@@ -184,6 +184,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"modsec_csm_block_escalation": true,
 		"email_compromised_account":   true,
 		"email_cloud_relay_abuse":     true,
+		"waf_attack_blocked":          true,
 	}
 
 	// Only blockable when block_cpanel_logins is enabled (disabled by default).

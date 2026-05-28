@@ -631,6 +631,7 @@ func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.S
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "waf_attack_blocked",
+				SourceIP: ip,
 				Message:  fmt.Sprintf("WAF blocking high-volume attacker: %s (%d blocked requests)", ip, count),
 				Details:  fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent block via CSM.", ip, count),
 			})

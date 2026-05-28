@@ -321,6 +321,38 @@ func TestAutoBlockIPs_BlocksGenericModSecEscalation(t *testing.T) {
 	}
 }
 
+// WAF high-volume attacker findings are already-confirmed attack signals;
+// they must reach the auto-block firewall path just like modsec escalation
+// or brute-force findings, instead of staying advisory.
+func TestAutoBlockIPs_BlocksWAFAttackBlocked(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:    "waf_attack_blocked",
+		SourceIP: "203.0.113.55",
+		Message:  "WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)",
+	}})
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.55" {
+		t.Fatalf("blocked IPs = %v, want 203.0.113.55", blocker.blocked)
+	}
+	if len(actions) == 0 || !strings.Contains(actions[0].Message, "203.0.113.55") {
+		t.Fatalf("actions = %+v, want auto-block for WAF attacker", actions)
+	}
+}
+
 func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()

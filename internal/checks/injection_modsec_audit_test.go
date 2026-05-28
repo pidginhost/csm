@@ -99,6 +99,11 @@ func TestCheckModSecAuditLogHighVolumeAttackerEmitsHigh(t *testing.T) {
 	if !strings.Contains(got[0].Message, "203.0.113.9") {
 		t.Errorf("message should name the attacker: %s", got[0].Message)
 	}
+	// SourceIP must be set so the auto-block path receives a structured
+	// attacker IP rather than depending on Message string parsing.
+	if got[0].SourceIP != "203.0.113.9" {
+		t.Errorf("SourceIP = %q, want 203.0.113.9", got[0].SourceIP)
+	}
 }
 
 func TestCheckModSecAuditLogBelowThresholdIgnored(t *testing.T) {
