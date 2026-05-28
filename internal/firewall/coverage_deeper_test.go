@@ -1,8 +1,10 @@
 package firewall
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,10 +15,32 @@ import (
 
 // --- AppendAudit edge cases -----------------------------------------------
 
-func TestAppendAuditBadDirDoesNotPanic(t *testing.T) {
-	// statePath that doesn't exist — AppendAudit should silently return.
-	AppendAudit(filepath.Join(t.TempDir(), "no", "such", "dir"), "block", "1.1.1.1", "test", "cli", 0)
-	// No panic, no file created. Just verifying it doesn't blow up.
+func TestAppendAuditOpenFailureLogs(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state-as-file")
+	if err := os.WriteFile(statePath, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	prevOutput := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOutput)
+		log.SetFlags(prevFlags)
+	})
+
+	AppendAudit(statePath, "block", "1.1.1.1", "test", "cli", 0)
+
+	prefix := "firewall: audit open failed for " + filepath.Join(statePath, "audit.jsonl") + ": "
+	got := logs.String()
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("open failure log = %q, want prefix %q", got, prefix)
+	}
+	if strings.TrimSpace(strings.TrimPrefix(got, prefix)) == "" {
+		t.Fatalf("open failure log did not include the error: %q", got)
+	}
 }
 
 func TestAppendAuditExplicitSourceSkipsInference(t *testing.T) {
