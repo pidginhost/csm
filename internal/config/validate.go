@@ -466,6 +466,17 @@ func validateWarnings(cfg *Config) []ValidationResult {
 		}
 	}
 
+	// block_ips wants to mutate nftables, but the firewall engine that
+	// would apply those rules is disabled or absent. Without this check
+	// the daemon happily logs "auto-blocked" actions that never reach
+	// the kernel, and operators only notice when attackers keep coming
+	// back.
+	if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+		if cfg.Firewall == nil || !cfg.Firewall.Enabled {
+			results = append(results, ValidationResult{"warn", "auto_response.block_ips", "auto-response wants to block IPs but firewall is disabled; blocks will be no-ops"})
+		}
+	}
+
 	// Infra IPs both empty
 	fwInfra := cfg.Firewall != nil && len(cfg.Firewall.InfraIPs) > 0
 	topInfra := len(cfg.InfraIPs) > 0

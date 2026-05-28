@@ -238,6 +238,43 @@ func TestValidateHeartbeat(t *testing.T) {
 	}
 }
 
+// auto_response.block_ips: true silently no-ops when the firewall is
+// disabled or missing -- the engine that would apply nft rules is not
+// running. Operators need a config-time warning instead of finding out
+// from "nothing got blocked" in production.
+func TestValidate_BlockIPsRequiresFirewallEnabled(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	// cfg.Firewall is nil -- block_ips will be a no-op.
+	results := Validate(cfg)
+	if !hasResult(results, "warn", "auto_response.block_ips") {
+		t.Fatalf("expected warn for block_ips without firewall; results=%v", results)
+	}
+}
+
+func TestValidate_BlockIPsWithFirewallDisabled(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Firewall = &firewall.FirewallConfig{Enabled: false}
+	results := Validate(cfg)
+	if !hasResult(results, "warn", "auto_response.block_ips") {
+		t.Fatalf("expected warn when firewall disabled; results=%v", results)
+	}
+}
+
+func TestValidate_BlockIPsWithFirewallEnabledSilent(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Firewall = &firewall.FirewallConfig{Enabled: true, ConnRateLimit: 100, InfraIPs: []string{"127.0.0.1"}}
+	results := Validate(cfg)
+	if hasResult(results, "warn", "auto_response.block_ips") {
+		t.Fatalf("did not expect block_ips warn when firewall is enabled; results=%v", results)
+	}
+}
+
 func TestValidateMaxPerHour(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.MaxPerHour = -1
