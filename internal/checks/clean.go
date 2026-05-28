@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // CleanResult describes the outcome of a cleaning attempt.
@@ -52,32 +56,14 @@ var (
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
-	// Open with O_NOFOLLOW so a symlink swapped in between detection and
-	// clean fails the open instead of redirecting the read at /etc/shadow
-	// (or any other root-readable file outside the user's home). Subsequent
-	// I/O goes through the fd, not the path, so a late directory swap
-	// cannot redirect either the backup read or the cleaned-content
-	// writeback after this point.
-	// #nosec G304 -- O_NOFOLLOW refuses symlinks; fd.Stat verifies regular
-	// file; writeback goes through atomic temp+rename in the same dir.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	target, err := openCleanTarget(path)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
 	}
-	defer func() { _ = f.Close() }()
+	defer target.Close()
 
-	info, err := f.Stat()
-	if err != nil {
-		result.Error = fmt.Sprintf("cannot stat file: %v", err)
-		return result
-	}
-	if !info.Mode().IsRegular() {
-		result.Error = fmt.Sprintf("refusing non-regular file (mode=%v)", info.Mode())
-		return result
-	}
-
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(target.File)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
@@ -97,19 +83,12 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// Metadata sidecar derived from the same fd we read, so a directory
 	// race after open cannot change the metadata we record.
-	fileSize := info.Size()
-	fileMode := info.Mode().String()
-	var uid, gid int
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		uid = int(stat.Uid)
-		gid = int(stat.Gid)
-	}
 	meta := map[string]interface{}{
 		"original_path":  path,
-		"owner_uid":      uid,
-		"group_gid":      gid,
-		"mode":           fileMode,
-		"size":           fileSize,
+		"owner_uid":      target.UID,
+		"group_gid":      target.GID,
+		"mode":           target.Info.Mode().String(),
+		"size":           target.Info.Size(),
 		"quarantined_at": time.Now(),
 		"reason":         "Pre-clean backup (surgical cleaning)",
 	}
@@ -154,13 +133,7 @@ func CleanInfectedFile(path string) CleanResult {
 		return result
 	}
 
-	// Atomic writeback: stage the cleaned content next to the original,
-	// preserve mode and ownership from the fd-derived stat, then rename
-	// over the source. Rename replaces the link or file at `path` even
-	// if a parent directory swap has redirected the name in the meantime,
-	// so the cleaned content lands at a name the operator controls and
-	// the original mode/owner travel with it.
-	if err := writeCleanedFileAtomic(path, []byte(content), info.Mode().Perm(), uid, gid); err != nil {
+	if err := writeCleanedFileAtomic(target, []byte(content)); err != nil {
 		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
 		return result
 	}
@@ -170,48 +143,213 @@ func CleanInfectedFile(path string) CleanResult {
 	return result
 }
 
-// writeCleanedFileAtomic stages cleaned content in a sibling temp file,
-// chmods + chowns it to match the original, fsyncs, and renames over the
-// target. The rename is atomic at the filesystem level so concurrent
-// readers observe either the old or the new content but never a partial
-// write.
-func writeCleanedFileAtomic(path string, content []byte, mode os.FileMode, uid, gid int) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".csm-clean-*")
+type cleanTarget struct {
+	Path       string
+	DirFD      int
+	Name       string
+	File       *os.File
+	Info       os.FileInfo
+	UID        int
+	GID        int
+	OwnerKnown bool
+}
+
+func (t *cleanTarget) Close() {
+	if t.File != nil {
+		_ = t.File.Close()
+	}
+	if t.DirFD >= 0 {
+		_ = unix.Close(t.DirFD)
+	}
+}
+
+func openCleanTarget(path string) (*cleanTarget, error) {
+	dir, name := filepath.Split(path)
+	if name == "" || name == "." || name == ".." {
+		return nil, fmt.Errorf("invalid target path %q", path)
+	}
+	if dir == "" {
+		dir = "."
+	}
+	dir = filepath.Clean(dir)
+	parentInfo, err := os.Lstat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("stat parent directory: %w", err)
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing symlinked parent directory")
+	}
+
+	// Pin the immediate parent. A swap of that directory to a symlink
+	// after detection must not redirect either the read or the writeback.
+	dirFD, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open parent directory: %w", err)
+	}
+	closeDir := true
+	defer func() {
+		if closeDir {
+			_ = unix.Close(dirFD)
+		}
+	}()
+	if pinErr := verifyCleanParentStillPinned(dirFD, parentInfo); pinErr != nil {
+		return nil, pinErr
+	}
+
+	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
+	file := os.NewFile(uintptr(fd), path)
+	closeFile := true
+	defer func() {
+		if closeFile {
+			_ = file.Close()
+		}
+	}()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing non-regular file (mode=%v)", info.Mode())
+	}
+
+	target := &cleanTarget{
+		Path:  path,
+		DirFD: dirFD,
+		Name:  name,
+		File:  file,
+		Info:  info,
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		target.UID = int(stat.Uid)
+		target.GID = int(stat.Gid)
+		target.OwnerKnown = true
+	}
+
+	closeDir = false
+	closeFile = false
+	return target, nil
+}
+
+func verifyCleanParentStillPinned(dirFD int, want os.FileInfo) error {
+	var got unix.Stat_t
+	if err := unix.Fstat(dirFD, &got); err != nil {
+		return fmt.Errorf("stat opened parent directory: %w", err)
+	}
+	if !sameUnixStatIdentity(want, got) {
+		return fmt.Errorf("parent directory changed during cleaning")
+	}
+	return nil
+}
+
+func sameUnixStatIdentity(info os.FileInfo, stat unix.Stat_t) bool {
+	if info == nil {
+		return false
+	}
+	want, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return uint64(want.Dev) == uint64(stat.Dev) && uint64(want.Ino) == uint64(stat.Ino)
+}
+
+// writeCleanedFileAtomic stages cleaned content through a hidden sibling
+// name under the pinned parent directory and renames it over the original
+// only after the path still resolves to the inode we read.
+func writeCleanedFileAtomic(target *cleanTarget, content []byte) error {
+	tmp, tmpName, err := createCleanTempFile(target.DirFD)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
 	removeTmp := true
 	defer func() {
 		if removeTmp {
-			_ = os.Remove(tmpPath)
+			_ = unix.Unlinkat(target.DirFD, tmpName, 0)
 		}
+		_ = tmp.Close()
 	}()
+
 	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		return err
-	}
-	if uid > 0 || gid > 0 {
-		if err := os.Chown(tmpPath, uid, gid); err != nil {
+	if target.OwnerKnown {
+		if err := tmp.Chown(target.UID, target.GID); err != nil {
 			return err
 		}
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := tmp.Chmod(cleanReplacementMode(target.Info.Mode())); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+
+	if err := verifyCleanTargetUnchanged(target); err != nil {
+		return err
+	}
+
+	if err := unix.Renameat(target.DirFD, tmpName, target.DirFD, target.Name); err != nil {
 		return err
 	}
 	removeTmp = false
 	return nil
+}
+
+func createCleanTempFile(dirFD int) (*os.File, string, error) {
+	for i := 0; i < 100; i++ {
+		var raw [8]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return nil, "", fmt.Errorf("random temp name: %w", err)
+		}
+		name := ".csm-clean-" + hex.EncodeToString(raw[:])
+		fd, err := unix.Openat(dirFD, name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err == unix.EEXIST {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
+		return os.NewFile(uintptr(fd), name), name, nil
+	}
+	return nil, "", fmt.Errorf("could not allocate temp file name")
+}
+
+func verifyCleanTargetUnchanged(target *cleanTarget) error {
+	fd, err := unix.Openat(target.DirFD, target.Name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open target before rename: %w", err)
+	}
+	// #nosec G115 -- unix.Openat returned a non-negative fd because err is nil.
+	file := os.NewFile(uintptr(fd), target.Path)
+	defer func() { _ = file.Close() }()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat target before rename: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing non-regular target before rename (mode=%v)", info.Mode())
+	}
+	if !sameFileIdentity(info, target.Info) || !sameCleanContentShape(info, target.Info) {
+		return fmt.Errorf("file changed during cleaning")
+	}
+	return nil
+}
+
+func sameCleanContentShape(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func cleanReplacementMode(mode os.FileMode) os.FileMode {
+	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 }
 
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned

@@ -72,7 +72,10 @@ func TestCleanInfectedFileRefusesSymlinkSwap(t *testing.T) {
 		}
 	}
 	if err := filepath.Walk(qDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
 			return nil
 		}
 		if strings.HasSuffix(p, ".meta") {
@@ -105,6 +108,105 @@ func TestCleanInfectedFileRefusesDirectory(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Errorf("expected error refusing non-regular target")
+	}
+}
+
+func TestCleanInfectedFileRefusesSymlinkedParent(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "victim.php")
+	original := "<?php\n@include(\"/tmp/payload.txt\");\necho 'outside';\n"
+	if err := os.WriteFile(outsideFile, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(root, "site")
+	if err := os.Symlink(outside, linkParent); err != nil {
+		t.Skipf("symlink not supported on this fs: %v", err)
+	}
+
+	res := CleanInfectedFile(filepath.Join(linkParent, "victim.php"))
+	if res.Cleaned {
+		t.Fatalf("symlinked parent must not be cleaned, got %+v", res)
+	}
+	if res.Error == "" {
+		t.Fatalf("expected refusal for symlinked parent")
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != original {
+		t.Fatalf("outside file was modified through symlinked parent:\n%s", got)
+	}
+}
+
+func TestCleanInfectedFilePreservesSpecialModeBits(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+	path := writeTempPHP(t, "<?php\n@include(\"/tmp/payload.txt\");\necho 'app';\n")
+	mode := os.FileMode(0o755) | os.ModeSticky
+	if err := os.Chmod(path, mode); err != nil {
+		t.Skipf("special mode bit not supported on this fs: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Mode()&os.ModeSticky == 0 {
+		t.Skip("filesystem did not preserve sticky bit on regular file")
+	}
+
+	res := CleanInfectedFile(path)
+	if !res.Cleaned {
+		t.Fatalf("expected cleaned, got %+v", res)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode()&os.ModeSticky == 0 {
+		t.Fatalf("sticky bit was not preserved: mode=%v", after.Mode())
+	}
+	if after.Mode().Perm() != 0o755 {
+		t.Fatalf("permissions = %v, want 0755", after.Mode().Perm())
+	}
+}
+
+func TestWriteCleanedFileAtomicRefusesTargetSwap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "victim.php")
+	original := "<?php\n@include(\"/tmp/payload.txt\");\necho 'app';\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := openCleanTarget(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+
+	if removeErr := os.Remove(path); removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	replacement := "<?php\necho 'replacement';\n"
+	if writeErr := os.WriteFile(path, []byte(replacement), 0o644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	if cleanErr := writeCleanedFileAtomic(target, []byte("<?php\necho 'app';\n")); cleanErr == nil {
+		t.Fatal("expected refusal after target inode swap")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != replacement {
+		t.Fatalf("replacement was overwritten: %q", got)
 	}
 }
 

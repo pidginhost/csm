@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Database scan, clean, and auto-response paths now reject a WordPress table prefix that contains anything outside alphanumerics or underscore. A cPanel-user-owned wp-config.php can no longer drive SQL injection through these helpers.
-- Surgical file cleaning now opens its target with `O_NOFOLLOW`, reads through the descriptor, and writes the cleaned content back via an atomic temp file in the same directory. An attacker who swaps the path for a symlink between detection and cleaning can no longer redirect the read at a root-readable file or have the cleaner overwrite something outside the user's home.
+- Surgical file cleaning now refuses symlinked targets or parent directories and writes replacements through a pinned directory handle. Cleaned files keep their original owner and mode while avoiding symlink write-through.
 
 ### Fixed
 
