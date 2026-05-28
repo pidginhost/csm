@@ -69,7 +69,15 @@ func IncidentCorrelator() *incident.Correlator {
 		var persist func(incident.Incident)
 		if db != nil {
 			persist = func(inc incident.Incident) {
-				_ = db.SaveIncident(inc)
+				if err := db.SaveIncident(inc); err != nil {
+					// Silent failure here used to leave the in-memory
+					// correlator and bbolt diverged: the next restart
+					// restored stale data, and operators had no signal
+					// the persisted timeline was a step behind reality.
+					csmlog.Warn("incident persist failed",
+						"id", inc.ID, "kind", string(inc.Kind),
+						"status", string(inc.Status), "err", err)
+				}
 			}
 		}
 		// Resolve spray-suppression knobs from the active config. nil
@@ -186,7 +194,10 @@ func IncidentCorrelator() *incident.Correlator {
 			OnIncidentBlock: onIncidentBlock,
 		})
 		if db != nil {
-			if list, err := db.ListIncidents(); err == nil {
+			list, err := db.ListIncidents()
+			if err != nil {
+				csmlog.Warn("incident restore failed", "err", err)
+			} else {
 				incidentCorrelator.Restore(list)
 			}
 		}

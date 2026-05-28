@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cloud-relay detector now evicts idle per-user windows on a periodic sweep, so the in-memory map no longer grows linearly with every authenticated sender ever seen.
 - Cloud-relay cleanup no longer drops the first new mailbox activity when cleanup and log parsing happen at the same time after a long idle period.
 - Firewall state reads now ignore expired allow-list rows the same way they ignore expired blocks, so stale entries no longer inflate firewall rule metrics.
+- Incident persistence failures now log a warning instead of being silently dropped. Operators see a signal when bbolt rejects an incident save and the in-memory and on-disk views drift apart.
 
 ## [3.9.1] - 2026-05-28
 
