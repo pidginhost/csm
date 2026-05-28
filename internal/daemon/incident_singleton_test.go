@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -251,6 +255,114 @@ func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 		t.Fatalf("GetIncident: %v", err)
 	} else if ok {
 		t.Fatal("compacted incident still visible in store")
+	}
+}
+
+func TestIncidentCorrelatorLogsRestoreFailure(t *testing.T) {
+	resetIncidentForTest()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close: %v", err)
+	}
+	finishLog := captureCSMLog(t)
+	t.Cleanup(func() {
+		_ = finishLog()
+		resetIncidentForTest()
+		store.SetGlobal(prev)
+	})
+
+	_ = IncidentCorrelator()
+
+	out := finishLog()
+	if !strings.Contains(out, "WARN: incident restore failed") {
+		t.Fatalf("restore failure was not logged: %q", out)
+	}
+	if !strings.Contains(out, `err="database not open"`) {
+		t.Fatalf("restore log did not include bbolt error: %q", out)
+	}
+}
+
+func TestIncidentCorrelatorLogsPersistFailure(t *testing.T) {
+	resetIncidentForTest()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	finishLog := captureCSMLog(t)
+	t.Cleanup(func() {
+		_ = finishLog()
+		resetIncidentForTest()
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+
+	c := IncidentCorrelator()
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close: %v", err)
+	}
+	_, created, err := c.OnFinding(alert.Finding{
+		Check:     "wp_login_bruteforce",
+		Severity:  alert.High,
+		TenantID:  "alice",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created {
+		t.Fatal("finding did not create an incident")
+	}
+
+	out := finishLog()
+	if !strings.Contains(out, "WARN: incident persist failed") {
+		t.Fatalf("persist failure was not logged: %q", out)
+	}
+	if !strings.Contains(out, "id=inc_") {
+		t.Fatalf("persist log did not include incident id: %q", out)
+	}
+	if !strings.Contains(out, "status=open") {
+		t.Fatalf("persist log did not include incident status: %q", out)
+	}
+	if !strings.Contains(out, `err="database not open"`) {
+		t.Fatalf("persist log did not include bbolt error: %q", out)
+	}
+}
+
+func captureCSMLog(t *testing.T) func() string {
+	t.Helper()
+	t.Setenv("CSM_LOG_FORMAT", "text")
+	t.Setenv("CSM_LOG_LEVEL", "debug")
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	csmlog.Init()
+
+	var (
+		once sync.Once
+		out  string
+	)
+	return func() string {
+		once.Do(func() {
+			_ = w.Close()
+			var buf bytes.Buffer
+			_, _ = io.Copy(&buf, r)
+			_ = r.Close()
+			os.Stderr = oldStderr
+			csmlog.Init()
+			out = buf.String()
+		})
+		return out
 	}
 }
 

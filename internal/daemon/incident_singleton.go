@@ -70,10 +70,9 @@ func IncidentCorrelator() *incident.Correlator {
 		if db != nil {
 			persist = func(inc incident.Incident) {
 				if err := db.SaveIncident(inc); err != nil {
-					// Silent failure here used to leave the in-memory
-					// correlator and bbolt diverged: the next restart
-					// restored stale data, and operators had no signal
-					// the persisted timeline was a step behind reality.
+					// The in-memory correlator has already advanced, so
+					// failed writes mean the next restore may replay stale
+					// incident state unless operators repair the store.
 					csmlog.Warn("incident persist failed",
 						"id", inc.ID, "kind", string(inc.Kind),
 						"status", string(inc.Status), "err", err)
