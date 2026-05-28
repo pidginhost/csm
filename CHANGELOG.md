@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-account scans now reject findings whose structured file path belongs to another home account before tenant attribution, avoiding cross-account incident misattribution.
 - Config validator now warns when auto-response wants to block IPs but the firewall section is disabled or missing. Previously the daemon logged auto-block actions that never reached nftables.
 - Health check now warns when BPF direct-SMTP enforcement is enabled but the connection tracker is running on legacy or has no active backend. Operators see the threat-detection degradation in the health channel instead of inferring it from missing telemetry.
+- conf.d fragment loader now logs each scalar override one fragment makes against an earlier source. Operators see which key was overwritten and what value won instead of silently inheriting the last-alphabetical fragment.
 
 ### Security
 

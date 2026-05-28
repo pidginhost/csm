@@ -1743,7 +1743,9 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 		return nil, err
 	}
 	for _, frag := range frags {
-		DeepMerge(&merged, frag)
+		DeepMergeTracked(&merged, frag, func(keyPath, oldVal, newVal string) {
+			fmt.Fprintf(os.Stderr, "confd: fragment overrides %s: %q -> %q\n", keyPath, oldVal, newVal)
+		})
 	}
 
 	mergedBytes, err := yaml.Marshal(&merged)
