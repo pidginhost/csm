@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,6 +110,105 @@ func TestAPIFirewallTentativeApplyRefusesWhenAlreadyPending(t *testing.T) {
 	s.apiFirewallTentativeApply(postW, postReq)
 	if postW.Code != 409 {
 		t.Errorf("expected 409 Conflict, got %d body=%s", postW.Code, postW.Body.String())
+	}
+}
+
+// scheduleDaemonRestart must respect server shutdown so a tentative-apply
+// issued just before Shutdown does not race a freshly-stopped HTTP server
+// or, in the worst case, restart the daemon after the operator killed it.
+func TestScheduleDaemonRestartAbortsOnShutdown(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	var calls int32
+	s.restartDaemon = func() ([]byte, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, nil
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		// httpSrv.Shutdown returns ErrServerClosed-ish errors when never
+		// served. Either is acceptable here; the call must close pruneDone.
+		t.Logf("Shutdown returned: %v", err)
+	}
+	s.scheduleDaemonRestart(50 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("restartDaemon called %d times after shutdown, want 0", got)
+	}
+}
+
+// scheduleDaemonRestart must still fire the restart in the happy path.
+// The delay-then-restart pattern lets the HTTP response flush first; this
+// test pins the contract that the goroutine does eventually fire.
+func TestScheduleDaemonRestartFiresAfterDelay(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	fired := make(chan struct{}, 1)
+	s.restartDaemon = func() ([]byte, error) {
+		fired <- struct{}{}
+		return nil, nil
+	}
+	s.scheduleDaemonRestart(20 * time.Millisecond)
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("restartDaemon not called within 1s")
+	}
+}
+
+// scheduleRollbackRevert must cancel the in-flight revert when the server
+// begins shutdown so a slow revert cannot hold past Shutdown.
+func TestScheduleRollbackRevertCancelsOnShutdown(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	revertCtx := make(chan context.Context, 1)
+	revertDone := make(chan struct{})
+	restoreCalled := make(chan struct{})
+	db, err := store.Open(s.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	mgr := rollback.NewManager(db, cfgPath, func(ctx context.Context) error {
+		revertCtx <- ctx
+		close(restoreCalled)
+		<-ctx.Done()
+		close(revertDone)
+		return ctx.Err()
+	}, time.Now)
+	rollback.SetGlobal(mgr)
+	t.Cleanup(func() { rollback.SetGlobal(nil) })
+	if _, err := mgr.Apply([]byte("a"), []byte("b"), time.Minute, "seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	<-restoreCalled
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Logf("Shutdown returned: %v", err)
+	}
+	select {
+	case <-revertDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("revert did not exit after server Shutdown")
+	}
+	ctx := <-revertCtx
+	if ctx.Err() == nil {
+		t.Errorf("revert context was not cancelled")
+	}
+}
+
+// Server.Shutdown must be idempotent; the prior code panicked on a second
+// close of pruneDone when tests (or callers that reuse a Server) invoke it
+// twice. Guarding the close with sync.Once is the minimum fix.
+func TestServerShutdownIdempotent(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Logf("first Shutdown returned: %v", err)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("second Shutdown panicked: %v", r)
+		}
+	}()
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Logf("second Shutdown returned: %v", err)
 	}
 }
 

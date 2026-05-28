@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // apiFirewallTentativeApply handles POST /api/v1/settings/firewall/tentative-apply.
@@ -125,12 +126,7 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 	// Defer the restart so the response flushes first; otherwise the
 	// client sees a connection reset and cannot read the rollback ETA
 	// it needs to drive the countdown banner.
-	go func() {
-		time.Sleep(250 * time.Millisecond)
-		if _, derr := s.restartDaemon(); derr != nil {
-			fmt.Fprintf(os.Stderr, "webui: tentative-apply restart failed: %v\n", derr)
-		}
-	}()
+	s.scheduleDaemonRestart(250 * time.Millisecond)
 
 	writeJSON(w, map[string]interface{}{
 		"status":           "tentative-apply issued",
@@ -214,13 +210,48 @@ func (s *Server) apiFirewallRollbackRevert(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, "no pending rollback", http.StatusConflict)
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	s.auditLog(r, "settings-rollback-revert", "firewall", "")
+	writeJSON(w, map[string]string{"status": "revert issued"})
+}
+
+// scheduleDaemonRestart fires restartDaemon after delay in a supervised
+// goroutine. The select on pruneDone lets the goroutine exit cleanly if
+// the server begins shutdown during the pre-restart delay, so an
+// operator-initiated stop is not chased by a phantom restart.
+func (s *Server) scheduleDaemonRestart(delay time.Duration) {
+	obs.SafeGo("webui-tentative-apply-restart", func() {
+		select {
+		case <-s.pruneDone:
+			return
+		case <-time.After(delay):
+		}
+		if _, err := s.restartDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "webui: tentative-apply restart failed: %v\n", err)
+		}
+	})
+}
+
+// scheduleRollbackRevert runs the revert in a supervised goroutine with
+// a hard timeout. The revert context is also cancelled when the server
+// starts shutdown so a slow nftables restore cannot outlive Shutdown.
+func (s *Server) scheduleRollbackRevert(mgr *rollback.Manager, timeout time.Duration) {
+	obs.SafeGo("webui-rollback-revert", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
+		watcher := make(chan struct{})
+		go func() {
+			defer close(watcher)
+			select {
+			case <-s.pruneDone:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 		if err := mgr.Revert(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "webui: rollback revert failed: %v\n", err)
 		}
-	}()
-	s.auditLog(r, "settings-rollback-revert", "firewall", "")
-	writeJSON(w, map[string]string{"status": "revert issued"})
+		cancel()
+		<-watcher
+	})
 }

@@ -91,7 +91,9 @@ type Server struct {
 	findingBus *broadcast.Bus // set by Daemon via SetFindingBus
 
 	// Graceful shutdown signal for background goroutines and streaming handlers.
-	pruneDone chan struct{}
+	// shutdownOnce makes Shutdown idempotent; closing pruneDone twice panics.
+	pruneDone    chan struct{}
+	shutdownOnce sync.Once
 
 	// restartDaemon is called by apiSettingsRestart. Tests override this.
 	restartDaemon func() (output []byte, err error)
@@ -417,12 +419,17 @@ func (s *Server) Start() error {
 	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
 }
 
-// Shutdown gracefully stops the server.
+// Shutdown gracefully stops the server. Safe to call more than once;
+// the underlying pruneDone close is guarded so duplicate shutdown does
+// not panic.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.perfCancel != nil {
 		s.perfCancel()
 	}
-	close(s.pruneDone)
+	s.shutdownOnce.Do(func() { close(s.pruneDone) })
+	if s.httpSrv == nil {
+		return nil
+	}
 	return s.httpSrv.Shutdown(ctx)
 }
 
