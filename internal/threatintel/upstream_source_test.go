@@ -322,11 +322,6 @@ func TestUpstreamSource_CircuitBreakerAllowsSingleCooldownProbe(t *testing.T) {
 	}
 }
 
-// Cache effectiveness has been an operator blind spot since the cache
-// + breaker landed (V15). Without metrics the operator cannot detect
-// when the upstream is degraded, when traffic shape has shifted to
-// unique-IP volume that bypasses the cache, or when the breaker is
-// open. Counters must increment for hit/miss/failure paths.
 func TestUpstreamSource_TracksCacheAndBackendCounters(t *testing.T) {
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

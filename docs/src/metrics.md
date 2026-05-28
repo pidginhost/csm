@@ -158,6 +158,22 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   sum by (tier) (rate(csm_check_duration_seconds_sum{tier="deep"}[1h]))
   ```
 
+### Threat intelligence
+
+Registered when `reputation.upstream.enabled: true`.
+
+- `csm_threatintel_cache_hits_total` (counter): upstream threat-intel
+  lookups served from CSM's local per-IP cache.
+- `csm_threatintel_cache_misses_total` (counter): upstream
+  threat-intel lookups not served from the local cache. A miss may
+  still fail open without an HTTP request when the breaker is open.
+- `csm_threatintel_backend_failures_total` (counter): upstream
+  backend failures from network errors, non-200 responses, malformed
+  JSON, response IP mismatches, or out-of-range scores.
+- `csm_threatintel_breaker_open` (gauge): 1 while the upstream
+  circuit breaker is refusing calls, 0 when closed or allowing its
+  single cooldown probe.
+
 ### Firewall
 
 - `csm_blocked_ips_total` (gauge): number of IPs currently on the

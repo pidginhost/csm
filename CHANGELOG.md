@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config validator now warns when auto-response wants to block IPs but the firewall section is disabled or missing. Previously the daemon logged auto-block actions that never reached nftables.
 - Health check now warns when BPF direct-SMTP enforcement is enabled but the connection tracker is running on legacy or has no active backend. Operators see the threat-detection degradation in the health channel instead of inferring it from missing telemetry.
 - conf.d fragment loader now logs scalar overrides with the fragment path and redacts sensitive values. Operators see which key was overwritten without leaking tokens into logs.
-- Upstream threat-intel source now exposes cache hits, cache misses, backend failures, and breaker state through the existing Prometheus pipeline. Operators can monitor cache effectiveness and upstream health alongside the other csm_* metrics.
+- Upstream threat-intel source now exposes cumulative cache hits, cache misses, backend failures, and breaker state through the existing Prometheus pipeline. Operators can monitor cache effectiveness and upstream health alongside the other csm_* metrics.
 
 ### Security
 

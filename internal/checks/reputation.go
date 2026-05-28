@@ -66,6 +66,7 @@ type reputationEntry struct {
 func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
+	supplementalAgg := newSupplementalThreatAggregator(cfg)
 	ips := collectRecentIPs(cfg)
 	if len(ips) == 0 {
 		return nil
@@ -74,8 +75,6 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
-	supplementalAgg := newSupplementalThreatAggregator(cfg)
-
 	client := abuseIPDBClient
 	sdb := store.Global()
 	now := time.Now()
@@ -271,6 +270,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 }
 
 func newSupplementalThreatAggregator(cfg *config.Config) *threatintel.Aggregator {
+	if !cfg.Reputation.Upstream.Enabled {
+		threatintel.ClearUpstreamMetricsSource()
+	}
 	if !cfg.Reputation.Rspamd.Enabled && !cfg.Reputation.Upstream.Enabled {
 		return nil
 	}
