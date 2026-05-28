@@ -300,6 +300,44 @@ func TestScanRetro_SkipsLinesOutsideLookback(t *testing.T) {
 	})
 }
 
+func TestScanRetro_CappedHistoryKeepsEarlierPeakWindow(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.Local)
+	base := now.Add(-300 * 24 * time.Hour)
+	var lines []string
+	for i := 0; i < cloudRelayHighVolumeEvents; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(i)*time.Minute),
+			"victim@example.com",
+			"ec2-1-2-3-4.compute-1.amazonaws.com",
+			"1.2.3.4",
+			"initial-burst",
+		))
+	}
+
+	tailBase := base.Add(2 * time.Hour)
+	for i := 0; i < cloudRelayScanMaxEventsPerUser+1; i++ {
+		lines = append(lines, eximLine(
+			tailBase.Add(time.Duration(i)*61*time.Minute),
+			"victim@example.com",
+			"ec2-1-2-3-4.compute-1.amazonaws.com",
+			"1.2.3.4",
+			"slow-tail",
+		))
+	}
+	path := writeEximFixture(t, lines)
+
+	withGlobalStore(t, func(*store.DB) {
+		cfg := &config.Config{}
+		findings := ScanEximHistoryForCloudRelay(cfg, path, now, 365*24*time.Hour)
+		if len(findings) != 1 {
+			t.Fatalf("expected capped scan to keep earlier peak window, got %d findings", len(findings))
+		}
+		if !strings.Contains(findings[0].Message, "sent 15 authenticated messages") {
+			t.Fatalf("finding should report the earlier peak window, got %q", findings[0].Message)
+		}
+	})
+}
+
 func TestMaxCloudRelayBurst_ReturnsWindowEndNotStart(t *testing.T) {
 	// Seven events spaced 2 min apart. The strongest 60-min window
 	// covers events 0..6 — operators reading the log want the peak
@@ -385,35 +423,51 @@ func TestExtractSenderFromCloudRelayMessage(t *testing.T) {
 // total memory footprint stays capped.
 func TestProcessCloudRelayScanLine_CapsPerUserEvents(t *testing.T) {
 	cfg := &config.Config{}
-	byUser := map[string][]cloudRelayScanEvent{}
+	byUser := map[string]*cloudRelayScanAccumulator{}
 	since := time.Now().Add(-24 * time.Hour)
 	base := time.Now().Add(-12 * time.Hour)
 	total := cloudRelayScanMaxEventsPerUser * 2
 	for i := 0; i < total; i++ {
+		ip := fmt.Sprintf("1.2.%d.%d", i/256, i%256)
 		line := eximLine(
-			base.Add(time.Duration(i)*time.Second),
+			base.Add(time.Duration(i)*time.Millisecond),
 			"victim@example.com",
 			"ec2-1-2-3-4.compute-1.amazonaws.com",
-			"1.2.3.4",
+			ip,
 			"subj",
 		)
 		processCloudRelayScanLine(line, cfg, since, byUser)
 	}
-	got := len(byUser["victim@example.com"])
+	acc := byUser["victim@example.com"]
+	if acc == nil {
+		t.Fatal("expected accumulator for the test user")
+	}
+	got := len(acc.events)
 	if got == 0 {
 		t.Fatal("expected events for the test user, got 0")
 	}
 	if got > cloudRelayScanMaxEventsPerUser {
 		t.Errorf("per-user events = %d, want <= %d", got, cloudRelayScanMaxEventsPerUser)
 	}
+	if acc.total != total {
+		t.Errorf("total events = %d, want %d", acc.total, total)
+	}
+	if !acc.reportable {
+		t.Fatal("expected capped accumulator to remain reportable")
+	}
+	wantRecentIP := fmt.Sprintf("1.2.%d.%d", (total-1)/256, (total-1)%256)
+	if len(acc.recentIPs) == 0 || acc.recentIPs[0] != wantRecentIP {
+		t.Fatalf("most recent IP = %v, want %s", acc.recentIPs, wantRecentIP)
+	}
 }
 
 // A log replay that surfaces more distinct compromised accounts than the
 // daemon can plausibly track at once must cap the outer map. Past the
-// cap, new users are dropped silently to keep memory bounded.
+// cap, stale low-signal users are evicted so later accounts are still
+// eligible for detection while memory stays bounded.
 func TestProcessCloudRelayScanLine_CapsDistinctUsers(t *testing.T) {
 	cfg := &config.Config{}
-	byUser := map[string][]cloudRelayScanEvent{}
+	byUser := map[string]*cloudRelayScanAccumulator{}
 	since := time.Now().Add(-24 * time.Hour)
 	base := time.Now().Add(-1 * time.Hour)
 	for i := 0; i < cloudRelayScanMaxUsers*2; i++ {
@@ -423,6 +477,10 @@ func TestProcessCloudRelayScanLine_CapsDistinctUsers(t *testing.T) {
 	}
 	if got := len(byUser); got > cloudRelayScanMaxUsers {
 		t.Errorf("distinct users = %d, want <= %d", got, cloudRelayScanMaxUsers)
+	}
+	lastUser := fmt.Sprintf("user%d@example.com", cloudRelayScanMaxUsers*2-1)
+	if _, ok := byUser[lastUser]; !ok {
+		t.Fatalf("new user %s was dropped after cap was reached", lastUser)
 	}
 }
 

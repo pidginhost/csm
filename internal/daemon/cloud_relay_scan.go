@@ -66,7 +66,7 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 	defer func() { _ = f.Close() }()
 
 	since := now.Add(-lookback)
-	byUser := make(map[string][]cloudRelayScanEvent)
+	byUser := make(map[string]*cloudRelayScanAccumulator)
 
 	// Use bufio.Reader rather than bufio.Scanner: an exim line can
 	// occasionally exceed whatever fixed Scanner buffer we set (e.g.
@@ -111,10 +111,11 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 
 	var findings []alert.Finding
 	for _, user := range users {
-		events := byUser[user]
-		sort.Slice(events, func(i, j int) bool { return events[i].at.Before(events[j].at) })
-
-		maxSends, maxDistinctIPs, fireAt, peakPTR := maxCloudRelayBurst(events)
+		acc := byUser[user]
+		if acc == nil || !acc.reportable {
+			continue
+		}
+		maxSends, maxDistinctIPs, fireAt, peakPTR := acc.bestSends, acc.bestDistinctIPs, acc.bestAt, acc.bestPTR
 		multiIP := maxSends >= cloudRelayMinEvents && maxDistinctIPs >= cloudRelayMinDistinctIP
 		volume := maxSends >= cloudRelayHighVolumeEvents
 		if !multiIP && !volume {
@@ -123,21 +124,14 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 
 		// Persistent dedup: skip if we've already fired for this user
 		// and no new event has landed since then.
-		latestEvent := events[len(events)-1].at
+		latestEvent := acc.latestEvent
 		if alreadyReportedRetro(user, latestEvent) {
 			continue
 		}
 
-		// Build the IP list (distinct, newest-first).
-		seen := make(map[string]struct{}, len(events))
-		var ips []string
-		for i := len(events) - 1; i >= 0; i-- {
-			ip := events[i].ip
-			if _, dup := seen[ip]; dup {
-				continue
-			}
-			seen[ip] = struct{}{}
-			ips = append(ips, ip)
+		ips := acc.recentIPs
+		if len(ips) == 0 {
+			continue
 		}
 		recentIP := ips[0]
 
@@ -158,10 +152,10 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			now.Format("2006-01-02 15:04:05"),
 			user,
 			int(lookback.Hours()),
-			len(events),
+			acc.total,
 			maxSends, maxDistinctIPs, fireAt.Format("2006-01-02 15:04:05"),
 			peakPTR,
-			strings.Join(truncateIPList(ips, 10), ", "),
+			strings.Join(ips, ", "),
 		)
 
 		mailbox, domain, tenant := splitMailAccount(user)
@@ -186,7 +180,7 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 // processCloudRelayScanLine parses a single exim log line and, if it is
 // an authenticated cloud-PTR acceptance within the lookback window,
 // records it under the AUTH user in `byUser`.
-func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time, byUser map[string][]cloudRelayScanEvent) {
+func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time, byUser map[string]*cloudRelayScanAccumulator) {
 	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
 		return
 	}
@@ -209,17 +203,22 @@ func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time,
 	if ip == "" {
 		return
 	}
-	events, exists := byUser[user]
-	if !exists && len(byUser) >= cloudRelayScanMaxUsers {
-		return
+
+	acc, exists := byUser[user]
+	if !exists {
+		if len(byUser) >= cloudRelayScanMaxUsers {
+			pruneCloudRelayScanUsers(byUser, ts)
+		}
+		if len(byUser) >= cloudRelayScanMaxUsers {
+			evictOldestCloudRelayScanUser(byUser)
+		}
+		if len(byUser) >= cloudRelayScanMaxUsers {
+			return
+		}
+		acc = newCloudRelayScanAccumulator()
+		byUser[user] = acc
 	}
-	if len(events) >= cloudRelayScanMaxEventsPerUser {
-		// Drop the oldest event so the newest peak window is preserved.
-		// Log files are read in chronological order, so the head of the
-		// slice is always the oldest entry.
-		events = events[1:]
-	}
-	byUser[user] = append(events, cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
+	acc.record(cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
 }
 
 // drainUntilNewline reads from reader and discards bytes until a newline
@@ -246,6 +245,125 @@ type cloudRelayScanEvent struct {
 	ptr string
 }
 
+type cloudRelayScanAccumulator struct {
+	events          []cloudRelayScanEvent
+	ipCounts        map[string]int
+	recentIPs       []string
+	total           int
+	latestEvent     time.Time
+	bestSends       int
+	bestDistinctIPs int
+	bestAt          time.Time
+	bestPTR         string
+	reportable      bool
+}
+
+func newCloudRelayScanAccumulator() *cloudRelayScanAccumulator {
+	return &cloudRelayScanAccumulator{
+		ipCounts: make(map[string]int),
+	}
+}
+
+func (acc *cloudRelayScanAccumulator) record(event cloudRelayScanEvent) {
+	acc.total++
+	if acc.latestEvent.IsZero() || event.at.After(acc.latestEvent) {
+		acc.latestEvent = event.at
+	}
+	acc.rememberRecentIP(event.ip)
+
+	cutoff := event.at.Add(-cloudRelayWindow_)
+	drop := 0
+	for drop < len(acc.events) && acc.events[drop].at.Before(cutoff) {
+		acc.removeWindowIP(acc.events[drop].ip)
+		drop++
+	}
+	if drop > 0 {
+		clear(acc.events[:drop])
+		acc.events = acc.events[drop:]
+	}
+	if len(acc.events) >= cloudRelayScanMaxEventsPerUser {
+		acc.removeWindowIP(acc.events[0].ip)
+		var zero cloudRelayScanEvent
+		acc.events[0] = zero
+		acc.events = acc.events[1:]
+	}
+
+	acc.events = append(acc.events, event)
+	acc.ipCounts[event.ip]++
+
+	sends := len(acc.events)
+	distinctIPs := len(acc.ipCounts)
+	if sends > acc.bestSends || (sends == acc.bestSends && distinctIPs > acc.bestDistinctIPs) {
+		acc.bestSends = sends
+		acc.bestDistinctIPs = distinctIPs
+		acc.bestAt = event.at
+		acc.bestPTR = event.ptr
+	}
+	if acc.bestSends >= cloudRelayHighVolumeEvents ||
+		(acc.bestSends >= cloudRelayMinEvents && acc.bestDistinctIPs >= cloudRelayMinDistinctIP) {
+		acc.reportable = true
+	}
+}
+
+func (acc *cloudRelayScanAccumulator) removeWindowIP(ip string) {
+	count := acc.ipCounts[ip]
+	if count <= 1 {
+		delete(acc.ipCounts, ip)
+		return
+	}
+	acc.ipCounts[ip] = count - 1
+}
+
+func (acc *cloudRelayScanAccumulator) rememberRecentIP(ip string) {
+	if ip == "" {
+		return
+	}
+	for i, existing := range acc.recentIPs {
+		if existing != ip {
+			continue
+		}
+		copy(acc.recentIPs[1:i+1], acc.recentIPs[:i])
+		acc.recentIPs[0] = ip
+		return
+	}
+	acc.recentIPs = append(acc.recentIPs, "")
+	copy(acc.recentIPs[1:], acc.recentIPs[:len(acc.recentIPs)-1])
+	acc.recentIPs[0] = ip
+	if len(acc.recentIPs) > 10 {
+		acc.recentIPs = acc.recentIPs[:10]
+	}
+}
+
+func pruneCloudRelayScanUsers(byUser map[string]*cloudRelayScanAccumulator, now time.Time) {
+	cutoff := now.Add(-cloudRelayWindow_)
+	for user, acc := range byUser {
+		if acc == nil || (!acc.reportable && acc.latestEvent.Before(cutoff)) {
+			delete(byUser, user)
+		}
+	}
+}
+
+func evictOldestCloudRelayScanUser(byUser map[string]*cloudRelayScanAccumulator) {
+	var oldestUser string
+	var oldestSeen time.Time
+	for user, acc := range byUser {
+		if acc == nil {
+			delete(byUser, user)
+			return
+		}
+		if acc.reportable {
+			continue
+		}
+		if oldestUser == "" || acc.latestEvent.Before(oldestSeen) {
+			oldestUser = user
+			oldestSeen = acc.latestEvent
+		}
+	}
+	if oldestUser != "" {
+		delete(byUser, oldestUser)
+	}
+}
+
 // maxCloudRelayBurst finds the strongest 60-min window in a sorted event
 // list. Returns (sends, distinctIPs, peakEnd, peakPTR), where peakEnd is
 // the timestamp of the LAST event in the best window so operators see
@@ -257,24 +375,27 @@ func maxCloudRelayBurst(events []cloudRelayScanEvent) (int, int, time.Time, stri
 	bestSends, bestDistinct := 0, 0
 	var bestAt time.Time
 	var bestPTR string
-	for i := range events {
-		ips := make(map[string]struct{})
-		sends := 0
-		lastIdx := i
-		for j := i; j < len(events); j++ {
-			if events[j].at.Sub(events[i].at) > cloudRelayWindow_ {
-				break
+	left := 0
+	ipCounts := make(map[string]int)
+	for right, event := range events {
+		ipCounts[event.ip]++
+		for event.at.Sub(events[left].at) > cloudRelayWindow_ {
+			leftIP := events[left].ip
+			if ipCounts[leftIP] <= 1 {
+				delete(ipCounts, leftIP)
+			} else {
+				ipCounts[leftIP]--
 			}
-			ips[events[j].ip] = struct{}{}
-			sends++
-			lastIdx = j
+			left++
 		}
+		sends := right - left + 1
+		distinct := len(ipCounts)
 		// "Best" = highest send count; tie-break by distinct IPs.
-		if sends > bestSends || (sends == bestSends && len(ips) > bestDistinct) {
+		if sends > bestSends || (sends == bestSends && distinct > bestDistinct) {
 			bestSends = sends
-			bestDistinct = len(ips)
-			bestAt = events[lastIdx].at
-			bestPTR = events[lastIdx].ptr
+			bestDistinct = distinct
+			bestAt = event.at
+			bestPTR = event.ptr
 		}
 	}
 	return bestSends, bestDistinct, bestAt, bestPTR
