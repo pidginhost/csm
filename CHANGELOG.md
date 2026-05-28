@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Async bot verifier now cancels its in-flight DNS lookup when the daemon begins shutdown, instead of holding the worker for the per-job timeout.
 - DynDNS resolver now passes a context-bounded deadline into every host lookup. A stuck DNS server can no longer hold a 5-minute tick beyond its budget and stack the next one on top of itself.
 - Per-account scans now stamp the tenant ID on findings that the detector emitted without explicit attribution. The incident correlator can key those findings by account instead of falling back to weaker identities, so one account's compromise no longer fragments across multiple incidents.
+- Per-account scans now reject findings whose structured file path belongs to another home account before tenant attribution, avoiding cross-account incident misattribution.
 
 ### Security
 

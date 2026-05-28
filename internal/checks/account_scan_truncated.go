@@ -67,10 +67,17 @@ func accountScanTruncationAccounts(ctx context.Context, paths []string) map[stri
 
 func accountFromHomePath(path string) string {
 	cleaned := filepath.ToSlash(filepath.Clean(path))
-	if !strings.HasPrefix(cleaned, "/home/") {
+	if !containsHomeReference(cleaned) {
 		return ""
 	}
-	account := strings.TrimPrefix(cleaned, "/home/")
+	i := len("/home")
+	for i < len(cleaned) && cleaned[i] >= '0' && cleaned[i] <= '9' {
+		i++
+	}
+	if i == len(cleaned) || cleaned[i] != '/' {
+		return ""
+	}
+	account := cleaned[i+1:]
 	if slash := strings.IndexByte(account, '/'); slash >= 0 {
 		account = account[:slash]
 	}

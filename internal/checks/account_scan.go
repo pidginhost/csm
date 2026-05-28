@@ -190,17 +190,101 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 
 	// Filter findings to only include this account's paths
 	var filtered []alert.Finding
-	accountPrefix := "/home/" + account + "/"
 	for _, f := range findings {
-		// Include if the finding mentions this account's path, or has no path at all
-		if strings.Contains(f.Message, accountPrefix) ||
-			strings.Contains(f.Details, accountPrefix) ||
-			(!strings.Contains(f.Message, "/home/") && !strings.Contains(f.Details, "/home/")) {
+		if accountScanFindingInScope(f, account) {
 			filtered = append(filtered, f)
 		}
 	}
 
 	return stampTenantIDIfEmpty(filtered, account)
+}
+
+func accountScanFindingInScope(f alert.Finding, account string) bool {
+	if account == "" {
+		return true
+	}
+	if f.FilePath != "" {
+		fileAccount := accountFromHomePath(f.FilePath)
+		if fileAccount != "" {
+			return fileAccount == account
+		}
+		if containsHomeReference(f.FilePath) {
+			return false
+		}
+	}
+
+	hasHomeRef, hasAccountRef := textHomeScope(f.Message, account)
+	detailsHasHomeRef, detailsHasAccountRef := textHomeScope(f.Details, account)
+	if hasAccountRef || detailsHasAccountRef {
+		return true
+	}
+	if hasHomeRef || detailsHasHomeRef {
+		return false
+	}
+	return true
+}
+
+func containsHomeReference(path string) bool {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	if !strings.HasPrefix(cleaned, "/home") {
+		return false
+	}
+	i := len("/home")
+	for i < len(cleaned) && cleaned[i] >= '0' && cleaned[i] <= '9' {
+		i++
+	}
+	return i == len(cleaned) || cleaned[i] == '/'
+}
+
+func textHomeScope(text, account string) (hasHomeRef, hasAccountRef bool) {
+	for i := 0; i < len(text); {
+		idx := strings.Index(text[i:], "/home")
+		if idx < 0 {
+			return hasHomeRef, hasAccountRef
+		}
+		start := i + idx
+		homeAccount, ok := homeAccountAt(text[start:])
+		if ok {
+			hasHomeRef = true
+			if homeAccount == account {
+				hasAccountRef = true
+			}
+		}
+		i = start + len("/home")
+	}
+	return hasHomeRef, hasAccountRef
+}
+
+func homeAccountAt(text string) (string, bool) {
+	if !strings.HasPrefix(text, "/home") {
+		return "", false
+	}
+	i := len("/home")
+	for i < len(text) && text[i] >= '0' && text[i] <= '9' {
+		i++
+	}
+	if i == len(text) {
+		return "", true
+	}
+	if text[i] != '/' {
+		return "", false
+	}
+	i++
+	start := i
+	for i < len(text) && isHomeAccountByte(text[i]) {
+		i++
+	}
+	if i == start {
+		return "", true
+	}
+	return text[start:i], true
+}
+
+func isHomeAccountByte(b byte) bool {
+	return b >= 'a' && b <= 'z' ||
+		b >= 'A' && b <= 'Z' ||
+		b >= '0' && b <= '9' ||
+		b == '_' || b == '-' || b == '.'
 }
 
 // stampTenantIDIfEmpty fills in Finding.TenantID with account when the
