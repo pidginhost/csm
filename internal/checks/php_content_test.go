@@ -427,6 +427,52 @@ func TestAnalyzePHPContentTwoIndicatorsEscalateToCritical(t *testing.T) {
 	}
 }
 
+// X8 regression: PHP tolerates whitespace and inline comments between the
+// keyword and the opening paren. `eval /*x*/ ( base64_decode (...))` is the
+// same call as `eval(base64_decode(...))`. The detector must strip
+// comments and tolerate whitespace before testing for `eval(` / `assert(`,
+// otherwise an obfuscated dropper slips past the nested-eval-decode
+// indicator while still executing the same payload at runtime.
+func TestAnalyzePHPContentNestedEvalDecodeWithCommentsAndWhitespace(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "eval_with_block_comment",
+			content: "<?php\n" +
+				"$u = 'https://pastebin.com/raw/abc';\n" +
+				"ev" + "al /*x*/ ( base64_decode($x));\n",
+		},
+		{
+			name: "assert_with_block_comment",
+			content: "<?php\n" +
+				"$u = 'https://pastebin.com/raw/abc';\n" +
+				"assert /*y*/ ( gzinflate(base64_decode($x)));\n",
+		},
+		{
+			name: "eval_with_trailing_line_comment_split",
+			content: "<?php\n" +
+				"$u = 'https://pastebin.com/raw/abc';\n" +
+				"ev" + "al // bypass\n( base64_decode($x));\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, c.name+".php")
+			if err := os.WriteFile(path, []byte(c.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			result := analyzePHPContent(path)
+			if result.check != "obfuscated_php" {
+				t.Errorf("obfuscated payload should escalate; got check=%q details=%q",
+					result.check, result.details)
+			}
+		})
+	}
+}
+
 // --- analyzePHPContent: call_user_func false-positive regression --------
 //
 // WPML bundles PHPZip (A. Grandt, LGPL) as inc/wpml_zip.php to build XLIFF

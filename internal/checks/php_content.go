@@ -5,12 +5,22 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// nestedEvalDecodeRe matches the PHP token sequence
+// `<eval|assert> [ws] ( [ws] <ident> [ws] (`, with DOTALL so the source
+// can have line breaks inside the whitespace gaps. Attackers wedge block
+// or line comments between the function name and the open paren --
+// stripping comments first turns those gaps into whitespace, which this
+// regex then tolerates. The inner identifier is captured so the caller
+// can verify it matches a decoder/compression sink.
+var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*(\w+)\s*\(`)
 
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
@@ -230,15 +240,20 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		}
 	}
 	// Check for structural nesting: eval(base64_decode(...)), eval(gzinflate(...)), etc.
-	// Scan individual lines for the nesting pattern to avoid flagging unrelated
-	// occurrences on distant lines.
-	for _, line := range strings.Split(contentLower, "\n") {
+	// PHP tolerates inline comments and arbitrary whitespace (including line
+	// breaks) between the keyword and its open paren, so a naive line-by-line
+	// `eval(` substring scan misses `eval /*x*/ ( base64_decode(...))` and
+	// `eval // bypass\n( base64_decode(...))`. Strip PHP comments first, then
+	// match the structural pattern across whitespace, and require the inner
+	// callee to be one of the known decoders / decompressors.
+	strippedLower := stripPHPCommentsFromCode(contentLower)
+	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(strippedLower, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		inner := m[2]
 		for _, d := range decoders {
-			if strings.Contains(line, "eval(") && strings.Contains(line, d+"(") {
-				hasNestedEvalDecode = true
-				break
-			}
-			if strings.Contains(line, "assert(") && strings.Contains(line, d+"(") {
+			if inner == d {
 				hasNestedEvalDecode = true
 				break
 			}

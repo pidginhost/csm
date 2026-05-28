@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Incident recovery now ignores corrupt or internally inconsistent bbolt incident rows instead of letting one bad record block the list or compaction pass. Direct incident lookups still surface corrupt records as errors without marking them found.
 - Alert shutdown now drains buffered findings after tracked workers stop, so last-second findings make it into the shutdown flush instead of vanishing on graceful restart.
 - Aggregated WordPress login brute force, XML-RPC abuse, and user-enumeration findings now carry a validated structured source IP, so the incident correlator keys them under the attacker IP instead of silently dropping the per-IP attribution.
+- Obfuscated-PHP content scanner now strips inline comments and tolerates whitespace between a call keyword and its open paren, so a dropper that wedges block or line comments between `eval` and `(` is no longer treated as clean.
 
 ## [3.9.1] - 2026-05-28
 
