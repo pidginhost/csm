@@ -14,13 +14,12 @@ import (
 )
 
 // nestedEvalDecodeRe matches the PHP token sequence
-// `<eval|assert> [ws] ( [ws] <ident> [ws] (`, with DOTALL so the source
-// can have line breaks inside the whitespace gaps. Attackers wedge block
-// or line comments between the function name and the open paren --
-// stripping comments first turns those gaps into whitespace, which this
-// regex then tolerates. The inner identifier is captured so the caller
-// can verify it matches a decoder/compression sink.
-var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*(\w+)\s*\(`)
+// `<eval|assert> [ws] ( [ws] [@] [\] <ident> [ws] (`, with DOTALL so the
+// source can have line breaks inside the whitespace gaps. Attackers wedge
+// comments or common call modifiers between the sink and decoder; comments and
+// strings are stripped before matching so only executable token structure is
+// evaluated.
+var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*@?\s*\\?\s*(\w+)\s*\(`)
 
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
@@ -243,11 +242,12 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// PHP tolerates inline comments and arbitrary whitespace (including line
 	// breaks) between the keyword and its open paren, so a naive line-by-line
 	// `eval(` substring scan misses `eval /*x*/ ( base64_decode(...))` and
-	// `eval // bypass\n( base64_decode(...))`. Strip PHP comments first, then
-	// match the structural pattern across whitespace, and require the inner
-	// callee to be one of the known decoders / decompressors.
-	strippedLower := stripPHPCommentsFromCode(contentLower)
-	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(strippedLower, -1) {
+	// `eval // bypass\n( base64_decode(...))`. Strip PHP comments and
+	// strings first, then match the structural pattern across whitespace,
+	// and require the inner callee to be one of the known decoders /
+	// decompressors.
+	codeLower := stripPHPStringsFromCode(stripPHPCommentsFromCode(contentLower))
+	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(codeLower, -1) {
 		if len(m) < 3 {
 			continue
 		}

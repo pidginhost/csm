@@ -473,6 +473,56 @@ func TestAnalyzePHPContentNestedEvalDecodeWithCommentsAndWhitespace(t *testing.T
 	}
 }
 
+func TestAnalyzePHPContentNestedEvalDecodeWithCallModifiers(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "eval_suppressed_global_decoder",
+			content: "<?php\n" +
+				"$u = 'https://pastebin.com/raw/abc';\n" +
+				"@eval(@\\base64_decode($x));\n",
+		},
+		{
+			name: "assert_suppressed_decoder_with_spacing",
+			content: "<?php\n" +
+				"$u = 'https://pastebin.com/raw/abc';\n" +
+				"assert(@ base64_decode($x));\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, c.name+".php")
+			if err := os.WriteFile(path, []byte(c.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			result := analyzePHPContent(path)
+			if result.check != "obfuscated_php" {
+				t.Errorf("suppressed/global decoder call should escalate; got check=%q details=%q",
+					result.check, result.details)
+			}
+		})
+	}
+}
+
+func TestAnalyzePHPContentNestedEvalDecodeIgnoresStringExamples(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "string-example.php")
+	content := "<?php\n" +
+		"$example = 'eval ( base64_decode($payload));';\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("string example must not be parsed as executable eval/decode; got check=%q details=%q",
+			result.check, result.details)
+	}
+}
+
 // --- analyzePHPContent: call_user_func false-positive regression --------
 //
 // WPML bundles PHPZip (A. Grandt, LGPL) as inc/wpml_zip.php to build XLIFF
