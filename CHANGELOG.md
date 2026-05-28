@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dry-run block ledger now serializes its records through the JSON encoder. A control character in the block reason no longer leaves an unparseable row that hides the rest of the bucket from the dry-run review pane.
 - Subnet auto-block now applies the operator-configured block expiry, matching the per-IP path. Escalated /24 blocks no longer outlive the configured TTL.
 - Reverse-DNS lookup cache is now size-capped with oldest-first eviction. The BPF SMTP-egress detector can no longer accumulate one entry per ever-seen remote IP on a busy host.
+- Fanotify plugin-stat cache now evicts entries that have not been re-stated in two times the TTL window, so a long-running watcher cannot accumulate one entry per distinct plugin slug ever observed.
 
 ## [3.9.1] - 2026-05-28
 

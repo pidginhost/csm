@@ -1841,6 +1841,24 @@ func (fm *FileMonitor) overflowReporter() {
 				}
 				return true
 			})
+			// Evict stale plugin-stat cache entries. Without this, the
+			// sync.Map grows linearly with every distinct
+			// wp-content/plugins/<name> path the fanotify watcher ever
+			// observes on a shared-hosting node. 2x TTL keeps a freshly
+			// re-stated entry alive while dropping entries no caller
+			// has touched in 10 minutes.
+			pluginCutoff := 2 * pluginCacheTTL
+			pluginStatCache.Range(func(key, value any) bool {
+				entry, ok := value.(pluginCacheEntry)
+				if !ok {
+					pluginStatCache.Delete(key)
+					return true
+				}
+				if now.Sub(entry.ts) > pluginCutoff {
+					pluginStatCache.Delete(key)
+				}
+				return true
+			})
 		}
 	}
 }
