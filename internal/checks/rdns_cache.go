@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"container/list"
 	"net"
 	"sync"
 	"time"
@@ -27,8 +28,7 @@ const rdnsCacheDefaultMaxSize = 10000
 // negative results (resolver error / NXDOMAIN) are kept until TTL too,
 // so the detector does not hammer a slow resolver on a known-bad IP.
 // Entries are capped at maxSize; the oldest-by-cachedAt entry is
-// evicted on insert once the cap is reached. Sweep() drops anything
-// older than 2*TTL and is intended for a daemon-driven retention loop.
+// evicted on insert once the cap is reached.
 type RDNSCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -36,10 +36,12 @@ type RDNSCache struct {
 	maxSize int
 	resolve func(ip net.IP) (string, error)
 	now     func() time.Time
-	entries map[string]rdnsEntry
+	order   *list.List
+	entries map[string]*list.Element
 }
 
 type rdnsEntry struct {
+	key      string
 	host     string
 	cachedAt time.Time
 }
@@ -56,58 +58,20 @@ func NewRDNSCache(cfg RDNSCacheConfig) *RDNSCache {
 		maxSize: maxSize,
 		resolve: cfg.Resolve,
 		now:     time.Now,
-		entries: map[string]rdnsEntry{},
+		order:   list.New(),
+		entries: map[string]*list.Element{},
 	}
 }
 
-// Len returns the current cached entry count. Used by tests.
-func (c *RDNSCache) Len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
-}
-
-// contains reports whether the cache currently holds an entry for the
-// stringified ip. Used by tests.
-func (c *RDNSCache) contains(ip string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_, ok := c.entries[ip]
-	return ok
-}
-
-// Sweep drops entries whose cachedAt is older than 2x TTL. Safe to
-// call from a periodic retention loop; bounded by maxSize.
-func (c *RDNSCache) Sweep() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cutoff := c.now().Add(-2 * c.ttl)
-	removed := 0
-	for key, entry := range c.entries {
-		if entry.cachedAt.Before(cutoff) {
-			delete(c.entries, key)
-			removed++
-		}
-	}
-	return removed
-}
-
-// evictOldestLocked drops the single entry with the smallest cachedAt.
-// Caller holds c.mu. O(N); only runs at insert time when len == maxSize.
+// evictOldestLocked drops the oldest cached entry. Caller holds c.mu.
 func (c *RDNSCache) evictOldestLocked() {
-	var oldestKey string
-	var oldestAt time.Time
-	first := true
-	for key, entry := range c.entries {
-		if first || entry.cachedAt.Before(oldestAt) {
-			oldestKey = key
-			oldestAt = entry.cachedAt
-			first = false
-		}
+	el := c.order.Front()
+	if el == nil {
+		return
 	}
-	if oldestKey != "" {
-		delete(c.entries, oldestKey)
-	}
+	entry := el.Value.(*rdnsEntry)
+	delete(c.entries, entry.key)
+	c.order.Remove(el)
 }
 
 // Lookup returns the cached hostname for ip, or "" on miss/error/deadline.
@@ -119,19 +83,32 @@ func (c *RDNSCache) Lookup(ip net.IP) string {
 	}
 	key := ip.String()
 	c.mu.Lock()
-	if e, ok := c.entries[key]; ok && c.now().Sub(e.cachedAt) <= c.ttl {
-		c.mu.Unlock()
-		return e.host
+	now := c.now()
+	if el, ok := c.entries[key]; ok {
+		e := el.Value.(*rdnsEntry)
+		if now.Sub(e.cachedAt) <= c.ttl {
+			c.mu.Unlock()
+			return e.host
+		}
 	}
 	c.mu.Unlock()
 
 	host := c.runWithDeadline(ip)
 
 	c.mu.Lock()
-	if _, present := c.entries[key]; !present && len(c.entries) >= c.maxSize {
+	now = c.now()
+	if el, present := c.entries[key]; present {
+		e := el.Value.(*rdnsEntry)
+		e.host = host
+		e.cachedAt = now
+		c.order.MoveToBack(el)
+		c.mu.Unlock()
+		return host
+	}
+	if c.order.Len() >= c.maxSize {
 		c.evictOldestLocked()
 	}
-	c.entries[key] = rdnsEntry{host: host, cachedAt: c.now()}
+	c.entries[key] = c.order.PushBack(&rdnsEntry{key: key, host: host, cachedAt: now})
 	c.mu.Unlock()
 	return host
 }
