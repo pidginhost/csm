@@ -1508,7 +1508,7 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	for _, cidr := range e.cfg.InfraIPs {
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
-			if cidr == ip {
+			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
 				return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s", ip)
 			}
 			continue

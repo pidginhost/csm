@@ -69,6 +69,28 @@ func TestEngineInfraIPResolvedHostLocked_NormalizesLookupIP(t *testing.T) {
 	}
 }
 
+func TestBlockIPOutcome_RefusesCanonicalStaticInfraIP(t *testing.T) {
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, InfraIPs: []string{"198.51.100.5", "2001:db8::1"}},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
+	}
+
+	cases := []string{
+		"::ffff:198.51.100.5",
+		"2001:0db8:0000:0000:0000:0000:0000:0001",
+	}
+	for _, ip := range cases {
+		outcome, err := e.BlockIPOutcome(ip, "test", time.Hour)
+		if err == nil || !strings.Contains(err.Error(), "refusing to block infra IP") {
+			t.Fatalf("BlockIPOutcome(%q) err = %v, want infra refusal", ip, err)
+		}
+		if outcome != BlockOutcomeNoop {
+			t.Fatalf("BlockIPOutcome(%q) outcome = %q, want %q", ip, outcome, BlockOutcomeNoop)
+		}
+	}
+}
+
 func TestEngineDropInfraResolved_ClearsHost(t *testing.T) {
 	e := &Engine{
 		cfg:           &FirewallConfig{Enabled: true},

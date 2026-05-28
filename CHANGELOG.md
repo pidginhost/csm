@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Firewall block guard now refuses to auto-block any of the daemon's own non-loopback interface addresses, regardless of operator configuration. A stray internal request that loops back to the daemon could previously trigger a self-block and firewall every customer hosted on that IP.
 - Database scan, clean, and auto-response paths now reject a WordPress table prefix that contains anything outside alphanumerics or underscore. A cPanel-user-owned wp-config.php can no longer drive SQL injection through these helpers.
 - Surgical file cleaning now refuses symlinked targets or parent directories and writes replacements through a pinned directory handle. Cleaned files keep their original owner and mode while avoiding symlink write-through.
-- Firewall infra-IP guard now matches the same numeric address whether the caller passes the canonical or IPv4-mapped-IPv6 form, so a misencoded incident IP cannot bypass the DNS-resolved-infra protection.
+- Firewall infra-IP guard now matches the same numeric address whether the caller passes the canonical or IPv4-mapped-IPv6 form, so a misencoded incident IP cannot bypass configured or DNS-resolved infra protection.
 
 ### Fixed
 
