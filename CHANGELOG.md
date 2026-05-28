@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Incident persistence and restore failures now log a warning instead of being silently dropped. Operators see a signal when bbolt rejects incident state and the in-memory and on-disk views drift apart.
 - Firewall audit log now logs when its file open fails. A disk-full or permission regression no longer drops audit entries silently.
 - Dry-run block ledger now serializes its records through the JSON encoder. A control character in the block reason no longer leaves an unparseable row that hides the rest of the bucket from the dry-run review pane.
+- Subnet auto-block now applies the operator-configured block expiry, matching the per-IP path. Escalated /24 blocks no longer outlive the configured TTL.
 
 ## [3.9.1] - 2026-05-28
 
