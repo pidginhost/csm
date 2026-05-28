@@ -209,6 +209,63 @@ func TestVerify_DeadlineHonored(t *testing.T) {
 	}
 }
 
+// blockingResolver stalls until ctx.Done() fires. Lets the test pin a
+// LookupAddr in flight inside process() and verify that closing stopCh
+// cancels the per-job context before the 5s hard timeout.
+type blockingResolver struct {
+	started chan struct{}
+}
+
+func (b *blockingResolver) LookupAddr(ctx context.Context, _ string) ([]string, error) {
+	select {
+	case <-b.started:
+	default:
+		close(b.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (b *blockingResolver) LookupIP(ctx context.Context, _, _ string) ([]net.IP, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A daemon shutdown that closes stopCh must cancel the per-job context
+// of any verify currently mid-LookupAddr, instead of leaving Run blocked
+// for 5 seconds while the in-flight goroutine waits on its own timeout.
+func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
+	started := make(chan struct{})
+	res := &blockingResolver{started: started}
+	a := &AsyncBotVerifier{
+		inflight: make(map[string]struct{}),
+		ch:       make(chan verifyJob, 4),
+		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
+		put:      func(net.IP, string, bool, time.Time) error { return nil },
+	}
+
+	stopCh := make(chan struct{})
+	runDone := make(chan struct{})
+	go func() {
+		a.Run(stopCh)
+		close(runDone)
+	}()
+
+	a.Enqueue(net.ParseIP("66.249.66.99"), "googlebot")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("LookupAddr was not called within 1s")
+	}
+
+	close(stopCh)
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after stopCh; in-flight verify is not honoring daemon shutdown")
+	}
+}
+
 func TestAsyncBotVerifier_DoesNotCacheTransientErrors(t *testing.T) {
 	var puts int
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {

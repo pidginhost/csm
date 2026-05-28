@@ -118,6 +118,11 @@ type AsyncBotVerifier struct {
 	ch       chan verifyJob
 	v        map[string]*verifier // bot identity -> verifier
 	put      func(net.IP, string, bool, time.Time) error
+	// runCtx is the parent context for in-flight verify jobs. Set in
+	// Run and cancelled when stopCh fires so a slow DNS lookup cannot
+	// outlive daemon shutdown by its own 5s per-job timeout. Read by
+	// process(), which runs in the same Run goroutine -- no mutex.
+	runCtx context.Context
 }
 
 type verifyJob struct {
@@ -182,10 +187,33 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
 // Run processes the queue until stopCh closes. Runs as a single
 // goroutine so DNS calls are serialised; volume is bounded by the
 // inflight dedup map so bursts do not launch unbounded goroutines.
+//
+// Closing stopCh cancels the parent context, so any in-flight verify
+// returns from its DNS lookup immediately rather than holding the Run
+// goroutine for the per-job 5s timeout.
 func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.runCtx = ctx
+	defer func() { a.runCtx = nil }()
+
+	bridge := make(chan struct{})
+	go func() {
+		defer close(bridge)
 		select {
 		case <-stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		cancel()
+		<-bridge
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
 			return
 		case job := <-a.ch:
 			a.process(job)
@@ -200,7 +228,11 @@ func (a *AsyncBotVerifier) process(job verifyJob) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	parent := a.runCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	result, err := v.verify(ctx, job.IP, job.Bot)
 	cancel()
 	if err != nil || a.put == nil {
