@@ -262,6 +262,12 @@ func incrCounter(tx *bolt.Tx, key string, delta int) error {
 	return b.Put([]byte(key), []byte(fmt.Sprintf("%d", current+delta)))
 }
 
+type dryRunBlockRecord struct {
+	IP         string `json:"ip"`
+	Reason     string `json:"reason"`
+	TimeoutSec int    `json:"timeout_sec"`
+}
+
 // RecordDryRunBlock appends a dry-run-block record to the "dry_run_blocks"
 // bucket. Called by the firewall engine when auto_response.dry_run is active
 // so operators can review "what would have been blocked" before going live.
@@ -269,16 +275,9 @@ func (db *DB) RecordDryRunBlock(ip, reason string, timeout time.Duration) {
 	if db == nil || db.bolt == nil {
 		return
 	}
-	// Marshal via encoding/json so control characters in the reason
-	// (audit forwarding from noisy log sources sometimes carries \v,
-	// \x00, etc.) become valid \u00XX escapes. The previous fmt.Sprintf
-	// %q path emitted Go-only \v / \xHH forms that the json package
-	// rejects on read, leaving the affected rows unparseable.
-	payload := struct {
-		IP         string `json:"ip"`
-		Reason     string `json:"reason"`
-		TimeoutSec int    `json:"timeout_sec"`
-	}{
+	// Log-derived reasons can carry raw control bytes; the JSON encoder
+	// emits escape forms that dry-run readers can decode.
+	payload := dryRunBlockRecord{
 		IP:         ip,
 		Reason:     reason,
 		TimeoutSec: int(timeout.Seconds()),

@@ -266,8 +266,8 @@ func TestIncidentCorrelatorLogsRestoreFailure(t *testing.T) {
 	}
 	prev := store.Global()
 	store.SetGlobal(db)
-	if err := db.Close(); err != nil {
-		t.Fatalf("db.Close: %v", err)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("db.Close: %v", closeErr)
 	}
 	finishLog := captureCSMLog(t)
 	t.Cleanup(func() {
@@ -304,8 +304,8 @@ func TestIncidentCorrelatorLogsPersistFailure(t *testing.T) {
 	})
 
 	c := IncidentCorrelator()
-	if err := db.Close(); err != nil {
-		t.Fatalf("db.Close: %v", err)
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatalf("db.Close: %v", closeErr)
 	}
 	_, created, err := c.OnFinding(alert.Finding{
 		Check:     "wp_login_bruteforce",

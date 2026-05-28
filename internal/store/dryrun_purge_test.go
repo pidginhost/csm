@@ -2,19 +2,14 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-// X21: RecordDryRunBlock used fmt.Sprintf %q which emits \v / \xHH
-// escapes that JSON cannot parse. A reason containing a control char
-// (audit forwarding from a noisy log source occasionally carries them)
-// wrote an unparseable record; the bucket then failed to unmarshal at
-// read time and the dry-run review pane went dark. Marshalling via
-// encoding/json applies the proper \u00XX escapes so every stored row
-// round-trips.
 func TestRecordDryRunBlockEncodesControlChars(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -29,41 +24,44 @@ func TestRecordDryRunBlockEncodesControlChars(t *testing.T) {
 		"null\x00byte",
 		"normal reason",
 	}
+	wantByIP := make(map[string]dryRunBlockRecord, len(reasons))
 	for i, reason := range reasons {
-		db.RecordDryRunBlock("198.51.100."+itoaSimple(i), reason, time.Hour)
+		ip := "198.51.100." + strconv.Itoa(i)
+		wantByIP[ip] = dryRunBlockRecord{IP: ip, Reason: reason, TimeoutSec: 3600}
+		db.RecordDryRunBlock(ip, reason, time.Hour)
 	}
 
 	parsed := 0
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("dry_run_blocks"))
 		if b == nil {
-			t.Fatal("dry_run_blocks bucket missing")
+			return fmt.Errorf("dry_run_blocks bucket missing")
 		}
 		return b.ForEach(func(_, v []byte) error {
-			var entry map[string]any
+			var entry dryRunBlockRecord
 			if err := json.Unmarshal(v, &entry); err != nil {
-				t.Errorf("row failed to unmarshal: %v -- raw=%q", err, string(v))
-				return nil
+				return fmt.Errorf("row failed to unmarshal: %w -- raw=%q", err, string(v))
 			}
+			want, ok := wantByIP[entry.IP]
+			if !ok {
+				return fmt.Errorf("unexpected stored IP %q", entry.IP)
+			}
+			if entry != want {
+				return fmt.Errorf("stored record = %+v, want %+v", entry, want)
+			}
+			delete(wantByIP, entry.IP)
 			parsed++
 			return nil
 		})
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if parsed != len(reasons) {
 		t.Errorf("parsed %d rows, want %d", parsed, len(reasons))
 	}
-}
-
-func itoaSimple(i int) string {
-	if i == 0 {
-		return "0"
+	if len(wantByIP) != 0 {
+		t.Errorf("missing stored records: %+v", wantByIP)
 	}
-	var out []byte
-	for i > 0 {
-		out = append([]byte{byte('0' + i%10)}, out...)
-		i /= 10
-	}
-	return string(out)
 }
 
 // TestPurgeAllDryRunBlocks asserts that the operator-flip-to-live
