@@ -1206,13 +1206,26 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
 	onBlock := c.cfg.OnIncidentBlock
 	return func() {
-		live := onBlock(ip, reason)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		delete(c.pendingIncidentBlocks, incidentID)
+		var live bool
+		// The in-flight slot must clear even if onBlock panics. Without
+		// the deferred release, a single panicking integration (nil
+		// deref in a verdict callback, a closed-channel send) latches
+		// the incident permanently -- every subsequent finding sees
+		// "block already in-flight" and the auto-block path stays dark
+		// for the rest of the incident's lifetime.
+		func() {
+			defer func() {
+				c.mu.Lock()
+				delete(c.pendingIncidentBlocks, incidentID)
+				c.mu.Unlock()
+			}()
+			live = onBlock(ip, reason)
+		}()
 		if !live {
 			return
 		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		current, ok := c.incidents[incidentID]
 		if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
 			return
@@ -1320,13 +1333,24 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	onSprayBlock := c.cfg.OnSprayBlock
 	incidentID := inc.ID
 	return func() {
-		live := onSprayBlock(ip, reason)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		delete(c.pendingSprayBlocks, incidentID)
+		var live bool
+		// Mirror the panic-safety guarantee from triggerIncidentBlockLocked:
+		// the in-flight slot must clear even if onSprayBlock panics so a
+		// recurring panic class does not latch the credential_spray
+		// incident out of the auto-block path forever.
+		func() {
+			defer func() {
+				c.mu.Lock()
+				delete(c.pendingSprayBlocks, incidentID)
+				c.mu.Unlock()
+			}()
+			live = onSprayBlock(ip, reason)
+		}()
 		if !live {
 			return
 		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		current, ok := c.incidents[incidentID]
 		if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
 			return

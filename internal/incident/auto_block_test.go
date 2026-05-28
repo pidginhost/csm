@@ -440,3 +440,72 @@ func TestAutoBlockSkipsTruncatedTimelineWithoutRemoteIPKey(t *testing.T) {
 		t.Fatalf("incidentBlockCandidate = %q, want empty for truncated non-IP-keyed timeline", candidate)
 	}
 }
+
+// X13 regression: when OnIncidentBlock panics the in-flight slot must
+// still be cleared. Before the fix, a panicking callback left the
+// incident permanently latched in pendingIncidentBlocks and every
+// subsequent finding hit the "block already in-flight" early-return.
+// A recurring panic class (nil deref in a verdict integration, a
+// closed channel send in a fault-injection harness) would then take
+// the auto-block path offline for the entire incident's lifetime.
+func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
+	calls := 0
+	cb := func(_, _ string) bool {
+		calls++
+		if calls == 1 {
+			panic("simulated firewall panic")
+		}
+		return true
+	}
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+		},
+		OnIncidentBlock: cb,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	f := alert.Finding{
+		Check:     "modsec_csm_block_escalation",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.60",
+		Timestamp: now,
+	}
+
+	// First finding: callback panics. The OnFinding defer chain runs
+	// afterUnlock at the bottom of the stack, so the panic propagates
+	// to OnFinding's caller (us). Recover so the test can continue,
+	// then verify the next finding can re-trigger the auto-block path.
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic to propagate from OnIncidentBlock")
+			}
+		}()
+		_, _, _ = c.OnFinding(f)
+	}()
+
+	if calls != 1 {
+		t.Fatalf("OnIncidentBlock call count after first finding = %d, want 1", calls)
+	}
+
+	c.mu.Lock()
+	leftover := len(c.pendingIncidentBlocks)
+	c.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("pendingIncidentBlocks count after panic = %d, want 0", leftover)
+	}
+
+	// Second finding from the same source: same incident, same IP. The
+	// auto-block path must arm again and the callback must run a second
+	// time (no longer stuck behind the latched in-flight slot).
+	f2 := f
+	f2.Timestamp = now.Add(time.Minute)
+	_, _, _ = c.OnFinding(f2)
+	if calls != 2 {
+		t.Fatalf("OnIncidentBlock call count after retry = %d, want 2", calls)
+	}
+}

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential-spray block audit now records "ok" only after the firewall callback confirms the block actually took effect. Dry-run and failed callbacks no longer log a false success on the incident timeline.
 - Credential-spray blocking now coalesces concurrent findings while a firewall callback is in flight, preventing duplicate block attempts for one incident.
 - Incident block audit now uses the firewall outcome, so dry-run, verdict-allow, and no-op attempts no longer look like live blocks.
+- Panic inside an auto-block firewall callback now releases the per-incident in-flight slot, so a single bad integration cannot permanently latch the auto-block path for an open incident.
 
 ## [3.9.1] - 2026-05-28
 
