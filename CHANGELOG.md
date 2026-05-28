@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-account scans now stamp the tenant ID on findings that the detector emitted without explicit attribution. The incident correlator can key those findings by account instead of falling back to weaker identities, so one account's compromise no longer fragments across multiple incidents.
 - Per-account scans now reject findings whose structured file path belongs to another home account before tenant attribution, avoiding cross-account incident misattribution.
 - Config validator now warns when auto-response wants to block IPs but the firewall section is disabled or missing. Previously the daemon logged auto-block actions that never reached nftables.
+- Health check now warns when BPF enforcement is configured but the kernel fell back to the legacy backend. Operators see the threat-detection degradation in the health channel instead of inferring it from missing telemetry.
 
 ### Security
 

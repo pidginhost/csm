@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -222,6 +223,105 @@ func TestPlatformRequiredCommandsNonCPanel(t *testing.T) {
 	}
 	if len(wantSet) != 0 {
 		t.Errorf("missing commands: %v", wantSet)
+	}
+}
+
+// BPF enforcement configured-but-degraded must surface a health
+// finding so operators see "threat detection running on legacy
+// backend" rather than discovering it from missing telemetry.
+func TestCheckHealth_WarnsWhenBPFEnforcementConfiguredButLegacy(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+	withMockCmd(t, &mockCmd{
+		lookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		run: func(name string, _ ...string) ([]byte, error) {
+			if name == "auditctl" {
+				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.StatePath = t.TempDir()
+
+	got := CheckHealth(context.Background(), cfg, nil)
+	found := false
+	for _, f := range got {
+		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
+			found = true
+			if f.Severity != alert.Warning {
+				t.Errorf("BPF degraded finding severity = %v, want Warning", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected BPF-degraded csm_health finding, got %+v", got)
+	}
+}
+
+func TestCheckHealth_NoBPFWarningWhenBPFActive(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+	withMockCmd(t, &mockCmd{
+		lookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		run: func(name string, _ ...string) ([]byte, error) {
+			if name == "auditctl" {
+				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	bpf.SetActive("connection_tracker", bpf.BackendBPF)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.StatePath = t.TempDir()
+
+	got := CheckHealth(context.Background(), cfg, nil)
+	for _, f := range got {
+		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
+			t.Errorf("unexpected BPF-degraded finding when backend=bpf: %+v", f)
+		}
+	}
+}
+
+func TestCheckHealth_NoBPFWarningWhenEnforcementDisabled(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
+	withMockCmd(t, &mockCmd{
+		lookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		run: func(name string, _ ...string) ([]byte, error) {
+			if name == "auditctl" {
+				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = false
+	cfg.StatePath = t.TempDir()
+
+	got := CheckHealth(context.Background(), cfg, nil)
+	for _, f := range got {
+		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
+			t.Errorf("unexpected BPF finding when enforcement disabled: %+v", f)
+		}
 	}
 }
 

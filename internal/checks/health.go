@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
@@ -60,6 +61,23 @@ func CheckHealth(ctx context.Context, cfg *config.Config, _ *state.Store) []aler
 				Check:    "csm_health",
 				Message:  "auditd CSM rules not loaded",
 				Details:  "Run 'csm install' to deploy auditd rules, then 'service auditd restart'",
+			})
+		}
+	}
+
+	// BPF enforcement configured but the active backend is degraded.
+	// G4 fixed silent disable inside the loader, but the operator
+	// channel was still quiet -- a doctor check or alert is the only
+	// place where the operator notices threat detection is on the
+	// legacy backend rather than BPF.
+	if cfg != nil && cfg.BPFEnforcement.Enabled {
+		switch bpf.ActiveKind("connection_tracker") {
+		case bpf.BackendLegacy, bpf.BackendNone:
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "csm_health",
+				Message:  "BPF enforcement enabled but kernel running on legacy backend",
+				Details:  "bpf_enforcement is configured but the connection tracker fell back to legacy or no backend. Check kernel version, LSM availability, or CAP_BPF.",
 			})
 		}
 	}
