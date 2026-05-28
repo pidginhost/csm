@@ -249,13 +249,14 @@ func TestAlertDispatcher_StopsOnSignal(t *testing.T) {
 	}
 }
 
-// X6 regression: when the daemon stops with findings still buffered in
-// d.alertCh (produced after the last ticker tick), the dispatcher must
-// drain them into the shutdown flush instead of abandoning them. Before
-// the fix, anything in the 500-slot channel after the final ticker
-// vanished on graceful restart.
+// The dispatcher must drain findings still buffered in d.alertCh when the
+// daemon stops, otherwise the final events after the last ticker batch never
+// reach audit/history on graceful restart.
 func TestAlertDispatcher_DrainsBufferedAlertsOnStop(t *testing.T) {
 	dir := t.TempDir()
+	sdb, restore := openTestBoltStore(t, dir)
+	defer restore()
+
 	st, err := state.Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -288,13 +289,78 @@ func TestAlertDispatcher_DrainsBufferedAlertsOnStop(t *testing.T) {
 		t.Fatal("alertDispatcher did not finish shutdown flush")
 	}
 
-	histPath := filepath.Join(dir, "history.jsonl")
-	data, err := os.ReadFile(histPath)
+	assertHistoryContainsChecks(t, sdb, queued)
+}
+
+func TestFlushPendingAlertsOnShutdown_DrainsAlertsLeftAfterDispatcherExit(t *testing.T) {
+	dir := t.TempDir()
+	sdb, restore := openTestBoltStore(t, dir)
+	defer restore()
+
+	st, err := state.Open(dir)
 	if err != nil {
-		t.Fatalf("read history: %v", err)
+		t.Fatal(err)
 	}
-	for _, want := range queued {
-		if !strings.Contains(string(data), want.Check) {
+	defer func() { _ = st.Close() }()
+
+	d := New(&config.Config{}, st, nil, "")
+	d.wg.Add(1)
+	go d.alertDispatcher()
+	close(d.stopCh)
+
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("alertDispatcher did not exit")
+	}
+
+	late := alert.Finding{
+		Check:     "late_after_dispatcher_exit",
+		Severity:  alert.Warning,
+		Message:   "producer completed after dispatcher stop",
+		Timestamp: time.Now(),
+	}
+	d.alertCh <- late
+
+	d.flushPendingAlertsOnShutdown()
+
+	assertHistoryContainsChecks(t, sdb, []alert.Finding{late})
+}
+
+func openTestBoltStore(t *testing.T, dir string) (*store.DB, func()) {
+	t.Helper()
+
+	prev := store.Global()
+	sdb, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetGlobal(sdb)
+
+	return sdb, func() {
+		store.SetGlobal(prev)
+		_ = sdb.Close()
+	}
+}
+
+func assertHistoryContainsChecks(t *testing.T, sdb *store.DB, wantFindings []alert.Finding) {
+	t.Helper()
+
+	history, total := sdb.ReadHistory(len(wantFindings)+10, 0)
+	if total < len(wantFindings) {
+		t.Fatalf("history entries = %d, want at least %d", total, len(wantFindings))
+	}
+	got := make(map[string]bool, len(history))
+	for _, f := range history {
+		got[f.Check] = true
+	}
+	for _, want := range wantFindings {
+		if !got[want.Check] {
 			t.Errorf("history missing finding %q after shutdown drain", want.Check)
 		}
 	}

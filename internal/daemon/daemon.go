@@ -924,6 +924,9 @@ func (d *Daemon) Run() error {
 	d.stopYaraBackend()
 
 	d.wg.Wait()
+	// Some producers can finish a tick after alertDispatcher observes stopCh.
+	// Drain again once tracked workers are gone and before state is closed.
+	d.flushPendingAlertsOnShutdown()
 	if d.findingBus != nil {
 		d.findingBus.Close()
 		alert.FindingBus = nil
@@ -968,34 +971,9 @@ func (d *Daemon) alertDispatcher() {
 	for {
 		select {
 		case <-d.stopCh:
-			// Drain anything still queued on alertCh into the in-memory
-			// batch before the timed flush. Without this, findings
-			// produced after the last ticker tick sit in the buffered
-			// channel and vanish on graceful restart -- no audit, no
-			// dropped-alert counter, no log. Bounded by channel capacity
-			// so a stuck producer cannot hold shutdown open indefinitely.
-			for drain := true; drain; {
-				select {
-				case f := <-d.alertCh:
-					batch = append(batch, f)
-				default:
-					drain = false
-				}
-			}
-			// Flush remaining with a timeout to avoid blocking shutdown
+			batch = d.drainAlertChannel(batch)
 			if len(batch) > 0 {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				done := make(chan struct{})
-				obs.SafeGo("shutdown-flush", func() {
-					d.dispatchBatch(batch)
-					close(done)
-				})
-				select {
-				case <-done:
-				case <-ctx.Done():
-					fmt.Fprintf(os.Stderr, "[%s] shutdown flush timed out after 30s, %d findings not dispatched\n", ts(), len(batch))
-				}
-				cancel()
+				d.flushAlertBatchWithTimeout(batch)
 			}
 			return
 
@@ -1008,6 +986,44 @@ func (d *Daemon) alertDispatcher() {
 				batch = nil
 			}
 		}
+	}
+}
+
+func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
+	for {
+		select {
+		case f, ok := <-d.alertCh:
+			if !ok {
+				return batch
+			}
+			batch = append(batch, f)
+		default:
+			return batch
+		}
+	}
+}
+
+func (d *Daemon) flushPendingAlertsOnShutdown() {
+	batch := d.drainAlertChannel(nil)
+	if len(batch) == 0 {
+		return
+	}
+	d.flushAlertBatchWithTimeout(batch)
+}
+
+func (d *Daemon) flushAlertBatchWithTimeout(batch []alert.Finding) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	obs.SafeGo("shutdown-flush", func() {
+		defer close(done)
+		d.dispatchBatch(batch)
+	})
+	select {
+	case <-done:
+	case <-ctx.Done():
+		fmt.Fprintf(os.Stderr, "[%s] shutdown flush timed out after 30s, %d findings not dispatched\n", ts(), len(batch))
 	}
 }
 
