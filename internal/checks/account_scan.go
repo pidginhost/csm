@@ -200,7 +200,25 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 		}
 	}
 
-	return filtered
+	return stampTenantIDIfEmpty(filtered, account)
+}
+
+// stampTenantIDIfEmpty fills in Finding.TenantID with account when the
+// detector emitted the finding without explicit tenant attribution.
+// Account-scope detectors otherwise leave TenantID empty and the
+// correlator falls back to weaker identities (UID, PID, file hash),
+// fragmenting one account's incidents across multiple keys. Findings
+// the detector did stamp keep their value; an empty account is a no-op.
+func stampTenantIDIfEmpty(findings []alert.Finding, account string) []alert.Finding {
+	if account == "" {
+		return findings
+	}
+	for i := range findings {
+		if findings[i].TenantID == "" {
+			findings[i].TenantID = account
+		}
+	}
+	return findings
 }
 
 // GetScanHomeDirs returns the list of home directories to scan.
