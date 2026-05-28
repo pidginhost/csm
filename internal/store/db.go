@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -268,14 +269,30 @@ func (db *DB) RecordDryRunBlock(ip, reason string, timeout time.Duration) {
 	if db == nil || db.bolt == nil {
 		return
 	}
+	// Marshal via encoding/json so control characters in the reason
+	// (audit forwarding from noisy log sources sometimes carries \v,
+	// \x00, etc.) become valid \u00XX escapes. The previous fmt.Sprintf
+	// %q path emitted Go-only \v / \xHH forms that the json package
+	// rejects on read, leaving the affected rows unparseable.
+	payload := struct {
+		IP         string `json:"ip"`
+		Reason     string `json:"reason"`
+		TimeoutSec int    `json:"timeout_sec"`
+	}{
+		IP:         ip,
+		Reason:     reason,
+		TimeoutSec: int(timeout.Seconds()),
+	}
+	val, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte("dry_run_blocks"))
 		if err != nil {
 			return err
 		}
 		key := []byte(time.Now().UTC().Format(time.RFC3339Nano) + ":" + ip)
-		val := []byte(fmt.Sprintf(`{"ip":%q,"reason":%q,"timeout_sec":%d}`,
-			ip, reason, int(timeout.Seconds())))
 		return b.Put(key, val)
 	})
 }
