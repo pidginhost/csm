@@ -29,11 +29,11 @@ func ClassifyKind(f alert.Finding) Kind {
 
 	// Host integrity -- daemon/kernel-level signals that indicate the
 	// host itself is compromised, not a single tenant. Listed
-	// explicitly to avoid sweeping unrelated checks into this bucket.
-	for _, hi := range []string{"sensitive_file_write", "fake_kernel_thread", "auditd_disabled", "modsec_disabled"} {
-		if check == hi {
-			return KindHostIntegrityRisk
-		}
+	// explicitly so account-attributed checks that share a substring
+	// (e.g. suspicious_crontab on a per-user spool) stay in the
+	// tenant bucket.
+	if hostIntegrityChecks[check] {
+		return KindHostIntegrityRisk
 	}
 
 	// Post-exploit process -- exe under ephemeral paths is a strong
@@ -49,6 +49,27 @@ func ClassifyKind(f alert.Finding) Kind {
 	// tenant-attributed web/PHP issues, so this fallback matches the
 	// modal incident shape operators see.
 	return KindWebAccountCompromise
+}
+
+// hostIntegrityChecks lists check names whose scope is the host itself
+// (kernel modules, system daemon configs, root-owned credential stores)
+// rather than a single tenant. Findings matching one of these jump
+// straight to KindHostIntegrityRisk so incident severity reflects the
+// blast radius.
+var hostIntegrityChecks = map[string]bool{
+	"sensitive_file_write":    true,
+	"sensitive_file_modified": true,
+	"fake_kernel_thread":      true,
+	"auditd_disabled":         true,
+	"modsec_disabled":         true,
+	"shadow_change":           true,
+	"sshd_config_change":      true,
+	"root_password_change":    true,
+	"uid0_account":            true,
+	"suid_binary":             true,
+	"kernel_module":           true,
+	"crontab_change":          true,
+	"crond_change":            true,
 }
 
 func isMailboxTakeoverCheck(check string) bool {

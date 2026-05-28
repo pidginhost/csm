@@ -34,10 +34,37 @@ func TestClassifyKindPostExploitProcess(t *testing.T) {
 }
 
 func TestClassifyKindHostIntegrityRisk(t *testing.T) {
-	for _, check := range []string{"sensitive_file_write", "fake_kernel_thread", "auditd_disabled"} {
+	for _, check := range []string{
+		"sensitive_file_write",
+		"sensitive_file_modified",
+		"fake_kernel_thread",
+		"auditd_disabled",
+		"modsec_disabled",
+		"shadow_change",
+		"sshd_config_change",
+		"root_password_change",
+		"uid0_account",
+		"suid_binary",
+		"kernel_module",
+		"crontab_change",
+		"crond_change",
+	} {
 		got := ClassifyKind(alert.Finding{Check: check})
 		if got != KindHostIntegrityRisk {
 			t.Errorf("check %q: got %v, want host_integrity_risk", check, got)
+		}
+	}
+}
+
+// Tenant-attributed checks that look "system-adjacent" must NOT be swept
+// into host_integrity_risk. A per-user crontab with a suspicious pattern
+// is an account-compromise signal, not a host-scope kernel/daemon
+// change. The classifier has to keep them in web_account_compromise.
+func TestClassifyKindAccountScopedSystemAdjacentChecks(t *testing.T) {
+	for _, check := range []string{"suspicious_crontab"} {
+		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})
+		if got != KindWebAccountCompromise {
+			t.Errorf("check %q: got %v, want web_account_compromise", check, got)
 		}
 	}
 }
