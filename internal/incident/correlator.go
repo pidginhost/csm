@@ -866,9 +866,9 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 // can validate thresholds before flipping the live switch. Returns
 // (closed, dryRun, total-scanned).
 //
-// The merge window's stale-binding logic (see correlator.go OnFinding)
-// already lets fresh findings open a new incident after the bound
-// incident becomes stale, so closing here does not block re-detection.
+// Closing unbinds both the incident key and any spray detector state,
+// so future findings are evaluated as new activity instead of merging
+// into the closed incident.
 func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Duration, dryRun bool) (closed, dryRunCount, scanned int) {
 	if len(idleThresholds) == 0 {
 		return 0, 0, 0

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Closing or auto-resolving a credential-spray super-incident now releases its per-IP detector binding. A later finding from the same address cannot reopen the closed incident or accumulate against it, and the stale binding no longer keeps new super-incidents from opening for the same attacker.
+- Closing or auto-resolving a credential-spray incident now releases its attacker tracking state. Later failures from that address are evaluated as new activity instead of mutating the closed incident or reusing old spray counts.
 
 ## [3.9.1] - 2026-05-28
 

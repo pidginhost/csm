@@ -165,8 +165,11 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 	if ok {
 		// Window expiration: a state whose lastSeen fell outside the
 		// window is stale; reset before recording the new hit so a
-		// fresh attack does not inherit a tripped-but-cold binding.
-		if now.Sub(state.lastSeen) > d.window {
+		// fresh attack does not inherit cold mailbox counts. Bound
+		// entries stay until the correlator closes or unbinds their
+		// incident; otherwise a quiet but still-open super-incident can
+		// lose suppression and duplicate on the next finding.
+		if state.incident == "" && now.Sub(state.lastSeen) > d.window {
 			state = nil
 			delete(d.perIP, f.SourceIP)
 		}
@@ -211,7 +214,8 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 
 // BindIncident records the spray incident id the correlator just
 // created in response to sprayDecisionOpen. Subsequent findings from
-// the same IP return sprayDecisionSuppress until the window expires.
+// the same IP return sprayDecisionSuppress while the incident stays
+// bound.
 // Caller holds the correlator mutex.
 func (d *sprayDetector) BindIncident(ip, id string) {
 	if d == nil {
@@ -227,8 +231,8 @@ func (d *sprayDetector) BindIncident(ip, id string) {
 // new per-mailbox fan-out instead of allowing a duplicate super-incident
 // to open. The seeded state carries no per-mailbox set: the operator
 // already saw the trip on the open incident, and the suppress path only
-// reads state.incident. lastSeen is set so the existing window-expiry
-// check can age this entry out naturally once the attacker quiets down.
+// reads state.incident. lastSeen is set so metrics and future unbound
+// expiry have a stable anchor if the incident later closes.
 // Caller holds the correlator mutex.
 func (d *sprayDetector) Rehydrate(ip, id string, lastSeen time.Time) {
 	if d == nil || ip == "" || id == "" {
@@ -255,19 +259,21 @@ func (d *sprayDetector) IncidentForIP(ip string) string {
 	return ""
 }
 
-// UnbindIncident clears the perIP binding for every IP currently
-// bound to id, so a finding from one of those IPs cannot reach the
-// closed/missing incident through the suppress merge path. Caller
-// holds the correlator mutex. Linear scan over perIP, same shape as
-// the byKey unbind in correlator.unbindLocked: the active set is
-// bounded by MaxTrackedIPs.
+// UnbindIncident drops detector state for every IP currently bound to
+// id, so a finding from one of those IPs cannot reach the closed or
+// missing incident through the suppress merge path. Dropping the state
+// also resets the distinct-mailbox threshold for future activity after
+// an operator closes or dismisses the incident. Caller holds the
+// correlator mutex. Linear scan over perIP, same shape as the byKey
+// unbind in correlator.unbindLocked: the active set is bounded by
+// MaxTrackedIPs.
 func (d *sprayDetector) UnbindIncident(id string) {
 	if d == nil || id == "" {
 		return
 	}
-	for _, state := range d.perIP {
+	for ip, state := range d.perIP {
 		if state.incident == id {
-			state.incident = ""
+			delete(d.perIP, ip)
 		}
 	}
 }

@@ -692,12 +692,9 @@ func TestSprayBlockFiresOnSuppressAfterCriticalArmedLater(t *testing.T) {
 	}
 }
 
-// X3: closing a spray incident must release its perIP binding so a later
-// finding from the same IP cannot reopen the resolved incident through the
-// suppress merge path. Without the unbind hook, SetStatus left
-// spray.perIP[ip].incident pointing at the closed incident; the next
-// in-window finding hit sprayDecisionSuppress, located the resolved
-// incident in c.incidents, merged into it, bumped severity, and persisted.
+// Closing a spray incident must release its per-IP binding so a later
+// finding from the same IP cannot reopen the resolved incident through
+// the suppress merge path.
 func TestSpraySetStatusUnbindsClosedIncident(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	now := time.Unix(1_700_000_000, 0)
@@ -734,7 +731,11 @@ func TestSpraySetStatusUnbindsClosedIncident(t *testing.T) {
 	// And the finding itself must not mutate the resolved incident.
 	preEvents := 0
 	preSev := alert.Severity(0)
+	preSprayCount := 0
 	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			preSprayCount++
+		}
 		if inc.ID == sprayID {
 			preEvents = len(inc.Timeline)
 			preSev = inc.Severity
@@ -754,12 +755,18 @@ func TestSpraySetStatusUnbindsClosedIncident(t *testing.T) {
 			}
 		}
 	}
+	postSprayCount := 0
+	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			postSprayCount++
+		}
+	}
+	if postSprayCount != preSprayCount {
+		t.Errorf("post-close single finding opened %d spray incidents, want %d", postSprayCount, preSprayCount)
+	}
 }
 
-// X11: PruneStale must skip entries that still carry an incident binding.
-// The original code evicted everything outside the window without checking
-// state.incident, so the bound incident silently lost its perIP entry and
-// the next finding opened a duplicate.
+// PruneStale must skip entries that still carry an incident binding.
 func TestSprayPruneStaleKeepsBoundEntries(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	now := time.Unix(1_700_000_000, 0)
@@ -789,12 +796,51 @@ func TestSprayPruneStaleKeepsBoundEntries(t *testing.T) {
 	}
 }
 
-// X10: when a suppress-branch lookup misses (incident vanished by other
-// means -- bbolt purge, manual delete, future eviction path), the spray
-// binding must be cleared on the spot so subsequent findings do not
-// keep falling into the same dead-end suppress lookup. Equivalent to the
-// audit's "bound incident vanished" branch in correlator.OnFinding.
-func TestSprayUnbindIncidentClearsBinding(t *testing.T) {
+func TestSprayDecideKeepsBoundEntryAfterWindowUntilClosed(t *testing.T) {
+	c := newSprayCorrelator(t, true, false)
+	now := time.Unix(1_700_000_000, 0)
+	attackerIP := "192.0.2.78"
+
+	for i := 0; i < 3; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, attackerIP, now.Add(time.Duration(i)*time.Second)))
+	}
+	var sprayID string
+	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			sprayID = inc.ID
+		}
+	}
+	if sprayID == "" {
+		t.Fatal("setup: no spray incident opened")
+	}
+
+	later := now.Add(incidentMergeWindow + time.Minute)
+	c.now = func() time.Time { return later }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	id, opened, err := c.OnFinding(sprayFinding("late@example.com", attackerIP, later))
+	if err != nil {
+		t.Fatalf("OnFinding after window: %v", err)
+	}
+	if opened || id != sprayID {
+		t.Fatalf("post-window finding id=%q opened=%v, want suppress merge into %q", id, opened, sprayID)
+	}
+
+	sprayCount := 0
+	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			sprayCount++
+		}
+	}
+	if sprayCount != 1 {
+		t.Fatalf("credential_spray count = %d, want 1 after post-window merge", sprayCount)
+	}
+}
+
+func TestSprayUnbindIncidentClearsTrackingState(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	now := time.Unix(1_700_000_000, 0)
 	attackerIP := "192.0.2.88"
@@ -817,5 +863,8 @@ func TestSprayUnbindIncidentClearsBinding(t *testing.T) {
 
 	if got := c.spray.IncidentForIP(attackerIP); got != "" {
 		t.Errorf("IncidentForIP after UnbindIncident = %q, want empty", got)
+	}
+	if got := c.spray.TrackedIPs(); got != 0 {
+		t.Errorf("TrackedIPs after UnbindIncident = %d, want 0", got)
 	}
 }
