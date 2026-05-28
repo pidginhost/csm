@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Web UI firewall rollback restart and revert now exit cleanly when the server begins shutdown, replacing the prior fire-and-forget goroutines that could outlive the HTTP server.
+- Web UI firewall rollback now avoids delayed daemon restarts after shutdown without canceling an in-progress manual revert restart.
 
 ## [3.9.0] - 2026-05-27
 

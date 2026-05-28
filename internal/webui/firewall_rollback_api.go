@@ -233,25 +233,20 @@ func (s *Server) scheduleDaemonRestart(delay time.Duration) {
 }
 
 // scheduleRollbackRevert runs the revert in a supervised goroutine with
-// a hard timeout. The revert context is also cancelled when the server
-// starts shutdown so a slow nftables restore cannot outlive Shutdown.
+// a hard timeout. If shutdown already started before the worker runs, it
+// does not begin a new revert; once started, the revert owns its restart
+// context so the restart it triggers cannot cancel itself via Shutdown.
 func (s *Server) scheduleRollbackRevert(mgr *rollback.Manager, timeout time.Duration) {
 	obs.SafeGo("webui-rollback-revert", func() {
+		select {
+		case <-s.pruneDone:
+			return
+		default:
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		watcher := make(chan struct{})
-		go func() {
-			defer close(watcher)
-			select {
-			case <-s.pruneDone:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
 		if err := mgr.Revert(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "webui: rollback revert failed: %v\n", err)
 		}
-		cancel()
-		<-watcher
 	})
 }

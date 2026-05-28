@@ -153,44 +153,87 @@ func TestScheduleDaemonRestartFiresAfterDelay(t *testing.T) {
 	}
 }
 
-// scheduleRollbackRevert must cancel the in-flight revert when the server
-// begins shutdown so a slow revert cannot hold past Shutdown.
-func TestScheduleRollbackRevertCancelsOnShutdown(t *testing.T) {
+// scheduleRollbackRevert must not let the daemon shutdown triggered by
+// the revert's own restart cancel that restart context. Otherwise the
+// config can be restored while the rollback record remains pending.
+func TestScheduleRollbackRevertKeepsOwnRestartContextOnShutdown(t *testing.T) {
 	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
-	revertCtx := make(chan context.Context, 1)
-	revertDone := make(chan struct{})
-	restoreCalled := make(chan struct{})
+	restartErr := make(chan error, 1)
 	db, err := store.Open(s.cfg.StatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	mgr := rollback.NewManager(db, cfgPath, func(ctx context.Context) error {
-		revertCtx <- ctx
-		close(restoreCalled)
-		<-ctx.Done()
-		close(revertDone)
-		return ctx.Err()
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Logf("Shutdown returned: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			restartErr <- ctx.Err()
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			restartErr <- nil
+			return nil
+		}
 	}, time.Now)
 	rollback.SetGlobal(mgr)
-	t.Cleanup(func() { rollback.SetGlobal(nil) })
+	t.Cleanup(func() {
+		_ = mgr.Confirm()
+		rollback.SetGlobal(nil)
+	})
 	if _, err := mgr.Apply([]byte("a"), []byte("b"), time.Minute, "seed"); err != nil {
 		t.Fatal(err)
 	}
 
 	s.scheduleRollbackRevert(mgr, 30*time.Second)
-	<-restoreCalled
+	select {
+	case err := <-restartErr:
+		if err != nil {
+			t.Fatalf("restart context was canceled during revert shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("revert restart did not run")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !mgr.Status().Pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rollback record stayed pending after successful revert")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestScheduleRollbackRevertDoesNotStartAfterShutdown(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	var calls int32
+	db, err := store.Open(s.cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	mgr := rollback.NewManager(db, cfgPath, func(context.Context) error {
+		atomic.AddInt32(&calls, 1)
+		return nil
+	}, time.Now)
+	t.Cleanup(func() { _ = mgr.Confirm() })
+	if _, err := mgr.Apply([]byte("a"), []byte("b"), time.Minute, "seed"); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Logf("Shutdown returned: %v", err)
 	}
-	select {
-	case <-revertDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("revert did not exit after server Shutdown")
+
+	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("revert restart called %d times after shutdown, want 0", got)
 	}
-	ctx := <-revertCtx
-	if ctx.Err() == nil {
-		t.Errorf("revert context was not cancelled")
+	if !mgr.Status().Pending {
+		t.Error("rollback record should stay pending when revert was not started")
 	}
 }
 
