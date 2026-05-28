@@ -13,6 +13,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type confFragment struct {
+	path string
+	node *yaml.Node
+}
+
 // ValidateConfDir vets an operator-selected conf.d directory before any YAML
 // fragments are loaded from it. The returned path is symlink-resolved so later
 // reads do not depend on a mutable link name.
@@ -48,6 +53,18 @@ func ValidateConfDir(dir string) (string, error) {
 // an error and returns an empty slice; an unreadable file or invalid YAML
 // is fatal so operators see misconfigurations at startup.
 func LoadConfDir(dir string) ([]*yaml.Node, error) {
+	frags, err := loadConfDirFragments(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*yaml.Node, 0, len(frags))
+	for _, frag := range frags {
+		out = append(out, frag.node)
+	}
+	return out, nil
+}
+
+func loadConfDirFragments(dir string) ([]confFragment, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -92,7 +109,7 @@ func LoadConfDir(dir string) ([]*yaml.Node, error) {
 	}
 	sort.Strings(names)
 
-	out := make([]*yaml.Node, 0, len(names))
+	out := make([]confFragment, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		data, err := readTrustedConfFragment(path)
@@ -107,7 +124,7 @@ func LoadConfDir(dir string) ([]*yaml.Node, error) {
 		if len(node.Content) == 0 {
 			continue
 		}
-		out = append(out, &node)
+		out = append(out, confFragment{path: path, node: &node})
 	}
 	return out, nil
 }

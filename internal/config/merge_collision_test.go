@@ -1,6 +1,10 @@
 package config
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -84,6 +88,38 @@ func TestDeepMerge_SignaturePreserved(t *testing.T) {
 	}
 }
 
+func TestLoadWithDir_RedactsSecretCollisionValues(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("webui:\n  auth_token: old-secret\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "10-webui.yaml"), []byte("webui:\n  auth_token: new-secret\n"), 0o600))
+
+	stderr := captureStderr(t, func() {
+		cfg, err := LoadWithDir(main, confd)
+		if err != nil {
+			t.Fatalf("LoadWithDir: %v", err)
+		}
+		if cfg.WebUI.AuthToken != "new-secret" {
+			t.Fatalf("WebUI.AuthToken = %q, want new-secret", cfg.WebUI.AuthToken)
+		}
+	})
+
+	if strings.Contains(stderr, "old-secret") || strings.Contains(stderr, "new-secret") {
+		t.Fatalf("collision log leaked secret values: %q", stderr)
+	}
+	if !strings.Contains(stderr, "webui.auth_token") {
+		t.Fatalf("collision log missing key path: %q", stderr)
+	}
+	if !strings.Contains(stderr, "10-webui.yaml") {
+		t.Fatalf("collision log missing fragment path: %q", stderr)
+	}
+	if strings.Count(stderr, redactedValue) != 2 {
+		t.Fatalf("collision log = %q, want both values redacted", stderr)
+	}
+}
+
 type collisionEvent struct {
 	key    string
 	oldVal string
@@ -97,4 +133,32 @@ func mustYAML(t *testing.T, src string) *yaml.Node {
 		t.Fatal(err)
 	}
 	return &n
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = old
+	}()
+
+	fn()
+
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatalf("close stderr writer: %v", closeErr)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if closeErr := r.Close(); closeErr != nil {
+		t.Fatalf("close stderr reader: %v", closeErr)
+	}
+	return string(out)
 }

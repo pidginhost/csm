@@ -2,6 +2,23 @@ package config
 
 const redactedValue = "***REDACTED***"
 
+var sensitiveScalarPaths = map[string]struct{}{
+	"alerts.webhook.hmac_secret":                 {},
+	"auto_response.verdict_callback.hmac_secret": {},
+	"challenge.captcha_fallback.secret_key":      {},
+	"challenge.secret":                           {},
+	"challenge.verified_session.admin_secret":    {},
+	"geoip.license_key":                          {},
+	"integrity.binary_hash":                      {},
+	"integrity.config_hash":                      {},
+	"reputation.abuseipdb_key":                   {},
+	"reputation.rspamd.token":                    {},
+	"reputation.upstream.token":                  {},
+	"sentry.dsn":                                 {},
+	"webui.auth_token":                           {},
+	"webui.metrics_token":                        {},
+}
+
 // Redact returns a copy of the config with sensitive fields replaced.
 // Empty fields are left empty (not replaced with the redaction marker).
 // The original config is not modified.
@@ -45,6 +62,9 @@ func Redact(cfg *Config) *Config {
 	if c.Challenge.Secret != "" {
 		c.Challenge.Secret = redactedValue
 	}
+	if c.Challenge.CaptchaFallback.SecretKey != "" {
+		c.Challenge.CaptchaFallback.SecretKey = redactedValue
+	}
 	if c.Challenge.VerifiedSession.AdminSecret != "" {
 		c.Challenge.VerifiedSession.AdminSecret = redactedValue
 	}
@@ -65,4 +85,14 @@ func Redact(cfg *Config) *Config {
 	}
 
 	return &c
+}
+
+func redactConfigScalarForLog(keyPath, value string) string {
+	if value == "" {
+		return value
+	}
+	if _, ok := sensitiveScalarPaths[keyPath]; ok {
+		return redactedValue
+	}
+	return value
 }

@@ -1738,13 +1738,18 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, unmarshalErr)
 	}
 
-	frags, err := LoadConfDir(confDir)
+	frags, err := loadConfDirFragments(confDir)
 	if err != nil {
 		return nil, err
 	}
 	for _, frag := range frags {
-		DeepMergeTracked(&merged, frag, func(keyPath, oldVal, newVal string) {
-			fmt.Fprintf(os.Stderr, "confd: fragment overrides %s: %q -> %q\n", keyPath, oldVal, newVal)
+		DeepMergeTracked(&merged, frag.node, func(keyPath, oldVal, newVal string) {
+			fmt.Fprintf(os.Stderr, "confd: %s overrides %s: %q -> %q\n",
+				frag.path,
+				keyPath,
+				redactConfigScalarForLog(keyPath, oldVal),
+				redactConfigScalarForLog(keyPath, newVal),
+			)
 		})
 	}
 

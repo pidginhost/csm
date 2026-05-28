@@ -12,6 +12,7 @@ func TestRedact(t *testing.T) {
 	cfg.GeoIP.AccountID = "account-123"
 	cfg.Reputation.AbuseIPDBKey = "abuse-key"
 	cfg.Challenge.Secret = "challenge-secret"
+	cfg.Challenge.CaptchaFallback.SecretKey = "captcha-secret"
 	cfg.Challenge.VerifiedSession.AdminSecret = "verified-secret"
 	cfg.Integrity.BinaryHash = "abc123"
 	cfg.Integrity.ConfigHash = "def456"
@@ -41,6 +42,9 @@ func TestRedact(t *testing.T) {
 	}
 	if redacted.Challenge.Secret != "***REDACTED***" {
 		t.Errorf("challenge.secret not redacted: %q", redacted.Challenge.Secret)
+	}
+	if redacted.Challenge.CaptchaFallback.SecretKey != "***REDACTED***" {
+		t.Errorf("challenge.captcha_fallback.secret_key not redacted: %q", redacted.Challenge.CaptchaFallback.SecretKey)
 	}
 	if redacted.Challenge.VerifiedSession.AdminSecret != "***REDACTED***" {
 		t.Errorf("challenge.verified_session.admin_secret not redacted: %q", redacted.Challenge.VerifiedSession.AdminSecret)
