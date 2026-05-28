@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Startup retro scan of `exim_mainlog` now caps per-user event history and total distinct users it holds in memory. A compromised account that bursts thousands of sends, or a crafted log run, can no longer grow that map without bound.
 - Incident classifier now treats kernel module loads, /etc/shadow and sshd config writes, root password changes, new uid-0 accounts, new suid binaries, and root crontab edits as host-integrity incidents instead of generic web-account compromise. Severity escalation and operator filtering now match the actual blast radius.
+- Verdict callback replay protection now fires on the response-signing opt-out path too. A panel that disabled HMAC signing during rollout still has its echoed nonce and timestamp checked; a panel that echoes nothing keeps working unchanged.
 
 ## [3.9.0] - 2026-05-27
 

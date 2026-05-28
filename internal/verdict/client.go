@@ -38,12 +38,16 @@ const (
 //
 // RequireResponseSignature controls whether the panel must sign its
 // response body with the same HMAC scheme used on the request
-// (X-CSM-Signature header). Default is true: when a secret is configured,
-// CSM rejects unsigned or forged responses to prevent an on-path attacker
-// from silently downgrading a block to "allow". Set the pointer to a
-// false value only during phpanel-side rollouts that have not yet
-// implemented response signing. When no HMAC secret is configured at all,
-// response signing is skipped because there is no key to verify against.
+// (X-CSM-Signature header) and echo the request nonce + timestamp.
+// Default is true: when a secret is configured, CSM rejects unsigned
+// or forged responses to prevent an on-path attacker from silently
+// downgrading a block to "allow". Set the pointer to a false value
+// only during phpanel-side rollouts that have not yet implemented
+// response signing. Even on the opt-out path, replay protection is
+// best-effort enforced: if the panel does echo nonce or timestamp,
+// they must match; a panel that echoes neither still works (legacy
+// shape). When no HMAC secret is configured at all, every response
+// check is skipped because there is no key to verify against.
 type Config struct {
 	URL                      string
 	HMACSecret               string
@@ -211,6 +215,7 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 			return Response{}, err
 		}
 	}
+	strictReplay := secret != "" && c.cfg.requireResponseSig()
 	if strings.TrimSpace(string(data)) == "" {
 		return Response{}, nil
 	}
@@ -228,23 +233,30 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if out.Verdict != "" && out.Verdict != "block" && out.Verdict != "allow" {
 		return Response{}, fmt.Errorf("verdict callback returned unknown verdict %q", out.Verdict)
 	}
-	// Replay protection: when response signing is enforced, the panel
-	// must echo the request nonce and stamp a timestamp inside the
-	// allowed skew. Without these checks a captured "allow" reply
-	// could be replayed against a fresh request.
-	if secret != "" && c.cfg.requireResponseSig() {
-		if subtle.ConstantTimeCompare([]byte(out.Nonce), []byte(req.Nonce)) != 1 {
-			return Response{}, fmt.Errorf("verdict callback response nonce mismatch")
+	// Replay protection runs whenever a secret is configured. Strict
+	// mode (response signing required) demands the panel echo nonce and
+	// timestamp. Best-effort mode (signing opt-out) still enforces what
+	// the panel did echo, so a captured stale reply with a wrong nonce
+	// or a long-expired timestamp is rejected even when the operator
+	// has not yet enabled response signing on the panel side.
+	if secret != "" {
+		if out.Nonce != "" {
+			if subtle.ConstantTimeCompare([]byte(out.Nonce), []byte(req.Nonce)) != 1 {
+				return Response{}, fmt.Errorf("verdict callback response nonce mismatch")
+			}
+		} else if strictReplay {
+			return Response{}, fmt.Errorf("verdict callback response missing nonce")
 		}
-		if out.Timestamp == 0 {
+		if out.Timestamp != 0 {
+			drift := time.Since(time.Unix(out.Timestamp, 0))
+			if drift < 0 {
+				drift = -drift
+			}
+			if drift > verdictMaxResponseSkew {
+				return Response{}, fmt.Errorf("verdict callback response timestamp drift %s exceeds %s", drift, verdictMaxResponseSkew)
+			}
+		} else if strictReplay {
 			return Response{}, fmt.Errorf("verdict callback response missing timestamp")
-		}
-		drift := time.Since(time.Unix(out.Timestamp, 0))
-		if drift < 0 {
-			drift = -drift
-		}
-		if drift > verdictMaxResponseSkew {
-			return Response{}, fmt.Errorf("verdict callback response timestamp drift %s exceeds %s", drift, verdictMaxResponseSkew)
 		}
 	}
 	return out, nil

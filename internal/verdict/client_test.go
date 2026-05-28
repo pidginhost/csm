@@ -490,3 +490,64 @@ func TestClient_NoSecretSkipsResponseSignatureCheck(t *testing.T) {
 		t.Fatalf("no-secret path must skip verify, got %v", err)
 	}
 }
+
+// Opt-out only disables the HMAC signature check. A panel that does
+// echo nonce in its reply still has to echo the correct one, so a
+// captured-then-replayed reply with a stale nonce is rejected.
+func TestClient_OptOutStillRejectsWrongNonce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", Nonce: "stale-nonce-from-an-old-reply"})
+	}))
+	defer srv.Close()
+
+	optOut := false
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &optOut, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected rejection of mismatched nonce even with signature opt-out")
+	}
+}
+
+// A panel that echoes a stale timestamp gets rejected even on the
+// opt-out path. Skew bound catches replayed-or-cached responses
+// regardless of whether the panel signs.
+func TestClient_OptOutStillRejectsStaleTimestamp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{
+			Verdict:   "allow",
+			Timestamp: time.Now().Add(-10 * time.Minute).Unix(),
+		})
+	}))
+	defer srv.Close()
+
+	optOut := false
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &optOut, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected rejection of stale timestamp even with signature opt-out")
+	}
+}
+
+// A panel that echoes the correct nonce on the opt-out path keeps
+// working; the new best-effort check must not break this case.
+func TestClient_OptOutAcceptsMatchingNonce(t *testing.T) {
+	var capturedReq Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedReq)
+		_ = json.NewEncoder(w).Encode(Response{
+			Verdict:   "allow",
+			Nonce:     capturedReq.Nonce,
+			Timestamp: time.Now().Unix(),
+		})
+	}))
+	defer srv.Close()
+
+	optOut := false
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &optOut, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("opt-out path with matching nonce must succeed, got %v", err)
+	}
+	if resp.Verdict != "allow" {
+		t.Fatalf("verdict = %q, want allow", resp.Verdict)
+	}
+}
