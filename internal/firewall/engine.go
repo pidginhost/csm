@@ -47,11 +47,10 @@ type Engine struct {
 
 	// shutdownCtx, when set, scopes the lifetime of any in-flight verdict
 	// callback to daemon shutdown. Without it, BlockIPOutcome used
-	// context.Background() and a wedged panel callback held e.mu for the
-	// full http.Client.Timeout, which stalled the heartbeat loop's
-	// CleanExpiredAllows behind every late block during a graceful
-	// restart. Nil falls back to context.Background() so unit tests that
-	// build the Engine literal without a daemon keep working.
+	// context.Background() and a wedged panel callback kept the
+	// auto-block caller waiting for the full http.Client.Timeout during
+	// graceful restart. Nil falls back to context.Background() so unit
+	// tests that build the Engine literal without a daemon keep working.
 	shutdownCtx context.Context
 
 	table    *nftables.Table
