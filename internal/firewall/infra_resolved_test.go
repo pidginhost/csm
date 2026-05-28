@@ -41,6 +41,34 @@ func TestEngineUpdateInfraResolved_ReplacesPriorIPs(t *testing.T) {
 	}
 }
 
+// X18 regression: UpdateInfraResolved canonicalizes IPs via net.ParseIP
+// before storing them, so a lookup by an IPv4-mapped-IPv6 form or an
+// uncanonical IPv6 must still match the stored canonical address. Without
+// the normalization on lookup, a caller passing "::ffff:198.51.100.5"
+// bypasses the infra block guard for the same numeric address.
+func TestEngineInfraIPResolvedHostLocked_NormalizesLookupIP(t *testing.T) {
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return false },
+	}
+	e.UpdateInfraResolved("panel.example.net", []string{
+		"198.51.100.5",
+		"2001:DB8::1",
+	})
+
+	cases := []string{
+		"::ffff:198.51.100.5",
+		"2001:0db8:0000:0000:0000:0000:0000:0001",
+		"2001:DB8::1",
+	}
+	for _, lookup := range cases {
+		if _, ok := e.infraIPResolvedHostLocked(lookup); !ok {
+			t.Errorf("infraIPResolvedHostLocked(%q) returned ok=false; canonical IPs are stored", lookup)
+		}
+	}
+}
+
 func TestEngineDropInfraResolved_ClearsHost(t *testing.T) {
 	e := &Engine{
 		cfg:           &FirewallConfig{Enabled: true},

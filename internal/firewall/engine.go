@@ -2259,13 +2259,21 @@ func (e *Engine) DropInfraResolved(host string) {
 
 // infraIPResolvedHostLocked reports whether ip matches any IP recorded
 // for any tracked infra hostname. Must be called with e.mu held; the
-// existing blockIPTarget path already does so.
+// existing blockIPTarget path already does so. The lookup normalizes ip
+// to the same canonical form the storage path applies (net.ParseIP
+// collapses IPv6 and rewrites ::ffff:1.2.3.4 to 1.2.3.4), so a caller
+// passing the IPv4-mapped or uncanonical form still hits the guard.
 func (e *Engine) infraIPResolvedHostLocked(ip string) (string, bool) {
 	if e.infraResolved == nil {
 		return "", false
 	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", false
+	}
+	key := parsed.String()
 	for host, set := range e.infraResolved {
-		if _, ok := set[ip]; ok {
+		if _, ok := set[key]; ok {
 			return host, true
 		}
 	}
