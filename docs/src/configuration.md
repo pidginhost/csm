@@ -134,6 +134,7 @@ thresholds:
   mail_log_tail_lines: 500              # trailing lines of /var/log/exim_mainlog read by the mail-per-account scanner (default: 500)
   syslog_messages_tail_lines: 200       # trailing lines of /var/log/messages read by the FTP login scanner (default: 200)
   account_scan_max_files: 10000         # account and mail-domain paths per scanner cycle (default: 10000)
+  # If this cap clips /home/<account>/ paths, account_scan_truncated names the affected account.
   crontab_base64_blob_max_bytes: 16384  # encoded bytes per crontab base64 candidate before decoded-content matching; must be a multiple of 4 (default: 16384)
 
   # HTTP request flood and User-Agent spoof detection.

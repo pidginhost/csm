@@ -73,13 +73,17 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
-	dropped := 0
+	var droppedPaths []string
 	if maxFiles > 0 && len(ranked) > maxFiles {
-		dropped = len(ranked) - maxFiles
+		dropped := len(ranked) - maxFiles
+		droppedPaths = make([]string, dropped)
+		for i, e := range ranked[maxFiles:] {
+			droppedPaths[i] = e.path
+		}
 		ranked = ranked[:maxFiles]
 	}
-	if dropped > 0 {
-		recordAccountScanTruncated(ctx, dropped, maxFiles)
+	if len(droppedPaths) > 0 {
+		recordAccountScanTruncatedPaths(ctx, droppedPaths, maxFiles)
 	}
 	out := make([]string, len(ranked))
 	for i, e := range ranked {

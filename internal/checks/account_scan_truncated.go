@@ -3,7 +3,9 @@ package checks
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,9 +16,9 @@ type accountScanTruncationContextKey struct{}
 
 type accountScanTruncationCollector struct {
 	mu sync.Mutex
-	// droppedBy is keyed by account scope so operators can see which
-	// account tripped which cap. The empty-string key is the full-host
-	// scan tier (no account scope on the context).
+	// droppedBy is keyed by account so operators can see which tenant hit
+	// which cap. The empty-string key keeps dropped paths that are not
+	// attributable to /home/<account>/.
 	droppedBy map[string]map[int]int
 }
 
@@ -37,6 +39,45 @@ func recordAccountScanTruncated(ctx context.Context, dropped, cap int) {
 		return
 	}
 	collector.record(AccountFromContext(ctx), dropped, cap)
+}
+
+func recordAccountScanTruncatedPaths(ctx context.Context, droppedPaths []string, cap int) {
+	if len(droppedPaths) == 0 || cap <= 0 || ctx == nil {
+		return
+	}
+	collector, ok := ctx.Value(accountScanTruncationContextKey{}).(*accountScanTruncationCollector)
+	if !ok || collector == nil {
+		return
+	}
+	for account, dropped := range accountScanTruncationAccounts(ctx, droppedPaths) {
+		collector.record(account, dropped, cap)
+	}
+}
+
+func accountScanTruncationAccounts(ctx context.Context, paths []string) map[string]int {
+	if account := AccountFromContext(ctx); account != "" {
+		return map[string]int{account: len(paths)}
+	}
+	counts := make(map[string]int)
+	for _, path := range paths {
+		counts[accountFromHomePath(path)]++
+	}
+	return counts
+}
+
+func accountFromHomePath(path string) string {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	if !strings.HasPrefix(cleaned, "/home/") {
+		return ""
+	}
+	account := strings.TrimPrefix(cleaned, "/home/")
+	if slash := strings.IndexByte(account, '/'); slash >= 0 {
+		account = account[:slash]
+	}
+	if account == "." || account == ".." {
+		return ""
+	}
+	return account
 }
 
 func (c *accountScanTruncationCollector) record(account string, dropped, cap int) {

@@ -58,18 +58,27 @@ func TestRunParallelReturnsAccountScanTruncationFinding(t *testing.T) {
 	}}
 
 	findings, _ := runParallel(&config.Config{}, nil, checks, "unit", true)
-	if len(findings) != 1 {
-		t.Fatalf("len(findings) = %d, want 1: %+v", len(findings), findings)
+	if len(findings) != 2 {
+		t.Fatalf("len(findings) = %d, want 2: %+v", len(findings), findings)
 	}
-	f := findings[0]
-	if f.Check != "account_scan_truncated" || f.Severity != alert.Warning {
-		t.Fatalf("finding = %+v, want warning account_scan_truncated", f)
+	byTenant := map[string]alert.Finding{}
+	for _, f := range findings {
+		if f.Check != "account_scan_truncated" || f.Severity != alert.Warning {
+			t.Fatalf("finding = %+v, want warning account_scan_truncated", f)
+		}
+		if f.Timestamp.IsZero() {
+			t.Fatal("timestamp is zero")
+		}
+		byTenant[f.TenantID] = f
 	}
-	if !strings.Contains(f.Message, "2 file(s) skipped past cap of 1") {
-		t.Fatalf("message = %q, want skipped count and cap", f.Message)
-	}
-	if f.Timestamp.IsZero() {
-		t.Fatal("timestamp is zero")
+	for _, tenant := range []string{"aaa-customer", "bbb-customer"} {
+		f, ok := byTenant[tenant]
+		if !ok {
+			t.Fatalf("missing truncation finding for %s: %+v", tenant, findings)
+		}
+		if !strings.Contains(f.Message, tenant) || !strings.Contains(f.Message, "1 file(s) skipped past cap of 1") {
+			t.Fatalf("message = %q, want tenant name, skipped count, and cap", f.Message)
+		}
 	}
 }
 

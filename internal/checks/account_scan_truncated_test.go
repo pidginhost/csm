@@ -27,9 +27,9 @@ func TestAccountScanTruncated_PerAccountFinding(t *testing.T) {
 	byAccount := map[string]string{}
 	for _, f := range findings {
 		switch {
-		case strings.Contains(f.Message, "alice"):
+		case f.TenantID == "alice" && strings.Contains(f.Message, "alice"):
 			byAccount["alice"] = f.Message
-		case strings.Contains(f.Message, "bob"):
+		case f.TenantID == "bob" && strings.Contains(f.Message, "bob"):
 			byAccount["bob"] = f.Message
 		}
 	}
@@ -58,6 +58,58 @@ func TestAccountScanTruncated_HostScopeFinding(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "42") || !strings.Contains(findings[0].Message, "100") {
 		t.Errorf("host-scope message missing counts: %q", findings[0].Message)
+	}
+	if findings[0].TenantID != "" {
+		t.Errorf("host-scope TenantID = %q, want empty", findings[0].TenantID)
+	}
+}
+
+func TestAccountScanTruncated_HostScanAttributesDroppedHomePaths(t *testing.T) {
+	ctx, collector := withAccountScanTruncationCollector(context.Background())
+	recordAccountScanTruncatedPaths(ctx, []string{
+		"/home/alice/public_html/old.php",
+		"/home/alice/public_html/cache.php",
+		"/home/bob/public_html/old.php",
+		"/var/tmp/host-scope.php",
+	}, 25)
+
+	findings := collector.findings(time.Now())
+	if len(findings) != 3 {
+		t.Fatalf("findings count = %d, want 3 (alice, bob, host): %+v", len(findings), findings)
+	}
+	byTenant := map[string]string{}
+	for _, f := range findings {
+		byTenant[f.TenantID] = f.Message
+	}
+	if !strings.Contains(byTenant["alice"], "2 file(s)") || !strings.Contains(byTenant["alice"], "cap of 25") {
+		t.Errorf("alice finding = %q, want per-account dropped count and cap", byTenant["alice"])
+	}
+	if !strings.Contains(byTenant["bob"], "1 file(s)") || !strings.Contains(byTenant["bob"], "cap of 25") {
+		t.Errorf("bob finding = %q, want per-account dropped count and cap", byTenant["bob"])
+	}
+	if !strings.Contains(byTenant[""], "host scan") || !strings.Contains(byTenant[""], "1 file(s)") {
+		t.Errorf("host finding = %q, want host-scope dropped count", byTenant[""])
+	}
+}
+
+func TestAccountScanTruncated_ContextScopeOverridesDroppedPaths(t *testing.T) {
+	baseCtx, collector := withAccountScanTruncationCollector(context.Background())
+	ctx := ContextWithAccountScope(baseCtx, "alice")
+
+	recordAccountScanTruncatedPaths(ctx, []string{
+		"/home/bob/public_html/old.php",
+		"/var/tmp/no-account.php",
+	}, 10)
+
+	findings := collector.findings(time.Now())
+	if len(findings) != 1 {
+		t.Fatalf("findings count = %d, want 1: %+v", len(findings), findings)
+	}
+	if findings[0].TenantID != "alice" {
+		t.Fatalf("TenantID = %q, want alice", findings[0].TenantID)
+	}
+	if !strings.Contains(findings[0].Message, "2 file(s)") || !strings.Contains(findings[0].Message, "account alice") {
+		t.Errorf("message = %q, want scoped account and dropped count", findings[0].Message)
 	}
 }
 
