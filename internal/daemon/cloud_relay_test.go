@@ -551,3 +551,43 @@ func TestEvictCloudRelayWindows(t *testing.T) {
 		t.Errorf("non-window value survived eviction")
 	}
 }
+
+func TestLockCloudRelayWindowForUpdateIgnoresEvictedWindow(t *testing.T) {
+	cloudRelayWindows = sync.Map{}
+	t.Cleanup(func() { cloudRelayWindows = sync.Map{} })
+
+	now := time.Unix(1_700_000_000, 0)
+	user := "stale@example.com"
+	stale := &cloudRelayWindow{lastEvent: now.Add(-cloudRelayEvictWindow - time.Hour)}
+	stale.mu.Lock()
+	cloudRelayWindows.Store(user, stale)
+
+	locked := make(chan *cloudRelayWindow, 1)
+	go func() {
+		locked <- lockCloudRelayWindowForUpdate(user, now)
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	cloudRelayWindows.Delete(user)
+	stale.mu.Unlock()
+
+	var got *cloudRelayWindow
+	select {
+	case got = <-locked:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cloud-relay window lock")
+	}
+	defer got.mu.Unlock()
+
+	if got == stale {
+		t.Fatalf("lock returned an evicted window")
+	}
+	mapped, ok := cloudRelayWindows.Load(user)
+	if !ok {
+		t.Fatal("window was not restored after stale eviction")
+	}
+	mappedWindow, ok := mapped.(*cloudRelayWindow)
+	if !ok || mappedWindow != got {
+		t.Fatalf("locked window is not the mapped active window")
+	}
+}

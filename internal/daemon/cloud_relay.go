@@ -156,6 +156,27 @@ type cloudRelayEvent struct {
 // cloudRelayWindows tracks per-user cloud-relay activity.
 var cloudRelayWindows sync.Map // map[string]*cloudRelayWindow
 
+func lockCloudRelayWindowForUpdate(user string, now time.Time) *cloudRelayWindow {
+	for {
+		val, _ := cloudRelayWindows.LoadOrStore(user, &cloudRelayWindow{lastEvent: now})
+		w, ok := val.(*cloudRelayWindow)
+		if !ok {
+			cloudRelayWindows.Delete(user)
+			continue
+		}
+
+		w.mu.Lock()
+		// Re-check while holding w.mu so the eviction sweep cannot delete
+		// a stale entry and orphan a parser update made through that pointer.
+		current, ok := cloudRelayWindows.Load(user)
+		currentWindow, currentOK := current.(*cloudRelayWindow)
+		if ok && currentOK && currentWindow == w {
+			return w
+		}
+		w.mu.Unlock()
+	}
+}
+
 // Detection thresholds. Two OR-combined signals within the same 60-min
 // sliding window:
 //
@@ -215,10 +236,7 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	now := time.Now()
-	val, _ := cloudRelayWindows.LoadOrStore(user, &cloudRelayWindow{})
-	w := val.(*cloudRelayWindow)
-
-	w.mu.Lock()
+	w := lockCloudRelayWindowForUpdate(user, now)
 	defer w.mu.Unlock()
 
 	// Prune anything older than the window.
@@ -349,11 +367,10 @@ func evictCloudRelayWindows(now time.Time) {
 			return true
 		}
 		w.mu.Lock()
-		idle := w.lastEvent.Before(cutoff)
-		w.mu.Unlock()
-		if idle {
-			cloudRelayWindows.Delete(key)
+		if w.lastEvent.Before(cutoff) {
+			cloudRelayWindows.CompareAndDelete(key, val)
 		}
+		w.mu.Unlock()
 		return true
 	})
 }

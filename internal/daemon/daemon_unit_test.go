@@ -702,6 +702,13 @@ func TestStartEmailRateEviction_StopsOnSignal(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+func TestStartCloudRelayEviction_StopsOnSignal(t *testing.T) {
+	stopCh := make(chan struct{})
+	StartCloudRelayEviction(stopCh)
+	close(stopCh)
+	time.Sleep(50 * time.Millisecond)
+}
+
 // ---------------------------------------------------------------------------
 // discoverModSecLogPath — config override
 // ---------------------------------------------------------------------------
