@@ -255,16 +255,39 @@ func (d *sprayDetector) IncidentForIP(ip string) string {
 	return ""
 }
 
+// UnbindIncident clears the perIP binding for every IP currently
+// bound to id, so a finding from one of those IPs cannot reach the
+// closed/missing incident through the suppress merge path. Caller
+// holds the correlator mutex. Linear scan over perIP, same shape as
+// the byKey unbind in correlator.unbindLocked: the active set is
+// bounded by MaxTrackedIPs.
+func (d *sprayDetector) UnbindIncident(id string) {
+	if d == nil || id == "" {
+		return
+	}
+	for _, state := range d.perIP {
+		if state.incident == id {
+			state.incident = ""
+		}
+	}
+}
+
 // PruneStale clears entries whose lastSeen is older than the window.
 // Called by the daemon retention loop alongside PruneStalePending so
 // the detector does not grow without bound on hosts with churning
-// attacker IPs.
+// attacker IPs. Entries still bound to an open spray incident are
+// kept regardless of age -- evicting them lets a new spray finding
+// open a duplicate per-mailbox incident while the super-incident is
+// still active in the correlator.
 func (d *sprayDetector) PruneStale(now time.Time) int {
 	if d == nil {
 		return 0
 	}
 	pruned := 0
 	for ip, state := range d.perIP {
+		if state.incident != "" {
+			continue
+		}
 		if now.Sub(state.lastSeen) > d.window {
 			delete(d.perIP, ip)
 			pruned++

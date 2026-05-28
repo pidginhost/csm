@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Database scan, clean, and auto-response paths now reject a WordPress table prefix that contains anything outside alphanumerics or underscore. A cPanel-user-owned wp-config.php can no longer drive SQL injection through these helpers.
 
+### Fixed
+
+- Closing or auto-resolving a credential-spray super-incident now releases its per-IP detector binding. A later finding from the same address cannot reopen the closed incident or accumulate against it, and the stale binding no longer keeps new super-incidents from opening for the same attacker.
+
 ## [3.9.1] - 2026-05-28
 
 ### Changed

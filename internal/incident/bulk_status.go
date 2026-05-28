@@ -114,6 +114,9 @@ func (c *Correlator) BulkSetStatus(filter BulkStatusFilter) (BulkStatusResult, e
 		})
 		c.counters.statusChangedTotal.Add(1)
 		c.unbindLocked(inc.ID)
+		if c.spray != nil {
+			c.spray.UnbindIncident(inc.ID)
+		}
 		if req, ok := c.queuePersistLocked(*inc); ok {
 			persist = append(persist, req)
 		}

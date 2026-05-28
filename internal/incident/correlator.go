@@ -244,7 +244,8 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			return id, true, nil
 		case sprayDecisionSuppress:
 			id := c.spray.IncidentForIP(f.SourceIP)
-			if inc, ok := c.incidents[id]; ok {
+			inc, ok := c.incidents[id]
+			if ok && incidentStatusActive(inc.Status) {
 				c.mergeLocked(inc, f, now, true)
 				if hits >= c.spray.cfg.SeverityEscalateAt && inc.Severity < alert.Critical {
 					from := inc.Severity
@@ -270,9 +271,14 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 				c.counters.spraySuppressedTotal.Add(1)
 				return id, false, nil
 			}
-			// Bound incident vanished (e.g. operator dismissed it). Fall
-			// through to legacy path so the finding still produces an
-			// incident rather than silently disappearing.
+			// Bound incident vanished (purged) or is no longer active
+			// (operator resolved/dismissed). Clear the perIP binding so
+			// subsequent findings don't keep falling into the same dead
+			// lookup, then fall through to legacy so the finding still
+			// produces an incident rather than silently disappearing.
+			if id != "" {
+				c.spray.UnbindIncident(id)
+			}
 		case sprayDecisionNone:
 			if c.spray.cfg.DryRun && hits >= c.spray.cfg.DistinctMailboxes {
 				c.counters.sprayDryRunTotal.Add(1)
@@ -839,6 +845,9 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 			inc.ClosedBy = "operator"
 		}
 		c.unbindLocked(id)
+		if c.spray != nil {
+			c.spray.UnbindIncident(id)
+		}
 	} else {
 		// Reverting from resolved/dismissed back to open or contained
 		// clears the close attribution so future closes attribute correctly.
@@ -898,6 +907,9 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 		c.counters.statusChangedTotal.Add(1)
 		c.counters.autoClosedTotal.Add(1)
 		c.unbindLocked(id)
+		if c.spray != nil {
+			c.spray.UnbindIncident(id)
+		}
 		if req, ok := c.queuePersistLocked(*inc); ok {
 			persist = append(persist, req)
 		}
