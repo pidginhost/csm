@@ -174,6 +174,7 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 			out = append(out, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "wp_login_bruteforce",
+				SourceIP: ip,
 				Message:  formatLegacyMessage("WordPress login brute force", ip, count, "attempts"),
 				Details:  "Aggregated across per-vhost access logs",
 			})
@@ -184,6 +185,7 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 			out = append(out, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "xmlrpc_abuse",
+				SourceIP: ip,
 				Message:  formatLegacyMessage("XML-RPC abuse", ip, count, "requests"),
 				Details:  "Aggregated across per-vhost access logs",
 			})
@@ -194,6 +196,7 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 			out = append(out, alert.Finding{
 				Severity: alert.High,
 				Check:    "wp_user_enumeration",
+				SourceIP: ip,
 				Message:  formatLegacyMessage("WordPress user enumeration", ip, count, "requests"),
 				Details:  "Requests to /wp-json/wp/v2/users or ?author=",
 			})

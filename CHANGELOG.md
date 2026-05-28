@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closing or auto-resolving a credential-spray incident now releases its attacker tracking state. Later failures from that address are evaluated as new activity instead of mutating the closed incident or reusing old spray counts.
 - Incident recovery now ignores corrupt or internally inconsistent bbolt incident rows instead of letting one bad record block the list or compaction pass. Direct incident lookups still surface corrupt records as errors without marking them found.
 - Alert shutdown now drains buffered findings after tracked workers stop, so last-second findings make it into the shutdown flush instead of vanishing on graceful restart.
+- Aggregated WordPress login brute force, XML-RPC abuse, and user-enumeration findings now carry a structured source IP, so the incident correlator keys them under the attacker IP instead of silently dropping the per-IP attribution.
 
 ## [3.9.1] - 2026-05-28
 

@@ -64,10 +64,11 @@ func TestRefactorParity(t *testing.T) {
 		Check    string
 		Severity alert.Severity
 		Message  string
+		SourceIP string
 	}{
-		{"wp_login_bruteforce", alert.Critical, "WordPress login brute force from 192.0.2.10: 20 attempts"},
-		{"wp_user_enumeration", alert.High, "WordPress user enumeration from 203.0.113.30: 6 requests"},
-		{"xmlrpc_abuse", alert.Critical, "XML-RPC abuse from 198.51.100.20: 32 requests"},
+		{"wp_login_bruteforce", alert.Critical, "WordPress login brute force from 192.0.2.10: 20 attempts", "192.0.2.10"},
+		{"wp_user_enumeration", alert.High, "WordPress user enumeration from 203.0.113.30: 6 requests", "203.0.113.30"},
+		{"xmlrpc_abuse", alert.Critical, "XML-RPC abuse from 198.51.100.20: 32 requests", "198.51.100.20"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("findings=%d, want %d (%+v)", len(got), len(want), got)
@@ -82,8 +83,10 @@ func TestRefactorParity(t *testing.T) {
 		if got[i].Message != w.Message {
 			t.Errorf("[%d] message=%q want %q", i, got[i].Message, w.Message)
 		}
-		if got[i].SourceIP != "" {
-			t.Errorf("[%d] SourceIP=%q, want empty to preserve legacy JSON shape", i, got[i].SourceIP)
+		// X7: SourceIP must be stamped so incident.KeyFor returns a
+		// non-empty key and the correlator does not silently drop these.
+		if got[i].SourceIP != w.SourceIP {
+			t.Errorf("[%d] SourceIP=%q want %q", i, got[i].SourceIP, w.SourceIP)
 		}
 	}
 }
