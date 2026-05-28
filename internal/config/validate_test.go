@@ -264,6 +264,42 @@ func TestValidate_BlockIPsWithFirewallDisabled(t *testing.T) {
 	}
 }
 
+func TestValidate_BlockIPsWarnsWhenLoadedConfigOmitsFirewall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(path, []byte(`
+hostname: test
+alerts:
+  email:
+    enabled: true
+    to:
+      - a@b.com
+    from: csm@test.com
+    smtp: localhost:25
+  max_per_hour: 10
+mail_logs:
+  source: auto
+thresholds:
+  mail_brute_account_key: builtin:dovecot-user
+auto_response:
+  enabled: true
+  block_ips: true
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Firewall == nil || cfg.Firewall.Enabled {
+		t.Fatalf("Load() should apply a disabled default firewall; got %#v", cfg.Firewall)
+	}
+	results := Validate(cfg)
+	if !hasResult(results, "warn", "auto_response.block_ips") {
+		t.Fatalf("expected warn for loaded config with missing firewall section; results=%v", results)
+	}
+}
+
 func TestValidate_BlockIPsWithFirewallEnabledSilent(t *testing.T) {
 	cfg := baseValidationConfig()
 	cfg.AutoResponse.Enabled = true

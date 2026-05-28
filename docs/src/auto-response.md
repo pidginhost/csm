@@ -65,6 +65,8 @@ auto_response:
 
 `auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without thinking through policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
 
+IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns both live nftables mutations and dry-run block records; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
+
 Verify dry-run state explicitly:
 
 ```bash
@@ -98,7 +100,7 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 ## Findings that always trigger IP block
 
-When `auto_response.block_ips: true`, the source IP is blocked for every finding in this list regardless of other configuration. The dry-run gate still applies if `dry_run: true`.
+When `auto_response.block_ips: true` and the firewall is enabled, the source IP is blocked for every finding in this list. The dry-run gate still applies if `dry_run: true`.
 
 | Finding | Description |
 |---------|-------------|

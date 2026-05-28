@@ -119,7 +119,7 @@ Full firewall reference: [Configuration - Firewall](configuration.md#full-refere
 
 ## Auto-response interaction
 
-Auto-block calls go through the firewall engine, but the engine consults two policy hooks first:
+Auto-block calls require `firewall.enabled: true` because they go through the firewall engine. The engine consults two policy hooks first:
 
 1. **`auto_response.verdict_callback`** - when enabled, the engine
    POSTs a signed JSON request to the panel after local validation and
