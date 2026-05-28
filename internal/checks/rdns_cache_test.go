@@ -65,6 +65,35 @@ func TestRDNSCacheResolveErrorReturnsEmptyAndIsCached(t *testing.T) {
 	}
 }
 
+// X23: cache must drop the oldest entry before inserting once it hits
+// the size cap. Otherwise the BPF SMTP-egress code path -- keyed by
+// every distinct remote IP -- grows linearly forever on a busy host.
+func TestRDNSCacheEvictsOldestWhenCapExceeded(t *testing.T) {
+	c := NewRDNSCache(RDNSCacheConfig{
+		TTL:     time.Hour,
+		MaxSize: 3,
+		Resolve: func(ip net.IP) (string, error) {
+			return "host-" + ip.String(), nil
+		},
+	})
+	c.Lookup(net.ParseIP("203.0.113.1").To4())
+	c.Lookup(net.ParseIP("203.0.113.2").To4())
+	c.Lookup(net.ParseIP("203.0.113.3").To4())
+	c.Lookup(net.ParseIP("203.0.113.4").To4()) // forces eviction
+
+	if got := c.Len(); got != 3 {
+		t.Errorf("cache size = %d, want 3 after eviction", got)
+	}
+	if c.contains("203.0.113.1") {
+		t.Errorf("oldest entry 203.0.113.1 should have been evicted")
+	}
+	for _, ip := range []string{"203.0.113.2", "203.0.113.3", "203.0.113.4"} {
+		if !c.contains(ip) {
+			t.Errorf("%s should still be cached", ip)
+		}
+	}
+}
+
 func TestRDNSCacheDeadlineExpiredReturnsEmpty(t *testing.T) {
 	c := NewRDNSCache(RDNSCacheConfig{
 		TTL: time.Minute,
