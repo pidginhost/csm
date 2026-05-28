@@ -103,6 +103,8 @@ func TestLooksLikePluginUpdateFlatFile(t *testing.T) {
 // --- looksLikePluginUpdate: caching behavior ------------------------------
 
 func TestLooksLikePluginUpdateCache(t *testing.T) {
+	resetPluginStatCacheForTest(t)
+
 	// Build a fake WP root where the plugin dir exists.
 	dir := t.TempDir()
 	wpRoot := dir
@@ -121,6 +123,51 @@ func TestLooksLikePluginUpdateCache(t *testing.T) {
 	if !looksLikePluginUpdate(p) {
 		t.Error("second call should return cached true")
 	}
+}
+
+func TestEvictStalePluginStatCache(t *testing.T) {
+	resetPluginStatCacheForTest(t)
+
+	now := time.Now()
+	staleKey := "/home/a/public_html/wp-content/plugins/stale"
+	freshKey := "/home/a/public_html/wp-content/plugins/fresh"
+	badKey := "/home/a/public_html/wp-content/plugins/bad"
+
+	pluginStatCache.Store(staleKey, pluginCacheEntry{
+		exists: true,
+		ts:     now.Add(-2*pluginCacheTTL - time.Second),
+	})
+	pluginStatCache.Store(freshKey, pluginCacheEntry{
+		exists: true,
+		ts:     now.Add(-2*pluginCacheTTL + time.Second),
+	})
+	pluginStatCache.Store(badKey, "invalid")
+
+	evictStalePluginStatCache(now)
+
+	if _, ok := pluginStatCache.Load(staleKey); ok {
+		t.Fatal("stale plugin cache entry was not evicted")
+	}
+	if _, ok := pluginStatCache.Load(badKey); ok {
+		t.Fatal("invalid plugin cache entry was not evicted")
+	}
+	if cached, ok := pluginStatCache.Load(freshKey); !ok {
+		t.Fatal("fresh plugin cache entry was evicted")
+	} else if entry := cached.(pluginCacheEntry); !entry.exists {
+		t.Fatal("fresh plugin cache entry changed")
+	}
+}
+
+func resetPluginStatCacheForTest(t *testing.T) {
+	t.Helper()
+	clearPluginStatCache := func() {
+		pluginStatCache.Range(func(key, _ any) bool {
+			pluginStatCache.Delete(key)
+			return true
+		})
+	}
+	clearPluginStatCache()
+	t.Cleanup(clearPluginStatCache)
 }
 
 // --- credentialLogNames map covers key entries ---------------------------
