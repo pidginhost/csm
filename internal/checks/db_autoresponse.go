@@ -306,6 +306,9 @@ func parseDBFindingDetails(details string) (dbName, optionName string) {
 }
 
 // findCredsForDB finds wp-config.php credentials that match a database name.
+// Skips wp-configs whose $table_prefix fails the safety check -- those
+// values come straight from a cPanel-user-writable file and end up in
+// root-credentialled SQL via handleMaliciousOption / handleSiteurlHijack.
 func findCredsForDB(dbName string) wpDBCreds {
 	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
 	addonConfigs, _ := osFS.Glob("/home/*/*/wp-config.php")
@@ -313,9 +316,13 @@ func findCredsForDB(dbName string) wpDBCreds {
 
 	for _, path := range wpConfigs {
 		creds := parseWPConfig(path)
-		if creds.dbName == dbName {
-			return creds
+		if creds.dbName != dbName {
+			continue
 		}
+		if _, ok := resolveTablePrefix(creds); !ok {
+			continue
+		}
+		return creds
 	}
 	return wpDBCreds{}
 }

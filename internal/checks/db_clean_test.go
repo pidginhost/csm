@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -161,5 +163,102 @@ func TestDBCleanOption_SQLInjectionVariants(t *testing.T) {
 		if result.Success {
 			t.Errorf("SQL injection should fail: %q", name)
 		}
+	}
+}
+
+// --- resolveTablePrefix ---
+
+func TestResolveTablePrefix_Cases(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    string
+		wantOK  bool
+	}{
+		{"", "wp_", true},
+		{"wp_", "wp_", true},
+		{"my_prefix_", "my_prefix_", true},
+		{"site42_", "site42_", true},
+		{"wp_; DROP TABLE wp_users; --", "", false},
+		{"wp_'; SELECT", "", false},
+		{"wp_`; DROP", "", false},
+		{"a b", "", false},
+		{"a-b", "", false},
+		{"a.b", "", false},
+		{"a/b", "", false},
+		{"--", "", false},
+		{"' OR '1'='1", "", false},
+	}
+	for _, c := range cases {
+		got, ok := resolveTablePrefix(wpDBCreds{tablePrefix: c.in})
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("resolveTablePrefix(%q) = (%q, %v), want (%q, %v)",
+				c.in, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+// findCredsForAccount must refuse a wp-config whose $table_prefix is
+// attacker-controlled. The audit (X1) traced cPanel-user -> root SQL
+// injection through DBCleanOption / DBRevokeUser / DBDeleteSpam, which
+// concatenate the parsed prefix into runMySQLQueryRoot statements. The
+// helper must drop the wp-config instead of returning the unsafe prefix.
+func TestFindCredsForAccount_RejectsMaliciousPrefix(t *testing.T) {
+	dir := t.TempDir()
+	wpConfig := filepath.Join(dir, "wp-config.php")
+	body := []byte(`<?php
+define( 'DB_NAME', 'attacker_wp' );
+define( 'DB_USER', 'wpuser' );
+define( 'DB_PASSWORD', 'x' );
+define( 'DB_HOST', 'localhost' );
+$table_prefix = 'wp_; DROP TABLE wp_users; --';
+`)
+	if err := os.WriteFile(wpConfig, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			// Primary lookup pattern in findCredsForAccount.
+			if strings.HasSuffix(pattern, "/public_html/wp-config.php") {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		open: func(path string) (*os.File, error) { return os.Open(path) },
+	}
+	withMockOS(t, m)
+	creds, prefix := findCredsForAccount("attacker")
+	if creds.dbName != "" || prefix != "" {
+		t.Fatalf("findCredsForAccount must reject malicious prefix; got dbName=%q prefix=%q",
+			creds.dbName, prefix)
+	}
+}
+
+// Same root cause via the auto-response credential helper.
+func TestFindCredsForDB_RejectsMaliciousPrefix(t *testing.T) {
+	dir := t.TempDir()
+	wpConfig := filepath.Join(dir, "wp-config.php")
+	body := []byte(`<?php
+define( 'DB_NAME', 'attacker_wp' );
+define( 'DB_USER', 'wpuser' );
+define( 'DB_PASSWORD', 'x' );
+define( 'DB_HOST', 'localhost' );
+$table_prefix = "wp_'; DROP TABLE wp_users; --";
+`)
+	if err := os.WriteFile(wpConfig, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if strings.HasSuffix(pattern, "/public_html/wp-config.php") {
+				return []string{wpConfig}, nil
+			}
+			return nil, nil
+		},
+		open: func(path string) (*os.File, error) { return os.Open(path) },
+	}
+	withMockOS(t, m)
+	creds := findCredsForDB("attacker_wp")
+	if creds.dbName != "" {
+		t.Fatalf("findCredsForDB must reject malicious prefix; got dbName=%q", creds.dbName)
 	}
 }

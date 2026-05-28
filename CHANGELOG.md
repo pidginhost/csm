@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Database clean and auto-response paths now reject a WordPress table prefix that contains anything outside alphanumerics or underscore. A cPanel-user-owned wp-config.php can no longer drive root-credentialled SQL injection through these helpers.
+
 ## [3.9.1] - 2026-05-28
 
 ### Changed

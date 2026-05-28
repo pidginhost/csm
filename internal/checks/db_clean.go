@@ -321,21 +321,37 @@ func findCredsForAccount(account string) (wpDBCreds, string) {
 
 	for _, path := range patterns {
 		creds := parseWPConfig(path)
-		if creds.dbName != "" {
-			prefix := creds.tablePrefix
-			if prefix == "" {
-				prefix = "wp_"
-			}
-			// Use root auth — CSM runs as root with /root/.my.cnf.
-			// wp-config.php passwords are unreliable (cPanel password
-			// rotations don't always update the file).
-			creds.dbUser = ""
-			creds.dbPass = ""
-			creds.dbHost = "localhost"
-			return creds, prefix
+		if creds.dbName == "" {
+			continue
 		}
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
+			continue
+		}
+		// Use root auth — CSM runs as root with /root/.my.cnf.
+		// wp-config.php passwords are unreliable (cPanel password
+		// rotations don't always update the file).
+		creds.dbUser = ""
+		creds.dbPass = ""
+		creds.dbHost = "localhost"
+		return creds, prefix
 	}
 	return wpDBCreds{}, ""
+}
+
+// resolveTablePrefix returns the safe `wp_options`-style prefix for the
+// parsed wp-config. Empty input defaults to "wp_". Anything outside
+// [A-Za-z0-9_]+ returns ("", false) so callers refuse to interpolate
+// attacker-controlled $table_prefix into root-credentialled MySQL.
+func resolveTablePrefix(creds wpDBCreds) (string, bool) {
+	prefix := creds.tablePrefix
+	if prefix == "" {
+		prefix = "wp_"
+	}
+	if !validTablePrefix.MatchString(prefix) {
+		return "", false
+	}
+	return prefix, true
 }
 
 // runMySQLExecRoot runs a non-SELECT MySQL statement under root
