@@ -435,8 +435,9 @@ type Config struct {
 			// is configured, CSM rejects unsigned or forged responses to
 			// prevent an on-path attacker from downgrading block to allow.
 			// Set false only during a phpanel rollout that has not yet
-			// implemented response signing - in that window the path reverts
-			// to the pre-3.x advisory contract.
+			// implemented response signing. In that mode, CSM still checks
+			// nonce or timestamp fields the panel echoes; responses that
+			// omit both keep the legacy advisory shape working.
 			RequireResponseSignature *bool `yaml:"require_response_signature,omitempty"`
 			// AllowUnsigned opts out of the default fail-closed posture and
 			// permits the verdict callback to fire without an HMAC secret.

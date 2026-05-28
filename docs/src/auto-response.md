@@ -82,10 +82,12 @@ to start without `hmac_secret` or a non-empty `hmac_secret_env` value
 unless `allow_unsigned: true` is set for a staged unsigned rollout.
 When a secret is configured, CSM also requires the panel to sign the
 response body unless `require_response_signature: false` is set for a
-staged rollout. The panel can return `{"verdict": "block"}` (apply),
-`{"verdict": "allow"}` (audit-only; CSM logs the decision and skips
-nftables), or attach metadata (`tenant_id`, `note`). The callback runs
-after local validation and infra-IP safety checks, and before the
+staged rollout. With that opt-out, CSM still checks any echoed `nonce`
+or `timestamp` when a secret is configured; a legacy response that
+omits both keeps working. The panel can return `{"verdict": "block"}`
+(apply), `{"verdict": "allow"}` (audit-only; CSM logs the decision and
+skips nftables), or attach metadata (`tenant_id`, `note`). The callback
+runs after local validation and infra-IP safety checks, and before the
 dry-run gate, so panels can observe dry-run decisions too.
 
 CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).

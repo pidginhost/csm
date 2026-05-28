@@ -84,10 +84,10 @@ type Request struct {
 //	verdict    = "allow" - CSM logs the verdict but does NOT block.
 //	verdict    = "" or missing - equivalent to "block" (default).
 //	tenant_id  = optional attribution string CSM logs alongside the decision.
-//	nonce      = MUST equal the Request.Nonce. Required when response
-//	             signing is in effect; defeats replay of captured replies.
-//	timestamp  = unix seconds the panel produced the reply. MUST be
-//	             within verdictMaxResponseSkew of CSM's clock.
+//	nonce      = MUST equal the Request.Nonce when present. Required when
+//	             response signing is in effect; defeats replay of captured replies.
+//	timestamp  = unix seconds the panel produced the reply. MUST be within
+//	             verdictMaxResponseSkew of CSM's clock when present.
 type Response struct {
 	Verdict   string `json:"verdict,omitempty"`
 	TenantID  string `json:"tenant_id,omitempty"`

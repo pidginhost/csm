@@ -52,7 +52,13 @@ downgrade every "block" decision to "allow".
 If the server cannot sign responses yet (e.g. mid-rollout), operators
 can set `auto_response.verdict_callback.require_response_signature:
 false` in `csm.yaml` to temporarily accept unsigned responses. The
-default is `true` and there is no other way to disable the check.
+default is `true` and there is no other way to disable the signature
+requirement.
+
+When response signing is disabled but a secret is configured, CSM still
+checks any `nonce` or `timestamp` fields the server echoes. A nonce must
+match the request nonce, and a timestamp must stay within the five-minute
+skew window. A legacy response that omits both fields keeps working.
 
 ## Request body
 
@@ -71,8 +77,8 @@ default is `true` and there is no other way to disable the check.
 - `reason` (required): short reason string (`mail_bruteforce`, `wp_login_bruteforce`, etc.).
 - `severity` (optional): `"auto"` for auto-response decisions; reserved for future use.
 - `source` (optional): `"auto_response"` (the only current emitter).
-- `nonce` (required when response signing is on): a 128-bit hex random value unique to this call. The panel MUST echo it verbatim in the response.
-- `timestamp` (required when response signing is on): unix seconds when CSM produced the request. The panel does not need to validate it but MAY use it to reject stale calls.
+- `nonce` (always sent): a 128-bit hex random value unique to this call. The panel MUST echo it verbatim when response signing is on. When response signing is disabled, CSM still checks the value if the panel echoes it.
+- `timestamp` (always sent): unix seconds when CSM produced the request. The panel does not need to validate it but MAY use it to reject stale calls.
 
 ## Response body (200 OK)
 
@@ -89,8 +95,8 @@ default is `true` and there is no other way to disable the check.
 - `verdict`: `"block"` (default; also returned if field omitted) or `"allow"` to override. **Any other string is rejected by CSM as a protocol error**, treated as "no decision" (CSM proceeds with the default block per fail-open semantics).
 - `tenant_id` (optional): attribution string; CSM logs it alongside the decision.
 - `note` (optional): free-form note logged for the verdict.
-- `nonce` (required when response signing is on): MUST equal `request.nonce`. CSM compares with constant-time equality and rejects mismatches as replay attempts.
-- `timestamp` (required when response signing is on): unix seconds when the panel produced the reply. CSM rejects replies whose timestamp drifts more than five minutes from local clock.
+- `nonce` (required when response signing is on): MUST equal `request.nonce`. CSM compares with constant-time equality and rejects mismatches as replay attempts. When response signing is disabled, CSM still checks this field if present.
+- `timestamp` (required when response signing is on): unix seconds when the panel produced the reply. CSM rejects replies whose timestamp drifts more than five minutes from local clock. When response signing is disabled, CSM still checks this field if present.
 
 ## Failure semantics
 
@@ -100,7 +106,8 @@ default is `true` and there is no other way to disable the check.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).
 - 200 OK with missing or invalid `X-CSM-Signature` (and `require_response_signature` not turned off): rejected as forged; treated as fail-open (default block). Operators see the rejection in stderr; recurring rejections indicate either a panel-side rollout gap or an active on-path attack.
-- 200 OK with mismatched `nonce`, missing `timestamp`, or timestamp drift over five minutes (and response signing required): rejected as replay; treated as fail-open (default block).
+- 200 OK with mismatched `nonce` or timestamp drift over five minutes: rejected as replay whenever a secret is configured and the field is present; treated as fail-open (default block).
+- 200 OK with missing `nonce` or `timestamp`: rejected as replay when response signing is required. Missing replay fields are accepted only when `require_response_signature: false` is set for a legacy response shape.
 
 ## Limits
 

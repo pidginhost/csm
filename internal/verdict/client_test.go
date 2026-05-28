@@ -324,6 +324,23 @@ func TestClient_RejectsResponseMissingNonce(t *testing.T) {
 	}
 }
 
+func TestClient_RejectsResponseMissingTimestamp(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		body, _ := json.Marshal(Response{Verdict: "allow", Nonce: req.Nonce})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected replay-protection error when response omits timestamp")
+	}
+}
+
 // TestClient_RejectsResponseWithWrongNonce: a captured old reply
 // (with the previous nonce) must be rejected even if its signature is
 // valid against the same secret.
@@ -488,6 +505,26 @@ func TestClient_NoSecretSkipsResponseSignatureCheck(t *testing.T) {
 	c := New(Config{URL: srv.URL, Timeout: time.Second})
 	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err != nil {
 		t.Fatalf("no-secret path must skip verify, got %v", err)
+	}
+}
+
+func TestClient_NoSecretSkipsResponseReplayCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{
+			Verdict:   "allow",
+			Nonce:     "stale-nonce",
+			Timestamp: time.Now().Add(-10 * time.Minute).Unix(),
+		})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("no-secret path must skip replay checks, got %v", err)
+	}
+	if resp.Verdict != "allow" {
+		t.Fatalf("verdict = %q, want allow", resp.Verdict)
 	}
 }
 
