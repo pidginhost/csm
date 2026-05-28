@@ -13,10 +13,12 @@ type recordingIPBlocker struct {
 	blocked       []string
 	calls         []blockCall
 	blockedSubnet []string
+	subnetCalls   []subnetCall
 }
 
 func (b *recordingIPBlocker) BlockSubnet(cidr, reason string, timeout time.Duration) error {
 	b.blockedSubnet = append(b.blockedSubnet, cidr)
+	b.subnetCalls = append(b.subnetCalls, subnetCall{cidr: cidr, reason: reason, timeout: timeout})
 	return nil
 }
 
@@ -31,6 +33,12 @@ func (b *recordingIPBlocker) IsSubnetBlocked(cidr string) bool {
 
 type blockCall struct {
 	ip      string
+	reason  string
+	timeout time.Duration
+}
+
+type subnetCall struct {
+	cidr    string
 	reason  string
 	timeout time.Duration
 }
@@ -247,6 +255,44 @@ func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
 	}
 	if blocker.blockedSubnet[0] != "2001:db8:1::/64" {
 		t.Fatalf("blockedSubnet[0]=%q, want 2001:db8:1::/64", blocker.blockedSubnet[0])
+	}
+}
+
+func TestAutoBlockIPs_NetBlockUsesConfiguredExpiry(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "2h"
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 2
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.20"},
+	})
+
+	if len(blocker.subnetCalls) != 1 {
+		t.Fatalf("BlockSubnet calls = %+v, want one netblock call", blocker.subnetCalls)
+	}
+	if blocker.subnetCalls[0].cidr != "198.51.100.0/24" {
+		t.Fatalf("BlockSubnet CIDR = %q, want 198.51.100.0/24", blocker.subnetCalls[0].cidr)
+	}
+	if blocker.subnetCalls[0].timeout != 2*time.Hour {
+		t.Fatalf("BlockSubnet timeout = %s, want 2h", blocker.subnetCalls[0].timeout)
 	}
 }
 

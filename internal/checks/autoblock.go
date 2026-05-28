@@ -402,10 +402,6 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if threshold < 2 {
 			threshold = 3
 		}
-		// Honor the operator-configured BlockExpiry on subnet blocks as
-		// well, matching the per-IP path above. The previous code passed
-		// 0 (permanent), which silently overrode the configured TTL for
-		// the escalated subnet without leaving an audit signal.
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
 		subnetCounts := make(map[string]int)
