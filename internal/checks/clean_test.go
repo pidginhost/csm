@@ -305,6 +305,26 @@ func TestRemoveChrPackInjectionsChrChain(t *testing.T) {
 	}
 }
 
+// X25 regression: a chr-chain split across line breaks by the
+// PHP concat operator (chr(115)\n.chr(121)\n.chr(115)...) used to slip
+// past the per-line scan that required 5+ chr() calls on a single line.
+// The cleaner must recognize the chain across line breaks and excise
+// every line that participates in it.
+func TestRemoveChrPackInjectionsChrChainAcrossLines(t *testing.T) {
+	payload := "$x = chr(115)\n.chr(121)\n.chr(115)\n.chr(116)\n.chr(101)\n.chr(109);\n"
+	input := "<?php\n" + payload + "echo 1;\n"
+	out, removed := removeChrPackInjections(input)
+	if len(removed) == 0 {
+		t.Fatal("expected removal of multi-line chr-chain")
+	}
+	if strings.Contains(out, "chr(115)") || strings.Contains(out, "chr(116)") {
+		t.Errorf("multi-line chr-chain should be stripped:\n%s", out)
+	}
+	if !strings.Contains(out, "echo 1") {
+		t.Error("legitimate code was removed")
+	}
+}
+
 func TestRemoveChrPackInjectionsPackHexSafe(t *testing.T) {
 	input := "<?php\n$data = pack(\"H*\", \"48656c6c6f\");\necho $data;\n"
 	_, removed := removeChrPackInjections(input)

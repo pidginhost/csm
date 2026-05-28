@@ -41,6 +41,13 @@ var (
 	cleanRegexpMultiB64   = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
 	cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
 	cleanRegexpChrChain   = regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+	// cleanRegexpChrChainCrossLine accepts the same shape but tolerates
+	// newlines inside the optional whitespace between calls. Attackers
+	// wrap the chain across line breaks with the `.` concat operator
+	// (`chr(115)\n.chr(121)\n...`) so a strict per-line match misses the
+	// chain even though PHP still evaluates it as one expression. The
+	// (?s) flag lets `\s` match `\n`.
+	cleanRegexpChrChainCrossLine = regexp.MustCompile(`(?is)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
 	cleanRegexpPackHex    = regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
 	cleanRegexpHexVar     = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
 )
@@ -673,15 +680,32 @@ func removeMultiLayerBase64(content string) (string, []string) {
 func removeChrPackInjections(content string) (string, []string) {
 	var removals []string
 	lines := strings.Split(content, "\n")
-	var clean []string
 
+	// Find chr-chain spans across the full content first so multi-line
+	// chains (chr(115)\n.chr(121)\n...) are recognized as one chain
+	// instead of slipping past the per-line 5+ count.
+	dropLine := make(map[int]bool)
+	offsets := make([]int, len(lines))
+	off := 0
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		offsets[i] = off
+		off += len(line) + 1 // +1 for the newline strings.Split consumed
+	}
+	for _, span := range cleanRegexpChrChainCrossLine.FindAllStringIndex(content, -1) {
+		startLine := lineIndexForOffset(offsets, span[0])
+		endLine := lineIndexForOffset(offsets, span[1]-1)
+		for i := startLine; i <= endLine; i++ {
+			dropLine[i] = true
+		}
+	}
 
-		if cleanRegexpChrChain.MatchString(trimmed) {
-			removals = append(removals, fmt.Sprintf("removed chr() chain injection (line %d, %d chars)", i+1, len(trimmed)))
+	var clean []string
+	for i, line := range lines {
+		if dropLine[i] {
+			removals = append(removals, fmt.Sprintf("removed chr() chain injection (line %d, %d chars)", i+1, len(strings.TrimSpace(line))))
 			continue
 		}
+		trimmed := strings.TrimSpace(line)
 
 		if cleanRegexpPackHex.MatchString(trimmed) {
 			lower := strings.ToLower(trimmed)
@@ -697,6 +721,20 @@ func removeChrPackInjections(content string) (string, []string) {
 	}
 
 	return strings.Join(clean, "\n"), removals
+}
+
+// lineIndexForOffset returns the index of the line containing the byte
+// at offset within the original content.
+func lineIndexForOffset(offsets []int, byteOffset int) int {
+	if byteOffset < 0 {
+		return 0
+	}
+	for i := len(offsets) - 1; i >= 0; i-- {
+		if offsets[i] <= byteOffset {
+			return i
+		}
+	}
+	return 0
 }
 
 // --- Strategy 7: Hex-encoded variable injections ---
