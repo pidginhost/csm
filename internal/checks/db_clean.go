@@ -328,6 +328,7 @@ func findCredsForAccount(account string) (wpDBCreds, string) {
 		if !ok {
 			continue
 		}
+		creds.tablePrefix = prefix
 		// Use root auth — CSM runs as root with /root/.my.cnf.
 		// wp-config.php passwords are unreliable (cPanel password
 		// rotations don't always update the file).

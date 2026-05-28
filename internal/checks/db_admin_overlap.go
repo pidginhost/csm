@@ -57,13 +57,11 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 		if creds.dbName == "" {
 			continue
 		}
-		prefix := creds.tablePrefix
-		if prefix == "" {
-			prefix = "wp_"
-		}
-		if !validTablePrefix.MatchString(prefix) {
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
 			continue
 		}
+		creds.tablePrefix = prefix
 		for _, email := range adminEmailsForSite(creds, prefix) {
 			_ = db.RecordAdminEmail(email, account, creds.dbName, now)
 		}

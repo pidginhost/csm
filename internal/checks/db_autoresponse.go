@@ -319,9 +319,11 @@ func findCredsForDB(dbName string) wpDBCreds {
 		if creds.dbName != dbName {
 			continue
 		}
-		if _, ok := resolveTablePrefix(creds); !ok {
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
 			continue
 		}
+		creds.tablePrefix = prefix
 		return creds
 	}
 	return wpDBCreds{}

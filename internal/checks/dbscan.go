@@ -61,10 +61,11 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 
-		prefix := creds.tablePrefix
-		if prefix == "" {
-			prefix = "wp_"
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
+			continue
 		}
+		creds.tablePrefix = prefix
 
 		// Always scan the main-site (or single-site) tables. In
 		// multisite, blog ID 1 keeps the unprefixed names; in a
@@ -626,10 +627,11 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 		if creds.dbName == "" {
 			continue
 		}
-		prefix := creds.tablePrefix
-		if prefix == "" {
-			prefix = "wp_"
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
+			continue
 		}
+		creds.tablePrefix = prefix
 
 		// Clean spam from wp_posts
 		spamPatterns := []struct {

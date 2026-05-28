@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,9 +171,9 @@ func TestDBCleanOption_SQLInjectionVariants(t *testing.T) {
 
 func TestResolveTablePrefix_Cases(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    string
-		wantOK  bool
+		in     string
+		want   string
+		wantOK bool
 	}{
 		{"", "wp_", true},
 		{"wp_", "wp_", true},
@@ -198,35 +199,44 @@ func TestResolveTablePrefix_Cases(t *testing.T) {
 }
 
 // findCredsForAccount must refuse a wp-config whose $table_prefix is
-// attacker-controlled. The audit (X1) traced cPanel-user -> root SQL
-// injection through DBCleanOption / DBRevokeUser / DBDeleteSpam, which
-// concatenate the parsed prefix into runMySQLQueryRoot statements. The
-// helper must drop the wp-config instead of returning the unsafe prefix.
+// attacker-controlled. DBCleanOption, DBRevokeUser, and DBDeleteSpam
+// concatenate the parsed prefix into root MySQL statements.
 func TestFindCredsForAccount_RejectsMaliciousPrefix(t *testing.T) {
-	dir := t.TempDir()
-	wpConfig := filepath.Join(dir, "wp-config.php")
-	body := []byte(`<?php
+	body := `<?php
 define( 'DB_NAME', 'attacker_wp' );
 define( 'DB_USER', 'wpuser' );
 define( 'DB_PASSWORD', 'x' );
 define( 'DB_HOST', 'localhost' );
 $table_prefix = 'wp_; DROP TABLE wp_users; --';
-`)
-	if err := os.WriteFile(wpConfig, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
+`
+	opened := false
 	m := &mockOS{
-		glob: func(pattern string) ([]string, error) {
-			// Primary lookup pattern in findCredsForAccount.
-			if strings.HasSuffix(pattern, "/public_html/wp-config.php") {
-				return []string{wpConfig}, nil
+		glob: func(string) ([]string, error) { return nil, nil },
+		open: func(path string) (*os.File, error) {
+			if path != "/home/attacker/public_html/wp-config.php" {
+				return nil, os.ErrNotExist
 			}
-			return nil, nil
+			opened = true
+			f, err := os.CreateTemp(t.TempDir(), "wpconfig")
+			if err != nil {
+				return nil, err
+			}
+			if _, err := f.WriteString(body); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			if _, err := f.Seek(0, 0); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			return f, nil
 		},
-		open: func(path string) (*os.File, error) { return os.Open(path) },
 	}
 	withMockOS(t, m)
 	creds, prefix := findCredsForAccount("attacker")
+	if !opened {
+		t.Fatal("findCredsForAccount did not read the account's primary wp-config")
+	}
 	if creds.dbName != "" || prefix != "" {
 		t.Fatalf("findCredsForAccount must reject malicious prefix; got dbName=%q prefix=%q",
 			creds.dbName, prefix)
@@ -254,11 +264,70 @@ $table_prefix = "wp_'; DROP TABLE wp_users; --";
 			}
 			return nil, nil
 		},
-		open: func(path string) (*os.File, error) { return os.Open(path) },
+		open: os.Open,
 	}
 	withMockOS(t, m)
 	creds := findCredsForDB("attacker_wp")
 	if creds.dbName != "" {
 		t.Fatalf("findCredsForDB must reject malicious prefix; got dbName=%q", creds.dbName)
+	}
+}
+
+func TestDatabaseScanners_RejectMaliciousPrefixBeforeQuery(t *testing.T) {
+	wpConfig := `<?php
+define( 'DB_NAME', 'attacker_wp' );
+define( 'DB_USER', 'wpuser' );
+define( 'DB_PASSWORD', 'x' );
+define( 'DB_HOST', 'localhost' );
+$table_prefix = 'wp_; DROP TABLE wp_users; --';
+`
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/home/*/public_html/wp-config.php",
+				"/home/attacker/*/wp-config.php",
+				"/home/attacker/public_html/wp-config.php":
+				return []string{"/home/attacker/public_html/wp-config.php"}, nil
+			default:
+				return nil, nil
+			}
+		},
+		open: func(name string) (*os.File, error) {
+			if !strings.HasSuffix(name, "wp-config.php") {
+				return nil, os.ErrNotExist
+			}
+			f, err := os.CreateTemp(t.TempDir(), "wpconfig")
+			if err != nil {
+				return nil, err
+			}
+			if _, err := f.WriteString(wpConfig); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			if _, err := f.Seek(0, 0); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			return f, nil
+		},
+	})
+
+	mysqlCalls := 0
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(string, []string, ...string) ([]byte, error) {
+			mysqlCalls++
+			return nil, nil
+		},
+	})
+
+	findings := CheckDatabaseContent(context.Background(), nil, nil)
+	if len(findings) != 0 {
+		t.Fatalf("CheckDatabaseContent returned findings for rejected prefix: %v", findings)
+	}
+	if got := CleanDatabaseSpam("attacker"); len(got) != 0 {
+		t.Fatalf("CleanDatabaseSpam returned findings for rejected prefix: %v", got)
+	}
+	if mysqlCalls != 0 {
+		t.Fatalf("malicious table prefix reached MySQL query path %d times", mysqlCalls)
 	}
 }
