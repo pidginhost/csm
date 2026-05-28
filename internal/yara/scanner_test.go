@@ -26,6 +26,11 @@ func TestRepoHtaccessAutoPrependRuleCatchesSuspiciousTargets(t *testing.T) {
 	if !hasYaraRule(scanner.ScanBytes(suspicious), "backdoor_htaccess_auto_prepend") {
 		t.Fatal("expected suspicious auto_prepend_file target to match")
 	}
+
+	adminVariant := []byte("php_admin_value auto_prepend_file /home/user/public_html/.cache/.x.php\n")
+	if !hasYaraRule(scanner.ScanBytes(adminVariant), "backdoor_htaccess_auto_prepend") {
+		t.Fatal("expected php_admin_value auto_prepend_file target to match")
+	}
 }
 
 func TestRepoHtaccessAutoPrependRuleAllowsKnownLegitimateTargets(t *testing.T) {
@@ -45,6 +50,11 @@ func TestRepoHtaccessAutoPrependRuleAllowsKnownLegitimateTargets(t *testing.T) {
 	legitimate := []byte("php_value auto_prepend_file /home/user/public_html/wordfence-waf.php\n")
 	if hasYaraRule(scanner.ScanBytes(legitimate), "backdoor_htaccess_auto_prepend") {
 		t.Fatal("expected wordfence auto_prepend_file target to stay excluded")
+	}
+
+	adminVariant := []byte("php_admin_value auto_prepend_file /home/user/public_html/wordfence-waf.php\n")
+	if hasYaraRule(scanner.ScanBytes(adminVariant), "backdoor_htaccess_auto_prepend") {
+		t.Fatal("expected php_admin_value wordfence auto_prepend_file target to stay excluded")
 	}
 }
 

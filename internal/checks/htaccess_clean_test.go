@@ -71,17 +71,21 @@ func TestDetectorAutoPrependFlagsImageExtensionTarget(t *testing.T) {
 	}
 }
 
-// X26 regression: mod_php and some LSAPI builds honor
-// `php_admin_value auto_prepend_file ...` inside `.htaccess` too, so the
-// detector must recognize the admin variant. Attackers using the
-// admin-prefix form bypassed the previous regex that anchored on a
-// literal `php_value`.
 func TestDetectorAutoPrependFlagsAdminVariant(t *testing.T) {
 	dir := t.TempDir()
 	path := writeHtaccess(t, dir, "site", "php_admin_value auto_prepend_file /tmp/.cache.php\n")
 	findings, _ := AuditHtaccessFile(path)
 	if countByCheck(findings, "htaccess_auto_prepend") != 1 {
 		t.Errorf("php_admin_value auto_prepend matches = %d, want 1", countByCheck(findings, "htaccess_auto_prepend"))
+	}
+}
+
+func TestDetectorAutoPrependFlagsQuotedAdminVariantTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := writeHtaccess(t, dir, "site", "php_admin_value auto_prepend_file \"/tmp/.cache.php\"\n")
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_auto_prepend") != 1 {
+		t.Errorf("quoted php_admin_value auto_prepend matches = %d, want 1", countByCheck(findings, "htaccess_auto_prepend"))
 	}
 }
 

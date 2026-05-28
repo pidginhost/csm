@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reverse-DNS lookup cache is now size-capped with oldest-first eviction. The BPF SMTP-egress detector can no longer accumulate one entry per ever-seen remote IP on a busy host.
 - Fanotify plugin-stat cache now evicts entries that have not been re-stated in two times the TTL window, so a long-running watcher cannot accumulate one entry per distinct plugin slug ever observed.
 - Surgical file cleaner now removes whole chr() chain statements that span multiple lines via the PHP concat operator. An attacker can no longer break the 5-chr-on-one-line gate by inserting a newline between calls.
-- htaccess auto_prepend_file detection now recognizes the `php_admin_value` variant in addition to `php_value`, closing the bypass that mod_php and some LSAPI builds expose.
+- htaccess auto_prepend and auto_append detection now recognizes the `php_admin_value` variant in hardened and signature scans, closing the bypass that mod_php and some LSAPI builds expose.
 
 ## [3.9.1] - 2026-05-28
 

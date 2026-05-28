@@ -287,6 +287,7 @@ func TestBackdoorPhpAutoAppend_LooseTokenNoLongerBypasses(t *testing.T) {
 		"php_value auto_prepend_file /tmp/evil.php # litespeed\n",
 		"php_value auto_prepend_file /tmp/evil.php # php_shield.php\n",
 		"php_value auto_prepend_file /tmp/evil.php # advanced-headers.php\n",
+		"php_admin_value auto_prepend_file /tmp/evil.php # advanced-headers.php\n",
 	}
 	for _, body := range cases {
 		matches := scanner.ScanContent([]byte(body), ".htaccess")
@@ -303,6 +304,7 @@ func TestBackdoorPhpAutoAppend_LegitDirectiveTargetsStillExcluded(t *testing.T) 
 		"php_value auto_prepend_file '/home/user/public_html/wordfence-waf.php'\n",
 		"php_value auto_prepend_file /home/user/public_html/wp-content/advanced-headers.php\n",
 		"php_value auto_prepend_file /home/user/public_html/sucuri.php\n",
+		"php_admin_value auto_prepend_file '/home/user/public_html/wordfence-waf.php'\n",
 	}
 	for _, body := range cases {
 		matches := scanner.ScanContent([]byte(body), ".htaccess")

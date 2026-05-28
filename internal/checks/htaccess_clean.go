@@ -101,10 +101,9 @@ var htaccessTrackingHeaders = []string{
 }
 
 var (
-	rePHPHandlerMap   = regexp.MustCompile(`(?im)^\s*(AddHandler|SetHandler|ForceType)\s+\S*php\S*\s+([^\n]+)$`)
-	// Match both `php_value` and `php_admin_value` since mod_php and some
-	// LSAPI builds accept either inside `.htaccess`. The previous literal
-	// `php_value` prefix let attackers slip past with the admin form.
+	rePHPHandlerMap = regexp.MustCompile(`(?im)^\s*(AddHandler|SetHandler|ForceType)\s+\S*php\S*\s+([^\n]+)$`)
+	// Match both forms because mod_php and some LSAPI builds honor either
+	// directive in .htaccess.
 	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+(\S+)`)
 	reUACloakCond     = regexp.MustCompile(`(?im)^\s*RewriteCond\s+%\{HTTP_USER_AGENT\}\s+([^\n]+)`)
 	reSpamRedirect    = regexp.MustCompile(`(?im)^\s*RewriteRule\s+\S+\s+(https?://[^\s\[]+)`)
@@ -350,9 +349,9 @@ func pathInNonScriptDir(path string) bool {
 	return false
 }
 
-// detectAutoPrepend flags php_value auto_prepend_file directives
-// that point at filesystem locations known not to host legitimate
-// prelude scripts.
+// detectAutoPrepend flags PHP auto_prepend_file directives that
+// point at filesystem locations known not to host legitimate prelude
+// scripts.
 func detectAutoPrepend(content []byte, _ string) []htaccessMatch {
 	idxs := reAutoPrepend.FindAllSubmatchIndex(content, -1)
 	var out []htaccessMatch
@@ -373,6 +372,7 @@ func detectAutoPrepend(content []byte, _ string) []htaccessMatch {
 }
 
 func autoPrependTargetSuspicious(target string) bool {
+	target = strings.Trim(strings.TrimSpace(target), `"'`)
 	lower := strings.ToLower(target)
 	for _, p := range htaccessSuspiciousAutoPrependPaths {
 		if strings.HasPrefix(lower, p) {
