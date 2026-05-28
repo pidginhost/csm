@@ -35,6 +35,7 @@ func TestClassifyKindPostExploitProcess(t *testing.T) {
 
 func TestClassifyKindHostIntegrityRisk(t *testing.T) {
 	for _, check := range []string{
+		"bulk_password_change",
 		"sensitive_file_write",
 		"sensitive_file_modified",
 		"fake_kernel_thread",

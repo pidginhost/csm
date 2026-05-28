@@ -240,6 +240,8 @@
             var g = groups[i];
             var sourceText = g.source_kind === 'ip'
                 ? g.source
+                : g.source_kind === 'host'
+                    ? 'host'
                 : g.source_kind === '_unkeyed'
                     ? 'unkeyed'
                     : g.source_kind + ': ' + g.source;

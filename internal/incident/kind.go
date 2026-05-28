@@ -32,7 +32,7 @@ func ClassifyKind(f alert.Finding) Kind {
 	// explicitly so account-attributed checks that share a substring
 	// (e.g. suspicious_crontab on a per-user spool) stay in the
 	// tenant bucket.
-	if hostIntegrityChecks[check] {
+	if isHostIntegrityCheck(check) {
 		return KindHostIntegrityRisk
 	}
 
@@ -57,6 +57,7 @@ func ClassifyKind(f alert.Finding) Kind {
 // straight to KindHostIntegrityRisk so incident severity reflects the
 // blast radius.
 var hostIntegrityChecks = map[string]bool{
+	"bulk_password_change":    true,
 	"sensitive_file_write":    true,
 	"sensitive_file_modified": true,
 	"fake_kernel_thread":      true,
@@ -70,6 +71,10 @@ var hostIntegrityChecks = map[string]bool{
 	"kernel_module":           true,
 	"crontab_change":          true,
 	"crond_change":            true,
+}
+
+func isHostIntegrityCheck(check string) bool {
+	return hostIntegrityChecks[strings.ToLower(strings.TrimSpace(check))]
 }
 
 func isMailboxTakeoverCheck(check string) bool {

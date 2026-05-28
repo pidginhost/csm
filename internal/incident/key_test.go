@@ -108,6 +108,32 @@ func TestKeyForUnattributableFindingReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestKeyForHostIntegrityFindingUsesHostKey(t *testing.T) {
+	f := alert.Finding{Check: "kernel_module", Message: "new module loaded"}
+	k := KeyFor(f)
+	if k.Host != "host" {
+		t.Fatalf("Host = %q, want host", k.Host)
+	}
+	if k.Account != "" || k.Domain != "" || k.Mailbox != "" || k.RemoteIP != "" || k.UID != 0 || k.PID != 0 {
+		t.Fatalf("host-integrity key must not carry tenant/process fields: %+v", k)
+	}
+}
+
+func TestKeyForHostIntegrityIgnoresAccountAttribution(t *testing.T) {
+	f := alert.Finding{
+		Check:    "suid_binary",
+		FilePath: "/home/alice/bin/helper",
+		TenantID: "alice",
+	}
+	k := KeyFor(f)
+	if k.Host != "host" {
+		t.Fatalf("host-integrity key = %+v, want Host=host", k)
+	}
+	if k.Account != "" {
+		t.Fatalf("host-integrity finding must not split by account, got %+v", k)
+	}
+}
+
 // PHP-relay findings carry the cPanel user in CPUser rather than TenantID;
 // without a fallback they would drop on the floor of the correlator. Account
 // must be populated when CPUser is the only attribution available.

@@ -8,7 +8,10 @@ import (
 
 // Key is the correlation key derived from a Finding. Empty fields mean
 // "not provided"; the correlator uses the most specific non-empty fields.
+// Host is the synthetic local-host actor for findings whose blast radius
+// is the machine itself rather than one tenant, process, or remote IP.
 type Key struct {
+	Host     string `json:"host,omitempty"`
 	Account  string `json:"account,omitempty"`
 	Domain   string `json:"domain,omitempty"`
 	Mailbox  string `json:"mailbox,omitempty"`
@@ -20,14 +23,16 @@ type Key struct {
 // IsEmpty reports whether the key has nothing to correlate on. Such
 // findings are emitted normally but do not join an incident.
 func (k Key) IsEmpty() bool {
-	return k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
+	return k.Host == "" && k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
 }
 
-// KeyFor extracts a correlation key from a Finding. TenantID,
-// Process.Account, CPUser, and a /home[N]/<account>/ heuristic provide
-// account attribution. Domain and Mailbox come directly from the finding.
-// Process UID/PID and SourceIP are fallback identities: they should not
-// split account/domain/mailbox incidents.
+// KeyFor extracts a correlation key from a Finding. Host-integrity
+// findings are keyed to the local host so unattributed root/system events
+// still become incidents. TenantID, Process.Account, CPUser, and a
+// /home[N]/<account>/ heuristic provide account attribution. Domain and
+// Mailbox come directly from the finding. Process UID/PID and SourceIP are
+// fallback identities: they should not split account/domain/mailbox
+// incidents.
 //
 // Mailbox + Domain are canonicalised so emitters that set either the
 // full local@domain form or the split (Mailbox=local, Domain=site)
@@ -35,6 +40,10 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
+	if ClassifyKind(f) == KindHostIntegrityRisk {
+		return Key{Host: "host"}
+	}
+
 	mailbox, domain := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
 	k := Key{
 		Account: f.TenantID,

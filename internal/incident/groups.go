@@ -199,11 +199,14 @@ func BuildGroups(incidents []Incident, filter GroupFilter) GroupsResponse {
 }
 
 // groupSource derives the (source_kind, source) pair the UI uses to
-// label and drill into a group. Cascade order: remote_ip > account >
-// domain > mailbox > "_unkeyed". The IP path is the most useful
-// grouping for credential-spray patterns and the most common shape on
-// busy hosts.
+// label and drill into a group. Cascade order: host > remote_ip >
+// account > domain > mailbox > "_unkeyed". The IP path is the most
+// useful grouping for credential-spray patterns and the most common
+// shape on busy hosts.
 func groupSource(inc Incident) (sourceKind, source string) {
+	if inc.CorrelationKey != nil && inc.CorrelationKey.Host != "" {
+		return "host", inc.CorrelationKey.Host
+	}
 	if inc.CorrelationKey != nil && inc.CorrelationKey.RemoteIP != "" {
 		return "ip", inc.CorrelationKey.RemoteIP
 	}

@@ -82,6 +82,33 @@ func TestCorrelatorThresholdBypassedForCriticalSeverity(t *testing.T) {
 	}
 }
 
+func TestCorrelatorThresholdBypassedForHighHostIntegrity(t *testing.T) {
+	c := newThresholdCorrelator(2)
+	f := alert.Finding{
+		Check:     "kernel_module",
+		Severity:  alert.High,
+		Message:   "New kernel module loaded after baseline: x",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	id, created, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created || id == "" {
+		t.Fatalf("High host-integrity finding must open incident on first hit: id=%q created=%v", id, created)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("Get on freshly created incident returned not-found")
+	}
+	if inc.Kind != KindHostIntegrityRisk {
+		t.Fatalf("Kind = %s, want host_integrity_risk", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.Host != "host" {
+		t.Fatalf("CorrelationKey = %+v, want Host=host", inc.CorrelationKey)
+	}
+}
+
 // A pending finding that ages past the merge window must NOT promote
 // when a much-later second finding arrives. The later finding becomes
 // the new pending entry; otherwise stale half-hour-old probes would

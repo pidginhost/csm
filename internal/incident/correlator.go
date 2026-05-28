@@ -296,11 +296,10 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	}
 
 	// Threshold gate. Non-Critical findings need OpenThreshold sightings
-	// inside the merge window before opening an incident; Critical
-	// findings always open immediately so escalations and known-bad
-	// signals (account compromise, cloud-relay abuse, modsec
-	// escalations) page on the first hit.
-	if c.openThreshold > 1 && f.Severity < alert.Critical {
+	// inside the merge window before opening an incident, except High
+	// host-integrity findings. Those are not scanner noise and must
+	// surface on the first sighting like Critical escalations.
+	if c.openThreshold > 1 && !opensIncidentImmediately(f) {
 		if pf, ok := c.pending[keyStr]; ok && now.Sub(pf.at) <= incidentMergeWindow {
 			delete(c.pending, keyStr)
 			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
@@ -1048,7 +1047,8 @@ func cloneKey(k Key) *Key {
 // (e.g. different PID-only processes or different remote IPs) do not
 // collapse to the same bucket and falsely merge.
 func keyString(k Key) string {
-	return fmt.Sprintf("%d:%s|%d:%s|%d:%s|%d|%d|%d:%s",
+	return fmt.Sprintf("%d:%s|%d:%s|%d:%s|%d:%s|%d|%d|%d:%s",
+		len(k.Host), k.Host,
 		len(k.Account), k.Account,
 		len(k.Mailbox), k.Mailbox,
 		len(k.Domain), k.Domain,
@@ -1056,6 +1056,13 @@ func keyString(k Key) string {
 		k.PID,
 		len(k.RemoteIP), k.RemoteIP,
 	)
+}
+
+func opensIncidentImmediately(f alert.Finding) bool {
+	if f.Severity >= alert.Critical {
+		return true
+	}
+	return f.Severity >= alert.High && ClassifyKind(f) == KindHostIntegrityRisk
 }
 
 func newIncidentID() string {

@@ -367,6 +367,9 @@ func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
 	if keyString(a) == keyString(b) {
 		t.Fatal("keyString collided when field values contained separators")
 	}
+	if keyString(Key{Host: "host"}) == keyString(Key{Account: "host"}) {
+		t.Fatal("keyString collided between host and account keys")
+	}
 }
 
 func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {

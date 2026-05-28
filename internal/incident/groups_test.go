@@ -98,6 +98,25 @@ func TestBuildGroupsBucketByAccountFallback(t *testing.T) {
 	}
 }
 
+func TestBuildGroupsBucketByHostKey(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	in := []Incident{
+		{
+			ID:             "inc_host",
+			Kind:           KindHostIntegrityRisk,
+			Status:         StatusOpen,
+			Severity:       alert.High,
+			CorrelationKey: &Key{Host: "host"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+	}
+	resp := BuildGroups(in, GroupFilter{})
+	if len(resp.Groups) != 1 || resp.Groups[0].SourceKind != "host" || resp.Groups[0].Source != "host" {
+		t.Fatalf("expected one host-keyed group, got %+v", resp.Groups)
+	}
+}
+
 func TestBuildGroupsSortsByCountThenSeverityThenLastSeen(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	in := []Incident{
