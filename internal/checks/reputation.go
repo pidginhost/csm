@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/threatintel"
@@ -282,13 +283,15 @@ func newSupplementalThreatAggregator(cfg *config.Config) *threatintel.Aggregator
 		))
 	}
 	if cfg.Reputation.Upstream.Enabled {
-		agg.Register(threatintel.NewUpstreamSource(threatintel.UpstreamConfig{
+		upstream := threatintel.NewUpstreamSource(threatintel.UpstreamConfig{
 			URL:      cfg.Reputation.Upstream.URL,
 			Token:    cfg.Reputation.Upstream.Token,
 			TokenEnv: cfg.Reputation.Upstream.TokenEnv,
 			CacheTTL: time.Duration(cfg.Reputation.Upstream.CacheTTLMin) * time.Minute,
 			Timeout:  time.Duration(cfg.Reputation.Upstream.TimeoutSec) * time.Second,
-		}))
+		})
+		threatintel.RegisterUpstreamMetrics(metrics.Default(), upstream)
+		agg.Register(upstream)
 	}
 	return agg
 }

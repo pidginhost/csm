@@ -321,3 +321,58 @@ func TestUpstreamSource_CircuitBreakerAllowsSingleCooldownProbe(t *testing.T) {
 		t.Fatalf("cooldown probe returned error: %v", err)
 	}
 }
+
+// Cache effectiveness has been an operator blind spot since the cache
+// + breaker landed (V15). Without metrics the operator cannot detect
+// when the upstream is degraded, when traffic shape has shifted to
+// unique-IP volume that bypasses the cache, or when the breaker is
+// open. Counters must increment for hit/miss/failure paths.
+func TestUpstreamSource_TracksCacheAndBackendCounters(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		ip := r.URL.Query().Get("ip")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ip": ip, "score": 30})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, Timeout: time.Second})
+
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.Score(context.Background(), "5.6.7.8"); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, misses, fails := src.MetricsSnapshot()
+	if hits != 1 {
+		t.Errorf("cache hits = %d, want 1", hits)
+	}
+	if misses != 2 {
+		t.Errorf("cache misses = %d, want 2", misses)
+	}
+	if fails != 0 {
+		t.Errorf("backend failures = %d, want 0", fails)
+	}
+}
+
+func TestUpstreamSource_TracksBackendFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, Timeout: time.Second})
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err == nil {
+		t.Fatal("expected error on 503")
+	}
+
+	_, _, fails := src.MetricsSnapshot()
+	if fails != 1 {
+		t.Errorf("backend failures = %d, want 1", fails)
+	}
+}

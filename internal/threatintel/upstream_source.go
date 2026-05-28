@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,6 +72,14 @@ type UpstreamSource struct {
 	breakerProbe      bool
 	breakerTrip       int
 	breakerCooldown   time.Duration
+
+	// Counters for the operator-facing metrics. Read-only after Score
+	// increments via atomic.Int64; expose via MetricsSnapshot and the
+	// RegisterMetrics binding so the existing prometheus pipeline can
+	// surface them.
+	cacheHitsTotal       atomic.Int64
+	cacheMissesTotal     atomic.Int64
+	backendFailuresTotal atomic.Int64
 }
 
 type upstreamEntry struct {
@@ -118,8 +127,10 @@ func (u *UpstreamSource) resolveToken() string {
 
 func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 	if v, ok := u.cacheGet(ip); ok {
+		u.cacheHitsTotal.Add(1)
 		return v, nil
 	}
+	u.cacheMissesTotal.Add(1)
 	if open, until := u.breakerOpen(); open {
 		if until.IsZero() {
 			return 0, fmt.Errorf("upstream breaker probe already running")
@@ -224,9 +235,29 @@ func (u *UpstreamSource) breakerObserve(success bool) {
 		u.resetBreakerLocked()
 		return
 	}
+	u.backendFailuresTotal.Add(1)
 	now := time.Now()
 	u.closeExpiredBreakerLocked(now)
 	u.recordBreakerFailureLocked(now)
+}
+
+// MetricsSnapshot returns the current counter values for cache hits,
+// cache misses, and backend failures. Read-only; safe to call from any
+// goroutine. Provides the bridge between the source's atomic counters
+// and the package-level RegisterMetrics binding.
+func (u *UpstreamSource) MetricsSnapshot() (cacheHits, cacheMisses, backendFailures int64) {
+	return u.cacheHitsTotal.Load(), u.cacheMissesTotal.Load(), u.backendFailuresTotal.Load()
+}
+
+// BreakerOpen reports whether the circuit breaker is currently in the
+// open state (refusing calls). Read-only.
+func (u *UpstreamSource) BreakerOpen() bool {
+	u.breakerMu.Lock()
+	defer u.breakerMu.Unlock()
+	if u.breakerOpenedAt.IsZero() {
+		return false
+	}
+	return time.Now().Before(u.breakerOpenedAt.Add(u.breakerCooldown))
 }
 
 func (u *UpstreamSource) lookupEndpoint(ip string) (string, error) {
