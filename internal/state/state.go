@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -130,14 +131,12 @@ func (s *Store) save() error {
 		return nil
 	}
 
-	// Atomic write: write to temp file, then rename
+	// Atomic write with fsync. Power loss between rename and a dir
+	// fsync can otherwise leave the file truncated; the savedHash gate
+	// above then "skips" the next attempt because the in-memory hash is
+	// unchanged, so corruption persists across restarts.
 	stateFile := filepath.Join(s.path, "state.json")
-	tmpFile := stateFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpFile, stateFile); err != nil {
-		os.Remove(tmpFile)
+	if err := atomicio.AtomicWriteJSON(stateFile, 0o600, s.entries); err != nil {
 		return err
 	}
 
@@ -652,10 +651,7 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	s.latestScanTime = time.Now()
 
 	// Persist to disk
-	data, _ := json.Marshal(merged)
-	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, merged)
 }
 
 // PurgeFindingsByChecks removes all findings whose Check field matches
@@ -685,10 +681,7 @@ func (s *Store) PurgeFindingsByChecks(checks []string) {
 
 	// Persist to disk so purged findings don't reappear after restart.
 	// Mirrors the persistence logic at the end of SetLatestFindings().
-	data, _ := json.Marshal(s.latestFindings)
-	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, s.latestFindings)
 }
 
 // PurgeAndMergeFindings atomically removes findings matching the given check
@@ -866,22 +859,9 @@ func (s *Store) LoadSuppressions() []SuppressionRule {
 	return rules
 }
 
-// SaveSuppressions writes suppression rules to disk atomically.
+// SaveSuppressions writes suppression rules to disk atomically with fsync.
 func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
-	data, err := json.MarshalIndent(rules, "", "  ")
-	if err != nil {
-		return err
-	}
-	target := filepath.Join(s.path, "suppressions.json")
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return atomicio.AtomicWriteJSON(filepath.Join(s.path, "suppressions.json"), 0o600, rules)
 }
 
 // IsSuppressed checks if a finding matches any loaded suppression rule.
