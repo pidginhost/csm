@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -40,26 +42,30 @@ func (db *DB) GetIncident(id string) (incident.Incident, bool, error) {
 		if v == nil {
 			return nil
 		}
+		if err := json.Unmarshal(v, &inc); err != nil {
+			return err
+		}
+		if err := validateIncidentRow(id, inc); err != nil {
+			return err
+		}
 		found = true
-		return json.Unmarshal(v, &inc)
+		return nil
 	})
 	return inc, found, err
 }
 
 // ListIncidents returns every stored incident, newest UpdatedAt first.
-// Corrupt rows (torn writes, bit-flips, schema-mismatched legacy
-// records) are skipped with a warn log so the rest of the bucket is
-// still restorable. Aborting on the first bad row would erase every
-// open incident from memory at daemon startup.
+// Rows that fail JSON decode or storage invariants are skipped with a
+// warn log so the rest of the bucket is still restorable. Aborting on
+// the first bad row would leave the daemon with no restored incidents
+// at startup.
 func (db *DB) ListIncidents() ([]incident.Incident, error) {
 	var out []incident.Incident
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(incidentsBucket))
 		return b.ForEach(func(k, v []byte) error {
-			var inc incident.Incident
-			if err := json.Unmarshal(v, &inc); err != nil {
-				csmlog.Warn("store: skipping corrupt incident row",
-					"bucket", incidentsBucket, "id", string(k), "err", err)
+			inc, ok := decodeIncidentRow(k, v)
+			if !ok {
 				return nil
 			}
 			out = append(out, inc)
@@ -101,10 +107,8 @@ func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, err
 		b := tx.Bucket([]byte(incidentsBucket))
 		var toDelete [][]byte
 		err := b.ForEach(func(k, v []byte) error {
-			var inc incident.Incident
-			if err := json.Unmarshal(v, &inc); err != nil {
-				csmlog.Warn("store: skipping corrupt incident row",
-					"bucket", incidentsBucket, "id", string(k), "err", err)
+			inc, ok := decodeIncidentRow(k, v)
+			if !ok {
 				return nil
 			}
 			if inc.Status != incident.StatusResolved && inc.Status != incident.StatusDismissed {
@@ -127,4 +131,48 @@ func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, err
 		return nil
 	})
 	return pruned, err
+}
+
+func decodeIncidentRow(k, v []byte) (incident.Incident, bool) {
+	rowID := string(k)
+	var inc incident.Incident
+	if err := json.Unmarshal(v, &inc); err != nil {
+		warnSkippedIncidentRow(rowID, err)
+		return incident.Incident{}, false
+	}
+	if err := validateIncidentRow(rowID, inc); err != nil {
+		warnSkippedIncidentRow(rowID, err)
+		return incident.Incident{}, false
+	}
+	return inc, true
+}
+
+func validateIncidentRow(rowID string, inc incident.Incident) error {
+	if rowID == "" {
+		return errors.New("empty row key")
+	}
+	if inc.ID == "" {
+		return errors.New("empty incident id")
+	}
+	if inc.ID != rowID {
+		return fmt.Errorf("incident id %q does not match row key %q", inc.ID, rowID)
+	}
+	if !incidentStatusValid(inc.Status) {
+		return fmt.Errorf("invalid status %q", inc.Status)
+	}
+	return nil
+}
+
+func incidentStatusValid(status incident.Status) bool {
+	switch status {
+	case incident.StatusOpen, incident.StatusContained, incident.StatusResolved, incident.StatusDismissed:
+		return true
+	default:
+		return false
+	}
+}
+
+func warnSkippedIncidentRow(rowID string, err error) {
+	csmlog.Warn("store: skipping corrupt incident row",
+		"bucket", incidentsBucket, "id", rowID, "err", err)
 }

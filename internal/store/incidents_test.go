@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -35,6 +36,25 @@ func sampleIncident(id string) incident.Incident {
 	}
 }
 
+func putRawIncidentRow(t *testing.T, db *DB, id string, raw []byte) {
+	t.Helper()
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(incidentsBucket)).Put([]byte(id), raw)
+	})
+	if err != nil {
+		t.Fatalf("put raw incident row %q: %v", id, err)
+	}
+}
+
+func mustMarshalIncident(t *testing.T, inc incident.Incident) []byte {
+	t.Helper()
+	raw, err := json.Marshal(inc)
+	if err != nil {
+		t.Fatalf("marshal incident: %v", err)
+	}
+	return raw
+}
+
 func TestSaveAndGetIncident(t *testing.T) {
 	db := newTestStore(t)
 	want := sampleIncident("inc_a")
@@ -61,6 +81,33 @@ func TestGetIncidentMissReturnsFalseNoError(t *testing.T) {
 	}
 	if ok {
 		t.Errorf("expected miss")
+	}
+}
+
+func TestGetIncidentCorruptRecordReturnsErrorWithoutFound(t *testing.T) {
+	db := newTestStore(t)
+	putRawIncidentRow(t, db, "inc_corrupt", []byte("{bad"))
+
+	got, ok, err := db.GetIncident("inc_corrupt")
+	if err == nil {
+		t.Fatal("expected error for corrupt incident row")
+	}
+	if ok {
+		t.Fatalf("found = true with error; got incident %+v", got)
+	}
+}
+
+func TestGetIncidentInvalidStoredRecordReturnsErrorWithoutFound(t *testing.T) {
+	db := newTestStore(t)
+	bad := sampleIncident("inc_value_id")
+	putRawIncidentRow(t, db, "inc_key_id", mustMarshalIncident(t, bad))
+
+	got, ok, err := db.GetIncident("inc_key_id")
+	if err == nil {
+		t.Fatal("expected error for invalid incident row")
+	}
+	if ok {
+		t.Fatalf("found = true with error; got incident %+v", got)
 	}
 }
 
@@ -182,11 +229,8 @@ func TestCompactIncidentsPrunesOldResolved(t *testing.T) {
 	}
 }
 
-// X4: a single corrupt JSON row must not erase every other incident at
-// startup. Before the fix, ListIncidents returned the unmarshal error
-// from b.ForEach, which propagated up through Restore() and left the
-// daemon with zero in-memory incidents until a fresh finding rebuilt
-// one. Sibling buckets already use the skip-and-continue pattern.
+// A single corrupt JSON row must not block restore of every other
+// incident at startup.
 func TestListIncidentsSkipsCorruptRecord(t *testing.T) {
 	db := newTestStore(t)
 
@@ -199,14 +243,7 @@ func TestListIncidentsSkipsCorruptRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Inject a corrupt row directly via bbolt -- mirrors what would
-	// happen after a torn write or on-disk bit-flip.
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(incidentsBucket)).Put([]byte("inc_corrupt"), []byte("not-json{"))
-	})
-	if err != nil {
-		t.Fatalf("inject corrupt row: %v", err)
-	}
+	putRawIncidentRow(t, db, "inc_corrupt", []byte("not-json{"))
 
 	list, err := db.ListIncidents()
 	if err != nil {
@@ -222,9 +259,33 @@ func TestListIncidentsSkipsCorruptRecord(t *testing.T) {
 	}
 }
 
-// X4: CompactIncidents shares the same ForEach + Unmarshal shape, so a
-// corrupt row in the incidents bucket must not abort the compaction
-// pass either.
+func TestListIncidentsSkipsInvalidStoredRecord(t *testing.T) {
+	db := newTestStore(t)
+
+	good := sampleIncident("inc_good")
+	if err := db.SaveIncident(good); err != nil {
+		t.Fatal(err)
+	}
+
+	emptyID := sampleIncident("")
+	putRawIncidentRow(t, db, "inc_empty_id", mustMarshalIncident(t, emptyID))
+
+	mismatchedID := sampleIncident("inc_value_id")
+	putRawIncidentRow(t, db, "inc_key_id", mustMarshalIncident(t, mismatchedID))
+
+	badStatus := sampleIncident("inc_bad_status")
+	badStatus.Status = incident.Status("bogus")
+	putRawIncidentRow(t, db, "inc_bad_status", mustMarshalIncident(t, badStatus))
+
+	list, err := db.ListIncidents()
+	if err != nil {
+		t.Fatalf("ListIncidents must not fail on invalid stored rows: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "inc_good" {
+		t.Fatalf("ListIncidents = %+v, want only inc_good", list)
+	}
+}
+
 func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 	db := newTestStore(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
@@ -236,12 +297,7 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(incidentsBucket)).Put([]byte("inc_corrupt"), []byte("{bad"))
-	})
-	if err != nil {
-		t.Fatalf("inject corrupt row: %v", err)
-	}
+	putRawIncidentRow(t, db, "inc_corrupt", []byte("{bad"))
 
 	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
 	if err != nil {
@@ -249,5 +305,10 @@ func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
 	}
 	if pruned != 1 {
 		t.Errorf("pruned = %d, want 1 (only inc_stale)", pruned)
+	}
+	if _, ok, err := db.GetIncident("inc_stale"); err != nil {
+		t.Fatalf("GetIncident: %v", err)
+	} else if ok {
+		t.Errorf("inc_stale should be gone")
 	}
 }
