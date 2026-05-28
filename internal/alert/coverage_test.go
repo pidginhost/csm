@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -530,6 +531,112 @@ func TestDispatchRateLimitsNonCritical(t *testing.T) {
 	}
 }
 
+func TestDispatchFailedSendDoesNotConsumeRateLimit(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "temporary failure", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+
+	first := Finding{Check: "c", Message: "first", Severity: Warning, Timestamp: time.Now()}
+	if err := Dispatch(cfg, []Finding{first}); err == nil {
+		t.Fatal("first dispatch should return the webhook error")
+	}
+	if got := readRateLimitCount(t, cfg.StatePath); got != 0 {
+		t.Fatalf("rate-limit count after failed dispatch = %d, want 0", got)
+	}
+
+	second := Finding{Check: "c", Message: "second", Severity: Warning, Timestamp: time.Now()}
+	if err := Dispatch(cfg, []Finding{second}); err != nil {
+		t.Fatalf("second dispatch should still have a rate-limit slot: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("webhook requests = %d, want 2", got)
+	}
+	if got := readRateLimitCount(t, cfg.StatePath); got != 1 {
+		t.Fatalf("rate-limit count after successful dispatch = %d, want 1", got)
+	}
+}
+
+func TestDispatchConcurrentNonCriticalReservationsHonorBudget(t *testing.T) {
+	const callers = 8
+
+	var requests atomic.Int32
+	var firstRequest sync.Once
+	firstRequestSeen := make(chan struct{})
+	releaseWebhook := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		firstRequest.Do(func() { close(firstRequestSeen) })
+		<-releaseWebhook
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+
+	start := make(chan struct{})
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			finding := Finding{
+				Check:     "c",
+				Message:   "message " + string(rune('a'+i)),
+				Severity:  Warning,
+				Timestamp: time.Now(),
+			}
+			if err := Dispatch(cfg, []Finding{finding}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+
+	close(start)
+	select {
+	case <-firstRequestSeen:
+	case <-time.After(time.Second):
+		close(releaseWebhook)
+		wg.Wait()
+		t.Fatal("no webhook request reached the server")
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if got := requests.Load(); got != 1 {
+		close(releaseWebhook)
+		wg.Wait()
+		t.Fatalf("webhook requests before first dispatch completed = %d, want 1", got)
+	}
+
+	close(releaseWebhook)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("Dispatch returned error: %v", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("webhook requests = %d, want 1", got)
+	}
+	if got := readRateLimitCount(t, cfg.StatePath); got != 1 {
+		t.Fatalf("rate-limit count = %d, want 1", got)
+	}
+}
+
 func TestDispatchCriticalAlwaysGoesThrough(t *testing.T) {
 	var count int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -568,6 +675,23 @@ func TestDispatchEmailErrorIsReturned(t *testing.T) {
 	if !strings.Contains(err.Error(), "email:") {
 		t.Errorf("err = %v, want 'email:' prefix", err)
 	}
+}
+
+func readRateLimitCount(t *testing.T, dir string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(dir, "ratelimit.json"))
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state rateLimitState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state.Count
 }
 
 // --- SendHeartbeat -----------------------------------------------------

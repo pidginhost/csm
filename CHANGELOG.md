@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fanotify plugin-stat cache now evicts entries that have not been re-stated in two times the TTL window, so a long-running watcher cannot accumulate one entry per distinct plugin slug ever observed.
 - Surgical file cleaner now removes whole chr() chain statements that span multiple lines via the PHP concat operator. An attacker can no longer break the 5-chr-on-one-line gate by inserting a newline between calls.
 - htaccess auto_prepend and auto_append detection now recognizes the `php_admin_value` variant in hardened and signature scans, closing the bypass that mod_php and some LSAPI builds expose.
-- Alert dispatch now only consumes a per-hour rate-limit slot after at least one channel accepted the message. A failed SMTP or webhook send no longer silently throttles the next non-critical alert.
+- Alert dispatch now only consumes a per-hour rate-limit slot after at least one channel accepted the message. Failed sends no longer silently throttle the next non-critical alert, and concurrent dispatches honor the same hourly cap.
 
 ## [3.9.1] - 2026-05-28
 

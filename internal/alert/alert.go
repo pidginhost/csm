@@ -347,17 +347,32 @@ var FindingBus interface {
 	Publish(Finding)
 }
 
-var rateLimitMu sync.Mutex
+type rateLimitKey struct {
+	StatePath string
+	Hour      string
+}
+
+type rateLimitReservation struct {
+	key    rateLimitKey
+	active bool
+}
+
+var (
+	rateLimitMu      sync.Mutex
+	rateLimitPending = make(map[rateLimitKey]int)
+)
 
 // reserveRateLimit reports whether the per-hour alert budget can absorb
-// another send without committing the slot. Use commitRateLimit after a
-// successful dispatch so a failed send does not consume the operator's
-// budget. The previous checkRateLimit() incremented on inspection,
-// which silently throttled later non-critical alerts when SMTP/webhook
-// failed and the operator never received the missed message.
-func reserveRateLimit(statePath string, maxPerHour int) bool {
+// another send without committing the slot. The in-memory reservation
+// prevents concurrent dispatches from all taking the same final slot while
+// the outbound channel is still blocked on SMTP or webhook I/O.
+func reserveRateLimit(statePath string, maxPerHour int) (*rateLimitReservation, bool) {
 	rateLimitMu.Lock()
 	defer rateLimitMu.Unlock()
+
+	if maxPerHour <= 0 {
+		return nil, false
+	}
 
 	currentHour := time.Now().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
@@ -368,19 +383,51 @@ func reserveRateLimit(statePath string, maxPerHour int) bool {
 	if err == nil {
 		_ = json.Unmarshal(data, &rl)
 	}
+	count := 0
 	if rl.Hour != currentHour {
-		return true
+		count = 0
+	} else {
+		count = rl.Count
 	}
-	return rl.Count < maxPerHour
+
+	key := rateLimitKey{StatePath: statePath, Hour: currentHour}
+	if count+rateLimitPending[key] >= maxPerHour {
+		return nil, false
+	}
+	rateLimitPending[key]++
+	return &rateLimitReservation{key: key, active: true}, true
+}
+
+func releaseRateLimit(reservation *rateLimitReservation) {
+	if reservation == nil {
+		return
+	}
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+	releaseRateLimitLocked(reservation)
+}
+
+func releaseRateLimitLocked(reservation *rateLimitReservation) {
+	if reservation == nil || !reservation.active {
+		return
+	}
+	if pending := rateLimitPending[reservation.key]; pending <= 1 {
+		delete(rateLimitPending, reservation.key)
+	} else {
+		rateLimitPending[reservation.key] = pending - 1
+	}
+	reservation.active = false
 }
 
 // commitRateLimit records one successful dispatch toward the hourly
 // budget. Logs the WriteFile error so a disk-full or perm regression
 // surfaces in the daemon log instead of silently letting the counter
 // drift from the on-disk record.
-func commitRateLimit(statePath string) {
+func commitRateLimit(statePath string, reservation *rateLimitReservation) {
 	rateLimitMu.Lock()
 	defer rateLimitMu.Unlock()
+
+	releaseRateLimitLocked(reservation)
 
 	currentHour := time.Now().Format("2006-01-02T15")
 	rlPath := filepath.Join(statePath, "ratelimit.json")
@@ -405,10 +452,10 @@ func commitRateLimit(statePath string) {
 }
 
 // checkRateLimit returns true if we can send more alerts this hour.
-// Deprecated: kept for backwards compatibility with legacy callers that
-// expect the check-and-increment pattern. New code should use the
-// reserveRateLimit / commitRateLimit split so a failed dispatch does
-// not consume the operator's budget.
+//
+// Deprecated: kept for callers that expect the check-and-increment pattern.
+// New code should use reserveRateLimit and commitRateLimit so a failed
+// dispatch does not consume the operator's budget.
 func checkRateLimit(statePath string, maxPerHour int) bool {
 	rateLimitMu.Lock()
 	defer rateLimitMu.Unlock()
@@ -491,9 +538,15 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 			break
 		}
 	}
-	if !hasCritical && !reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
-		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
-		return nil
+	var reservation *rateLimitReservation
+	if !hasCritical {
+		var ok bool
+		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
+			return nil
+		}
+		defer releaseRateLimit(reservation)
 	}
 
 	var errs []error
@@ -534,7 +587,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	// budget; the next non-critical alert was then throttled with no
 	// operator-facing trace.
 	if dispatched {
-		commitRateLimit(cfg.StatePath)
+		commitRateLimit(cfg.StatePath, reservation)
 	}
 
 	if len(errs) > 0 {
