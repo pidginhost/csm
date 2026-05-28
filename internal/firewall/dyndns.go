@@ -40,9 +40,11 @@ type DynDNSResolver struct {
 		DropInfraResolved(host string)
 	}
 
-	// lookupFn is the DNS lookup function; defaults to net.LookupHost.
-	// Tests may replace this with a stub.
-	lookupFn func(host string) ([]string, error)
+	// lookupFn is the context-bound DNS lookup function. Defaults to
+	// net.DefaultResolver.LookupHost so callers can bound a stuck
+	// resolver by cancelling the parent context. Tests may replace this
+	// with a stub.
+	lookupFn func(ctx context.Context, host string) ([]string, error)
 
 	// Guard fields for the DNS re-resolve guard (Task 3).
 	muGuard      sync.RWMutex
@@ -65,7 +67,7 @@ func NewDynDNSResolver(hosts []string, engine interface {
 		unresolvable: make(map[string]struct{}),
 		gracePeriod:  10 * time.Minute,
 	}
-	r.lookupFn = net.LookupHost
+	r.lookupFn = net.DefaultResolver.LookupHost
 	return r
 }
 
@@ -141,15 +143,15 @@ func (d *DynDNSResolver) UnresolvableHosts() []string {
 
 // Run starts the periodic resolver. Blocks until stopCh is closed.
 func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
 
 	go func() {
 		<-stopCh
-		cancel()
+		cancelParent()
 	}()
 
-	d.tickOnce(ctx)
+	d.runTick(parent)
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -159,21 +161,40 @@ func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			d.tickOnce(ctx)
+			d.runTick(parent)
 		}
 	}
 }
 
+// runTick is the periodic Run helper. It bounds a single resolution
+// cycle so a stuck DNS server cannot hold the ticker beyond its budget
+// and stack late ticks. The per-tick budget is purposely larger than
+// the default 30-second per-resolver timeout but smaller than the
+// 5-minute ticker period.
+func (d *DynDNSResolver) runTick(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, dyndnsTickBudget)
+	defer cancel()
+	d.tickOnce(ctx)
+}
+
+const dyndnsTickBudget = 60 * time.Second
+
 // tickOnce performs one resolution cycle over all registered hosts.
-// The periodic Run loop calls this; tests can call it directly.
-func (d *DynDNSResolver) tickOnce(_ context.Context) {
+// The periodic Run loop calls this; tests can call it directly. The
+// context bounds the whole cycle so a single stuck DNS server cannot
+// hold the tick for the resolver's implicit timeout (~30s) and pile
+// late ticks on top of the configured 5-minute period.
+func (d *DynDNSResolver) tickOnce(ctx context.Context) {
 	d.mu.Lock()
 	hosts := make([]string, len(d.hosts))
 	copy(hosts, d.hosts)
 	d.mu.Unlock()
 
 	for _, host := range hosts {
-		d.resolveHost(host)
+		if ctx.Err() != nil {
+			return
+		}
+		d.resolveHost(ctx, host)
 	}
 }
 
@@ -182,8 +203,8 @@ func (d *DynDNSResolver) resolveAll() {
 	d.tickOnce(context.Background())
 }
 
-func (d *DynDNSResolver) resolveHost(host string) {
-	newIPs, err := d.lookupFn(host)
+func (d *DynDNSResolver) resolveHost(ctx context.Context, host string) {
+	newIPs, err := d.lookupFn(ctx, host)
 	if err != nil || len(newIPs) == 0 {
 		fmt.Fprintf(os.Stderr, "dyndns: failed to resolve %s: %v\n", host, err)
 		d.updateGuardFailure(host)

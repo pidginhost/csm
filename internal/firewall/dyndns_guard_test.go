@@ -15,7 +15,7 @@ func newTestResolver(t *testing.T) *DynDNSResolver {
 	eng := &mockEngine{}
 	r := NewDynDNSResolver(nil, eng)
 	// Suppress the real net.LookupHost so tests are hermetic.
-	r.lookupFn = func(host string) ([]string, error) {
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) {
 		return nil, errors.New("NXDOMAIN")
 	}
 	return r
@@ -26,12 +26,12 @@ func TestDynDNSResolver_EmptyResolutionEmitsFinding(t *testing.T) {
 	r.gracePeriod = 10 * time.Millisecond
 
 	// Seed a successful resolution so lastSuccess is set.
-	r.lookupFn = func(host string) ([]string, error) { return []string{"203.0.113.42"}, nil }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return []string{"203.0.113.42"}, nil }
 	r.AddHost("panel.example.com")
 	r.tickOnce(context.Background())
 
 	// Now flip to NXDOMAIN and wait past grace period.
-	r.lookupFn = func(host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
 	time.Sleep(20 * time.Millisecond)
 	r.tickOnce(context.Background())
 
@@ -73,7 +73,7 @@ func TestDynDNSResolver_RecoversWhenResolutionReturns(t *testing.T) {
 
 	calls := 0
 	var mu sync.Mutex
-	r.lookupFn = func(host string) ([]string, error) {
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -110,7 +110,7 @@ func TestDynDNSResolver_FindingSinkInvoked(t *testing.T) {
 	// Seed lastSuccess, then fail repeatedly past grace period.
 	r.AddHost("panel.example.com")
 	r.markLastSuccess("panel.example.com")
-	r.lookupFn = func(host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
 	time.Sleep(10 * time.Millisecond)
 	r.tickOnce(context.Background())
 
@@ -136,7 +136,7 @@ func TestDynDNSResolver_FindingSinkNotInvokedBeforeGrace(t *testing.T) {
 	r.AddHost("panel.example.com")
 	r.markLastSuccess("panel.example.com")
 	// Fail immediately - well within grace period.
-	r.lookupFn = func(host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
 	r.tickOnce(context.Background())
 
 	mu.Lock()
@@ -160,7 +160,7 @@ func TestDynDNSResolver_FindingSinkOnlyOnce(t *testing.T) {
 
 	r.AddHost("panel.example.com")
 	r.markLastSuccess("panel.example.com")
-	r.lookupFn = func(host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
 	time.Sleep(10 * time.Millisecond)
 
 	// Multiple ticks should only emit once.
@@ -181,7 +181,7 @@ func TestDynDNSResolver_NilSinkNoPanic(t *testing.T) {
 
 	r.AddHost("panel.example.com")
 	r.markLastSuccess("panel.example.com")
-	r.lookupFn = func(host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) { return nil, errors.New("NXDOMAIN") }
 	time.Sleep(10 * time.Millisecond)
 
 	// Should not panic with a nil sink.

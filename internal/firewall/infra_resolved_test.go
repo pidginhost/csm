@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -122,7 +123,7 @@ func TestDynDNSResolver_RoutesInfraHosts(t *testing.T) {
 	r := NewDynDNSResolver([]string{"panel.example.net"}, allow)
 	r.RegisterInfraHost("panel.example.net")
 	r.SetInfraEngine(infra)
-	r.lookupFn = func(host string) ([]string, error) {
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) {
 		if host != "panel.example.net" {
 			return nil, errors.New("unexpected host")
 		}
@@ -147,7 +148,7 @@ func TestDynDNSResolver_SkipsInfraWhenHostNotRegistered(t *testing.T) {
 	infra := &fakeInfraEngine{}
 	r := NewDynDNSResolver([]string{"backup.example.net"}, allow)
 	r.SetInfraEngine(infra)
-	r.lookupFn = func(host string) ([]string, error) {
+	r.lookupFn = func(_ context.Context, host string) ([]string, error) {
 		return []string{"198.51.100.60"}, nil
 	}
 

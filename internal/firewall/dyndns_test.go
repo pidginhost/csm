@@ -1,8 +1,10 @@
 package firewall
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // mockEngine records AllowIP/RemoveAllowIPBySource calls.
@@ -95,7 +97,7 @@ func TestDynDNSResolverInfraUpdateDoesNotDependOnAllowSuccess(t *testing.T) {
 	d := NewDynDNSResolver([]string{"panel.example.net"}, allow)
 	d.RegisterInfraHost("panel.example.net")
 	d.SetInfraEngine(infra)
-	d.lookupFn = func(host string) ([]string, error) {
+	d.lookupFn = func(_ context.Context, host string) ([]string, error) {
 		return []string{"198.51.100.70"}, nil
 	}
 
@@ -125,4 +127,40 @@ func TestDynDNSResolverRunStops(t *testing.T) {
 	stopCh := make(chan struct{})
 	close(stopCh) // close immediately
 	d.Run(stopCh) // should return immediately
+}
+
+// A hung DNS server must not block the tick longer than the tick's
+// context deadline. Without ctx propagation, a stuck LookupHost on one
+// host can hold the tick until Go's resolver gives up (typically 30s),
+// stacking the next 5-minute tick on top.
+func TestDynDNSResolver_TickRespectsContextCancellation(t *testing.T) {
+	eng := &mockEngine{}
+	d := NewDynDNSResolver([]string{"slow.example.net"}, eng)
+
+	started := make(chan struct{})
+	d.lookupFn = func(ctx context.Context, _ string) ([]string, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.tickOnce(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("lookupFn was not called within 1s")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tickOnce did not exit within 1s after ctx cancel")
+	}
 }
