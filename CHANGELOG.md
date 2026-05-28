@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Panic inside an auto-block firewall callback now releases the per-incident in-flight slot, so a single bad integration cannot permanently latch the auto-block path for an open incident.
 - Auto-blocking no longer risks a duplicate firewall callback when another matching finding arrives as a block finishes.
 - Verdict callback now respects daemon shutdown. A wedged panel response can no longer keep auto-block workers waiting past stopCh during graceful restart.
+- PHP-relay supervisor, exim history scan, and Flow E maintenance ticker now run under panic-capturing goroutines and are tracked by the daemon waitgroup. A large exim_mainlog scan also honors shutdown so it cannot outlive state close.
 
 ## [3.9.1] - 2026-05-28
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -152,20 +153,33 @@ func startPHPRelayLinux(d *Daemon) {
 		emitPHPRelayFinding(d, alert.Critical, "email_php_relay_watcher_failed", "supervisor exhausted restarts")
 	}
 	ctx := stopChContext(d)
-	go sup.Run(ctx)
+	d.wg.Add(1)
+	obs.Go("php-relay-supervisor", func() {
+		defer d.wg.Done()
+		sup.Run(ctx)
+	})
 
 	// 11. Retrospective Path 2b scan over exim_mainlog so account-volume
 	// alerts fire on the first hour boundary even after a daemon
-	// restart that lost in-memory state.
-	go ScanEximHistoryForPHPRelayAccountVolume("/var/log/exim_mainlog", eng, time.Now(), func(f alert.Finding) {
-		select {
-		case d.alertCh <- f:
-		default:
-		}
+	// restart that lost in-memory state. Threaded through ctx so a
+	// large mainlog on a busy host cannot outlive shutdown.
+	d.wg.Add(1)
+	obs.Go("php-relay-history-scan", func() {
+		defer d.wg.Done()
+		ScanEximHistoryForPHPRelayAccountVolume(ctx, "/var/log/exim_mainlog", eng, time.Now(), func(f alert.Finding) {
+			select {
+			case d.alertCh <- f:
+			default:
+			}
+		})
 	})
 
 	// 12. Flow E maintenance ticker.
-	go runPHPRelayFlowE(d, ctx, psw, pip, pacct, idx, persister, ignores, prMetrics)
+	d.wg.Add(1)
+	obs.Go("php-relay-flow-e", func() {
+		defer d.wg.Done()
+		runPHPRelayFlowE(d, ctx, psw, pip, pacct, idx, persister, ignores, prMetrics)
+	})
 }
 
 // runPHPRelayFlowE drives Phase E maintenance (TTL sweeps + metric

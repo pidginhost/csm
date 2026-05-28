@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,7 @@ func TestScanEximHistoryForPHPRelayAccountVolume_ReplaysLines(t *testing.T) {
 
 	var findings []alert.Finding
 	var mu sync.Mutex
-	ScanEximHistoryForPHPRelayAccountVolume(logPath, eng, time.Now(), func(f alert.Finding) {
+	ScanEximHistoryForPHPRelayAccountVolume(context.Background(), logPath, eng, time.Now(), func(f alert.Finding) {
 		mu.Lock()
 		findings = append(findings, f)
 		mu.Unlock()
