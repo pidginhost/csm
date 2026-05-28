@@ -299,6 +299,34 @@ func TestCleanInfectedFileRemovesChrChain(t *testing.T) {
 	}
 }
 
+func TestCleanInfectedFileRemovesSplitChrChainStatement(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+	content := "<?php\n" +
+		"$fn =\n" +
+		"chr(115)\n" +
+		".chr(121)\n" +
+		".chr(115)\n" +
+		".chr(116)\n" +
+		".chr(101)\n" +
+		".chr(109)\n" +
+		";\n" +
+		"echo 'app body';\n"
+	path := writeTempPHP(t, content)
+
+	res := CleanInfectedFile(path)
+	if !res.Cleaned {
+		t.Fatalf("expected cleaned, got %+v", res)
+	}
+	cleaned, _ := os.ReadFile(path)
+	cs := string(cleaned)
+	if strings.Contains(cs, "$fn =") || strings.Contains(cs, "chr(115)") {
+		t.Errorf("split chr() statement should be stripped:\n%s", cs)
+	}
+	if !strings.Contains(cs, "echo 'app body'") {
+		t.Errorf("legitimate code should be preserved:\n%s", cs)
+	}
+}
+
 func TestCleanInfectedFileBackupHasMetaSidecar(t *testing.T) {
 	qdir := t.TempDir()
 	withQuarantineDirT(t, qdir)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -40,14 +41,7 @@ var (
 		`(?i)^\s*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
 	cleanRegexpMultiB64   = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
 	cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
-	cleanRegexpChrChain   = regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
-	// cleanRegexpChrChainCrossLine accepts the same shape but tolerates
-	// newlines inside the optional whitespace between calls. Attackers
-	// wrap the chain across line breaks with the `.` concat operator
-	// (`chr(115)\n.chr(121)\n...`) so a strict per-line match misses the
-	// chain even though PHP still evaluates it as one expression. The
-	// (?s) flag lets `\s` match `\n`.
-	cleanRegexpChrChainCrossLine = regexp.MustCompile(`(?is)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+	cleanRegexpChrChain   = regexp.MustCompile(`(?i)\bchr\s*\(\s*\d+\s*\)(?:\s*\.?\s*\bchr\s*\(\s*\d+\s*\)){4,}`)
 	cleanRegexpPackHex    = regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
 	cleanRegexpHexVar     = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
 )
@@ -691,9 +685,8 @@ func removeChrPackInjections(content string) (string, []string) {
 		offsets[i] = off
 		off += len(line) + 1 // +1 for the newline strings.Split consumed
 	}
-	for _, span := range cleanRegexpChrChainCrossLine.FindAllStringIndex(content, -1) {
-		startLine := lineIndexForOffset(offsets, span[0])
-		endLine := lineIndexForOffset(offsets, span[1]-1)
+	for _, span := range cleanRegexpChrChain.FindAllStringIndex(content, -1) {
+		startLine, endLine := chrChainStatementLineRange(lines, offsets, span)
 		for i := startLine; i <= endLine; i++ {
 			dropLine[i] = true
 		}
@@ -723,18 +716,61 @@ func removeChrPackInjections(content string) (string, []string) {
 	return strings.Join(clean, "\n"), removals
 }
 
+func chrChainStatementLineRange(lines []string, offsets []int, span []int) (int, int) {
+	startLine := lineIndexForOffset(offsets, span[0])
+	endLine := lineIndexForOffset(offsets, span[1]-1)
+
+	for startLine > 0 && chrChainPrefixContinues(lines[startLine-1]) {
+		startLine--
+	}
+	for endLine+1 < len(lines) && !strings.Contains(lines[endLine], ";") && chrChainSuffixContinues(lines[endLine+1]) {
+		endLine++
+		if strings.Contains(lines[endLine], ";") {
+			break
+		}
+	}
+	return startLine, endLine
+}
+
+func chrChainPrefixContinues(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || trimmed == "<?php" {
+		return false
+	}
+	return strings.HasSuffix(trimmed, "=") ||
+		strings.HasSuffix(trimmed, ".") ||
+		strings.HasSuffix(trimmed, "(") ||
+		strings.HasSuffix(trimmed, ",") ||
+		strings.HasSuffix(trimmed, "[")
+}
+
+func chrChainSuffixContinues(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	return strings.HasPrefix(trimmed, ".") ||
+		strings.HasPrefix(trimmed, ")") ||
+		strings.HasPrefix(trimmed, ",") ||
+		strings.HasPrefix(trimmed, ";")
+}
+
 // lineIndexForOffset returns the index of the line containing the byte
 // at offset within the original content.
 func lineIndexForOffset(offsets []int, byteOffset int) int {
-	if byteOffset < 0 {
+	if len(offsets) == 0 || byteOffset < 0 {
 		return 0
 	}
-	for i := len(offsets) - 1; i >= 0; i-- {
-		if offsets[i] <= byteOffset {
-			return i
-		}
+	idx := sort.Search(len(offsets), func(i int) bool {
+		return offsets[i] > byteOffset
+	}) - 1
+	if idx < 0 {
+		return 0
 	}
-	return 0
+	if idx >= len(offsets) {
+		return len(offsets) - 1
+	}
+	return idx
 }
 
 // --- Strategy 7: Hex-encoded variable injections ---

@@ -325,6 +325,29 @@ func TestRemoveChrPackInjectionsChrChainAcrossLines(t *testing.T) {
 	}
 }
 
+func TestRemoveChrPackInjectionsChrChainAcrossLinesRemovesSplitStatement(t *testing.T) {
+	payload := "$fn =\nchr(115)\n.chr(121)\n.chr(115)\n.chr(116)\n.chr(101)\n.chr(109)\n;\n"
+	input := "<?php\n" + payload + "echo 1;\n"
+	out, removed := removeChrPackInjections(input)
+	if len(removed) == 0 {
+		t.Fatal("expected removal of split chr-chain statement")
+	}
+	if out != "<?php\necho 1;\n" {
+		t.Fatalf("split statement should be fully stripped, got:\n%s", out)
+	}
+}
+
+func TestRemoveChrPackInjectionsChrChainBoundary(t *testing.T) {
+	input := "<?php\n$label = mychr(1).mychr(2).mychr(3).mychr(4).mychr(5);\necho 1;\n"
+	out, removed := removeChrPackInjections(input)
+	if len(removed) != 0 {
+		t.Fatalf("function names ending in chr should not match chr() chain: %v", removed)
+	}
+	if out != input {
+		t.Fatal("content should be unchanged")
+	}
+}
+
 func TestRemoveChrPackInjectionsPackHexSafe(t *testing.T) {
 	input := "<?php\n$data = pack(\"H*\", \"48656c6c6f\");\necho $data;\n"
 	_, removed := removeChrPackInjections(input)
