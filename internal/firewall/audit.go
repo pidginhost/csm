@@ -53,6 +53,11 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 	// #nosec G304 -- path is filepath.Join under operator-configured statePath.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		// Without this log, perm/disk-full/inode-exhaust modes drop the
+		// audit entry with no operator-visible signal -- the Write/Close
+		// branches below already log, so a silent Open path was the only
+		// remaining hole in the audit pipeline.
+		log.Printf("firewall: audit open failed for %s: %v", path, err)
 		return
 	}
 	if _, writeErr := f.Write(data); writeErr != nil {

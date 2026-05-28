@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cloud-relay cleanup no longer drops the first new mailbox activity when cleanup and log parsing happen at the same time after a long idle period.
 - Firewall state reads now ignore expired allow-list rows the same way they ignore expired blocks, so stale entries no longer inflate firewall rule metrics.
 - Incident persistence and restore failures now log a warning instead of being silently dropped. Operators see a signal when bbolt rejects incident state and the in-memory and on-disk views drift apart.
+- Firewall audit log now logs when its file open fails. A disk-full or permission regression no longer drops audit entries silently.
 
 ## [3.9.1] - 2026-05-28
 
