@@ -104,8 +104,8 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 // it. bot is consulted before any count so a verified Googlebot does
 // not contribute to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
-	ip := clientIPForRecord(rec, cfg)
-	if ip == "" || ip == "-" || ip == "127.0.0.1" || ip == "::1" {
+	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
+	if ip == "" {
 		return
 	}
 	if cfg != nil && isInfraIP(ip, cfg.InfraIPs) {
@@ -492,6 +492,22 @@ func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
 		}
 	}
 	return rec.RemoteIP
+}
+
+func normalizeHTTPClientIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return ip.String()
 }
 
 // isTrustedProxy returns true when addr matches any entry in proxies (exact

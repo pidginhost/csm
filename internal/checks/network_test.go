@@ -10,6 +10,19 @@ func TestIsInfraIPExactMatch(t *testing.T) {
 	}
 }
 
+func TestIsInfraIPTrimsConfiguredEntries(t *testing.T) {
+	if !isInfraIP("10.0.0.5", []string{" 10.0.0.0/24 "}) {
+		t.Error("CIDR match with spaces should return true")
+	}
+}
+
+func TestIsInfraIPExactMatchCanonicalIPv6(t *testing.T) {
+	expanded := "2001:0db8:0000:0000:0000:0000:0000:0001"
+	if !isInfraIP("2001:db8::1", []string{expanded}) {
+		t.Error("canonical IPv6 exact match should return true")
+	}
+}
+
 func TestIsInfraIPCIDRMatch(t *testing.T) {
 	if !isInfraIP("10.0.0.5", []string{"10.0.0.0/24"}) {
 		t.Error("CIDR match should return true")

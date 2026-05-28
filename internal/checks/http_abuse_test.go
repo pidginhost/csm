@@ -7,12 +7,13 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 )
 
 // TestRefactorParity feeds a fixed set of access-log lines through the
 // current countBruteForce / aggregator path and asserts that the same
-// three legacy findings come out with the same messages and severities.
-// This locks the refactor down to "zero behavior change".
+// three legacy findings come out with the same operator-facing messages
+// and severities.
 func TestRefactorParity(t *testing.T) {
 	lines := []string{
 		// 20 wp-login POSTs from one IP (at wpLoginThreshold=20)
@@ -83,11 +84,47 @@ func TestRefactorParity(t *testing.T) {
 		if got[i].Message != w.Message {
 			t.Errorf("[%d] message=%q want %q", i, got[i].Message, w.Message)
 		}
-		// X7: SourceIP must be stamped so incident.KeyFor returns a
-		// non-empty key and the correlator does not silently drop these.
 		if got[i].SourceIP != w.SourceIP {
 			t.Errorf("[%d] SourceIP=%q want %q", i, got[i].SourceIP, w.SourceIP)
 		}
+		if key := incident.KeyFor(got[i]); key.RemoteIP != w.SourceIP {
+			t.Errorf("[%d] incident RemoteIP=%q want %q", i, key.RemoteIP, w.SourceIP)
+		}
+	}
+}
+
+func TestHTTPAbuseRejectsMalformedClientIP(t *testing.T) {
+	stats := newDomlogStats()
+	rec := accessLogRecord{RemoteIP: "client.example", Method: "POST", URI: "/wp-login.php"}
+	for i := 0; i < wpLoginThreshold; i++ {
+		stats.scan(rec, nil, nopBotClassifier{})
+	}
+
+	if got := stats.emitLegacy(nil); len(got) != 0 {
+		t.Fatalf("malformed client IP emitted structured finding: %+v", got)
+	}
+}
+
+func TestHTTPAbuseNormalizesStructuredSourceIP(t *testing.T) {
+	stats := newDomlogStats()
+	rec := accessLogRecord{
+		RemoteIP: "2001:0db8:0000:0000:0000:0000:0000:0001",
+		Method:   "POST",
+		URI:      "/wp-login.php",
+	}
+	for i := 0; i < wpLoginThreshold; i++ {
+		stats.scan(rec, nil, nopBotClassifier{})
+	}
+
+	got := stats.emitLegacy(nil)
+	if len(got) != 1 {
+		t.Fatalf("findings=%d, want 1: %+v", len(got), got)
+	}
+	if got[0].SourceIP != "2001:db8::1" {
+		t.Fatalf("SourceIP=%q want canonical IPv6", got[0].SourceIP)
+	}
+	if key := incident.KeyFor(got[0]); key.RemoteIP != "2001:db8::1" {
+		t.Fatalf("incident RemoteIP=%q want canonical IPv6", key.RemoteIP)
 	}
 }
 
