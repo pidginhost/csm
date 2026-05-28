@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.1] - 2026-05-28
+
 ### Changed
 
 - Bumped `github.com/VirusTotal/yara-x/go` to v1.17.0 and `github.com/oschwald/maxminddb-golang/v2` to v2.3.0; bumped the pinned `github/codeql-action` SHA to v4.36.0 in the CodeQL and Scorecard workflows.
