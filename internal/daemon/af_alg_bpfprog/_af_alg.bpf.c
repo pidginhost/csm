@@ -64,9 +64,20 @@ int BPF_PROG(csm_block_af_alg, int family, int type, int protocol, int kern, int
             __builtin_memset(e->parent_comm, 0, sizeof(e->parent_comm));
         }
 
-        struct file *exe_file = BPF_CORE_READ(task, mm, exe_file);
-        if (exe_file) {
-            bpf_d_path(&exe_file->f_path, (char *)e->exe, sizeof(e->exe));
+        // bpf_d_path() requires a PTR_TRUSTED struct path *. Chasing the
+        // pointer with BPF_CORE_READ yields a scalar (probe-read return value),
+        // which fails the verifier on kernel >=6.12 with
+        //   R1 type=scalar expected=ptr_, trusted_ptr_, rcu_ptr_
+        // Direct field access on the trusted task_struct from
+        // bpf_get_current_task_btf() propagates the trusted tag.
+        struct mm_struct *mm = task->mm;
+        if (mm) {
+            struct file *exe_file = mm->exe_file;
+            if (exe_file) {
+                bpf_d_path(&exe_file->f_path, (char *)e->exe, sizeof(e->exe));
+            } else {
+                __builtin_memset(e->exe, 0, sizeof(e->exe));
+            }
         } else {
             __builtin_memset(e->exe, 0, sizeof(e->exe));
         }
