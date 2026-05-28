@@ -232,12 +232,17 @@ func (db *DB) LoadFirewallState() FirewallState {
 			return nil
 		})
 
-		// fw:allowed
+		// fw:allowed — mirror the Blocked branch's expiry filter so stale
+		// allows do not leak into csm_firewall_rules_total, /api/v1
+		// blocked-ip endpoints, or the WebUI rule listings.
 		allowed := tx.Bucket([]byte("fw:allowed"))
 		_ = allowed.ForEach(func(k, v []byte) error {
 			var entry FWAllowedEntry
 			if json.Unmarshal(v, &entry) != nil {
 				return nil //nolint:nilerr // skip corrupt entry
+			}
+			if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+				return nil // expired
 			}
 			state.Allowed = append(state.Allowed, entry)
 			return nil
