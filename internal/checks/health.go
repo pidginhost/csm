@@ -65,19 +65,18 @@ func CheckHealth(ctx context.Context, cfg *config.Config, _ *state.Store) []aler
 		}
 	}
 
-	// BPF enforcement configured but the active backend is degraded.
-	// G4 fixed silent disable inside the loader, but the operator
-	// channel was still quiet -- a doctor check or alert is the only
-	// place where the operator notices threat detection is on the
-	// legacy backend rather than BPF.
-	if cfg != nil && cfg.BPFEnforcement.Enabled {
-		switch bpf.ActiveKind("connection_tracker") {
+	if cfg != nil && cfg.BPFEnforcement.Enabled && cfg.BPFEnforcement.DirectSMTPEgress {
+		switch active := bpf.ActiveKind("connection_tracker"); active {
 		case bpf.BackendLegacy, bpf.BackendNone:
+			message := "BPF enforcement enabled but connection tracker is running on legacy backend"
+			if active == bpf.BackendNone {
+				message = "BPF enforcement enabled but connection tracker has no active backend"
+			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "csm_health",
-				Message:  "BPF enforcement enabled but kernel running on legacy backend",
-				Details:  "bpf_enforcement is configured but the connection tracker fell back to legacy or no backend. Check kernel version, LSM availability, or CAP_BPF.",
+				Message:  message,
+				Details:  "bpf_enforcement.direct_smtp_egress requires the connection tracker BPF backend. Check kernel version, LSM availability, or CAP_BPF.",
 			})
 		}
 	}

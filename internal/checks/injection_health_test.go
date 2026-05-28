@@ -226,10 +226,8 @@ func TestPlatformRequiredCommandsNonCPanel(t *testing.T) {
 	}
 }
 
-// BPF enforcement configured-but-degraded must surface a health
-// finding so operators see "threat detection running on legacy
-// backend" rather than discovering it from missing telemetry.
-func TestCheckHealth_WarnsWhenBPFEnforcementConfiguredButLegacy(t *testing.T) {
+func setupCheckHealthBPFTest(t *testing.T) {
+	t.Helper()
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
 	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
@@ -242,86 +240,101 @@ func TestCheckHealth_WarnsWhenBPFEnforcementConfiguredButLegacy(t *testing.T) {
 			return nil, nil
 		},
 	})
+}
 
-	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
-	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
-
+func validBPFEnforcementHealthConfig(t *testing.T) *config.Config {
+	t.Helper()
 	cfg := &config.Config{}
+	cfg.Detection.ConnectionTrackerBackend = bpf.BackendAuto
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Backend = bpf.BackendAuto
 	cfg.BPFEnforcement.Enabled = true
 	cfg.BPFEnforcement.DirectSMTPEgress = true
 	cfg.StatePath = t.TempDir()
+	return cfg
+}
 
-	got := CheckHealth(context.Background(), cfg, nil)
-	found := false
-	for _, f := range got {
+func findBPFHealthFinding(findings []alert.Finding) (alert.Finding, bool) {
+	for _, f := range findings {
 		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
-			found = true
-			if f.Severity != alert.Warning {
-				t.Errorf("BPF degraded finding severity = %v, want Warning", f.Severity)
-			}
+			return f, true
 		}
 	}
+	return alert.Finding{}, false
+}
+
+func TestCheckHealth_WarnsWhenBPFEnforcementConfiguredButLegacy(t *testing.T) {
+	setupCheckHealthBPFTest(t)
+	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	got := CheckHealth(context.Background(), validBPFEnforcementHealthConfig(t), nil)
+	f, found := findBPFHealthFinding(got)
 	if !found {
-		t.Errorf("expected BPF-degraded csm_health finding, got %+v", got)
+		t.Fatalf("expected BPF-degraded csm_health finding, got %+v", got)
+	}
+	if f.Severity != alert.Warning {
+		t.Errorf("BPF degraded finding severity = %v, want Warning", f.Severity)
+	}
+	if !strings.Contains(f.Message, "legacy backend") {
+		t.Errorf("BPF degraded finding message = %q, want legacy backend", f.Message)
+	}
+}
+
+func TestCheckHealth_WarnsWhenBPFEnforcementConfiguredButNoBackend(t *testing.T) {
+	setupCheckHealthBPFTest(t)
+	bpf.SetActive("connection_tracker", bpf.BackendNone)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	got := CheckHealth(context.Background(), validBPFEnforcementHealthConfig(t), nil)
+	f, found := findBPFHealthFinding(got)
+	if !found {
+		t.Fatalf("expected BPF-degraded csm_health finding, got %+v", got)
+	}
+	if f.Severity != alert.Warning {
+		t.Errorf("BPF degraded finding severity = %v, want Warning", f.Severity)
+	}
+	if !strings.Contains(f.Message, "no active backend") {
+		t.Errorf("BPF degraded finding message = %q, want no active backend", f.Message)
 	}
 }
 
 func TestCheckHealth_NoBPFWarningWhenBPFActive(t *testing.T) {
-	platform.ResetForTest()
-	t.Cleanup(platform.ResetForTest)
-	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
-	withMockCmd(t, &mockCmd{
-		lookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
-		run: func(name string, _ ...string) ([]byte, error) {
-			if name == "auditctl" {
-				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
-			}
-			return nil, nil
-		},
-	})
-
+	setupCheckHealthBPFTest(t)
 	bpf.SetActive("connection_tracker", bpf.BackendBPF)
 	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
 
-	cfg := &config.Config{}
-	cfg.BPFEnforcement.Enabled = true
-	cfg.BPFEnforcement.DirectSMTPEgress = true
-	cfg.StatePath = t.TempDir()
-
-	got := CheckHealth(context.Background(), cfg, nil)
-	for _, f := range got {
-		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
-			t.Errorf("unexpected BPF-degraded finding when backend=bpf: %+v", f)
-		}
+	got := CheckHealth(context.Background(), validBPFEnforcementHealthConfig(t), nil)
+	if f, found := findBPFHealthFinding(got); found {
+		t.Errorf("unexpected BPF-degraded finding when backend=bpf: %+v", f)
 	}
 }
 
 func TestCheckHealth_NoBPFWarningWhenEnforcementDisabled(t *testing.T) {
-	platform.ResetForTest()
-	t.Cleanup(platform.ResetForTest)
-	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelNone)})
-	withMockCmd(t, &mockCmd{
-		lookPath: func(name string) (string, error) { return "/usr/bin/" + name, nil },
-		run: func(name string, _ ...string) ([]byte, error) {
-			if name == "auditctl" {
-				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
-			}
-			return nil, nil
-		},
-	})
-
+	setupCheckHealthBPFTest(t)
 	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
 	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
 
-	cfg := &config.Config{}
+	cfg := validBPFEnforcementHealthConfig(t)
 	cfg.BPFEnforcement.Enabled = false
-	cfg.StatePath = t.TempDir()
 
 	got := CheckHealth(context.Background(), cfg, nil)
-	for _, f := range got {
-		if f.Check == "csm_health" && strings.Contains(f.Message, "BPF") {
-			t.Errorf("unexpected BPF finding when enforcement disabled: %+v", f)
-		}
+	if f, found := findBPFHealthFinding(got); found {
+		t.Errorf("unexpected BPF finding when enforcement disabled: %+v", f)
+	}
+}
+
+func TestCheckHealth_NoBPFWarningWhenEnforcementGateDisabled(t *testing.T) {
+	setupCheckHealthBPFTest(t)
+	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	t.Cleanup(func() { bpf.SetActive("connection_tracker", "") })
+
+	cfg := validBPFEnforcementHealthConfig(t)
+	cfg.BPFEnforcement.DirectSMTPEgress = false
+
+	got := CheckHealth(context.Background(), cfg, nil)
+	if f, found := findBPFHealthFinding(got); found {
+		t.Errorf("unexpected BPF finding when enforcement gate disabled: %+v", f)
 	}
 }
 
