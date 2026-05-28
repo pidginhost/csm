@@ -349,7 +349,66 @@ var FindingBus interface {
 
 var rateLimitMu sync.Mutex
 
+// reserveRateLimit reports whether the per-hour alert budget can absorb
+// another send without committing the slot. Use commitRateLimit after a
+// successful dispatch so a failed send does not consume the operator's
+// budget. The previous checkRateLimit() incremented on inspection,
+// which silently throttled later non-critical alerts when SMTP/webhook
+// failed and the operator never received the missed message.
+func reserveRateLimit(statePath string, maxPerHour int) bool {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+
+	currentHour := time.Now().Format("2006-01-02T15")
+	rlPath := filepath.Join(statePath, "ratelimit.json")
+
+	var rl rateLimitState
+	// #nosec G304 -- filepath.Join(statePath, "ratelimit.json"); statePath from operator config.
+	data, err := os.ReadFile(rlPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &rl)
+	}
+	if rl.Hour != currentHour {
+		return true
+	}
+	return rl.Count < maxPerHour
+}
+
+// commitRateLimit records one successful dispatch toward the hourly
+// budget. Logs the WriteFile error so a disk-full or perm regression
+// surfaces in the daemon log instead of silently letting the counter
+// drift from the on-disk record.
+func commitRateLimit(statePath string) {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+
+	currentHour := time.Now().Format("2006-01-02T15")
+	rlPath := filepath.Join(statePath, "ratelimit.json")
+
+	var rl rateLimitState
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
+	if data, err := os.ReadFile(rlPath); err == nil {
+		_ = json.Unmarshal(data, &rl)
+	}
+	if rl.Hour != currentHour {
+		rl = rateLimitState{Hour: currentHour}
+	}
+	rl.Count++
+	newData, err := json.Marshal(rl)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "alert: rate-limit marshal failed: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(rlPath, newData, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "alert: rate-limit write failed for %s: %v\n", rlPath, err)
+	}
+}
+
 // checkRateLimit returns true if we can send more alerts this hour.
+// Deprecated: kept for backwards compatibility with legacy callers that
+// expect the check-and-increment pattern. New code should use the
+// reserveRateLimit / commitRateLimit split so a failed dispatch does
+// not consume the operator's budget.
 func checkRateLimit(statePath string, maxPerHour int) bool {
 	rateLimitMu.Lock()
 	defer rateLimitMu.Unlock()
@@ -432,22 +491,21 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 			break
 		}
 	}
-	if !hasCritical && !checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
+	if !hasCritical && !reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
 		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
 		return nil
 	}
-	// Still count critical dispatches toward the rate limit budget
-	if hasCritical {
-		checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
-	}
 
 	var errs []error
+	dispatched := false
 
 	if len(emailFindings) > 0 {
 		subject := buildSubject(cfg.Hostname, emailFindings)
 		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
 			errs = append(errs, fmt.Errorf("email: %w", err))
+		} else {
+			dispatched = true
 		}
 	}
 
@@ -456,6 +514,8 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 			for _, f := range webhookFindings {
 				if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
 					errs = append(errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
+				} else {
+					dispatched = true
 				}
 			}
 		} else {
@@ -463,8 +523,18 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 			body := FormatAlert(cfg.Hostname, webhookFindings)
 			if err := SendWebhook(cfg, subject, body); err != nil {
 				errs = append(errs, fmt.Errorf("webhook: %w", err))
+			} else {
+				dispatched = true
 			}
 		}
+	}
+
+	// Commit the rate-limit slot only after at least one channel
+	// accepted the message. Without this, a failed send burned the
+	// budget; the next non-critical alert was then throttled with no
+	// operator-facing trace.
+	if dispatched {
+		commitRateLimit(cfg.StatePath)
 	}
 
 	if len(errs) > 0 {
