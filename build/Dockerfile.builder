@@ -88,7 +88,7 @@ RUN curl -fsSL https://sh.rustup.rs | \
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.20 --locked
 
-# Compile YARA-X v1.16.0 static library, install to /usr/local. The
+# Compile YARA-X v1.17.0 static library, install to /usr/local. The
 # --library-type=staticlib flag ensures cargo-c emits only the .a
 # (not a .so) — we link YARA-X statically into the csm binary so
 # there is no external YARA-X dependency at deploy time. The csm
@@ -96,9 +96,9 @@ RUN cargo install cargo-c@0.10.20 --locked
 # ldflags: -linkmode external without -extldflags '-static').
 # Keep this branch in lockstep with the yara-x/go module version in
 # go.mod — the Go bindings reference C symbols (e.g.
-# yrx_compiler_max_warnings added in 1.16) that must exist in the
+# yrx_scanner_fast_scan added in 1.17) that must exist in the
 # linked static lib.
-RUN git clone --depth 1 --branch v1.16.0 \
+RUN git clone --depth 1 --branch v1.17.0 \
         https://github.com/VirusTotal/yara-x.git /tmp/yara-x \
     && cd /tmp/yara-x \
     && cargo cinstall -p yara-x-capi --release \
