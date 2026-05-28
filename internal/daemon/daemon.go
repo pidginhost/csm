@@ -2253,11 +2253,12 @@ func (d *Daemon) startFirewall() {
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
-	// Wire the credential_spray firewall hand-off. The engine itself
-	// honors auto_response.dry_run via SetDryRunEnabledFunc, so the
-	// callback does not need to re-check it.
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) error {
-		return engine.BlockIP(ip, reason, timeout)
+	// Wire the incident firewall hand-off through BlockIPOutcome so the
+	// correlator can distinguish live nftables mutation from dry-run,
+	// verdict-allow, and other no-op outcomes.
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) (bool, error) {
+		outcome, err := engine.BlockIPOutcome(ip, reason, timeout)
+		return outcome == firewall.BlockOutcomeLive, err
 	})
 
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)

@@ -122,11 +122,11 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 		mu    sync.Mutex
 		calls []blockCall
 	)
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) error {
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, blockCall{ip: ip, reason: reason, timeout: timeout})
-		return nil
+		return true, nil
 	})
 
 	c := IncidentCorrelator()
@@ -153,6 +153,44 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 	}
 	if calls[0].timeout != 15*time.Minute {
 		t.Errorf("spray block timeout = %s, want 15m", calls[0].timeout)
+	}
+}
+
+func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Incidents.SpraySuppression.Enabled = true
+	cfg.Incidents.SpraySuppression.DryRun = false
+	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	var calls int
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+		calls++
+		return false, nil
+	})
+
+	c := IncidentCorrelator()
+	feedSpray(t, c, "192.0.2.82", 3)
+	if calls != 1 {
+		t.Fatalf("spray blocker calls = %d, want 1", calls)
+	}
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != incident.KindCredentialSpray {
+			continue
+		}
+		for _, action := range inc.Actions {
+			if action.Action == "credential_spray_block_requested" {
+				t.Fatalf("non-live blocker outcome recorded block action: %+v", action)
+			}
+		}
 	}
 }
 

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Obfuscated-PHP content scanner now recognizes comment-disrupted eval/assert decoder chains more accurately while ignoring examples inside PHP strings.
 - Daemon state files are now fsynced through the same atomic-write helper used by the firewall engine. A power loss between rename and directory sync can no longer leave the state file truncated and skipped by the in-memory hash gate.
 - Credential-spray block audit now records "ok" only after the firewall callback confirms the block actually took effect. Dry-run and failed callbacks no longer log a false success on the incident timeline.
+- Credential-spray blocking now coalesces concurrent findings while a firewall callback is in flight, preventing duplicate block attempts for one incident.
+- Incident block audit now uses the firewall outcome, so dry-run, verdict-allow, and no-op attempts no longer look like live blocks.
 
 ## [3.9.1] - 2026-05-28
 

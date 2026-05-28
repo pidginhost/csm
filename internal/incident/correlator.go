@@ -164,6 +164,7 @@ type Correlator struct {
 	incidents             map[string]*Incident
 	byKey                 map[string]string
 	pending               map[string]pendingFinding
+	pendingSprayBlocks    map[string]struct{}
 	pendingIncidentBlocks map[string]struct{}
 	openThreshold         int
 	now                   func() time.Time
@@ -192,6 +193,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		incidents:             map[string]*Incident{},
 		byKey:                 map[string]string{},
 		pending:               map[string]pendingFinding{},
+		pendingSprayBlocks:    map[string]struct{}{},
 		pendingIncidentBlocks: map[string]struct{}{},
 		openThreshold:         threshold,
 		now:                   time.Now,
@@ -268,7 +270,8 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 				// incident was opened or escalated, in which case the
 				// transition-time hook already fired without effect; the
 				// helper is idempotent via triggerSprayBlockLocked's
-				// action-presence check so a no-op call is harmless.
+				// action-presence and in-flight guards so a no-op call is
+				// harmless.
 				if cb := c.maybeBlockSprayLocked(inc, f.SourceIP, hits, now, "spray ongoing"); cb != nil {
 					afterUnlock = cb
 				}
@@ -1093,9 +1096,9 @@ func newIncidentID() string {
 // operator who arms BlockAtSeverity AFTER an incident has already
 // reached the configured severity still gets a block on the next
 // matching finding. Idempotency is provided by
-// triggerSprayBlockLocked's existing action-presence guard, so calling
-// this helper repeatedly against the same incident emits exactly one
-// firewall call.
+// triggerSprayBlockLocked's action-presence and in-flight guards, so
+// calling this helper repeatedly against the same incident emits one
+// live firewall call at a time.
 //
 // Returns the callback that the caller must invoke after releasing
 // c.mu (matches the existing sprayDecisionOpen contract), or nil when
@@ -1296,12 +1299,12 @@ func hasIncidentAction(actions []IncidentAction, action string) bool {
 }
 
 // triggerSprayBlockLocked invokes the operator-supplied OnSprayBlock
-// callback at most once per spray incident and appends an audit action
-// only when the callback reports the firewall actually applied the block.
-// Caller holds c.mu. The returned callback must be invoked after
-// unlocking. Idempotent: a second call against the same incident is a
-// no-op so the open + escalate paths can both arm without producing
-// duplicate firewall calls.
+// callback at most once while a spray block is already in flight and
+// appends an audit action only when the callback reports the firewall
+// actually applied the block. Caller holds c.mu. The returned callback
+// must be invoked after unlocking. Idempotent after success; declined
+// callbacks can retry on a later finding after the in-flight marker is
+// cleared.
 func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int, now time.Time, why string) func() {
 	if inc == nil || c.cfg.OnSprayBlock == nil {
 		return nil
@@ -1309,16 +1312,21 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
 		return nil
 	}
+	if _, ok := c.pendingSprayBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingSprayBlocks[inc.ID] = struct{}{}
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
 	onSprayBlock := c.cfg.OnSprayBlock
 	incidentID := inc.ID
 	return func() {
 		live := onSprayBlock(ip, reason)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.pendingSprayBlocks, incidentID)
 		if !live {
 			return
 		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
 		current, ok := c.incidents[incidentID]
 		if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
 			return

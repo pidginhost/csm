@@ -3,6 +3,7 @@ package incident
 import (
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -441,6 +442,104 @@ func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
 	case <-called:
 	default:
 		t.Fatal("OnSprayBlock was not called")
+	}
+}
+
+func TestSprayBlockCoalescesConcurrentCallback(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "high"
+	cfg.DistinctMailboxes = 1
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	duplicate := make(chan struct{}, 1)
+	var calls atomic.Int32
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock: func(_, _ string) bool {
+			if calls.Add(1) == 1 {
+				close(firstEntered)
+				<-releaseFirst
+				return true
+			}
+			duplicate <- struct{}{}
+			return true
+		},
+	})
+	c.openThreshold = 1
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := c.OnFinding(sprayFinding("first@example.com", "192.0.2.12", now))
+		firstDone <- err
+	}()
+
+	select {
+	case <-firstEntered:
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first OnFinding: %v", err)
+		}
+		t.Fatal("first OnFinding completed before entering block callback")
+	case <-time.After(time.Second):
+		t.Fatal("first OnFinding did not enter block callback")
+	}
+	released := false
+	release := func() {
+		if !released {
+			close(releaseFirst)
+			released = true
+		}
+	}
+	defer release()
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, _, err := c.OnFinding(sprayFinding("second@example.com", "192.0.2.12", now.Add(time.Second)))
+		secondDone <- err
+	}()
+
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second OnFinding: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second OnFinding blocked behind in-flight spray callback")
+	}
+	select {
+	case <-duplicate:
+		t.Fatal("duplicate spray block callback fired while first callback was in flight")
+	default:
+	}
+
+	release()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first OnFinding: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first OnFinding did not finish after release")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("OnSprayBlock calls = %d, want 1", got)
+	}
+	foundAction := false
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != KindCredentialSpray {
+			continue
+		}
+		if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
+			foundAction = true
+		}
+	}
+	if !foundAction {
+		t.Fatal("incident missing credential_spray_block_requested action after live callback")
 	}
 }
 

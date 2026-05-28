@@ -19,20 +19,21 @@ var (
 	incidentAutoCloseCancel func()
 
 	// incidentSprayBlocker is the firewall hand-off the daemon wires in
-	// before IncidentCorrelator() is first invoked. The closure forwards
-	// to fwEngine.BlockIP, which already honors auto_response.dry_run via
-	// SetDryRunEnabledFunc, so the callback does not need to re-check it.
+	// before IncidentCorrelator() is first invoked. The bool reports
+	// whether nftables was actually mutated; dry-run, already-blocked,
+	// and verdict-allow outcomes return false so incident timelines do
+	// not record a live block that never landed.
 	// nil means "no blocker wired" (early startup or unit tests); the
 	// singleton then skips wiring OnSprayBlock and the spray detector
 	// stays detection-only even with BlockAtSeverity set.
-	incidentSprayBlocker func(ip, reason string, timeout time.Duration) error
+	incidentSprayBlocker func(ip, reason string, timeout time.Duration) (bool, error)
 )
 
 // SetIncidentSprayBlocker installs the firewall-side hand-off used by the
-// credential_spray super-incident path. Call once after the firewall
-// engine is built and before the first IncidentCorrelator() call.
+// incident auto-block paths. Call once after the firewall engine is built
+// and before the first IncidentCorrelator() call.
 // Passing nil clears the binding.
-func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) error) {
+func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) (bool, error)) {
 	incidentSprayBlocker = fn
 }
 
@@ -104,12 +105,12 @@ func IncidentCorrelator() *incident.Correlator {
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
-					dryRun := liveCfg.AutoResponseDryRunEnabled()
-					if err := blocker(ip, "CSM credential_spray: "+reason, timeout); err != nil {
+					live, err := blocker(ip, "CSM credential_spray: "+reason, timeout)
+					if err != nil {
 						csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
 						return false
 					}
-					return !dryRun
+					return live
 				}
 			}
 			// Generic incident-driven auto-block. Reuses the same firewall
@@ -136,12 +137,12 @@ func IncidentCorrelator() *incident.Correlator {
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
-					dryRun := liveCfg.AutoResponseDryRunEnabled()
-					if err := blocker(ip, "CSM incident: "+reason, timeout); err != nil {
+					live, err := blocker(ip, "CSM incident: "+reason, timeout)
+					if err != nil {
 						csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
 						return false
 					}
-					return !dryRun
+					return live
 				}
 			}
 			// Whitelist accessor: prefer the bbolt-backed live whitelist
