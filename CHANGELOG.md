@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Regenerated AF_ALG BPF LSM object files so the kernel-side denylist program actually loads on Linux 6.12+. The C source was already fixed for the `bpf_d_path` trusted-pointer requirement, but the committed `.o` artifacts were stale and tripped the verifier with `R1 type=scalar expected=ptr_, trusted_ptr_, rcu_ptr_`, dropping AF_ALG enforcement to the auditd-tail fallback.
+- Firewall infra-IP guard now runs before the IPv6-enabled check. A canonical IPv6 form of an infra address listed in `firewall.infra_ips` is now refused even when the engine has no IPv6 set bound, instead of returning an "IPv6 not enabled" error that the caller could misread as a transient config issue.
 - Closing or auto-resolving a credential-spray incident now releases its attacker tracking state. Later failures from that address are evaluated as new activity instead of mutating the closed incident or reusing old spray counts.
 - Incident recovery now ignores corrupt or internally inconsistent bbolt incident rows instead of letting one bad record block the list or compaction pass. Direct incident lookups still surface corrupt records as errors without marking them found.
 - Alert shutdown now drains buffered findings after tracked workers stop, so last-second findings make it into the shutdown flush instead of vanishing on graceful restart.

@@ -1498,13 +1498,15 @@ func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting 
 }
 
 func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, error) {
-	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
-	if err != nil {
-		return nil, nil, false, err
-	}
 	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return nil, nil, false, fmt.Errorf("invalid IP: %s", ip)
+	}
 
-	// SAFETY: never block infra IPs - prevents admin lockout
+	// SAFETY: never block infra IPs - prevents admin lockout.
+	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
+	// cannot bypass the infra guard when the caller passes the canonical
+	// IPv6 form of a listed infra address.
 	for _, cidr := range e.cfg.InfraIPs {
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
@@ -1531,6 +1533,11 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	// firewalls every customer hosted on the same IP.
 	if e.isLocalAddrLocked(ip) {
 		return nil, nil, false, fmt.Errorf("refusing to block local host IP: %s (own interface address)", ip)
+	}
+
+	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return nil, nil, false, err
 	}
 
 	st := e.loadStateFile()
