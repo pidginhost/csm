@@ -699,34 +699,34 @@ func TestCleanInfectedFile_ReadError(t *testing.T) {
 }
 
 func TestCleanInfectedFile_NoInjectionFound(t *testing.T) {
-	// Clean PHP, no injection patterns → CleanInfectedFile either errors
-	// on backup (when /opt/csm/quarantine is not writable, as in CI) or
-	// returns the "no known injection patterns" error. Both confirm the
-	// function correctly declined to write over a clean file.
+	// Clean PHP, no injection patterns -> CleanInfectedFile returns
+	// "no known injection patterns" without touching the file. Uses a
+	// real tempfile because the security-sensitive read path opens via
+	// fd with O_NOFOLLOW and bypasses the osFS mock by design.
 	content := `<?php
 echo "hello world";
 // nothing malicious at all
 `
-	withMockOS(t, &mockOS{
-		readFile: func(name string) ([]byte, error) {
-			return []byte(content), nil
-		},
-		stat: func(name string) (os.FileInfo, error) {
-			return fakeFileInfo{name: "clean.php", size: int64(len(content))}, nil
-		},
-	})
+	dir := t.TempDir()
+	path := filepath.Join(dir, "clean.php")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := quarantineDir
+	quarantineDir = t.TempDir()
+	t.Cleanup(func() { quarantineDir = old })
 
-	res := CleanInfectedFile("/tmp/clean.php")
+	res := CleanInfectedFile(path)
 	if res.Cleaned {
 		t.Error("clean file should not be modified")
 	}
-	if res.Error == "" {
-		t.Error("expected some error for clean file, got empty")
-	}
-	ok := strings.Contains(res.Error, "no known injection patterns") ||
-		strings.Contains(res.Error, "cannot create backup")
-	if !ok {
+	if !strings.Contains(res.Error, "no known injection patterns") {
 		t.Errorf("unexpected error: %q", res.Error)
+	}
+	// Source file content stays exact.
+	got, _ := os.ReadFile(path)
+	if string(got) != content {
+		t.Errorf("file mutated: %q", got)
 	}
 }
 

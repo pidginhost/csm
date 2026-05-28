@@ -3,6 +3,7 @@ package checks
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -51,8 +52,32 @@ var (
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
-	// Read original file
-	data, err := osFS.ReadFile(path)
+	// Open with O_NOFOLLOW so a symlink swapped in between detection and
+	// clean fails the open instead of redirecting the read at /etc/shadow
+	// (or any other root-readable file outside the user's home). Subsequent
+	// I/O goes through the fd, not the path, so a late directory swap
+	// cannot redirect either the backup read or the cleaned-content
+	// writeback after this point.
+	// #nosec G304 -- O_NOFOLLOW refuses symlinks; fd.Stat verifies regular
+	// file; writeback goes through atomic temp+rename in the same dir.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		result.Error = fmt.Sprintf("cannot read file: %v", err)
+		return result
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		result.Error = fmt.Sprintf("cannot stat file: %v", err)
+		return result
+	}
+	if !info.Mode().IsRegular() {
+		result.Error = fmt.Sprintf("refusing non-regular file (mode=%v)", info.Mode())
+		return result
+	}
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
@@ -70,18 +95,14 @@ func CleanInfectedFile(path string) CleanResult {
 	}
 	result.BackupPath = backupPath
 
-	// Write metadata sidecar so the WebUI quarantine page can list pre-clean backups
-	info, _ := osFS.Stat(path)
-	var fileSize int64
-	var fileMode string
+	// Metadata sidecar derived from the same fd we read, so a directory
+	// race after open cannot change the metadata we record.
+	fileSize := info.Size()
+	fileMode := info.Mode().String()
 	var uid, gid int
-	if info != nil {
-		fileSize = info.Size()
-		fileMode = info.Mode().String()
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			uid = int(stat.Uid)
-			gid = int(stat.Gid)
-		}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		uid = int(stat.Uid)
+		gid = int(stat.Gid)
 	}
 	meta := map[string]interface{}{
 		"original_path":  path,
@@ -133,13 +154,13 @@ func CleanInfectedFile(path string) CleanResult {
 		return result
 	}
 
-	// Write cleaned file
-	info, _ = osFS.Stat(path)
-	mode := os.FileMode(0644)
-	if info != nil {
-		mode = info.Mode()
-	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+	// Atomic writeback: stage the cleaned content next to the original,
+	// preserve mode and ownership from the fd-derived stat, then rename
+	// over the source. Rename replaces the link or file at `path` even
+	// if a parent directory swap has redirected the name in the meantime,
+	// so the cleaned content lands at a name the operator controls and
+	// the original mode/owner travel with it.
+	if err := writeCleanedFileAtomic(path, []byte(content), info.Mode().Perm(), uid, gid); err != nil {
 		result.Error = fmt.Sprintf("cannot write cleaned file: %v", err)
 		return result
 	}
@@ -147,6 +168,50 @@ func CleanInfectedFile(path string) CleanResult {
 	result.Cleaned = true
 	result.Removals = removals
 	return result
+}
+
+// writeCleanedFileAtomic stages cleaned content in a sibling temp file,
+// chmods + chowns it to match the original, fsyncs, and renames over the
+// target. The rename is atomic at the filesystem level so concurrent
+// readers observe either the old or the new content but never a partial
+// write.
+func writeCleanedFileAtomic(path string, content []byte, mode os.FileMode, uid, gid int) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".csm-clean-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return err
+	}
+	if uid > 0 || gid > 0 {
+		if err := os.Chown(tmpPath, uid, gid); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
 }
 
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned

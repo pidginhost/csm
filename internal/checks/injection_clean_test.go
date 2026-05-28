@@ -35,6 +35,79 @@ func TestCleanInfectedFileMissingFileReturnsError(t *testing.T) {
 	}
 }
 
+// X5 regression: an attacker who controls the parent directory can swap
+// the path for a symlink between detection and CleanInfectedFile's read.
+// The cleaner must refuse the open instead of following the link, so
+// neither the read of the link target nor the cleaned-content writeback
+// ever touches a root-readable / root-writable file outside the user's
+// home.
+func TestCleanInfectedFileRefusesSymlinkSwap(t *testing.T) {
+	qDir := t.TempDir()
+	withQuarantineDirT(t, qDir)
+
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim.php")
+	secret := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("SHADOW-DATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, victim); err != nil {
+		t.Skipf("symlink not supported on this fs: %v", err)
+	}
+
+	res := CleanInfectedFile(victim)
+	if res.Cleaned {
+		t.Errorf("symlink target must not be cleaned, got %+v", res)
+	}
+	if res.Error == "" {
+		t.Errorf("expected error refusing symlink, got %+v", res)
+	}
+
+	// Secret content must not appear in any backup file.
+	if res.BackupPath != "" {
+		if data, err := os.ReadFile(res.BackupPath); err == nil {
+			if strings.Contains(string(data), "SHADOW-DATA") {
+				t.Errorf("symlink target leaked into backup %s", res.BackupPath)
+			}
+		}
+	}
+	if err := filepath.Walk(qDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, ".meta") {
+			return nil
+		}
+		data, rerr := os.ReadFile(p)
+		if rerr == nil && strings.Contains(string(data), "SHADOW-DATA") {
+			t.Errorf("symlink target leaked into quarantine file %s", p)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Secret must remain unmodified.
+	if data, err := os.ReadFile(secret); err != nil || string(data) != "SHADOW-DATA" {
+		t.Errorf("secret tampered with: data=%q err=%v", string(data), err)
+	}
+}
+
+// X5: CleanInfectedFile must refuse non-regular targets (directories,
+// fifos, device nodes). The detector only flags regular files, so a
+// non-regular shape at clean time means the path was swapped.
+func TestCleanInfectedFileRefusesDirectory(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+	dir := t.TempDir()
+	res := CleanInfectedFile(dir)
+	if res.Cleaned {
+		t.Errorf("directory must not be cleaned, got %+v", res)
+	}
+	if res.Error == "" {
+		t.Errorf("expected error refusing non-regular target")
+	}
+}
+
 func TestCleanInfectedFileNoInjectionsReturnsError(t *testing.T) {
 	withQuarantineDirT(t, t.TempDir())
 	path := writeTempPHP(t, "<?php\n// clean code\necho 'hello world';\n")
