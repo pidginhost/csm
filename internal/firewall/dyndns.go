@@ -146,10 +146,22 @@ func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
 
+	done := make(chan struct{})
 	go func() {
-		<-stopCh
-		cancelParent()
+		select {
+		case <-stopCh:
+			cancelParent()
+		case <-done:
+		}
 	}()
+	defer close(done)
+
+	select {
+	case <-stopCh:
+		cancelParent()
+		return
+	default:
+	}
 
 	d.runTick(parent)
 
@@ -158,7 +170,7 @@ func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
 
 	for {
 		select {
-		case <-stopCh:
+		case <-parent.Done():
 			return
 		case <-ticker.C:
 			d.runTick(parent)
@@ -206,6 +218,9 @@ func (d *DynDNSResolver) resolveAll() {
 func (d *DynDNSResolver) resolveHost(ctx context.Context, host string) {
 	newIPs, err := d.lookupFn(ctx, host)
 	if err != nil || len(newIPs) == 0 {
+		if ctx.Err() == context.Canceled {
+			return
+		}
 		fmt.Fprintf(os.Stderr, "dyndns: failed to resolve %s: %v\n", host, err)
 		d.updateGuardFailure(host)
 		return
