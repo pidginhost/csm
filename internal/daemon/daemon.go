@@ -1613,6 +1613,11 @@ func (d *Daemon) startLogWatchers() {
 	// Start background eviction for email rate limiting state
 	StartEmailRateEviction(d.stopCh)
 
+	// Start background eviction for cloud-relay per-user windows so the
+	// sync.Map does not grow linearly with every distinct authenticated
+	// sender ever seen.
+	StartCloudRelayEviction(d.stopCh)
+
 	// Start background purge for SMTP brute-force tracker
 	d.wg.Add(1)
 	obs.Go("smtp-tracker-purge", func() {

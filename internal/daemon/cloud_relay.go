@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // --- Cloud-relay compromise detection -----------------------------------
@@ -308,4 +309,51 @@ func truncateIPList(ips []string, n int) []string {
 		return ips
 	}
 	return ips[:n]
+}
+
+// cloudRelayEvictWindow is how long a per-user cloudRelayWindow can stay
+// idle before it is evicted. Picked at 2x cloudRelayWindow_ so a user who
+// just barely cleared the threshold does not lose their entry before the
+// dedup cooldown can suppress a repeat.
+const cloudRelayEvictWindow = 2 * cloudRelayWindow_
+
+// StartCloudRelayEviction periodically prunes per-user cloud-relay
+// windows that have not seen activity in cloudRelayEvictWindow. Without
+// this sweep the cloudRelayWindows sync.Map grows linearly with every
+// distinct authenticated sender ever seen, including users deleted by
+// the operator. Pairs with the firedAt dedup guard so repeat alerts on
+// long-lived attackers still pass.
+func StartCloudRelayEviction(stopCh <-chan struct{}) {
+	obs.Go("cloud-relay-eviction", func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case now := <-ticker.C:
+				evictCloudRelayWindows(now)
+			}
+		}
+	})
+}
+
+// evictCloudRelayWindows deletes per-user entries whose lastEvent is
+// older than cloudRelayEvictWindow. Safe to call from tests.
+func evictCloudRelayWindows(now time.Time) {
+	cutoff := now.Add(-cloudRelayEvictWindow)
+	cloudRelayWindows.Range(func(key, val any) bool {
+		w, ok := val.(*cloudRelayWindow)
+		if !ok {
+			cloudRelayWindows.Delete(key)
+			return true
+		}
+		w.mu.Lock()
+		idle := w.lastEvent.Before(cutoff)
+		w.mu.Unlock()
+		if idle {
+			cloudRelayWindows.Delete(key)
+		}
+		return true
+	})
 }

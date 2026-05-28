@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -521,4 +522,32 @@ func TestExtractEximHostname(t *testing.T) {
 type alert_Finding struct {
 	Severity string
 	Message  string
+}
+
+// X16: evictCloudRelayWindows must drop per-user entries idle past
+// cloudRelayEvictWindow so the sync.Map does not grow forever after a
+// burst of unique senders. Active entries (lastEvent inside the window)
+// must survive so an in-progress detector window is not lost mid-attack.
+func TestEvictCloudRelayWindows(t *testing.T) {
+	cloudRelayWindows = sync.Map{}
+	t.Cleanup(func() { cloudRelayWindows = sync.Map{} })
+
+	now := time.Unix(1_700_000_000, 0)
+	stale := &cloudRelayWindow{lastEvent: now.Add(-cloudRelayEvictWindow - time.Hour)}
+	fresh := &cloudRelayWindow{lastEvent: now.Add(-5 * time.Minute)}
+	cloudRelayWindows.Store("stale@example.com", stale)
+	cloudRelayWindows.Store("fresh@example.com", fresh)
+	cloudRelayWindows.Store("bogus", "not-a-window")
+
+	evictCloudRelayWindows(now)
+
+	if _, ok := cloudRelayWindows.Load("stale@example.com"); ok {
+		t.Errorf("stale entry survived eviction")
+	}
+	if _, ok := cloudRelayWindows.Load("fresh@example.com"); !ok {
+		t.Errorf("fresh entry was evicted")
+	}
+	if _, ok := cloudRelayWindows.Load("bogus"); ok {
+		t.Errorf("non-window value survived eviction")
+	}
 }
