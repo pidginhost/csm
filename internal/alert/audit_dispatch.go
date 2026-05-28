@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -176,10 +177,7 @@ func RegisterFindingObserver(fn func(Finding)) func() {
 
 // notifyFindingObservers fans a finding out to every registered observer.
 // Each observer runs in a recover scope so a panic in one cannot stop
-// dispatch to the rest, the audit-log sinks, or future ones. The
-// recover value is logged with the observer id so a recurring panic
-// (correlator nil deref, future plugin bug) leaves operator-visible
-// trace instead of failing silently every dispatch tick.
+// dispatch to the rest, the audit-log sinks, or future ones.
 func notifyFindingObservers(f Finding) {
 	findingObserversMu.RLock()
 	obs := append([]findingObserver(nil), findingObservers...)
@@ -189,11 +187,20 @@ func notifyFindingObservers(f Finding) {
 			defer func() {
 				if r := recover(); r != nil {
 					fmt.Fprintf(os.Stderr,
-						"alert: finding observer id=%d panic for check=%q: %v\n%s",
-						o.id, f.Check, r, debug.Stack())
+						"alert: finding observer id=%d panic for check=%q: %s\n%s",
+						o.id, f.Check, formatRecoverValue(r), debug.Stack())
 				}
 			}()
 			o.fn(f)
 		}(o)
 	}
+}
+
+func formatRecoverValue(v any) (out string) {
+	defer func() {
+		if recover() != nil {
+			out = strconv.Quote(fmt.Sprintf("<unprintable panic value of type %T>", v))
+		}
+	}()
+	return strconv.QuoteToASCII(fmt.Sprint(v))
 }
