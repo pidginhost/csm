@@ -102,7 +102,10 @@ var htaccessTrackingHeaders = []string{
 
 var (
 	rePHPHandlerMap   = regexp.MustCompile(`(?im)^\s*(AddHandler|SetHandler|ForceType)\s+\S*php\S*\s+([^\n]+)$`)
-	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php_value\s+auto_prepend_file\s+(\S+)`)
+	// Match both `php_value` and `php_admin_value` since mod_php and some
+	// LSAPI builds accept either inside `.htaccess`. The previous literal
+	// `php_value` prefix let attackers slip past with the admin form.
+	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+(\S+)`)
 	reUACloakCond     = regexp.MustCompile(`(?im)^\s*RewriteCond\s+%\{HTTP_USER_AGENT\}\s+([^\n]+)`)
 	reSpamRedirect    = regexp.MustCompile(`(?im)^\s*RewriteRule\s+\S+\s+(https?://[^\s\[]+)`)
 	reFilesMatchOpen  = regexp.MustCompile(`(?im)^\s*<FilesMatch\s+["']?[^"'>]*\\\.(php|phtml|ph[2-7])[^"'>]*["']?\s*>`)
