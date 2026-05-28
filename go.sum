@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-github.com/VirusTotal/yara-x/go v1.16.0 h1:uUCBmGAwQhYyWj37E/UtYE/9vHaVZB4gd4+Odqn65/U=
-github.com/VirusTotal/yara-x/go v1.16.0/go.mod h1:lgXP/nkYX349MVowrtTtU5hzMdCOWQLv3+wKll9+0F8=
+github.com/VirusTotal/yara-x/go v1.17.0 h1:uTVLT+8arsnVN8/jLZ88PgzBdKUOPdlUrfx+Q6Q+2Iw=
+github.com/VirusTotal/yara-x/go v1.17.0/go.mod h1:lgXP/nkYX349MVowrtTtU5hzMdCOWQLv3+wKll9+0F8=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
@@ -40,8 +40,8 @@ github.com/mdlayher/netlink v1.11.2 h1:HKh2jqe+omdSWcQ88nrT7INE61B0NXfiSPFdgL4Yb
 github.com/mdlayher/netlink v1.11.2/go.mod h1:uT2Yc/QLaZubzDpZIBi9d4GoeLwtp3x1AMeqSRrK2sA=
 github.com/mdlayher/socket v0.6.0 h1:ScZPaAGyO1icQnbFrhPM8mnXyMu9qukC1K4ZoM2IQKU=
 github.com/mdlayher/socket v0.6.0/go.mod h1:q7vozUAnxSqnjHc12Fik5yUKIzfZ8ITCfMkhOtE9z18=
-github.com/oschwald/maxminddb-golang/v2 v2.2.0 h1:/2khmIiNvFxgfwGxitper3XBJBs5qTCPQ/H1iR9MgBw=
-github.com/oschwald/maxminddb-golang/v2 v2.2.0/go.mod h1:n/ctYVTFYQypkn5uO1CZnTmj8jdQKIVh/LX7gSaIl0w=
+github.com/oschwald/maxminddb-golang/v2 v2.3.0 h1:PnXjMGjkSQlwOBSyZ7hk6Fd75t7erkAhJNJgEhA3MQU=
+github.com/oschwald/maxminddb-golang/v2 v2.3.0/go.mod h1:NSQvgFwPxODpBTJI5+5Ns1AAucnx7ggW9PSRRifAT1s=
 github.com/pingcap/errors v0.11.4 h1:lFuQV/oaUMGcD2tqt+01ROSmJs75VG1ToEOkZIZ4nE4=
 github.com/pingcap/errors v0.11.4/go.mod h1:Oi8TUi2kEtXXLMJk9l1cGmz20kV3TaQ0usTwv5KuLY8=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
