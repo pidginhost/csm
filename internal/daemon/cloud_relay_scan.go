@@ -31,6 +31,16 @@ import (
 // cloudRelayScanPathDefault is where cPanel exim writes its mainlog.
 const cloudRelayScanPathDefault = "/var/log/exim_mainlog"
 
+// Memory caps for the retro scan. A compromised account or a crafted log
+// can otherwise grow byUser without bound. The thresholds are set well
+// above the volume detector (cloudRelayHighVolumeEvents=15 in a 60-min
+// window) so legitimate detection is unaffected; the caps only kick in
+// for pathological volumes that would balloon memory.
+const (
+	cloudRelayScanMaxEventsPerUser = 5000
+	cloudRelayScanMaxUsers         = 10000
+)
+
 // CloudRelayScanPath is the log file path scanned at startup. Exported
 // via var (not const) for tests.
 var CloudRelayScanPath = cloudRelayScanPathDefault
@@ -199,7 +209,17 @@ func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time,
 	if ip == "" {
 		return
 	}
-	byUser[user] = append(byUser[user], cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
+	events, exists := byUser[user]
+	if !exists && len(byUser) >= cloudRelayScanMaxUsers {
+		return
+	}
+	if len(events) >= cloudRelayScanMaxEventsPerUser {
+		// Drop the oldest event so the newest peak window is preserved.
+		// Log files are read in chronological order, so the head of the
+		// slice is always the oldest entry.
+		events = events[1:]
+	}
+	byUser[user] = append(events, cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
 }
 
 // drainUntilNewline reads from reader and discards bytes until a newline

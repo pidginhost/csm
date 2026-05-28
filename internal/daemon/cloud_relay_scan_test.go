@@ -379,6 +379,53 @@ func TestExtractSenderFromCloudRelayMessage(t *testing.T) {
 	}
 }
 
+// A compromised account that bursts thousands of cloud-PTR sends in the
+// lookback window must not be allowed to grow the per-user event slice
+// unbounded. The peak 60-min window still has to be detectable, but the
+// total memory footprint stays capped.
+func TestProcessCloudRelayScanLine_CapsPerUserEvents(t *testing.T) {
+	cfg := &config.Config{}
+	byUser := map[string][]cloudRelayScanEvent{}
+	since := time.Now().Add(-24 * time.Hour)
+	base := time.Now().Add(-12 * time.Hour)
+	total := cloudRelayScanMaxEventsPerUser * 2
+	for i := 0; i < total; i++ {
+		line := eximLine(
+			base.Add(time.Duration(i)*time.Second),
+			"victim@example.com",
+			"ec2-1-2-3-4.compute-1.amazonaws.com",
+			"1.2.3.4",
+			"subj",
+		)
+		processCloudRelayScanLine(line, cfg, since, byUser)
+	}
+	got := len(byUser["victim@example.com"])
+	if got == 0 {
+		t.Fatal("expected events for the test user, got 0")
+	}
+	if got > cloudRelayScanMaxEventsPerUser {
+		t.Errorf("per-user events = %d, want <= %d", got, cloudRelayScanMaxEventsPerUser)
+	}
+}
+
+// A log replay that surfaces more distinct compromised accounts than the
+// daemon can plausibly track at once must cap the outer map. Past the
+// cap, new users are dropped silently to keep memory bounded.
+func TestProcessCloudRelayScanLine_CapsDistinctUsers(t *testing.T) {
+	cfg := &config.Config{}
+	byUser := map[string][]cloudRelayScanEvent{}
+	since := time.Now().Add(-24 * time.Hour)
+	base := time.Now().Add(-1 * time.Hour)
+	for i := 0; i < cloudRelayScanMaxUsers*2; i++ {
+		user := fmt.Sprintf("user%d@example.com", i)
+		line := eximLine(base, user, "ec2-1-2-3-4.compute-1.amazonaws.com", "1.2.3.4", "subj")
+		processCloudRelayScanLine(line, cfg, since, byUser)
+	}
+	if got := len(byUser); got > cloudRelayScanMaxUsers {
+		t.Errorf("distinct users = %d, want <= %d", got, cloudRelayScanMaxUsers)
+	}
+}
+
 func TestParseEximTimestamp(t *testing.T) {
 	line := "2026-04-22 14:55:43 1wFWBE-000000036n0-1PMK <= ..."
 	ts, ok := parseEximTimestamp(line)
