@@ -1207,36 +1207,31 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 	onBlock := c.cfg.OnIncidentBlock
 	return func() {
 		var live bool
-		// The in-flight slot must clear even if onBlock panics. Without
-		// the deferred release, a single panicking integration (nil
-		// deref in a verdict callback, a closed-channel send) latches
-		// the incident permanently -- every subsequent finding sees
-		// "block already in-flight" and the auto-block path stays dark
-		// for the rest of the incident's lifetime.
-		func() {
-			defer func() {
-				c.mu.Lock()
-				delete(c.pendingIncidentBlocks, incidentID)
-				c.mu.Unlock()
-			}()
-			live = onBlock(ip, reason)
+		callbackReturned := false
+		// The in-flight slot must clear even if onBlock panics. Otherwise,
+		// later findings keep seeing the incident as already in flight and
+		// skip the auto-block path for the rest of the incident lifetime.
+		defer func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			delete(c.pendingIncidentBlocks, incidentID)
+			if !callbackReturned || !live {
+				return
+			}
+			current, ok := c.incidents[incidentID]
+			if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
+				return
+			}
+			current.Actions = append(current.Actions, IncidentAction{
+				Time:    now,
+				Action:  "incident_block_requested",
+				Result:  "ok",
+				Details: ip + " " + reason,
+			})
+			c.persistLocked(*current)
 		}()
-		if !live {
-			return
-		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		current, ok := c.incidents[incidentID]
-		if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
-			return
-		}
-		current.Actions = append(current.Actions, IncidentAction{
-			Time:    now,
-			Action:  "incident_block_requested",
-			Result:  "ok",
-			Details: ip + " " + reason,
-		})
-		c.persistLocked(*current)
+		live = onBlock(ip, reason)
+		callbackReturned = true
 	}
 }
 
@@ -1334,33 +1329,31 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	incidentID := inc.ID
 	return func() {
 		var live bool
+		callbackReturned := false
 		// Mirror the panic-safety guarantee from triggerIncidentBlockLocked:
 		// the in-flight slot must clear even if onSprayBlock panics so a
 		// recurring panic class does not latch the credential_spray
 		// incident out of the auto-block path forever.
-		func() {
-			defer func() {
-				c.mu.Lock()
-				delete(c.pendingSprayBlocks, incidentID)
-				c.mu.Unlock()
-			}()
-			live = onSprayBlock(ip, reason)
+		defer func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			delete(c.pendingSprayBlocks, incidentID)
+			if !callbackReturned || !live {
+				return
+			}
+			current, ok := c.incidents[incidentID]
+			if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
+				return
+			}
+			current.Actions = append(current.Actions, IncidentAction{
+				Time:    now,
+				Action:  "credential_spray_block_requested",
+				Result:  "ok",
+				Details: ip + " " + reason,
+			})
+			c.persistLocked(*current)
 		}()
-		if !live {
-			return
-		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		current, ok := c.incidents[incidentID]
-		if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
-			return
-		}
-		current.Actions = append(current.Actions, IncidentAction{
-			Time:    now,
-			Action:  "credential_spray_block_requested",
-			Result:  "ok",
-			Details: ip + " " + reason,
-		})
-		c.persistLocked(*current)
+		live = onSprayBlock(ip, reason)
+		callbackReturned = true
 	}
 }

@@ -543,6 +543,64 @@ func TestSprayBlockCoalescesConcurrentCallback(t *testing.T) {
 	}
 }
 
+func TestSprayBlockReleasesPendingSlotOnPanic(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "high"
+	cfg.DistinctMailboxes = 1
+	calls := 0
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock: func(_, _ string) bool {
+			calls++
+			if calls == 1 {
+				panic("simulated spray block panic")
+			}
+			return true
+		},
+	})
+	c.openThreshold = 1
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic to propagate from OnSprayBlock")
+			}
+		}()
+		_, _, _ = c.OnFinding(sprayFinding("first@example.com", "192.0.2.13", now))
+	}()
+	if calls != 1 {
+		t.Fatalf("OnSprayBlock calls after panic = %d, want 1", calls)
+	}
+	c.mu.Lock()
+	leftover := len(c.pendingSprayBlocks)
+	c.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("pendingSprayBlocks count after panic = %d, want 0", leftover)
+	}
+
+	_, _, err := c.OnFinding(sprayFinding("second@example.com", "192.0.2.13", now.Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("OnFinding retry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("OnSprayBlock calls after retry = %d, want 2", calls)
+	}
+	foundAction := false
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != KindCredentialSpray {
+			continue
+		}
+		if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
+			foundAction = true
+		}
+	}
+	if !foundAction {
+		t.Fatal("incident missing credential_spray_block_requested action after retry")
+	}
+}
+
 func TestSprayBlockAtCriticalSkipsOpenFiresOnEscalation(t *testing.T) {
 	cfg := sprayTestConfig(true, false)
 	cfg.BlockAtSeverity = "critical"

@@ -504,8 +504,22 @@ func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	// time (no longer stuck behind the latched in-flight slot).
 	f2 := f
 	f2.Timestamp = now.Add(time.Minute)
-	_, _, _ = c.OnFinding(f2)
+	if _, _, err := c.OnFinding(f2); err != nil {
+		t.Fatalf("OnFinding retry: %v", err)
+	}
 	if calls != 2 {
 		t.Fatalf("OnIncidentBlock call count after retry = %d, want 2", calls)
+	}
+	foundAction := false
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != KindWebAccountCompromise {
+			continue
+		}
+		if hasIncidentAction(inc.Actions, "incident_block_requested") {
+			foundAction = true
+		}
+	}
+	if !foundAction {
+		t.Fatal("incident missing incident_block_requested action after retry")
 	}
 }
