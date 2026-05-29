@@ -1,0 +1,1602 @@
+# CSM HTTP API -- OpenAPI 3.1 contract for /api/v1/*
+#
+# Generated from the route registrations in internal/webui. The
+# TestOpenAPISpecCoversAllRoutes drift guard fails if a registered
+# /api/v1/* route is missing here, so this file stays in sync.
+#
+# Scope: every path carries its auth scope (read vs admin) and method.
+# Method is derived from the route wrapper: CSRF-protected routes are
+# state-changing POSTs, the rest are GETs. Response bodies are typed as
+# generic JSON objects in this v1; per-endpoint response schemas are a
+# documented follow-up (see ROADMAP item 10, Y16).
+openapi: 3.1.0
+info:
+  title: CSM HTTP API
+  version: "1.0"
+  description: >-
+    Continuous Security Monitor daemon API. All endpoints require a bearer
+    token (webui.tokens). Read-scope tokens authorize the GET endpoints
+    marked scope=read; management routes require an admin-scope token.
+servers:
+  - url: https://localhost:8443
+    description: CSM daemon HTTPS listener (operator-configured host/port)
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        webui.tokens entry. scope=read authorizes read endpoints; scope=admin
+        authorizes all endpoints.
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+    Forbidden:
+      description: Token scope insufficient for this endpoint.
+  schemas:
+    JSONObject:
+      type: object
+      description: Endpoint-specific JSON. Per-field schema is a documented follow-up.
+      additionalProperties: true
+security:
+  - bearerAuth: []
+paths:
+  "/api/v1/account":
+    get:
+      operationId: get_account
+      summary: "get /api/v1/account (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/accounts":
+    get:
+      operationId: get_accounts
+      summary: "get /api/v1/accounts (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/audit":
+    get:
+      operationId: get_audit
+      summary: "get /api/v1/audit (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/block-ip":
+    post:
+      operationId: post_block_ip
+      summary: "post /api/v1/block-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/blocked-ips":
+    get:
+      operationId: get_blocked_ips
+      summary: "get /api/v1/blocked-ips (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/capabilities":
+    get:
+      operationId: get_capabilities
+      summary: "get /api/v1/capabilities (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/components":
+    get:
+      operationId: get_components
+      summary: "get /api/v1/components (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/db-object-backup-preview":
+    get:
+      operationId: get_db_object_backup_preview
+      summary: "get /api/v1/db-object-backup-preview (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/db-object-backup-restore":
+    post:
+      operationId: post_db_object_backup_restore
+      summary: "post /api/v1/db-object-backup-restore (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/db-object-backups":
+    get:
+      operationId: get_db_object_backups
+      summary: "get /api/v1/db-object-backups (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/dismiss":
+    post:
+      operationId: post_dismiss
+      summary: "post /api/v1/dismiss (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/av/status":
+    get:
+      operationId: get_email_av_status
+      summary: "get /api/v1/email/av/status (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/groups":
+    get:
+      operationId: get_email_groups
+      summary: "get /api/v1/email/groups (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/quarantine":
+    get:
+      operationId: get_email_quarantine
+      summary: "get /api/v1/email/quarantine (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/quarantine/":
+    post:
+      operationId: post_email_quarantine_
+      summary: "post /api/v1/email/quarantine/ (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/stats":
+    get:
+      operationId: get_email_stats
+      summary: "get /api/v1/email/stats (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/events":
+    get:
+      operationId: get_events
+      summary: "get /api/v1/events (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/export":
+    get:
+      operationId: get_export
+      summary: "get /api/v1/export (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/finding-detail":
+    get:
+      operationId: get_finding_detail
+      summary: "get /api/v1/finding-detail (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/findings":
+    get:
+      operationId: get_findings
+      summary: "get /api/v1/findings (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/findings/enriched":
+    get:
+      operationId: get_findings_enriched
+      summary: "get /api/v1/findings/enriched (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/allow-ip":
+    post:
+      operationId: post_firewall_allow_ip
+      summary: "post /api/v1/firewall/allow-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/allowed":
+    get:
+      operationId: get_firewall_allowed
+      summary: "get /api/v1/firewall/allowed (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/audit":
+    get:
+      operationId: get_firewall_audit
+      summary: "get /api/v1/firewall/audit (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/check":
+    get:
+      operationId: get_firewall_check
+      summary: "get /api/v1/firewall/check (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/cphulk-clear":
+    post:
+      operationId: post_firewall_cphulk_clear
+      summary: "post /api/v1/firewall/cphulk-clear (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/deny-subnet":
+    post:
+      operationId: post_firewall_deny_subnet
+      summary: "post /api/v1/firewall/deny-subnet (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/flush":
+    post:
+      operationId: post_firewall_flush
+      summary: "post /api/v1/firewall/flush (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/remove-allow":
+    post:
+      operationId: post_firewall_remove_allow
+      summary: "post /api/v1/firewall/remove-allow (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/remove-subnet":
+    post:
+      operationId: post_firewall_remove_subnet
+      summary: "post /api/v1/firewall/remove-subnet (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/status":
+    get:
+      operationId: get_firewall_status
+      summary: "get /api/v1/firewall/status (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/subnets":
+    get:
+      operationId: get_firewall_subnets
+      summary: "get /api/v1/firewall/subnets (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/firewall/unban":
+    post:
+      operationId: post_firewall_unban
+      summary: "post /api/v1/firewall/unban (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/fix":
+    post:
+      operationId: post_fix
+      summary: "post /api/v1/fix (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/fix-bulk":
+    post:
+      operationId: post_fix_bulk
+      summary: "post /api/v1/fix-bulk (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/geoip":
+    get:
+      operationId: get_geoip
+      summary: "get /api/v1/geoip (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/geoip/batch":
+    post:
+      operationId: post_geoip_batch
+      summary: "post /api/v1/geoip/batch (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/hardening":
+    get:
+      operationId: get_hardening
+      summary: "get /api/v1/hardening (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/hardening/run":
+    post:
+      operationId: post_hardening_run
+      summary: "post /api/v1/hardening/run (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/health":
+    get:
+      operationId: get_health
+      summary: "get /api/v1/health (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/history":
+    get:
+      operationId: get_history
+      summary: "get /api/v1/history (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/history/csv":
+    get:
+      operationId: get_history_csv
+      summary: "get /api/v1/history/csv (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/import":
+    post:
+      operationId: post_import
+      summary: "post /api/v1/import (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/incident":
+    get:
+      operationId: get_incident
+      summary: "get /api/v1/incident (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/incidents":
+    get:
+      operationId: get_incidents
+      summary: "get /api/v1/incidents (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/incidents/":
+    post:
+      operationId: post_incidents_
+      summary: "post /api/v1/incidents/ (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/incidents/groups":
+    get:
+      operationId: get_incidents_groups
+      summary: "get /api/v1/incidents/groups (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/blocks":
+    get:
+      operationId: get_modsec_blocks
+      summary: "get /api/v1/modsec/blocks (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/events":
+    get:
+      operationId: get_modsec_events
+      summary: "get /api/v1/modsec/events (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/rules":
+    get:
+      operationId: get_modsec_rules
+      summary: "get /api/v1/modsec/rules (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/rules/apply":
+    post:
+      operationId: post_modsec_rules_apply
+      summary: "post /api/v1/modsec/rules/apply (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/rules/escalation":
+    post:
+      operationId: post_modsec_rules_escalation
+      summary: "post /api/v1/modsec/rules/escalation (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/modsec/stats":
+    get:
+      operationId: get_modsec_stats
+      summary: "get /api/v1/modsec/stats (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/perf/fix-display-errors":
+    post:
+      operationId: post_perf_fix_display_errors
+      summary: "post /api/v1/perf/fix-display-errors (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/perf/fix-error-log":
+    post:
+      operationId: post_perf_fix_error_log
+      summary: "post /api/v1/perf/fix-error-log (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/performance":
+    get:
+      operationId: get_performance
+      summary: "get /api/v1/performance (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/prefs/user":
+    post:
+      operationId: post_prefs_user
+      summary: "post /api/v1/prefs/user (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/prefs/views":
+    post:
+      operationId: post_prefs_views
+      summary: "post /api/v1/prefs/views (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/quarantine":
+    get:
+      operationId: get_quarantine
+      summary: "get /api/v1/quarantine (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/quarantine-preview":
+    get:
+      operationId: get_quarantine_preview
+      summary: "get /api/v1/quarantine-preview (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/quarantine-restore":
+    post:
+      operationId: post_quarantine_restore
+      summary: "post /api/v1/quarantine-restore (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/quarantine/bulk-delete":
+    post:
+      operationId: post_quarantine_bulk_delete
+      summary: "post /api/v1/quarantine/bulk-delete (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/rules/list":
+    get:
+      operationId: get_rules_list
+      summary: "get /api/v1/rules/list (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/rules/modsec-escalation":
+    post:
+      operationId: post_rules_modsec_escalation
+      summary: "post /api/v1/rules/modsec-escalation (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/rules/reload":
+    post:
+      operationId: post_rules_reload
+      summary: "post /api/v1/rules/reload (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/rules/status":
+    get:
+      operationId: get_rules_status
+      summary: "get /api/v1/rules/status (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/scan-account":
+    post:
+      operationId: post_scan_account
+      summary: "post /api/v1/scan-account (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings":
+    get:
+      operationId: get_settings
+      summary: "get /api/v1/settings (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/":
+    get:
+      operationId: get_settings_
+      summary: "get /api/v1/settings/ (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/firewall/confirm":
+    post:
+      operationId: post_settings_firewall_confirm
+      summary: "post /api/v1/settings/firewall/confirm (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/firewall/revert":
+    post:
+      operationId: post_settings_firewall_revert
+      summary: "post /api/v1/settings/firewall/revert (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/firewall/rollback":
+    get:
+      operationId: get_settings_firewall_rollback
+      summary: "get /api/v1/settings/firewall/rollback (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/firewall/tentative-apply":
+    post:
+      operationId: post_settings_firewall_tentative_apply
+      summary: "post /api/v1/settings/firewall/tentative-apply (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/settings/restart":
+    post:
+      operationId: post_settings_restart
+      summary: "post /api/v1/settings/restart (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/stats":
+    get:
+      operationId: get_stats
+      summary: "get /api/v1/stats (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/stats/timeline":
+    get:
+      operationId: get_stats_timeline
+      summary: "get /api/v1/stats/timeline (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/stats/trend":
+    get:
+      operationId: get_stats_trend
+      summary: "get /api/v1/stats/trend (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/status":
+    get:
+      operationId: get_status
+      summary: "get /api/v1/status (scope: read)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/suppressions":
+    post:
+      operationId: post_suppressions
+      summary: "post /api/v1/suppressions (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/test-alert":
+    post:
+      operationId: post_test_alert
+      summary: "post /api/v1/test-alert (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/block-ip":
+    post:
+      operationId: post_threat_block_ip
+      summary: "post /api/v1/threat/block-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/bulk-action":
+    post:
+      operationId: post_threat_bulk_action
+      summary: "post /api/v1/threat/bulk-action (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/clear-ip":
+    post:
+      operationId: post_threat_clear_ip
+      summary: "post /api/v1/threat/clear-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/db-stats":
+    get:
+      operationId: get_threat_db_stats
+      summary: "get /api/v1/threat/db-stats (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/events":
+    get:
+      operationId: get_threat_events
+      summary: "get /api/v1/threat/events (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/ip":
+    get:
+      operationId: get_threat_ip
+      summary: "get /api/v1/threat/ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/stats":
+    get:
+      operationId: get_threat_stats
+      summary: "get /api/v1/threat/stats (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/temp-whitelist-ip":
+    post:
+      operationId: post_threat_temp_whitelist_ip
+      summary: "post /api/v1/threat/temp-whitelist-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/top-attackers":
+    get:
+      operationId: get_threat_top_attackers
+      summary: "get /api/v1/threat/top-attackers (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/unwhitelist-ip":
+    post:
+      operationId: post_threat_unwhitelist_ip
+      summary: "post /api/v1/threat/unwhitelist-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/whitelist":
+    get:
+      operationId: get_threat_whitelist
+      summary: "get /api/v1/threat/whitelist (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/threat/whitelist-ip":
+    post:
+      operationId: post_threat_whitelist_ip
+      summary: "post /api/v1/threat/whitelist-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/unblock-bulk":
+    post:
+      operationId: post_unblock_bulk
+      summary: "post /api/v1/unblock-bulk (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/unblock-ip":
+    post:
+      operationId: post_unblock_ip
+      summary: "post /api/v1/unblock-ip (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/undo/pending":
+    get:
+      operationId: get_undo_pending
+      summary: "get /api/v1/undo/pending (scope: admin)"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/undo/run":
+    post:
+      operationId: post_undo_run
+      summary: "post /api/v1/undo/run (scope: admin)"
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
