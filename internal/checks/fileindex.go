@@ -213,19 +213,16 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 // classifySensitiveDirPHP returns (severity, check, message) for a PHP file
 // in /wp-content/languages/ or /wp-content/upgrade/. Returns a negative
-// severity when the path is not in a sensitive dir or when the filename is
-// already recognised as safe by IsSafePHPInWPDir (which covers index.php,
-// *.l10n.php, locale .php, mu-plugin allowlist, plugin/theme vendor, and
-// the WPML translation queue) -- in those cases the caller keeps walking.
+// severity when the path is not in a sensitive dir.
 //
-// For a file that IS in a sensitive dir and is not on the safe list, the
-// helper runs analyzePHPContent first: a real indicator keeps Critical
-// severity and the content-based check name (obfuscated_php /
-// suspicious_php_content, both already wired into autoresponse, remediate,
-// correlation, and attackdb). A clean file is demoted to Warning with
-// check new_php_in_sensitive_dir_clean, which is intentionally NOT in any
-// of those maps -- a clean file is a visibility signal, not an attack.
-// Mirrors the realtime path at fanotify.go:890.
+// Every PHP file in a sensitive dir is content-analysed -- there is no
+// filename allowlist, so an attacker cannot hide a backdoor by naming it like
+// a translation or index file. A real indicator keeps Critical severity and
+// the content-based check name (obfuscated_php / suspicious_php_content, both
+// already wired into autoresponse, remediate, correlation, and attackdb). A
+// clean file is demoted to Warning with check new_php_in_sensitive_dir_clean,
+// which is intentionally NOT in any of those maps -- a clean file is a
+// visibility signal, not an attack. Mirrors the realtime path at fanotify.go.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
 	nameLower := strings.ToLower(name)
 	if !strings.HasSuffix(nameLower, ".php") {
@@ -236,15 +233,24 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 	if !isLanguages && !isUpgrade {
 		return -1, "", ""
 	}
-	if IsSafePHPInWPDir(path, name) {
-		return -1, "", ""
-	}
-	if result := analyzePHPContent(path); result.severity >= 0 {
-		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path)
-	}
 	locLabel := "wp-content/languages"
 	if isUpgrade {
 		locLabel = "wp-content/upgrade"
+	}
+	result := analyzePHPContent(path)
+	if result.severity >= 0 {
+		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path)
+	}
+	// Fail closed: an unreadable body (attacker racing the scanner with rm or
+	// chmod 000) must not be demoted to a clean Warning. Mirrors classifyUploadPHP.
+	if !result.readOK {
+		return alert.High, "new_php_in_sensitive_dir",
+			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path)
+	}
+	// Content-verified inert stub (e.g. the "silence is golden" index.php) is
+	// suppressed; any real code surfaces as a non-actionable visibility Warning.
+	if IsBenignPHPStub(path) {
+		return -1, "", ""
 	}
 	return alert.Warning, "new_php_in_sensitive_dir_clean",
 		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path)

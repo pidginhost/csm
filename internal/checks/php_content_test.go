@@ -8,50 +8,6 @@ import (
 	"testing"
 )
 
-// --- IsSafePHPInWPDir -------------------------------------------------
-
-func TestIsSafePHPInWPDirTranslation(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/en_US.l10n.php", "en_US.l10n.php") {
-		t.Error(".l10n.php should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirIndex(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/uploads/index.php", "index.php") {
-		t.Error("index.php should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirLanguagesAdmin(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/admin-en_US.php", "admin-en_US.php") {
-		t.Error("admin-* in languages should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirLanguagesLocale(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/fr_FR.php", "fr_FR.php") {
-		t.Error("locale.php in languages should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirMuPlugin(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/mu-plugins/endurance-browser-cache.php", "endurance-browser-cache.php") {
-		t.Error("endurance mu-plugin should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirPluginVendor(t *testing.T) {
-	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/plugins/myplugin/vendor/autoload.php", "autoload.php") {
-		t.Error("vendor/ in plugins should be safe")
-	}
-}
-
-func TestIsSafePHPInWPDirUnknown(t *testing.T) {
-	if IsSafePHPInWPDir("/home/u/public_html/wp-content/uploads/evil.php", "evil.php") {
-		t.Error("unknown PHP in uploads should not be safe")
-	}
-}
-
 // --- containsStandaloneFunc -------------------------------------------
 // Tests that function-call detection distinguishes standalone calls
 // from calls embedded in longer names (e.g. "doubleval(" vs "eval(").
@@ -566,28 +522,6 @@ func TestAnalyzePHPContentZipLibraryWithHexLiteralsIsClean(t *testing.T) {
 	result := analyzePHPContent(path)
 	if result.check != "" {
 		t.Errorf("benign zip library (hex ZIP signatures + plain call_user_func(self::$temp)) must not fire; got check=%q details=%q", result.check, result.details)
-	}
-}
-
-func TestIsSafePHPInWPDir_WPMLQueue(t *testing.T) {
-	cases := []struct {
-		path string
-		name string
-		want bool
-	}{
-		{"/home/u/public_html/wp-content/languages/wpml/queue/sitepress_pending.php", "sitepress_pending.php", true},
-		{"/home/u/public_html/wp-content/languages/wpml/queue/WPML.php", "WPML.php", true},
-		{"/home/u/public_html/wp-content/languages/wpml/queue/js_composer_pending.php", "js_composer_pending.php", true},
-		{"/home/u/public_html/wp-content/languages/wpml/queue/salient-core.php", "salient-core.php", true},
-		// Control: a random PHP dropped in /languages/ (not inside wpml/queue) must NOT be allowlisted
-		{"/home/u/public_html/wp-content/languages/shell.php", "shell.php", false},
-		// Control: wpml outside the queue/ subdir is also NOT safe (defense-in-depth)
-		{"/home/u/public_html/wp-content/languages/wpml/evil.php", "evil.php", false},
-	}
-	for _, tc := range cases {
-		if got := IsSafePHPInWPDir(tc.path, tc.name); got != tc.want {
-			t.Errorf("IsSafePHPInWPDir(%q, %q) = %v, want %v", tc.path, tc.name, got, tc.want)
-		}
 	}
 }
 

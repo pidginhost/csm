@@ -602,12 +602,9 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 			continue
 		}
 
-		// Skip known safe files
-		if IsSafePHPInWPDir(fullPath, name) {
-			continue
-		}
-
-		// Read and analyze content
+		// Every .php file is content-analysed. No filename/path allowlist:
+		// clean files produce no finding, so there is no benefit to skipping
+		// them, and any skip is a place an attacker can hide a backdoor.
 		result := analyzePHPContent(fullPath)
 		if result.severity >= 0 {
 			info, _ := osFS.Stat(fullPath)
@@ -1004,74 +1001,6 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		details:  fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
 		readOK:   true,
 	}
-}
-
-// IsSafePHPInWPDir returns true for known legitimate PHP files in WP directories
-// like languages (translation files) and upgrade (empty index.php). Exported so
-// the realtime fanotify path in internal/daemon shares the same allowlist as
-// the polled fileindex scan; keeping the two in lock-step avoids the class of
-// false positive where a path is recognised as safe by one path and flagged by
-// the other. The name argument may be passed in any case; the function
-// lower-cases it internally.
-func IsSafePHPInWPDir(path, name string) bool {
-	nameLower := strings.ToLower(name)
-
-	// WordPress translation files: *.l10n.php, *.mo, admin-*.php patterns
-	if strings.HasSuffix(nameLower, ".l10n.php") {
-		return true
-	}
-	if nameLower == "index.php" {
-		return true
-	}
-
-	// Known safe patterns in wp-content/languages/
-	if strings.Contains(path, "/wp-content/languages/") {
-		// Legitimate translation files have standard naming
-		if strings.HasPrefix(nameLower, "admin-") ||
-			strings.HasPrefix(nameLower, "continents-") ||
-			strings.Contains(path, "/languages/plugins/") ||
-			strings.Contains(path, "/languages/themes/") {
-			return true
-		}
-		// WP 6.5+ PHP translation files: xx_XX.php format (2-5 letter locale codes)
-		noExt := strings.TrimSuffix(nameLower, ".php")
-		if strings.Contains(noExt, "_") && len(noExt) <= 10 && !strings.ContainsAny(noExt, " /.\\") {
-			return true
-		}
-		// WPML translation queue: /wp-content/languages/wpml/queue/*.php
-		// stores pure <?php return [...] arrays of translation strings.
-		// Narrow match on the queue/ subdir, not on "wpml" anywhere in the
-		// path, so a backdoor in /wp-content/languages/wpml/evil.php is
-		// still caught.
-		if strings.Contains(path, "/wp-content/languages/wpml/queue/") {
-			return true
-		}
-	}
-
-	// Known safe in mu-plugins - common hosting provider mu-plugins
-	if strings.Contains(path, "/mu-plugins/") {
-		safeMuPlugins := []string{
-			"endurance", "starter", "imunify", "wp-toolkit",
-			"starter-plugin", "starter_plugin",
-			"jetpack", "object-cache", "redis-cache",
-			"cloudlinux", "alt-php",
-		}
-		for _, safe := range safeMuPlugins {
-			if strings.Contains(nameLower, safe) {
-				return true
-			}
-		}
-	}
-
-	// Files in vendor/ or node_modules/ subdirectories within plugins/themes
-	// are third-party dependencies and should not be flagged.
-	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
-		if strings.Contains(path, "/vendor/") || strings.Contains(path, "/node_modules/") {
-			return true
-		}
-	}
-
-	return false
 }
 
 func countOccurrences(s, substr string) int {

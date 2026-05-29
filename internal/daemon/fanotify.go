@@ -1040,18 +1040,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// PHP in languages/upgrade directories.
 	// Path-only Critical buried real alerts under location noise (WPML
 	// translation queues, WP auto-update staging). Run content analysis
-	// first: if a real rule fires the Critical lives there; clean files
-	// still get a Warning so unexpected PHP in these dirs is visible.
-	// Known-safe filenames (index.php, *.l10n.php, WPML queue, locale,
-	// etc.) are filtered via the shared checks.IsSafePHPInWPDir helper so
-	// the realtime path stays in lock-step with the polled fileindex scan.
+	// on every file -- a real rule fires Critical, a clean file gets a
+	// Warning so unexpected PHP in these dirs stays visible. No filename
+	// allowlist: an attacker must not be able to hide a backdoor by naming
+	// it like a translation or index file.
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
-		if !checks.IsSafePHPInWPDir(path, nameLower) {
-			if !fm.checkPHPContent(event.fd, path, procInfo) {
-				fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
-					fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
-			}
+		if !fm.checkPHPContent(event.fd, path, procInfo) {
+			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
+				fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
 		}
 		return
 	}

@@ -349,16 +349,30 @@ func TestClassifySensitiveDirPHP_NotASensitiveDir_ReturnsUnset(t *testing.T) {
 	}
 }
 
-func TestClassifySensitiveDirPHP_SafePatterns_ReturnsUnset(t *testing.T) {
-	cases := []string{
-		"/home/u/public_html/wp-content/languages/index.php",
-		"/home/u/public_html/wp-content/languages/en_US.l10n.php",
-		"/home/u/public_html/wp-content/languages/admin-en_US.php",
+// A content-verified inert stub (the "silence is golden" index.php) is
+// suppressed by CONTENT, not by its filename -- so it returns negative and the
+// caller keeps walking. There is no filename allowlist any more.
+func TestClassifySensitiveDirPHP_BenignStubSuppressed(t *testing.T) {
+	dir := t.TempDir()
+	langDir := filepath.Join(dir, "wp-content", "languages")
+	if err := os.MkdirAll(langDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, p := range cases {
-		sev, _, _ := classifySensitiveDirPHP(p, filepath.Base(p))
-		if sev >= 0 {
-			t.Errorf("%s: expected negative severity, got %v", p, sev)
-		}
+	path := filepath.Join(langDir, "index.php")
+	if err := os.WriteFile(path, []byte("<?php\n// Silence is golden.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if sev, _, _ := classifySensitiveDirPHP(path, "index.php"); sev >= 0 {
+		t.Errorf("benign stub index.php must be suppressed, got %v", sev)
+	}
+}
+
+// An unreadable PHP body in a sensitive dir fails closed at High -- an attacker
+// must not earn a "content clean" demote by racing the scanner.
+func TestClassifySensitiveDirPHP_UnreadableFailsClosed(t *testing.T) {
+	sev, check, _ := classifySensitiveDirPHP(
+		"/home/u/public_html/wp-content/languages/gone.php", "gone.php")
+	if sev < alert.High || check != "new_php_in_sensitive_dir" {
+		t.Errorf("unreadable PHP must fail closed at High, got sev=%v check=%q", sev, check)
 	}
 }
