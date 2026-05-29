@@ -1700,7 +1700,7 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 			// Inline quarantine: move high-confidence malware to quarantine
 			// immediately instead of waiting for the 5-second batch dispatcher.
 			// Uses the same 3-gate validation as AutoQuarantineFiles (category +
-			// library exclusion + entropy >= 4.8) to prevent false positives,
+			// library exclusion + entropy >= 5.5) to prevent false positives,
 			// and the same auto-response policy gate (enabled + quarantine_files)
 			// so the realtime path never moves files the batch path would not.
 			if sev == alert.Critical {
@@ -1710,7 +1710,7 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 					Details:  details,
 					FilePath: path,
 				}
-				if qPath, ok := checks.InlineQuarantineGated(fm.cfg, finding, path, data); ok {
+				if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))

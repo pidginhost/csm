@@ -13,25 +13,39 @@ import (
 )
 
 func TestInlineQuarantineGatedDisabledDoesNotQuarantine(t *testing.T) {
-	tmp := t.TempDir()
-	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
-
-	src := filepath.Join(tmp, "evil.php")
-	payload := makeHighEntropyContent(t, 2048)
-	if err := os.WriteFile(src, payload, 0644); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{name: "nil config", cfg: nil},
+		{name: "auto response disabled", cfg: &config.Config{}},
+		{name: "quarantine disabled", cfg: func() *config.Config {
+			cfg := &config.Config{}
+			cfg.AutoResponse.Enabled = true
+			return cfg
+		}()},
 	}
-	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
 
-	// auto-response disabled (default): high-confidence malware must NOT be
-	// moved; the file stays in place and the caller still alerts.
-	cfg := &config.Config{}
-	qPath, ok := InlineQuarantineGated(cfg, finding, src, payload)
-	if ok || qPath != "" {
-		t.Errorf("disabled auto-response must not quarantine, got (%q, %v)", qPath, ok)
-	}
-	if _, err := os.Stat(src); err != nil {
-		t.Errorf("source file must remain when quarantine is gated off: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+			src := filepath.Join(tmp, "evil.php")
+			payload := makeHighEntropyContent(t, 2048)
+			if err := os.WriteFile(src, payload, 0644); err != nil {
+				t.Fatal(err)
+			}
+			finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
+
+			qPath, ok := InlineQuarantineGated(tc.cfg, finding, src, payload)
+			if ok || qPath != "" {
+				t.Errorf("gated-off auto-response must not quarantine, got (%q, %v)", qPath, ok)
+			}
+			if _, err := os.Stat(src); err != nil {
+				t.Errorf("source file must remain when quarantine is gated off: %v", err)
+			}
+		})
 	}
 }
 

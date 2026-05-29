@@ -470,7 +470,7 @@ var knownLibraryPaths = []string{
 // InlineQuarantineGated applies the operator's quarantine policy before
 // InlineQuarantine moves anything. The realtime fanotify path detects malware
 // continuously, but moving a file is a customer-impacting auto-response
-// action: it must honour the same master switch and quarantine opt-in as the
+// action: it must honor the same master switch and quarantine opt-in as the
 // batch AutoQuarantineFiles dispatcher, never act on detection alone. An
 // operator in monitor mode (auto-response off, or quarantine_files off) gets
 // the alert without having files moved out from under them.

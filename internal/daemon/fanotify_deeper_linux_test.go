@@ -18,6 +18,23 @@ import (
 // by fanotify_methods_linux_test.go, fanotify_helpers_linux_test.go, or
 // fanotify_coverage_linux_test.go.
 
+func TestFileMonitorCurrentCfgPrefersReloadedActiveConfig(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	startup := &config.Config{}
+	startup.AutoResponse.Enabled = true
+	startup.AutoResponse.QuarantineFiles = true
+
+	reloaded := &config.Config{}
+	config.SetActive(reloaded)
+
+	fm := &FileMonitor{cfg: startup}
+	if got := fm.currentCfg(); got != reloaded {
+		t.Fatal("FileMonitor currentCfg did not return the active reloaded config")
+	}
+}
+
 // --- isInteresting: additional unique branches ---------------------------
 
 func TestIsInterestingMoreBranches(t *testing.T) {
