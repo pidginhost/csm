@@ -30,13 +30,17 @@ func WriteConfigBytesAtomic(path string, data []byte) error {
 // Atomic write semantics match SignAndSaveAtomic: same-directory
 // tempfile, fsync, rename. On success, intendedClone.Integrity.BinaryHash
 // and .ConfigHash are updated in place to reflect the hashes written to
-// disk. intendedClone.ConfigFile must equal path.
+// disk. intendedClone.ConfigFile must equal path and intendedClone.ConfigDir
+// must equal confDir.
 func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClone *config.Config, binaryHash string) error {
 	if intendedClone == nil {
 		return fmt.Errorf("intendedClone is nil")
 	}
 	if intendedClone.ConfigFile != path {
 		return fmt.Errorf("intendedClone.ConfigFile=%q does not match path=%q", intendedClone.ConfigFile, path)
+	}
+	if intendedClone.ConfigDir != confDir {
+		return fmt.Errorf("intendedClone.ConfigDir=%q does not match confDir=%q", intendedClone.ConfigDir, confDir)
 	}
 
 	// Hash the operator-edited bytes before the integrity scalars are
@@ -70,6 +74,7 @@ func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 		return fmt.Errorf("verify decode: %w", err)
 	}
 	decoded.ConfigFile = path
+	decoded.ConfigDir = confDir
 
 	expected := *intendedClone
 	expected.Integrity.BinaryHash = binaryHash
@@ -102,6 +107,7 @@ func SignConfigFilePreserving(path, confDir, binaryHash string) (configHash, con
 		return "", "", err
 	}
 	cfg.ConfigFile = path
+	cfg.ConfigDir = confDir
 	if err := SignAndSavePreserving(path, confDir, data, cfg, binaryHash); err != nil {
 		return "", "", err
 	}

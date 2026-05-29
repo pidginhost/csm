@@ -72,11 +72,11 @@ type ConfDirFragment struct {
 	Data []byte
 }
 
-// ConfDirFragmentDigestInput returns every trusted conf.d fragment in merge
-// order (sorted .yaml/.yml, symlink-resolved, trust-validated) as name+content
-// pairs for integrity hashing. An empty dir or no fragments yields nil so a
-// config without conf.d hashes to the empty digest and its baseline is
-// unaffected.
+// ConfDirFragmentDigestInput returns every non-empty trusted conf.d fragment in
+// merge order (sorted .yaml/.yml, symlink-resolved, trust-validated) as
+// name+content pairs for integrity hashing. An empty dir or no mergeable
+// fragments yields nil so a config without conf.d hashes to the empty digest
+// and its baseline is unaffected.
 func ConfDirFragmentDigestInput(dir string) ([]ConfDirFragment, error) {
 	files, err := confDirFragmentFiles(dir)
 	if err != nil {
@@ -85,9 +85,14 @@ func ConfDirFragmentDigestInput(dir string) ([]ConfDirFragment, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
-	out := make([]ConfDirFragment, len(files))
-	for i, ff := range files {
-		out[i] = ConfDirFragment{Name: ff.name, Data: ff.data}
+	out := make([]ConfDirFragment, 0, len(files))
+	for _, ff := range files {
+		if _, ok, err := parseConfFragment(ff); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		out = append(out, ConfDirFragment{Name: ff.name, Data: ff.data})
 	}
 	return out, nil
 }
@@ -165,17 +170,50 @@ func loadConfDirFragments(dir string) ([]confFragment, error) {
 	}
 	out := make([]confFragment, 0, len(files))
 	for _, ff := range files {
-		var node yaml.Node
-		if err := yaml.Unmarshal(ff.data, &node); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", ff.path, err)
+		node, ok, err := parseConfFragment(ff)
+		if err != nil {
+			return nil, err
 		}
-		// Skip empty files (Unmarshal yields a zero-Content document).
-		if len(node.Content) == 0 {
+		if !ok {
 			continue
 		}
-		out = append(out, confFragment{path: ff.path, node: &node})
+		out = append(out, confFragment{path: ff.path, node: node})
 	}
 	return out, nil
+}
+
+func parseConfFragment(ff confFragmentFile) (*yaml.Node, bool, error) {
+	var node yaml.Node
+	if err := yaml.Unmarshal(ff.data, &node); err != nil {
+		return nil, false, fmt.Errorf("parsing %s: %w", ff.path, err)
+	}
+	// Skip empty files (Unmarshal yields a zero-Content document).
+	if len(node.Content) == 0 {
+		return nil, false, nil
+	}
+	if hasTopLevelKey(&node, "integrity") {
+		return nil, false, fmt.Errorf("conf.d fragment %s must not set daemon-managed integrity metadata", ff.path)
+	}
+	return &node, true, nil
+}
+
+func hasTopLevelKey(root *yaml.Node, key string) bool {
+	cur := root
+	if cur.Kind == yaml.DocumentNode {
+		if len(cur.Content) == 0 {
+			return false
+		}
+		cur = cur.Content[0]
+	}
+	if cur.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(cur.Content); i += 2 {
+		if cur.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 func readTrustedConfFragment(path string) ([]byte, error) {

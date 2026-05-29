@@ -253,6 +253,7 @@ webui:
 integrity:
   binary_hash: ""
   config_hash: ""
+  confd_hash: ""
   immutable: true
 
 thresholds:

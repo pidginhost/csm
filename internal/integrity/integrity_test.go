@@ -158,6 +158,51 @@ func TestSignAndSaveAtomic_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestSignAndSaveAtomic_IncludesConfDirHash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-override.yaml"), []byte("thresholds:\n  mail_queue_warn: 250\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{ConfigFile: path, ConfigDir: confDir}
+	cfg.Hostname = "host.example.com"
+
+	fakeBin := filepath.Join(dir, "bin")
+	if err := os.WriteFile(fakeBin, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := HashFile(fakeBin)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+
+	if signErr := SignAndSaveAtomic(cfg, bh); signErr != nil {
+		t.Fatalf("SignAndSaveAtomic: %v", signErr)
+	}
+	loaded, err := config.LoadWithDir(path, confDir)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if loaded.Integrity.ConfdHash == "" {
+		t.Fatal("confd_hash is empty despite a loaded fragment")
+	}
+	if err := Verify(fakeBin, loaded); err != nil {
+		t.Fatalf("freshly signed config with conf.d must verify: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(confDir, "10-override.yaml"), []byte("thresholds:\n  mail_queue_warn: 300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(fakeBin, loaded); err == nil {
+		t.Fatal("edited conf.d fragment must fail verification")
+	}
+}
+
 func TestSignAndSaveAtomic_NoTempFileLeaks(t *testing.T) {
 	// On success, the target dir must contain exactly one file
 	// (csm.yaml) and zero temp stragglers.

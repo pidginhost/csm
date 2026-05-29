@@ -495,6 +495,70 @@ func TestReloadConfigRestartRequiredKeepsIntegrityConsistent(t *testing.T) {
 	}
 }
 
+func TestReloadConfigRestartRequiredConfDirChangeKeepsIntegrityConsistent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	binPath := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := integrity.HashFile(binPath)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+
+	orig := &config.Config{}
+	orig.Hostname = "main.example.com"
+	orig.Integrity.BinaryHash = bh
+	seedConfigAtPath(t, cfgPath, orig)
+	if writeErr := os.WriteFile(filepath.Join(confDir, "10-hostname.yaml"), []byte("hostname: before.example.com\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if _, _, signErr := integrity.SignConfigFilePreserving(cfgPath, confDir, bh); signErr != nil {
+		t.Fatalf("sign with conf.d: %v", signErr)
+	}
+
+	loaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatalf("load with conf.d: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+	d.binaryPath = binPath
+
+	if writeErr := os.WriteFile(filepath.Join(confDir, "10-hostname.yaml"), []byte("hostname: after.example.com\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	d.reloadConfig()
+
+	if got := config.Active(); got == nil || got.Hostname != "before.example.com" {
+		t.Errorf("live Hostname should stay on old drop-in value, got %q", hostnameOf(got))
+	}
+	if verifyErr := integrity.Verify(d.binaryPath, d.currentCfg()); verifyErr != nil {
+		t.Errorf("live config Verify failed after conf.d restart-required reload: %v", verifyErr)
+	}
+
+	reloaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatalf("reload from disk: %v", err)
+	}
+	if err := integrity.Verify(d.binaryPath, reloaded); err != nil {
+		t.Errorf("on-disk integrity Verify failed: %v", err)
+	}
+	if reloaded.Hostname != "after.example.com" {
+		t.Errorf("on-disk hostname: got %q want after.example.com", reloaded.Hostname)
+	}
+
+	select {
+	case <-d.alertCh:
+	default:
+		t.Error("expected a restart_required finding on the alert channel")
+	}
+}
+
 func hostnameOf(c *config.Config) string {
 	if c == nil {
 		return "<nil>"

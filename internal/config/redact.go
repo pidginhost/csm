@@ -11,6 +11,7 @@ var sensitiveScalarPaths = map[string]struct{}{
 	"geoip.license_key":                          {},
 	"integrity.binary_hash":                      {},
 	"integrity.config_hash":                      {},
+	"integrity.confd_hash":                       {},
 	"reputation.abuseipdb_key":                   {},
 	"reputation.rspamd.token":                    {},
 	"reputation.upstream.token":                  {},

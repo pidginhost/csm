@@ -109,8 +109,7 @@ func (d *Daemon) reloadConfig() {
 		// emit the warning so they know to act.
 		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err == nil {
 			resynced := *oldCfg
-			resynced.Integrity.BinaryHash = newCfg.Integrity.BinaryHash
-			resynced.Integrity.ConfigHash = newCfg.Integrity.ConfigHash
+			resynced.Integrity = newCfg.Integrity
 			resynced.ConfigFile = cfgPath
 			resynced.ConfigDir = oldCfg.ConfigDir
 			publishActiveConfig(&resynced, "SIGHUP")

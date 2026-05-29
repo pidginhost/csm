@@ -16,6 +16,7 @@ func TestRedact(t *testing.T) {
 	cfg.Challenge.VerifiedSession.AdminSecret = "verified-secret"
 	cfg.Integrity.BinaryHash = "abc123"
 	cfg.Integrity.ConfigHash = "def456"
+	cfg.Integrity.ConfdHash = "fedcba"
 	cfg.Sentry.DSN = "https://token@sentry.example.com/1"
 	cfg.Alerts.Email.SMTP = "localhost:25"
 
@@ -55,6 +56,9 @@ func TestRedact(t *testing.T) {
 	if redacted.Integrity.ConfigHash != "***REDACTED***" {
 		t.Errorf("config_hash not redacted: %q", redacted.Integrity.ConfigHash)
 	}
+	if redacted.Integrity.ConfdHash != "***REDACTED***" {
+		t.Errorf("confd_hash not redacted: %q", redacted.Integrity.ConfdHash)
+	}
 	if redacted.Sentry.DSN != "***REDACTED***" {
 		t.Errorf("sentry.dsn not redacted: %q", redacted.Sentry.DSN)
 	}
@@ -83,5 +87,12 @@ func TestRedactEmptyFields(t *testing.T) {
 	// Empty fields stay empty
 	if redacted.WebUI.AuthToken != "" {
 		t.Errorf("empty auth_token should stay empty, got %q", redacted.WebUI.AuthToken)
+	}
+}
+
+func TestRedactConfigScalarForLogRedactsConfdHash(t *testing.T) {
+	got := redactConfigScalarForLog("integrity.confd_hash", "sha256:abc")
+	if got != "***REDACTED***" {
+		t.Fatalf("confd_hash log redaction = %q", got)
 	}
 }

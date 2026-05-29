@@ -259,8 +259,12 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	disk.ConfigFile = s.cfg.ConfigFile
+	disk.ConfigDir = s.cfg.ConfigDir
 	if disk.Integrity.ConfigHash != ifMatch {
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
+		return
+	}
+	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
 		return
 	}
 
@@ -302,16 +306,17 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newETag := clone.Integrity.ConfigHash
+	newIntegrity := clone.Integrity
 
 	if len(restartFields) == 0 {
 		if live := config.Active(); live != nil {
 			liveClone := cloneConfigForSettingsApply(live)
 			if _, liveErrs := buildChangeSet(section, &liveClone, body.Changes); len(liveErrs) == 0 {
-				liveClone.Integrity.ConfigHash = newETag
+				liveClone.Integrity = newIntegrity
 				config.SetActive(&liveClone)
 			} else {
 				livePatched := *live
-				livePatched.Integrity.ConfigHash = newETag
+				livePatched.Integrity = newIntegrity
 				config.SetActive(&livePatched)
 			}
 		} else {
@@ -319,7 +324,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if live := config.Active(); live != nil {
 		livePatched := *live
-		livePatched.Integrity.ConfigHash = newETag
+		livePatched.Integrity = newIntegrity
 		config.SetActive(&livePatched)
 	}
 
@@ -338,6 +343,19 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})
+}
+
+func rejectIfConfDirChanged(w http.ResponseWriter, confDir, storedHash string) bool {
+	currentHash, err := integrity.HashConfDir(confDir)
+	if err != nil {
+		writeJSONError(w, "hash conf.d: "+err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	if currentHash != storedHash {
+		writeJSONError(w, "conf.d changed on disk, reload", http.StatusPreconditionFailed)
+		return true
+	}
+	return false
 }
 
 type fieldError struct {

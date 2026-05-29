@@ -63,6 +63,59 @@ func newSettingsTestServer(t *testing.T, token, yamlBody string) (*Server, strin
 	return s, cfgPath
 }
 
+func newSettingsTestServerWithConfDir(t *testing.T, token, yamlBody string, fragments map[string]string) (*Server, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range fragments {
+		if err := os.WriteFile(filepath.Join(confDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StatePath = dir
+	cfg.WebUI.AuthToken = token
+	cfg.WebUI.UIDir = filepath.Join(dir, "ui-missing")
+	if serr := integrity.SignAndSaveAtomic(cfg, "sha256:testbinary"); serr != nil {
+		t.Fatal(serr)
+	}
+	cfg, err = config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StatePath = dir
+	cfg.WebUI.AuthToken = token
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin"}}
+	cfg.WebUI.UIDir = filepath.Join(dir, "ui-missing")
+
+	store, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(nil) })
+
+	config.SetActive(cfg)
+
+	s, err := New(cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+	return s, cfgPath, confDir
+}
+
 func settingsAuthedReq(method, path, token, body string) *http.Request {
 	var r *http.Request
 	if body != "" {
@@ -250,6 +303,111 @@ auto_response:
 	}
 	if loaded.Integrity.ConfigHash != resp.NewETag {
 		t.Errorf("disk config_hash = %q, new_etag = %q", loaded.Integrity.ConfigHash, resp.NewETag)
+	}
+}
+
+func TestSettingsPOSTPreservesConfdHashWithFragments(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  netblock_threshold: 3
+  max_blocks_per_hour: 50
+`
+	s, cfgPath, confDir := newSettingsTestServerWithConfDir(t, "tok", body, map[string]string{
+		"10-thresholds.yaml": "thresholds:\n  mail_queue_warn: 150\n",
+	})
+	oldConfdHash := config.Active().Integrity.ConfdHash
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag from GET")
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+
+	loaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Integrity.ConfdHash != oldConfdHash {
+		t.Fatalf("disk confd_hash = %q, want %q", loaded.Integrity.ConfdHash, oldConfdHash)
+	}
+	live := config.Active()
+	if live.Integrity.ConfdHash != loaded.Integrity.ConfdHash {
+		t.Fatalf("live confd_hash = %q, disk = %q", live.Integrity.ConfdHash, loaded.Integrity.ConfdHash)
+	}
+	if live.ConfigDir != confDir {
+		t.Fatalf("live ConfigDir = %q, want %q", live.ConfigDir, confDir)
+	}
+}
+
+func TestSettingsPOSTRejectsStaleConfdHashAfterFragmentChange(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  netblock_threshold: 3
+  max_blocks_per_hour: 50
+`
+	s, cfgPath, confDir := newSettingsTestServerWithConfDir(t, "tok", body, map[string]string{
+		"10-thresholds.yaml": "thresholds:\n  mail_queue_warn: 150\n",
+	})
+	oldConfdHash := config.Active().Integrity.ConfdHash
+	if err := os.WriteFile(filepath.Join(confDir, "10-thresholds.yaml"), []byte("thresholds:\n  mail_queue_warn: 175\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag from GET")
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != http.StatusPreconditionFailed {
+		t.Fatalf("code = %d, want 412, body = %s", postW.Code, postW.Body.String())
+	}
+
+	loaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AutoResponse.BlockIPs {
+		t.Fatal("disk config was updated despite stale conf.d hash")
+	}
+	if config.Active().Integrity.ConfdHash != oldConfdHash {
+		t.Fatalf("live confd_hash changed despite rejected save")
 	}
 }
 

@@ -113,6 +113,7 @@ alerts:
 integrity:
   binary_hash: ""                       # auto-populated by install/rehash
   config_hash: ""                       # auto-populated by install/rehash
+  confd_hash: ""                        # auto-populated by install/rehash
   immutable: false                      # prevent config changes at runtime
 
 # --- Thresholds ---
@@ -582,9 +583,10 @@ csm config show        # display config with secrets redacted
 
 ## Editing csm.yaml by hand
 
-CSM stores a sha256 of the config in `integrity.config_hash` and
-refuses to start if the on-disk file disagrees with it. This is a
-tamper-detection feature. There are two supported edit workflows
+CSM stores a sha256 of the main config in `integrity.config_hash` and
+a separate digest of loaded drop-ins in `integrity.confd_hash`. It
+refuses to start if the on-disk files disagree with those values. This
+is a tamper-detection feature. There are two supported edit workflows
 depending on which fields you touch.
 
 ### Fast path: SIGHUP reload (safe fields only)
@@ -607,7 +609,7 @@ sudo journalctl -u csm -n 20 --no-pager
 file). The daemon re-reads the file, validates it, diffs it against
 the running config, and if every change is on a field tagged
 `hotreload:"safe"` it swaps the new values into
-the live config and re-signs `integrity.config_hash` on disk. The
+the live config and re-signs the integrity hashes on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
 
@@ -671,7 +673,7 @@ sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
 
 # edit /etc/csm/csm.yaml with your favourite editor
 
-sudo /opt/csm/csm rehash     # re-signs integrity.config_hash
+sudo /opt/csm/csm rehash     # re-signs integrity hashes
 sudo /opt/csm/csm validate   # syntax + value sanity
 sudo systemctl restart csm
 sudo systemctl status csm    # confirm active, no crash-loop
@@ -702,7 +704,8 @@ Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **d
 - **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order.
 - **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
-- **Hash:** `integrity.config_hash` covers the **main file only**. Drop-in changes are picked up on restart (or SIGHUP, where the field is hot-reload-safe) without a `csm rehash`.
+- **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
+- **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Web settings saves refuse to bless a drop-in change that has not already been re-signed.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash

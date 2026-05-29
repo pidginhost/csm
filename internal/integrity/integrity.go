@@ -110,6 +110,11 @@ func HashConfigStableBytes(data []byte) string {
 func SignAndSaveAtomic(cfg *config.Config, binaryHash string) error {
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = ""
+	confdHash, err := HashConfDir(cfg.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("hashing conf.d: %w", err)
+	}
+	cfg.Integrity.ConfdHash = confdHash
 	preHash, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal (pre-hash): %w", err)

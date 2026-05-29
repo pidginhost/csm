@@ -47,6 +47,53 @@ func TestLoadConfDir_EmptyDirReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestConfDirFragmentDigestInputSkipsEmptyFragments(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "10-empty.yaml"), []byte("# comment only\n\n"), 0o600))
+
+	frags, err := ConfDirFragmentDigestInput(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frags) != 0 {
+		t.Fatalf("expected no digest fragments, got %d", len(frags))
+	}
+}
+
+func TestConfDirFragmentDigestInputRejectsInvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "10-bad.yaml"), []byte("bad: :\n"), 0o600))
+
+	_, err := ConfDirFragmentDigestInput(dir)
+	if err == nil {
+		t.Fatal("invalid YAML must be rejected")
+	}
+	if !strings.Contains(err.Error(), "parsing") {
+		t.Fatalf("error = %v, want parsing error", err)
+	}
+}
+
+func TestLoadConfDirRejectsIntegrityOverride(t *testing.T) {
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "10-integrity.yaml"), []byte("integrity:\n  config_hash: \"\"\n"), 0o600))
+
+	_, err := LoadConfDir(dir)
+	if err == nil {
+		t.Fatal("conf.d integrity override must be rejected")
+	}
+	if !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("error = %v, want integrity refusal", err)
+	}
+
+	_, err = ConfDirFragmentDigestInput(dir)
+	if err == nil {
+		t.Fatal("digest input must reject the same fragment set")
+	}
+	if !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("digest error = %v, want integrity refusal", err)
+	}
+}
+
 func TestLoadConfDir_RejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(dir, "10.yaml"), []byte("not_a_real_field: 1\n"), 0o600))
