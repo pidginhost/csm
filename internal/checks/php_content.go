@@ -36,6 +36,27 @@ var evalExecWrapInner = map[string]struct{}{
 	"call_user_func_array": {},
 }
 
+// reBacktickSuperglobal matches a backtick shell-exec span that contains a
+// request superglobal, e.g. “ `cat $_GET[f]` “. Backticks are PHP's
+// shell_exec sugar; embedding request input in one is a near-certain RCE
+// and is not covered by the shell-function list (which looks for named
+// calls). Backticks are not stripped by stripPHPStringsFromCode, so this
+// runs against the lower-cased source directly.
+var reBacktickSuperglobal = regexp.MustCompile("`[^`]*\\$_(?:get|post|request|cookie|server)[^`]*`")
+
+// reCallbackExecName matches a callback-position sink whose callback is a
+// literal exec/decoder function name, e.g. array_map("system", $_GET) or
+// register_shutdown_function("passthru", ...). Passing one of these names
+// as a string callback is never legitimate. Runs on comment-stripped (but
+// string-preserved) source so the literal name survives.
+var reCallbackExecName = regexp.MustCompile(`(?i)\b(?:array_map|array_filter|array_walk|u[ak]?sort|register_shutdown_function|register_tick_function|call_user_func(?:_array)?)\s*\(\s*["'](?:system|exec|shell_exec|passthru|popen|proc_open|eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|create_function|call_user_func)["']`)
+
+// reVarVarCall matches a variable-variable or dynamic-expression function
+// invocation, e.g. `$$h(...)` or `${$x}(...)`. On its own this shows up in
+// some dispatcher code, so it is only treated as an indicator when the same
+// line also carries a request superglobal (the RCE shape).
+var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
+
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
 // CheckPHPContent scans new/suspicious PHP files for obfuscation patterns,
@@ -261,7 +282,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// strings first, then match the structural pattern across whitespace,
 	// and require the inner callee to be one of the known decoders /
 	// decompressors.
-	codeLower := stripPHPStringsFromCode(stripPHPCommentsFromCode(contentLower))
+	commentStripped := stripPHPCommentsFromCode(contentLower)
+	codeLower := stripPHPStringsFromCode(commentStripped)
 	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(codeLower, -1) {
 		if len(m) < 3 {
 			continue
@@ -303,6 +325,31 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 	if hasEvalExecWrap {
 		indicators = append(indicators, "eval() wrapping a dynamic code-execution primitive")
+	}
+
+	// Backtick shell execution with request input -- `...$_GET...`. Backticks
+	// survive string stripping, so match the lower-cased source directly.
+	if reBacktickSuperglobal.MatchString(contentLower) {
+		indicators = append(indicators, "backtick shell execution with request input")
+	}
+
+	// Callback-position exec: an exec/decoder function name passed as a
+	// string callback (array_map("system", ...), register_shutdown_function(
+	// "passthru", ...)). Runs on the comment-stripped source so the literal
+	// callback name is preserved.
+	if reCallbackExecName.MatchString(commentStripped) {
+		indicators = append(indicators, "exec/decoder function name passed as a callback")
+	}
+
+	// Variable-variable / dynamic-expression function call co-located with
+	// request input on the same line -- $$h($_GET[...]) -- a dynamic-dispatch
+	// RCE shape. The same-line request-var gate keeps benign dispatcher code
+	// (which uses $$var without attacker input) from tripping.
+	for _, line := range strings.Split(codeLower, "\n") {
+		if reVarVarCall.MatchString(line) && lineContainsRequestVar(line) {
+			indicators = append(indicators, "variable-variable function call with request input")
+			break
+		}
 	}
 
 	// --- Critical: call_user_func with string-built function names ---

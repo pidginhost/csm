@@ -184,6 +184,61 @@ func TestAnalyzePHPContentAssertCallUserFuncConditionNotFlagged(t *testing.T) {
 	}
 }
 
+// --- analyzePHPContent: callback / backtick / variable-variable sinks --
+
+func TestAnalyzePHPContentBacktickSuperglobal(t *testing.T) {
+	res := analyzePHPString(t, "<?php $out = `cat /etc/passwd $_GET[x]`; echo $out; ?>")
+	if !strings.Contains(res.details, "backtick shell execution with request input") {
+		t.Errorf("backtick with superglobal not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentBacktickNoSuperglobalNotFlagged(t *testing.T) {
+	// A backtick with a static command is not a request-driven RCE.
+	res := analyzePHPString(t, "<?php $v = `git rev-parse HEAD`; echo $v; ?>")
+	if strings.Contains(res.details, "backtick shell execution with request input") {
+		t.Errorf("static backtick wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallbackExecName(t *testing.T) {
+	res := analyzePHPString(t, "<?php array_map(\"system\", $_POST['cmds']); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("array_map(\"system\", ...) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallbackRegisterShutdown(t *testing.T) {
+	res := analyzePHPString(t, "<?php register_shutdown_function('passthru', $_GET['c']); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("register_shutdown_function('passthru', ...) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentBenignCallbackNotFlagged(t *testing.T) {
+	// array_map('trim', $_POST) and array_filter($arr, 'is_string') are
+	// extremely common and must not trip the callback-exec indicator.
+	res := analyzePHPString(t, "<?php $a = array_map('trim', $_POST); $b = array_filter($arr, 'is_string'); ?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("benign array_map/array_filter wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentVarVarCallWithRequest(t *testing.T) {
+	res := analyzePHPString(t, "<?php $$h($_GET['a'], $_GET['b']); ?>")
+	if !strings.Contains(res.details, "variable-variable function call with request input") {
+		t.Errorf("$$h($_GET...) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentVarVarCallNoRequestNotFlagged(t *testing.T) {
+	// $$handler() dispatch without attacker input is a legitimate pattern.
+	res := analyzePHPString(t, "<?php $handler='render'; $$handler($config); ?>")
+	if strings.Contains(res.details, "variable-variable function call with request input") {
+		t.Errorf("benign $$handler() wrongly flagged; details=%q", res.details)
+	}
+}
+
 // --- checkDangerousPorts with listening port on dangerous port --------
 
 func TestCheckDangerousPortsWithListening(t *testing.T) {

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The surgical PHP cleaner now strips include and eval injections even when the malicious line is padded with leading NUL or vertical-tab bytes, instead of falling back to whole-file quarantine.
 - Surgical PHP cleaner reports now omit padding control bytes from stripped injection summaries.
 - PHP content scanner now flags eval that wraps a variable function call or a dynamic code-construction primitive, closing an obfuscation path that decoder-only matching missed.
+- PHP content scanner now flags backtick shell execution with request input, exec/decoder names passed as callbacks, and variable-variable function calls driven by request input.
 
 ## [3.9.2] - 2026-05-29
 
