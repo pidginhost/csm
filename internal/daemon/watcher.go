@@ -389,7 +389,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		// Record the hold-seen marker only after CSM confirms the hold was
 		// applied or already active. If lookup or whmapi1 fails, later
 		// max-defers lines must still retry and alert.
-		if autoSuspendOutgoingMail(domain) {
+		if maybeHoldOutgoingMail(cfg, domain) {
 			recordRecentOutgoingMailHold(domain)
 		}
 		findings = append(findings, alert.Finding{
@@ -548,7 +548,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	for _, f := range parseCloudRelayFinding(line, cfg) {
 		authUser := extractAuthUser(line)
 		if domain := extractDomainFromEmail(authUser); domain != "" {
-			autoSuspendOutgoingMail(authUser)
+			maybeHoldOutgoingMail(cfg, authUser)
 			RecordCompromisedDomain(domain)
 		}
 		findings = append(findings, f)
@@ -731,6 +731,22 @@ func userOnOutgoingMailHold(user string) bool {
 		}
 	}
 	return false
+}
+
+// maybeHoldOutgoingMail applies an outgoing-mail hold only when auto-response
+// is enabled and not in dry-run. Holding a customer's outbound mail is a
+// customer-impacting action, so it honours the same master switch and dry-run
+// safety default as IP blocking and quarantine; an operator evaluating CSM in
+// monitor mode must never have mail held out from under them. It returns true
+// only when a hold was actually applied (or already active), so callers can
+// keep their hold-dedup bookkeeping accurate.
+func maybeHoldOutgoingMail(cfg *config.Config, domainOrEmail string) bool {
+	if cfg == nil || !cfg.AutoResponse.Enabled || cfg.AutoResponseDryRunEnabled() {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: would hold outgoing mail for %s (auto_response disabled or dry-run)\n",
+			time.Now().Format("2006-01-02 15:04:05"), domainOrEmail)
+		return false
+	}
+	return autoSuspendOutgoingMail(domainOrEmail)
 }
 
 // autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel

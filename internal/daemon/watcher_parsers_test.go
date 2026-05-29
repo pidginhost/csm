@@ -238,6 +238,84 @@ func TestParseEximLogLine_OutgoingMailHoldDoesNotReapplyHold(t *testing.T) {
 	})
 }
 
+// eximAutoHoldConfig returns a config that opts in to live mail holds:
+// auto-response enabled and dry-run explicitly off. Outgoing-mail holds are
+// a customer-impacting auto-response action, so they require the same master
+// switch + dry-run gate as IP blocks and quarantine.
+func eximAutoHoldConfig() *config.Config {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	dryRun := false
+	cfg.AutoResponse.DryRun = &dryRun
+	return cfg
+}
+
+// TestMaybeHoldOutgoingMail_GatedByConfig verifies the customer-impacting
+// mail hold runs only when auto-response is enabled and dry-run is off, and
+// is otherwise suppressed (the safety default).
+func TestMaybeHoldOutgoingMail_GatedByConfig(t *testing.T) {
+	prevHook := autoSuspendOutgoingMail
+	var calls int
+	autoSuspendOutgoingMail = func(string) bool { calls++; return true }
+	t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+	dryRunOff := false
+	dryRunOn := true
+	enabled := &config.Config{}
+	enabled.AutoResponse.Enabled = true
+	enabled.AutoResponse.DryRun = &dryRunOff
+	enabledDry := &config.Config{}
+	enabledDry.AutoResponse.Enabled = true
+	enabledDry.AutoResponse.DryRun = &dryRunOn
+
+	cases := []struct {
+		name     string
+		cfg      *config.Config
+		wantCall bool
+	}{
+		{"nil config", nil, false},
+		{"defaults (disabled + dry-run)", &config.Config{}, false},
+		{"enabled but dry-run", enabledDry, false},
+		{"enabled and live", enabled, true},
+	}
+	for _, tc := range cases {
+		calls = 0
+		got := maybeHoldOutgoingMail(tc.cfg, "user@example.com")
+		if got != tc.wantCall || (calls > 0) != tc.wantCall {
+			t.Errorf("%s: held=%v calls=%d, want held=%v", tc.name, got, calls, tc.wantCall)
+		}
+	}
+}
+
+// TestParseEximLogLine_MaxDefersDryRunDoesNotHold asserts that with the safety
+// defaults (auto-response disabled, dry-run on) a spam-outbreak line surfaces
+// the finding for the operator but does NOT hold the customer's mail.
+func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
+	withGlobalStore(t, func(_ *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) bool {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+			return true
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{} // disabled + dry-run on (defaults)
+		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		findings := parseEximLogLine(line, cfg)
+		if len(suspendCalls) != 0 {
+			t.Fatalf("auto-response disabled/dry-run must not hold mail; got calls %v", suspendCalls)
+		}
+		if len(findings) == 0 || findings[0].Check != "email_spam_outbreak" {
+			t.Fatalf("outbreak finding must still surface for operator visibility; got %v", findings)
+		}
+	})
+}
+
 // TestParseEximLogLine_MaxDefersStillSuspends asserts that a max-defers
 // threshold line still escalates when CSM has not recently seen cPanel hold
 // the domain already.
@@ -254,7 +332,7 @@ func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-		cfg := &config.Config{}
+		cfg := eximAutoHoldConfig()
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 		findings := parseEximLogLine(line, cfg)
@@ -280,7 +358,7 @@ func TestParseEximLogLine_MaxDefersAfterRecentHoldDoesNotReportOutbreak(t *testi
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-		cfg := &config.Config{}
+		cfg := eximAutoHoldConfig()
 		holdLine := `2026-04-11 12:00:00 1abc23-000456-AB == user@example.com R=enforce_mail_permissions defer (-1): "Domain example.com has an outgoing mail hold. Message will be reattempted later"`
 		maxDefersLine := `2026-04-11 12:15:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
@@ -318,7 +396,7 @@ func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-		cfg := &config.Config{}
+		cfg := eximAutoHoldConfig()
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 		first := parseEximLogLine(line, cfg)
@@ -355,7 +433,7 @@ func TestParseEximLogLine_MaxDefersDoesNotRecordHoldDedupWhenSuspendFails(t *tes
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
-		cfg := &config.Config{}
+		cfg := eximAutoHoldConfig()
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 		first := parseEximLogLine(line, cfg)
@@ -474,7 +552,7 @@ func TestParseEximLogLine_MaxDefersAfterStaleHoldStillSuspends(t *testing.T) {
 			t.Fatalf("SetMetaString: %v", err)
 		}
 
-		cfg := &config.Config{}
+		cfg := eximAutoHoldConfig()
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 		findings := parseEximLogLine(line, cfg)
