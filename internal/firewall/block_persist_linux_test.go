@@ -3,8 +3,12 @@
 package firewall
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 // TestSaveBlockedEntryPropagatesPersistError pins that a failed state
@@ -31,5 +35,24 @@ func TestSaveBlockedEntrySucceedsWhenWritable(t *testing.T) {
 	}
 	if c := e.RuleCounts(); c.Blocked != 1 {
 		t.Errorf("Blocked count after persist = %d, want 1", c.Blocked)
+	}
+}
+
+func TestSaveBlockedEntryAcceptsCommittedWriteWarning(t *testing.T) {
+	prev := writeFirewallStateJSON
+	t.Cleanup(func() { writeFirewallStateJSON = prev })
+	writeFirewallStateJSON = func(path string, perm os.FileMode, v any) error {
+		if err := atomicio.AtomicWriteJSON(path, perm, v); err != nil {
+			return err
+		}
+		return errors.New("sync state dir")
+	}
+
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}}
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.3", Reason: "test"}); err != nil {
+		t.Fatalf("saveBlockedEntry returned error after committed write: %v", err)
+	}
+	if !e.IsBlocked("203.0.113.3") {
+		t.Fatal("committed write warning should refresh blocked cache")
 	}
 }

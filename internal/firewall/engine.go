@@ -1490,8 +1490,12 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 		// and the live ruleset cannot diverge: a non-durable block would
 		// silently vanish on the next daemon restart. The caller re-fires
 		// the finding on the next cycle.
-		_ = e.conn.SetDeleteElements(targetSet, elem)
-		_ = e.conn.Flush()
+		if rollbackErr := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); rollbackErr != nil {
+			return fmt.Errorf("persisting block for %s: %w (rollback queue failed: %v)", ip, err, rollbackErr)
+		}
+		if rollbackErr := e.conn.Flush(); rollbackErr != nil {
+			return fmt.Errorf("persisting block for %s: %w (rollback flush failed: %v)", ip, err, rollbackErr)
+		}
 		return fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
@@ -2770,6 +2774,8 @@ func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
 	return out, true
 }
 
+var writeFirewallStateJSON = atomicio.AtomicWriteJSON
+
 // saveState writes the firewall state to disk atomically (write to .tmp,
 // rename into place) and rebuilds the in-memory cache to reflect the
 // just-written snapshot. Callers must hold e.mu.
@@ -2779,11 +2785,38 @@ func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
 // corrupt the cache.
 func (e *Engine) saveState(s *FirewallState) error {
 	path := filepath.Join(e.statePath, "state.json")
-	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
+	if err := writeFirewallStateJSON(path, 0o600, s); err != nil {
+		if firewallStateFileMatches(path, 0o600, s) {
+			fmt.Fprintf(os.Stderr, "firewall: state.json committed with persistence warning: %v\n", err)
+			e.setStateCacheLocked(path, s)
+			return nil
+		}
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
 		return err
 	}
+	e.setStateCacheLocked(path, s)
+	return nil
+}
+
+func firewallStateFileMatches(path string, perm os.FileMode, s *FirewallState) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != perm {
+		return false
+	}
+	want, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return false
+	}
+	// #nosec G304 -- path is the engine-owned state file path.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(got, want)
+}
+
+func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 	var cacheKey stateFileCacheKey
 	if info, statErr := os.Stat(path); statErr == nil {
 		cacheKey = stateFileCacheKeyFromInfo(info)
@@ -2797,7 +2830,6 @@ func (e *Engine) saveState(s *FirewallState) error {
 	}
 	e.stateCacheKey = cacheKey
 	e.rebuildIndexLocked()
-	return nil
 }
 
 func (e *Engine) clearStateCacheLocked() {
