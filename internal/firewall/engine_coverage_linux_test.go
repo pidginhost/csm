@@ -157,7 +157,7 @@ func TestEngineSaveBlockedEntryInfersSourceWhenEmpty(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:     "203.0.113.7",
 		Reason: "via CLI",
 	})
@@ -277,7 +277,7 @@ func TestEngineRemoveAllowedStateBySourceNoMatchingSource(t *testing.T) {
 func TestEngineSaveStateAtomicRename(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		Blocked: []BlockedEntry{{IP: "1.2.3.4"}},
 	})
 

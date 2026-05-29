@@ -68,11 +68,11 @@ func TestEngineSaveStateOverwritesExisting(t *testing.T) {
 	e := &Engine{statePath: dir}
 
 	// First write
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		Blocked: []BlockedEntry{{IP: "1.1.1.1", BlockedAt: time.Now()}},
 	})
 	// Second write with different content
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		Blocked: []BlockedEntry{{IP: "2.2.2.2", BlockedAt: time.Now()}},
 	})
 
@@ -110,7 +110,7 @@ func TestEngineSaveBlockedEntryExplicitSourcePreserved(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:        "203.0.113.9",
 		Reason:    "manual block",
 		Source:    "cli",
@@ -258,7 +258,7 @@ func TestEngineCleanExpiredSubnetsWithActiveOnly(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
 	// Write an explicitly active (far-future expiry) subnet directly to state
 	future := time.Now().Add(24 * time.Hour)
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		BlockedNet: []SubnetEntry{{CIDR: "10.0.0.0/8", ExpiresAt: future}},
 	})
 	if n := e.CleanExpiredSubnets(); n != 0 {
@@ -274,7 +274,7 @@ func TestEngineCleanExpiredSubnetsWithActiveOnly(t *testing.T) {
 
 func TestEngineSaveBlockedEntryInfersFromChallengeReason(t *testing.T) {
 	e := &Engine{statePath: t.TempDir()}
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:        "203.0.113.5",
 		Reason:    "captcha challenge failed",
 		BlockedAt: time.Now(),

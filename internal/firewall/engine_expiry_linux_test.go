@@ -140,7 +140,7 @@ func TestCleanExpiredSubnetsUsesRawState(t *testing.T) {
 		cfg:       &FirewallConfig{},
 	}
 	future := time.Now().Add(time.Hour)
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		BlockedNet: []SubnetEntry{
 			{CIDR: "192.0.2.0/24", Reason: "expired", ExpiresAt: time.Now().Add(-time.Hour)},
 			{CIDR: "198.51.100.0/24", Reason: "active", ExpiresAt: future},
@@ -187,7 +187,7 @@ func TestAllowMethodsReturnBlockedDeleteQueueError(t *testing.T) {
 				cfg:        &FirewallConfig{},
 				setBlocked: anonymousIPv4Set("blocked_ips"),
 			}
-			e.saveBlockedEntry(BlockedEntry{
+			_ = e.saveBlockedEntry(BlockedEntry{
 				IP:        "10.0.0.44",
 				Reason:    "test block",
 				BlockedAt: time.Now(),

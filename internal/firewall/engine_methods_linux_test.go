@@ -27,7 +27,7 @@ func TestEngineBlockIPStateOnly(t *testing.T) {
 	e := newTestEngine(t)
 
 	// BlockIP will panic on nil conn — just test saveBlockedEntry directly
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:        "203.0.113.5",
 		Reason:    "brute-force",
 		BlockedAt: time.Now(),

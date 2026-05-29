@@ -35,9 +35,9 @@ func TestBlockIPOutcome_DenyLimitCountsFromLiveSet(t *testing.T) {
 	}
 	// Seed state.json with 3 stale temp blocks to exceed the cap if
 	// the count was sourced from state.
-	e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.1", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
-	e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.2", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
-	e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.3", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.1", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.2", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.3", Reason: "x", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)})
 
 	outcome, err := e.BlockIPOutcome("198.51.100.4", "new", time.Hour)
 	if err != nil {

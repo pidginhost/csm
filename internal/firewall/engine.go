@@ -1484,7 +1484,16 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	if timeout > 0 {
 		entry.ExpiresAt = time.Now().Add(timeout)
 	}
-	e.saveBlockedEntry(entry)
+	if err := e.saveBlockedEntry(entry); err != nil {
+		// The block is live in nft but did not persist. Roll the kernel
+		// element back so state.json (the seed source on the next Apply)
+		// and the live ruleset cannot diverge: a non-durable block would
+		// silently vanish on the next daemon restart. The caller re-fires
+		// the finding on the next cycle.
+		_ = e.conn.SetDeleteElements(targetSet, elem)
+		_ = e.conn.Flush()
+		return fmt.Errorf("persisting block for %s: %w", ip, err)
+	}
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 
 	return nil
@@ -1904,7 +1913,7 @@ func (e *Engine) CleanExpiredAllows() int {
 			return 0 // don't update state; will retry on next tick
 		}
 		state.Allowed = active
-		e.saveState(&state)
+		_ = e.saveState(&state)
 		for _, entry := range expired {
 			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
 		}
@@ -1963,7 +1972,7 @@ func (e *Engine) CleanExpiredSubnets() int {
 			return 0
 		}
 		state.BlockedNet = active
-		e.saveState(&state)
+		_ = e.saveState(&state)
 		for _, entry := range expired {
 			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
 		}
@@ -2043,7 +2052,7 @@ func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) e
 	st.PortAllowed = append(st.PortAllowed, PortAllowEntry{
 		IP: ip, Port: port, Proto: proto, Reason: reason, Source: InferProvenance("allow_port", reason),
 	})
-	e.saveState(&st)
+	_ = e.saveState(&st)
 	AppendAudit(e.statePath, "allow_port", fmt.Sprintf("%s:%d/%s", ip, port, proto), reason, InferProvenance("allow_port", reason), 0)
 	return nil
 }
@@ -2067,7 +2076,7 @@ func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
 		return fmt.Errorf("port allow not found: %s:%d/%s", ip, port, proto)
 	}
 	st.PortAllowed = remaining
-	e.saveState(&st)
+	_ = e.saveState(&st)
 	AppendAudit(e.statePath, "remove_port_allow", fmt.Sprintf("%s:%d/%s", ip, port, proto), "", "", 0)
 	return nil
 }
@@ -2088,7 +2097,7 @@ func (e *Engine) FlushBlocked() error {
 	state := e.loadStateFile()
 	count := len(state.Blocked)
 	state.Blocked = nil
-	e.saveState(&state)
+	_ = e.saveState(&state)
 	AppendAudit(e.statePath, "flush", "", fmt.Sprintf("cleared %d entries", count), SourceSystem, 0)
 
 	return nil
@@ -2768,12 +2777,12 @@ func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
 // The cache rebuild deep-copies the input slices so a caller that
 // keeps mutating the local FirewallState after saveState returns cannot
 // corrupt the cache.
-func (e *Engine) saveState(s *FirewallState) {
+func (e *Engine) saveState(s *FirewallState) error {
 	path := filepath.Join(e.statePath, "state.json")
 	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
-		return
+		return err
 	}
 	var cacheKey stateFileCacheKey
 	if info, statErr := os.Stat(path); statErr == nil {
@@ -2788,6 +2797,7 @@ func (e *Engine) saveState(s *FirewallState) {
 	}
 	e.stateCacheKey = cacheKey
 	e.rebuildIndexLocked()
+	return nil
 }
 
 func (e *Engine) clearStateCacheLocked() {
@@ -2796,7 +2806,7 @@ func (e *Engine) clearStateCacheLocked() {
 	e.rebuildIndexLocked()
 }
 
-func (e *Engine) saveBlockedEntry(entry BlockedEntry) {
+func (e *Engine) saveBlockedEntry(entry BlockedEntry) error {
 	if entry.Source == "" {
 		entry.Source = InferProvenance("block", entry.Reason)
 	}
@@ -2805,11 +2815,10 @@ func (e *Engine) saveBlockedEntry(entry BlockedEntry) {
 	// blocked entry per call. Hot during correlator-driven block bursts.
 	if i, ok := e.blockedIPIndex[entry.IP]; ok && i >= 0 && i < len(state.Blocked) && state.Blocked[i].IP == entry.IP {
 		state.Blocked[i] = entry
-		e.saveState(&state)
-		return
+		return e.saveState(&state)
 	}
 	state.Blocked = append(state.Blocked, entry)
-	e.saveState(&state)
+	return e.saveState(&state)
 }
 
 func (e *Engine) removeBlockedState(ip string) {
@@ -2821,7 +2830,7 @@ func (e *Engine) removeBlockedState(ip string) {
 		}
 	}
 	state.Blocked = remaining
-	e.saveState(&state)
+	_ = e.saveState(&state)
 }
 
 func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
@@ -2832,12 +2841,12 @@ func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
 	for i, existing := range state.Allowed {
 		if existing.IP == entry.IP && existing.Source == entry.Source {
 			state.Allowed[i] = entry // update reason/expiry for same source
-			e.saveState(&state)
+			_ = e.saveState(&state)
 			return
 		}
 	}
 	state.Allowed = append(state.Allowed, entry)
-	e.saveState(&state)
+	_ = e.saveState(&state)
 }
 
 func (e *Engine) removeAllowedState(ip string) {
@@ -2849,7 +2858,7 @@ func (e *Engine) removeAllowedState(ip string) {
 		}
 	}
 	state.Allowed = remaining
-	e.saveState(&state)
+	_ = e.saveState(&state)
 }
 
 // removeAllowedStateBySource removes only entries matching ip+source.
@@ -2874,7 +2883,7 @@ func (e *Engine) removeAllowedStateBySource(ip, source string) bool {
 		return false // IP+source not in state, nothing to do
 	}
 	state.Allowed = remaining
-	e.saveState(&state)
+	_ = e.saveState(&state)
 	return !ipStillPresent
 }
 
@@ -2889,7 +2898,7 @@ func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
 		}
 	}
 	state.BlockedNet = append(state.BlockedNet, entry)
-	e.saveState(&state)
+	_ = e.saveState(&state)
 }
 
 func (e *Engine) isSubnetBlockedStateLocked(cidr string) bool {
@@ -2907,7 +2916,7 @@ func (e *Engine) removeSubnetState(cidr string) {
 		}
 	}
 	state.BlockedNet = remaining
-	e.saveState(&state)
+	_ = e.saveState(&state)
 }
 
 // IP helpers (nextIP, lastIPInRange, fileExistsFirewall) moved to ip_helpers.go (no build tag).

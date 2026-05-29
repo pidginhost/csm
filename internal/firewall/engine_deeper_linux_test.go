@@ -188,7 +188,7 @@ func TestEngineSaveBlockedEntryPreservesExplicitSource(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:     "203.0.113.9",
 		Reason: "anything",
 		Source: SourceAutoResponse, // explicit should not be overridden
@@ -475,8 +475,8 @@ func TestEngineSaveBlockedEntryDedupUpdatesExpiresAt(t *testing.T) {
 		BlockedAt: time.Now(),
 		ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
-	e.saveBlockedEntry(first)
-	e.saveBlockedEntry(second)
+	_ = e.saveBlockedEntry(first)
+	_ = e.saveBlockedEntry(second)
 
 	state := e.loadStateFile()
 	if len(state.Blocked) != 1 {
@@ -496,7 +496,7 @@ func TestEngineRemoveBlockedStateMissingIPIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{IP: "10.0.0.1"})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "10.0.0.1"})
 	// Removing an IP not present should leave state unchanged (no panic, no error).
 	e.removeBlockedState("9.9.9.9")
 

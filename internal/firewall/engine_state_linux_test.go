@@ -73,7 +73,7 @@ func TestEngineSaveState(t *testing.T) {
 	state := &FirewallState{
 		Blocked: []BlockedEntry{{IP: "1.2.3.4", Reason: "test"}},
 	}
-	e.saveState(state)
+	_ = e.saveState(state)
 
 	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if err != nil {
@@ -88,7 +88,7 @@ func TestEngineSaveBlockedEntry(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "test"})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "test"})
 
 	state := e.loadStateFile()
 	if len(state.Blocked) != 1 {
@@ -100,8 +100,8 @@ func TestEngineSaveBlockedEntryDedup(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "first"})
-	e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "second"})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "first"})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "second"})
 
 	state := e.loadStateFile()
 	if len(state.Blocked) != 1 {
@@ -116,7 +116,7 @@ func TestEngineRemoveBlockedState(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}
 
-	e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "test"})
+	_ = e.saveBlockedEntry(BlockedEntry{IP: "203.0.113.5", Reason: "test"})
 	e.removeBlockedState("203.0.113.5")
 
 	state := e.loadStateFile()

@@ -257,7 +257,7 @@ func TestEngine_SaveStateRefreshesCache(t *testing.T) {
 	}
 
 	e.mu.Lock()
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		Blocked:    []BlockedEntry{{IP: "10.0.0.1", BlockedAt: time.Now()}},
 		BlockedNet: []SubnetEntry{{CIDR: "203.0.113.0/24", BlockedAt: time.Now()}},
 	})
@@ -276,7 +276,7 @@ func TestEngine_SaveStateCacheKeyMatchesRenamedFile(t *testing.T) {
 	e := &Engine{statePath: dir}
 
 	e.mu.Lock()
-	e.saveState(&FirewallState{
+	_ = e.saveState(&FirewallState{
 		Blocked: []BlockedEntry{{IP: "10.0.0.1", BlockedAt: time.Now()}},
 	})
 	cachedBefore := e.stateCache

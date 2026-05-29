@@ -208,7 +208,7 @@ func TestBlockIPAlreadyBlockedNoopsBeforeNftablesAndAudit(t *testing.T) {
 		statePath:     dir,
 		dryRunEnabled: func() bool { return false },
 	}
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:        "192.0.2.4",
 		Reason:    "first block",
 		BlockedAt: time.Now().Add(-time.Minute),
@@ -242,7 +242,7 @@ func TestBlockIPOutcome_CachedBlockMissingLiveReachesDryRun(t *testing.T) {
 			return false, nil
 		},
 	}
-	e.saveBlockedEntry(BlockedEntry{
+	_ = e.saveBlockedEntry(BlockedEntry{
 		IP:        "192.0.2.44",
 		Reason:    "stale cache",
 		BlockedAt: time.Now().Add(-time.Minute),

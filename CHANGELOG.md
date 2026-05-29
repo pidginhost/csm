@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pruning an old closed incident now also releases any leftover credential-spray tracking bound to it, so an orphaned binding cannot keep attacker state alive after the incident is gone.
 - Blocked-IP lookups across the threat view, reputation skip-list, alert suppression, and the web UI blocked-IP list now read the live firewall engine state instead of a migration-time snapshot, so they no longer show or act on a stale set of blocks.
 - The blocked-IP API now returns an empty list when the live firewall state has no active blocks, instead of a JSON null payload.
+- A firewall block that is applied to the kernel but fails to persist now rolls the live rule back instead of leaving a block that would silently disappear on the next restart.
 
 ## [3.9.2] - 2026-05-29
 
