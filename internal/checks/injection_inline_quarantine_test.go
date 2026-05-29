@@ -94,6 +94,37 @@ func makeHighEntropyContent(t *testing.T, n int) []byte {
 	return []byte(enc[:n])
 }
 
+// A symlink at the detected path must never be quarantined: following it lets
+// an attacker who swaps the file for a symlink (between detection and the move)
+// trick CSM into relocating an arbitrary target like /etc/passwd. The realtime
+// path must reject symlinks the same way the batch AutoQuarantineFiles does.
+func TestInlineQuarantineRejectsSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+	target := filepath.Join(tmp, "real.php")
+	payload := makeHighEntropyContent(t, 2048)
+	if err := os.WriteFile(target, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "evil.php")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
+	qPath, ok := InlineQuarantine(finding, link, payload)
+	if ok || qPath != "" {
+		t.Errorf("symlink must not be quarantined, got (%q, %v)", qPath, ok)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("symlink itself should be left in place, got %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("symlink target must be untouched, got %v", err)
+	}
+}
+
 func TestInlineQuarantineCategoryNotDropperOrWebshellRejects(t *testing.T) {
 	finding := alert.Finding{
 		Check:   "yara_match",

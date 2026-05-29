@@ -492,8 +492,14 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 		return "", false
 	}
 
-	info, err := osFS.Stat(path)
+	// Lstat (not Stat) so a symlink is seen as a symlink and rejected. Stat
+	// follows the link, letting an attacker who swaps the file for a symlink
+	// between detection and the move trick CSM into relocating the target.
+	info, err := osFS.Lstat(path)
 	if err != nil {
+		return "", false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
 		return "", false
 	}
 
@@ -502,18 +508,19 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 	ts := time.Now().Format("20060102-150405")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
 
-	if err := os.Rename(path, qPath); err != nil {
-		if info.IsDir() {
+	if info.IsDir() {
+		if err := os.Rename(path, qPath); err != nil {
 			return "", false
 		}
-		data, readErr := osFS.ReadFile(path)
-		if readErr != nil {
+	} else {
+		// Move the file through the TOCTOU-safe path (fd open with O_NOFOLLOW,
+		// fstat-verify the inode, hardlink-by-fd, unlink) just like the batch
+		// AutoQuarantineFiles dispatcher, so a late inode/symlink swap fails
+		// closed instead of relocating an attacker-chosen file.
+		if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
+			fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
 			return "", false
 		}
-		if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
-			return "", false
-		}
-		os.Remove(path)
 	}
 
 	// Write metadata sidecar

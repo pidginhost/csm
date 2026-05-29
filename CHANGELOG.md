@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config integrity verification now covers the conf.d drop-in fragments, not just the main config file, so an attacker who edits a fragment to weaken settings is detected. Operators using conf.d should re-run `csm rehash` once after upgrading.
 - Config integrity metadata now stays in sync when drop-in fragments change through reloads or settings saves, preventing false tamper failures after a legitimate edit.
 - Config drop-ins that try to set integrity metadata are now rejected so signed hashes always come from the main config.
+- Realtime malware quarantine now moves files through the same race-safe path as the scheduled dispatcher, rejecting symlinks and verifying the file did not change between detection and the move, so an attacker cannot redirect quarantine at an unrelated file.
 - Web settings saves now reject stale drop-in integrity state instead of silently signing unrelated fragment edits.
 - Automatic outgoing-mail hold on a spam outbreak, realtime cloud-relay credential abuse, or startup cloud-relay replay now respects the auto-response master switch and dry-run safety default, so an operator in monitor mode no longer has a customer's mail held without opting in. The finding still surfaces.
 - Realtime malware quarantine now honors the live auto-response master switch and quarantine opt-in, matching the scheduled quarantine path, so an operator who disables file quarantine on reload no longer has files moved on a realtime signature match.
