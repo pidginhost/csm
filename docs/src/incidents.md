@@ -63,8 +63,10 @@ longer-lived kinds (`web_account_compromise` defaults to 168h). If the
 open-incident count is higher than you want to triage, shorten the
 relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
 disabling auto-close. The closed records are retained 30 days regardless,
-so shortening the threshold only changes when an idle incident moves from
-open to resolved, not whether its history survives.
+measured from when the incident resolves, so shortening the threshold also
+moves the eventual prune point earlier relative to the last finding.
+Auto-close still keeps a resolved record for follow-up instead of deleting
+history at close time.
 
 Metrics: `csm_incidents_auto_closed_total` and
 `csm_incidents_auto_close_dry_run_total`.
