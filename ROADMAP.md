@@ -160,12 +160,12 @@ Replacing the in-memory cache (item 7.1 result stands).
 
 ## 10. Security audit v5 feature backlog
 
-**Status:** specced 2026-05-29. The v5 audit closed every bug, hardening,
-and detection-gap item in code; these eight are the remaining feature
+**Status:** specced 2026-05-29. The v5 audit closed the immediate code
+fixes; these eight are the remaining larger detection and integration
 items, each with a design doc under `docs/superpowers/specs/`. Intended to
 be implemented one per session. Items marked DECISION carry open
-data-source / protocol / privacy choices that must be resolved before
-implementation (captured in each spec's "Open decisions").
+data-source / protocol / privacy / sequencing choices that must be
+resolved before implementation (captured in each spec's "Open decisions").
 
 Self-contained (no external dependency):
 
@@ -192,5 +192,6 @@ Decision required:
   (bundled table vs MaxMind ASN vs rDNS-only).
   `2026-05-29-y13-asn-crawler-whitelist-design.md`.
 - **Y14 -- chained-attack correlator (uid0 + suid + bad_asn_outbound).**
-  Blocked on Y13; needs a new `bad_asn_outbound` detector.
+  DECISION: bad-ASN model and chain threshold; blocked on Y13; needs a new
+  `bad_asn_outbound` detector.
   `2026-05-29-y14-chained-attack-correlator-design.md`.
