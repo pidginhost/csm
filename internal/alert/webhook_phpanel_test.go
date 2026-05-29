@@ -149,6 +149,74 @@ func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
 	}
 }
 
+func TestDispatchPhpanelWebhookBypassesOperatorRateLimit(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+
+	for i := 0; i < 3; i++ {
+		finding := Finding{
+			Check:     "ssh_bruteforce",
+			Message:   "failed login " + string(rune('a'+i)),
+			Severity:  Warning,
+			SourceIP:  "203.0.113.10",
+			Timestamp: time.Now(),
+		}
+		if err := Dispatch(cfg, []Finding{finding}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&requests); got != 3 {
+		t.Fatalf("phpanel webhook requests = %d, want 3", got)
+	}
+	if got := readRateLimitCount(t, cfg.StatePath); got != 0 {
+		t.Fatalf("rate-limit count = %d, want 0", got)
+	}
+}
+
+func TestDispatchPhpanelWebhookBypassesBlockedAlertSuppression(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	finding := Finding{
+		Check:     "ip_reputation",
+		Message:   "Known malicious IP detected: 203.0.113.10",
+		Severity:  Warning,
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Now(),
+	}
+	if err := Dispatch(cfg, []Finding{finding}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("phpanel webhook requests = %d, want 1", got)
+	}
+}
+
 func TestDispatchPhpanelWebhookErrorIsReturned(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)

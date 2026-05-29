@@ -487,6 +487,17 @@ func checkRateLimit(statePath string, maxPerHour int) bool {
 	return true
 }
 
+func formatDispatchErrors(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+	}
+	return fmt.Errorf("alert dispatch errors: %s", strings.Join(msgs, "; "))
+}
+
 // Dispatch sends alerts via all configured channels.
 func Dispatch(cfg *config.Config, findings []Finding) error {
 	// Deduplicate
@@ -508,11 +519,25 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		}
 	}
 
+	var errs []error
+
+	// Phpanel consumes this webhook as a signed data-plane stream. Send the
+	// full deduplicated stream before operator notification suppression and
+	// rate limiting, otherwise fleet correlation can miss attacker spread.
+	phpanelWebhook := cfg.Alerts.Webhook.Enabled && cfg.Alerts.Webhook.Type == "phpanel"
+	if phpanelWebhook {
+		for _, f := range findings {
+			if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
+				errs = append(errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
+			}
+		}
+	}
+
 	// Filter out blocked IP alerts if configured
 	findings = FilterBlockedAlerts(cfg, findings)
 
 	if len(findings) == 0 {
-		return nil
+		return formatDispatchErrors(errs)
 	}
 
 	emailFindings := []Finding(nil)
@@ -521,12 +546,12 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	webhookFindings := []Finding(nil)
-	if cfg.Alerts.Webhook.Enabled {
+	if cfg.Alerts.Webhook.Enabled && !phpanelWebhook {
 		webhookFindings = findings
 	}
 
 	if len(emailFindings) == 0 && len(webhookFindings) == 0 {
-		return nil
+		return formatDispatchErrors(errs)
 	}
 
 	// Rate limit check — CRITICAL realtime findings (malware, webshells,
@@ -544,12 +569,11 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
-			return nil
+			return formatDispatchErrors(errs)
 		}
 		defer releaseRateLimit(reservation)
 	}
 
-	var errs []error
 	dispatched := false
 
 	if len(emailFindings) > 0 {
@@ -563,22 +587,12 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	if len(webhookFindings) > 0 {
-		if cfg.Alerts.Webhook.Type == "phpanel" {
-			for _, f := range webhookFindings {
-				if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
-					errs = append(errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
-				} else {
-					dispatched = true
-				}
-			}
+		subject := buildSubject(cfg.Hostname, webhookFindings)
+		body := FormatAlert(cfg.Hostname, webhookFindings)
+		if err := SendWebhook(cfg, subject, body); err != nil {
+			errs = append(errs, fmt.Errorf("webhook: %w", err))
 		} else {
-			subject := buildSubject(cfg.Hostname, webhookFindings)
-			body := FormatAlert(cfg.Hostname, webhookFindings)
-			if err := SendWebhook(cfg, subject, body); err != nil {
-				errs = append(errs, fmt.Errorf("webhook: %w", err))
-			} else {
-				dispatched = true
-			}
+			dispatched = true
 		}
 	}
 
@@ -590,15 +604,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		commitRateLimit(cfg.StatePath, reservation)
 	}
 
-	if len(errs) > 0 {
-		msgs := make([]string, len(errs))
-		for i, e := range errs {
-			msgs[i] = e.Error()
-		}
-		return fmt.Errorf("alert dispatch errors: %s", strings.Join(msgs, "; "))
-	}
-
-	return nil
+	return formatDispatchErrors(errs)
 }
 
 // SendHeartbeat pings a dead man's switch URL.

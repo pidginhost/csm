@@ -2,10 +2,10 @@
 
 CSM is a per-host sensor. It does not correlate findings across hosts
 itself; cross-host ("fleet") correlation is owned by phpanel, which
-already receives every finding through the per-finding webhook. This
-document defines the contract phpanel implements to turn that stream
-into one fleet incident per attacker instead of N identical per-host
-incidents.
+already receives every deduplicated finding through the per-finding
+webhook. This document defines the contract phpanel implements to turn
+that stream into one fleet incident per attacker instead of N identical
+per-host incidents.
 
 This is the **phpanel-side correlation** design: CSM stays a sensor with
 no new inbound network surface on hosts. A peer-to-peer ingest endpoint
@@ -14,9 +14,12 @@ auth plane and key distribution to every host).
 
 ## What CSM already provides
 
-With `alerts.webhook.type: phpanel` and `per_finding: true`, CSM POSTs
-one HMAC-signed message per finding (see the per-finding webhook in
-`internal/alert/webhook.go`):
+With `alerts.webhook.type: phpanel`, CSM POSTs one HMAC-signed
+message per deduplicated finding that reaches `alert.Dispatch` (see
+the per-finding webhook in `internal/alert/webhook.go`). This sink runs
+before operator alert suppression and the operator alert rate limit, so
+phpanel receives the correlation stream even when local notifications
+are muted:
 
 ```
 POST <alerts.webhook.url>
@@ -29,9 +32,10 @@ X-CSM-Hostname: <hostname>
   "timestamp": "2026-05-29T10:00:00Z",
   "finding": {
     "check":     "ssh_bruteforce",
-    "severity":  3,
+    "severity":  2,
     "source_ip": "203.0.113.10",
     "message":   "...",
+    "timestamp": "2026-05-29T10:00:00Z",
     "tenant_id": "...",   // when known
     "domain":    "...",   // when known
     ...
@@ -41,9 +45,10 @@ X-CSM-Hostname: <hostname>
 
 Every field phpanel needs to correlate across hosts is present:
 `hostname` identifies the reporting sensor, and `finding.source_ip`
-identifies the attacker. No CSM change is required to enable fleet
-correlation; it is purely a matter of phpanel aggregating the stream it
-already receives.
+identifies the attacker when the detector has a remote source. Severity
+is the CSM numeric enum (`0` warning, `1` high, `2` critical). No extra
+CSM API or peer transport is required; fleet correlation is a matter of
+phpanel aggregating the stream it already receives.
 
 ## Correlation rule (phpanel side)
 

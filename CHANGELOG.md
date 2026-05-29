@@ -12,10 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New check flags identical WordPress administrator password hashes across hosting accounts, a signal that one copied admin credential could unlock multiple sites. Raw hashes are not written to state, logs, or findings; only the affected account list and count are reported.
 - The incident correlator now raises a `host_takeover` incident when a new uid-0 account and a planted suid binary are correlated for the same host inside the merge window, so a multi-step privilege escalation stands out from a single host-integrity finding.
 - Auto-response can now drop confirmed-malicious database triggers, events, procedures, and functions when `clean_database` is enabled, recording a restorable backup first. Detection of these objects is unchanged; only the automated cleanup is new.
-- Documented the fleet-correlation contract (`docs/fleet-correlation-contract.md`): how phpanel turns the per-finding webhook stream into one cross-host incident per attacker IP. No agent change is required; the webhook already carries the hostname and source IP.
+- Documented the fleet-correlation contract: how phpanel turns the signed per-finding webhook stream into one cross-host incident per attacker IP.
 
 ### Fixed
 
+- Phpanel per-finding webhooks now bypass operator alert suppression and rate limits, so panel-side fleet correlation receives the full deduplicated finding stream.
 - Host takeover incidents now have a readable label and kind filter in the grouped incident view.
 - The incident correlator now treats verified-crawler source IPs from published ranges (Googlebot, Bingbot, Applebot) as whitelisted, so legitimate crawler traffic no longer creates correlated incidents. CDN edge ranges are intentionally not whitelisted.
 - HTTP request-flood and User-Agent-spoof findings now carry the originating vhost and report how many distinct vhosts a single IP hit, so an operator can see a one-IP-scans-many-sites pattern on shared hosting.
