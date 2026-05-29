@@ -337,11 +337,39 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 	}
 }
 
+// matchGlob reports whether path is covered by an operator suppression pattern.
+//
+// Matching is tried in order:
+//  1. filepath.Match against the basename ("*.php", "*.log") and the full path.
+//  2. For a glob pattern, a substring match of the wildcard-stripped residue --
+//     but ONLY when that residue still contains a path separator with literal
+//     content (e.g. "*/node_modules/*" -> "/node_modules/"). This preserves the
+//     "directory anywhere in the path, at any depth" intent without a
+//     doublestar dependency.
+//  3. For a pattern with no wildcards, a literal substring match, so an operator
+//     can suppress a directory ("/uploads/") or a filename ("adminer.php").
+//
+// The separator requirement in step 2 is the fix for an over-suppression
+// footgun: the previous code stripped every "*" and substring-matched the
+// remainder, so "*.php" became the bare token ".php" and silenced every file
+// whose path merely contained ".php" -- turning a narrow pattern into a
+// whole-subtree allowlist an attacker could hide a webshell in.
 func matchGlob(path, pattern string) bool {
-	matched, _ := filepath.Match(pattern, filepath.Base(path))
-	if matched {
-		return true
+	if pattern == "" {
+		return false
 	}
-	pattern = strings.ReplaceAll(pattern, "*", "")
+	if strings.ContainsAny(pattern, "*?[") {
+		if matched, _ := filepath.Match(pattern, filepath.Base(path)); matched {
+			return true
+		}
+		if matched, _ := filepath.Match(pattern, path); matched {
+			return true
+		}
+		residue := strings.ReplaceAll(pattern, "*", "")
+		if strings.Contains(residue, "/") && strings.Trim(residue, "/") != "" {
+			return strings.Contains(path, residue)
+		}
+		return false
+	}
 	return strings.Contains(path, pattern)
 }

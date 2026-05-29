@@ -83,3 +83,24 @@ func TestMatchGlobNoMatch(t *testing.T) {
 		t.Error("*.php should not match .txt")
 	}
 }
+
+// A wildcard pattern must not over-suppress by being stripped to a bare
+// substring. "*.php" must not silence a non-PHP file just because an ancestor
+// directory name ends in ".php" -- the old strip-stars-then-Contains did, which
+// let an attacker hide a webshell in a "safe" subtree.
+func TestMatchGlobWildcardNotStrippedToSubstring(t *testing.T) {
+	if matchGlob("/home/u/public_html/x.php/evil.txt", "*.php") {
+		t.Error("*.php must not suppress evil.txt under a dir named x.php")
+	}
+	if matchGlob("/home/u/somewhere/cacheconfig/shell.aspx", "*config*") {
+		t.Error("*config* must not suppress a file under a dir merely containing 'config'")
+	}
+}
+
+// A slash-bearing wildcard pattern keeps its "directory anywhere in the path"
+// meaning without degrading to a bare substring.
+func TestMatchGlobDirGlobMatchesAnywhere(t *testing.T) {
+	if !matchGlob("/home/u/public_html/node_modules/dep/x.js", "*/node_modules/*") {
+		t.Error("*/node_modules/* should match node_modules anywhere in the path")
+	}
+}
