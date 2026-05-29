@@ -278,6 +278,32 @@ func (d *sprayDetector) UnbindIncident(id string) {
 	}
 }
 
+// UnbindIncidents drops detector state for every IP bound to one of the
+// supplied incident ids. Caller holds the correlator mutex.
+func (d *sprayDetector) UnbindIncidents(ids []string) {
+	if d == nil || len(ids) == 0 {
+		return
+	}
+	if len(ids) == 1 {
+		d.UnbindIncident(ids[0])
+		return
+	}
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			idSet[id] = struct{}{}
+		}
+	}
+	if len(idSet) == 0 {
+		return
+	}
+	for ip, state := range d.perIP {
+		if _, ok := idSet[state.incident]; ok {
+			delete(d.perIP, ip)
+		}
+	}
+}
+
 // PruneStale clears entries whose lastSeen is older than the window.
 // Called by the daemon retention loop alongside PruneStalePending so
 // the detector does not grow without bound on hosts with churning

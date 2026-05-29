@@ -966,6 +966,7 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 	defer c.mu.Unlock()
 	cutoff := now.Add(-retention)
 	pruned := 0
+	var prunedIDs []string
 	for id, inc := range c.incidents {
 		if inc.Status != StatusResolved && inc.Status != StatusDismissed {
 			continue
@@ -976,9 +977,12 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 		delete(c.incidents, id)
 		c.unbindLocked(id)
 		if c.spray != nil {
-			c.spray.UnbindIncident(id)
+			prunedIDs = append(prunedIDs, id)
 		}
 		pruned++
+	}
+	if c.spray != nil {
+		c.spray.UnbindIncidents(prunedIDs)
 	}
 	return pruned
 }

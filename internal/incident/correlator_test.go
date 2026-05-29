@@ -851,6 +851,9 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	old := now.Add(-(30*24*time.Hour + time.Second))
+	ip1 := "203.0.113.7"
+	ip2 := "203.0.113.8"
+	activeIP := "203.0.113.9"
 	c := NewCorrelator(CorrelatorConfig{
 		SpraySuppression: SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 10, MaxTrackedIPs: 100},
 	})
@@ -859,22 +862,57 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 		t.Fatal("setup: spray detector not constructed")
 	}
 	c.Restore([]Incident{
-		{ID: "inc_spray_closed", Status: StatusResolved, Severity: alert.High, CreatedAt: old, UpdatedAt: old},
+		{
+			ID:             "inc_spray_closed_a",
+			Kind:           KindCredentialSpray,
+			Status:         StatusResolved,
+			Severity:       alert.High,
+			CorrelationKey: &Key{RemoteIP: ip1},
+			CreatedAt:      old,
+			UpdatedAt:      old,
+		},
+		{
+			ID:             "inc_spray_closed_b",
+			Kind:           KindCredentialSpray,
+			Status:         StatusDismissed,
+			Severity:       alert.High,
+			CorrelationKey: &Key{RemoteIP: ip2},
+			CreatedAt:      old,
+			UpdatedAt:      old,
+		},
+		{
+			ID:             "inc_spray_open",
+			Kind:           KindCredentialSpray,
+			Status:         StatusOpen,
+			Severity:       alert.High,
+			CorrelationKey: &Key{RemoteIP: activeIP},
+			CreatedAt:      old,
+			UpdatedAt:      old,
+		},
 	})
 
-	ip := "203.0.113.7"
 	c.mu.Lock()
-	c.spray.Rehydrate(ip, "inc_spray_closed", old)
+	c.spray.Rehydrate(ip1, "inc_spray_closed_a", old)
+	c.spray.Rehydrate(ip2, "inc_spray_closed_b", old)
 	c.mu.Unlock()
-	if got := c.spray.IncidentForIP(ip); got != "inc_spray_closed" {
-		t.Fatalf("setup: spray binding = %q, want inc_spray_closed", got)
+	if got := c.spray.IncidentForIP(ip1); got != "inc_spray_closed_a" {
+		t.Fatalf("setup: spray binding for %s = %q, want inc_spray_closed_a", ip1, got)
+	}
+	if got := c.spray.IncidentForIP(ip2); got != "inc_spray_closed_b" {
+		t.Fatalf("setup: spray binding for %s = %q, want inc_spray_closed_b", ip2, got)
 	}
 
-	if pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour); pruned != 1 {
-		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
+	if pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour); pruned != 2 {
+		t.Fatalf("PruneClosedOlderThan pruned %d, want 2", pruned)
 	}
-	if got := c.spray.IncidentForIP(ip); got != "" {
+	if got := c.spray.IncidentForIP(ip1); got != "" {
 		t.Errorf("spray binding survived prune of closed incident: %q", got)
+	}
+	if got := c.spray.IncidentForIP(ip2); got != "" {
+		t.Errorf("spray binding survived prune of dismissed incident: %q", got)
+	}
+	if got := c.spray.IncidentForIP(activeIP); got != "inc_spray_open" {
+		t.Errorf("spray binding for active incident = %q, want inc_spray_open", got)
 	}
 }
 
