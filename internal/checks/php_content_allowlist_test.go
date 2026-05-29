@@ -39,10 +39,9 @@ func TestSensitiveDirPHP_MaliciousTranslationNameDetected(t *testing.T) {
 	}
 }
 
-// A clean translation file in the same dir must NOT produce a Critical/High
-// alert (it may surface as the clean visibility Warning). This guards against
-// over-correcting the allowlist removal into a false-positive flood.
-func TestSensitiveDirPHP_CleanTranslationNotCritical(t *testing.T) {
+// A clean translation file in the same dir must surface as the clean visibility
+// Warning instead of being silently suppressed by its translation-style name.
+func TestSensitiveDirPHP_CleanTranslationWarns(t *testing.T) {
 	dir := t.TempDir()
 	langDir := filepath.Join(dir, "wp-content", "languages")
 	if err := os.MkdirAll(langDir, 0o755); err != nil {
@@ -55,8 +54,11 @@ func TestSensitiveDirPHP_CleanTranslationNotCritical(t *testing.T) {
 		t.Fatal(err)
 	}
 	sev, check, _ := classifySensitiveDirPHP(path, "fr_FR.l10n.php")
-	if sev >= alert.High {
-		t.Fatalf("clean translation must not be High/Critical, got sev=%v check=%q", sev, check)
+	if sev != alert.Warning {
+		t.Fatalf("clean translation must warn, got sev=%v check=%q", sev, check)
+	}
+	if check != "new_php_in_sensitive_dir_clean" {
+		t.Fatalf("clean translation check = %q, want new_php_in_sensitive_dir_clean", check)
 	}
 }
 

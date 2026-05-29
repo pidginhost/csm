@@ -13,15 +13,11 @@ import (
 )
 
 // Item 3 regression: PHP in /wp-content/languages/ should no longer fire
-// Critical purely on path. The content scanner runs first; clean files in
-// known-safe sublocations (WPML translation queue, locale .php, .l10n.php)
-// produce no alert at all, while clean files in unrecognised sublocations
-// of the sensitive dir still get a Warning. Files that trip a real rule
-// fire the content-scan Critical and the path alert is suppressed as
-// redundant. Coverage for the unknown-clean-PHP Warning lives in
-// TestAnalyzeFilePHPInLanguagesAlerts (fanotify_final_linux_test.go).
+// Critical purely on path. The content scanner runs first; files that trip
+// a real rule fire the content-scan Critical, clean real code gets a Warning,
+// and content-proven inert stubs stay quiet.
 
-func TestPHPInLanguagesWPMLQueueCleanContentNoAlert(t *testing.T) {
+func TestPHPInLanguagesWPMLQueueCleanContentWarns(t *testing.T) {
 	dir := t.TempDir()
 	queueDir := filepath.Join(dir, "wp-content", "languages", "wpml", "queue")
 	if err := os.MkdirAll(queueDir, 0755); err != nil {
@@ -50,7 +46,36 @@ return array(
 
 	select {
 	case got := <-ch:
-		t.Errorf("expected no alert for WPML translation queue file, got %+v", got)
+		if got.Check != "php_in_sensitive_dir_realtime" {
+			t.Errorf("Check = %q, want php_in_sensitive_dir_realtime", got.Check)
+		}
+		if got.Severity != alert.Warning {
+			t.Errorf("Severity = %v, want Warning", got.Severity)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("expected Warning for clean PHP in sensitive dir")
+	}
+}
+
+func TestPHPInLanguagesBenignStubNoAlert(t *testing.T) {
+	dir := t.TempDir()
+	langDir := filepath.Join(dir, "wp-content", "languages")
+	if err := os.MkdirAll(langDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(langDir, "random-name.php")
+	if err := os.WriteFile(path, []byte("<?php\n// Silence is golden.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		t.Errorf("expected no alert for content-proven inert stub, got %+v", got)
 	case <-time.After(150 * time.Millisecond):
 		// OK
 	}

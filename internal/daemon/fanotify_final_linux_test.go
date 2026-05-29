@@ -381,15 +381,15 @@ func TestAnalyzeFilePHPInLanguagesAlerts(t *testing.T) {
 	}
 }
 
-// --- analyzeFile: PHP in languages with .l10n.php suffix skipped ---------
+// --- analyzeFile: inert PHP stub in languages is suppressed by content ----
 
-func TestAnalyzeFileL10nInLanguagesNoAlert(t *testing.T) {
+func TestAnalyzeFileBenignStubInLanguagesNoAlert(t *testing.T) {
 	dir := t.TempDir()
 	langDir := filepath.Join(dir, "wp-content", "languages")
 	if err := os.MkdirAll(langDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(langDir, "strings-en_US.l10n.php")
+	path := filepath.Join(langDir, "strings.php")
 	if err := os.WriteFile(path, []byte("<?php // compiled translations\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestAnalyzeFileL10nInLanguagesNoAlert(t *testing.T) {
 
 	select {
 	case got := <-ch:
-		t.Errorf("expected no alert for .l10n.php, got %+v", got)
+		t.Errorf("expected no alert for content-proven inert stub, got %+v", got)
 	case <-time.After(100 * time.Millisecond):
 		// OK
 	}

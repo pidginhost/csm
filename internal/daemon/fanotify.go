@@ -774,6 +774,18 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+func isBenignPHPStubData(fd int, data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	complete := false
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err == nil {
+		complete = st.Size <= int64(len(data))
+	}
+	return checks.IsBenignPHPStubBytesComplete(data, complete)
+}
+
 // readTailFromFd reads the last maxBytes of a file via its fd using pread.
 // Returns nil if the file is smaller than maxBytes (head scan already covers it).
 func readTailFromFd(fd int, maxBytes int) []byte {
@@ -995,12 +1007,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			// signature/YARA pass and the path-only warning
 			// below are the layers that fire on real droppers;
 			// a structurally inert stub adds no signal.
-			completePHPRead := false
-			var st unix.Stat_t
-			if err := unix.Fstat(event.fd, &st); err == nil {
-				completePHPRead = st.Size <= int64(len(data))
-			}
-			if checks.IsBenignPHPStubBytesComplete(data, completePHPRead) {
+			if isBenignPHPStubData(event.fd, data) {
 				return
 			}
 			if looksLikePluginUpdate(path) {
@@ -1040,13 +1047,17 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// PHP in languages/upgrade directories.
 	// Path-only Critical buried real alerts under location noise (WPML
 	// translation queues, WP auto-update staging). Run content analysis
-	// on every file -- a real rule fires Critical, a clean file gets a
-	// Warning so unexpected PHP in these dirs stays visible. No filename
-	// allowlist: an attacker must not be able to hide a backdoor by naming
-	// it like a translation or index file.
+	// on every file -- a real rule fires Critical, clean real code gets a
+	// Warning, and inert stubs stay quiet. No filename allowlist: an attacker
+	// must not be able to hide a backdoor by naming it like a translation or
+	// index file.
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
 		if !fm.checkPHPContent(event.fd, path, procInfo) {
+			data := readFromFd(event.fd, 65536)
+			if isBenignPHPStubData(event.fd, data) {
+				return
+			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
 				fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
 		}
