@@ -298,7 +298,7 @@ func TestAnalyzeFilePHPInUploadsAlerts(t *testing.T) {
 	}
 }
 
-// --- analyzeFile: index.php in uploads is not alerted ---------------------
+// --- analyzeFile: inert index.php in uploads is not alerted ----------------
 
 func TestAnalyzeFileIndexPhpInUploadsNoAlert(t *testing.T) {
 	dir := t.TempDir()
@@ -321,6 +321,35 @@ func TestAnalyzeFileIndexPhpInUploadsNoAlert(t *testing.T) {
 		t.Errorf("expected no alert for index.php in uploads, got %+v", got)
 	case <-time.After(100 * time.Millisecond):
 		// OK
+	}
+}
+
+func TestAnalyzeFileIndexPhpInUploadsWebshellAlerts(t *testing.T) {
+	dir := t.TempDir()
+	uploadsDir := filepath.Join(dir, "wp-content", "uploads")
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(uploadsDir, "index.php")
+	if err := os.WriteFile(path, []byte("<?php system($_POST['cmd']); ?>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		if got.Check != "php_in_uploads_realtime" {
+			t.Errorf("Check = %q, want php_in_uploads_realtime", got.Check)
+		}
+		if got.Severity != alert.Critical {
+			t.Errorf("Severity = %v, want Critical", got.Severity)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected php_in_uploads_realtime alert for webshell content in uploads/index.php")
 	}
 }
 

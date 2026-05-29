@@ -6,18 +6,9 @@ import (
 	"strings"
 )
 
-// Recognisers shared between the realtime fanotify path and the
-// scheduled deep-scan path. Both pipelines emit per-file alerts on
-// "anomalous PHP location" (php_in_uploads_realtime / new_php_in_uploads
-// in their respective paths). These helpers identify two structural
-// shapes that are duplicates or known-legitimate, so callers can
-// suppress the path-based alert without giving up the other detectors
-// (signature/YARA, suspicious filename) that run on the same file.
-//
-// Path-only checks live here so the deep-scan path - which lists files
-// from a stored index without re-opening them - can apply the same
-// gate. The realtime path adds a content shape check on top: see
-// looksLikeWPOptimizeProbe in internal/daemon/restore_dedup.go.
+// Recognisers used by the realtime fanotify restore/probe dedup logic.
+// The scheduled file index deliberately does not call these as scan skips:
+// upload PHP is indexed first and then classified by content.
 
 // LooksLikeCpanelRestoreStaging recognises files inside cPanel's
 // pkgacct/restorepkg staging tree. cPanel extracts the user backup
@@ -78,8 +69,7 @@ func LooksLikeCpanelRestoreStaging(path string) bool {
 // <?php files to /wp-content/uploads/wpo/.../test.php to test whether
 // the host honours certain Apache/Nginx directives.
 //
-// Path-only gates (no content read - safe for deep-scan callers that
-// only have the file path):
+// Path-only gates (no content read):
 //
 //  1. Path lies under /wp-content/uploads/wpo/.
 //  2. The basename is exactly "test.php" (the literal filename
@@ -89,12 +79,9 @@ func LooksLikeCpanelRestoreStaging(path string) bool {
 //  3. The wp-optimize plugin directory is actually present in this
 //     site's wp-content/plugins/ tree (filesystem stat).
 //
-// The realtime path additionally applies a content shape gate (size
-// < 512 bytes, no superglobals or execution primitives) before
-// suppressing the alert. The deep-scan path relies on its own other
-// detectors (suspicious PHP filename, signature/YARA) for that
-// content layer, so the path-only gate here is intentionally
-// conservative on the filename axis.
+// The realtime path additionally applies a content shape gate before
+// suppressing the duplicate alert, so the path predicate here stays
+// narrow to the literal probe filename and installed plugin directory.
 func LooksLikeWPOptimizeProbeByPath(path string) bool {
 	const marker = "/wp-content/uploads/wpo/"
 	if !strings.Contains(path, marker) {

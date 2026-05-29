@@ -964,14 +964,47 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// PHP in uploads directories.
 	// Any PHP file here is anomalous: /wp-content/uploads/ is meant for
 	// media, not code. Plugin-update temp dirs are recognised structurally
-	// via looksLikePluginUpdate; everything else is Critical. Operators
-	// suppress legitimate caching daemons through the path-scoped
+	// via looksLikePluginUpdate only after content checks have had first
+	// refusal, so a decoy update directory cannot downgrade a webshell.
+	// Operators suppress legitimate caching daemons through the path-scoped
 	// suppressions_api, not an implicit substring allowlist in the daemon.
 	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
-		if nameLower != "index.php" {
+		// Content-aware severity: PHP in uploads is anomalous but not
+		// always malicious (TinyMCE smile_fonts/charmap.php is glyph
+		// data shipped by WP's bundled editor). Emit Critical for
+		// direct webshell markers, otherwise run the broader PHP
+		// content/signature/YARA path before downgrading clean PHP to
+		// a Warning.
+		recordReadTruncation(event.fd, 65536, "phpcontent_uploads")
+		data := readFromFd(event.fd, 65536)
+		if looksLikePHPWebshell(data) {
+			fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
+				fmt.Sprintf("PHP file created in uploads: %s", path),
+				"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
+				path, procInfo)
+		} else {
+			if fm.checkPHPContent(event.fd, path, procInfo) {
+				return
+			}
+			// Content-shape gate: file whose reachable code is
+			// whitespace+comments, or that terminates with
+			// die/exit/__halt_compiler before any statement,
+			// cannot execute attacker-controlled code via web
+			// request. BackWPup writes its working-job and
+			// folder-cache state files this way. The earlier
+			// signature/YARA pass and the path-only warning
+			// below are the layers that fire on real droppers;
+			// a structurally inert stub adds no signal.
+			completePHPRead := false
+			var st unix.Stat_t
+			if err := unix.Fstat(event.fd, &st); err == nil {
+				completePHPRead = st.Size <= int64(len(data))
+			}
+			if checks.IsBenignPHPStubBytesComplete(data, completePHPRead) {
+				return
+			}
 			if looksLikePluginUpdate(path) {
 				// Verified plugin update - emit one low-severity alert per temp directory.
-				// Cannot suppress entirely - attacker could create a decoy plugin dir.
 				uploadsIdx := strings.Index(path, "/wp-content/uploads/")
 				afterUploads := path[uploadsIdx+len("/wp-content/uploads/"):]
 				tempDir := afterUploads
@@ -982,59 +1015,24 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
 					fmt.Sprintf("Plugin update in uploads: %s", updateDir),
 					"Verified: matching plugin exists in plugins/", updateDir, procInfo)
-			} else {
-				// Content-aware severity: PHP in uploads is anomalous but not
-				// always malicious (TinyMCE smile_fonts/charmap.php is glyph
-				// data shipped by WP's bundled editor). Emit Critical for
-				// direct webshell markers, otherwise run the broader PHP
-				// content/signature/YARA path before downgrading clean PHP to
-				// a Warning.
-				recordReadTruncation(event.fd, 65536, "phpcontent_uploads")
-				data := readFromFd(event.fd, 65536)
-				if looksLikePHPWebshell(data) {
-					fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
-						fmt.Sprintf("PHP file created in uploads: %s", path),
-						"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
-						path, procInfo)
-				} else {
-					if fm.checkPHPContent(event.fd, path, procInfo) {
-						return
-					}
-					// Suppress the path-only "anomalous location" warning
-					// when the file is structurally a duplicate (cPanel
-					// restore staging) or a known plugin probe shape that
-					// never carries executable input. Signature/YARA scans
-					// already ran above, so any real malicious content is
-					// reported through its own pipeline.
-					if looksLikeCpanelRestoreStaging(path) {
-						return
-					}
-					if looksLikeWPOptimizeProbe(path, data) {
-						return
-					}
-					// Content-shape gate: file whose reachable code is
-					// whitespace+comments, or that terminates with
-					// die/exit/__halt_compiler before any statement,
-					// cannot execute attacker-controlled code via web
-					// request. BackWPup writes its working-job and
-					// folder-cache state files this way. The earlier
-					// signature/YARA pass and the path-only warning
-					// below are the layers that fire on real droppers;
-					// a structurally inert stub adds no signal.
-					completePHPRead := false
-					var st unix.Stat_t
-					if err := unix.Fstat(event.fd, &st); err == nil {
-						completePHPRead = st.Size <= int64(len(data))
-					}
-					if checks.IsBenignPHPStubBytesComplete(data, completePHPRead) {
-						return
-					}
-					fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
-						fmt.Sprintf("PHP file in uploads (no webshell markers): %s", path),
-						"Anomalous location for PHP, but content is clean",
-						path, procInfo)
-				}
+				return
 			}
+			// Suppress the path-only "anomalous location" warning
+			// when the file is structurally a duplicate (cPanel
+			// restore staging) or a known plugin probe shape that
+			// never carries executable input. Signature/YARA scans
+			// already ran above, so any real malicious content is
+			// reported through its own pipeline.
+			if looksLikeCpanelRestoreStaging(path) {
+				return
+			}
+			if looksLikeWPOptimizeProbe(path, data) {
+				return
+			}
+			fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
+				fmt.Sprintf("PHP file in uploads (no webshell markers): %s", path),
+				"Anomalous location for PHP, but content is clean",
+				path, procInfo)
 		}
 		return
 	}

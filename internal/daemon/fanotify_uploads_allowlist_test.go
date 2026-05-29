@@ -18,10 +18,9 @@ import (
 // That's a path allowlist: an attacker only has to create a directory named
 // after any listed token and drop the webshell inside.
 //
-// Post-fix, PHP created in /wp-content/uploads/ is always either a verified
-// plugin-update temp directory (Warning via looksLikePluginUpdate) or a
-// Critical alert. Operators whitelist legit daemons via the path-scoped
-// suppressions_api, which is explicit and auditable.
+// Post-fix, PHP created in /wp-content/uploads/ is classified by content
+// before any structural demotion. Operators whitelist legit daemons via the
+// path-scoped suppressions_api, which is explicit and auditable.
 
 func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *testing.T) {
 	cases := []string{
@@ -66,6 +65,41 @@ func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *test
 				t.Fatalf("expected Critical php_in_uploads_realtime for %s", path)
 			}
 		})
+	}
+}
+
+func TestAnalyzeFile_PluginUpdatePathWebshellContentStaysCritical(t *testing.T) {
+	resetPluginStatCacheForTest(t)
+
+	wpRoot := t.TempDir()
+	pluginName := "sample-plugin"
+	if err := os.MkdirAll(filepath.Join(wpRoot, "wp-content", "plugins", pluginName), 0755); err != nil {
+		t.Fatal(err)
+	}
+	uploadsDir := filepath.Join(wpRoot, "wp-content", "uploads", pluginName+"_abc12")
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(uploadsDir, "index.php")
+	if err := os.WriteFile(path, []byte("<?php system($_POST['cmd']); ?>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case a := <-ch:
+		if a.Check != "php_in_uploads_realtime" {
+			t.Errorf("Check = %q, want php_in_uploads_realtime", a.Check)
+		}
+		if a.Severity != alert.Critical {
+			t.Errorf("Severity = %v, want Critical for webshell content in plugin-update-shaped uploads path", a.Severity)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected Critical php_in_uploads_realtime for webshell content in plugin-update-shaped uploads path")
 	}
 }
 
