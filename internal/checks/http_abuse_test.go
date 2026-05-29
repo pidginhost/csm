@@ -2,6 +2,7 @@ package checks
 
 import (
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,6 +191,74 @@ func TestHTTPRequestFlood_RecordCountedThroughScan(t *testing.T) {
 	got := stats.emit(cfg)
 	if len(got) != 1 || got[0].Check != "http_request_flood" {
 		t.Fatalf("emit=%+v", got)
+	}
+}
+
+func TestHTTPRequestFlood_StampsSingleVhost(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 50
+	cfg.Thresholds.HTTPFloodWindowMin = 5
+
+	stats := newDomlogStatsAt(now)
+	rec, _ := parseAccessLogRecord(`192.0.2.60 - - [20/May/2026:18:00:00 +0300] "GET /a HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+	rec.Domain = "example.com"
+	for i := 0; i < 75; i++ {
+		stats.scan(rec, cfg, nopBotClassifier{})
+	}
+	got := stats.emit(cfg)
+	if len(got) != 1 || got[0].Check != "http_request_flood" {
+		t.Fatalf("emit=%+v", got)
+	}
+	if got[0].Domain != "example.com" {
+		t.Errorf("Domain = %q, want example.com", got[0].Domain)
+	}
+	if strings.Contains(got[0].Message, "across") {
+		t.Errorf("single-vhost message should not claim cross-vhost spread: %q", got[0].Message)
+	}
+}
+
+func TestHTTPRequestFlood_ReportsCrossVhostSpread(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 50
+	cfg.Thresholds.HTTPFloodWindowMin = 5
+
+	stats := newDomlogStatsAt(now)
+	// One IP spread across three vhosts: aggregate trips, and the finding
+	// reports the cross-site spread with no single attributable domain.
+	for _, dom := range []string{"a.example", "b.example", "c.example"} {
+		rec, _ := parseAccessLogRecord(`192.0.2.70 - - [20/May/2026:18:00:00 +0300] "GET /x HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+		rec.Domain = dom
+		for i := 0; i < 30; i++ {
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+	}
+	got := stats.emit(cfg)
+	if len(got) != 1 || got[0].Check != "http_request_flood" {
+		t.Fatalf("emit=%+v", got)
+	}
+	if got[0].Domain != "" {
+		t.Errorf("Domain = %q, want empty for multi-vhost flood", got[0].Domain)
+	}
+	if !strings.Contains(got[0].Message, "across 3 vhosts") {
+		t.Errorf("message should report cross-vhost spread: %q", got[0].Message)
+	}
+}
+
+func TestDomainFromDomlogPath(t *testing.T) {
+	cases := map[string]string{
+		"/usr/local/apache/domlogs/example.com":   "example.com",
+		"/home/u/access-logs/example.com-ssl_log": "example.com",
+		"/var/log/apache2/sub.example.co.uk_log":  "sub.example.co.uk",
+		"/usr/local/apache/domlogs/Example.COM":   "example.com",
+		"/var/log/httpd/access_log":               "", // central, not a domain
+		"/some/path/ftpxferlog":                   "", // no dot
+	}
+	for in, want := range cases {
+		if got := domainFromDomlogPath(in); got != want {
+			t.Errorf("domainFromDomlogPath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

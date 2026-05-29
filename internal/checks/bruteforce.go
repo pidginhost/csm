@@ -279,16 +279,34 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 				break
 			}
 		}
+		domain := domainFromDomlogPath(p)
 		for _, line := range tailFile(p, tailLines) {
 			rec, ok := parseAccessLogRecord(line)
 			if !ok {
 				continue
 			}
+			rec.Domain = domain
 			stats.scan(rec, cfg, classifier)
 		}
 		scanned++
 	}
 	return scanned
+}
+
+// domainFromDomlogPath derives the vhost from a per-domain domlog file
+// path (e.g. ".../domlogs/example.com-ssl_log" -> "example.com"). Returns
+// "" for paths that do not look like a domain log so the central access
+// log and odd filenames do not pollute the per-IP vhost set.
+func domainFromDomlogPath(p string) string {
+	base := filepath.Base(p)
+	for _, suffix := range []string{"-ssl_log", "_log", ".log"} {
+		base = strings.TrimSuffix(base, suffix)
+	}
+	base = strings.TrimSpace(base)
+	if base == "" || !strings.Contains(base, ".") {
+		return ""
+	}
+	return strings.ToLower(base)
 }
 
 // scanDomlogsStats discovers per-vhost logs honouring the operator's

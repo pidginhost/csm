@@ -32,6 +32,7 @@ type accessLogRecord struct {
 	Status    int
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
+	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -80,6 +81,11 @@ type domlogStats struct {
 	httpReqs map[string]int
 	uaCat    map[string]map[uaKind]int
 	samples  map[string]httpSample
+	// domains tracks the set of distinct vhosts each IP touched, so the
+	// per-IP aggregate findings can report cross-site spread (one IP
+	// scanning many vhosts on a shared host). Empty-domain records (the
+	// central access log) do not contribute.
+	domains  map[string]map[string]struct{}
 	scanTime time.Time
 }
 
@@ -95,6 +101,7 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 		httpReqs: make(map[string]int),
 		uaCat:    make(map[string]map[uaKind]int),
 		samples:  make(map[string]httpSample),
+		domains:  make(map[string]map[string]struct{}),
 		scanTime: t,
 	}
 }
@@ -113,6 +120,15 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	}
 	if bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent) {
 		return
+	}
+
+	if rec.Domain != "" {
+		set := s.domains[ip]
+		if set == nil {
+			set = make(map[string]struct{})
+			s.domains[ip] = set
+		}
+		set[rec.Domain] = struct{}{}
 	}
 
 	if rec.Method == "POST" {
@@ -221,7 +237,8 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 				Severity: alert.High,
 				Check:    "http_request_flood",
 				SourceIP: ip,
-				Message:  "HTTP request flood from " + ip + ": " + itoa(count) + " requests",
+				Domain:   s.singleDomain(ip),
+				Message:  "HTTP request flood from " + ip + ": " + itoa(count) + " requests" + s.vhostSuffix(ip),
 				Details:  "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
 			})
 		}
@@ -234,25 +251,25 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 		}
 		for ip, byKind := range s.uaCat {
 			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits > 0 {
-				out = append(out, makeUASpoofFinding(ip,
+				out = append(out, s.makeUASpoofFinding(ip,
 					"claimed search-engine bot failed rDNS verification",
 					s.samples[ip], hits))
 				continue
 			}
 			if hits, ok := byKind[uaKindKnownScanner]; ok && hits > 0 {
-				out = append(out, makeUASpoofFinding(ip, "known scanner UA",
+				out = append(out, s.makeUASpoofFinding(ip, "known scanner UA",
 					s.samples[ip], hits))
 				continue
 			}
 			if hits := byKind[uaKindWPSpoofPingback]; hits >= threshold {
-				out = append(out, makeUASpoofFinding(ip,
+				out = append(out, s.makeUASpoofFinding(ip,
 					"WordPress/<ver> UA on GET (pingback spoof)",
 					s.samples[ip], hits))
 				continue
 			}
 			if cfg.Thresholds.HTTPUAScriptingEnabled {
 				if hits := byKind[uaKindScriptingLang]; hits >= threshold {
-					out = append(out, makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip,
 						"scripting-language UA (curl/python/etc.)",
 						s.samples[ip], hits))
 					continue
@@ -260,14 +277,14 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			}
 			if cfg.Thresholds.HTTPUAHeadlessEnabled {
 				if hits := byKind[uaKindHeadless]; hits >= threshold {
-					out = append(out, makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip,
 						"headless browser UA", s.samples[ip], hits))
 					continue
 				}
 			}
 			if cfg.Thresholds.HTTPUAEmptyEnabled {
 				if hits := byKind[uaKindEmpty]; hits >= threshold {
-					out = append(out, makeUASpoofFinding(ip,
+					out = append(out, s.makeUASpoofFinding(ip,
 						"empty/dash User-Agent", s.samples[ip], hits))
 					continue
 				}
@@ -277,15 +294,38 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	return out
 }
 
-func makeUASpoofFinding(ip, reason string, sample httpSample, hits int) alert.Finding {
+func (s *domlogStats) makeUASpoofFinding(ip, reason string, sample httpSample, hits int) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Critical,
 		Check:    "http_ua_spoof",
 		SourceIP: ip,
-		Message:  "User-Agent spoof from " + ip + ": " + reason,
+		Domain:   s.singleDomain(ip),
+		Message:  "User-Agent spoof from " + ip + ": " + reason + s.vhostSuffix(ip),
 		Details: "Hits: " + itoa(hits) + ", Sample: " + sample.Method + " " +
 			sample.URI + " UA=" + truncate(sample.UA, 200),
 	}
+}
+
+// singleDomain returns the one vhost ip touched, or "" when zero or more
+// than one (the per-IP aggregate spans several vhosts, so no single domain
+// attributes the finding). vhostSuffix renders the cross-site spread for
+// the operator-facing message.
+func (s *domlogStats) singleDomain(ip string) string {
+	set := s.domains[ip]
+	if len(set) != 1 {
+		return ""
+	}
+	for d := range set {
+		return d
+	}
+	return ""
+}
+
+func (s *domlogStats) vhostSuffix(ip string) string {
+	if n := len(s.domains[ip]); n > 1 {
+		return " across " + itoa(n) + " vhosts"
+	}
+	return ""
 }
 
 // withinHTTPFloodWindow reports whether a log timestamp falls inside the
