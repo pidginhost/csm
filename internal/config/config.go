@@ -230,6 +230,15 @@ type Config struct {
 		// Default 30.
 		HTTPUASpoofThreshold int `yaml:"http_ua_spoof_threshold"`
 
+		// HTTPDistributedMinIPs is the number of distinct source IPs that
+		// must each trip an HTTP-abuse threshold (wp-login / xmlrpc / user
+		// enumeration / request flood / UA spoof) against one vhost in a
+		// scan window before a single http_distributed_flood finding is
+		// emitted for that vhost. Only already-abusive IPs are counted, so
+		// a popular site's ordinary visitor spread does not trip it. 0
+		// disables the detector; the shipped sample sets 10.
+		HTTPDistributedMinIPs int `yaml:"http_distributed_min_ips"`
+
 		// HTTPUAScriptingEnabled opts in to flagging scripting-language
 		// UA strings (curl, python-requests, wget, etc.) as spoof candidates.
 		// Off by default: many legitimate API integrations use these.

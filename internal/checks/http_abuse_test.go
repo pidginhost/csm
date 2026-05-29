@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -333,6 +334,81 @@ func TestDomainFromDomlogPath(t *testing.T) {
 	for in, want := range cases {
 		if got := domainFromDomlogPath(in); got != want {
 			t.Errorf("domainFromDomlogPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// seedAbusiveIPsToDomain drives `count` distinct IPs, each making enough
+// in-window xmlrpc POSTs to cross xmlrpcThreshold, against one vhost.
+func seedAbusiveIPsToDomain(t *testing.T, stats *domlogStats, domain string, count int, ts time.Time) {
+	t.Helper()
+	line := `IP - - [20/May/2026:18:00:00 +0300] "POST /xmlrpc.php HTTP/1.1" 200 0 "-" "Mozilla/5.0"`
+	for i := 0; i < count; i++ {
+		ip := fmt.Sprintf("203.0.113.%d", i+1)
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
+			t.Fatal("parse")
+		}
+		rec.RemoteIP = ip
+		rec.Time = ts
+		rec.Domain = domain
+		for j := 0; j < xmlrpcThreshold; j++ {
+			stats.scan(rec, &config.Config{}, nopBotClassifier{})
+		}
+	}
+}
+
+func TestHTTPDistributedFlood_FiresOnManyAbusiveIPsOneVhost(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodWindowMin = 60
+	cfg.Thresholds.HTTPDistributedMinIPs = 10
+
+	stats := newDomlogStatsAt(now)
+	seedAbusiveIPsToDomain(t, stats, "victim.example", 12, now)
+
+	got := stats.emit(cfg)
+	var dist *alert.Finding
+	for i := range got {
+		if got[i].Check == "http_distributed_flood" {
+			dist = &got[i]
+		}
+	}
+	if dist == nil {
+		t.Fatalf("expected http_distributed_flood, got %+v", got)
+	}
+	if dist.Domain != "victim.example" {
+		t.Errorf("Domain = %q, want victim.example", dist.Domain)
+	}
+	if !strings.Contains(dist.Message, "12 distinct abusive source IPs") {
+		t.Errorf("message = %q", dist.Message)
+	}
+}
+
+func TestHTTPDistributedFlood_BelowThresholdAndDisabled(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	stats := newDomlogStatsAt(now)
+	seedAbusiveIPsToDomain(t, stats, "victim.example", 6, now)
+
+	// Below the min-IP threshold: no distributed finding.
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodWindowMin = 60
+	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			t.Fatalf("6 IPs must not trip a min-10 distributed flood: %+v", f)
+		}
+	}
+
+	// Threshold 0 disables the rollup even with many abusive IPs.
+	stats2 := newDomlogStatsAt(now)
+	seedAbusiveIPsToDomain(t, stats2, "victim.example", 20, now)
+	cfg0 := &config.Config{}
+	cfg0.Thresholds.HTTPFloodWindowMin = 60
+	cfg0.Thresholds.HTTPDistributedMinIPs = 0
+	for _, f := range stats2.emit(cfg0) {
+		if f.Check == "http_distributed_flood" {
+			t.Fatalf("threshold 0 must disable distributed flood: %+v", f)
 		}
 	}
 }

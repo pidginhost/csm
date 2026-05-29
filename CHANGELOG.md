@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `http_distributed_flood` finding flags a distributed HTTP attack: when many distinct already-abusive source IPs hit one vhost in a scan window, CSM raises a single per-vhost finding instead of only the per-IP ones, surfacing botnet/distributed brute-force that per-IP detection alone misses. Tuned by `thresholds.http_distributed_min_ips` (sample default 10; 0 disables).
 - New supply-chain check parses `composer.lock` and `package-lock.json` dependency trees and flags versions listed in a local advisory database. The matcher ships in the binary; the advisory data is operator- or mirror-supplied (`docs/supply-chain-advisories.md`), and the check is dormant until that file exists.
 - New check flags identical WordPress administrator password hashes across hosting accounts, a signal that one copied admin credential could unlock multiple sites. Raw hashes are not written to state, logs, or findings; only the affected account list and count are reported.
 - The incident correlator now raises a `host_takeover` incident when a new uid-0 account and a planted suid binary are correlated for the same host inside the merge window, so a multi-step privilege escalation stands out from a single host-integrity finding.

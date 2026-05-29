@@ -7,7 +7,9 @@
 package checks
 
 import (
+	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -288,6 +290,73 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 				}
 			}
 		}
+	}
+
+	// Distributed attack: many distinct abusive IPs hitting one vhost.
+	// Built from the per-IP findings already emitted above, so only IPs
+	// that crossed an abuse threshold count -- a popular site's normal
+	// visitor spread never trips it.
+	out = append(out, s.emitDistributedFlood(cfg, out)...)
+	return out
+}
+
+// httpAbuseChecks are the per-IP finding kinds that mark a source IP as
+// abusive for the distributed-attack rollup.
+var httpAbuseChecks = map[string]struct{}{
+	"wp_login_bruteforce": {},
+	"xmlrpc_abuse":        {},
+	"wp_user_enumeration": {},
+	"http_request_flood":  {},
+	"http_ua_spoof":       {},
+}
+
+// emitDistributedFlood rolls the per-IP HTTP-abuse findings up per vhost:
+// when at least HTTPDistributedMinIPs distinct abusive IPs hit one vhost
+// in this window, it emits a single http_distributed_flood finding for
+// that vhost. The per-IP findings still stand; this adds the
+// many-IPs-one-target view (botnet / distributed brute-force) that the
+// per-IP and per-source-IP-spray paths cannot see. Disabled when the
+// threshold is <= 0.
+func (s *domlogStats) emitDistributedFlood(cfg *config.Config, prior []alert.Finding) []alert.Finding {
+	if cfg == nil {
+		return nil
+	}
+	minIPs := cfg.Thresholds.HTTPDistributedMinIPs
+	if minIPs <= 0 {
+		return nil
+	}
+	domainIPs := map[string]map[string]struct{}{}
+	for _, f := range prior {
+		if _, ok := httpAbuseChecks[f.Check]; !ok || f.SourceIP == "" {
+			continue
+		}
+		for dom := range s.domains[f.SourceIP] {
+			if domainIPs[dom] == nil {
+				domainIPs[dom] = map[string]struct{}{}
+			}
+			domainIPs[dom][f.SourceIP] = struct{}{}
+		}
+	}
+	domains := make([]string, 0, len(domainIPs))
+	for dom := range domainIPs {
+		domains = append(domains, dom)
+	}
+	sort.Strings(domains)
+	var out []alert.Finding
+	for _, dom := range domains {
+		n := len(domainIPs[dom])
+		if n < minIPs {
+			continue
+		}
+		out = append(out, alert.Finding{
+			Severity: alert.High,
+			Check:    "http_distributed_flood",
+			Domain:   dom,
+			Message:  fmt.Sprintf("Distributed HTTP attack on %s: %d distinct abusive source IPs", dom, n),
+			Details: fmt.Sprintf("%d source IPs each tripped an HTTP-abuse threshold against %s in this window. "+
+				"Likely a botnet or distributed brute-force; consider edge rate-limiting or a challenge.", n, dom),
+			Timestamp: time.Now(),
+		})
 	}
 	return out
 }
