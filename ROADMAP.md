@@ -155,3 +155,42 @@ existing `state.json`, writes bbolt buckets, renames the JSON to
 Replacing the in-memory cache (item 7.1 result stands).
 
 ### Size: 2-3 days.
+
+---
+
+## 10. Security audit v5 feature backlog
+
+**Status:** specced 2026-05-29. The v5 audit closed every bug, hardening,
+and detection-gap item in code; these eight are the remaining feature
+items, each with a design doc under `docs/superpowers/specs/`. Intended to
+be implemented one per session. Items marked DECISION carry open
+data-source / protocol / privacy choices that must be resolved before
+implementation (captured in each spec's "Open decisions").
+
+Self-contained (no external dependency):
+
+- **Y11 -- spray ingests HTTP-flood / UA-spoof.** Add the HTTP checks to
+  the spray default set plus a request-target identity dimension.
+  `2026-05-29-y11-spray-http-signals-design.md`.
+- **Y15 -- mail_logs source re-pick.** FileReader missing-file callback ->
+  finding + unhealthy watcher (+ optional live journal re-pick).
+  `2026-05-29-y15-maillog-source-repick-design.md`.
+- **Y16 -- OpenAPI spec for `/api/v1/*`.** Hand-authored spec + drift test.
+  `2026-05-29-y16-openapi-spec-design.md`.
+
+Decision required:
+
+- **Y9 -- supply-chain CVE scanning.** DECISION: advisory data source
+  (bundled/synced vs online OSV). `2026-05-29-y9-supply-chain-cve-design.md`.
+- **Y10 -- credential-stuffing detection.** DECISION: behavioral
+  (login-stream) vs at-rest hash reuse (system / WP). Privacy-sensitive.
+  `2026-05-29-y10-credential-stuffing-design.md`.
+- **Y12 -- cross-server / fleet ingest.** DECISION: phpanel-side
+  correlation vs peer-to-peer ingest endpoint + trust model.
+  `2026-05-29-y12-fleet-ingest-design.md`.
+- **Y13 -- ASN/CIDR crawler-CDN whitelist.** DECISION: range data source
+  (bundled table vs MaxMind ASN vs rDNS-only).
+  `2026-05-29-y13-asn-crawler-whitelist-design.md`.
+- **Y14 -- chained-attack correlator (uid0 + suid + bad_asn_outbound).**
+  Blocked on Y13; needs a new `bad_asn_outbound` detector.
+  `2026-05-29-y14-chained-attack-correlator-design.md`.
