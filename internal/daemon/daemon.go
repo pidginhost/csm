@@ -1533,6 +1533,24 @@ func (d *Daemon) startLogWatchers() {
 			csmlog.Warn("mail log reader disabled", "err", mlErr)
 			d.MarkWatcher("maillog", false)
 		} else {
+			// A file-backed reader can go dark if its log path disappears
+			// mid-run (syslog->journald migration). Surface that instead of
+			// silently tailing a dead fd: mark the watcher unhealthy and
+			// emit a finding so the operator knows mail detection degraded.
+			if fr, ok := mailReader.(*maillog.FileReader); ok {
+				fr.SetOnGone(func(err error) {
+					d.MarkWatcher("maillog", false)
+					select {
+					case d.alertCh <- alert.Finding{
+						Severity:  alert.Warning,
+						Check:     "mail_log_source_unavailable",
+						Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
+						Timestamp: time.Now(),
+					}:
+					case <-d.stopCh:
+					}
+				})
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() { <-d.stopCh; cancel() }()
 			mailLines, mlErr := mailReader.Run(ctx)

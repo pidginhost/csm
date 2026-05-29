@@ -17,6 +17,12 @@ import (
 // reader into an OOM vector.
 const maxLogLineBytes = 64 * 1024
 
+// defaultGoneGrace is how long the source path must stay missing before
+// the reader declares the source gone. Long enough to ride out a
+// logrotate create-delay (rename old -> create new), short enough that an
+// operator notices a real syslog->journald migration quickly.
+const defaultGoneGrace = 90 * time.Second
+
 // FileReader tails a single log file. It uses a 2-second polling loop
 // because rsyslog/syslog-ng don't reliably trigger inotify events on
 // every line written, and periodic path re-stat checks for log rotation.
@@ -24,10 +30,50 @@ const maxLogLineBytes = 64 * 1024
 // On context cancel the reader closes the output channel and returns.
 type FileReader struct {
 	path string
+
+	// onGone, when set, fires once when the source path has been missing
+	// continuously for goneGrace. A FileReader whose path vanishes mid-run
+	// (e.g. a syslog->journald migration) otherwise tails a dead fd
+	// silently; the callback lets the daemon surface a finding and mark the
+	// watcher unhealthy. Cleared (re-armable) once the path returns.
+	onGone    func(error)
+	goneGrace time.Duration
+	nowFn     func() time.Time
+
+	// gone-tracking state, touched only by the single loop goroutine.
+	firstMissing time.Time
+	goneFired    bool
 }
 
 // NewFileReader constructs a FileReader for the given path.
-func NewFileReader(path string) *FileReader { return &FileReader{path: path} }
+func NewFileReader(path string) *FileReader {
+	return &FileReader{path: path, goneGrace: defaultGoneGrace, nowFn: time.Now}
+}
+
+// SetOnGone installs a callback invoked once when the source path has been
+// missing for longer than the grace period. Must be called before Run.
+func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
+
+// recordStat advances the missing-source state machine from one stat
+// result and fires onGone exactly once when the path has been missing past
+// the grace period. Returns to the armed state when the path reappears.
+func (r *FileReader) recordStat(missing bool, missErr error) {
+	if !missing {
+		r.firstMissing = time.Time{}
+		r.goneFired = false
+		return
+	}
+	now := r.nowFn()
+	if r.firstMissing.IsZero() {
+		r.firstMissing = now
+	}
+	if !r.goneFired && now.Sub(r.firstMissing) >= r.goneGrace {
+		r.goneFired = true
+		if r.onGone != nil {
+			r.onGone(missErr)
+		}
+	}
+}
 
 // Run starts the polling loop and returns the line channel. Returns an
 // error only when the path can't be opened at all; runtime errors during
@@ -117,8 +163,13 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 	reopenOnRotate := func() {
 		st, err := os.Stat(r.path)
 		if err != nil {
+			// Track persistent disappearance so a source that vanishes
+			// mid-run (syslog->journald migration) surfaces instead of
+			// tailing a dead fd in silence.
+			r.recordStat(os.IsNotExist(err), err)
 			return
 		}
+		r.recordStat(false, nil)
 		if inode(st) == lastIno {
 			return
 		}
