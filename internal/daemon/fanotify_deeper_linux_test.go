@@ -73,6 +73,10 @@ func TestIsInterestingMoreBranches(t *testing.T) {
 // --- matchSuppression: unusual glob patterns -----------------------------
 
 func TestMatchSuppressionEdges(t *testing.T) {
+	tmp := t.TempDir()
+	directChild := filepath.Join(tmp, ".htaccess")
+	nestedChild := filepath.Join(tmp, "nested", ".htaccess")
+
 	cases := []struct {
 		pattern, path string
 		want          bool
@@ -91,6 +95,14 @@ func TestMatchSuppressionEdges(t *testing.T) {
 		{"/cache/*", "/cache/file.php", true},
 		// completely unrelated
 		{"*.log", "/home/a/x.php", false},
+		// basename glob must not become a subtree substring suppression
+		{"*.php", "/home/a/public_html/x.php/evil.txt", false},
+		// full-path globs stay scoped to the named path segment
+		{filepath.Join(tmp, "*"), directChild, true},
+		{filepath.Join(tmp, "*"), nestedChild, false},
+		// malformed or wildcard-only residues do not fall back to substring
+		{"*/*", "/home/a/public_html/cache/file.php", false},
+		{"*?[/cache/*", "/home/a/public_html/cache/file.php", false},
 	}
 
 	for _, tc := range cases {

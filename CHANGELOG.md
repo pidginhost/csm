@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quarantine cleanup now fails closed if a source path changes while the move is in progress.
 - Realtime credential-log and .config executable detection now read file content and mode from the kernel event handle instead of re-opening by path, so an attacker cannot evade detection by swapping the file after it is written.
 - Suppression patterns with a wildcard no longer collapse into an over-broad substring match, so a narrow ignore rule like `*.php` can no longer silently silence an entire directory subtree. Directory-style patterns such as `/uploads/` and `*/node_modules/*` keep working.
+- Suppression globs that target a specific directory now stay scoped to that glob instead of muting every deeper descendant that shares the same prefix.
 - Web settings saves now reject stale drop-in integrity state instead of silently signing unrelated fragment edits.
 - Automatic outgoing-mail hold on a spam outbreak, realtime cloud-relay credential abuse, or startup cloud-relay replay now respects the auto-response master switch and dry-run safety default, so an operator in monitor mode no longer has a customer's mail held without opting in. The finding still surfaces.
 - Realtime malware quarantine now honors the live auto-response master switch and quarantine opt-in, matching the scheduled quarantine path, so an operator who disables file quarantine on reload no longer has files moved on a realtime signature match.

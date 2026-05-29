@@ -1,6 +1,9 @@
 package checks
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // --- isInfraIP --------------------------------------------------------
 
@@ -102,5 +105,62 @@ func TestMatchGlobWildcardNotStrippedToSubstring(t *testing.T) {
 func TestMatchGlobDirGlobMatchesAnywhere(t *testing.T) {
 	if !matchGlob("/home/u/public_html/node_modules/dep/x.js", "*/node_modules/*") {
 		t.Error("*/node_modules/* should match node_modules anywhere in the path")
+	}
+}
+
+func TestMatchGlobPreservesDocumentedSuppressionShapes(t *testing.T) {
+	tmp := t.TempDir()
+	directChild := filepath.Join(tmp, ".htaccess")
+	nestedChild := filepath.Join(tmp, "nested", ".htaccess")
+
+	tests := []struct {
+		name    string
+		path    string
+		pattern string
+		want    bool
+	}{
+		{name: "php basename", path: "/home/u/public_html/index.php", pattern: "*.php", want: true},
+		{name: "html basename", path: "/home/u/public_html/login.html", pattern: "*.html", want: true},
+		{name: "log basename", path: "/var/log/httpd/domains/example.log", pattern: "*.log", want: true},
+		{name: "uploads literal substring", path: "/home/u/public_html/wp-content/uploads/bad.php", pattern: "/uploads/", want: true},
+		{name: "adminer literal substring", path: "/home/u/public_html/tools/adminer.php", pattern: "adminer.php", want: true},
+		{name: "dropper literal substring", path: "/home/u/public_html/cache/dropper.php.bak", pattern: "dropper.php", want: true},
+		{name: "node modules any depth", path: "/home/u/site/wp-content/plugins/a/node_modules/dep/x.js", pattern: "*/node_modules/*", want: true},
+		{name: "node modules segment boundary", path: "/home/u/site/node_modules_evil/dep/x.js", pattern: "*/node_modules/*", want: false},
+		{name: "full path direct child", path: directChild, pattern: filepath.Join(tmp, "*"), want: true},
+		{name: "full path not recursive", path: nestedChild, pattern: filepath.Join(tmp, "*"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchGlob(tt.path, tt.pattern); got != tt.want {
+				t.Fatalf("matchGlob(%q, %q) = %v, want %v", tt.path, tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchGlobResidueFallbackEdges(t *testing.T) {
+	path := "/home/u/public_html/cache/file.php"
+	tests := []struct {
+		pattern string
+		want    bool
+	}{
+		{pattern: "*", want: true},
+		{pattern: "**", want: true},
+		{pattern: "*/*", want: false},
+		{pattern: "*?[/cache/*", want: false},
+		{pattern: "*/", want: false},
+		{pattern: "/*", want: false},
+		{pattern: "*/cache/", want: true},
+		{pattern: "*/cache/*", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			if got := matchGlob(path, tt.pattern); got != tt.want {
+				t.Fatalf("matchGlob(%q, %q) = %v, want %v", path, tt.pattern, got, tt.want)
+			}
+		})
 	}
 }

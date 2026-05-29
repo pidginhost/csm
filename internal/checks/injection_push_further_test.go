@@ -573,8 +573,6 @@ func TestAnalyzePHPContent_GithubCoPresence(t *testing.T) {
 }
 
 // scanDirForObfuscatedPHP honors cfg.Suppressions.IgnorePaths.
-// matchGlob falls back to substring-after-stripping-stars, so a pattern
-// containing a unique substring of the path suppresses matches reliably.
 func TestScanDirForObfuscatedPHP_SuppressedPath(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "dropper.php")
@@ -582,7 +580,6 @@ func TestScanDirForObfuscatedPHP_SuppressedPath(t *testing.T) {
 	_ = os.WriteFile(bad, []byte(content), 0644)
 
 	cfg := &config.Config{}
-	// matchGlob strips * and substring-matches, so any prefix of the path works.
 	cfg.Suppressions.IgnorePaths = []string{"dropper.php"}
 
 	var findings []alert.Finding

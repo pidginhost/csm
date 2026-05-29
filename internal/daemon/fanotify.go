@@ -1984,8 +1984,10 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
 // Supports patterns like "*/cache/*", "*/vendor/*", "*.log".
-// Uses filepath.Match per path segment for wildcard patterns.
 func matchSuppression(pattern, path string) bool {
+	if pattern == "" {
+		return false
+	}
 	// Direct match against full path
 	if m, _ := filepath.Match(pattern, path); m {
 		return true
@@ -1994,47 +1996,25 @@ func matchSuppression(pattern, path string) bool {
 	if m, _ := filepath.Match(pattern, filepath.Base(path)); m {
 		return true
 	}
-	// For patterns like "*/cache/*": check if any directory segment matches
-	// the non-wildcard core of the pattern. We split the pattern on "/" and
-	// match each pattern segment against the corresponding path segments.
-	patParts := strings.Split(pattern, "/")
-	pathParts := strings.Split(path, "/")
-	if len(patParts) < 2 {
+	if !strings.ContainsAny(pattern, "*?[") {
+		return strings.Contains(path, pattern)
+	}
+	if strings.ContainsAny(pattern, "?[") || !hasLeadingAnyDepthSuppressionGlob(pattern) {
 		return false
 	}
-	// Sliding window: try to align pattern segments with path segments.
-	// Empty pattern parts (from leading/trailing/double slashes) match any segment.
-	for i := 0; i <= len(pathParts)-len(patParts); i++ {
-		allMatch := true
-		for j, pp := range patParts {
-			if pp == "" {
-				continue // empty segment matches anything (acts as wildcard)
-			}
-			if i+j >= len(pathParts) {
-				allMatch = false
-				break
-			}
-			m, _ := filepath.Match(pp, pathParts[i+j])
-			if !m {
-				allMatch = false
-				break
-			}
-		}
-		// Only count as match if we consumed at least one non-empty pattern part
-		if allMatch {
-			hasNonEmpty := false
-			for _, pp := range patParts {
-				if pp != "" {
-					hasNonEmpty = true
-					break
-				}
-			}
-			if hasNonEmpty {
-				return true
-			}
-		}
+	residue := strings.ReplaceAll(pattern, "*", "")
+	if strings.Contains(residue, "/") && strings.Trim(residue, "/") != "" {
+		return strings.Contains(path, residue)
 	}
 	return false
+}
+
+func hasLeadingAnyDepthSuppressionGlob(pattern string) bool {
+	firstSlash := strings.Index(pattern, "/")
+	if firstSlash <= 0 {
+		return false
+	}
+	return strings.Trim(pattern[:firstSlash], "*") == ""
 }
 
 // readHead opens a file by path and reads the first maxBytes.

@@ -341,11 +341,12 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 //
 // Matching is tried in order:
 //  1. filepath.Match against the basename ("*.php", "*.log") and the full path.
-//  2. For a glob pattern, a substring match of the wildcard-stripped residue --
-//     but ONLY when that residue still contains a path separator with literal
-//     content (e.g. "*/node_modules/*" -> "/node_modules/"). This preserves the
-//     "directory anywhere in the path, at any depth" intent without a
-//     doublestar dependency.
+//  2. For a leading-any-depth glob pattern, a substring match of the
+//     wildcard-stripped residue -- but ONLY when that residue still contains a
+//     path separator with literal content (e.g. "*/node_modules/*" ->
+//     "/node_modules/"). This preserves the "directory anywhere in the path, at
+//     any depth" intent without broadening anchored full-path globs like
+//     "/tmp/safe/*" into recursive subtree suppressions.
 //  3. For a pattern with no wildcards, a literal substring match, so an operator
 //     can suppress a directory ("/uploads/") or a filename ("adminer.php").
 //
@@ -365,6 +366,9 @@ func matchGlob(path, pattern string) bool {
 		if matched, _ := filepath.Match(pattern, path); matched {
 			return true
 		}
+		if strings.ContainsAny(pattern, "?[") || !hasLeadingAnyDepthGlob(pattern) {
+			return false
+		}
 		residue := strings.ReplaceAll(pattern, "*", "")
 		if strings.Contains(residue, "/") && strings.Trim(residue, "/") != "" {
 			return strings.Contains(path, residue)
@@ -372,4 +376,12 @@ func matchGlob(path, pattern string) bool {
 		return false
 	}
 	return strings.Contains(path, pattern)
+}
+
+func hasLeadingAnyDepthGlob(pattern string) bool {
+	firstSlash := strings.Index(pattern, "/")
+	if firstSlash <= 0 {
+		return false
+	}
+	return strings.Trim(pattern[:firstSlash], "*") == ""
 }
