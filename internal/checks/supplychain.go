@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -74,7 +75,7 @@ func CheckSupplyChain(ctx context.Context, cfg *config.Config, _ *state.Store) [
 
 	var findings []alert.Finding
 	for _, lock := range discoverLockfiles(ctx) {
-		if ctx.Err() != nil {
+		if ctx != nil && ctx.Err() != nil {
 			return findings
 		}
 		data, err := osFS.ReadFile(lock.path)
@@ -85,7 +86,7 @@ func CheckSupplyChain(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		for _, p := range pkgs {
 			for _, adv := range index[advisoryKey(p.Ecosystem, p.Name)] {
 				if versionVulnerable(p.Version, adv.Ranges) {
-					findings = append(findings, supplyChainFinding(lock.account, p, adv))
+					findings = append(findings, supplyChainFinding(lock.account, lock.path, p, adv))
 				}
 			}
 		}
@@ -130,6 +131,11 @@ type lockfile struct {
 	parse   func([]byte) []supplyChainPkg
 }
 
+type packageLockDependency struct {
+	Version      string                           `json:"version"`
+	Dependencies map[string]packageLockDependency `json:"dependencies"`
+}
+
 // discoverLockfiles globs composer.lock and package-lock.json at the
 // common project depths under customer home directories. Bounded by the
 // glob shape (no recursive walk) so a deep node_modules tree cannot turn
@@ -137,13 +143,12 @@ type lockfile struct {
 func discoverLockfiles(ctx context.Context) []lockfile {
 	patterns := []struct {
 		glob  string
-		eco   string
 		parse func([]byte) []supplyChainPkg
 	}{
-		{"/home/*/public_html/composer.lock", "composer", parseComposerLock},
-		{"/home/*/composer.lock", "composer", parseComposerLock},
-		{"/home/*/public_html/package-lock.json", "npm", parsePackageLock},
-		{"/home/*/package-lock.json", "npm", parsePackageLock},
+		{"/home/*/public_html/composer.lock", parseComposerLock},
+		{"/home/*/composer.lock", parseComposerLock},
+		{"/home/*/public_html/package-lock.json", parsePackageLock},
+		{"/home/*/package-lock.json", parsePackageLock},
 	}
 	var out []lockfile
 	seen := map[string]struct{}{}
@@ -188,9 +193,7 @@ func parsePackageLock(data []byte) []supplyChainPkg {
 		Packages map[string]struct {
 			Version string `json:"version"`
 		} `json:"packages"`
-		Dependencies map[string]struct {
-			Version string `json:"version"`
-		} `json:"dependencies"`
+		Dependencies map[string]packageLockDependency `json:"dependencies"`
 	}
 	if json.Unmarshal(data, &doc) != nil {
 		return nil
@@ -198,20 +201,44 @@ func parsePackageLock(data []byte) []supplyChainPkg {
 	var out []supplyChainPkg
 	// npm v2/v3: keyed by "node_modules/<name>" (the root "" entry is the
 	// project itself and has no node_modules prefix).
-	for path, v := range doc.Packages {
+	paths := make([]string, 0, len(doc.Packages))
+	for path := range doc.Packages {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		v := doc.Packages[path]
 		name := npmNameFromPackagesKey(path)
 		if name == "" || v.Version == "" {
 			continue
 		}
 		out = append(out, supplyChainPkg{Ecosystem: "npm", Name: name, Version: v.Version})
 	}
-	// npm v1 fallback: top-level dependencies map keyed by package name.
+	// npm v1: dependency tree rooted at the top-level dependencies map.
 	if len(doc.Packages) == 0 {
-		for name, v := range doc.Dependencies {
-			if name == "" || v.Version == "" {
-				continue
+		return appendPackageLockV1Dependencies(out, doc.Dependencies)
+	}
+	return out
+}
+
+func appendPackageLockV1Dependencies(out []supplyChainPkg, deps map[string]packageLockDependency) []supplyChainPkg {
+	stack := []map[string]packageLockDependency{deps}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		names := make([]string, 0, len(cur))
+		for name := range cur {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			dep := cur[name]
+			if name != "" && dep.Version != "" {
+				out = append(out, supplyChainPkg{Ecosystem: "npm", Name: name, Version: dep.Version})
 			}
-			out = append(out, supplyChainPkg{Ecosystem: "npm", Name: name, Version: v.Version})
+			if len(dep.Dependencies) > 0 {
+				stack = append(stack, dep.Dependencies)
+			}
 		}
 	}
 	return out
@@ -225,11 +252,23 @@ func npmNameFromPackagesKey(key string) string {
 	if key == "" {
 		return ""
 	}
-	idx := strings.LastIndex(key, "node_modules/")
-	if idx < 0 {
-		return ""
+	parts := strings.Split(key, "/")
+	for i := len(parts) - 2; i >= 0; i-- {
+		if parts[i] != "node_modules" {
+			continue
+		}
+		if parts[i+1] == "" {
+			return ""
+		}
+		if strings.HasPrefix(parts[i+1], "@") {
+			if i+2 >= len(parts) || parts[i+2] == "" {
+				return ""
+			}
+			return parts[i+1] + "/" + parts[i+2]
+		}
+		return parts[i+1]
 	}
-	return key[idx+len("node_modules/"):]
+	return ""
 }
 
 // versionVulnerable reports whether version falls inside any advisory
@@ -278,6 +317,7 @@ func semverCompare(a, b string) int {
 func semverSegments(v string) []int {
 	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(v, "v")
+	v = strings.TrimPrefix(v, "V")
 	if i := strings.IndexAny(v, "-+"); i >= 0 {
 		v = v[:i]
 	}
@@ -293,7 +333,7 @@ func semverSegments(v string) []int {
 	return out
 }
 
-func supplyChainFinding(account string, p supplyChainPkg, adv supplyChainAdvisory) alert.Finding {
+func supplyChainFinding(account, lockPath string, p supplyChainPkg, adv supplyChainAdvisory) alert.Finding {
 	sev := alert.High
 	switch strings.ToLower(adv.Severity) {
 	case "critical":
@@ -317,8 +357,9 @@ func supplyChainFinding(account string, p supplyChainPkg, adv supplyChainAdvisor
 		Check:    "supply_chain_vuln",
 		Message: fmt.Sprintf("Vulnerable %s dependency %s %s (%s) on account %s",
 			p.Ecosystem, p.Name, p.Version, id, account),
-		Details: fmt.Sprintf("Account: %s\nEcosystem: %s\nPackage: %s\nVersion: %s\nAdvisory: %s\nSeverity: %s\nFix: %s\n%s",
-			account, p.Ecosystem, p.Name, p.Version, id, adv.Severity, fixed, adv.Summary),
+		Details: fmt.Sprintf("Account: %s\nLockfile: %s\nEcosystem: %s\nPackage: %s\nVersion: %s\nAdvisory: %s\nSeverity: %s\nFix: %s\n%s",
+			account, lockPath, p.Ecosystem, p.Name, p.Version, id, adv.Severity, fixed, adv.Summary),
+		FilePath:  lockPath,
 		Timestamp: time.Now(),
 	}
 }
