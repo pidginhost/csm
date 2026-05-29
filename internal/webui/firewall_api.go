@@ -1,8 +1,8 @@
 package webui
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -520,15 +520,44 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// cphulkBlocksIP reports whether the cphulk black-list JSON contains ip as an
-// exact record value. It matches the quoted JSON token ("<ip>"), not a bare
-// substring, so querying a prefix like 10.20.30.4 does not falsely match a
-// different blocked address 10.20.30.40 and leak blocklist membership.
+// cphulkBlocksIP scopes the match to cPHulk record IP fields. A raw token
+// search would still match unrelated strings such as operator notes.
 func cphulkBlocksIP(jsonOut []byte, ip string) bool {
 	if ip == "" {
 		return false
 	}
-	return bytes.Contains(jsonOut, []byte(`"`+ip+`"`))
+	var payload struct {
+		Data struct {
+			Records []map[string]json.RawMessage `json:"records"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(jsonOut, &payload); err != nil {
+		return false
+	}
+	for _, record := range payload.Data.Records {
+		for key, raw := range record {
+			if !isCphulkRecordIPField(key) {
+				continue
+			}
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				continue
+			}
+			if value == ip {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isCphulkRecordIPField(key string) bool {
+	switch strings.ToLower(key) {
+	case "ip", "ip_address":
+		return true
+	default:
+		return false
+	}
 }
 
 // apiFirewallUnban unblocks an IP from CSM + cphulk in one call.

@@ -161,10 +161,7 @@ func TestAPIFirewallUnbanGetRejected(t *testing.T) {
 	}
 }
 
-// cphulkBlocksIP must match a blocked IP exactly, never by prefix. The old
-// bytes.Contains(out, ip) reported a different blocked IP (10.20.30.40) when
-// querying a prefix (10.20.30.4), leaking blocklist membership.
-func TestCphulkBlocksIPExactMatch(t *testing.T) {
+func TestCphulkBlocksIPMatchesRecordIPOnly(t *testing.T) {
 	out := []byte(`{"data":{"records":[{"ip":"10.20.30.40","type":"black"}]}}`)
 	if !cphulkBlocksIP(out, "10.20.30.40") {
 		t.Error("exact blocked IP must match")
@@ -174,6 +171,18 @@ func TestCphulkBlocksIPExactMatch(t *testing.T) {
 	}
 	if cphulkBlocksIP(out, "1.2.3.4") {
 		t.Error("unrelated IP must not match")
+	}
+	commentOnly := []byte(`{"data":{"records":[{"ip":"192.0.2.10","comment":"10.20.30.40"}]}}`)
+	if cphulkBlocksIP(commentOnly, "10.20.30.40") {
+		t.Error("IP in a non-IP record field must not match")
+	}
+	cidrOnly := []byte(`{"data":{"records":[{"ip":"10.20.30.40/32","type":"black"}]}}`)
+	if cphulkBlocksIP(cidrOnly, "10.20.30.40") {
+		t.Error("CIDR value must not match a single-IP query")
+	}
+	metadataOnly := []byte(`{"metadata":{"ip":"10.20.30.40"},"data":{"records":[]}}`)
+	if cphulkBlocksIP(metadataOnly, "10.20.30.40") {
+		t.Error("IP outside cPHulk records must not match")
 	}
 	if cphulkBlocksIP([]byte("not json"), "10.20.30.40") {
 		t.Error("garbage output must not match")
