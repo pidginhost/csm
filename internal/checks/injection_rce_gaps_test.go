@@ -138,6 +138,23 @@ func TestAnalyzePHPContentIncludeInStringNotFlagged(t *testing.T) {
 	}
 }
 
+// TestAnalyzePHPContentCallUserFuncConcatOnlyNotFlagged guards the
+// call_user_func+decoder obfuscation indicator against a concat-only false
+// positive: a large minified plugin that uses call_user_func_array, an
+// unrelated base64_decode, and heavy string concatenation must not trip it.
+// Hex-encoded function-name building (the real obfuscation signal) still does.
+func TestAnalyzePHPContentCallUserFuncConcatOnlyNotFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"call_user_func_array($cb, $args);\n" +
+		"$x = base64_decode($data);\n" +
+		"$s = \"a\" . \"b\" . \"c\" . \"d\" . \"e\" . \"f\" . \"g\";\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("concat-only call_user_func/decoder wrongly flagged; details=%q", res.details)
+	}
+}
+
 // --- assert / create_function code-eval primitives with request input ---
 
 func TestAnalyzePHPContentAssertRequestFlagged(t *testing.T) {

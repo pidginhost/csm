@@ -891,7 +891,11 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// dozens of plugins use call_user_func_array with base64_decode legitimately.
 	// Only flag when combined with actual obfuscation (hex strings, heavy concat).
 	if strings.Contains(contentLower, "call_user_func") && hasDecoder {
-		if hexStringCount > 5 || dotConcatCount > 5 {
+		// Hex-encoded name building is the obfuscation signal. A bare concat
+		// count is not: large minified plugins concatenate string literals
+		// dozens of times in unrelated code, so concat alone produced standing
+		// false positives next to an unrelated call_user_func and decoder.
+		if hexStringCount > 5 {
 			indicators = append(indicators, "variable function call with decoder and obfuscation")
 		}
 	}

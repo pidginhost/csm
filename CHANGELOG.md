@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - PHP content scanner now ties the new remote-code-execution checks to the executable expression being scanned, reducing false positives from nearby literals or unrelated request reads.
+- PHP content scanner no longer raises the call_user_func-with-decoder obfuscation signal on string concatenation alone; it now requires hex-encoded name building, clearing false positives on large minified plugins.
 - File-index scanner now judges every new PHP file in WordPress uploads by its content instead of skipping files by directory name or the index.php filename, so a webshell hidden in a "safe" upload folder or named index.php is no longer missed.
 - Realtime upload monitoring now applies content checks before filename or update-directory handling, so malicious PHP in WordPress uploads is still surfaced while inert stubs stay quiet.
 - Automatic outgoing-mail hold on a spam outbreak, realtime cloud-relay credential abuse, or startup cloud-relay replay now respects the auto-response master switch and dry-run safety default, so an operator in monitor mode no longer has a customer's mail held without opting in. The finding still surfaces.
