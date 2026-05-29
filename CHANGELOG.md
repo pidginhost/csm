@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP content scanner now flags backtick shell execution with request input, exec/decoder names passed as callbacks, and variable-variable function calls driven by request input.
 - PHP content scanner now ignores those new execution patterns when they appear only in comments or quoted examples.
 - PHP content scanner no longer flags a decode function used as a callback unless that same call is fed request input, clearing false positives on stock plugins that decode internal data while still catching attacker-driven droppers.
+- PHP content scanner now treats request variables as exact input sources, avoiding literal or prefix-only matches in callback and dynamic-call checks.
 
 ## [3.9.2] - 2026-05-29
 

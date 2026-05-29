@@ -191,13 +191,7 @@ func lineContainsDirectEvalCall(line string) bool {
 }
 
 func lineContainsRequestVar(line string) bool {
-	codeLine := strings.ToLower(stripPHPStringsFromCode(line))
-	for _, requestVar := range []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"} {
-		if strings.Contains(codeLine, requestVar) {
-			return true
-		}
-	}
-	return false
+	return containsRequestSuperglobal(stripPHPStringsFromCode(line))
 }
 
 func lineContainsIndirectCallKind(calls []indirectCall, lineStart, lineEnd int, kind indirectFuncKind) bool {

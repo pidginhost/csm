@@ -159,7 +159,7 @@ func hasCallbackExecName(code string) bool {
 		}
 		if _, decoder := callbackDecoderNames[callbackName]; decoder {
 			closeParen := matchingParen(code, openParen)
-			if containsRequestSuperglobal(code[openParen:closeParen]) {
+			if containsRequestSuperglobalExpression(code[openParen:closeParen]) {
 				return true
 			}
 		}
@@ -192,12 +192,44 @@ func matchingParen(code string, openParen int) int {
 }
 
 func containsRequestSuperglobal(code string) bool {
+	code = strings.ToLower(code)
 	for _, requestVar := range []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"} {
-		if strings.Contains(code, requestVar) {
-			return true
+		searchFrom := 0
+		for {
+			pos := strings.Index(code[searchFrom:], requestVar)
+			if pos < 0 {
+				break
+			}
+			end := searchFrom + pos + len(requestVar)
+			if end >= len(code) || !isPHPIdentifierPart(code[end]) {
+				return true
+			}
+			searchFrom = end
 		}
 	}
 	return false
+}
+
+// PHP single-quoted strings do not interpolate variables, but double-quoted
+// strings do. The decoder callback gate needs that distinction so a literal
+// '$_POST' data value does not look like request input.
+func containsRequestSuperglobalExpression(code string) bool {
+	start := 0
+	for i := 0; i < len(code); i++ {
+		if !isPHPQuote(code[i]) {
+			continue
+		}
+		if containsRequestSuperglobal(code[start:i]) {
+			return true
+		}
+		end := skipPHPString(code, i)
+		if code[i] == '"' && containsRequestSuperglobal(code[i:end+1]) {
+			return true
+		}
+		i = end
+		start = end + 1
+	}
+	return containsRequestSuperglobal(code[start:])
 }
 
 func canStartGlobalPHPFunction(code string, slash int) bool {
@@ -597,14 +629,12 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// Uses containsStandaloneFunc to avoid substring false positives
 	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen(", "proc_open(", "pcntl_exec("}
-	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
 	// Two-tier detection:
 	// Same line = CRITICAL signal (auto-quarantine eligible)
 	// Co-presence = HIGH signal (alert only, not quarantined alone)
 	// This prevents bypass by splitting across lines while avoiding
 	// false-positive quarantine of legitimate plugins.
 	hasShellFunc := false
-	hasRequestVar := false
 	sameLineShellRequest := false
 	for _, sf := range shellFuncs {
 		if containsStandaloneFunc(contentLower, sf) {
@@ -612,12 +642,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			break
 		}
 	}
-	for _, rv := range requestVars {
-		if strings.Contains(contentLower, rv) {
-			hasRequestVar = true
-			break
-		}
-	}
+	hasRequestVar := containsRequestSuperglobal(contentLower)
 	// Same-line is a strong signal on its own: "$ret = system($_POST['cmd']);"
 	// almost never occurs in legitimate code. Co-presence is weaker: elFinder
 	// and other media-processing libraries legitimately call exec() for
@@ -638,13 +663,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			if !lineHasShell {
 				continue
 			}
-			for _, rv := range requestVars {
-				if strings.Contains(line, rv) {
-					sameLineShellRequest = true
-					break
-				}
-			}
-			if sameLineShellRequest {
+			if containsRequestSuperglobal(line) {
+				sameLineShellRequest = true
 				break
 			}
 		}

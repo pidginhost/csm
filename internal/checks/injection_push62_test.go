@@ -201,6 +201,13 @@ func TestAnalyzePHPContentBacktickNoSuperglobalNotFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentBacktickSuperglobalPrefixNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $out = `printf %s $_POSTGRES`; ?>")
+	if strings.Contains(res.details, "backtick shell execution with request input") {
+		t.Errorf("superglobal prefix variable in backtick wrongly flagged; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentBacktickExampleNotFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php\n// Example: `cat $_GET[x]`\n$doc = \"Run `cat $_POST[x]` from a shell\";\n?>")
 	if strings.Contains(res.details, "backtick shell execution with request input") {
@@ -212,6 +219,13 @@ func TestAnalyzePHPContentBacktickWithShellQuotesStillFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php $out = `printf \"x\" $_GET[c]`; ?>")
 	if !strings.Contains(res.details, "backtick shell execution with request input") {
 		t.Errorf("backtick with quoted shell args not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentShellSuperglobalPrefixNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php system($_POSTGRES); ?>")
+	if strings.Contains(res.details, "shell function with request input") {
+		t.Errorf("superglobal prefix variable in shell call wrongly flagged; details=%q", res.details)
 	}
 }
 
@@ -268,6 +282,34 @@ func TestAnalyzePHPContentDecoderCallbackWithRequestFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentDecoderCallbackLiteralRequestStringNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $p = array_map('base64_decode', array('$_POST[p]')); ?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("literal request token in decoder callback data wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentDecoderCallbackSuperglobalPrefixNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $p = array_map('base64_decode', $_POSTGRES); ?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("superglobal prefix variable in decoder callback data wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentDecoderCallbackUppercaseRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $p = ArRaY_Map('BaSe64_DeCoDe', $_POST['p']); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("decoder callback fed uppercase request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentDecoderCallbackTruncatedRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $p = array_map('base64_decode', $_POST['p']")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("truncated decoder callback fed request input not flagged; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentExecCallbackNoRequestStillFlagged(t *testing.T) {
 	// An execution sink as a callback is RCE regardless of where its arguments
 	// come from, so it must flag even without request input on the call.
@@ -305,6 +347,13 @@ func TestAnalyzePHPContentVarVarCallNoRequestNotFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php $handler='render'; $$handler($config); ?>")
 	if strings.Contains(res.details, "variable-variable function call with request input") {
 		t.Errorf("benign $$handler() wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentVarVarCallSuperglobalPrefixNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $$handler($_POSTGRES); ?>")
+	if strings.Contains(res.details, "variable-variable function call with request input") {
+		t.Errorf("superglobal prefix variable in dynamic call wrongly flagged; details=%q", res.details)
 	}
 }
 
