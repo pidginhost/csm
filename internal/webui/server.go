@@ -771,6 +771,17 @@ func (s *Server) isAuthenticated(r *http.Request) bool {
 	return s.tokenHasScope(r, "admin")
 }
 
+// clientIPKey strips the port from a net/http RemoteAddr for use as a
+// per-client rate-limit key, handling bracketed IPv6 ([::1]:443 -> ::1).
+// Falls back to the raw value when there is no host:port to split, so a
+// missing port never collapses distinct clients onto one key.
+func clientIPKey(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Redirect already-authenticated users to dashboard
 	if s.isAuthenticated(r) {
@@ -789,10 +800,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit: 5 attempts per minute per IP (strip port from RemoteAddr)
-	ip := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
-	}
+	ip := clientIPKey(r.RemoteAddr)
 	s.loginMu.Lock()
 	now := time.Now()
 	attempts := s.loginAttempts[ip]
@@ -936,10 +944,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 		// API rate limiting: 600 requests per minute per IP
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			ip := r.RemoteAddr
-			if idx := strings.LastIndex(ip, ":"); idx >= 0 {
-				ip = ip[:idx]
-			}
+			ip := clientIPKey(r.RemoteAddr)
 			s.apiMu.Lock()
 			now := time.Now()
 			cutoff := now.Add(-time.Minute)
