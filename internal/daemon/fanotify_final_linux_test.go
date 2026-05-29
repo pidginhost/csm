@@ -241,6 +241,57 @@ func TestAnalyzeFileExecutableInConfigAlerts(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFileExecutableInConfigUsesEventFd(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, ".config")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(confDir, "miner")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho miner\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("benign replacement\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		if got.Check != "executable_in_config_realtime" {
+			t.Errorf("Check = %q, want executable_in_config_realtime", got.Check)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected executable_in_config_realtime alert from event fd inode")
+	}
+}
+
+func TestAnalyzeFileExecutableInConfigSkipsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".config", "cache")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		t.Fatalf("expected no alert for .config directory, got %+v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // --- analyzeFile: suppressed path → no alert ------------------------------
 
 func TestAnalyzeFileSuppressedPathSkips(t *testing.T) {
