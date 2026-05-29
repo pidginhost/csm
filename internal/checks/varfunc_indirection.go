@@ -207,6 +207,15 @@ func stripPHPCommentsFromCode(code string) string {
 	var b strings.Builder
 	b.Grow(len(code))
 	for i := 0; i < len(code); i++ {
+		// Heredoc/nowdoc bodies are string literals, not code. Copy them
+		// verbatim so a '#', '//', or '/*' inside the body is not mistaken
+		// for a comment (which would corrupt the surrounding code).
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			end := phpHeredocEnd(code, bodyStart, label)
+			b.WriteString(code[i:end])
+			i = end - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = copyPHPString(&b, code, i)
 			continue
@@ -260,6 +269,22 @@ func stripPHPStringsFromCode(code string) string {
 	var b strings.Builder
 	b.Grow(len(code))
 	for i := 0; i < len(code); i++ {
+		// Blank heredoc/nowdoc bodies (and their opener/closing label) the same
+		// way single/double-quoted strings are blanked, so their contents are
+		// not analysed as code and a quote inside the body cannot desync the
+		// scanner and swallow real code that follows the heredoc.
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			end := phpHeredocEnd(code, bodyStart, label)
+			for k := i; k < end; k++ {
+				if code[k] == '\n' || code[k] == '\r' {
+					b.WriteByte(code[k])
+				} else {
+					b.WriteByte(' ')
+				}
+			}
+			i = end - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = replacePHPString(&b, code, i)
 			continue
@@ -267,6 +292,79 @@ func stripPHPStringsFromCode(code string) string {
 		b.WriteByte(code[i])
 	}
 	return b.String()
+}
+
+// phpHeredocOpen reports whether code[i:] opens a heredoc or nowdoc. On success
+// it returns the label and the byte index where the body begins (just past the
+// opening line's newline). It recognises `<<<LABEL`, `<<<"LABEL"` (heredoc) and
+// `<<<'LABEL'` (nowdoc), with optional spaces/tabs after `<<<`.
+func phpHeredocOpen(code string, i int) (label string, bodyStart int, ok bool) {
+	if i+3 > len(code) || code[i] != '<' || code[i+1] != '<' || code[i+2] != '<' {
+		return "", 0, false
+	}
+	j := i + 3
+	for j < len(code) && (code[j] == ' ' || code[j] == '\t') {
+		j++
+	}
+	var quote byte
+	if j < len(code) && (code[j] == '\'' || code[j] == '"') {
+		quote = code[j]
+		j++
+	}
+	if j >= len(code) || !isPHPIdentifierStart(code[j]) {
+		return "", 0, false
+	}
+	start := j
+	j++
+	for j < len(code) && isPHPIdentifierPart(code[j]) {
+		j++
+	}
+	label = code[start:j]
+	if quote != 0 {
+		if j >= len(code) || code[j] != quote {
+			return "", 0, false
+		}
+		j++
+	}
+	// The opening line ends at the next newline; only trailing whitespace and
+	// an optional CR may sit between the label and that newline.
+	for j < len(code) && (code[j] == ' ' || code[j] == '\t' || code[j] == '\r') {
+		j++
+	}
+	if j >= len(code) || code[j] != '\n' {
+		return "", 0, false
+	}
+	return label, j + 1, true
+}
+
+// phpHeredocEnd returns the byte index just past the closing label of a heredoc
+// whose body begins at bodyStart. PHP 7.3+ permits the closing label to be
+// indented; the label must appear at the start of a line (after optional
+// spaces/tabs) and be followed by a non-identifier byte. An unterminated
+// heredoc consumes the rest of the input.
+func phpHeredocEnd(code string, bodyStart int, label string) int {
+	i := bodyStart
+	for i < len(code) {
+		lineEnd := i
+		for lineEnd < len(code) && code[lineEnd] != '\n' {
+			lineEnd++
+		}
+		k := i
+		for k < lineEnd && (code[k] == ' ' || code[k] == '\t') {
+			k++
+		}
+		if k+len(label) <= lineEnd && code[k:k+len(label)] == label {
+			after := k + len(label)
+			if after >= len(code) || !isPHPIdentifierPart(code[after]) {
+				return after
+			}
+		}
+		if lineEnd >= len(code) {
+			break
+		}
+		i = lineEnd + 1
+	}
+	return len(code)
 }
 
 func copyPHPString(b *strings.Builder, code string, start int) int {

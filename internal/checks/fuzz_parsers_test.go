@@ -131,6 +131,32 @@ func FuzzHasCallUserFuncHexNameBuild(f *testing.F) {
 	})
 }
 
+func FuzzStripPHPHeredoc(f *testing.F) {
+	// Heredoc/nowdoc openers and bodies the strip functions must walk without
+	// panicking or running off the end of the buffer.
+	f.Add("$a = <<<EOT\nbody line\nEOT;\n$b = 1;\n")
+	f.Add("$a = <<<'EOT'\nsystem($_GET[c]);\nEOT;\n")
+	f.Add("$a = <<<\"EOT\"\n  indented\n  EOT;\n")
+	f.Add("<<<EOT") // opener, no body, no close
+	f.Add("<<<")    // bare marker
+	f.Add("<<<EOT\nunterminated body with 'quote and \"quote")
+	f.Add("$x = <<<EOT\nEOT") // close at EOF, no newline after label
+	f.Add("a << b < c <<< d") // not a heredoc
+	f.Add("<<<123\nx\n123\n") // label not an identifier
+	f.Fuzz(func(t *testing.T, code string) {
+		// Neither pass may panic, and the comment pass must preserve length-ish
+		// invariants only loosely; we only assert no crash here.
+		_ = stripPHPCommentsFromCode(code)
+		_ = stripPHPStringsFromCode(code)
+		// The opener/end helpers must also be panic-free on arbitrary offsets.
+		for i := 0; i < len(code); i++ {
+			if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+				_ = phpHeredocEnd(code, bodyStart, label)
+			}
+		}
+	})
+}
+
 func FuzzExtractPHPString(f *testing.F) {
 	f.Add(" 'hello');")
 	f.Add(` "world");`)
