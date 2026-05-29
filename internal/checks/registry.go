@@ -113,6 +113,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "new_executable_in_config", Category: CategoryMalware},
 	{Name: "new_php_in_sensitive_dir_clean", Category: CategoryMalware},
 	{Name: "new_php_in_uploads", Category: CategoryMalware},
+	{Name: "new_php_in_uploads_clean", Category: CategoryMalware},
 	{Name: "new_suspicious_php", Category: CategoryMalware},
 	{Name: "new_webshell_file", Category: CategoryMalware},
 	{Name: "nulled_plugin", Category: CategoryMalware},

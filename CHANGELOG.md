@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File-index scanner now judges every new PHP file in WordPress uploads by its content instead of skipping files by directory name or the index.php filename, so a webshell hidden in a "safe" upload folder or named index.php is no longer missed.
 - The distributed HTTP flood threshold is now exposed in web settings, reference configs, and operator docs so it can be tuned consistently.
 - Incident auto-close now starts shortly after restart instead of waiting a long warm-up, and drains a large backlog over several bounded sweeps rather than one. A frequently-restarted busy host no longer leaves thousands of long-idle incidents sitting open, and a big sweep no longer stalls incident ingestion or bursts the store.
 - Default configuration templates now show the dedicated Prometheus scrape token so operators do not need to give scrapers the admin token.

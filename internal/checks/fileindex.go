@@ -149,40 +149,18 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		message := ""
 
 		if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(nameLower, ".php") {
-			if isKnownSafeUpload(path, name) {
+			// Content decides, never the path or name. A negative
+			// severity is a content-verified inert stub (e.g. the
+			// WordPress "silence is golden" index.php, or BackWPup's
+			// "<?php //<json>" working files) and is suppressed; any
+			// real code surfaces, malicious or merely present.
+			if sev, ck, msg := classifyUploadPHP(path); sev >= 0 {
+				severity = sev
+				check = ck
+				message = msg
+			} else {
 				continue
 			}
-			// Structural recognisers for two duplicate/legitimate
-			// shapes the deep-scan path also encounters: cPanel
-			// pkgrestore staging (the user-context extraction emits
-			// its own event) and WP-Optimize per-server probe files
-			// (test.php under /uploads/wpo/ on a site running the
-			// plugin). Both checks are path-only and verified by a
-			// filesystem stat or path component anchor; an attacker
-			// dropping a webshell in one of these locations is
-			// caught by other detectors that run on the same file.
-			if LooksLikeCpanelRestoreStaging(path) {
-				continue
-			}
-			if LooksLikeWPOptimizeProbeByPath(path) {
-				continue
-			}
-			// Content-shape gate. Plugins that write transient PHP
-			// state files into upload trees (BackWPup writes
-			// "<?php //<json>" working files and "<?php\n//path..."
-			// folder caches) produced standing FPs every backup run.
-			// The recogniser accepts only files whose reachable code
-			// is whitespace+comments, or that terminate with
-			// die/exit/__halt_compiler before any statement. Both
-			// shapes are inert under PHP execution semantics; a
-			// payload dropped under a "known-safe" filename fails the
-			// gate the moment it includes any non-comment statement.
-			if IsBenignPHPStub(path) {
-				continue
-			}
-			severity = scorePHPUploadSeverity(path)
-			check = "new_php_in_uploads"
-			message = fmt.Sprintf("New PHP file in uploads: %s", path)
 		}
 
 		// PHP files in wp-content/languages and wp-content/upgrade: content-first.
@@ -387,7 +365,10 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 		}
 
 		nameLower := strings.ToLower(name)
-		if strings.HasSuffix(nameLower, ".php") && nameLower != "index.php" {
+		if strings.HasSuffix(nameLower, ".php") {
+			// index.php is indexed too: a webshell named index.php must
+			// not hide behind the WordPress silence-stub convention. The
+			// inert stub itself is suppressed later by content analysis.
 			*entries = append(*entries, fullPath)
 		}
 		ext := filepath.Ext(nameLower)
@@ -455,25 +436,6 @@ func scanDirForSuspiciousExt(dir string, maxDepth int, cache dirMtimeCache, prev
 			*entries = append(*entries, fullPath)
 		}
 	}
-}
-
-func isKnownSafeUpload(path, name string) bool {
-	safePaths := []string{
-		"/cache/", "/imunify", "/redux/", "/mailchimp-for-wp/",
-		"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
-		"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
-		"/bws-custom-code/", "/wp-import-export-lite/",
-		"/mc4wp-debug-log.php", "/zn_fonts/", "/companies_documents/",
-	}
-	if name == "index.php" {
-		return true
-	}
-	for _, sp := range safePaths {
-		if strings.Contains(path, sp) {
-			return true
-		}
-	}
-	return false
 }
 
 func isWebshellName(name string) bool {

@@ -166,7 +166,7 @@ var runnerFindingNames = map[string][]string{
 	"email_weak_password":   {"email_weak_password"},
 	"exfiltration_paste":    {"exfiltration_paste_site"},
 	"fake_kernel_threads":   {"fake_kernel_thread"},
-	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
+	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
 	"filesystem":            {"backdoor_binary", "suid_binary", "suspicious_file"},
 	"firewall":              {"firewall", "firewall_ports"},
 	"ftp_logins":            {"ftp_bruteforce", "ftp_login"},

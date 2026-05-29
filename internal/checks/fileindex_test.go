@@ -54,25 +54,6 @@ func TestIsSuspiciousPHPName(t *testing.T) {
 	}
 }
 
-func TestIsKnownSafeUpload(t *testing.T) {
-	tests := []struct {
-		path string
-		name string
-		want bool
-	}{
-		{"/home/user/public_html/wp-content/uploads/index.php", "index.php", true},
-		{"/home/user/public_html/wp-content/uploads/redux/color.php", "color.php", true},
-		{"/home/user/public_html/wp-content/uploads/mailchimp-for-wp/debug.php", "debug.php", true},
-		{"/home/user/public_html/wp-content/uploads/evil.php", "evil.php", false},
-		{"/home/user/public_html/wp-content/uploads/2024/shell.php", "shell.php", false},
-	}
-	for _, tt := range tests {
-		if got := isKnownSafeUpload(tt.path, tt.name); got != tt.want {
-			t.Errorf("isKnownSafeUpload(%q, %q) = %v, want %v", tt.path, tt.name, got, tt.want)
-		}
-	}
-}
-
 // --- loadDirCache / saveDirCache round-trip ----------------------------
 
 func TestDirCacheRoundTrip(t *testing.T) {
@@ -201,7 +182,7 @@ func TestGroupEntriesByUploadDir(t *testing.T) {
 func TestScanDirForPHPFindsFiles(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "evil.php"), []byte("<?php"), 0644)
-	_ = os.WriteFile(filepath.Join(dir, "index.php"), []byte("<?php"), 0644) // skipped
+	_ = os.WriteFile(filepath.Join(dir, "index.php"), []byte("<?php"), 0644) // indexed; inert stub suppressed later by content analysis
 	_ = os.WriteFile(filepath.Join(dir, "safe.txt"), []byte("text"), 0644)
 	_ = os.WriteFile(filepath.Join(dir, "trick.phtml"), []byte("<?php"), 0644)
 
@@ -210,8 +191,8 @@ func TestScanDirForPHPFindsFiles(t *testing.T) {
 	var entries []string
 	scanDirForPHP(dir, 3, cache, prev, false, &entries)
 
-	if len(entries) != 2 {
-		t.Errorf("got %d entries %v, want 2 (evil.php + trick.phtml)", len(entries), entries)
+	if len(entries) != 3 {
+		t.Errorf("got %d entries %v, want 3 (evil.php + index.php + trick.phtml)", len(entries), entries)
 	}
 }
 

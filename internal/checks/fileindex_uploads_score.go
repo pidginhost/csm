@@ -1,31 +1,37 @@
 package checks
 
 import (
+	"fmt"
+
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// scorePHPUploadSeverity decides the alert severity for a fresh PHP file
-// dropped under wp-content/uploads. Default is High because writable PHP
-// in uploads is real attack surface; the detector exists to surface every
-// drop. We demote to Warning only when analyzePHPContent reads the body
-// and produces zero indicators, which means none of the obfuscation,
-// remote-payload, shell-execution, or hex-concat heuristics matched. Any
-// read error (missing file, zero bytes, permission denial) fails closed
-// at High -- an attacker who races the scanner with `rm` or chmod 000
-// must not get a free demote.
+// classifyUploadPHP decides severity, check name, and message for a fresh PHP
+// file under wp-content/uploads using its CONTENT, never its path or name.
+// Uploads should hold media, not PHP, so any new PHP is at least a visibility
+// signal; the body decides whether it is an attack.
 //
-// Yara coverage is intentionally not invoked here. The deep tier's
-// CheckPHPContent runs on its own schedule across the same uploads tree
-// and will emit obfuscated_php / suspicious_php_content independently,
-// so a truly malicious file produces a separate High/Critical finding
-// even after this demote.
-func scorePHPUploadSeverity(path string) alert.Severity {
+// A negative severity means "suppress" (a content-verified inert stub). It
+// mirrors classifySensitiveDirPHP so the two anomalous-PHP-location detectors
+// behave identically. Path/name allowlists are intentionally absent: skipping
+// a file because it sits under /cache/ or is named index.php is exactly how an
+// attacker hides a webshell in a "safe" location.
+//
+// Unreadable or zero-byte bodies fail closed at High: an attacker who races
+// the scanner with `rm` or chmod 000 must not earn a demote. A content-clean
+// real-code file surfaces as a non-actionable Warning under a check name that
+// is intentionally absent from the correlation and auto-response maps -- a
+// clean file is visibility, not an attack.
+func classifyUploadPHP(path string) (alert.Severity, string, string) {
 	r := analyzePHPContent(path)
-	if r.severity >= alert.High {
-		return alert.High
+	if r.severity >= 0 {
+		return r.severity, r.check, fmt.Sprintf("%s: %s", r.message, path)
 	}
-	if r.readOK {
-		return alert.Warning
+	if !r.readOK {
+		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path)
 	}
-	return alert.High
+	if IsBenignPHPStub(path) {
+		return -1, "", ""
+	}
+	return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New PHP file in uploads (content clean): %s", path)
 }

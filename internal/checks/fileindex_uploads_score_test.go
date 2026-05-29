@@ -8,107 +8,80 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-func TestScorePHPUploadSeverityBenignClassFile(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "class-pxl-breadcrumb.php")
-	body := `<?php
+// --- classifyUploadPHP: content-first, no path/name allowlist ---------
 
-class PxlBreadcrumb_Widget extends Pxltheme_Core_Widget_Base{
-    protected $name = 'pxl_breadcrumb';
-    protected $title = 'PXL Breadcrumb';
-    protected $icon = 'eicon-navigation-horizontal';
-    protected $categories = array( 'pxltheme-core' );
-    protected $params = '{"sections":[]}';
-    protected $styles = array();
-    protected $scripts = array();
-}
-`
+func writeUploadPHP(t *testing.T, name, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	target := filepath.Join(dir, name)
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := scorePHPUploadSeverity(target); got != alert.Warning {
-		t.Errorf("benign class file -> got %v, want Warning", got)
+	return target
+}
+
+func TestClassifyUploadPHPWebshellInCacheDirFlagged(t *testing.T) {
+	// A webshell whose path contains "/cache/" was previously skipped wholesale
+	// by isKnownSafeUpload. It must now be flagged on content, regardless of
+	// the "safe" directory name.
+	target := writeUploadPHP(t, "shell.php", "<?php system($_POST['cmd']); ?>")
+	sev, check, _ := classifyUploadPHP(target)
+	if sev < alert.High {
+		t.Fatalf("webshell -> severity %v, want >= High", sev)
+	}
+	if check == "new_php_in_uploads_clean" || check == "" {
+		t.Errorf("webshell -> check %q, want an actionable content check", check)
 	}
 }
 
-func TestScorePHPUploadSeverityBenignUsesBoundedAnalyzerRead(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "class-generated.php")
-	body := `<?php
-
-class Generated_Widget {
-    public function render() {
-        return '<div>ok</div>';
-    }
-}
-`
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+func TestClassifyUploadPHPObfuscatedFlagged(t *testing.T) {
+	target := writeUploadPHP(t, "x.php", "<?php eval(base64_decode(\"ZWNobyAxOw==\")); ?>")
+	sev, check, _ := classifyUploadPHP(target)
+	if sev < alert.High {
+		t.Errorf("eval+base64 -> severity %v, want >= High", sev)
 	}
-
-	oldOS := osFS
-	osFS = noReadFileOS{t: t}
-	t.Cleanup(func() { osFS = oldOS })
-
-	if got := scorePHPUploadSeverity(target); got != alert.Warning {
-		t.Errorf("benign class file -> got %v, want Warning", got)
+	if check == "" || check == "new_php_in_uploads_clean" {
+		t.Errorf("eval+base64 -> check %q, want an actionable content check", check)
 	}
 }
 
-type noReadFileOS struct {
-	realOS
-	t *testing.T
-}
-
-func (fs noReadFileOS) ReadFile(name string) ([]byte, error) {
-	fs.t.Fatalf("scorePHPUploadSeverity must not re-read full clean upload %q", name)
-	return nil, nil
-}
-
-func TestScorePHPUploadSeverityObfuscatedKeepsHigh(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "x.php")
-	body := `<?php
-eval(base64_decode("ZWNobyAxOw=="));
-`
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+func TestClassifyUploadPHPCleanRealCodeIsWarningVisibility(t *testing.T) {
+	// A clean real-code PHP file (e.g. a plugin cache class) is no longer
+	// path-skipped; it surfaces as a non-actionable visibility Warning.
+	target := writeUploadPHP(t, "class-cache.php", "<?php\nclass Cache_Widget { public function render() { return 'ok'; } }\n")
+	sev, check, _ := classifyUploadPHP(target)
+	if sev != alert.Warning {
+		t.Errorf("clean real-code -> severity %v, want Warning", sev)
 	}
-	if got := scorePHPUploadSeverity(target); got != alert.High {
-		t.Errorf("eval+base64 -> got %v, want High", got)
+	if check != "new_php_in_uploads_clean" {
+		t.Errorf("clean real-code -> check %q, want new_php_in_uploads_clean", check)
 	}
 }
 
-func TestScorePHPUploadSeverityShellWithRequestSameLineKeepsHigh(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "y.php")
-	body := `<?php
-$out = system($_POST['cmd']);
-`
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := scorePHPUploadSeverity(target); got != alert.High {
-		t.Errorf("shell+request same line -> got %v, want High", got)
+func TestClassifyUploadPHPInertStubSuppressed(t *testing.T) {
+	// WordPress "silence is golden" index.php and similar inert stubs are
+	// content-verified benign and must be suppressed (negative severity).
+	target := writeUploadPHP(t, "index.php", "<?php // Silence is golden\n")
+	sev, _, _ := classifyUploadPHP(target)
+	if sev >= 0 {
+		t.Errorf("inert stub -> severity %v, want negative (suppressed)", sev)
 	}
 }
 
-func TestScorePHPUploadSeverityUnreadableKeepsHigh(t *testing.T) {
-	// Missing path -> analyzePHPContent returns severity=-1 because Open fails.
-	// Fail-closed: alerting path stays High when we cannot inspect content.
-	if got := scorePHPUploadSeverity("/nonexistent/path/that/does/not/exist.php"); got != alert.High {
-		t.Errorf("unreadable -> got %v, want High (fail-closed)", got)
+func TestClassifyUploadPHPUnreadableFailsClosed(t *testing.T) {
+	sev, check, _ := classifyUploadPHP("/nonexistent/wp-content/uploads/gone.php")
+	if sev != alert.High {
+		t.Errorf("unreadable -> severity %v, want High (fail-closed)", sev)
+	}
+	if check != "new_php_in_uploads" {
+		t.Errorf("unreadable -> check %q, want new_php_in_uploads", check)
 	}
 }
 
-func TestScorePHPUploadSeverityEmptyFileKeepsHigh(t *testing.T) {
-	// Zero-byte PHP in uploads: cannot prove benign -> fail closed.
-	dir := t.TempDir()
-	target := filepath.Join(dir, "empty.php")
-	if err := os.WriteFile(target, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := scorePHPUploadSeverity(target); got != alert.High {
-		t.Errorf("empty file -> got %v, want High (fail-closed)", got)
+func TestClassifyUploadPHPEmptyFileFailsClosed(t *testing.T) {
+	target := writeUploadPHP(t, "empty.php", "")
+	sev, _, _ := classifyUploadPHP(target)
+	if sev != alert.High {
+		t.Errorf("empty file -> severity %v, want High (fail-closed)", sev)
 	}
 }
