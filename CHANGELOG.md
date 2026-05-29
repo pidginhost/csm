@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.2] - 2026-05-29
+
 ### Security
 
 - Firewall block guard now refuses to auto-block any of the daemon's own non-loopback interface addresses, regardless of operator configuration. A stray internal request that loops back to the daemon could previously trigger a self-block and firewall every customer hosted on that IP.
