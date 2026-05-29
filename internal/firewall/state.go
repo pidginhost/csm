@@ -7,10 +7,9 @@ import (
 	"time"
 )
 
-// LoadState reads the firewall state file directly without requiring a running engine.
-// Used by CLI commands that only need to display state.
-// Note: callers that have access to the store package should check store.Global()
-// first for bbolt-backed state. This function reads flat-file state.json only.
+// LoadState reads the authoritative firewall state file directly without requiring
+// a running engine. A missing state file is a valid fresh-host state and returns
+// an empty FirewallState.
 func LoadState(statePath string) (*FirewallState, error) {
 	stateFile := filepath.Join(statePath, "firewall", "state.json")
 	// #nosec G304 -- filepath.Join under operator-configured statePath.

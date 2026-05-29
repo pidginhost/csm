@@ -53,6 +53,27 @@ func TestAPIBlockedIPsWithMultipleEntries(t *testing.T) {
 	}
 }
 
+func TestAPIBlockedIPsEmptyEngineStateReturnsArray(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	_ = store.Global().BlockIP("10.0.0.99", "stale-bucket", time.Now().Add(time.Hour))
+	legacy := `{"ips":[` +
+		`{"ip":"198.51.100.99","reason":"legacy",` +
+		`"blocked_at":"2026-04-01T00:00:00Z","expires_at":"2099-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(filepath.Join(s.cfg.StatePath, "blocked_ips.json"), []byte(legacy), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeEngineBlockStateFile(t, s.cfg.StatePath, nil)
+
+	w := httptest.NewRecorder()
+	s.apiBlockedIPs(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
+		t.Fatalf("body = %s, want []", got)
+	}
+}
+
 // --- apiUnblockIP with bbolt -----------------------------------------
 
 func TestAPIUnblockIPWithBbolt(t *testing.T) {

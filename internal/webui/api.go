@@ -1021,25 +1021,27 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 }
 
 // apiBlockedIPs returns the list of currently blocked IPs.
-// Uses bbolt store when available, falls back to flat files.
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
-	var result []blockedView
+	result := []blockedView{}
 
-	// Read the authoritative firewall engine state.json. The bbolt
-	// fw:blocked bucket is written only at migration, so reading it would
-	// serve the operator a frozen snapshot instead of the live block set.
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
-	// #nosec G304 -- filepath.Join under operator-configured StatePath.
-	if fwData, err := os.ReadFile(fwFile); err == nil {
-		var fwState struct {
-			Blocked []blockedEntry `json:"blocked"`
-		}
-		if json.Unmarshal(fwData, &fwState) == nil {
-			for _, b := range fwState.Blocked {
-				if view, ok := formatBlockedView(b); ok {
-					result = append(result, view)
-				}
+	_, fwStatErr := os.Stat(fwFile) // #nosec G304 -- filepath.Join under operator-configured StatePath.
+	if fwState, err := firewall.LoadState(s.cfg.StatePath); err == nil && fwState != nil {
+		for _, entry := range fwState.Blocked {
+			b := blockedEntry{
+				IP:        entry.IP,
+				Reason:    entry.Reason,
+				Source:    entry.Source,
+				BlockedAt: entry.BlockedAt,
+				ExpiresAt: entry.ExpiresAt,
 			}
+			if view, ok := formatBlockedView(b); ok {
+				result = append(result, view)
+			}
+		}
+		// A present engine state file wins even when empty. blocked_ips.json
+		// is only a legacy fallback when the engine file does not exist.
+		if fwStatErr == nil || len(fwState.Blocked) > 0 {
 			writeJSON(w, result)
 			return
 		}

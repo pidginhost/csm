@@ -489,7 +489,8 @@ func extractBracketedIP(line string) string {
 }
 
 // loadAllBlockedIPs returns all IPs currently blocked in CSM.
-// Uses bbolt store when available, falls back to flat files.
+// It reads firewall state through osFS so tests can inject a filesystem,
+// then merges the legacy blocked_ips.json file.
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
 
