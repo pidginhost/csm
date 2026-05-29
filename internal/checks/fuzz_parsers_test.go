@@ -116,6 +116,21 @@ func FuzzHasPregReplaceEvalModifier(f *testing.F) {
 	})
 }
 
+func FuzzHasCallUserFuncHexNameBuild(f *testing.F) {
+	f.Add("call_user_func(\"\\x73\".\"\\x79\".\"\\x73\", $a);")
+	f.Add("$n = \"\\x63\".\"\\x75\".\"\\x72\"; call_user_func($n, $x);")
+	f.Add("$n = \"\\x63\"; $n .= \"\\x75\"; $n .= \"\\x72\"; call_user_func($n, $x);")
+	f.Add("call_user_func_array($cb, $args);")
+	f.Add("call_user_func(")
+	f.Add("$n = ; call_user_func($n);")
+	f.Add("call_user_func($")
+	f.Add("$ .= ")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		_ = hasCallUserFuncHexNameBuild(s)
+	})
+}
+
 func FuzzExtractPHPString(f *testing.F) {
 	f.Add(" 'hello');")
 	f.Add(` "world");`)
