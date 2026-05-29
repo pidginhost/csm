@@ -61,6 +61,7 @@ func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
 func (e *Engine) Apply() error                                      { return nil }
 func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
 func (e *Engine) BlockedCount() int                                 { return 0 }
+func (e *Engine) RuleCounts() RuleCounts                            { return RuleCounts{} }
 func (e *Engine) UpdateInfraResolved(_ string, _ []string)          {}
 func (e *Engine) DropInfraResolved(_ string)                        {}
 func (e *Engine) BlockIPOutcome(_ string, _ string, _ time.Duration) (BlockOutcome, error) {

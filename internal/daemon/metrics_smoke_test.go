@@ -15,56 +15,6 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// TestFirewallMetricsReadLiveStore registers the firewall gauges and
-// then mutates the bbolt store underneath them; the scrape must
-// reflect the mutation. This catches a silent regression where someone
-// stops reading store.Global() or caches the state at register time.
-func TestFirewallMetricsReadLiveStore(t *testing.T) {
-	// store.EnsureOpen's sync.Once means we cannot rely on it to
-	// point Global at a fresh tempdir. Open directly and SetGlobal
-	// for the duration of this test.
-	db := openStoreForTest(t)
-
-	// Seed with known state. Exact counts let us assert precise
-	// values on the gauges.
-	if err := db.BlockIP("10.0.0.1", "test", time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("BlockIP: %v", err)
-	}
-	if err := db.BlockIP("10.0.0.2", "test", time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("BlockIP: %v", err)
-	}
-	if err := db.AllowIP("10.0.0.3", "test", time.Time{}); err != nil {
-		t.Fatalf("AllowIP: %v", err)
-	}
-	if err := db.AllowIP("10.0.0.5", "expired", time.Now().Add(-time.Hour)); err != nil {
-		t.Fatalf("AllowIP(expired): %v", err)
-	}
-
-	d := &Daemon{cfg: &config.Config{}}
-	d.registerFirewallMetrics()
-
-	body := scrapeBody(t)
-
-	// Fresh test-store: the three seed rows are the only entries, so
-	// assert exact counts. Tighter than >= catches regressions like
-	// "BlockIP silently double-inserts" or
-	// "LoadFirewallState reads the bucket twice".
-	if got := readGauge(body, "csm_blocked_ips_total"); got != 2 {
-		t.Errorf("csm_blocked_ips_total: got %g, want 2 (two BlockIPs seeded)", got)
-	}
-	if got := readGauge(body, "csm_firewall_rules_total"); got != 3 {
-		t.Errorf("csm_firewall_rules_total: got %g, want 3 (2 blocked + 1 active allow)", got)
-	}
-
-	// Mutate and re-scrape to prove the gauge is live, not cached.
-	if err := db.BlockIP("10.0.0.4", "test", time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("BlockIP: %v", err)
-	}
-	if got := readGauge(scrapeBody(t), "csm_blocked_ips_total"); got != 3 {
-		t.Errorf("csm_blocked_ips_total after third BlockIP: got %g, want 3", got)
-	}
-}
-
 // TestStoreSizeMetricReadsFile registers the store-size gauge, writes
 // more data to bbolt, and confirms the gauge reflects the larger
 // file. bbolt preallocates pages so the first write can already lift

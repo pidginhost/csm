@@ -2372,6 +2372,22 @@ func (e *Engine) BlockedCount() int {
 	return len(e.loadStateFile().Blocked)
 }
 
+// RuleCounts returns the cardinality of every firewall rule category from
+// the engine state file with expired temp bans pruned. Callers needing a
+// live count (e.g. Prometheus gauges) must use this rather than the bbolt
+// store, which holds only the migration-time snapshot.
+func (e *Engine) RuleCounts() RuleCounts {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s := e.loadStateFile()
+	return RuleCounts{
+		Blocked:     len(s.Blocked),
+		Allowed:     len(s.Allowed),
+		Subnets:     len(s.BlockedNet),
+		PortAllowed: len(s.PortAllowed),
+	}
+}
+
 // Status returns current firewall statistics.
 //
 // Takes e.mu so the cached state can be read coherently. Before the

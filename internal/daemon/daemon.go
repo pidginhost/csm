@@ -338,33 +338,30 @@ var firewallMetricsOnce sync.Once
 
 // registerFirewallMetrics exposes the count of blocked IPs and the
 // total number of firewall rules (IPs + allowed + subnets + port
-// allow entries). Both are gauge hooks that read from the bbolt
-// store at scrape time, so they observe the full live state without
-// holding any cached mirror.
+// allow entries). Both gauges read the firewall engine at scrape time:
+// the engine state file is authoritative, while the parallel bbolt
+// fw:* buckets are written only at migration, so reading the store
+// would freeze the gauge at the migration-time snapshot.
 func (d *Daemon) registerFirewallMetrics() {
 	firewallMetricsOnce.Do(func() {
 		metrics.RegisterGaugeFunc(
 			"csm_blocked_ips_total",
 			"Number of IPs currently on the firewall block list (excluding expired temp bans).",
 			func() float64 {
-				db := store.Global()
-				if db == nil {
+				if d.fwEngine == nil {
 					return 0
 				}
-				st := db.LoadFirewallState()
-				return float64(len(st.Blocked))
+				return float64(d.fwEngine.RuleCounts().Blocked)
 			},
 		)
 		metrics.RegisterGaugeFunc(
 			"csm_firewall_rules_total",
 			"Total firewall rules across all categories (blocked IPs, allowed IPs, blocked subnets, port-specific allows).",
 			func() float64 {
-				db := store.Global()
-				if db == nil {
+				if d.fwEngine == nil {
 					return 0
 				}
-				st := db.LoadFirewallState()
-				return float64(len(st.Blocked) + len(st.Allowed) + len(st.Subnets) + len(st.PortAllowed))
+				return float64(d.fwEngine.RuleCounts().Total())
 			},
 		)
 	})

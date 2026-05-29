@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Prometheus firewall gauges now report the live engine rule counts. They previously read a parallel store populated only at migration, so the blocked-IP and total-rule metrics could sit frozen at an old snapshot while the real firewall state moved on.
+
 ## [3.9.2] - 2026-05-29
 
 ### Security
