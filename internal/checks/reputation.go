@@ -493,27 +493,22 @@ func extractBracketedIP(line string) string {
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
 
-	// Try bbolt store first.
-	if sdb := store.Global(); sdb != nil {
-		ss := sdb.LoadFirewallState()
-		for _, entry := range ss.Blocked {
-			blocked[entry.IP] = true
+	// Read the authoritative firewall engine state. The engine persists
+	// every block to firewall/state.json; the parallel bbolt fw:blocked
+	// bucket is written only at migration, so reading it would return a
+	// frozen snapshot that misses live blocks.
+	if fwData, err := osFS.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+		var fwState struct {
+			Blocked []struct {
+				IP        string    `json:"ip"`
+				ExpiresAt time.Time `json:"expires_at"`
+			} `json:"blocked"`
 		}
-	} else {
-		// Fallback: read from firewall engine state (nftables) flat file.
-		if fwData, err := osFS.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
-			var fwState struct {
-				Blocked []struct {
-					IP        string    `json:"ip"`
-					ExpiresAt time.Time `json:"expires_at"`
-				} `json:"blocked"`
-			}
-			if json.Unmarshal(fwData, &fwState) == nil {
-				now := time.Now()
-				for _, entry := range fwState.Blocked {
-					if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-						blocked[entry.IP] = true
-					}
+		if json.Unmarshal(fwData, &fwState) == nil {
+			now := time.Now()
+			for _, entry := range fwState.Blocked {
+				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+					blocked[entry.IP] = true
 				}
 			}
 		}

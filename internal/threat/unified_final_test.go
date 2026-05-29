@@ -66,8 +66,10 @@ func TestLookupCombinesBboltReputationAndBlockAndLegacy(t *testing.T) {
 	_ = sdb.SetReputation("198.51.100.10", store.ReputationEntry{
 		Score: 95, Category: "abuse", CheckedAt: time.Now(),
 	})
-	// bbolt firewall block (permanent).
-	_ = sdb.BlockIP("198.51.100.10", "test-block", time.Time{})
+	// Engine firewall block (permanent).
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "198.51.100.10", "reason": "test-block", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+	})
 
 	// Legacy blocked_ips.json with a DIFFERENT IP so both files are read.
 	writeBlockedIPsFile(t, dir, []map[string]any{
@@ -129,7 +131,9 @@ func TestLookupBatchWithBboltAndLegacyCombined(t *testing.T) {
 	store.SetGlobal(sdb)
 	defer store.SetGlobal(nil)
 
-	_ = sdb.BlockIP("198.51.100.20", "bbolt block", time.Time{})
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "198.51.100.20", "reason": "engine block", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+	})
 	writeBlockedIPsFile(t, dir, []map[string]any{
 		{
 			"ip":         "198.51.100.21",

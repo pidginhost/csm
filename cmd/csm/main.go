@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/daemon"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -212,16 +213,18 @@ func ensureGlobalStore(cfg *config.Config) error {
 		return err
 	}
 
-	// Wire alert filter to read blocked IPs from bbolt when available.
-	if sdb := store.Global(); sdb != nil {
-		alert.BlockedIPsFunc = func() map[string]bool {
-			ips := make(map[string]bool)
-			ss := sdb.LoadFirewallState()
-			for _, entry := range ss.Blocked {
+	// Wire alert filter to read blocked IPs from the authoritative firewall
+	// engine state. The bbolt fw:blocked bucket is migration-only, so reading
+	// it would suppress alerts based on a stale snapshot.
+	statePath := cfg.StatePath
+	alert.BlockedIPsFunc = func() map[string]bool {
+		ips := make(map[string]bool)
+		if fwState, err := firewall.LoadState(statePath); err == nil && fwState != nil {
+			for _, entry := range fwState.Blocked {
 				ips[entry.IP] = true
 			}
-			return ips
 		}
+		return ips
 	}
 	return nil
 }

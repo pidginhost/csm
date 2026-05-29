@@ -218,23 +218,36 @@ func TestAPIHistoryFilteredExactScanCapIsNotMarkedTruncated(t *testing.T) {
 	}
 }
 
-func TestAPIBlockedIPsWithBbolt(t *testing.T) {
+func TestAPIBlockedIPsReadsEngineStateNotStore(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
-	sdb := store.Global()
-	_ = sdb.BlockIP("203.0.113.5", "brute-force", time.Time{})
-	_ = sdb.BlockIP("198.51.100.1", "waf-block", time.Now().Add(1*time.Hour))
+	// Stale migration-snapshot bucket: must be ignored by the handler.
+	_ = store.Global().BlockIP("10.0.0.99", "stale-bucket", time.Now().Add(time.Hour))
+	// Authoritative engine state.
+	writeEngineBlockStateFile(t, s.cfg.StatePath, []string{
+		`{"ip":"203.0.113.5","reason":"brute-force","blocked_at":"2026-04-01T00:00:00Z","expires_at":"0001-01-01T00:00:00Z"}`,
+		`{"ip":"198.51.100.1","reason":"waf-block","blocked_at":"2026-04-01T00:00:00Z","expires_at":"` + time.Now().Add(1*time.Hour).Format(time.RFC3339) + `"}`,
+	})
 
 	w := httptest.NewRecorder()
 	s.apiBlockedIPs(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data []interface{}
+	var data []map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if len(data) < 1 {
-		t.Error("expected at least 1 blocked IP")
+	ips := map[string]bool{}
+	for _, e := range data {
+		if ip, ok := e["ip"].(string); ok {
+			ips[ip] = true
+		}
+	}
+	if !ips["203.0.113.5"] || !ips["198.51.100.1"] {
+		t.Errorf("engine-state blocked IPs missing: %v", ips)
+	}
+	if ips["10.0.0.99"] {
+		t.Error("stale store-bucket IP leaked into response")
 	}
 }
 

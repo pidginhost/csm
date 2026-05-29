@@ -143,18 +143,12 @@ func TestLoadFullAbuseCacheViaBboltSkipsNegativeScore(t *testing.T) {
 
 // --- loadFullBlockState: bbolt with multiple entries ---------------------
 
-func TestLoadFullBlockStateViaBboltMultipleEntries(t *testing.T) {
+func TestLoadFullBlockStateMultipleEntries(t *testing.T) {
 	dir := t.TempDir()
-	sdb, err := store.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sdb.Close() }()
-	store.SetGlobal(sdb)
-	defer store.SetGlobal(nil)
-
-	_ = sdb.BlockIP("10.0.0.1", "brute", time.Time{})
-	_ = sdb.BlockIP("10.0.0.2", "rate limit", time.Now().Add(24*time.Hour))
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "10.0.0.1", "reason": "brute", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+		{"ip": "10.0.0.2", "reason": "rate limit", "expires_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339Nano)},
+	})
 
 	blocks := loadFullBlockState(dir)
 	if len(blocks) != 2 {
@@ -170,18 +164,13 @@ func TestLoadFullBlockStateViaBboltMultipleEntries(t *testing.T) {
 
 // --- loadFullBlockState: legacy blocked_ips.json deduplication -----------
 
-func TestLoadFullBlockStateLegacyDoesNotOverrideBbolt(t *testing.T) {
+func TestLoadFullBlockStateLegacyDoesNotOverrideEngineState(t *testing.T) {
 	dir := t.TempDir()
-	sdb, err := store.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sdb.Close() }()
-	store.SetGlobal(sdb)
-	defer store.SetGlobal(nil)
 
-	// Block via bbolt.
-	_ = sdb.BlockIP("203.0.113.70", "bbolt reason", time.Time{})
+	// Block via the authoritative engine state.
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "203.0.113.70", "reason": "engine reason", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+	})
 
 	// Also write a legacy file with the same IP but different reason.
 	writeBlockedIPsFile(t, dir, []map[string]any{
@@ -198,9 +187,9 @@ func TestLoadFullBlockStateLegacyDoesNotOverrideBbolt(t *testing.T) {
 	if !ok {
 		t.Fatal("expected 203.0.113.70 in block map")
 	}
-	// bbolt entry should take precedence.
-	if entry.reason != "bbolt reason" {
-		t.Errorf("reason = %q, want 'bbolt reason' (bbolt takes precedence)", entry.reason)
+	// Engine-state entry should take precedence over the legacy file.
+	if entry.reason != "engine reason" {
+		t.Errorf("reason = %q, want 'engine reason' (engine state takes precedence)", entry.reason)
 	}
 }
 
@@ -273,7 +262,9 @@ func TestLookupBatchViaBbolt(t *testing.T) {
 	_ = sdb.SetReputation("10.0.0.1", store.ReputationEntry{
 		Score: 50, Category: "scan", CheckedAt: time.Now(),
 	})
-	_ = sdb.BlockIP("10.0.0.2", "malicious", time.Time{})
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "10.0.0.2", "reason": "malicious", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+	})
 
 	results := LookupBatch([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, dir)
 	if len(results) != 3 {

@@ -91,6 +91,48 @@ func TestComputeVerdictBoundaries(t *testing.T) {
 
 // --- applyBlockState ---------------------------------------------------
 
+// TestLoadFullBlockStatePrefersEngineStateOverStaleStore pins that the
+// unified threat view reads live firewall engine state, not the
+// migration-only bbolt fw:blocked bucket.
+func TestLoadFullBlockStatePrefersEngineStateOverStaleStore(t *testing.T) {
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	fwState := map[string]interface{}{
+		"blocked": []map[string]interface{}{
+			{"ip": "203.0.113.1", "reason": "live", "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339)},
+		},
+	}
+	data, _ := json.Marshal(fwState)
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+	if err := db.BlockIP("203.0.113.99", "stale-bucket", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("BlockIP: %v", err)
+	}
+
+	m := loadFullBlockState(dir)
+	if m["203.0.113.1"] == nil {
+		t.Error("live engine-state block missing from result")
+	}
+	if m["203.0.113.99"] != nil {
+		t.Error("stale store-bucket block leaked into result")
+	}
+}
+
 func TestApplyBlockStateMiss(t *testing.T) {
 	intel := &IPIntelligence{IP: "1.2.3.4"}
 	applyBlockState(intel, map[string]*blockEntry{})
@@ -286,6 +328,24 @@ func writeBlockedIPsFile(t *testing.T, statePath string, ips []map[string]any) {
 	}
 }
 
+// writeEngineBlockState writes the firewall engine state.json under
+// statePath/firewall, the authoritative block source loadFullBlockState
+// reads. blocked is a list of {"ip","reason","blocked_at","expires_at"}.
+func writeEngineBlockState(t *testing.T, statePath string, blocked []map[string]any) {
+	t.Helper()
+	fwDir := filepath.Join(statePath, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"blocked": blocked})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadFullBlockStateMissingIsEmpty(t *testing.T) {
 	// No state files; globals are unset in tests. loadFullBlockState
 	// should return an empty map without panicking.
@@ -469,21 +529,15 @@ func TestLoadFullAbuseCacheViaBbolt(t *testing.T) {
 	}
 }
 
-func TestLoadFullBlockStateViaBbolt(t *testing.T) {
+func TestLoadFullBlockStateFromEngineState(t *testing.T) {
 	dir := t.TempDir()
-	sdb, err := store.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sdb.Close() }()
-	store.SetGlobal(sdb)
-	defer store.SetGlobal(nil)
-
-	_ = sdb.BlockIP("203.0.113.5", "test-block", time.Time{})
+	writeEngineBlockState(t, dir, []map[string]any{
+		{"ip": "203.0.113.5", "reason": "test-block", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
+	})
 
 	blocks := loadFullBlockState(dir)
 	if entry, ok := blocks["203.0.113.5"]; !ok {
-		t.Error("expected entry from bbolt")
+		t.Error("expected entry from engine state")
 	} else if !entry.permanent {
 		t.Error("zero expiry should be permanent")
 	}

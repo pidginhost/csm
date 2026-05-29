@@ -21,7 +21,6 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
-	"github.com/pidginhost/csm/internal/store"
 )
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
@@ -1026,25 +1025,9 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	var result []blockedView
 
-	// Try bbolt store first.
-	if sdb := store.Global(); sdb != nil {
-		ss := sdb.LoadFirewallState()
-		for _, entry := range ss.Blocked {
-			b := blockedEntry{
-				IP:        entry.IP,
-				Reason:    entry.Reason,
-				BlockedAt: entry.BlockedAt,
-				ExpiresAt: entry.ExpiresAt,
-			}
-			if view, ok := formatBlockedView(b); ok {
-				result = append(result, view)
-			}
-		}
-		writeJSON(w, result)
-		return
-	}
-
-	// Fallback: try firewall engine state.json
+	// Read the authoritative firewall engine state.json. The bbolt
+	// fw:blocked bucket is written only at migration, so reading it would
+	// serve the operator a frozen snapshot instead of the live block set.
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
 	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	if fwData, err := os.ReadFile(fwFile); err == nil {

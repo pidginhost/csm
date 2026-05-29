@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,25 +15,41 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// --- apiBlockedIPs with bbolt blocked data ---------------------------
+// writeEngineBlockStateFile writes firewall/state.json under statePath, the
+// authoritative source apiBlockedIPs reads. entriesJSON are raw JSON objects
+// for the "blocked" array.
+func writeEngineBlockStateFile(t *testing.T, statePath string, entriesJSON []string) {
+	t.Helper()
+	fwDir := filepath.Join(statePath, "firewall")
+	if err := os.MkdirAll(fwDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"blocked":[` + strings.Join(entriesJSON, ",") + `]}`
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- apiBlockedIPs reads authoritative engine state ------------------
 
 func TestAPIBlockedIPsWithMultipleEntries(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
-	sdb := store.Global()
-	_ = sdb.BlockIP("203.0.113.1", "brute-force", time.Time{})
-	_ = sdb.BlockIP("203.0.113.2", "waf-block", time.Now().Add(2*time.Hour))
-	_ = sdb.BlockIP("203.0.113.3", "auto-block", time.Now().Add(-1*time.Hour)) // expired
+	writeEngineBlockStateFile(t, s.cfg.StatePath, []string{
+		`{"ip":"203.0.113.1","reason":"brute-force","blocked_at":"2026-04-01T00:00:00Z","expires_at":"0001-01-01T00:00:00Z"}`,
+		`{"ip":"203.0.113.2","reason":"waf-block","blocked_at":"2026-04-01T00:00:00Z","expires_at":"` + time.Now().Add(2*time.Hour).Format(time.RFC3339) + `"}`,
+		`{"ip":"203.0.113.3","reason":"auto-block","blocked_at":"2026-04-01T00:00:00Z","expires_at":"` + time.Now().Add(-1*time.Hour).Format(time.RFC3339) + `"}`, // expired
+	})
 
 	w := httptest.NewRecorder()
 	s.apiBlockedIPs(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data []interface{}
+	var data []map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &data)
-	// Should have at least 2 (expired ones filtered by formatBlockedView)
-	if len(data) < 1 {
-		t.Errorf("expected blocked entries, got %d", len(data))
+	// Two active entries; the expired one is filtered by formatBlockedView.
+	if len(data) != 2 {
+		t.Errorf("expected 2 active blocked entries, got %d", len(data))
 	}
 }
 

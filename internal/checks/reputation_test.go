@@ -10,7 +10,53 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/store"
 )
+
+// TestLoadAllBlockedIPsPrefersEngineStateOverStaleStore pins that the
+// blocked-IP reader uses the authoritative firewall engine state file,
+// not the bbolt fw:blocked bucket. That bucket is written only at
+// migration, so a daemon with an open store would otherwise serve a
+// frozen snapshot and miss live blocks.
+func TestLoadAllBlockedIPsPrefersEngineStateOverStaleStore(t *testing.T) {
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	fwState := map[string]interface{}{
+		"blocked": []map[string]interface{}{
+			{"ip": "203.0.113.1", "expires_at": time.Now().Add(time.Hour).Format(time.RFC3339)},
+		},
+	}
+	data, _ := json.Marshal(fwState)
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), data, 0600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+	// Stale migration-snapshot entry that is no longer a live block.
+	if err := db.BlockIP("203.0.113.99", "stale-bucket", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("BlockIP: %v", err)
+	}
+
+	blocked := loadAllBlockedIPs(dir)
+	if !blocked["203.0.113.1"] {
+		t.Error("engine-state blocked IP missing from result")
+	}
+	if blocked["203.0.113.99"] {
+		t.Error("stale store-bucket IP leaked into result")
+	}
+}
 
 // --- firstField -------------------------------------------------------
 

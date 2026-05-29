@@ -235,30 +235,17 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 	result := make(map[string]*blockEntry)
 	now := time.Now()
 
-	// Try bbolt store first.
-	if sdb := store.Global(); sdb != nil {
-		ss := sdb.LoadFirewallState()
-		for _, entry := range ss.Blocked {
+	// Read the authoritative firewall engine state (flat-file state.json).
+	// The bbolt fw:blocked bucket is written only at migration, so it would
+	// return a stale snapshot rather than the live block set.
+	if fwState, err := firewall.LoadState(statePath); err == nil && fwState != nil {
+		for _, entry := range fwState.Blocked {
 			perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
 			result[entry.IP] = &blockEntry{
 				reason:    entry.Reason,
 				blockedAt: entry.BlockedAt,
 				expiresAt: entry.ExpiresAt,
 				permanent: perm,
-			}
-		}
-	} else {
-		// Fallback: firewall.LoadState() reads flat-file state.json.
-		fwState, err := firewall.LoadState(statePath)
-		if err == nil && fwState != nil {
-			for _, entry := range fwState.Blocked {
-				perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
-				result[entry.IP] = &blockEntry{
-					reason:    entry.Reason,
-					blockedAt: entry.BlockedAt,
-					expiresAt: entry.ExpiresAt,
-					permanent: perm,
-				}
 			}
 		}
 	}
