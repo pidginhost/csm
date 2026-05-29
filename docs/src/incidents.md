@@ -22,11 +22,14 @@ threshold described under "Auto-close" below.
 ## Auto-close
 
 To stop the open-incident backlog from growing without bound on busy
-hosts, the daemon scans Open / Contained incidents once an hour and
-auto-resolves any whose `updated_at` exceeds the per-kind idle
-threshold. Auto-resolved incidents carry `closed_by: "auto:stale"` and
-an `incident_auto_closed` action in their timeline so reporting can
-distinguish them from operator closes.
+hosts, the daemon scans Open / Contained incidents shortly after startup
+and then once an hour, auto-resolving any whose `updated_at` exceeds the
+per-kind idle threshold. A live sweep closes at most 1000 stale incidents
+at a time; if more stale incidents remain, follow-up sweeps run every 30
+seconds until the backlog drains. Dry-run sweeps still scan the full set
+so the counters show every would-close decision. Auto-resolved incidents
+carry `closed_by: "auto:stale"` and an `incident_auto_closed` action in
+their timeline so reporting can distinguish them from operator closes.
 
 Defaults (configurable in `csm.yaml`):
 

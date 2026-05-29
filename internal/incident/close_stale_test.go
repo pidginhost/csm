@@ -64,6 +64,54 @@ func TestCloseStaleLimitedCapsClosesAndReportsBacklog(t *testing.T) {
 	if closed4 != 3 || more4 {
 		t.Fatalf("unbounded sweep = (closed=%d more=%v), want (3, false)", closed4, more4)
 	}
+
+	for i := 0; i < 5; i++ {
+		seedIncident(t, c, "email_auth_failure_realtime", "dry"+string(rune('a'+i)), old)
+	}
+	closed5, dryRun5, scanned5, more5 := c.CloseStaleLimited(now, thr, true, 2)
+	if closed5 != 0 || dryRun5 != 5 || scanned5 != 5 || more5 {
+		t.Fatalf("dry-run capped sweep = (closed=%d dryRun=%d scanned=%d more=%v), want (0,5,5,false)",
+			closed5, dryRun5, scanned5, more5)
+	}
+	closed6, _, _, more6 := c.CloseStaleLimited(now, thr, false, 0)
+	if closed6 != 5 || more6 {
+		t.Fatalf("live sweep after dry-run = (closed=%d more=%v), want (5, false)", closed6, more6)
+	}
+}
+
+func TestCloseStaleDelegatesToUnboundedLimitedSweep(t *testing.T) {
+	old := time.Unix(1_700_000_000, 0)
+	now := old.Add(25 * time.Hour)
+	thr := map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}
+	c1 := newTestCorrelator()
+	c2 := newTestCorrelator()
+	c1.now = func() time.Time { return old }
+	c2.now = func() time.Time { return old }
+	for i := 0; i < 3; i++ {
+		mailbox := "delegate" + string(rune('a'+i))
+		seedIncident(t, c1, "email_auth_failure_realtime", mailbox, old)
+		seedIncident(t, c2, "email_auth_failure_realtime", mailbox, old)
+	}
+
+	closed1, dryRun1, scanned1 := c1.CloseStale(now, thr, false)
+	closed2, dryRun2, scanned2, more2 := c2.CloseStaleLimited(now, thr, false, 0)
+	if closed1 != closed2 || dryRun1 != dryRun2 || scanned1 != scanned2 || more2 {
+		t.Fatalf("CloseStale=(%d,%d,%d), CloseStaleLimited=(%d,%d,%d,%v)",
+			closed1, dryRun1, scanned1, closed2, dryRun2, scanned2, more2)
+	}
+	if countStatus(c1.Snapshot(), StatusResolved) != 3 || countStatus(c2.Snapshot(), StatusResolved) != 3 {
+		t.Fatalf("CloseStale and unbounded CloseStaleLimited must resolve the same incident count")
+	}
+}
+
+func countStatus(incidents []Incident, status Status) int {
+	count := 0
+	for _, inc := range incidents {
+		if inc.Status == status {
+			count++
+		}
+	}
+	return count
 }
 
 func TestCloseStaleClosesIncidentsOlderThanThreshold(t *testing.T) {
