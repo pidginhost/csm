@@ -14,12 +14,14 @@ import (
 func TestFileReaderRecordStatFiresGoneAfterGrace(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	var fires int
+	var restores int
 	var lastErr error
 	r := &FileReader{
-		path:      "/var/log/maillog",
-		goneGrace: 90 * time.Second,
-		nowFn:     func() time.Time { return now },
-		onGone:    func(err error) { fires++; lastErr = err },
+		path:       "/var/log/maillog",
+		goneGrace:  90 * time.Second,
+		nowFn:      func() time.Time { return now },
+		onGone:     func(err error) { fires++; lastErr = err },
+		onRestored: func() { restores++ },
 	}
 
 	missErr := &fs.PathError{Op: "stat", Path: r.path, Err: errors.New("no such file")}
@@ -54,8 +56,12 @@ func TestFileReaderRecordStatFiresGoneAfterGrace(t *testing.T) {
 		t.Fatalf("fired %d times while still gone, want 1", fires)
 	}
 
-	// Path returns: re-arm.
+	// Path returns and the reader can use it again: re-arm.
 	r.recordStat(false, nil)
+	r.recordRestored()
+	if restores != 1 {
+		t.Fatalf("restored callback fired %d times, want 1", restores)
+	}
 
 	// Missing again from scratch: clock restarts, no immediate fire.
 	r.recordStat(true, missErr)
@@ -69,9 +75,6 @@ func TestFileReaderRecordStatFiresGoneAfterGrace(t *testing.T) {
 	}
 }
 
-// TestFileReaderRecordStatIgnoresNonMissingErrors confirms a stat error
-// that is not "not exist" (e.g. a permission blip) does not start the
-// gone clock.
 func TestFileReaderRecordStatPresentResets(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	fires := 0
@@ -87,5 +90,44 @@ func TestFileReaderRecordStatPresentResets(t *testing.T) {
 	r.recordStat(false, nil)
 	if fires != 0 {
 		t.Fatalf("present-resets path fired %d times, want 0", fires)
+	}
+}
+
+func TestFileReaderRecordStatDoesNotDoubleFireBeforeRestore(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	fires := 0
+	restores := 0
+	r := &FileReader{
+		path:       "/var/log/maillog",
+		goneGrace:  10 * time.Second,
+		nowFn:      func() time.Time { return now },
+		onGone:     func(error) { fires++ },
+		onRestored: func() { restores++ },
+	}
+
+	r.recordStat(true, errors.New("gone"))
+	now = now.Add(11 * time.Second)
+	r.recordStat(true, errors.New("still gone"))
+	if fires != 1 {
+		t.Fatalf("fires after first gone state = %d, want 1", fires)
+	}
+
+	r.recordStat(false, nil)
+	r.recordStat(true, errors.New("missing again before readable restore"))
+	now = now.Add(11 * time.Second)
+	r.recordStat(true, errors.New("missing again before readable restore"))
+	if fires != 1 {
+		t.Fatalf("fires before restore = %d, want 1", fires)
+	}
+
+	r.recordRestored()
+	if restores != 1 {
+		t.Fatalf("restores = %d, want 1", restores)
+	}
+	r.recordStat(true, errors.New("gone after restore"))
+	now = now.Add(11 * time.Second)
+	r.recordStat(true, errors.New("gone after restore"))
+	if fires != 2 {
+		t.Fatalf("fires after restore/rearm = %d, want 2", fires)
 	}
 }

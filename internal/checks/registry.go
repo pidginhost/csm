@@ -306,6 +306,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "fanotify_overflow", Category: CategoryCorrelation},
 	{Name: "integrity", Category: CategoryCorrelation},
 	{Name: "local_threat_score", Category: CategoryCorrelation},
+	{Name: "mail_log_source_unavailable", Category: CategoryCorrelation},
 
 	// --- Internal (not shown in user-facing dropdowns) -------------------
 	{Name: "test_alert", Category: CategoryInternal, Internal: true},

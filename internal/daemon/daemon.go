@@ -1538,18 +1538,8 @@ func (d *Daemon) startLogWatchers() {
 			// silently tailing a dead fd: mark the watcher unhealthy and
 			// emit a finding so the operator knows mail detection degraded.
 			if fr, ok := mailReader.(*maillog.FileReader); ok {
-				fr.SetOnGone(func(err error) {
-					d.MarkWatcher("maillog", false)
-					select {
-					case d.alertCh <- alert.Finding{
-						Severity:  alert.Warning,
-						Check:     "mail_log_source_unavailable",
-						Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
-						Timestamp: time.Now(),
-					}:
-					case <-d.stopCh:
-					}
-				})
+				fr.SetOnGone(d.handleMailLogSourceGone)
+				fr.SetOnRestored(d.handleMailLogSourceRestored)
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() { <-d.stopCh; cancel() }()
@@ -1721,6 +1711,27 @@ func (d *Daemon) startLogWatchers() {
 			d.MarkWatcher(lf.name, true)
 		}
 	}
+}
+
+func (d *Daemon) handleMailLogSourceGone(err error) {
+	d.MarkWatcher("maillog", false)
+	finding := alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "mail_log_source_unavailable",
+		Message:   fmt.Sprintf("Mail log source unavailable: %v; brute-force and rate detection degraded until it returns or the daemon restarts", err),
+		Timestamp: time.Now(),
+	}
+	select {
+	case d.alertCh <- finding:
+	case <-d.stopCh:
+	default:
+		atomic.AddInt64(&d.droppedAlerts, 1)
+		fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping maillog source finding\n", ts())
+	}
+}
+
+func (d *Daemon) handleMailLogSourceRestored() {
+	d.MarkWatcher("maillog", true)
 }
 
 // retryLogWatcher polls for a missing log file every 60 seconds.

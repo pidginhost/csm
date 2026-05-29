@@ -106,6 +106,7 @@ var componentCheckOrigin = map[string]string{
 	"mail_account_compromised":                   "maillog",
 	"mail_account_spray":                         "maillog",
 	"mail_bruteforce":                            "maillog",
+	"mail_log_source_unavailable":                "maillog",
 	"mail_subnet_spray":                          "maillog",
 	"modsec_block_escalation":                    "modsec",
 	"modsec_block_realtime":                      "modsec",

@@ -35,14 +35,17 @@ type FileReader struct {
 	// continuously for goneGrace. A FileReader whose path vanishes mid-run
 	// (e.g. a syslog->journald migration) otherwise tails a dead fd
 	// silently; the callback lets the daemon surface a finding and mark the
-	// watcher unhealthy. Cleared (re-armable) once the path returns.
-	onGone    func(error)
-	goneGrace time.Duration
-	nowFn     func() time.Time
+	// watcher unhealthy. onRestored fires after the path returns and the
+	// reader can use it again.
+	onGone     func(error)
+	onRestored func()
+	goneGrace  time.Duration
+	nowFn      func() time.Time
 
 	// gone-tracking state, touched only by the single loop goroutine.
 	firstMissing time.Time
 	goneFired    bool
+	restoreReady bool
 }
 
 // NewFileReader constructs a FileReader for the given path.
@@ -54,24 +57,42 @@ func NewFileReader(path string) *FileReader {
 // missing for longer than the grace period. Must be called before Run.
 func (r *FileReader) SetOnGone(fn func(error)) { r.onGone = fn }
 
-// recordStat advances the missing-source state machine from one stat
-// result and fires onGone exactly once when the path has been missing past
-// the grace period. Returns to the armed state when the path reappears.
+// SetOnRestored installs a callback invoked once after a previously-gone
+// source path returns and the reader is using it again. Must be called
+// before Run.
+func (r *FileReader) SetOnRestored(fn func()) { r.onRestored = fn }
+
+// recordStat advances the missing-source state machine from one stat result.
+// It fires onGone once after the path is missing past the grace period and
+// arms the restore callback when the path returns.
 func (r *FileReader) recordStat(missing bool, missErr error) {
 	if !missing {
+		if !r.firstMissing.IsZero() && r.goneFired {
+			r.restoreReady = true
+		}
 		r.firstMissing = time.Time{}
-		r.goneFired = false
 		return
 	}
 	now := r.nowFn()
 	if r.firstMissing.IsZero() {
 		r.firstMissing = now
 	}
-	if !r.goneFired && now.Sub(r.firstMissing) >= r.goneGrace {
+	if !r.goneFired && !r.restoreReady && now.Sub(r.firstMissing) >= r.goneGrace {
 		r.goneFired = true
 		if r.onGone != nil {
 			r.onGone(missErr)
 		}
+	}
+}
+
+func (r *FileReader) recordRestored() {
+	if !r.restoreReady {
+		return
+	}
+	r.restoreReady = false
+	r.goneFired = false
+	if r.onRestored != nil {
+		r.onRestored()
 	}
 }
 
@@ -171,6 +192,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		}
 		r.recordStat(false, nil)
 		if inode(st) == lastIno {
+			r.recordRestored()
 			return
 		}
 		nf, nr, ino, err := r.openRotated()
@@ -182,6 +204,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		f = nf
 		reader = nr
 		lastIno = ino
+		r.recordRestored()
 	}
 
 	for {

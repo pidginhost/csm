@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mail-log source recovery now marks the watcher healthy again when the file returns after a vanished-source alert.
 - The mail-log reader now reports when its source file disappears mid-run (for example after a syslog-to-journald migration), marking the watcher unhealthy and emitting a finding instead of silently tailing a dead file with mail brute-force and rate detection going dark.
 - Automatic database-object cleanup now fails closed on malformed metadata, so automated drops cannot target a different stored object than the detector reported.
 - Prometheus firewall gauges now report live firewall rule counts after startup and in-process daemon rebuilds. They previously read a parallel store populated only at migration, so the blocked-IP and total-rule metrics could sit frozen while the real firewall state moved on.
