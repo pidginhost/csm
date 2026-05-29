@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -392,7 +393,7 @@ func removeIncludeInjections(content string) (string, []string) {
 
 	for i, line := range lines {
 		if cleanRegexpMaliciousInclude.MatchString(line) {
-			removals = append(removals, fmt.Sprintf("removed @include injection: %s", strings.TrimSpace(line)))
+			removals = append(removals, fmt.Sprintf("removed @include injection: %s", trimCleanRemovalLine(line)))
 			continue
 		}
 
@@ -406,7 +407,7 @@ func removeIncludeInjections(content string) (string, []string) {
 				strings.Contains(contextLower, `"\x`) ||
 				strings.Count(contextLower, ". ") > 5 // heavy string concatenation
 			if isObfuscated {
-				removals = append(removals, fmt.Sprintf("removed obfuscated @include: %s", strings.TrimSpace(line)))
+				removals = append(removals, fmt.Sprintf("removed obfuscated @include: %s", trimCleanRemovalLine(line)))
 				continue
 			}
 		}
@@ -415,6 +416,12 @@ func removeIncludeInjections(content string) (string, []string) {
 	}
 
 	return strings.Join(clean, "\n"), removals
+}
+
+func trimCleanRemovalLine(line string) string {
+	return strings.TrimFunc(line, func(r rune) bool {
+		return r == '\x00' || unicode.IsSpace(r)
+	})
 }
 
 // removePrependInjection removes malicious PHP code injected before the

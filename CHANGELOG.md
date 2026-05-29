@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The blocked-IP API now returns an empty list when the live firewall state has no active blocks, instead of a JSON null payload.
 - A firewall block that is applied to the kernel but fails to persist now rolls the live rule back instead of leaving a block that would silently disappear on the next restart.
 - The surgical PHP cleaner now strips include and eval injections even when the malicious line is padded with leading NUL or vertical-tab bytes, instead of falling back to whole-file quarantine.
+- Surgical PHP cleaner reports now omit padding control bytes from stripped injection summaries.
 
 ## [3.9.2] - 2026-05-29
 

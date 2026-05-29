@@ -22,6 +22,41 @@ func TestRemoveIncludeInjectionsToleratesNulAndVTabPrefix(t *testing.T) {
 	if !strings.Contains(cleaned, "echo 'ok';") {
 		t.Errorf("cleaner dropped legitimate content: %q", cleaned)
 	}
+	if strings.ContainsAny(removals[0], "\x00\x0b") {
+		t.Errorf("removal summary should not carry padding control bytes: %q", removals[0])
+	}
+}
+
+func TestRemoveIncludeInjectionsToleratesNulAndVTabVarPrefix(t *testing.T) {
+	content := "<?php\n$x = base64_decode('L3RtcC9ldmlsLnBocA==');\n\x00\x0b@include($x)\necho 'ok';\n"
+	cleaned, removals := removeIncludeInjections(content)
+	if len(removals) == 0 {
+		t.Fatal("expected the NUL/VT-prefixed variable @include injection to be removed")
+	}
+	if strings.Contains(cleaned, "@include") {
+		t.Errorf("cleaned content still contains @include: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "echo 'ok';") {
+		t.Errorf("cleaner dropped legitimate content: %q", cleaned)
+	}
+	if strings.ContainsAny(removals[0], "\x00\x0b") {
+		t.Errorf("removal summary should not carry padding control bytes: %q", removals[0])
+	}
+}
+
+func TestRemoveInlineEvalInjectionsToleratesNulAndVTabPrefix(t *testing.T) {
+	payload := strings.Repeat("A", 60)
+	content := "<?php\n\x00\x0b@eval/*x*/(base64_decode('" + payload + "'));\necho 'ok';\n"
+	cleaned, removals := removeInlineEvalInjections(content)
+	if len(removals) == 0 {
+		t.Fatal("expected the NUL/VT-prefixed inline eval injection to be removed")
+	}
+	if strings.Contains(cleaned, "eval") {
+		t.Errorf("cleaned content still contains eval: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "echo 'ok';") {
+		t.Errorf("cleaner dropped legitimate content: %q", cleaned)
+	}
 }
 
 // --- shannonEntropy ---------------------------------------------------
