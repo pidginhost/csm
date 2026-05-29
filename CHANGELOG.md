@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New check flags identical WordPress administrator password hashes across hosting accounts, a signal that one copied admin credential could unlock multiple sites. Raw hashes are not written to state, logs, or findings; only the affected account list and count are reported.
 - The incident correlator now raises a `host_takeover` incident when a new uid-0 account and a planted suid binary are correlated for the same host inside the merge window, so a multi-step privilege escalation stands out from a single host-integrity finding.
 - Auto-response can now drop confirmed-malicious database triggers, events, procedures, and functions when `clean_database` is enabled, recording a restorable backup first. Detection of these objects is unchanged; only the automated cleanup is new.
+- Documented the fleet-correlation contract (`docs/fleet-correlation-contract.md`): how phpanel turns the per-finding webhook stream into one cross-host incident per attacker IP. No agent change is required; the webhook already carries the hostname and source IP.
 
 ### Fixed
 
