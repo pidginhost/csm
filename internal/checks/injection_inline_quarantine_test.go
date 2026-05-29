@@ -125,6 +125,65 @@ func TestInlineQuarantineRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestInlineQuarantineUsesCallerDataWithoutReread(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+	src := filepath.Join(tmp, "evil.php")
+	payload := makeHighEntropyContent(t, 2048)
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		lstat: os.Lstat,
+		readFile: func(string) ([]byte, error) {
+			t.Fatal("InlineQuarantine must use caller-provided content")
+			return nil, os.ErrInvalid
+		},
+	})
+
+	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
+	qPath, ok := InlineQuarantine(finding, src, payload)
+	if !ok || qPath == "" {
+		t.Fatalf("expected caller-provided data to pass quarantine, got (%q, %v)", qPath, ok)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source should be moved, stat err=%v", err)
+	}
+}
+
+func TestInlineQuarantineDirectoryMovesAndWritesMeta(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	withQuarantineDirIQ(t, qdir)
+
+	src := filepath.Join(tmp, "phishkit")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "index.php"), []byte("<?php echo 'x';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	finding := alert.Finding{Check: "yara_match", Details: "Category: webshell\nRule: webshell_generic\n"}
+	qPath, ok := InlineQuarantine(finding, src, makeHighEntropyContent(t, 2048))
+	if !ok || qPath == "" {
+		t.Fatalf("expected directory quarantine, got (%q, %v)", qPath, ok)
+	}
+	if info, err := os.Stat(qPath); err != nil || !info.IsDir() {
+		t.Fatalf("quarantine target should be directory, info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(qPath, "index.php")); err != nil {
+		t.Errorf("directory contents missing after quarantine: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source directory should be moved, stat err=%v", err)
+	}
+	if _, err := os.Stat(qPath + ".meta"); err != nil {
+		t.Errorf(".meta sidecar should exist: %v", err)
+	}
+}
+
 func TestInlineQuarantineCategoryNotDropperOrWebshellRejects(t *testing.T) {
 	finding := alert.Finding{
 		Check:   "yara_match",
@@ -168,7 +227,7 @@ func TestInlineQuarantineLowEntropyRejects(t *testing.T) {
 func TestInlineQuarantineStatFailureRejects(t *testing.T) {
 	finding := alert.Finding{Details: "Category: dropper\n"}
 	withMockOS(t, &mockOS{
-		stat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+		lstat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 	})
 	got, ok := InlineQuarantine(finding, "/nonexistent/file.php", makeHighEntropyContent(t, 1024))
 	if ok || got != "" {

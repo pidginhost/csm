@@ -3,7 +3,6 @@
 package checks
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,29 +20,52 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	if originalInfo.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("quarantine: refused symlink at %s", path)
 	}
-	if err := os.Rename(path, qPath); err != nil {
-		if !errors.Is(err, syscall.EXDEV) {
-			return fmt.Errorf("quarantine: rename %s -> %s: %w", path, qPath, err)
-		}
-		if err := copyQuarantineFileByPath(path, qPath); err != nil {
-			return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
-		}
-		if err := os.Remove(path); err != nil {
-			_ = os.Remove(qPath)
-			return fmt.Errorf("quarantine: unlink source %s: %w", path, err)
-		}
+
+	// #nosec G304 -- path is the quarantine subject; O_NOFOLLOW plus fd
+	// identity verification below fail closed on symlink and inode swaps.
+	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("quarantine: open %s: %w", path, err)
+	}
+	defer func() { _ = fd.Close() }()
+
+	cur, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("quarantine: fstat %s: %w", path, err)
+	}
+	if !sameFileIdentity(cur, originalInfo) {
+		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path)
+	}
+	if !sameContentShape(cur, originalInfo) {
+		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path)
+	}
+	if !cur.Mode().IsRegular() {
+		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
+	}
+
+	if err := copyQuarantineFileByFD(fd, qPath); err != nil {
+		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
+	}
+	if err := removeQuarantinedSource(path, qPath, cur); err != nil {
+		return err
 	}
 	return nil
 }
 
-func copyQuarantineFileByPath(path, qPath string) error {
-	// #nosec G304 -- non-Linux development fallback for the remediation
-	// subject; Linux production uses fd-preserving quarantine.
-	src, err := os.Open(path)
-	if err != nil {
-		return err
+func sameContentShape(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return false
 	}
-	defer func() { _ = src.Close() }()
+	if a.Size() != b.Size() {
+		return false
+	}
+	return a.ModTime().Equal(b.ModTime())
+}
+
+func copyQuarantineFileByFD(src *os.File, qPath string) error {
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek source: %w", err)
+	}
 	// #nosec G304 G306 -- qPath is generated under the quarantine
 	// directory; 0600 keeps cross-device quarantine copies private.
 	dst, err := os.OpenFile(qPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -64,5 +86,28 @@ func copyQuarantineFileByPath(path, qPath string) error {
 		return err
 	}
 	removeCopy = false
+	return nil
+}
+
+func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		_ = os.Remove(qPath)
+		return fmt.Errorf("quarantine: stat source before unlink %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
+		return nil
+	}
+	if !sameContentShape(info, original) {
+		_ = os.Remove(qPath)
+		return fmt.Errorf("quarantine: source changed before unlink %s", path)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(qPath)
+		return fmt.Errorf("quarantine: unlink source %s: %w", path, err)
+	}
 	return nil
 }

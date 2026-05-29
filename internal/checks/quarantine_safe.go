@@ -151,6 +151,10 @@ func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
 		return nil
 	}
+	if !sameContentShape(info, original) {
+		_ = os.Remove(qPath)
+		return fmt.Errorf("quarantine: source changed before unlink %s", path)
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		_ = os.Remove(qPath)
 		return fmt.Errorf("quarantine: unlink source %s: %w", path, err)
