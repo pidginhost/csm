@@ -143,6 +143,7 @@ func buildFindingNameToRunnerNames() map[string][]string {
 
 var runnerFindingNames = map[string][]string{
 	"admin_overlap":         {"admin_cross_account_overlap"},
+	"credential_reuse":      {"credential_reuse"},
 	"af_alg_enforcement":    {"af_alg_enforcement_corrected"},
 	"af_alg_socket_use":     {"af_alg_socket_use"},
 	"api_auth_failures":     {"api_auth_failure"},
@@ -334,6 +335,7 @@ func deepChecks() []namedCheck {
 		{"db_content_opencart", CheckOpenCartContent},
 		{"db_objects", CheckDatabaseObjects},
 		{"admin_overlap", CheckAdminEmailOverlap},
+		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
@@ -366,6 +368,7 @@ func reducedDeepChecks() []namedCheck {
 		{"db_content_opencart", CheckOpenCartContent},
 		{"db_objects", CheckDatabaseObjects},
 		{"admin_overlap", CheckAdminEmailOverlap},
+		{"credential_reuse", CheckCredentialReuse},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
