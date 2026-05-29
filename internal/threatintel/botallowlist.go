@@ -87,6 +87,28 @@ func (r *BotRanges) IPInBot(ip net.IP, bot string) bool {
 	return false
 }
 
+// IPInAnyBot reports whether the IP falls inside any published crawler
+// range (Googlebot/Bingbot/Applebot snapshots). Unlike IPInBot it needs
+// no claimed-UA, so callers that only have an IP (e.g. the incident
+// correlator's whitelist backstop) can recognise a verified-crawler
+// address. Deliberately covers only crawlers that publish authoritative
+// IP ranges -- CDN edge ranges are NOT included, because legitimate and
+// malicious traffic share a CDN's egress IPs and whitelisting them would
+// hide attacks proxied through the CDN.
+func (r *BotRanges) IPInAnyBot(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, nets := range r.byBot {
+		for _, n := range nets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ClaimedBotFromUA returns the lower-case bot identity if the UA looks
 // like a known bot. Empty string otherwise. Identities match BotDomains
 // keys in botverify.go so the async verifier can look up the right

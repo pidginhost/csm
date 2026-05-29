@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 var (
@@ -169,10 +171,14 @@ func IncidentCorrelator() *incident.Correlator {
 				if staticAllow[ip] {
 					return true
 				}
-				if d := store.Global(); d != nil {
-					return d.IsWhitelisted(ip)
+				if d := store.Global(); d != nil && d.IsWhitelisted(ip) {
+					return true
 				}
-				return false
+				// Backstop: a verified-crawler IP from a published range
+				// (Googlebot/Bingbot/Applebot) should never anchor a
+				// correlated incident. CDN edge ranges are intentionally
+				// excluded -- see threatintel.IPInAnyBot.
+				return threatintel.DefaultRanges().IPInAnyBot(net.ParseIP(ip))
 			}
 		}
 		incidentCorrelator = incident.NewCorrelator(incident.CorrelatorConfig{

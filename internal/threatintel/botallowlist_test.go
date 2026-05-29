@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+func TestIPInAnyBot(t *testing.T) {
+	r := DefaultRanges()
+	if !r.IPInAnyBot(net.ParseIP("66.249.66.1")) {
+		t.Error("66.249.66.1 (googlebot) should match IPInAnyBot")
+	}
+	if !r.IPInAnyBot(net.ParseIP("157.55.39.1")) {
+		t.Error("157.55.39.1 (bingbot) should match IPInAnyBot")
+	}
+	if r.IPInAnyBot(net.ParseIP("203.0.113.7")) {
+		t.Error("203.0.113.7 must not match any crawler range")
+	}
+	if r.IPInAnyBot(nil) {
+		t.Error("nil IP must not match")
+	}
+}
+
 func TestDefaultRanges_Googlebot(t *testing.T) {
 	r := DefaultRanges()
 	if !r.IPInBot(net.ParseIP("66.249.66.1"), "googlebot") {
