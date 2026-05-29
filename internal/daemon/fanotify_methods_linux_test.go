@@ -190,11 +190,27 @@ func TestCheckCredentialLogWithData(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	path := dir + "/results.txt"
-	_ = os.WriteFile(path, []byte("alice@example.com:pass1\nbob@example.com:pass2\ncarol@example.com:pass3\n"), 0644)
+	real := dir + "/results.txt"
+	_ = os.WriteFile(real, []byte(
+		"alice@example.com:pass1\nbob@example.com:pass2\ncarol@example.com:pass3\n"+
+			"dave@example.com:pass4\neve@example.com:pass5\n"), 0644)
+	f, err := os.Open(real) // #nosec G304 -- test-controlled temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
 
-	fm.checkCredentialLog(path, "unknown")
-	// Exercises the credential log detection path
+	// Content is read from the fd; the path string only needs /public_html/
+	// for the location gate, so it does not have to exist on disk.
+	fm.checkCredentialLog(int(f.Fd()), "/home/u/public_html/results.txt", "unknown")
+	select {
+	case got := <-ch:
+		if got.Check != "credential_log_realtime" {
+			t.Errorf("Check = %q, want credential_log_realtime", got.Check)
+		}
+	default:
+		t.Error("expected credential_log_realtime alert from fd-read content")
+	}
 }
 
 // --- checkPhishingZip with suspicious name ---------------------------

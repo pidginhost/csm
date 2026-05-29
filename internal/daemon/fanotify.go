@@ -934,12 +934,17 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Executables in .config - checked before the /tmp block so a miner
 	// dropped at /tmp/.config/* is flagged as executable_in_config_realtime
 	// (more specific) rather than executable_in_tmp_realtime.
+	// Uses unix.Fstat on the event fd (not os.Stat by path) for TOCTOU
+	// safety: an attacker cannot chmod -x or swap the file after the event.
 	if strings.Contains(path, "/.config/") {
-		finfo, err := os.Stat(path)
-		if err == nil && finfo.Mode()&0111 != 0 {
-			fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
-				fmt.Sprintf("Executable created in .config: %s", path),
-				fmt.Sprintf("Size: %d", finfo.Size()), path, procInfo)
+		var cfgStat unix.Stat_t
+		if err := unix.Fstat(event.fd, &cfgStat); err == nil {
+			isDir := cfgStat.Mode&unix.S_IFMT == unix.S_IFDIR
+			if !isDir && cfgStat.Mode&0111 != 0 {
+				fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
+					fmt.Sprintf("Executable created in .config: %s", path),
+					fmt.Sprintf("Size: %d", cfgStat.Size), path, procInfo)
+			}
 		}
 		return
 	}
@@ -1079,9 +1084,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
-	// Credential log files (path-based)
+	// Credential log files (content read from the event fd)
 	if credentialLogNames[nameLower] {
-		fm.checkCredentialLog(path, procInfo)
+		fm.checkCredentialLog(event.fd, path, procInfo)
 		return
 	}
 
@@ -1558,9 +1563,11 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 }
 
 // checkCredentialLog reads a text file and checks if it contains harvested
-// email:password pairs - output from an active phishing kit.
-// Uses path-based reads because it needs path context.
-func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
+// email:password pairs - output from an active phishing kit. The path is used
+// only for the suppression/location checks; the content is read from the
+// fanotify event fd (not re-opened by path) so an attacker cannot swap the
+// file between the event and the read.
+func (fm *FileMonitor) checkCredentialLog(fd int, path, procInfo string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
 	}
@@ -1575,7 +1582,7 @@ func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
 		}
 	}
 
-	data := readHead(path, 4096)
+	data := readFromFd(fd, 4096)
 	if data == nil {
 		return
 	}

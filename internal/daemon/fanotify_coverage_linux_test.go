@@ -341,10 +341,22 @@ func TestCheckPhishingZipRealFileSuspicious(t *testing.T) {
 
 // --- checkCredentialLog: early-return branches -------------------------
 
+// fdForCredLog opens path read-only and returns its fd for checkCredentialLog,
+// which now reads content from the fanotify event fd instead of by path.
+func fdForCredLog(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path) // #nosec G304 -- test-controlled temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return int(f.Fd())
+}
+
 func TestCheckCredentialLogOutsidePublicHTML(t *testing.T) {
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCredentialLog("/home/a/results.txt", "pi")
+	fm.checkCredentialLog(-1, "/home/a/results.txt", "pi")
 	select {
 	case f := <-ch:
 		t.Errorf("no alert expected, got %v", f)
@@ -355,7 +367,7 @@ func TestCheckCredentialLogOutsidePublicHTML(t *testing.T) {
 func TestCheckCredentialLogEtcSkipped(t *testing.T) {
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCredentialLog("/etc/passwd", "pi")
+	fm.checkCredentialLog(-1, "/etc/passwd", "pi")
 	select {
 	case f := <-ch:
 		t.Errorf("no alert expected for /etc/, got %v", f)
@@ -373,7 +385,7 @@ func TestCheckCredentialLogConfigSuffixSkipped(t *testing.T) {
 		"/home/a/public_html/app.yaml",
 		"/home/a/public_html/app.yml",
 	} {
-		fm.checkCredentialLog(p, "pi")
+		fm.checkCredentialLog(-1, p, "pi")
 	}
 	select {
 	case f := <-ch:
@@ -400,7 +412,7 @@ func TestCheckCredentialLogEmailListHigh(t *testing.T) {
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCredentialLog(path, "pi")
+	fm.checkCredentialLog(fdForCredLog(t, path), path, "pi")
 
 	select {
 	case f := <-ch:
@@ -436,7 +448,7 @@ func TestCheckCredentialLogCriticalFromDelimiters(t *testing.T) {
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCredentialLog(path, "pi")
+	fm.checkCredentialLog(fdForCredLog(t, path), path, "pi")
 
 	select {
 	case f := <-ch:
@@ -451,7 +463,7 @@ func TestCheckCredentialLogCriticalFromDelimiters(t *testing.T) {
 func TestCheckCredentialLogMissingFile(t *testing.T) {
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCredentialLog("/home/a/public_html/nope.txt", "pi")
+	fm.checkCredentialLog(-1, "/home/a/public_html/nope.txt", "pi")
 	select {
 	case f := <-ch:
 		t.Errorf("no alert expected, got %v", f)
