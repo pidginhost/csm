@@ -28,17 +28,22 @@ type CleanResult struct {
 }
 
 var (
+	// Leading class is [\s\x00\x0b] rather than \s: an injection can pad
+	// the line start with NUL or vertical-tab bytes that Go's \s does not
+	// cover. Detection still flags the file (analyzePHPContent is not
+	// anchored); widening the class here lets the surgical cleaner strip
+	// the injection instead of falling back to whole-file quarantine.
 	cleanRegexpMaliciousInclude = regexp.MustCompile(
-		`(?i)^\s*@include\s*\(\s*(?:` +
+		`(?i)^[\s\x00\x0b]*@include\s*\(\s*(?:` +
 			`['"](?:/tmp/|/dev/shm/|/var/tmp/)` +
 			`|base64_decode\s*\(` +
 			`|str_rot13\s*\(` +
 			`|gzinflate\s*\(` +
 			`)`)
-	cleanRegexpVarInclude = regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
+	cleanRegexpVarInclude = regexp.MustCompile(`(?i)^[\s\x00\x0b]*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
 	cleanRegexpCloseOpen  = regexp.MustCompile(`\?>\s*<\?php`)
 	cleanRegexpInlineEval = regexp.MustCompile(
-		`(?i)^\s*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
+		`(?i)^[\s\x00\x0b]*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
 	cleanRegexpMultiB64   = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
 	cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
 	cleanRegexpChrChain   = regexp.MustCompile(`(?i)\bchr\s*\(\s*\d+\s*\)(?:\s*\.?\s*\bchr\s*\(\s*\d+\s*\)){4,}`)

@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+// TestRemoveIncludeInjectionsToleratesNulAndVTabPrefix pins that an
+// injection padded with leading NUL or vertical-tab bytes (which Go's \s
+// does not cover) is still stripped by the surgical cleaner rather than
+// slipping through to leave the file infected.
+func TestRemoveIncludeInjectionsToleratesNulAndVTabPrefix(t *testing.T) {
+	content := "<?php\n\x00\x0b@include(base64_decode(\"ZXZpbA==\"));\necho 'ok';\n"
+	cleaned, removals := removeIncludeInjections(content)
+	if len(removals) == 0 {
+		t.Fatal("expected the NUL/VT-prefixed @include injection to be removed")
+	}
+	if strings.Contains(cleaned, "@include") {
+		t.Errorf("cleaned content still contains @include: %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "echo 'ok';") {
+		t.Errorf("cleaner dropped legitimate content: %q", cleaned)
+	}
+}
+
 // --- shannonEntropy ---------------------------------------------------
 
 func TestShannonEntropyEmpty(t *testing.T) {
