@@ -17,7 +17,7 @@ csm daemon
  +-- PAM brute-force listener      Real-time login failure tracking
  +-- PHP runtime shield            auto_prepend_file protection
  +-- critical scanner (10 min)     36 checks: processes, network, tokens, logins, firewall
- +-- deep scanner (60 min)         33 checks: WP/CMS integrity, package integrity, DB injection, phishing
+ +-- deep scanner (60 min)         35 checks: WP/CMS integrity, package integrity, DB injection, phishing
  +-- nftables firewall engine      Kernel netlink API, IP sets, rate limiting
  +-- threat intelligence           IP reputation, attack scoring, GeoIP
  +-- ModSecurity manager           Rule deployment, overrides, escalation

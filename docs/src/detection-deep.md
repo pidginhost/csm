@@ -1,6 +1,6 @@
 # Deep Checks
 
-33 checks, run every 60 minutes. Thorough filesystem and database scans.
+35 checks, run every 60 minutes. Thorough filesystem and database scans.
 
 ## Filesystem
 
@@ -27,6 +27,8 @@
 | `db_content_magento` | Magento 1.x and 2.x database content scanning. Discovers installs via `app/etc/env.php` (M2, preferred) or `app/etc/local.xml` (M1). Credentials parsed via `encoding/xml` for M1 (CDATA-aware) or field-level regex for M2. Scans `core_config_data`, `catalog_product_entity_text`, `cms_block`, `cms_page`, and `admin_user` (with the configured `db.prefix`). Findings: `magento_settings_injection`, `magento_content_injection`, `magento_admin_injection`. |
 | `db_content_opencart` | OpenCart database content scanning. Discovers installs via the `config.php` + `admin/config.php` pair both containing `define('DB_DRIVER'`. Credentials parsed from `DB_HOSTNAME` / `DB_USERNAME` / `DB_PASSWORD` / `DB_DATABASE` / `DB_PREFIX` defines. Scans `<prefix>setting` (`config_url` / `config_ssl` are canonical hijack targets), `<prefix>product_description`, `<prefix>information_description`, and `<prefix>user` (admin/staff). Findings: `opencart_settings_injection`, `opencart_content_injection`, `opencart_admin_injection`. |
 | `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
+| `admin_overlap` | WordPress administrator email overlap across cPanel accounts. Reports when the same admin email appears on the configured number of accounts, with reviewed emails and domains suppressible in `detection`. |
+| `credential_reuse` | WordPress administrator password-hash reuse across cPanel accounts. Groups identical hashes with an in-memory fingerprint and reports only the affected accounts and count. |
 
 ## CMS Scanner Support Policy
 
