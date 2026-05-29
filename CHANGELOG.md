@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-response can now drop confirmed-malicious database triggers, events, procedures, and functions when `clean_database` is enabled, recording a restorable backup first. Detection of these objects is unchanged; only the automated cleanup is new.
 - Documented the fleet-correlation contract: how phpanel turns the signed per-finding webhook stream into one cross-host incident per attacker IP.
 - Published an OpenAPI 3.1 spec for the `/api/v1/*` HTTP API covering every route with its method and auth scope. A drift-guard test fails the build if a route is added without documenting it.
+- PHP content scanner now flags three more remote-code-execution shapes: preg_replace with the /e modifier, include or require of request input or a remote/stream wrapper, and assert or create_function driven by request input.
 
 ### Fixed
 

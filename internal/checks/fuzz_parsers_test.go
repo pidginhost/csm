@@ -99,6 +99,23 @@ func FuzzExtractPHPDefine(f *testing.F) {
 	})
 }
 
+func FuzzHasPregReplaceEvalModifier(f *testing.F) {
+	f.Add("preg_replace('/.*/e', $_POST['c'], $s);")
+	f.Add("preg_replace('~x~ie', $r, $s);")
+	f.Add("preg_replace('/[a-z]+/i', 'x', $s);")
+	f.Add("$doc = \"preg_replace('/a/e', ...)\";")
+	f.Add("preg_replace(")
+	f.Add("preg_replace('")
+	f.Add("preg_replace('/')")
+	f.Add("preg_replace('(unterminated")
+	f.Add("preg_replace ( '{x}e' ,")
+	f.Add("")
+	f.Add("preg_replace")
+	f.Fuzz(func(t *testing.T, s string) {
+		_ = hasPregReplaceEvalModifier(s)
+	})
+}
+
 func FuzzExtractPHPString(f *testing.F) {
 	f.Add(" 'hello');")
 	f.Add(` "world");`)

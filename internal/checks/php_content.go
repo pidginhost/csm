@@ -78,6 +78,18 @@ var callbackDecoderNames = map[string]struct{}{
 // line also carries a request superglobal (the RCE shape).
 var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 
+// reIncludeKeyword matches an include/require language construct used as a
+// statement, not an identifier. The leading class rejects `$include`,
+// `->include`, and `Foo::include` so a variable or method named "include"
+// does not trip the LFI/RFI detector. The trailing \b keeps `include_path`
+// and similar identifiers from matching.
+var reIncludeKeyword = regexp.MustCompile(`(?i)(?:^|[^\w$>:])(?:include|require)(?:_once)?\b`)
+
+// includeDangerWrappers are stream wrappers / remote schemes that, as an
+// include/require target, mean remote-file inclusion or php://input code
+// execution. Matched on the comment-stripped (strings preserved) source.
+var includeDangerWrappers = []string{"data://", "php://", "phar://", "http://", "https://", "ftp://"}
+
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
 func hasBacktickSuperglobal(code string) bool {
@@ -189,6 +201,115 @@ func matchingParen(code string, openParen int) int {
 		}
 	}
 	return len(code)
+}
+
+// hasDangerousInclude reports an include/require whose target is request
+// input or a remote/stream wrapper -- the LFI/RFI and php://input code-exec
+// shapes. Scans per line on comment-stripped source so a static
+// `require_once ABSPATH . 'wp-load.php'` never trips.
+func hasDangerousInclude(code string) bool {
+	for _, line := range strings.Split(code, "\n") {
+		if !reIncludeKeyword.MatchString(line) {
+			continue
+		}
+		if containsRequestSuperglobal(line) {
+			return true
+		}
+		for _, w := range includeDangerWrappers {
+			if strings.Contains(line, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasCodeEvalPrimitiveWithRequest reports assert()/create_function() fed
+// request input on the same line. assert() evaluates a string argument as PHP
+// (pre-8.0) and create_function() evals its body argument; both are RCE when
+// driven by attacker input. The same-line request gate keeps benign
+// assert(count($x) > 0) / static create_function() calls quiet.
+func hasCodeEvalPrimitiveWithRequest(code string) bool {
+	for _, line := range strings.Split(code, "\n") {
+		if !containsStandaloneFunc(line, "assert(") && !containsStandaloneFunc(line, "create_function(") {
+			continue
+		}
+		if containsRequestSuperglobal(line) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPregReplaceEvalModifier reports a preg_replace() call whose pattern
+// string carries the /e modifier, which evaluates the replacement as PHP. The
+// modifier was removed in PHP 7.0 precisely because it is an execution sink;
+// any occurrence in user-directory PHP is a strong RCE signal. Walks the
+// source skipping string literals so a documentation example in a string does
+// not trip, then inspects the literal first argument of each real call.
+func hasPregReplaceEvalModifier(code string) bool {
+	const fn = "preg_replace"
+	for i := 0; i+len(fn) <= len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if code[i] != 'p' || code[i:i+len(fn)] != fn {
+			continue
+		}
+		if i > 0 && (isPHPIdentifierPart(code[i-1]) || code[i-1] == '$') {
+			continue
+		}
+		j := skipPHPWhitespace(code, i+len(fn))
+		if j >= len(code) || code[j] != '(' {
+			continue
+		}
+		argStart := skipPHPWhitespace(code, j+1)
+		if argStart >= len(code) || !isPHPQuote(code[argStart]) {
+			continue
+		}
+		end := skipPHPString(code, argStart)
+		// skipPHPString returns the closing-quote index, or the last index
+		// for an unterminated literal. Guard the slice: a quote in the final
+		// position leaves no string body to inspect.
+		if end <= argStart {
+			continue
+		}
+		if pregPatternHasEvalModifier(code[argStart+1 : end]) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+// pregPatternHasEvalModifier returns true when the PCRE pattern string carries
+// an "e" modifier after its closing delimiter.
+func pregPatternHasEvalModifier(pat string) bool {
+	if len(pat) < 2 {
+		return false
+	}
+	open := pat[0]
+	// PHP forbids alphanumeric, backslash, and whitespace delimiters.
+	if isPHPIdentifierPart(open) || open == '\\' || open == ' ' {
+		return false
+	}
+	closeDelim := open
+	switch open {
+	case '(':
+		closeDelim = ')'
+	case '[':
+		closeDelim = ']'
+	case '{':
+		closeDelim = '}'
+	case '<':
+		closeDelim = '>'
+	}
+	idx := strings.LastIndexByte(pat, closeDelim)
+	if idx <= 0 {
+		return false
+	}
+	return strings.IndexByte(pat[idx+1:], 'e') >= 0
 }
 
 func containsRequestSuperglobal(code string) bool {
@@ -539,6 +660,24 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			indicators = append(indicators, "variable-variable function call with request input")
 			break
 		}
+	}
+
+	// preg_replace() with the /e modifier evaluates its replacement as PHP.
+	// Removed in PHP 7.0; any occurrence is a legacy code-execution sink.
+	if hasPregReplaceEvalModifier(commentStripped) {
+		indicators = append(indicators, "preg_replace with /e modifier (code execution)")
+	}
+
+	// include/require of request input or a remote/stream wrapper -- LFI,
+	// RFI, and php://input code execution.
+	if hasDangerousInclude(commentStripped) {
+		indicators = append(indicators, "include/require of request input or remote/data wrapper")
+	}
+
+	// assert()/create_function() driven by request input -- both evaluate a
+	// string argument as PHP.
+	if hasCodeEvalPrimitiveWithRequest(commentStripped) {
+		indicators = append(indicators, "code-eval primitive (assert/create_function) with request input")
 	}
 
 	// --- Critical: call_user_func with string-built function names ---
