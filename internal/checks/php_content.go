@@ -44,21 +44,32 @@ var callbackFirstArgFuncs = map[string]struct{}{
 	"register_tick_function":     {},
 }
 
-var callbackDangerousNames = map[string]struct{}{
+// callbackExecNames are names that execute code when used as a callback. They
+// are RCE regardless of where the call's arguments come from, so they flag
+// unconditionally.
+var callbackExecNames = map[string]struct{}{
 	"assert":          {},
-	"base64_decode":   {},
 	"call_user_func":  {},
 	"create_function": {},
 	"eval":            {},
 	"exec":            {},
-	"gzinflate":       {},
-	"gzuncompress":    {},
 	"passthru":        {},
 	"popen":           {},
 	"proc_open":       {},
 	"shell_exec":      {},
-	"str_rot13":       {},
 	"system":          {},
+}
+
+// callbackDecoderNames are decode/decompress primitives. As a callback they
+// only transform data (array_map('base64_decode', $data) returns decoded
+// bytes, it executes nothing), so legitimate plugins use them constantly. They
+// only signal a dropper when the same call is fed request input; the
+// decode-then-eval shape is covered separately by the eval-chain detectors.
+var callbackDecoderNames = map[string]struct{}{
+	"base64_decode": {},
+	"gzinflate":     {},
+	"gzuncompress":  {},
+	"str_rot13":     {},
 }
 
 // reVarVarCall matches a variable-variable or dynamic-expression function
@@ -143,12 +154,41 @@ func hasCallbackExecName(code string) bool {
 			i = nameEnd - 1
 			continue
 		}
-		if _, dangerous := callbackDangerousNames[callbackName]; dangerous {
+		if _, dangerous := callbackExecNames[callbackName]; dangerous {
 			return true
+		}
+		if _, decoder := callbackDecoderNames[callbackName]; decoder {
+			closeParen := matchingParen(code, openParen)
+			if containsRequestSuperglobal(code[openParen:closeParen]) {
+				return true
+			}
 		}
 		i = nameEnd - 1
 	}
 	return false
+}
+
+// matchingParen returns the index of the close paren matching the open paren
+// at openParen, or len(code) if unbalanced. Quoted strings are skipped so
+// parens inside string literals do not throw off the depth count.
+func matchingParen(code string, openParen int) int {
+	depth := 0
+	for i := openParen; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		switch code[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(code)
 }
 
 func containsRequestSuperglobal(code string) bool {

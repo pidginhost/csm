@@ -236,6 +236,47 @@ func TestAnalyzePHPContentCallbackRegisterShutdown(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentDecoderCallbackNoRequestNotFlagged(t *testing.T) {
+	// WooCommerce Payments decrypt_signed_data uses array_map('base64_decode',
+	// $data) on internal data. A decoder as a callback executes nothing on its
+	// own, so without request input it must not trip the callback indicator.
+	res := analyzePHPString(t, "<?php $decoded = array_map('base64_decode', $data); ?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("benign decoder callback wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentDecoderCallbackRequestElsewhereNotFlagged(t *testing.T) {
+	// Mirrors woopay-utilities.php: the file uses $_POST in unrelated methods,
+	// but the decoder callback itself operates on internal data. The gate is
+	// per-call, not file-wide, so this must not flag.
+	res := analyzePHPString(t, "<?php\n"+
+		"function save() { return $_POST['x']; }\n"+
+		"function decrypt($data) { return array_map('base64_decode', $data); }\n"+
+		"?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("decoder callback flagged on file-wide request var; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentDecoderCallbackWithRequestFlagged(t *testing.T) {
+	// A decoder fed attacker input as a callback is the dropper shape
+	// (array_map('base64_decode', $_POST['p'])) and must still flag.
+	res := analyzePHPString(t, "<?php $p = array_map('base64_decode', $_POST['p']); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("decoder callback fed request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentExecCallbackNoRequestStillFlagged(t *testing.T) {
+	// An execution sink as a callback is RCE regardless of where its arguments
+	// come from, so it must flag even without request input on the call.
+	res := analyzePHPString(t, "<?php array_map('system', $cmds); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("system callback wrongly cleared without request input; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentBenignCallbackNotFlagged(t *testing.T) {
 	// These callback shapes are common in WordPress plugins and must not
 	// trip the callback-exec indicator.
