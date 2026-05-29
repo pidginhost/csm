@@ -2380,12 +2380,7 @@ func (e *Engine) RuleCounts() RuleCounts {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s := e.loadStateFile()
-	return RuleCounts{
-		Blocked:     len(s.Blocked),
-		Allowed:     len(s.Allowed),
-		Subnets:     len(s.BlockedNet),
-		PortAllowed: len(s.PortAllowed),
-	}
+	return countRuleEntries(s, e.cfg != nil && e.cfg.IPv6)
 }
 
 // Status returns current firewall statistics.

@@ -35,18 +35,18 @@ func TestFirewallMetricsReadEngineState(t *testing.T) {
 	}
 	// NewEngine roots state under <dir>/firewall.
 	stateFile := filepath.Join(dir, "firewall", "state.json")
-	writeState := func(st firewall.FirewallState) {
+	writeState := func(path string, st firewall.FirewallState) {
 		data, err := json.MarshalIndent(st, "", "  ")
 		if err != nil {
 			t.Fatalf("marshal state: %v", err)
 		}
-		if err := os.WriteFile(stateFile, data, 0600); err != nil {
+		if err := os.WriteFile(path, data, 0600); err != nil {
 			t.Fatalf("write state: %v", err)
 		}
 	}
 
 	now := time.Now()
-	writeState(firewall.FirewallState{
+	writeState(stateFile, firewall.FirewallState{
 		Blocked: []firewall.BlockedEntry{
 			{IP: "203.0.113.1", ExpiresAt: now.Add(time.Hour)},
 			{IP: "203.0.113.2", ExpiresAt: now.Add(-time.Hour)}, // expired -> pruned
@@ -60,9 +60,7 @@ func TestFirewallMetricsReadEngineState(t *testing.T) {
 	d := &Daemon{cfg: &config.Config{}}
 
 	// Nil-engine path registers the gauges and must report 0, never
-	// panic. The closures capture d, so swapping d.fwEngine below is
-	// observed by later scrapes.
-	d.fwEngine = nil
+	// panic.
 	d.registerFirewallMetrics()
 	body := scrapeBody(t)
 	if got := readGauge(body, "csm_blocked_ips_total"); got != 0 {
@@ -73,7 +71,7 @@ func TestFirewallMetricsReadEngineState(t *testing.T) {
 	}
 
 	// Populated engine: 2 active blocked + 1 allowed + 1 subnet + 1 port.
-	d.fwEngine = eng
+	d.setFirewallEngine(eng)
 	body = scrapeBody(t)
 	if got := readGauge(body, "csm_blocked_ips_total"); got != 2 {
 		t.Errorf("csm_blocked_ips_total = %g, want 2 (engine state, expired pruned; store seeded 3)", got)
@@ -84,12 +82,36 @@ func TestFirewallMetricsReadEngineState(t *testing.T) {
 
 	// Mutate the engine state file and re-scrape to prove the gauge is
 	// live, not captured at register time.
-	writeState(firewall.FirewallState{
+	writeState(stateFile, firewall.FirewallState{
 		Blocked: []firewall.BlockedEntry{
 			{IP: "203.0.113.1", ExpiresAt: now.Add(time.Hour)},
 		},
 	})
 	if got := readGauge(scrapeBody(t), "csm_blocked_ips_total"); got != 1 {
 		t.Errorf("csm_blocked_ips_total after rewrite = %g, want 1", got)
+	}
+
+	otherDir := t.TempDir()
+	otherEng, err := firewall.NewEngine(&firewall.FirewallConfig{Enabled: true}, otherDir)
+	if err != nil {
+		t.Fatalf("second NewEngine: %v", err)
+	}
+	otherStateFile := filepath.Join(otherDir, "firewall", "state.json")
+	writeState(otherStateFile, firewall.FirewallState{
+		Blocked: []firewall.BlockedEntry{
+			{IP: "203.0.113.10"},
+			{IP: "203.0.113.11"},
+			{IP: "203.0.113.12"},
+		},
+	})
+
+	other := &Daemon{cfg: &config.Config{}}
+	other.registerFirewallMetrics()
+	if got := readGauge(scrapeBody(t), "csm_blocked_ips_total"); got != 0 {
+		t.Errorf("second daemon nil engine csm_blocked_ips_total = %g, want 0", got)
+	}
+	other.setFirewallEngine(otherEng)
+	if got := readGauge(scrapeBody(t), "csm_blocked_ips_total"); got != 3 {
+		t.Errorf("second daemon csm_blocked_ips_total = %g, want 3", got)
 	}
 }

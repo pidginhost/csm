@@ -335,6 +335,29 @@ func (d *Daemon) registerStoreSizeMetric() {
 // blocked-IP gauges so repeated daemon starts in a test binary are
 // idempotent.
 var firewallMetricsOnce sync.Once
+var firewallMetricsMu sync.RWMutex
+var firewallMetricsEngine *firewall.Engine
+
+func setFirewallMetricsEngine(engine *firewall.Engine) {
+	firewallMetricsMu.Lock()
+	defer firewallMetricsMu.Unlock()
+	firewallMetricsEngine = engine
+}
+
+func firewallMetricsRuleCounts() firewall.RuleCounts {
+	firewallMetricsMu.RLock()
+	engine := firewallMetricsEngine
+	firewallMetricsMu.RUnlock()
+	if engine == nil {
+		return firewall.RuleCounts{}
+	}
+	return engine.RuleCounts()
+}
+
+func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
+	d.fwEngine = engine
+	setFirewallMetricsEngine(engine)
+}
 
 // registerFirewallMetrics exposes the count of blocked IPs and the
 // total number of firewall rules (IPs + allowed + subnets + port
@@ -343,25 +366,20 @@ var firewallMetricsOnce sync.Once
 // fw:* buckets are written only at migration, so reading the store
 // would freeze the gauge at the migration-time snapshot.
 func (d *Daemon) registerFirewallMetrics() {
+	setFirewallMetricsEngine(d.fwEngine)
 	firewallMetricsOnce.Do(func() {
 		metrics.RegisterGaugeFunc(
 			"csm_blocked_ips_total",
 			"Number of IPs currently on the firewall block list (excluding expired temp bans).",
 			func() float64 {
-				if d.fwEngine == nil {
-					return 0
-				}
-				return float64(d.fwEngine.RuleCounts().Blocked)
+				return float64(firewallMetricsRuleCounts().Blocked)
 			},
 		)
 		metrics.RegisterGaugeFunc(
 			"csm_firewall_rules_total",
 			"Total firewall rules across all categories (blocked IPs, allowed IPs, blocked subnets, port-specific allows).",
 			func() float64 {
-				if d.fwEngine == nil {
-					return 0
-				}
-				return float64(d.fwEngine.RuleCounts().Total())
+				return float64(firewallMetricsRuleCounts().Total())
 			},
 		)
 	})
@@ -2261,7 +2279,7 @@ func (d *Daemon) startFirewall() {
 	}()
 	engine.SetShutdownContext(verdictCtx)
 
-	d.fwEngine = engine
+	d.setFirewallEngine(engine)
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
