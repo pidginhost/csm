@@ -145,6 +145,9 @@ func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 	if _, ok := got["wp_login_bruteforce"]; ok {
 		t.Fatal("default thresholds must not include check name wp_login_bruteforce")
 	}
+	if _, ok := got["host_takeover"]; ok {
+		t.Fatal("default thresholds must not auto-close host_takeover")
+	}
 }
 
 func TestValidate(t *testing.T) {

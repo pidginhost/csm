@@ -1010,47 +1010,154 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 // inside the merge window escalate the incident from host_integrity_risk
 // to host_takeover.
 func TestCorrelatorHostTakeoverCompound(t *testing.T) {
-	c := newTestCorrelator()
+	tests := []struct {
+		name  string
+		first alert.Finding
+		next  alert.Finding
+	}{
+		{
+			name: "uid0 then suid",
+			first: alert.Finding{
+				Check: "uid0_account", Severity: alert.High,
+				Message: "new uid-0 account bob",
+			},
+			next: alert.Finding{
+				Check: "suid_binary", Severity: alert.High,
+				Message: "planted suid /home/bob/x",
+			},
+		},
+		{
+			name: "suid then uid0",
+			first: alert.Finding{
+				Check: "suid_binary", Severity: alert.High,
+				Message: "planted suid /home/bob/x",
+			},
+			next: alert.Finding{
+				Check: "uid0_account", Severity: alert.High,
+				Message: "new uid-0 account bob",
+			},
+		},
+	}
 	now := time.Unix(1_700_000_000, 0)
 
-	id1, created1, err := c.OnFinding(alert.Finding{
-		Check: "uid0_account", Severity: alert.High,
-		Message: "new uid-0 account bob", Timestamp: now,
-	})
-	if err != nil || !created1 {
-		t.Fatalf("uid0 finding must open an incident: created=%v err=%v", created1, err)
-	}
-	if inc, _ := c.Get(id1); inc.Kind != KindHostIntegrityRisk {
-		t.Fatalf("after uid0 only: Kind=%s, want host_integrity_risk", inc.Kind)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestCorrelator()
+			first := tt.first
+			first.Timestamp = now
+			id1, created1, err := c.OnFinding(first)
+			if err != nil || !created1 {
+				t.Fatalf("first finding must open an incident: created=%v err=%v", created1, err)
+			}
+			if inc, _ := c.Get(id1); inc.Kind != KindHostIntegrityRisk {
+				t.Fatalf("after first leg only: Kind=%s, want host_integrity_risk", inc.Kind)
+			}
 
-	c.now = func() time.Time { return now.Add(time.Minute) }
-	id2, created2, _ := c.OnFinding(alert.Finding{
-		Check: "suid_binary", Severity: alert.High,
-		Message: "planted suid /home/bob/x", Timestamp: now.Add(time.Minute),
-	})
-	if created2 || id1 != id2 {
-		t.Fatalf("suid must merge into the host incident: created=%v id1=%s id2=%s", created2, id1, id2)
-	}
-	inc, _ := c.Get(id1)
-	if inc.Kind != KindHostTakeover {
-		t.Fatalf("after uid0+suid: Kind=%s, want host_takeover", inc.Kind)
-	}
-	if !inc.CompoundFlags.UID0 || !inc.CompoundFlags.SUID {
-		t.Errorf("compound flags = %+v, want UID0 and SUID set", inc.CompoundFlags)
+			c.now = func() time.Time { return now.Add(time.Minute) }
+			next := tt.next
+			next.Timestamp = now.Add(time.Minute)
+			id2, created2, err := c.OnFinding(next)
+			if err != nil {
+				t.Fatalf("second finding: %v", err)
+			}
+			if created2 || id1 != id2 {
+				t.Fatalf("second leg must merge into the host incident: created=%v id1=%s id2=%s", created2, id1, id2)
+			}
+			inc, _ := c.Get(id1)
+			if inc.Kind != KindHostTakeover {
+				t.Fatalf("after both legs: Kind=%s, want host_takeover", inc.Kind)
+			}
+			if !inc.CompoundFlags.UID0 || !inc.CompoundFlags.SUID {
+				t.Errorf("compound flags = %+v, want UID0 and SUID set", inc.CompoundFlags)
+			}
+		})
 	}
 }
 
 // TestCorrelatorSingleHostLegStaysIntegrityRisk confirms one leg alone
 // does not escalate to host_takeover.
 func TestCorrelatorSingleHostLegStaysIntegrityRisk(t *testing.T) {
+	tests := []struct {
+		name  string
+		check string
+	}{
+		{name: "uid0 only", check: "uid0_account"},
+		{name: "suid only", check: "suid_binary"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestCorrelator()
+			id, created, err := c.OnFinding(alert.Finding{
+				Check: tt.check, Severity: alert.High,
+				Message: "single host leg", Timestamp: time.Unix(1_700_000_000, 0),
+			})
+			if err != nil || !created {
+				t.Fatalf("single leg must open host incident: created=%v err=%v", created, err)
+			}
+			if inc, _ := c.Get(id); inc.Kind != KindHostIntegrityRisk {
+				t.Fatalf("single leg Kind=%s, want host_integrity_risk", inc.Kind)
+			}
+		})
+	}
+}
+
+func TestCorrelatorHostTakeoverSurvivesTimelineCap(t *testing.T) {
 	c := newTestCorrelator()
-	id, _, _ := c.OnFinding(alert.Finding{
-		Check: "suid_binary", Severity: alert.High,
-		Message: "planted suid", Timestamp: time.Unix(1_700_000_000, 0),
-	})
-	if inc, _ := c.Get(id); inc.Kind != KindHostIntegrityRisk {
-		t.Fatalf("single leg Kind=%s, want host_integrity_risk", inc.Kind)
+	base := time.Unix(1_700_000_000, 0)
+
+	mkFinding := func(check string, i int) alert.Finding {
+		return alert.Finding{
+			Check:     check,
+			Severity:  alert.High,
+			Message:   check,
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	send := func(check string, i int) (string, bool) {
+		t.Helper()
+		c.now = func() time.Time { return base.Add(time.Duration(i) * time.Second) }
+		id, created, err := c.OnFinding(mkFinding(check, i))
+		if err != nil {
+			t.Fatalf("OnFinding %s/%d: %v", check, i, err)
+		}
+		return id, created
+	}
+
+	id, created := send("kernel_module", 0)
+	if !created {
+		t.Fatal("setup did not create host incident")
+	}
+	for i := 1; i <= 250; i++ {
+		send("kernel_module", i)
+	}
+	send("suid_binary", 251)
+	for i := 252; i <= maxIncidentTimeline+50; i++ {
+		send("kernel_module", i)
+	}
+
+	snap, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident missing")
+	}
+	if !snap.CompoundFlags.SUID {
+		t.Fatalf("sticky SUID flag missing before UID0: %+v", snap.CompoundFlags)
+	}
+	for _, ev := range snap.Timeline {
+		if ev.Check == "suid_binary" {
+			t.Fatalf("test precondition broken: suid event still in timeline (len=%d)", len(snap.Timeline))
+		}
+	}
+
+	send("uid0_account", maxIncidentTimeline+100)
+	snap, ok = c.Get(id)
+	if !ok {
+		t.Fatal("incident missing after uid0")
+	}
+	if snap.Kind != KindHostTakeover {
+		t.Fatalf("Kind = %s, want host_takeover after evicted SUID + UID0", snap.Kind)
+	}
+	if !snap.CompoundFlags.UID0 || !snap.CompoundFlags.SUID {
+		t.Errorf("compound flags = %+v, want UID0 and SUID set", snap.CompoundFlags)
 	}
 }
 

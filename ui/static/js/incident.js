@@ -64,6 +64,7 @@
             case 'credential_spray':       return 'Credential spray';
             case 'post_exploit_process':   return 'Post-exploit process';
             case 'host_integrity_risk':    return 'Host integrity';
+            case 'host_takeover':          return 'Host takeover';
         }
         return k;
     }

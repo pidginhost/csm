@@ -153,7 +153,7 @@ func TestSaveIncidentRoundTripsTimeline(t *testing.T) {
 func TestSaveIncidentRoundTripsCompoundFlags(t *testing.T) {
 	db := newTestStore(t)
 	want := sampleIncident("inc_flags")
-	want.CompoundFlags = incident.CompoundFlags{Webshell: true}
+	want.CompoundFlags = incident.CompoundFlags{Webshell: true, UID0: true, SUID: true}
 	if err := db.SaveIncident(want); err != nil {
 		t.Fatal(err)
 	}
@@ -161,8 +161,8 @@ func TestSaveIncidentRoundTripsCompoundFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !got.CompoundFlags.Webshell || got.CompoundFlags.C2 {
-		t.Errorf("CompoundFlags = %+v, want webshell only", got.CompoundFlags)
+	if !got.CompoundFlags.Webshell || got.CompoundFlags.C2 || !got.CompoundFlags.UID0 || !got.CompoundFlags.SUID {
+		t.Errorf("CompoundFlags = %+v, want webshell, uid0, and suid only", got.CompoundFlags)
 	}
 }
 

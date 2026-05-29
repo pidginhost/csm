@@ -77,6 +77,8 @@ func TestKindValuesUseSnakeCase(t *testing.T) {
 		KindMailboxTakeover,
 		KindPostExploitProcess,
 		KindHostIntegrityRisk,
+		KindCredentialSpray,
+		KindHostTakeover,
 	} {
 		if strings.Contains(string(k), " ") || strings.Contains(string(k), "-") {
 			t.Errorf("kind %q must be snake_case", k)

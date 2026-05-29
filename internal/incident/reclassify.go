@@ -56,8 +56,9 @@ func allCompoundFlagsSet(f CompoundFlags) bool {
 // classifies as a stronger Kind, or when the incident's sticky
 // CompoundFlags plus the new finding cover a compound pattern that the
 // per-finding classifier cannot see. Compound rules at this time:
-// webshell + outbound C2 connection -> PostExploitProcess. Idempotent:
-// calling with weaker findings is a no-op.
+// webshell + outbound C2 connection -> PostExploitProcess;
+// uid0_account + suid_binary -> HostTakeover. Idempotent: calling with
+// weaker findings is a no-op.
 //
 // CompoundFlags are mutated here so callers do not need a separate
 // pass; they survive timeline trimming so an early webshell still
@@ -102,9 +103,9 @@ func hydrateCompoundFlagsFromTimeline(flags *CompoundFlags, events []IncidentEve
 	}
 }
 
-// updateCompoundFlags sets the webshell / C2 flag based on a Finding's
-// check name. Once true a flag stays true so reclassify decisions are
-// not silently disarmed by later trimming.
+// updateCompoundFlags sets sticky compound flags based on a Finding's
+// check name. Once true a flag stays true so reclassify decisions are not
+// silently disarmed by later trimming.
 func updateCompoundFlags(flags *CompoundFlags, check string) {
 	if flags == nil {
 		return

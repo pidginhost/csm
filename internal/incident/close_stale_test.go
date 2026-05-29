@@ -112,6 +112,43 @@ func TestCloseStaleSkipsKindsWithoutThreshold(t *testing.T) {
 	}
 }
 
+func TestCloseStaleSkipsHostTakeoverWithoutThreshold(t *testing.T) {
+	c := newTestCorrelator()
+	old := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return old }
+	id, _, err := c.OnFinding(alert.Finding{
+		Check:     "uid0_account",
+		Message:   "new uid-0 account",
+		Severity:  alert.High,
+		Timestamp: old,
+	})
+	if err != nil {
+		t.Fatalf("uid0: %v", err)
+	}
+	c.now = func() time.Time { return old.Add(time.Minute) }
+	if mergedID, created, err := c.OnFinding(alert.Finding{
+		Check:     "suid_binary",
+		Message:   "planted suid",
+		Severity:  alert.High,
+		Timestamp: old.Add(time.Minute),
+	}); err != nil || created || mergedID != id {
+		t.Fatalf("suid merge: id=%s created=%v err=%v", mergedID, created, err)
+	}
+	if inc, _ := c.Get(id); inc.Kind != KindHostTakeover {
+		t.Fatalf("setup Kind=%s, want host_takeover", inc.Kind)
+	}
+
+	closed, _, scanned := c.CloseStale(old.Add(48*time.Hour),
+		map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}, false)
+	if closed != 0 || scanned != 0 {
+		t.Errorf("host_takeover without threshold must not auto-close (closed=%d scanned=%d)", closed, scanned)
+	}
+	got, _ := c.Get(id)
+	if got.Status != StatusOpen {
+		t.Errorf("status = %s, want open", got.Status)
+	}
+}
+
 func TestCloseStaleHonorsDryRun(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)

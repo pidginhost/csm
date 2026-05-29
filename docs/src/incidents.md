@@ -192,6 +192,8 @@ which then trips the generic auto_block gate.
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
   writes, fake kernel threads, auditd disabled).
+- `host_takeover` -- a new uid-0 account and a planted suid binary seen
+  for the same host inside the merge window.
 - `credential_spray` -- one source IP brute-forcing many distinct
   mailboxes/accounts inside the merge window. Keyed on the source IP
   rather than per-mailbox, so a scanner spraying thousands of usernames

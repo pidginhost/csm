@@ -56,6 +56,14 @@ func TestMaybeReclassifyKind_DoesNotDowngrade(t *testing.T) {
 	}
 }
 
+func TestMaybeReclassifyKind_DoesNotDowngradeHostTakeover(t *testing.T) {
+	inc := &Incident{Kind: KindHostTakeover}
+	maybeReclassifyKind(inc, alert.Finding{TenantID: "alice"})
+	if inc.Kind != KindHostTakeover {
+		t.Errorf("Kind downgraded to %q, want unchanged", inc.Kind)
+	}
+}
+
 func TestMaybeReclassifyKind_CompoundDoesNotDowngradeHostIntegrity(t *testing.T) {
 	inc := &Incident{
 		Kind: KindHostIntegrityRisk,
@@ -115,6 +123,58 @@ func TestMaybeReclassifyKind_CompoundSurvivesTimelineEviction(t *testing.T) {
 	maybeReclassifyKind(inc, alert.Finding{Check: "c2_connection", SourceIP: "203.0.113.5"})
 	if inc.Kind != KindPostExploitProcess {
 		t.Errorf("Kind = %q, want %q (sticky webshell marker + new C2 should promote even with empty timeline)", inc.Kind, KindPostExploitProcess)
+	}
+}
+
+func TestMaybeReclassifyKind_HostTakeoverRequiresUID0AndSUID(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   CompoundFlags
+		finding alert.Finding
+		want    Kind
+	}{
+		{
+			name:    "uid0 only",
+			finding: alert.Finding{Check: "uid0_account"},
+			want:    KindHostIntegrityRisk,
+		},
+		{
+			name:    "suid only",
+			finding: alert.Finding{Check: "suid_binary"},
+			want:    KindHostIntegrityRisk,
+		},
+		{
+			name:    "sticky uid0 plus suid",
+			flags:   CompoundFlags{UID0: true},
+			finding: alert.Finding{Check: "suid_binary"},
+			want:    KindHostTakeover,
+		},
+		{
+			name:    "sticky suid plus uid0",
+			flags:   CompoundFlags{SUID: true},
+			finding: alert.Finding{Check: "uid0_account"},
+			want:    KindHostTakeover,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inc := &Incident{Kind: KindHostIntegrityRisk, CompoundFlags: tt.flags}
+			maybeReclassifyKind(inc, tt.finding)
+			if inc.Kind != tt.want {
+				t.Fatalf("Kind = %q, want %q", inc.Kind, tt.want)
+			}
+		})
+	}
+}
+
+func TestHydrateCompoundFlagsReadsPastCompletedWebCompound(t *testing.T) {
+	flags := CompoundFlags{Webshell: true, C2: true}
+	hydrateCompoundFlagsFromTimeline(&flags, []IncidentEvent{
+		{Check: "uid0_account"},
+		{Check: "suid_binary"},
+	})
+	if !flags.UID0 || !flags.SUID {
+		t.Fatalf("host flags not hydrated after web flags already set: %+v", flags)
 	}
 }
 

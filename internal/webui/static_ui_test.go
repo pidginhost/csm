@@ -661,6 +661,7 @@ func TestIncidentPageHasGroupedTab(t *testing.T) {
 		`id="grouped-content"`,
 		`id="grouped-status-filter"`,
 		`id="grouped-kind-filter"`,
+		`value="host_takeover"`,
 		`csm-summary-list`,
 	} {
 		if !strings.Contains(text, want) {
@@ -678,6 +679,8 @@ func TestIncidentPageHasGroupedTab(t *testing.T) {
 		`function renderGroups`,
 		`function openGroupDetail`,
 		`switchTab('grouped')`,
+		`case 'host_takeover':`,
+		`Host takeover`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("incident.js missing grouped-view hook %q", want)

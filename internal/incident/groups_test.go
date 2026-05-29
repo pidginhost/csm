@@ -117,6 +117,39 @@ func TestBuildGroupsBucketByHostKey(t *testing.T) {
 	}
 }
 
+func TestBuildGroupsKeepsHostTakeoverAsOwnKind(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	in := []Incident{
+		{
+			ID:             "inc_integrity",
+			Kind:           KindHostIntegrityRisk,
+			Status:         StatusOpen,
+			Severity:       alert.High,
+			CorrelationKey: &Key{Host: "host"},
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		},
+		{
+			ID:             "inc_takeover",
+			Kind:           KindHostTakeover,
+			Status:         StatusOpen,
+			Severity:       alert.Critical,
+			CorrelationKey: &Key{Host: "host"},
+			CreatedAt:      now,
+			UpdatedAt:      now.Add(time.Minute),
+		},
+	}
+	resp := BuildGroups(in, GroupFilter{})
+	if resp.TotalGroups != 2 {
+		t.Fatalf("TotalGroups = %d, want separate host-integrity and takeover groups: %+v", resp.TotalGroups, resp.Groups)
+	}
+	for _, group := range resp.Groups {
+		if group.SourceKind != "host" || group.Source != "host" {
+			t.Fatalf("host group source = (%s,%s), want (host,host)", group.SourceKind, group.Source)
+		}
+	}
+}
+
 func TestBuildGroupsSortsByCountThenSeverityThenLastSeen(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	in := []Incident{
