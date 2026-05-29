@@ -36,12 +36,12 @@ func TestFirewallMetricsReadEngineState(t *testing.T) {
 	// NewEngine roots state under <dir>/firewall.
 	stateFile := filepath.Join(dir, "firewall", "state.json")
 	writeState := func(path string, st firewall.FirewallState) {
-		data, err := json.MarshalIndent(st, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal state: %v", err)
+		data, marshalErr := json.MarshalIndent(st, "", "  ")
+		if marshalErr != nil {
+			t.Fatalf("marshal state: %v", marshalErr)
 		}
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatalf("write state: %v", err)
+		if writeErr := os.WriteFile(path, data, 0600); writeErr != nil {
+			t.Fatalf("write state: %v", writeErr)
 		}
 	}
 
