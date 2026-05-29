@@ -467,6 +467,20 @@ var knownLibraryPaths = []string{
 	"/breakdance/",
 }
 
+// InlineQuarantineGated applies the operator's quarantine policy before
+// InlineQuarantine moves anything. The realtime fanotify path detects malware
+// continuously, but moving a file is a customer-impacting auto-response
+// action: it must honour the same master switch and quarantine opt-in as the
+// batch AutoQuarantineFiles dispatcher, never act on detection alone. An
+// operator in monitor mode (auto-response off, or quarantine_files off) gets
+// the alert without having files moved out from under them.
+func InlineQuarantineGated(cfg *config.Config, f alert.Finding, path string, data []byte) (string, bool) {
+	if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles {
+		return "", false
+	}
+	return InlineQuarantine(f, path, data)
+}
+
 // InlineQuarantine moves a file to quarantine immediately if it passes the
 // high-confidence validation gates. Called from fanotify's analyzeFile to
 // quarantine malware without waiting for the 5-second batch dispatcher.

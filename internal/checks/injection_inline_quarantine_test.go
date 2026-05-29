@@ -9,7 +9,54 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestInlineQuarantineGatedDisabledDoesNotQuarantine(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+	src := filepath.Join(tmp, "evil.php")
+	payload := makeHighEntropyContent(t, 2048)
+	if err := os.WriteFile(src, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
+
+	// auto-response disabled (default): high-confidence malware must NOT be
+	// moved; the file stays in place and the caller still alerts.
+	cfg := &config.Config{}
+	qPath, ok := InlineQuarantineGated(cfg, finding, src, payload)
+	if ok || qPath != "" {
+		t.Errorf("disabled auto-response must not quarantine, got (%q, %v)", qPath, ok)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source file must remain when quarantine is gated off: %v", err)
+	}
+}
+
+func TestInlineQuarantineGatedEnabledQuarantines(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+	src := filepath.Join(tmp, "evil.php")
+	payload := makeHighEntropyContent(t, 2048)
+	if err := os.WriteFile(src, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	finding := alert.Finding{Check: "yara_match", Details: "Category: dropper\nRule: webshell_generic\n"}
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.QuarantineFiles = true
+	qPath, ok := InlineQuarantineGated(cfg, finding, src, payload)
+	if !ok || qPath == "" {
+		t.Fatalf("enabled quarantine should move high-confidence malware, got (%q, %v)", qPath, ok)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source should be moved when quarantine is enabled, stat err=%v", err)
+	}
+}
 
 // withQuarantineDirIQ — InlineQuarantine variant of the temp-dir override.
 // Distinct from withQuarantineDirT (clean tests) and withQuarantineDir
