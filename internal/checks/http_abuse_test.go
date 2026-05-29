@@ -246,14 +246,89 @@ func TestHTTPRequestFlood_ReportsCrossVhostSpread(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestFlood_VhostSpreadIgnoresRecordsOutsideWindow(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 3
+	cfg.Thresholds.HTTPFloodWindowMin = 5
+
+	stats := newDomlogStatsAt(now)
+	old, _ := parseAccessLogRecord(`192.0.2.80 - - [20/May/2026:17:00:00 +0300] "GET /old HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+	old.Domain = "stale.example"
+	stats.scan(old, cfg, nopBotClassifier{})
+
+	for _, dom := range []string{"a.example", "b.example"} {
+		rec, _ := parseAccessLogRecord(`192.0.2.80 - - [20/May/2026:18:04:00 +0300] "GET /new HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+		rec.Domain = dom
+		for i := 0; i < 2; i++ {
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+	}
+	got := stats.emit(cfg)
+	if len(got) != 1 || got[0].Check != "http_request_flood" {
+		t.Fatalf("emit=%+v", got)
+	}
+	if got[0].Domain != "" {
+		t.Errorf("Domain = %q, want empty for multi-vhost flood", got[0].Domain)
+	}
+	if !strings.Contains(got[0].Message, "across 2 vhosts") {
+		t.Errorf("message should count only in-window vhosts: %q", got[0].Message)
+	}
+	if strings.Contains(got[0].Details, "/old") {
+		t.Errorf("sample should come from an in-window request: %q", got[0].Details)
+	}
+}
+
+func TestHTTPRequestFlood_CentralRecordsDoNotInheritStaleVhost(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 3
+	cfg.Thresholds.HTTPFloodWindowMin = 5
+
+	stats := newDomlogStatsAt(now)
+	old, _ := parseAccessLogRecord(`192.0.2.81 - - [20/May/2026:17:00:00 +0300] "GET /old HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+	old.Domain = "stale.example"
+	stats.scan(old, cfg, nopBotClassifier{})
+
+	current, _ := parseAccessLogRecord(`192.0.2.81 - - [20/May/2026:18:04:00 +0300] "GET /central HTTP/1.1" 200 100 "-" "Mozilla/5.0"`)
+	for i := 0; i < 3; i++ {
+		stats.scan(current, cfg, nopBotClassifier{})
+	}
+	got := stats.emit(cfg)
+	if len(got) != 1 || got[0].Check != "http_request_flood" {
+		t.Fatalf("emit=%+v", got)
+	}
+	if got[0].Domain != "" {
+		t.Errorf("central-log flood Domain = %q, want empty", got[0].Domain)
+	}
+	if strings.Contains(got[0].Message, "across") {
+		t.Errorf("central-log flood should not claim vhost spread: %q", got[0].Message)
+	}
+}
+
 func TestDomainFromDomlogPath(t *testing.T) {
 	cases := map[string]string{
-		"/usr/local/apache/domlogs/example.com":   "example.com",
-		"/home/u/access-logs/example.com-ssl_log": "example.com",
-		"/var/log/apache2/sub.example.co.uk_log":  "sub.example.co.uk",
-		"/usr/local/apache/domlogs/Example.COM":   "example.com",
-		"/var/log/httpd/access_log":               "", // central, not a domain
-		"/some/path/ftpxferlog":                   "", // no dot
+		"/usr/local/apache/domlogs/example.com":              "example.com",
+		"/home/u/access-logs/example.com-ssl_log":            "example.com",
+		"/home/u/access-logs/example.com_log":                "example.com",
+		"/var/log/apache2/sub.example.co.uk_log":             "sub.example.co.uk",
+		"/usr/local/apache/domlogs/Example.COM":              "example.com",
+		"/var/log/apache2/www.example.com-access.log":        "www.example.com",
+		"/var/log/apache2/www.example.com_access.log":        "www.example.com",
+		"/var/log/httpd/www.example.com-access_log":          "www.example.com",
+		"/var/log/httpd/www.example.com_access_log":          "www.example.com",
+		"/var/log/nginx/www.example.com.access.log":          "www.example.com",
+		"/var/log/nginx/www.example.com-access.log":          "www.example.com",
+		"/var/log/httpd/domains/www.example.com.log":         "www.example.com",
+		"/var/www/vhosts/Example.COM/logs/access_log":        "example.com",
+		"/var/www/vhosts/example.net/logs/access_ssl_log":    "example.net",
+		"/var/www/vhosts/system/example.org/logs/access_log": "example.org",
+		"/var/log/httpd/access_log":                          "", // central, not a domain
+		"/var/log/apache2/access.log":                        "", // central, not a domain
+		"/var/log/apache2/other_vhosts_access.log":           "", // central, not a domain
+		"/some/path/ftpxferlog":                              "", // no dot
+		"/var/log/httpd/domains/192.0.2.10.log":              "", // IP-literal vhost
+		"/var/log/httpd/domains/bad_name.example.log":        "", // invalid label
 	}
 	for in, want := range cases {
 		if got := domainFromDomlogPath(in); got != want {
@@ -366,6 +441,36 @@ func TestHTTPUASpoof_KnownScannerImmediate(t *testing.T) {
 	if !found {
 		t.Errorf("scanner UA did not emit http_ua_spoof: %+v", got)
 	}
+}
+
+func TestHTTPUASpoof_StampsSingleVhost(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPUASpoofThreshold = 30
+	cfg.Thresholds.HTTPFloodWindowMin = 5
+
+	stats := newDomlogStatsAt(now)
+	rec, ok := parseAccessLogRecord(`192.0.2.82 - - [20/May/2026:18:04:00 +0300] "GET /wp-admin/ HTTP/1.1" 404 100 "-" "nikto/2.5"`)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	rec.Domain = "example.com"
+	stats.scan(rec, cfg, nopBotClassifier{})
+
+	got := stats.emit(cfg)
+	for _, f := range got {
+		if f.Check != "http_ua_spoof" {
+			continue
+		}
+		if f.Domain != "example.com" {
+			t.Fatalf("Domain = %q, want example.com", f.Domain)
+		}
+		if strings.Contains(f.Message, "across") {
+			t.Fatalf("single-vhost message should not claim spread: %q", f.Message)
+		}
+		return
+	}
+	t.Fatalf("http_ua_spoof not emitted: %+v", got)
 }
 
 func TestHTTPUASpoof_WPPingbackBelowThreshold(t *testing.T) {

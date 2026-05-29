@@ -122,15 +122,6 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 
-	if rec.Domain != "" {
-		set := s.domains[ip]
-		if set == nil {
-			set = make(map[string]struct{})
-			s.domains[ip] = set
-		}
-		set[rec.Domain] = struct{}{}
-	}
-
 	if rec.Method == "POST" {
 		if strings.Contains(rec.URI, "wp-login.php") {
 			s.wpLogin[ip]++
@@ -150,6 +141,17 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 	// flood window. Malformed timestamp lines still feed the legacy POST
 	// counters above but not rate or UA findings.
 	if withinHTTPFloodWindow(rec.Time, cfg, s.scanTime) {
+		if rec.Domain != "" {
+			set := s.domains[ip]
+			if set == nil {
+				set = make(map[string]struct{})
+				s.domains[ip] = set
+			}
+			set[rec.Domain] = struct{}{}
+		}
+		if _, ok := s.samples[ip]; !ok {
+			s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
+		}
 		s.httpReqs[ip]++
 
 		kind := classifyUA(rec.UserAgent, rec.Method)
@@ -173,10 +175,6 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.uaCat[ip] = make(map[uaKind]int)
 		}
 		s.uaCat[ip][kind]++
-	}
-
-	if _, ok := s.samples[ip]; !ok {
-		s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 	}
 }
 

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -294,19 +295,74 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 }
 
 // domainFromDomlogPath derives the vhost from a per-domain domlog file
-// path (e.g. ".../domlogs/example.com-ssl_log" -> "example.com"). Returns
-// "" for paths that do not look like a domain log so the central access
-// log and odd filenames do not pollute the per-IP vhost set.
+// path. Returns "" for paths that do not look like a domain log so the
+// central access log and odd filenames do not pollute the per-IP vhost set.
 func domainFromDomlogPath(p string) string {
 	base := filepath.Base(p)
-	for _, suffix := range []string{"-ssl_log", "_log", ".log"} {
-		base = strings.TrimSuffix(base, suffix)
+	if domain, ok := pleskDomlogDomain(p, base); ok {
+		return cleanDomlogDomain(domain)
 	}
-	base = strings.TrimSpace(base)
-	if base == "" || !strings.Contains(base, ".") {
+	if domain, ok := trimDomlogSuffix(base); ok {
+		return cleanDomlogDomain(domain)
+	}
+	return cleanDomlogDomain(base)
+}
+
+func pleskDomlogDomain(p, base string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(base)) {
+	case "access_log", "access_ssl_log", "proxy_access_ssl_log":
+		return filepath.Base(filepath.Dir(filepath.Dir(p))), true
+	default:
+		return "", false
+	}
+}
+
+func trimDomlogSuffix(base string) (string, bool) {
+	trimmed := strings.TrimSpace(base)
+	low := strings.ToLower(trimmed)
+	for _, suffix := range []string{
+		".access.log",
+		"-access.log",
+		"_access.log",
+		"-access_log",
+		"_access_log",
+		"-ssl_log",
+		"_log",
+		".log",
+	} {
+		if strings.HasSuffix(low, suffix) {
+			return trimmed[:len(trimmed)-len(suffix)], true
+		}
+	}
+	return trimmed, false
+}
+
+func cleanDomlogDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" || len(domain) > 253 || !strings.Contains(domain, ".") {
 		return ""
 	}
-	return strings.ToLower(base)
+	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") ||
+		strings.Contains(domain, "..") {
+		return ""
+	}
+	if net.ParseIP(domain) != nil {
+		return ""
+	}
+	labels := strings.Split(domain, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 ||
+			strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return ""
+		}
+		for _, c := range label {
+			if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+				continue
+			}
+			return ""
+		}
+	}
+	return domain
 }
 
 // scanDomlogsStats discovers per-vhost logs honouring the operator's
