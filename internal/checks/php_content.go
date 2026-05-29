@@ -36,20 +36,30 @@ var evalExecWrapInner = map[string]struct{}{
 	"call_user_func_array": {},
 }
 
-// reBacktickSuperglobal matches a backtick shell-exec span that contains a
-// request superglobal, e.g. “ `cat $_GET[f]` “. Backticks are PHP's
-// shell_exec sugar; embedding request input in one is a near-certain RCE
-// and is not covered by the shell-function list (which looks for named
-// calls). Backticks are not stripped by stripPHPStringsFromCode, so this
-// runs against the lower-cased source directly.
-var reBacktickSuperglobal = regexp.MustCompile("`[^`]*\\$_(?:get|post|request|cookie|server)[^`]*`")
+var callbackFirstArgFuncs = map[string]struct{}{
+	"array_map":                  {},
+	"call_user_func":             {},
+	"call_user_func_array":       {},
+	"register_shutdown_function": {},
+	"register_tick_function":     {},
+}
 
-// reCallbackExecName matches a callback-position sink whose callback is a
-// literal exec/decoder function name, e.g. array_map("system", $_GET) or
-// register_shutdown_function("passthru", ...). Passing one of these names
-// as a string callback is never legitimate. Runs on comment-stripped (but
-// string-preserved) source so the literal name survives.
-var reCallbackExecName = regexp.MustCompile(`(?i)\b(?:array_map|array_filter|array_walk|u[ak]?sort|register_shutdown_function|register_tick_function|call_user_func(?:_array)?)\s*\(\s*["'](?:system|exec|shell_exec|passthru|popen|proc_open|eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|create_function|call_user_func)["']`)
+var callbackDangerousNames = map[string]struct{}{
+	"assert":          {},
+	"base64_decode":   {},
+	"call_user_func":  {},
+	"create_function": {},
+	"eval":            {},
+	"exec":            {},
+	"gzinflate":       {},
+	"gzuncompress":    {},
+	"passthru":        {},
+	"popen":           {},
+	"proc_open":       {},
+	"shell_exec":      {},
+	"str_rot13":       {},
+	"system":          {},
+}
 
 // reVarVarCall matches a variable-variable or dynamic-expression function
 // invocation, e.g. `$$h(...)` or `${$x}(...)`. On its own this shows up in
@@ -58,6 +68,113 @@ var reCallbackExecName = regexp.MustCompile(`(?i)\b(?:array_map|array_filter|arr
 var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 
 const phpContentReadSize = 32768 // Read first 32KB for analysis
+
+func hasBacktickSuperglobal(code string) bool {
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if code[i] != '`' {
+			continue
+		}
+
+		end := i + 1
+		for end < len(code) {
+			if code[end] == '\\' && end+1 < len(code) {
+				end += 2
+				continue
+			}
+			if code[end] == '`' {
+				break
+			}
+			end++
+		}
+		if end >= len(code) {
+			break
+		}
+		if containsRequestSuperglobal(code[i+1 : end]) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+func hasCallbackExecName(code string) bool {
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+
+		nameStart := i
+		if code[i] == '\\' {
+			if i+1 >= len(code) || !isPHPIdentifierStart(code[i+1]) || !canStartGlobalPHPFunction(code, i) {
+				continue
+			}
+			nameStart = i + 1
+		} else if !isPHPIdentifierStart(code[i]) || !canStartPHPFunctionName(code, i) {
+			continue
+		}
+
+		nameEnd := nameStart + 1
+		for nameEnd < len(code) && isPHPIdentifierPart(code[nameEnd]) {
+			nameEnd++
+		}
+		name := code[nameStart:nameEnd]
+		if _, ok := callbackFirstArgFuncs[name]; !ok {
+			i = nameEnd - 1
+			continue
+		}
+
+		openParen := skipPHPWhitespace(code, nameEnd)
+		if openParen >= len(code) || code[openParen] != '(' {
+			i = nameEnd - 1
+			continue
+		}
+		firstArg := skipPHPWhitespace(code, openParen+1)
+		if firstArg >= len(code) || !isPHPQuote(code[firstArg]) {
+			i = nameEnd - 1
+			continue
+		}
+		callbackName, _, ok := readPHPFunctionString(code, firstArg)
+		if !ok {
+			i = nameEnd - 1
+			continue
+		}
+		if _, dangerous := callbackDangerousNames[callbackName]; dangerous {
+			return true
+		}
+		i = nameEnd - 1
+	}
+	return false
+}
+
+func containsRequestSuperglobal(code string) bool {
+	for _, requestVar := range []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"} {
+		if strings.Contains(code, requestVar) {
+			return true
+		}
+	}
+	return false
+}
+
+func canStartGlobalPHPFunction(code string, slash int) bool {
+	if slash == 0 {
+		return true
+	}
+	prev := code[slash-1]
+	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
+}
+
+func canStartPHPFunctionName(code string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	prev := code[start-1]
+	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
+}
 
 // CheckPHPContent scans new/suspicious PHP files for obfuscation patterns,
 // remote payload fetching, and eval chains. This is designed to catch droppers
@@ -327,9 +444,9 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		indicators = append(indicators, "eval() wrapping a dynamic code-execution primitive")
 	}
 
-	// Backtick shell execution with request input -- `...$_GET...`. Backticks
-	// survive string stripping, so match the lower-cased source directly.
-	if reBacktickSuperglobal.MatchString(contentLower) {
+	// Backtick shell execution with request input -- `...$_GET...`.
+	// Match only executable backtick spans, not quoted examples.
+	if hasBacktickSuperglobal(commentStripped) {
 		indicators = append(indicators, "backtick shell execution with request input")
 	}
 
@@ -337,7 +454,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// string callback (array_map("system", ...), register_shutdown_function(
 	// "passthru", ...)). Runs on the comment-stripped source so the literal
 	// callback name is preserved.
-	if reCallbackExecName.MatchString(commentStripped) {
+	if hasCallbackExecName(commentStripped) {
 		indicators = append(indicators, "exec/decoder function name passed as a callback")
 	}
 

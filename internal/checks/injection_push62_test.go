@@ -201,10 +201,31 @@ func TestAnalyzePHPContentBacktickNoSuperglobalNotFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentBacktickExampleNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php\n// Example: `cat $_GET[x]`\n$doc = \"Run `cat $_POST[x]` from a shell\";\n?>")
+	if strings.Contains(res.details, "backtick shell execution with request input") {
+		t.Errorf("comment or string backtick example wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentBacktickWithShellQuotesStillFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $out = `printf \"x\" $_GET[c]`; ?>")
+	if !strings.Contains(res.details, "backtick shell execution with request input") {
+		t.Errorf("backtick with quoted shell args not flagged; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentCallbackExecName(t *testing.T) {
 	res := analyzePHPString(t, "<?php array_map(\"system\", $_POST['cmds']); ?>")
 	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
 		t.Errorf("array_map(\"system\", ...) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentGlobalCallbackExecName(t *testing.T) {
+	res := analyzePHPString(t, "<?php \\call_user_func('shell_exec', $_GET['c']); ?>")
+	if !strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("\\call_user_func('shell_exec', ...) not flagged; details=%q", res.details)
 	}
 }
 
@@ -216,11 +237,18 @@ func TestAnalyzePHPContentCallbackRegisterShutdown(t *testing.T) {
 }
 
 func TestAnalyzePHPContentBenignCallbackNotFlagged(t *testing.T) {
-	// array_map('trim', $_POST) and array_filter($arr, 'is_string') are
-	// extremely common and must not trip the callback-exec indicator.
-	res := analyzePHPString(t, "<?php $a = array_map('trim', $_POST); $b = array_filter($arr, 'is_string'); ?>")
+	// These callback shapes are common in WordPress plugins and must not
+	// trip the callback-exec indicator.
+	res := analyzePHPString(t, "<?php $a = array_map('trim', $_POST); $b = array_filter($arr, 'is_string'); usort($a, 'strcmp'); call_user_func($obj, 'method'); ?>")
 	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
-		t.Errorf("benign array_map/array_filter wrongly flagged; details=%q", res.details)
+		t.Errorf("benign callback use wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallbackExampleNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php\n// array_map('system', $_POST);\n$doc = \"register_shutdown_function('passthru', $_GET[c])\";\n?>")
+	if strings.Contains(res.details, "exec/decoder function name passed as a callback") {
+		t.Errorf("comment or string callback example wrongly flagged; details=%q", res.details)
 	}
 }
 
@@ -236,6 +264,25 @@ func TestAnalyzePHPContentVarVarCallNoRequestNotFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php $handler='render'; $$handler($config); ?>")
 	if strings.Contains(res.details, "variable-variable function call with request input") {
 		t.Errorf("benign $$handler() wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentVarVarCallStringRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $$handler('$_GET[x]'); ?>")
+	if strings.Contains(res.details, "variable-variable function call with request input") {
+		t.Errorf("string-only request token wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentNewIndicatorsSeverityThreshold(t *testing.T) {
+	single := analyzePHPString(t, "<?php array_map(\"system\", $_POST['cmds']); ?>")
+	if single.severity != alert.High {
+		t.Errorf("single callback indicator severity = %v, want High", single.severity)
+	}
+
+	multiple := analyzePHPString(t, "<?php array_map(\"system\", $_POST['cmds']); $out = `cat $_GET[x]`; ?>")
+	if multiple.severity != alert.Critical {
+		t.Errorf("two new indicators severity = %v, want Critical", multiple.severity)
 	}
 }
 
