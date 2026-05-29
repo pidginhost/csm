@@ -125,6 +125,10 @@ thresholds:
   # Claimed bot UAs with confirmed PTR/forward-A mismatches fire
   # regardless of this threshold.
   http_ua_spoof_threshold: 30
+  # Distributed HTTP attack: distinct already-abusive source IPs hitting
+  # one vhost in a scan window before the per-vhost rollup fires.
+  # 0 disables the rollup.
+  http_distributed_min_ips: 10
   # Opt-in UA classes. These match many legitimate monitoring agents;
   # leave disabled unless the noise floor is known.
   http_ua_scripting_enabled: false

@@ -342,9 +342,16 @@ func TestDomainFromDomlogPath(t *testing.T) {
 // in-window xmlrpc POSTs to cross xmlrpcThreshold, against one vhost.
 func seedAbusiveIPsToDomain(t *testing.T, stats *domlogStats, domain string, count int, ts time.Time) {
 	t.Helper()
-	line := `IP - - [20/May/2026:18:00:00 +0300] "POST /xmlrpc.php HTTP/1.1" 200 0 "-" "Mozilla/5.0"`
 	for i := 0; i < count; i++ {
 		ip := fmt.Sprintf("203.0.113.%d", i+1)
+		seedAbusiveIPToDomains(t, stats, ip, []string{domain}, ts)
+	}
+}
+
+func seedAbusiveIPToDomains(t *testing.T, stats *domlogStats, ip string, domains []string, ts time.Time) {
+	t.Helper()
+	line := `IP - - [20/May/2026:18:00:00 +0300] "POST /xmlrpc.php HTTP/1.1" 200 0 "-" "Mozilla/5.0"`
+	for _, domain := range domains {
 		rec, ok := parseAccessLogRecord(line)
 		if !ok {
 			t.Fatal("parse")
@@ -382,6 +389,84 @@ func TestHTTPDistributedFlood_FiresOnManyAbusiveIPsOneVhost(t *testing.T) {
 	}
 	if !strings.Contains(dist.Message, "12 distinct abusive source IPs") {
 		t.Errorf("message = %q", dist.Message)
+	}
+}
+
+func TestHTTPDistributedFlood_DoesNotUseNormalCurrentHitsForStaleAbuse(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodWindowMin = 60
+	cfg.Thresholds.HTTPDistributedMinIPs = 10
+
+	stats := newDomlogStatsAt(now)
+	seedAbusiveIPsToDomain(t, stats, "attacked.example", 12, now.Add(-2*time.Hour))
+
+	normal, ok := parseAccessLogRecord(`IP - - [20/May/2026:18:04:00 +0300] "GET / HTTP/1.1" 200 0 "-" "Mozilla/5.0"`)
+	if !ok {
+		t.Fatal("parse")
+	}
+	normal.Time = now
+	normal.Domain = "popular.example"
+	for i := 0; i < 12; i++ {
+		normal.RemoteIP = fmt.Sprintf("203.0.113.%d", i+1)
+		stats.scan(normal, cfg, nopBotClassifier{})
+	}
+
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			t.Fatalf("old XML-RPC abuse plus current normal hits must not roll up to popular.example: %+v", f)
+		}
+	}
+}
+
+func TestHTTPDistributedFlood_AbusiveIPContributesToEachAbusedVhost(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodWindowMin = 60
+	cfg.Thresholds.HTTPDistributedMinIPs = 2
+
+	stats := newDomlogStatsAt(now)
+	for _, ip := range []string{"203.0.113.10", "203.0.113.11"} {
+		seedAbusiveIPToDomains(t, stats, ip, []string{"a.example", "b.example"}, now)
+	}
+
+	got := stats.emit(cfg)
+	found := map[string]bool{}
+	for _, f := range got {
+		if f.Check == "http_distributed_flood" {
+			found[f.Domain] = true
+		}
+	}
+	for _, dom := range []string{"a.example", "b.example"} {
+		if !found[dom] {
+			t.Fatalf("distributed flood missing for %s: %+v", dom, got)
+		}
+	}
+}
+
+func TestHTTPDistributedFlood_IgnoresNormalVisitorSpread(t *testing.T) {
+	now := time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600))
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodWindowMin = 60
+	cfg.Thresholds.HTTPDistributedMinIPs = 10
+
+	stats := newDomlogStatsAt(now)
+	line := `IP - - [20/May/2026:18:04:00 +0300] "GET / HTTP/1.1" 200 0 "-" "Mozilla/5.0"`
+	for i := 0; i < 25; i++ {
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
+			t.Fatal("parse")
+		}
+		rec.RemoteIP = fmt.Sprintf("203.0.113.%d", i+1)
+		rec.Time = now
+		rec.Domain = "popular.example"
+		stats.scan(rec, cfg, nopBotClassifier{})
+	}
+
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			t.Fatalf("normal visitor spread must not emit distributed flood: %+v", f)
+		}
 	}
 }
 

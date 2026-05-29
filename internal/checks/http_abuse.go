@@ -87,8 +87,13 @@ type domlogStats struct {
 	// per-IP aggregate findings can report cross-site spread (one IP
 	// scanning many vhosts on a shared host). Empty-domain records (the
 	// central access log) do not contribute.
-	domains  map[string]map[string]struct{}
-	scanTime time.Time
+	domains map[string]map[string]struct{}
+	// abuseDomains tracks the in-window vhosts where each source made the
+	// request shape for a specific HTTP-abuse finding. The distributed
+	// rollup uses this instead of all in-window touches so an IP that was
+	// abusive elsewhere cannot make a normal hit count against a vhost.
+	abuseDomains map[string]map[string]map[string]struct{}
+	scanTime     time.Time
 }
 
 func newDomlogStats() *domlogStats {
@@ -97,14 +102,15 @@ func newDomlogStats() *domlogStats {
 
 func newDomlogStatsAt(t time.Time) *domlogStats {
 	return &domlogStats{
-		wpLogin:  make(map[string]int),
-		xmlrpc:   make(map[string]int),
-		userEnum: make(map[string]int),
-		httpReqs: make(map[string]int),
-		uaCat:    make(map[string]map[uaKind]int),
-		samples:  make(map[string]httpSample),
-		domains:  make(map[string]map[string]struct{}),
-		scanTime: t,
+		wpLogin:      make(map[string]int),
+		xmlrpc:       make(map[string]int),
+		userEnum:     make(map[string]int),
+		httpReqs:     make(map[string]int),
+		uaCat:        make(map[string]map[uaKind]int),
+		samples:      make(map[string]httpSample),
+		domains:      make(map[string]map[string]struct{}),
+		abuseDomains: make(map[string]map[string]map[string]struct{}),
+		scanTime:     t,
 	}
 }
 
@@ -124,19 +130,24 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 
+	wpLoginHit := rec.Method == "POST" && strings.Contains(rec.URI, "wp-login.php")
+	xmlrpcHit := rec.Method == "POST" && strings.Contains(rec.URI, "xmlrpc.php")
+	userEnumHit := false
 	if rec.Method == "POST" {
-		if strings.Contains(rec.URI, "wp-login.php") {
+		if wpLoginHit {
 			s.wpLogin[ip]++
 		}
-		if strings.Contains(rec.URI, "xmlrpc.php") {
+		if xmlrpcHit {
 			s.xmlrpc[ip]++
 		}
 	}
 	if strings.Contains(rec.URI, "?author=") {
 		s.userEnum[ip]++
+		userEnumHit = true
 	} else if strings.Contains(rec.URI, "/wp-json/wp/v2/users") &&
 		!strings.Contains(rec.URI, "/users/me") {
 		s.userEnum[ip]++
+		userEnumHit = true
 	}
 
 	// Rate and UA counters only fire for requests that fall inside the
@@ -150,6 +161,16 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 				s.domains[ip] = set
 			}
 			set[rec.Domain] = struct{}{}
+			if wpLoginHit {
+				s.recordAbuseDomain("wp_login_bruteforce", ip, rec.Domain)
+			}
+			if xmlrpcHit {
+				s.recordAbuseDomain("xmlrpc_abuse", ip, rec.Domain)
+			}
+			if userEnumHit {
+				s.recordAbuseDomain("wp_user_enumeration", ip, rec.Domain)
+			}
+			s.recordAbuseDomain("http_request_flood", ip, rec.Domain)
 		}
 		if _, ok := s.samples[ip]; !ok {
 			s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
@@ -177,7 +198,24 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.uaCat[ip] = make(map[uaKind]int)
 		}
 		s.uaCat[ip][kind]++
+		if rec.Domain != "" && kind != uaKindBrowser {
+			s.recordAbuseDomain("http_ua_spoof", ip, rec.Domain)
+		}
 	}
+}
+
+func (s *domlogStats) recordAbuseDomain(check, ip, domain string) {
+	byIP := s.abuseDomains[check]
+	if byIP == nil {
+		byIP = make(map[string]map[string]struct{})
+		s.abuseDomains[check] = byIP
+	}
+	set := byIP[ip]
+	if set == nil {
+		set = make(map[string]struct{})
+		byIP[ip] = set
+	}
+	set[domain] = struct{}{}
 }
 
 // emitLegacy returns the three pre-existing finding kinds. Kept
@@ -330,7 +368,7 @@ func (s *domlogStats) emitDistributedFlood(cfg *config.Config, prior []alert.Fin
 		if _, ok := httpAbuseChecks[f.Check]; !ok || f.SourceIP == "" {
 			continue
 		}
-		for dom := range s.domains[f.SourceIP] {
+		for dom := range s.abuseDomains[f.Check][f.SourceIP] {
 			if domainIPs[dom] == nil {
 				domainIPs[dom] = map[string]struct{}{}
 			}

@@ -68,6 +68,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
 		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
 	}
+	if cfg.Thresholds.HTTPDistributedMinIPs != 0 {
+		t.Errorf("http_distributed_min_ips = %d, want 0 (disabled when unset)", cfg.Thresholds.HTTPDistributedMinIPs)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
@@ -449,6 +452,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
 		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
 	}
+	if cfg.Thresholds.HTTPDistributedMinIPs != 10 {
+		t.Errorf("http_distributed_min_ips = %d, want 10", cfg.Thresholds.HTTPDistributedMinIPs)
+	}
 	if cfg.Reputation.BotVerifyEnabled == nil || !*cfg.Reputation.BotVerifyEnabled {
 		t.Fatal("reputation.bot_verify_enabled must be explicitly true in production reference config")
 	}
@@ -468,6 +474,7 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 		"http_flood_threshold",
 		"http_flood_window_min",
 		"http_ua_spoof_threshold",
+		"http_distributed_min_ips",
 		"http_ua_scripting_enabled",
 		"http_ua_headless_enabled",
 		"http_ua_empty_enabled",

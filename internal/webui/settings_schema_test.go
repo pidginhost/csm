@@ -258,6 +258,26 @@ func TestThresholdsSchemaIncludesMailBruteAccountKey(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesHTTPDistributedMinIPs(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "http_distributed_min_ips")
+	if f == nil {
+		t.Fatal("http_distributed_min_ips field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("http_distributed_min_ips type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 0 {
+		t.Fatalf("http_distributed_min_ips min = %v, want 0", f.Min)
+	}
+	if f.FieldGroup != FieldGroupWebBruteForce {
+		t.Fatalf("http_distributed_min_ips group = %q, want %q", f.FieldGroup, FieldGroupWebBruteForce)
+	}
+	if !strings.Contains(f.Help, "0 disables") {
+		t.Fatalf("http_distributed_min_ips help = %q, want disable guidance", f.Help)
+	}
+}
+
 func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 	cases := []struct {
 		section, field, source string

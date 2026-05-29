@@ -137,8 +137,8 @@ thresholds:
   # If this cap clips /home/<account>/ paths, account_scan_truncated names the affected account.
   crontab_base64_blob_max_bytes: 16384  # encoded bytes per crontab base64 candidate before decoded-content matching; must be a multiple of 4 (default: 16384)
 
-  # HTTP request flood and User-Agent spoof detection.
-  # Both detectors scan the same per-vhost access-log stream as the WP
+  # HTTP request flood, User-Agent spoof, and distributed HTTP detection.
+  # These detectors scan the same per-vhost access-log stream as the WP
   # brute-force scanner; no extra log tailer is needed.
   #
   # http_flood_threshold: minimum per-IP request count inside the window
@@ -153,6 +153,12 @@ thresholds:
   # Bingbot, Applebot) that fail reverse-DNS confirmation fire regardless of
   # this threshold once the rDNS cache confirms the IP is not the real bot.
   http_ua_spoof_threshold: 30          # default: 30
+
+  # http_distributed_min_ips: distinct already-abusive source IPs that hit
+  # the same vhost in one scan window before a per-vhost distributed flood
+  # finding fires. 0 disables the rollup for existing configs that do not
+  # opt in.
+  http_distributed_min_ips: 10         # sample setting; omit or set 0 to disable
 
   # These three opt-in flags extend UA spoof detection to additional UA
   # classes. Leave disabled on busy shared hosts; scripting-language agents

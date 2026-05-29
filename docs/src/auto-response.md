@@ -125,6 +125,10 @@ When `auto_response.block_ips: true` and the firewall is enabled, the source IP 
 | `email_compromised_account` | Email account compromise indicator |
 | `email_cloud_relay_abuse` | Cloud relay abuse |
 
+Distributed HTTP flood rollups do not trigger a direct IP block because
+they describe one targeted vhost, not one source IP. The per-IP findings
+that feed the rollup still drive normal block decisions.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services
