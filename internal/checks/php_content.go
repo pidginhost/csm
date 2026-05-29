@@ -21,14 +21,14 @@ import (
 // evaluated.
 var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*@?\s*\\?\s*(\w+)\s*\(`)
 
-// reEvalVarCallee matches eval/assert wrapping a variable function call,
+// reEvalVarCallee matches eval wrapping a variable function call,
 // e.g. `eval($f(...))`. The literal-callee form above cannot capture a
 // `$var` callee, yet eval'ing the result of a dynamic function call is a
 // near-certain dropper signal in user web directories.
-var reEvalVarCallee = regexp.MustCompile(`(?is)\b(?:eval|assert)\s*\(\s*@?\s*\$\w+\s*\(`)
+var reEvalVarCallee = regexp.MustCompile(`(?is)\beval\s*\(\s*@?\s*\$\w+\s*\(`)
 
 // evalExecWrapInner lists code-construction primitives that, when wrapped
-// directly by eval/assert, indicate dynamic code execution rather than the
+// directly by eval, indicate dynamic code execution rather than the
 // decoder/decompressor chain nestedEvalDecodeRe already covers.
 var evalExecWrapInner = map[string]struct{}{
 	"create_function":      {},
@@ -281,7 +281,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		indicators = append(indicators, "eval() directly wrapping encoding/compression function")
 	}
 
-	// eval/assert wrapping dynamic code construction the decoder loop above
+	// eval wrapping dynamic code construction the decoder loop above
 	// ignores: a variable callee (eval($f(...))) or a code-building
 	// primitive (eval(create_function(...)), eval(call_user_func(...))).
 	// These never appear in legitimate user-directory PHP; a single hit is
@@ -292,6 +292,9 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			if len(m) < 3 {
 				continue
 			}
+			if m[1] != "eval" {
+				continue
+			}
 			if _, ok := evalExecWrapInner[m[2]]; ok {
 				hasEvalExecWrap = true
 				break
@@ -299,7 +302,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		}
 	}
 	if hasEvalExecWrap {
-		indicators = append(indicators, "eval/assert wrapping a dynamic code-execution primitive")
+		indicators = append(indicators, "eval() wrapping a dynamic code-execution primitive")
 	}
 
 	// --- Critical: call_user_func with string-built function names ---

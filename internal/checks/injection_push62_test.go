@@ -138,6 +138,13 @@ func TestAnalyzePHPContentEvalCreateFunction(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentEvalStringLiteralNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php eval('return 1;'); ?>")
+	if strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("eval(string literal) wrongly flagged as dynamic exec; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentEvalCommentWedgedVarCallee(t *testing.T) {
 	// Comment wedged between eval and ( must not defeat detection.
 	res := analyzePHPString(t, "<?php eval /*x*/ ( $f($_POST['z']) ); ?>")
@@ -160,6 +167,20 @@ func TestAnalyzePHPContentAssertConditionNotFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php function f($x){ assert($x > 0); return $x; } ?>")
 	if strings.Contains(res.details, "dynamic code-execution primitive") {
 		t.Errorf("assert(condition) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertCallableConditionNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert($validator($value)); ?>")
+	if strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("assert($callback(...)) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertCallUserFuncConditionNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(call_user_func($validator, $value)); ?>")
+	if strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("assert(call_user_func(...)) wrongly flagged; details=%q", res.details)
 	}
 }
 
