@@ -302,6 +302,9 @@ func phpHeredocOpen(code string, i int) (label string, bodyStart int, ok bool) {
 	if i+3 > len(code) || code[i] != '<' || code[i+1] != '<' || code[i+2] != '<' {
 		return "", 0, false
 	}
+	if i > 0 && code[i-1] == '<' {
+		return "", 0, false
+	}
 	j := i + 3
 	for j < len(code) && (code[j] == ' ' || code[j] == '\t') {
 		j++

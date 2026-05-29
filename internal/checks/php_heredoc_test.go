@@ -3,6 +3,7 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,28 @@ func TestAnalyzePHPContent_EvalAfterHeredocWithQuote(t *testing.T) {
 	r := analyzePHPContent(path)
 	if r.check == "" {
 		t.Fatalf("eval(base64_decode($_POST)) after a heredoc must still be detected; got no finding (details=%q)", r.details)
+	}
+}
+
+func TestAnalyzePHPContent_EvalAfterHeredocCaseVariantBodyLine(t *testing.T) {
+	res := analyzePHPString(t, "<?php\n"+
+		"$tpl = <<<EOT\n"+
+		"eot;\n"+
+		"it's still string body\n"+
+		"EOT;\n"+
+		"eval(base64_decode($_POST['c']));\n")
+	if !strings.Contains(res.details, "eval() directly wrapping encoding/compression function") {
+		t.Fatalf("case-variant body line must not close heredoc before post-heredoc eval; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContent_ContentSignalInsideHeredocStillScanned(t *testing.T) {
+	res := analyzePHPString(t, "<?php\n"+
+		"$tpl = <<<'EOT'\n"+
+		"https://pastebin.com/raw/abc\n"+
+		"EOT;\n")
+	if !strings.Contains(res.details, "remote payload URL") {
+		t.Fatalf("content signals inside heredoc body must still be scanned; details=%q", res.details)
 	}
 }
 
@@ -56,6 +79,47 @@ func TestStripPHPCommentsFromCode_KeepsHeredocBody(t *testing.T) {
 	got := stripPHPCommentsFromCode(code)
 	if !containsToken(got, "evil.example") {
 		t.Errorf("heredoc body must survive comment stripping: %q", got)
+	}
+}
+
+func TestPHPHeredocOpenRejectsNonOpeners(t *testing.T) {
+	cases := []string{
+		"$x = $a << $b;\n",
+		"$x = $a < $b;\n",
+		"$x = <<<<EOT\nbody\nEOT;\n",
+		"$x = <<<123\nbody\n123;\n",
+	}
+	for _, code := range cases {
+		t.Run(code, func(t *testing.T) {
+			for i := 0; i < len(code); i++ {
+				if label, _, ok := phpHeredocOpen(code, i); ok {
+					t.Fatalf("non-opener at offset %d parsed as heredoc label %q", i, label)
+				}
+			}
+		})
+	}
+}
+
+func TestPHPHeredocEndRequiresExactCaseSensitiveLabel(t *testing.T) {
+	code := "<<<EOT\nEOTHER\neot;\n  EOT;\n$after = 1;\n"
+	label, bodyStart, ok := phpHeredocOpen(code, 0)
+	if !ok {
+		t.Fatal("expected heredoc opener")
+	}
+	end := phpHeredocEnd(code, bodyStart, label)
+	if got := code[end:]; !strings.HasPrefix(got, ";\n$after") {
+		t.Fatalf("heredoc closed at wrong label; suffix=%q", got)
+	}
+}
+
+func TestPHPHeredocEndUnterminatedConsumesEOF(t *testing.T) {
+	code := "<<<EOT\nbody\n"
+	label, bodyStart, ok := phpHeredocOpen(code, 0)
+	if !ok {
+		t.Fatal("expected heredoc opener")
+	}
+	if end := phpHeredocEnd(code, bodyStart, label); end != len(code) {
+		t.Fatalf("unterminated heredoc end=%d, want %d", end, len(code))
 	}
 }
 

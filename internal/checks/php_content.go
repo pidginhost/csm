@@ -146,7 +146,7 @@ func hasCallbackExecName(code string) bool {
 		for nameEnd < len(code) && isPHPIdentifierPart(code[nameEnd]) {
 			nameEnd++
 		}
-		name := code[nameStart:nameEnd]
+		name := strings.ToLower(code[nameStart:nameEnd])
 		if _, ok := callbackFirstArgFuncs[name]; !ok {
 			i = nameEnd - 1
 			continue
@@ -721,9 +721,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// strings first, then match the structural pattern across whitespace,
 	// and require the inner callee to be one of the known decoders /
 	// decompressors.
-	commentStripped := stripPHPCommentsFromCode(contentLower)
-	commentStrippedOriginal := stripPHPCommentsFromCode(content)
-	codeLower := stripPHPStringsFromCode(commentStripped)
+	commentStripped := stripPHPCommentsFromCode(content)
+	codeLower := strings.ToLower(stripPHPStringsFromCode(commentStripped))
 	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(codeLower, -1) {
 		if len(m) < 3 {
 			continue
@@ -794,19 +793,19 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// preg_replace() with the /e modifier evaluates its replacement as PHP.
 	// Removed in PHP 7.0; any occurrence is a legacy code-execution sink.
-	if hasPregReplaceEvalModifier(commentStrippedOriginal) {
+	if hasPregReplaceEvalModifier(commentStripped) {
 		indicators = append(indicators, "preg_replace with /e modifier (code execution)")
 	}
 
 	// include/require of request input or a remote/stream wrapper -- LFI,
 	// RFI, and php://input code execution.
-	if hasDangerousInclude(commentStrippedOriginal) {
+	if hasDangerousInclude(commentStripped) {
 		indicators = append(indicators, "include/require of request input or remote/data wrapper")
 	}
 
 	// assert()/create_function() driven by request input -- both evaluate a
 	// string argument as PHP.
-	if hasCodeEvalPrimitiveWithRequest(commentStrippedOriginal) {
+	if hasCodeEvalPrimitiveWithRequest(commentStripped) {
 		indicators = append(indicators, "code-eval primitive (assert/create_function) with request input")
 	}
 
