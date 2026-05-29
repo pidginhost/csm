@@ -102,6 +102,47 @@ func TestIncidentCorrelatorCriticalBypassesThreshold(t *testing.T) {
 	}
 }
 
+func TestIncidentCorrelatorSkipsPublishedCrawlerRemoteIP(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	c := IncidentCorrelator()
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "http_request_flood",
+		Severity:  alert.High,
+		Domain:    "example.com",
+		SourceIP:  "66.249.66.1",
+		Timestamp: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding crawler: %v", err)
+	}
+	if created {
+		t.Fatal("published crawler IP created an incident")
+	}
+	if id != "" {
+		t.Fatalf("crawler incident id = %q, want empty", id)
+	}
+	if got := c.OpenCount(); got != 0 {
+		t.Fatalf("OpenCount after crawler = %d, want 0", got)
+	}
+
+	if _, created, err := c.OnFinding(alert.Finding{
+		Check:     "http_request_flood",
+		Severity:  alert.High,
+		Domain:    "example.net",
+		SourceIP:  "203.0.113.7",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("OnFinding non-crawler: %v", err)
+	} else if !created {
+		t.Fatal("non-crawler remote IP did not create an incident")
+	}
+}
+
 func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T) {
 	resetIncidentForTest()
 	t.Cleanup(resetIncidentForTest)

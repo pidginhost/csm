@@ -154,10 +154,10 @@ func IncidentCorrelator() *incident.Correlator {
 					return live
 				}
 			}
-			// Whitelist accessor: prefer the bbolt-backed live whitelist
-			// (operators add IPs at runtime), fall back to the static
-			// reputation.whitelist list. db nil-check inside the closure
-			// so the resolution stays current across daemon restarts.
+			// Whitelist accessor: check the static reputation.whitelist
+			// list, then the bbolt-backed live whitelist operators add at
+			// runtime. db nil-check inside the closure so store resolution
+			// stays current across daemon restarts.
 			staticAllow := make(map[string]bool, len(cfg.Reputation.Whitelist))
 			for _, ip := range cfg.Reputation.Whitelist {
 				if ip != "" {

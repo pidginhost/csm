@@ -13,8 +13,17 @@ func TestIPInAnyBot(t *testing.T) {
 	if !r.IPInAnyBot(net.ParseIP("157.55.39.1")) {
 		t.Error("157.55.39.1 (bingbot) should match IPInAnyBot")
 	}
+	if !r.IPInAnyBot(net.ParseIP("17.1.2.3")) {
+		t.Error("17.1.2.3 (applebot) should match IPInAnyBot")
+	}
+	if !r.IPInAnyBot(net.ParseIP("2001:4860:4801::1")) {
+		t.Error("2001:4860:4801::1 (googlebot IPv6) should match IPInAnyBot")
+	}
 	if r.IPInAnyBot(net.ParseIP("203.0.113.7")) {
 		t.Error("203.0.113.7 must not match any crawler range")
+	}
+	if r.IPInAnyBot(net.ParseIP("104.16.0.1")) {
+		t.Error("CDN edge IP must not match crawler ranges")
 	}
 	if r.IPInAnyBot(nil) {
 		t.Error("nil IP must not match")

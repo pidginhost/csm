@@ -195,6 +195,95 @@ func TestCorrelatorRemoteIPOnlyFindingsDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestCorrelatorSkipsWhitelistedRemoteIPOnlyFinding(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{
+		IsWhitelisted: func(ip string) bool {
+			return ip == "203.0.113.10"
+		},
+	})
+	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "ssh_bruteforce",
+		Severity:  alert.High,
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if created {
+		t.Fatal("whitelisted remote-IP-only finding created an incident")
+	}
+	if id != "" {
+		t.Fatalf("id = %q, want empty", id)
+	}
+	if got := c.OpenCount(); got != 0 {
+		t.Fatalf("OpenCount = %d, want 0", got)
+	}
+	if got := c.PendingCount(); got != 0 {
+		t.Fatalf("PendingCount = %d, want 0", got)
+	}
+}
+
+func TestCorrelatorSkipsWhitelistedSourceIPWithStableActor(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{
+		IsWhitelisted: func(ip string) bool {
+			return ip == "203.0.113.10"
+		},
+	})
+	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "wp_login_bruteforce",
+		Severity:  alert.High,
+		TenantID:  "alice",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if created {
+		t.Fatal("stable-actor finding with whitelisted SourceIP created an incident")
+	}
+	if id != "" {
+		t.Fatalf("id = %q, want empty", id)
+	}
+	if got := c.OpenCount(); got != 0 {
+		t.Fatalf("OpenCount = %d, want 0", got)
+	}
+}
+
+func TestCorrelatorWhitelistedSourceIPDoesNotSuppressHostIntegrity(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{
+		IsWhitelisted: func(ip string) bool {
+			return ip == "203.0.113.10"
+		},
+	})
+	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "suid_binary",
+		Severity:  alert.Critical,
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created {
+		t.Fatal("host-integrity finding with whitelisted SourceIP did not create an incident")
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("created incident not found")
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.Host != "host" {
+		t.Fatalf("CorrelationKey = %+v, want host key", inc.CorrelationKey)
+	}
+}
+
 func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
 	c := newTestCorrelator()
 	f1 := alert.Finding{

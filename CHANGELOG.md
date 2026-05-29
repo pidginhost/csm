@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The incident correlator now treats a verified-crawler IP from a published range (Googlebot, Bingbot, Applebot) as whitelisted, so a legitimate crawler can no longer anchor a correlated incident. CDN edge ranges are intentionally not whitelisted.
+- The incident correlator now treats verified-crawler source IPs from published ranges (Googlebot, Bingbot, Applebot) as whitelisted, so legitimate crawler traffic no longer creates correlated incidents. CDN edge ranges are intentionally not whitelisted.
 - HTTP request-flood and User-Agent-spoof findings now carry the originating vhost and report how many distinct vhosts a single IP hit, so an operator can see a one-IP-scans-many-sites pattern on shared hosting.
 - Mail-log source recovery now marks the watcher healthy again when the file returns after a vanished-source alert.
 - The mail-log reader now reports when its source file disappears mid-run (for example after a syslog-to-journald migration), marking the watcher unhealthy and emitting a finding instead of silently tailing a dead file with mail brute-force and rate detection going dark.

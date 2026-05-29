@@ -61,7 +61,8 @@ type CorrelatorConfig struct {
 	// follows the legacy per-mailbox correlation path. Default-off.
 	SpraySuppression SpraySuppressionConfig
 
-	// IsWhitelisted is consulted by the spray detector to skip IPs the
+	// IsWhitelisted is consulted before a source-IP finding can anchor
+	// incident correlation and by the spray detector to skip IPs the
 	// operator has marked as known-good (e.g. internal mail relays).
 	// nil short-circuits to "no IPs whitelisted".
 	IsWhitelisted func(ip string) bool
@@ -217,6 +218,9 @@ func closedPersistTail() chan struct{} {
 func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	key := KeyFor(f)
 	if key.IsEmpty() {
+		return "", false, nil
+	}
+	if key.Host == "" && f.SourceIP != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(f.SourceIP) {
 		return "", false, nil
 	}
 	var afterUnlock func()
