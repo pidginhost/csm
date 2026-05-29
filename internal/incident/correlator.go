@@ -881,8 +881,22 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 // so future findings are evaluated as new activity instead of merging
 // into the closed incident.
 func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Duration, dryRun bool) (closed, dryRunCount, scanned int) {
+	closed, dryRunCount, scanned, _ = c.CloseStaleLimited(now, idleThresholds, dryRun, 0)
+	return closed, dryRunCount, scanned
+}
+
+// CloseStaleLimited is CloseStale with a per-call cap on the number of
+// incidents it resolves. limit <= 0 means unbounded (the CloseStale
+// behaviour). When the cap is hit, more=true signals the caller that
+// stale incidents remain so it can schedule a prompt follow-up sweep
+// instead of waiting the full auto-close interval. Bounding the work
+// keeps a large post-restart backlog from holding c.mu and bursting
+// thousands of bbolt persists in a single tick. The cap applies only to
+// live closes; a dry-run pass always scans the full set so its counters
+// stay accurate.
+func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]time.Duration, dryRun bool, limit int) (closed, dryRunCount, scanned int, more bool) {
 	if len(idleThresholds) == 0 {
-		return 0, 0, 0
+		return 0, 0, 0, false
 	}
 	var persist []queuedPersist
 	c.mu.Lock()
@@ -897,6 +911,10 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 		idle := now.Sub(inc.UpdatedAt)
 		if idle <= threshold {
 			continue
+		}
+		if !dryRun && limit > 0 && closed >= limit {
+			more = true
+			break
 		}
 		scanned++
 		if dryRun {
@@ -931,7 +949,7 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 	for _, req := range persist {
 		c.runQueuedPersist(req)
 	}
-	return closed, dryRunCount, scanned
+	return closed, dryRunCount, scanned, more
 }
 
 // validStatus reports whether s is one of the four spec-defined values.

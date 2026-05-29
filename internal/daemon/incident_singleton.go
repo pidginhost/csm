@@ -45,6 +45,23 @@ func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) (
 // stays cheap on hosts with thousands of incidents.
 const incidentAutoCloseInterval = 1 * time.Hour
 
+// incidentAutoCloseWarmup delays the first sweep just long enough for the
+// startup finding burst to settle. Incidents are restored synchronously
+// before the loop starts, so a long warm-up only parks a stale backlog as
+// "open" after every restart (observed on a frequently-upgraded prod host:
+// thousands of >24h incidents sitting open for the full warm-up). Short.
+const incidentAutoCloseWarmup = 2 * time.Minute
+
+// incidentAutoCloseDrainDelay is the cadence used when a sweep hit its
+// per-sweep cap, so a large backlog drains over a few quick passes instead
+// of waiting a full interval between each capped sweep.
+const incidentAutoCloseDrainDelay = 30 * time.Second
+
+// incidentAutoCloseMaxPerSweep bounds live closes per sweep so a big
+// post-restart backlog does not hold the correlator lock or burst
+// thousands of bbolt persists in one tick.
+const incidentAutoCloseMaxPerSweep = 1000
+
 // incidentRetentionPeriod is how long resolved/dismissed incidents are
 // kept before compaction prunes them. Named constant per project
 // convention; config exposure deferred until operators ask.
@@ -244,21 +261,23 @@ func SetIncidentConfigSource(get func() *config.Config) {
 func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func() {
 	stop := make(chan struct{})
 	go func() {
-		t := time.NewTicker(incidentAutoCloseInterval)
-		defer t.Stop()
-		// First sweep fires after a 30-min warm-up so the daemon has
-		// finished restoring incidents and processing any backlog from
-		// the journal before we start writing back.
-		first := time.NewTimer(30 * time.Minute)
-		defer first.Stop()
+		// Single resettable timer: first sweep after a short warm-up, then
+		// the normal interval -- unless a sweep reports a remaining backlog,
+		// in which case the next sweep fires on the fast drain cadence so a
+		// post-restart backlog clears in minutes rather than over hours.
+		timer := time.NewTimer(incidentAutoCloseWarmup)
+		defer timer.Stop()
 		for {
 			select {
 			case <-stop:
 				return
-			case <-first.C:
-				runIncidentAutoClose(c, cfg)
-			case <-t.C:
-				runIncidentAutoClose(c, cfg)
+			case <-timer.C:
+				more := runIncidentAutoClose(c, cfg)
+				next := incidentAutoCloseInterval
+				if more {
+					next = incidentAutoCloseDrainDelay
+				}
+				timer.Reset(next)
 			}
 		}
 	}()
@@ -268,29 +287,33 @@ func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func
 // runIncidentAutoClose is one tick of the auto-close loop. Gated on
 // the operator's config and on the per-kind threshold map. dry_run=true
 // only increments counters; live mode flips Status -> resolved and
-// records "auto:stale" attribution.
-func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) {
+// records "auto:stale" attribution. Returns more=true when the per-sweep
+// cap left stale incidents unclosed, so the caller schedules a prompt
+// follow-up sweep instead of waiting the full interval.
+func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool) {
 	if cfg == nil || !cfg.IncidentsAutoCloseEnabled() {
-		return
+		return false
 	}
 	rawThresholds := cfg.IncidentsAutoCloseThresholds()
 	if len(rawThresholds) == 0 {
-		return
+		return false
 	}
 	thresholds := make(map[incident.Kind]time.Duration, len(rawThresholds))
 	for k, v := range rawThresholds {
 		thresholds[incident.Kind(k)] = v
 	}
 	dryRun := cfg.Incidents.AutoClose.DryRun
-	closed, dryRunCount, scanned := c.CloseStale(time.Now(), thresholds, dryRun)
+	closed, dryRunCount, scanned, more := c.CloseStaleLimited(time.Now(), thresholds, dryRun, incidentAutoCloseMaxPerSweep)
 	if closed > 0 || dryRunCount > 0 {
 		csmlog.Info("incident auto-close",
 			"closed", closed,
 			"dry_run_decisions", dryRunCount,
 			"scanned", scanned,
 			"dry_run", dryRun,
+			"backlog_remaining", more,
 		)
 	}
+	return more
 }
 
 // startIncidentRetentionLoop runs a daily compaction sweep against the

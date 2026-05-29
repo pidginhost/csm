@@ -29,6 +29,43 @@ func seedIncident(t *testing.T, c *Correlator, kind string, mailbox string, ts t
 	return id
 }
 
+// TestCloseStaleLimitedCapsClosesAndReportsBacklog pins the bounded
+// sweep: with a per-call limit, only `limit` incidents close per call,
+// more=true signals a remaining backlog, and repeated capped calls drain
+// the rest. A large post-restart backlog must not all close in one tick.
+func TestCloseStaleLimitedCapsClosesAndReportsBacklog(t *testing.T) {
+	c := newTestCorrelator()
+	old := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return old }
+	for i := 0; i < 5; i++ {
+		seedIncident(t, c, "email_auth_failure_realtime", "user"+string(rune('a'+i)), old)
+	}
+
+	now := old.Add(25 * time.Hour)
+	thr := map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}
+
+	closed, _, _, more := c.CloseStaleLimited(now, thr, false, 2)
+	if closed != 2 || !more {
+		t.Fatalf("first capped sweep = (closed=%d more=%v), want (2, true)", closed, more)
+	}
+	closed2, _, _, more2 := c.CloseStaleLimited(now, thr, false, 2)
+	if closed2 != 2 || !more2 {
+		t.Fatalf("second capped sweep = (closed=%d more=%v), want (2, true)", closed2, more2)
+	}
+	closed3, _, _, more3 := c.CloseStaleLimited(now, thr, false, 2)
+	if closed3 != 1 || more3 {
+		t.Fatalf("final sweep = (closed=%d more=%v), want (1, false)", closed3, more3)
+	}
+	// Unbounded (limit 0) closes everything and never reports backlog.
+	for i := 0; i < 3; i++ {
+		seedIncident(t, c, "email_auth_failure_realtime", "x"+string(rune('a'+i)), old)
+	}
+	closed4, _, _, more4 := c.CloseStaleLimited(now, thr, false, 0)
+	if closed4 != 3 || more4 {
+		t.Fatalf("unbounded sweep = (closed=%d more=%v), want (3, false)", closed4, more4)
+	}
+}
+
 func TestCloseStaleClosesIncidentsOlderThanThreshold(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
