@@ -78,17 +78,17 @@ var callbackDecoderNames = map[string]struct{}{
 // line also carries a request superglobal (the RCE shape).
 var reVarVarCall = regexp.MustCompile(`(?:\$\$\w+|\$\{[^}]{1,64}\})\s*\(`)
 
-// reIncludeKeyword matches an include/require language construct used as a
-// statement, not an identifier. The leading class rejects `$include`,
-// `->include`, and `Foo::include` so a variable or method named "include"
-// does not trip the LFI/RFI detector. The trailing \b keeps `include_path`
-// and similar identifiers from matching.
-var reIncludeKeyword = regexp.MustCompile(`(?i)(?:^|[^\w$>:])(?:include|require)(?:_once)?\b`)
-
 // includeDangerWrappers are stream wrappers / remote schemes that, as an
 // include/require target, mean remote-file inclusion or php://input code
 // execution. Matched on the comment-stripped (strings preserved) source.
 var includeDangerWrappers = []string{"data://", "php://", "phar://", "http://", "https://", "ftp://"}
+
+var includeKeywords = []string{"include_once", "require_once", "include", "require"}
+
+var (
+	pregReplaceCallName        = map[string]struct{}{"preg_replace": {}}
+	codeEvalPrimitiveCallNames = map[string]struct{}{"assert": {}, "create_function": {}}
+)
 
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
@@ -205,20 +205,28 @@ func matchingParen(code string, openParen int) int {
 
 // hasDangerousInclude reports an include/require whose target is request
 // input or a remote/stream wrapper -- the LFI/RFI and php://input code-exec
-// shapes. Scans per line on comment-stripped source so a static
-// `require_once ABSPATH . 'wp-load.php'` never trips.
+// shapes. Scans the include expression, not the whole line, so unrelated
+// request reads or URLs after a static include do not trip the detector.
 func hasDangerousInclude(code string) bool {
-	for _, line := range strings.Split(code, "\n") {
-		if !reIncludeKeyword.MatchString(line) {
-			continue
+	searchFrom := 0
+	for {
+		exprStart, exprEnd, ok := nextIncludeExpression(code, searchFrom)
+		if !ok {
+			break
 		}
-		if containsRequestSuperglobal(line) {
+		expr := code[exprStart:exprEnd]
+		if containsRequestSuperglobalExpression(expr) {
 			return true
 		}
+		exprLower := strings.ToLower(expr)
 		for _, w := range includeDangerWrappers {
-			if strings.Contains(line, w) {
+			if strings.Contains(exprLower, w) {
 				return true
 			}
+		}
+		searchFrom = exprEnd
+		if searchFrom >= len(code) {
+			break
 		}
 	}
 	return false
@@ -227,15 +235,26 @@ func hasDangerousInclude(code string) bool {
 // hasCodeEvalPrimitiveWithRequest reports assert()/create_function() fed
 // request input on the same line. assert() evaluates a string argument as PHP
 // (pre-8.0) and create_function() evals its body argument; both are RCE when
-// driven by attacker input. The same-line request gate keeps benign
-// assert(count($x) > 0) / static create_function() calls quiet.
+// driven by attacker input.
 func hasCodeEvalPrimitiveWithRequest(code string) bool {
 	for _, line := range strings.Split(code, "\n") {
-		if !containsStandaloneFunc(line, "assert(") && !containsStandaloneFunc(line, "create_function(") {
-			continue
-		}
-		if containsRequestSuperglobal(line) {
-			return true
+		searchFrom := 0
+		for {
+			_, openParen, closeParen, ok := nextStandalonePHPCall(line, searchFrom, codeEvalPrimitiveCallNames)
+			if !ok {
+				break
+			}
+			exprEnd := closeParen
+			if exprEnd < len(line) {
+				exprEnd++
+			}
+			if containsRequestSuperglobal(line[openParen:exprEnd]) {
+				return true
+			}
+			searchFrom = exprEnd
+			if searchFrom >= len(line) {
+				break
+			}
 		}
 	}
 	return false
@@ -248,24 +267,15 @@ func hasCodeEvalPrimitiveWithRequest(code string) bool {
 // source skipping string literals so a documentation example in a string does
 // not trip, then inspects the literal first argument of each real call.
 func hasPregReplaceEvalModifier(code string) bool {
-	const fn = "preg_replace"
-	for i := 0; i+len(fn) <= len(code); i++ {
-		if isPHPQuote(code[i]) {
-			i = skipPHPString(code, i)
-			continue
+	searchFrom := 0
+	for {
+		_, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, pregReplaceCallName)
+		if !ok {
+			break
 		}
-		if code[i] != 'p' || code[i:i+len(fn)] != fn {
-			continue
-		}
-		if i > 0 && (isPHPIdentifierPart(code[i-1]) || code[i-1] == '$') {
-			continue
-		}
-		j := skipPHPWhitespace(code, i+len(fn))
-		if j >= len(code) || code[j] != '(' {
-			continue
-		}
-		argStart := skipPHPWhitespace(code, j+1)
+		argStart := skipPHPWhitespace(code, openParen+1)
 		if argStart >= len(code) || !isPHPQuote(code[argStart]) {
+			searchFrom = nextSearchOffset(closeParen, len(code))
 			continue
 		}
 		end := skipPHPString(code, argStart)
@@ -273,12 +283,13 @@ func hasPregReplaceEvalModifier(code string) bool {
 		// for an unterminated literal. Guard the slice: a quote in the final
 		// position leaves no string body to inspect.
 		if end <= argStart {
+			searchFrom = nextSearchOffset(closeParen, len(code))
 			continue
 		}
 		if pregPatternHasEvalModifier(code[argStart+1 : end]) {
 			return true
 		}
-		i = end
+		searchFrom = nextSearchOffset(closeParen, len(code))
 	}
 	return false
 }
@@ -309,7 +320,127 @@ func pregPatternHasEvalModifier(pat string) bool {
 	if idx <= 0 {
 		return false
 	}
-	return strings.IndexByte(pat[idx+1:], 'e') >= 0
+	for _, c := range pat[idx+1:] {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+		if c == 'e' {
+			return true
+		}
+	}
+	return false
+}
+
+func nextIncludeExpression(line string, searchFrom int) (int, int, bool) {
+	for i := searchFrom; i < len(line); i++ {
+		if isPHPQuote(line[i]) {
+			i = skipPHPString(line, i)
+			continue
+		}
+		keywordEnd, ok := includeKeywordEnd(line, i)
+		if !ok {
+			continue
+		}
+		exprStart := skipPHPWhitespace(line, keywordEnd)
+		return exprStart, phpExpressionEnd(line, exprStart), true
+	}
+	return 0, 0, false
+}
+
+func includeKeywordEnd(line string, start int) (int, bool) {
+	if !canStartIncludeKeyword(line, start) {
+		return 0, false
+	}
+	for _, keyword := range includeKeywords {
+		end := start + len(keyword)
+		if end > len(line) || !strings.EqualFold(line[start:end], keyword) {
+			continue
+		}
+		if end < len(line) && isPHPIdentifierPart(line[end]) {
+			continue
+		}
+		return end, true
+	}
+	return 0, false
+}
+
+func canStartIncludeKeyword(line string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	prev := line[start-1]
+	return !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\'
+}
+
+func phpExpressionEnd(code string, start int) int {
+	depth := 0
+	for i := start; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		switch code[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return i
+			}
+			depth--
+		case ';':
+			if depth == 0 {
+				return i
+			}
+		case ',':
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(code)
+}
+
+func nextStandalonePHPCall(code string, searchFrom int, names map[string]struct{}) (int, int, int, bool) {
+	for i := searchFrom; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+
+		nameStart := i
+		if code[i] == '\\' {
+			if i+1 >= len(code) || !isPHPIdentifierStart(code[i+1]) || !canStartGlobalPHPFunction(code, i) {
+				continue
+			}
+			nameStart = i + 1
+		} else if !isPHPIdentifierStart(code[i]) || !canStartPHPFunctionName(code, i) {
+			continue
+		}
+
+		nameEnd := nameStart + 1
+		for nameEnd < len(code) && isPHPIdentifierPart(code[nameEnd]) {
+			nameEnd++
+		}
+		if _, ok := names[strings.ToLower(code[nameStart:nameEnd])]; !ok {
+			i = nameEnd - 1
+			continue
+		}
+
+		openParen := skipPHPWhitespace(code, nameEnd)
+		if openParen >= len(code) || code[openParen] != '(' {
+			i = nameEnd - 1
+			continue
+		}
+		return i, openParen, matchingParen(code, openParen), true
+	}
+	return 0, 0, 0, false
+}
+
+func nextSearchOffset(pos, codeLen int) int {
+	if pos >= codeLen {
+		return codeLen
+	}
+	return pos + 1
 }
 
 func containsRequestSuperglobal(code string) bool {
@@ -593,6 +724,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// and require the inner callee to be one of the known decoders /
 	// decompressors.
 	commentStripped := stripPHPCommentsFromCode(contentLower)
+	commentStrippedOriginal := stripPHPCommentsFromCode(content)
 	codeLower := stripPHPStringsFromCode(commentStripped)
 	for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(codeLower, -1) {
 		if len(m) < 3 {
@@ -664,19 +796,19 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// preg_replace() with the /e modifier evaluates its replacement as PHP.
 	// Removed in PHP 7.0; any occurrence is a legacy code-execution sink.
-	if hasPregReplaceEvalModifier(commentStripped) {
+	if hasPregReplaceEvalModifier(commentStrippedOriginal) {
 		indicators = append(indicators, "preg_replace with /e modifier (code execution)")
 	}
 
 	// include/require of request input or a remote/stream wrapper -- LFI,
 	// RFI, and php://input code execution.
-	if hasDangerousInclude(commentStripped) {
+	if hasDangerousInclude(commentStrippedOriginal) {
 		indicators = append(indicators, "include/require of request input or remote/data wrapper")
 	}
 
 	// assert()/create_function() driven by request input -- both evaluate a
 	// string argument as PHP.
-	if hasCodeEvalPrimitiveWithRequest(commentStripped) {
+	if hasCodeEvalPrimitiveWithRequest(commentStrippedOriginal) {
 		indicators = append(indicators, "code-eval primitive (assert/create_function) with request input")
 	}
 
