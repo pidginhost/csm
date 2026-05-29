@@ -86,6 +86,27 @@ func TestIncidentAPIStatusTransitions(t *testing.T) {
 	}
 }
 
+// An oversized status body is rejected instead of being buffered wholesale
+// into memory. The handler caps the body like every other mutating endpoint.
+func TestIncidentAPIStatusRejectsOversizeBody(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
+
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	huge := `{"status":"resolved","details":"` + strings.Repeat("A", 64*1024) + `"}`
+	req := httptest.NewRequest("POST", "/api/v1/incidents/"+id+"/status", strings.NewReader(huge))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiIncidentStatus(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("oversize body must be rejected, got 200")
+	}
+	if got, _ := c.Get(id); got.Status == incident.StatusResolved {
+		t.Error("status must not change when the body is rejected")
+	}
+}
+
 // TestIncidentAPIListPaginatedReturnsEnvelope: when the request carries
 // any pagination parameter (limit, offset, status), the response shape
 // switches to an envelope with items + total + offset + limit + status.

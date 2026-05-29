@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -505,16 +506,29 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check cphulk (cPanel brute force detector) - read-only check
-	cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
+	// Check cphulk (cPanel brute force detector) - read-only check.
+	// CommandContext bounds a hung whmapi1 (cPanel socket busy/down) so a
+	// stuck call cannot pin this HTTP handler goroutine indefinitely.
+	cphulkCtx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	cphulkOut, cphulkErr := exec.CommandContext(cphulkCtx, "whmapi1", "read_cphulk_records",
 		"list_name=black", "--output=json").Output()
-	if cphulkErr == nil {
-		if bytes.Contains(cphulkOut, []byte(ip)) {
-			result["cphulk"] = true
-		}
+	if cphulkErr == nil && cphulkBlocksIP(cphulkOut, ip) {
+		result["cphulk"] = true
 	}
 
 	writeJSON(w, result)
+}
+
+// cphulkBlocksIP reports whether the cphulk black-list JSON contains ip as an
+// exact record value. It matches the quoted JSON token ("<ip>"), not a bare
+// substring, so querying a prefix like 10.20.30.4 does not falsely match a
+// different blocked address 10.20.30.40 and leak blocklist membership.
+func cphulkBlocksIP(jsonOut []byte, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	return bytes.Contains(jsonOut, []byte(`"`+ip+`"`))
 }
 
 // apiFirewallUnban unblocks an IP from CSM + cphulk in one call.

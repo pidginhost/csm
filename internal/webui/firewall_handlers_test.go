@@ -160,3 +160,22 @@ func TestAPIFirewallUnbanGetRejected(t *testing.T) {
 		t.Errorf("GET unban = %d, want 405", w.Code)
 	}
 }
+
+// cphulkBlocksIP must match a blocked IP exactly, never by prefix. The old
+// bytes.Contains(out, ip) reported a different blocked IP (10.20.30.40) when
+// querying a prefix (10.20.30.4), leaking blocklist membership.
+func TestCphulkBlocksIPExactMatch(t *testing.T) {
+	out := []byte(`{"data":{"records":[{"ip":"10.20.30.40","type":"black"}]}}`)
+	if !cphulkBlocksIP(out, "10.20.30.40") {
+		t.Error("exact blocked IP must match")
+	}
+	if cphulkBlocksIP(out, "10.20.30.4") {
+		t.Error("prefix of a blocked IP must NOT match (blocklist info leak)")
+	}
+	if cphulkBlocksIP(out, "1.2.3.4") {
+		t.Error("unrelated IP must not match")
+	}
+	if cphulkBlocksIP([]byte("not json"), "10.20.30.40") {
+		t.Error("garbage output must not match")
+	}
+}

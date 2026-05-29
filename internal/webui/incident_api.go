@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -336,7 +335,9 @@ func (s *Server) apiIncidentStatus(w http.ResponseWriter, r *http.Request) {
 		Status  string `json:"status"`
 		Details string `json:"details"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// Cap the request body like every other mutating handler; a bare
+	// json.NewDecoder(r.Body) would buffer an unbounded body into memory.
+	if err := decodeJSONBodyLimited(w, r, 16*1024, &body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
