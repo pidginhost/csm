@@ -56,6 +56,16 @@ auto-close, the merge-window stale-binding logic creates a new open
 incident -- nothing about auto-close blocks re-detection. History is
 preserved on the closed record.
 
+**Tuning on high-volume hosts.** Each `by_kind` threshold is the idle
+time before a kind auto-resolves; they are independent and operator-set.
+A host under sustained brute-force keeps a large open set mostly from the
+longer-lived kinds (`web_account_compromise` defaults to 168h). If the
+open-incident count is higher than you want to triage, shorten the
+relevant `by_kind` entry (e.g. `web_account_compromise: 72h`) rather than
+disabling auto-close. The closed records are retained 30 days regardless,
+so shortening the threshold only changes when an idle incident moves from
+open to resolved, not whether its history survives.
+
 Metrics: `csm_incidents_auto_closed_total` and
 `csm_incidents_auto_close_dry_run_total`.
 

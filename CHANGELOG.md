@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Incident auto-close now starts shortly after restart instead of waiting a long warm-up, and drains a large backlog over several bounded sweeps rather than one. A frequently-restarted busy host no longer leaves thousands of long-idle incidents sitting open, and a big sweep no longer stalls incident ingestion or bursts the store.
 - Default configuration templates now show the dedicated Prometheus scrape token so operators do not need to give scrapers the admin token.
+- Documented how to tune per-kind incident auto-close thresholds on high-volume hosts to keep the open-incident set manageable.
 - Phpanel per-finding webhooks now bypass operator alert suppression and rate limits, so panel-side fleet correlation receives the full deduplicated finding stream.
 - Host takeover incidents now have a readable label and kind filter in the grouped incident view.
 - The incident correlator now treats verified-crawler source IPs from published ranges (Googlebot, Bingbot, Applebot) as whitelisted, so legitimate crawler traffic no longer creates correlated incidents. CDN edge ranges are intentionally not whitelisted.
