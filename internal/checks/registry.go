@@ -161,6 +161,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_malicious_procedure", Category: CategoryDatabase},
 	{Name: "admin_cross_account_overlap", Category: CategoryDatabase},
 	{Name: "credential_reuse", Category: CategoryDatabase},
+	{Name: "supply_chain_vuln", Category: CategoryWeb},
 	{Name: "db_magic_token_user", Category: CategoryDatabase},
 	{Name: "db_malicious_trigger", Category: CategoryDatabase},
 	{Name: "db_options_injection", Category: CategoryDatabase},
