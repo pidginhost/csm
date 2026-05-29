@@ -291,7 +291,7 @@ func TestMaybeHoldOutgoingMail_GatedByConfig(t *testing.T) {
 // defaults (auto-response disabled, dry-run on) a spam-outbreak line surfaces
 // the finding for the operator but does NOT hold the customer's mail.
 func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
-	withGlobalStore(t, func(_ *store.DB) {
+	withGlobalStore(t, func(db *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
@@ -312,6 +312,17 @@ func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
 		}
 		if len(findings) == 0 || findings[0].Check != "email_spam_outbreak" {
 			t.Fatalf("outbreak finding must still surface for operator visibility; got %v", findings)
+		}
+		if strings.Contains(findings[0].Message, "auto-suspended") {
+			t.Fatalf("dry-run finding must not claim outgoing mail was held: %q", findings[0].Message)
+		}
+		if got := db.GetMetaString("email_hold_seen:example.com"); got != "" {
+			t.Fatalf("dry-run max-defers path must not record a hold-seen marker, got %q", got)
+		}
+
+		second := parseEximLogLine(line, cfg)
+		if len(second) == 0 || second[0].Check != "email_spam_outbreak" {
+			t.Fatalf("dry-run max-defers finding must keep surfacing without hold dedup, got %v", second)
 		}
 	})
 }
@@ -341,6 +352,9 @@ func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
 		}
 		if len(findings) == 0 || findings[0].Check != "email_spam_outbreak" {
 			t.Fatalf("expected email_spam_outbreak finding, got %v", findings)
+		}
+		if !strings.Contains(findings[0].Message, "auto-suspended") {
+			t.Fatalf("live hold finding should report the hold action: %q", findings[0].Message)
 		}
 	})
 }

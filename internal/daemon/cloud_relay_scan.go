@@ -146,9 +146,9 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 				"  peak 60-min window: %d sends / %d distinct IPs ending at %s\n"+
 				"  peak PTR: %s\n"+
 				"  distinct source IPs observed: %s\n\n"+
-				"Outgoing mail has been auto-suspended. The most recent source IP "+
-				"has been queued for auto-block; older IPs were not blocked because "+
-				"rented-fleet addresses tend to be recycled outside a 2-hour window.",
+				"Outgoing mail hold and source-IP blocking follow the configured "+
+				"auto-response and dry-run settings. Older IPs are left as context "+
+				"because rented-fleet addresses tend to be recycled outside a 2-hour window.",
 			now.Format("2006-01-02 15:04:05"),
 			user,
 			int(lookback.Hours()),

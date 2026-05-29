@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - File-index scanner now judges every new PHP file in WordPress uploads by its content instead of skipping files by directory name or the index.php filename, so a webshell hidden in a "safe" upload folder or named index.php is no longer missed.
 - Realtime upload monitoring now applies content checks before filename or update-directory handling, so malicious PHP in WordPress uploads is still surfaced while inert stubs stay quiet.
-- Automatic outgoing-mail hold on a spam outbreak or cloud-relay credential abuse now respects the auto-response master switch and dry-run safety default, so an operator in monitor mode no longer has a customer's mail held without opting in. The outbreak finding still surfaces.
+- Automatic outgoing-mail hold on a spam outbreak, realtime cloud-relay credential abuse, or startup cloud-relay replay now respects the auto-response master switch and dry-run safety default, so an operator in monitor mode no longer has a customer's mail held without opting in. The finding still surfaces.
 - The distributed HTTP flood threshold is now exposed in web settings, reference configs, and operator docs so it can be tuned consistently.
 - Incident auto-close now starts shortly after restart instead of waiting a long warm-up, and drains a large backlog over several bounded sweeps rather than one. A frequently-restarted busy host no longer leaves thousands of long-idle incidents sitting open, and a big sweep no longer stalls incident ingestion or bursts the store.
 - Default configuration templates now show the dedicated Prometheus scrape token so operators do not need to give scrapers the admin token.

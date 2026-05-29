@@ -708,7 +708,8 @@ func (d *Daemon) Run() error {
 		d.wg.Add(1)
 		obs.Go("cloud-relay-retro-scan", func() {
 			defer d.wg.Done()
-			retro := ScanEximHistoryForCloudRelay(d.currentCfg(), "", time.Now(), 24*time.Hour)
+			cfg := d.currentCfg()
+			retro := ScanEximHistoryForCloudRelay(cfg, "", time.Now(), 24*time.Hour)
 			for _, f := range retro {
 				// Enqueue the finding FIRST; only after it is
 				// accepted by the dispatcher do we trigger the
@@ -724,10 +725,7 @@ func (d *Daemon) Run() error {
 				if sender == "" {
 					continue
 				}
-				if domain := extractDomainFromEmail(sender); domain != "" {
-					autoSuspendOutgoingMail(sender)
-					RecordCompromisedDomain(domain)
-				}
+				handleCloudRelayCredentialAbuse(cfg, sender)
 			}
 		})
 	}

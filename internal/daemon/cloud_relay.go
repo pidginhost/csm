@@ -25,9 +25,9 @@ import (
 // from a rotating fleet trips the detector within minutes of the first
 // distinct IPs showing up.
 //
-// Action: one Critical finding per user per window, auto-suspend outgoing
-// mail for the owning cPanel account, and emit an IP in the finding
-// message so autoblock adds it to the nftables blocked_ips set.
+// Action: one Critical finding per user per window. Customer-impacting
+// response actions follow the configured auto-response and dry-run settings.
+// The finding message embeds a source IP so autoblock can evaluate it.
 
 // cloudProviderPTRSuffixes is an intentionally-conservative list of
 // hostname suffixes that strongly indicate a cloud-VM source. Adding to
@@ -299,8 +299,8 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 			"  recent IPs: %s\n\n"+
 			"Legitimate users do not send mail from rented cloud VMs. "+
 			"This pattern is characteristic of credential abuse by a bulk "+
-			"phishing operator. Outgoing mail has been auto-suspended and "+
-			"the source IPs are being firewalled.",
+			"phishing operator. Outgoing mail hold and source-IP blocking "+
+			"follow the configured auto-response and dry-run settings.",
 		user,
 		int(cloudRelayWindow_.Minutes()),
 		len(w.events),
@@ -320,6 +320,15 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		Domain:   domain,
 		TenantID: tenant,
 	}}
+}
+
+func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string) {
+	if domain := extractDomainFromEmail(authUser); domain != "" {
+		maybeHoldOutgoingMail(cfg, authUser)
+		// This is correlation state, not an auto-response action; keep it
+		// active even when the mail hold is disabled or dry-run gated.
+		RecordCompromisedDomain(domain)
+	}
 }
 
 func truncateIPList(ips []string, n int) []string {

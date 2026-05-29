@@ -439,6 +439,62 @@ func TestCloudRelay_SuspendsAUTHUserNotEnvelopeFrom(t *testing.T) {
 	}
 }
 
+func TestCloudRelayCredentialAbuseAction_DryRunRecordsDomainWithoutHold(t *testing.T) {
+	resetEmailRateState()
+
+	prevHook := autoSuspendOutgoingMail
+	var suspendCalls []string
+	var mu sync.Mutex
+	autoSuspendOutgoingMail = func(target string) bool {
+		mu.Lock()
+		suspendCalls = append(suspendCalls, target)
+		mu.Unlock()
+		return true
+	}
+	t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+	handleCloudRelayCredentialAbuse(cloudRelayTestConfig(), "real@victim.example")
+
+	if len(suspendCalls) != 0 {
+		t.Fatalf("auto-response disabled/dry-run must not hold mail; got calls %v", suspendCalls)
+	}
+
+	emailRateSuppressed.mu.Lock()
+	_, gotVictim := emailRateSuppressed.domains["victim.example"]
+	emailRateSuppressed.mu.Unlock()
+	if !gotVictim {
+		t.Fatal("cloud-relay domain must be tracked as compromised even when mail hold is gated off")
+	}
+}
+
+func TestCloudRelayCredentialAbuseAction_LiveHoldsAndRecordsDomain(t *testing.T) {
+	resetEmailRateState()
+
+	prevHook := autoSuspendOutgoingMail
+	var suspendCalls []string
+	var mu sync.Mutex
+	autoSuspendOutgoingMail = func(target string) bool {
+		mu.Lock()
+		suspendCalls = append(suspendCalls, target)
+		mu.Unlock()
+		return true
+	}
+	t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+	handleCloudRelayCredentialAbuse(eximAutoHoldConfig(), "real@victim.example")
+
+	if len(suspendCalls) != 1 || suspendCalls[0] != "real@victim.example" {
+		t.Fatalf("live auto-response should hold AUTH user once, got %v", suspendCalls)
+	}
+
+	emailRateSuppressed.mu.Lock()
+	_, gotVictim := emailRateSuppressed.domains["victim.example"]
+	emailRateSuppressed.mu.Unlock()
+	if !gotVictim {
+		t.Fatal("cloud-relay domain must be tracked as compromised after live hold")
+	}
+}
+
 func TestCloudRelay_PerUserIsolation(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()

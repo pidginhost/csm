@@ -389,13 +389,18 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		// Record the hold-seen marker only after CSM confirms the hold was
 		// applied or already active. If lookup or whmapi1 fails, later
 		// max-defers lines must still retry and alert.
-		if maybeHoldOutgoingMail(cfg, domain) {
+		held := maybeHoldOutgoingMail(cfg, domain)
+		if held {
 			recordRecentOutgoingMailHold(domain)
+		}
+		message := fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures", domain)
+		if held {
+			message += " - outgoing mail auto-suspended"
 		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_spam_outbreak",
-			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures - outgoing mail auto-suspended", domain),
+			Message:  message,
 			Details:  truncateDaemon(line, 300),
 			Domain:   domain,
 		})
@@ -546,11 +551,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// identity is the credential actually being abused and the one we
 	// must lock out.
 	for _, f := range parseCloudRelayFinding(line, cfg) {
-		authUser := extractAuthUser(line)
-		if domain := extractDomainFromEmail(authUser); domain != "" {
-			maybeHoldOutgoingMail(cfg, authUser)
-			RecordCompromisedDomain(domain)
-		}
+		handleCloudRelayCredentialAbuse(cfg, extractAuthUser(line))
 		findings = append(findings, f)
 	}
 
