@@ -10,6 +10,7 @@ func TestClientIPKey(t *testing.T) {
 		{"bracketed ipv6 with port", "[2001:db8::1]:443", "2001:db8::1"},
 		{"bracketed loopback ipv6", "[::1]:80", "::1"},
 		{"no port falls back", "1.2.3.4", "1.2.3.4"},
+		{"raw ipv6 no port falls back", "2001:db8::1", "2001:db8::1"},
 		{"empty", "", ""},
 	}
 	for _, c := range cases {
@@ -26,5 +27,13 @@ func TestClientIPKeyIPv6NotCollapsed(t *testing.T) {
 	b := clientIPKey("[2001:db8::2]:443")
 	if a == b {
 		t.Errorf("distinct IPv6 clients collapsed to one key: %q == %q", a, b)
+	}
+}
+
+func TestClientIPKeyFallbackNotCollapsed(t *testing.T) {
+	a := clientIPKey("2001:db8::1")
+	b := clientIPKey("2001:db8::2")
+	if a == b {
+		t.Errorf("fallback addresses collapsed to one key: %q == %q", a, b)
 	}
 }

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web UI API rate limiter now derives its per-client key with proper host and port splitting, so IPv6 clients are keyed individually and consistently with the login limiter instead of sharing a bucket.
+- Web UI audit logs now preserve IPv6 source addresses that arrive without a port.
 - PHP content scanner now ties the new remote-code-execution checks to the executable expression being scanned, reducing false positives from nearby literals or unrelated request reads.
 - PHP content scanner now ties decoder obfuscation alerts to encoded callback construction instead of nearby string concatenation or unrelated encoded data, reducing false positives on large plugins.
 - File-index scanner now judges every new PHP file in WordPress uploads by its content instead of skipping files by directory name or the index.php filename, so a webshell hidden in a "safe" upload folder or named index.php is no longer missed.

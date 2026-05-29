@@ -61,18 +61,7 @@ func (s *Server) auditLog(r *http.Request, action, target, details string) {
 func extractClientIP(r *http.Request) string {
 	// Use RemoteAddr directly - XFF is trivially spoofable and this is
 	// a security audit log, so we only trust the TCP connection source.
-	host := r.RemoteAddr
-	// Strip port from "ip:port" or "[ipv6]:port"
-	if last := strings.LastIndex(host, ":"); last >= 0 {
-		if host[0] == '[' {
-			// IPv6: [::1]:port
-			if bracket := strings.Index(host, "]"); bracket >= 0 {
-				return host[1:bracket]
-			}
-		}
-		return host[:last]
-	}
-	return host
+	return clientIPKey(r.RemoteAddr)
 }
 
 // readUIAuditLog returns the last N audit entries.

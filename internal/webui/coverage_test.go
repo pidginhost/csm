@@ -415,6 +415,14 @@ func TestExtractClientIPIPv6(t *testing.T) {
 	}
 }
 
+func TestExtractClientIPRawIPv6NoPort(t *testing.T) {
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "2001:db8::1"
+	if got := extractClientIP(req); got != "2001:db8::1" {
+		t.Errorf("got %q, want raw IPv6 address unchanged", got)
+	}
+}
+
 func TestExtractClientIPNoPortInRemoteAddr(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "203.0.113.5" // unusual, no port
