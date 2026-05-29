@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Auto-response can now drop confirmed-malicious database triggers, events, procedures, and functions when `clean_database` is enabled, recording a restorable backup first. Detection of these objects is unchanged; only the automated cleanup is new.
+
 ### Fixed
 
 - Prometheus firewall gauges now report live firewall rule counts after startup and in-process daemon rebuilds. They previously read a parallel store populated only at migration, so the blocked-IP and total-rule metrics could sit frozen while the real firewall state moved on.

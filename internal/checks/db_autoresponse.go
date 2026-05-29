@@ -39,10 +39,68 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 		case "db_siteurl_hijack":
 			acts := handleSiteurlHijack(cfg, f)
 			actions = append(actions, acts...)
+		case "db_malicious_trigger", "db_malicious_event",
+			"db_malicious_procedure", "db_malicious_function":
+			acts := handleMaliciousDBObject(f)
+			actions = append(actions, acts...)
 		}
 	}
 
 	return actions
+}
+
+// dbDropObjectFn is the seam through which handleMaliciousDBObject performs
+// the backup-then-DROP. Overridden in tests so the routing and action
+// emission can be exercised without a live MySQL server.
+var dbDropObjectFn = DBDropObject
+
+// handleMaliciousDBObject auto-cleans a confirmed malicious stored database
+// object (trigger/event/procedure/function). Detection always fires; the
+// DROP only runs when the operator has enabled auto_response.clean_database
+// (checked by the caller). The object kind comes from the check name
+// (db_malicious_<kind>); account/schema/name come from the finding details.
+// DBDropObject records a SHOW CREATE backup in bbolt before dropping, so the
+// action is reversible.
+func handleMaliciousDBObject(f alert.Finding) []alert.Finding {
+	account, schema, name := parseDBObjectFindingDetails(f.Details)
+	kind := strings.TrimPrefix(f.Check, "db_malicious_")
+	if account == "" || schema == "" || name == "" || !IsDBObjectKind(kind) {
+		return nil
+	}
+
+	res := dbDropObjectFn(account, schema, kind, name, false)
+	if !res.Success {
+		return []alert.Finding{{
+			Severity:  alert.Warning,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-DB-CLEAN failed to drop %s %s.%s: %s", kind, schema, name, res.Message),
+			Timestamp: time.Now(),
+		}}
+	}
+	return []alert.Finding{{
+		Severity:  alert.Warning,
+		Check:     "auto_response",
+		Message:   fmt.Sprintf("AUTO-DB-CLEAN: Dropped malicious %s %s.%s (backup retained for restore)", kind, schema, name),
+		Timestamp: time.Now(),
+	}}
+}
+
+// parseDBObjectFindingDetails extracts the structured fields a
+// db_malicious_<kind> finding carries in its Details block (Account/Schema/
+// Kind/Name lines, as written by dbObjectFinding.toFinding).
+func parseDBObjectFindingDetails(details string) (account, schema, name string) {
+	for _, line := range strings.Split(details, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "Account: "):
+			account = strings.TrimPrefix(line, "Account: ")
+		case strings.HasPrefix(line, "Schema: "):
+			schema = strings.TrimPrefix(line, "Schema: ")
+		case strings.HasPrefix(line, "Name: "):
+			name = strings.TrimPrefix(line, "Name: ")
+		}
+	}
+	return
 }
 
 // handleMaliciousOption checks if a db_options_injection finding contains
