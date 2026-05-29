@@ -16,6 +16,7 @@ var kindRank = map[Kind]int{
 	KindPostExploitProcess:   3,
 	KindHostIntegrityRisk:    4,
 	KindCredentialSpray:      3,
+	KindHostTakeover:         5,
 }
 
 var compoundPostExploitWebChecks = map[string]struct{}{
@@ -32,6 +33,23 @@ var compoundPostExploitNetworkChecks = map[string]struct{}{
 	"c2_connection":          {},
 	"backdoor_port":          {},
 	"backdoor_port_outbound": {},
+}
+
+// compoundHostPrivescUID0Checks and compoundHostPrivescSUIDChecks are the
+// two host-privilege-escalation legs the takeover rule correlates. A
+// future bad_asn_outbound leg joins here once an ASN classifier exists.
+var compoundHostPrivescUID0Checks = map[string]struct{}{
+	"uid0_account": {},
+}
+
+var compoundHostPrivescSUIDChecks = map[string]struct{}{
+	"suid_binary": {},
+}
+
+// allCompoundFlagsSet reports whether every compound signal is already
+// recorded, so the timeline hydrate loop can stop early.
+func allCompoundFlagsSet(f CompoundFlags) bool {
+	return f.Webshell && f.C2 && f.UID0 && f.SUID
 }
 
 // maybeReclassifyKind upgrades inc.Kind in place when the new finding
@@ -60,6 +78,11 @@ func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && inc.CompoundFlags.Webshell && inc.CompoundFlags.C2 {
 		inc.Kind = KindPostExploitProcess
 	}
+	// Host takeover: two distinct privilege-escalation legs (new uid-0
+	// account + planted suid binary) on the same host inside the window.
+	if kindRank[KindHostTakeover] > kindRank[inc.Kind] && inc.CompoundFlags.UID0 && inc.CompoundFlags.SUID {
+		inc.Kind = KindHostTakeover
+	}
 }
 
 // hydrateCompoundFlagsFromTimeline OR-merges timeline-derived signals
@@ -68,12 +91,12 @@ func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 // CompoundFlags yet. Trimmed timelines may miss events, but anything
 // still present remains a valid signal.
 func hydrateCompoundFlagsFromTimeline(flags *CompoundFlags, events []IncidentEvent) {
-	if flags == nil || (flags.Webshell && flags.C2) {
+	if flags == nil || allCompoundFlagsSet(*flags) {
 		return
 	}
 	for _, ev := range events {
 		updateCompoundFlags(flags, ev.Check)
-		if flags.Webshell && flags.C2 {
+		if allCompoundFlagsSet(*flags) {
 			return
 		}
 	}
@@ -92,5 +115,11 @@ func updateCompoundFlags(flags *CompoundFlags, check string) {
 	}
 	if _, ok := compoundPostExploitNetworkChecks[check]; ok {
 		flags.C2 = true
+	}
+	if _, ok := compoundHostPrivescUID0Checks[check]; ok {
+		flags.UID0 = true
+	}
+	if _, ok := compoundHostPrivescSUIDChecks[check]; ok {
+		flags.SUID = true
 	}
 }

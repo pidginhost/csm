@@ -36,6 +36,12 @@ const (
 	// super-incident keyed on the source IP. Prevents the per-mailbox fan-out
 	// that turns one attacker into thousands of mailbox_takeover incidents.
 	KindCredentialSpray Kind = "credential_spray" // #nosec G101 -- taxonomy label, not a secret
+	// KindHostTakeover is the compound escalation when more than one
+	// host-privilege-escalation leg (a new uid-0 account, a planted suid
+	// binary) is seen for the same host inside the merge window. It ranks
+	// above KindHostIntegrityRisk so a confirmed multi-leg takeover stands
+	// out from a single host-integrity finding.
+	KindHostTakeover Kind = "host_takeover"
 )
 
 // Incident is the wire shape every consumer (API, control socket,
@@ -78,6 +84,13 @@ type Incident struct {
 type CompoundFlags struct {
 	Webshell bool `json:"webshell,omitempty"`
 	C2       bool `json:"c2,omitempty"`
+	// UID0 and SUID record the two host-privilege-escalation legs (a new
+	// uid-0 account, a planted suid binary). When both are set on one
+	// incident the reclassifier escalates to KindHostTakeover. A future
+	// bad_asn_outbound leg would add a third bit here once an ASN
+	// classifier exists.
+	UID0 bool `json:"uid0,omitempty"`
+	SUID bool `json:"suid,omitempty"`
 }
 
 // MarshalJSON renders Severity as its uppercase string form

@@ -1005,6 +1005,55 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 	}
 }
 
+// TestCorrelatorHostTakeoverCompound pins the uid0 + suid host-takeover
+// compound: two distinct privilege-escalation legs on the same host
+// inside the merge window escalate the incident from host_integrity_risk
+// to host_takeover.
+func TestCorrelatorHostTakeoverCompound(t *testing.T) {
+	c := newTestCorrelator()
+	now := time.Unix(1_700_000_000, 0)
+
+	id1, created1, err := c.OnFinding(alert.Finding{
+		Check: "uid0_account", Severity: alert.High,
+		Message: "new uid-0 account bob", Timestamp: now,
+	})
+	if err != nil || !created1 {
+		t.Fatalf("uid0 finding must open an incident: created=%v err=%v", created1, err)
+	}
+	if inc, _ := c.Get(id1); inc.Kind != KindHostIntegrityRisk {
+		t.Fatalf("after uid0 only: Kind=%s, want host_integrity_risk", inc.Kind)
+	}
+
+	c.now = func() time.Time { return now.Add(time.Minute) }
+	id2, created2, _ := c.OnFinding(alert.Finding{
+		Check: "suid_binary", Severity: alert.High,
+		Message: "planted suid /home/bob/x", Timestamp: now.Add(time.Minute),
+	})
+	if created2 || id1 != id2 {
+		t.Fatalf("suid must merge into the host incident: created=%v id1=%s id2=%s", created2, id1, id2)
+	}
+	inc, _ := c.Get(id1)
+	if inc.Kind != KindHostTakeover {
+		t.Fatalf("after uid0+suid: Kind=%s, want host_takeover", inc.Kind)
+	}
+	if !inc.CompoundFlags.UID0 || !inc.CompoundFlags.SUID {
+		t.Errorf("compound flags = %+v, want UID0 and SUID set", inc.CompoundFlags)
+	}
+}
+
+// TestCorrelatorSingleHostLegStaysIntegrityRisk confirms one leg alone
+// does not escalate to host_takeover.
+func TestCorrelatorSingleHostLegStaysIntegrityRisk(t *testing.T) {
+	c := newTestCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{
+		Check: "suid_binary", Severity: alert.High,
+		Message: "planted suid", Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if inc, _ := c.Get(id); inc.Kind != KindHostIntegrityRisk {
+		t.Fatalf("single leg Kind=%s, want host_integrity_risk", inc.Kind)
+	}
+}
+
 func TestCorrelatorSetStatusUpdatesIncidentAndAppendsAction(t *testing.T) {
 	c := newTestCorrelator()
 	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})

@@ -42,8 +42,11 @@ incidents:
 ```
 
 Kinds absent from `by_kind` are never auto-closed. The default map
-omits `host_integrity_risk` and `post_exploit_process` because those
-host-level incidents should stay open until an operator reviews them.
+omits `host_integrity_risk`, `host_takeover`, and `post_exploit_process`
+because those host-level incidents should stay open until an operator
+reviews them. `host_takeover` is the compound escalation raised when two
+host-privilege-escalation legs (a new uid-0 account and a planted suid
+binary) are correlated for the same host inside the merge window.
 
 If a fresh finding for the same correlation key arrives after the
 auto-close, the merge-window stale-binding logic creates a new open
