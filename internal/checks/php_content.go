@@ -21,6 +21,21 @@ import (
 // evaluated.
 var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*@?\s*\\?\s*(\w+)\s*\(`)
 
+// reEvalVarCallee matches eval/assert wrapping a variable function call,
+// e.g. `eval($f(...))`. The literal-callee form above cannot capture a
+// `$var` callee, yet eval'ing the result of a dynamic function call is a
+// near-certain dropper signal in user web directories.
+var reEvalVarCallee = regexp.MustCompile(`(?is)\b(?:eval|assert)\s*\(\s*@?\s*\$\w+\s*\(`)
+
+// evalExecWrapInner lists code-construction primitives that, when wrapped
+// directly by eval/assert, indicate dynamic code execution rather than the
+// decoder/decompressor chain nestedEvalDecodeRe already covers.
+var evalExecWrapInner = map[string]struct{}{
+	"create_function":      {},
+	"call_user_func":       {},
+	"call_user_func_array": {},
+}
+
 const phpContentReadSize = 32768 // Read first 32KB for analysis
 
 // CheckPHPContent scans new/suspicious PHP files for obfuscation patterns,
@@ -264,6 +279,27 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 	if hasNestedEvalDecode {
 		indicators = append(indicators, "eval() directly wrapping encoding/compression function")
+	}
+
+	// eval/assert wrapping dynamic code construction the decoder loop above
+	// ignores: a variable callee (eval($f(...))) or a code-building
+	// primitive (eval(create_function(...)), eval(call_user_func(...))).
+	// These never appear in legitimate user-directory PHP; a single hit is
+	// surfaced as a High signal (the >=2 gate still governs quarantine).
+	hasEvalExecWrap := reEvalVarCallee.MatchString(codeLower)
+	if !hasEvalExecWrap {
+		for _, m := range nestedEvalDecodeRe.FindAllStringSubmatch(codeLower, -1) {
+			if len(m) < 3 {
+				continue
+			}
+			if _, ok := evalExecWrapInner[m[2]]; ok {
+				hasEvalExecWrap = true
+				break
+			}
+		}
+	}
+	if hasEvalExecWrap {
+		indicators = append(indicators, "eval/assert wrapping a dynamic code-execution primitive")
 	}
 
 	// --- Critical: call_user_func with string-built function names ---

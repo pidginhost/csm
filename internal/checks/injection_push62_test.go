@@ -105,6 +105,64 @@ func TestAnalyzePHPContentWithObfuscation(t *testing.T) {
 	_ = result
 }
 
+// --- analyzePHPContent: eval/assert wrapping dynamic code execution --
+
+func analyzePHPString(t *testing.T, content string) phpAnalysisResult {
+	t.Helper()
+	dir := t.TempDir()
+	path := dir + "/sample.php"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	return analyzePHPContent(path)
+}
+
+func TestAnalyzePHPContentEvalVariableCallee(t *testing.T) {
+	// eval($f(...)) -- variable callee the literal-decoder regex misses.
+	res := analyzePHPString(t, "<?php $f='base'.'64_decode'; eval($f($_GET['c'])); ?>")
+	if res.severity < 0 {
+		t.Fatal("eval($f(...)) should produce at least one indicator")
+	}
+	if !strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("missing eval-var-callee indicator; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentEvalCreateFunction(t *testing.T) {
+	res := analyzePHPString(t, "<?php eval(create_function('', $payload)); ?>")
+	if res.severity < 0 || !strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("eval(create_function(...)) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentEvalCommentWedgedVarCallee(t *testing.T) {
+	// Comment wedged between eval and ( must not defeat detection.
+	res := analyzePHPString(t, "<?php eval /*x*/ ( $f($_POST['z']) ); ?>")
+	if res.severity < 0 || !strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("comment-wedged eval($f(...)) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPlainEvalNotFlagged(t *testing.T) {
+	// eval($code) with no inner call is common-ish templating; the new
+	// indicator must not fire on it (FP guard).
+	res := analyzePHPString(t, "<?php $code = trim($tpl); eval($code); ?>")
+	if strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("plain eval($var) wrongly flagged as dynamic exec; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertConditionNotFlagged(t *testing.T) {
+	// assert($x > 0) is a normal condition, not a callable invocation.
+	res := analyzePHPString(t, "<?php function f($x){ assert($x > 0); return $x; } ?>")
+	if strings.Contains(res.details, "dynamic code-execution primitive") {
+		t.Errorf("assert(condition) wrongly flagged; details=%q", res.details)
+	}
+}
+
 // --- checkDangerousPorts with listening port on dangerous port --------
 
 func TestCheckDangerousPortsWithListening(t *testing.T) {
