@@ -4,9 +4,9 @@
 # TestOpenAPISpecCoversAllRoutes drift guard fails if a registered
 # /api/v1/* route is missing here, so this file stays in sync.
 #
-# Scope: every path carries its auth scope (read vs admin) and method.
+# Scope: every operation carries its method and x-csm-scope (read vs admin).
 # Method is derived from the route wrapper: CSRF-protected routes are
-# state-changing POSTs, the rest are GETs. Response bodies are typed as
+# state-changing methods, the rest are GETs. Response bodies are typed as
 # generic JSON objects in this v1; per-endpoint response schemas are a
 # documented follow-up (see ROADMAP item 10, Y16).
 openapi: 3.1.0
@@ -14,9 +14,10 @@ info:
   title: CSM HTTP API
   version: "1.0"
   description: >-
-    Continuous Security Monitor daemon API. All endpoints require a bearer
-    token (webui.tokens). Read-scope tokens authorize the GET endpoints
-    marked scope=read; management routes require an admin-scope token.
+    Continuous Security Monitor daemon API. API clients authenticate with a
+    bearer token from webui.tokens. Read-scope tokens authorize the GET
+    endpoints marked x-csm-scope=read; management routes require an
+    admin-scope token.
 servers:
   - url: https://localhost:8443
     description: CSM daemon HTTPS listener (operator-configured host/port)
@@ -30,9 +31,9 @@ components:
         authorizes all endpoints.
   responses:
     Unauthorized:
-      description: Missing or invalid bearer token.
+      description: Missing, invalid, or insufficient-scope token.
     Forbidden:
-      description: Token scope insufficient for this endpoint.
+      description: CSRF validation failed or cross-origin API request blocked.
   schemas:
     JSONObject:
       type: object
@@ -45,6 +46,7 @@ paths:
     get:
       operationId: get_account
       summary: "get /api/v1/account (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -59,6 +61,7 @@ paths:
     get:
       operationId: get_accounts
       summary: "get /api/v1/accounts (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -73,6 +76,7 @@ paths:
     get:
       operationId: get_audit
       summary: "get /api/v1/audit (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -87,6 +91,7 @@ paths:
     post:
       operationId: post_block_ip
       summary: "post /api/v1/block-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -106,6 +111,7 @@ paths:
     get:
       operationId: get_blocked_ips
       summary: "get /api/v1/blocked-ips (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -120,6 +126,7 @@ paths:
     get:
       operationId: get_capabilities
       summary: "get /api/v1/capabilities (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -134,6 +141,7 @@ paths:
     get:
       operationId: get_components
       summary: "get /api/v1/components (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -148,6 +156,7 @@ paths:
     get:
       operationId: get_db_object_backup_preview
       summary: "get /api/v1/db-object-backup-preview (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -162,6 +171,7 @@ paths:
     post:
       operationId: post_db_object_backup_restore
       summary: "post /api/v1/db-object-backup-restore (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -181,6 +191,7 @@ paths:
     get:
       operationId: get_db_object_backups
       summary: "get /api/v1/db-object-backups (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -195,6 +206,7 @@ paths:
     post:
       operationId: post_dismiss
       summary: "post /api/v1/dismiss (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -214,6 +226,7 @@ paths:
     get:
       operationId: get_email_av_status
       summary: "get /api/v1/email/av/status (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -228,6 +241,7 @@ paths:
     get:
       operationId: get_email_groups
       summary: "get /api/v1/email/groups (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -242,6 +256,7 @@ paths:
     get:
       operationId: get_email_quarantine
       summary: "get /api/v1/email/quarantine (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -256,6 +271,7 @@ paths:
     post:
       operationId: post_email_quarantine_
       summary: "post /api/v1/email/quarantine/ (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -275,6 +291,7 @@ paths:
     get:
       operationId: get_email_stats
       summary: "get /api/v1/email/stats (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -289,6 +306,7 @@ paths:
     get:
       operationId: get_events
       summary: "get /api/v1/events (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -303,6 +321,7 @@ paths:
     get:
       operationId: get_export
       summary: "get /api/v1/export (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -317,6 +336,7 @@ paths:
     get:
       operationId: get_finding_detail
       summary: "get /api/v1/finding-detail (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -331,6 +351,7 @@ paths:
     get:
       operationId: get_findings
       summary: "get /api/v1/findings (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -345,6 +366,7 @@ paths:
     get:
       operationId: get_findings_enriched
       summary: "get /api/v1/findings/enriched (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -359,6 +381,7 @@ paths:
     post:
       operationId: post_firewall_allow_ip
       summary: "post /api/v1/firewall/allow-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -378,6 +401,7 @@ paths:
     get:
       operationId: get_firewall_allowed
       summary: "get /api/v1/firewall/allowed (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -392,6 +416,7 @@ paths:
     get:
       operationId: get_firewall_audit
       summary: "get /api/v1/firewall/audit (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -406,6 +431,7 @@ paths:
     get:
       operationId: get_firewall_check
       summary: "get /api/v1/firewall/check (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -420,6 +446,7 @@ paths:
     post:
       operationId: post_firewall_cphulk_clear
       summary: "post /api/v1/firewall/cphulk-clear (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -439,6 +466,7 @@ paths:
     post:
       operationId: post_firewall_deny_subnet
       summary: "post /api/v1/firewall/deny-subnet (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -458,6 +486,7 @@ paths:
     post:
       operationId: post_firewall_flush
       summary: "post /api/v1/firewall/flush (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -477,6 +506,7 @@ paths:
     post:
       operationId: post_firewall_remove_allow
       summary: "post /api/v1/firewall/remove-allow (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -496,6 +526,7 @@ paths:
     post:
       operationId: post_firewall_remove_subnet
       summary: "post /api/v1/firewall/remove-subnet (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -515,6 +546,7 @@ paths:
     get:
       operationId: get_firewall_status
       summary: "get /api/v1/firewall/status (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -529,6 +561,7 @@ paths:
     get:
       operationId: get_firewall_subnets
       summary: "get /api/v1/firewall/subnets (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -543,6 +576,7 @@ paths:
     post:
       operationId: post_firewall_unban
       summary: "post /api/v1/firewall/unban (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -562,6 +596,7 @@ paths:
     post:
       operationId: post_fix
       summary: "post /api/v1/fix (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -581,6 +616,7 @@ paths:
     post:
       operationId: post_fix_bulk
       summary: "post /api/v1/fix-bulk (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -600,6 +636,7 @@ paths:
     get:
       operationId: get_geoip
       summary: "get /api/v1/geoip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -614,6 +651,7 @@ paths:
     post:
       operationId: post_geoip_batch
       summary: "post /api/v1/geoip/batch (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -633,6 +671,7 @@ paths:
     get:
       operationId: get_hardening
       summary: "get /api/v1/hardening (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -647,6 +686,7 @@ paths:
     post:
       operationId: post_hardening_run
       summary: "post /api/v1/hardening/run (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -666,6 +706,7 @@ paths:
     get:
       operationId: get_health
       summary: "get /api/v1/health (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -680,6 +721,7 @@ paths:
     get:
       operationId: get_history
       summary: "get /api/v1/history (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -694,6 +736,7 @@ paths:
     get:
       operationId: get_history_csv
       summary: "get /api/v1/history/csv (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -708,6 +751,7 @@ paths:
     post:
       operationId: post_import
       summary: "post /api/v1/import (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -727,6 +771,7 @@ paths:
     get:
       operationId: get_incident
       summary: "get /api/v1/incident (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -741,6 +786,7 @@ paths:
     get:
       operationId: get_incidents
       summary: "get /api/v1/incidents (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -755,6 +801,7 @@ paths:
     post:
       operationId: post_incidents_
       summary: "post /api/v1/incidents/ (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -774,6 +821,7 @@ paths:
     get:
       operationId: get_incidents_groups
       summary: "get /api/v1/incidents/groups (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -788,6 +836,7 @@ paths:
     get:
       operationId: get_modsec_blocks
       summary: "get /api/v1/modsec/blocks (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -802,6 +851,7 @@ paths:
     get:
       operationId: get_modsec_events
       summary: "get /api/v1/modsec/events (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -816,6 +866,7 @@ paths:
     get:
       operationId: get_modsec_rules
       summary: "get /api/v1/modsec/rules (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -830,6 +881,7 @@ paths:
     post:
       operationId: post_modsec_rules_apply
       summary: "post /api/v1/modsec/rules/apply (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -849,6 +901,7 @@ paths:
     post:
       operationId: post_modsec_rules_escalation
       summary: "post /api/v1/modsec/rules/escalation (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -868,6 +921,7 @@ paths:
     get:
       operationId: get_modsec_stats
       summary: "get /api/v1/modsec/stats (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -882,6 +936,7 @@ paths:
     post:
       operationId: post_perf_fix_display_errors
       summary: "post /api/v1/perf/fix-display-errors (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -901,6 +956,7 @@ paths:
     post:
       operationId: post_perf_fix_error_log
       summary: "post /api/v1/perf/fix-error-log (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -920,6 +976,7 @@ paths:
     get:
       operationId: get_performance
       summary: "get /api/v1/performance (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -931,9 +988,10 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/prefs/user":
-    post:
-      operationId: post_prefs_user
-      summary: "post /api/v1/prefs/user (scope: admin)"
+    put:
+      operationId: put_prefs_user
+      summary: "put /api/v1/prefs/user (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -950,9 +1008,10 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/prefs/views":
-    post:
-      operationId: post_prefs_views
-      summary: "post /api/v1/prefs/views (scope: admin)"
+    put:
+      operationId: put_prefs_views
+      summary: "put /api/v1/prefs/views (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -972,6 +1031,7 @@ paths:
     get:
       operationId: get_quarantine
       summary: "get /api/v1/quarantine (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -986,6 +1046,7 @@ paths:
     get:
       operationId: get_quarantine_preview
       summary: "get /api/v1/quarantine-preview (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1000,6 +1061,7 @@ paths:
     post:
       operationId: post_quarantine_restore
       summary: "post /api/v1/quarantine-restore (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1019,6 +1081,7 @@ paths:
     post:
       operationId: post_quarantine_bulk_delete
       summary: "post /api/v1/quarantine/bulk-delete (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1038,6 +1101,7 @@ paths:
     get:
       operationId: get_rules_list
       summary: "get /api/v1/rules/list (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1052,6 +1116,7 @@ paths:
     post:
       operationId: post_rules_modsec_escalation
       summary: "post /api/v1/rules/modsec-escalation (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1071,6 +1136,7 @@ paths:
     post:
       operationId: post_rules_reload
       summary: "post /api/v1/rules/reload (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1090,6 +1156,7 @@ paths:
     get:
       operationId: get_rules_status
       summary: "get /api/v1/rules/status (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1104,6 +1171,7 @@ paths:
     post:
       operationId: post_scan_account
       summary: "post /api/v1/scan-account (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1123,6 +1191,7 @@ paths:
     get:
       operationId: get_settings
       summary: "get /api/v1/settings (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1137,6 +1206,7 @@ paths:
     get:
       operationId: get_settings_
       summary: "get /api/v1/settings/ (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1151,6 +1221,7 @@ paths:
     post:
       operationId: post_settings_firewall_confirm
       summary: "post /api/v1/settings/firewall/confirm (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1170,6 +1241,7 @@ paths:
     post:
       operationId: post_settings_firewall_revert
       summary: "post /api/v1/settings/firewall/revert (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1189,6 +1261,7 @@ paths:
     get:
       operationId: get_settings_firewall_rollback
       summary: "get /api/v1/settings/firewall/rollback (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1203,6 +1276,7 @@ paths:
     post:
       operationId: post_settings_firewall_tentative_apply
       summary: "post /api/v1/settings/firewall/tentative-apply (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1222,6 +1296,7 @@ paths:
     post:
       operationId: post_settings_restart
       summary: "post /api/v1/settings/restart (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1241,6 +1316,7 @@ paths:
     get:
       operationId: get_stats
       summary: "get /api/v1/stats (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -1255,6 +1331,7 @@ paths:
     get:
       operationId: get_stats_timeline
       summary: "get /api/v1/stats/timeline (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -1269,6 +1346,7 @@ paths:
     get:
       operationId: get_stats_trend
       summary: "get /api/v1/stats/trend (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -1283,6 +1361,7 @@ paths:
     get:
       operationId: get_status
       summary: "get /api/v1/status (scope: read)"
+      x-csm-scope: read
       security:
         - bearerAuth: []
       responses:
@@ -1297,6 +1376,7 @@ paths:
     post:
       operationId: post_suppressions
       summary: "post /api/v1/suppressions (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1316,6 +1396,7 @@ paths:
     post:
       operationId: post_test_alert
       summary: "post /api/v1/test-alert (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1335,6 +1416,7 @@ paths:
     post:
       operationId: post_threat_block_ip
       summary: "post /api/v1/threat/block-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1354,6 +1436,7 @@ paths:
     post:
       operationId: post_threat_bulk_action
       summary: "post /api/v1/threat/bulk-action (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1373,6 +1456,7 @@ paths:
     post:
       operationId: post_threat_clear_ip
       summary: "post /api/v1/threat/clear-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1392,6 +1476,7 @@ paths:
     get:
       operationId: get_threat_db_stats
       summary: "get /api/v1/threat/db-stats (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1406,6 +1491,7 @@ paths:
     get:
       operationId: get_threat_events
       summary: "get /api/v1/threat/events (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1420,6 +1506,7 @@ paths:
     get:
       operationId: get_threat_ip
       summary: "get /api/v1/threat/ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1434,6 +1521,7 @@ paths:
     get:
       operationId: get_threat_stats
       summary: "get /api/v1/threat/stats (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1448,6 +1536,7 @@ paths:
     post:
       operationId: post_threat_temp_whitelist_ip
       summary: "post /api/v1/threat/temp-whitelist-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1467,6 +1556,7 @@ paths:
     get:
       operationId: get_threat_top_attackers
       summary: "get /api/v1/threat/top-attackers (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1481,6 +1571,7 @@ paths:
     post:
       operationId: post_threat_unwhitelist_ip
       summary: "post /api/v1/threat/unwhitelist-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1500,6 +1591,7 @@ paths:
     get:
       operationId: get_threat_whitelist
       summary: "get /api/v1/threat/whitelist (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1514,6 +1606,7 @@ paths:
     post:
       operationId: post_threat_whitelist_ip
       summary: "post /api/v1/threat/whitelist-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1533,6 +1626,7 @@ paths:
     post:
       operationId: post_unblock_bulk
       summary: "post /api/v1/unblock-bulk (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1552,6 +1646,7 @@ paths:
     post:
       operationId: post_unblock_ip
       summary: "post /api/v1/unblock-ip (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
@@ -1571,6 +1666,7 @@ paths:
     get:
       operationId: get_undo_pending
       summary: "get /api/v1/undo/pending (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       responses:
@@ -1585,6 +1681,7 @@ paths:
     post:
       operationId: post_undo_run
       summary: "post /api/v1/undo/run (scope: admin)"
+      x-csm-scope: admin
       security:
         - bearerAuth: []
       requestBody:
