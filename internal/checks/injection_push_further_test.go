@@ -551,6 +551,9 @@ func TestAnalyzePHPContent_CallUserFuncWithObfuscation(t *testing.T) {
 	if result.check == "" {
 		t.Errorf("expected detection, got %+v", result)
 	}
+	if !strings.Contains(result.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("expected hex-built call_user_func decoder indicator, got details=%q", result.details)
+	}
 }
 
 // analyzePHPContent: github raw co-present with dangerous call.

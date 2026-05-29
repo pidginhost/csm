@@ -88,6 +88,7 @@ var includeKeywords = []string{"include_once", "require_once", "include", "requi
 var (
 	pregReplaceCallName        = map[string]struct{}{"preg_replace": {}}
 	codeEvalPrimitiveCallNames = map[string]struct{}{"assert": {}, "create_function": {}}
+	callUserFuncCallNames      = map[string]struct{}{"call_user_func": {}, "call_user_func_array": {}}
 )
 
 const phpContentReadSize = 32768 // Read first 32KB for analysis
@@ -889,13 +890,9 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// --- High: Variable function calls with obfuscated names ---
 	// call_user_func + decoder alone is too broad - Elementor, WooCommerce, and
 	// dozens of plugins use call_user_func_array with base64_decode legitimately.
-	// Only flag when combined with actual obfuscation (hex strings, heavy concat).
+	// Only flag when combined with hex-built callable target obfuscation.
 	if strings.Contains(contentLower, "call_user_func") && hasDecoder {
-		// Hex-encoded name building is the obfuscation signal. A bare concat
-		// count is not: large minified plugins concatenate string literals
-		// dozens of times in unrelated code, so concat alone produced standing
-		// false positives next to an unrelated call_user_func and decoder.
-		if hexStringCount > 5 {
+		if hasCallUserFuncHexNameBuild(content) {
 			indicators = append(indicators, "variable function call with decoder and obfuscation")
 		}
 	}
@@ -1087,6 +1084,176 @@ func countOccurrences(s, substr string) int {
 		}
 		count++
 		offset += idx + len(substr)
+	}
+	return count
+}
+
+type hexNameAssignment struct {
+	obfuscated bool
+	hexEscapes int
+	concatOps  int
+	pos        int
+}
+
+func hasCallUserFuncHexNameBuild(content string) bool {
+	code := stripPHPCommentsFromCode(content)
+	assignments := findHexNameAssignments(code)
+	searchFrom := 0
+	for {
+		callStart, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, callUserFuncCallNames)
+		if !ok {
+			return false
+		}
+		arg, argOK := firstPHPCallArgument(code, openParen+1)
+		if argOK && phpExprHasHexNameBuild(arg) {
+			return true
+		}
+		if argOK {
+			if variable, varOK := singlePHPVariableExpr(arg); varOK && hexNameBuildAt(assignments[variable], callStart) {
+				return true
+			}
+		}
+		searchFrom = nextSearchOffset(closeParen, len(code))
+	}
+}
+
+func findHexNameAssignments(code string) map[string][]hexNameAssignment {
+	assignments := map[string][]hexNameAssignment{}
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if code[i] != '$' {
+			continue
+		}
+		variable, next, ok := readPHPVariableName(code, i)
+		if !ok {
+			continue
+		}
+		j := skipPHPWhitespace(code, next)
+		opLen, directAssign, appendAssign, ok := phpAssignmentOperator(code, j)
+		if !ok {
+			i = next - 1
+			continue
+		}
+
+		exprStart := skipPHPWhitespace(code, j+opLen)
+		exprEnd := phpExpressionEnd(code, exprStart)
+		hexEscapes := 0
+		concatOps := 0
+		if directAssign || appendAssign {
+			hexEscapes = countPHPStringHexEscapes(code[exprStart:exprEnd])
+			concatOps = countPHPConcatOperators(code[exprStart:exprEnd])
+		}
+		if appendAssign {
+			prev := lastHexNameAssignment(assignments[variable])
+			hexEscapes += prev.hexEscapes
+			concatOps += prev.concatOps + 1
+		}
+		assignments[variable] = append(assignments[variable], hexNameAssignment{
+			obfuscated: phpExprCountsHaveHexNameBuild(hexEscapes, concatOps),
+			hexEscapes: hexEscapes,
+			concatOps:  concatOps,
+			pos:        exprEnd,
+		})
+		i = next - 1
+	}
+	return assignments
+}
+
+func phpAssignmentOperator(code string, pos int) (int, bool, bool, bool) {
+	if pos >= len(code) {
+		return 0, false, false, false
+	}
+	if code[pos] == '=' && (pos+1 >= len(code) || (code[pos+1] != '=' && code[pos+1] != '>')) {
+		return 1, true, false, true
+	}
+	if pos+1 < len(code) && code[pos] == '.' && code[pos+1] == '=' {
+		return 2, false, true, true
+	}
+	if pos+1 < len(code) && strings.ContainsRune("+-*/%&|^", rune(code[pos])) && code[pos+1] == '=' {
+		return 2, false, false, true
+	}
+	if pos+2 < len(code) {
+		op := code[pos : pos+3]
+		if op == "??=" || op == "<<=" || op == ">>=" {
+			return 3, false, false, true
+		}
+	}
+	return 0, false, false, false
+}
+
+func lastHexNameAssignment(assignments []hexNameAssignment) hexNameAssignment {
+	if len(assignments) == 0 {
+		return hexNameAssignment{}
+	}
+	return assignments[len(assignments)-1]
+}
+
+func hexNameBuildAt(assignments []hexNameAssignment, callPos int) bool {
+	var last hexNameAssignment
+	found := false
+	for _, assignment := range assignments {
+		if assignment.pos > callPos {
+			break
+		}
+		last = assignment
+		found = true
+	}
+	return found && last.obfuscated
+}
+
+func singlePHPVariableExpr(expr string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" || expr[0] != '$' {
+		return "", false
+	}
+	variable, next, ok := readPHPVariableName(expr, 0)
+	if !ok || skipPHPWhitespace(expr, next) != len(expr) {
+		return "", false
+	}
+	return variable, true
+}
+
+func phpExprHasHexNameBuild(expr string) bool {
+	return phpExprCountsHaveHexNameBuild(countPHPStringHexEscapes(expr), countPHPConcatOperators(expr))
+}
+
+func phpExprCountsHaveHexNameBuild(hexEscapes, concatOps int) bool {
+	return hexEscapes >= 3 && concatOps >= 2
+}
+
+func countPHPStringHexEscapes(expr string) int {
+	count := 0
+	for i := 0; i < len(expr); i++ {
+		if expr[i] != '"' {
+			if isPHPQuote(expr[i]) {
+				i = skipPHPString(expr, i)
+			}
+			continue
+		}
+		end := skipPHPString(expr, i)
+		if end > i {
+			literal := strings.ToLower(expr[i+1 : end])
+			count += countOccurrences(literal, `\x`)
+			count += countOccurrences(literal, `\u{`)
+		}
+		i = end
+	}
+	return count
+}
+
+func countPHPConcatOperators(expr string) int {
+	count := 0
+	for i := 0; i < len(expr); i++ {
+		if isPHPQuote(expr[i]) {
+			i = skipPHPString(expr, i)
+			continue
+		}
+		if expr[i] == '.' {
+			count++
+		}
 	}
 	return count
 }

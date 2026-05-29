@@ -155,6 +155,59 @@ func TestAnalyzePHPContentCallUserFuncConcatOnlyNotFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentCallUserFuncUnrelatedHexNotFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"call_user_func_array($cb, $args);\n" +
+		"$x = base64_decode($data);\n" +
+		"$zip = [\"\\x50\", \"\\x4b\", \"\\x03\", \"\\x04\", \"\\x14\", \"\\x00\"];\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("unrelated hex literals wrongly flagged as call_user_func obfuscation; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallUserFuncReassignedHexNameNotFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"$name = \"\\x63\" . \"\\x75\" . \"\\x72\";\n" +
+		"$name = $cb;\n" +
+		"$x = base64_decode($data);\n" +
+		"call_user_func($name, $x);\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("reassigned hex-built callback name wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallUserFuncCompoundReassignedHexNameNotFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"$name = \"\\x63\" . \"\\x75\" . \"\\x72\";\n" +
+		"$name += 1;\n" +
+		"$x = base64_decode($data);\n" +
+		"call_user_func($name, $x);\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("compound-reassigned hex-built callback name wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCallUserFuncAppendHexNameFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"$name = \"\";\n" +
+		"$name .= \"\\x63\";\n" +
+		"$name .= \"\\x75\";\n" +
+		"$name .= \"\\x72\";\n" +
+		"$x = base64_decode($data);\n" +
+		"call_user_func($name, $x);\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, "variable function call with decoder and obfuscation") {
+		t.Errorf("appended hex-built callback name not flagged; details=%q", res.details)
+	}
+}
+
 // --- assert / create_function code-eval primitives with request input ---
 
 func TestAnalyzePHPContentAssertRequestFlagged(t *testing.T) {
