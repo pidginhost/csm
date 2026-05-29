@@ -975,6 +975,9 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 		}
 		delete(c.incidents, id)
 		c.unbindLocked(id)
+		if c.spray != nil {
+			c.spray.UnbindIncident(id)
+		}
 		pruned++
 	}
 	return pruned

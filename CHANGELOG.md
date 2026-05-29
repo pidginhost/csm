@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Prometheus firewall gauges now report live firewall rule counts after startup and in-process daemon rebuilds. They previously read a parallel store populated only at migration, so the blocked-IP and total-rule metrics could sit frozen while the real firewall state moved on.
+- Pruning an old closed incident now also releases any leftover credential-spray tracking bound to it, so an orphaned binding cannot keep attacker state alive after the incident is gone.
 
 ## [3.9.2] - 2026-05-29
 

@@ -842,6 +842,42 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 	}
 }
 
+// TestCorrelatorPruneClosedUnbindsSpray pins that pruning a closed
+// incident also drops any spray-detector binding pointing at it. The
+// binding is normally released at close time, but a restore path or a
+// future direct prune could leave one attached; without the unbind the
+// orphaned perIP entry is never reaped (PruneStale skips bound entries)
+// and a later finding from that IP would route into a deleted incident.
+func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	old := now.Add(-(30*24*time.Hour + time.Second))
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 10, MaxTrackedIPs: 100},
+	})
+	c.now = func() time.Time { return now }
+	if c.spray == nil {
+		t.Fatal("setup: spray detector not constructed")
+	}
+	c.Restore([]Incident{
+		{ID: "inc_spray_closed", Status: StatusResolved, Severity: alert.High, CreatedAt: old, UpdatedAt: old},
+	})
+
+	ip := "203.0.113.7"
+	c.mu.Lock()
+	c.spray.Rehydrate(ip, "inc_spray_closed", old)
+	c.mu.Unlock()
+	if got := c.spray.IncidentForIP(ip); got != "inc_spray_closed" {
+		t.Fatalf("setup: spray binding = %q, want inc_spray_closed", got)
+	}
+
+	if pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour); pruned != 1 {
+		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
+	}
+	if got := c.spray.IncidentForIP(ip); got != "" {
+		t.Errorf("spray binding survived prune of closed incident: %q", got)
+	}
+}
+
 func TestCorrelatorSetStatusUpdatesIncidentAndAppendsAction(t *testing.T) {
 	c := newTestCorrelator()
 	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
