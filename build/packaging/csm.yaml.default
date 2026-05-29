@@ -26,7 +26,7 @@ webui:
   auth_token: ""  # auto-generated on install
   # metrics_token gates GET /metrics (Prometheus). Set a long random
   # string here so a scraper does NOT need the admin auth_token. Leave
-  # empty to fall back to admin-token/UI-session auth. See docs/metrics.
+  # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
   metrics_token: ""
   tls_cert: ""    # auto-generated self-signed if empty
   tls_key: ""

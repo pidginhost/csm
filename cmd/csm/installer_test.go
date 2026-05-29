@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {
@@ -87,5 +90,45 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 		if !slices.Contains(got, want) {
 			t.Errorf("installerRuntimeDirs missing %s", want)
 		}
+	}
+}
+
+func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if err := deployDefaultConfig(path); err != nil {
+		t.Fatalf("deployDefaultConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	var raw map[string]any
+	if unmarshalErr := yaml.Unmarshal(data, &raw); unmarshalErr != nil {
+		t.Fatalf("unmarshal generated config: %v", unmarshalErr)
+	}
+	webui, ok := raw["webui"].(map[string]any)
+	if !ok {
+		t.Fatalf("generated config webui section has type %T, want map", raw["webui"])
+	}
+	if got, ok := webui["auth_token"].(string); !ok || got != "" {
+		t.Fatalf("installer default webui.auth_token = %#v, want empty placeholder", webui["auth_token"])
+	}
+	if got, ok := webui["metrics_token"].(string); !ok || got != "" {
+		t.Fatalf("installer default webui.metrics_token = %#v, want empty placeholder", webui["metrics_token"])
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes generated config: %v", err)
+	}
+
+	if !cfg.WebUI.Enabled {
+		t.Fatal("installer default config must enable the web UI like the packaged default")
+	}
+	if cfg.WebUI.Listen != "0.0.0.0:9443" {
+		t.Fatalf("WebUI.Listen = %q, want 0.0.0.0:9443", cfg.WebUI.Listen)
+	}
+	if cfg.WebUI.MetricsToken != "" {
+		t.Fatalf("WebUI.MetricsToken = %q, want empty placeholder", cfg.WebUI.MetricsToken)
 	}
 }

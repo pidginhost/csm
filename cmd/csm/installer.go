@@ -238,6 +238,18 @@ alerts:
     enabled: false
     url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
 
+webui:
+  enabled: true
+  listen: "0.0.0.0:9443"
+  auth_token: ""  # auto-generated on install
+  # metrics_token gates GET /metrics (Prometheus). Set a long random
+  # string here so a scraper does NOT need the admin auth_token. Leave
+  # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
+  metrics_token: ""
+  tls_cert: ""    # auto-generated self-signed if empty
+  tls_key: ""
+  ui_dir: "/opt/csm/ui"
+
 integrity:
   binary_hash: ""
   config_hash: ""
