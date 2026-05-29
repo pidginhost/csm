@@ -14,11 +14,12 @@ import (
 // AutoRespondDBMalware processes database injection findings and takes
 // automated action: blocks attacker IPs extracted from WordPress session
 // tokens, revokes compromised user sessions, and cleans confirmed
-// malicious content from wp_options.
+// malicious content from wp_options or stored database objects.
 //
 // Only acts on high-confidence findings:
 //   - db_options_injection with confirmed malicious external script URLs
 //   - db_siteurl_hijack (siteurl/home pointing to malicious content)
+//   - db_malicious_trigger/event/procedure/function with structured metadata
 //
 // Does NOT act on:
 //   - db_spam_injection (spam posts — needs manual review)
@@ -62,9 +63,15 @@ var dbDropObjectFn = DBDropObject
 // DBDropObject records a SHOW CREATE backup in bbolt before dropping, so the
 // action is reversible.
 func handleMaliciousDBObject(f alert.Finding) []alert.Finding {
-	account, schema, name := parseDBObjectFindingDetails(f.Details)
-	kind := strings.TrimPrefix(f.Check, "db_malicious_")
-	if account == "" || schema == "" || name == "" || !IsDBObjectKind(kind) {
+	kind := maliciousDBObjectKind(f.Check)
+	if kind == "" {
+		return nil
+	}
+	account, schema, detailKind, name := parseDBObjectFindingDetails(f.Details)
+	if account == "" || schema == "" || detailKind == "" || name == "" {
+		return nil
+	}
+	if detailKind != kind {
 		return nil
 	}
 
@@ -85,19 +92,45 @@ func handleMaliciousDBObject(f alert.Finding) []alert.Finding {
 	}}
 }
 
-// parseDBObjectFindingDetails extracts the structured fields a
-// db_malicious_<kind> finding carries in its Details block (Account/Schema/
-// Kind/Name lines, as written by dbObjectFinding.toFinding).
-func parseDBObjectFindingDetails(details string) (account, schema, name string) {
+func maliciousDBObjectKind(check string) string {
+	const prefix = "db_malicious_"
+	if !strings.HasPrefix(check, prefix) {
+		return ""
+	}
+	kind := strings.TrimPrefix(check, prefix)
+	if !IsDBObjectKind(kind) {
+		return ""
+	}
+	return kind
+}
+
+// parseDBObjectFindingDetails extracts the structured header fields a
+// db_malicious_<kind> finding carries in its Details block. The SQL body is
+// attacker-controlled and may contain lines that look like metadata, so parsing
+// stops at Body and keeps the first value for each header key.
+func parseDBObjectFindingDetails(details string) (account, schema, kind, name string) {
 	for _, line := range strings.Split(details, "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Body:") {
+			break
+		}
 		switch {
 		case strings.HasPrefix(line, "Account: "):
-			account = strings.TrimPrefix(line, "Account: ")
+			if account == "" {
+				account = strings.TrimSpace(strings.TrimPrefix(line, "Account: "))
+			}
 		case strings.HasPrefix(line, "Schema: "):
-			schema = strings.TrimPrefix(line, "Schema: ")
+			if schema == "" {
+				schema = strings.TrimSpace(strings.TrimPrefix(line, "Schema: "))
+			}
+		case strings.HasPrefix(line, "Kind: "):
+			if kind == "" {
+				kind = strings.TrimSpace(strings.TrimPrefix(line, "Kind: "))
+			}
 		case strings.HasPrefix(line, "Name: "):
-			name = strings.TrimPrefix(line, "Name: ")
+			if name == "" {
+				name = strings.TrimSpace(strings.TrimPrefix(line, "Name: "))
+			}
 		}
 	}
 	return
