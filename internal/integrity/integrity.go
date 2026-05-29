@@ -164,6 +164,29 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// HashConfDir returns a stable digest over every conf.d drop-in fragment that
+// would be merged on top of the main config, in merge order. It returns the
+// empty string when there are no fragments, so a config without conf.d keeps
+// the empty digest and its pre-existing baseline still verifies after upgrade.
+//
+// Each fragment is domain-separated by name and length so two fragments cannot
+// collide by shuffling bytes across the filename boundary.
+func HashConfDir(confDir string) (string, error) {
+	frags, err := config.ConfDirFragmentDigestInput(confDir)
+	if err != nil {
+		return "", err
+	}
+	if len(frags) == 0 {
+		return "", nil
+	}
+	h := sha256.New()
+	for _, f := range frags {
+		fmt.Fprintf(h, "confd-fragment:%s:%d\n", f.Name, len(f.Data))
+		_, _ = h.Write(f.Data)
+	}
+	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
+}
+
 // Verify checks the binary and config file integrity.
 func Verify(binaryPath string, cfg *config.Config) error {
 	if cfg.Integrity.BinaryHash == "" {
@@ -185,6 +208,20 @@ func Verify(binaryPath string, cfg *config.Config) error {
 		}
 		if configHash != cfg.Integrity.ConfigHash {
 			return fmt.Errorf("config hash mismatch: expected %s, got %s", cfg.Integrity.ConfigHash, configHash)
+		}
+
+		// conf.d fragments are merged on top of the main config at load time,
+		// so they must be covered too. A symmetric comparison closes the gap
+		// both ways: a tampered or added fragment makes the computed digest
+		// diverge from the stored one, and a baseline taken without conf.d
+		// stays empty == empty. Operators who already use conf.d must re-run
+		// `csm rehash` once after upgrade to populate confd_hash.
+		confdHash, err := HashConfDir(cfg.ConfigDir)
+		if err != nil {
+			return fmt.Errorf("hashing conf.d: %w", err)
+		}
+		if confdHash != cfg.Integrity.ConfdHash {
+			return fmt.Errorf("conf.d hash mismatch: expected %s, got %s", cfg.Integrity.ConfdHash, confdHash)
 		}
 	}
 

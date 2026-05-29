@@ -296,7 +296,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, edited, &clone, disk.Integrity.BinaryHash); err != nil {
+	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, s.cfg.ConfigDir, edited, &clone, disk.Integrity.BinaryHash); err != nil {
 		writeJSONError(w, "save: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

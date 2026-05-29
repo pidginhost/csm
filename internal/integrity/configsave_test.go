@@ -40,7 +40,7 @@ integrity:
 	}
 	clone.ConfigFile = path
 
-	if serr := SignAndSavePreserving(path, edited, clone, "sha256:newbinary"); serr != nil {
+	if serr := SignAndSavePreserving(path, "", edited, clone, "sha256:newbinary"); serr != nil {
 		t.Fatalf("save: %v", serr)
 	}
 
@@ -90,7 +90,7 @@ func TestSignAndSavePreservingRejectsDrift(t *testing.T) {
 	applied, _ := config.LoadBytes([]byte("hostname: a\n"))
 	applied.ConfigFile = path
 
-	err := SignAndSavePreserving(path, bogus, applied, "sha256:bin")
+	err := SignAndSavePreserving(path, "", bogus, applied, "sha256:bin")
 	if err == nil {
 		t.Fatal("expected drift error, got nil")
 	}

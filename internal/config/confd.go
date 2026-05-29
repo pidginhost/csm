@@ -64,7 +64,44 @@ func LoadConfDir(dir string) ([]*yaml.Node, error) {
 	return out, nil
 }
 
-func loadConfDirFragments(dir string) ([]confFragment, error) {
+// ConfDirFragment is one conf.d drop-in fragment's filename and raw bytes,
+// exported so the integrity hasher can cover the same fragment set the loader
+// merges without duplicating the enumeration rules.
+type ConfDirFragment struct {
+	Name string
+	Data []byte
+}
+
+// ConfDirFragmentDigestInput returns every trusted conf.d fragment in merge
+// order (sorted .yaml/.yml, symlink-resolved, trust-validated) as name+content
+// pairs for integrity hashing. An empty dir or no fragments yields nil so a
+// config without conf.d hashes to the empty digest and its baseline is
+// unaffected.
+func ConfDirFragmentDigestInput(dir string) ([]ConfDirFragment, error) {
+	files, err := confDirFragmentFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	out := make([]ConfDirFragment, len(files))
+	for i, ff := range files {
+		out[i] = ConfDirFragment{Name: ff.name, Data: ff.data}
+	}
+	return out, nil
+}
+
+type confFragmentFile struct {
+	name string
+	path string
+	data []byte
+}
+
+// confDirFragmentFiles enumerates trusted conf.d fragment files and returns
+// their raw bytes in merge order. Shared by loadConfDirFragments and the
+// integrity hasher so both observe exactly the same fragment set.
+func confDirFragmentFiles(dir string) ([]confFragmentFile, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -109,22 +146,34 @@ func loadConfDirFragments(dir string) ([]confFragment, error) {
 	}
 	sort.Strings(names)
 
-	out := make([]confFragment, 0, len(names))
+	out := make([]confFragmentFile, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		data, err := readTrustedConfFragment(path)
 		if err != nil {
 			return nil, err
 		}
+		out = append(out, confFragmentFile{name: name, path: path, data: data})
+	}
+	return out, nil
+}
+
+func loadConfDirFragments(dir string) ([]confFragment, error) {
+	files, err := confDirFragmentFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]confFragment, 0, len(files))
+	for _, ff := range files {
 		var node yaml.Node
-		if err := yaml.Unmarshal(data, &node); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		if err := yaml.Unmarshal(ff.data, &node); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", ff.path, err)
 		}
 		// Skip empty files (Unmarshal yields a zero-Content document).
 		if len(node.Content) == 0 {
 			continue
 		}
-		out = append(out, confFragment{path: path, node: &node})
+		out = append(out, confFragment{path: ff.path, node: &node})
 	}
 	return out, nil
 }

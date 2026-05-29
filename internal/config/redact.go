@@ -74,6 +74,9 @@ func Redact(cfg *Config) *Config {
 	if c.Integrity.ConfigHash != "" {
 		c.Integrity.ConfigHash = redactedValue
 	}
+	if c.Integrity.ConfdHash != "" {
+		c.Integrity.ConfdHash = redactedValue
+	}
 	if c.Sentry.DSN != "" {
 		c.Sentry.DSN = redactedValue
 	}

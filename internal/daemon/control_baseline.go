@@ -55,12 +55,13 @@ func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hashing binary: %w", err)
 	}
-	configHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, binaryHash)
+	configHash, confdHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, cfg.ConfigDir, binaryHash)
 	if err != nil {
 		return nil, fmt.Errorf("saving integrity: %w", err)
 	}
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
+	cfg.Integrity.ConfdHash = confdHash
 
 	return control.BaselineResult{
 		Findings:       len(findings),

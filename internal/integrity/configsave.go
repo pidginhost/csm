@@ -31,7 +31,7 @@ func WriteConfigBytesAtomic(path string, data []byte) error {
 // tempfile, fsync, rename. On success, intendedClone.Integrity.BinaryHash
 // and .ConfigHash are updated in place to reflect the hashes written to
 // disk. intendedClone.ConfigFile must equal path.
-func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *config.Config, binaryHash string) error {
+func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClone *config.Config, binaryHash string) error {
 	if intendedClone == nil {
 		return fmt.Errorf("intendedClone is nil")
 	}
@@ -45,9 +45,18 @@ func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *confi
 	// patch.
 	newConfigHash := HashConfigStableBytes(editedBytes)
 
+	// Cover the conf.d fragments merged on top of this main config. Empty
+	// when there are none, leaving conf.d-free configs byte-identical to
+	// their prior baseline.
+	newConfdHash, err := HashConfDir(confDir)
+	if err != nil {
+		return fmt.Errorf("hashing conf.d: %w", err)
+	}
+
 	patched, err := config.YAMLEdit(editedBytes, []config.YAMLChange{
 		{Path: []string{"integrity", "binary_hash"}, Value: binaryHash},
 		{Path: []string{"integrity", "config_hash"}, Value: newConfigHash},
+		{Path: []string{"integrity", "confd_hash"}, Value: newConfdHash},
 	})
 	if err != nil {
 		return fmt.Errorf("patch integrity scalars: %w", err)
@@ -65,6 +74,7 @@ func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *confi
 	expected := *intendedClone
 	expected.Integrity.BinaryHash = binaryHash
 	expected.Integrity.ConfigHash = newConfigHash
+	expected.Integrity.ConfdHash = newConfdHash
 
 	if !reflect.DeepEqual(decoded, &expected) {
 		return fmt.Errorf("yaml rewrite drift: decoded config does not match intended clone")
@@ -72,28 +82,30 @@ func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *confi
 
 	intendedClone.Integrity.BinaryHash = binaryHash
 	intendedClone.Integrity.ConfigHash = newConfigHash
+	intendedClone.Integrity.ConfdHash = newConfdHash
 
 	return atomicWriteFile(path, patched, 0o600)
 }
 
 // SignConfigFilePreserving signs path in place without re-marshaling the
-// config. It is for operations that must update only the operator-owned main
-// config file even when the live config also includes conf.d fragments.
-func SignConfigFilePreserving(path, binaryHash string) (string, error) {
+// config. It updates only the operator-owned main config file, but folds the
+// conf.d fragments under confDir into integrity.confd_hash so a later edit to
+// any fragment is detected by Verify.
+func SignConfigFilePreserving(path, confDir, binaryHash string) (configHash, confdHash string, err error) {
 	// #nosec G304 -- operator-configured config path.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read config: %w", err)
+		return "", "", fmt.Errorf("read config: %w", err)
 	}
 	cfg, err := config.LoadBytes(data)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	cfg.ConfigFile = path
-	if err := SignAndSavePreserving(path, data, cfg, binaryHash); err != nil {
-		return "", err
+	if err := SignAndSavePreserving(path, confDir, data, cfg, binaryHash); err != nil {
+		return "", "", err
 	}
-	return cfg.Integrity.ConfigHash, nil
+	return cfg.Integrity.ConfigHash, cfg.Integrity.ConfdHash, nil
 }
 
 // stripIntegrityBlock removes the top-level `integrity:` mapping and

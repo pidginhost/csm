@@ -190,24 +190,31 @@ func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
 }
 
 // signAndSaveReloadedConfig re-computes integrity.config_hash for the main
-// config file when that file changed. Drop-ins are intentionally not written
-// back into csm.yaml. The binary hash is preserved from the prior live config;
-// a SIGHUP reload cannot upgrade the binary, so that value must not drift.
+// config file (and integrity.confd_hash for the conf.d fragments) when either
+// changed across a SIGHUP. Drop-in fragment CONTENT is intentionally not
+// written back into csm.yaml; only their digest is folded into confd_hash so
+// a later Verify still passes. The binary hash is preserved from the prior
+// live config; a SIGHUP reload cannot upgrade the binary, so it must not drift.
 func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
 	currentHash, err := integrity.HashConfigStable(oldCfg.ConfigFile)
 	if err != nil {
 		return err
 	}
-	if currentHash == oldCfg.Integrity.ConfigHash {
+	currentConfd, err := integrity.HashConfDir(oldCfg.ConfigDir)
+	if err != nil {
+		return err
+	}
+	if currentHash == oldCfg.Integrity.ConfigHash && currentConfd == oldCfg.Integrity.ConfdHash {
 		newCfg.Integrity = oldCfg.Integrity
 		return nil
 	}
-	configHash, err := integrity.SignConfigFilePreserving(oldCfg.ConfigFile, oldCfg.Integrity.BinaryHash)
+	configHash, confdHash, err := integrity.SignConfigFilePreserving(oldCfg.ConfigFile, oldCfg.ConfigDir, oldCfg.Integrity.BinaryHash)
 	if err != nil {
 		return err
 	}
 	newCfg.Integrity.BinaryHash = oldCfg.Integrity.BinaryHash
 	newCfg.Integrity.ConfigHash = configHash
+	newCfg.Integrity.ConfdHash = confdHash
 	return nil
 }
 

@@ -101,7 +101,14 @@ type Config struct {
 	Integrity struct {
 		BinaryHash string `yaml:"binary_hash"`
 		ConfigHash string `yaml:"config_hash"`
-		Immutable  bool   `yaml:"immutable"`
+		// ConfdHash covers the conf.d drop-in fragments merged on top of the
+		// main config. Empty when no fragments exist, so configs without
+		// conf.d stay byte-identical to their pre-existing baseline. Without
+		// it an attacker with write access to conf.d could override any
+		// setting (auto_response, block_ips, dry_run) without tripping
+		// integrity verification.
+		ConfdHash string `yaml:"confd_hash"`
+		Immutable bool   `yaml:"immutable"`
 	} `yaml:"integrity"`
 
 	Thresholds struct {

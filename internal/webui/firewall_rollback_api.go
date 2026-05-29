@@ -112,7 +112,7 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, edited, &clone, disk.Integrity.BinaryHash); err != nil {
+	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, s.cfg.ConfigDir, edited, &clone, disk.Integrity.BinaryHash); err != nil {
 		// Best-effort cleanup: the snapshot is now misleading because
 		// the on-disk file never changed. Drop it so the operator does
 		// not see a phantom pending rollback in the UI.

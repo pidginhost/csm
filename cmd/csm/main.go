@@ -730,13 +730,14 @@ func runRehash() {
 		fmt.Fprintf(os.Stderr, "Error hashing binary: %v\n", err)
 		return
 	}
-	configHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, binaryHash)
+	configHash, confdHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, cfg.ConfigDir, binaryHash)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		return
 	}
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
+	cfg.Integrity.ConfdHash = confdHash
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
