@@ -560,11 +560,10 @@ func nextSearchOffset(pos, codeLen int) int {
 
 var requestSuperglobalNames = []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
 
-// includeTargetSuperglobalNames omits $_SERVER: including a path built from
-// $_SERVER['DOCUMENT_ROOT'] / ['SCRIPT_FILENAME'] is the standard WordPress
-// bootstrap idiom, not an LFI/RFI primitive. Real include-driven inclusion
-// uses the request body/query/cookie superglobals or a stream wrapper, both of
-// which are still covered.
+// includeTargetSuperglobalNames omits $_SERVER path keys: including a path
+// built from the server document root or script filename is the standard
+// WordPress bootstrap idiom, not an LFI/RFI primitive. Header-derived
+// $_SERVER keys are handled separately below.
 var includeTargetSuperglobalNames = []string{"$_request", "$_post", "$_get", "$_cookie"}
 
 func containsRequestSuperglobal(code string) bool {
@@ -598,10 +597,11 @@ func containsRequestSuperglobalExpression(code string) bool {
 }
 
 // containsIncludeTargetExpression reports whether an include/require target
-// expression reads an attacker-controlled superglobal. It excludes $_SERVER
-// (see includeTargetSuperglobalNames).
+// expression reads an attacker-controlled superglobal. Non-header $_SERVER
+// path keys are left alone (see includeTargetSuperglobalNames).
 func containsIncludeTargetExpression(code string) bool {
-	return containsSuperglobalExpression(code, includeTargetSuperglobalNames)
+	return containsSuperglobalExpression(code, includeTargetSuperglobalNames) ||
+		containsServerHeaderIncludeExpression(code)
 }
 
 func containsSuperglobalExpression(code string, names []string) bool {
@@ -621,6 +621,187 @@ func containsSuperglobalExpression(code string, names []string) bool {
 		start = end + 1
 	}
 	return containsAnySuperglobal(code[start:], names)
+}
+
+func containsServerHeaderIncludeExpression(code string) bool {
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			end := skipPHPString(code, i)
+			if code[i] == '"' && end > i && containsServerHeaderReference(code[i+1:end]) {
+				return true
+			}
+			i = end
+			continue
+		}
+		dangerous, next, ok := serverIncludeReferenceAt(code, i)
+		if !ok {
+			continue
+		}
+		if dangerous {
+			return true
+		}
+		i = next - 1
+	}
+	return false
+}
+
+func containsServerHeaderReference(code string) bool {
+	for i := 0; i < len(code); i++ {
+		dangerous, next, ok := serverIncludeReferenceAt(code, i)
+		if !ok {
+			continue
+		}
+		if dangerous {
+			return true
+		}
+		i = next - 1
+	}
+	return false
+}
+
+func serverIncludeReferenceAt(code string, start int) (bool, int, bool) {
+	const serverName = "$_server"
+	end := start + len(serverName)
+	if end > len(code) || !strings.EqualFold(code[start:end], serverName) {
+		return false, start, false
+	}
+	if end < len(code) && isPHPIdentifierPart(code[end]) {
+		return false, start, false
+	}
+
+	bracket := skipPHPWhitespace(code, end)
+	if bracket >= len(code) || code[bracket] != '[' {
+		return true, end, true
+	}
+	keyStart := skipPHPWhitespace(code, bracket+1)
+	if keyStart >= len(code) {
+		return true, len(code), true
+	}
+	if isPHPQuote(code[keyStart]) {
+		keyEnd := skipPHPString(code, keyStart)
+		key := phpStringLiteralValue(code, keyStart, keyEnd)
+		next := skipPHPWhitespace(code, keyEnd+1)
+		if next < len(code) && code[next] == ']' {
+			return isAttackerControlledServerKey(key), next + 1, true
+		}
+		return true, next, true
+	}
+	if isPHPIdentifierStart(code[keyStart]) {
+		keyEnd := keyStart + 1
+		for keyEnd < len(code) && isPHPIdentifierPart(code[keyEnd]) {
+			keyEnd++
+		}
+		key := code[keyStart:keyEnd]
+		next := skipPHPWhitespace(code, keyEnd)
+		if next < len(code) && code[next] == ']' {
+			return isAttackerControlledServerKey(key), next + 1, true
+		}
+		return true, next, true
+	}
+	return true, keyStart + 1, true
+}
+
+func phpStringLiteralValue(code string, start, end int) string {
+	var b strings.Builder
+	quote := code[start]
+	for i := start + 1; i < end; i++ {
+		if code[i] != '\\' || i+1 >= end {
+			b.WriteByte(code[i])
+			continue
+		}
+		i++
+		esc := code[i]
+		if quote == '\'' {
+			if esc == '\'' || esc == '\\' {
+				b.WriteByte(esc)
+			} else {
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+			}
+			continue
+		}
+		switch esc {
+		case 'x':
+			if i+1 >= end || !isHexDigit(code[i+1]) {
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+				continue
+			}
+			value := hexVal(code[i+1])
+			i++
+			if i+1 < end && isHexDigit(code[i+1]) {
+				value = value*16 + hexVal(code[i+1])
+				i++
+			}
+			// #nosec G115 -- PHP hex string escapes are at most one byte.
+			b.WriteByte(byte(value))
+		case 'u':
+			if i+2 >= end || code[i+1] != '{' || !isHexDigit(code[i+2]) {
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+				continue
+			}
+			value := 0
+			j := i + 2
+			for ; j < end && isHexDigit(code[j]); j++ {
+				value = value*16 + hexVal(code[j])
+			}
+			if j >= end || code[j] != '}' {
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+				continue
+			}
+			if value > 0x10ffff {
+				b.WriteByte('\\')
+				b.WriteByte(esc)
+				continue
+			}
+			// #nosec G115 -- value is capped at the largest valid Unicode code point.
+			b.WriteRune(rune(value))
+			i = j
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			value := int(esc - '0')
+			digits := 1
+			for i+1 < end && digits < 3 && code[i+1] >= '0' && code[i+1] <= '7' {
+				value = value*8 + int(code[i+1]-'0')
+				i++
+				digits++
+			}
+			// #nosec G115 -- PHP octal string escapes are byte escapes.
+			b.WriteByte(byte(value))
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte('\v')
+		case 'e':
+			b.WriteByte(0x1b)
+		case 'f':
+			b.WriteByte('\f')
+		case '\\', '$', '"':
+			b.WriteByte(esc)
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(esc)
+		}
+	}
+	return b.String()
+}
+
+func isAttackerControlledServerKey(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "HTTP_") {
+		return true
+	}
+	switch key {
+	case "CONTENT_LENGTH", "CONTENT_TYPE", "PHP_AUTH_DIGEST", "PHP_AUTH_PW", "PHP_AUTH_USER":
+		return true
+	default:
+		return false
+	}
 }
 
 func canStartGlobalPHPFunction(code string, slash int) bool {

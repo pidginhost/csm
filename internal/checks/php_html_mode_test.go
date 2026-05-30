@@ -62,6 +62,21 @@ func TestAnalyzePHPContentServerDocumentRootIncludeNotFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentServerHeaderIncludeStillFlagged(t *testing.T) {
+	cases := []string{
+		"<?php require $_SERVER['HTTP_X_TEMPLATE']; ?>",
+		"<?php require $_SERVER[\"\\x48\\x54\\x54\\x50_X_TEMPLATE\"]; ?>",
+		"<?php require \"{$_SERVER['HTTP_X_TEMPLATE']}\"; ?>",
+		"<?php require $_SERVER['HT' . 'TP_X_TEMPLATE']; ?>",
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if res.severity < 0 || !strings.Contains(res.details, "include/require of request input") {
+			t.Errorf("header-derived $_SERVER include must still flag; content=%q details=%q", content, res.details)
+		}
+	}
+}
+
 // --- Regression guards: the HTML-mode fix must not blind real PHP sinks. ---
 
 func TestAnalyzePHPContentRequestIncludeStillFlaggedAfterHTMLStrip(t *testing.T) {
@@ -79,6 +94,14 @@ func TestAnalyzePHPContentBacktickInRealPHPStillFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentSinkAfterRunTogetherEmptyTagStillFlagged(t *testing.T) {
+	content := "<?php?><?php system($_GET['cmd']); ?>"
+	res := analyzePHPString(t, content)
+	if res.severity < 0 || !strings.Contains(res.details, "shell function with request input") {
+		t.Errorf("sink after run-together empty tag must still flag; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentSinkInSecondBlockStillFlagged(t *testing.T) {
 	// A clean first PHP block, then inline HTML, then a real sink in a second
 	// PHP block: the second block is code and must still be analysed.
@@ -86,5 +109,17 @@ func TestAnalyzePHPContentSinkInSecondBlockStillFlagged(t *testing.T) {
 	res := analyzePHPString(t, content)
 	if res.severity < 0 {
 		t.Errorf("sink in second PHP block must still flag; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentNestedOpenTagInsideHeredocDoesNotHideLaterSink(t *testing.T) {
+	content := "<?php\n" +
+		"$tpl = <<<EOT\n" +
+		"<?php not a real tag ?>\n" +
+		"EOT;\n" +
+		"system($_GET['cmd']);\n"
+	res := analyzePHPString(t, content)
+	if res.severity < 0 || !strings.Contains(res.details, "shell function with request input") {
+		t.Errorf("sink after heredoc body must still flag; details=%q", res.details)
 	}
 }
