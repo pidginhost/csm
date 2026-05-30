@@ -262,42 +262,252 @@ func hasCodeEvalPrimitiveWithRequest(code string) bool {
 }
 
 // hasPregReplaceEvalWithRequest reports a preg_replace() call whose pattern
-// carries the /e modifier AND whose arguments read request input. The /e
-// modifier (removed in PHP 7.0) evaluates the replacement as PHP, with
-// backreferences interpolated from the subject, so the call is an RCE sink only
-// when attacker input reaches the replacement or subject. Bare /e with static
-// arguments is the legacy WordPress serialize-fix / autolink idiom -- real /e
-// usage, but not a dropper -- so it is gated on request-input correlation, the
-// same way the shell, include, and assert detectors here gate their sinks.
+// carries the /e modifier and whose evaluated replacement or subject reads
+// request input. The /e modifier (removed in PHP 7.0) evaluates the replacement
+// as PHP after backreferences from the subject are interpolated, so pattern-only
+// request input is not enough to call this a code-execution sink. Bare /e with
+// static arguments is the legacy WordPress serialize-fix / autolink idiom --
+// real /e usage, but not a dropper -- so it is gated on request-input
+// correlation, the same way the shell, include, and assert detectors here gate
+// their sinks.
 // Walks the source skipping string literals so a documentation example in a
 // string does not trip, then inspects the literal first argument of each call.
 func hasPregReplaceEvalWithRequest(code string) bool {
 	searchFrom := 0
 	for {
-		_, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, pregReplaceCallName)
+		callStart, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, pregReplaceCallName)
 		if !ok {
 			break
 		}
-		argStart := skipPHPWhitespace(code, openParen+1)
-		if argStart >= len(code) || !isPHPQuote(code[argStart]) {
+		args := phpCallArguments(code, openParen+1, closeParen)
+		if len(args) < 3 || !pregPatternArgumentHasEvalModifier(args[0]) {
 			searchFrom = nextSearchOffset(closeParen, len(code))
 			continue
 		}
-		end := skipPHPString(code, argStart)
-		// skipPHPString returns the closing-quote index, or the last index
-		// for an unterminated literal. Guard the slice: a quote in the final
-		// position leaves no string body to inspect.
-		if end <= argStart {
-			searchFrom = nextSearchOffset(closeParen, len(code))
-			continue
-		}
-		if pregPatternHasEvalModifier(code[argStart+1:end]) &&
-			containsRequestSuperglobalExpression(code[openParen+1:closeParen]) {
+		tainted := requestTaintedVariablesBefore(code, callStart)
+		if pregReplacementReadsRequest(args[1], tainted) || phpExpressionReadsRequest(args[2], tainted) {
 			return true
 		}
 		searchFrom = nextSearchOffset(closeParen, len(code))
 	}
 	return false
+}
+
+func pregPatternArgumentHasEvalModifier(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" || !isPHPQuote(expr[0]) {
+		return false
+	}
+	end := skipPHPString(expr, 0)
+	// skipPHPString returns the closing-quote index, or the last index for an
+	// unterminated literal. Guard the slice: a quote in the final position
+	// leaves no string body to inspect.
+	if end <= 0 {
+		return false
+	}
+	return pregPatternHasEvalModifier(expr[1:end])
+}
+
+func pregReplacementReadsRequest(expr string, tainted map[string]struct{}) bool {
+	if phpExpressionReadsRequest(expr, tainted) {
+		return true
+	}
+	body, _, ok := phpStringLiteralExpression(expr)
+	if !ok {
+		return false
+	}
+	return phpExpressionReadsRequest(body, tainted)
+}
+
+func phpExpressionReadsRequest(expr string, tainted map[string]struct{}) bool {
+	return containsRequestSuperglobalExpression(expr) || phpExpressionReferencesTaintedVariable(expr, tainted)
+}
+
+func phpExpressionReferencesTaintedVariable(expr string, tainted map[string]struct{}) bool {
+	if len(tainted) == 0 {
+		return false
+	}
+	for i := 0; i < len(expr); i++ {
+		if isPHPQuote(expr[i]) {
+			i = skipPHPString(expr, i)
+			continue
+		}
+		if expr[i] != '$' {
+			continue
+		}
+		variable, next, ok := readPHPVariableName(expr, i)
+		if !ok {
+			continue
+		}
+		if _, found := tainted[variable]; found {
+			return true
+		}
+		i = next - 1
+	}
+	return false
+}
+
+func requestTaintedVariablesBefore(code string, limit int) map[string]struct{} {
+	if limit > len(code) {
+		limit = len(code)
+	}
+	if limit <= 0 {
+		return nil
+	}
+	scan := code[:limit]
+	taintStack := []map[string]struct{}{{}}
+	functionBraceStack := []bool{}
+	pendingFunctionScope := false
+	for i := 0; i < len(scan); i++ {
+		if isPHPQuote(scan[i]) {
+			i = skipPHPString(scan, i)
+			continue
+		}
+		if end, ok := phpKeywordAt(scan, i, "function"); ok {
+			pendingFunctionScope = true
+			i = end - 1
+			continue
+		}
+		switch scan[i] {
+		case '{':
+			functionBraceStack = append(functionBraceStack, pendingFunctionScope)
+			if pendingFunctionScope {
+				taintStack = append(taintStack, map[string]struct{}{})
+			}
+			pendingFunctionScope = false
+			continue
+		case '}':
+			if len(functionBraceStack) > 0 {
+				last := len(functionBraceStack) - 1
+				if functionBraceStack[last] && len(taintStack) > 1 {
+					taintStack = taintStack[:len(taintStack)-1]
+				}
+				functionBraceStack = functionBraceStack[:last]
+			}
+			pendingFunctionScope = false
+			continue
+		case ';':
+			pendingFunctionScope = false
+		}
+		if scan[i] != '$' {
+			continue
+		}
+		variable, next, ok := readPHPVariableName(scan, i)
+		if !ok || isRequestSuperglobalVariable(variable) {
+			continue
+		}
+		j := skipPHPWhitespace(scan, next)
+		opLen, directAssign, appendAssign, ok := phpAssignmentOperator(scan, j)
+		if !ok {
+			i = next - 1
+			continue
+		}
+		exprStart := skipPHPWhitespace(scan, j+opLen)
+		exprEnd := phpExpressionEnd(scan, exprStart)
+		expr := scan[exprStart:exprEnd]
+		tainted := taintStack[len(taintStack)-1]
+		exprTainted := phpExpressionReadsRequest(expr, tainted)
+		switch {
+		case directAssign:
+			if exprTainted {
+				tainted[variable] = struct{}{}
+			} else {
+				delete(tainted, variable)
+			}
+		case appendAssign:
+			if exprTainted {
+				tainted[variable] = struct{}{}
+			}
+		default:
+			if exprTainted {
+				tainted[variable] = struct{}{}
+			} else {
+				delete(tainted, variable)
+			}
+		}
+		i = exprEnd - 1
+	}
+	return taintStack[len(taintStack)-1]
+}
+
+func phpKeywordAt(code string, start int, keyword string) (int, bool) {
+	end := start + len(keyword)
+	if end > len(code) || !strings.EqualFold(code[start:end], keyword) {
+		return 0, false
+	}
+	if start > 0 {
+		prev := code[start-1]
+		if isPHPIdentifierPart(prev) || prev == '$' || prev == '>' || prev == ':' || prev == '\\' {
+			return 0, false
+		}
+	}
+	if end < len(code) && isPHPIdentifierPart(code[end]) {
+		return 0, false
+	}
+	return end, true
+}
+
+func isRequestSuperglobalVariable(variable string) bool {
+	switch strings.ToLower(variable) {
+	case "_request", "_post", "_get", "_cookie", "_server":
+		return true
+	default:
+		return false
+	}
+}
+
+func phpStringLiteralExpression(expr string) (string, byte, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" || !isPHPQuote(expr[0]) {
+		return "", 0, false
+	}
+	end := skipPHPString(expr, 0)
+	if end <= 0 || end >= len(expr) || expr[end] != expr[0] {
+		return "", 0, false
+	}
+	if skipPHPWhitespace(expr, end+1) != len(expr) {
+		return "", 0, false
+	}
+	return expr[1:end], expr[0], true
+}
+
+func phpCallArguments(code string, start, end int) []string {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(code) {
+		end = len(code)
+	}
+	if start > end {
+		return nil
+	}
+
+	var args []string
+	argStart := skipPHPWhitespace(code, start)
+	depth := 0
+	for i := start; i < end; i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		switch code[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				args = append(args, strings.TrimSpace(code[argStart:i]))
+				argStart = skipPHPWhitespace(code, i+1)
+			}
+		}
+	}
+	if tail := strings.TrimSpace(code[argStart:end]); tail != "" || len(args) > 0 {
+		args = append(args, tail)
+	}
+	return args
 }
 
 // pregPatternHasEvalModifier returns true when the PCRE pattern string carries
@@ -1116,7 +1326,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 
 	// preg_replace() with the /e modifier evaluates its replacement as PHP.
-	// Removed in PHP 7.0; any occurrence is a legacy code-execution sink.
+	// Removed in PHP 7.0; flag it when request input reaches the evaluated
+	// replacement or its subject backreferences.
 	if hasPregReplaceEvalWithRequest(commentStripped) {
 		indicators = append(indicators, "preg_replace with /e modifier (code execution)")
 	}

@@ -27,12 +27,47 @@ func TestAnalyzePHPContentPregReplaceEvalReplacementRequestFlagged(t *testing.T)
 	}
 }
 
+func TestAnalyzePHPContentPregReplaceEvalTaintedReplacementVariableFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $code = $_POST['c']; preg_replace('/.*/e', $code, $subject); ?>")
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with tainted replacement variable not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalReplacementCodeStringRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, `<?php preg_replace('/.*/e', 'system($_POST["cmd"])', 'x'); ?>`)
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with request-reading replacement code not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalReplacementCodeStringTaintedVariableFlagged(t *testing.T) {
+	res := analyzePHPString(t, `<?php $cmd = $_POST["cmd"]; preg_replace('/.*/e', 'system($cmd)', 'x'); ?>`)
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with tainted variable inside replacement code not flagged; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentPregReplaceEvalSubjectRequestFlagged(t *testing.T) {
 	// /e evals the replacement with backreferences taken from the subject, so a
 	// request-controlled subject is just as exploitable as a request replacement.
 	res := analyzePHPString(t, "<?php preg_replace('/.*/e', $repl, $_GET['data']); ?>")
 	if !strings.Contains(res.details, indPregReplaceEval) {
 		t.Errorf("preg_replace /e with request subject not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalTaintedSubjectVariableFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $subject = $_GET['data']; preg_replace('/.*/e', $repl, $subject); ?>")
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with tainted subject variable not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalDoubleQuotedSubjectRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, `<?php preg_replace('/.*/e', 'strtoupper("$0")', "$_POST[data]"); ?>`)
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with interpolated request subject not flagged; details=%q", res.details)
 	}
 }
 
@@ -49,6 +84,38 @@ func TestAnalyzePHPContentPregReplaceEvalPairedDelimitersRequestFlagged(t *testi
 		if !strings.Contains(res.details, indPregReplaceEval) {
 			t.Errorf("preg_replace %q with request input not flagged; details=%q", pattern, res.details)
 		}
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalPatternRequestOnlyNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, `<?php preg_replace("/$_GET[p]/e", "'ok'", $subject); ?>`)
+	if strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace /e with request only in pattern wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalSingleQuotedSubjectLiteralNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, `<?php preg_replace('/.*/e', '"ok"', '$_POST[data]'); ?>`)
+	if strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("single-quoted subject literal wrongly treated as request input; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalReassignedVariableNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php $code = $_POST['c']; $code = 'safe'; preg_replace('/.*/e', $code, $subject); ?>")
+	if strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("reassigned replacement variable wrongly treated as request input; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalOtherFunctionTaintNotFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"function store_request() { $code = $_POST['c']; }\n" +
+		"function render($subject, $code) { return preg_replace('/.*/e', $code, $subject); }\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("request variable from another function wrongly carried into preg_replace /e; details=%q", res.details)
 	}
 }
 
