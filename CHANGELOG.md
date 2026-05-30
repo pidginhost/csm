@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.10.0] - 2026-05-30
+
 ### Added
 
 - CSM now raises one per-vhost alert when many already-abusive HTTP sources focus on the same site in one scan window, making distributed botnet pressure visible without counting ordinary visitor spread.
