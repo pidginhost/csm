@@ -261,13 +261,17 @@ func hasCodeEvalPrimitiveWithRequest(code string) bool {
 	return false
 }
 
-// hasPregReplaceEvalModifier reports a preg_replace() call whose pattern
-// string carries the /e modifier, which evaluates the replacement as PHP. The
-// modifier was removed in PHP 7.0 precisely because it is an execution sink;
-// any occurrence in user-directory PHP is a strong RCE signal. Walks the
-// source skipping string literals so a documentation example in a string does
-// not trip, then inspects the literal first argument of each real call.
-func hasPregReplaceEvalModifier(code string) bool {
+// hasPregReplaceEvalWithRequest reports a preg_replace() call whose pattern
+// carries the /e modifier AND whose arguments read request input. The /e
+// modifier (removed in PHP 7.0) evaluates the replacement as PHP, with
+// backreferences interpolated from the subject, so the call is an RCE sink only
+// when attacker input reaches the replacement or subject. Bare /e with static
+// arguments is the legacy WordPress serialize-fix / autolink idiom -- real /e
+// usage, but not a dropper -- so it is gated on request-input correlation, the
+// same way the shell, include, and assert detectors here gate their sinks.
+// Walks the source skipping string literals so a documentation example in a
+// string does not trip, then inspects the literal first argument of each call.
+func hasPregReplaceEvalWithRequest(code string) bool {
 	searchFrom := 0
 	for {
 		_, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, pregReplaceCallName)
@@ -287,7 +291,8 @@ func hasPregReplaceEvalModifier(code string) bool {
 			searchFrom = nextSearchOffset(closeParen, len(code))
 			continue
 		}
-		if pregPatternHasEvalModifier(code[argStart+1 : end]) {
+		if pregPatternHasEvalModifier(code[argStart+1:end]) &&
+			containsRequestSuperglobalExpression(code[openParen+1:closeParen]) {
 			return true
 		}
 		searchFrom = nextSearchOffset(closeParen, len(code))
@@ -1112,7 +1117,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// preg_replace() with the /e modifier evaluates its replacement as PHP.
 	// Removed in PHP 7.0; any occurrence is a legacy code-execution sink.
-	if hasPregReplaceEvalModifier(commentStripped) {
+	if hasPregReplaceEvalWithRequest(commentStripped) {
 		indicators = append(indicators, "preg_replace with /e modifier (code execution)")
 	}
 

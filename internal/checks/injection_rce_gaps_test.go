@@ -12,26 +12,58 @@ const (
 )
 
 // --- preg_replace /e modifier (legacy eval sink, removed in PHP 7) ---
+//
+// The /e modifier evaluates the replacement as PHP with backreferences
+// interpolated from the subject, so the call is an RCE sink only when attacker
+// input reaches the replacement or subject. Bare /e with static arguments is
+// the legacy WordPress serialize-fix / autolink idiom, not a dropper, so it is
+// gated on request-input correlation -- matching the shell, include, and assert
+// detectors.
 
-func TestAnalyzePHPContentPregReplaceEvalFlagged(t *testing.T) {
+func TestAnalyzePHPContentPregReplaceEvalReplacementRequestFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php preg_replace('/.*/e', $_POST['c'], $subject); ?>")
 	if !strings.Contains(res.details, indPregReplaceEval) {
-		t.Errorf("preg_replace /e not flagged; details=%q", res.details)
+		t.Errorf("preg_replace /e with request replacement not flagged; details=%q", res.details)
 	}
 }
 
-func TestAnalyzePHPContentPregReplaceEvalAltDelimiterFlagged(t *testing.T) {
-	res := analyzePHPString(t, "<?php preg_replace('~payload~ie', $r, $s); ?>")
+func TestAnalyzePHPContentPregReplaceEvalSubjectRequestFlagged(t *testing.T) {
+	// /e evals the replacement with backreferences taken from the subject, so a
+	// request-controlled subject is just as exploitable as a request replacement.
+	res := analyzePHPString(t, "<?php preg_replace('/.*/e', $repl, $_GET['data']); ?>")
 	if !strings.Contains(res.details, indPregReplaceEval) {
-		t.Errorf("preg_replace ~..~ie not flagged; details=%q", res.details)
+		t.Errorf("preg_replace /e with request subject not flagged; details=%q", res.details)
 	}
 }
 
-func TestAnalyzePHPContentPregReplaceEvalPairedDelimitersFlagged(t *testing.T) {
+func TestAnalyzePHPContentPregReplaceEvalAltDelimiterRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php preg_replace('~payload~ie', $_POST['r'], $s); ?>")
+	if !strings.Contains(res.details, indPregReplaceEval) {
+		t.Errorf("preg_replace ~..~ie with request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalPairedDelimitersRequestFlagged(t *testing.T) {
 	for _, pattern := range []string{"{payload}e", "(payload)e", "[payload]e", "<payload>e"} {
-		res := analyzePHPString(t, "<?php preg_replace('"+pattern+"', $r, $s); ?>")
+		res := analyzePHPString(t, "<?php preg_replace('"+pattern+"', 'static', $_GET['s']); ?>")
 		if !strings.Contains(res.details, indPregReplaceEval) {
-			t.Errorf("preg_replace %q not flagged; details=%q", pattern, res.details)
+			t.Errorf("preg_replace %q with request input not flagged; details=%q", pattern, res.details)
+		}
+	}
+}
+
+func TestAnalyzePHPContentPregReplaceEvalNoRequestNotFlagged(t *testing.T) {
+	// The legacy WordPress serialize-fix and autolink idioms: real /e usage, but
+	// the subject and replacement are internal data, not attacker input. These
+	// are not droppers and must not flag.
+	cases := []string{
+		`<?php $r = preg_replace('!s:(\d+):"(.*?)";!e', "'s:'.strlen('$2').':\"$2\";'", $serial); ?>`,
+		`<?php $v = preg_replace("#(^|[\n ])([\w]+?://[\w]+[^ \"\n\r\t<]*)#ise", "'\\1<a href=\"\\2\">\\2</a>'", $text); ?>`,
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if strings.Contains(res.details, indPregReplaceEval) {
+			t.Errorf("static-argument /e idiom wrongly flagged; content=%q details=%q", content, res.details)
 		}
 	}
 }
