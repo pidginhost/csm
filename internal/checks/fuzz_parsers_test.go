@@ -157,6 +157,30 @@ func FuzzStripPHPHeredoc(f *testing.F) {
 	})
 }
 
+func FuzzPHPCodeOnly(f *testing.F) {
+	// Mixed PHP/HTML shapes the inline-HTML blanker must walk without panicking.
+	f.Add("<?php echo 1; ?>\n<p>html</p>\n<?php system($_GET['c']); ?>")
+	f.Add("<p>don't desync me</p><?php $x = `id`; ?>")
+	f.Add("<?= $_SERVER['HTTP_HOST'] ?>")
+	f.Add("<?php $s = \"a ?> b\"; echo $s; ?>")         // ?> inside a string
+	f.Add("<?php /* ?> */ echo 1; ?>")                  // ?> inside a block comment
+	f.Add("<?php // trailing ?> html <?php echo 2; ?>") // ?> ends a line comment
+	f.Add("<?php $h = <<<EOT\n?> not a tag\nEOT;\n?>")  // ?> inside a heredoc
+	f.Add("plain html with no php tags at all")
+	f.Add("<?")
+	f.Add("<?php")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, code string) {
+		out := phpCodeOnly(code)
+		// The blanker substitutes byte-for-byte (HTML->space, <?php->spaces,
+		// ?>-> "; "), so output length must equal input length. A drift means
+		// an off-by-one that could swallow or duplicate code bytes.
+		if len(out) != len(code) {
+			t.Fatalf("length changed: in=%d out=%d", len(code), len(out))
+		}
+	})
+}
+
 func FuzzExtractPHPString(f *testing.F) {
 	f.Add(" 'hello');")
 	f.Add(` "world");`)

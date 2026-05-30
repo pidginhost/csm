@@ -216,7 +216,7 @@ func hasDangerousInclude(code string) bool {
 			break
 		}
 		expr := code[exprStart:exprEnd]
-		if containsRequestSuperglobalExpression(expr) {
+		if containsIncludeTargetExpression(expr) {
 			return true
 		}
 		exprLower := strings.ToLower(expr)
@@ -401,6 +401,120 @@ func phpExpressionEnd(code string, start int) int {
 	return len(code)
 }
 
+// phpCodeOnly blanks the inline-HTML regions of a PHP source so only the code
+// inside <?php ... ?> (and <?= ... ?>) spans is analysed for execution sinks.
+// Inline HTML is literal output and cannot execute PHP, so scanning it as code
+// only yields false positives: apostrophes in prose ("don't", "you're") desync
+// the string scanner, and href URLs, JS backtick template literals, and English
+// words like "include"/"require" in markup then read as PHP execution sinks.
+//
+// HTML bytes become spaces (newlines kept so line-oriented detectors keep their
+// line structure); a closing "?>" becomes "; " so it still bounds the preceding
+// statement and consecutive <?php?> blocks do not run their expressions
+// together. The "?>" scan skips PHP strings, heredoc/nowdoc bodies, and block
+// comments so a "?>" inside them does not end PHP mode and blank real code. A
+// file with no PHP open tag yields all blanks -- it executes nothing.
+func phpCodeOnly(src string) string {
+	var b strings.Builder
+	b.Grow(len(src))
+	n := len(src)
+	i := 0
+	for i < n {
+		// HTML mode: blank up to the next "<?" open tag.
+		htmlStart := i
+		for i < n && (src[i] != '<' || i+1 >= n || src[i+1] != '?') {
+			i++
+		}
+		blankInlineHTML(&b, src[htmlStart:i])
+		if i >= n {
+			break
+		}
+		// Blank the opening tag: "<?php" (needs trailing whitespace/EOF), "<?=",
+		// or a bare "<?" short tag.
+		i += 2
+		b.WriteString("  ")
+		if i+3 <= n && strings.EqualFold(src[i:i+3], "php") && (i+3 == n || isPHPSpace(src[i+3])) {
+			b.WriteString("   ")
+			i += 3
+		} else if i < n && src[i] == '=' {
+			b.WriteByte(' ')
+			i++
+		}
+		// PHP mode: copy verbatim until a top-level "?>".
+		i = copyPHPModeRegion(&b, src, i)
+	}
+	return b.String()
+}
+
+// copyPHPModeRegion copies src[start:] into b verbatim until a top-level "?>"
+// (which it replaces with "; ") or EOF, and returns the resume index. Strings,
+// heredoc/nowdoc bodies, and block comments are copied whole so a "?>" inside
+// them is not mistaken for a closing tag. A "?>" inside a // or # line comment
+// does end PHP mode, matching PHP's own tokeniser.
+func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
+	n := len(src)
+	i := start
+	for i < n {
+		if label, bodyStart, ok := phpHeredocOpen(src, i); ok {
+			end := phpHeredocEnd(src, bodyStart, label)
+			b.WriteString(src[i:end])
+			i = end
+			continue
+		}
+		if isPHPQuote(src[i]) {
+			i = copyPHPString(b, src, i) + 1
+			continue
+		}
+		if src[i] == '/' && i+1 < n && src[i+1] == '*' {
+			b.WriteString("/*")
+			i += 2
+			for i < n {
+				if src[i] == '*' && i+1 < n && src[i+1] == '/' {
+					b.WriteString("*/")
+					i += 2
+					break
+				}
+				b.WriteByte(src[i])
+				i++
+			}
+			continue
+		}
+		if (src[i] == '/' && i+1 < n && src[i+1] == '/') || src[i] == '#' {
+			for i < n && src[i] != '\n' {
+				if src[i] == '?' && i+1 < n && src[i+1] == '>' {
+					break
+				}
+				b.WriteByte(src[i])
+				i++
+			}
+			if i+1 < n && src[i] == '?' && src[i+1] == '>' {
+				b.WriteString("; ")
+				return i + 2
+			}
+			continue
+		}
+		if src[i] == '?' && i+1 < n && src[i+1] == '>' {
+			b.WriteString("; ")
+			return i + 2
+		}
+		b.WriteByte(src[i])
+		i++
+	}
+	return i
+}
+
+// blankInlineHTML writes s as spaces, preserving newlines so line-based
+// detectors keep their line boundaries across blanked template text.
+func blankInlineHTML(b *strings.Builder, s string) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' || s[i] == '\r' {
+			b.WriteByte(s[i])
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+}
+
 func nextStandalonePHPCall(code string, searchFrom int, names map[string]struct{}) (int, int, int, bool) {
 	for i := searchFrom; i < len(code); i++ {
 		if isPHPQuote(code[i]) {
@@ -444,9 +558,22 @@ func nextSearchOffset(pos, codeLen int) int {
 	return pos + 1
 }
 
+var requestSuperglobalNames = []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
+
+// includeTargetSuperglobalNames omits $_SERVER: including a path built from
+// $_SERVER['DOCUMENT_ROOT'] / ['SCRIPT_FILENAME'] is the standard WordPress
+// bootstrap idiom, not an LFI/RFI primitive. Real include-driven inclusion
+// uses the request body/query/cookie superglobals or a stream wrapper, both of
+// which are still covered.
+var includeTargetSuperglobalNames = []string{"$_request", "$_post", "$_get", "$_cookie"}
+
 func containsRequestSuperglobal(code string) bool {
+	return containsAnySuperglobal(code, requestSuperglobalNames)
+}
+
+func containsAnySuperglobal(code string, names []string) bool {
 	code = strings.ToLower(code)
-	for _, requestVar := range []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"} {
+	for _, requestVar := range names {
 		searchFrom := 0
 		for {
 			pos := strings.Index(code[searchFrom:], requestVar)
@@ -467,22 +594,33 @@ func containsRequestSuperglobal(code string) bool {
 // strings do. The decoder callback gate needs that distinction so a literal
 // '$_POST' data value does not look like request input.
 func containsRequestSuperglobalExpression(code string) bool {
+	return containsSuperglobalExpression(code, requestSuperglobalNames)
+}
+
+// containsIncludeTargetExpression reports whether an include/require target
+// expression reads an attacker-controlled superglobal. It excludes $_SERVER
+// (see includeTargetSuperglobalNames).
+func containsIncludeTargetExpression(code string) bool {
+	return containsSuperglobalExpression(code, includeTargetSuperglobalNames)
+}
+
+func containsSuperglobalExpression(code string, names []string) bool {
 	start := 0
 	for i := 0; i < len(code); i++ {
 		if !isPHPQuote(code[i]) {
 			continue
 		}
-		if containsRequestSuperglobal(code[start:i]) {
+		if containsAnySuperglobal(code[start:i], names) {
 			return true
 		}
 		end := skipPHPString(code, i)
-		if code[i] == '"' && containsRequestSuperglobal(code[i:end+1]) {
+		if code[i] == '"' && containsAnySuperglobal(code[i:end+1], names) {
 			return true
 		}
 		i = end
 		start = end + 1
 	}
-	return containsRequestSuperglobal(code[start:])
+	return containsAnySuperglobal(code[start:], names)
 }
 
 func canStartGlobalPHPFunction(code string, slash int) bool {
@@ -645,7 +783,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	if n == 0 {
 		return phpAnalysisResult{severity: -1}
 	}
-	content := string(buf[:n])
+	content := phpCodeOnly(string(buf[:n]))
 	contentLower := strings.ToLower(content)
 
 	var indicators []string
