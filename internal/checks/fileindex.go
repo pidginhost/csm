@@ -247,6 +247,10 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 		return alert.High, "new_php_in_sensitive_dir",
 			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path)
 	}
+	if result.empty {
+		return alert.High, "new_php_in_sensitive_dir",
+			fmt.Sprintf("New empty PHP file in %s: %s", locLabel, path)
+	}
 	// Content-verified inert stub (e.g. the "silence is golden" index.php) is
 	// suppressed; any real code surfaces as a non-actionable visibility Warning.
 	if IsBenignPHPStub(path) {

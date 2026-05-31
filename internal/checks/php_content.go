@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1080,12 +1082,25 @@ func savePHPContentCache(stateDir string, cache phpContentCache) {
 	_ = os.Rename(tmpPath, filepath.Join(stateDir, "phpcontentcache.json"))
 }
 
-// phpContentScanCount drives a periodic forced full rescan that bypasses the
-// content cache, mirroring the file-index cadence. The cache keys on mtime+size
-// alone, so a content swap that preserves both (an attacker resetting mtime
-// after editing in place) would be skipped until the file changed again. The
-// forced rescan bounds that window; realtime fanotify covers it in between.
-var phpContentScanCount int32
+// phpContentHostScanCount drives a periodic forced full rescan that bypasses
+// the content cache, mirroring the file-index cadence. The cache keys on
+// mtime+size alone, so a content swap that preserves both (an attacker resetting
+// mtime after editing in place) would be skipped until the file changed again.
+// The forced rescan bounds that window; realtime fanotify covers it in between.
+var phpContentHostScanCount int32
+
+// phpContentAccountScanCount keeps account-scoped scans from consuming the
+// host-wide full-rescan cadence. Account scans are subsets and never save the
+// shared cache, so mixing the counters can make the host-wide backstop miss its
+// intended cycle.
+var phpContentAccountScanCount int32
+
+func phpContentForceFull(ctx context.Context) bool {
+	if AccountFromContext(ctx) != "" {
+		return atomic.AddInt32(&phpContentAccountScanCount, 1)%6 == 0
+	}
+	return atomic.AddInt32(&phpContentHostScanCount, 1)%6 == 0
+}
 
 // phpContentScan carries the per-cycle cache state through the recursive walk.
 // prev is the previous cycle's clean-file stamps (read-only); next is rebuilt
@@ -1112,9 +1127,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		return nil
 	}
 
-	scanNum := atomic.AddInt32(&phpContentScanCount, 1)
-	forceFull := scanNum%6 == 0
-	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), forceFull)
+	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), phpContentForceFull(ctx))
 
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
@@ -1226,11 +1239,15 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 		if canCache {
 			stamp = phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
 			// Cache hit: file was clean last cycle and has not changed. Skip
-			// the read+parse and carry the stamp forward.
+			// the read+parse and carry the stamp forward only if the file is
+			// still readable. chmod does not update mtime or size, so a stale
+			// clean cache entry must not mask a file we can no longer inspect.
 			if !s.forceFull {
 				if prev, ok := s.prev[fullPath]; ok && prev == stamp {
-					s.next[fullPath] = stamp
-					continue
+					if phpContentReadable(fullPath) {
+						s.next[fullPath] = stamp
+						continue
+					}
 				}
 			}
 		}
@@ -1263,12 +1280,22 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 	}
 }
 
+func phpContentReadable(path string) bool {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
+}
+
 type phpAnalysisResult struct {
 	severity alert.Severity
 	check    string
 	message  string
 	details  string
 	readOK   bool
+	empty    bool
 }
 
 // analyzePHPContent reads the first phpContentReadSize bytes of a PHP file
@@ -1281,9 +1308,10 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, phpContentReadSize)
-	n, _ := f.Read(buf)
+	n, readErr := f.Read(buf)
+	readOK := readErr == nil || errors.Is(readErr, io.EOF)
 	if n == 0 {
-		return phpAnalysisResult{severity: -1}
+		return phpAnalysisResult{severity: -1, readOK: readOK, empty: readOK}
 	}
 	content := phpCodeOnly(string(buf[:n]))
 	contentLower := strings.ToLower(content)
@@ -1612,7 +1640,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// --- Determine severity based on indicators ---
 	if len(indicators) == 0 {
-		return phpAnalysisResult{severity: -1, readOK: true}
+		return phpAnalysisResult{severity: -1, readOK: readOK}
 	}
 
 	// Auto-quarantine in autoresponse.AutoQuarantineFiles acts only on

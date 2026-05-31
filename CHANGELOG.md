@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The PHP content scan now skips re-reading files that are unchanged since the previous scan, backed by a periodic full rescan and realtime file monitoring. On large multi-tenant hosts this keeps the deep scan from hitting its time limit and emitting spurious timeout warnings.
+- PHP content cache full rescans now stay on the host-wide cadence even when account scans run between daemon cycles, files that become unreadable are retried, and empty readable files are cached as clean.
 
 ## [3.10.0] - 2026-05-30
 

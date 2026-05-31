@@ -376,3 +376,19 @@ func TestClassifySensitiveDirPHP_UnreadableFailsClosed(t *testing.T) {
 		t.Errorf("unreadable PHP must fail closed at High, got sev=%v check=%q", sev, check)
 	}
 }
+
+func TestClassifySensitiveDirPHP_EmptyFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	langDir := filepath.Join(dir, "wp-content", "languages")
+	if err := os.MkdirAll(langDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(langDir, "empty.php")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sev, check, _ := classifySensitiveDirPHP(path, "empty.php")
+	if sev < alert.High || check != "new_php_in_sensitive_dir" {
+		t.Errorf("empty PHP must fail closed at High, got sev=%v check=%q", sev, check)
+	}
+}

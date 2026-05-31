@@ -30,6 +30,9 @@ func classifyUploadPHP(path string) (alert.Severity, string, string) {
 	if !r.readOK {
 		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path)
 	}
+	if r.empty {
+		return alert.High, "new_php_in_uploads", fmt.Sprintf("New empty PHP file in uploads: %s", path)
+	}
 	if IsBenignPHPStub(path) {
 		return -1, "", ""
 	}
