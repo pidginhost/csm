@@ -3,10 +3,13 @@ package checks
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -1043,6 +1046,64 @@ func canStartPHPFunctionName(code string, start int) bool {
 // This check scans PHP files in directories that shouldn't normally contain
 // user-authored PHP: wp-content/languages, wp-content/upgrade, wp-content/mu-plugins,
 // and also checks any PHP files flagged by the file index as new.
+// phpFileStamp is the cheap content-version key for a scanned PHP file. A file
+// whose mtime and size both match the previous cycle is treated as unchanged.
+type phpFileStamp struct {
+	Mtime int64 `json:"m"`
+	Size  int64 `json:"s"`
+}
+
+// phpContentCache maps a file path to the stamp it carried when last confirmed
+// clean. Only clean files are stored, so a present, matching entry means
+// "unchanged and previously produced no finding."
+type phpContentCache map[string]phpFileStamp
+
+func loadPHPContentCache(stateDir string) phpContentCache {
+	cache := phpContentCache{}
+	if stateDir == "" {
+		return cache
+	}
+	data, err := osFS.ReadFile(filepath.Join(stateDir, "phpcontentcache.json"))
+	if err == nil {
+		_ = json.Unmarshal(data, &cache)
+	}
+	return cache
+}
+
+func savePHPContentCache(stateDir string, cache phpContentCache) {
+	if stateDir == "" {
+		return
+	}
+	data, _ := json.Marshal(cache)
+	tmpPath := filepath.Join(stateDir, "phpcontentcache.json.tmp")
+	_ = os.WriteFile(tmpPath, data, 0600)
+	_ = os.Rename(tmpPath, filepath.Join(stateDir, "phpcontentcache.json"))
+}
+
+// phpContentScanCount drives a periodic forced full rescan that bypasses the
+// content cache, mirroring the file-index cadence. The cache keys on mtime+size
+// alone, so a content swap that preserves both (an attacker resetting mtime
+// after editing in place) would be skipped until the file changed again. The
+// forced rescan bounds that window; realtime fanotify covers it in between.
+var phpContentScanCount int32
+
+// phpContentScan carries the per-cycle cache state through the recursive walk.
+// prev is the previous cycle's clean-file stamps (read-only); next is rebuilt
+// from the files seen this cycle, which prunes deleted files automatically.
+type phpContentScan struct {
+	cfg       *config.Config
+	prev      phpContentCache
+	next      phpContentCache
+	forceFull bool
+}
+
+func newPHPContentScan(cfg *config.Config, prev phpContentCache, forceFull bool) *phpContentScan {
+	if prev == nil {
+		prev = phpContentCache{}
+	}
+	return &phpContentScan{cfg: cfg, prev: prev, next: phpContentCache{}, forceFull: forceFull}
+}
+
 func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -1050,6 +1111,10 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	if err != nil {
 		return nil
 	}
+
+	scanNum := atomic.AddInt32(&phpContentScanCount, 1)
+	forceFull := scanNum%6 == 0
+	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), forceFull)
 
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
@@ -1082,7 +1147,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 
 			for _, dir := range suspiciousDirs {
-				scanDirForObfuscatedPHP(ctx, dir, 4, cfg, &findings)
+				scan.scanDir(ctx, dir, 4, &findings)
 				if ctx.Err() != nil {
 					return findings
 				}
@@ -1090,12 +1155,31 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		}
 	}
 
+	// Persist only after a complete host-wide scan. A run cut short by ctx
+	// timeout leaves scan.next missing the unscanned files; persisting it would
+	// drop their cached-clean state and force a needless re-read next cycle
+	// (still safe, just slower). An account-scoped run (account_scan) only walks
+	// one account, so its scan.next is a subset of the shared cache and must not
+	// overwrite the host-wide stamps.
+	if ctx.Err() == nil && AccountFromContext(ctx) == "" {
+		savePHPContentCache(cfg.StatePath, scan.next)
+	}
+
 	return findings
 }
 
-// scanDirForObfuscatedPHP recursively scans directories for PHP files with
-// malicious content patterns.
+// scanDirForObfuscatedPHP scans dir without the content cache: every PHP file
+// is read and analysed. Used where caching does not apply (no prior cycle to
+// compare against).
 func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg *config.Config, findings *[]alert.Finding) {
+	newPHPContentScan(cfg, nil, true).scanDir(ctx, dir, maxDepth, findings)
+}
+
+// scanDir recursively scans dir for PHP files with malicious content patterns.
+// A file that was clean last cycle and is unchanged (same mtime+size) skips the
+// read+parse, unless this is a forced full rescan. Files that produce a finding
+// are never cached, so they re-surface on every cycle for the alert pipeline.
+func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, findings *[]alert.Finding) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -1116,7 +1200,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 
 		// Check suppressed paths
 		suppressed := false
-		for _, ignore := range cfg.Suppressions.IgnorePaths {
+		for _, ignore := range s.cfg.Suppressions.IgnorePaths {
 			if matchGlob(fullPath, ignore) {
 				suppressed = true
 				break
@@ -1127,7 +1211,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 		}
 
 		if entry.IsDir() {
-			scanDirForObfuscatedPHP(ctx, fullPath, maxDepth-1, cfg, findings)
+			s.scanDir(ctx, fullPath, maxDepth-1, findings)
 			continue
 		}
 
@@ -1136,12 +1220,26 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 			continue
 		}
 
+		info, statErr := osFS.Stat(fullPath)
+		var stamp phpFileStamp
+		canCache := statErr == nil
+		if canCache {
+			stamp = phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
+			// Cache hit: file was clean last cycle and has not changed. Skip
+			// the read+parse and carry the stamp forward.
+			if !s.forceFull {
+				if prev, ok := s.prev[fullPath]; ok && prev == stamp {
+					s.next[fullPath] = stamp
+					continue
+				}
+			}
+		}
+
 		// Every .php file is content-analysed. No filename/path allowlist:
 		// clean files produce no finding, so there is no benefit to skipping
 		// them, and any skip is a place an attacker can hide a backdoor.
 		result := analyzePHPContent(fullPath)
 		if result.severity >= 0 {
-			info, _ := osFS.Stat(fullPath)
 			details := result.details
 			if info != nil {
 				details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
@@ -1153,6 +1251,14 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 				Details:  details,
 				FilePath: fullPath,
 			})
+			continue
+		}
+
+		// Cache only files we read successfully and confirmed clean. An
+		// unreadable file might become readable later, so it must not be
+		// recorded as clean.
+		if canCache && result.readOK {
+			s.next[fullPath] = stamp
 		}
 	}
 }

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP content scanner now reports the legacy preg_replace /e modifier only when attacker-controlled input reaches the call, consistent with its other sink checks. This clears recurring false positives on old plugins that run /e over internal data while still catching it as a real code-execution sink.
 - PHP content scanner no longer misses legacy replacement-eval droppers when attacker input is staged before the call.
 
+### Changed
+
+- The PHP content scan now skips re-reading files that are unchanged since the previous scan, backed by a periodic full rescan and realtime file monitoring. On large multi-tenant hosts this keeps the deep scan from hitting its time limit and emitting spurious timeout warnings.
+
 ## [3.10.0] - 2026-05-30
 
 ### Added
