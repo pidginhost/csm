@@ -38,14 +38,14 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads |
 | cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
-| Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force and probe abuse |
+| Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log` (cPanel) |
-| Dovecot log (`/var/log/maillog`) | cPanel only | IMAP/POP3 account compromise |
+| Mail log (platform file or journal) | All hosts with Postfix/Dovecot logs | IMAP/POP3/ManageSieve account compromise and mail brute-force |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
 
-Cpanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
+cPanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
 ## SMTP / Dovecot Brute-Force Tracker
 
@@ -62,9 +62,15 @@ Four attack patterns:
 
 Tunable via the `thresholds.smtp_bruteforce_*` and `thresholds.smtp_probe_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
+## Cloud-Relay Credential Abuse
+
+Detects authenticated outbound Exim deliveries where the same mailbox is sending through public-cloud relay sources. The realtime Exim mainlog watcher evaluates new accepted deliveries, and a bounded startup replay covers recent lines already on disk.
+
+The finding is `email_cloud_relay_abuse`. Auto-response actions follow the global dry-run and block settings plus the email hold path. Operators with legitimate cloud mailers can opt out specific mailboxes or domains under `email_protection.cloud_relay`, or use `email_protection.high_volume_senders` for known high-volume senders.
+
 ## Mail Auth Brute-Force Tracker
 
-Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs as part of the Dovecot log watcher on cPanel hosts. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.
+Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.
 
 Four attack patterns:
 
@@ -98,14 +104,14 @@ The detector runs four paths and only fires `email_php_relay_abuse` (Critical) w
 
 | Path | What triggers it | Why it exists |
 |------|------------------|---------------|
-| **Path 1: header score** | Per-script: `From` domain not in the account's authorised domains AND additional signal (PHPMailer / suspicious Reply-To / suspicious User-Agent), evaluated over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages | The shape that matched the original incident: spoofed sender, contact-form-style. `FromMismatch` is a HARD precondition — the score never accumulates without it |
+| **Path 1: header score** | Per-script: `From` domain not in the account's authorised domains AND additional signal (PHPMailer / suspicious Reply-To / suspicious User-Agent), evaluated over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages | The shape that matched the original incident: spoofed sender, contact-form-style. `FromMismatch` is a HARD precondition -- the score never accumulates without it |
 | **Path 2: absolute volume per script** | A single script emits more than `absolute_volume_per_hour` messages in the last hour | Catches a compromised script even if the headers themselves are legit-shaped |
 | **Path 2b: account log-tail volume** | Per cPanel user: more than `effective_account_limit` outbound messages through the redirect_resolver router in the last hour. The effective limit is auto-derived from `/var/cpanel/cpanel.config`'s `maxemailsperhour` (60% of it, clamped to 20-60), capped at 95% of the cPanel limit when an operator override is set | Backstop for when Path 2 misses the window. Reads `/var/log/exim_mainlog` directly; only fires on lines tagged `B=redirect_resolver` so forwarders don't trip it |
 | **Path 4: HTTP-IP fanout** | Per HTTP source IP: one source IP appears in more than `fanout_distinct_scripts` distinct script keys in `fanout_window_min` minutes, after excluding loaded HTTP-proxy ranges, loopback, and the host's own interface addresses | Catches one client walking many scripts while avoiding CDN/proxy traffic and local cron or panel callbacks |
 
 Path 5 (behavioural baseline) is deferred to Stage 2.
 
-The detector starts a one-shot retrospective scan of `exim_mainlog` at daemon startup so Path 2b can fire on history already on disk. `IN_Q_OVERFLOW` triggers a bounded recovery walk of the spool (capped at 1000 files; if more were skipped, a `email_php_relay_overflow_scan_truncated` Critical fires too — Path 2b backstops the missed messages).
+The detector starts a one-shot retrospective scan of `exim_mainlog` at daemon startup so Path 2b can fire on history already on disk. `IN_Q_OVERFLOW` triggers a bounded recovery walk of the spool (capped at 1000 files; if more were skipped, a `email_php_relay_overflow_scan_truncated` Critical fires too -- Path 2b backstops the missed messages).
 
 Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit the pipeline before any path scoring runs, so a known-noisy contact form can be opted out individually without disabling the detector. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only) for the full operator surface.
 

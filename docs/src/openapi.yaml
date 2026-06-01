@@ -19,7 +19,7 @@ info:
     endpoints marked x-csm-scope=read; management routes require an
     admin-scope token.
 servers:
-  - url: https://localhost:8443
+  - url: https://localhost:9443
     description: CSM daemon HTTPS listener (operator-configured host/port)
 components:
   securitySchemes:

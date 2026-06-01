@@ -24,7 +24,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
+| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
 | **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, sticky bulk operations, modal account scan |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |

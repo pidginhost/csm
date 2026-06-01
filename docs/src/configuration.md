@@ -183,7 +183,7 @@ thresholds:
   smtp_probe_suppress_min: 60             # cooldown between repeat findings (default: 60)
   smtp_probe_max_tracked: 20000           # soft cap on tracked entries; oldest evicted (default: 20000)
 
-  # Mail brute-force tracker (Dovecot direct: IMAP/POP3/ManageSieve via /var/log/maillog)
+  # Mail brute-force tracker (IMAP/POP3/ManageSieve via mail_logs source)
   mail_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)
   mail_bruteforce_window_min: 10          # sliding window in minutes (default: 10)
   mail_bruteforce_suppress_min: 60        # cooldown between repeat findings (default: 60)
@@ -191,6 +191,8 @@ thresholds:
   mail_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
+  modsec_escalation_hits: 3          # denies from one IP before ModSecurity escalation (default: 3)
+  modsec_escalation_window_min: 10   # ModSecurity escalation window in minutes (default: 10)
 
 # --- Web server overrides ---
 # Leave these empty to use auto-detected paths for the running platform.
@@ -245,7 +247,10 @@ auto_response:
   permblock: false                      # promote temp blocks to permanent
   permblock_count: 4                    # temp blocks before promotion
   permblock_interval: "24h"             # window for counting temp blocks
+  clean_database: false                 # auto-drop confirmed malicious DB objects after backup
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
+  disable_enforce_af_alg: false         # suspend periodic AF_ALG hardening re-assertion
+  copy_fail_kill_process: false         # kill processes caught opening AF_ALG sockets via the live listener
   dry_run: true                         # safe default; logs intended IP blocks without mutating nftables
   verdict_callback:
     enabled: false                      # call panel before each auto-block
@@ -278,6 +283,25 @@ detection:
   admin_overlap_trusted_emails: []       # exact reviewed admin emails that may manage multiple cPanel accounts
   admin_overlap_trusted_domains: []      # exact reviewed email domains for developer or reseller admin accounts
   # rescan_on_signature_update: true    # tri-state; omit for default-on, false to disable retroactive sweeps
+  af_alg_backend: "auto"                # auto | bpf | auditd | none
+  connection_tracker_backend: "auto"    # auto | bpf | legacy | none
+  connection_poll_interval: 30s         # legacy connection tracker interval
+  exec_monitor_backend: "auto"          # auto | bpf | legacy | none
+  exec_monitor_poll_interval: 30m       # legacy process monitor interval
+  sensitive_files_backend: "auto"       # auto | bpf | legacy | none
+  sensitive_files_poll_interval: 5m     # sensitive-file poll/watchset refresh interval
+  direct_smtp_egress:
+    enabled: false                      # detect non-MTA local processes opening outbound SMTP
+    backend: "auto"                     # auto | bpf | legacy | none
+    dry_run: true                       # safe default for detector-scoped action
+    ports: [25, 465, 587]               # destination ports to inspect
+
+# --- BPF Enforcement ---
+bpf_enforcement:
+  enabled: false                        # master switch for in-kernel denial
+  dry_run: true                         # log intended denials, allow the connect
+  direct_smtp_egress: false             # gate enforcement on direct SMTP egress matches
+  verdict_callback: false               # userspace advisory callback after the BPF decision
 
 # --- Challenge Pages ---
 challenge:
@@ -289,6 +313,7 @@ challenge:
   public_url: ""                        # required by webserver-integration, e.g. https://host:8439/challenge
   secret: ""                            # HMAC secret for tokens (auto-generated if empty)
   difficulty: 2                         # SHA-256 proof-of-work difficulty 0-5 (default: 2)
+  trusted_proxies: []                   # IPs/CIDRs allowed to supply X-Forwarded-For
   port_gate:
     enabled: false                      # nftables gate for non-loopback challenge listener
   captcha_fallback:                     # widget for JS-disabled visitors (default off)
@@ -349,13 +374,17 @@ signatures:
   disabled_rules: []                    # YARA rule names to exclude from Forge downloads
   # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
 
-
-`signatures.signing_key` is mandatory whenever either `signatures.update_url` is set or `signatures.yara_forge.enabled` is `true`.
-The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.
-It is not a PEM block and not a filesystem path.
-Remote update URLs must use HTTP or HTTPS and must not point at localhost, loopback, link-local, unspecified, or RFC1918 / ULA private addresses.
-
-YARA Forge upstream GitHub releases do not publish CSM detached signatures. To enable automatic Forge updates, mirror the ZIPs, sign each ZIP, publish the signature at the ZIP URL plus `.sig`, and set `yara_forge.download_url` to that signed mirror. If you are not operating a signed remote rule feed yet, leave `update_url` empty and keep `yara_forge.enabled: false`.
+# signatures.signing_key is mandatory whenever either signatures.update_url
+# is set or signatures.yara_forge.enabled is true. It must be the hex
+# Ed25519 public key used to verify detached .sig files for rule bundles.
+# Remote update URLs must use HTTP or HTTPS and must not point at localhost,
+# loopback, link-local, unspecified, or RFC1918 / ULA private addresses.
+#
+# YARA Forge upstream GitHub releases do not publish CSM detached signatures.
+# To enable automatic Forge updates, mirror the ZIPs, sign each ZIP, publish
+# the signature at the ZIP URL plus .sig, and set yara_forge.download_url to
+# that signed mirror. Otherwise leave update_url empty and yara_forge.enabled
+# false.
 
 # --- Web UI ---
 webui:
@@ -405,7 +434,10 @@ email_protection:
     fanout_window_min: 5                # Path 4 window
     baseline_sigma: 3.0                 # Path 5 (Stage 3)
     baseline_observation_days: 7        # Path 5 (Stage 3)
-    policies_dir: "/opt/csm/policies/email"  # mailer_classes.yaml + http_proxy_ranges.yaml; SIGHUP-reloadable
+    policies_dir: "/opt/csm/policies/php_relay"  # mailer_classes.yaml + http_proxy_ranges.yaml; SIGHUP-reloadable
+  cloud_relay:
+    allow_users: []                     # full mailbox opt-outs for cloud-relay detection
+    allow_domains: []                   # domain-wide opt-outs for cloud-relay detection
 
 # --- Firewall ---
 firewall:
@@ -530,6 +562,35 @@ cloudflare:
 # --- Threat Intel ---
 c2_blocklist: []                        # known C2 server IPs to block permanently
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
+
+# --- Update check ---
+updates:
+  check_enabled: true                   # notify only; CSM never downloads or applies updates
+  interval: "24h"                       # release check interval
+  github_api_url: ""                    # optional release API mirror or test endpoint
+  package_name: "csm"                   # apt/dnf package name for package-manager fallback
+
+# --- Incidents ---
+incidents:
+  auto_close:
+    enabled: true                       # auto-close idle open/contained incidents
+    dry_run: false                      # log decisions without writing status changes
+    by_kind:
+      mailbox_takeover: 24h
+      credential_spray: 24h
+      web_account_compromise: 168h
+  spray_suppression:
+    enabled: false                      # collapse one-source credential spray into one incident
+    dry_run: true
+    distinct_mailboxes: 10
+    severity_escalate_at: 50
+    per_check: [email_auth_failure_realtime, pam_auth_failure, ssh_bruteforce]
+    max_tracked_ips: 10000
+    block_at_severity: ""              # "" | high | critical
+  auto_block:
+    enabled: false                      # block source IPs from incident correlations
+    block_at_severity: ""              # "" | high | critical
+    kinds: []                           # empty means all non-spray kinds with remote_ip
 
 # --- Disabled checks (skip whole categories per host) ---
 # Listed finding names disable the scheduled check runner(s) that emit them,

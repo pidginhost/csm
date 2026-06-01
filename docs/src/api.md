@@ -26,10 +26,10 @@ webui:
       scope: admin       # full read+write
     - name: "panel-readonly"
       token: "..."
-      scope: read        # status, findings, history, stats, blocked IPs, health, capabilities, SSE
+      scope: read        # status, findings, history, stats, blocked IPs, health, components, capabilities, SSE
 ```
 
-The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, blocked-IP summaries, health, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, ModSecurity, account detail, exports, incident timelines, and audit history. `metrics_token:` is a separate, read-only credential for `/metrics` only.
+The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, blocked-IP summaries, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, ModSecurity, account detail, exports, incident timelines, and audit history. `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Status & Data
 
@@ -41,6 +41,7 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`). Use for orchestrator feature-detect.
+GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)

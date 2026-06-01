@@ -1,6 +1,6 @@
 # Deep Checks
 
-35 checks, run every 60 minutes. Thorough filesystem and database scans.
+Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and database scans.
 
 ## Filesystem
 
@@ -29,6 +29,7 @@
 | `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
 | `admin_overlap` | WordPress administrator email overlap across cPanel accounts. Reports when the same admin email appears on the configured number of accounts, with reviewed emails and domains suppressible in `detection`. |
 | `credential_reuse` | WordPress administrator password-hash reuse across cPanel accounts. Groups identical hashes with an in-memory fingerprint and reports only the affected accounts and count. |
+| `supply_chain` | Composer and npm lockfile advisory matching against the local advisory database. Silent when no advisory file is present. |
 
 ## CMS Scanner Support Policy
 
@@ -92,6 +93,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 
 - `htaccess`, `file_index`, `php_content`, `group_writable_php`, `symlink_attacks` -- iterate `/home/*/public_html/**`
 - `wp_core`, `nulled_plugins`, `outdated_plugins`, `db_content` -- find WordPress installs under `/home/*/public_html`
+- `supply_chain` -- scans `composer.lock` and `package-lock.json` under `/home/*` and `/home/*/public_html`
 - `phishing`, `email_content` -- scan user home directories and Exim spool
 - `dns_zones`, `ssl_certs` -- read cPanel's DNS zone store and SSL installation records
 - `email_weak_password`, `email_forwarder_audit` -- read `/etc/valiases`, Dovecot/Courier auth databases

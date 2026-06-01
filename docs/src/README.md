@@ -16,15 +16,15 @@ csm daemon
  +-- inotify log watchers          ~2s detection on auth, access, exim, FTP logs
  +-- PAM brute-force listener      Real-time login failure tracking
  +-- PHP runtime shield            auto_prepend_file protection
- +-- critical scanner (10 min)     36 checks: processes, network, tokens, logins, firewall
- +-- deep scanner (60 min)         35 checks: WP/CMS integrity, package integrity, DB injection, phishing
+ +-- critical scanner (10 min)     Processes, network, tokens, logins, firewall
+ +-- deep scanner (60 min)         WP/CMS integrity, package integrity, DB injection, phishing
  +-- nftables firewall engine      Kernel netlink API, IP sets, rate limiting
  +-- threat intelligence           IP reputation, attack scoring, GeoIP
  +-- ModSecurity manager           Rule deployment, overrides, escalation
  +-- email security                AV scanning, quarantine, password/forwarder audit
  +-- challenge server              Proof-of-work pages for suspicious IPs
  +-- alert dispatcher              Email, Slack, Discord, webhooks
- +-- web UI                        HTTPS dashboard with 14 authenticated pages
+ +-- web UI                        HTTPS dashboard with authenticated operator pages
  +-- hardening audit               On-demand server hardening checks + scoring
  +-- performance monitor           PHP, MySQL, Redis, WordPress metrics
 ```

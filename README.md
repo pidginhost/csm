@@ -77,7 +77,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 | Compromised WP admin / siteurl injection | `csm db-clean --revoke-user`, `--option`, `--delete-spam` | [CLI](docs/src/cli.md) |
 | Webshells, obfuscated/eval-chain PHP, tail-appended payloads | fanotify watcher + 7 cleaning strategies; quarantine preserves owner/perms/mtime | [Real-time](docs/src/detection-realtime.md), [Auto-response](docs/src/auto-response.md) |
 | PHP-relay form abuse (PHPMailer with spoofed `From`) | Inotify watcher on `/var/spool/exim/input`, 4 detection paths, optional `exim -Mf` auto-freeze | [Real-time](docs/src/detection-realtime.md#php-relay-mail-abuse-cpanel-only) |
-| Outbound abuse to GCP/AWS/Azure cloud relays | Realtime fanotify block + retro-scan on startup | [Real-time](docs/src/detection-realtime.md) |
+| Outbound abuse to GCP/AWS/Azure cloud relays | Exim mainlog watcher plus startup replay; optional mail hold and IP block | [Real-time](docs/src/detection-realtime.md) |
 | ModSecurity rule sprawl and triage | Web UI on/off + edit, WAF blocks feed attacker scoring | [ModSecurity](docs/src/modsecurity.md) |
 | Subnet-spread brute force | Per-/24 scoring + auto-block of the whole CIDR | [Auto-response](docs/src/auto-response.md) |
 | Kernel-level CVEs you can't immediately patch | `csm harden`, continuous enforcement, live exploit-signature detection | [CVE Mitigations](docs/src/cve-mitigations.md) |
