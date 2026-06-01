@@ -278,6 +278,29 @@ func TestThresholdsSchemaIncludesHTTPDistributedMinIPs(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesCredStuffingDistinctAccounts(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "cred_stuffing_distinct_accounts")
+	if f == nil {
+		t.Fatal("cred_stuffing_distinct_accounts field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("cred_stuffing_distinct_accounts type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 2 {
+		t.Fatalf("cred_stuffing_distinct_accounts min = %v, want 2", f.Min)
+	}
+	if f.Max == nil || *f.Max != 200 {
+		t.Fatalf("cred_stuffing_distinct_accounts max = %v, want 200", f.Max)
+	}
+	if f.FieldGroup != FieldGroupAccountSpray {
+		t.Fatalf("cred_stuffing_distinct_accounts group = %q, want %q", f.FieldGroup, FieldGroupAccountSpray)
+	}
+	if !strings.Contains(f.Help, "Default 5") {
+		t.Fatalf("cred_stuffing_distinct_accounts help = %q, want default guidance", f.Help)
+	}
+}
+
 func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 	cases := []struct {
 		section, field, source string

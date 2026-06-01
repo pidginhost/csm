@@ -27,11 +27,10 @@ type credentialStuffingDetector struct {
 }
 
 type credStuffState struct {
-	accounts  map[string]struct{}
-	firstSeen time.Time
-	lastSeen  time.Time
+	accounts map[string]time.Time
+	lastSeen time.Time
 	// fired is set once the IP crosses the distinct-account threshold so a
-	// single campaign yields one finding, not one per additional account.
+	// single active window yields one finding, not one per additional account.
 	fired bool
 }
 
@@ -64,7 +63,10 @@ func (d *credentialStuffingDetector) Record(ip, account string) ([]string, bool)
 	}
 	now := d.now()
 	state, ok := d.perIP[ip]
-	if ok && now.Sub(state.lastSeen) > d.window {
+	if ok {
+		d.pruneAccountWindow(state, now)
+	}
+	if ok && len(state.accounts) == 0 {
 		state = nil
 		delete(d.perIP, ip)
 	}
@@ -72,13 +74,17 @@ func (d *credentialStuffingDetector) Record(ip, account string) ([]string, bool)
 		if d.maxTrackedIPs > 0 && len(d.perIP) >= d.maxTrackedIPs {
 			d.evictOldest()
 		}
-		state = &credStuffState{accounts: make(map[string]struct{}), firstSeen: now}
+		state = &credStuffState{accounts: make(map[string]time.Time)}
 		d.perIP[ip] = state
 	}
-	state.accounts[account] = struct{}{}
+	state.accounts[account] = now
 	state.lastSeen = now
 
-	if state.fired || len(state.accounts) < d.distinctAccounts {
+	if len(state.accounts) < d.distinctAccounts {
+		state.fired = false
+		return nil, false
+	}
+	if state.fired {
 		return nil, false
 	}
 	state.fired = true
@@ -99,12 +105,59 @@ func (d *credentialStuffingDetector) PruneStale(now time.Time) int {
 	}
 	pruned := 0
 	for ip, state := range d.perIP {
-		if now.Sub(state.lastSeen) > d.window {
+		d.pruneAccountWindow(state, now)
+		if len(state.accounts) == 0 {
 			delete(d.perIP, ip)
 			pruned++
+			continue
+		}
+		if len(state.accounts) < d.distinctAccounts {
+			state.fired = false
 		}
 	}
 	return pruned
+}
+
+// Clear removes all tracked breadth state for ip after a successful login.
+func (d *credentialStuffingDetector) Clear(ip string) {
+	if d == nil || ip == "" {
+		return
+	}
+	delete(d.perIP, ip)
+}
+
+// Configure applies live threshold/window changes. Callers hold their
+// external mutex, matching Record's synchronization contract.
+func (d *credentialStuffingDetector) Configure(distinctAccounts int, window time.Duration, now time.Time) {
+	if d == nil {
+		return
+	}
+	if distinctAccounts < 2 {
+		distinctAccounts = 2
+	}
+	d.distinctAccounts = distinctAccounts
+	d.window = window
+	for ip, state := range d.perIP {
+		d.pruneAccountWindow(state, now)
+		if len(state.accounts) == 0 {
+			delete(d.perIP, ip)
+			continue
+		}
+		if len(state.accounts) < d.distinctAccounts {
+			state.fired = false
+		}
+	}
+}
+
+func (d *credentialStuffingDetector) pruneAccountWindow(state *credStuffState, now time.Time) {
+	if state == nil {
+		return
+	}
+	for account, seen := range state.accounts {
+		if now.Sub(seen) > d.window {
+			delete(state.accounts, account)
+		}
+	}
 }
 
 // evictOldest removes the entry with the smallest lastSeen so a fresh insert

@@ -41,6 +41,7 @@ var checkToAttack = map[string]AttackType{
 	"api_auth_failure":          AttackBruteForce,
 	"api_auth_failure_realtime": AttackBruteForce,
 	"ftp_auth_failure_realtime": AttackBruteForce,
+	"credential_stuffing":       AttackBruteForce,
 	"pam_bruteforce":            AttackBruteForce,
 	"smtp_bruteforce":           AttackBruteForce,
 	"smtp_probe_abuse":          AttackBruteForce,

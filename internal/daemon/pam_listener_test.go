@@ -30,6 +30,7 @@ func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
 	// Keep the count-based brute trigger quiet so this asserts the
 	// distinct-account breadth path specifically.
 	cfg.Thresholds.MultiIPLoginThreshold = 100
+	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 
 	p := &PAMListener{
 		cfg:      cfg,
@@ -58,6 +59,7 @@ func TestPAMListenerRepeatedSingleAccountIsNotStuffing(t *testing.T) {
 	alertCh := make(chan alert.Finding, 8)
 	cfg := &config.Config{}
 	cfg.Thresholds.MultiIPLoginThreshold = 100 // keep brute quiet
+	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 
 	p := &PAMListener{
 		cfg:      cfg,
@@ -73,6 +75,60 @@ func TestPAMListenerRepeatedSingleAccountIsNotStuffing(t *testing.T) {
 	}
 	if got := drainForCheck(alertCh, "credential_stuffing"); got != nil {
 		t.Fatalf("credential_stuffing fired on single-account depth: %+v", got)
+	}
+}
+
+func TestPAMListenerOKClearsCredentialStuffingState(t *testing.T) {
+	alertCh := make(chan alert.Finding, 8)
+	cfg := &config.Config{}
+	cfg.Thresholds.MultiIPLoginThreshold = 100
+	cfg.Thresholds.CredStuffingDistinctAccounts = 3
+
+	p := &PAMListener{
+		cfg:      cfg,
+		alertCh:  alertCh,
+		failures: make(map[string]*pamFailureTracker),
+		stuffing: newCredentialStuffingDetector(3, 10*time.Minute, nil),
+	}
+
+	p.processEvent("FAIL ip=203.0.113.22 user=alice service=sshd")
+	p.processEvent("FAIL ip=203.0.113.22 user=bob service=dovecot")
+	p.processEvent("OK ip=203.0.113.22 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.22 user=carol service=sshd")
+
+	if got := drainForCheck(alertCh, "credential_stuffing"); got != nil {
+		t.Fatalf("credential_stuffing retained pre-success accounts: %+v", got)
+	}
+}
+
+func TestPAMListenerUsesActiveCredentialStuffingThreshold(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	alertCh := make(chan alert.Finding, 8)
+	startup := &config.Config{}
+	startup.Thresholds.MultiIPLoginThreshold = 100
+	startup.Thresholds.CredStuffingDistinctAccounts = 5
+
+	active := &config.Config{}
+	active.Thresholds.MultiIPLoginThreshold = 100
+	active.Thresholds.CredStuffingDistinctAccounts = 3
+	config.SetActive(active)
+
+	p := &PAMListener{
+		cfg:             startup,
+		alertCh:         alertCh,
+		failures:        make(map[string]*pamFailureTracker),
+		useActiveConfig: true,
+		stuffing:        newCredentialStuffingDetector(5, 10*time.Minute, nil),
+	}
+
+	p.processEvent("FAIL ip=203.0.113.23 user=alice service=sshd")
+	p.processEvent("FAIL ip=203.0.113.23 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.23 user=carol service=sshd")
+
+	if got := drainForCheck(alertCh, "credential_stuffing"); got == nil {
+		t.Fatal("expected active threshold to lower credential_stuffing trip point")
 	}
 }
 

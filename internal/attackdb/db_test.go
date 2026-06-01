@@ -26,3 +26,10 @@ func TestClassify_AdminPanelBruteForceAsBruteForce(t *testing.T) {
 		t.Errorf("admin_panel_bruteforce classified as %q, want %q", got, AttackBruteForce)
 	}
 }
+
+func TestClassify_CredentialStuffingAsBruteForce(t *testing.T) {
+	got := checkToAttack["credential_stuffing"]
+	if got != AttackBruteForce {
+		t.Errorf("credential_stuffing classified as %q, want %q", got, AttackBruteForce)
+	}
+}

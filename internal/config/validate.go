@@ -337,6 +337,9 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.SyslogMessagesTailLines != 0 && (t.SyslogMessagesTailLines < 10 || t.SyslogMessagesTailLines > 100000) {
 		results = append(results, ValidationResult{"error", "thresholds.syslog_messages_tail_lines", "syslog_messages_tail_lines must be between 10 and 100000"})
 	}
+	if t.CredStuffingDistinctAccounts != 0 && (t.CredStuffingDistinctAccounts < 2 || t.CredStuffingDistinctAccounts > 200) {
+		results = append(results, ValidationResult{"error", "thresholds.cred_stuffing_distinct_accounts", "cred_stuffing_distinct_accounts must be between 2 and 200"})
+	}
 	if t.SMTPBruteForceThreshold != 0 && (t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_threshold", "smtp_bruteforce_threshold must be between 2 and 50"})
 	}

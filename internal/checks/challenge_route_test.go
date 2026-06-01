@@ -143,6 +143,17 @@ func TestChallengeRoute_DoesNotRouteMailChecks(t *testing.T) {
 	}
 }
 
+func TestChallengeRoute_DoesNotRoutePAMChecks(t *testing.T) {
+	for _, check := range []string{"pam_bruteforce", "credential_stuffing"} {
+		if isChallengeableCheck(check) {
+			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
+		}
+		if !isHardBlockCheck(check) {
+			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+		}
+	}
+}
+
 func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
 	if isChallengeableCheck("admin_panel_bruteforce") {
 		t.Error("admin_panel_bruteforce must not be challenge-routed (hard-block only)")

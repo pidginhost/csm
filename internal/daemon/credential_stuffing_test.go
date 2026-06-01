@@ -78,6 +78,36 @@ func TestCredentialStuffingWindowExpiryResets(t *testing.T) {
 	}
 }
 
+func TestCredentialStuffingRequiresAccountsInsideWindow(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	d := newCredentialStuffingDetector(3, 10*time.Minute, fixedClock(&now))
+
+	d.Record("203.0.113.7", "alice")
+	now = now.Add(6 * time.Minute)
+	d.Record("203.0.113.7", "bob")
+	now = now.Add(6 * time.Minute)
+	if accts, fire := d.Record("203.0.113.7", "carol"); fire {
+		t.Fatalf("fired with stale out-of-window account included: %v", accts)
+	}
+}
+
+func TestCredentialStuffingCanFireAgainAfterWindowRolls(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	d := newCredentialStuffingDetector(2, 10*time.Minute, fixedClock(&now))
+
+	d.Record("203.0.113.7", "alice")
+	if _, fire := d.Record("203.0.113.7", "bob"); !fire {
+		t.Fatal("expected first window to fire")
+	}
+	now = now.Add(11 * time.Minute)
+	if _, fire := d.Record("203.0.113.7", "carol"); fire {
+		t.Fatal("single account in fresh window should not fire")
+	}
+	if _, fire := d.Record("203.0.113.7", "dave"); !fire {
+		t.Fatal("expected fresh window to fire after stale state rolled out")
+	}
+}
+
 func TestCredentialStuffingBoundsTrackedIPs(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	d := newCredentialStuffingDetector(3, 10*time.Minute, fixedClock(&now))
@@ -105,6 +135,21 @@ func TestCredentialStuffingPruneStaleDropsExpired(t *testing.T) {
 	}
 	if len(d.perIP) != 0 {
 		t.Fatalf("stale entry survived prune: %d", len(d.perIP))
+	}
+}
+
+func TestCredentialStuffingClearDropsIPState(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	d := newCredentialStuffingDetector(3, 10*time.Minute, fixedClock(&now))
+
+	d.Record("203.0.113.7", "alice")
+	d.Record("203.0.113.7", "bob")
+	d.Clear("203.0.113.7")
+	if _, fire := d.Record("203.0.113.7", "carol"); fire {
+		t.Fatal("cleared accounts counted toward a later threshold")
+	}
+	if got := len(d.perIP["203.0.113.7"].accounts); got != 1 {
+		t.Fatalf("accounts after clear+record = %d, want 1", got)
 	}
 }
 

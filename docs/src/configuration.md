@@ -127,6 +127,7 @@ thresholds:
   filesystem_scan_interval_min: 30      # filesystem scan interval (default: 30)
   multi_ip_login_threshold: 3           # IPs per account before alert (default: 3)
   multi_ip_login_window_min: 60         # time window for multi-IP check (default: 60)
+  cred_stuffing_distinct_accounts: 5    # failed accounts from one IP before credential_stuffing (default: 5)
   plugin_check_interval_min: 1440       # WordPress plugin check interval (default: 1440)
   brute_force_window: 5000              # failed auth attempts window (default: 5000)
   domlog_max_files: 500                 # per-domain access logs per WP brute-force scan (default: 500)

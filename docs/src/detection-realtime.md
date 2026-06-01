@@ -121,6 +121,7 @@ Real-time authentication monitoring across all PAM-enabled services.
 
 - SSH login tracking with geolocation
 - cPanel, FTP, and webmail authentication
+- Credential stuffing / password spray breadth: one source IP failing against many distinct accounts inside `thresholds.multi_ip_login_window_min`. The finding is `credential_stuffing`; tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5).
 - Blocks IPs within seconds of threshold breach
 - Integrates with the nftables firewall for instant blocking
 

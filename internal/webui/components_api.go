@@ -113,6 +113,7 @@ var componentCheckOrigin = map[string]string{
 	"modsec_csm_block_escalation":                "modsec",
 	"modsec_warning_realtime":                    "modsec",
 	"obfuscated_php_realtime":                    "fanotify",
+	"credential_stuffing":                        "pamlistener",
 	"pam_bruteforce":                             "pamlistener",
 	"pam_login":                                  "pamlistener",
 	"phishing_kit_realtime":                      "fanotify",

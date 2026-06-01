@@ -1162,6 +1162,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.SyslogMessagesTailLines == 0 {
 		cfg.Thresholds.SyslogMessagesTailLines = 200
 	}
+	if cfg.Thresholds.CredStuffingDistinctAccounts == 0 {
+		cfg.Thresholds.CredStuffingDistinctAccounts = 5
+	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3
 	}

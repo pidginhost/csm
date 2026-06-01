@@ -59,6 +59,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.SyslogMessagesTailLines != 200 {
 		t.Errorf("syslog_messages_tail_lines = %d, want 200", cfg.Thresholds.SyslogMessagesTailLines)
 	}
+	if cfg.Thresholds.CredStuffingDistinctAccounts != 5 {
+		t.Errorf("cred_stuffing_distinct_accounts = %d, want 5", cfg.Thresholds.CredStuffingDistinctAccounts)
+	}
 	if cfg.Thresholds.HTTPFloodWindowMin != 5 {
 		t.Errorf("http_flood_window_min = %d, want 5", cfg.Thresholds.HTTPFloodWindowMin)
 	}
@@ -471,6 +474,7 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 		t.Fatalf("yaml.Unmarshal: %v", err)
 	}
 	for _, key := range []string{
+		"cred_stuffing_distinct_accounts",
 		"http_flood_threshold",
 		"http_flood_window_min",
 		"http_ua_spoof_threshold",

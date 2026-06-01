@@ -75,6 +75,7 @@ var hardBlockChecks = map[string]bool{
 	"modsec_csm_block_escalation": true,
 	"api_auth_failure_realtime":   true, // cPanel API brute force — challenge is useless, hard-block
 	"ftp_auth_failure_realtime":   true, // FTP brute force — can't challenge non-HTTP
+	"credential_stuffing":         true, // PAM breadth signal — can't challenge non-HTTP
 	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
 	"smtp_bruteforce":             true, // SMTP brute force — can't challenge non-HTTP
 	"smtp_probe_abuse":            true, // SMTP probe abuse (connect-rate) cannot challenge non-HTTP

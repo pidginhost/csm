@@ -112,6 +112,7 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 		{check: "mail_log_source_unavailable", watcher: "maillog"},
 		{check: "email_php_relay_abuse", watcher: "phprelay"},
 		{check: "email_malware", watcher: "email_av_spool"},
+		{check: "credential_stuffing", watcher: "pamlistener"},
 		{check: "pam_login", watcher: "pamlistener"},
 	}
 

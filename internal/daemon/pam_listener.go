@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,12 @@ import (
 
 const pamSocketPath = "/var/run/csm/pam.sock"
 
+const (
+	defaultPAMFailureThreshold          = 5
+	defaultPAMFailureWindowMin          = 10
+	defaultCredStuffingDistinctAccounts = 5
+)
+
 // PAMListener listens on a Unix socket for authentication events from the
 // pam_csm.so PAM module. Tracks failures per IP and triggers CSM auto-blocking.
 type PAMListener struct {
@@ -26,6 +33,10 @@ type PAMListener struct {
 	listener net.Listener
 	mu       sync.Mutex
 	failures map[string]*pamFailureTracker
+	// useActiveConfig is true for the daemon-owned listener, so SIGHUP
+	// threshold changes apply without rebuilding the socket. Unit tests that
+	// assemble a listener by hand keep using their local cfg.
+	useActiveConfig bool
 	// stuffing flags one source IP failing against many distinct accounts
 	// (credential stuffing / password spraying breadth) -- complementary to
 	// the per-IP failure-count brute-force trigger below. Guarded by mu.
@@ -69,22 +80,16 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 	// root-only instead of accepting arbitrary local writers.
 	_ = os.Chmod(pamSocketPath, 0600)
 
-	windowMin := 10
-	if cfg.Thresholds.MultiIPLoginWindowMin > 0 {
-		windowMin = cfg.Thresholds.MultiIPLoginWindowMin
-	}
-	distinct := 5
-	if cfg.Thresholds.CredStuffingDistinctAccounts > 0 {
-		distinct = cfg.Thresholds.CredStuffingDistinctAccounts
-	}
+	_, window, distinct := pamThresholds(cfg)
 
 	return &PAMListener{
-		cfg:       cfg,
-		alertCh:   alertCh,
-		listener:  listener,
-		failures:  make(map[string]*pamFailureTracker),
-		startedAt: time.Now(),
-		stuffing:  newCredentialStuffingDetector(distinct, time.Duration(windowMin)*time.Minute, nil),
+		cfg:             cfg,
+		alertCh:         alertCh,
+		listener:        listener,
+		failures:        make(map[string]*pamFailureTracker),
+		startedAt:       time.Now(),
+		useActiveConfig: true,
+		stuffing:        newCredentialStuffingDetector(distinct, window, nil),
 	}, nil
 }
 
@@ -232,11 +237,14 @@ func (p *PAMListener) processEvent(line string) {
 func (p *PAMListener) recordFailure(ip, user, service string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	cfg := p.currentCfg()
+	threshold, window, distinct := pamThresholds(cfg)
+	now := time.Now()
 
 	tracker, exists := p.failures[ip]
 	if !exists {
 		tracker = &pamFailureTracker{
-			firstSeen: time.Now(),
+			firstSeen: now,
 			users:     make(map[string]bool),
 			services:  make(map[string]bool),
 		}
@@ -244,7 +252,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 	}
 
 	tracker.count++
-	tracker.lastSeen = time.Now()
+	tracker.lastSeen = now
 	tracker.users[user] = true
 	tracker.services[service] = true
 
@@ -252,33 +260,24 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 	// distinct accounts. Independent of the per-IP failure-count brute-force
 	// trigger below, so a low-and-slow campaign that stays under the count
 	// threshold per account is still caught. Fires once per window.
+	p.ensureCredentialStuffingDetectorLocked(distinct, window, now)
 	if accounts, fire := p.stuffing.Record(ip, user); fire {
 		p.alertCh <- alert.Finding{
 			Severity: alert.High,
 			Check:    "credential_stuffing",
 			Message:  fmt.Sprintf("Credential stuffing: %s failed logins against %d distinct accounts", ip, len(accounts)),
 			Details: fmt.Sprintf("Accounts targeted: %s\nService(s): %s",
-				strings.Join(accounts, ", "), service),
-			Timestamp: time.Now(),
+				strings.Join(accounts, ", "), strings.Join(sortedBoolKeys(tracker.services), ", ")),
+			Timestamp: now,
 			SourceIP:  ip,
 		}
 	}
 
-	// Check threshold
-	threshold := 5
-	windowMin := 10
-	if p.cfg.Thresholds.MultiIPLoginThreshold > 0 {
-		threshold = p.cfg.Thresholds.MultiIPLoginThreshold
-	}
-	if p.cfg.Thresholds.MultiIPLoginWindowMin > 0 {
-		windowMin = p.cfg.Thresholds.MultiIPLoginWindowMin
-	}
-
 	// Only block if within the time window
-	if time.Since(tracker.firstSeen) > time.Duration(windowMin)*time.Minute {
+	if now.Sub(tracker.firstSeen) > window {
 		// Window expired - reset tracker
 		tracker.count = 1
-		tracker.firstSeen = time.Now()
+		tracker.firstSeen = now
 		tracker.users = map[string]bool{user: true}
 		tracker.services = map[string]bool{service: true}
 		tracker.blocked = false
@@ -300,10 +299,10 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 		p.alertCh <- alert.Finding{
 			Severity: alert.Critical,
 			Check:    "pam_bruteforce",
-			Message:  fmt.Sprintf("PAM brute-force detected: %s (%d failures in %ds)", ip, tracker.count, int(time.Since(tracker.firstSeen).Seconds())),
+			Message:  fmt.Sprintf("PAM brute-force detected: %s (%d failures in %ds)", ip, tracker.count, int(now.Sub(tracker.firstSeen).Seconds())),
 			Details: fmt.Sprintf("Users targeted: %s\nServices: %s",
 				strings.Join(users, ", "), strings.Join(services, ", ")),
-			Timestamp: time.Now(),
+			Timestamp: now,
 			SourceIP:  ip,
 		}
 	}
@@ -313,6 +312,7 @@ func (p *PAMListener) clearFailures(ip string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.failures, ip)
+	p.stuffing.Clear(ip)
 }
 
 // cleanupLoop removes expired failure trackers every minute.
@@ -332,10 +332,59 @@ func (p *PAMListener) cleanupLoop(stopCh <-chan struct{}) {
 					delete(p.failures, ip)
 				}
 			}
-			p.stuffing.PruneStale(time.Now())
+			if p.stuffing != nil {
+				now := time.Now()
+				_, window, distinct := pamThresholds(p.currentCfg())
+				p.stuffing.Configure(distinct, window, now)
+				p.stuffing.PruneStale(now)
+			}
 			p.mu.Unlock()
 		}
 	}
+}
+
+func (p *PAMListener) currentCfg() *config.Config {
+	if p.useActiveConfig {
+		if cfg := config.Active(); cfg != nil {
+			return cfg
+		}
+	}
+	return p.cfg
+}
+
+func pamThresholds(cfg *config.Config) (threshold int, window time.Duration, distinct int) {
+	threshold = defaultPAMFailureThreshold
+	windowMin := defaultPAMFailureWindowMin
+	distinct = defaultCredStuffingDistinctAccounts
+	if cfg != nil {
+		if cfg.Thresholds.MultiIPLoginThreshold > 0 {
+			threshold = cfg.Thresholds.MultiIPLoginThreshold
+		}
+		if cfg.Thresholds.MultiIPLoginWindowMin > 0 {
+			windowMin = cfg.Thresholds.MultiIPLoginWindowMin
+		}
+		if cfg.Thresholds.CredStuffingDistinctAccounts > 0 {
+			distinct = cfg.Thresholds.CredStuffingDistinctAccounts
+		}
+	}
+	return threshold, time.Duration(windowMin) * time.Minute, distinct
+}
+
+func (p *PAMListener) ensureCredentialStuffingDetectorLocked(distinct int, window time.Duration, now time.Time) {
+	if p.stuffing == nil {
+		p.stuffing = newCredentialStuffingDetector(distinct, window, nil)
+		return
+	}
+	p.stuffing.Configure(distinct, window, now)
+}
+
+func sortedBoolKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // isInfraIP checks if an IP is in the configured infra IP ranges.

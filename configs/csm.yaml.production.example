@@ -101,6 +101,7 @@ thresholds:
   filesystem_scan_interval_min: 30
   multi_ip_login_threshold: 3
   multi_ip_login_window_min: 60
+  cred_stuffing_distinct_accounts: 5
   brute_force_window: 5000
   domlog_max_files: 500
   domlog_tail_lines: 500
