@@ -170,6 +170,18 @@ detection:
     #   - 465
     #   - 587
 
+  # Flags outbound connections to a bad or unexpected autonomous system,
+  # the third leg (with a new uid-0 account and a planted suid binary) of
+  # the host-takeover chain correlator. Needs the GeoLite2-ASN database.
+  # Off by default; classification requires operator-supplied ASN lists.
+  bad_asn_outbound:
+    enabled: false
+    # blocked_asns:         # ASNs always treated as bad (e.g. bulletproof hosts)
+    #   - 64500
+    # allowed_asns:         # if set, ANY ASN outside this list is treated as bad
+    #   - 13335
+    #   - 15169
+
 # Optional in-kernel deny path for matched outbound connections.
 # Phase 4 of the BPF Incident Response Roadmap. Defaults are all-safe:
 # enforcement off, dry-run on. Operators should keep dry-run on and review

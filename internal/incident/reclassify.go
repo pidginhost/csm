@@ -35,9 +35,10 @@ var compoundPostExploitNetworkChecks = map[string]struct{}{
 	"backdoor_port_outbound": {},
 }
 
-// compoundHostPrivescUID0Checks and compoundHostPrivescSUIDChecks are the
-// two host-privilege-escalation legs the takeover rule correlates. A
-// future bad_asn_outbound leg joins here once an ASN classifier exists.
+// compoundHostPrivescUID0Checks, compoundHostPrivescSUIDChecks, and
+// compoundHostPrivescBadASNChecks are the three host-takeover legs the
+// takeover rule correlates: a new uid-0 account, a planted suid binary, and
+// an outbound connection to a bad/unexpected ASN.
 var compoundHostPrivescUID0Checks = map[string]struct{}{
 	"uid0_account": {},
 }
@@ -46,10 +47,30 @@ var compoundHostPrivescSUIDChecks = map[string]struct{}{
 	"suid_binary": {},
 }
 
+var compoundHostPrivescBadASNChecks = map[string]struct{}{
+	"bad_asn_outbound": {},
+}
+
 // allCompoundFlagsSet reports whether every compound signal is already
 // recorded, so the timeline hydrate loop can stop early.
 func allCompoundFlagsSet(f CompoundFlags) bool {
-	return f.Webshell && f.C2 && f.UID0 && f.SUID
+	return f.Webshell && f.C2 && f.UID0 && f.SUID && f.BadASNOutbound
+}
+
+// hostTakeoverLegs counts how many of the three distinct host-takeover legs
+// an incident has observed. Two or more legs escalate to KindHostTakeover.
+func hostTakeoverLegs(f CompoundFlags) int {
+	n := 0
+	if f.UID0 {
+		n++
+	}
+	if f.SUID {
+		n++
+	}
+	if f.BadASNOutbound {
+		n++
+	}
+	return n
 }
 
 // maybeReclassifyKind upgrades inc.Kind in place when the new finding
@@ -79,9 +100,10 @@ func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && inc.CompoundFlags.Webshell && inc.CompoundFlags.C2 {
 		inc.Kind = KindPostExploitProcess
 	}
-	// Host takeover: two distinct privilege-escalation legs (new uid-0
-	// account + planted suid binary) on the same host inside the window.
-	if kindRank[KindHostTakeover] > kindRank[inc.Kind] && inc.CompoundFlags.UID0 && inc.CompoundFlags.SUID {
+	// Host takeover: any two of the three distinct legs (new uid-0 account,
+	// planted suid binary, outbound connection to a bad ASN) on the same
+	// host inside the window.
+	if kindRank[KindHostTakeover] > kindRank[inc.Kind] && hostTakeoverLegs(inc.CompoundFlags) >= 2 {
 		inc.Kind = KindHostTakeover
 	}
 }
@@ -122,5 +144,8 @@ func updateCompoundFlags(flags *CompoundFlags, check string) {
 	}
 	if _, ok := compoundHostPrivescSUIDChecks[check]; ok {
 		flags.SUID = true
+	}
+	if _, ok := compoundHostPrivescBadASNChecks[check]; ok {
+		flags.BadASNOutbound = true
 	}
 }

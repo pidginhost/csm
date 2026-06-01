@@ -182,6 +182,13 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 			f.Timestamp = time.Now()
 			findings = append(findings, f)
 		}
+		if asnLookup != nil && cfg.Detection.BadASNOutbound.Enabled {
+			asn, org := asnLookup(dstIP.String())
+			if f, ok := EvaluateBadASNOutbound(cfg, dstIP, asn, org); ok {
+				f.Timestamp = time.Now()
+				findings = append(findings, f)
+			}
+		}
 		if directSMTPEnabled {
 			// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
 			if f, ok := EvaluateDirectSMTPEgress(cfg, DirectSMTPEgressInput{

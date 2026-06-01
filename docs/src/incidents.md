@@ -47,9 +47,10 @@ incidents:
 Kinds absent from `by_kind` are never auto-closed. The default map
 omits `host_integrity_risk`, `host_takeover`, and `post_exploit_process`
 because those host-level incidents should stay open until an operator
-reviews them. `host_takeover` is the compound escalation raised when two
-host-privilege-escalation legs (a new uid-0 account and a planted suid
-binary) are correlated for the same host inside the merge window.
+reviews them. `host_takeover` is the compound escalation raised when any
+two of three host-takeover legs (a new uid-0 account, a planted suid
+binary, an outbound connection to a bad ASN) are correlated for the same
+host inside the merge window.
 
 If a fresh finding for the same correlation key arrives after the
 auto-close, the merge-window stale-binding logic creates a new open
@@ -207,8 +208,9 @@ which then trips the generic auto_block gate.
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
   writes, fake kernel threads, auditd disabled).
-- `host_takeover` -- a new uid-0 account and a planted suid binary seen
-  for the same host inside the merge window.
+- `host_takeover` -- any two of a new uid-0 account, a planted suid
+  binary, and an outbound connection to a bad ASN, seen for the same host
+  inside the merge window.
 - `credential_spray` -- one source IP brute-forcing many distinct
   mailboxes/accounts inside the merge window. Keyed on the source IP
   rather than per-mailbox, so a scanner spraying thousands of usernames

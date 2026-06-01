@@ -33,6 +33,7 @@ Critical checks run every 10 minutes. Typical wall-clock cost on a busy shared h
 |-------|-------------|
 | `outbound_connections` | Root-level outbound to non-infra IPs (C2, backdoor ports) |
 | `user_outbound` | Per-user outbound connections (non-standard ports) |
+| `bad_asn_outbound` | Outbound connection whose destination resolves (via GeoLite2-ASN) to a bad or unexpected autonomous system. Config `detection.bad_asn_outbound`: `blocked_asns` (always bad) and/or `allowed_asns` (allowlist mode -- anything outside is bad). Off by default; the third leg of the `host_takeover` incident chain |
 | `dns_connections` | DNS exfiltration and suspicious queries |
 | `firewall` | Firewall status and rule integrity |
 

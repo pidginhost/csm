@@ -84,13 +84,13 @@ type Incident struct {
 type CompoundFlags struct {
 	Webshell bool `json:"webshell,omitempty"`
 	C2       bool `json:"c2,omitempty"`
-	// UID0 and SUID record the two host-privilege-escalation legs (a new
-	// uid-0 account, a planted suid binary). When both are set on one
-	// incident the reclassifier escalates to KindHostTakeover. A future
-	// bad_asn_outbound leg would add a third bit here once an ASN
-	// classifier exists.
-	UID0 bool `json:"uid0,omitempty"`
-	SUID bool `json:"suid,omitempty"`
+	// UID0, SUID, and BadASNOutbound record the three host-takeover legs:
+	// a new uid-0 account, a planted suid binary, and an outbound connection
+	// to a bad/unexpected ASN. When any two are set on one incident the
+	// reclassifier escalates to KindHostTakeover.
+	UID0           bool `json:"uid0,omitempty"`
+	SUID           bool `json:"suid,omitempty"`
+	BadASNOutbound bool `json:"bad_asn_outbound,omitempty"`
 }
 
 // MarshalJSON renders Severity as its uppercase string form

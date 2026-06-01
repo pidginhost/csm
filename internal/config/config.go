@@ -379,6 +379,23 @@ type Config struct {
 			DryRun *bool `yaml:"dry_run,omitempty"`
 			Ports  []int `yaml:"ports,omitempty"`
 		} `yaml:"direct_smtp_egress" hotreload:"safe"`
+
+		// BadASNOutbound flags outbound connections whose destination IP
+		// resolves (via the GeoLite2-ASN database) to a bad or unexpected
+		// autonomous system. It is the third leg of the host-takeover
+		// chain correlator (alongside a new uid-0 account and a planted
+		// suid binary). Requires the GeoLite2-ASN database. Off by default;
+		// classification needs operator-supplied ASN lists.
+		BadASNOutbound struct {
+			Enabled bool `yaml:"enabled"`
+			// BlockedASNs are autonomous system numbers always treated as
+			// bad (e.g. known bulletproof hosters).
+			BlockedASNs []uint `yaml:"blocked_asns"`
+			// AllowedASNs, when non-empty, switches to allowlist mode: any
+			// destination ASN outside this set is treated as bad. Use on
+			// hosts whose legitimate egress is confined to a few providers.
+			AllowedASNs []uint `yaml:"allowed_asns"`
+		} `yaml:"bad_asn_outbound" hotreload:"safe"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {

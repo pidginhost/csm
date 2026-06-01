@@ -167,6 +167,48 @@ func TestMaybeReclassifyKind_HostTakeoverRequiresUID0AndSUID(t *testing.T) {
 	}
 }
 
+func TestMaybeReclassifyKind_HostTakeoverTwoOfThreeWithBadASN(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   CompoundFlags
+		finding alert.Finding
+		want    Kind
+	}{
+		{
+			name:    "bad_asn alone is one leg",
+			finding: alert.Finding{Check: "bad_asn_outbound"},
+			want:    KindHostIntegrityRisk,
+		},
+		{
+			name:    "sticky uid0 plus bad_asn",
+			flags:   CompoundFlags{UID0: true},
+			finding: alert.Finding{Check: "bad_asn_outbound"},
+			want:    KindHostTakeover,
+		},
+		{
+			name:    "sticky suid plus bad_asn",
+			flags:   CompoundFlags{SUID: true},
+			finding: alert.Finding{Check: "bad_asn_outbound"},
+			want:    KindHostTakeover,
+		},
+		{
+			name:    "sticky bad_asn plus uid0",
+			flags:   CompoundFlags{BadASNOutbound: true},
+			finding: alert.Finding{Check: "uid0_account"},
+			want:    KindHostTakeover,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inc := &Incident{Kind: KindHostIntegrityRisk, CompoundFlags: tt.flags}
+			maybeReclassifyKind(inc, tt.finding)
+			if inc.Kind != tt.want {
+				t.Fatalf("Kind = %q, want %q", inc.Kind, tt.want)
+			}
+		})
+	}
+}
+
 func TestHydrateCompoundFlagsReadsPastCompletedWebCompound(t *testing.T) {
 	flags := CompoundFlags{Webshell: true, C2: true}
 	hydrateCompoundFlagsFromTimeline(&flags, []IncidentEvent{

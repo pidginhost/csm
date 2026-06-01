@@ -68,6 +68,7 @@ var hostIntegrityChecks = map[string]bool{
 	"root_password_change":    true,
 	"uid0_account":            true,
 	"suid_binary":             true,
+	"bad_asn_outbound":        true,
 	"kernel_module":           true,
 	"crontab_change":          true,
 	"crond_change":            true,

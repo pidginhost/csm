@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/geoip"
 )
 
@@ -11,9 +12,19 @@ import (
 // during daemon init and read by log watcher handlers for country filtering.
 var daemonGeoIPDB atomic.Pointer[geoip.DB]
 
-// setGeoIPDB stores the GeoIP database for daemon-wide use.
+// setGeoIPDB stores the GeoIP database for daemon-wide use and wires the
+// ASN resolver the bad_asn_outbound detector uses. Clearing the DB (nil)
+// disables ASN classification.
 func setGeoIPDB(db *geoip.DB) {
 	daemonGeoIPDB.Store(db)
+	if db == nil {
+		checks.SetASNLookup(nil)
+		return
+	}
+	checks.SetASNLookup(func(ip string) (uint, string) {
+		info := db.Lookup(ip)
+		return info.ASN, info.ASOrg
+	})
 }
 
 // getGeoIPDB returns the daemon's GeoIP database, or nil.

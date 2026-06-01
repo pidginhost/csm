@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A signed YARA Forge rule mirror lets operators turn on Forge rule updates with signature verification. Release artifacts and downloaded rules are now checked against the project signing key.
 - Credential-stuffing detection: a single source IP that fails logins against many distinct accounts now raises its own alert, catching breadth-based attacks that the per-IP brute-force trigger (which keys on attempt count) misses.
+- Outbound connections to a bad or unexpected network (by autonomous system) can now be flagged. Combined with a new root account or a planted privileged binary, this escalates an incident to a host takeover. Off by default; needs the ASN geolocation database and an operator ASN list.
 
 ### Fixed
 
