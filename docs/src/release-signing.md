@@ -13,9 +13,28 @@ Do not reuse keys between these paths. The package repositories use GPG because 
 |---------|----------|-------------|-------|
 | APT repository metadata | GPG | `CSM_GPG_SIGNING_KEY` | Published by `repo:publish`; operators install with `signed-by=/etc/apt/keyrings/csm.gpg`. |
 | RPM packages and repository metadata | GPG | `CSM_GPG_SIGNING_KEY` | Published by `repo:publish`; operators use `gpgcheck=1` and `repo_gpgcheck=1`. |
-| Raw binaries, tarballs, `.deb`, `.rpm` siblings | Ed25519 | `CSM_SIGNING_KEY` | Optional detached `.sig` files for direct downloads and standalone scripts. |
+| Raw binaries, tarballs, `.deb`, `.rpm` siblings | Ed25519 | `CSM_SIGNING_KEY` | Detached `.sig` files for direct downloads and standalone scripts. |
+| YARA Forge rule ZIPs | Ed25519 | `CSM_SIGNING_KEY` | Signed by the `yara-forge-mirror` job; clients verify via `signatures.signing_key`. |
 
-The preferred operator path is the signed APT/DNF repository documented in [Installation](installation.md). Standalone scripts still support detached signatures, but this source tree does not currently embed an Ed25519 public key in `scripts/install.sh`, `scripts/deploy.sh`, or `scripts/deploy-gitlab.sh`. Without an embedded key or `CSM_SIGNING_KEY_PEM`, those scripts warn and continue unless `CSM_REQUIRE_SIGNATURES=1` is set.
+The preferred operator path is the signed APT/DNF repository documented in [Installation](installation.md). Standalone scripts also verify detached signatures: `scripts/install.sh` embeds the Ed25519 public key in `EMBEDDED_SIGNING_KEY`. Override it at runtime with `CSM_SIGNING_KEY_PEM`. Without any key, the scripts warn and continue unless `CSM_REQUIRE_SIGNATURES=1` is set.
+
+## Public Key
+
+The same Ed25519 key signs release artifacts and YARA Forge rule ZIPs.
+
+Hex form, for `signatures.signing_key` in CSM config:
+
+```text
+2d1472b2a1d9728c2717b75111487145a7863f7ce731c1b44181f7a68bb908f7
+```
+
+PEM form, for standalone script verification (`EMBEDDED_SIGNING_KEY` / `CSM_SIGNING_KEY_PEM`):
+
+```text
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEALRRysqHZcownF7dREUhxRaeGP3znMcG0QYH3pou5CPc=
+-----END PUBLIC KEY-----
+```
 
 ## Package Repository Signing
 

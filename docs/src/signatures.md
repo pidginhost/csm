@@ -72,10 +72,12 @@ signatures:
     enabled: true
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
-    download_url: "https://rules.example/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
+    download_url: "https://mirrors.pidginhost.com/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
   disabled_rules:             # rule names to exclude from Forge downloads
     - SUSP_Example_Rule
 ```
+
+The project operates the signed mirror shown above. A ready-to-use drop-in is shipped at `/usr/lib/csm/profiles/yara-forge.example.yaml`; copy or include it under `/etc/csm/conf.d/` to enable Forge without editing the main `csm.yaml`. The matching `signing_key` is the project Ed25519 public key (hex), published on the [release signing](release-signing.md) page.
 
 `signing_key` must be a hex string for the Ed25519 public key that matches the private key used to sign the remote Forge artifact. It is not a PEM block and not a file path.
 

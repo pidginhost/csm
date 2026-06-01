@@ -1,0 +1,19 @@
+# YARA Forge rule feed (conf.d drop-in example).
+#
+# Copy or include this under /etc/csm/conf.d/ to pull signed YARA Forge
+# rules from the project mirror without editing the main csm.yaml.
+#
+# The mirror publishes each upstream release as a detached-signed ZIP. CSM
+# fetches <download_url>, then <download_url>.sig, and verifies the raw
+# ed25519 signature against signing_key before extracting. A missing or bad
+# signature fails closed: the existing rules stay in place.
+#
+# signing_key is the project ed25519 public key (hex). It pairs with the
+# private key the mirror signs with; rotate both together if ever rotated.
+signatures:
+  signing_key: "2d1472b2a1d9728c2717b75111487145a7863f7ce731c1b44181f7a68bb908f7"
+  yara_forge:
+    enabled: true
+    tier: core            # core | extended | full -- core is smallest, lowest FP
+    update_interval: 168h # weekly; Forge cuts releases roughly monthly
+    download_url: "https://mirrors.pidginhost.com/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"

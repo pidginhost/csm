@@ -37,9 +37,11 @@ info() { echo "  $1"; }
 : "${CSM_REQUIRE_SIGNATURES:=0}"
 
 # EMBEDDED_SIGNING_KEY is the repo-committed public key used by default.
-# Replace with the real key once signing is provisioned. Must be a PEM
-# block beginning with -----BEGIN PUBLIC KEY-----.
-EMBEDDED_SIGNING_KEY=""
+# Must be a PEM block beginning with -----BEGIN PUBLIC KEY-----. Pairs with
+# the ed25519 private key held in the CSM_SIGNING_KEY CI variable.
+EMBEDDED_SIGNING_KEY="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEALRRysqHZcownF7dREUhxRaeGP3znMcG0QYH3pou5CPc=
+-----END PUBLIC KEY-----"
 
 if [ -z "$CSM_SIGNING_KEY_PEM" ] && [ -n "$EMBEDDED_SIGNING_KEY" ]; then
     CSM_SIGNING_KEY_PEM="$EMBEDDED_SIGNING_KEY"

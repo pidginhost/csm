@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A signed YARA Forge rule mirror lets operators turn on Forge rule updates with signature verification. Release artifacts and downloaded rules are now checked against the project signing key.
+
 ### Fixed
 
 - PHP content scanner now analyses only the code inside PHP tags, ignoring inline HTML, CSS, and JavaScript. This stops false positives on stock plugin and theme template files where markup text, page links, and script template literals looked like include, require, or shell-execution sinks.
