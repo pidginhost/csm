@@ -26,6 +26,10 @@ type PAMListener struct {
 	listener net.Listener
 	mu       sync.Mutex
 	failures map[string]*pamFailureTracker
+	// stuffing flags one source IP failing against many distinct accounts
+	// (credential stuffing / password spraying breadth) -- complementary to
+	// the per-IP failure-count brute-force trigger below. Guarded by mu.
+	stuffing *credentialStuffingDetector
 	// startedAt anchors the upstream-probe verdict so the dashboard does
 	// not flag a freshly-started daemon as "deaf" before the PAM module
 	// has had a chance to emit anything. Compared against lastPeerNanos
@@ -65,12 +69,22 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 	// root-only instead of accepting arbitrary local writers.
 	_ = os.Chmod(pamSocketPath, 0600)
 
+	windowMin := 10
+	if cfg.Thresholds.MultiIPLoginWindowMin > 0 {
+		windowMin = cfg.Thresholds.MultiIPLoginWindowMin
+	}
+	distinct := 5
+	if cfg.Thresholds.CredStuffingDistinctAccounts > 0 {
+		distinct = cfg.Thresholds.CredStuffingDistinctAccounts
+	}
+
 	return &PAMListener{
 		cfg:       cfg,
 		alertCh:   alertCh,
 		listener:  listener,
 		failures:  make(map[string]*pamFailureTracker),
 		startedAt: time.Now(),
+		stuffing:  newCredentialStuffingDetector(distinct, time.Duration(windowMin)*time.Minute, nil),
 	}, nil
 }
 
@@ -234,6 +248,22 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 	tracker.users[user] = true
 	tracker.services[service] = true
 
+	// Credential-stuffing breadth signal: one source IP failing against many
+	// distinct accounts. Independent of the per-IP failure-count brute-force
+	// trigger below, so a low-and-slow campaign that stays under the count
+	// threshold per account is still caught. Fires once per window.
+	if accounts, fire := p.stuffing.Record(ip, user); fire {
+		p.alertCh <- alert.Finding{
+			Severity: alert.High,
+			Check:    "credential_stuffing",
+			Message:  fmt.Sprintf("Credential stuffing: %s failed logins against %d distinct accounts", ip, len(accounts)),
+			Details: fmt.Sprintf("Accounts targeted: %s\nService(s): %s",
+				strings.Join(accounts, ", "), service),
+			Timestamp: time.Now(),
+			SourceIP:  ip,
+		}
+	}
+
 	// Check threshold
 	threshold := 5
 	windowMin := 10
@@ -302,6 +332,7 @@ func (p *PAMListener) cleanupLoop(stopCh <-chan struct{}) {
 					delete(p.failures, ip)
 				}
 			}
+			p.stuffing.PruneStale(time.Now())
 			p.mu.Unlock()
 		}
 	}

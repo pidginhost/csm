@@ -41,6 +41,7 @@ Critical checks run every 10 minutes. Typical wall-clock cost on a busy shared h
 | Check | Description |
 |-------|-------------|
 | `wp_bruteforce` | WordPress login brute force (wp-login.php, xmlrpc.php) |
+| `credential_stuffing` | One source IP failing logins (via the PAM listener) against many distinct accounts inside the auth window -- the breadth signal of credential stuffing / password spraying. Distinct from `pam_bruteforce`, which trips on the per-IP failure count against any account. Threshold: `thresholds.cred_stuffing_distinct_accounts` (default 5), window: `thresholds.multi_ip_login_window_min` |
 | `http_ua_spoof` | IP claiming a search-engine bot UA (Googlebot, Bingbot, Applebot) that fails reverse-DNS verification, or exceeding the per-IP spoof threshold for scripting/headless/empty UAs when those opt-in flags are enabled |
 | `http_distributed_flood` | Many already-abusive HTTP source IPs hitting the same vhost in one scheduled scan window |
 | `ftp_logins` | FTP access patterns and failed auth |

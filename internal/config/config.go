@@ -121,8 +121,15 @@ type Config struct {
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
 		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
 		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
-		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
-		BruteForceWindow          int `yaml:"brute_force_window"`
+		// CredStuffingDistinctAccounts is the number of distinct accounts a
+		// single source IP must fail against inside the multi_ip_login window
+		// to raise a credential_stuffing finding. This is the breadth signal
+		// (one source, many accounts) that the count-based pam_bruteforce
+		// detector does not catch. Default 5 when unset or <=0, matching the
+		// always-on posture of the sibling multi_ip_login_threshold.
+		CredStuffingDistinctAccounts int `yaml:"cred_stuffing_distinct_accounts"`
+		PluginCheckIntervalMin       int `yaml:"plugin_check_interval_min"`
+		BruteForceWindow             int `yaml:"brute_force_window"`
 
 		// DomlogMaxFiles caps how many per-domain access logs the WP brute
 		// force check scans per cycle. Sites are ranked by recent mtime so

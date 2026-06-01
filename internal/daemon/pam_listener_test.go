@@ -2,10 +2,79 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+// drainForCheck returns the first finding with the given check name buffered
+// on ch, or nil if none is present.
+func drainForCheck(ch <-chan alert.Finding, check string) *alert.Finding {
+	for {
+		select {
+		case f := <-ch:
+			if f.Check == check {
+				out := f
+				return &out
+			}
+		default:
+			return nil
+		}
+	}
+}
+
+func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
+	alertCh := make(chan alert.Finding, 8)
+	cfg := &config.Config{}
+	// Keep the count-based brute trigger quiet so this asserts the
+	// distinct-account breadth path specifically.
+	cfg.Thresholds.MultiIPLoginThreshold = 100
+
+	p := &PAMListener{
+		cfg:      cfg,
+		alertCh:  alertCh,
+		failures: make(map[string]*pamFailureTracker),
+		stuffing: newCredentialStuffingDetector(3, 10*time.Minute, nil),
+	}
+
+	p.processEvent("FAIL ip=203.0.113.20 user=alice service=sshd")
+	p.processEvent("FAIL ip=203.0.113.20 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.20 user=carol service=sshd")
+
+	got := drainForCheck(alertCh, "credential_stuffing")
+	if got == nil {
+		t.Fatal("expected credential_stuffing finding after 3 distinct accounts")
+	}
+	if got.SourceIP != "203.0.113.20" {
+		t.Fatalf("SourceIP = %q, want 203.0.113.20", got.SourceIP)
+	}
+	if got.Severity != alert.High {
+		t.Fatalf("Severity = %v, want High", got.Severity)
+	}
+}
+
+func TestPAMListenerRepeatedSingleAccountIsNotStuffing(t *testing.T) {
+	alertCh := make(chan alert.Finding, 8)
+	cfg := &config.Config{}
+	cfg.Thresholds.MultiIPLoginThreshold = 100 // keep brute quiet
+
+	p := &PAMListener{
+		cfg:      cfg,
+		alertCh:  alertCh,
+		failures: make(map[string]*pamFailureTracker),
+		stuffing: newCredentialStuffingDetector(3, 10*time.Minute, nil),
+	}
+
+	// Many failures against ONE account is brute-force depth, not the
+	// breadth signal -- no credential_stuffing finding.
+	for i := 0; i < 10; i++ {
+		p.processEvent("FAIL ip=203.0.113.21 user=root service=sshd")
+	}
+	if got := drainForCheck(alertCh, "credential_stuffing"); got != nil {
+		t.Fatalf("credential_stuffing fired on single-account depth: %+v", got)
+	}
+}
 
 func TestPAMListenerOKClearsFailures(t *testing.T) {
 	alertCh := make(chan alert.Finding, 4)
