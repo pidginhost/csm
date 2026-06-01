@@ -15,8 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bad-ASN outbound findings now carry the destination IP and stay race-free across GeoIP reloads.
-- Credential-stuffing detection now counts distinct failed accounts inside the configured auth window and clears that state after a successful login, avoiding stale breadth alerts.
 - PHP content scanner now analyses only the code inside PHP tags, ignoring inline HTML, CSS, and JavaScript. This stops false positives on stock plugin and theme template files where markup text, page links, and script template literals looked like include, require, or shell-execution sinks.
 - PHP content scanner no longer treats an include or require built from a server path such as the document root as remote-file inclusion, clearing false positives on standard WordPress bootstrap files.
 - PHP include scanning keeps the server-path false-positive fix while still treating header-derived include targets as attacker controlled.
