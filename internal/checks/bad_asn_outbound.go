@@ -3,21 +3,41 @@ package checks
 import (
 	"fmt"
 	"net"
-	"time"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
+type asnLookupFunc func(ip string) (asn uint, org string)
+
+type asnLookupHolder struct {
+	fn asnLookupFunc
+}
+
 // asnLookup resolves an IP to its autonomous system number and organization
 // via the GeoLite2-ASN database. The daemon injects it at startup/reload;
 // nil (no ASN database, or unit tests that do not exercise the live path)
 // disables bad-ASN classification on the outbound connection scan.
-var asnLookup func(ip string) (asn uint, org string)
+var asnLookup atomic.Pointer[asnLookupHolder]
 
 // SetASNLookup wires the GeoLite2-ASN resolver used by the outbound
 // connection scan. Passing nil clears it.
-func SetASNLookup(fn func(ip string) (asn uint, org string)) { asnLookup = fn }
+func SetASNLookup(fn func(ip string) (asn uint, org string)) {
+	if fn == nil {
+		asnLookup.Store(nil)
+		return
+	}
+	asnLookup.Store(&asnLookupHolder{fn: fn})
+}
+
+func currentASNLookup() asnLookupFunc {
+	h := asnLookup.Load()
+	if h == nil {
+		return nil
+	}
+	return h.fn
+}
 
 // EvaluateBadASNOutbound classifies one outbound connection's destination by
 // autonomous system and returns a finding when the ASN is bad. It is a pure
@@ -65,7 +85,7 @@ func EvaluateBadASNOutbound(cfg *config.Config, dstIP net.IP, asn uint, asOrg st
 		Details: fmt.Sprintf("Destination: %s\nASN: %d (%s)\n"+
 			"Combined with a new uid-0 account or a planted suid binary this escalates to a host takeover.",
 			dst, asn, org),
-		Timestamp: time.Now(),
+		SourceIP: dstIP.String(),
 	}, true
 }
 

@@ -38,9 +38,10 @@ const (
 	KindCredentialSpray Kind = "credential_spray" // #nosec G101 -- taxonomy label, not a secret
 	// KindHostTakeover is the compound escalation when more than one
 	// host-privilege-escalation leg (a new uid-0 account, a planted suid
-	// binary) is seen for the same host inside the merge window. It ranks
-	// above KindHostIntegrityRisk so a confirmed multi-leg takeover stands
-	// out from a single host-integrity finding.
+	// binary, or bad-ASN outbound connection) is seen for the same host
+	// inside the merge window. It ranks above KindHostIntegrityRisk so a
+	// confirmed multi-leg takeover stands out from a single host-integrity
+	// finding.
 	KindHostTakeover Kind = "host_takeover"
 )
 

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -24,6 +25,12 @@ func TestBadASNOutbound_BlockedASNFlagged(t *testing.T) {
 	}
 	if f.Check != "bad_asn_outbound" {
 		t.Fatalf("check = %q", f.Check)
+	}
+	if f.SourceIP != "203.0.113.9" {
+		t.Fatalf("SourceIP = %q, want destination IP", f.SourceIP)
+	}
+	if !f.Timestamp.IsZero() {
+		t.Fatal("pure evaluator must not set Timestamp")
 	}
 }
 
@@ -83,8 +90,15 @@ func TestScanProcNetTCPFlagsBadASNOutbound(t *testing.T) {
 	defer SetASNLookup(nil)
 
 	findings := scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false)
-	if !hasCheck(findings, "bad_asn_outbound") {
+	f, ok := findingForCheck(findings, "bad_asn_outbound")
+	if !ok {
 		t.Fatalf("expected bad_asn_outbound finding; got %+v", findings)
+	}
+	if f.SourceIP != "203.0.113.56" {
+		t.Fatalf("SourceIP = %q, want remote destination IP", f.SourceIP)
+	}
+	if f.Timestamp.IsZero() {
+		t.Fatal("scan wiring must stamp emitted findings")
 	}
 }
 
@@ -116,11 +130,41 @@ func TestScanProcNetTCPBadASNDisabledSkipsLookup(t *testing.T) {
 	}
 }
 
+func TestScanProcNetTCPASNLookupConcurrentSet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Detection.BadASNOutbound.Enabled = true
+	cfg.Detection.BadASNOutbound.BlockedASNs = []uint{64500}
+	t.Cleanup(func() { SetASNLookup(nil) })
+
+	const iterations = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			SetASNLookup(func(string) (uint, string) { return 64500, "Bulletproof LLC" })
+			SetASNLookup(nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = scanProcNetTCP(cfg, []byte(procNetTCPBadASNRow), false)
+		}
+	}()
+	wg.Wait()
+}
+
 func hasCheck(findings []alert.Finding, check string) bool {
+	_, ok := findingForCheck(findings, check)
+	return ok
+}
+
+func findingForCheck(findings []alert.Finding, check string) (alert.Finding, bool) {
 	for _, f := range findings {
 		if f.Check == check {
-			return true
+			return f, true
 		}
 	}
-	return false
+	return alert.Finding{}, false
 }
