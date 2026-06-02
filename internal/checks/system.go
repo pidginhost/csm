@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"syscall"
 
@@ -136,15 +137,15 @@ func checkRPMPackageIntegrity(packages []string) []alert.Finding {
 				continue
 			}
 
-			// Check for size (S) or checksum (5) changes on binaries
+			// Check for size (S) or checksum (5) changes. Config and doc files
+			// were already skipped above; report any tampered executable or
+			// shared library regardless of directory.
 			if strings.Contains(flags, "S") || strings.Contains(flags, "5") {
-				// Only flag binary files, not configs
-				if strings.HasPrefix(file, "/usr/bin/") || strings.HasPrefix(file, "/usr/sbin/") ||
-					strings.HasPrefix(file, "/bin/") || strings.HasPrefix(file, "/sbin/") {
+				if looksExecutableOrLibrary(file) {
 					findings = append(findings, alert.Finding{
 						Severity: alert.Critical,
 						Check:    "rpm_integrity",
-						Message:  fmt.Sprintf("Modified system binary: %s (package: %s)", file, pkg),
+						Message:  fmt.Sprintf("Modified system binary or library: %s (package: %s)", file, pkg),
 						Details:  fmt.Sprintf("RPM verification flags: %s", flags),
 					})
 				}
@@ -180,13 +181,13 @@ func checkDebsums(packages []string) []alert.Finding {
 			if file == "" {
 				continue
 			}
-			if !isCriticalSystemPath(file) {
+			if !looksExecutableOrLibrary(file) {
 				continue
 			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "dpkg_integrity",
-				Message:  fmt.Sprintf("Modified system binary: %s (package: %s)", file, pkg),
+				Message:  fmt.Sprintf("Modified system binary or library: %s (package: %s)", file, pkg),
 				Details:  "debsums reported md5 mismatch against the package manifest.",
 			})
 		}
@@ -218,13 +219,13 @@ func checkDpkgVerify(packages []string) []alert.Finding {
 			if !strings.Contains(flags, "5") && !strings.Contains(flags, "S") {
 				continue
 			}
-			if !isCriticalSystemPath(file) {
+			if !looksExecutableOrLibrary(file) {
 				continue
 			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "dpkg_integrity",
-				Message:  fmt.Sprintf("Modified system binary: %s (package: %s)", file, pkg),
+				Message:  fmt.Sprintf("Modified system binary or library: %s (package: %s)", file, pkg),
 				Details:  fmt.Sprintf("dpkg --verify flags: %s", flags),
 			})
 		}
@@ -232,14 +233,32 @@ func checkDpkgVerify(packages []string) []alert.Finding {
 	return findings
 }
 
-// isCriticalSystemPath returns true for binaries in standard executable
-// directories. Matches the same filter used by the rpm path so the two
-// backends report the same scope of findings.
-func isCriticalSystemPath(path string) bool {
-	return strings.HasPrefix(path, "/usr/bin/") ||
-		strings.HasPrefix(path, "/usr/sbin/") ||
-		strings.HasPrefix(path, "/bin/") ||
-		strings.HasPrefix(path, "/sbin/")
+// looksExecutableOrLibrary reports whether the installed file at path is an
+// executable or a shared library. A package-integrity mismatch on one of these
+// is the threat we care about (a trojaned binary or .so), so it is reported
+// wherever it lives. Judging by file type instead of a directory allowlist
+// means an attacker cannot dodge the check by tampering a packaged binary that
+// sits outside /usr/bin (e.g. under /usr/lib64, /usr/local, or /opt), while
+// changed package-manager state files (manifests, caches, databases) -- which
+// are not executable -- do not generate noise.
+func looksExecutableOrLibrary(path string) bool {
+	info, err := osFS.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if info.Mode()&0o111 != 0 {
+		return true
+	}
+	// Shared libraries are commonly mode 0644; identify them by ELF magic so a
+	// trojaned .so is reported regardless of its permission bits.
+	f, err := osFS.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var magic [4]byte
+	n, _ := io.ReadFull(f, magic[:])
+	return n == 4 && string(magic[:]) == "\x7fELF"
 }
 
 // CheckMySQLUsers queries for MySQL users with elevated privileges

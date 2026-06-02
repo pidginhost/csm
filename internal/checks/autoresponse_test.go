@@ -108,10 +108,12 @@ class PHPMailer {
 	}
 }
 
-func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
+// Confidence is judged by content, not path: an obfuscated webshell hidden
+// inside a library directory must still auto-quarantine. The old code skipped
+// any file under a known-library path fragment, which let an attacker hide a
+// backdoor by planting it under vendor/, phpmailer/, etc.
+func TestIsHighConfidenceRealtimeMatch_ObfuscatedWebshellInLibraryDirQuarantined(t *testing.T) {
 	dir := t.TempDir()
-
-	// Create a high-entropy file inside a phpmailer directory
 	phpmailerDir := filepath.Join(dir, "server", "phpmailer")
 	mkdirTest(t, phpmailerDir)
 	libFile := filepath.Join(phpmailerDir, "PHPMailer.php")
@@ -120,11 +122,11 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: Marijuana Shell\nMatched: passthru(",
 	}
-	if isHighConfidenceRealtimeMatch(f, libFile, nil) {
-		t.Error("file in /phpmailer/ path should be excluded even with high entropy")
+	if !isHighConfidenceRealtimeMatch(f, libFile, nil) {
+		t.Error("obfuscated webshell under /phpmailer/ must still be quarantined")
 	}
 
-	// Same file outside library path → should match
+	// Same obfuscated content outside any library path → also quarantined.
 	nonLib := filepath.Join(dir, "wp-admin", "maint")
 	mkdirTest(t, nonLib)
 	evilFile := filepath.Join(nonLib, "index.php")
@@ -136,7 +138,8 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 	}
 }
 
-func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
+// A webshell under vendor/ must auto-quarantine: the path is not a free pass.
+func TestIsHighConfidenceRealtimeMatch_VendorWebshellQuarantined(t *testing.T) {
 	dir := t.TempDir()
 	vendorDir := filepath.Join(dir, "vendor", "somepackage")
 	mkdirTest(t, vendorDir)
@@ -146,8 +149,8 @@ func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: hex-encoded function",
 	}
-	if isHighConfidenceRealtimeMatch(f, vendorFile, nil) {
-		t.Error("file in /vendor/ path should be excluded")
+	if !isHighConfidenceRealtimeMatch(f, vendorFile, nil) {
+		t.Error("obfuscated webshell under /vendor/ must be quarantined")
 	}
 }
 
@@ -411,30 +414,56 @@ class Zip {
 `
 }
 
-func TestIsHighConfidenceRealtimeMatch_KnownLibraryPaths_WPMLAndBreakdance(t *testing.T) {
+// Real WPML/Breakdance library files carry binary magic-byte constants that
+// raise entropy/hex density but are inert data with no obfuscated execution.
+// They must NOT be quarantined -- and that must hold on any path, not because
+// the path is allowlisted. Conversely, obfuscated malware planted under those
+// same plugin paths must be quarantined.
+func TestIsHighConfidenceRealtimeMatch_LibraryContentNotPath(t *testing.T) {
 	dir := t.TempDir()
-	highEntropy := []byte(generateHighEntropyPHP(8000))
-
-	cases := []struct {
-		name    string
-		relPath string
-	}{
-		{"wpml-sitepress", "wp-content/plugins/sitepress-multilingual-cms/inc/wpml_zip.php"},
-		{"wpml-tm", "wp-content/plugins/wpml-translation-management/inc/wpml_zip.php"},
-		{"wpml-string-translation", "wp-content/plugins/wpml-string-translation/inc/foo.php"},
-		{"breakdance", "wp-content/plugins/breakdance/plugin/fonts/integrations/google-fonts/google-fonts.php"},
+	pluginPaths := []string{
+		"wp-content/plugins/sitepress-multilingual-cms/inc/wpml_zip.php",
+		"wp-content/plugins/wpml-translation-management/inc/wpml_zip.php",
+		"wp-content/plugins/breakdance/plugin/fonts/integrations/google-fonts/google-fonts.php",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			full := filepath.Join(dir, tc.relPath)
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			writeTestFile(t, full, highEntropy)
-			f := alert.Finding{Details: "Category: webshell\nDescription: test"}
-			if isHighConfidenceRealtimeMatch(f, full, nil) {
-				t.Errorf("path %q must be treated as known-library", tc.relPath)
-			}
-		})
+	f := alert.Finding{Details: "Category: webshell\nDescription: test"}
+
+	for _, rel := range pluginPaths {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Inert library code: not quarantined regardless of path.
+		writeTestFile(t, full, []byte(libLikePHPFixture()))
+		if isHighConfidenceRealtimeMatch(f, full, nil) {
+			t.Errorf("inert library content at %q must not be quarantined", rel)
+		}
+		// Obfuscated malware under the same plugin path: quarantined.
+		writeTestFile(t, full, []byte(generateHighEntropyPHP(8000)))
+		if !isHighConfidenceRealtimeMatch(f, full, nil) {
+			t.Errorf("obfuscated malware at %q must be quarantined", rel)
+		}
+	}
+}
+
+func TestHasObfuscatedExecutionSignal(t *testing.T) {
+	// goto-spaghetti control-flow obfuscation.
+	if !hasObfuscatedExecutionSignal(generateHighEntropyPHP(8000)) {
+		t.Error("goto-obfuscated content must signal")
+	}
+	// decoder + executor combo.
+	if !hasObfuscatedExecutionSignal(generateHexEncodedPHP(8000)) {
+		t.Error("decoder+executor content must signal")
+	}
+	if !hasObfuscatedExecutionSignal("<?php eval(gzinflate(base64_decode($x))); ?>") {
+		t.Error("eval+decoder one-liner must signal")
+	}
+	// Inert library data: magic-byte constants, gzdeflate writer, no executor.
+	if hasObfuscatedExecutionSignal(libLikePHPFixture()) {
+		t.Error("inert ZIP library data must not signal")
+	}
+	// A decoder with no executor is not enough on its own.
+	if hasObfuscatedExecutionSignal("<?php $x = base64_decode($raw); echo strlen($x);") {
+		t.Error("decoder without executor must not signal")
 	}
 }

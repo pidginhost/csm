@@ -1340,15 +1340,17 @@ func TestIsHighConfidenceRealtimeMatchDropperHighEntropy(t *testing.T) {
 }
 
 func TestIsHighConfidenceRealtimeMatchWebshellHighHex(t *testing.T) {
-	// Webshell with high hex density
-	hexContent := strings.Repeat(`\x4f\x2a\x3b\x8c`, 200)
+	// Hex-encoded webshell: high hex density plus a decoder/executor signal.
+	// Inert high-hex data (e.g. ZIP magic-byte tables) lacks the signal and is
+	// intentionally not treated as high confidence.
+	hexContent := generateHexEncodedPHP(8000)
 
 	f := alert.Finding{
 		Check:   "signature_match_realtime",
 		Details: "Category: webshell\nRule: test_ws",
 	}
 	if !isHighConfidenceRealtimeMatch(f, "/home/alice/public_html/ws.php", []byte(hexContent)) {
-		t.Error("webshell with high hex density should be high confidence")
+		t.Error("hex-encoded webshell with decoder+executor should be high confidence")
 	}
 }
 
@@ -1368,6 +1370,8 @@ func TestIsHighConfidenceRealtimeMatchNilDataReadError(t *testing.T) {
 	}
 }
 
+// A vendor/library path is not a free pass: high-entropy malware planted under
+// vendor/phpmailer must still be high confidence so it auto-quarantines.
 func TestIsHighConfidenceRealtimeMatchPhpmailerPath(t *testing.T) {
 	content := make([]byte, 600)
 	for i := range content {
@@ -1378,8 +1382,8 @@ func TestIsHighConfidenceRealtimeMatchPhpmailerPath(t *testing.T) {
 		Check:   "signature_match_realtime",
 		Details: "Category: webshell",
 	}
-	if isHighConfidenceRealtimeMatch(f, "/home/alice/public_html/vendor/phpmailer/src/PHPMailer.php", content) {
-		t.Error("phpmailer vendor path should not be high confidence")
+	if !isHighConfidenceRealtimeMatch(f, "/home/alice/public_html/vendor/phpmailer/src/PHPMailer.php", content) {
+		t.Error("high-entropy malware under a vendor path must still be high confidence")
 	}
 }
 
@@ -1393,8 +1397,8 @@ func TestIsHighConfidenceRealtimeMatchNodeModulesPath(t *testing.T) {
 		Check:   "signature_match_realtime",
 		Details: "Category: dropper",
 	}
-	if isHighConfidenceRealtimeMatch(f, "/home/alice/node_modules/some-pkg/index.php", content) {
-		t.Error("node_modules path should not be high confidence")
+	if !isHighConfidenceRealtimeMatch(f, "/home/alice/node_modules/some-pkg/index.php", content) {
+		t.Error("high-entropy malware under node_modules must still be high confidence")
 	}
 }
 

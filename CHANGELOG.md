@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-quarantine of realtime malware matches now decides by file content (obfuscation and decoder/execution signals) instead of a hardcoded library-path allowlist, so a webshell hidden under `vendor/`, `node_modules/`, or a plugin directory is contained while genuine library data files are still spared.
+- Package-integrity checks now report a tampered executable or shared library wherever it lives, not only under `/usr/bin` and a few sibling directories, so a trojaned `.so` under `/usr/lib*`, `/usr/local`, or `/opt` is no longer missed.
 - Non-standard MySQL superuser accounts and operator WHM root API tokens are now surfaced on the first scan instead of being silently recorded as the baseline. If CSM is installed on an already-compromised host, accounts and tokens planted by an attacker are flagged for review rather than treated as known-good.
 - The PAM brute-force listener no longer emits alerts while holding its internal lock. A stalled alert consumer could previously wedge the whole login-monitoring path and let its failure-tracking memory grow without bound.
 - Behind a trusted proxy, the client IP for HTTP abuse detection is now taken from the proxy-appended end of `X-Forwarded-For` instead of the client-controlled end, matching the challenge server. An attacker can no longer forge the header to get an arbitrary victim IP auto-blocked.

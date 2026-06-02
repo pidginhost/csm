@@ -3,12 +3,34 @@ package checks
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+// execStatFileInfo presents a regular, executable file so looksExecutableOrLibrary
+// reports it. The mode&0111 branch short-circuits before any Open is needed.
+type execStatFileInfo struct{ name string }
+
+func (e execStatFileInfo) Name() string     { return e.name }
+func (execStatFileInfo) Size() int64        { return 4096 }
+func (execStatFileInfo) Mode() os.FileMode  { return 0o755 }
+func (execStatFileInfo) ModTime() time.Time { return time.Time{} }
+func (execStatFileInfo) IsDir() bool        { return false }
+func (execStatFileInfo) Sys() interface{}   { return nil }
+
+// withExecutableFiles makes every Stat return an executable regular file, so a
+// package-verify mismatch is treated as a tampered binary regardless of path.
+func withExecutableFiles(t *testing.T) {
+	t.Helper()
+	withMockOS(t, &mockOS{stat: func(name string) (os.FileInfo, error) {
+		return execStatFileInfo{name: name}, nil
+	}})
+}
 
 // --- checkRPMPackageIntegrity ------------------------------------------
 
@@ -35,6 +57,7 @@ func TestCheckRPMPackageIntegrityCommandFailureSkips(t *testing.T) {
 }
 
 func TestCheckRPMPackageIntegrityModifiedBinaryEmitsCritical(t *testing.T) {
+	withExecutableFiles(t)
 	withMockCmd(t, &mockCmd{
 		runAllowNonZero: func(string, ...string) ([]byte, error) {
 			// rpm -V output: "S.5......" flags + "/usr/bin/passwd"
@@ -66,14 +89,32 @@ func TestCheckRPMPackageIntegritySkipsConfigFiles(t *testing.T) {
 	}
 }
 
-func TestCheckRPMPackageIntegritySkipsNonBinaryPaths(t *testing.T) {
+func TestCheckRPMPackageIntegritySkipsNonExecutableFiles(t *testing.T) {
+	// A non-executable, non-ELF packaged file (e.g. package-manager state) is
+	// not reported even when its checksum changed.
+	withMockOS(t, &mockOS{stat: func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }})
 	withMockCmd(t, &mockCmd{
 		runAllowNonZero: func(string, ...string) ([]byte, error) {
 			return []byte("S.5......  /var/lib/something\n"), nil
 		},
 	})
 	if got := checkRPMPackageIntegrity([]string{"openssh-server"}); got != nil {
-		t.Errorf("non-binary path should be skipped, got %d findings", len(got))
+		t.Errorf("non-executable file should be skipped, got %d findings", len(got))
+	}
+}
+
+// A tampered shared library outside the legacy /usr/bin allowlist must now be
+// reported -- this is the path-allowlist bypass the fix closes.
+func TestCheckRPMPackageIntegrityReportsLibraryOutsideBinDirs(t *testing.T) {
+	withExecutableFiles(t)
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) {
+			return []byte("S.5......  /usr/lib64/libcrypto.so.3\n"), nil
+		},
+	})
+	got := checkRPMPackageIntegrity([]string{"openssl-libs"})
+	if len(got) != 1 || !strings.Contains(got[0].Message, "/usr/lib64/libcrypto.so.3") {
+		t.Fatalf("tampered library outside bin dirs must be reported, got %+v", got)
 	}
 }
 
@@ -129,6 +170,7 @@ func TestCheckDebianPackageIntegrityFallsBackToDpkgVerify(t *testing.T) {
 // --- checkDpkgVerify ---------------------------------------------------
 
 func TestCheckDpkgVerifyParsesMd5MismatchFlag(t *testing.T) {
+	withExecutableFiles(t)
 	withMockCmd(t, &mockCmd{
 		runAllowNonZero: func(string, ...string) ([]byte, error) {
 			return []byte("??5??????   /usr/bin/passwd\n"), nil
@@ -167,14 +209,16 @@ func TestCheckDpkgVerifySkipsLinesWithoutSor5Flag(t *testing.T) {
 	}
 }
 
-func TestCheckDpkgVerifySkipsNonCriticalPaths(t *testing.T) {
+func TestCheckDpkgVerifySkipsNonExecutableFiles(t *testing.T) {
+	// Package-manager metadata (not executable) is not reported.
+	withMockOS(t, &mockOS{stat: func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }})
 	withMockCmd(t, &mockCmd{
 		runAllowNonZero: func(string, ...string) ([]byte, error) {
 			return []byte("??5??????   /var/lib/dpkg/info/x.list\n"), nil
 		},
 	})
 	if got := checkDpkgVerify([]string{"sudo"}); got != nil {
-		t.Errorf("non-critical path should be skipped, got %d findings", len(got))
+		t.Errorf("non-executable file should be skipped, got %d findings", len(got))
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -388,13 +389,6 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 		return false
 	}
 
-	pathLower := strings.ToLower(path)
-	for _, lib := range knownLibraryPaths {
-		if strings.Contains(pathLower, lib) {
-			return false
-		}
-	}
-
 	if data == nil {
 		var err error
 		data, err = osFS.ReadFile(path)
@@ -415,7 +409,74 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 	// Files that use long hex-string payloads (LEVIATHAN signature) are
 	// caught by the hex-density arm instead, which stays at 20%.
 	content := string(data)
-	return shannonEntropy(content) >= 5.5 || hexEncodingDensity(content) > 0.20
+
+	// High Shannon entropy is a strong standalone signal: packed/encrypted
+	// payloads land at 5.8+, while ordinary library code (even with a handful
+	// of binary constants) stays below 5.5 -- measured WPML wpml_zip.php =
+	// 5.25, Breakdance google-fonts.php = 4.90.
+	if shannonEntropy(content) >= 5.5 {
+		return true
+	}
+
+	// High hex density alone is NOT enough: a ZIP/PDF library's magic-byte
+	// constant tables ("\x50\x4b\x03\x04" ...) saturate that metric while being
+	// inert data. Require a structural obfuscated-execution signal too. This
+	// replaces a hardcoded library-path allowlist (vendor/, node_modules/,
+	// named plugin slugs) that an attacker could defeat by planting a webshell
+	// under any "trusted" directory -- the file is now judged by content, so a
+	// hex-encoded packer still quarantines wherever it hides and a benign
+	// data-heavy library file is spared on any path.
+	if hexEncodingDensity(content) > 0.20 {
+		return hasObfuscatedExecutionSignal(content)
+	}
+	return false
+}
+
+var reVariableFunctionCall = regexp.MustCompile(`\$[A-Za-z_]\w*\s*\(`)
+
+// hasObfuscatedExecutionSignal reports whether content carries a structural
+// sign of obfuscated code execution, distinguishing a packed webshell from
+// inert binary data such as a ZIP library's magic-byte constants. Any signal
+// is sufficient:
+//   - LEVIATHAN-style control-flow obfuscation (goto spaghetti).
+//   - Function names built from concatenated hex escapes ("\x65"."\x76"... to
+//     dodge literal-name detection).
+//   - A variable bound to a decoder/exec primitive and later invoked.
+//   - A decoder (base64/gz/rot13/openssl/hex2bin) paired with an executor
+//     (eval/assert/create_function/call_user_func or a variable-function call).
+func hasObfuscatedExecutionSignal(content string) bool {
+	lower := strings.ToLower(content)
+	if countOccurrences(lower, "goto ") > 10 {
+		return true
+	}
+	// Function-name obfuscation: many hex string literals joined by the
+	// concatenation operator. Standalone hex constant tables (no concat) are
+	// inert data and do not match.
+	if countOccurrences(content, `"\x`) > 20 && countOccurrences(content, `" . "`) > 10 {
+		return true
+	}
+	if detectVarFuncDangerousAssignment(content) {
+		return true
+	}
+	hasDecoder := false
+	for _, d := range []string{
+		"base64_decode", "gzinflate", "gzuncompress", "gzdecode",
+		"str_rot13", "openssl_decrypt", "hex2bin", "convert_uudecode",
+	} {
+		if strings.Contains(lower, d) {
+			hasDecoder = true
+			break
+		}
+	}
+	if !hasDecoder {
+		return false
+	}
+	for _, x := range []string{"eval(", "assert(", "create_function(", "call_user_func"} {
+		if strings.Contains(lower, x) {
+			return true
+		}
+	}
+	return reVariableFunctionCall.MatchString(content)
 }
 
 // hexEncodingDensity returns the fraction of a string's bytes that are part
@@ -440,31 +501,6 @@ func hexEncodingDensity(s string) float64 {
 
 func isHexDigit(b byte) bool {
 	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
-}
-
-// knownLibraryPaths are directory fragments that indicate a file belongs to
-// a well-known third-party library and should never be auto-quarantined.
-var knownLibraryPaths = []string{
-	"/phpmailer/",
-	"/vendor/",
-	"/node_modules/",
-	"/pear/",
-	"/tcpdf/",
-	"/dompdf/",
-	"/guzzlehttp/",
-	"/symfony/",
-	"/monolog/",
-	// WPML ships a bundled PHPZip class whose ZIP magic-byte constants
-	// ("\x50\x4b\x03\x04" etc.) raise entropy above legitimate-code gates.
-	// The three WPML plugin slugs below cover the family. The sitepress
-	// slug is deliberately written without a trailing slash so it matches
-	// both /sitepress-multilingual-cms/ and /sitepress-multilingual-cms-o/.
-	"/sitepress-multilingual-cms",
-	"/wpml-translation-management/",
-	"/wpml-string-translation/",
-	// Breakdance page builder ships namespaced library helpers that match
-	// dropper heuristics by co-occurrence (file_get_contents + namespace).
-	"/breakdance/",
 }
 
 // InlineQuarantineGated applies the operator's quarantine policy before

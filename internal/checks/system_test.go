@@ -5,33 +5,10 @@ import (
 	"testing"
 )
 
-func TestIsCriticalSystemPath(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"/usr/bin/passwd", true},
-		{"/usr/sbin/sshd", true},
-		{"/bin/bash", true},
-		{"/sbin/init", true},
-		{"/etc/passwd", false},
-		{"/opt/csm/csm", false},
-		{"/var/log/auth.log", false},
-		{"", false},
-		{"/home/user/.ssh/authorized_keys", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			if got := isCriticalSystemPath(tt.path); got != tt.want {
-				t.Errorf("isCriticalSystemPath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-// parseDpkgVerifyOutput extracts the parsing logic from checkDpkgVerify
-// into a pure function for direct unit-testing without a runCmd mock.
-// The production code should call this after shelling out to dpkg.
+// parseDpkgVerifyOutput mirrors the flag/conffile parsing in checkDpkgVerify.
+// It does NOT decide which files are reported by type -- production filters the
+// parsed candidates through looksExecutableOrLibrary, so this pure helper
+// returns every non-conffile size/checksum mismatch.
 func parseDpkgVerifyOutput(pkg string, output string) []string {
 	var flagged []string
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
@@ -44,9 +21,6 @@ func parseDpkgVerifyOutput(pkg string, output string) []string {
 			continue
 		}
 		if !strings.Contains(flags, "5") && !strings.Contains(flags, "S") {
-			continue
-		}
-		if !isCriticalSystemPath(file) {
 			continue
 		}
 		flagged = append(flagged, file)
@@ -72,11 +46,13 @@ func TestParseDpkgVerifyOutput_SkipsConfigFiles(t *testing.T) {
 	}
 }
 
-func TestParseDpkgVerifyOutput_SkipsNonBinaryPaths(t *testing.T) {
-	output := "??5??????  /usr/share/doc/coreutils/README"
-	got := parseDpkgVerifyOutput("coreutils", output)
-	if len(got) != 0 {
-		t.Errorf("non-binary path should be skipped, got %v", got)
+func TestParseDpkgVerifyOutput_ReturnsNonConfigMismatch(t *testing.T) {
+	// Parsing no longer filters by path; checkDpkgVerify decides reporting by
+	// file type. A non-conffile mismatch is returned at the parse layer.
+	output := "??5??????  /usr/lib/x86_64-linux-gnu/libssl.so.3"
+	got := parseDpkgVerifyOutput("libssl3", output)
+	if len(got) != 1 || got[0] != "/usr/lib/x86_64-linux-gnu/libssl.so.3" {
+		t.Errorf("non-conffile mismatch should be returned, got %v", got)
 	}
 }
 
@@ -119,9 +95,6 @@ func parseRpmVerifyOutput(output string) []string {
 			continue
 		}
 		if !strings.Contains(flags, "S") && !strings.Contains(flags, "5") {
-			continue
-		}
-		if !isCriticalSystemPath(file) {
 			continue
 		}
 		flagged = append(flagged, file)
