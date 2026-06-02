@@ -2107,6 +2107,58 @@ func (e *Engine) FlushBlocked() error {
 	return nil
 }
 
+// subnetSafetyGuardLocked refuses a CIDR block that would firewall
+// infrastructure the daemon must never drop: any infra IP or infra range, a
+// DNS-resolved infra host, one of the daemon's own interface addresses, or an
+// explicitly allowed IP. It also refuses the default route, which would drop
+// all traffic. The single-IP path enforces the same invariants in
+// blockIPTarget; subnet blocks (auto-netblock escalation and the operator CLI)
+// reached nft without them, so a /24 containing the panel or management IP
+// could lock the operator out, and a shared-hosting /24 could be weaponised to
+// firewall hundreds of unrelated customers. The output chain has no infra
+// carve-out, so an unsafe subnet also kills the daemon's own egress.
+// Must be called with e.mu held.
+func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
+	if ones, _ := network.Mask.Size(); ones == 0 {
+		return fmt.Errorf("refusing to block default route: %s", network.String())
+	}
+
+	for _, raw := range e.cfg.InfraIPs {
+		if _, infraNet, cidrErr := net.ParseCIDR(raw); cidrErr == nil {
+			if network.Contains(infraNet.IP) || infraNet.Contains(network.IP) {
+				return fmt.Errorf("refusing to block subnet %s: overlaps infra range %s", network.String(), raw)
+			}
+			continue
+		}
+		if infraIP := net.ParseIP(raw); infraIP != nil && network.Contains(infraIP) {
+			return fmt.Errorf("refusing to block subnet %s: contains infra IP %s", network.String(), raw)
+		}
+	}
+
+	for host, set := range e.infraResolved {
+		for key := range set {
+			if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
+				return fmt.Errorf("refusing to block subnet %s: contains infra IP %s (resolved from %s)", network.String(), key, host)
+			}
+		}
+	}
+
+	e.refreshLocalAddrsLocked()
+	for key := range e.localAddrs {
+		if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
+			return fmt.Errorf("refusing to block subnet %s: contains local host IP %s", network.String(), key)
+		}
+	}
+
+	for key := range e.allowedIPIndex {
+		if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
+			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), key)
+		}
+	}
+
+	return nil
+}
+
 // BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
 // timeout 0 = permanent block.
 func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) error {
@@ -2116,6 +2168,9 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	_, network, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
+	}
+	if err := e.subnetSafetyGuardLocked(network); err != nil {
+		return err
 	}
 	if e.isSubnetBlockedStateLocked(network.String()) {
 		return nil
