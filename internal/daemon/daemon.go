@@ -1926,10 +1926,29 @@ func (d *Daemon) startSpoolWatcher() {
 	fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher active\n", ts())
 }
 
+// superviseWatcherRun runs run() to completion. If daemonStop closes while
+// run() is still blocked, stop() is invoked so run() can return. The helper
+// goroutine is reaped when run() returns on its own. This guarantees the live
+// watcher instance is stopped on shutdown even after a crash-restart swapped a
+// fresh instance in, which the external shutdown path (it only stops the
+// instance registered via setSpoolWatcher) can miss, hanging wg.Wait forever.
+func superviseWatcherRun(daemonStop <-chan struct{}, run, stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-daemonStop:
+			stop()
+		case <-done:
+		}
+	}()
+	run()
+	close(done)
+}
+
 func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
 	current := sw
 	for {
-		current.Run()
+		superviseWatcherRun(d.stopCh, current.Run, current.Stop)
 
 		select {
 		case <-d.stopCh:
