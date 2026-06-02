@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The attack database no longer leaks memory tracking removed addresses on hosts that use the flat-file store, and it now reports a failed save instead of silently swallowing it.
 - The GeoIP RDAP lookup cache is now hard-bounded even when every entry is recent, so a burst of distinct lookups can no longer grow it past its cap.
 - `csm rehash` now exits non-zero when it fails to update the integrity hashes, so a scripted rehash-then-restart no longer proceeds on a stale hash and takes the daemon down.
 - The YARA scan worker now contains a handler crash and returns an error for that one scan instead of dropping the connection, and a stopped scan worker no longer retries against its closed socket. Together these stop a single bad scan from wedging the scan path.

@@ -119,9 +119,18 @@ func (db *DB) saveRecords() {
 		return
 	}
 
-	// Fallback: flat-file records.json.
+	// Fallback: flat-file records.json. The whole records map is rewritten
+	// each flush, so removals are reflected by absence and deletedIPs is
+	// redundant here -- but it must still be drained or it grows for the
+	// process lifetime on a host with no bbolt store. Snapshot the keys under
+	// the same lock as the marshal, then clear exactly those after a
+	// successful write (a removal added later stays for the next flush).
 	db.mu.RLock()
 	data, err := json.Marshal(db.records)
+	var drained []string
+	for ip := range db.deletedIPs {
+		drained = append(drained, ip)
+	}
 	db.mu.RUnlock()
 
 	if err != nil {
@@ -135,7 +144,17 @@ func (db *DB) saveRecords() {
 		fmt.Fprintf(os.Stderr, "attackdb: error writing %s: %v\n", tmpPath, err)
 		return
 	}
-	_ = os.Rename(tmpPath, path)
+	if err := os.Rename(tmpPath, path); err != nil {
+		fmt.Fprintf(os.Stderr, "attackdb: error renaming %s: %v\n", path, err)
+		return
+	}
+	if len(drained) > 0 {
+		db.mu.Lock()
+		for _, ip := range drained {
+			delete(db.deletedIPs, ip)
+		}
+		db.mu.Unlock()
+	}
 }
 
 // appendEvents writes events to the bbolt store (if available) or appends
