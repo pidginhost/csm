@@ -225,17 +225,42 @@ func (db *DB) LookupWithRDAP(ip string) Info {
 	// Cache
 	db.rdapMu.Lock()
 	db.rdapTTL[ip] = rdapCacheEntry{info: rdapInfo, fetched: time.Now()}
-	// Evict old entries
-	if len(db.rdapTTL) > 10000 {
-		for k, v := range db.rdapTTL {
-			if time.Since(v.fetched) > 24*time.Hour {
-				delete(db.rdapTTL, k)
-			}
-		}
-	}
+	db.evictRDAPLocked()
 	db.rdapMu.Unlock()
 
 	return info
+}
+
+// maxRDAPCacheEntries hard-caps the RDAP cache. Caller holds db.rdapMu.
+const maxRDAPCacheEntries = 10000
+
+// evictRDAPLocked bounds the RDAP cache. It first drops expired entries; if the
+// map is still over the cap (every entry fresh, e.g. a burst of distinct
+// lookups within the 24h TTL), it evicts the oldest entries until at the cap so
+// the map cannot grow without bound. Caller holds db.rdapMu.
+func (db *DB) evictRDAPLocked() {
+	if len(db.rdapTTL) <= maxRDAPCacheEntries {
+		return
+	}
+	for k, v := range db.rdapTTL {
+		if time.Since(v.fetched) > 24*time.Hour {
+			delete(db.rdapTTL, k)
+		}
+	}
+	for len(db.rdapTTL) > maxRDAPCacheEntries {
+		var oldestKey string
+		var oldest time.Time
+		for k, v := range db.rdapTTL {
+			if oldestKey == "" || v.fetched.Before(oldest) {
+				oldestKey = k
+				oldest = v.fetched
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(db.rdapTTL, oldestKey)
+	}
 }
 
 // RDAP lookup - fetches from the appropriate RIR
