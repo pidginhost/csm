@@ -133,6 +133,7 @@ that feed the rollup still drive normal block decisions.
 
 - Never kills root processes, system daemons, or cPanel services
 - Infrastructure IPs (`infra_ips` in config) are never blocked
+- Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
 - Auto-quarantine requires high confidence: category match (webshell/backdoor/dropper) + entropy >= 4.8 or hex density > 20%. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking

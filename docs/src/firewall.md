@@ -9,7 +9,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Rate limiting** - SYN flood, UDP flood, per-IP connection rate, per-port flood
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
-- **Subnet/CIDR blocking** with auto-escalation from individual IPs
+- **Subnet/CIDR blocking** with auto-escalation from individual IPs and safety guards for infra, local, and allowed addresses
 - **Permanent block escalation** after repeated temp blocks
 - **Dynamic DNS** hostname resolution (updated every 5 min) with grace-period guard against transient resolver failures
 - **IPv6 dual-stack** with separate sets
@@ -130,6 +130,11 @@ Auto-block calls require `firewall.enabled: true` because they go through the fi
    [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
 
 2. **`auto_response.dry_run`** - when true (or absent; safety default), `BlockIP()` records the intended block to bbolt and returns success without touching nftables. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes; "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
+
+Subnet blocks refuse the default route and any range that contains an
+infrastructure IP, a resolved infra hostname, a local host address, a
+full-IP allow, or a port-specific allow. Remove the allow or narrow the
+CIDR before applying the block.
 
 ## Infrastructure IP DNS guard
 

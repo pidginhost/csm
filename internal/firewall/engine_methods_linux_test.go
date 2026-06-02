@@ -75,7 +75,7 @@ func TestEngineBlockSubnetRejectsSaturatedCIDRBeforeNetlink(t *testing.T) {
 	e := newTestEngine(t)
 	e.setBlockedNet = &nftables.Set{Name: "blocked_nets"}
 
-	err := e.BlockSubnet("0.0.0.0/0", "bad range", 0)
+	err := e.BlockSubnet("255.255.255.255/32", "bad range", 0)
 	if err == nil || !strings.Contains(err.Error(), "no safe interval end") {
 		t.Fatalf("BlockSubnet saturated CIDR error = %v, want safe interval error", err)
 	}

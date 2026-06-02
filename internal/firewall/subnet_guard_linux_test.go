@@ -3,7 +3,10 @@
 package firewall
 
 import (
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,18 +23,33 @@ func mustCIDR(t *testing.T, cidr string) *net.IPNet {
 	return network
 }
 
+func writeFirewallStateForGuard(t *testing.T, dir string, state FirewallState) {
+	t.Helper()
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal firewall state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600); err != nil {
+		t.Fatalf("write firewall state: %v", err)
+	}
+}
+
 // A subnet block must be refused when it would firewall infrastructure the
 // daemon must never drop. Before the guard, BlockSubnet went straight to nft,
 // so a /24 containing the panel/management IP locked the operator out and a
 // shared-hosting /24 could be weaponised against unrelated customers.
 func TestSubnetSafetyGuard_RefusesUnsafeRanges(t *testing.T) {
+	dir := t.TempDir()
+	writeFirewallStateForGuard(t, dir, FirewallState{
+		Allowed: []AllowedEntry{{IP: "192.0.2.10", Reason: "admin"}},
+	})
 	e := &Engine{
 		cfg: &FirewallConfig{
 			InfraIPs: []string{"192.0.2.1", "192.0.2.128/25"},
 		},
 		infraResolved:    map[string]map[string]struct{}{"panel.example": {"198.51.100.7": {}}},
-		allowedIPIndex:   map[string]struct{}{"192.0.2.10": {}},
 		localAddrsLookup: func() ([]string, error) { return []string{"203.0.113.5"}, nil },
+		statePath:        dir,
 	}
 
 	cases := []struct {
@@ -65,6 +83,7 @@ func TestSubnetSafetyGuard_AllowsSafeRange(t *testing.T) {
 	e := &Engine{
 		cfg:              &FirewallConfig{InfraIPs: []string{"192.0.2.1"}},
 		localAddrsLookup: func() ([]string, error) { return []string{"203.0.113.5"}, nil },
+		statePath:        t.TempDir(),
 	}
 	if err := e.subnetSafetyGuardLocked(mustCIDR(t, "198.51.100.0/24")); err != nil {
 		t.Fatalf("safe subnet must pass guard, got %v", err)
@@ -76,6 +95,7 @@ func TestSubnetSafetyGuard_IPv6(t *testing.T) {
 	e := &Engine{
 		cfg:              &FirewallConfig{InfraIPs: []string{"2001:db8:1::1"}},
 		localAddrsLookup: func() ([]string, error) { return nil, nil },
+		statePath:        t.TempDir(),
 	}
 	if err := e.subnetSafetyGuardLocked(mustCIDR(t, "::/0")); err == nil {
 		t.Fatal("IPv6 default route must be refused")
@@ -85,5 +105,41 @@ func TestSubnetSafetyGuard_IPv6(t *testing.T) {
 	}
 	if err := e.subnetSafetyGuardLocked(mustCIDR(t, "2001:db8:2::/64")); err != nil {
 		t.Fatalf("safe IPv6 subnet must pass, got %v", err)
+	}
+}
+
+func TestSubnetSafetyGuard_LoadsStateForAllowedIPs(t *testing.T) {
+	dir := t.TempDir()
+	writeFirewallStateForGuard(t, dir, FirewallState{
+		Allowed:     []AllowedEntry{{IP: "192.0.2.10", Reason: "admin"}},
+		PortAllowed: []PortAllowEntry{{IP: "198.51.100.20", Port: 25, Proto: "tcp", Reason: "smtp relay"}},
+	})
+	e := &Engine{
+		cfg:              &FirewallConfig{},
+		localAddrsLookup: func() ([]string, error) { return nil, nil },
+		statePath:        dir,
+	}
+	if e.allowedIPIndex != nil {
+		t.Fatal("test must start with a cold allowed-IP index")
+	}
+
+	cases := []struct {
+		name string
+		cidr string
+		want string
+	}{
+		{"allowed IP", "192.0.2.0/24", "allowed IP 192.0.2.10"},
+		{"port-allowed IP", "198.51.100.0/24", "port-allowed IP 198.51.100.20"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := e.subnetSafetyGuardLocked(mustCIDR(t, tc.cidr))
+			if err == nil {
+				t.Fatalf("expected refusal for %s, got nil", tc.cidr)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err.Error(), tc.want)
+			}
+		})
 	}
 }

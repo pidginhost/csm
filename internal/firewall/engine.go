@@ -2151,16 +2151,12 @@ func (e *Engine) FlushBlocked() error {
 	return nil
 }
 
-// subnetSafetyGuardLocked refuses a CIDR block that would firewall
-// infrastructure the daemon must never drop: any infra IP or infra range, a
-// DNS-resolved infra host, one of the daemon's own interface addresses, or an
-// explicitly allowed IP. It also refuses the default route, which would drop
-// all traffic. The single-IP path enforces the same invariants in
-// blockIPTarget; subnet blocks (auto-netblock escalation and the operator CLI)
-// reached nft without them, so a /24 containing the panel or management IP
-// could lock the operator out, and a shared-hosting /24 could be weaponised to
-// firewall hundreds of unrelated customers. The output chain has no infra
-// carve-out, so an unsafe subnet also kills the daemon's own egress.
+// subnetSafetyGuardLocked refuses a CIDR block that would firewall traffic the
+// daemon must keep reachable: infra IPs or ranges, DNS-resolved infra hosts,
+// local interface addresses, full-IP allows, port-specific allows, or the
+// default route. Subnet blocks cover many addresses, and the output chain has
+// no infra carve-out, so an unsafe subnet can lock out operators or kill the
+// daemon's own egress.
 // Must be called with e.mu held.
 func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	if ones, _ := network.Mask.Size(); ones == 0 {
@@ -2194,9 +2190,15 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 		}
 	}
 
-	for key := range e.allowedIPIndex {
-		if ip := net.ParseIP(key); ip != nil && network.Contains(ip) {
-			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), key)
+	state := e.loadStateFile()
+	for _, entry := range state.Allowed {
+		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
+			return fmt.Errorf("refusing to block subnet %s: contains allowed IP %s", network.String(), entry.IP)
+		}
+	}
+	for _, entry := range state.PortAllowed {
+		if ip := net.ParseIP(entry.IP); ip != nil && network.Contains(ip) {
+			return fmt.Errorf("refusing to block subnet %s: contains port-allowed IP %s", network.String(), entry.IP)
 		}
 	}
 
