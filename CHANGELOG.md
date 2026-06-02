@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Non-standard MySQL superuser accounts and operator WHM root API tokens are now surfaced on the first scan instead of being silently recorded as the baseline. If CSM is installed on an already-compromised host, accounts and tokens planted by an attacker are flagged for review rather than treated as known-good.
 - The PAM brute-force listener no longer emits alerts while holding its internal lock. A stalled alert consumer could previously wedge the whole login-monitoring path and let its failure-tracking memory grow without bound.
 - Behind a trusted proxy, the client IP for HTTP abuse detection is now taken from the proxy-appended end of `X-Forwarded-For` instead of the client-controlled end, matching the challenge server. An attacker can no longer forge the header to get an arbitrary victim IP auto-blocked.
 - Subnet (CIDR) blocking now refuses any range that contains an infrastructure IP, the daemon's own address, a resolved infra host, or an explicitly allowed IP, and refuses the default route. This closes a self-lockout path and stops an attacker on a shared range from tricking auto-escalation into firewalling unrelated customers. Single-IP blocking already had these guards.

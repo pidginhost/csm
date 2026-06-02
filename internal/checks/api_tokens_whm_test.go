@@ -86,10 +86,28 @@ func tokenSigFromMap(m map[string]bool) tokenSig {
 	return sig
 }
 
-func TestWHMTokens_FirstRunBaselineNoFinding(t *testing.T) {
+// A root API token present on the first scan must be surfaced for review: if
+// CSM is installed after a breach, an attacker-created token would otherwise
+// be baselined as "known" and never alert.
+func TestWHMTokens_FirstRunOperatorTokenSurfaced(t *testing.T) {
 	got := runWHMTokens(t, nil, map[string]bool{"phclient": true})
+	if len(got) != 1 {
+		t.Fatalf("first run with an operator token must surface it, got %+v", got)
+	}
+	if got[0].Severity != alert.High {
+		t.Errorf("baseline token finding severity = %v, want High", got[0].Severity)
+	}
+	if !strings.Contains(got[0].Details, "phclient") {
+		t.Errorf("baseline finding must name the token, got %q", got[0].Details)
+	}
+}
+
+// A first scan whose only tokens are cluster-managed trust tokens is routine
+// DNS-clustering state, not a compromise signal, so it stays silent.
+func TestWHMTokens_FirstRunClusterOnlyNoFinding(t *testing.T) {
+	got := runWHMTokens(t, nil, map[string]bool{"reverse_trust_aaaaaaaa": false})
 	if len(got) != 0 {
-		t.Fatalf("first run must set baseline silently, got %+v", got)
+		t.Fatalf("cluster-only baseline must be silent, got %+v", got)
 	}
 }
 

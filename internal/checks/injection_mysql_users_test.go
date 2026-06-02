@@ -54,10 +54,10 @@ func TestCheckMySQLUsersEmptyOutputReturnsNil(t *testing.T) {
 	}
 }
 
-func TestCheckMySQLUsersFirstRunEstablishesBaselineNoFinding(t *testing.T) {
+func TestCheckMySQLUsersFirstRunSurfacesPreExisting(t *testing.T) {
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
-			// One non-standard superuser present.
+			// One non-standard superuser present at baseline.
 			return []byte("admin_user\tlocalhost\n"), nil
 		},
 	})
@@ -67,9 +67,15 @@ func TestCheckMySQLUsersFirstRunEstablishesBaselineNoFinding(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 
+	// The query excludes standard accounts, so a non-standard superuser present
+	// on the first scan is surfaced for review rather than silently baselined --
+	// a rogue account planted before CSM was installed must not pass as "known".
 	findings := CheckMySQLUsers(context.Background(), nil, st)
-	if len(findings) != 0 {
-		t.Errorf("first run should establish baseline without a finding, got %d", len(findings))
+	if len(findings) != 1 || findings[0].Check != "mysql_superuser" {
+		t.Fatalf("first run must surface pre-existing superuser, got %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "baseline") {
+		t.Errorf("message should indicate baseline, got %q", findings[0].Message)
 	}
 }
 

@@ -263,7 +263,21 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 	hash := hashBytes(out)
 	key := "_mysql_super_users"
 	prev, exists := store.GetRaw(key)
-	if exists && prev != hash {
+	switch {
+	case !exists:
+		// First run establishes the baseline. The query already excludes the
+		// standard cPanel/system superusers, so every account here is a
+		// non-standard privileged account. Baselining them silently would let
+		// a rogue superuser planted before CSM was installed (the
+		// CSM-installed-after-breach case) pass as "known" forever. Surface the
+		// pre-existing set for operator review instead.
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "mysql_superuser",
+			Message:  "Non-standard MySQL superuser accounts present at baseline",
+			Details:  fmt.Sprintf("Review these privileged accounts:\n%s", output),
+		})
+	case prev != hash:
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "mysql_superuser",

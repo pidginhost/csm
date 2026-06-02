@@ -398,13 +398,22 @@ func checkWHMRootAPITokens(store *state.Store) (alert.Finding, bool) {
 	if err == nil {
 		if cur, ok := parseWHMTokenSig(out); ok {
 			_, hadStructuredState := store.GetRaw(whmAPITokensStateKey)
+			_, hadLegacyState := store.GetRaw(whmAPITokensHashKey)
 			finding, fire := diffWHMTokens(store, cur)
-			if !hadStructuredState {
-				if _, hadLegacyState := store.GetRaw(whmAPITokensHashKey); hadLegacyState {
-					if legacyFinding, legacyFire := checkWHMRootAPITokensLegacyHash(store); legacyFire {
-						finding, fire = legacyFinding, true
-					}
+			switch {
+			case !hadStructuredState && hadLegacyState:
+				// Migrating from the legacy hash: the tokens were already
+				// vetted under the old scheme, so diff against the legacy hash
+				// rather than re-flagging the whole set as new.
+				if legacyFinding, legacyFire := checkWHMRootAPITokensLegacyHash(store); legacyFire {
+					finding, fire = legacyFinding, true
 				}
+			case !hadStructuredState && !hadLegacyState:
+				// True first run with no prior state of any kind. A root API
+				// token created by an attacker before CSM was installed would
+				// otherwise be baselined as "known" and never alert. Surface
+				// the pre-existing operator tokens for review.
+				finding, fire = baselineWHMTokens(cur)
 			}
 			store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
 			return finding, fire
@@ -431,6 +440,31 @@ func checkWHMRootAPITokensLegacyHash(store *state.Store) (alert.Finding, bool) {
 		}, true
 	}
 	return alert.Finding{}, false
+}
+
+// baselineWHMTokens reports pre-existing root API tokens on the very first
+// scan. Routine cluster-managed trust tokens churn on their own and are
+// expected, so a baseline made up only of those stays silent; any
+// operator/full-access token present at baseline is surfaced for review so a
+// token planted before CSM was installed cannot pass as "known".
+func baselineWHMTokens(cur tokenSig) (alert.Finding, bool) {
+	var operator []string
+	for name, info := range cur {
+		if isClusterManagedToken(info) || isClusterManagedTokenAddition(name, info) {
+			continue
+		}
+		operator = append(operator, name)
+	}
+	if len(operator) == 0 {
+		return alert.Finding{}, false
+	}
+	sort.Strings(operator)
+	return alert.Finding{
+		Severity: alert.High,
+		Check:    "api_tokens",
+		Message:  "Pre-existing WHM root API tokens present at baseline",
+		Details:  "Review with 'whmapi1 api_token_list': " + strings.Join(operator, "; "),
+	}, true
 }
 
 // tokenSig maps each WHM root API token name to the security traits compared
