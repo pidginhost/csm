@@ -82,6 +82,30 @@ func TestApiEvents_NilBusReturns503(t *testing.T) {
 	}
 }
 
+func TestApiEvents_Returns503WhenSubscriberCapIsFull(t *testing.T) {
+	bus := broadcast.NewBus(8)
+	defer bus.Close()
+	bus.SetMaxSubscribers(1)
+	sub, ok := bus.TrySubscribe()
+	if !ok {
+		t.Fatal("expected first subscription to reserve the only slot")
+	}
+	defer bus.Unsubscribe(sub)
+
+	s := &Server{cfg: &config.Config{}}
+	s.SetFindingBus(bus)
+
+	rec := httptest.NewRecorder()
+	s.apiEvents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when subscriber cap is full, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "too many event stream subscribers") {
+		t.Fatalf("unexpected response body: %q", rec.Body.String())
+	}
+}
+
 func TestApiEvents_SetsFiniteDeadlineBeforeEachWrite(t *testing.T) {
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
