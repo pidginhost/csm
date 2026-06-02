@@ -1548,18 +1548,12 @@ func (d *Daemon) startLogWatchers() {
 				d.MarkWatcher("maillog", false)
 			} else {
 				d.MarkWatcher("maillog", true)
-				cfg := d.cfg
 				d.wg.Add(1)
 				obs.Go("maillog-consumer", func() {
 					defer d.wg.Done()
 					for line := range mailLines {
-						findings := mailHandler(line.Message, cfg)
-						for _, f := range findings {
-							select {
-							case d.alertCh <- f:
-							case <-d.stopCh:
-								return
-							}
+						if !d.dispatchMailLogLine(line, mailHandler) {
+							return
 						}
 					}
 				})
@@ -1626,7 +1620,7 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	// Start background eviction for modsec dedup/escalation state
-	StartModSecEviction(d.stopCh, func() *config.Config { return d.cfg })
+	StartModSecEviction(d.stopCh, func() *config.Config { return d.currentCfg() })
 
 	// Start background eviction for access log brute force state
 	StartAccessLogEviction(d.stopCh)
@@ -1730,6 +1724,18 @@ func (d *Daemon) handleMailLogSourceGone(err error) {
 
 func (d *Daemon) handleMailLogSourceRestored() {
 	d.MarkWatcher("maillog", true)
+}
+
+func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
+	findings := handler(line.Message, d.currentCfg())
+	for _, f := range findings {
+		select {
+		case d.alertCh <- f:
+		case <-d.stopCh:
+			return false
+		}
+	}
+	return true
 }
 
 // retryLogWatcher polls for a missing log file every 60 seconds.
