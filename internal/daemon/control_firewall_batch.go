@@ -185,17 +185,21 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 
 	cfg := c.d.currentCfg()
 	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
+	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.nft")
 
-	// Capture current nftables ruleset for rollback. Best-effort: if
-	// nft isn't installed or fails, proceed without rollback script.
+	// Capture the current nftables ruleset for rollback. Best-effort: if nft
+	// isn't installed or fails, proceed without a rollback file.
 	// #nosec G204 -- "nft list ruleset" is literal.
 	nftDump, _ := exec.Command("nft", "list", "ruleset").Output()
 	if len(nftDump) > 0 {
-		rollbackScript := fmt.Sprintf("#!/bin/bash\n# Auto-rollback: restore previous nftables ruleset\nnft flush ruleset\nnft -f - <<'NFTEOF'\n%s\nNFTEOF\nrm -f %s %s\necho 'Firewall rolled back to previous state'\n",
-			string(nftDump), confirmFile, rollbackFile)
-		// #nosec G306 -- rollback script must be executable by root.
-		_ = os.WriteFile(rollbackFile, []byte(rollbackScript), 0700)
+		// Store the ruleset as an nft script restored with `nft -f`. Wrapping
+		// the dump in a bash heredoc (the previous approach) risked shell
+		// injection: a set name or comment containing the heredoc delimiter or
+		// shell metacharacters could break out into the root shell. `nft -f`
+		// consumes the file directly with no shell involved.
+		payload := append([]byte("flush ruleset\n"), nftDump...)
+		// #nosec G306 -- root-only state dir; this is data, not an executable.
+		_ = os.WriteFile(rollbackFile, payload, 0600)
 	}
 
 	if err := c.d.fwEngine.Apply(); err != nil {
@@ -217,9 +221,10 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 		if _, err := os.Stat(rollbackFile); err != nil {
 			return
 		}
-		// #nosec G204 -- bash is hardcoded; rollbackFile path written above.
-		cmd := exec.Command("bash", rollbackFile)
-		_, _ = cmd.CombinedOutput()
+		// #nosec G204 -- nft is hardcoded; rollbackFile is a CSM-written path.
+		_, _ = exec.Command("nft", "-f", rollbackFile).CombinedOutput()
+		_ = os.Remove(confirmFile)
+		_ = os.Remove(rollbackFile)
 	})
 
 	state, _ := firewall.LoadState(cfg.StatePath)
@@ -231,7 +236,7 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) {
 	cfg := c.d.currentCfg()
 	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
+	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.nft")
 
 	if _, err := os.Stat(confirmFile); os.IsNotExist(err) {
 		return control.FirewallAckResult{
