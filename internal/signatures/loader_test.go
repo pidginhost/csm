@@ -242,3 +242,45 @@ func hasRule(matches []Match, ruleName string) bool {
 	}
 	return false
 }
+
+// ScanFile read hardening: a negative maxBytes (which can arrive unvalidated
+// off the IPC wire via ScanFileArgs.MaxBytes) must not panic on
+// make([]byte, maxBytes), and a full file within maxBytes must be scanned in
+// full rather than from a possibly-short first read.
+func TestScanFileReadHardening(t *testing.T) {
+	dir := t.TempDir()
+	rulesYAML := `
+version: 1
+rules:
+  - name: simple_webshell
+    description: "Simple webshell"
+    severity: critical
+    category: webshell
+    file_types: [".php"]
+    patterns: ["eval(", "base64_decode"]
+    min_match: 2
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(rulesYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(dir)
+
+	target := filepath.Join(dir, "victim.php")
+	content := []byte(`<?php eval(base64_decode("abc")); ?>`)
+	if err := os.WriteFile(target, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Negative maxBytes must be rejected cleanly (no panic).
+	if got := scanner.ScanFile(target, -1); got != nil {
+		t.Errorf("negative maxBytes: want nil, got %v", got)
+	}
+	// Zero maxBytes: nothing to read.
+	if got := scanner.ScanFile(target, 0); got != nil {
+		t.Errorf("zero maxBytes: want nil, got %v", got)
+	}
+	// Generous cap: full file scanned, rule matches.
+	if got := scanner.ScanFile(target, 1<<20); len(got) != 1 {
+		t.Errorf("full scan: want 1 match, got %d", len(got))
+	}
+}

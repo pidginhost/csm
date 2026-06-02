@@ -4,6 +4,7 @@ package yara
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,18 +170,24 @@ func extractStringMeta(entries []yara_x.Metadata) map[string]string {
 
 // ScanFile reads a file (up to maxBytes) and scans it against YARA rules.
 func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
+	if maxBytes <= 0 {
+		return nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, maxBytes)
-	n, _ := f.Read(buf)
-	if n == 0 {
+	// ReadAll over a LimitReader rather than one f.Read into a pre-sized
+	// buffer: a short first read would scan only a prefix and silently miss
+	// malware deeper in the file, and a negative maxBytes off the IPC wire
+	// would panic make([]byte, maxBytes).
+	buf, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
+	if err != nil || len(buf) == 0 {
 		return nil
 	}
-	return s.ScanBytes(buf[:n])
+	return s.ScanBytes(buf)
 }
 
 // RuleCount returns the number of compiled rule files.

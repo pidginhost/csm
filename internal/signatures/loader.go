@@ -2,6 +2,7 @@ package signatures
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -247,6 +248,10 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 		return nil
 	}
 
+	if maxBytes <= 0 {
+		return nil
+	}
+
 	// #nosec G304 -- ScanFile's whole purpose is to scan a file on disk;
 	// `path` comes from the daemon's file index walker or a fanotify event.
 	f, err := os.Open(path)
@@ -255,14 +260,18 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, maxBytes)
-	n, _ := f.Read(buf)
-	if n == 0 {
+	// ReadAll over a LimitReader, not a single Read into a pre-sized buffer:
+	// a bare f.Read can return a short count on the first call, which would
+	// hand only a prefix to the scanner and silently miss malware further
+	// into the file. LimitReader also makes a negative/huge maxBytes safe
+	// (no make([]byte, maxBytes) panic / over-allocation).
+	buf, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
+	if err != nil || len(buf) == 0 {
 		return nil
 	}
 
 	ext := filepath.Ext(path)
-	return s.ScanContent(buf[:n], ext)
+	return s.ScanContent(buf, ext)
 }
 
 // RuleCount returns the number of loaded rules.

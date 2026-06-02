@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -2021,6 +2022,9 @@ func hasLeadingAnyDepthSuppressionGlob(pattern string) bool {
 // Kept for path-based checks (HTML phishing, credential logs, ZIP checks)
 // that need os.Stat for file size anyway.
 func readHead(path string, maxBytes int) []byte {
+	if maxBytes <= 0 {
+		return nil
+	}
 	// #nosec G304 -- readHead scans files surfaced by fanotify/scanner;
 	// reading user files for signature analysis is the daemon's purpose.
 	f, err := os.Open(path)
@@ -2028,12 +2032,14 @@ func readHead(path string, maxBytes int) []byte {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	buf := make([]byte, maxBytes)
-	n, _ := f.Read(buf)
-	if n == 0 {
+	// ReadAll over a LimitReader, not a single f.Read into a pre-sized
+	// buffer: a short read would hand only a prefix to the detectors and
+	// silently miss content deeper in the file.
+	buf, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
+	if err != nil || len(buf) == 0 {
 		return nil
 	}
-	return buf[:n]
+	return buf
 }
 
 // looksLikePluginUpdate checks if a PHP file in uploads looks like a plugin

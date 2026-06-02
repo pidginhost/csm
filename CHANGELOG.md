@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File signature scanning now reads the whole inspected region in one pass instead of a single read that could stop short, closing a gap where malware further into a file could be missed. An out-of-range read size is now rejected instead of crashing the scanner.
 - Allowing an IP that falls inside a blocked subnet now warns that the address stays blocked until the subnet is unblocked, instead of reporting a success that has no effect.
 - Backup restore now verifies the database snapshot before a full or firewall restore applies payloads, so a tampered or corrupted snapshot is rejected without a partial import.
 - The verified-crawler DNS cache is now bounded. A scan from many unique source IPs could previously grow it without limit between periodic prunes, an external memory-pressure lever.
