@@ -125,6 +125,33 @@ func TestScanProcNetTCPFlagsRootBadASNOutbound(t *testing.T) {
 	}
 }
 
+// procNetTCPRootBadASNSMTPRow is a root-owned SMTP egress row. Root must
+// remain visible to bad_asn_outbound without entering non-root detectors.
+const procNetTCPRootBadASNSMTPRow = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C350 387100CB:024B 01 00000000:00000000 00:00000000 00000000     0        0 33333 1 0000000000000000
+`
+
+func TestScanProcNetTCPRootBadASNDoesNotRunNonRootDetectors(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Detection.BadASNOutbound.Enabled = true
+	cfg.Detection.BadASNOutbound.BlockedASNs = []uint{64500}
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Backend = "legacy"
+	cfg.Detection.DirectSMTPEgress.Ports = []int{25, 465, 587}
+	SetASNLookup(func(string) (uint, string) { return 64500, "Bulletproof LLC" })
+	defer SetASNLookup(nil)
+
+	findings := scanProcNetTCP(cfg, []byte(procNetTCPRootBadASNSMTPRow), false)
+	if !hasCheck(findings, "bad_asn_outbound") {
+		t.Fatalf("root egress to a bad ASN must be flagged; got %+v", findings)
+	}
+	for _, check := range []string{"user_outbound_connection", "direct_smtp_egress"} {
+		if hasCheck(findings, check) {
+			t.Fatalf("root row must not raise %s; got %+v", check, findings)
+		}
+	}
+}
+
 func TestScanProcNetTCPGoodASNNotFlagged(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Detection.BadASNOutbound.Enabled = true

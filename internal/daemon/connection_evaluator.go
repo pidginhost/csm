@@ -97,14 +97,16 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 		out = append(out, f)
 	}
 
-	// Bad-ASN egress (host-takeover chain leg). Unlike user_outbound this is
-	// evaluated for every UID including root, so live exfil from a post-exploit
-	// root process is caught -- the periodic /proc/net poll skips root rows.
-	if lookup := checks.CurrentASNLookup(); lookup != nil && cfg.Detection.BadASNOutbound.Enabled {
-		asn, org := lookup(ev.DstIP.String())
-		if f, ok := checks.EvaluateBadASNOutbound(cfg, ev.DstIP, asn, org); ok {
-			f.Timestamp = now
-			out = append(out, f)
+	// Bad-ASN egress (host-takeover chain leg). The BPF program emits
+	// non-root connects only; root egress is covered by the periodic
+	// /proc/net scan so root-heavy hosts do not flood the ringbuf.
+	if ev.UID != 0 && cfg.Detection.BadASNOutbound.Enabled {
+		if lookup := checks.CurrentASNLookup(); lookup != nil {
+			asn, org := lookup(ev.DstIP.String())
+			if f, ok := checks.EvaluateBadASNOutbound(cfg, ev.DstIP, asn, org); ok {
+				f.Timestamp = now
+				out = append(out, f)
+			}
 		}
 	}
 	return out
