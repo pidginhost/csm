@@ -550,17 +550,18 @@ func TestClientIPForRecord_RejectsSpoofedLeftmost(t *testing.T) {
 	}
 }
 
-// In a chain of trusted proxies the rightmost untrusted entry is the real
-// client; trailing trusted-proxy hops are skipped.
-func TestClientIPForRecord_SkipsChainedTrustedProxies(t *testing.T) {
+// The direct proxy's appended entry is authoritative even when it also matches
+// a trusted-proxy CIDR. Skipping it would make the next entry to the left
+// client-controlled again.
+func TestClientIPForRecord_UsesProxyAppendedEntryInTrustedCIDR(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.WebServer.TrustedProxies = []string{"198.51.100.10", "198.51.100.11"}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
 	rec := accessLogRecord{
-		RemoteIP: "198.51.100.11",                           // outermost proxy (direct peer)
-		XFF:      "192.0.2.50, 203.0.113.10, 198.51.100.10", // spoof, realclient, inner trusted proxy
+		RemoteIP: "198.51.100.10",
+		XFF:      "203.0.113.99, 198.51.100.20",
 	}
-	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
-		t.Fatalf("chained trusted proxies: got %q, want 203.0.113.10", got)
+	if got := clientIPForRecord(rec, cfg); got != "198.51.100.20" {
+		t.Fatalf("trusted-CIDR appended entry: got %q, want 198.51.100.20", got)
 	}
 }
 
