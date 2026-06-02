@@ -1564,8 +1564,18 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 				existingSet[w.IP] = true
 			}
 			for _, entry := range bundle.Whitelist {
-				if entry.IP != "" && !existingSet[entry.IP] {
-					tdb.AddWhitelist(entry.IP)
+				// Validate imported IPs like every interactive route does: an
+				// unvalidated bundle could otherwise poison the threat DB /
+				// firewall allow-list with malformed or attacker-chosen entries
+				// (whitelisting bypasses blocking). Use the canonical form.
+				ip, err := parseAndValidateIP(entry.IP)
+				if err != nil {
+					continue
+				}
+				canonical := ip.String()
+				if !existingSet[canonical] {
+					tdb.AddWhitelist(canonical)
+					existingSet[canonical] = true
 					imported++
 				}
 			}

@@ -15,11 +15,17 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+// defaultMaxSubscribers caps concurrent subscribers so a flood of event-stream
+// connections (each a goroutine plus a buffered channel) cannot exhaust the
+// daemon's memory. Generous for an operator dashboard.
+const defaultMaxSubscribers = 256
+
 // Bus fans out published findings to every subscriber.
 type Bus struct {
 	mu          sync.RWMutex
 	subscribers map[chan alert.Finding]struct{}
 	buffer      int
+	maxSubs     int
 	closed      bool
 }
 
@@ -32,7 +38,39 @@ func NewBus(buffer int) *Bus {
 	return &Bus{
 		subscribers: make(map[chan alert.Finding]struct{}),
 		buffer:      buffer,
+		maxSubs:     defaultMaxSubscribers,
 	}
+}
+
+// SetMaxSubscribers overrides the concurrent-subscriber cap. A value < 1 is
+// ignored. Safe to call before the bus is in use.
+func (b *Bus) SetMaxSubscribers(n int) {
+	if n < 1 {
+		return
+	}
+	b.mu.Lock()
+	b.maxSubs = n
+	b.mu.Unlock()
+}
+
+// TrySubscribe is Subscribe with the concurrent-subscriber cap enforced. It
+// returns ok=false when the cap is reached so an untrusted caller (the SSE
+// endpoint, reachable with a low-trust read token) cannot open unbounded
+// long-lived streams. Use this for externally-driven subscriptions; Subscribe
+// remains for trusted in-process consumers.
+func (b *Bus) TrySubscribe() (<-chan alert.Finding, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ch := make(chan alert.Finding, b.buffer)
+	if b.closed {
+		close(ch)
+		return ch, true
+	}
+	if len(b.subscribers) >= b.maxSubs {
+		return nil, false
+	}
+	b.subscribers[ch] = struct{}{}
+	return ch, true
 }
 
 // Subscribe returns a new buffered channel that receives every published

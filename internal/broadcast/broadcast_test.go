@@ -123,3 +123,24 @@ func TestBus_SubscribeAfterCloseReturnsClosedChannel(t *testing.T) {
 		t.Fatal("expected closed channel immediately")
 	}
 }
+
+// TrySubscribe enforces the concurrent-subscriber cap so an untrusted SSE
+// client cannot open unbounded streams; a freed slot is reusable.
+func TestBus_TrySubscribeEnforcesCap(t *testing.T) {
+	b := NewBus(4)
+	b.SetMaxSubscribers(2)
+
+	c1, ok1 := b.TrySubscribe()
+	_, ok2 := b.TrySubscribe()
+	if !ok1 || !ok2 {
+		t.Fatalf("first two subscriptions should succeed, got %v %v", ok1, ok2)
+	}
+	if _, ok := b.TrySubscribe(); ok {
+		t.Fatal("subscription beyond the cap must be rejected")
+	}
+
+	b.Unsubscribe(c1)
+	if _, ok := b.TrySubscribe(); !ok {
+		t.Fatal("a freed slot must allow a new subscription")
+	}
+}

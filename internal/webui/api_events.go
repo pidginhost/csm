@@ -33,6 +33,16 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reserve a subscriber slot before sending any stream headers so a flood of
+	// connections cannot exhaust daemon memory. Done up front so the cap can be
+	// reported as a clean 503 rather than mid-stream.
+	sub, ok := bus.TrySubscribe()
+	if !ok {
+		http.Error(w, "too many event stream subscribers", http.StatusServiceUnavailable)
+		return
+	}
+	defer bus.Unsubscribe(sub)
+
 	rc := http.NewResponseController(w)
 	setWriteDeadline := func() error {
 		return rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
@@ -63,9 +73,6 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	if err := writeFrame(""); err != nil {
 		return
 	}
-
-	sub := bus.Subscribe()
-	defer bus.Unsubscribe(sub)
 
 	keepalive := time.NewTicker(25 * time.Second)
 	defer keepalive.Stop()
