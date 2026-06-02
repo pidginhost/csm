@@ -94,3 +94,43 @@ func TestBlockIPReportsStateRestoreFailure(t *testing.T) {
 		t.Fatalf("state writes = %d, want persist plus restore", writes)
 	}
 }
+
+func TestPromoteToPermanentBlockHonorsPermanentDenyLimit(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		statePath:  dir,
+		cfg:        &FirewallConfig{Enabled: true, DenyIPLimit: 1},
+		setBlocked: anonymousIPv4Set("blocked_ips"),
+	}
+	tempExpires := time.Now().Add(time.Hour)
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "192.0.2.10", Reason: "existing permanent", BlockedAt: time.Now().Add(-2 * time.Hour)},
+		{IP: "192.0.2.11", Reason: "temporary", BlockedAt: time.Now().Add(-time.Minute), ExpiresAt: tempExpires},
+	}}
+	if err := e.saveState(&state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	err := e.PromoteToPermanentBlock("192.0.2.11", "PERMBLOCK: test")
+	if err == nil {
+		t.Fatal("expected promotion to respect permanent deny limit")
+	}
+	if !strings.Contains(err.Error(), "permanent deny limit reached") {
+		t.Fatalf("PromoteToPermanentBlock error = %v, want permanent deny limit", err)
+	}
+
+	got := e.loadStateFile()
+	for _, entry := range got.Blocked {
+		if entry.IP != "192.0.2.11" {
+			continue
+		}
+		if entry.ExpiresAt.IsZero() {
+			t.Fatal("temporary entry was promoted in state despite deny-limit refusal")
+		}
+		if entry.Reason != "temporary" {
+			t.Fatalf("temporary entry reason changed to %q", entry.Reason)
+		}
+		return
+	}
+	t.Fatal("temporary entry missing after denied promotion")
+}

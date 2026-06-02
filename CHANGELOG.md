@@ -10,13 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Allowing an IP that falls inside a blocked subnet now warns that the address stays blocked until the subnet is unblocked, instead of reporting a success that has no effect.
-- Backup restore now verifies the database snapshot against the hash recorded at backup time before it replaces the live database, so a tampered or corrupted archive is rejected instead of restored.
+- Backup restore now verifies the database snapshot before a full or firewall restore applies payloads, so a tampered or corrupted snapshot is rejected without a partial import.
 - The verified-crawler DNS cache is now bounded. A scan from many unique source IPs could previously grow it without limit between periodic prunes, an external memory-pressure lever.
 - Incident auto-close and retention background loops now stop during shutdown before the state store closes, so they no longer tick against a closed database or leak past daemon exit.
 - Log watchers now close their files from their own polling loop on shutdown instead of from a separate goroutine, removing a teardown race on the file handle that could surface during a restart.
 - The verdict callback now refuses an "allow" reply that carries no replay binding when an HMAC secret is set but response signing is not required. An on-path attacker could previously strip the nonce and timestamp to slip an unbound allow past the best-effort replay checks and disable a block.
 - The `.htaccess` directive scanner no longer stops at an oversized line. An attacker could pad an early line past the reader's limit to silently hide a malicious directive after it; the scanner now reads past long lines and flags any file it still cannot fully parse.
 - Permanent-block escalation now actually makes a repeat offender's block permanent. The promotion previously ran in the same cycle as the temporary block and was skipped as "already blocked," so the address kept its temporary timeout and silently expired instead of staying blocked.
+- Permanent-block escalation now respects the permanent block cap when promoting a temporary block.
 - The email spool watcher now exits cleanly on shutdown even if it crash-restarted moments earlier. A narrow race could previously leave a freshly restarted watcher running with nothing to stop it, hanging daemon shutdown until systemd killed the process and dropped in-flight scan state.
 - Surgical file cleaning now refuses files above a size ceiling and quarantines them by rename instead. An attacker could previously match a signature in a file's first bytes, pad it to many gigabytes, and make the root daemon read the whole file into memory until it was killed.
 

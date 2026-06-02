@@ -207,6 +207,21 @@ func TestArchiveRoundTripFullRestore(t *testing.T) {
 // untouched. This models an archive whose database was altered after export
 // but still decompresses and untars cleanly.
 func rewriteArchiveFlippingBbolt(t *testing.T, src, dst string) {
+	rewriteArchive(t, src, dst, func(name string, data []byte) ([]byte, bool) {
+		if name == bboltSnapshotEntry && len(data) > 0 {
+			data[0] ^= 0xFF // same length, header.Size stays valid
+		}
+		return data, true
+	})
+}
+
+func rewriteArchiveDroppingBbolt(t *testing.T, src, dst string) {
+	rewriteArchive(t, src, dst, func(name string, data []byte) ([]byte, bool) {
+		return data, name != bboltSnapshotEntry
+	})
+}
+
+func rewriteArchive(t *testing.T, src, dst string, edit func(name string, data []byte) ([]byte, bool)) {
 	t.Helper()
 	in, err := os.Open(src)
 	if err != nil {
@@ -243,9 +258,14 @@ func rewriteArchiveFlippingBbolt(t *testing.T, src, dst string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if hdr.Name == bboltSnapshotEntry && len(data) > 0 {
-			data[0] ^= 0xFF // same length, header.Size stays valid
+		if edit != nil {
+			var keep bool
+			data, keep = edit(hdr.Name, data)
+			if !keep {
+				continue
+			}
 		}
+		hdr.Size = int64(len(data))
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatal(err)
 		}
@@ -278,10 +298,65 @@ func TestArchiveImportRejectsTamperedBboltSnapshot(t *testing.T) {
 	tampered := filepath.Join(t.TempDir(), "tampered.csmbak")
 	rewriteArchiveFlippingBbolt(t, archivePath, tampered)
 
-	_, err := Import(ImportOptions{
+	for _, only := range []string{"all", "firewall"} {
+		t.Run(only, func(t *testing.T) {
+			_, err := Import(ImportOptions{
+				SrcPath:         tampered,
+				StatePath:       t.TempDir(),
+				RulesPath:       t.TempDir(),
+				Only:            only,
+				CurrentPlatform: defaultPlatform(),
+			})
+			if err == nil {
+				t.Fatal("Import accepted a tampered bbolt snapshot")
+			}
+			if !errors.Is(err, ErrCorruptArchive) {
+				t.Errorf("Import err = %v, want ErrCorruptArchive", err)
+			}
+		})
+	}
+}
+
+func TestArchiveImportHashMismatchDoesNotPartiallyRestore(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = db.Close()
+
+	tampered := filepath.Join(t.TempDir(), "tampered.csmbak")
+	rewriteArchiveFlippingBbolt(t, archivePath, tampered)
+
+	targetState := t.TempDir()
+	targetRules := t.TempDir()
+	liveState := []byte(`{"live":true}`)
+	liveRule := []byte(`rule live { condition: true }`)
+	if err := os.WriteFile(filepath.Join(targetState, "state.json"), liveState, 0600); err != nil {
+		t.Fatalf("seed target state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRules, "malware.yar"), liveRule, 0600); err != nil {
+		t.Fatalf("seed target rules: %v", err)
+	}
+	targetDB, err := Open(targetState)
+	if err != nil {
+		t.Fatalf("open target db: %v", err)
+	}
+	if updateErr := targetDB.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("history")).Put([]byte("live-key"), []byte("live-value"))
+	}); updateErr != nil {
+		t.Fatalf("seed target db: %v", updateErr)
+	}
+	_ = targetDB.Close()
+
+	_, err = Import(ImportOptions{
 		SrcPath:         tampered,
-		StatePath:       t.TempDir(),
-		RulesPath:       t.TempDir(),
+		StatePath:       targetState,
+		RulesPath:       targetRules,
 		Only:            "all",
 		CurrentPlatform: defaultPlatform(),
 	})
@@ -290,6 +365,135 @@ func TestArchiveImportRejectsTamperedBboltSnapshot(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCorruptArchive) {
 		t.Errorf("Import err = %v, want ErrCorruptArchive", err)
+	}
+
+	gotState, err := os.ReadFile(filepath.Join(targetState, "state.json"))
+	if err != nil {
+		t.Fatalf("read target state: %v", err)
+	}
+	if !bytes.Equal(gotState, liveState) {
+		t.Fatalf("state.json changed after rejected import: got %q want %q", gotState, liveState)
+	}
+	gotRule, err := os.ReadFile(filepath.Join(targetRules, "malware.yar"))
+	if err != nil {
+		t.Fatalf("read target rule: %v", err)
+	}
+	if !bytes.Equal(gotRule, liveRule) {
+		t.Fatalf("malware.yar changed after rejected import: got %q want %q", gotRule, liveRule)
+	}
+	reopened, err := Open(targetState)
+	if err != nil {
+		t.Fatalf("re-open target db: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if err := reopened.bolt.View(func(tx *bolt.Tx) error {
+		got := tx.Bucket([]byte("history")).Get([]byte("live-key"))
+		if !bytes.Equal(got, []byte("live-value")) {
+			t.Fatalf("target db changed after rejected import: got %q want live-value", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify target db: %v", err)
+	}
+}
+
+func TestArchiveImportOnlyBaselineIgnoresTamperedBboltSnapshot(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, wantState, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = db.Close()
+
+	tampered := filepath.Join(t.TempDir(), "tampered.csmbak")
+	rewriteArchiveFlippingBbolt(t, archivePath, tampered)
+
+	targetState := t.TempDir()
+	imp, err := Import(ImportOptions{
+		SrcPath:         tampered,
+		StatePath:       targetState,
+		RulesPath:       t.TempDir(),
+		Only:            "baseline",
+		CurrentPlatform: defaultPlatform(),
+	})
+	if err != nil {
+		t.Fatalf("baseline import should not consume bbolt snapshot: %v", err)
+	}
+	if len(imp.BucketsRestored) != 0 {
+		t.Fatalf("baseline import restored bbolt buckets: %v", imp.BucketsRestored)
+	}
+	for name, content := range wantState {
+		got, err := os.ReadFile(filepath.Join(targetState, name))
+		if err != nil {
+			t.Errorf("read state %s: %v", name, err)
+			continue
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("state %s mismatch after baseline import", name)
+		}
+	}
+}
+
+func TestArchiveImportFullRestoreRequiresBboltSnapshot(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = db.Close()
+
+	missingBbolt := filepath.Join(t.TempDir(), "missing-bbolt.csmbak")
+	rewriteArchiveDroppingBbolt(t, archivePath, missingBbolt)
+
+	for _, only := range []string{"all", "firewall"} {
+		t.Run(only, func(t *testing.T) {
+			targetState := t.TempDir()
+			targetRules := t.TempDir()
+			liveState := []byte(`{"live":true}`)
+			liveRule := []byte(`rule live { condition: true }`)
+			if err := os.WriteFile(filepath.Join(targetState, "state.json"), liveState, 0600); err != nil {
+				t.Fatalf("seed target state: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(targetRules, "malware.yar"), liveRule, 0600); err != nil {
+				t.Fatalf("seed target rules: %v", err)
+			}
+
+			_, err := Import(ImportOptions{
+				SrcPath:         missingBbolt,
+				StatePath:       targetState,
+				RulesPath:       targetRules,
+				Only:            only,
+				CurrentPlatform: defaultPlatform(),
+			})
+			if err == nil {
+				t.Fatal("Import accepted an archive missing the bbolt snapshot")
+			}
+			if !errors.Is(err, ErrCorruptArchive) {
+				t.Errorf("Import err = %v, want ErrCorruptArchive", err)
+			}
+			gotState, err := os.ReadFile(filepath.Join(targetState, "state.json"))
+			if err != nil {
+				t.Fatalf("read target state: %v", err)
+			}
+			if !bytes.Equal(gotState, liveState) {
+				t.Fatalf("state.json changed after rejected import: got %q want %q", gotState, liveState)
+			}
+			gotRule, err := os.ReadFile(filepath.Join(targetRules, "malware.yar"))
+			if err != nil {
+				t.Fatalf("read target rule: %v", err)
+			}
+			if !bytes.Equal(gotRule, liveRule) {
+				t.Fatalf("malware.yar changed after rejected import: got %q want %q", gotRule, liveRule)
+			}
+		})
 	}
 }
 

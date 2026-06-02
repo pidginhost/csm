@@ -836,7 +836,7 @@ func (b *engineLikeBlocker) BlockIP(ip, reason string, timeout time.Duration) er
 	_, err := b.BlockIPOutcome(ip, reason, timeout)
 	return err
 }
-func (b *engineLikeBlocker) UnblockIP(string) error { return nil }
+func (b *engineLikeBlocker) UnblockIP(string) error   { return nil }
 func (b *engineLikeBlocker) IsBlocked(ip string) bool { return b.liveBlocked[ip] }
 
 func (b *engineLikeBlocker) BlockIPOutcome(ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error) {

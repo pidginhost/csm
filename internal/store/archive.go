@@ -350,6 +350,25 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 
+	if (only == "all" || only == "firewall") && stagedBbolt == "" {
+		return nil, fmt.Errorf("%w: %s import needs bbolt snapshot in archive", ErrCorruptArchive, only)
+	}
+
+	// Verify the staged bbolt snapshot against the hash the manifest recorded
+	// at export time before any bbolt-consuming import applies payloads.
+	// zstd's frame CRC catches transport corruption, but a snapshot that was
+	// altered before compression would otherwise be promoted over csm.db
+	// unchecked. Empty hash means a pre-hash archive; skip rather than reject.
+	if (only == "all" || only == "firewall") && stagedBbolt != "" && man.BboltSHA256 != "" {
+		gotHash, hashErr := sha256File(stagedBbolt)
+		if hashErr != nil {
+			return nil, fmt.Errorf("hashing staged bbolt snapshot: %w", hashErr)
+		}
+		if gotHash != man.BboltSHA256 {
+			return nil, fmt.Errorf("%w: bbolt snapshot hash mismatch (archive manifest %s, staged %s)", ErrCorruptArchive, man.BboltSHA256, gotHash)
+		}
+	}
+
 	res := &ImportResult{Manifest: man}
 
 	// Apply state files (always, unless caller filtered everything out).
@@ -382,21 +401,6 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 
-	// Verify the staged bbolt snapshot against the hash the manifest recorded
-	// at export time before it can replace the live database. zstd's frame CRC
-	// catches transport corruption, but a snapshot that was altered before
-	// compression would otherwise be promoted over csm.db unchecked. Empty
-	// hash means a pre-hash archive; skip rather than reject.
-	if stagedBbolt != "" && man.BboltSHA256 != "" {
-		gotHash, hashErr := sha256File(stagedBbolt)
-		if hashErr != nil {
-			return nil, fmt.Errorf("hashing staged bbolt snapshot: %w", hashErr)
-		}
-		if gotHash != man.BboltSHA256 {
-			return nil, fmt.Errorf("%w: bbolt snapshot hash mismatch (archive manifest %s, staged %s)", ErrCorruptArchive, man.BboltSHA256, gotHash)
-		}
-	}
-
 	// Apply bbolt:
 	//   only=all      -> wholesale rename the snapshot over csm.db
 	//   only=firewall -> open snapshot read-only and copy fw:* buckets
@@ -404,18 +408,13 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 	//   only=baseline -> skip bbolt entirely
 	switch only {
 	case "all":
-		if stagedBbolt != "" {
-			target := filepath.Join(opts.StatePath, "csm.db")
-			if err := atomicReplace(stagedBbolt, target); err != nil {
-				return nil, fmt.Errorf("restoring csm.db: %w", err)
-			}
-			// Report every bucket that came from the snapshot.
-			res.BucketsRestored = append([]string(nil), man.BboltBuckets...)
+		target := filepath.Join(opts.StatePath, "csm.db")
+		if err := atomicReplace(stagedBbolt, target); err != nil {
+			return nil, fmt.Errorf("restoring csm.db: %w", err)
 		}
+		// Report every bucket that came from the snapshot.
+		res.BucketsRestored = append([]string(nil), man.BboltBuckets...)
 	case "firewall":
-		if stagedBbolt == "" {
-			return nil, fmt.Errorf("%w: firewall import needs bbolt snapshot in archive", ErrCorruptArchive)
-		}
 		restored, err := mergeBucketsFromSnapshot(stagedBbolt, opts.StatePath, isFirewallBucket)
 		if err != nil {
 			return nil, fmt.Errorf("merging firewall buckets: %w", err)

@@ -1461,18 +1461,30 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
 	}
 
 	priorState := e.loadStateFile()
-	if !firewallStateHasBlocked(priorState, ip) {
-		return fmt.Errorf("cannot promote %s: not currently blocked", ip)
-	}
-
 	entry := BlockedEntry{IP: ip, Reason: reason, Source: SourceSystem, BlockedAt: time.Now()}
+	found := false
+	wasTemporary := false
 	for _, b := range priorState.Blocked {
 		if b.IP == ip {
+			found = true
+			wasTemporary = !b.ExpiresAt.IsZero()
 			entry.BlockedAt = b.BlockedAt
 			if b.Source != "" {
 				entry.Source = b.Source
 			}
 			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("cannot promote %s: not currently blocked", ip)
+	}
+	if e.cfg != nil && wasTemporary && e.cfg.DenyIPLimit > 0 {
+		perm, _, ok := e.livePermTempCountsLocked(priorState)
+		if !ok {
+			perm = countPermanentBlockedEntries(priorState)
+		}
+		if perm >= e.cfg.DenyIPLimit {
+			return fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
 		}
 	}
 	// ExpiresAt left zero: permanent.
@@ -1723,6 +1735,16 @@ func firewallStateHasBlocked(state FirewallState, ip string) bool {
 		}
 	}
 	return false
+}
+
+func countPermanentBlockedEntries(state FirewallState) int {
+	count := 0
+	for _, entry := range state.Blocked {
+		if entry.ExpiresAt.IsZero() {
+			count++
+		}
+	}
+	return count
 }
 
 // UnblockIP removes an IP from the blocked set and state.
