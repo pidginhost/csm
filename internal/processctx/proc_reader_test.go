@@ -123,9 +123,11 @@ func TestReadProcEntryTruncatedCmdlineNoPanic(t *testing.T) {
 }
 
 func TestReadWithDeadlineTimesOut(t *testing.T) {
+	done := make(chan struct{})
 	start := time.Now()
 	_, ok := runBytesWithDeadline(25*time.Millisecond, func() ([]byte, error) {
-		time.Sleep(time.Second)
+		defer close(done)
+		time.Sleep(100 * time.Millisecond)
 		return []byte("late"), nil
 	})
 	elapsed := time.Since(start)
@@ -135,6 +137,12 @@ func TestReadWithDeadlineTimesOut(t *testing.T) {
 	if elapsed > 200*time.Millisecond {
 		t.Errorf("deadline helper took too long; elapsed=%v", elapsed)
 	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("deadline read goroutine did not return")
+	}
+	waitForProcReadSlots(t, 0)
 }
 
 func TestParseStatusUIDFromTabbedFormat(t *testing.T) {

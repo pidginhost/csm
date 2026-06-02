@@ -12,11 +12,29 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// getCurrentGID returns the current process's primary group, used by tests
-// to simulate "the file's group is the web server group" without root.
 func getCurrentGID(t *testing.T) uint32 {
 	t.Helper()
 	return uint32(os.Getgid())
+}
+
+func fileGID(t *testing.T, path string) uint32 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skip("syscall.Stat_t unavailable on this platform")
+	}
+	return stat.Gid
+}
+
+func differentGID(gid uint32) uint32 {
+	if gid == 0 {
+		return 1
+	}
+	return 0
 }
 
 func TestScanGroupWritablePHPRespectsMaxDepthZero(t *testing.T) {
@@ -82,9 +100,8 @@ func TestScanGroupWritablePHPSkipsPHPWhenGroupNotInWebGIDs(t *testing.T) {
 	if err := os.Chmod(php, 0664); err != nil {
 		t.Fatal(err)
 	}
-	// Use a GID we definitely don't own.
 	var findings []alert.Finding
-	scanGroupWritablePHP(tmp, 4, map[uint32]bool{99999: true}, &findings)
+	scanGroupWritablePHP(tmp, 4, map[uint32]bool{differentGID(fileGID(t, php)): true}, &findings)
 	if len(findings) != 0 {
 		t.Errorf("file's GID not in webGIDs → no finding, got %+v", findings)
 	}
@@ -101,7 +118,7 @@ func TestScanGroupWritablePHPFlagsWebOwnedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	var findings []alert.Finding
-	scanGroupWritablePHP(tmp, 4, map[uint32]bool{getCurrentGID(t): true}, &findings)
+	scanGroupWritablePHP(tmp, 4, map[uint32]bool{fileGID(t, php): true}, &findings)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
@@ -148,7 +165,7 @@ func TestScanGroupWritablePHPRecursesIntoSubdirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	var findings []alert.Finding
-	scanGroupWritablePHP(tmp, 4, map[uint32]bool{getCurrentGID(t): true}, &findings)
+	scanGroupWritablePHP(tmp, 4, map[uint32]bool{fileGID(t, deep): true}, &findings)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 deep finding, got %d: %+v", len(findings), findings)
 	}
@@ -229,16 +246,12 @@ func TestCheckGroupWritablePHPFlagsRealFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Determine current GID and group name from /etc/group entries we know
-	// about — we can't add a synthetic group, so we craft a /etc/group that
-	// names the current GID under "nobody" and rewire osFS to:
+	// Determine the file GID and group name from /etc/group entries we know
+	// about: we can't add a synthetic group, so we craft a /etc/group that
+	// names the file GID under "nobody" and rewire osFS to:
 	//   - return that synthetic /etc/group via ReadFile
 	//   - return our docRoot's contents via ReadDir(/home/<name>/public_html)
 	//   - return our tmp dir as a single entry under /home
-	curGID := getCurrentGID(t)
-	groupContent := "root:x:0:\nnobody:x:" +
-		strconvUint(curGID) + ":\n"
-
 	docInfo, err := os.Stat(docRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -251,6 +264,9 @@ func TestCheckGroupWritablePHPFlagsRealFile(t *testing.T) {
 	if _, ok := phpInfo.Sys().(*syscall.Stat_t); !ok {
 		t.Skip("syscall.Stat_t unavailable on this platform")
 	}
+	phpGID := fileGID(t, php)
+	groupContent := "root:x:0:\nnobody:x:" +
+		strconvUint(phpGID) + ":\n"
 
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {

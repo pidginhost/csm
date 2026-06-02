@@ -17,7 +17,11 @@ import (
 func withFixPermissionsAllowedRoots(t *testing.T, dir string) {
 	t.Helper()
 	old := fixPermissionsAllowedRoots
-	fixPermissionsAllowedRoots = []string{dir}
+	roots := []string{dir}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+		roots = append(roots, resolved)
+	}
+	fixPermissionsAllowedRoots = roots
 	t.Cleanup(func() { fixPermissionsAllowedRoots = old })
 }
 

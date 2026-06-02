@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Server-Sent Events stream now caps concurrent subscribers and returns 503 when full, so a read-scope token cannot open unbounded long-lived streams to exhaust daemon memory.
 - Imported whitelist IPs are now validated and normalized like every interactive route, so a crafted import bundle cannot poison the allow-list with malformed or non-routable entries.
 - Process-context enrichment now caps how many deadline-bound `/proc` reads run at once. A process stuck in uninterruptible I/O can no longer leak an unbounded number of reader goroutines over time; once the cap is hit, enrichment degrades gracefully instead.
+- Process-context reads configured with no per-file deadline now stay outside that deadline cap, matching the existing unlimited-read behavior.
 - When the temporary-block cap is reached, the firewall now evicts the block closest to expiry to make room for a new one instead of refusing it. An attacker can no longer saturate the cap with disposable IPs to stop CSM from blocking the address doing real damage.
 - Temporary-block eviction now happens only when a live block is applied. Dry-run decisions and panel allow verdicts no longer remove an existing temporary block.
 - The verdict callback now refuses an unsigned "allow" decision unless the operator explicitly set `allow_unsigned: true`, so a missing HMAC secret can no longer silently disable auto-blocking.

@@ -196,6 +196,10 @@ func runBytesWithDeadline(d time.Duration, fn func() ([]byte, error)) ([]byte, b
 
 // readlinkWithDeadline runs Readlink in a goroutine and gives up after d.
 func readlinkWithDeadline(path string, d time.Duration) (string, bool) {
+	if d <= 0 {
+		target, err := os.Readlink(path)
+		return target, err == nil
+	}
 	if !acquireProcReadSlot() {
 		return "", false
 	}
@@ -209,13 +213,15 @@ func readlinkWithDeadline(path string, d time.Duration) (string, bool) {
 		t, err := os.Readlink(path)
 		ch <- result{t, err}
 	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
 	case res := <-ch:
 		if res.err != nil {
 			return "", false
 		}
 		return res.target, true
-	case <-time.After(d):
+	case <-timer.C:
 		return "", false
 	}
 }
