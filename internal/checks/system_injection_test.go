@@ -68,6 +68,7 @@ func TestCheckRPMPackageIntegrityClean(t *testing.T) {
 }
 
 func TestCheckRPMPackageIntegrityModified(t *testing.T) {
+	withExecutableFiles(t)
 	withMockCmd(t, &mockCmd{
 		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
 			return []byte("S.5....T.  /usr/sbin/sshd\n"), nil
@@ -84,6 +85,7 @@ func TestCheckRPMPackageIntegrityModified(t *testing.T) {
 }
 
 func TestCheckDebianPackageIntegrityModified(t *testing.T) {
+	withExecutableFiles(t)
 	withMockCmd(t, &mockCmd{
 		lookPath: func(name string) (string, error) {
 			if name == "debsums" {

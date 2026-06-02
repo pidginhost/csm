@@ -195,14 +195,28 @@ func TestInlineQuarantineCategoryNotDropperOrWebshellRejects(t *testing.T) {
 	}
 }
 
-func TestInlineQuarantineKnownLibraryPathRejects(t *testing.T) {
+func TestInlineQuarantineVendorPathDoesNotBypassContentGate(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineDirIQ(t, filepath.Join(tmp, "quarantine"))
+
+	src := filepath.Join(tmp, "public_html", "vendor", "lib.php")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload := makeHighEntropyContent(t, 2048)
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	finding := alert.Finding{
 		Details: "Category: dropper\n",
 	}
-	// /vendor/ is in knownLibraryPaths — must always be skipped.
-	got, ok := InlineQuarantine(finding, "/home/u/public_html/vendor/lib.php", makeHighEntropyContent(t, 1024))
-	if ok || got != "" {
-		t.Errorf("vendor path should be skipped, got (%q, %v)", got, ok)
+	got, ok := InlineQuarantine(finding, src, payload)
+	if !ok || got == "" {
+		t.Fatalf("vendor path must not bypass high-confidence content, got (%q, %v)", got, ok)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source should be quarantined, stat err=%v", err)
 	}
 }
 

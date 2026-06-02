@@ -466,4 +466,63 @@ func TestHasObfuscatedExecutionSignal(t *testing.T) {
 	if hasObfuscatedExecutionSignal("<?php $x = base64_decode($raw); echo strlen($x);") {
 		t.Error("decoder without executor must not signal")
 	}
+	// Hex-escaped function names are usually concatenated without spaces around
+	// the dot operator. That shape must still signal.
+	if !hasObfuscatedExecutionSignal(noSpaceHexConcatFunctionFixture()) {
+		t.Error("hex-escaped no-space function-name concat must signal")
+	}
+	// A generic callback in code that also decodes data is not an executor.
+	if hasObfuscatedExecutionSignal(benignHighHexCallbackFixture()) {
+		t.Error("benign decoder plus callback library code must not signal")
+	}
+	if hasObfuscatedExecutionSignal(benignHighHexCallUserFuncFixture()) {
+		t.Error("benign decoder plus call_user_func callback must not signal")
+	}
+	if !hasObfuscatedExecutionSignal(`<?php call_user_func("assert", base64_decode($x)); ?>`) {
+		t.Error("dangerous literal callback executor must signal")
+	}
+}
+
+func TestIsHighConfidenceRealtimeMatch_BenignHighHexCallbackLibrary(t *testing.T) {
+	content := benignHighHexCallbackFixture()
+	if len(content) < 512 || hexEncodingDensity(content) <= 0.20 {
+		t.Fatalf("test fixture must exercise the high-hex arm, len=%d density=%.2f", len(content), hexEncodingDensity(content))
+	}
+
+	f := alert.Finding{Details: "Category: dropper\nDescription: test"}
+	if isHighConfidenceRealtimeMatch(f, "/home/alice/public_html/vendor/lib.php", []byte(content)) {
+		t.Error("benign high-hex callback library code must not be high confidence")
+	}
+}
+
+func noSpaceHexConcatFunctionFixture() string {
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	for b.Len() < 768 {
+		b.WriteString(`$f="\x65"."\x76"."\x61"."\x6c";`)
+	}
+	return b.String()
+}
+
+func benignHighHexCallbackFixture() string {
+	return benignHighHexCallbackFixtureWithCall("    return $callback($decoded);\n")
+}
+
+func benignHighHexCallUserFuncFixture() string {
+	return benignHighHexCallbackFixtureWithCall("    return call_user_func($callback, $decoded);\n")
+}
+
+func benignHighHexCallbackFixtureWithCall(callLine string) string {
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	b.WriteString("function decode_library_blob($raw, $callback) {\n")
+	b.WriteString("    $decoded = base64_decode($raw);\n")
+	b.WriteString(callLine)
+	b.WriteString("}\n")
+	b.WriteString(`const ZIP_MAGIC = "`)
+	for b.Len() < 1024 {
+		b.WriteString(`\x50\x4b\x03\x04`)
+	}
+	b.WriteString(`";`)
+	return b.String()
 }

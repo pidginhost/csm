@@ -374,10 +374,9 @@ func isSafeProcess(exe string) bool {
 //
 // Criteria:
 //  1. Category must be "dropper" or "webshell"
-//  2. File must not be in a known library path
-//  3. File must be >= 512 bytes (entropy unreliable below this)
-//  4. Content must show obfuscation indicators:
-//     Shannon entropy >= 4.8 OR hex density > 20%.
+//  2. File must be >= 512 bytes (entropy unreliable below this)
+//  3. Content must show obfuscation indicators:
+//     Shannon entropy >= 5.5 OR hex density > 20% plus an execution signal.
 //     This applies to BOTH dropper and webshell categories to avoid
 //     false-positive quarantine of legitimate plugins that happen to
 //     match a dropper rule (e.g. curl_exec + eval on distant lines).
@@ -432,7 +431,10 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 	return false
 }
 
-var reVariableFunctionCall = regexp.MustCompile(`\$[A-Za-z_]\w*\s*\(`)
+var (
+	reVariableFunctionCall   = regexp.MustCompile(`\$[A-Za-z_]\w*\s*\(`)
+	reHexEscapedStringConcat = regexp.MustCompile(`(?i)"(?:\\x[0-9a-f]{2})+"\s*\.\s*"(?:\\x[0-9a-f]{2})+"`)
+)
 
 // hasObfuscatedExecutionSignal reports whether content carries a structural
 // sign of obfuscated code execution, distinguishing a packed webshell from
@@ -443,40 +445,110 @@ var reVariableFunctionCall = regexp.MustCompile(`\$[A-Za-z_]\w*\s*\(`)
 //     dodge literal-name detection).
 //   - A variable bound to a decoder/exec primitive and later invoked.
 //   - A decoder (base64/gz/rot13/openssl/hex2bin) paired with an executor
-//     (eval/assert/create_function/call_user_func or a variable-function call).
+//     (eval/assert/create_function, a literal dangerous callback, or a
+//     request-scoped variable-function call).
 func hasObfuscatedExecutionSignal(content string) bool {
-	lower := strings.ToLower(content)
-	if countOccurrences(lower, "goto ") > 10 {
+	code := stripPHPCommentsFromCode(content)
+	codeNoStrings := strings.ToLower(stripPHPStringsFromCode(code))
+	if countOccurrences(codeNoStrings, "goto ") > 10 {
 		return true
 	}
-	// Function-name obfuscation: many hex string literals joined by the
-	// concatenation operator. Standalone hex constant tables (no concat) are
-	// inert data and do not match.
-	if countOccurrences(content, `"\x`) > 20 && countOccurrences(content, `" . "`) > 10 {
+	// Function-name obfuscation: many double-quoted hex string literals joined
+	// by the concatenation operator. Standalone hex constant tables (no concat)
+	// are inert data and do not match.
+	if countHexEscapedStringConcats(code) > 10 {
 		return true
 	}
-	if detectVarFuncDangerousAssignment(content) {
+	if detectVarFuncDangerousAssignment(code) {
 		return true
 	}
-	hasDecoder := false
-	for _, d := range []string{
+	if !containsDirectPHPFunctionCall(codeNoStrings, []string{
 		"base64_decode", "gzinflate", "gzuncompress", "gzdecode",
 		"str_rot13", "openssl_decrypt", "hex2bin", "convert_uudecode",
-	} {
-		if strings.Contains(lower, d) {
-			hasDecoder = true
-			break
-		}
-	}
-	if !hasDecoder {
+	}) {
 		return false
 	}
-	for _, x := range []string{"eval(", "assert(", "create_function(", "call_user_func"} {
-		if strings.Contains(lower, x) {
+	if containsDirectPHPFunctionCall(codeNoStrings, []string{
+		"eval", "assert", "create_function",
+	}) {
+		return true
+	}
+	if hasLiteralCallbackExecutor(code) {
+		return true
+	}
+	return hasRequestScopedVariableFunctionCall(codeNoStrings)
+}
+
+func countHexEscapedStringConcats(code string) int {
+	return len(reHexEscapedStringConcat.FindAllStringIndex(code, -1))
+}
+
+func containsDirectPHPFunctionCall(codeNoStrings string, names []string) bool {
+	for _, name := range names {
+		if containsStandaloneFunc(codeNoStrings, name+"(") {
 			return true
 		}
 	}
-	return reVariableFunctionCall.MatchString(content)
+	return false
+}
+
+func hasRequestScopedVariableFunctionCall(codeNoStrings string) bool {
+	for _, line := range strings.Split(codeNoStrings, "\n") {
+		if containsRequestSuperglobal(line) && reVariableFunctionCall.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLiteralCallbackExecutor(code string) bool {
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+
+		nameStart := i
+		if code[i] == '\\' {
+			if i+1 >= len(code) || !isPHPIdentifierStart(code[i+1]) || !canStartGlobalPHPFunction(code, i) {
+				continue
+			}
+			nameStart = i + 1
+		} else if !isPHPIdentifierStart(code[i]) || !canStartPHPFunctionName(code, i) {
+			continue
+		}
+
+		nameEnd := nameStart + 1
+		for nameEnd < len(code) && isPHPIdentifierPart(code[nameEnd]) {
+			nameEnd++
+		}
+		name := strings.ToLower(code[nameStart:nameEnd])
+		if _, ok := callbackFirstArgFuncs[name]; !ok {
+			i = nameEnd - 1
+			continue
+		}
+
+		openParen := skipPHPWhitespace(code, nameEnd)
+		if openParen >= len(code) || code[openParen] != '(' {
+			i = nameEnd - 1
+			continue
+		}
+		firstArg := skipPHPWhitespace(code, openParen+1)
+		if firstArg >= len(code) || !isPHPQuote(code[firstArg]) {
+			i = nameEnd - 1
+			continue
+		}
+		callbackName, _, ok := readPHPFunctionString(code, firstArg)
+		if !ok {
+			i = nameEnd - 1
+			continue
+		}
+		if _, dangerous := callbackExecNames[callbackName]; dangerous {
+			return true
+		}
+		i = nameEnd - 1
+	}
+	return false
 }
 
 // hexEncodingDensity returns the fraction of a string's bytes that are part

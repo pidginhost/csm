@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,6 +119,22 @@ func TestCheckRPMPackageIntegrityReportsLibraryOutsideBinDirs(t *testing.T) {
 	}
 }
 
+func TestCheckRPMPackageIntegrityReportsNonExecutableELFLibrary(t *testing.T) {
+	lib := filepath.Join(t.TempDir(), "libcrypto.so.3")
+	if err := os.WriteFile(lib, []byte("\x7fELF\x02\x01\x01"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) {
+			return []byte("S.5......  " + lib + "\n"), nil
+		},
+	})
+	got := checkRPMPackageIntegrity([]string{"openssl-libs"})
+	if len(got) != 1 || !strings.Contains(got[0].Message, lib) {
+		t.Fatalf("tampered 0644 ELF library must be reported, got %+v", got)
+	}
+}
+
 // --- checkDebianPackageIntegrity --------------------------------------
 
 func TestCheckDebianPackageIntegrityPrefersDebsumsWhenAvailable(t *testing.T) {
@@ -219,6 +236,22 @@ func TestCheckDpkgVerifySkipsNonExecutableFiles(t *testing.T) {
 	})
 	if got := checkDpkgVerify([]string{"sudo"}); got != nil {
 		t.Errorf("non-executable file should be skipped, got %d findings", len(got))
+	}
+}
+
+func TestCheckDpkgVerifyReportsNonExecutableELFLibrary(t *testing.T) {
+	lib := filepath.Join(t.TempDir(), "libssl.so.3")
+	if err := os.WriteFile(lib, []byte("\x7fELF\x02\x01\x01"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) {
+			return []byte("??5??????   " + lib + "\n"), nil
+		},
+	})
+	got := checkDpkgVerify([]string{"libssl3"})
+	if len(got) != 1 || !strings.Contains(got[0].Message, lib) {
+		t.Fatalf("tampered 0644 ELF library must be reported, got %+v", got)
 	}
 }
 
