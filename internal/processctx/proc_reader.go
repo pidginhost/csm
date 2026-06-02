@@ -140,10 +140,36 @@ func readFileWithDeadline(path string, d time.Duration) ([]byte, bool) {
 	})
 }
 
+// procReadConcurrency bounds how many deadline-bound /proc reads run at once.
+// A blocking syscall goroutine cannot be cancelled in Go, so a wedged /proc
+// entry (NFS-backed, D-state) leaks its goroutine until the kernel returns --
+// which may be never. The cap turns what was an unbounded leak under PID-reuse
+// churn into a fixed ceiling: once it is reached, further reads fail fast
+// instead of spawning more abandonable goroutines. A goroutine releases its
+// slot only when its syscall finally returns, so genuinely-stuck reads keep
+// their slot (correctly counting against the ceiling).
+const procReadConcurrency = 64
+
+var procReadSem = make(chan struct{}, procReadConcurrency)
+
+func acquireProcReadSlot() bool {
+	select {
+	case procReadSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func releaseProcReadSlot() { <-procReadSem }
+
 func runBytesWithDeadline(d time.Duration, fn func() ([]byte, error)) ([]byte, bool) {
 	if d <= 0 {
 		data, err := fn()
 		return data, err == nil
+	}
+	if !acquireProcReadSlot() {
+		return nil, false
 	}
 	type result struct {
 		data []byte
@@ -151,6 +177,7 @@ func runBytesWithDeadline(d time.Duration, fn func() ([]byte, error)) ([]byte, b
 	}
 	ch := make(chan result, 1)
 	go func() {
+		defer releaseProcReadSlot()
 		data, err := fn()
 		ch <- result{data: data, err: err}
 	}()
@@ -169,12 +196,16 @@ func runBytesWithDeadline(d time.Duration, fn func() ([]byte, error)) ([]byte, b
 
 // readlinkWithDeadline runs Readlink in a goroutine and gives up after d.
 func readlinkWithDeadline(path string, d time.Duration) (string, bool) {
+	if !acquireProcReadSlot() {
+		return "", false
+	}
 	type result struct {
 		target string
 		err    error
 	}
 	ch := make(chan result, 1)
 	go func() {
+		defer releaseProcReadSlot()
 		t, err := os.Readlink(path)
 		ch <- result{t, err}
 	}()
