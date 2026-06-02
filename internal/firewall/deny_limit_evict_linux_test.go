@@ -3,6 +3,10 @@
 package firewall
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -38,5 +42,79 @@ func TestSoonestExpiringTempIP_NoTempEntries(t *testing.T) {
 	st := FirewallState{Blocked: []BlockedEntry{{IP: "192.0.2.1"}}}
 	if _, ok := soonestExpiringTempIP(st, ""); ok {
 		t.Fatal("permanent-only state must report no temp entry to evict")
+	}
+}
+
+func TestBlockIPOutcome_DryRunAtTempCapDoesNotEvict(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
+		statePath:     dir,
+		dryRunEnabled: func() bool { return true },
+	}
+	if err := e.saveBlockedEntry(BlockedEntry{
+		IP:        "192.0.2.10",
+		Reason:    "existing temp block",
+		BlockedAt: time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+
+	outcome, err := e.BlockIPOutcome("192.0.2.11", "new temp block", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome: %v", err)
+	}
+	if outcome != BlockOutcomeDryRun {
+		t.Fatalf("outcome = %q, want %q", outcome, BlockOutcomeDryRun)
+	}
+	assertOnlyBlockedIP(t, e, "192.0.2.10")
+	assertNoAuditLog(t, dir)
+}
+
+func TestBlockIPOutcome_AllowVerdictAtTempCapDoesNotEvict(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
+		statePath: dir,
+		verdictAsker: func(_ context.Context, _, _ string) (string, string, string, error) {
+			return "allow", "", "", nil
+		},
+	}
+	if err := e.saveBlockedEntry(BlockedEntry{
+		IP:        "192.0.2.20",
+		Reason:    "existing temp block",
+		BlockedAt: time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+
+	outcome, err := e.BlockIPOutcome("192.0.2.21", "new temp block", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome: %v", err)
+	}
+	if outcome != BlockOutcomeAllowed {
+		t.Fatalf("outcome = %q, want %q", outcome, BlockOutcomeAllowed)
+	}
+	assertOnlyBlockedIP(t, e, "192.0.2.20")
+	assertNoAuditLog(t, dir)
+}
+
+func assertOnlyBlockedIP(t *testing.T, e *Engine, ip string) {
+	t.Helper()
+	state := e.loadStateFile()
+	if len(state.Blocked) != 1 {
+		t.Fatalf("blocked entries = %d, want 1: %#v", len(state.Blocked), state.Blocked)
+	}
+	if state.Blocked[0].IP != ip {
+		t.Fatalf("blocked IP = %q, want %q", state.Blocked[0].IP, ip)
+	}
+}
+
+func assertNoAuditLog(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(dir, "audit.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("audit log exists or stat failed: %v", err)
 	}
 }

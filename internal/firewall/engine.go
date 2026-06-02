@@ -1458,7 +1458,7 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	targetSet, key, alreadyBlocked, err := e.blockIPTarget(ip, timeout, skipExisting)
+	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTarget(ip, timeout, skipExisting)
 	if err != nil {
 		return err
 	}
@@ -1482,18 +1482,43 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	if timeout > 0 {
 		entry.ExpiresAt = time.Now().Add(timeout)
 	}
-	if err := e.saveBlockedEntry(entry); err != nil {
+
+	var evictSet *nftables.Set
+	var evictKey []byte
+	if evictTempIP != "" {
+		evictSet, evictKey, err = e.resolveIPSet(evictTempIP, e.setBlocked, e.setBlocked6)
+		if err != nil {
+			return fmt.Errorf("resolving temp block eviction target %s: %w", evictTempIP, err)
+		}
+	}
+
+	priorState := e.loadStateFile()
+	nextState := copyFirewallState(priorState)
+	if evictTempIP != "" {
+		removeBlockedIPFromState(&nextState, evictTempIP)
+	}
+	upsertBlockedEntryInState(&nextState, entry)
+	if err := e.saveState(&nextState); err != nil {
 		return fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
 	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
-		e.removeBlockedState(ip)
+		e.restoreBlockStateAfterFailureLocked(priorState, ip)
 		return fmt.Errorf("adding to blocked set: %w", err)
 	}
+	if evictTempIP != "" {
+		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
+			e.restoreBlockStateAfterFailureLocked(priorState, ip)
+			return fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
+		}
+	}
 	if err := e.conn.Flush(); err != nil {
-		e.removeBlockedState(ip)
+		e.restoreBlockStateAfterFailureLocked(priorState, ip)
 		return fmt.Errorf("flushing: %w", err)
+	}
+	if evictTempIP != "" {
+		AppendAudit(e.statePath, "evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
 	}
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 
@@ -1503,14 +1528,14 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, _, alreadyBlocked, err := e.blockIPTarget(ip, timeout, skipExisting)
+	_, _, alreadyBlocked, _, err := e.blockIPTarget(ip, timeout, skipExisting)
 	return alreadyBlocked, err
 }
 
-func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, error) {
+func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, string, error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
-		return nil, nil, false, fmt.Errorf("invalid IP: %s", ip)
+		return nil, nil, false, "", fmt.Errorf("invalid IP: %s", ip)
 	}
 
 	// SAFETY: never block infra IPs - prevents admin lockout.
@@ -1521,12 +1546,12 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
 			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
-				return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s", ip)
+				return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s", ip)
 			}
 			continue
 		}
 		if network.Contains(parsed) {
-			return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+			return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
 		}
 	}
 	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
@@ -1535,19 +1560,19 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	// pinned the IP, so a moving panel IP would silently drop out of
 	// the lockout guard.
 	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
-		return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
+		return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
 	}
 	// Daemon's own interface addresses are always off-limits. Without
 	// this guard a stray request from the host to itself (cron, panel
 	// callback, internal probe) could trigger an auto-block that
 	// firewalls every customer hosted on the same IP.
 	if e.isLocalAddrLocked(ip) {
-		return nil, nil, false, fmt.Errorf("refusing to block local host IP: %s (own interface address)", ip)
+		return nil, nil, false, "", fmt.Errorf("refusing to block local host IP: %s (own interface address)", ip)
 	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, "", err
 	}
 
 	st := e.loadStateFile()
@@ -1558,7 +1583,7 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 			// Treat a probe error as "still blocked" so we never demote a
 			// cached block on transient netlink trouble. Returning nil
 			// here is intentional and the conservative posture.
-			return targetSet, key, true, nil //nolint:nilerr // intentional fail-safe on netlink probe error
+			return targetSet, key, true, "", nil //nolint:nilerr // intentional fail-safe on netlink probe error
 		}
 		cachedBlockMissingLive = true
 	}
@@ -1583,21 +1608,23 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 			}
 		}
 		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
-			return nil, nil, false, fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
+			return nil, nil, false, "", fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
 		}
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
-			// Make room by evicting the soonest-to-expire temp block instead of
-			// refusing. Refusing let an attacker saturate the cap with cheap
-			// throwaway-IP blocks and then stop CSM from ever blocking the IPs
-			// doing real damage. The evicted entry is the one closest to expiry
-			// anyway, so this only shortens its remaining time slightly.
-			if !e.evictSoonestExpiringTempLocked(st, ip) {
-				return nil, nil, false, fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
+			// Validation must stay read-only because verdict and dry-run gates run
+			// after it. The live block path applies this eviction target.
+			victim, ok := soonestExpiringTempIP(st, ip)
+			if !ok {
+				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
 			}
+			if _, _, err := e.resolveIPSet(victim, e.setBlocked, e.setBlocked6); err != nil {
+				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and eviction target %s is unusable: %w", e.cfg.DenyTempIPLimit, victim, err)
+			}
+			return targetSet, key, false, victim, nil
 		}
 	}
 
-	return targetSet, key, false, nil
+	return targetSet, key, false, "", nil
 }
 
 // soonestExpiringTempIP returns the IP of the temporary block closest to
@@ -1616,28 +1643,6 @@ func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 		}
 	}
 	return best, found
-}
-
-// evictSoonestExpiringTempLocked removes the soonest-to-expire temporary block
-// from nft and state to free a slot under DenyTempIPLimit. Must hold e.mu.
-func (e *Engine) evictSoonestExpiringTempLocked(st FirewallState, excludeIP string) bool {
-	victim, ok := soonestExpiringTempIP(st, excludeIP)
-	if !ok {
-		return false
-	}
-	set, key, err := e.resolveIPSet(victim, e.setBlocked, e.setBlocked6)
-	if err != nil {
-		return false
-	}
-	if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
-		return false
-	}
-	if err := e.conn.Flush(); err != nil {
-		return false
-	}
-	e.removeBlockedState(victim)
-	AppendAudit(e.statePath, "evict_temp", victim, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
-	return true
 }
 
 func firewallStateHasBlocked(state FirewallState, ip string) bool {
@@ -2937,6 +2942,42 @@ func (e *Engine) clearStateCacheLocked() {
 	e.stateCache = nil
 	e.stateCacheKey = stateFileCacheKey{}
 	e.rebuildIndexLocked()
+}
+
+func copyFirewallState(s FirewallState) FirewallState {
+	return FirewallState{
+		Blocked:     append([]BlockedEntry(nil), s.Blocked...),
+		BlockedNet:  append([]SubnetEntry(nil), s.BlockedNet...),
+		Allowed:     append([]AllowedEntry(nil), s.Allowed...),
+		PortAllowed: append([]PortAllowEntry(nil), s.PortAllowed...),
+	}
+}
+
+func upsertBlockedEntryInState(state *FirewallState, entry BlockedEntry) {
+	for i := range state.Blocked {
+		if state.Blocked[i].IP == entry.IP {
+			state.Blocked[i] = entry
+			return
+		}
+	}
+	state.Blocked = append(state.Blocked, entry)
+}
+
+func removeBlockedIPFromState(state *FirewallState, ip string) {
+	remaining := state.Blocked[:0]
+	for _, entry := range state.Blocked {
+		if entry.IP == ip {
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+	state.Blocked = remaining
+}
+
+func (e *Engine) restoreBlockStateAfterFailureLocked(state FirewallState, ip string) {
+	if err := e.saveState(&state); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: restore state after failed block for %s failed: %v\n", ip, err)
+	}
 }
 
 func (e *Engine) saveBlockedEntry(entry BlockedEntry) error {
