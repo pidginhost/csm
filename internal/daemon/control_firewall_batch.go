@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -184,47 +185,40 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 	}
 
 	cfg := c.d.currentCfg()
-	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.nft")
+	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(cfg.StatePath)
 
-	// Capture the current nftables ruleset for rollback. Best-effort: if nft
-	// isn't installed or fails, proceed without a rollback file.
-	// #nosec G204 -- "nft list ruleset" is literal.
-	nftDump, _ := exec.Command("nft", "list", "ruleset").Output()
-	if len(nftDump) > 0 {
-		// Store the ruleset as an nft script restored with `nft -f`. Wrapping
-		// the dump in a bash heredoc (the previous approach) risked shell
-		// injection: a set name or comment containing the heredoc delimiter or
-		// shell metacharacters could break out into the root shell. `nft -f`
-		// consumes the file directly with no shell involved.
-		payload := append([]byte("flush ruleset\n"), nftDump...)
-		// #nosec G306 -- root-only state dir; this is data, not an executable.
-		_ = os.WriteFile(rollbackFile, payload, 0600)
+	if err := os.MkdirAll(filepath.Dir(rollbackFile), 0700); err != nil {
+		return nil, fmt.Errorf("creating firewall rollback dir: %w", err)
+	}
+	if err := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); err != nil {
+		return nil, err
+	}
+	if err := writeFirewallRollbackFile(rollbackFile); err != nil {
+		return nil, err
 	}
 
 	if err := c.d.fwEngine.Apply(); err != nil {
+		_ = removeFileIfExists(rollbackFile)
 		return nil, fmt.Errorf("applying ruleset: %w", err)
 	}
 
 	deadline := time.Now().Add(time.Duration(minutes) * time.Minute)
 	if err := os.WriteFile(confirmFile, []byte(deadline.Format(time.RFC3339)), 0600); err != nil {
-		return nil, fmt.Errorf("writing confirm marker: %w", err)
+		if restoreErr := applyFirewallRollbackFile(rollbackFile); restoreErr != nil {
+			_ = removeFileIfExists(confirmFile)
+			return nil, fmt.Errorf("writing confirm marker: %w; rollback restore failed: %v", err, restoreErr)
+		}
+		_ = removeFirewallRollbackFiles(confirmFile, rollbackFile)
+		return nil, fmt.Errorf("writing confirm marker: %w; previous ruleset restored", err)
 	}
 
 	// Rollback goroutine lives in the daemon (long-lived, so it
-	// survives CLI exit — an improvement over the old CLI version).
+	// survives CLI exit -- an improvement over the old CLI version).
 	obs.SafeGo("fw-apply-confirmed-rollback", func() {
 		time.Sleep(time.Duration(minutes) * time.Minute)
-		if _, err := os.Stat(confirmFile); err != nil {
-			return // already confirmed (file removed)
+		if err := restoreFirewallRollback(confirmFile, rollbackFile); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Firewall rollback failed: %v\n", ts(), err)
 		}
-		if _, err := os.Stat(rollbackFile); err != nil {
-			return
-		}
-		// #nosec G204 -- nft is hardcoded; rollbackFile is a CSM-written path.
-		_, _ = exec.Command("nft", "-f", rollbackFile).CombinedOutput()
-		_ = os.Remove(confirmFile)
-		_ = os.Remove(rollbackFile)
 	})
 
 	state, _ := firewall.LoadState(cfg.StatePath)
@@ -235,18 +229,110 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 
 func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) {
 	cfg := c.d.currentCfg()
-	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.nft")
+	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(cfg.StatePath)
 
-	if _, err := os.Stat(confirmFile); os.IsNotExist(err) {
+	if _, err := os.Stat(confirmFile); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("checking confirm marker: %w", err)
+		}
+		if cleanupErr := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); cleanupErr != nil {
+			return nil, cleanupErr
+		}
 		return control.FirewallAckResult{
 			Message: "No pending confirmation. Firewall is already confirmed.",
 		}, nil
 	}
 
-	_ = os.Remove(confirmFile)
-	_ = os.Remove(rollbackFile)
+	if err := removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFile); err != nil {
+		return nil, err
+	}
 	return control.FirewallAckResult{
 		Message: "Firewall confirmed. Rollback timer cancelled.",
 	}, nil
+}
+
+func firewallRollbackFiles(statePath string) (confirmFile, rollbackFile, legacyRollbackFile string) {
+	firewallDir := filepath.Join(statePath, "firewall")
+	return filepath.Join(firewallDir, "confirm_pending"),
+		filepath.Join(firewallDir, "rollback.nft"),
+		filepath.Join(firewallDir, "rollback.sh")
+}
+
+func writeFirewallRollbackFile(rollbackFile string) error {
+	// #nosec G204 -- "nft list ruleset" is literal.
+	nftDump, err := exec.Command("nft", "list", "ruleset").Output()
+	if err != nil {
+		return fmt.Errorf("capturing rollback ruleset: %w", err)
+	}
+
+	// The dump is nft syntax, so store it as data consumed by nft -f.
+	// An empty live ruleset still needs a rollback file; flush ruleset
+	// restores that state.
+	payload := make([]byte, 0, len("flush ruleset\n")+len(nftDump)+1)
+	payload = append(payload, "flush ruleset\n"...)
+	payload = append(payload, nftDump...)
+	if len(nftDump) > 0 && nftDump[len(nftDump)-1] != '\n' {
+		payload = append(payload, '\n')
+	}
+
+	// #nosec G306 -- root-only state dir; this is data, not an executable.
+	if err := os.WriteFile(rollbackFile, payload, 0600); err != nil {
+		_ = removeFileIfExists(rollbackFile)
+		return fmt.Errorf("writing rollback ruleset: %w", err)
+	}
+	return nil
+}
+
+func restoreFirewallRollback(confirmFile, rollbackFile string) error {
+	if _, err := os.Stat(confirmFile); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("checking confirm marker: %w", err)
+	}
+	if err := applyFirewallRollbackFile(rollbackFile); err != nil {
+		return err
+	}
+
+	return removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFileFor(rollbackFile))
+}
+
+func applyFirewallRollbackFile(rollbackFile string) error {
+	if _, err := os.Stat(rollbackFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("rollback ruleset missing")
+		}
+		return fmt.Errorf("checking rollback ruleset: %w", err)
+	}
+
+	// #nosec G204 -- nft is hardcoded; rollbackFile is a CSM-written path.
+	out, err := exec.Command("nft", "-f", rollbackFile).CombinedOutput()
+	if err != nil {
+		out = bytes.TrimSpace(out)
+		if len(out) > 0 {
+			return fmt.Errorf("restoring rollback ruleset: %w: %s", err, out)
+		}
+		return fmt.Errorf("restoring rollback ruleset: %w", err)
+	}
+	return nil
+}
+
+func removeFirewallRollbackFiles(paths ...string) error {
+	for _, path := range paths {
+		if err := removeFileIfExists(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func legacyRollbackFileFor(rollbackFile string) string {
+	return filepath.Join(filepath.Dir(rollbackFile), "rollback.sh")
+}
+
+func removeFileIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %s: %w", filepath.Base(path), err)
+	}
+	return nil
 }

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The timed firewall-rollback now stores the previous ruleset as an nftables data file restored with `nft -f`, instead of a generated bash script. This removes a shell-injection surface where a crafted set name or comment in the live ruleset could break out into a root shell.
+- Timed firewall rollback now keeps the pending rollback state when restore fails, and it can roll back hosts that had no prior nftables ruleset instead of silently treating them as confirmed.
 - Firewall blocks now persist to state before the kernel rule is added, so a crash mid-block can no longer leave a permanent kernel block with no state record that a later rebuild would silently drop.
 - Firewall block failures now report when their state rollback also fails, so operators can see when a failed block may still be restored on the next ruleset rebuild.
 - The Server-Sent Events stream now caps concurrent subscribers and returns 503 when full, so a read-scope token cannot open unbounded long-lived streams to exhaust daemon memory.
