@@ -671,8 +671,7 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	lower := strings.ToLower(path)
 
 	// PHP files
-	if strings.HasSuffix(lower, ".php") || strings.HasSuffix(lower, ".phtml") ||
-		strings.HasSuffix(lower, ".pht") || strings.HasSuffix(lower, ".php5") {
+	if isPHPExtension(filepath.Base(lower)) {
 		return true
 	}
 

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"path/filepath"
 	"strings"
 )
 
@@ -43,10 +44,16 @@ type phpHandlerOverlay struct {
 	// AddHandler/AddType maps to a PHP handler, e.g. "AddHandler
 	// application/x-httpd-php .inc".
 	exts map[string]struct{}
+	// names holds exact lowercase basenames matched by a <Files> container.
+	names map[string]struct{}
 	// scanAll is set when a SetHandler/ForceType routes the PHP interpreter
 	// for the whole directory with no extension filter. Every file in the
 	// subtree then executes as PHP and must be content-analysed.
 	scanAll bool
+}
+
+func (o phpHandlerOverlay) active() bool {
+	return o.scanAll || len(o.exts) > 0 || len(o.names) > 0
 }
 
 // executes reports whether a file named nameLower (lowercased) runs as PHP
@@ -57,6 +64,9 @@ func (o phpHandlerOverlay) executes(nameLower string) bool {
 		return true
 	}
 	if isExecutablePHPName(nameLower) {
+		return true
+	}
+	if _, ok := o.names[nameLower]; ok {
 		return true
 	}
 	for ext := range o.exts {
@@ -75,19 +85,28 @@ func (o phpHandlerOverlay) mergeHtaccess(content []byte) phpHandlerOverlay {
 	if len(content) == 0 {
 		return o
 	}
-	exts, scanAll := parsePHPHandlerDirectives(content)
-	if len(exts) == 0 && !scanAll {
+	parsed := parsePHPHandlerDirectives(content)
+	if !parsed.active() {
 		return o
 	}
 
-	merged := phpHandlerOverlay{scanAll: o.scanAll || scanAll}
-	if len(o.exts) > 0 || len(exts) > 0 {
-		merged.exts = make(map[string]struct{}, len(o.exts)+len(exts))
+	merged := phpHandlerOverlay{scanAll: o.scanAll || parsed.scanAll}
+	if len(o.exts) > 0 || len(parsed.exts) > 0 {
+		merged.exts = make(map[string]struct{}, len(o.exts)+len(parsed.exts))
 		for e := range o.exts {
 			merged.exts[e] = struct{}{}
 		}
-		for _, e := range exts {
+		for e := range parsed.exts {
 			merged.exts[e] = struct{}{}
+		}
+	}
+	if len(o.names) > 0 || len(parsed.names) > 0 {
+		merged.names = make(map[string]struct{}, len(o.names)+len(parsed.names))
+		for name := range o.names {
+			merged.names[name] = struct{}{}
+		}
+		for name := range parsed.names {
+			merged.names[name] = struct{}{}
 		}
 	}
 	return merged
@@ -105,12 +124,26 @@ func (o phpHandlerOverlay) mergeHtaccess(content []byte) phpHandlerOverlay {
 // (e.g. application/x-httpd-php, php5-script, x-httpd-php-source is excluded
 // because it ends in -source... we keep it simple and conservative: any token
 // containing "php" except the source viewer). Matching is case-insensitive.
-func parsePHPHandlerDirectives(content []byte) (exts []string, scanAll bool) {
+func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
+	var overlay phpHandlerOverlay
+	var contexts []phpHandlerOverlay
+
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		if ctx, ok := openPHPHandlerContext(line); ok {
+			contexts = append(contexts, ctx)
+			continue
+		}
+		if closesPHPHandlerContext(line) {
+			if len(contexts) > 0 {
+				contexts = contexts[:len(contexts)-1]
+			}
+			continue
+		}
+
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -124,29 +157,31 @@ func parsePHPHandlerDirectives(content []byte) (exts []string, scanAll bool) {
 				continue
 			}
 			// Remaining fields are extensions.
-			for _, f := range fields[2:] {
-				if ext := normalizeExt(f); ext != "" {
-					exts = append(exts, ext)
-				}
+			addExtensions(&overlay, normalizedExts(fields[2:]))
+			if len(fields) == 2 {
+				mergeContext(&overlay, contexts)
 			}
 		case "sethandler", "forcetype":
 			if !handlerIsPHP(handler) {
 				continue
 			}
-			// No extension filter: the handler applies to every file in the
-			// directory. If extensions are present anyway, honour them too.
-			if len(fields) == 2 {
-				scanAll = true
+			exts := normalizedExts(fields[2:])
+			if len(exts) > 0 {
+				addExtensions(&overlay, exts)
 				continue
 			}
-			for _, f := range fields[2:] {
-				if ext := normalizeExt(f); ext != "" {
-					exts = append(exts, ext)
-				}
+			if mergeContext(&overlay, contexts) {
+				continue
 			}
+			if len(contexts) > 0 {
+				continue
+			}
+			// No extension or file filter: the handler applies to every
+			// file in this directory.
+			overlay.scanAll = true
 		}
 	}
-	return exts, scanAll
+	return overlay
 }
 
 func handlerIsPHP(token string) bool {
@@ -176,4 +211,199 @@ func normalizeExt(token string) string {
 		}
 	}
 	return "." + t
+}
+
+func normalizedExts(tokens []string) []string {
+	var exts []string
+	for _, token := range tokens {
+		if ext := normalizeExt(token); ext != "" {
+			exts = append(exts, ext)
+		}
+	}
+	return exts
+}
+
+func addExtensions(overlay *phpHandlerOverlay, exts []string) {
+	if len(exts) == 0 {
+		return
+	}
+	for _, ext := range exts {
+		if isExecutablePHPName("x" + ext) {
+			continue
+		}
+		if overlay.exts == nil {
+			overlay.exts = make(map[string]struct{}, len(exts))
+		}
+		overlay.exts[ext] = struct{}{}
+	}
+}
+
+func mergeContext(overlay *phpHandlerOverlay, contexts []phpHandlerOverlay) bool {
+	merged := false
+	for _, ctx := range contexts {
+		if len(ctx.exts) > 0 {
+			if overlay.exts == nil {
+				overlay.exts = make(map[string]struct{}, len(ctx.exts))
+			}
+			for ext := range ctx.exts {
+				overlay.exts[ext] = struct{}{}
+				merged = true
+			}
+		}
+		if len(ctx.names) > 0 {
+			if overlay.names == nil {
+				overlay.names = make(map[string]struct{}, len(ctx.names))
+			}
+			for name := range ctx.names {
+				overlay.names[name] = struct{}{}
+				merged = true
+			}
+		}
+	}
+	return merged
+}
+
+func openPHPHandlerContext(line string) (phpHandlerOverlay, bool) {
+	lower := strings.ToLower(line)
+	switch {
+	case strings.HasPrefix(lower, "<filesmatch"):
+		pattern := apacheContainerArgument(line)
+		return overlayForFilesMatch(pattern), true
+	case strings.HasPrefix(lower, "<files"):
+		name := apacheContainerArgument(line)
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" || strings.Contains(name, "/") {
+			return phpHandlerOverlay{}, true
+		}
+		if strings.ContainsAny(name, "*?[") {
+			overlay := phpHandlerOverlay{}
+			addExtensions(&overlay, []string{filepath.Ext(name)})
+			return overlay, true
+		}
+		overlay := phpHandlerOverlay{names: map[string]struct{}{name: {}}}
+		return overlay, true
+	default:
+		return phpHandlerOverlay{}, false
+	}
+}
+
+func closesPHPHandlerContext(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.HasPrefix(lower, "</filesmatch") || strings.HasPrefix(lower, "</files")
+}
+
+func apacheContainerArgument(line string) string {
+	start := strings.IndexByte(line, ' ')
+	end := strings.LastIndexByte(line, '>')
+	if start < 0 || end <= start {
+		return ""
+	}
+	arg := strings.TrimSpace(line[start:end])
+	if len(arg) >= 2 {
+		quote := arg[0]
+		if (quote == '"' || quote == '\'') && arg[len(arg)-1] == quote {
+			arg = arg[1 : len(arg)-1]
+		}
+	}
+	return arg
+}
+
+func overlayForFilesMatch(pattern string) phpHandlerOverlay {
+	overlay := phpHandlerOverlay{}
+	addExtensions(&overlay, extensionsFromFilesMatchPattern(pattern))
+	return overlay
+}
+
+func extensionsFromFilesMatchPattern(pattern string) []string {
+	pattern = strings.ToLower(pattern)
+	seen := make(map[string]struct{})
+	var exts []string
+
+	add := func(ext string) {
+		ext = normalizeExt(ext)
+		if ext == "" {
+			return
+		}
+		if _, ok := seen[ext]; ok {
+			return
+		}
+		seen[ext] = struct{}{}
+		exts = append(exts, ext)
+	}
+
+	for i := 0; i+1 < len(pattern); i++ {
+		if pattern[i] != '\\' || pattern[i+1] != '.' {
+			continue
+		}
+		j := i + 2
+		if j < len(pattern) && pattern[j] == '(' {
+			end := strings.IndexByte(pattern[j+1:], ')')
+			if end >= 0 {
+				group := pattern[j+1 : j+1+end]
+				group = strings.TrimPrefix(group, "?:")
+				for _, part := range strings.Split(group, "|") {
+					add(part)
+				}
+			}
+			continue
+		}
+		start := j
+		for j < len(pattern) {
+			c := pattern[j]
+			alnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+			if !alnum && c != '_' && c != '-' {
+				break
+			}
+			j++
+		}
+		add(pattern[start:j])
+		i = j
+	}
+	return exts
+}
+
+func phpPathExecutes(path, nameLower string) bool {
+	if isExecutablePHPName(nameLower) {
+		return true
+	}
+
+	overlay := phpHandlerOverlay{}
+	for _, dir := range htaccessAncestorDirs(path) {
+		if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
+			overlay = overlay.mergeHtaccess(htaccess)
+		}
+	}
+	return overlay.executes(nameLower)
+}
+
+func htaccessAncestorDirs(path string) []string {
+	dir := filepath.Clean(filepath.Dir(path))
+	if dir == "." {
+		return nil
+	}
+
+	var dirs []string
+	for {
+		dirs = append(dirs, dir)
+		if stopHtaccessAncestorWalk(dir) {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	for i, j := 0, len(dirs)-1; i < j; i, j = i+1, j-1 {
+		dirs[i], dirs[j] = dirs[j], dirs[i]
+	}
+	return dirs
+}
+
+func stopHtaccessAncestorWalk(dir string) bool {
+	if !strings.HasPrefix(dir, "/home/") {
+		return false
+	}
+	rest := strings.TrimPrefix(dir, "/home/")
+	return rest != "" && !strings.Contains(rest, "/")
 }

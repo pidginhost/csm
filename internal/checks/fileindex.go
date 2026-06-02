@@ -148,7 +148,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		check := ""
 		message := ""
 
-		if strings.Contains(path, "/wp-content/uploads/") && isExecutablePHPName(nameLower) {
+		if strings.Contains(path, "/wp-content/uploads/") && phpPathExecutes(path, nameLower) {
 			// Content decides, never the path or name. A negative
 			// severity is a content-verified inert stub (e.g. the
 			// WordPress "silence is golden" index.php, or BackWPup's
@@ -225,7 +225,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 // visibility signal, not an attack. Mirrors the realtime path at fanotify.go.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
 	nameLower := strings.ToLower(name)
-	if !isExecutablePHPName(nameLower) {
+	if !phpPathExecutes(path, nameLower) {
 		return -1, "", ""
 	}
 	isLanguages := strings.Contains(path, "/wp-content/languages/")
@@ -323,12 +323,12 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		}
 
 		for _, uploadsDir := range uploadDirs {
-			scanDirForPHP(uploadsDir, 6, dirCache, prevByDir, forceFullScan, &entries)
+			scanDirForPHP(uploadsDir, 6, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
 		}
 
 		// Scan sensitive WP directories for any PHP files
 		for _, sensitiveDir := range sensitiveWPDirs {
-			scanDirForPHP(sensitiveDir, 4, dirCache, prevByDir, forceFullScan, &entries)
+			scanDirForPHP(sensitiveDir, 4, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
 		}
 
 		// Scan .config for executables
@@ -347,14 +347,18 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 	return entries
 }
 
-// scanDirForPHP recursively reads directories for .php files.
+// scanDirForPHP recursively reads directories for PHP-executable files.
 // If directory mtime is unchanged, carries forward previous entries.
-func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
+func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
 	if maxDepth <= 0 {
 		return
 	}
 
-	if !dirChanged(dir, cache, forceFullScan) {
+	if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
+		overlay = overlay.mergeHtaccess(htaccess)
+	}
+
+	if !dirChanged(dir, cache, forceFullScan || overlay.active()) {
 		// Carry forward previous entries for this directory
 		*entries = append(*entries, prev[dir]...)
 		return
@@ -370,7 +374,7 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 		fullPath := filepath.Join(dir, name)
 
 		if entry.IsDir() {
-			scanDirForPHP(fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
+			scanDirForPHP(fullPath, maxDepth-1, cache, prev, forceFullScan, overlay, entries)
 			continue
 		}
 
@@ -381,7 +385,7 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 		// extensions are indexed, not just .php, so a .phtml/.php7 backdoor
 		// cannot dodge the index by extension. The two predicates overlap
 		// (the PHP family is also "suspicious"), so index each file once.
-		if isExecutablePHPName(nameLower) || suspiciousExtensions[filepath.Ext(nameLower)] {
+		if overlay.executes(nameLower) || suspiciousExtensions[filepath.Ext(nameLower)] {
 			*entries = append(*entries, fullPath)
 		}
 	}

@@ -17,7 +17,10 @@ func TestIsPHPExtension(t *testing.T) {
 		{"evil.php", true},
 		{"trick.phtml", true},
 		{"hack.pht", true},
+		{"old.php3", true},
 		{"old.php5", true},
+		{"current.php8", true},
+		{"source.phps", false},
 		{"safe.html", false},
 		{"readme.txt", false},
 		{"image.jpg", false},
@@ -26,6 +29,19 @@ func TestIsPHPExtension(t *testing.T) {
 		if got := isPHPExtension(tt.name); got != tt.want {
 			t.Errorf("isPHPExtension(%q) = %v, want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestFileMonitorIsInterestingExecutablePHPExtensions(t *testing.T) {
+	fm := &FileMonitor{}
+	for _, name := range []string{"evil.php2", "evil.php3", "evil.php4", "evil.php6", "evil.php7", "evil.php8"} {
+		path := "/home/alice/public_html/" + name
+		if !fm.isInteresting(path) {
+			t.Errorf("%s should be interesting to realtime PHP monitoring", path)
+		}
+	}
+	if fm.isInteresting("/home/alice/public_html/source.phps") {
+		t.Error(".phps source-view files should not be treated as executable PHP")
 	}
 }
 

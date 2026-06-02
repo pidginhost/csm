@@ -118,6 +118,80 @@ func TestScanObfuscatedPHP_SetHandlerScansAllExtensions(t *testing.T) {
 	}
 }
 
+func TestScanObfuscatedPHP_FilesMatchSetHandlerDoesNotScanAll(t *testing.T) {
+	dir := t.TempDir()
+	htaccess := `<FilesMatch "\.php$">
+  SetHandler "proxy:unix:/opt/cpanel/ea-php82/root/usr/var/run/php-fpm/site.sock|fcgi://localhost"
+</FilesMatch>
+`
+	if err := os.WriteFile(filepath.Join(dir, ".htaccess"), []byte(htaccess), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(path, []byte(evalWebshell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanDirForObfuscatedPHP(context.Background(), dir, 2, &config.Config{}, &findings)
+	if findingForPath(findings, path) {
+		t.Fatalf("FilesMatch-scoped SetHandler for .php must not scan unrelated extensions")
+	}
+}
+
+func TestPHPHandlerOverlay_StockFilesMatchIsInactive(t *testing.T) {
+	htaccess := []byte(`<FilesMatch "\.php$">
+  SetHandler "proxy:unix:/opt/cpanel/ea-php82/root/usr/var/run/php-fpm/site.sock|fcgi://localhost"
+</FilesMatch>
+`)
+	overlay := parsePHPHandlerDirectives(htaccess)
+	if overlay.active() {
+		t.Fatal("stock .php handler mapping should not bypass directory mtime caching")
+	}
+	if overlay.executes("data.txt") {
+		t.Fatal("stock .php handler mapping must not make unrelated extensions executable")
+	}
+}
+
+func TestScanObfuscatedPHP_FilesMatchMappedExtensionDetected(t *testing.T) {
+	dir := t.TempDir()
+	htaccess := `<FilesMatch "\.inc$">
+  SetHandler application/x-httpd-php
+</FilesMatch>
+`
+	if err := os.WriteFile(filepath.Join(dir, ".htaccess"), []byte(htaccess), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "evil.inc")
+	if err := os.WriteFile(path, []byte(evalWebshell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanDirForObfuscatedPHP(context.Background(), dir, 2, &config.Config{}, &findings)
+	if !findingForPath(findings, path) {
+		t.Fatalf("FilesMatch-scoped SetHandler must content-analyse mapped extension, got %d findings", len(findings))
+	}
+}
+
+func TestScanObfuscatedPHP_FilesWildcardMappedExtensionDetected(t *testing.T) {
+	dir := t.TempDir()
+	htaccess := `<Files "*.inc">
+  SetHandler application/x-httpd-php
+</Files>
+`
+	if err := os.WriteFile(filepath.Join(dir, ".htaccess"), []byte(htaccess), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "evil.inc")
+	if err := os.WriteFile(path, []byte(evalWebshell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanDirForObfuscatedPHP(context.Background(), dir, 2, &config.Config{}, &findings)
+	if !findingForPath(findings, path) {
+		t.Fatalf("Files wildcard SetHandler must content-analyse mapped extension, got %d findings", len(findings))
+	}
+}
+
 // A parent .htaccess handler mapping applies to child directories too (Apache
 // merges parent config), so a mapped-extension webshell in a subdir must also
 // be content-analysed.

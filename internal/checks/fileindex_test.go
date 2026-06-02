@@ -189,16 +189,52 @@ func TestScanDirForPHPFindsFiles(t *testing.T) {
 	cache := make(dirMtimeCache)
 	prev := make(map[string][]string)
 	var entries []string
-	scanDirForPHP(dir, 3, cache, prev, false, &entries)
+	scanDirForPHP(dir, 3, cache, prev, false, phpHandlerOverlay{}, &entries)
 
 	if len(entries) != 3 {
 		t.Errorf("got %d entries %v, want 3 (evil.php + index.php + trick.phtml)", len(entries), entries)
 	}
 }
 
+func TestScanDirForPHPIndexesHtaccessMappedExtension(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, ".htaccess"), []byte("AddHandler application/x-httpd-php .inc\n"), 0644)
+	mapped := filepath.Join(dir, "evil.inc")
+	_ = os.WriteFile(mapped, []byte("<?php system($_POST['c']);"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "safe.txt"), []byte("text"), 0644)
+
+	cache := make(dirMtimeCache)
+	prev := make(map[string][]string)
+	var entries []string
+	scanDirForPHP(dir, 3, cache, prev, false, phpHandlerOverlay{}, &entries)
+
+	if len(entries) != 1 || entries[0] != mapped {
+		t.Errorf("got entries %v, want mapped .inc only", entries)
+	}
+}
+
+func TestClassifySensitiveDirPHPHonorsHtaccessMappedExtension(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "wp-content", "languages")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".htaccess"), []byte("AddHandler application/x-httpd-php .inc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "evil.inc")
+	if err := os.WriteFile(path, []byte("<?php system($_POST['c']);"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sev, check, _ := classifySensitiveDirPHP(path, "evil.inc")
+	if sev < 0 || check == "" {
+		t.Fatalf("mapped .inc in sensitive dir should be classified, got severity=%v check=%q", sev, check)
+	}
+}
+
 func TestScanDirForPHPMaxDepthZero(t *testing.T) {
 	var entries []string
-	scanDirForPHP(t.TempDir(), 0, make(dirMtimeCache), nil, false, &entries)
+	scanDirForPHP(t.TempDir(), 0, make(dirMtimeCache), nil, false, phpHandlerOverlay{}, &entries)
 	if len(entries) != 0 {
 		t.Errorf("maxDepth=0 should return nothing, got %v", entries)
 	}
@@ -211,11 +247,11 @@ func TestScanDirForPHPCarriesForwardUnchanged(t *testing.T) {
 
 	// First call: populates cache
 	var e1 []string
-	scanDirForPHP(dir, 3, cache, prev, false, &e1)
+	scanDirForPHP(dir, 3, cache, prev, false, phpHandlerOverlay{}, &e1)
 
 	// Second call: dir mtime unchanged, should carry forward
 	var e2 []string
-	scanDirForPHP(dir, 3, cache, prev, false, &e2)
+	scanDirForPHP(dir, 3, cache, prev, false, phpHandlerOverlay{}, &e2)
 	found := false
 	for _, e := range e2 {
 		if e == "/old/entry.php" {
@@ -240,7 +276,7 @@ func TestScanDirForPHPCarriesForwardNestedEntriesWhenRootUnchanged(t *testing.T)
 	cache := dirMtimeCache{dir: info.ModTime().Unix()}
 
 	var entries []string
-	scanDirForPHP(dir, 6, cache, prev, false, &entries)
+	scanDirForPHP(dir, 6, cache, prev, false, phpHandlerOverlay{}, &entries)
 
 	got := map[string]bool{}
 	for _, entry := range entries {
