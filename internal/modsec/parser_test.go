@@ -391,3 +391,30 @@ func TestParseAction_DenyWinsOverStrayPass(t *testing.T) {
 		t.Errorf("Action = %q, want deny (priority must favour the disruptive keyword)", r.Action)
 	}
 }
+
+// Vendor packs ship assembled rules whose single logical line can exceed the
+// default 64 KB scanner token. Before the buffer was enlarged, Scan stopped at
+// ErrTooLong and the whole file's rules dropped out of the registry. A rule on
+// a >64 KB line must now parse.
+func TestParseRulesFileAll_LongMinifiedLineParses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.conf")
+
+	// One SecRule whose regex operand is padded well past 64 KB.
+	pad := make([]byte, 100*1024)
+	for i := range pad {
+		pad[i] = 'a'
+	}
+	rule := `SecRule REQUEST_URI "@rx ` + string(pad) + `" "id:949110,phase:2,deny,status:403,msg:'big'"` + "\n"
+	if err := os.WriteFile(path, []byte(rule), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll on long line: %v", err)
+	}
+	if findRule(rules, 949110) == nil {
+		t.Fatal("rule on >64 KB line was dropped (scanner truncated the file)")
+	}
+}

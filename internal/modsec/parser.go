@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// maxModsecLineBytes bounds a single logical line for the rule scanners. Far
+// above any legitimate directive, but finite so a pathological file cannot
+// drive an unbounded allocation.
+const maxModsecLineBytes = 8 << 20 // 8 MiB
+
 // Rule represents a parsed ModSecurity rule from the CSM custom config.
 type Rule struct {
 	ID          int    // e.g. 900112
@@ -83,6 +88,13 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 	var logicalLines []string
 	var current strings.Builder
 	scanner := bufio.NewScanner(f)
+	// Vendor packs (OWASP CRS, Comodo, Imunify360, cPanel modsec_assemble)
+	// ship assembled/minified directives that can exceed the default 64 KB
+	// token. Without a larger buffer Scan stops at ErrTooLong and the file's
+	// rules drop out of the action registry, where unknown IDs then default
+	// to "deny" and skew the modsec signal. Raise the ceiling so real files
+	// parse in full.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxModsecLineBytes)
 	for scanner.Scan() {
 		raw := scanner.Text()
 		trimmed := strings.TrimSpace(raw)

@@ -53,6 +53,7 @@ func ReadOverrides(path string) ([]int, error) {
 
 	var ids []int
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxModsecLineBytes)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "SecRuleRemoveById ") {
