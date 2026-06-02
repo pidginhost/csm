@@ -488,9 +488,11 @@ func extractIPFromFinding(f alert.Finding) string {
 
 	msg := f.Message
 
-	// Use LastIndex to find the rightmost separator - log-injected content
-	// tends to appear earlier in the message, while the structurally-parsed
-	// IP from the log parser appears at the end.
+	// Fallback for detectors that have not yet adopted the structured SourceIP
+	// field. Only findings whose Check is auto-block-eligible reach this path,
+	// and those detectors format their own messages with a CSM-parsed IP at the
+	// tail. Use LastIndex so the rightmost (CSM-appended) IP wins over any
+	// log-injected content earlier in the message.
 	for _, sep := range []string{" from ", ": "} {
 		if idx := strings.LastIndex(msg, sep); idx >= 0 {
 			rest := msg[idx+len(sep):]
