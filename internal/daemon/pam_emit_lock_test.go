@@ -14,7 +14,8 @@ import (
 // failure trackers then grew without bound. With the send moved out of the
 // critical section, a blocked emit no longer holds the lock.
 func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
-	alertCh := make(chan alert.Finding) // unbuffered, no reader -> send blocks
+	alertCh := make(chan alert.Finding, 1)
+	alertCh <- alert.Finding{Check: "blocker"}
 	cfg := &config.Config{}
 	cfg.Thresholds.MultiIPLoginThreshold = 3          // trigger brute-force quickly
 	cfg.Thresholds.CredStuffingDistinctAccounts = 100 // keep stuffing path quiet
@@ -26,25 +27,42 @@ func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
 		stuffing: newCredentialStuffingDetector(100, 10*time.Minute, nil),
 	}
 
-	// Brute-force from one IP; the resulting emit blocks (no reader).
-	emitting := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
-		close(emitting)
-		for i := 0; i < 4; i++ {
+		defer close(done)
+		for i := 0; i < 3; i++ {
 			p.processEvent("FAIL ip=203.0.113.30 user=root service=sshd")
 		}
 	}()
-	<-emitting
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-done:
+			t.Fatal("producer finished before the alert send blocked")
+		default:
+		}
+
+		if p.mu.TryLock() {
+			tracker := p.failures["203.0.113.30"]
+			blocked := tracker != nil && tracker.blocked && tracker.count >= 3
+			p.mu.Unlock()
+			if blocked {
+				break
+			}
+		}
+
+		select {
+		case <-deadline:
+			t.Fatal("producer did not reach a blocked alert send with p.mu free")
+		case <-time.After(time.Millisecond):
+		}
+	}
 
 	// While the emit is blocked, a method that needs p.mu must still run.
 	lockFreed := make(chan struct{})
 	go func() {
-		// Spin a few times so we race against the blocked emit, not just the
-		// pre-emit window.
-		for i := 0; i < 3; i++ {
-			p.clearFailures("203.0.113.99")
-			time.Sleep(time.Millisecond)
-		}
+		p.clearFailures("203.0.113.99")
 		close(lockFreed)
 	}()
 
@@ -55,11 +73,21 @@ func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
 		t.Fatal("clearFailures blocked: alert emit is holding p.mu")
 	}
 
-	// Drain so the producer goroutine can finish.
-	go func() {
-		for range alertCh {
+	<-alertCh
+	select {
+	case f := <-alertCh:
+		if f.Check != "pam_bruteforce" {
+			t.Fatalf("unexpected finding after unblocking producer: %+v", f)
 		}
-	}()
+	case <-time.After(3 * time.Second):
+		t.Fatal("producer did not emit pam_bruteforce after channel was drained")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("producer did not finish after channel was drained")
+	}
 }
 
 // emitRecordFailure mirrors processEvent's FAIL path (recordFailure then emit)
