@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -268,14 +269,12 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 
 	rows, err := mysqlclient.RootQuery(ctx,
 		"SELECT user, host FROM mysql.user WHERE Super_priv='Y' AND user NOT IN ('root','mysql.session','mysql.sys','mysql.infoschema','debian-sys-maint')")
-	if err != nil || len(rows) == 0 {
+	if err != nil {
 		return nil
 	}
 
+	sort.Strings(rows)
 	output := strings.TrimSpace(strings.Join(rows, "\n"))
-	if output == "" {
-		return nil
-	}
 	out := []byte(output)
 
 	// Track known MySQL superusers
@@ -284,6 +283,9 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 	prev, exists := store.GetRaw(key)
 	switch {
 	case !exists:
+		if output == "" {
+			break
+		}
 		// First run establishes the baseline. The query already excludes the
 		// standard cPanel/system superusers, so every account here is a
 		// non-standard privileged account. Baselining them silently would let
@@ -297,11 +299,15 @@ func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) 
 			Details:  fmt.Sprintf("Review these privileged accounts:\n%s", output),
 		})
 	case prev != hash:
+		details := "Current superusers: none"
+		if output != "" {
+			details = fmt.Sprintf("Current superusers:\n%s", output)
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "mysql_superuser",
 			Message:  "MySQL superuser accounts changed",
-			Details:  fmt.Sprintf("Current superusers:\n%s", output),
+			Details:  details,
 		})
 	}
 	store.SetRaw(key, hash)

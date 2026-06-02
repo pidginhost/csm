@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Realtime auto-quarantine now relies on content-based obfuscation and execution signals instead of library path names.
 - Package-integrity checks now report modified executable code by file type instead of a fixed directory list, while keeping non-executable package data quiet.
 - Non-standard MySQL superuser accounts and operator WHM root API tokens are now surfaced on the first scan instead of being silently recorded as the baseline. If CSM is installed on an already-compromised host, accounts and tokens planted by an attacker are flagged for review rather than treated as known-good.
+- MySQL superuser tracking now records clean scans, so later privileged-account additions are reported as changes. Older WHM output now feeds first-scan token review instead of silently trusting existing tokens.
 - The PAM brute-force listener no longer emits alerts while holding its internal lock. A stalled alert consumer could previously wedge the whole login-monitoring path and let its failure-tracking memory grow without bound.
 - Behind a trusted proxy, HTTP abuse detection now matches the challenge server's client-IP attribution instead of trusting client-supplied header entries.
 - Subnet (CIDR) blocking now refuses ranges that cover infrastructure, local host addresses, allowed IPs, port-specific allows, or the default route. This prevents self-lockout and collateral blocks on shared ranges.

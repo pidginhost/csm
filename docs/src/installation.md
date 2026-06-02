@@ -201,14 +201,14 @@ csm baseline
 1. Edit `/etc/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
 2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
 3. Start the daemon: `systemctl enable --now csm.service`
-4. Run `csm baseline` to record current state as known-good (see below)
+4. Run `csm baseline` to record current state for change tracking (see below)
 5. Open the Web UI: `https://<server>:9443/login`
 
 All installation methods produce the same installed state. RPM/DEB packages auto-detect hostname and email, and generate the auth token.
 
 ## Baseline Scan
 
-The `csm baseline` command scans the entire server and records the current state as known-good. This is required on first install so CSM knows what's "normal" for your server.
+The `csm baseline` command scans the entire server and records the current state for change tracking. This is required on first install so CSM knows what's "normal" for your server. Findings that should never be silently trusted, such as non-standard MySQL superusers or WHM root API tokens, can still be reported on this first scan.
 
 **What it does:**
 - Scans all cPanel accounts for malware, permissions, and configuration issues

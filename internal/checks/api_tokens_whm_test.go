@@ -40,6 +40,31 @@ func whmTokensJSON(tokens map[string]bool) string {
 	return b.String()
 }
 
+func whmTokensYAML(tokens map[string]bool) string {
+	var b strings.Builder
+	b.WriteString("---\ndata:\n")
+	if len(tokens) == 0 {
+		b.WriteString("  tokens: {}\n")
+		return b.String()
+	}
+	b.WriteString("  tokens:\n")
+	for name, all := range tokens {
+		v := 0
+		if all {
+			v = 1
+		}
+		b.WriteString("    ")
+		b.WriteString(name)
+		b.WriteString(":\n      acls:\n        all: ")
+		if v == 1 {
+			b.WriteString("1\n")
+		} else {
+			b.WriteString("0\n")
+		}
+	}
+	return b.String()
+}
+
 // runWHMTokens seeds the prior token state, feeds the current token list via the
 // mocked whmapi1 command, and returns the WHM-root api_tokens findings.
 func runWHMTokens(t *testing.T, prior, current map[string]bool) []alert.Finding {
@@ -108,6 +133,67 @@ func TestWHMTokens_FirstRunClusterOnlyNoFinding(t *testing.T) {
 	got := runWHMTokens(t, nil, map[string]bool{"reverse_trust_aaaaaaaa": false})
 	if len(got) != 0 {
 		t.Fatalf("cluster-only baseline must be silent, got %+v", got)
+	}
+}
+
+func TestWHMTokens_FirstRunLegacyYAMLOperatorTokenSurfaced(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte("api_token_list: unknown option --output"), nil
+			}
+			return []byte(whmTokensYAML(map[string]bool{"phclient": true})), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 1 || got[0].Severity != alert.High {
+		t.Fatalf("legacy YAML baseline token must be surfaced, got %+v", got)
+	}
+	if !strings.Contains(got[0].Details, "phclient") {
+		t.Errorf("legacy YAML baseline finding must name token, got %q", got[0].Details)
+	}
+	if _, exists := store.GetRaw(whmAPITokensStateKey); !exists {
+		t.Fatal("legacy YAML fallback must seed structured WHM token state")
+	}
+}
+
+func TestWHMTokens_FirstRunLegacyYAMLClusterOnlyNoFinding(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte("api_token_list: unknown option --output"), nil
+			}
+			return []byte(whmTokensYAML(map[string]bool{"reverse_trust_aaaaaaaa": false})), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 0 {
+		t.Fatalf("cluster-only legacy YAML baseline must be silent, got %+v", got)
+	}
+	if _, exists := store.GetRaw(whmAPITokensStateKey); !exists {
+		t.Fatal("cluster-only legacy YAML baseline must still seed structured state")
 	}
 }
 

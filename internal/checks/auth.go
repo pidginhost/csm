@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"gopkg.in/yaml.v3"
 )
 
 func CheckShadowChanges(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
@@ -397,26 +398,7 @@ func checkWHMRootAPITokens(store *state.Store) (alert.Finding, bool) {
 	out, err := runCmd("whmapi1", "api_token_list", "--output=json")
 	if err == nil {
 		if cur, ok := parseWHMTokenSig(out); ok {
-			_, hadStructuredState := store.GetRaw(whmAPITokensStateKey)
-			_, hadLegacyState := store.GetRaw(whmAPITokensHashKey)
-			finding, fire := diffWHMTokens(store, cur)
-			switch {
-			case !hadStructuredState && hadLegacyState:
-				// Migrating from the legacy hash: the tokens were already
-				// vetted under the old scheme, so diff against the legacy hash
-				// rather than re-flagging the whole set as new.
-				if legacyFinding, legacyFire := checkWHMRootAPITokensLegacyHash(store); legacyFire {
-					finding, fire = legacyFinding, true
-				}
-			case !hadStructuredState && !hadLegacyState:
-				// True first run with no prior state of any kind. A root API
-				// token created by an attacker before CSM was installed would
-				// otherwise be baselined as "known" and never alert. Surface
-				// the pre-existing operator tokens for review.
-				finding, fire = baselineWHMTokens(cur)
-			}
-			store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
-			return finding, fire
+			return checkStructuredWHMRootAPITokens(store, cur, nil)
 		}
 	}
 	return checkWHMRootAPITokensLegacyHash(store)
@@ -427,7 +409,54 @@ func checkWHMRootAPITokensLegacyHash(store *state.Store) (alert.Finding, bool) {
 	if err != nil {
 		return alert.Finding{}, false
 	}
+	if cur, ok := parseWHMTokenSigYAML(out); ok {
+		return checkStructuredWHMRootAPITokens(store, cur, out)
+	}
+	return checkWHMRootAPITokensLegacyHashOutput(store, out)
+}
 
+func checkWHMRootAPITokensLegacyHashOnly(store *state.Store) (alert.Finding, bool) {
+	out, err := runCmd("whmapi1", "api_token_list")
+	if err != nil {
+		return alert.Finding{}, false
+	}
+	return checkWHMRootAPITokensLegacyHashOutput(store, out)
+}
+
+func checkStructuredWHMRootAPITokens(store *state.Store, cur tokenSig, legacyOut []byte) (alert.Finding, bool) {
+	_, hadStructuredState := store.GetRaw(whmAPITokensStateKey)
+	_, hadLegacyState := store.GetRaw(whmAPITokensHashKey)
+	finding, fire := diffWHMTokens(store, cur)
+	switch {
+	case !hadStructuredState && hadLegacyState:
+		// Migrating from the legacy hash: the tokens were already vetted under
+		// the old scheme, so diff against the legacy hash rather than
+		// re-flagging the whole set as new.
+		var legacyFinding alert.Finding
+		var legacyFire bool
+		if legacyOut != nil {
+			legacyFinding, legacyFire = checkWHMRootAPITokensLegacyHashOutput(store, legacyOut)
+		} else {
+			legacyFinding, legacyFire = checkWHMRootAPITokensLegacyHashOnly(store)
+		}
+		if legacyFire {
+			finding, fire = legacyFinding, true
+		}
+	case !hadStructuredState && !hadLegacyState:
+		// True first run with no prior state of any kind. A root API token
+		// created by an attacker before CSM was installed would otherwise be
+		// baselined as "known" and never alert. Surface the pre-existing
+		// operator tokens for review.
+		finding, fire = baselineWHMTokens(cur)
+	}
+	store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
+	if legacyOut != nil {
+		store.SetRaw(whmAPITokensHashKey, hashBytes(legacyOut))
+	}
+	return finding, fire
+}
+
+func checkWHMRootAPITokensLegacyHashOutput(store *state.Store, out []byte) (alert.Finding, bool) {
 	hash := hashBytes(out)
 	prev, exists := store.GetRaw(whmAPITokensHashKey)
 	store.SetRaw(whmAPITokensHashKey, hash)
@@ -525,10 +554,53 @@ func parseWHMTokenSig(out []byte) (tokenSig, bool) {
 	return sig, true
 }
 
+func parseWHMTokenSigYAML(out []byte) (tokenSig, bool) {
+	type yamlToken struct {
+		ACLs map[string]any `yaml:"acls"`
+	}
+	type yamlTokenData struct {
+		Tokens map[string]yamlToken `yaml:"tokens"`
+	}
+	var env struct {
+		Data   yamlTokenData `yaml:"data"`
+		Result struct {
+			Data yamlTokenData `yaml:"data"`
+		} `yaml:"result"`
+	}
+	if err := yaml.Unmarshal(out, &env); err != nil {
+		return nil, false
+	}
+	tokens := env.Data.Tokens
+	if tokens == nil {
+		tokens = env.Result.Data.Tokens
+	}
+	if tokens == nil {
+		return nil, false
+	}
+
+	sig := make(tokenSig, len(tokens))
+	for name, raw := range tokens {
+		acls := decodeWHMTokenYAMLACLs(raw.ACLs)
+		sig[name] = tokenInfo{
+			FullAccess:     acls["all"],
+			ClusterManaged: clusterManagedFromACLs(name, acls),
+		}
+	}
+	return sig, true
+}
+
 func decodeWHMTokenACLs(raw map[string]json.RawMessage) map[string]bool {
 	acls := make(map[string]bool, len(raw))
 	for name, value := range raw {
 		acls[name] = decodeWHMTokenACL(value)
+	}
+	return acls
+}
+
+func decodeWHMTokenYAMLACLs(raw map[string]any) map[string]bool {
+	acls := make(map[string]bool, len(raw))
+	for name, value := range raw {
+		acls[name] = decodeWHMTokenYAMLACL(value)
 	}
 	return acls
 }
@@ -551,6 +623,26 @@ func decodeWHMTokenACL(raw json.RawMessage) bool {
 	}
 	var b bool
 	return json.Unmarshal(raw, &b) == nil && b
+}
+
+func decodeWHMTokenYAMLACL(raw any) bool {
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case int:
+		return v == 1
+	case int64:
+		return v == 1
+	case uint64:
+		return v == 1
+	case float64:
+		return v == 1
+	case string:
+		s := strings.TrimSpace(v)
+		return s == "1" || strings.EqualFold(s, "true")
+	default:
+		return false
+	}
 }
 
 // marshalTokenSig serializes a tokenSig deterministically (encoding/json sorts

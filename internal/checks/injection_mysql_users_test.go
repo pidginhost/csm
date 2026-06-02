@@ -11,11 +11,11 @@ import (
 )
 
 // CheckMySQLUsers behavior:
-//   - mysql command fails / returns nil → no findings
-//   - empty output → no findings (no non-standard superusers)
-//   - first call with output → no finding (just establishes baseline hash)
-//   - second call with SAME output → no finding (hash unchanged)
-//   - second call with DIFFERENT output → emits "superuser accounts changed"
+//   - mysql command fails / returns nil -> no findings
+//   - empty output -> no findings, but records the empty successful state
+//   - first call with output -> emits a baseline review finding
+//   - second call with SAME output -> no finding (hash unchanged)
+//   - second call with DIFFERENT output -> emits "superuser accounts changed"
 
 func TestCheckMySQLUsersMySQLCommandFailsReturnsNil(t *testing.T) {
 	withMockCmd(t, &mockCmd{
@@ -51,6 +51,98 @@ func TestCheckMySQLUsersEmptyOutputReturnsNil(t *testing.T) {
 
 	if findings := CheckMySQLUsers(context.Background(), nil, st); findings != nil {
 		t.Errorf("expected nil for empty output (no non-standard superusers), got %d", len(findings))
+	}
+	if _, exists := st.GetRaw("_mysql_super_users"); !exists {
+		t.Fatal("successful empty output must still establish baseline state")
+	}
+}
+
+func TestCheckMySQLUsersEmptyBaselineThenAdditionIsChange(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte(""), nil
+		},
+	})
+	if findings := CheckMySQLUsers(context.Background(), nil, st); len(findings) != 0 {
+		t.Fatalf("empty baseline should not alert, got %+v", findings)
+	}
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte("admin_user\tlocalhost\n"), nil
+		},
+	})
+	findings := CheckMySQLUsers(context.Background(), nil, st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "changed") {
+		t.Fatalf("post-baseline superuser must be reported as a change, got %+v", findings)
+	}
+}
+
+func TestCheckMySQLUsersRemovalUpdatesBaseline(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte("admin_user\tlocalhost\n"), nil
+		},
+	})
+	_ = CheckMySQLUsers(context.Background(), nil, st)
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte(""), nil
+		},
+	})
+	findings := CheckMySQLUsers(context.Background(), nil, st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Details, "none") {
+		t.Fatalf("removal must be recorded as current empty state, got %+v", findings)
+	}
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte("admin_user\tlocalhost\n"), nil
+		},
+	})
+	findings = CheckMySQLUsers(context.Background(), nil, st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "changed") {
+		t.Fatalf("re-added superuser after empty state must alert, got %+v", findings)
+	}
+}
+
+func TestCheckMySQLUsersRowOrderStable(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	outputs := [][]byte{
+		[]byte("beta\tlocalhost\nalpha\tlocalhost\n"),
+		[]byte("alpha\tlocalhost\nbeta\tlocalhost\n"),
+	}
+	call := 0
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			out := outputs[call]
+			call++
+			return out, nil
+		},
+	})
+
+	_ = CheckMySQLUsers(context.Background(), nil, st)
+	findings := CheckMySQLUsers(context.Background(), nil, st)
+	if len(findings) != 0 {
+		t.Fatalf("same rows in different order must not alert, got %+v", findings)
 	}
 }
 
