@@ -26,6 +26,33 @@ func TestIncidentCorrelatorSingletonReturnsSameInstance(t *testing.T) {
 	}
 }
 
+// The auto-close and retention goroutines write to bbolt. On shutdown the
+// daemon must cancel them before closing the store, or they tick against a
+// closed database. StopIncidentBackgroundLoops must stop both loops; we prove
+// it by the cancels being cleared after the call.
+func TestStopIncidentBackgroundLoopsCancelsBothLoops(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	SetIncidentConfigSource(func() *config.Config { return &config.Config{} })
+	t.Cleanup(func() { SetIncidentConfigSource(nil) })
+
+	_ = IncidentCorrelator()
+
+	if incidentRetentionCancel == nil {
+		t.Fatal("retention loop cancel not set after construction")
+	}
+	if incidentAutoCloseCancel == nil {
+		t.Fatal("auto-close loop cancel not set after construction")
+	}
+
+	StopIncidentBackgroundLoops()
+
+	if incidentRetentionCancel != nil || incidentAutoCloseCancel != nil {
+		t.Fatal("StopIncidentBackgroundLoops did not clear both loop cancels")
+	}
+}
+
 func TestIncidentCorrelatorIngestsDirectFindings(t *testing.T) {
 	resetIncidentForTest()
 	c := IncidentCorrelator()

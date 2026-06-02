@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Incident auto-close and retention background loops now stop during shutdown before the state store closes, so they no longer tick against a closed database or leak past daemon exit.
 - Log watchers now close their files from their own polling loop on shutdown instead of from a separate goroutine, removing a teardown race on the file handle that could surface during a restart.
 - The verdict callback now refuses an "allow" reply that carries no replay binding when an HMAC secret is set but response signing is not required. An on-path attacker could previously strip the nonce and timestamp to slip an unbound allow past the best-effort replay checks and disable a block.
 - The `.htaccess` directive scanner no longer stops at an oversized line. An attacker could pad an early line past the reader's limit to silently hide a malicious directive after it; the scanner now reads past long lines and flags any file it still cannot fully parse.

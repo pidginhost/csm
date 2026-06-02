@@ -365,6 +365,21 @@ func runIncidentCompaction(c *incident.Correlator) {
 	}
 }
 
+// StopIncidentBackgroundLoops cancels the incident auto-close and retention
+// goroutines. The daemon calls it during shutdown, before closing the store,
+// so neither loop performs a bbolt write against an already-closed database.
+// Safe to call when the singleton was never constructed (both cancels nil).
+func StopIncidentBackgroundLoops() {
+	if incidentRetentionCancel != nil {
+		incidentRetentionCancel()
+		incidentRetentionCancel = nil
+	}
+	if incidentAutoCloseCancel != nil {
+		incidentAutoCloseCancel()
+		incidentAutoCloseCancel = nil
+	}
+}
+
 // resetIncidentForTest is a test seam. Stops any retention worker, zeros
 // the singleton, and pins the registry to a private one so subsequent
 // IncidentCorrelator() calls do not collide on metrics.Default.

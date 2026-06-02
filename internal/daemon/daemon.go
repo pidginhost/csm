@@ -947,6 +947,9 @@ func (d *Daemon) Run() error {
 	if adb := attackdb.Global(); adb != nil {
 		adb.Stop()
 	}
+	// Stop the incident auto-close and retention goroutines before closing the
+	// store so neither writes to an already-closed bbolt database.
+	StopIncidentBackgroundLoops()
 	if err := d.store.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] error closing state store: %v\n", ts(), err)
 	}
