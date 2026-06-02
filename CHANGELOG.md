@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The auto-block rate-limit warning now fires once per hour instead of on every scan, so a sustained attack no longer floods the audit log with thousands of identical entries. The overflow queue is also bounded; once full, the warning reports how many addresses were dropped.
 - The timed firewall-rollback now stores the previous ruleset as an nftables data file restored with `nft -f`, instead of a generated bash script. This removes a shell-injection surface where a crafted set name or comment in the live ruleset could break out into a root shell.
 - Timed firewall rollback now keeps the pending rollback state when restore fails, and it can roll back hosts that had no prior nftables ruleset instead of silently treating them as confirmed.
 - Firewall blocks now persist to state before the kernel rule is added, so a crash mid-block can no longer leave a permanent kernel block with no state record that a later rebuild would silently drop.

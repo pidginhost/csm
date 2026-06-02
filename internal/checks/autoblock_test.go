@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,16 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func countRateLimitWarnings(actions []alert.Finding) int {
+	n := 0
+	for _, a := range actions {
+		if strings.Contains(a.Message, "rate limit reached") {
+			n++
+		}
+	}
+	return n
+}
 
 type recordingIPBlocker struct {
 	blocked       []string
@@ -490,6 +501,153 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	}
 	if state.IPs[0].IP != "9.8.7.6" {
 		t.Fatalf("saved blocked IP = %q, want %q", state.IPs[0].IP, "9.8.7.6")
+	}
+}
+
+func TestAutoBlockIPs_RateLimitWarningThrottledWithinHour(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	hour := time.Now().Format("2006-01-02T15")
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour: config.DefaultMaxBlocksPerHour,
+		HourKey:        hour,
+	})
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	first := AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 5.6.7.8", Timestamp: time.Now()},
+	})
+	if got := countRateLimitWarnings(first); got != 1 {
+		t.Fatalf("first scan rate-limit warnings = %d, want 1", got)
+	}
+
+	second := AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 9.10.11.12", Timestamp: time.Now()},
+	})
+	if got := countRateLimitWarnings(second); got != 0 {
+		t.Fatalf("second scan within same hour rate-limit warnings = %d, want 0 (throttled)", got)
+	}
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.Pending) != 2 {
+		t.Fatalf("pending after two rate-limited scans = %d, want 2", len(state.Pending))
+	}
+	if state.RateLimitWarnedHour != hour {
+		t.Fatalf("RateLimitWarnedHour = %q, want %q", state.RateLimitWarnedHour, hour)
+	}
+}
+
+func TestAutoBlockIPs_RateLimitWarningReemitsAfterHourRollover(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.MaxBlocksPerHour = 1
+
+	prevHour := time.Now().Add(-2 * time.Hour).Format("2006-01-02T15")
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour:      1,
+		HourKey:             prevHour,
+		RateLimitWarnedHour: prevHour,
+	})
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	// Two attackers in the new hour: the window reset lets the first block,
+	// the second hits the cap of 1 and must re-emit the warning because the
+	// last warning belongs to a prior hour.
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 5.6.7.8", Timestamp: time.Now()},
+		{Check: "xmlrpc_abuse", Message: "XML-RPC abuse from 9.10.11.12: 40 requests", Timestamp: time.Now()},
+	})
+
+	if got := countRateLimitWarnings(actions); got != 1 {
+		t.Fatalf("rate-limit warnings after hour rollover = %d, want 1 (re-emitted)", got)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if state.RateLimitWarnedHour != time.Now().Format("2006-01-02T15") {
+		t.Fatalf("RateLimitWarnedHour = %q, want current hour", state.RateLimitWarnedHour)
+	}
+}
+
+func TestAutoBlockIPs_PendingQueueCappedUnderFlood(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	hour := time.Now().Format("2006-01-02T15")
+	overflow := maxPendingBlocks + 5
+	pending := make([]pendingIP, 0, overflow)
+	for i := 0; i < overflow; i++ {
+		pending = append(pending, pendingIP{
+			IP:     fmt.Sprintf("2001:db8::%x", i),
+			Reason: "queued flood",
+		})
+	}
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour: config.DefaultMaxBlocksPerHour,
+		HourKey:        hour,
+		Pending:        pending,
+	})
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, nil)
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.Pending) != maxPendingBlocks {
+		t.Fatalf("pending queue length = %d, want capped at %d", len(state.Pending), maxPendingBlocks)
+	}
+
+	var warned string
+	for _, a := range actions {
+		if strings.Contains(a.Message, "rate limit reached") {
+			warned = a.Message
+		}
+	}
+	if warned == "" {
+		t.Fatal("expected a rate-limit warning when the queue overflowed")
+	}
+	if !strings.Contains(warned, "dropped") {
+		t.Fatalf("warning %q should report dropped IPs once the queue is capped", warned)
 	}
 }
 

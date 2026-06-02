@@ -20,6 +20,14 @@ import (
 const (
 	defaultBlockExpiry = "24h"
 	blockStateFile     = "blocked_ips.json"
+
+	// maxPendingBlocks bounds the rate-limit overflow queue. Under a
+	// sustained flood the daemon can see more distinct attacker IPs in an
+	// hour than the block cap allows; without a bound the pending queue
+	// grows without limit and bloats blocked_ips.json. Dropped IPs are
+	// re-detected from the same findings on the next scan, so the cap
+	// loses no durable protection.
+	maxPendingBlocks = 1000
 )
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
@@ -105,6 +113,12 @@ type blockState struct {
 	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for rate-limit reset
 	BlocksThisHour int         `json:"blocks_this_hour"`
 	HourKey        string      `json:"hour_key"`
+	// RateLimitWarnedHour is the HourKey for which the rate-limit warning
+	// was already emitted. The warning reflects a steady-state condition,
+	// not a per-IP event, so it fires once per hour window instead of on
+	// every scan tick -- the per-tick emission flooded the audit log with
+	// one identical finding every few seconds during a sustained attack.
+	RateLimitWarnedHour string `json:"rate_limit_warned_hour,omitempty"`
 }
 
 // AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
@@ -289,10 +303,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		maxPerHour = config.DefaultMaxBlocksPerHour
 	}
 	rateLimited := false
+	droppedPending := 0
 	for ip, reason := range ipsToBlock {
 		if state.BlocksThisHour >= maxPerHour {
-			// Queue for next cycle instead of dropping
-			state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: reason})
+			// Queue for next cycle instead of dropping, bounded so a
+			// sustained flood cannot grow the queue without limit.
+			if len(state.Pending) < maxPendingBlocks {
+				state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: reason})
+			} else {
+				droppedPending++
+			}
 			rateLimited = true
 			continue
 		}
@@ -387,11 +407,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	if rateLimited {
+	if rateLimited && state.RateLimitWarnedHour != currentHour {
+		state.RateLimitWarnedHour = currentHour
+		msg := fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending))
+		if droppedPending > 0 {
+			msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
+		}
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "auto_block",
-			Message:   fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending)),
+			Message:   msg,
 			Timestamp: time.Now(),
 		})
 	}
