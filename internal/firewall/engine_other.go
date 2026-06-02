@@ -81,6 +81,7 @@ func (e *Engine) RemoveAllowIP(_ string) error                          { return
 func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error        { return nil }
 func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error { return nil }
 func (e *Engine) IsSubnetBlocked(_ string) bool                         { return false }
+func (e *Engine) BlockedSubnetCovering(_ string) (string, bool)         { return "", false }
 func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
 func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
 func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }

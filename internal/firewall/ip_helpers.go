@@ -5,6 +5,26 @@ import (
 	"os"
 )
 
+// subnetCovering returns the first CIDR in entries that contains ip, if any.
+// Pure helper for BlockedSubnetCovering so the containment logic is testable
+// without a kernel-attached engine.
+func subnetCovering(entries []SubnetEntry, ip string) (string, bool) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		_, network, err := net.ParseCIDR(entry.CIDR)
+		if err != nil {
+			continue
+		}
+		if network.Contains(parsed) {
+			return entry.CIDR, true
+		}
+	}
+	return "", false
+}
+
 // nextIP returns the IP address immediately following the given IP.
 // When ip is the all-ones address for its family, nextIP clamps to ip
 // instead of wrapping to all-zeros. Callers that construct nftables

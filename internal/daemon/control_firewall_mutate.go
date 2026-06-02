@@ -76,7 +76,11 @@ func (c *ControlListener) handleFirewallAllow(argsRaw json.RawMessage) (any, err
 	if err := c.d.fwEngine.AllowIP(args.IP, reason); err != nil {
 		return nil, fmt.Errorf("allow %s: %w", args.IP, err)
 	}
-	return control.FirewallAckResult{Message: fmt.Sprintf("Allowed %s - %s", args.IP, reason)}, nil
+	msg := fmt.Sprintf("Allowed %s - %s", args.IP, reason)
+	if cidr, covered := c.d.fwEngine.BlockedSubnetCovering(args.IP); covered {
+		msg += fmt.Sprintf(" (WARNING: still dropped by blocked subnet %s; unblock the subnet for this allow to take effect)", cidr)
+	}
+	return control.FirewallAckResult{Message: msg}, nil
 }
 
 func (c *ControlListener) handleFirewallRemoveAllow(argsRaw json.RawMessage) (any, error) {

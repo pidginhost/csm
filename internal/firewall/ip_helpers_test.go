@@ -113,3 +113,27 @@ func TestFileExistsFirewallFalse(t *testing.T) {
 		t.Error("missing file should return false")
 	}
 }
+
+// An allow on an IP inside a blocked subnet has no effect because the
+// blocked_nets drop precedes the allowed_ips accept. subnetCovering must
+// report the covering CIDR so callers can warn the operator.
+func TestSubnetCovering(t *testing.T) {
+	entries := []SubnetEntry{
+		{CIDR: "203.0.113.0/24"},
+		{CIDR: "2001:db8::/32"},
+		{CIDR: "not-a-cidr"}, // malformed entries are skipped, not fatal
+	}
+
+	if cidr, ok := subnetCovering(entries, "203.0.113.55"); !ok || cidr != "203.0.113.0/24" {
+		t.Fatalf("covered IPv4: got (%q,%v), want (203.0.113.0/24,true)", cidr, ok)
+	}
+	if cidr, ok := subnetCovering(entries, "2001:db8::1"); !ok || cidr != "2001:db8::/32" {
+		t.Fatalf("covered IPv6: got (%q,%v), want (2001:db8::/32,true)", cidr, ok)
+	}
+	if _, ok := subnetCovering(entries, "198.51.100.7"); ok {
+		t.Fatal("uncovered IP reported as covered")
+	}
+	if _, ok := subnetCovering(entries, "garbage"); ok {
+		t.Fatal("malformed IP reported as covered")
+	}
+}

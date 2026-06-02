@@ -2339,6 +2339,18 @@ func (e *Engine) IsSubnetBlocked(cidr string) bool {
 	return e.isSubnetBlockedStateLocked(network.String())
 }
 
+// BlockedSubnetCovering reports the blocked CIDR (if any) that contains ip.
+// The input-chain drops blocked_nets before the allowed_ips accept, so an
+// allow on an IP inside a blocked subnet has no effect: the subnet drop still
+// fires. Callers surface this so an operator is not told an IP is reachable
+// when a subnet rule still blocks it. The subnet block stays authoritative by
+// design (see subnetSafetyGuardLocked); this only reports, it does not unblock.
+func (e *Engine) BlockedSubnetCovering(ip string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return subnetCovering(e.loadStateFile().BlockedNet, ip)
+}
+
 // UnblockSubnet removes a CIDR range from the blocked subnets set (IPv4 or IPv6).
 func (e *Engine) UnblockSubnet(cidr string) error {
 	e.mu.Lock()

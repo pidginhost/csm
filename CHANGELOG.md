@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Allowing an IP that falls inside a blocked subnet now warns that the address stays blocked until the subnet is unblocked, instead of reporting a success that has no effect.
 - Backup restore now verifies the database snapshot against the hash recorded at backup time before it replaces the live database, so a tampered or corrupted archive is rejected instead of restored.
 - The verified-crawler DNS cache is now bounded. A scan from many unique source IPs could previously grow it without limit between periodic prunes, an external memory-pressure lever.
 - Incident auto-close and retention background loops now stop during shutdown before the state store closes, so they no longer tick against a closed database or leak past daemon exit.
