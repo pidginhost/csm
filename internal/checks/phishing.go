@@ -312,7 +312,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		}
 
 		// --- PHP phishing pages and open redirectors ---
-		if strings.HasSuffix(nameLower, ".php") {
+		if isExecutablePHPName(nameLower) {
 			// Skip known CMS files
 			if isKnownCMSFile(nameLower) {
 				continue

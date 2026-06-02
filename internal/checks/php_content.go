@@ -1160,7 +1160,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 
 			for _, dir := range suspiciousDirs {
-				scan.scanDir(ctx, dir, 4, &findings)
+				scan.scanDir(ctx, dir, 4, phpHandlerOverlay{}, &findings)
 				if ctx.Err() != nil {
 					return findings
 				}
@@ -1185,14 +1185,14 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 // is read and analysed. Used where caching does not apply (no prior cycle to
 // compare against).
 func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg *config.Config, findings *[]alert.Finding) {
-	newPHPContentScan(cfg, nil, true).scanDir(ctx, dir, maxDepth, findings)
+	newPHPContentScan(cfg, nil, true).scanDir(ctx, dir, maxDepth, phpHandlerOverlay{}, findings)
 }
 
 // scanDir recursively scans dir for PHP files with malicious content patterns.
 // A file that was clean last cycle and is unchanged (same mtime+size) skips the
 // read+parse, unless this is a forced full rescan. Files that produce a finding
 // are never cached, so they re-surface on every cycle for the alert pipeline.
-func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, findings *[]alert.Finding) {
+func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, overlay phpHandlerOverlay, findings *[]alert.Finding) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -1202,6 +1202,15 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
+	}
+
+	// Layer this directory's .htaccess PHP handler remappings onto the set
+	// inherited from parent directories. An attacker who maps a non-PHP
+	// extension to the PHP interpreter (the LEVIATHAN .htaccess trick) or who
+	// SetHandlers the whole directory must not be able to hide executable PHP
+	// behind a name the stock handler would not run. Read once per directory.
+	if htaccess, herr := osFS.ReadFile(filepath.Join(dir, ".htaccess")); herr == nil {
+		overlay = overlay.mergeHtaccess(htaccess)
 	}
 
 	for _, entry := range entries {
@@ -1224,12 +1233,12 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 		}
 
 		if entry.IsDir() {
-			s.scanDir(ctx, fullPath, maxDepth-1, findings)
+			s.scanDir(ctx, fullPath, maxDepth-1, overlay, findings)
 			continue
 		}
 
 		nameLower := strings.ToLower(name)
-		if !strings.HasSuffix(nameLower, ".php") {
+		if !overlay.executes(nameLower) {
 			continue
 		}
 

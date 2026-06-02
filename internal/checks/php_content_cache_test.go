@@ -50,7 +50,7 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 	if len(f1) != 0 {
 		t.Fatalf("benign file should produce no finding, got %d", len(f1))
 	}
@@ -62,7 +62,7 @@ func TestPHPContentCacheSkipsUnchangedCleanFile(t *testing.T) {
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if len(f2) != 0 {
 		t.Fatalf("cache hit should skip re-analysis, got %d findings", len(f2))
 	}
@@ -77,13 +77,13 @@ func TestPHPContentCacheReanalyzesOnMtimeChange(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 
 	// Same size, newer mtime -> cache miss -> must re-analyze and detect.
 	writePHPFixture(t, path, phpCacheMalicious, mtime.Add(100*time.Second))
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if len(f2) == 0 {
 		t.Fatal("mtime change must trigger re-analysis and detect the webshell")
 	}
@@ -98,13 +98,13 @@ func TestPHPContentCacheReanalyzesOnSizeChange(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 
 	// Different size, same mtime -> cache miss -> must re-analyze.
 	writePHPFixture(t, path, phpCacheMalicious+" extra bytes change size", mtime)
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if len(f2) == 0 {
 		t.Fatal("size change must trigger re-analysis and detect the webshell")
 	}
@@ -119,7 +119,7 @@ func TestPHPContentCacheForceFullRescanIgnoresCache(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 
 	// Malicious swap with identical mtime+size would normally be skipped, but
 	// a forced full rescan ignores the cache and catches the mtime-reset
@@ -127,7 +127,7 @@ func TestPHPContentCacheForceFullRescanIgnoresCache(t *testing.T) {
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
 	s2 := newPHPContentScan(cfg, s1.next, true)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if len(f2) == 0 {
 		t.Fatal("forced full rescan must ignore cache and detect the webshell")
 	}
@@ -161,7 +161,7 @@ func TestPHPContentCacheDirtyFileAlwaysSurfaces(t *testing.T) {
 	writePHPFixture(t, path, phpCacheMalicious, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 	if len(f1) == 0 {
 		t.Fatal("malicious file must be detected on first scan")
 	}
@@ -173,7 +173,7 @@ func TestPHPContentCacheDirtyFileAlwaysSurfaces(t *testing.T) {
 	// findings drive the alert pipeline every cycle; only clean files skip.
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if len(f2) == 0 {
 		t.Fatal("unchanged malicious file must still surface on subsequent scans")
 	}
@@ -208,7 +208,7 @@ func TestPHPContentCacheDoesNotCarryUnreadableCacheHit(t *testing.T) {
 
 	s := newPHPContentScan(&config.Config{}, phpContentCache{path: stamp}, false)
 	var findings []alert.Finding
-	s.scanDir(context.Background(), dir, 4, &findings)
+	s.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &findings)
 	if _, ok := s.next[path]; ok {
 		t.Fatal("unreadable cache hit must not be carried forward as clean")
 	}
@@ -223,7 +223,7 @@ func TestPHPContentCacheRecordsEmptyReadableFile(t *testing.T) {
 	writePHPFixture(t, path, "", mtime)
 	s := newPHPContentScan(cfg, nil, false)
 	var findings []alert.Finding
-	s.scanDir(context.Background(), dir, 4, &findings)
+	s.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &findings)
 	if len(findings) != 0 {
 		t.Fatalf("empty readable file should produce no finding, got %d", len(findings))
 	}
@@ -241,7 +241,7 @@ func TestPHPContentCachePrunesDeletedFiles(t *testing.T) {
 	writePHPFixture(t, path, phpCacheBenign, mtime)
 	s1 := newPHPContentScan(cfg, nil, false)
 	var f1 []alert.Finding
-	s1.scanDir(context.Background(), dir, 4, &f1)
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
 	if _, ok := s1.next[path]; !ok {
 		t.Fatal("clean file should be recorded in cache")
 	}
@@ -251,7 +251,7 @@ func TestPHPContentCachePrunesDeletedFiles(t *testing.T) {
 	}
 	s2 := newPHPContentScan(cfg, s1.next, false)
 	var f2 []alert.Finding
-	s2.scanDir(context.Background(), dir, 4, &f2)
+	s2.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f2)
 	if _, ok := s2.next[path]; ok {
 		t.Fatal("deleted file must be pruned from the next cache")
 	}

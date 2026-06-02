@@ -148,7 +148,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		check := ""
 		message := ""
 
-		if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(nameLower, ".php") {
+		if strings.Contains(path, "/wp-content/uploads/") && isExecutablePHPName(nameLower) {
 			// Content decides, never the path or name. A negative
 			// severity is a content-verified inert stub (e.g. the
 			// WordPress "silence is golden" index.php, or BackWPup's
@@ -184,7 +184,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			message = fmt.Sprintf("New file with webshell name: %s", path)
 		}
 
-		if strings.HasSuffix(nameLower, ".php") && isSuspiciousPHPName(nameLower) {
+		if isExecutablePHPName(nameLower) && isSuspiciousPHPName(nameLower) {
 			if severity < 0 {
 				severity = alert.High
 				check = "new_suspicious_php"
@@ -225,7 +225,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 // visibility signal, not an attack. Mirrors the realtime path at fanotify.go.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
 	nameLower := strings.ToLower(name)
-	if !strings.HasSuffix(nameLower, ".php") {
+	if !isExecutablePHPName(nameLower) {
 		return -1, "", ""
 	}
 	isLanguages := strings.Contains(path, "/wp-content/languages/")
@@ -375,14 +375,13 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 		}
 
 		nameLower := strings.ToLower(name)
-		if strings.HasSuffix(nameLower, ".php") {
-			// index.php is indexed too: a webshell named index.php must
-			// not hide behind the WordPress silence-stub convention. The
-			// inert stub itself is suppressed later by content analysis.
-			*entries = append(*entries, fullPath)
-		}
-		ext := filepath.Ext(nameLower)
-		if suspiciousExtensions[ext] {
+		// index.php is indexed too: a webshell named index.php must not hide
+		// behind the WordPress silence-stub convention. The inert stub itself
+		// is suppressed later by content analysis. All PHP-executable
+		// extensions are indexed, not just .php, so a .phtml/.php7 backdoor
+		// cannot dodge the index by extension. The two predicates overlap
+		// (the PHP family is also "suspicious"), so index each file once.
+		if isExecutablePHPName(nameLower) || suspiciousExtensions[filepath.Ext(nameLower)] {
 			*entries = append(*entries, fullPath)
 		}
 	}

@@ -315,8 +315,8 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 			})
 		}
 
-		// File permission anomalies - only check PHP files to keep it fast
-		if strings.HasSuffix(nameLower, ".php") {
+		// File permission anomalies - only check PHP-executable files to keep it fast
+		if isExecutablePHPName(nameLower) {
 			info, err := entry.Info()
 			if err == nil {
 				mode := info.Mode()

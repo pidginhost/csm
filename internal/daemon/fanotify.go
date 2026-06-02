@@ -1908,10 +1908,9 @@ func containsFunc(content, funcCall string) bool {
 }
 
 func isPHPExtension(nameLower string) bool {
-	return strings.HasSuffix(nameLower, ".php") ||
-		strings.HasSuffix(nameLower, ".phtml") ||
-		strings.HasSuffix(nameLower, ".pht") ||
-		strings.HasSuffix(nameLower, ".php5")
+	// Single source of truth shared with the periodic content scanners so the
+	// realtime and batch paths never drift on which extensions execute PHP.
+	return checks.IsExecutablePHPName(nameLower)
 }
 
 func isCGIExtension(nameLower string) bool {

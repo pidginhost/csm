@@ -322,7 +322,7 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 			continue
 		}
 
-		if !strings.HasSuffix(strings.ToLower(name), ".php") {
+		if !isExecutablePHPName(strings.ToLower(name)) {
 			continue
 		}
 
