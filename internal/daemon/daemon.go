@@ -901,13 +901,9 @@ func (d *Daemon) Run() error {
 	csmlog.Info("shutting down")
 	close(d.stopCh)
 
-	// Stop all watchers
-	d.logWatchersMu.Lock()
-	watchers := d.logWatchers
-	d.logWatchersMu.Unlock()
-	for _, w := range watchers {
-		w.Stop()
-	}
+	// Log watchers own their files and close them when their Run loop exits on
+	// d.stopCh; d.wg.Wait below blocks until that happens. Calling Stop here
+	// would race the still-running Run on w.file.
 	if d.webServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = d.webServer.Shutdown(ctx)

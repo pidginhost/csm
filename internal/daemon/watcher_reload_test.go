@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -120,5 +121,41 @@ func TestDaemonMailLogDispatchUsesActiveConfig(t *testing.T) {
 	}
 	if seen != active {
 		t.Fatalf("mail log handler received startup config, want active config")
+	}
+}
+
+// Run owns the watcher's file and must close it when its loop exits on
+// stopCh. Previously the file was closed by a separate Stop() call from the
+// shutdown goroutine, which raced readNewLines/reopen on w.file. With Run
+// owning the close, no concurrent close happens and -race stays clean.
+func TestLogWatcherRunClosesFileOnStop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tail.log")
+	if err := os.WriteFile(path, []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewLogWatcher(path, &config.Config{}, func(string, *config.Config) []alert.Finding { return nil }, make(chan alert.Finding, 8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := w.file
+
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		w.Run(stopCh)
+		close(done)
+	}()
+
+	close(stopCh)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return on stopCh")
+	}
+
+	if _, err := f.Stat(); err == nil {
+		t.Fatal("Run must close the watcher file on exit, but it is still open")
 	}
 }

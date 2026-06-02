@@ -29,12 +29,13 @@ type LogLineHandler func(line string, cfg *config.Config) []alert.Finding
 
 // LogWatcher tails a log file using inotify and processes new lines.
 type LogWatcher struct {
-	path    string
-	cfg     *config.Config
-	handler LogLineHandler
-	alertCh chan<- alert.Finding
-	file    *os.File
-	offset  int64
+	path      string
+	cfg       *config.Config
+	handler   LogLineHandler
+	alertCh   chan<- alert.Finding
+	file      *os.File
+	offset    int64
+	closeOnce sync.Once
 }
 
 // NewLogWatcher creates a watcher for a log file.
@@ -76,6 +77,12 @@ func (w *LogWatcher) currentCfg() *config.Config {
 // Run starts watching the log file. Uses polling (every 2 seconds) instead of
 // inotify to avoid complexity with log rotation. Simple, reliable, low overhead.
 func (w *LogWatcher) Run(stopCh <-chan struct{}) {
+	// Run owns the file for its lifetime. Closing it here, rather than from a
+	// separate shutdown goroutine, keeps w.file single-threaded: a concurrent
+	// Stop() close used to race readNewLines/reopen, and the freed fd could be
+	// reused by another goroutine mid-Stat/Read.
+	defer w.closeFile()
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -95,11 +102,20 @@ func (w *LogWatcher) Run(stopCh <-chan struct{}) {
 	}
 }
 
-// Stop closes the watcher.
+// Stop closes the watcher's file. Safe to call when Run was never started
+// (unit tests open a watcher just to drive readNewLines directly). When Run is
+// active it closes the file itself on stopCh, so the daemon must not call Stop
+// concurrently with a running Run.
 func (w *LogWatcher) Stop() {
-	if w.file != nil {
-		_ = w.file.Close()
-	}
+	w.closeFile()
+}
+
+func (w *LogWatcher) closeFile() {
+	w.closeOnce.Do(func() {
+		if w.file != nil {
+			_ = w.file.Close()
+		}
+	})
 }
 
 func (w *LogWatcher) readNewLines() {
