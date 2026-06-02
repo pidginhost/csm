@@ -31,7 +31,10 @@ func SetASNLookup(fn func(ip string) (asn uint, org string)) {
 	asnLookup.Store(&asnLookupHolder{fn: fn})
 }
 
-func currentASNLookup() asnLookupFunc {
+// CurrentASNLookup returns the wired ASN resolver, or nil when none is set.
+// Both the polling connection scan and the live BPF connection evaluator
+// use it so bad-ASN classification behaves identically on either path.
+func CurrentASNLookup() func(ip string) (asn uint, org string) {
 	h := asnLookup.Load()
 	if h == nil {
 		return nil

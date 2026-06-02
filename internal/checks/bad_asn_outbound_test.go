@@ -102,6 +102,29 @@ func TestScanProcNetTCPFlagsBadASNOutbound(t *testing.T) {
 	}
 }
 
+// procNetTCPRootBadASNRow is an ESTABLISHED outbound row owned by root
+// (uid 0) -- a post-exploit root process exfiltrating to a bad ASN.
+const procNetTCPRootBadASNRow = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C350 387100CB:115C 01 00000000:00000000 00:00000000 00000000     0        0 33333 1 0000000000000000
+`
+
+func TestScanProcNetTCPFlagsRootBadASNOutbound(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Detection.BadASNOutbound.Enabled = true
+	cfg.Detection.BadASNOutbound.BlockedASNs = []uint{64500}
+	SetASNLookup(func(string) (uint, string) { return 64500, "Bulletproof LLC" })
+	defer SetASNLookup(nil)
+
+	findings := scanProcNetTCP(cfg, []byte(procNetTCPRootBadASNRow), false)
+	if !hasCheck(findings, "bad_asn_outbound") {
+		t.Fatalf("root egress to a bad ASN must be flagged; got %+v", findings)
+	}
+	// The root row must NOT raise the non-root user_outbound finding.
+	if hasCheck(findings, "user_outbound_connection") {
+		t.Fatalf("root row must not raise user_outbound_connection")
+	}
+}
+
 func TestScanProcNetTCPGoodASNNotFlagged(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Detection.BadASNOutbound.Enabled = true

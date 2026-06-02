@@ -146,7 +146,7 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 
 		uidStr := fields[7]
 		uidU64, err := strconv.ParseUint(uidStr, 10, 32)
-		if err != nil || uidU64 == 0 {
+		if err != nil {
 			continue
 		}
 		uidU32 := uint32(uidU64)
@@ -176,18 +176,28 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 			continue
 		}
 
-		user := LookupUser(uidU32)
-		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
-		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
-			f.Timestamp = time.Now()
-			findings = append(findings, f)
-		}
-		if lookup := currentASNLookup(); lookup != nil && cfg.Detection.BadASNOutbound.Enabled {
+		// Bad-ASN egress is classified for every UID, root included: a
+		// post-exploit root process exfiltrating to a bad ASN is the
+		// host-takeover signal. The live BPF tracker drops root events for
+		// flood control, so this periodic scan is where root egress is seen.
+		// The non-root detectors below intentionally skip root.
+		if lookup := CurrentASNLookup(); lookup != nil && cfg.Detection.BadASNOutbound.Enabled {
 			asn, org := lookup(dstIP.String())
 			if f, ok := EvaluateBadASNOutbound(cfg, dstIP, asn, org); ok {
 				f.Timestamp = time.Now()
 				findings = append(findings, f)
 			}
+		}
+
+		if uidU64 == 0 {
+			continue
+		}
+
+		user := LookupUser(uidU32)
+		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
+		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
+			f.Timestamp = time.Now()
+			findings = append(findings, f)
 		}
 		if directSMTPEnabled {
 			// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
