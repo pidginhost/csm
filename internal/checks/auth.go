@@ -390,8 +390,8 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 }
 
 const (
-	whmAPITokensStateKey = "_whm_api_tokens_state"
-	whmAPITokensHashKey  = "_whm_api_tokens_hash"
+	whmAPITokensStateKey = "_whm_api_tokens_state" // #nosec G101 -- bbolt state-store key name, not a credential
+	whmAPITokensHashKey  = "_whm_api_tokens_hash"  // #nosec G101 -- bbolt state-store key name, not a credential
 )
 
 func checkWHMRootAPITokens(store *state.Store) (alert.Finding, bool) {
