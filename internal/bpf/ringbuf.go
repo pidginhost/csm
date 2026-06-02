@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf"
@@ -13,6 +14,13 @@ import (
 
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
+
+// ringReader is the subset of *ringbuf.Reader that Reader depends on. It exists
+// so the close/shutdown logic can be exercised without a privileged BPF map.
+type ringReader interface {
+	Read() (ringbuf.Record, error)
+	Close() error
+}
 
 // Reader wraps cilium/ebpf's ringbuf.Reader with a per-feature decoder
 // callback and a typed Go channel. Each BPF feature defines its own event
@@ -22,11 +30,13 @@ import (
 // The decoder runs on the reader goroutine; keep it allocation-light. Slow
 // userspace work (allocating findings, IO) belongs in the consumer.
 type Reader[T any] struct {
-	rb      *ringbuf.Reader
-	decode  func([]byte) (T, error)
-	out     chan T
-	count   atomic.Uint64
-	dropped atomic.Uint64
+	rb        ringReader
+	decode    func([]byte) (T, error)
+	out       chan T
+	count     atomic.Uint64
+	dropped   atomic.Uint64
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewReader takes a ringbuf-typed BPF map and a decoder. The map must have
@@ -65,9 +75,19 @@ func (r *Reader[T]) DroppedCount() uint64 { return r.dropped.Load() }
 // malformed record).
 func (r *Reader[T]) Run(ctx context.Context) {
 	defer close(r.out)
+	// Closing the reader is what unblocks the Read() below on shutdown. Both
+	// this ctx watcher and an external Close() funnel through closeReader, which
+	// runs exactly once, so the underlying ringbuf reader is never closed twice
+	// (which would race cilium's reader teardown). The watcher exits when Run
+	// returns -- via done -- so an external Close() does not leak it.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		_ = r.rb.Close()
+		select {
+		case <-ctx.Done():
+			_ = r.closeReader()
+		case <-done:
+		}
 	}()
 	for {
 		rec, err := r.rb.Read()
@@ -96,4 +116,11 @@ func (r *Reader[T]) Run(ctx context.Context) {
 }
 
 // Close releases the underlying reader. Run will return with ringbuf.ErrClosed.
-func (r *Reader[T]) Close() error { return r.rb.Close() }
+// Idempotent and safe to call concurrently with Run's own ctx-driven close.
+func (r *Reader[T]) Close() error { return r.closeReader() }
+
+// closeReader closes the underlying ringbuf reader exactly once.
+func (r *Reader[T]) closeReader() error {
+	r.closeOnce.Do(func() { r.closeErr = r.rb.Close() })
+	return r.closeErr
+}
