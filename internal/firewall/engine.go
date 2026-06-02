@@ -1466,15 +1466,13 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 		return nil
 	}
 
-	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
-	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
-		return fmt.Errorf("adding to blocked set: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
-	}
-
-	// Persist - zero ExpiresAt means permanent
+	// Persist to state BEFORE adding the kernel element. state.json is the
+	// seed source on the next Apply, so a crash after this point but before the
+	// kernel add leaves a durable record that Apply re-applies. The previous
+	// ordering (kernel first, then state) left a window where a process kill
+	// produced a permanent kernel block with no state row: it never expired
+	// (timeout 0) yet a later state-seeded Apply would silently drop it.
+	// Zero ExpiresAt means permanent.
 	entry := BlockedEntry{
 		IP:        ip,
 		Reason:    reason,
@@ -1485,18 +1483,17 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 		entry.ExpiresAt = time.Now().Add(timeout)
 	}
 	if err := e.saveBlockedEntry(entry); err != nil {
-		// The block is live in nft but did not persist. Roll the kernel
-		// element back so state.json (the seed source on the next Apply)
-		// and the live ruleset cannot diverge: a non-durable block would
-		// silently vanish on the next daemon restart. The caller re-fires
-		// the finding on the next cycle.
-		if rollbackErr := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); rollbackErr != nil {
-			return fmt.Errorf("persisting block for %s: %w (rollback queue failed: %v)", ip, err, rollbackErr)
-		}
-		if rollbackErr := e.conn.Flush(); rollbackErr != nil {
-			return fmt.Errorf("persisting block for %s: %w (rollback flush failed: %v)", ip, err, rollbackErr)
-		}
 		return fmt.Errorf("persisting block for %s: %w", ip, err)
+	}
+
+	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
+	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
+		e.removeBlockedState(ip)
+		return fmt.Errorf("adding to blocked set: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		e.removeBlockedState(ip)
+		return fmt.Errorf("flushing: %w", err)
 	}
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 

@@ -285,8 +285,8 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		ips = append(ips, e.ip)
 	}
 
-	// Message format: autoblock's extractIPFromFinding takes the IP after
-	// the last " from " token — we put the most recent source IP there.
+	// The block source is carried in the structured SourceIP field below; the
+	// IP is included in the message only for operator-facing readability.
 	message := fmt.Sprintf(
 		"Email account %s sent %d authenticated messages from %d cloud-provider IPs in %d minutes - credentials compromised - from %s",
 		user, len(w.events), len(distinctIPs), int(cloudRelayWindow_.Minutes()), ips[0],
