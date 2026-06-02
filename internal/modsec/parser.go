@@ -87,6 +87,13 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 	// Phase 1: Read lines, joining backslash continuations into logical lines.
 	var logicalLines []string
 	var current strings.Builder
+	appendCurrent := func(part string) error {
+		if current.Len()+len(part) > maxModsecLineBytes {
+			return fmt.Errorf("logical modsec line exceeds %d bytes", maxModsecLineBytes)
+		}
+		current.WriteString(part)
+		return nil
+	}
 	scanner := bufio.NewScanner(f)
 	// Vendor packs (OWASP CRS, Comodo, Imunify360, cPanel modsec_assemble)
 	// ship assembled/minified directives that can exceed the default 64 KB
@@ -100,12 +107,18 @@ func ParseRulesFileAll(path string) ([]Rule, error) {
 		trimmed := strings.TrimSpace(raw)
 
 		if strings.HasSuffix(trimmed, "\\") {
-			// Continuation: strip trailing \ and keep accumulating
-			current.WriteString(strings.TrimSuffix(trimmed, "\\"))
-			current.WriteString(" ")
+			// Continuation: strip trailing \ and keep accumulating.
+			if err := appendCurrent(strings.TrimSuffix(trimmed, "\\")); err != nil {
+				return nil, err
+			}
+			if err := appendCurrent(" "); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		current.WriteString(trimmed)
+		if err := appendCurrent(trimmed); err != nil {
+			return nil, err
+		}
 		logicalLines = append(logicalLines, current.String())
 		current.Reset()
 	}

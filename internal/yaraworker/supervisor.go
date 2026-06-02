@@ -133,8 +133,16 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return err
 	}
 
-	s.running.Store(true)
+	s.mu.Lock()
+	stopped := s.stopped
+	if !stopped {
+		s.running.Store(true)
+	}
+	s.mu.Unlock()
 	obs.Go("yara-supervisor", s.supervise)
+	if stopped {
+		return errors.New("yaraworker: supervisor already stopped")
+	}
 	return nil
 }
 
@@ -278,10 +286,11 @@ func (s *Supervisor) ChildPID() int {
 //
 // No-op when the supervisor is stopped or has no running child.
 func (s *Supervisor) RestartWorker() error {
+	s.mu.Lock()
 	if s.stopped {
+		s.mu.Unlock()
 		return errors.New("yaraworker: supervisor is stopped")
 	}
-	s.mu.Lock()
 	cmd := s.cmd
 	s.mu.Unlock()
 	if cmd == nil || cmd.Process == nil {
@@ -376,6 +385,10 @@ func (s *Supervisor) spawnAndWaitReady() error {
 	}
 	s.mu.Unlock()
 
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+
 	// Unlink stale socket here too, even though the worker also does
 	// it: the worker may fail before reaching its own unlink, leaving
 	// a stale file that blocks dial attempts during a failed start.
@@ -425,6 +438,9 @@ func (s *Supervisor) spawnAndWaitReady() error {
 func (s *Supervisor) waitForReady(client *yaraipc.Client) error {
 	deadline := time.Now().Add(s.cfg.StartTimeout)
 	for time.Now().Before(deadline) {
+		if err := s.ctx.Err(); err != nil {
+			return err
+		}
 		if info, err := os.Stat(s.cfg.SocketPath); err == nil && info.Mode()&os.ModeSocket != 0 {
 			if _, err := client.Ping(); err == nil {
 				return nil

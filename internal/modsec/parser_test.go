@@ -3,6 +3,7 @@ package modsec
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -416,5 +417,24 @@ func TestParseRulesFileAll_LongMinifiedLineParses(t *testing.T) {
 	}
 	if findRule(rules, 949110) == nil {
 		t.Fatal("rule on >64 KB line was dropped (scanner truncated the file)")
+	}
+}
+
+func TestParseRulesFileAll_ContinuationLineLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "too-big.conf")
+
+	half := strings.Repeat("a", maxModsecLineBytes/2)
+	rule := `SecRule REQUEST_URI "@rx ` + half + `\` + "\n" +
+		half + `\` + "\n" +
+		`a" "id:949111,phase:2,deny,status:403,msg:'too big'"` + "\n"
+	if err := os.WriteFile(path, []byte(rule), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ParseRulesFileAll(path); err == nil {
+		t.Fatal("expected continuation-heavy logical line to be rejected")
+	} else if !strings.Contains(err.Error(), "logical modsec line exceeds") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -260,6 +260,65 @@ func TestSupervisorScansShortCircuitAfterStop(t *testing.T) {
 	}
 }
 
+func TestSupervisorStopDuringStartDoesNotDeadlock(t *testing.T) {
+	sock := shortSockPath(t)
+	cfg := SupervisorConfig{
+		BinaryPath:   os.Args[0],
+		SocketPath:   sock,
+		StartTimeout: 5 * time.Second,
+		Env:          helperEnv("sleep-forever"),
+	}
+	sup, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- sup.Start(context.Background())
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sup.mu.Lock()
+		ready := sup.done != nil && sup.cancel != nil
+		sup.mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Start did not initialize supervisor state")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- sup.Stop()
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop deadlocked while Start was still waiting for readiness")
+	}
+
+	select {
+	case err := <-startDone:
+		if err == nil {
+			t.Fatal("Start succeeded after Stop cancelled startup")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after Stop cancelled startup")
+	}
+	if sup.running.Load() {
+		t.Fatal("supervisor reports running after Stop during startup")
+	}
+}
+
 func TestSupervisorRestartsOnCrash(t *testing.T) {
 	sock := shortSockPath(t)
 	var restarts atomic.Int32

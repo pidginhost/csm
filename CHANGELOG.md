@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ModSecurity parsing now rejects pathological continuation-heavy rule files before they can consume excessive memory.
+- The YARA scan worker now handles shutdown during startup without leaving the supervisor stuck waiting for readiness.
 - The attack database no longer leaks memory tracking removed addresses on hosts that use the flat-file store, and it now reports a failed save instead of silently swallowing it.
 - The GeoIP RDAP lookup cache is now hard-bounded even when every entry is recent, so a burst of distinct lookups can no longer grow it past its cap.
 - `csm rehash` now exits non-zero when it fails to update the integrity hashes, so a scripted rehash-then-restart no longer proceeds on a stale hash and takes the daemon down.
