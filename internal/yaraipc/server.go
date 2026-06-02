@@ -142,7 +142,7 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 			}
 			return
 		}
-		resp := dispatch(req, h)
+		resp := safeDispatch(req, h, opts)
 		if err := WriteFrame(conn, resp); err != nil {
 			if opts.ErrorLog != nil {
 				opts.ErrorLog(fmt.Errorf("write: %w", err))
@@ -151,6 +151,23 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 		}
 		served++
 	}
+}
+
+// safeDispatch runs dispatch and converts a handler panic into an error
+// response frame. Without it a panic (malformed rules, a pathological scan
+// input, a bad arg) would unwind serveConn with no frame written: the client
+// blocks to its deadline, retries, and panics again, while the worker process
+// stays up so the supervisor never restarts it -- that scan never completes.
+func safeDispatch(req Frame, h Handler, opts ServeOptions) (resp Frame) {
+	defer func() {
+		if r := recover(); r != nil {
+			if opts.ErrorLog != nil {
+				opts.ErrorLog(fmt.Errorf("handler panic on op %q: %v", req.Op, r))
+			}
+			resp = Frame{Error: fmt.Sprintf("handler panic: %v", r)}
+		}
+	}()
+	return dispatch(req, h)
 }
 
 func dispatch(req Frame, h Handler) Frame {

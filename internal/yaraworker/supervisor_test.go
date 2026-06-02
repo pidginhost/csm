@@ -224,6 +224,42 @@ func TestSupervisorStartsAndStops(t *testing.T) {
 	}
 }
 
+// After Stop, the supervisor must report not-running so ScanFile/ScanBytes
+// short-circuit instead of redialing the closed worker socket on every call.
+func TestSupervisorScansShortCircuitAfterStop(t *testing.T) {
+	sock := shortSockPath(t)
+	cfg := SupervisorConfig{
+		BinaryPath:         os.Args[0],
+		SocketPath:         sock,
+		StartTimeout:       3 * time.Second,
+		MinRestartInterval: 50 * time.Millisecond,
+		MaxRestartInterval: 500 * time.Millisecond,
+		StableDuration:     50 * time.Millisecond,
+		ClientTimeout:      2 * time.Second,
+		Env:                helperEnv("normal", "YARAWORKER_RULE_COUNT=3"),
+	}
+	sup, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := sup.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if sup.running.Load() {
+		t.Fatal("supervisor still reports running after Stop")
+	}
+	if got := sup.ScanBytes([]byte("payload")); got != nil {
+		t.Fatalf("ScanBytes after Stop should return nil, got %v", got)
+	}
+	if got := sup.ScanFile("/tmp/x.php", 4096); got != nil {
+		t.Fatalf("ScanFile after Stop should return nil, got %v", got)
+	}
+}
+
 func TestSupervisorRestartsOnCrash(t *testing.T) {
 	sock := shortSockPath(t)
 	var restarts atomic.Int32

@@ -372,3 +372,30 @@ func TestServerRejectsUnknownOp(t *testing.T) {
 		t.Errorf("error should mention unknown op: %q", resp.Error)
 	}
 }
+
+// panicHandler panics on ScanBytes to model a handler crash (pathological
+// rules, bad scan input). The server must convert the panic into an error
+// frame so the client gets a real error instead of a closed connection that
+// it retries into the same panic forever.
+type panicHandler struct{ fakeHandler }
+
+func (p *panicHandler) ScanBytes(ScanBytesArgs) (ScanResult, error) {
+	panic("boom in scan")
+}
+
+func TestServerRecoversHandlerPanic(t *testing.T) {
+	h := &panicHandler{}
+	socketPath, stop := startServer(t, h)
+	defer stop()
+
+	c := NewClient(socketPath, 2*time.Second)
+	defer func() { _ = c.Close() }()
+
+	_, err := c.ScanBytes(ScanBytesArgs{Data: []byte("payload")})
+	if err == nil {
+		t.Fatal("expected an error from a panicking handler")
+	}
+	if !strings.Contains(err.Error(), "handler panic") {
+		t.Fatalf("want a handler-panic error frame, got %v", err)
+	}
+}
