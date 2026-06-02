@@ -330,13 +330,8 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	var findings []alert.Finding
 
 	// WHM root API tokens
-	if out, err := runCmd("whmapi1", "api_token_list", "--output=json"); err == nil {
-		if cur, ok := parseWHMTokenSig(out); ok {
-			if f, fire := diffWHMTokens(store, cur); fire {
-				findings = append(findings, f)
-			}
-			store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
-		}
+	if f, fire := checkWHMRootAPITokens(store); fire {
+		findings = append(findings, f)
 	}
 
 	// User API tokens - read directly from disk instead of spawning uapi per user.
@@ -393,11 +388,59 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	return findings
 }
 
-const whmAPITokensStateKey = "_whm_api_tokens_state"
+const (
+	whmAPITokensStateKey = "_whm_api_tokens_state"
+	whmAPITokensHashKey  = "_whm_api_tokens_hash"
+)
 
-// tokenSig maps each WHM root API token name to whether it carries the
-// full-access "all" ACL. It is the unit compared between scans.
-type tokenSig map[string]bool
+func checkWHMRootAPITokens(store *state.Store) (alert.Finding, bool) {
+	out, err := runCmd("whmapi1", "api_token_list", "--output=json")
+	if err == nil {
+		if cur, ok := parseWHMTokenSig(out); ok {
+			_, hadStructuredState := store.GetRaw(whmAPITokensStateKey)
+			finding, fire := diffWHMTokens(store, cur)
+			if !hadStructuredState {
+				if _, hadLegacyState := store.GetRaw(whmAPITokensHashKey); hadLegacyState {
+					if legacyFinding, legacyFire := checkWHMRootAPITokensLegacyHash(store); legacyFire {
+						finding, fire = legacyFinding, true
+					}
+				}
+			}
+			store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
+			return finding, fire
+		}
+	}
+	return checkWHMRootAPITokensLegacyHash(store)
+}
+
+func checkWHMRootAPITokensLegacyHash(store *state.Store) (alert.Finding, bool) {
+	out, err := runCmd("whmapi1", "api_token_list")
+	if err != nil {
+		return alert.Finding{}, false
+	}
+
+	hash := hashBytes(out)
+	prev, exists := store.GetRaw(whmAPITokensHashKey)
+	store.SetRaw(whmAPITokensHashKey, hash)
+	if exists && prev != hash {
+		return alert.Finding{
+			Severity: alert.Critical,
+			Check:    "api_tokens",
+			Message:  "WHM root API tokens changed",
+			Details:  "Run 'whmapi1 api_token_list' to review",
+		}, true
+	}
+	return alert.Finding{}, false
+}
+
+// tokenSig maps each WHM root API token name to the security traits compared
+// between scans.
+type tokenSig map[string]tokenInfo
+
+type tokenInfo struct {
+	FullAccess     bool `json:"full_access"`
+	ClusterManaged bool `json:"cluster_managed"`
+}
 
 // isClusterManagedToken reports whether cPanel owns the token's lifecycle.
 // DNS clustering creates, rotates, and deletes these on its own:
@@ -405,15 +448,25 @@ type tokenSig map[string]bool
 //   - <host>-trust (e.g. ns2-trust): local end of a trust relationship
 //
 // Their churn is routine and must not page like an attacker-created token.
-func isClusterManagedToken(name string) bool {
-	return strings.HasPrefix(name, "reverse_trust_") || strings.HasSuffix(name, "-trust")
+func isClusterManagedToken(info tokenInfo) bool {
+	return info.ClusterManaged && !info.FullAccess
+}
+
+func isClusterManagedTokenAddition(name string, info tokenInfo) bool {
+	return strings.HasPrefix(name, "reverse_trust_") && isClusterManagedToken(info)
+}
+
+func clusterManagedFromACLs(name string, acls map[string]bool) bool {
+	if strings.HasPrefix(name, "reverse_trust_") {
+		return true
+	}
+	return strings.HasSuffix(name, "-trust") && acls["clustering"]
 }
 
 // parseWHMTokenSig decodes `whmapi1 api_token_list --output=json` into a
-// tokenSig. A token whose value is not a JSON object (or whose ACLs cannot be
-// read) is recorded with all=false rather than dropped, so an unparsable entry
-// never hides a token's presence. ok is false only when the top-level envelope
-// has no tokens map at all, in which case the caller leaves prior state intact.
+// tokenSig. A token whose value is not a JSON object or whose ACLs cannot be
+// read is kept with FullAccess=false, so an unparsable entry never hides a
+// token's presence. ok=false means the caller should use the legacy hash path.
 func parseWHMTokenSig(out []byte) (tokenSig, bool) {
 	var env struct {
 		Data struct {
@@ -426,12 +479,44 @@ func parseWHMTokenSig(out []byte) (tokenSig, bool) {
 	sig := make(tokenSig, len(env.Data.Tokens))
 	for name, raw := range env.Data.Tokens {
 		var t struct {
-			ACLs map[string]json.Number `json:"acls"`
+			ACLs map[string]json.RawMessage `json:"acls"`
 		}
 		_ = json.Unmarshal(raw, &t)
-		sig[name] = t.ACLs["all"].String() == "1"
+		acls := decodeWHMTokenACLs(t.ACLs)
+		sig[name] = tokenInfo{
+			FullAccess:     acls["all"],
+			ClusterManaged: clusterManagedFromACLs(name, acls),
+		}
 	}
 	return sig, true
+}
+
+func decodeWHMTokenACLs(raw map[string]json.RawMessage) map[string]bool {
+	acls := make(map[string]bool, len(raw))
+	for name, value := range raw {
+		acls[name] = decodeWHMTokenACL(value)
+	}
+	return acls
+}
+
+func decodeWHMTokenACL(raw json.RawMessage) bool {
+	switch strings.TrimSpace(string(raw)) {
+	case "1", "true", `"1"`, `"true"`:
+		return true
+	case "0", "false", `"0"`, `"false"`, "null", "":
+		return false
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String() == "1"
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s == "1" || strings.EqualFold(s, "true")
+	}
+	var b bool
+	return json.Unmarshal(raw, &b) == nil && b
 }
 
 // marshalTokenSig serializes a tokenSig deterministically (encoding/json sorts
@@ -441,14 +526,34 @@ func marshalTokenSig(sig tokenSig) string {
 	return string(b)
 }
 
+func unmarshalTokenSig(raw string) (tokenSig, bool) {
+	var sig tokenSig
+	if err := json.Unmarshal([]byte(raw), &sig); err == nil {
+		return sig, true
+	}
+
+	var legacy map[string]bool
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return nil, false
+	}
+	sig = make(tokenSig, len(legacy))
+	for name, all := range legacy {
+		sig[name] = tokenInfo{
+			FullAccess:     all,
+			ClusterManaged: !all && (strings.HasPrefix(name, "reverse_trust_") || strings.HasSuffix(name, "-trust")),
+		}
+	}
+	return sig, true
+}
+
 // diffWHMTokens compares the current token set against the previously stored
 // one and returns a single finding when something changed. Severity splits on
 // intent:
-//   - Critical: a non-cluster (operator/automation) token added or removed, or
-//     ANY token gaining the full-access "all" ACL. These are the changes an
-//     attacker makes to plant or escalate a backdoor token.
-//   - Warning: only cluster-managed trust tokens were added or removed. cPanel
-//     does this during normal DNS clustering and it must not page.
+//   - Critical: any token added outside generated reverse_trust churn, any
+//     non-cluster token removed, or ANY token gaining the full-access "all" ACL.
+//   - Warning: only generated reverse_trust additions/removals or recorded
+//     cluster trust removals changed. cPanel does this during normal DNS
+//     clustering and it must not page.
 //
 // The first scan after the key is introduced just records a baseline.
 func diffWHMTokens(store *state.Store, cur tokenSig) (alert.Finding, bool) {
@@ -456,31 +561,31 @@ func diffWHMTokens(store *state.Store, cur tokenSig) (alert.Finding, bool) {
 	if !exists {
 		return alert.Finding{}, false
 	}
-	var prev tokenSig
-	if json.Unmarshal([]byte(raw), &prev) != nil {
+	prev, ok := unmarshalTokenSig(raw)
+	if !ok {
 		return alert.Finding{}, false
 	}
 
 	var critical, cluster []string
-	for name, all := range cur {
-		prevAll, had := prev[name]
+	for name, info := range cur {
+		prevInfo, had := prev[name]
 		if !had {
-			if isClusterManagedToken(name) {
+			if isClusterManagedTokenAddition(name, info) {
 				cluster = append(cluster, "added "+name)
 			} else {
 				critical = append(critical, "added "+name)
 			}
 			continue
 		}
-		if all && !prevAll {
+		if info.FullAccess && !prevInfo.FullAccess {
 			critical = append(critical, "escalated "+name+" to full access")
 		}
 	}
-	for name := range prev {
+	for name, info := range prev {
 		if _, still := cur[name]; still {
 			continue
 		}
-		if isClusterManagedToken(name) {
+		if isClusterManagedToken(info) {
 			cluster = append(cluster, "removed "+name)
 		} else {
 			critical = append(critical, "removed "+name)

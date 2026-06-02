@@ -571,7 +571,9 @@ func TestCheckAPITokens_WHMTokenChanged(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	// Seed a prior baseline that lacks the token now present.
-	store.SetRaw(whmAPITokensStateKey, marshalTokenSig(tokenSig{"phclient": true}))
+	store.SetRaw(whmAPITokensStateKey, marshalTokenSig(tokenSig{
+		"phclient": {FullAccess: true},
+	}))
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) { return nil, nil },

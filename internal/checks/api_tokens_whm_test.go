@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -77,7 +78,10 @@ func runWHMTokens(t *testing.T, prior, current map[string]bool) []alert.Finding 
 func tokenSigFromMap(m map[string]bool) tokenSig {
 	sig := tokenSig{}
 	for name, all := range m {
-		sig[name] = all
+		sig[name] = tokenInfo{
+			FullAccess:     all,
+			ClusterManaged: !all && (strings.HasPrefix(name, "reverse_trust_") || strings.HasSuffix(name, "-trust")),
+		}
 	}
 	return sig
 }
@@ -134,6 +138,48 @@ func TestWHMTokens_NewManualTokenCritical(t *testing.T) {
 	}
 }
 
+func TestWHMTokens_NewTrustSuffixWithoutClusterACLCritical(t *testing.T) {
+	prior := map[string]bool{"phclient": true}
+	current := map[string]bool{"phclient": true, "x-trust": false}
+	got := runWHMTokens(t, prior, current)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("attacker-named trust token must be Critical, got %+v", got)
+	}
+	if !strings.Contains(got[0].Details, "x-trust") {
+		t.Errorf("finding must name the added token, got %q", got[0].Details)
+	}
+}
+
+func TestWHMTokens_NewTrustSuffixWithClusterACLCritical(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetRaw(whmAPITokensStateKey, marshalTokenSig(tokenSigFromMap(map[string]bool{"phclient": true})))
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, _ ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			return []byte(`{"data":{"tokens":{` +
+				`"phclient":{"acls":{"all":1}},` +
+				`"x-trust":{"acls":{"all":0,"clustering":1}}` +
+				`}}}`), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("new trust-suffix token must be Critical even with cluster ACL, got %+v", got)
+	}
+	if !strings.Contains(got[0].Details, "x-trust") {
+		t.Errorf("finding must name the added token, got %q", got[0].Details)
+	}
+}
+
 func TestWHMTokens_NewFullAccessTokenCritical(t *testing.T) {
 	prior := map[string]bool{"phclient": true}
 	current := map[string]bool{"phclient": true, "rogue": true}
@@ -169,5 +215,113 @@ func TestWHMTokens_RemovedManualTokenCritical(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Details, "ci-deploy") {
 		t.Errorf("finding must name the removed token, got %q", got[0].Details)
+	}
+}
+
+func TestWHMTokens_DecodesAllACLNumberStringAndBool(t *testing.T) {
+	out := []byte(`{"data":{"tokens":{` +
+		`"number":{"acls":{"all":1}},` +
+		`"string":{"acls":{"all":"1"}},` +
+		`"bool":{"acls":{"all":true}},` +
+		`"zero":{"acls":{"all":0}}` +
+		`}}}`)
+	got, ok := parseWHMTokenSig(out)
+	if !ok {
+		t.Fatal("expected WHM token payload to parse")
+	}
+	for _, name := range []string{"number", "string", "bool"} {
+		if !got[name].FullAccess {
+			t.Errorf("%s all ACL was not decoded as full access", name)
+		}
+	}
+	if got["zero"].FullAccess {
+		t.Error("zero all ACL decoded as full access")
+	}
+}
+
+func TestWHMTokens_FallbackHashOnJSONParseFailure(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetRaw(whmAPITokensHashKey, hashBytes([]byte("old raw output")))
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte("api_token_list: unknown option --output"), nil
+			}
+			return []byte("new raw output"), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("legacy hash fallback must alert on changed raw output, got %+v", got)
+	}
+	if _, exists := store.GetRaw(whmAPITokensStateKey); exists {
+		t.Fatal("malformed JSON output must not replace structured WHM token state")
+	}
+}
+
+func TestWHMTokens_FallbackHashWhenJSONCommandFails(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetRaw(whmAPITokensHashKey, hashBytes([]byte("old raw output")))
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			if len(args) == 2 && args[1] == "--output=json" {
+				return nil, errors.New("unknown option")
+			}
+			return []byte("new raw output"), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("legacy hash fallback must alert when JSON command fails, got %+v", got)
+	}
+}
+
+func TestWHMTokens_LegacyHashCheckedBeforeStructuredBaseline(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetRaw(whmAPITokensHashKey, hashBytes([]byte("old raw output")))
+
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" {
+				return nil, nil
+			}
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte(whmTokensJSON(map[string]bool{"phclient": true})), nil
+			}
+			return []byte("new raw output"), nil
+		},
+	})
+
+	got := CheckAPITokens(context.Background(), &config.Config{}, store)
+	if len(got) != 1 || got[0].Severity != alert.Critical {
+		t.Fatalf("legacy hash change must not be hidden by structured baseline, got %+v", got)
+	}
+	if _, exists := store.GetRaw(whmAPITokensStateKey); !exists {
+		t.Fatal("successful structured parse must still seed structured state")
 	}
 }
