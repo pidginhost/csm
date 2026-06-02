@@ -630,11 +630,24 @@ func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
 	if !isTrustedProxy(rec.RemoteIP, cfg.WebServer.TrustedProxies) {
 		return rec.RemoteIP
 	}
-	for _, part := range strings.Split(rec.XFF, ",") {
-		ip := strings.TrimSpace(part)
-		if net.ParseIP(ip) != nil {
-			return ip
+	// Walk X-Forwarded-For from the right. A trusted proxy appends the address
+	// it observed as the last entry, so the rightmost entry is trustworthy;
+	// everything to its left was supplied by hops closer to the client and is
+	// ultimately client-controlled. Skip trailing entries that are themselves
+	// trusted proxies (proxy chains) and return the first untrusted address --
+	// the real client at the trust boundary. Taking the leftmost entry let an
+	// attacker send "X-Forwarded-For: <victim>" and have CSM auto-block the
+	// victim. The challenge server's extractIP uses the same rightmost rule.
+	parts := strings.Split(rec.XFF, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := strings.TrimSpace(parts[i])
+		if net.ParseIP(ip) == nil {
+			continue
 		}
+		if isTrustedProxy(ip, cfg.WebServer.TrustedProxies) {
+			continue
+		}
+		return ip
 	}
 	return rec.RemoteIP
 }

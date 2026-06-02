@@ -517,9 +517,10 @@ func TestHTTPRequestFlood_IgnoresRecordsOutsideWindow(t *testing.T) {
 }
 
 func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
+	// A trusted proxy appends the real client as the rightmost XFF entry.
 	rec := accessLogRecord{
 		RemoteIP: "198.51.100.10",
-		XFF:      "203.0.113.10, 10.0.0.1",
+		XFF:      "192.0.2.50, 203.0.113.10",
 	}
 
 	if got := clientIPForRecord(rec, &config.Config{}); got != "198.51.100.10" {
@@ -530,6 +531,36 @@ func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
 	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
 	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
 		t.Fatalf("trusted proxy client IP=%q, want 203.0.113.10", got)
+	}
+}
+
+// A client must not be able to forge an attribution by injecting a victim IP
+// into the leftmost X-Forwarded-For position. The proxy-appended rightmost
+// entry is authoritative; the leftmost is attacker-controlled. Taking the
+// leftmost let an attacker auto-block any chosen victim.
+func TestClientIPForRecord_RejectsSpoofedLeftmost(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
+	rec := accessLogRecord{
+		RemoteIP: "198.51.100.10",
+		XFF:      "203.0.113.99, 203.0.113.10", // attacker put victim 203.0.113.99 leftmost
+	}
+	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
+		t.Fatalf("spoofed leftmost XFF honoured: got %q, want 203.0.113.10", got)
+	}
+}
+
+// In a chain of trusted proxies the rightmost untrusted entry is the real
+// client; trailing trusted-proxy hops are skipped.
+func TestClientIPForRecord_SkipsChainedTrustedProxies(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.10", "198.51.100.11"}
+	rec := accessLogRecord{
+		RemoteIP: "198.51.100.11",                           // outermost proxy (direct peer)
+		XFF:      "192.0.2.50, 203.0.113.10, 198.51.100.10", // spoof, realclient, inner trusted proxy
+	}
+	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
+		t.Fatalf("chained trusted proxies: got %q, want 203.0.113.10", got)
 	}
 }
 
