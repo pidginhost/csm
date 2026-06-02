@@ -20,6 +20,13 @@ func countRateLimitWarnings(actions []alert.Finding) int {
 	return n
 }
 
+func setAutoBlockNow(t *testing.T, now time.Time) {
+	t.Helper()
+	previous := autoBlockNow
+	autoBlockNow = func() time.Time { return now }
+	t.Cleanup(func() { autoBlockNow = previous })
+}
+
 type recordingIPBlocker struct {
 	blocked       []string
 	calls         []blockCall
@@ -143,9 +150,11 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
 	saveBlockState(cfg.StatePath, &blockState{
 		BlocksThisHour: config.DefaultMaxBlocksPerHour,
-		HourKey:        time.Now().Format("2006-01-02T15"),
+		HourKey:        now.Format("2006-01-02T15"),
 	})
 
 	blocker := &recordingIPBlocker{}
@@ -456,9 +465,11 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
 	saveBlockState(cfg.StatePath, &blockState{
 		BlocksThisHour: config.DefaultMaxBlocksPerHour,
-		HourKey:        time.Now().Add(-2 * time.Hour).Format("2006-01-02T15"),
+		HourKey:        now.Add(-2 * time.Hour).Format("2006-01-02T15"),
 		Pending: []pendingIP{
 			{IP: "9.8.7.6", Reason: "queued brute force"},
 		},
@@ -510,7 +521,9 @@ func TestAutoBlockIPs_RateLimitWarningThrottledWithinHour(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 
-	hour := time.Now().Format("2006-01-02T15")
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
+	hour := now.Format("2006-01-02T15")
 	saveBlockState(cfg.StatePath, &blockState{
 		BlocksThisHour: config.DefaultMaxBlocksPerHour,
 		HourKey:        hour,
@@ -559,7 +572,9 @@ func TestAutoBlockIPs_RateLimitWarningReemitsAfterHourRollover(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.MaxBlocksPerHour = 1
 
-	prevHour := time.Now().Add(-2 * time.Hour).Format("2006-01-02T15")
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
+	prevHour := now.Add(-2 * time.Hour).Format("2006-01-02T15")
 	saveBlockState(cfg.StatePath, &blockState{
 		BlocksThisHour:      1,
 		HourKey:             prevHour,
@@ -591,8 +606,15 @@ func TestAutoBlockIPs_RateLimitWarningReemitsAfterHourRollover(t *testing.T) {
 		t.Fatalf("rate-limit warnings after hour rollover = %d, want 1 (re-emitted)", got)
 	}
 	state := loadBlockState(cfg.StatePath)
-	if state.RateLimitWarnedHour != time.Now().Format("2006-01-02T15") {
+	if state.RateLimitWarnedHour != now.Format("2006-01-02T15") {
 		t.Fatalf("RateLimitWarnedHour = %q, want current hour", state.RateLimitWarnedHour)
+	}
+
+	again := AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 13.14.15.16", Timestamp: time.Now()},
+	})
+	if got := countRateLimitWarnings(again); got != 0 {
+		t.Fatalf("second same-hour scan warnings = %d, want 0", got)
 	}
 }
 
@@ -602,7 +624,9 @@ func TestAutoBlockIPs_PendingQueueCappedUnderFlood(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 
-	hour := time.Now().Format("2006-01-02T15")
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
+	hour := now.Format("2006-01-02T15")
 	overflow := maxPendingBlocks + 5
 	pending := make([]pendingIP, 0, overflow)
 	for i := 0; i < overflow; i++ {
@@ -648,6 +672,9 @@ func TestAutoBlockIPs_PendingQueueCappedUnderFlood(t *testing.T) {
 	}
 	if !strings.Contains(warned, "dropped") {
 		t.Fatalf("warning %q should report dropped IPs once the queue is capped", warned)
+	}
+	if !strings.Contains(warned, "5 dropped") {
+		t.Fatalf("warning %q should report the exact dropped count", warned)
 	}
 }
 
@@ -934,7 +961,9 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 	defer func() { SetIPBlocker(prev) }()
 
 	state := loadBlockState(cfg.StatePath)
-	state.HourKey = time.Now().Format("2006-01-02T15")
+	now := time.Date(2026, 6, 2, 13, 15, 0, 0, time.UTC)
+	setAutoBlockNow(t, now)
+	state.HourKey = now.Format("2006-01-02T15")
 	state.BlocksThisHour = config.DefaultMaxBlocksPerHour
 	saveBlockState(cfg.StatePath, state)
 

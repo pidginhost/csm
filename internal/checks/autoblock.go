@@ -75,6 +75,7 @@ type fwBlockerSlot struct{ b IPBlocker }
 
 var fwBlockerHolder atomic.Pointer[fwBlockerSlot]
 var blockStateMu sync.Mutex
+var autoBlockNow = time.Now
 
 // SetIPBlocker installs the firewall engine for auto-blocking. Safe to
 // call concurrently with AutoBlockIPs: each call publishes the new
@@ -164,7 +165,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	state.IPs = stillBlocked
 
 	// Check rate limit
-	currentHour := time.Now().Format("2006-01-02T15")
+	currentHour := autoBlockNow().Format("2006-01-02T15")
 	if state.HourKey != currentHour {
 		state.HourKey = currentHour
 		state.BlocksThisHour = 0
