@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP include scanning keeps the server-path false-positive fix while still treating header-derived include targets as attacker controlled.
 - PHP content scanner now reports the legacy preg_replace /e modifier only when attacker-controlled input reaches the call, consistent with its other sink checks. This clears recurring false positives on old plugins that run /e over internal data while still catching it as a real code-execution sink.
 - PHP content scanner no longer misses legacy replacement-eval droppers when attacker input is staged before the call.
+- WHM root API token alerts now name the token that changed and stay critical only when an operator token is added or removed or any token gains full access. Routine DNS cluster trust token churn is reported as a low-severity note instead of a recurring detail-free critical.
 
 ### Changed
 

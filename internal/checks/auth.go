@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -329,20 +330,13 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	var findings []alert.Finding
 
 	// WHM root API tokens
-	out, err := runCmd("whmapi1", "api_token_list")
-	if err == nil {
-		hash := hashBytes(out)
-		key := "_whm_api_tokens_hash"
-		prev, exists := store.GetRaw(key)
-		if exists && prev != hash {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "api_tokens",
-				Message:  "WHM root API tokens changed",
-				Details:  "Run 'whmapi1 api_token_list' to review",
-			})
+	if out, err := runCmd("whmapi1", "api_token_list", "--output=json"); err == nil {
+		if cur, ok := parseWHMTokenSig(out); ok {
+			if f, fire := diffWHMTokens(store, cur); fire {
+				findings = append(findings, f)
+			}
+			store.SetRaw(whmAPITokensStateKey, marshalTokenSig(cur))
 		}
-		store.SetRaw(key, hash)
 	}
 
 	// User API tokens - read directly from disk instead of spawning uapi per user.
@@ -397,6 +391,121 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	}
 
 	return findings
+}
+
+const whmAPITokensStateKey = "_whm_api_tokens_state"
+
+// tokenSig maps each WHM root API token name to whether it carries the
+// full-access "all" ACL. It is the unit compared between scans.
+type tokenSig map[string]bool
+
+// isClusterManagedToken reports whether cPanel owns the token's lifecycle.
+// DNS clustering creates, rotates, and deletes these on its own:
+//   - reverse_trust_<uuid>: trust granted to a remote WHM peer
+//   - <host>-trust (e.g. ns2-trust): local end of a trust relationship
+//
+// Their churn is routine and must not page like an attacker-created token.
+func isClusterManagedToken(name string) bool {
+	return strings.HasPrefix(name, "reverse_trust_") || strings.HasSuffix(name, "-trust")
+}
+
+// parseWHMTokenSig decodes `whmapi1 api_token_list --output=json` into a
+// tokenSig. A token whose value is not a JSON object (or whose ACLs cannot be
+// read) is recorded with all=false rather than dropped, so an unparsable entry
+// never hides a token's presence. ok is false only when the top-level envelope
+// has no tokens map at all, in which case the caller leaves prior state intact.
+func parseWHMTokenSig(out []byte) (tokenSig, bool) {
+	var env struct {
+		Data struct {
+			Tokens map[string]json.RawMessage `json:"tokens"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &env); err != nil || env.Data.Tokens == nil {
+		return nil, false
+	}
+	sig := make(tokenSig, len(env.Data.Tokens))
+	for name, raw := range env.Data.Tokens {
+		var t struct {
+			ACLs map[string]json.Number `json:"acls"`
+		}
+		_ = json.Unmarshal(raw, &t)
+		sig[name] = t.ACLs["all"].String() == "1"
+	}
+	return sig, true
+}
+
+// marshalTokenSig serializes a tokenSig deterministically (encoding/json sorts
+// map keys), so an unchanged set always produces an identical stored string.
+func marshalTokenSig(sig tokenSig) string {
+	b, _ := json.Marshal(sig)
+	return string(b)
+}
+
+// diffWHMTokens compares the current token set against the previously stored
+// one and returns a single finding when something changed. Severity splits on
+// intent:
+//   - Critical: a non-cluster (operator/automation) token added or removed, or
+//     ANY token gaining the full-access "all" ACL. These are the changes an
+//     attacker makes to plant or escalate a backdoor token.
+//   - Warning: only cluster-managed trust tokens were added or removed. cPanel
+//     does this during normal DNS clustering and it must not page.
+//
+// The first scan after the key is introduced just records a baseline.
+func diffWHMTokens(store *state.Store, cur tokenSig) (alert.Finding, bool) {
+	raw, exists := store.GetRaw(whmAPITokensStateKey)
+	if !exists {
+		return alert.Finding{}, false
+	}
+	var prev tokenSig
+	if json.Unmarshal([]byte(raw), &prev) != nil {
+		return alert.Finding{}, false
+	}
+
+	var critical, cluster []string
+	for name, all := range cur {
+		prevAll, had := prev[name]
+		if !had {
+			if isClusterManagedToken(name) {
+				cluster = append(cluster, "added "+name)
+			} else {
+				critical = append(critical, "added "+name)
+			}
+			continue
+		}
+		if all && !prevAll {
+			critical = append(critical, "escalated "+name+" to full access")
+		}
+	}
+	for name := range prev {
+		if _, still := cur[name]; still {
+			continue
+		}
+		if isClusterManagedToken(name) {
+			cluster = append(cluster, "removed "+name)
+		} else {
+			critical = append(critical, "removed "+name)
+		}
+	}
+
+	switch {
+	case len(critical) > 0:
+		sort.Strings(critical)
+		return alert.Finding{
+			Severity: alert.Critical,
+			Check:    "api_tokens",
+			Message:  "WHM root API tokens changed",
+			Details:  "Review with 'whmapi1 api_token_list': " + strings.Join(critical, "; "),
+		}, true
+	case len(cluster) > 0:
+		sort.Strings(cluster)
+		return alert.Finding{
+			Severity: alert.Warning,
+			Check:    "api_tokens",
+			Message:  "WHM root cluster trust tokens changed",
+			Details:  "cPanel DNS clustering churn (expected): " + strings.Join(cluster, "; "),
+		}, true
+	}
+	return alert.Finding{}, false
 }
 
 // shadowMutatingWHMEndpoints lists WHM JSON-API endpoints whose handlers

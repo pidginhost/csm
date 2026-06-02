@@ -570,8 +570,8 @@ func TestCheckAPITokens_WHMTokenChanged(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	// Seed the stored hash with a value that won't match.
-	store.SetRaw("_whm_api_tokens_hash", "stale-hash-0000")
+	// Seed a prior baseline that lacks the token now present.
+	store.SetRaw(whmAPITokensStateKey, marshalTokenSig(tokenSig{"phclient": true}))
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) { return nil, nil },
@@ -579,7 +579,7 @@ func TestCheckAPITokens_WHMTokenChanged(t *testing.T) {
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "whmapi1" {
-				return []byte(`{"data":{"tokens":{"root":"abc"}}}`), nil
+				return []byte(`{"data":{"tokens":{"phclient":{"acls":{"all":1}},"newtoken":{"acls":{"all":1}}}}}`), nil
 			}
 			return nil, nil
 		},
