@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The timed firewall-rollback now stores the previous ruleset as an nftables data file restored with `nft -f`, instead of a generated bash script. This removes a shell-injection surface where a crafted set name or comment in the live ruleset could break out into a root shell.
 - Firewall blocks now persist to state before the kernel rule is added, so a crash mid-block can no longer leave a permanent kernel block with no state record that a later rebuild would silently drop.
+- Firewall block failures now report when their state rollback also fails, so operators can see when a failed block may still be restored on the next ruleset rebuild.
 - The Server-Sent Events stream now caps concurrent subscribers and returns 503 when full, so a read-scope token cannot open unbounded long-lived streams to exhaust daemon memory.
 - Imported whitelist IPs are now validated and normalized like every interactive route, so a crafted import bundle cannot poison the allow-list with malformed or non-routable entries.
 - Process-context enrichment now caps how many deadline-bound `/proc` reads run at once. A process stuck in uninterruptible I/O can no longer leak an unbounded number of reader goroutines over time; once the cap is hit, enrichment degrades gracefully instead.

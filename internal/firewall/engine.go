@@ -1504,17 +1504,23 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
 	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
-		e.restoreBlockStateAfterFailureLocked(priorState, ip)
+		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+			return fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("adding to blocked set: %w", err)
 	}
 	if evictTempIP != "" {
 		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
-			e.restoreBlockStateAfterFailureLocked(priorState, ip)
+			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+				return fmt.Errorf("evicting temp block %s: %w (state restore failed: %v)", evictTempIP, err, restoreErr)
+			}
 			return fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
 		}
 	}
 	if err := e.conn.Flush(); err != nil {
-		e.restoreBlockStateAfterFailureLocked(priorState, ip)
+		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("flushing: %w", err)
 	}
 	if evictTempIP != "" {
@@ -2974,10 +2980,12 @@ func removeBlockedIPFromState(state *FirewallState, ip string) {
 	state.Blocked = remaining
 }
 
-func (e *Engine) restoreBlockStateAfterFailureLocked(state FirewallState, ip string) {
+func (e *Engine) restoreBlockStateAfterFailureLocked(state FirewallState, ip string) error {
 	if err := e.saveState(&state); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: restore state after failed block for %s failed: %v\n", ip, err)
+		return err
 	}
+	return nil
 }
 
 func (e *Engine) saveBlockedEntry(entry BlockedEntry) error {

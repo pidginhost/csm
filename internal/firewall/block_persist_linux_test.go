@@ -6,8 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/nftables"
 	"github.com/pidginhost/csm/internal/atomicio"
 )
 
@@ -54,5 +57,40 @@ func TestSaveBlockedEntryAcceptsCommittedWriteWarning(t *testing.T) {
 	}
 	if !e.IsBlocked("203.0.113.3") {
 		t.Fatal("committed write warning should refresh blocked cache")
+	}
+}
+
+func TestBlockIPReportsStateRestoreFailure(t *testing.T) {
+	prev := writeFirewallStateJSON
+	t.Cleanup(func() { writeFirewallStateJSON = prev })
+
+	writes := 0
+	writeFirewallStateJSON = func(path string, perm os.FileMode, v any) error {
+		writes++
+		if writes == 1 {
+			return atomicio.AtomicWriteJSON(path, perm, v)
+		}
+		return errors.New("restore denied")
+	}
+
+	e := &Engine{
+		conn:       &nftables.Conn{},
+		statePath:  t.TempDir(),
+		cfg:        &FirewallConfig{Enabled: true},
+		setBlocked: anonymousIPv4Set("blocked_ips"),
+	}
+
+	err := e.BlockIPForce("203.0.113.4", "manual block", time.Hour)
+	if err == nil {
+		t.Fatal("expected nftables queue error")
+	}
+	if !strings.Contains(err.Error(), "adding to blocked set") {
+		t.Fatalf("error %q does not report the nftables operation", err)
+	}
+	if !strings.Contains(err.Error(), "state restore failed: restore denied") {
+		t.Fatalf("error %q does not report the rollback failure", err)
+	}
+	if writes != 2 {
+		t.Fatalf("state writes = %d, want persist plus restore", writes)
 	}
 }
