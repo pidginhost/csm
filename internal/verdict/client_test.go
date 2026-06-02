@@ -171,6 +171,46 @@ func TestClient_RejectsUnknownVerdict(t *testing.T) {
 	}
 }
 
+// Best-effort mode: a secret is configured but response signing is not
+// required. An on-path attacker returns allow with neither nonce nor
+// timestamp to dodge the replay checks. The client must refuse it so the
+// engine stays on its default block path.
+func TestClient_BestEffortRefusesUnboundAllow(t *testing.T) {
+	noSign := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// No signature header, no nonce, no timestamp.
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow"})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &noSign, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected error refusing unbound allow in best-effort mode")
+	}
+}
+
+// Best-effort mode with a valid echoed nonce binds the reply to this request,
+// so the allow is honored.
+func TestClient_BestEffortHonorsBoundAllow(t *testing.T) {
+	noSign := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req Request
+		_ = json.Unmarshal(raw, &req)
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", Nonce: req.Nonce, Timestamp: time.Now().Unix()})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &noSign, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("bound allow should be honored, got %v", err)
+	}
+	if resp.Verdict != "allow" {
+		t.Fatalf("verdict = %q, want allow", resp.Verdict)
+	}
+}
+
 func TestClient_ResolvesSecretFromEnv(t *testing.T) {
 	const envVar = "TEST_VERDICT_HMAC"
 	t.Setenv(envVar, "from-env")

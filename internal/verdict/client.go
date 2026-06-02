@@ -272,6 +272,16 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		} else if strictReplay {
 			return Response{}, fmt.Errorf("verdict callback response missing timestamp")
 		}
+		// An "allow" is the only verdict an on-path attacker gains from
+		// forging. In best-effort mode (signing not required) the replay
+		// checks above only fire when the panel echoed a nonce or timestamp,
+		// so an attacker can strip both to slip an unbound allow through.
+		// Require an allow to carry at least one replay binding; otherwise
+		// treat it like the no-secret case and refuse, keeping the engine on
+		// its default block path.
+		if out.Verdict == "allow" && out.Nonce == "" && out.Timestamp == 0 {
+			return Response{}, fmt.Errorf("verdict callback: refusing allow with no replay binding (nonce/timestamp)")
+		}
 	}
 	return out, nil
 }
