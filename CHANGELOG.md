@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Surgical file cleaning now refuses files above a size ceiling and quarantines them by rename instead. An attacker could previously match a signature in a file's first bytes, pad it to many gigabytes, and make the root daemon read the whole file into memory until it was killed.
+
 ## [3.11.0] - 2026-06-02
 
 ### Added

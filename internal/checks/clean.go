@@ -52,6 +52,17 @@ var (
 	cleanRegexpHexVar     = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
 )
 
+// cleanMaxFileSize bounds how large a file surgical cleaning will read
+// into memory. The detector that routes a file here (analyzePHPContent)
+// only inspects the first 32 KB, so an attacker can match a signature in
+// the head and pad the tail to many gigabytes. Reading that whole file
+// with io.ReadAll plus the strings.Split and regex passes below would
+// OOM the root daemon. Above this ceiling we refuse, and the caller
+// falls back to quarantine-by-rename, which never reads content.
+// Legitimate plugin/theme PHP files are far smaller than this. Var, not
+// const, so tests can lower it. 8 MiB.
+var cleanMaxFileSize int64 = 8 << 20
+
 // CleanInfectedFile attempts to surgically remove malicious code from a PHP file
 // while preserving the legitimate content. Always creates a backup first.
 //
@@ -69,6 +80,11 @@ func CleanInfectedFile(path string) CleanResult {
 		return result
 	}
 	defer target.Close()
+
+	if sz := target.Info.Size(); sz > cleanMaxFileSize {
+		result.Error = fmt.Sprintf("file too large to clean (%d bytes > %d), quarantining instead", sz, cleanMaxFileSize)
+		return result
+	}
 
 	data, err := io.ReadAll(target.File)
 	if err != nil {

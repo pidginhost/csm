@@ -414,6 +414,58 @@ func TestShannonEntropyBoundaries(t *testing.T) {
 	}
 }
 
+// An attacker drops a file whose first bytes match a malware signature
+// (analyzePHPContent only reads the first 32 KB) then pads it to many
+// gigabytes. CleanInfectedFile runs as root and previously did
+// io.ReadAll on the whole file, then strings.Split + multiple regex
+// passes, multiplying that into an OOM that kills the daemon. The size
+// guard must refuse to read an oversized file so auto-response falls
+// back to quarantine-by-rename, which never reads content.
+func TestCleanInfectedFileRefusesOversizedFile(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+
+	old := cleanMaxFileSize
+	cleanMaxFileSize = 1024
+	t.Cleanup(func() { cleanMaxFileSize = old })
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "big.php")
+	payload := []byte("<?php @include(base64_decode('aaaa')); ")
+	payload = append(payload, make([]byte, int(cleanMaxFileSize)+1)...)
+	if err := os.WriteFile(path, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := CleanInfectedFile(path)
+	if res.Cleaned {
+		t.Fatalf("oversized file must not be cleaned, got %+v", res)
+	}
+	if !strings.Contains(res.Error, "too large") {
+		t.Fatalf("expected too-large error, got %q", res.Error)
+	}
+	// Must not have read the file into a backup: no backup written.
+	if res.BackupPath != "" {
+		t.Fatalf("oversized file must not be backed up, got %q", res.BackupPath)
+	}
+}
+
+func TestCleanInfectedFileAcceptsFileUnderSizeLimit(t *testing.T) {
+	withQuarantineDirT(t, t.TempDir())
+
+	old := cleanMaxFileSize
+	cleanMaxFileSize = 4096
+	t.Cleanup(func() { cleanMaxFileSize = old })
+
+	// A legitimate-sized file under the cap with an @include injection
+	// must still clean, proving the guard is a ceiling, not a blanket
+	// refusal.
+	path := writeTempPHP(t, "<?php\n@include('/tmp/x');\necho 'hi';\n")
+	res := CleanInfectedFile(path)
+	if res.Error != "" {
+		t.Fatalf("file under cap must clean, got error %q", res.Error)
+	}
+}
+
 func TestContainsLongEncodedString(t *testing.T) {
 	if containsLongEncodedString("short", 100) {
 		t.Error("short string should not match minLength=100")
