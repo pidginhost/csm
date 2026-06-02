@@ -88,6 +88,22 @@ func GetThreatDB() *ThreatDB {
 	return globalThreatDB
 }
 
+// SetGlobalThreatDBForTest installs a freshly-constructed threat DB rooted at
+// statePath, bypassing the once-guard, and returns a function that restores the
+// previous global. For tests only: lets a test exercise the threat-DB path
+// without permanently polluting the global for order-dependent tests.
+func SetGlobalThreatDBForTest(statePath string) func() {
+	prev := globalThreatDB
+	db := &ThreatDB{
+		badIPs:    make(map[string]string),
+		whitelist: make(map[string]bool),
+		dbPath:    filepath.Join(statePath, "threat_db"),
+	}
+	_ = os.MkdirAll(db.dbPath, 0700)
+	globalThreatDB = db
+	return func() { globalThreatDB = prev }
+}
+
 // Lookup checks if an IP is in the local threat database.
 // Returns (source, true) if found, ("", false) if unknown.
 // Whitelisted IPs always return false.

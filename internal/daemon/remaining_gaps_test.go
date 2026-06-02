@@ -151,7 +151,7 @@ func TestPAMRecordFailureWindowExpiration(t *testing.T) {
 	p.mu.Unlock()
 
 	// This failure should trigger window expiration reset (not alert).
-	p.recordFailure(ip, "alice", "ssh")
+	emitRecordFailure(p, ip, "alice", "ssh")
 
 	select {
 	case f := <-alertCh:

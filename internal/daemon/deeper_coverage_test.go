@@ -196,7 +196,7 @@ func TestRecordFailure_ReachesThreshold(t *testing.T) {
 	}
 	// Default threshold is 5
 	for i := 0; i < 4; i++ {
-		p.recordFailure("203.0.113.10", "root", "sshd")
+		emitRecordFailure(p, "203.0.113.10", "root", "sshd")
 	}
 	select {
 	case f := <-alertCh:
@@ -205,7 +205,7 @@ func TestRecordFailure_ReachesThreshold(t *testing.T) {
 	}
 
 	// 5th failure should trigger
-	p.recordFailure("203.0.113.10", "root", "sshd")
+	emitRecordFailure(p, "203.0.113.10", "root", "sshd")
 	select {
 	case f := <-alertCh:
 		if f.Check != "pam_bruteforce" {
@@ -227,7 +227,7 @@ func TestRecordFailure_OnlyAlertsOnce(t *testing.T) {
 		failures: make(map[string]*pamFailureTracker),
 	}
 	for i := 0; i < 10; i++ {
-		p.recordFailure("203.0.113.11", "root", "sshd")
+		emitRecordFailure(p, "203.0.113.11", "root", "sshd")
 	}
 	count := 0
 	for {
@@ -251,9 +251,9 @@ func TestRecordFailure_TracksMultipleUsers(t *testing.T) {
 		alertCh:  alertCh,
 		failures: make(map[string]*pamFailureTracker),
 	}
-	p.recordFailure("203.0.113.12", "root", "sshd")
-	p.recordFailure("203.0.113.12", "admin", "sshd")
-	p.recordFailure("203.0.113.12", "www", "webmin")
+	emitRecordFailure(p, "203.0.113.12", "root", "sshd")
+	emitRecordFailure(p, "203.0.113.12", "admin", "sshd")
+	emitRecordFailure(p, "203.0.113.12", "www", "webmin")
 
 	p.mu.Lock()
 	tracker := p.failures["203.0.113.12"]
@@ -278,15 +278,15 @@ func TestRecordFailure_CustomThreshold(t *testing.T) {
 		alertCh:  alertCh,
 		failures: make(map[string]*pamFailureTracker),
 	}
-	p.recordFailure("203.0.113.13", "root", "sshd")
-	p.recordFailure("203.0.113.13", "root", "sshd")
+	emitRecordFailure(p, "203.0.113.13", "root", "sshd")
+	emitRecordFailure(p, "203.0.113.13", "root", "sshd")
 	select {
 	case f := <-alertCh:
 		t.Fatalf("below custom threshold should not alert: %+v", f)
 	default:
 	}
 
-	p.recordFailure("203.0.113.13", "root", "sshd")
+	emitRecordFailure(p, "203.0.113.13", "root", "sshd")
 	select {
 	case f := <-alertCh:
 		if f.Check != "pam_bruteforce" {
@@ -310,8 +310,8 @@ func TestRecordFailure_WindowExpiry(t *testing.T) {
 
 	ip := "203.0.113.14"
 	// Record 2 failures
-	p.recordFailure(ip, "root", "sshd")
-	p.recordFailure(ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
 
 	// Manually set firstSeen to the past so the window expires
 	p.mu.Lock()
@@ -319,7 +319,7 @@ func TestRecordFailure_WindowExpiry(t *testing.T) {
 	p.mu.Unlock()
 
 	// This failure should reset the tracker because the window expired
-	p.recordFailure(ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
 
 	// Tracker should be reset to count=1
 	p.mu.Lock()

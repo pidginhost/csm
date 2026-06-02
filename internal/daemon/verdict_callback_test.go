@@ -7,28 +7,39 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
 func TestAskVerdictCallbackUsesActiveConfig(t *testing.T) {
+	// Both endpoints echo the request nonce and a fresh timestamp so replay
+	// checks pass; a secret is configured so the "allow" verdict is honored
+	// (an unsigned allow with no secret is refused).
+	echo := func(resp verdict.Response, hits *int32) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(hits, 1)
+			var req verdict.Request
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			resp.Nonce = req.Nonce
+			resp.Timestamp = time.Now().Unix()
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+	}
 	var oldHits, newHits int32
-	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&oldHits, 1)
-		_ = json.NewEncoder(w).Encode(verdict.Response{Verdict: "block", TenantID: "old-tenant", Note: "old-note"})
-	}))
+	oldSrv := httptest.NewServer(echo(verdict.Response{Verdict: "block", TenantID: "old-tenant", Note: "old-note"}, &oldHits))
 	defer oldSrv.Close()
-	newSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&newHits, 1)
-		_ = json.NewEncoder(w).Encode(verdict.Response{Verdict: "allow", TenantID: "new-tenant", Note: "new-note"})
-	}))
+	newSrv := httptest.NewServer(echo(verdict.Response{Verdict: "allow", TenantID: "new-tenant", Note: "new-note"}, &newHits))
 	defer newSrv.Close()
 
+	optOut := false
 	cfg := &config.Config{}
 	cfg.AutoResponse.VerdictCallback.Enabled = true
 	cfg.AutoResponse.VerdictCallback.URL = oldSrv.URL
 	cfg.AutoResponse.VerdictCallback.TimeoutSec = 1
+	cfg.AutoResponse.VerdictCallback.HMACSecret = "panel-secret"
+	cfg.AutoResponse.VerdictCallback.RequireResponseSignature = &optOut
 	d := &Daemon{cfg: &config.Config{}}
 	config.SetActive(cfg)
 	t.Cleanup(func() { config.SetActive(nil) })

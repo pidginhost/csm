@@ -61,3 +61,9 @@ func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
 		}
 	}()
 }
+
+// emitRecordFailure mirrors processEvent's FAIL path (recordFailure then emit)
+// so tests that drive recordFailure directly still observe findings on alertCh.
+func emitRecordFailure(p *PAMListener, ip, user, service string) {
+	p.emit(p.recordFailure(ip, user, service))
+}

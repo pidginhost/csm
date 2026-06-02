@@ -15,7 +15,7 @@ import (
 // stored in canonical form.
 func TestAPIImportValidatesWhitelistIPs(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
-	checks.InitThreatDB(t.TempDir(), nil)
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 
 	body := `{"whitelist":[
 		{"ip":"not-an-ip"},

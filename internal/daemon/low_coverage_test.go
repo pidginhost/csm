@@ -172,8 +172,8 @@ func TestRecordFailure_CustomWindowMin(t *testing.T) {
 	}
 
 	ip := "203.0.113.70"
-	p.recordFailure(ip, "root", "sshd")
-	p.recordFailure(ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
 
 	// Move firstSeen to 3 minutes ago (beyond the 2-min window)
 	p.mu.Lock()
@@ -181,7 +181,7 @@ func TestRecordFailure_CustomWindowMin(t *testing.T) {
 	p.mu.Unlock()
 
 	// This should reset the tracker because the window expired
-	p.recordFailure(ip, "root", "sshd")
+	emitRecordFailure(p, ip, "root", "sshd")
 
 	p.mu.Lock()
 	count := p.failures[ip].count
@@ -208,15 +208,15 @@ func TestRecordFailure_WindowExpiryResetsUsersAndServices(t *testing.T) {
 	}
 
 	ip := "203.0.113.71"
-	p.recordFailure(ip, "root", "sshd")
-	p.recordFailure(ip, "admin", "webmin")
+	emitRecordFailure(p, ip, "root", "sshd")
+	emitRecordFailure(p, ip, "admin", "webmin")
 
 	p.mu.Lock()
 	p.failures[ip].firstSeen = time.Now().Add(-2 * time.Minute)
 	p.mu.Unlock()
 
 	// Window expired: next failure resets users/services
-	p.recordFailure(ip, "deploy", "sudo")
+	emitRecordFailure(p, ip, "deploy", "sudo")
 
 	p.mu.Lock()
 	tracker := p.failures[ip]
@@ -243,9 +243,9 @@ func TestRecordFailure_AlertDetailsContainUsersAndServices(t *testing.T) {
 	}
 
 	ip := "203.0.113.72"
-	p.recordFailure(ip, "root", "sshd")
-	p.recordFailure(ip, "admin", "webmin")
-	p.recordFailure(ip, "root", "sshd") // triggers threshold
+	emitRecordFailure(p, ip, "root", "sshd")
+	emitRecordFailure(p, ip, "admin", "webmin")
+	emitRecordFailure(p, ip, "root", "sshd") // triggers threshold
 
 	select {
 	case f := <-alertCh:
