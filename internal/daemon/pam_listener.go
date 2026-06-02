@@ -220,23 +220,37 @@ func (p *PAMListener) processEvent(line string) {
 
 	switch eventType {
 	case "FAIL":
-		p.recordFailure(ip, user, service)
+		p.emit(p.recordFailure(ip, user, service))
 	case "OK":
 		p.clearFailures(ip)
 		// Successful login from non-infra IP - informational alert
-		p.alertCh <- alert.Finding{
+		p.emit([]alert.Finding{{
 			Severity:  alert.High,
 			Check:     "pam_login",
 			Message:   fmt.Sprintf("Login success from non-infra IP: %s (user: %s, service: %s)", ip, user, service),
 			Timestamp: time.Now(),
 			SourceIP:  ip,
-		}
+		}})
 	}
 }
 
-func (p *PAMListener) recordFailure(ip, user, service string) {
+// emit forwards findings to the alert channel. It must be called WITHOUT
+// p.mu held: a stalled alert consumer blocks the send, and holding the lock
+// across that send would wedge recordFailure, clearFailures, and the cleanup
+// loop, letting failure trackers grow without bound.
+func (p *PAMListener) emit(findings []alert.Finding) {
+	for _, f := range findings {
+		p.alertCh <- f
+	}
+}
+
+// recordFailure updates per-IP failure state and returns any findings the
+// update produced. Findings are returned rather than sent so the caller can
+// emit them after releasing p.mu (see emit).
+func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var findings []alert.Finding
 	cfg := p.currentCfg()
 	threshold, window, distinct := pamThresholds(cfg)
 	now := time.Now()
@@ -262,7 +276,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 	// threshold per account is still caught. Fires once per window.
 	p.ensureCredentialStuffingDetectorLocked(distinct, window, now)
 	if accounts, fire := p.stuffing.Record(ip, user); fire {
-		p.alertCh <- alert.Finding{
+		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "credential_stuffing",
 			Message:  fmt.Sprintf("Credential stuffing: %s failed logins against %d distinct accounts", ip, len(accounts)),
@@ -270,7 +284,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 				strings.Join(accounts, ", "), strings.Join(sortedBoolKeys(tracker.services), ", ")),
 			Timestamp: now,
 			SourceIP:  ip,
-		}
+		})
 	}
 
 	// Only block if within the time window
@@ -281,7 +295,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 		tracker.users = map[string]bool{user: true}
 		tracker.services = map[string]bool{service: true}
 		tracker.blocked = false
-		return
+		return findings
 	}
 
 	if tracker.count >= threshold && !tracker.blocked {
@@ -296,7 +310,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 			services = append(services, s)
 		}
 
-		p.alertCh <- alert.Finding{
+		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "pam_bruteforce",
 			Message:  fmt.Sprintf("PAM brute-force detected: %s (%d failures in %ds)", ip, tracker.count, int(now.Sub(tracker.firstSeen).Seconds())),
@@ -304,8 +318,10 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 				strings.Join(users, ", "), strings.Join(services, ", ")),
 			Timestamp: now,
 			SourceIP:  ip,
-		}
+		})
 	}
+
+	return findings
 }
 
 func (p *PAMListener) clearFailures(ip string) {
