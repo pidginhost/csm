@@ -1589,11 +1589,58 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 			return nil, nil, false, fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
 		}
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
-			return nil, nil, false, fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
+			// Make room by evicting the soonest-to-expire temp block instead of
+			// refusing. Refusing let an attacker saturate the cap with cheap
+			// throwaway-IP blocks and then stop CSM from ever blocking the IPs
+			// doing real damage. The evicted entry is the one closest to expiry
+			// anyway, so this only shortens its remaining time slightly.
+			if !e.evictSoonestExpiringTempLocked(st, ip) {
+				return nil, nil, false, fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
+			}
 		}
 	}
 
 	return targetSet, key, false, nil
+}
+
+// soonestExpiringTempIP returns the IP of the temporary block closest to
+// expiry, skipping permanent blocks and excludeIP. Pure helper so the
+// eviction policy is unit-testable without nftables.
+func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
+	var best string
+	var bestExp time.Time
+	found := false
+	for _, b := range st.Blocked {
+		if b.IP == excludeIP || b.ExpiresAt.IsZero() {
+			continue
+		}
+		if !found || b.ExpiresAt.Before(bestExp) {
+			best, bestExp, found = b.IP, b.ExpiresAt, true
+		}
+	}
+	return best, found
+}
+
+// evictSoonestExpiringTempLocked removes the soonest-to-expire temporary block
+// from nft and state to free a slot under DenyTempIPLimit. Must hold e.mu.
+func (e *Engine) evictSoonestExpiringTempLocked(st FirewallState, excludeIP string) bool {
+	victim, ok := soonestExpiringTempIP(st, excludeIP)
+	if !ok {
+		return false
+	}
+	set, key, err := e.resolveIPSet(victim, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return false
+	}
+	if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
+		return false
+	}
+	if err := e.conn.Flush(); err != nil {
+		return false
+	}
+	e.removeBlockedState(victim)
+	AppendAudit(e.statePath, "evict_temp", victim, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
+	return true
 }
 
 func firewallStateHasBlocked(state FirewallState, ip string) bool {
