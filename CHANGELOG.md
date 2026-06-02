@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-06-02
+
 ### Added
 
 - A signed YARA Forge rule mirror lets operators turn on Forge rule updates with signature verification. Release artifacts and downloaded rules are now checked against the project signing key.
