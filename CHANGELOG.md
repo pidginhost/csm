@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `csm rehash` now exits non-zero when it fails to update the integrity hashes, so a scripted rehash-then-restart no longer proceeds on a stale hash and takes the daemon down.
 - The YARA scan worker now contains a handler crash and returns an error for that one scan instead of dropping the connection, and a stopped scan worker no longer retries against its closed socket. Together these stop a single bad scan from wedging the scan path.
 - ModSecurity rule parsing no longer drops an entire vendor rule file when it contains an unusually long assembled line. Such a file previously fell out of the rule-action registry, which could mislabel its pass and counter rules as real blocks.
 - File signature scanning now reads the whole inspected region in one pass instead of a single read that could stop short, closing a gap where malware further into a file could be missed. An out-of-range read size is now rejected instead of crashing the scanner.

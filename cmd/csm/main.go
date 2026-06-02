@@ -727,13 +727,17 @@ func runRehash() {
 
 	binaryHash, err := integrity.HashFile(binaryPath)
 	if err != nil {
+		// Exit non-zero: operators chain `csm rehash && systemctl restart
+		// csm`, and csm.yaml edits require a rehash or the daemon refuses to
+		// start on a hash mismatch. A silent exit 0 here would let the
+		// restart proceed onto a stale hash and take the daemon down.
 		fmt.Fprintf(os.Stderr, "Error hashing binary: %v\n", err)
-		return
+		os.Exit(1)
 	}
 	configHash, confdHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, cfg.ConfigDir, binaryHash)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		return
+		os.Exit(1)
 	}
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
