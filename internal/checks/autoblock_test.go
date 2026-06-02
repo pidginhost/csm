@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func countRateLimitWarnings(actions []alert.Finding) int {
@@ -815,6 +816,94 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	}
 	if !strings.Contains(actions[1].Message, "AUTO-PERMBLOCK") {
 		t.Fatalf("permblock action message = %q, want AUTO-PERMBLOCK", actions[1].Message)
+	}
+}
+
+// engineLikeBlocker reproduces the real firewall engine's BlockIPOutcome
+// contract: a second block of an already-blocked IP within the same scan
+// (skipExisting) returns BlockOutcomeNoop. PermBlock escalation runs in that
+// same cycle, right after the temp block landed, so routing the promotion
+// through the ordinary block path would no-op forever and the kernel timeout
+// would expire the "permanent" block. The engine satisfies permanentPromoter
+// so the escalation upgrades the existing element instead.
+type engineLikeBlocker struct {
+	liveBlocked map[string]bool
+	tempCalls   []blockCall
+	promotions  []blockCall
+}
+
+func (b *engineLikeBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
+	_, err := b.BlockIPOutcome(ip, reason, timeout)
+	return err
+}
+func (b *engineLikeBlocker) UnblockIP(string) error { return nil }
+func (b *engineLikeBlocker) IsBlocked(ip string) bool { return b.liveBlocked[ip] }
+
+func (b *engineLikeBlocker) BlockIPOutcome(ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error) {
+	if b.liveBlocked[ip] {
+		return firewall.BlockOutcomeNoop, nil
+	}
+	b.liveBlocked[ip] = true
+	b.tempCalls = append(b.tempCalls, blockCall{ip: ip, reason: reason, timeout: timeout})
+	return firewall.BlockOutcomeLive, nil
+}
+
+func (b *engineLikeBlocker) PromoteToPermanentBlock(ip, reason string) error {
+	b.promotions = append(b.promotions, blockCall{ip: ip, reason: reason, timeout: 0})
+	return nil
+}
+
+func TestAutoBlockIPs_PromotesViaUpgradeWhenAlreadyBlockedThisCycle(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "1h"
+	cfg.AutoResponse.PermBlock = true
+	cfg.AutoResponse.PermBlockCount = 2
+	cfg.AutoResponse.PermBlockInterval = "24h"
+
+	tracker := &permBlockTracker{
+		IPs: map[string][]time.Time{
+			"4.3.2.1": {time.Now().Add(-1 * time.Hour)},
+		},
+	}
+	savePermBlockTracker(cfg.StatePath, tracker)
+
+	blocker := &engineLikeBlocker{liveBlocked: map[string]bool{}}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:     "wp_login_bruteforce",
+			Message:   "WordPress brute force from 4.3.2.1",
+			Timestamp: time.Now(),
+		},
+	})
+
+	if len(blocker.tempCalls) != 1 {
+		t.Fatalf("temp block count = %d, want 1", len(blocker.tempCalls))
+	}
+	if len(blocker.promotions) != 1 || blocker.promotions[0].ip != "4.3.2.1" {
+		t.Fatalf("promotions = %+v, want one upgrade of 4.3.2.1", blocker.promotions)
+	}
+	if !strings.Contains(blocker.promotions[0].reason, "PERMBLOCK") {
+		t.Fatalf("promotion reason = %q, want PERMBLOCK marker", blocker.promotions[0].reason)
+	}
+	var sawPerm bool
+	for _, a := range actions {
+		if strings.Contains(a.Message, "AUTO-PERMBLOCK") {
+			sawPerm = true
+		}
+	}
+	if !sawPerm {
+		t.Fatalf("no AUTO-PERMBLOCK action emitted; actions=%+v", actions)
 	}
 }
 

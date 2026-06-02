@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Permanent-block escalation now actually makes a repeat offender's block permanent. The promotion previously ran in the same cycle as the temporary block and was skipped as "already blocked," so the address kept its temporary timeout and silently expired instead of staying blocked.
 - The email spool watcher now exits cleanly on shutdown even if it crash-restarted moments earlier. A narrow race could previously leave a freshly restarted watcher running with nothing to stop it, hanging daemon shutdown until systemd killed the process and dropped in-flight scan state.
 - Surgical file cleaning now refuses files above a size ceiling and quarantines them by rename instead. An attacker could previously match a signature in a file's first bytes, pad it to many gigabytes, and make the root daemon read the whole file into memory until it was killed.
 

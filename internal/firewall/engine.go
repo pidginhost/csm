@@ -1441,6 +1441,71 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) e
 	return e.blockIPLocked(ip, reason, timeout, false)
 }
 
+// PromoteToPermanentBlock upgrades an existing temporary block on ip to a
+// permanent one: it clears the kernel timeout by deleting the timed element
+// and re-adding it without a timeout, and zeroes ExpiresAt in state. The
+// ordinary block path cannot do this during PermBlock escalation because it
+// skips an already-blocked IP, so the kernel timeout would otherwise expire
+// the block the operator wanted made permanent. Returns an error if the IP is
+// not currently blocked (nothing to promote).
+func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("invalid IP: %s", ip)
+	}
+	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return err
+	}
+
+	priorState := e.loadStateFile()
+	if !firewallStateHasBlocked(priorState, ip) {
+		return fmt.Errorf("cannot promote %s: not currently blocked", ip)
+	}
+
+	entry := BlockedEntry{IP: ip, Reason: reason, Source: SourceSystem, BlockedAt: time.Now()}
+	for _, b := range priorState.Blocked {
+		if b.IP == ip {
+			entry.BlockedAt = b.BlockedAt
+			if b.Source != "" {
+				entry.Source = b.Source
+			}
+			break
+		}
+	}
+	// ExpiresAt left zero: permanent.
+	nextState := copyFirewallState(priorState)
+	upsertBlockedEntryInState(&nextState, entry)
+	if err := e.saveState(&nextState); err != nil {
+		return fmt.Errorf("persisting permanent promotion for %s: %w", ip, err)
+	}
+
+	// Delete the timed element and re-add it without a timeout in one
+	// transaction, so the address is never unblocked in between.
+	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
+		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+			return fmt.Errorf("promoting %s: delete timed element: %w (state restore failed: %v)", ip, err, restoreErr)
+		}
+		return fmt.Errorf("promoting %s: delete timed element: %w", ip, err)
+	}
+	if err := e.conn.SetAddElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
+		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+			return fmt.Errorf("promoting %s: re-add permanent element: %w (state restore failed: %v)", ip, err, restoreErr)
+		}
+		return fmt.Errorf("promoting %s: re-add permanent element: %w", ip, err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+			return fmt.Errorf("promoting %s: flush: %w (state restore failed: %v)", ip, err, restoreErr)
+		}
+		return fmt.Errorf("promoting %s: flush: %w", ip, err)
+	}
+	AppendAudit(e.statePath, "permblock", ip, reason, entry.Source, 0)
+	return nil
+}
+
 // recordDryRunBlock persists a dry-run record through the daemon-installed
 // recorder so operators can review the count via /api/v1/status.
 // No-op when no recorder is installed.

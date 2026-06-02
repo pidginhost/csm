@@ -64,6 +64,15 @@ type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
 
+// permanentPromoter is satisfied by engines that can upgrade an existing
+// temporary block to a permanent one. PermBlock escalation runs in the same
+// scan cycle as the temp block that triggered it, so the ordinary block path
+// (which skips an already-blocked IP and returns BlockOutcomeNoop) would never
+// clear the kernel timeout and the "permanent" block would silently expire.
+type permanentPromoter interface {
+	PromoteToPermanentBlock(ip, reason string) error
+}
+
 type subnetBlockStatus interface {
 	IsSubnetBlocked(cidr string) bool
 }
@@ -396,7 +405,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			if checkPermBlockEscalation(cfg.StatePath, ip, count, interval) {
 				permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-				if permOutcome, err := callBlockIP(blocker, ip, permReason, 0); err == nil && permOutcome == firewall.BlockOutcomeLive {
+				if promoteToPermanentBlock(blocker, ip, permReason) {
 					actions = append(actions, alert.Finding{
 						Severity:  alert.Critical,
 						Check:     "auto_block",
@@ -495,6 +504,24 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 		return firewall.BlockOutcomeNoop, err
 	}
 	return firewall.BlockOutcomeLive, nil
+}
+
+// promoteToPermanentBlock upgrades an existing temp block to permanent. The
+// real engine implements permanentPromoter and clears the kernel timeout in
+// place. Legacy blockers that only implement BlockIP have not marked the IP
+// blocked in a way that trips skipExisting, so a fresh zero-timeout block on
+// them lands live; that fallback preserves pre-existing behaviour for tests
+// and third-party implementations.
+func promoteToPermanentBlock(b IPBlocker, ip, reason string) bool {
+	if pp, ok := b.(permanentPromoter); ok {
+		if err := pp.PromoteToPermanentBlock(ip, reason); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: permblock promotion of %s failed: %v\n", ip, err)
+			return false
+		}
+		return true
+	}
+	outcome, err := callBlockIP(b, ip, reason, 0)
+	return err == nil && outcome == firewall.BlockOutcomeLive
 }
 
 func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {
