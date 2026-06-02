@@ -2441,6 +2441,7 @@ func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (str
 		HMACSecret:               vcCfg.HMACSecret,
 		HMACSecretEnv:            vcCfg.HMACSecretEnv,
 		RequireResponseSignature: vcCfg.RequireResponseSignature,
+		AllowUnsigned:            vcCfg.AllowUnsigned,
 		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
 	})
 	resp, err := vc.Ask(ctx, verdict.Request{

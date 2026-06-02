@@ -480,10 +480,11 @@ type Config struct {
 			// omit both keep the legacy advisory shape working.
 			RequireResponseSignature *bool `yaml:"require_response_signature,omitempty"`
 			// AllowUnsigned opts out of the default fail-closed posture and
-			// permits the verdict callback to fire without an HMAC secret.
-			// Only set true while bootstrapping a new panel or during local
-			// testing; production deployments must keep this false so the
-			// daemon refuses to start when the secret env var is empty.
+			// permits the verdict callback to fire without an HMAC secret,
+			// including advisory "allow" responses. Only set true while
+			// bootstrapping a new panel or during local testing; production
+			// deployments must keep this false so the daemon refuses to start
+			// when the secret env var is empty.
 			AllowUnsigned bool `yaml:"allow_unsigned,omitempty"`
 		} `yaml:"verdict_callback"`
 	} `yaml:"auto_response" hotreload:"safe"`
@@ -1584,7 +1585,7 @@ func validateVerdictCallbackField(cfg *Config) (string, error) {
 // outbound HMAC: when the callback is enabled, either hmac_secret or the
 // hmac_secret_env-named env var must resolve to a non-empty value, OR
 // the operator must explicitly set allow_unsigned: true to acknowledge
-// that the channel will run without integrity protection.
+// that requests and responses will run without integrity protection.
 //
 // Without this check a misconfigured deployment (env var typoed, secret
 // not yet rotated in) silently emits unsigned POSTs while the daemon
@@ -1603,7 +1604,7 @@ func validateVerdictCallbackSecret(vc verdictCallbackForValidation) error {
 		}
 		return fmt.Errorf("auto_response.verdict_callback.enabled=true but env var %q is empty or unset; set the secret, or opt in with allow_unsigned: true", vc.HMACSecretEnv)
 	}
-	return fmt.Errorf("auto_response.verdict_callback.enabled=true requires hmac_secret or hmac_secret_env (or allow_unsigned: true to acknowledge unsigned posts)")
+	return fmt.Errorf("auto_response.verdict_callback.enabled=true requires hmac_secret or hmac_secret_env (or allow_unsigned: true to acknowledge unsigned requests and responses)")
 }
 
 // verdictCallbackForValidation isolates the fields validateVerdictCallbackSecret

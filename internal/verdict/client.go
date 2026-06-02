@@ -46,13 +46,19 @@ const (
 // response signing. Even on the opt-out path, replay protection is
 // best-effort enforced: if the panel does echo nonce or timestamp,
 // they must match; a panel that echoes neither still works (legacy
-// shape). When no HMAC secret is configured at all, every response
-// check is skipped because there is no key to verify against.
+// shape). When no HMAC secret is configured at all, signature and
+// replay checks are skipped because there is no key to verify against.
+//
+// AllowUnsigned is the runtime form of
+// auto_response.verdict_callback.allow_unsigned. By default, an unsigned
+// "allow" response is rejected because it would disable the block. Set true
+// only for configs that explicitly opted in to an unsigned rollout.
 type Config struct {
 	URL                      string
 	HMACSecret               string
 	HMACSecretEnv            string
 	RequireResponseSignature *bool
+	AllowUnsigned            bool
 	Timeout                  time.Duration
 }
 
@@ -237,9 +243,8 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	// signature protection (the checks below are gated on secret != ""), so an
 	// on-path attacker could return "allow" on every call and silently disable
 	// auto-blocking. Returning an error keeps the engine on its default block
-	// path. Config validation also refuses a callback URL with no secret; this
-	// guards the runtime case where the secret env is unset or empty.
-	if secret == "" && out.Verdict == "allow" {
+	// path unless the config explicitly opted in to unsigned callback verdicts.
+	if secret == "" && out.Verdict == "allow" && !c.cfg.AllowUnsigned {
 		return Response{}, fmt.Errorf("verdict callback: refusing unsigned allow (no HMAC secret configured)")
 	}
 	// Replay protection runs whenever a secret is configured. Strict

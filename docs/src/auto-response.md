@@ -83,6 +83,8 @@ When `verdict_callback.enabled: true`, every auto-block call POSTs a
 signed JSON request to the panel before mutating nftables. CSM refuses
 to start without `hmac_secret` or a non-empty `hmac_secret_env` value
 unless `allow_unsigned: true` is set for a staged unsigned rollout.
+Without that opt-in, an unsigned `allow` response is rejected and the
+default block continues.
 When a secret is configured, CSM also requires the panel to sign the
 response body unless `require_response_signature: false` is set for a
 staged rollout. With that opt-out, CSM still checks any echoed `nonce`

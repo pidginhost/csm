@@ -35,7 +35,9 @@ verification on the same key for that exchange.
 CSM refuses to enable the callback without a non-empty `hmac_secret` or
 resolved `hmac_secret_env` value. Operators can set
 `allow_unsigned: true` only for staged rollouts that intentionally send
-unsigned requests.
+unsigned requests and accept unsigned responses. Without that explicit
+opt-in, CSM rejects an unsigned `allow` verdict and proceeds with the
+default block.
 
 The server MUST verify the signature with constant-time compare and
 reject unsigned or invalid requests with 401.
@@ -102,9 +104,10 @@ skew window. A legacy response that omits both fields keeps working.
 
 - Network error / timeout / non-200 HTTP response: CSM logs a warning and **proceeds with the default block**. The hook is fail-open at the transport level.
 - Local nonce generation failure: CSM does not send the request and **proceeds with the default block**.
-- 200 OK with `verdict: "allow"`: CSM does **not** modify nftables; logs the override to stderr.
+- 200 OK with `verdict: "allow"`: CSM does **not** modify nftables; logs the override to stderr. If no HMAC secret is configured, this is accepted only when `allow_unsigned: true` is set.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).
+- 200 OK with `verdict: "allow"` and no HMAC secret while `allow_unsigned` is false: rejected as an unsigned downgrade; treated as fail-open (default block).
 - 200 OK with missing or invalid `X-CSM-Signature` (and `require_response_signature` not turned off): rejected as forged; treated as fail-open (default block). Operators see the rejection in stderr; recurring rejections indicate either a panel-side rollout gap or an active on-path attack.
 - 200 OK with mismatched `nonce` or timestamp drift over five minutes: rejected as replay whenever a secret is configured and the field is present; treated as fail-open (default block).
 - 200 OK with missing `nonce` or `timestamp`: rejected as replay when response signing is required. Missing replay fields are accepted only when `require_response_signature: false` is set for a legacy response shape.

@@ -24,6 +24,7 @@ func applyBPFEnforcementVerdict(ctx context.Context, cfg *config.Config, ev Conn
 		HMACSecret:               vcCfg.HMACSecret,
 		HMACSecretEnv:            vcCfg.HMACSecretEnv,
 		RequireResponseSignature: vcCfg.RequireResponseSignature,
+		AllowUnsigned:            vcCfg.AllowUnsigned,
 		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
 	})
 	resp, err := vc.Ask(ctx, verdict.Request{

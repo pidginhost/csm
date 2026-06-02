@@ -68,6 +68,34 @@ func TestAskVerdictCallbackUsesActiveConfig(t *testing.T) {
 	}
 }
 
+func TestAskVerdictCallbackPassesAllowUnsignedOptIn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(verdict.Response{
+			Verdict:  "allow",
+			TenantID: "unsigned-tenant",
+			Note:     "unsigned rollout",
+		})
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.VerdictCallback.Enabled = true
+	cfg.AutoResponse.VerdictCallback.URL = srv.URL
+	cfg.AutoResponse.VerdictCallback.TimeoutSec = 1
+	cfg.AutoResponse.VerdictCallback.AllowUnsigned = true
+	config.SetActive(cfg)
+	t.Cleanup(func() { config.SetActive(nil) })
+
+	d := &Daemon{cfg: &config.Config{}}
+	verdictValue, tenant, note, err := d.askVerdictCallback(context.Background(), "192.0.2.10", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verdictValue != "allow" || tenant != "unsigned-tenant" || note != "unsigned rollout" {
+		t.Fatalf("unexpected unsigned verdict response: verdict=%q tenant=%q note=%q", verdictValue, tenant, note)
+	}
+}
+
 func TestAskVerdictCallbackDisabledActiveConfigSkipsHTTP(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

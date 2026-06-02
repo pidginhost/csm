@@ -239,27 +239,20 @@ func TestApplyBPFEnforcementVerdictAnnotatesFinding(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		// An "allow" verdict is honored only with integrity protection. Echo the
-		// request nonce and a fresh timestamp so replay checks pass under the
-		// signature opt-out.
 		_ = json.NewEncoder(w).Encode(verdict.Response{
-			Verdict:   "allow",
-			TenantID:  "panel-tenant",
-			Note:      "policy exception",
-			Nonce:     gotReq.Nonce,
-			Timestamp: time.Now().Unix(),
+			Verdict:  "allow",
+			TenantID: "panel-tenant",
+			Note:     "policy exception",
 		})
 	}))
 	t.Cleanup(srv.Close)
 
-	optOut := false
 	cfg := &config.Config{}
 	cfg.BPFEnforcement.VerdictCallback = true
 	cfg.AutoResponse.VerdictCallback.Enabled = true
 	cfg.AutoResponse.VerdictCallback.URL = srv.URL
 	cfg.AutoResponse.VerdictCallback.TimeoutSec = 1
-	cfg.AutoResponse.VerdictCallback.HMACSecret = "panel-secret"
-	cfg.AutoResponse.VerdictCallback.RequireResponseSignature = &optOut
+	cfg.AutoResponse.VerdictCallback.AllowUnsigned = true
 	f := alert.Finding{Check: "direct_smtp_egress", Severity: alert.High, Details: "base"}
 	ev := ConnectionEvent{
 		Decision: 1,

@@ -254,6 +254,22 @@ func TestClient_RejectsUnsignedAllow(t *testing.T) {
 	}
 }
 
+func TestClient_AllowUnsignedOptInAcceptsAllow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", TenantID: "t-1"})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, AllowUnsigned: true, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verdict != "allow" || resp.TenantID != "t-1" {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+}
+
 // An unsigned "block" verdict is safe (it does not weaken the default), so it
 // is still accepted without a secret.
 func TestClient_AcceptsUnsignedBlock(t *testing.T) {
