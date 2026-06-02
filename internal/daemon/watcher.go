@@ -62,6 +62,17 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 	}, nil
 }
 
+// currentCfg returns the live daemon config so SIGHUP changes to thresholds,
+// infra_ips, trusted_countries, and suppression settings reach the log-line
+// handlers without a restart. Falls back to the startup snapshot before the
+// first hot-reload publishes an active config.
+func (w *LogWatcher) currentCfg() *config.Config {
+	if cfg := config.Active(); cfg != nil {
+		return cfg
+	}
+	return w.cfg
+}
+
 // Run starts watching the log file. Uses polling (every 2 seconds) instead of
 // inotify to avoid complexity with log rotation. Simple, reliable, low overhead.
 func (w *LogWatcher) Run(stopCh <-chan struct{}) {
@@ -130,7 +141,7 @@ func (w *LogWatcher) readNewLines() {
 				continue
 			}
 
-			findings := w.handler(line, w.cfg)
+			findings := w.handler(line, w.currentCfg())
 			for _, f := range findings {
 				if f.Timestamp.IsZero() {
 					f.Timestamp = time.Now()

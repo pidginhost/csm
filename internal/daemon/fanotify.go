@@ -852,8 +852,10 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Resolve process info from PID (best-effort - process may have exited)
 	procInfo := resolveProcessInfo(event.pid)
 
-	// H2 - suppression path matching using filepath.Match
-	for _, ignore := range fm.cfg.Suppressions.IgnorePaths {
+	// H2 - suppression path matching using filepath.Match. Read the live config
+	// (config.Active via currentCfg) so a SIGHUP change to suppressions.ignore_paths
+	// takes effect without a restart, matching the rest of this analyzer.
+	for _, ignore := range fm.currentCfg().Suppressions.IgnorePaths {
 		if matchSuppression(ignore, path) {
 			return
 		}

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Configuration reloads (SIGHUP) now reach the realtime file monitor's path suppressions and the log watchers. Threshold, infrastructure-IP, trusted-country, and suppression changes previously needed a full restart to take effect on those paths.
 - BPF ring-buffer readers now close exactly once on shutdown and no longer leak their shutdown-watcher goroutine, removing a teardown race that could surface when a watcher restarts.
 - Auto-quarantine of realtime malware matches now decides by file content (obfuscation and decoder/execution signals) instead of a hardcoded library-path allowlist, so a webshell hidden under `vendor/`, `node_modules/`, or a plugin directory is contained while genuine library data files are still spared.
 - Package-integrity checks now report a tampered executable or shared library wherever it lives, not only under `/usr/bin` and a few sibling directories, so a trojaned `.so` under `/usr/lib*`, `/usr/local`, or `/opt` is no longer missed.
