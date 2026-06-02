@@ -868,6 +868,54 @@ func TestCheckHtaccessFileSuspiciousDirectives(t *testing.T) {
 	}
 }
 
+// An attacker pads an early .htaccess line past the scanner's default 64 KB
+// token so Scan stops and silently drops every later line, hiding the real
+// malicious directive. The enlarged buffer must read past the long line and
+// still flag the directive that follows it.
+func TestCheckHtaccessFileDirectiveAfterLongLineStillFlagged(t *testing.T) {
+	longLine := "# " + strings.Repeat("A", 100*1024) // 100 KB, over the old 64 KB cap
+	content := longLine + "\nauto_prepend_file /tmp/evil.php\n"
+	tmp := t.TempDir() + "/.htaccess"
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) { return os.Open(tmp) },
+	})
+
+	var findings []alert.Finding
+	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+	if len(findings) == 0 {
+		t.Fatal("malicious directive after an oversized line was not flagged (scanner truncated)")
+	}
+}
+
+// A line longer than the hard ceiling cannot be analyzed, so the scanner must
+// fail closed and flag the file rather than report a clean partial scan.
+func TestCheckHtaccessFileOversizedLineFailsClosed(t *testing.T) {
+	huge := strings.Repeat("A", htaccessMaxLineBytes+1)
+	content := "auto_prepend_file /tmp/evil.php " + huge + "\n"
+	tmp := t.TempDir() + "/.htaccess"
+	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) { return os.Open(tmp) },
+	})
+
+	var findings []alert.Finding
+	checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+	var sawUnparseable bool
+	for _, f := range findings {
+		if strings.Contains(f.Message, "Unparseable .htaccess") {
+			sawUnparseable = true
+		}
+	}
+	if !sawUnparseable {
+		t.Fatalf("oversized line did not fail closed; findings=%+v", findings)
+	}
+}
+
 func TestCheckHtaccessFileCommentSkipped(t *testing.T) {
 	content := "# auto_prepend_file /tmp/evil.php\n"
 	tmp := t.TempDir() + "/.htaccess"

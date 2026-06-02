@@ -16,6 +16,12 @@ import (
 
 const wpChecksumWorkers = 5 // concurrent wp core verify-checksums
 
+// htaccessMaxLineBytes bounds a single .htaccess line for the token scanner.
+// Legitimate directives are far shorter; a line past this is itself an
+// anomaly, so the scanner fails closed (flags the file) rather than silently
+// truncating the rest.
+const htaccessMaxLineBytes = 1 << 20 // 1 MiB
+
 // CheckHtaccess scans for malicious .htaccess directives using pure Go ReadDir.
 func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
@@ -155,8 +161,26 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	// Read entire file to check cross-line context (e.g., AddHandler + Options -ExecCGI)
 	var lines []string
 	scanner := bufio.NewScanner(f)
+	// A .htaccess line longer than the default 64 KB token would make
+	// Scan stop early and silently drop every line after it, letting an
+	// attacker hide a malicious directive behind one padded line. Raise
+	// the ceiling, and if a line still exceeds it, fail closed below.
+	scanner.Buffer(make([]byte, 0, 64*1024), htaccessMaxLineBytes)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		// Could not read the whole file (oversized line or I/O error), so
+		// the cross-line and per-line analysis below is incomplete. Flag
+		// the file for review rather than reporting a clean partial scan.
+		*findings = append(*findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "htaccess_injection",
+			Message:  "Unparseable .htaccess: oversized or unreadable line blocks full analysis",
+			Details:  fmt.Sprintf("File: %s\nError: %v", path, err),
+			FilePath: path,
+		})
+		return
 	}
 
 	// Build full file content for context checks
