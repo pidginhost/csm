@@ -237,9 +237,28 @@ func TestClient_RejectsURLWithoutHost(t *testing.T) {
 	}
 }
 
-func TestClient_AllowVerdictParses(t *testing.T) {
+// With no HMAC secret configured there is no signature or replay protection,
+// so an "allow" verdict carries no integrity: an on-path attacker could return
+// it on every call and disable auto-blocking. The client must reject it; the
+// engine then stays on its default block path. (A signed allow is exercised by
+// TestClient_AcceptsSignedResponse.)
+func TestClient_RejectsUnsignedAllow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", TenantID: "t-1"})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected rejection of unsigned allow verdict")
+	}
+}
+
+// An unsigned "block" verdict is safe (it does not weaken the default), so it
+// is still accepted without a secret.
+func TestClient_AcceptsUnsignedBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "block"})
 	}))
 	defer srv.Close()
 
@@ -248,8 +267,8 @@ func TestClient_AllowVerdictParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Verdict != "allow" || resp.TenantID != "t-1" {
-		t.Fatalf("unexpected response %+v", resp)
+	if resp.Verdict != "block" {
+		t.Fatalf("unsigned block should be accepted, got %+v", resp)
 	}
 }
 
@@ -508,10 +527,13 @@ func TestClient_NoSecretSkipsResponseSignatureCheck(t *testing.T) {
 	}
 }
 
+// Without a secret the replay checks are skipped for a safe "block" verdict
+// (it cannot weaken the default). An unsigned "allow" is a separate matter and
+// is rejected outright -- see TestClient_RejectsUnsignedAllow.
 func TestClient_NoSecretSkipsResponseReplayCheck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(Response{
-			Verdict:   "allow",
+			Verdict:   "block",
 			Nonce:     "stale-nonce",
 			Timestamp: time.Now().Add(-10 * time.Minute).Unix(),
 		})
@@ -521,10 +543,10 @@ func TestClient_NoSecretSkipsResponseReplayCheck(t *testing.T) {
 	c := New(Config{URL: srv.URL, Timeout: time.Second})
 	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
 	if err != nil {
-		t.Fatalf("no-secret path must skip replay checks, got %v", err)
+		t.Fatalf("no-secret path must skip replay checks for a safe verdict, got %v", err)
 	}
-	if resp.Verdict != "allow" {
-		t.Fatalf("verdict = %q, want allow", resp.Verdict)
+	if resp.Verdict != "block" {
+		t.Fatalf("verdict = %q, want block", resp.Verdict)
 	}
 }
 

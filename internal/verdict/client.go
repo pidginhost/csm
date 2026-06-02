@@ -233,6 +233,15 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if out.Verdict != "" && out.Verdict != "block" && out.Verdict != "allow" {
 		return Response{}, fmt.Errorf("verdict callback returned unknown verdict %q", out.Verdict)
 	}
+	// Fail closed on an unsigned allow. Without a secret there is no replay or
+	// signature protection (the checks below are gated on secret != ""), so an
+	// on-path attacker could return "allow" on every call and silently disable
+	// auto-blocking. Returning an error keeps the engine on its default block
+	// path. Config validation also refuses a callback URL with no secret; this
+	// guards the runtime case where the secret env is unset or empty.
+	if secret == "" && out.Verdict == "allow" {
+		return Response{}, fmt.Errorf("verdict callback: refusing unsigned allow (no HMAC secret configured)")
+	}
 	// Replay protection runs whenever a secret is configured. Strict
 	// mode (response signing required) demands the panel echo nonce and
 	// timestamp. Best-effort mode (signing opt-out) still enforces what
