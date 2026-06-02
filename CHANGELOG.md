@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The verified-crawler DNS cache is now bounded. A scan from many unique source IPs could previously grow it without limit between periodic prunes, an external memory-pressure lever.
 - Incident auto-close and retention background loops now stop during shutdown before the state store closes, so they no longer tick against a closed database or leak past daemon exit.
 - Log watchers now close their files from their own polling loop on shutdown instead of from a separate goroutine, removing a teardown race on the file handle that could surface during a restart.
 - The verdict callback now refuses an "allow" reply that carries no replay binding when an HMAC secret is set but response signing is not required. An on-path attacker could previously strip the nonce and timestamp to slip an unbound allow past the best-effort replay checks and disable a block.

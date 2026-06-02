@@ -199,3 +199,40 @@ func TestCrawlerVerifierCacheExpiry(t *testing.T) {
 		t.Error("LookupAddr not re-called after TTL expiry")
 	}
 }
+
+// cachePut must not let the verifier cache grow without bound between the
+// daemon's periodic prunes. A flood of unique source IPs (each a negative
+// cache miss) must stay capped, evicting older entries to make room.
+func TestCrawlerVerifierCacheIsBounded(t *testing.T) {
+	v := NewCrawlerVerifier([]string{"googlebot"}, time.Minute, &fakeResolver{})
+	v.maxSize = 100
+
+	for i := 0; i < 10000; i++ {
+		v.cachePut(fmtIP(i), false)
+	}
+
+	v.mu.Lock()
+	size := len(v.cache)
+	v.mu.Unlock()
+	if size > v.maxSize {
+		t.Fatalf("cache size %d exceeded cap %d", size, v.maxSize)
+	}
+}
+
+func fmtIP(i int) string {
+	return "203.0.113." + itoa(i%256) + ":" + itoa(i)
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [20]byte
+	pos := len(b)
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(b[pos:])
+}

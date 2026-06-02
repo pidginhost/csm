@@ -44,9 +44,17 @@ type CrawlerVerifier struct {
 	posTTL   time.Duration
 	negTTL   time.Duration
 
-	mu    sync.Mutex
-	cache map[string]cacheEntry
+	mu      sync.Mutex
+	cache   map[string]cacheEntry
+	maxSize int
 }
+
+// crawlerCacheMaxEntries bounds the verifier cache between the daemon's
+// 60-second prune ticks. Without a cap a scan from many unique source IPs
+// (every miss inserts a negative entry) grows the map to request-rate x 60s,
+// an external memory-pressure lever. At the cap an insert first drops expired
+// entries, then evicts the soonest-to-expire entry to make room.
+const crawlerCacheMaxEntries = 50000
 
 type cacheEntry struct {
 	verified bool
@@ -75,6 +83,7 @@ func NewCrawlerVerifier(providers []string, cacheTTL time.Duration, resolver Res
 		posTTL:   cacheTTL,
 		negTTL:   cacheTTL / 5,
 		cache:    make(map[string]cacheEntry),
+		maxSize:  crawlerCacheMaxEntries,
 	}
 }
 
@@ -158,8 +167,39 @@ func (v *CrawlerVerifier) cachePut(ip string, verified bool) {
 		ttl = v.posTTL
 	}
 	v.mu.Lock()
+	defer v.mu.Unlock()
+	if _, exists := v.cache[ip]; !exists && v.maxSize > 0 && len(v.cache) >= v.maxSize {
+		v.evictForInsertLocked()
+	}
 	v.cache[ip] = cacheEntry{verified: verified, expires: time.Now().Add(ttl)}
-	v.mu.Unlock()
+}
+
+// evictForInsertLocked frees a slot when the cache is at capacity. It first
+// drops every expired entry; if that reclaimed nothing (all entries still
+// live), it evicts the single soonest-to-expire entry. Caller holds v.mu.
+func (v *CrawlerVerifier) evictForInsertLocked() {
+	now := time.Now()
+	freed := false
+	for ip, e := range v.cache {
+		if now.After(e.expires) {
+			delete(v.cache, ip)
+			freed = true
+		}
+	}
+	if freed {
+		return
+	}
+	var soonestIP string
+	var soonest time.Time
+	for ip, e := range v.cache {
+		if soonestIP == "" || e.expires.Before(soonest) {
+			soonestIP = ip
+			soonest = e.expires
+		}
+	}
+	if soonestIP != "" {
+		delete(v.cache, soonestIP)
+	}
 }
 
 // cleanExpired drops every entry whose TTL has lapsed. Without this,
