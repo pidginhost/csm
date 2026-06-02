@@ -382,6 +382,21 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		}
 	}
 
+	// Verify the staged bbolt snapshot against the hash the manifest recorded
+	// at export time before it can replace the live database. zstd's frame CRC
+	// catches transport corruption, but a snapshot that was altered before
+	// compression would otherwise be promoted over csm.db unchecked. Empty
+	// hash means a pre-hash archive; skip rather than reject.
+	if stagedBbolt != "" && man.BboltSHA256 != "" {
+		gotHash, hashErr := sha256File(stagedBbolt)
+		if hashErr != nil {
+			return nil, fmt.Errorf("hashing staged bbolt snapshot: %w", hashErr)
+		}
+		if gotHash != man.BboltSHA256 {
+			return nil, fmt.Errorf("%w: bbolt snapshot hash mismatch (archive manifest %s, staged %s)", ErrCorruptArchive, man.BboltSHA256, gotHash)
+		}
+	}
+
 	// Apply bbolt:
 	//   only=all      -> wholesale rename the snapshot over csm.db
 	//   only=firewall -> open snapshot read-only and copy fw:* buckets
@@ -468,6 +483,23 @@ func writeTarFile(tw *tar.Writer, name string, data []byte, modTime time.Time) e
 // (so a mid-write read sees either the old or the new full content)
 // and the bbolt snapshot (already a frozen copy on disk). The risk
 // is bounded enough to live with for v1.
+// sha256File returns the lowercase hex SHA-256 of a file, matching the
+// encoding Export records in Manifest.BboltSHA256.
+func sha256File(path string) (string, error) {
+	// #nosec G304 -- path is the staged bbolt snapshot inside the import
+	// staging dir (MkdirTemp under StatePath), not attacker-controlled.
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) error {
 	// #nosec G304 -- srcPath is supplied by Export's caller (the daemon's control handler, sourced from cfg.StatePath / cfg.Signatures.RulesDir) or is the bbolt snapshot path created via os.CreateTemp earlier in Export. Both are root-controlled; csm runs as root via systemd. Not attacker-controlled.
 	f, err := os.Open(srcPath)

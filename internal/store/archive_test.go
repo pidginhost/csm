@@ -1,15 +1,18 @@
 package store
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -196,6 +199,97 @@ func TestArchiveRoundTripFullRestore(t *testing.T) {
 		if !bytes.Equal(got, content) {
 			t.Errorf("rules %s mismatch", name)
 		}
+	}
+}
+
+// rewriteArchiveFlippingBbolt copies an archive, flipping one byte of the
+// bbolt snapshot payload while leaving the manifest (and its recorded hash)
+// untouched. This models an archive whose database was altered after export
+// but still decompresses and untars cleanly.
+func rewriteArchiveFlippingBbolt(t *testing.T, src, dst string) {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+
+	out, err := os.Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	zw, err := zstd.NewWriter(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name == bboltSnapshotEntry && len(data) > 0 {
+			data[0] ^= 0xFF // same length, header.Size stays valid
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A bbolt snapshot tampered after export (manifest hash unchanged) must be
+// rejected before it can replace the live database, not promoted blindly.
+func TestArchiveImportRejectsTamperedBboltSnapshot(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = db.Close()
+
+	tampered := filepath.Join(t.TempDir(), "tampered.csmbak")
+	rewriteArchiveFlippingBbolt(t, archivePath, tampered)
+
+	_, err := Import(ImportOptions{
+		SrcPath:         tampered,
+		StatePath:       t.TempDir(),
+		RulesPath:       t.TempDir(),
+		Only:            "all",
+		CurrentPlatform: defaultPlatform(),
+	})
+	if err == nil {
+		t.Fatal("Import accepted a tampered bbolt snapshot")
+	}
+	if !errors.Is(err, ErrCorruptArchive) {
+		t.Errorf("Import err = %v, want ErrCorruptArchive", err)
 	}
 }
 
