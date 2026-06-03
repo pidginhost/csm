@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- The `.htaccess` scanner now flags a directive that routes a non-PHP extension (for example an uploaded image) through a PHP handler, a handler-remap webshell technique that a generic safe-pattern match previously suppressed. Legitimate cPanel MultiPHP handler mappings for PHP extensions are unaffected.
+- The `.htaccess` scanner now flags PHP handler remaps to non-executable extensions, including Apache's dotless or quoted extension tokens and proxy-fcgi aliases. Legitimate cPanel MultiPHP mappings and PHP source-display handlers are unaffected.
 - Surgical removal of prepended PHP injection now matches uppercase open tags, closing a gap where an injected block starting with an uppercase tag was left in place.
 
 ### Fixed

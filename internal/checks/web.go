@@ -151,15 +151,10 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 	}
 }
 
-// phpExtension reports whether ext (leading dot, lowercase) is a PHP-family
-// source extension that legitimately maps to a PHP handler.
+// phpExtension reports whether ext (leading dot, lowercase) is a stock
+// PHP-executed extension that legitimately maps to a PHP handler.
 func phpExtension(ext string) bool {
-	switch ext {
-	case ".phtml", ".pht", ".phps", ".phar":
-		return true
-	}
-	// .php and versioned variants (.php5, .php7, .php8, ...).
-	return strings.HasPrefix(ext, ".php")
+	return isExecutablePHPName("x" + ext)
 }
 
 // phpHandlerRemapsNonPHP reports whether a single lowercased .htaccess line is
@@ -168,36 +163,52 @@ func phpExtension(ext string) bool {
 // to a PHP handler (e.g. application/x-httpd-ea-php74___lsphp .php .php7), so we
 // flag only when at least one mapped extension is not PHP-family.
 func phpHandlerRemapsNonPHP(lineLower string) bool {
-	fields := strings.Fields(lineLower)
+	return phpHandlerRemapsNonPHPInContext(lineLower, nil)
+}
+
+func phpHandlerRemapsNonPHPInContext(lineLower string, contexts []phpHandlerOverlay) bool {
+	fields := apacheDirectiveFields(lineLower)
 	if len(fields) < 2 {
 		return false
 	}
-	switch fields[0] {
-	case "addhandler", "addtype", "sethandler":
+	directive := fields[0]
+	switch directive {
+	case "addhandler", "addtype", "sethandler", "forcetype":
 	default:
 		return false
 	}
 
-	var handler string
-	var exts []string
-	for _, f := range fields[1:] {
-		if strings.HasPrefix(f, ".") {
-			exts = append(exts, strings.Trim(f, `"`))
-			continue
-		}
-		if handler == "" {
-			handler = strings.Trim(f, `"`)
-		}
+	handler := fields[1]
+	if !handlerIsPHP(handler) {
+		return false
 	}
 
-	// A PHP execution handler is identified by "php" in the handler token:
-	// x-httpd-php, ...___lsphp, or a proxy:fcgi path under an ea-phpNN tree.
-	if !strings.Contains(handler, "php") || len(exts) == 0 {
-		return false
+	exts := normalizedExts(fields[2:])
+	if len(exts) == 0 {
+		return directiveHandlerContextTargetsNonPHP(directive, contexts)
 	}
 	for _, ext := range exts {
 		if !phpExtension(ext) {
 			return true
+		}
+	}
+	return false
+}
+
+func directiveHandlerContextTargetsNonPHP(directive string, contexts []phpHandlerOverlay) bool {
+	if directive != "sethandler" && directive != "forcetype" {
+		return false
+	}
+	for _, ctx := range contexts {
+		for ext := range ctx.exts {
+			if !phpExtension(ext) {
+				return true
+			}
+		}
+		for name := range ctx.names {
+			if !isExecutablePHPName(name) {
+				return true
+			}
 		}
 	}
 	return false
@@ -241,6 +252,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	// If file contains handler directives paired with -ExecCGI, the whole
 	// block is a security measure (e.g., Wordfence execution protection)
 	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
+	var phpHandlerContexts []phpHandlerOverlay
 
 	for lineNum, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -250,13 +262,27 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if ctx, ok := openPHPHandlerContext(trimmed); ok {
+			phpHandlerContexts = append(phpHandlerContexts, ctx)
+			continue
+		}
+		if closesPHPHandlerContext(trimmed) {
+			if len(phpHandlerContexts) > 0 {
+				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
+			}
+			continue
+		}
 
 		// A PHP execution handler mapped onto a non-PHP extension is the
 		// handler-remap webshell technique: an uploaded .jpg then runs as
 		// PHP. The safe-pattern and AddType skips below would otherwise
 		// suppress it because the handler name itself is a normal PHP
 		// handler, so this override fires first and unconditionally.
-		if phpHandlerRemapsNonPHP(lineLower) {
+		remapsNonPHP := phpHandlerRemapsNonPHP(lineLower)
+		if !remapsNonPHP && len(phpHandlerContexts) > 0 {
+			remapsNonPHP = phpHandlerRemapsNonPHPInContext(lineLower, phpHandlerContexts)
+		}
+		if remapsNonPHP {
 			*findings = append(*findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "htaccess_injection",

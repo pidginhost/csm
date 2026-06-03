@@ -120,10 +120,9 @@ func (o phpHandlerOverlay) mergeHtaccess(content []byte) phpHandlerOverlay {
 //	SetHandler <php-handler>            (no extension -> whole directory)
 //	ForceType  <php-mime>               (no extension -> whole directory)
 //
-// A directive counts as PHP only when its handler/MIME token contains "php"
-// (e.g. application/x-httpd-php, php5-script, x-httpd-php-source is excluded
-// because it ends in -source... we keep it simple and conservative: any token
-// containing "php" except the source viewer). Matching is case-insensitive.
+// A directive counts as PHP when its handler/MIME token names PHP directly or
+// routes through proxy-fcgi. x-httpd-php-source is excluded because it renders
+// highlighted source instead of executing. Matching is case-insensitive.
 func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 	var overlay phpHandlerOverlay
 	var contexts []phpHandlerOverlay
@@ -144,12 +143,12 @@ func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 			continue
 		}
 
-		fields := strings.Fields(line)
+		fields := apacheDirectiveFields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		directive := strings.ToLower(fields[0])
-		handler := strings.ToLower(fields[1])
+		handler := fields[1]
 
 		switch directive {
 		case "addhandler", "addtype":
@@ -185,21 +184,26 @@ func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 }
 
 func handlerIsPHP(token string) bool {
-	if !strings.Contains(token, "php") {
-		return false
-	}
+	token = strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
 	// The source viewer renders highlighted source instead of executing.
 	if strings.Contains(token, "php-source") {
 		return false
 	}
-	return true
+	if strings.Contains(token, "php") {
+		return true
+	}
+	// cPanel/PHP-FPM .htaccess wiring can use a custom socket alias whose
+	// path does not include the literal "php". A proxy-fcgi handler still
+	// routes matching files to an executable backend, so remapped extensions
+	// must be treated as PHP-executed for scanning and .htaccess alerts.
+	return strings.HasPrefix(token, "proxy:") && strings.Contains(token, "fcgi://")
 }
 
 // normalizeExt turns an .htaccess extension token into a lowercase
 // leading-dot extension, rejecting anything that is not a plain extension
 // token (e.g. a stray flag or MIME fragment).
 func normalizeExt(token string) string {
-	t := strings.ToLower(strings.TrimSpace(token))
+	t := strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
 	t = strings.TrimPrefix(t, ".")
 	if t == "" {
 		return ""
@@ -211,6 +215,16 @@ func normalizeExt(token string) string {
 		}
 	}
 	return "." + t
+}
+
+func apacheDirectiveFields(line string) []string {
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if strings.HasPrefix(field, "#") {
+			return fields[:i]
+		}
+	}
+	return fields
 }
 
 func normalizedExts(tokens []string) []string {

@@ -73,6 +73,24 @@ func TestCheckHtaccessFlagsImageExtensionMappedToPHP(t *testing.T) {
 	}
 }
 
+// Apache accepts AddHandler/AddType extension tokens without a leading dot.
+// A dotless image extension must still be treated as the mapped extension.
+func TestCheckHtaccessFlagsDotlessImageExtensionMappedToPHP(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddType application/x-httpd-php jpg\n")
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("expected htaccess_injection finding for dotless jpg mapped to PHP handler, got %+v", findings)
+	}
+}
+
+// Quoted extension tokens are still Apache extension tokens. The parser must
+// normalize them before deciding whether the mapping is safe.
+func TestCheckHtaccessFlagsQuotedImageExtensionMappedToPHP(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddHandler application/x-httpd-php \".jpg\"\n")
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("expected htaccess_injection finding for quoted .jpg mapped to PHP handler, got %+v", findings)
+	}
+}
+
 // Attackers append a malicious extension to an otherwise legitimate-looking
 // handler line. The non-PHP extension must still flag.
 func TestCheckHtaccessFlagsAppendedAttackExtension(t *testing.T) {
@@ -89,6 +107,50 @@ func TestCheckHtaccessFlagsProxyFcgiRemap(t *testing.T) {
 		"AddHandler \"proxy:unix:/opt/cpanel/ea-php74/root/usr/var/run/php-fpm/x.sock|fcgi://localhost\" .ico\n")
 	if !hasInjectionFinding(findings) {
 		t.Fatalf("expected htaccess_injection finding for .ico mapped to php-fpm proxy handler, got %+v", findings)
+	}
+}
+
+// Custom php-fpm socket aliases do not always contain the literal "php". A
+// proxy-fcgi handler mapped to a static extension is still an execution remap.
+func TestCheckHtaccessFlagsProxyFcgiRemapWithoutPHPToken(t *testing.T) {
+	findings := htaccessFindingsFor(t,
+		"AddHandler \"proxy:unix:/run/site.sock|fcgi://localhost\" .ico\n")
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("expected htaccess_injection finding for .ico mapped to proxy-fcgi handler, got %+v", findings)
+	}
+}
+
+// FilesMatch-scoped SetHandler is the common php-fpm shape. If the context
+// targets a non-PHP extension, the SetHandler line must not be suppressed by
+// the generic proxy:unix safe pattern.
+func TestCheckHtaccessFlagsFilesMatchProxyFcgiRemap(t *testing.T) {
+	findings := htaccessFindingsFor(t, `<FilesMatch "\.jpg$">
+  SetHandler "proxy:unix:/run/site.sock|fcgi://localhost"
+</FilesMatch>
+`)
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("expected htaccess_injection finding for FilesMatch .jpg proxy-fcgi remap, got %+v", findings)
+	}
+}
+
+// .phps is normally source-display, .phar is an archive, and .phpx is not a
+// stock PHP extension. Mapping any of them to an executing PHP handler is not
+// the same as cPanel MultiPHP's normal .php/.php7/.phtml mapping.
+func TestCheckHtaccessFlagsNonExecutablePHPLikeExtensions(t *testing.T) {
+	for _, ext := range []string{".phps", ".phar", ".phpx"} {
+		findings := htaccessFindingsFor(t, "AddHandler application/x-httpd-php "+ext+"\n")
+		if !hasInjectionFinding(findings) {
+			t.Fatalf("expected htaccess_injection finding for %s mapped to PHP handler, got %+v", ext, findings)
+		}
+	}
+}
+
+// The source-view handler does not execute PHP. Mapping .phps to it is the
+// normal source-display shape and must not be treated as a handler-remap shell.
+func TestCheckHtaccessAllowsPHPSourceHandler(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddType application/x-httpd-php-source .phps\n")
+	if hasInjectionFinding(findings) {
+		t.Fatalf("PHP source-display handler must not flag, got %+v", findings)
 	}
 }
 

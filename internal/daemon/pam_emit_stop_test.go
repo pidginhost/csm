@@ -39,8 +39,9 @@ func TestPAMEmitUnblocksOnStop(t *testing.T) {
 // keeps its original blocking-send semantics so the lock-free emit contract is
 // unaffected.
 func TestPAMEmitBlocksWithoutStopChannel(t *testing.T) {
+	alertCh := make(chan alert.Finding)
 	p := &PAMListener{
-		alertCh: make(chan alert.Finding), // unbuffered, never drained
+		alertCh: alertCh, // unbuffered until the test drains it below
 	}
 
 	done := make(chan struct{})
@@ -54,5 +55,12 @@ func TestPAMEmitBlocksWithoutStopChannel(t *testing.T) {
 		t.Fatal("emit returned despite no reader and no stop signal")
 	case <-time.After(100 * time.Millisecond):
 		// Still blocked, as expected.
+	}
+
+	<-alertCh
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emit did not finish after the test drained alertCh")
 	}
 }

@@ -284,13 +284,30 @@ func fixHtaccess(path, message string) RemediationResult {
 
 	var cleaned []string
 	removed := 0
+	var phpHandlerContexts []phpHandlerOverlay
 	for _, line := range strings.Split(string(data), "\n") {
-		lineLower := strings.ToLower(strings.TrimSpace(line))
-		if strings.HasPrefix(lineLower, "#") {
+		trimmed := strings.TrimSpace(line)
+		lineLower := strings.ToLower(trimmed)
+		if strings.HasPrefix(trimmed, "#") {
+			cleaned = append(cleaned, line)
+			continue
+		}
+		if ctx, ok := openPHPHandlerContext(trimmed); ok {
+			phpHandlerContexts = append(phpHandlerContexts, ctx)
+			cleaned = append(cleaned, line)
+			continue
+		}
+		if closesPHPHandlerContext(trimmed) {
+			if len(phpHandlerContexts) > 0 {
+				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
+			}
 			cleaned = append(cleaned, line)
 			continue
 		}
 		isDangerous := false
+		if phpHandlerRemapsNonPHPInContext(lineLower, phpHandlerContexts) {
+			isDangerous = true
+		}
 		for _, d := range dangerous {
 			if strings.Contains(lineLower, d) {
 				isSafe := false
