@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.1] - 2026-06-03
+
 ### Security
 
 - The daemon is now built with Go 1.26.4, which patches two standard-library vulnerabilities (a TLS certificate hostname parsing slowdown and unescaped input in mail/network error messages).
