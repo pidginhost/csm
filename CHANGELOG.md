@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The daemon is now built with Go 1.26.4, which patches two standard-library vulnerabilities (a TLS certificate hostname parsing slowdown and unescaped input in mail/network error messages).
+
 ### Fixed
 
 - Active incidents can no longer accumulate without bound when auto-close is disabled or a kind has no threshold. A hard safety cap now resolves incidents left open past a maximum age, bounds how many stay in memory at once, and drains large capped backlogs promptly.
