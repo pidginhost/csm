@@ -42,7 +42,7 @@ var (
 			`|gzinflate\s*\(` +
 			`)`)
 	cleanRegexpVarInclude = regexp.MustCompile(`(?i)^[\s\x00\x0b]*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
-	cleanRegexpCloseOpen  = regexp.MustCompile(`\?>\s*<\?php`)
+	cleanRegexpCloseOpen  = regexp.MustCompile(`(?i)\?>\s*<\?php`)
 	cleanRegexpInlineEval = regexp.MustCompile(
 		`(?i)^[\s\x00\x0b]*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
 	cleanRegexpMultiB64   = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
@@ -447,7 +447,9 @@ func removePrependInjection(content string) (string, []string) {
 	var removals []string
 
 	trimmed := strings.TrimSpace(content)
-	if !strings.HasPrefix(trimmed, "<?php") {
+	// PHP open tags are case-insensitive (<?php, <?PHP, <?Php all execute), so
+	// match without lowercasing the whole file.
+	if len(trimmed) < 5 || !strings.EqualFold(trimmed[:5], "<?php") {
 		return content, nil
 	}
 

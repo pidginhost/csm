@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The `.htaccess` scanner now flags a directive that routes a non-PHP extension (for example an uploaded image) through a PHP handler, a handler-remap webshell technique that a generic safe-pattern match previously suppressed. Legitimate cPanel MultiPHP handler mappings for PHP extensions are unaffected.
+- Surgical removal of prepended PHP injection now matches uppercase open tags, closing a gap where an injected block starting with an uppercase tag was left in place.
+
+### Fixed
+
+- A visitor who passes the challenge now skips the gate for the allow window through a signed, single-IP cookie. The previous verification cookie was never checked, so a verified visitor was re-challenged on every request.
+- The authentication-event listener no longer leaks a goroutine at shutdown when the alert channel is no longer being drained.
+
 ## [3.11.1] - 2026-06-03
 
 ### Security

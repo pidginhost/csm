@@ -151,6 +151,58 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 	}
 }
 
+// phpExtension reports whether ext (leading dot, lowercase) is a PHP-family
+// source extension that legitimately maps to a PHP handler.
+func phpExtension(ext string) bool {
+	switch ext {
+	case ".phtml", ".pht", ".phps", ".phar":
+		return true
+	}
+	// .php and versioned variants (.php5, .php7, .php8, ...).
+	return strings.HasPrefix(ext, ".php")
+}
+
+// phpHandlerRemapsNonPHP reports whether a single lowercased .htaccess line is
+// an AddHandler/AddType/SetHandler directive routing a non-PHP file extension
+// to a PHP execution handler. cPanel MultiPHP legitimately maps PHP extensions
+// to a PHP handler (e.g. application/x-httpd-ea-php74___lsphp .php .php7), so we
+// flag only when at least one mapped extension is not PHP-family.
+func phpHandlerRemapsNonPHP(lineLower string) bool {
+	fields := strings.Fields(lineLower)
+	if len(fields) < 2 {
+		return false
+	}
+	switch fields[0] {
+	case "addhandler", "addtype", "sethandler":
+	default:
+		return false
+	}
+
+	var handler string
+	var exts []string
+	for _, f := range fields[1:] {
+		if strings.HasPrefix(f, ".") {
+			exts = append(exts, strings.Trim(f, `"`))
+			continue
+		}
+		if handler == "" {
+			handler = strings.Trim(f, `"`)
+		}
+	}
+
+	// A PHP execution handler is identified by "php" in the handler token:
+	// x-httpd-php, ...___lsphp, or a proxy:fcgi path under an ea-phpNN tree.
+	if !strings.Contains(handler, "php") || len(exts) == 0 {
+		return false
+	}
+	for _, ext := range exts {
+		if !phpExtension(ext) {
+			return true
+		}
+	}
+	return false
+}
+
 func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert.Finding) {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -196,6 +248,22 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 
 		// Skip comments entirely - commented-out directives are not active
 		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// A PHP execution handler mapped onto a non-PHP extension is the
+		// handler-remap webshell technique: an uploaded .jpg then runs as
+		// PHP. The safe-pattern and AddType skips below would otherwise
+		// suppress it because the handler name itself is a normal PHP
+		// handler, so this override fires first and unconditionally.
+		if phpHandlerRemapsNonPHP(lineLower) {
+			*findings = append(*findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "htaccess_injection",
+				Message:  "PHP handler mapped to non-PHP extension (handler remap)",
+				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
+				FilePath: path,
+			})
 			continue
 		}
 
