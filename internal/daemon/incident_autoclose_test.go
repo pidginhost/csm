@@ -44,6 +44,50 @@ func TestRunIncidentAutoCloseReportsLiveBacklogOnly(t *testing.T) {
 	}
 }
 
+func TestRunIncidentAutoCloseDrainsSafetyCapWhenAutoCloseDisabled(t *testing.T) {
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	enabled := false
+	cfg := &config.Config{}
+	cfg.Incidents.AutoClose.Enabled = &enabled
+
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	c.Restore(staleMailboxIncidents(incidentAutoCloseMaxPerSweep+1, old))
+	if more := runIncidentAutoClose(c, cfg); !more {
+		t.Fatal("disabled auto-close must still report safety-cap backlog")
+	}
+	if resolved, open := countDaemonIncidentStatuses(c.Snapshot()); resolved != incidentAutoCloseMaxPerSweep || open != 1 {
+		t.Fatalf("first safety sweep statuses = resolved:%d open:%d, want resolved:%d open:1",
+			resolved, open, incidentAutoCloseMaxPerSweep)
+	}
+	if more := runIncidentAutoClose(c, cfg); more {
+		t.Fatal("final safety sweep must clear backlog")
+	}
+	if resolved, open := countDaemonIncidentStatuses(c.Snapshot()); resolved != incidentAutoCloseMaxPerSweep+1 || open != 0 {
+		t.Fatalf("final safety sweep statuses = resolved:%d open:%d, want resolved:%d open:0",
+			resolved, open, incidentAutoCloseMaxPerSweep+1)
+	}
+}
+
+func TestRunIncidentAutoCloseReturnsSafetyBacklogWithoutThresholds(t *testing.T) {
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	cfg := &config.Config{}
+	cfg.Incidents.AutoClose.ByKind = map[string]string{
+		"mailbox_takeover":       "",
+		"credential_spray":       "",
+		"web_account_compromise": "",
+	}
+
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	c.Restore(staleMailboxIncidents(incidentAutoCloseMaxPerSweep+1, old))
+	if more := runIncidentAutoClose(c, cfg); !more {
+		t.Fatal("threshold-free auto-close must still report safety-cap backlog")
+	}
+	if resolved, open := countDaemonIncidentStatuses(c.Snapshot()); resolved != incidentAutoCloseMaxPerSweep || open != 1 {
+		t.Fatalf("threshold-free safety sweep statuses = resolved:%d open:%d, want resolved:%d open:1",
+			resolved, open, incidentAutoCloseMaxPerSweep)
+	}
+}
+
 func staleMailboxIncidents(count int, at time.Time) []incident.Incident {
 	incidents := make([]incident.Incident, 0, count)
 	for i := 0; i < count; i++ {

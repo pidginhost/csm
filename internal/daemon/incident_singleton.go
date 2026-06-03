@@ -302,7 +302,7 @@ func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool
 	}
 	rawThresholds := cfg.IncidentsAutoCloseThresholds()
 	if len(rawThresholds) == 0 {
-		return false
+		return capMore
 	}
 	thresholds := make(map[incident.Kind]time.Duration, len(rawThresholds))
 	for k, v := range rawThresholds {

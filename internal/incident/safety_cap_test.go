@@ -86,3 +86,54 @@ func TestEnforceActiveCapClosesOldestOverCap(t *testing.T) {
 		t.Fatalf("second sweep closed %d, want 0 (already at cap)", closed2)
 	}
 }
+
+func TestEnforceActiveCapLimitDoesNotCloseBelowCap(t *testing.T) {
+	c := newTestCorrelator()
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+
+	ids := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		ts := base.Add(time.Duration(i) * time.Hour)
+		c.now = func() time.Time { return ts }
+		ids[i] = seedIncident(t, c, "email_auth_failure_realtime", "limit"+string(rune('a'+i)), ts)
+	}
+
+	now := base.Add(10 * time.Hour)
+	closed, more := c.EnforceActiveCap(now, 3, 1)
+	if closed != 1 || !more {
+		t.Fatalf("first limited active cap = (closed=%d more=%v), want (1,true)", closed, more)
+	}
+	if got := activeIncidentCount(c.Snapshot()); got != 4 {
+		t.Fatalf("active count after first limited sweep = %d, want 4", got)
+	}
+	if got, _ := c.Get(ids[0]); got.Status != StatusResolved {
+		t.Fatalf("oldest incident status = %s, want resolved", got.Status)
+	}
+
+	closed2, more2 := c.EnforceActiveCap(now, 3, 1)
+	if closed2 != 1 || more2 {
+		t.Fatalf("second limited active cap = (closed=%d more=%v), want (1,false)", closed2, more2)
+	}
+	if got := activeIncidentCount(c.Snapshot()); got != 3 {
+		t.Fatalf("active count after second limited sweep = %d, want 3", got)
+	}
+
+	closed3, more3 := c.EnforceActiveCap(now, 3, 1)
+	if closed3 != 0 || more3 {
+		t.Fatalf("already-capped sweep = (closed=%d more=%v), want (0,false)", closed3, more3)
+	}
+	if got := activeIncidentCount(c.Snapshot()); got != 3 {
+		t.Fatalf("active count after already-capped sweep = %d, want 3", got)
+	}
+}
+
+func activeIncidentCount(incidents []Incident) int {
+	count := 0
+	for _, inc := range incidents {
+		if incidentStatusActive(inc.Status) {
+			count++
+		}
+	}
+	return count
+}
