@@ -172,3 +172,20 @@ func TestCheckHtaccessAllowsPlainPHPHandler(t *testing.T) {
 		t.Fatalf("plain .php handler must not flag, got %+v", findings)
 	}
 }
+
+// Regression guard for the #1 production false-positive risk: cPanel writes a
+// php-fpm FilesMatch SetHandler block into nearly every account's .htaccess.
+// Mapping PHP extensions through a proxy-fcgi handler is the normal shape and
+// must never flag.
+func TestCheckHtaccessAllowsLegitFPMFilesMatch(t *testing.T) {
+	for _, body := range []string{
+		"<FilesMatch \"\\.php$\">\n  SetHandler \"proxy:unix:/opt/cpanel/ea-php74/root/usr/var/run/php-fpm/x.sock|fcgi://localhost\"\n</FilesMatch>\n",
+		"<FilesMatch \"\\.(php[0-9]?|phtml)$\">\n  SetHandler \"proxy:unix:/opt/cpanel/ea-php82/root/usr/var/run/php-fpm/y.sock|fcgi://localhost\"\n</FilesMatch>\n",
+		"<FilesMatch \"\\.(php|php7|phtml)$\">\n  SetHandler application/x-httpd-ea-php74___lsphp\n</FilesMatch>\n",
+	} {
+		findings := htaccessFindingsFor(t, body)
+		if hasInjectionFinding(findings) {
+			t.Fatalf("legit php-fpm FilesMatch must not flag; body=%q findings=%+v", body, findings)
+		}
+	}
+}
