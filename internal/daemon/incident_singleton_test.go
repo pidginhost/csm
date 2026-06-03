@@ -46,7 +46,20 @@ func TestStopIncidentBackgroundLoopsCancelsBothLoops(t *testing.T) {
 		t.Fatal("auto-close loop cancel not set after construction")
 	}
 
-	StopIncidentBackgroundLoops()
+	// The cancels wait for their goroutines to exit, so StopIncidentBackground
+	// Loops must return promptly. A wrong wait (e.g. on a channel the goroutine
+	// never closes) would hang here; the deadline turns that into a failure
+	// instead of a stuck shutdown.
+	done := make(chan struct{})
+	go func() {
+		StopIncidentBackgroundLoops()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopIncidentBackgroundLoops did not return; cancel wait hung")
+	}
 
 	if incidentRetentionCancel != nil || incidentAutoCloseCancel != nil {
 		t.Fatal("StopIncidentBackgroundLoops did not clear both loop cancels")

@@ -260,7 +260,9 @@ func SetIncidentConfigSource(get func() *config.Config) {
 // at info when work was done; silent when nothing closed.
 func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func() {
 	stop := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		// Single resettable timer: first sweep after a short warm-up, then
 		// the normal interval -- unless a sweep reports a remaining backlog,
 		// in which case the next sweep fires on the fast drain cadence so a
@@ -281,7 +283,13 @@ func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func
 			}
 		}
 	}()
-	return func() { close(stop) }
+	// The cancel waits for the goroutine to actually exit, not just signal it,
+	// so the daemon's shutdown sequence can guarantee no sweep is mid-bbolt-
+	// write when it closes the store immediately after cancelling.
+	return func() {
+		close(stop)
+		<-stopped
+	}
 }
 
 // runIncidentAutoClose is one tick of the auto-close loop. Gated on
@@ -355,7 +363,9 @@ func runIncidentSafetyCap(c *incident.Correlator) (more bool) {
 // before touching the store under retention rules.
 func startIncidentRetentionLoop(c *incident.Correlator) func() {
 	stop := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		t := time.NewTicker(24 * time.Hour)
 		defer t.Stop()
 		first := time.NewTimer(time.Hour)
@@ -371,7 +381,12 @@ func startIncidentRetentionLoop(c *incident.Correlator) func() {
 			}
 		}
 	}()
-	return func() { close(stop) }
+	// Wait for the goroutine to exit, so a compaction in flight finishes
+	// before the daemon closes the store.
+	return func() {
+		close(stop)
+		<-stopped
+	}
 }
 
 // runIncidentCompaction prunes resolved/dismissed incidents older than
