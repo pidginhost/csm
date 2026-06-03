@@ -242,14 +242,9 @@ func joinHtaccessContinuations(physical []string) []htaccessLogicalLine {
 		for {
 			cur := physical[i]
 			span = append(span, cur)
-			// On CRLF input (strings.Split keeps the trailing "\r") the
-			// continuation backslash sits before the carriage return, so
-			// strip it before the suffix test and from the joined text.
-			body := strings.TrimRight(cur, "\r")
-			// A trailing backslash continues only when a next line exists;
-			// a backslash on the final line is left literal, matching Apache.
-			if i < len(physical)-1 && strings.HasSuffix(body, `\`) {
-				sb.WriteString(body[:len(body)-1])
+			body, continues := htaccessContinuationBody(cur, i < len(physical)-1)
+			if continues {
+				sb.WriteString(body)
 				i++
 				continue
 			}
@@ -260,6 +255,33 @@ func joinHtaccessContinuations(physical []string) []htaccessLogicalLine {
 		i++
 	}
 	return out
+}
+
+func htaccessContinuationBody(line string, hasNext bool) (string, bool) {
+	// On CRLF input (strings.Split keeps the trailing "\r") the continuation
+	// backslash sits before the carriage return, so strip it before the suffix
+	// test and from the joined text.
+	body := strings.TrimRight(line, "\r")
+	// A trailing backslash continues only when a next line exists; a backslash on
+	// the final line is left literal, matching Apache.
+	if !hasNext || !strings.HasSuffix(body, `\`) {
+		return body, false
+	}
+	if htaccessContainerLineKeepsTrailingBackslash(body) {
+		return body, false
+	}
+	return body[:len(body)-1], true
+}
+
+func htaccessContainerLineKeepsTrailingBackslash(body string) bool {
+	candidate := strings.TrimSpace(strings.TrimSuffix(body, `\`))
+	if !strings.Contains(candidate, ">") {
+		return false
+	}
+	if _, ok := openPHPHandlerContext(candidate); ok {
+		return true
+	}
+	return closesPHPHandlerContext(candidate)
 }
 
 func apacheDirectiveFields(line string) []string {

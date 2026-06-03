@@ -324,6 +324,86 @@ func applyRangeRemoval(content []byte, ranges []htaccessByteRange) []byte {
 	return out
 }
 
+type htaccessPhysicalByteLine struct {
+	text  string
+	start int
+	end   int
+}
+
+type htaccessLogicalByteLine struct {
+	text string
+	span htaccessByteRange
+}
+
+func splitHtaccessPhysicalByteLines(content []byte) []htaccessPhysicalByteLine {
+	var lines []htaccessPhysicalByteLine
+	for start := 0; start <= len(content); {
+		if start == len(content) {
+			lines = append(lines, htaccessPhysicalByteLine{
+				text:  "",
+				start: start,
+				end:   start,
+			})
+			break
+		}
+		end := start
+		for end < len(content) && content[end] != '\n' {
+			end++
+		}
+		lines = append(lines, htaccessPhysicalByteLine{
+			text:  string(content[start:end]),
+			start: start,
+			end:   end,
+		})
+		if end == len(content) {
+			break
+		}
+		start = end + 1
+	}
+	return lines
+}
+
+func htaccessLogicalByteLines(content []byte) []htaccessLogicalByteLine {
+	physical := splitHtaccessPhysicalByteLines(content)
+	var out []htaccessLogicalByteLine
+	for i := 0; i < len(physical); {
+		start := physical[i].start
+		var end int
+		var sb strings.Builder
+		for {
+			body, continues := htaccessContinuationBody(physical[i].text, i < len(physical)-1)
+			end = physical[i].end
+			if continues {
+				sb.WriteString(body)
+				i++
+				continue
+			}
+			sb.WriteString(body)
+			break
+		}
+		out = append(out, htaccessLogicalByteLine{
+			text: sb.String(),
+			span: htaccessByteRange{Start: start, End: end},
+		})
+		i++
+	}
+	return out
+}
+
+func matchesFromLogicalLineRegex(content []byte, re *regexp.Regexp) []htaccessMatch {
+	var out []htaccessMatch
+	for _, logical := range htaccessLogicalByteLines(content) {
+		if !re.MatchString(logical.text) {
+			continue
+		}
+		out = append(out, htaccessMatch{
+			Range:   logical.span,
+			Excerpt: trimExcerpt(content, logical.span.Start, logical.span.End),
+		})
+	}
+	return out
+}
+
 func sanitizePathForBackup(p string) string {
 	r := strings.NewReplacer("/", "_", "\\", "_", " ", "_", ":", "_")
 	return strings.TrimPrefix(r.Replace(p), "_")
@@ -336,7 +416,7 @@ func detectPHPInUploads(content []byte, path string) []htaccessMatch {
 	if !pathInNonScriptDir(path) {
 		return nil
 	}
-	return matchesFromRegex(content, rePHPHandlerMap)
+	return matchesFromLogicalLineRegex(content, rePHPHandlerMap)
 }
 
 func pathInNonScriptDir(path string) bool {
@@ -1043,19 +1123,4 @@ func trimExcerpt(content []byte, start, end int) string {
 		s = s[:200] + "..."
 	}
 	return s
-}
-
-// matchesFromRegex is a small helper: every match becomes one
-// htaccessMatch covering the line(s) the match spans, with the
-// match excerpt trimmed for display.
-func matchesFromRegex(content []byte, re *regexp.Regexp) []htaccessMatch {
-	idxs := re.FindAllIndex(content, -1)
-	var out []htaccessMatch
-	for _, idx := range idxs {
-		out = append(out, htaccessMatch{
-			Range:   lineRange(content, idx[0], idx[1]),
-			Excerpt: trimExcerpt(content, idx[0], idx[1]),
-		})
-	}
-	return out
 }

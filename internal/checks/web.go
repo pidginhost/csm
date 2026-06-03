@@ -388,7 +388,9 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
 	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
 	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
-		for lineNum, line := range lines {
+		for _, logical := range joinHtaccessContinuations(lines) {
+			lineNum := logical.start
+			line := logical.text
 			lineLower := strings.ToLower(line)
 			if !strings.Contains(lineLower, "addhandler") {
 				continue

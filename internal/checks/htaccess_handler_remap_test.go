@@ -247,6 +247,71 @@ func TestJoinHtaccessContinuations(t *testing.T) {
 	}
 }
 
+func TestJoinHtaccessContinuationsChainsAndPreservesCRSpan(t *testing.T) {
+	in := []string{
+		"AddHandler application/x-httpd-php \\\r",
+		".jpg \\\r",
+		".png\r",
+		"final-literal \\\r",
+	}
+	got := joinHtaccessContinuations(in)
+	if len(got) != 2 {
+		t.Fatalf("logical line count = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].text != "AddHandler application/x-httpd-php .jpg .png" {
+		t.Errorf("chained join text = %q", got[0].text)
+	}
+	if got[0].start != 0 || len(got[0].lines) != 3 {
+		t.Errorf("chained span wrong: start=%d lines=%q", got[0].start, got[0].lines)
+	}
+	if got[0].lines[0] != "AddHandler application/x-httpd-php \\\r" || got[0].lines[2] != ".png\r" {
+		t.Errorf("physical CR lines not preserved: %q", got[0].lines)
+	}
+	if got[1].text != "final-literal \\" {
+		t.Errorf("final EOF backslash should stay literal after CR strip, got %q", got[1].text)
+	}
+}
+
+func TestJoinHtaccessContinuationsLeavesNormalLinesUnchanged(t *testing.T) {
+	in := []string{
+		"AddHandler application/x-httpd-php .php",
+		"RewriteEngine On",
+		"Header set X-Frame-Options \"SAMEORIGIN\"",
+	}
+	got := joinHtaccessContinuations(in)
+	if len(got) != len(in) {
+		t.Fatalf("logical line count = %d, want %d: %+v", len(got), len(in), got)
+	}
+	for i := range in {
+		if got[i].text != in[i] {
+			t.Errorf("line %d text = %q, want %q", i, got[i].text, in[i])
+		}
+		if got[i].start != i || len(got[i].lines) != 1 || got[i].lines[0] != in[i] {
+			t.Errorf("line %d span changed: %+v", i, got[i])
+		}
+	}
+}
+
+func TestCheckHtaccessFlagsContinuationSplitCGIHandlerAbuse(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddHandler cgi-script \\\n.haxor\n")
+	for _, f := range findings {
+		if f.check == "htaccess_handler_abuse" {
+			return
+		}
+	}
+	t.Fatalf("continuation-split CGI handler abuse not flagged; got %+v", findings)
+}
+
+func TestCheckHtaccessContainerBackslashDoesNotEatSetHandler(t *testing.T) {
+	findings := htaccessFindingsFor(t, `<FilesMatch "\.jpg$">\
+  SetHandler "proxy:unix:/run/site.sock|fcgi://localhost"
+</FilesMatch>
+`)
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("FilesMatch context with stray backslash ate SetHandler; got %+v", findings)
+	}
+}
+
 // fixHtaccess must remove every physical line of a continuation-split remap and
 // preserve the legit handler. Portable variant so it also runs off Linux.
 func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
@@ -277,6 +342,82 @@ func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
 	}
 	if !strings.Contains(string(cs), "AddHandler application/x-httpd-php .php") {
 		t.Errorf("plain PHP handler should be preserved:\n%s", cs)
+	}
+}
+
+func TestFixHtaccessPreservesLegitContinuationAndRemovesFullDangerousSpan(t *testing.T) {
+	saved := fixHtaccessAllowedRoots
+	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
+	if evalErr != nil {
+		t.Fatal(evalErr)
+	}
+	fixHtaccessAllowedRoots = []string{dir}
+	t.Cleanup(func() { fixHtaccessAllowedRoots = saved })
+
+	path := filepath.Join(dir, ".htaccess")
+	content := "AddHandler application/x-httpd-php \\\n.php .php7\n" +
+		"AddHandler application/x-httpd-php \\\n.jpg \\\n.png\n" +
+		"RewriteEngine On\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := fixHtaccess(path, "htaccess injection at "+path)
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	cs, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(cs)
+	if strings.Contains(got, ".jpg") || strings.Contains(got, ".png") {
+		t.Fatalf("dangerous continuation span not fully stripped:\n%s", got)
+	}
+	wantLegit := "AddHandler application/x-httpd-php \\\n.php .php7\n"
+	if !strings.Contains(got, wantLegit) {
+		t.Errorf("legit continuation not preserved with both physical lines:\n%s", got)
+	}
+	if !strings.Contains(got, "RewriteEngine On\n") {
+		t.Errorf("ordinary directive was not preserved:\n%s", got)
+	}
+}
+
+func TestFixHtaccessPreservesCRLFLegitContinuationWriteBack(t *testing.T) {
+	saved := fixHtaccessAllowedRoots
+	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
+	if evalErr != nil {
+		t.Fatal(evalErr)
+	}
+	fixHtaccessAllowedRoots = []string{dir}
+	t.Cleanup(func() { fixHtaccessAllowedRoots = saved })
+
+	path := filepath.Join(dir, ".htaccess")
+	content := "AddHandler application/x-httpd-php \\\r\n.php .php7\r\n" +
+		"AddHandler application/x-httpd-php \\\r\n.jpg\r\n" +
+		"Header set X-Frame-Options \"SAMEORIGIN\"\r\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := fixHtaccess(path, "htaccess injection at "+path)
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	cs, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(cs)
+	wantLegit := "AddHandler application/x-httpd-php \\\r\n.php .php7\r\n"
+	if !strings.Contains(got, wantLegit) {
+		t.Errorf("CRLF legit continuation corrupted:\n%q", got)
+	}
+	if strings.Contains(got, ".jpg") {
+		t.Errorf("dangerous CRLF continuation span not stripped:\n%q", got)
+	}
+	if !strings.Contains(got, "Header set X-Frame-Options \"SAMEORIGIN\"\r\n") {
+		t.Errorf("CRLF ordinary directive corrupted:\n%q", got)
 	}
 }
 

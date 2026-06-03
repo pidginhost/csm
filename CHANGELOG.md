@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The `.htaccess` scanner now flags PHP handler remaps to non-executable extensions, including Apache's dotless or quoted extension tokens and proxy-fcgi aliases. Legitimate cPanel MultiPHP mappings and PHP source-display handlers are unaffected.
-- The `.htaccess` directive scanner, file-index handler overlay, and auto-cleaner now join Apache line continuations before analysis, so a malicious directive split across a trailing-backslash line break can no longer slip past detection or removal.
+- The `.htaccess` directive scanner, file-index handler overlay, and cleaners now join Apache line continuations before analysis and remove the full physical directive span, so split malicious directives can no longer slip past detection or leave orphaned lines.
 - Surgical removal of prepended PHP injection now matches uppercase open tags, closing a gap where an injected block starting with an uppercase tag was left in place.
 
 ### Fixed
