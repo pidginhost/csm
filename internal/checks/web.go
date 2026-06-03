@@ -254,8 +254,9 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
 	var phpHandlerContexts []phpHandlerOverlay
 
-	for lineNum, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	for _, logical := range joinHtaccessContinuations(lines) {
+		lineNum := logical.start
+		trimmed := strings.TrimSpace(logical.text)
 		lineLower := strings.ToLower(trimmed)
 
 		// Skip comments entirely - commented-out directives are not active

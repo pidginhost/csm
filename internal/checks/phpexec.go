@@ -127,8 +127,8 @@ func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 	var overlay phpHandlerOverlay
 	var contexts []phpHandlerOverlay
 
-	for _, raw := range strings.Split(string(content), "\n") {
-		line := strings.TrimSpace(raw)
+	for _, logical := range joinHtaccessContinuations(strings.Split(string(content), "\n")) {
+		line := strings.TrimSpace(logical.text)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -215,6 +215,51 @@ func normalizeExt(token string) string {
 		}
 	}
 	return "." + t
+}
+
+// htaccessLogicalLine is one Apache directive after joining physical
+// continuation lines. text is the joined directive (continuation backslashes
+// removed); lines are the original physical lines it spans, so a per-line
+// rewrite can drop or keep them together. start is the 0-based index of the
+// first physical line.
+type htaccessLogicalLine struct {
+	text  string
+	lines []string
+	start int
+}
+
+// joinHtaccessContinuations groups physical .htaccess lines into logical
+// directives, honoring Apache's trailing-backslash line continuation: a line
+// ending in "\" is joined with the next. Without this, a directive split as
+// "AddHandler ...php \" + ".jpg" reads as two harmless physical lines and
+// every per-line scanner misses the remap.
+func joinHtaccessContinuations(physical []string) []htaccessLogicalLine {
+	var out []htaccessLogicalLine
+	for i := 0; i < len(physical); {
+		start := i
+		var sb strings.Builder
+		var span []string
+		for {
+			cur := physical[i]
+			span = append(span, cur)
+			// On CRLF input (strings.Split keeps the trailing "\r") the
+			// continuation backslash sits before the carriage return, so
+			// strip it before the suffix test and from the joined text.
+			body := strings.TrimRight(cur, "\r")
+			// A trailing backslash continues only when a next line exists;
+			// a backslash on the final line is left literal, matching Apache.
+			if i < len(physical)-1 && strings.HasSuffix(body, `\`) {
+				sb.WriteString(body[:len(body)-1])
+				i++
+				continue
+			}
+			sb.WriteString(body)
+			break
+		}
+		out = append(out, htaccessLogicalLine{text: sb.String(), lines: span, start: start})
+		i++
+	}
+	return out
 }
 
 func apacheDirectiveFields(line string) []string {

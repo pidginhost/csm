@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -187,5 +188,114 @@ func TestCheckHtaccessAllowsLegitFPMFilesMatch(t *testing.T) {
 		if hasInjectionFinding(findings) {
 			t.Fatalf("legit php-fpm FilesMatch must not flag; body=%q findings=%+v", body, findings)
 		}
+	}
+}
+
+// Apache joins a physical line ending in a backslash with the next line, so
+// this maps .jpg to PHP across two physical lines. Per-line scanning must not
+// be evaded by splitting the directive.
+func TestCheckHtaccessFlagsContinuationSplitRemap(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddHandler application/x-httpd-php \\\n.jpg\n")
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("continuation-split handler remap not flagged; got %+v", findings)
+	}
+}
+
+// A legit PHP handler mapped to a PHP extension across a continuation must
+// still not flag.
+func TestCheckHtaccessAllowsContinuationLegitPHP(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddHandler application/x-httpd-php \\\n.php .php7\n")
+	if hasInjectionFinding(findings) {
+		t.Fatalf("legit continued PHP handler must not flag; got %+v", findings)
+	}
+}
+
+// The file-index handler overlay must also honor continuation so a webshell
+// planted under a continuation-mapped extension is content-scanned.
+func TestParsePHPHandlerDirectivesHonorsContinuation(t *testing.T) {
+	overlay := parsePHPHandlerDirectives([]byte("AddHandler application/x-httpd-php \\\n.jpg\n"))
+	if _, ok := overlay.exts[".jpg"]; !ok {
+		t.Fatalf("continuation-mapped .jpg not in overlay; exts=%v", overlay.exts)
+	}
+}
+
+// joinHtaccessContinuations groups physical lines into logical Apache
+// directives, honoring trailing-backslash continuation.
+func TestJoinHtaccessContinuations(t *testing.T) {
+	in := []string{
+		"AddHandler application/x-httpd-php \\",
+		".jpg",
+		"RewriteEngine On",
+		"trailing-backslash-on-last \\",
+	}
+	got := joinHtaccessContinuations(in)
+	if len(got) != 3 {
+		t.Fatalf("logical line count = %d, want 3: %+v", len(got), got)
+	}
+	if got[0].text != "AddHandler application/x-httpd-php .jpg" {
+		t.Errorf("join text = %q", got[0].text)
+	}
+	if len(got[0].lines) != 2 || got[0].start != 0 {
+		t.Errorf("span wrong: lines=%v start=%d", got[0].lines, got[0].start)
+	}
+	if got[1].text != "RewriteEngine On" || got[1].start != 2 {
+		t.Errorf("second logical wrong: %+v", got[1])
+	}
+	// A backslash on the final physical line has no successor and stays literal.
+	if got[2].text != "trailing-backslash-on-last \\" {
+		t.Errorf("trailing backslash should be literal on last line, got %q", got[2].text)
+	}
+}
+
+// fixHtaccess must remove every physical line of a continuation-split remap and
+// preserve the legit handler. Portable variant so it also runs off Linux.
+func TestFixHtaccessRemovesContinuationRemapPortable(t *testing.T) {
+	saved := fixHtaccessAllowedRoots
+	dir, evalErr := filepath.EvalSymlinks(t.TempDir())
+	if evalErr != nil {
+		t.Fatal(evalErr)
+	}
+	fixHtaccessAllowedRoots = []string{dir}
+	t.Cleanup(func() { fixHtaccessAllowedRoots = saved })
+
+	path := dir + "/.htaccess"
+	content := "AddHandler application/x-httpd-php .php\nAddHandler application/x-httpd-php \\\n.jpg\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := fixHtaccess(path, "htaccess injection at "+path)
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	cs, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cs), ".jpg") {
+		t.Errorf("continuation-split remap not fully stripped:\n%s", cs)
+	}
+	if !strings.Contains(string(cs), "AddHandler application/x-httpd-php .php") {
+		t.Errorf("plain PHP handler should be preserved:\n%s", cs)
+	}
+}
+
+// A CRLF .htaccess splits to lines ending in "\r"; the continuation backslash
+// then sits before the CR. Apache still joins it, so the join must tolerate a
+// trailing carriage return.
+func TestCheckHtaccessFlagsCRLFContinuationRemap(t *testing.T) {
+	findings := htaccessFindingsFor(t, "AddHandler application/x-httpd-php \\\r\n.jpg\r\n")
+	if !hasInjectionFinding(findings) {
+		t.Fatalf("CRLF continuation-split remap not flagged; got %+v", findings)
+	}
+}
+
+// The overlay/remediation read sites use strings.Split on "\n", which keeps a
+// trailing "\r" on CRLF files. The continuation join must still recognize a
+// backslash that precedes the carriage return.
+func TestParsePHPHandlerDirectivesHonorsCRLFContinuation(t *testing.T) {
+	overlay := parsePHPHandlerDirectives([]byte("AddHandler application/x-httpd-php \\\r\n.jpg\r\n"))
+	if _, ok := overlay.exts[".jpg"]; !ok {
+		t.Fatalf("CRLF continuation-mapped .jpg not in overlay; exts=%v", overlay.exts)
 	}
 }

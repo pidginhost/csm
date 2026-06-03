@@ -285,23 +285,25 @@ func fixHtaccess(path, message string) RemediationResult {
 	var cleaned []string
 	removed := 0
 	var phpHandlerContexts []phpHandlerOverlay
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
+	// Iterate logical directives so a malicious mapping split across an Apache
+	// line continuation is removed as a unit (every physical line it spans).
+	for _, logical := range joinHtaccessContinuations(strings.Split(string(data), "\n")) {
+		trimmed := strings.TrimSpace(logical.text)
 		lineLower := strings.ToLower(trimmed)
 		if strings.HasPrefix(trimmed, "#") {
-			cleaned = append(cleaned, line)
+			cleaned = append(cleaned, logical.lines...)
 			continue
 		}
 		if ctx, ok := openPHPHandlerContext(trimmed); ok {
 			phpHandlerContexts = append(phpHandlerContexts, ctx)
-			cleaned = append(cleaned, line)
+			cleaned = append(cleaned, logical.lines...)
 			continue
 		}
 		if closesPHPHandlerContext(trimmed) {
 			if len(phpHandlerContexts) > 0 {
 				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
 			}
-			cleaned = append(cleaned, line)
+			cleaned = append(cleaned, logical.lines...)
 			continue
 		}
 		isDangerous := false
@@ -326,7 +328,7 @@ func fixHtaccess(path, message string) RemediationResult {
 		if isDangerous {
 			removed++
 		} else {
-			cleaned = append(cleaned, line)
+			cleaned = append(cleaned, logical.lines...)
 		}
 	}
 
