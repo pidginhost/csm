@@ -291,8 +291,14 @@ func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func
 // cap left stale incidents unclosed, so the caller schedules a prompt
 // follow-up sweep instead of waiting the full interval.
 func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool) {
+	// The safety cap runs on every tick regardless of the operator's
+	// auto-close toggle or per-kind thresholds. It is a hard backstop against
+	// unbounded growth of Open/Contained incidents (in memory and bbolt) on a
+	// host under sustained attack when auto-close is off or a kind is omitted.
+	capMore := runIncidentSafetyCap(c)
+
 	if cfg == nil || !cfg.IncidentsAutoCloseEnabled() {
-		return false
+		return capMore
 	}
 	rawThresholds := cfg.IncidentsAutoCloseThresholds()
 	if len(rawThresholds) == 0 {
@@ -313,7 +319,33 @@ func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool
 			"backlog_remaining", more,
 		)
 	}
-	return more
+	return more || capMore
+}
+
+// incidentSafetyMaxAge is the hard age cap: any Open/Contained incident idle
+// longer than this is force-closed regardless of auto-close config.
+const incidentSafetyMaxAge = 30 * 24 * time.Hour
+
+// incidentSafetyMaxActive bounds how many Open/Contained incidents are held in
+// memory at once; the oldest over this are force-closed.
+const incidentSafetyMaxActive = 50000
+
+// runIncidentSafetyCap force-closes incidents past the age cap and trims the
+// active set back under the size ceiling. Always runs, independent of the
+// operator's auto-close settings. Returns more=true if either sweep left a
+// backlog so the loop schedules a prompt follow-up.
+func runIncidentSafetyCap(c *incident.Correlator) (more bool) {
+	now := time.Now()
+	byAge, ageMore := c.CloseStaleByAge(now, incidentSafetyMaxAge, incidentAutoCloseMaxPerSweep)
+	byCap, capMore := c.EnforceActiveCap(now, incidentSafetyMaxActive, incidentAutoCloseMaxPerSweep)
+	if byAge > 0 || byCap > 0 {
+		csmlog.Info("incident safety cap",
+			"closed_by_age", byAge,
+			"closed_by_active_cap", byCap,
+			"backlog_remaining", ageMore || capMore,
+		)
+	}
+	return ageMore || capMore
 }
 
 // startIncidentRetentionLoop runs a daily compaction sweep against the

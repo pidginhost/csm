@@ -952,6 +952,119 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 	return closed, dryRunCount, scanned, more
 }
 
+// closeIncidentLocked force-resolves an active incident with the given
+// attribution. Caller holds c.mu and must queue/run the persist of *inc.
+func (c *Correlator) closeIncidentLocked(inc *Incident, id string, now time.Time, by, detail string) {
+	from := inc.Status
+	inc.Status = StatusResolved
+	inc.UpdatedAt = now
+	inc.ClosedAt = now
+	inc.ClosedBy = by
+	inc.Actions = append(inc.Actions, IncidentAction{
+		Time:    now,
+		Action:  "incident_auto_closed",
+		Result:  "ok",
+		Details: string(from) + " -> resolved: " + detail,
+	})
+	c.counters.statusChangedTotal.Add(1)
+	c.counters.autoClosedTotal.Add(1)
+	c.unbindLocked(id)
+	if c.spray != nil {
+		c.spray.UnbindIncident(id)
+	}
+}
+
+// CloseStaleByAge is a kind-agnostic safety cap. It force-closes any Open or
+// Contained incident whose UpdatedAt is older than maxAge, independent of the
+// operator's per-kind auto-close thresholds. Without it, disabling auto-close
+// (or omitting a kind from the threshold map) lets active incidents accumulate
+// without bound in memory and bbolt on a host under sustained attack. limit
+// bounds closures per call (0 = unbounded); more reports a remaining backlog.
+func (c *Correlator) CloseStaleByAge(now time.Time, maxAge time.Duration, limit int) (closed int, more bool) {
+	if maxAge <= 0 {
+		return 0, false
+	}
+	var persist []queuedPersist
+	c.mu.Lock()
+	for id, inc := range c.incidents {
+		if inc.Status != StatusOpen && inc.Status != StatusContained {
+			continue
+		}
+		if now.Sub(inc.UpdatedAt) <= maxAge {
+			continue
+		}
+		if limit > 0 && closed >= limit {
+			more = true
+			break
+		}
+		c.closeIncidentLocked(inc, id, now, "auto:age_cap", "stale age cap "+maxAge.Truncate(time.Second).String())
+		if req, ok := c.queuePersistLocked(*inc); ok {
+			persist = append(persist, req)
+		}
+		closed++
+	}
+	c.mu.Unlock()
+	for _, req := range persist {
+		c.runQueuedPersist(req)
+	}
+	return closed, more
+}
+
+// EnforceActiveCap bounds how many Open/Contained incidents are held in
+// memory. When the active count exceeds maxActive it force-closes the oldest
+// (by UpdatedAt) until the count is back at maxActive or the per-call limit is
+// reached. This protects against a flood of distinct incidents arriving within
+// the age-cap window. maxActive <= 0 disables the cap; limit <= 0 is
+// unbounded. more reports that incidents remained over the cap after limit.
+func (c *Correlator) EnforceActiveCap(now time.Time, maxActive, limit int) (closed int, more bool) {
+	if maxActive <= 0 {
+		return 0, false
+	}
+	c.mu.Lock()
+	type activeRef struct {
+		id      string
+		updated time.Time
+	}
+	var active []activeRef
+	for id, inc := range c.incidents {
+		if inc.Status == StatusOpen || inc.Status == StatusContained {
+			active = append(active, activeRef{id: id, updated: inc.UpdatedAt})
+		}
+	}
+	if len(active) <= maxActive {
+		c.mu.Unlock()
+		return 0, false
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].updated.Before(active[j].updated) })
+
+	overflow := len(active) - maxActive
+	var persist []queuedPersist
+	for _, a := range active {
+		if overflow <= 0 {
+			break
+		}
+		if limit > 0 && closed >= limit {
+			more = true
+			break
+		}
+		inc := c.incidents[a.id]
+		if inc == nil || (inc.Status != StatusOpen && inc.Status != StatusContained) {
+			continue
+		}
+		c.closeIncidentLocked(inc, a.id, now, "auto:active_cap", "active incident cap "+strconv.Itoa(maxActive))
+		if req, ok := c.queuePersistLocked(*inc); ok {
+			persist = append(persist, req)
+		}
+		closed++
+		overflow--
+	}
+	c.mu.Unlock()
+	for _, req := range persist {
+		c.runQueuedPersist(req)
+	}
+	return closed, more
+}
+
 // validStatus reports whether s is one of the four spec-defined values.
 // Guards SetStatus against arbitrary strings reaching the persisted
 // timeline; control-socket and webui handlers also reject early but

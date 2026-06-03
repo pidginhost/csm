@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Active incidents can no longer accumulate without bound when auto-close is disabled or a kind has no threshold. A hard safety cap now resolves incidents left open past a maximum age and bounds how many stay in memory at once, independent of the auto-close settings.
 - ModSecurity parsing now rejects pathological continuation-heavy rule files before they can consume excessive memory.
 - The YARA scan worker now handles shutdown during startup without leaving the supervisor stuck waiting for readiness.
 - The attack database no longer leaks memory tracking removed addresses on hosts that use the flat-file store, and it now reports a failed save instead of silently swallowing it.
