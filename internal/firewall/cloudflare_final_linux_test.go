@@ -5,6 +5,8 @@ package firewall
 import (
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // cloudflare.go is 0% covered. It requires real nftables, so we only
@@ -44,5 +46,18 @@ func TestEngineUpdateCloudflareSetNilSetReturnsError(t *testing.T) {
 	err := e.UpdateCloudflareSet([]string{"1.2.3.0/24"}, nil)
 	if err == nil {
 		t.Error("expected error when setCFWhitelist is nil")
+	}
+}
+
+// Regression: ConnectExisting loads each CF set independently, so the v4 set
+// can be present while the v6 set is nil. The old code only nil-checked v4
+// and then called FlushSet(setCFWhitelist6)/SetAddElements on the nil v6 set,
+// which panics. The guard must require both sets and return an error.
+func TestEngineUpdateCloudflareSetNilV6SetReturnsError(t *testing.T) {
+	e := &Engine{statePath: t.TempDir(), setCFWhitelist: &nftables.Set{}}
+	// setCFWhitelist6 is nil
+	err := e.UpdateCloudflareSet([]string{"1.2.3.0/24"}, []string{"2400:cb00::/32"})
+	if err == nil {
+		t.Error("expected error when setCFWhitelist6 is nil (would otherwise panic)")
 	}
 }

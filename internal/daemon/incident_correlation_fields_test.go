@@ -357,7 +357,7 @@ func TestPAMLoginPopulatesSourceIP(t *testing.T) {
 
 func TestPasswordHijackPopulatesCorrelationFields(t *testing.T) {
 	ch := make(chan alert.Finding, 2)
-	detector := NewPasswordHijackDetector(&config.Config{}, ch)
+	detector := NewPasswordHijackDetector(&config.Config{}, ch, make(chan struct{}))
 
 	detector.HandlePasswordChange("alice", "203.0.113.60")
 	change := <-ch

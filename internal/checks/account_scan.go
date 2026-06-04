@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -145,37 +146,23 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 
 	for _, nc := range accountChecks {
 		wg.Add(1)
-		go func(c namedCheck) {
+		c := nc
+		// Account checks run against user filesystem content (unparsed PHP,
+		// crafted archives, foreign encodings) so a panic is plausible.
+		// SafeGo captures it; runAccountScanCheck surfaces it as a
+		// check_timeout, keeping the scan and the daemon alive.
+		obs.SafeGo("account-scan-runner", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(scanCtx, checkTimeout)
-			done := make(chan []alert.Finding, 1)
-			go func() {
-				done <- c.fn(ctx, cfg, store)
-			}()
-
-			select {
-			case results := <-done:
-				cancel()
-				if len(results) > 0 {
-					mu.Lock()
-					findings = append(findings, results...)
-					mu.Unlock()
-				}
-			case <-ctx.Done():
-				cancel()
+			results := runAccountScanCheck(scanCtx, c, cfg, store, checkTimeout)
+			if len(results) > 0 {
 				mu.Lock()
-				findings = append(findings, alert.Finding{
-					Severity:  alert.Warning,
-					Check:     "check_timeout",
-					Message:   fmt.Sprintf("Account scan check '%s' timed out", c.name),
-					Timestamp: time.Now(),
-				})
+				findings = append(findings, results...)
 				mu.Unlock()
 			}
-		}(nc)
+		})
 	}
 
 	wg.Wait()
@@ -197,6 +184,33 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 	}
 
 	return stampTenantIDIfEmpty(filtered, account)
+}
+
+// runAccountScanCheck runs one check under a timeout, recovering any panic.
+// The check executes on a SafeGo goroutine, so a panic (recovered there)
+// never delivers to done and the timeout branch fires -- the same graceful
+// degradation runParallel uses, surfacing a check_timeout instead of
+// crashing the daemon that hosts the WebUI-triggered account scan.
+func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, store *state.Store, timeout time.Duration) []alert.Finding {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	done := make(chan []alert.Finding, 1)
+	obs.SafeGo("account-scan-exec", func() {
+		done <- c.fn(cctx, cfg, store)
+	})
+
+	select {
+	case results := <-done:
+		return results
+	case <-cctx.Done():
+		return []alert.Finding{{
+			Severity:  alert.Warning,
+			Check:     "check_timeout",
+			Message:   fmt.Sprintf("Account scan check '%s' timed out", c.name),
+			Timestamp: time.Now(),
+		}}
+	}
 }
 
 func accountScanFindingInScope(f alert.Finding, account string) bool {

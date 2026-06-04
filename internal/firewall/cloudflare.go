@@ -15,8 +15,11 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.setCFWhitelist == nil {
-		return fmt.Errorf("cf_whitelist set not initialized")
+	// Both sets are created together by createSets, but ConnectExisting
+	// loads them independently, so one can be present while the other is
+	// nil. Require both -- FlushSet/SetAddElements panic on a nil set.
+	if e.setCFWhitelist == nil || e.setCFWhitelist6 == nil {
+		return fmt.Errorf("cf_whitelist sets not initialized")
 	}
 
 	// Flush existing entries

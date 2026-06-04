@@ -114,7 +114,7 @@ func TestReloadSignatures_NilGlobals(t *testing.T) {
 func TestHeartbeat_StopsOnSignal(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
-	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh)
+	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	d.wg.Add(1)
 
 	done := make(chan struct{})
@@ -248,7 +248,7 @@ func TestStartForwarderWatcher_FailsGracefully(t *testing.T) {
 func TestStartLogWatchers_NoLogFilesPresent(t *testing.T) {
 	cfg := &config.Config{}
 	d := New(cfg, nil, nil, "")
-	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh)
+	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	// On macOS, none of the Linux log paths exist.
 	d.startLogWatchers()
 	// All watchers should be empty because no log files exist on macOS.
@@ -860,7 +860,7 @@ func TestStartLogWatchers_PHPShieldEnabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.PHPShield.Enabled = true
 	d := New(cfg, nil, nil, "")
-	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh)
+	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	d.startLogWatchers()
 	// On macOS, no log files exist. Clean up.
 	close(d.stopCh)

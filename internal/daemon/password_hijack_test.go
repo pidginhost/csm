@@ -13,7 +13,7 @@ import (
 func TestNewPasswordHijackDetector(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 	if d == nil {
 		t.Fatal("detector should not be nil")
 	}
@@ -24,7 +24,7 @@ func TestNewPasswordHijackDetector(t *testing.T) {
 func TestHandlePasswordChangeNonInfra(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.1"}}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandlePasswordChange("alice", "203.0.113.5")
 
@@ -41,7 +41,7 @@ func TestHandlePasswordChangeNonInfra(t *testing.T) {
 func TestHandlePasswordChangeInfraSkipped(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.1"}}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandlePasswordChange("alice", "10.0.0.1")
 
@@ -56,7 +56,7 @@ func TestHandlePasswordChangeInfraSkipped(t *testing.T) {
 func TestHandlePasswordChangeLoopbackSkipped(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandlePasswordChange("alice", "127.0.0.1")
 
@@ -72,7 +72,7 @@ func TestHandlePasswordChangeLoopbackSkipped(t *testing.T) {
 func TestHandleLoginCorrelatesWithChange(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandlePasswordChange("alice", "203.0.113.5")
 	<-ch // consume the password-change alert
@@ -92,7 +92,7 @@ func TestHandleLoginCorrelatesWithChange(t *testing.T) {
 func TestHandleLoginNoRecentChange(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandleLogin("alice", "203.0.113.5")
 
@@ -106,7 +106,7 @@ func TestHandleLoginNoRecentChange(t *testing.T) {
 func TestHandleLoginInfraSkipped(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.1"}}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	d.HandlePasswordChange("alice", "203.0.113.5")
 	<-ch
@@ -120,12 +120,40 @@ func TestHandleLoginInfraSkipped(t *testing.T) {
 	}
 }
 
+// --- shutdown safety --------------------------------------------------
+
+func TestHandlePasswordChangeUnblocksOnStop(t *testing.T) {
+	// Regression: the session-log watcher goroutine calls these handlers
+	// synchronously. An unbuffered/saturated alertCh whose dispatcher has
+	// stopped draining at shutdown must not wedge the watcher (and, for
+	// HandlePasswordChange, must not wedge it while holding d.mu). The
+	// send has to give up when stopCh is closed.
+	cfg := &config.Config{}
+	ch := make(chan alert.Finding) // no reader: a naive send blocks forever
+	stop := make(chan struct{})
+	d := NewPasswordHijackDetector(cfg, ch, stop)
+	close(stop)
+
+	done := make(chan struct{})
+	go func() {
+		d.HandlePasswordChange("alice", "203.0.113.5")
+		d.HandleLogin("alice", "198.51.100.1")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handlers blocked on a full alertCh after stop was signaled")
+	}
+}
+
 // --- Cleanup ----------------------------------------------------------
 
 func TestCleanupRemovesExpired(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	// Inject an old entry directly
 	d.mu.Lock()
@@ -171,7 +199,7 @@ func TestParseWHMPurgeNoWhostmgr(t *testing.T) {
 func TestParseSessionLineForHijackPasswordChange(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	line := `[2026-04-12 10:00:00 +0000] info [whostmgr] 198.51.100.50 PURGE alice:token password_change`
 	ParseSessionLineForHijack(line, d)
@@ -189,7 +217,7 @@ func TestParseSessionLineForHijackPasswordChange(t *testing.T) {
 func TestParseSessionLineForHijackAPISessionSkipped(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	// API sessions with method=create_user_session should be skipped
 	line := `[2026-04-12 10:00:00 +0000] info [cpaneld] 203.0.113.5 NEW alice:token method=create_user_session`

@@ -175,6 +175,25 @@ func TestRemoveMaliciousScripts_StripsAttackerIndicatorURLs(t *testing.T) {
 	}
 }
 
+func TestRemoveMaliciousScripts_StripsProtocolRelativeAttacker(t *testing.T) {
+	// Regression: extractMaliciousScriptURL (scriptSrcRe) matches
+	// protocol-relative "//host" script URLs, so removeMaliciousScripts
+	// must strip them too. Before the fix the remover's grammar required
+	// an explicit http(s):// scheme, so a confirmed attacker script loaded
+	// via "//host/x.js" was detected but never removed -- the cleaner
+	// either no-oped or wrote back the live script while claiming success.
+	cases := []string{
+		`lead <script src="//192.0.2.42/loader.js"></script> tail`,
+		`x<script src=//evil.top/p.js></script>y`,
+	}
+	for _, in := range cases {
+		out := removeMaliciousScripts(in)
+		if strings.Contains(out, "192.0.2.42") || strings.Contains(out, "evil.top") {
+			t.Errorf("protocol-relative attacker script must be removed; in=%q out=%q", in, out)
+		}
+	}
+}
+
 func TestExtractMaliciousScriptURL_MixedSafeAndMalicious(t *testing.T) {
 	// Content with both safe and malicious scripts — should return the malicious one.
 	content := `<script src="https://www.googletagmanager.com/gtag/js?id=G-XX"></script>

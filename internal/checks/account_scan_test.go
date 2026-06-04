@@ -1,14 +1,47 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+func TestRunAccountScanCheck_RecoversPanic(t *testing.T) {
+	// Account checks parse attacker-controlled filesystem content, so a
+	// panic is plausible. RunAccountScan is reachable from the WebUI inside
+	// the daemon process; an unrecovered panic in a check goroutine would
+	// crash the whole daemon. The per-check runner must contain the panic
+	// and surface it as a timeout finding instead.
+	panicCheck := namedCheck{"boom", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+		panic("crafted input blew up the parser")
+	}}
+
+	got := runAccountScanCheck(context.Background(), panicCheck, &config.Config{}, nil, 100*time.Millisecond)
+
+	if len(got) != 1 || got[0].Check != "check_timeout" {
+		t.Fatalf("panicking check must yield a single check_timeout finding, got %+v", got)
+	}
+}
+
+func TestRunAccountScanCheck_ReturnsFindings(t *testing.T) {
+	okCheck := namedCheck{"ok", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+		return []alert.Finding{{Check: "demo", Severity: alert.Warning}}
+	}}
+
+	got := runAccountScanCheck(context.Background(), okCheck, &config.Config{}, nil, 5*time.Second)
+
+	if len(got) != 1 || got[0].Check != "demo" {
+		t.Fatalf("want the check's own finding, got %+v", got)
+	}
+}
 
 func TestResolveWebRoots_ExplicitConfig(t *testing.T) {
 	// Build a fake tree that mimics /var/www/*/public_html.

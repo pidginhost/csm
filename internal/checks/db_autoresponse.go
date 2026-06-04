@@ -526,7 +526,20 @@ func revokeCompromisedSessions(creds wpDBCreds, prefix string, infraIPs []string
 // backupAndCleanOption saves the original value to a backup option, then
 // removes malicious script injections from the option value.
 func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, maliciousURL string) bool {
+	if maliciousURL == "" {
+		return false
+	}
+
 	cleaned := removeMaliciousScripts(originalValue)
+	// Never claim a clean (nor write back) unless the confirmed attacker
+	// script is actually gone. This keeps removal locked to detection: if
+	// a script form is flagged but the remover cannot strip it, report the
+	// finding but never persist a value that still carries a live payload.
+	// Plain text references to the same URL are inert option data and must
+	// not block a valid script cleanup.
+	if extractMaliciousScriptURL(cleaned) != "" {
+		return false
+	}
 	if cleaned == originalValue {
 		return false
 	}
@@ -558,8 +571,11 @@ var maliciousScriptRe = regexp.MustCompile(
 	`(?i)</style>\s*<script[^>]*src\s*=\s*[^>]+>\s*</script>\s*<style>`)
 
 // simpleScriptRe matches standalone <script src="..."></script> tags.
+// The src grammar mirrors scriptSrcRe (https://, http://, and
+// protocol-relative //) so removal stays paired with detection: a URL
+// form the detector flags must be one the remover can strip.
 var simpleScriptRe = regexp.MustCompile(
-	`(?i)<script[^>]*src\s*=\s*["']?https?://[^"'\s>]+["']?[^>]*>\s*</script>`)
+	`(?i)<script[^>]*src\s*=\s*["']?(?:https?:)?//[^"'\s>]+["']?[^>]*>\s*</script>`)
 
 // removeMaliciousScripts strips malicious <script> injections from content,
 // preserving scripts that are not classified as attacker scripts.
