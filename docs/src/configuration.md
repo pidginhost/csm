@@ -417,7 +417,7 @@ email_protection:
   rate_warn_threshold: 50               # emails per window before warning (default: 50)
   rate_crit_threshold: 100              # emails per window before critical (default: 100)
   rate_window_min: 10                   # rate check window in minutes (default: 10)
-  known_forwarders: []                  # accounts that forward mail (skip rate alerts)
+  known_forwarders: []                  # expected plain mail forwarders
 
   # PHP-relay detector (cPanel only; gated by platform.IsCPanel at startup).
   # Off by default. When enabled, the daemon spawns the inotify spool
@@ -699,8 +699,8 @@ structure keeps the old value until the next restart:
   `reputation.whitelist` from csm.yaml does not automatically
   propagate to the running threat database.
 - `email_protection.known_forwarders` -- captured by the forwarder
-  watcher at startup. No runtime API yet; send a restart if you
-  edit this list.
+  watcher at startup and read by scheduled forwarder and mail-filter
+  checks. No runtime API yet; send a restart if you edit this list.
 
 If you change either of the above, send `systemctl restart csm`
 instead of a reload. The rest of the sub-keys in every safe-tagged
