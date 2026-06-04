@@ -349,6 +349,33 @@ func TestCheckWHMAccessRealFile(t *testing.T) {
 	}
 }
 
+func TestCheckWHMAccessIgnoresNonWHMPortSubstringMatch(t *testing.T) {
+	// Regression: the WHM filter matched the bare substring "2087" anywhere
+	// in the line. A request on a different service port (e.g. :2083) with a
+	// response byte count of 2087 and a passwd path would false-positive as a
+	// WHM password change. The filter must match the service port token,
+	// not an arbitrary "2087" anywhere in the line.
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "access_log")
+	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] ":2083" "POST /json-api/passwd HTTP/1.1" 200 2087` + "\n"
+	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			return os.Open(logPath)
+		},
+	})
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/24"}}
+	findings := CheckWHMAccess(context.Background(), cfg, nil)
+
+	if len(findings) != 0 {
+		t.Errorf("non-WHM-port line must not produce findings, got %+v", findings)
+	}
+}
+
 func TestCheckWHMAccessSkipsLoopback(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access_log")

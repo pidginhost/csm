@@ -350,33 +350,18 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			if !strings.Contains(lower, "out of memory") && !strings.Contains(lower, "oom_reaper") {
 				continue
 			}
-			if useISO {
-				// ISO format: 2006-01-02T15:04:05,000000+0300
-				// The timestamp is the first field before the first space.
-				ts := strings.SplitN(line, " ", 2)[0]
-				// Normalise: replace comma-decimal with period so time.Parse handles it.
-				ts = strings.Replace(ts, ",", ".", 1)
-				// Try parsing with timezone offset (+hhmm or +hh:mm).
-				var parsed time.Time
-				var parseErr error
-				for _, layout := range []string{"2006-01-02T15:04:05.000000-0700", "2006-01-02T15:04:05.000000-07:00"} {
-					parsed, parseErr = time.Parse(layout, ts)
-					if parseErr == nil {
-						break
-					}
-				}
-				if parseErr != nil || parsed.Before(cutoff) {
-					continue
-				}
-			}
-			message := "OOM killer detected in dmesg"
-			if useISO {
-				message = "OOM killer invoked in the last hour"
+			// Both the ISO and the -T fallback are filtered to the last
+			// hour. A line whose timestamp cannot be parsed is skipped, not
+			// reported: an OOM event we cannot date is exactly the stale
+			// finding that previously fired a Critical on every scan.
+			when, ok := parseDmesgOOMTime(line, useISO)
+			if !ok || when.Before(cutoff) {
+				continue
 			}
 			findings = append(findings, alert.Finding{
 				Severity:  alert.Critical,
 				Check:     "perf_memory",
-				Message:   message,
+				Message:   "OOM killer invoked in the last hour",
 				Details:   strings.TrimSpace(line),
 				Timestamp: time.Now(),
 			})
@@ -402,6 +387,37 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	return findings
+}
+
+// parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
+// (--time-format iso) carry an absolute timestamp with a timezone offset as
+// the first field. The -T fallback carries a bracketed ctime in local time
+// ("[Mon Jan _2 15:04:05 2006] ..."). Returns ok=false when no timestamp can
+// be parsed, so the caller drops the line rather than reporting an undatable
+// (and therefore possibly stale) OOM event.
+func parseDmesgOOMTime(line string, useISO bool) (time.Time, bool) {
+	if useISO {
+		// 2006-01-02T15:04:05,000000+0300 -- comma decimal, first field.
+		ts := strings.Replace(strings.SplitN(line, " ", 2)[0], ",", ".", 1)
+		for _, layout := range []string{"2006-01-02T15:04:05.000000-0700", "2006-01-02T15:04:05.000000-07:00"} {
+			if parsed, err := time.Parse(layout, ts); err == nil {
+				return parsed, true
+			}
+		}
+		return time.Time{}, false
+	}
+
+	open := strings.IndexByte(line, '[')
+	closeIdx := strings.IndexByte(line, ']')
+	if open != 0 || closeIdx <= open {
+		return time.Time{}, false
+	}
+	// dmesg -T prints local wall-clock time with no zone, so parse in Local.
+	parsed, err := time.ParseInLocation("Mon Jan _2 15:04:05 2006", strings.TrimSpace(line[open+1:closeIdx]), time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 // CheckPHPHandler detects PHP CGI handler usage on LiteSpeed servers.

@@ -2,15 +2,68 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/redisinfo"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// dmesgMock returns a CmdRunner that fails the ISO dmesg probe (forcing the
+// -T fallback) and answers the -T probe with the given line.
+func dmesgMock(tLine string) *mockCmd {
+	return &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "dmesg" {
+				return nil, nil
+			}
+			for _, a := range args {
+				if a == "iso" {
+					return nil, fmt.Errorf("--time-format unsupported")
+				}
+			}
+			return []byte(tLine), nil
+		},
+	}
+}
+
+func oomFinding(findings []alert.Finding) bool {
+	for _, f := range findings {
+		if f.Check == "perf_memory" && strings.Contains(f.Message, "OOM") {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCheckSwapAndOOM_NonISOFallbackIgnoresStaleOOM(t *testing.T) {
+	// Regression: the -T (non-ISO) dmesg fallback never time-filtered, so a
+	// days-old OOM event fired a Critical every scan. The fallback must apply
+	// the same 1-hour cutoff the ISO path uses.
+	stale := "[Mon Jan  2 00:00:00 2017] Out of memory: Killed process 1234 (php)"
+	withMockCmd(t, dmesgMock(stale))
+
+	if oomFinding(CheckSwapAndOOM(context.Background(), testPerfConfig(), nil)) {
+		t.Error("stale OOM event must not produce a finding via the -T fallback")
+	}
+}
+
+func TestCheckSwapAndOOM_NonISOFallbackReportsRecentOOM(t *testing.T) {
+	// A genuinely recent OOM in the -T fallback path must still fire.
+	recent := fmt.Sprintf("[%s] Out of memory: Killed process 4321 (php)",
+		time.Now().Add(-2*time.Minute).Format("Mon Jan _2 15:04:05 2006"))
+	withMockCmd(t, dmesgMock(recent))
+
+	if !oomFinding(CheckSwapAndOOM(context.Background(), testPerfConfig(), nil)) {
+		t.Error("recent OOM event must produce a finding via the -T fallback")
+	}
+}
 
 func testPerfConfig() *config.Config {
 	cfg := &config.Config{}
