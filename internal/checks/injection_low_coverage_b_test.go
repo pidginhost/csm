@@ -172,6 +172,40 @@ $table_prefix = 'wp_';
 	}
 }
 
+func TestDBCleanOption_PreviewRejectsPartialClean(t *testing.T) {
+	wpCfg := `<?php
+define( 'DB_NAME', 'partialdb' );
+define( 'DB_USER', 'u' );
+define( 'DB_PASSWORD', 'p' );
+define( 'DB_HOST', 'localhost' );
+$table_prefix = 'wp_';
+`
+	maliciousContent := `<script src="https://evil.top/removed.js"></script><script src="https://evil.top/still-live.js">`
+
+	withMockOS(t, wpConfigFixture(t, "partialuser", wpCfg))
+
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
+			if name == "mysql" {
+				for _, a := range args {
+					if strings.Contains(a, "SELECT option_value") {
+						return []byte(maliciousContent + "\n"), nil
+					}
+				}
+			}
+			return nil, nil
+		},
+	})
+
+	result := DBCleanOption("partialuser", "widget_text", true)
+	if result.Success {
+		t.Fatalf("preview must fail when a cleaned value would still contain an attacker script: %+v", result)
+	}
+	if !strings.Contains(result.Message, "Failed to remove all malicious scripts") {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
 func TestDBCleanOption_FullCleanWithBackup(t *testing.T) {
 	wpCfg := `<?php
 define( 'DB_NAME', 'cleandb' );

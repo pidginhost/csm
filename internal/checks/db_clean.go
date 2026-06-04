@@ -63,6 +63,10 @@ func DBCleanOption(account, optionName string, preview bool) DBCleanResult {
 		result.Message = "Content unchanged after cleaning"
 		return result
 	}
+	if extractMaliciousScriptURL(cleaned) != "" {
+		result.Message = "Failed to remove all malicious scripts"
+		return result
+	}
 
 	result.Details = append(result.Details, fmt.Sprintf("Malicious URL: %s", maliciousURL))
 	result.Details = append(result.Details, fmt.Sprintf("Original length: %d, Cleaned length: %d", len(value), len(cleaned)))

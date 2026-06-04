@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Automatic WordPress database cleanup now strips injected scripts loaded via protocol-relative URLs, which were detected but previously left in place. It also no longer reports a successful clean while the malicious script is still present.
+- WordPress database cleanup now keeps legitimate external script embeds in place and refuses partial cleans that would leave an attacker script active.
 - The WHM password-change hijack detector can no longer hang daemon shutdown when its alert channel is saturated; its alerts give way once shutdown begins.
 - A panic inside a per-account security scan started from the web UI is now contained and reported as a check timeout instead of crashing the daemon.
 - Refreshing the Cloudflare allowlist now fails cleanly when only one address-family set is initialized, instead of panicking.

@@ -588,10 +588,17 @@ var simpleScriptRe = regexp.MustCompile(
 // (OneTrust, Issuu, regional widget) would silently lose the legitimate
 // embed along with the attacker's script.
 func removeMaliciousScripts(content string) string {
-	// First pass: remove style-break pattern (always malicious — the
-	// </style><script ...></script><style> sandwich is not a form any
-	// legitimate CMS or plugin emits).
-	content = maliciousScriptRe.ReplaceAllString(content, "")
+	// First pass: remove style-break patterns only when the embedded URL has
+	// attacker indicators. The wrapper is suspicious, but the cleaner must
+	// not remove a legitimate embed just because it appears next to a real
+	// attacker script in the same option.
+	content = maliciousScriptRe.ReplaceAllStringFunc(content, func(match string) string {
+		urls := scriptSrcRe.FindStringSubmatch(match)
+		if len(urls) >= 2 && isAttackerScriptURL(urls[1]) {
+			return ""
+		}
+		return match
+	})
 
 	// Second pass: remove standalone script tags only when the URL
 	// shows attacker indicators.

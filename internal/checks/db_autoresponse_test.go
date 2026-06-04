@@ -150,6 +150,26 @@ func TestRemoveMaliciousScripts_PreservesLegitimateUnlistedDomains(t *testing.T)
 	}
 }
 
+func TestRemoveMaliciousScripts_PreservesLegitimateStyleBreakEmbeds(t *testing.T) {
+	legitEmbeds := []string{
+		`</style><script src="https://privacyportalde-cdn.onetrust.com/privacy-notice-scripts/otnotice-1.0.min.js"></script><style>`,
+		`</style><script src="//e.issuu.com/embed.js"></script><style>`,
+		`</style><script src="https://www.trilulilu.ro/embed-video/x/y"></script><style>`,
+	}
+	input := strings.Join(legitEmbeds, " ") + ` <script src="https://evil.top/payload.js"></script>`
+
+	out := removeMaliciousScripts(input)
+
+	if strings.Contains(out, "evil.top") {
+		t.Fatalf("attacker script must be removed; got: %s", out)
+	}
+	for _, want := range []string{"onetrust.com", "e.issuu.com", "trilulilu.ro"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("legitimate style-break embed %q was stripped; got: %s", want, out)
+		}
+	}
+}
+
 func TestRemoveMaliciousScripts_StripsAttackerIndicatorURLs(t *testing.T) {
 	// Each case contains exactly one attack-indicator URL and one
 	// unremarkable-but-unlisted URL. The removal must preserve the

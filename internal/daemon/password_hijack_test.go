@@ -148,6 +148,23 @@ func TestHandlePasswordChangeUnblocksOnStop(t *testing.T) {
 	}
 }
 
+func TestPasswordHijackNilStopChannelStillSends(t *testing.T) {
+	ch := make(chan alert.Finding, 2)
+	d := NewPasswordHijackDetector(&config.Config{}, ch, nil)
+
+	d.HandlePasswordChange("alice", "203.0.113.5")
+	d.HandleLogin("alice", "198.51.100.1")
+
+	gotChange := <-ch
+	gotLogin := <-ch
+	if gotChange.Check != "whm_password_change_noninfra" {
+		t.Fatalf("nil stopCh disabled password-change send, got %+v", gotChange)
+	}
+	if gotLogin.Check != "password_hijack_confirmed" {
+		t.Fatalf("nil stopCh disabled correlated-login send, got %+v", gotLogin)
+	}
+}
+
 // --- Cleanup ----------------------------------------------------------
 
 func TestCleanupRemovesExpired(t *testing.T) {
