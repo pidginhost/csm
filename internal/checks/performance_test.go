@@ -54,6 +54,15 @@ func TestCheckSwapAndOOM_NonISOFallbackIgnoresStaleOOM(t *testing.T) {
 	}
 }
 
+func TestCheckSwapAndOOM_NonISOFallbackIgnoresUndatedOOM(t *testing.T) {
+	undated := "[12345.678] Out of memory: Killed process 1234 (php)"
+	withMockCmd(t, dmesgMock(undated))
+
+	if oomFinding(CheckSwapAndOOM(context.Background(), testPerfConfig(), nil)) {
+		t.Error("undated OOM event must not produce a finding via the -T fallback")
+	}
+}
+
 func TestCheckSwapAndOOM_NonISOFallbackReportsRecentOOM(t *testing.T) {
 	// A genuinely recent OOM in the -T fallback path must still fire.
 	recent := fmt.Sprintf("[%s] Out of memory: Killed process 4321 (php)",

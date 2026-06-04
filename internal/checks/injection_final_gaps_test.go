@@ -290,7 +290,7 @@ func TestShellQuoteEmpty(t *testing.T) {
 
 func TestCheckWHMAccessWithPasswordChangeFromUnknownIP(t *testing.T) {
 	// Provide a log line that matches port 2087 + password action
-	logData := `203.0.113.5 - - [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 ":2087"` + "\n"
+	logData := `203.0.113.5 - - [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 "-" "curl/8.0" "host.example.com:2087"` + "\n"
 
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
@@ -312,9 +312,9 @@ func TestCheckWHMAccessRealFile(t *testing.T) {
 	// Create a real temp file, then set the osFS to open it via real impl.
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access_log")
-	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] ":2087" "POST /json-api/passwd HTTP/1.1" 200 1234` + "\n" +
-		`8.8.8.8 - root [12/Apr/2026:10:01:00 +0000] ":2087" "GET /scripts/createacct HTTP/1.1" 200 1234` + "\n" +
-		`10.0.0.5 - - [12/Apr/2026:10:02:00 +0000] ":2087" "POST /json-api/passwd HTTP/1.1" 200 1234` + "\n"
+	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 "" "curl/8.0" "s" "-" 2087` + "\n" +
+		`8.8.8.8 - root [12/Apr/2026:10:01:00 +0000] "GET /scripts/createacct HTTP/1.1" 200 1234 "-" "curl/8.0" "host.example.com:2087"` + "\n" +
+		`10.0.0.5 - - [12/Apr/2026:10:02:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 "" "curl/8.0" "s" "-" 2087` + "\n"
 	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestCheckWHMAccessIgnoresNonWHMPortSubstringMatch(t *testing.T) {
 	// not an arbitrary "2087" anywhere in the line.
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access_log")
-	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] ":2083" "POST /json-api/passwd HTTP/1.1" 200 2087` + "\n"
+	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 2087 "" "curl/8.0" "s" "-" 2083` + "\n"
 	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -376,10 +376,50 @@ func TestCheckWHMAccessIgnoresNonWHMPortSubstringMatch(t *testing.T) {
 	}
 }
 
+func TestCheckWHMAccessIgnoresByteCountWithoutServedPort(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "access_log")
+	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 2087` + "\n"
+	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			return os.Open(logPath)
+		},
+	})
+
+	findings := CheckWHMAccess(context.Background(), &config.Config{}, nil)
+	if len(findings) != 0 {
+		t.Errorf("byte-count-only WHM port must not produce findings, got %+v", findings)
+	}
+}
+
+func TestCheckWHMAccessIgnoresWHMPortInRefererOnOtherPort(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "access_log")
+	logData := `203.0.113.5 - root [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 "https://host.example.com:2087/" "curl/8.0" "host.example.com:2083"` + "\n"
+	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			return os.Open(logPath)
+		},
+	})
+
+	findings := CheckWHMAccess(context.Background(), &config.Config{}, nil)
+	if len(findings) != 0 {
+		t.Errorf("referer-only WHM port must not produce findings, got %+v", findings)
+	}
+}
+
 func TestCheckWHMAccessSkipsLoopback(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access_log")
-	logData := `127.0.0.1 - root [12/Apr/2026:10:00:00 +0000] ":2087" "POST /json-api/passwd HTTP/1.1" 200 1234` + "\n"
+	logData := `127.0.0.1 - root [12/Apr/2026:10:00:00 +0000] "POST /json-api/passwd HTTP/1.1" 200 1234 "" "curl/8.0" "s" "-" 2087` + "\n"
 	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -399,8 +439,8 @@ func TestCheckWHMAccessSkipsLoopback(t *testing.T) {
 func TestCheckWHMAccessSkipsNon2087Lines(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "access_log")
-	// Lines without ":2087" should be skipped entirely
-	logData := `203.0.113.5 - - "GET / HTTP/1.1" 200 cpaneld passwd` + "\n"
+	// Lines without WHM's served port should be skipped entirely.
+	logData := `203.0.113.5 - - [12/Apr/2026:10:00:00 +0000] "GET / HTTP/1.1" 200 1234 "" "curl/8.0" "s" "-" 2083` + "\n"
 	if err := os.WriteFile(logPath, []byte(logData), 0644); err != nil {
 		t.Fatal(err)
 	}

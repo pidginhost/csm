@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The WHM password-change hijack detector can no longer hang daemon shutdown when its alert channel is saturated; its alerts give way once shutdown begins.
 - A panic inside a per-account security scan started from the web UI is now contained and reported as a check timeout instead of crashing the daemon.
 - Refreshing the Cloudflare allowlist now fails cleanly when only one address-family set is initialized, instead of panicking.
-- WHM access monitoring no longer treats an unrelated request as a WHM action when an unrelated number such as a byte count happens to contain the WHM port.
+- WHM access monitoring now keys off the served WHM port field, so byte counts and referer URLs cannot make unrelated requests look like WHM actions.
 - Out-of-memory detection on older kernels now only reports recent events, instead of flagging a days-old event on every scan.
 
 ## [3.11.1] - 2026-06-03

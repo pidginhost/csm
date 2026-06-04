@@ -24,11 +24,7 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 200)
 
 	for _, line := range lines {
-		// Only check WHM (port 2087) entries. Match the service-port token
-		// (cPanel logs it as ":2087"), not a bare "2087" anywhere in the
-		// line -- a byte count or timestamp containing 2087 would otherwise
-		// false-positive a request on a different port as a WHM action.
-		if !strings.Contains(line, ":2087") {
+		if !isWHMAccessLogLine(line) {
 			continue
 		}
 
@@ -80,6 +76,42 @@ func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	}
 
 	return findings
+}
+
+func isWHMAccessLogLine(line string) bool {
+	served := lastAccessLogField(line)
+	switch {
+	case served == "2087":
+		return accessLogQuotedFieldCount(line) >= 5
+	case strings.HasSuffix(served, ":2087"):
+		return accessLogQuotedFieldCount(line) >= 4
+	default:
+		return false
+	}
+}
+
+func lastAccessLogField(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if strings.HasSuffix(line, "\"") {
+		end := len(line) - 1
+		start := strings.LastIndex(line[:end], "\"")
+		if start < 0 {
+			return ""
+		}
+		return line[start+1 : end]
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
+}
+
+func accessLogQuotedFieldCount(line string) int {
+	return strings.Count(line, "\"") / 2
 }
 
 // CheckSSHLogins parses /var/log/secure for SSH logins from non-infra IPs.
