@@ -188,6 +188,42 @@ func TestFixHtaccessRemovesDangerousLines(t *testing.T) {
 	}
 }
 
+func TestFixHtaccessRemovesPHPHandlerRemap(t *testing.T) {
+	tmp := t.TempDir()
+	withAllowedRoots(t, tmp)
+
+	htaccess := filepath.Join(tmp, ".htaccess")
+	content := strings.Join([]string{
+		"AddHandler application/x-httpd-php .php",
+		"AddType application/x-httpd-php jpg",
+		`<FilesMatch "\.ico$">`,
+		`  SetHandler "proxy:unix:/run/site.sock|fcgi://localhost"`,
+		"</FilesMatch>",
+	}, "\n")
+	if err := os.WriteFile(htaccess, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := fixHtaccess(htaccess, "htaccess injection at "+htaccess)
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	cleaned, err := os.ReadFile(htaccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := string(cleaned)
+	if strings.Contains(cs, "jpg") {
+		t.Errorf("dotless image PHP handler remap should be stripped:\n%s", cs)
+	}
+	if strings.Contains(cs, "proxy:unix") {
+		t.Errorf("FilesMatch proxy-fcgi remap should be stripped:\n%s", cs)
+	}
+	if !strings.Contains(cs, "AddHandler application/x-httpd-php .php") {
+		t.Errorf("plain PHP handler should be preserved:\n%s", cs)
+	}
+}
+
 func TestFixHtaccessNoDangerousDirectivesReportsError(t *testing.T) {
 	tmp := t.TempDir()
 	withAllowedRoots(t, tmp)

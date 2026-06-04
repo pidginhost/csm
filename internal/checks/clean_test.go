@@ -498,3 +498,18 @@ func TestCleanInfectedFileMissing(t *testing.T) {
 		t.Error("expected error for missing file")
 	}
 }
+
+// PHP accepts uppercase open tags (<?PHP). The surgical prepend-injection
+// cleaner must strip an injected block that opens with an uppercase tag, not
+// only the lowercase <?php form.
+func TestRemovePrependInjectionUppercaseTag(t *testing.T) {
+	payload := "<?PHP $x=base64_decode('" + strings.Repeat("QUJDREVGRw==", 20) + "');"
+	input := payload + "?><?PHP echo 'real code'; ?>"
+	out, removed := removePrependInjection(input)
+	if len(removed) == 0 {
+		t.Fatalf("expected removal of uppercase-tag prepend injection, got none; out=%q", out)
+	}
+	if !strings.Contains(out, "real code") {
+		t.Error("legitimate code was removed")
+	}
+}

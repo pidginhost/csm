@@ -44,6 +44,23 @@ func TestDetectorPHPInUploadsFiresInUploadsDir(t *testing.T) {
 	}
 }
 
+func TestDetectorPHPInUploadsHonorsContinuation(t *testing.T) {
+	dir := t.TempDir()
+	body := "keep\nAddHandler application/x-httpd-php \\\n.jpg\nend\n"
+	path := writeHtaccess(t, dir, "uploads", body)
+	findings, ranges := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_php_in_uploads") != 1 {
+		t.Fatalf("php_in_uploads matches = %d, want 1", countByCheck(findings, "htaccess_php_in_uploads"))
+	}
+	cleaned := applyRangeRemoval([]byte(body), ranges)
+	if strings.Contains(string(cleaned), ".jpg") || strings.Contains(string(cleaned), "AddHandler") {
+		t.Fatalf("continuation range left an orphan line:\n%s", cleaned)
+	}
+	if string(cleaned) != "keep\nend\n" {
+		t.Fatalf("cleaned content = %q, want keep/end only", cleaned)
+	}
+}
+
 func TestDetectorPHPInUploadsSkipsDocumentRoot(t *testing.T) {
 	dir := t.TempDir()
 	path := writeHtaccess(t, dir, "public_html", "AddHandler application/x-httpd-php .jpg\n")

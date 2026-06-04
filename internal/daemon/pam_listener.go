@@ -33,6 +33,13 @@ type PAMListener struct {
 	listener net.Listener
 	mu       sync.Mutex
 	failures map[string]*pamFailureTracker
+	// stopCh is set by Run so emit can abort a send when the daemon is
+	// shutting down. Per-connection goroutines are not tracked by a
+	// WaitGroup, so without this escape a goroutine blocked on the
+	// undrained alert channel would leak past shutdown. Nil for
+	// hand-constructed listeners in tests, where emit keeps blocking-send
+	// semantics.
+	stopCh <-chan struct{}
 	// useActiveConfig is true for the daemon-owned listener, so SIGHUP
 	// threshold changes apply without rebuilding the socket. Unit tests that
 	// assemble a listener by hand keep using their local cfg.
@@ -135,6 +142,7 @@ const (
 
 // Run accepts connections and processes PAM events.
 func (p *PAMListener) Run(stopCh <-chan struct{}) {
+	p.stopCh = stopCh
 	// Start cleanup goroutine to expire old failure records
 	obs.Go("pam-cleanup", func() { p.cleanupLoop(stopCh) })
 
@@ -240,7 +248,15 @@ func (p *PAMListener) processEvent(line string) {
 // loop, letting failure trackers grow without bound.
 func (p *PAMListener) emit(findings []alert.Finding) {
 	for _, f := range findings {
-		p.alertCh <- f
+		select {
+		case p.alertCh <- f:
+		case <-p.stopCh:
+			// Shutting down and the dispatcher has stopped draining;
+			// drop the remaining findings rather than leak this
+			// goroutine. A nil stopCh (hand-constructed listener)
+			// makes this case unselectable, preserving blocking send.
+			return
+		}
 	}
 }
 

@@ -673,7 +673,7 @@ func TestServerCleanExpired(t *testing.T) {
 	}
 }
 
-// --- makeToken / makeVerifyCookie -------------------------------------
+// --- makeToken / verify cookie ----------------------------------------
 
 func TestMakeTokenDeterministicAndIPBound(t *testing.T) {
 	s := New(baseCfg(), nil, nil)
@@ -688,11 +688,17 @@ func TestMakeTokenDeterministicAndIPBound(t *testing.T) {
 	}
 }
 
-func TestMakeVerifyCookieHas32Chars(t *testing.T) {
+func TestVerifyCookieIsSignedAndIPBound(t *testing.T) {
 	s := New(baseCfg(), nil, nil)
-	c := s.makeVerifyCookie("1.2.3.4")
-	if len(c) != 32 {
-		t.Errorf("cookie length = %d, want 32", len(c))
+	if s.verifySigner == nil {
+		t.Fatal("verifySigner must always be constructed")
+	}
+	value := s.verifySigner.Issue("1.2.3.4")
+	if err := s.verifySigner.Verify(value, "1.2.3.4"); err != nil {
+		t.Errorf("issued verify cookie failed Verify for same IP: %v", err)
+	}
+	if err := s.verifySigner.Verify(value, "5.5.5.5"); err == nil {
+		t.Error("verify cookie must not validate for a different IP")
 	}
 }
 

@@ -46,6 +46,13 @@ type Server struct {
 	sessionSigner *AdminSessionSigner
 	crawlers      *CrawlerVerifier
 
+	// verifySigner signs the csm_verified cookie handed to every visitor
+	// who passes the PoW/CAPTCHA. It binds the cookie to one IP and an
+	// expiry so a returning visitor skips the gate for the allow window
+	// without it being replayable elsewhere. Always constructed; the key
+	// rotates on restart like sessionSigner.
+	verifySigner *AdminSessionSigner
+
 	// adminFailures tracks failed admin-token submissions per source
 	// IP for rate-limiting brute-force probes. Sliding window: an IP
 	// that hits adminMaxFailuresInWindow within adminFailureWindow
@@ -58,6 +65,9 @@ type Server struct {
 const (
 	adminFailureWindow       = 5 * time.Minute
 	adminMaxFailuresInWindow = 5
+	// verifyCookieTTL is the lifetime of the csm_verified bypass cookie. It
+	// matches the firewall allow window applied in markVerified.
+	verifyCookieTTL = 4 * time.Hour
 )
 
 // New creates a challenge server.
@@ -81,6 +91,14 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 		trustedProxies: trusted,
 		verified:       make(map[string]time.Time),
 		adminFailures:  make(map[string][]time.Time),
+	}
+
+	// The verify-cookie signer is always on (independent of the optional
+	// admin-session feature). TTL matches the markVerified allow window.
+	if vs, err := NewAdminSessionSigner(verifyCookieTTL); err != nil {
+		fmt.Fprintf(os.Stderr, "[challenge] verify-cookie signing disabled: %v\n", err)
+	} else {
+		s.verifySigner = vs
 	}
 
 	// Optional sub-features. Each is opt-in via its own config block;
@@ -200,6 +218,10 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		s.markVerified(w, r, ip, "verified crawler", "")
 		return
 	}
+	if s.bypassByVerifyCookie(r, ip) {
+		s.markVerified(w, r, ip, "verified cookie", "")
+		return
+	}
 
 	nonce := generateNonce()
 	difficulty := s.cfg.Challenge.Difficulty
@@ -228,7 +250,7 @@ func (s *Server) handleGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := s.extractIP(r)
-	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) {
+	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) || s.bypassByVerifyCookie(r, ip) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -455,19 +477,21 @@ func (s *Server) markVerified(w http.ResponseWriter, r *http.Request, ip, reason
 		s.ipList.Remove(ip)
 	}
 
-	// Set verification cookie. Secure is always on: CSM is designed to
-	// run behind HTTPS and the cookie grants a multi-hour bypass of
-	// the PoW gate, so leaking it over plaintext is never acceptable.
-	cookie := &http.Cookie{
-		Name:     "csm_verified",
-		Value:    s.makeVerifyCookie(ip),
-		Path:     "/",
-		MaxAge:   int(allowDuration.Seconds()),
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+	// Set verification cookie so the visitor skips the gate until the allow
+	// window expires. Secure is always on: CSM is designed to run behind
+	// HTTPS and the cookie grants a multi-hour bypass of the PoW gate, so
+	// leaking it over plaintext is never acceptable.
+	if s.verifySigner != nil {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "csm_verified",
+			Value:    s.verifySigner.Issue(ip),
+			Path:     "/",
+			MaxAge:   int(allowDuration.Seconds()),
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
 	}
-	http.SetCookie(w, cookie)
 
 	dest := sanitizeRedirectDest(destOverride, r.Host)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -524,10 +548,20 @@ func (s *Server) makeToken(ip, nonce string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (s *Server) makeVerifyCookie(ip string) string {
-	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte("cookie:" + ip + ":" + time.Now().Truncate(time.Hour).Format(time.RFC3339)))
-	return hex.EncodeToString(mac.Sum(nil))[:32]
+// bypassByVerifyCookie returns true when the visitor presents a valid
+// csm_verified cookie issued by this daemon for this IP. The cookie binds
+// to one IP and an expiry, so it cannot be replayed from another network or
+// after the allow window; a daemon restart rotates the signing key and
+// invalidates every outstanding cookie.
+func (s *Server) bypassByVerifyCookie(r *http.Request, ip string) bool {
+	if s.verifySigner == nil {
+		return false
+	}
+	c, err := r.Cookie("csm_verified")
+	if err != nil || c.Value == "" {
+		return false
+	}
+	return s.verifySigner.Verify(c.Value, ip) == nil
 }
 
 // CleanExpired removes old verification records, prunes the

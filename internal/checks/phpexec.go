@@ -120,16 +120,15 @@ func (o phpHandlerOverlay) mergeHtaccess(content []byte) phpHandlerOverlay {
 //	SetHandler <php-handler>            (no extension -> whole directory)
 //	ForceType  <php-mime>               (no extension -> whole directory)
 //
-// A directive counts as PHP only when its handler/MIME token contains "php"
-// (e.g. application/x-httpd-php, php5-script, x-httpd-php-source is excluded
-// because it ends in -source... we keep it simple and conservative: any token
-// containing "php" except the source viewer). Matching is case-insensitive.
+// A directive counts as PHP when its handler/MIME token names PHP directly or
+// routes through proxy-fcgi. x-httpd-php-source is excluded because it renders
+// highlighted source instead of executing. Matching is case-insensitive.
 func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 	var overlay phpHandlerOverlay
 	var contexts []phpHandlerOverlay
 
-	for _, raw := range strings.Split(string(content), "\n") {
-		line := strings.TrimSpace(raw)
+	for _, logical := range joinHtaccessContinuations(strings.Split(string(content), "\n")) {
+		line := strings.TrimSpace(logical.text)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -144,12 +143,12 @@ func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 			continue
 		}
 
-		fields := strings.Fields(line)
+		fields := apacheDirectiveFields(line)
 		if len(fields) < 2 {
 			continue
 		}
 		directive := strings.ToLower(fields[0])
-		handler := strings.ToLower(fields[1])
+		handler := fields[1]
 
 		switch directive {
 		case "addhandler", "addtype":
@@ -185,21 +184,26 @@ func parsePHPHandlerDirectives(content []byte) phpHandlerOverlay {
 }
 
 func handlerIsPHP(token string) bool {
-	if !strings.Contains(token, "php") {
-		return false
-	}
+	token = strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
 	// The source viewer renders highlighted source instead of executing.
 	if strings.Contains(token, "php-source") {
 		return false
 	}
-	return true
+	if strings.Contains(token, "php") {
+		return true
+	}
+	// cPanel/PHP-FPM .htaccess wiring can use a custom socket alias whose
+	// path does not include the literal "php". A proxy-fcgi handler still
+	// routes matching files to an executable backend, so remapped extensions
+	// must be treated as PHP-executed for scanning and .htaccess alerts.
+	return strings.HasPrefix(token, "proxy:") && strings.Contains(token, "fcgi://")
 }
 
 // normalizeExt turns an .htaccess extension token into a lowercase
 // leading-dot extension, rejecting anything that is not a plain extension
 // token (e.g. a stray flag or MIME fragment).
 func normalizeExt(token string) string {
-	t := strings.ToLower(strings.TrimSpace(token))
+	t := strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
 	t = strings.TrimPrefix(t, ".")
 	if t == "" {
 		return ""
@@ -211,6 +215,83 @@ func normalizeExt(token string) string {
 		}
 	}
 	return "." + t
+}
+
+// htaccessLogicalLine is one Apache directive after joining physical
+// continuation lines. text is the joined directive (continuation backslashes
+// removed); lines are the original physical lines it spans, so a per-line
+// rewrite can drop or keep them together. start is the 0-based index of the
+// first physical line.
+type htaccessLogicalLine struct {
+	text  string
+	lines []string
+	start int
+}
+
+// joinHtaccessContinuations groups physical .htaccess lines into logical
+// directives, honoring Apache's trailing-backslash line continuation: a line
+// ending in "\" is joined with the next. Without this, a directive split as
+// "AddHandler ...php \" + ".jpg" reads as two harmless physical lines and
+// every per-line scanner misses the remap.
+func joinHtaccessContinuations(physical []string) []htaccessLogicalLine {
+	var out []htaccessLogicalLine
+	for i := 0; i < len(physical); {
+		start := i
+		var sb strings.Builder
+		var span []string
+		for {
+			cur := physical[i]
+			span = append(span, cur)
+			body, continues := htaccessContinuationBody(cur, i < len(physical)-1)
+			if continues {
+				sb.WriteString(body)
+				i++
+				continue
+			}
+			sb.WriteString(body)
+			break
+		}
+		out = append(out, htaccessLogicalLine{text: sb.String(), lines: span, start: start})
+		i++
+	}
+	return out
+}
+
+func htaccessContinuationBody(line string, hasNext bool) (string, bool) {
+	// On CRLF input (strings.Split keeps the trailing "\r") the continuation
+	// backslash sits before the carriage return, so strip it before the suffix
+	// test and from the joined text.
+	body := strings.TrimRight(line, "\r")
+	// A trailing backslash continues only when a next line exists; a backslash on
+	// the final line is left literal, matching Apache.
+	if !hasNext || !strings.HasSuffix(body, `\`) {
+		return body, false
+	}
+	if htaccessContainerLineKeepsTrailingBackslash(body) {
+		return body, false
+	}
+	return body[:len(body)-1], true
+}
+
+func htaccessContainerLineKeepsTrailingBackslash(body string) bool {
+	candidate := strings.TrimSpace(strings.TrimSuffix(body, `\`))
+	if !strings.Contains(candidate, ">") {
+		return false
+	}
+	if _, ok := openPHPHandlerContext(candidate); ok {
+		return true
+	}
+	return closesPHPHandlerContext(candidate)
+}
+
+func apacheDirectiveFields(line string) []string {
+	fields := strings.Fields(line)
+	for i, field := range fields {
+		if strings.HasPrefix(field, "#") {
+			return fields[:i]
+		}
+	}
+	return fields
 }
 
 func normalizedExts(tokens []string) []string {

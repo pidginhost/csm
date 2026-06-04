@@ -151,6 +151,69 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 	}
 }
 
+// phpExtension reports whether ext (leading dot, lowercase) is a stock
+// PHP-executed extension that legitimately maps to a PHP handler.
+func phpExtension(ext string) bool {
+	return isExecutablePHPName("x" + ext)
+}
+
+// phpHandlerRemapsNonPHP reports whether a single lowercased .htaccess line is
+// an AddHandler/AddType/SetHandler directive routing a non-PHP file extension
+// to a PHP execution handler. cPanel MultiPHP legitimately maps PHP extensions
+// to a PHP handler (e.g. application/x-httpd-ea-php74___lsphp .php .php7), so we
+// flag only when at least one mapped extension is not PHP-family.
+func phpHandlerRemapsNonPHP(lineLower string) bool {
+	return phpHandlerRemapsNonPHPInContext(lineLower, nil)
+}
+
+func phpHandlerRemapsNonPHPInContext(lineLower string, contexts []phpHandlerOverlay) bool {
+	fields := apacheDirectiveFields(lineLower)
+	if len(fields) < 2 {
+		return false
+	}
+	directive := fields[0]
+	switch directive {
+	case "addhandler", "addtype", "sethandler", "forcetype":
+	default:
+		return false
+	}
+
+	handler := fields[1]
+	if !handlerIsPHP(handler) {
+		return false
+	}
+
+	exts := normalizedExts(fields[2:])
+	if len(exts) == 0 {
+		return directiveHandlerContextTargetsNonPHP(directive, contexts)
+	}
+	for _, ext := range exts {
+		if !phpExtension(ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func directiveHandlerContextTargetsNonPHP(directive string, contexts []phpHandlerOverlay) bool {
+	if directive != "sethandler" && directive != "forcetype" {
+		return false
+	}
+	for _, ctx := range contexts {
+		for ext := range ctx.exts {
+			if !phpExtension(ext) {
+				return true
+			}
+		}
+		for name := range ctx.names {
+			if !isExecutablePHPName(name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert.Finding) {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -189,13 +252,45 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	// If file contains handler directives paired with -ExecCGI, the whole
 	// block is a security measure (e.g., Wordfence execution protection)
 	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
+	var phpHandlerContexts []phpHandlerOverlay
 
-	for lineNum, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	for _, logical := range joinHtaccessContinuations(lines) {
+		lineNum := logical.start
+		trimmed := strings.TrimSpace(logical.text)
 		lineLower := strings.ToLower(trimmed)
 
 		// Skip comments entirely - commented-out directives are not active
 		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if ctx, ok := openPHPHandlerContext(trimmed); ok {
+			phpHandlerContexts = append(phpHandlerContexts, ctx)
+			continue
+		}
+		if closesPHPHandlerContext(trimmed) {
+			if len(phpHandlerContexts) > 0 {
+				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
+			}
+			continue
+		}
+
+		// A PHP execution handler mapped onto a non-PHP extension is the
+		// handler-remap webshell technique: an uploaded .jpg then runs as
+		// PHP. The safe-pattern and AddType skips below would otherwise
+		// suppress it because the handler name itself is a normal PHP
+		// handler, so this override fires first and unconditionally.
+		remapsNonPHP := phpHandlerRemapsNonPHP(lineLower)
+		if !remapsNonPHP && len(phpHandlerContexts) > 0 {
+			remapsNonPHP = phpHandlerRemapsNonPHPInContext(lineLower, phpHandlerContexts)
+		}
+		if remapsNonPHP {
+			*findings = append(*findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "htaccess_injection",
+				Message:  "PHP handler mapped to non-PHP extension (handler remap)",
+				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
+				FilePath: path,
+			})
 			continue
 		}
 
@@ -293,7 +388,9 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
 	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
 	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
-		for lineNum, line := range lines {
+		for _, logical := range joinHtaccessContinuations(lines) {
+			lineNum := logical.start
+			line := logical.text
 			lineLower := strings.ToLower(line)
 			if !strings.Contains(lineLower, "addhandler") {
 				continue
