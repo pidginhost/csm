@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `go-redis/v9` to 9.20.0 and the pinned `actions/checkout` and `github/codeql-action` workflow actions to their latest patch releases.
+
 ## [3.11.1] - 2026-06-03
 
 ### Security
