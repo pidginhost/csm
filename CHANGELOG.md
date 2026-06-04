@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A new mail-filter scan inspects per-mailbox and domain-wide Exim filters for account-takeover interception: rules that copy every message to an external address while keeping a local copy are reported as critical, even when the filter predates CSM. Plain external forwards are flagged only when newly added, and a destination reused across mailboxes is called out as a coordinated campaign.
+- A new mail-filter scan inspects per-mailbox and domain-wide Exim filters for account-takeover interception. Hidden-copy rules are reported as critical even when the filter predates CSM; plain external forwards remain change-gated, and repeated destinations across mailboxes are called out as a coordinated campaign.
 
 ### Changed
 

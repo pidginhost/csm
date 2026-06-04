@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -68,10 +68,6 @@ type filterFinding struct {
 	reason    string
 	onlyIfNew bool
 }
-
-// matchAllRe matches an Exim address/header test whose comparison value is a
-// bare "@". Every email address contains "@", so such a rule fires on all mail.
-var matchAllRe = regexp.MustCompile(`contains\s+"@"`)
 
 // safePipeCommands are cPanel built-in pipe targets that are not attacker code.
 var safePipeCommands = []string{
@@ -162,15 +158,38 @@ var actionVerbs = map[string]bool{
 	"vacation": true,
 }
 
+var actionArgs = map[string]bool{
+	"deliver":  true,
+	"save":     true,
+	"pipe":     true,
+	"mail":     true,
+	"vacation": true,
+}
+
+var controlWords = map[string]bool{
+	"if":     true,
+	"elif":   true,
+	"else":   true,
+	"endif":  true,
+	"then":   true,
+	"unseen": true,
+}
+
+type filterRuleNode struct {
+	rule   filterRule
+	parent *filterRuleNode
+}
+
 // parseEximFilter parses Exim filter source into a flat list of rules, one per
 // if/elif/else branch plus one for any unconditional top-level actions. Nested
-// ifs attach actions to their innermost condition.
+// branches include ancestor actions so split deliver/save patterns still score
+// as one executed branch.
 func parseEximFilter(content string) []filterRule {
 	toks := tokenizeExim(content)
 
-	top := &filterRule{matchesAll: true}
-	stack := []*filterRule{top}
-	rules := []*filterRule{top}
+	top := &filterRuleNode{rule: filterRule{matchesAll: true}}
+	stack := []*filterRuleNode{top}
+	rules := []*filterRuleNode{top}
 
 	pendingUnseen := false
 	i := 0
@@ -180,21 +199,26 @@ func parseEximFilter(content string) []filterRule {
 			i++
 			continue
 		}
-		switch t.text {
+		kw := strings.ToLower(t.text)
+		switch kw {
 		case "if", "elif":
-			if t.text == "elif" && len(stack) > 1 {
+			if kw == "elif" && len(stack) > 1 {
 				stack = stack[:len(stack)-1]
 			}
+			parent := stack[len(stack)-1]
 			i++
 			condStart := i
-			for i < len(toks) && (toks[i].text != "then" || toks[i].str) {
+			for i < len(toks) && !tokenIs(toks[i], "then") {
 				i++
 			}
 			cond := renderCondition(toks[condStart:i])
 			if i < len(toks) {
 				i++ // consume "then"
 			}
-			r := &filterRule{condition: cond, matchesAll: conditionMatchesAll(cond)}
+			r := &filterRuleNode{
+				rule:   filterRule{condition: cond, matchesAll: conditionMatchesAll(cond)},
+				parent: parent,
+			}
 			rules = append(rules, r)
 			stack = append(stack, r)
 			pendingUnseen = false
@@ -202,8 +226,12 @@ func parseEximFilter(content string) []filterRule {
 			if len(stack) > 1 {
 				stack = stack[:len(stack)-1]
 			}
+			parent := stack[len(stack)-1]
 			i++
-			r := &filterRule{condition: "else"}
+			r := &filterRuleNode{
+				rule:   filterRule{condition: "else"},
+				parent: parent,
+			}
 			rules = append(rules, r)
 			stack = append(stack, r)
 			pendingUnseen = false
@@ -217,41 +245,274 @@ func parseEximFilter(content string) []filterRule {
 			pendingUnseen = true
 			i++
 		default:
-			if !actionVerbs[t.text] {
+			if !actionVerbs[kw] {
 				i++
 				continue
 			}
-			verb := t.text
+			verb := kw
 			i++
 			arg := ""
-			if i < len(toks) && toks[i].str {
-				arg = toks[i].text
-				i++
+			if actionArgs[verb] && i < len(toks) {
+				if toks[i].str || isBareActionArg(toks[i]) {
+					arg = toks[i].text
+					i++
+				}
 			}
 			cur := stack[len(stack)-1]
-			cur.actions = append(cur.actions, filterAction{verb: verb, arg: arg, unseen: pendingUnseen})
+			cur.rule.actions = append(cur.rule.actions, filterAction{verb: verb, arg: arg, unseen: pendingUnseen})
 			pendingUnseen = false
 		}
 	}
 
 	out := make([]filterRule, 0, len(rules))
 	for _, r := range rules {
-		if len(r.actions) > 0 {
-			out = append(out, *r)
+		if len(r.rule.actions) > 0 {
+			out = append(out, flattenRuleNode(r))
 		}
 	}
 	return out
 }
 
+func tokenIs(t eximToken, word string) bool {
+	return !t.str && strings.EqualFold(t.text, word)
+}
+
+func isBareActionArg(t eximToken) bool {
+	if t.str {
+		return true
+	}
+	lower := strings.ToLower(t.text)
+	return !controlWords[lower] && !actionVerbs[lower]
+}
+
+func flattenRuleNode(node *filterRuleNode) filterRule {
+	var chain []*filterRuleNode
+	for n := node; n != nil; n = n.parent {
+		chain = append(chain, n)
+	}
+
+	out := filterRule{matchesAll: true}
+	var conditions []string
+	for i := len(chain) - 1; i >= 0; i-- {
+		r := chain[i].rule
+		if r.condition != "" {
+			conditions = append(conditions, r.condition)
+		}
+		if !r.matchesAll {
+			out.matchesAll = false
+		}
+		out.actions = append(out.actions, r.actions...)
+	}
+	out.condition = strings.Join(conditions, " && ")
+	return out
+}
+
 // conditionMatchesAll reports whether a filter condition fires on effectively
 // all mail: an unconditional rule, or one that only tests that an address or
-// header "contains @" (true for every message).
+// header comparison is true for every normal email address.
 func conditionMatchesAll(cond string) bool {
 	c := strings.TrimSpace(cond)
 	if c == "" {
 		return true
 	}
-	return matchAllRe.MatchString(strings.ToLower(c))
+	return tokenExpressionMatchesAll(tokenizeExim(c))
+}
+
+func tokenExpressionMatchesAll(toks []eximToken) bool {
+	toks = trimOuterParens(toks)
+	if len(toks) == 0 {
+		return false
+	}
+	for _, term := range splitTopLevel(toks, "or") {
+		if tokenConjunctionMatchesAll(term) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenConjunctionMatchesAll(toks []eximToken) bool {
+	toks = trimOuterParens(toks)
+	if len(toks) == 0 {
+		return false
+	}
+	parts := splitTopLevel(toks, "and")
+	for _, part := range parts {
+		if !tokenTermMatchesAll(part) {
+			return false
+		}
+	}
+	return len(parts) > 0
+}
+
+func tokenTermMatchesAll(toks []eximToken) bool {
+	toks = trimOuterParens(toks)
+	if len(toks) == 0 {
+		return false
+	}
+	if parts := splitTopLevel(toks, "or"); len(parts) > 1 {
+		return tokenExpressionMatchesAll(toks)
+	}
+	if parts := splitTopLevel(toks, "and"); len(parts) > 1 {
+		return tokenConjunctionMatchesAll(toks)
+	}
+
+	hasMatchAllComparison := false
+	for i := 0; i < len(toks); i++ {
+		if toks[i].str {
+			continue
+		}
+		if strings.EqualFold(toks[i].text, "not") {
+			return false
+		}
+	}
+	for i := 0; i+1 < len(toks); i++ {
+		if toks[i].str {
+			continue
+		}
+		op := strings.ToLower(toks[i].text)
+		if !isAddressComparisonOperator(op) {
+			continue
+		}
+		if !comparisonMatchesAllAddress(op, toks[i+1].text) || !comparisonHasAddressOperand(toks, i) {
+			return false
+		}
+		hasMatchAllComparison = true
+	}
+	return hasMatchAllComparison
+}
+
+func splitTopLevel(toks []eximToken, word string) [][]eximToken {
+	var parts [][]eximToken
+	start := 0
+	depth := 0
+	for i, t := range toks {
+		if t.str {
+			continue
+		}
+		switch t.text {
+		case "(":
+			depth++
+		case ")":
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 && strings.EqualFold(t.text, word) {
+				if start < i {
+					parts = append(parts, toks[start:i])
+				}
+				start = i + 1
+			}
+		}
+	}
+	if start < len(toks) {
+		parts = append(parts, toks[start:])
+	}
+	return parts
+}
+
+func trimOuterParens(toks []eximToken) []eximToken {
+	for len(toks) >= 2 && tokenIs(toks[0], "(") && tokenIs(toks[len(toks)-1], ")") && outerParensEncloseAll(toks) {
+		toks = toks[1 : len(toks)-1]
+	}
+	return toks
+}
+
+func outerParensEncloseAll(toks []eximToken) bool {
+	depth := 0
+	for i, t := range toks {
+		if t.str {
+			continue
+		}
+		switch t.text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+			if depth == 0 && i != len(toks)-1 {
+				return false
+			}
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+func isAddressComparisonOperator(op string) bool {
+	switch op {
+	case "contains", "matches", "is":
+		return true
+	}
+	return false
+}
+
+func comparisonMatchesAllAddress(op, value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch op {
+	case "contains":
+		return v == "@"
+	case "matches":
+		switch v {
+		case "@", ".*@.*", ".+@.+", "^.*@.*$", "^.+@.+$":
+			return true
+		}
+	case "is":
+		return v == "*@*"
+	}
+	return false
+}
+
+func comparisonHasAddressOperand(toks []eximToken, opIndex int) bool {
+	for i := opIndex - 1; i >= 0; i-- {
+		if toks[i].str {
+			continue
+		}
+		word := strings.ToLower(toks[i].text)
+		switch word {
+		case "and", "or", "then", "else":
+			return false
+		case "(", ")":
+			return false
+		case "not":
+			continue
+		}
+		if tokenLooksAddressOperand(word) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenLooksAddressOperand(token string) bool {
+	addressOperands := []string{
+		"$thisaddress",
+		"foranyaddress",
+		"$sender_address",
+		"$return_path",
+		"$header_from",
+		"$h_from",
+		"$header_to",
+		"$h_to",
+		"$header_cc",
+		"$h_cc",
+		"$header_bcc",
+		"$h_bcc",
+		"$header_reply-to",
+		"$h_reply-to",
+		"$header_sender",
+		"$h_sender",
+		"$header_return-path",
+		"$h_return-path",
+	}
+	for _, operand := range addressOperands {
+		if strings.Contains(token, operand) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -262,46 +523,89 @@ func conditionMatchesAll(cond string) bool {
 // mail system. Exim variables ($domain etc.) and same-domain/local-domain
 // addresses are not external.
 func destIsExternal(dest string, mb filterMailbox, localDomains map[string]bool) bool {
-	at := strings.LastIndexByte(dest, '@')
-	if at < 0 || at == len(dest)-1 {
+	_, dom, ok := splitDeliverDest(dest)
+	if !ok {
 		return false
 	}
-	dom := strings.ToLower(strings.Trim(dest[at+1:], `" `))
-	if strings.Contains(dom, "$") {
+	if deliverDomainIsLocal(dom, mb, localDomains) {
 		return false
 	}
-	if dom == strings.ToLower(mb.domain) {
-		return false
-	}
-	return !localDomains[dom]
+	return true
 }
 
 // destIsLocalSelf reports whether a deliver destination routes back into the
 // local mail system (a self re-delivery that keeps a copy for the victim).
 func destIsLocalSelf(dest string, mb filterMailbox, localDomains map[string]bool) bool {
-	if strings.Contains(dest, "$local_part") || strings.Contains(dest, "$domain") || strings.Contains(dest, "$home") {
-		return true
-	}
-	at := strings.LastIndexByte(dest, '@')
-	if at < 0 || at == len(dest)-1 {
+	_, dom, ok := splitDeliverDest(dest)
+	if !ok {
 		return false
 	}
-	dom := strings.ToLower(strings.Trim(dest[at+1:], `" `))
-	return dom == strings.ToLower(mb.domain) || localDomains[dom]
+	return deliverDomainIsLocal(dom, mb, localDomains)
+}
+
+func splitDeliverDest(dest string) (string, string, bool) {
+	clean := strings.Trim(strings.TrimSpace(dest), `"`)
+	at := strings.LastIndexByte(clean, '@')
+	if at < 0 || at == len(clean)-1 {
+		return "", "", false
+	}
+	local := strings.Trim(strings.TrimSpace(clean[:at]), `"`)
+	dom := strings.ToLower(strings.Trim(strings.TrimSpace(clean[at+1:]), `"`))
+	if local == "" || dom == "" {
+		return "", "", false
+	}
+	return local, dom, true
+}
+
+func deliverDomainIsLocal(dom string, mb filterMailbox, localDomains map[string]bool) bool {
+	d := strings.ToLower(strings.TrimSpace(dom))
+	if d == "$domain" || d == "${domain}" {
+		return true
+	}
+	if d == strings.ToLower(mb.domain) {
+		return true
+	}
+	return localDomains[d]
 }
 
 func isSafePipe(cmd string) bool {
+	first := firstPipeCommandWord(cmd)
 	for _, s := range safePipeCommands {
-		if strings.Contains(cmd, s) {
+		if first == s {
 			return true
 		}
 	}
 	return false
 }
 
+func firstPipeCommandWord(cmd string) string {
+	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cmd), "|"))
+	var b strings.Builder
+	var quote rune
+	for _, r := range s {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			b.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		if unicode.IsSpace(r) {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // scoreFilterRules evaluates one mailbox's parsed filter rules and returns the
 // dangerous patterns found. Suppression entries in known (format
-// "local@domain: dest") drop matching external destinations.
+// "local@domain: dest") drop matching plain external destinations.
 func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[string]bool, known []string) []filterFinding {
 	var out []filterFinding
 	seen := map[string]bool{}
@@ -310,13 +614,29 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 		if seen[key] {
 			return
 		}
+		if f.kind == "forwarder" && seen["exfil|"+f.dest] {
+			return
+		}
+		if f.kind == "exfil" && seen["forwarder|"+f.dest] {
+			delete(seen, "forwarder|"+f.dest)
+			for i := range out {
+				if out[i].kind == "forwarder" && out[i].dest == f.dest {
+					out = append(out[:i], out[i+1:]...)
+					break
+				}
+			}
+		}
 		seen[key] = true
 		out = append(out, f)
 	}
 
+	type externalDelivery struct {
+		dest   string
+		unseen bool
+	}
+
 	for _, r := range rules {
-		var externalDest string
-		externalUnseen := false
+		var external []externalDelivery
 		hasLocalCopy := false
 		hasDevNull := false
 
@@ -325,12 +645,7 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 			case "deliver":
 				switch {
 				case destIsExternal(a.arg, mb, localDomains):
-					if externalDest == "" {
-						externalDest = a.arg
-					}
-					if a.unseen {
-						externalUnseen = true
-					}
+					external = append(external, externalDelivery{dest: a.arg, unseen: a.unseen})
 				case destIsLocalSelf(a.arg, mb, localDomains):
 					hasLocalCopy = true
 				}
@@ -353,28 +668,30 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 			}
 		}
 
-		if externalDest != "" {
-			if isKnownForwarder(mb.localPart, mb.domain, externalDest, known) {
-				continue
-			}
-			stealth := hasLocalCopy || hasDevNull || r.matchesAll || externalUnseen
-			if stealth {
-				add(filterFinding{
-					severity: alert.Critical,
-					check:    "email_filter_exfil",
-					kind:     "exfil",
-					dest:     externalDest,
-					reason:   stealthReason(hasLocalCopy, hasDevNull, r.matchesAll, externalUnseen),
-				})
-			} else {
-				add(filterFinding{
-					severity:  alert.High,
-					check:     "email_filter_forwarder",
-					kind:      "forwarder",
-					dest:      externalDest,
-					reason:    "filter forwards mail to an external address",
-					onlyIfNew: true,
-				})
+		if len(external) > 0 {
+			for _, delivery := range external {
+				stealth := hasLocalCopy || hasDevNull || r.matchesAll || delivery.unseen
+				if !stealth && isKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
+					continue
+				}
+				if stealth {
+					add(filterFinding{
+						severity: alert.Critical,
+						check:    "email_filter_exfil",
+						kind:     "exfil",
+						dest:     delivery.dest,
+						reason:   stealthReason(hasLocalCopy, hasDevNull, r.matchesAll, delivery.unseen),
+					})
+				} else {
+					add(filterFinding{
+						severity:  alert.High,
+						check:     "email_filter_forwarder",
+						kind:      "forwarder",
+						dest:      delivery.dest,
+						reason:    "filter forwards mail to an external address",
+						onlyIfNew: true,
+					})
+				}
 			}
 			continue
 		}
@@ -395,8 +712,14 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 func stealthReason(localCopy, devNull, matchAll, unseen bool) string {
 	switch {
 	case devNull:
+		if matchAll {
+			return "filter forwards all mail externally and discards the local copy to hide it"
+		}
 		return "filter forwards mail externally and discards the local copy to hide it"
 	case localCopy || unseen:
+		if !matchAll {
+			return "filter sends matching mail to an external address while keeping a local copy (stealth interception)"
+		}
 		return "filter copies every message to an external address while keeping a local copy (stealth interception)"
 	case matchAll:
 		return "filter forwards all mail to an external address"
