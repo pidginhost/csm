@@ -272,3 +272,26 @@ func FuzzParseAccessLogRecord(f *testing.F) {
 		_, _ = parseAccessLogRecord(line)
 	})
 }
+
+func FuzzParseEximFilter(f *testing.F) {
+	// Exim filter bodies are attacker-controlled (written via the cPanel API
+	// once a webmail account is compromised). The tokenizer/parser must walk
+	// any input without panicking or running off the buffer.
+	f.Add("if\n $header_from: contains \"@\"\nthen\n deliver \"x@y.com\"\nendif\n")
+	f.Add("if not first_delivery and error_message then finish endif")
+	f.Add("deliver \"\\\"$local_part+INBOX\\\"@$domain\"")
+	f.Add("save \"/dev/null\" 660")
+	f.Add("unseen deliver")          // verb with no arg
+	f.Add("if then endif")           // empty condition and branch
+	f.Add("\"unterminated string")   // unclosed quote
+	f.Add("(((")                     // dangling parens
+	f.Add("if if if then then then") // pathological nesting
+	f.Add("elif else endif endif")   // stack underflow attempts
+	f.Add("")                        // empty
+	f.Add("# comment only\n")        // comment, no tokens
+	f.Fuzz(func(t *testing.T, content string) {
+		rules := parseEximFilter(content)
+		mb := filterMailbox{localPart: "u", domain: "example.com"}
+		_ = scoreFilterRules(rules, mb, map[string]bool{"example.com": true}, nil)
+	})
+}
