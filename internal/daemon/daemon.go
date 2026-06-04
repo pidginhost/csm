@@ -557,7 +557,7 @@ func (d *Daemon) Run() error {
 	}
 
 	// Create password hijack detector
-	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
+	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh, d.stopCh)
 
 	// Start inotify log watchers
 	d.startLogWatchers()

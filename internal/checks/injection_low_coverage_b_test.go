@@ -172,6 +172,40 @@ $table_prefix = 'wp_';
 	}
 }
 
+func TestDBCleanOption_PreviewRejectsPartialClean(t *testing.T) {
+	wpCfg := `<?php
+define( 'DB_NAME', 'partialdb' );
+define( 'DB_USER', 'u' );
+define( 'DB_PASSWORD', 'p' );
+define( 'DB_HOST', 'localhost' );
+$table_prefix = 'wp_';
+`
+	maliciousContent := `<script src="https://evil.top/removed.js"></script><script src="https://evil.top/still-live.js">`
+
+	withMockOS(t, wpConfigFixture(t, "partialuser", wpCfg))
+
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
+			if name == "mysql" {
+				for _, a := range args {
+					if strings.Contains(a, "SELECT option_value") {
+						return []byte(maliciousContent + "\n"), nil
+					}
+				}
+			}
+			return nil, nil
+		},
+	})
+
+	result := DBCleanOption("partialuser", "widget_text", true)
+	if result.Success {
+		t.Fatalf("preview must fail when a cleaned value would still contain an attacker script: %+v", result)
+	}
+	if !strings.Contains(result.Message, "Failed to remove all malicious scripts") {
+		t.Fatalf("unexpected message: %s", result.Message)
+	}
+}
+
 func TestDBCleanOption_FullCleanWithBackup(t *testing.T) {
 	wpCfg := `<?php
 define( 'DB_NAME', 'cleandb' );
@@ -1019,6 +1053,63 @@ func TestBackupAndCleanOption_SuccessfulClean(t *testing.T) {
 	}
 	if !updateSeen {
 		t.Error("expected UPDATE for cleaned value")
+	}
+}
+
+func TestBackupAndCleanOption_AllowsCleanWhenURLRemainsAsText(t *testing.T) {
+	var updateQuery string
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
+			if name != "mysql" {
+				return nil, nil
+			}
+			for _, a := range args {
+				if strings.Contains(a, "UPDATE") && strings.Contains(a, "option_value") {
+					updateQuery = a
+				}
+			}
+			return nil, nil
+		},
+	})
+	creds := wpDBCreds{dbName: "db3", dbUser: "u", dbPass: "p", dbHost: "localhost"}
+	original := `text reference https://evil.top/x.js <script src="https://evil.top/x.js"></script>`
+
+	cleaned := backupAndCleanOption(creds, "wp_", "widget_text", original, "https://evil.top/x.js")
+
+	if !cleaned {
+		t.Fatal("should clean when the attacker URL remains only as inert text")
+	}
+	if updateQuery == "" {
+		t.Fatal("expected UPDATE for cleaned value")
+	}
+	if strings.Contains(updateQuery, "<script") {
+		t.Fatalf("cleaned UPDATE still contains script tag: %s", updateQuery)
+	}
+	if !strings.Contains(updateQuery, "text reference https://evil.top/x.js") {
+		t.Fatalf("cleaned UPDATE should preserve inert text URL reference: %s", updateQuery)
+	}
+}
+
+func TestBackupAndCleanOption_RejectsRemainingAttackerScript(t *testing.T) {
+	var mysqlCalls int
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, env ...string) ([]byte, error) {
+			if name == "mysql" {
+				mysqlCalls++
+			}
+			return nil, nil
+		},
+	})
+	creds := wpDBCreds{dbName: "db4", dbUser: "u", dbPass: "p", dbHost: "localhost"}
+	original := `text <script src="https://evil.top/x.js">`
+
+	cleaned := backupAndCleanOption(creds, "wp_", "widget_text", original, "https://evil.top/x.js")
+
+	if cleaned {
+		t.Fatal("should reject when an attacker script src remains after cleanup")
+	}
+	if mysqlCalls != 0 {
+		t.Fatalf("cleanup must not write backup or update queries, got %d mysql calls", mysqlCalls)
 	}
 }
 

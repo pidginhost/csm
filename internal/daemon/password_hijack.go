@@ -26,6 +26,7 @@ type PasswordHijackDetector struct {
 	recentChanges map[string]*passwordChange // account -> change info
 	cfg           *config.Config
 	alertCh       chan<- alert.Finding
+	stopCh        <-chan struct{} // closed on daemon shutdown; lets sends escape
 }
 
 type passwordChange struct {
@@ -37,11 +38,24 @@ type passwordChange struct {
 const hijackWindow = 120 * time.Second // time window to correlate password change + login
 
 // NewPasswordHijackDetector creates a new detector.
-func NewPasswordHijackDetector(cfg *config.Config, alertCh chan<- alert.Finding) *PasswordHijackDetector {
+func NewPasswordHijackDetector(cfg *config.Config, alertCh chan<- alert.Finding, stopCh <-chan struct{}) *PasswordHijackDetector {
 	return &PasswordHijackDetector{
 		recentChanges: make(map[string]*passwordChange),
 		cfg:           cfg,
 		alertCh:       alertCh,
+		stopCh:        stopCh,
+	}
+}
+
+// emit delivers a finding without ever blocking the (synchronous) session-log
+// watcher goroutine forever. It applies backpressure while the daemon is
+// running, but gives up the moment shutdown is signaled -- after the alert
+// dispatcher stops draining, a plain send would otherwise wedge d.wg.Wait().
+// Callers must NOT hold d.mu while calling this.
+func (d *PasswordHijackDetector) emit(f alert.Finding) {
+	select {
+	case d.alertCh <- f:
+	case <-d.stopCh:
 	}
 }
 
@@ -52,16 +66,17 @@ func (d *PasswordHijackDetector) HandlePasswordChange(account, ip string) {
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	d.recentChanges[account] = &passwordChange{
 		account:   account,
 		ip:        ip,
 		timestamp: time.Now(),
 	}
+	d.mu.Unlock()
 
-	// Alert on the password change itself - non-infra WHM password change is always suspicious
-	d.alertCh <- alert.Finding{
+	// Alert on the password change itself - non-infra WHM password change is
+	// always suspicious. Emit outside the lock so a saturated alert channel
+	// can never wedge the mutex.
+	d.emit(alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "whm_password_change_noninfra",
 		Message:   fmt.Sprintf("WHM password change from non-infra IP: %s (account: %s)", ip, account),
@@ -69,7 +84,7 @@ func (d *PasswordHijackDetector) HandlePasswordChange(account, ip string) {
 		Timestamp: time.Now(),
 		SourceIP:  ip,
 		TenantID:  account,
-	}
+	})
 }
 
 // HandleLogin checks if a cPanel login matches a recent non-infra password change.
@@ -95,7 +110,7 @@ func (d *PasswordHijackDetector) HandleLogin(account, loginIP string) {
 	}
 
 	// CONFIRMED ATTACK: password changed from non-infra IP, login within 120s
-	d.alertCh <- alert.Finding{
+	d.emit(alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "password_hijack_confirmed",
 		Message:   fmt.Sprintf("CONFIRMED ACCOUNT HIJACK: %s - password changed from %s, login from %s within %ds", account, change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
@@ -103,7 +118,7 @@ func (d *PasswordHijackDetector) HandleLogin(account, loginIP string) {
 		Timestamp: time.Now(),
 		SourceIP:  loginIP,
 		TenantID:  account,
-	}
+	})
 }
 
 // Cleanup removes expired entries.

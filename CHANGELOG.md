@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `go-redis/v9` to 9.20.0 and the pinned `actions/checkout` and `github/codeql-action` workflow actions to their latest patch releases.
+
 ### Security
 
 - The `.htaccess` scanner now flags PHP handler remaps to non-executable extensions, including Apache's dotless or quoted extension tokens and proxy-fcgi aliases. Legitimate cPanel MultiPHP mappings and PHP source-display handlers are unaffected.
@@ -17,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A visitor who passes the challenge now skips the gate for the allow window through a signed, single-IP cookie. The previous verification cookie was never checked, so a verified visitor was re-challenged on every request.
 - The authentication-event listener no longer leaks a goroutine at shutdown when the alert channel is no longer being drained.
+- Automatic WordPress database cleanup now strips injected scripts loaded via protocol-relative URLs, which were detected but previously left in place. It also no longer reports a successful clean while the malicious script is still present.
+- WordPress database cleanup now keeps legitimate external script embeds in place and refuses partial cleans that would leave an attacker script active.
+- The WHM password-change hijack detector can no longer hang daemon shutdown when its alert channel is saturated; its alerts give way once shutdown begins.
+- A panic inside a per-account security scan started from the web UI is now contained and reported as a check timeout instead of crashing the daemon.
+- Refreshing the Cloudflare allowlist now fails cleanly when only one address-family set is initialized, instead of panicking.
 
 ## [3.11.1] - 2026-06-03
 

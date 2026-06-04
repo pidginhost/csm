@@ -1450,7 +1450,7 @@ func TestParseSessionLogLine_InfraIPSkipped(t *testing.T) {
 func TestParseSessionLineForHijack_CPanelLogin(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	// First, create a password change record
 	d.HandlePasswordChange("bob", "198.51.100.1")
@@ -1477,7 +1477,7 @@ func TestParseSessionLineForHijack_CPanelLogin(t *testing.T) {
 func TestHandleLogin_ExpiredWindow(t *testing.T) {
 	cfg := &config.Config{}
 	ch := make(chan alert.Finding, 10)
-	d := NewPasswordHijackDetector(cfg, ch)
+	d := NewPasswordHijackDetector(cfg, ch, make(chan struct{}))
 
 	// Inject an old password change
 	d.mu.Lock()
