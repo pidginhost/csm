@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,12 +23,12 @@ import (
 
 func TestCentralFirebreakProtects(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.InfraIPs = []string{"10.10.10.0/24", "198.18.0.1"}
+	cfg.InfraIPs = []string{"10.10.10.0/24"}
 	cfg.Firewall = &firewall.FirewallConfig{InfraIPs: []string{"45.76.1.0/24"}}
 	d := New(cfg, nil, nil, "")
 	fb := d.centralFirebreak()
 
-	for _, ip := range []string{"127.0.0.1", "10.10.10.5", "198.18.0.1", "45.76.1.7", "192.0.2.7", "203.0.113.9", "::1", "fe80::1", "not-an-ip"} {
+	for _, ip := range []string{"127.0.0.1", "10.10.10.5", "45.76.1.7", "192.0.2.7", "198.51.100.10", "203.0.113.9", "198.18.0.1", "198.19.255.254", "2001:db8::1", "::1", "fe80::1", "not-an-ip"} {
 		if !fb(ip) {
 			t.Errorf("firebreak(%q) = false, want protected", ip)
 		}
@@ -34,6 +37,54 @@ func TestCentralFirebreakProtects(t *testing.T) {
 		if fb(ip) {
 			t.Errorf("firebreak(%q) = true, want actionable", ip)
 		}
+	}
+}
+
+func TestStartCentralConsumeWarnsOnlyForUnknownAction(t *testing.T) {
+	prevHook := alert.CentralHook
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	t.Cleanup(func() {
+		alert.SetCentralHook(prevHook)
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	t.Setenv("CSM_TEST_CENTRAL_PUB", hex.EncodeToString(pub))
+
+	tests := []struct {
+		action string
+		warn   bool
+	}{
+		{action: ""},
+		{action: string(reporting.ActionOff)},
+		{action: string(reporting.ActionChallenge)},
+		{action: string(reporting.ActionBlockIfLocalCorroborated)},
+		{action: "unknown", warn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			log.SetFlags(0)
+			alert.SetCentralHook(nil)
+
+			cfg := &config.Config{}
+			cfg.Reputation.Central.Enabled = true
+			cfg.Reputation.Central.SetURL = "https://central.example/decisions"
+			cfg.Reputation.Central.PubkeyEnv = "CSM_TEST_CENTRAL_PUB"
+			cfg.Reputation.Central.Action = tt.action
+			d := New(cfg, nil, nil, "")
+			if loop := d.startCentralConsume(); loop == nil {
+				t.Fatal("enabled consumer returned nil loop")
+			}
+
+			gotWarn := strings.Contains(buf.String(), "unrecognized action")
+			if gotWarn != tt.warn {
+				t.Fatalf("unrecognized-action warning = %v, want %v; log=%q", gotWarn, tt.warn, buf.String())
+			}
+		})
 	}
 }
 

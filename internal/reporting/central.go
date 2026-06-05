@@ -100,8 +100,8 @@ func (cs *CentralStore) Version() uint64 { return cs.state.Load().set.Version() 
 
 // Refresh pulls an update and swaps in the new state on change. On a version
 // gap it retries once from a cold pull (since=0) so a node that fell behind the
-// diff window recovers with a full snapshot. A non-increasing version is
-// rejected so a rolled-back or hostile endpoint cannot regress the cache.
+// diff window recovers with a full snapshot. A lower version is rejected so a
+// rolled-back or hostile endpoint cannot regress the cache.
 func (cs *CentralStore) Refresh(ctx context.Context) error {
 	cur := cs.state.Load().snapshot
 	next, changed, err := cs.puller.Refresh(ctx, cur)
@@ -112,10 +112,19 @@ func (cs *CentralStore) Refresh(ctx context.Context) error {
 		return err
 	}
 	if changed {
-		if next.Version < cur.Version {
-			return ErrSetVersionGap
+		nextState := &centralState{snapshot: next, set: NewSet(next)}
+		for {
+			latest := cs.state.Load()
+			if next.Version < latest.snapshot.Version {
+				return ErrSetVersionGap
+			}
+			if next.Version == latest.snapshot.Version {
+				return nil
+			}
+			if cs.state.CompareAndSwap(latest, nextState) {
+				return nil
+			}
 		}
-		cs.state.Store(&centralState{snapshot: next, set: NewSet(next)})
 	}
 	return nil
 }

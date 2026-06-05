@@ -1,13 +1,17 @@
 package reporting
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestParseActionDefaultsToChallenge(t *testing.T) {
@@ -204,5 +208,105 @@ func TestCentralStoreRefreshRejectsSnapshotRollback(t *testing.T) {
 	}
 	if _, ok := cs.Lookup("203.0.113.8"); ok {
 		t.Fatal("rolled-back snapshot replaced the cached set")
+	}
+}
+
+func TestCentralStoreConcurrentRefreshCannotRegress(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	v8b, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 8, Entries: []ScoredEntry{
+		{IP: "203.0.113.8", Score: 80, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+	v9b, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 9, Entries: []ScoredEntry{
+		{IP: "203.0.113.9", Score: 90, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+
+	var calls atomic.Uint64
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+			return signedSetResponse(req, priv, v8b), nil
+		case 2:
+			close(secondStarted)
+			return signedSetResponse(req, priv, v9b), nil
+		default:
+			t.Fatalf("unexpected refresh request %d", calls.Load())
+			return nil, nil
+		}
+	})}
+
+	cs := NewCentralStore(NewPuller(client, "https://central.example/decisions", hex.EncodeToString(pub)))
+	base := sampleSnapshot()
+	cs.state.Store(&centralState{snapshot: base, set: NewSet(base)})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	slowErr := make(chan error, 1)
+	go func() { slowErr <- cs.Refresh(ctx) }()
+	waitForSignal(t, firstStarted)
+
+	fastErr := make(chan error, 1)
+	go func() { fastErr <- cs.Refresh(ctx) }()
+	waitForSignal(t, secondStarted)
+	if err := waitForRefresh(t, fastErr); err != nil {
+		t.Fatalf("fast refresh: %v", err)
+	}
+	if cs.Version() != 9 {
+		t.Fatalf("version after fast refresh = %d, want 9", cs.Version())
+	}
+
+	close(releaseFirst)
+	if err := waitForRefresh(t, slowErr); err != ErrSetVersionGap {
+		t.Fatalf("stale refresh err = %v, want ErrSetVersionGap", err)
+	}
+	if cs.Version() != 9 {
+		t.Fatalf("version after stale refresh = %d, want 9", cs.Version())
+	}
+	if _, ok := cs.Lookup("203.0.113.8"); ok {
+		t.Fatal("stale version 8 entry replaced newer cache")
+	}
+	if _, ok := cs.Lookup("203.0.113.9"); !ok {
+		t.Fatal("newer version 9 entry was lost")
+	}
+}
+
+func signedSetResponse(req *http.Request, priv ed25519.PrivateKey, payload []byte) *http.Response {
+	sig := ed25519.Sign(priv, payload)
+	h := make(http.Header)
+	h.Set("X-CSM-Signature", "ed25519="+hex.EncodeToString(sig))
+	h.Set("X-CSM-Kind", "snapshot")
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     h,
+		Body:       io.NopCloser(bytes.NewReader(payload)),
+		Request:    req,
+	}
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for refresh request")
+	}
+}
+
+func waitForRefresh(t *testing.T, ch <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for refresh")
+		return nil
 	}
 }

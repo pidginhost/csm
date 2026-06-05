@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Concurrent central scored-set refreshes now keep the newest accepted cache
+  version when overlapping pulls finish out of order.
 - Central scored-set consumer now rejects a snapshot at version 0 or any
   version below the cached one, so a rolled-back or hostile endpoint cannot
   regress a node's set or pin it to perpetual cold pulls; the snapshot and its
