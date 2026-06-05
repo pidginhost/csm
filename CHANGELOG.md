@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answers per-IP reputation lookups for the central abuse database.
 - Scored-set pull client that fetches a full snapshot or an incremental diff
   from the central service and verifies it before use.
+- Central scored-set consumer wired into the daemon under `reputation.central`
+  (opt-in, default off): refreshes the verified set and, when a finding's IP is
+  listed, challenges it (or hard-blocks only with local corroboration above the
+  threshold). Firebreaks (loopback, private, documentation ranges, infra_ips)
+  are never acted on; central data never blocks on its own.
 
 ### Fixed
 

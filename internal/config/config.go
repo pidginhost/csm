@@ -633,6 +633,18 @@ type Config struct {
 				TokenEnv  string `yaml:"token_env"` // optional bearer for hmac collectors
 			} `yaml:"targets"`
 		} `yaml:"report" hotreload:"restart"`
+
+		// Central pulls a signed scored-set from the central abuse database and
+		// acts on it per Action. Opt-in; default off. Central data never hard
+		// blocks on its own (see Action / firebreaks).
+		Central struct {
+			Enabled         bool   `yaml:"enabled"`
+			SetURL          string `yaml:"set_url"`
+			PubkeyEnv       string `yaml:"pubkey_env"`       // env holding the central Ed25519 public key (hex)
+			RefreshInterval string `yaml:"refresh_interval"` // e.g. "6h"; default 6h
+			Action          string `yaml:"action"`           // off | challenge | block_if_local_corroborated
+			BlockThreshold  int    `yaml:"block_threshold"`  // node-local score threshold for block (default 80)
+		} `yaml:"central" hotreload:"restart"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {

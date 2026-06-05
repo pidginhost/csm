@@ -1,0 +1,176 @@
+package daemon
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"log"
+	"net"
+	"os"
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/reporting"
+)
+
+const (
+	centralRefreshDefault = 6 * time.Hour
+	centralBlockThreshold = 80
+	centralChallengeTTL   = 6 * time.Hour
+	centralBlockTTL       = 24 * time.Hour
+)
+
+// documentationNets are reserved/documentation ranges (RFC 5737, RFC 3849) that
+// must never be acted on; they are not routable real attackers.
+var documentationNets = mustCIDRs(
+	"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32",
+)
+
+func mustCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// startCentralConsume wires the central scored-set consumer: it pulls and
+// verifies the signed set on an interval and installs alert.CentralHook so a
+// finding whose IP is in the set is escalated per the configured action. It
+// returns the refresh loop, or nil when disabled/misconfigured.
+func (d *Daemon) startCentralConsume() func() {
+	alert.SetCentralHook(nil)
+
+	cc := d.cfg.Reputation.Central
+	if !cc.Enabled {
+		return nil
+	}
+	if cc.SetURL == "" {
+		log.Printf("central-intel: enabled but set_url is empty; consumer stays off")
+		return nil
+	}
+	pubHex := os.Getenv(cc.PubkeyEnv)
+	if raw, err := hex.DecodeString(pubHex); err != nil || len(raw) != ed25519.PublicKeySize {
+		log.Printf("central-intel: %s must hold a 64-hex-char Ed25519 public key; consumer stays off", cc.PubkeyEnv)
+		return nil
+	}
+
+	action := reporting.ParseAction(cc.Action)
+	threshold := cc.BlockThreshold
+	if threshold <= 0 {
+		threshold = centralBlockThreshold
+	}
+	interval := centralRefreshDefault
+	if cc.RefreshInterval != "" {
+		if d2, err := time.ParseDuration(cc.RefreshInterval); err == nil && d2 > 0 {
+			interval = d2
+		}
+	}
+
+	store := reporting.NewCentralStore(reporting.NewPuller(nil, cc.SetURL, pubHex))
+	firebreak := d.centralFirebreak()
+
+	alert.SetCentralHook(func(f alert.Finding) {
+		d.applyCentral(store, action, threshold, firebreak, f)
+	})
+	log.Printf("central-intel: enabled (action=%s, threshold=%d, refresh=%s)", action, threshold, interval)
+
+	return func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-d.stopCh
+			cancel()
+		}()
+		defer alert.SetCentralHook(nil)
+
+		// Initial pull so the set is usable before the first interval.
+		if err := store.Refresh(ctx); err != nil {
+			log.Printf("central-intel: initial pull failed: %v", err)
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case <-ticker.C:
+				if err := store.Refresh(ctx); err != nil {
+					log.Printf("central-intel: refresh failed: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// applyCentral escalates a finding's IP when it appears in the central set. A
+// finding firing on the IP is the node's local corroboration. Firebreaks and
+// the action policy gate what happens; central data never blocks on its own.
+func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) {
+	ip := f.SourceIP
+	if ip == "" {
+		return
+	}
+	entry, found := store.Lookup(ip)
+	dec := reporting.Decide(reporting.DecisionInput{
+		Found:               found,
+		Score:               entry.Score,
+		Protected:           firebreak(ip),
+		LocallyCorroborated: true, // a finding fired on this IP
+	}, action, threshold)
+
+	switch dec {
+	case reporting.DecisionChallenge:
+		if d.ipList != nil {
+			d.ipList.Add(ip, "central-intel", centralChallengeTTL)
+		}
+	case reporting.DecisionBlock:
+		if d.fwEngine != nil {
+			if err := d.fwEngine.BlockIP(ip, "central-intel (locally corroborated)", centralBlockTTL); err != nil {
+				log.Printf("central-intel: block %s failed: %v", ip, err)
+			}
+		}
+	}
+}
+
+// centralFirebreak returns a predicate that reports whether an IP must never be
+// acted on from central data: loopback/unspecified/private, documentation
+// ranges, or an operator infra_ips entry.
+func (d *Daemon) centralFirebreak() func(string) bool {
+	var infra []*net.IPNet
+	for _, raw := range d.cfg.InfraIPs {
+		if _, n, err := net.ParseCIDR(raw); err == nil {
+			infra = append(infra, n)
+			continue
+		}
+		if ip := net.ParseIP(raw); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			infra = append(infra, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return func(s string) bool {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			return true // unparseable: never act
+		}
+		if ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return true
+		}
+		for _, n := range documentationNets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		for _, n := range infra {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+}

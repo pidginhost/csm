@@ -385,6 +385,42 @@ func callReportHook(f Finding) {
 	h(f)
 }
 
+// CentralHook, when set by the daemon, is called once per deduplicated finding
+// so the central-intel consumer can escalate (challenge/block) when the
+// finding's IP is in the verified central scored-set. A finding firing on an IP
+// is the node's own local signal, so this is the local-corroboration path.
+// Must not block. Install or clear with SetCentralHook.
+var CentralHook func(Finding)
+
+var centralHookMu sync.RWMutex
+
+// SetCentralHook installs or clears the central-intel hook used by Dispatch.
+func SetCentralHook(h func(Finding)) {
+	centralHookMu.Lock()
+	CentralHook = h
+	centralHookMu.Unlock()
+}
+
+func currentCentralHook() func(Finding) {
+	centralHookMu.RLock()
+	h := CentralHook
+	centralHookMu.RUnlock()
+	return h
+}
+
+func callCentralHook(f Finding) {
+	h := currentCentralHook()
+	if h == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "alert: central hook panic")
+		}
+	}()
+	h(f)
+}
+
 type rateLimitKey struct {
 	StatePath string
 	Hour      string
@@ -558,9 +594,12 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	// Offer every finding to the abuse reporter (it gates and minimizes
-	// internally, queueing only confirmed-abuse findings for the drain loop).
+	// internally, queueing only confirmed-abuse findings for the drain loop)
+	// and to the central-intel consumer (it escalates findings whose IP is in
+	// the verified central scored-set).
 	for _, f := range findings {
 		callReportHook(f)
+		callCentralHook(f)
 	}
 
 	var errs []error
