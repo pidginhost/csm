@@ -12,6 +12,7 @@ graphify-out/
 CLAUDE.md
 AGENTS.md
 docs/IMPROVEMENT_PLAN.md
+docs/abuse-reporting-implementation-plan.md
 docs/superpowers/
 scripts/deploy-gitlab.sh
 
