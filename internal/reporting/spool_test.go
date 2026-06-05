@@ -3,7 +3,10 @@ package reporting
 import (
 	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func newSpool(t *testing.T, max int) *Spool {
@@ -69,6 +72,58 @@ func TestSpoolDrainStopsAndRetainsOnError(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "b" || got[1] != "c" {
 		t.Fatalf("retry order wrong: %v", got)
+	}
+}
+
+func TestSpoolDrainSerializesConcurrentCallers(t *testing.T) {
+	s := newSpool(t, 100)
+	if _, err := s.Enqueue("central", []byte("a")); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	firstSend := make(chan struct{})
+	releaseSend := make(chan struct{})
+	duplicateSend := make(chan struct{})
+	var calls atomic.Int32
+	send := func(_ string, _ []byte) error {
+		if calls.Add(1) == 1 {
+			close(firstSend)
+		} else {
+			close(duplicateSend)
+		}
+		<-releaseSend
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = s.Drain(send)
+		}()
+	}
+
+	select {
+	case <-firstSend:
+	case <-time.After(time.Second):
+		t.Fatal("first drain did not start sending")
+	}
+	select {
+	case <-duplicateSend:
+		close(releaseSend)
+		wg.Wait()
+		t.Fatal("concurrent drains sent the same queued report twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseSend)
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("send calls = %d, want 1", got)
+	}
+	if s.Len() != 0 {
+		t.Fatalf("len = %d, want 0", s.Len())
 	}
 }
 

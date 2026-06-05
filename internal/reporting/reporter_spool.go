@@ -28,9 +28,13 @@ func NewSpooler(spool *Spool, sender *Sender, targets []Target, interval time.Du
 	}
 	m := make(map[string]Target, len(targets))
 	order := make([]string, 0, len(targets))
+	seen := make(map[string]bool, len(targets))
 	for _, t := range targets {
 		m[t.Name] = t
-		order = append(order, t.Name)
+		if !seen[t.Name] {
+			order = append(order, t.Name)
+			seen[t.Name] = true
+		}
 	}
 	return &Spooler{spool: spool, sender: sender, targets: m, order: order, interval: interval, logf: log.Printf}
 }

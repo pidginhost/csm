@@ -7,11 +7,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -98,6 +101,18 @@ func TestSendTreatsConflictAsSuccess(t *testing.T) {
 	}
 }
 
+func TestSendSignsRootPathWhenTargetURLHasNoPath(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	srv := verifyingServer(t, pub, nil, http.StatusAccepted)
+	defer srv.Close()
+
+	s := NewSender(srv.Client(), fixedClock())
+	tgt := Target{URL: srv.URL, Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
+	if err := s.Send(context.Background(), tgt, []byte(`{}`)); err != nil {
+		t.Fatalf("send to root target: %v", err)
+	}
+}
+
 func TestSendRejectsServerError(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	srv := verifyingServer(t, pub, nil, http.StatusInternalServerError)
@@ -109,12 +124,76 @@ func TestSendRejectsServerError(t *testing.T) {
 	}
 }
 
+func TestSendDoesNotFollowRedirectsWithSignedHeaders(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var leaked atomic.Bool
+	leakTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-CSM-Signature") != "" || r.Header.Get("Authorization") != "" {
+			leaked.Store(true)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer leakTarget.Close()
+
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, leakTarget.URL+"/steal", http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	s := NewSender(redirector.Client(), fixedClock())
+	tgt := Target{
+		URL:         redirector.URL + "/report",
+		Transport:   TransportEd25519,
+		NodeID:      "n1",
+		KeyID:       "k1",
+		Ed25519Key:  priv,
+		BearerToken: "collector-token",
+	}
+	err := s.Send(context.Background(), tgt, []byte(`{}`))
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("redirect send error = %v, want ErrRejected", err)
+	}
+	if leaked.Load() {
+		t.Fatal("signed reporting headers reached redirected target")
+	}
+}
+
 func TestSendRejectsInsecureURL(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	s := NewSender(nil, fixedClock())
 	tgt := Target{URL: "http://collector.example.com/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
 	if err := s.Send(context.Background(), tgt, []byte(`{}`)); err != ErrInsecureURL {
 		t.Fatalf("got %v, want ErrInsecureURL", err)
+	}
+}
+
+func TestSecureURLRejectsRemoteHTTPDisguises(t *testing.T) {
+	for _, raw := range []string{
+		"http://https://collector.example/report",
+		"http://localhost./report",
+		"http://localhost@collector.example/report",
+		"https:///report",
+		"https://:443/report",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if secureURL(u) {
+				t.Fatalf("secureURL(%q) = true, want false", raw)
+			}
+		})
+	}
+}
+
+func TestSecureURLAllowsIPv6LoopbackHTTP(t *testing.T) {
+	u, err := url.Parse("http://[::1]:8080/report")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !secureURL(u) {
+		t.Fatal("IPv6 loopback HTTP should be allowed")
 	}
 }
 

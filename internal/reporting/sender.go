@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -84,7 +85,7 @@ func (s *Sender) Send(ctx context.Context, t Target, body []byte) error {
 		NodeID:    t.NodeID,
 		KeyID:     t.KeyID,
 		Method:    http.MethodPost,
-		Path:      u.Path,
+		Path:      requestPath(u),
 		BodyHash:  HashBody(body),
 		Timestamp: s.now().UTC().Unix(),
 		Nonce:     nonce,
@@ -108,7 +109,7 @@ func (s *Sender) Send(ctx context.Context, t Target, body []byte) error {
 		req.Header.Set("Authorization", "Bearer "+t.BearerToken)
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := s.do(req)
 	if err != nil {
 		return err
 	}
@@ -121,6 +122,16 @@ func (s *Sender) Send(ctx context.Context, t Target, body []byte) error {
 	default:
 		return fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
 	}
+}
+
+func (s *Sender) do(req *http.Request) (*http.Response, error) {
+	client := *s.client
+	// The signature is bound to the configured URL path, and auth headers must
+	// not be replayed to a redirected endpoint.
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return client.Do(req)
 }
 
 func (s *Sender) sign(t Target, env Envelope) (sig []byte, scheme string, err error) {
@@ -138,17 +149,27 @@ func (s *Sender) sign(t Target, env Envelope) (sig []byte, scheme string, err er
 
 // secureURL requires https, except for loopback hosts (local collectors / tests).
 func secureURL(u *url.URL) bool {
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
 	if u.Scheme == "https" {
 		return true
 	}
 	if u.Scheme == "http" {
-		host := u.Hostname()
 		if ip := net.ParseIP(host); ip != nil {
 			return ip.IsLoopback()
 		}
-		return host == "localhost"
+		return strings.EqualFold(host, "localhost")
 	}
 	return false
+}
+
+func requestPath(u *url.URL) string {
+	if u.Path == "" {
+		return "/"
+	}
+	return u.Path
 }
 
 func newNonce() (string, error) {

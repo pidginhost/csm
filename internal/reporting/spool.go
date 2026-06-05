@@ -3,6 +3,7 @@ package reporting
 import (
 	"encoding/binary"
 	"encoding/json"
+	"sync"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -21,6 +22,7 @@ type Spool struct {
 	db     *bolt.DB
 	bucket []byte
 	max    int
+	drain  sync.Mutex
 }
 
 // NewSpool opens (or creates) a spool at path with a per-node entry cap.
@@ -103,6 +105,9 @@ func (s *Spool) Len() int {
 // leaves that item (and the rest) for a later retry, preserving order. It
 // returns how many were delivered.
 func (s *Spool) Drain(send func(target string, body []byte) error) (delivered int, err error) {
+	s.drain.Lock()
+	defer s.drain.Unlock()
+
 	for {
 		var (
 			key  []byte
