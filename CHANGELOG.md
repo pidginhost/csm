@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Groundwork for reporting confirmed-abuse IPs to a central abuse database or a
+  private collector. Reports are minimized to an IP, an abuse class, a count,
+  and timestamps, carrying no account, domain, mailbox, or path data, and are
+  signed so a receiver can authenticate them.
+
 ## [3.12.0] - 2026-06-05
 
 ### Added
