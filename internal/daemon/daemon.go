@@ -853,6 +853,16 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("heartbeat", d.heartbeat)
 
+	// Start abuse reporting (opt-in). startAbuseReporting installs the alert
+	// hook and returns the spool drain loop, or nil when disabled.
+	if reportLoop := d.startAbuseReporting(); reportLoop != nil {
+		d.wg.Add(1)
+		obs.Go("abuse-reporter", func() {
+			defer d.wg.Done()
+			reportLoop()
+		})
+	}
+
 	// Start the retention sweep only when opted in. Compaction is NOT
 	// run from this goroutine — see internal/daemon/retention.go for why.
 	if d.cfg != nil && d.cfg.Retention.Enabled {

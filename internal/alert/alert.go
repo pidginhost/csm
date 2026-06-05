@@ -347,6 +347,13 @@ var FindingBus interface {
 	Publish(Finding)
 }
 
+// ReportHook, when set by the daemon at startup, is called once per
+// deduplicated finding so the abuse reporter can consider it for submission to
+// a central abuse database or collector. It must not block (the reporter
+// enqueues to a durable spool). Declared as a func to avoid an import cycle
+// (the reporting package imports alert for the Finding type).
+var ReportHook func(Finding)
+
 type rateLimitKey struct {
 	StatePath string
 	Hour      string
@@ -516,6 +523,14 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	if FindingBus != nil {
 		for _, f := range findings {
 			FindingBus.Publish(f)
+		}
+	}
+
+	// Offer every finding to the abuse reporter (it gates and minimizes
+	// internally, enqueuing only confirmed-abuse findings to a durable spool).
+	if ReportHook != nil {
+		for _, f := range findings {
+			ReportHook(f)
 		}
 	}
 

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signed so a receiver can authenticate them.
 - Durable, bounded outbound spool and HTTPS-only signed delivery for abuse
   reports, so a down collector or a restart does not drop them.
+- Abuse reporting is now wired into the daemon and configurable under
+  `reputation.report` (opt-in, default off): confirmed-abuse findings are
+  reported to the configured targets.
 
 ### Fixed
 

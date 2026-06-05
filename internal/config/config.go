@@ -614,6 +614,25 @@ type Config struct {
 		// survives SIGHUP reload without being overwritten by applyDefaults.
 		// Default true.
 		BotVerifyEnabled *bool `yaml:"bot_verify_enabled"`
+
+		// Report emits signed, minimized abuse reports for confirmed-abuse
+		// findings to a central abuse database or a private collector.
+		// Opt-in; default off. Keys/secrets resolve from *_env at startup.
+		Report struct {
+			Enabled   bool     `yaml:"enabled"`
+			Classes   []string `yaml:"classes"`    // bruteforce, php_relay, credential_stuffing, bad_asn_egress
+			SpoolPath string   `yaml:"spool_path"` // bbolt file; default <state_dir>/abuse_reports.db
+			SpoolMax  int      `yaml:"spool_max"`  // bounded queue size; default 10000
+			Targets   []struct {
+				Name      string `yaml:"name"`
+				URL       string `yaml:"url"`
+				Transport string `yaml:"transport"` // ed25519 | hmac
+				NodeID    string `yaml:"node_id"`
+				KeyID     string `yaml:"key_id"`
+				KeyEnv    string `yaml:"key_env"`   // ed25519 hex private key, or hmac secret
+				TokenEnv  string `yaml:"token_env"` // optional bearer for hmac collectors
+			} `yaml:"targets"`
+		} `yaml:"report"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
