@@ -192,6 +192,7 @@ Commands:
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)
+  report enroll Generate an abuse-reporting node key pair
   version       Version info + build hash
 
 Options:

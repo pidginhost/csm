@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `csm report enroll` usage now appears in the CLI help and tells operators to
+  store the generated private key in an environment variable.
 - Abuse report delivery now refuses redirected collectors and serializes spool
   draining, avoiding credential leakage and duplicate sends.
 - Abuse reporting now skips unusable targets during startup and clears its

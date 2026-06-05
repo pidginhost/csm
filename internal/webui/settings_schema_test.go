@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -118,6 +119,43 @@ func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 		}
 		if !f.Secret {
 			t.Errorf("field %s.%s not marked secret", k.section, k.field)
+		}
+	}
+}
+
+func TestReputationReportingSchemaFieldsResolveToConfig(t *testing.T) {
+	section, ok := LookupSettingsSection("reputation")
+	if !ok {
+		t.Fatal("reputation settings section missing")
+	}
+	tests := []struct {
+		path string
+		typ  string
+		raw  json.RawMessage
+	}{
+		{"report.enabled", "bool", json.RawMessage(`true`)},
+		{"report.classes", "[]string", json.RawMessage(`["bruteforce","php_relay"]`)},
+		{"report.spool_max", "int", json.RawMessage(`500`)},
+		{"central.enabled", "bool", json.RawMessage(`true`)},
+		{"central.set_url", "string", json.RawMessage(`"https://abuse.example/set"`)},
+		{"central.pubkey_env", "string", json.RawMessage(`"CSM_CENTRAL_PUBKEY"`)},
+		{"central.action", "string", json.RawMessage(`"challenge"`)},
+		{"central.block_threshold", "int", json.RawMessage(`80`)},
+		{"central.refresh_interval", "string", json.RawMessage(`"6h"`)},
+	}
+
+	for _, tt := range tests {
+		field := lookupSchemaField(section, tt.path)
+		if field == nil {
+			t.Fatalf("reputation schema field %q missing", tt.path)
+		}
+		if field.Type != tt.typ {
+			t.Fatalf("reputation schema field %q type = %q, want %q", tt.path, field.Type, tt.typ)
+		}
+		var cfg config.Config
+		fullPath := strings.Split(section.YAMLPath+"."+tt.path, ".")
+		if err := applyToClone(&cfg, fullPath, tt.raw); err != nil {
+			t.Fatalf("reputation schema field %q does not resolve to config: %v", tt.path, err)
 		}
 	}
 }
