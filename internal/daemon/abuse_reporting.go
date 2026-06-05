@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -16,15 +17,19 @@ import (
 const (
 	abuseReportSpoolFile    = "abuse_reports.db"
 	abuseReportSpoolDefault = 10000
+	abuseReportQueueDefault = abuseReportSpoolDefault
 	abuseReportDrainEvery   = time.Minute
 )
 
 // startAbuseReporting wires the abuse reporter from config: it sets
 // alert.ReportHook so confirmed-abuse findings are gated, minimized, and
-// spooled, and returns the spool drain loop to run as a supervised goroutine.
+// queued for spooling, and returns the spool drain loop to run as a supervised
+// goroutine.
 // It returns nil when reporting is disabled or misconfigured (logged), leaving
 // the alert path untouched.
 func (d *Daemon) startAbuseReporting() func() {
+	alert.SetReportHook(nil)
+
 	rc := d.cfg.Reputation.Report
 	if !rc.Enabled {
 		return nil
@@ -54,23 +59,91 @@ func (d *Daemon) startAbuseReporting() func() {
 		return nil
 	}
 
+	reportQueue := make(chan reporting.Report, abuseReportQueueSize(max))
 	spooler := reporting.NewSpooler(spool, reporting.NewSender(nil, nil), targets, abuseReportDrainEvery)
 	gate := reporting.Gate{Enabled: enabled}
-	alert.ReportHook = func(f alert.Finding) {
-		if r, ok := gate.Consider(f); ok {
-			spooler.Enqueue(r)
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	d.abuseReportStop = stopCh
+	d.abuseReportDone = doneCh
+	var dropped atomic.Uint64
+	var loggedDropped uint64
+	logDropped := func() {
+		n := dropped.Load()
+		if n != loggedDropped {
+			log.Printf("abuse-reporting: report queue full; dropped %d report(s)", n)
+			loggedDropped = n
 		}
 	}
+	alert.SetReportHook(func(f alert.Finding) {
+		if r, ok := gate.Consider(f); ok {
+			select {
+			case reportQueue <- r:
+			default:
+				dropped.Add(1)
+			}
+		}
+	})
 	log.Printf("abuse-reporting: enabled for %d target(s), %d class(es)", len(targets), len(enabled))
 
 	return func() {
+		defer close(doneCh)
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		go func() {
-			<-d.stopCh
+			<-stopCh
 			cancel()
 		}()
-		spooler.Run(ctx)
-		_ = spool.Close()
+
+		ticker := time.NewTicker(abuseReportDrainEvery)
+		defer ticker.Stop()
+		defer func() {
+			alert.SetReportHook(nil)
+			_ = spool.Close()
+		}()
+
+		for {
+			select {
+			case r := <-reportQueue:
+				spooler.Enqueue(r)
+			case <-ticker.C:
+				logDropped()
+				spooler.DrainOnce(ctx)
+			case <-stopCh:
+				alert.SetReportHook(nil)
+				logDropped()
+				drainReportQueue(spooler, reportQueue)
+				return
+			}
+		}
+	}
+}
+
+func (d *Daemon) stopAbuseReporting() {
+	if d.abuseReportStop == nil {
+		return
+	}
+	close(d.abuseReportStop)
+	<-d.abuseReportDone
+	d.abuseReportStop = nil
+	d.abuseReportDone = nil
+}
+
+func abuseReportQueueSize(spoolMax int) int {
+	if spoolMax > 0 && spoolMax < abuseReportQueueDefault {
+		return spoolMax
+	}
+	return abuseReportQueueDefault
+}
+
+func drainReportQueue(spooler *reporting.Spooler, reportQueue <-chan reporting.Report) {
+	for {
+		select {
+		case r := <-reportQueue:
+			spooler.Enqueue(r)
+		default:
+			return
+		}
 	}
 }
 
@@ -117,6 +190,10 @@ func buildReportTargets(cfgTargets []reportTargetConfig) []reporting.Target {
 			log.Printf("abuse-reporting: skipping target with missing name/url/node_id/key_id")
 			continue
 		}
+		if err := reporting.ValidateTargetURL(ct.URL); err != nil {
+			log.Printf("abuse-reporting: target %q: URL must be HTTPS or loopback HTTP; skipping", ct.Name)
+			continue
+		}
 		t := reporting.Target{
 			Name:   ct.Name,
 			URL:    ct.URL,
@@ -128,14 +205,14 @@ func buildReportTargets(cfgTargets []reportTargetConfig) []reporting.Target {
 		case reporting.TransportEd25519:
 			raw, err := hex.DecodeString(secret)
 			if err != nil || len(raw) != ed25519.PrivateKeySize {
-				log.Printf("abuse-reporting: target %q: %s must hold a 64-byte hex Ed25519 key; skipping", ct.Name, ct.KeyEnv)
+				log.Printf("abuse-reporting: target %q: configured key_env must hold a 64-byte hex Ed25519 key; skipping", ct.Name)
 				continue
 			}
 			t.Transport = reporting.TransportEd25519
 			t.Ed25519Key = ed25519.PrivateKey(raw)
 		case reporting.TransportHMAC:
 			if secret == "" {
-				log.Printf("abuse-reporting: target %q: %s (HMAC secret) is empty; skipping", ct.Name, ct.KeyEnv)
+				log.Printf("abuse-reporting: target %q: configured key_env is empty; skipping", ct.Name)
 				continue
 			}
 			t.Transport = reporting.TransportHMAC

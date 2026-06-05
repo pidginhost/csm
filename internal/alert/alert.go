@@ -349,10 +349,41 @@ var FindingBus interface {
 
 // ReportHook, when set by the daemon at startup, is called once per
 // deduplicated finding so the abuse reporter can consider it for submission to
-// a central abuse database or collector. It must not block (the reporter
-// enqueues to a durable spool). Declared as a func to avoid an import cycle
-// (the reporting package imports alert for the Finding type).
+// a central abuse database or collector. It must not block. Declared as a func
+// to avoid an import cycle (the reporting package imports alert for the
+// Finding type).
+//
+// Install or clear it with SetReportHook so Dispatch reads a consistent value.
 var ReportHook func(Finding)
+
+var reportHookMu sync.RWMutex
+
+// SetReportHook installs or clears the abuse-reporting hook used by Dispatch.
+func SetReportHook(h func(Finding)) {
+	reportHookMu.Lock()
+	ReportHook = h
+	reportHookMu.Unlock()
+}
+
+func currentReportHook() func(Finding) {
+	reportHookMu.RLock()
+	h := ReportHook
+	reportHookMu.RUnlock()
+	return h
+}
+
+func callReportHook(f Finding) {
+	h := currentReportHook()
+	if h == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintln(os.Stderr, "alert: report hook panic")
+		}
+	}()
+	h(f)
+}
 
 type rateLimitKey struct {
 	StatePath string
@@ -527,11 +558,9 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	// Offer every finding to the abuse reporter (it gates and minimizes
-	// internally, enqueuing only confirmed-abuse findings to a durable spool).
-	if ReportHook != nil {
-		for _, f := range findings {
-			ReportHook(f)
-		}
+	// internally, queueing only confirmed-abuse findings for the drain loop).
+	for _, f := range findings {
+		callReportHook(f)
 	}
 
 	var errs []error

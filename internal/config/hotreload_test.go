@@ -227,6 +227,26 @@ func TestDiffFieldTagOverridesParent(t *testing.T) {
 	}
 }
 
+func TestDiffReputationReportRequiresRestart(t *testing.T) {
+	a := &Config{}
+	b := &Config{}
+	b.Reputation.Report.Enabled = true
+
+	changes := Diff(a, b)
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %+v", changes)
+	}
+	if changes[0].Field != "reputation.report" {
+		t.Fatalf("field path = %q, want reputation.report", changes[0].Field)
+	}
+	if changes[0].Tag != TagRestart {
+		t.Fatalf("tag = %q, want %q", changes[0].Tag, TagRestart)
+	}
+	if !RestartRequired(changes) {
+		t.Fatal("reputation.report changes must require restart")
+	}
+}
+
 // TestDiffFieldOverrideSplitsClassification covers the mixed case:
 // an edit touches BOTH webui.metrics_token (safe) and webui.listen
 // (inherits parent restart). The recursive Diff reports them as two

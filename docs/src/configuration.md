@@ -359,6 +359,19 @@ reputation:
     token_env: ""                       # env var read at query time
     cache_ttl_min: 15                   # local cache TTL for upstream scores
     timeout_sec: 5                      # upstream request timeout
+  report:
+    enabled: false                      # opt-in abuse report delivery; restart required
+    classes: []                         # bruteforce | php_relay | credential_stuffing | bad_asn_egress
+    spool_path: ""                      # default: <state_path>/abuse_reports.db
+    spool_max: 10000                    # max queued reports per target
+    targets:
+      - name: ""                        # stable target name
+        url: ""                         # HTTPS collector URL; HTTP only allowed for loopback
+        transport: "hmac"               # hmac | ed25519
+        node_id: ""                     # sender node ID
+        key_id: ""                      # receiver key ID
+        key_env: ""                     # HMAC secret or Ed25519 private key env var
+        token_env: ""                   # optional bearer token env var for HMAC targets
 
 # --- Signatures ---
 signatures:

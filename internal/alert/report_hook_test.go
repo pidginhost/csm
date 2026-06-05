@@ -9,15 +9,15 @@ import (
 
 func TestDispatch_OffersEachFindingToReportHook(t *testing.T) {
 	prev := ReportHook
-	t.Cleanup(func() { ReportHook = prev })
+	t.Cleanup(func() { SetReportHook(prev) })
 
 	var mu sync.Mutex
 	var seen []string
-	ReportHook = func(f Finding) {
+	SetReportHook(func(f Finding) {
 		mu.Lock()
 		seen = append(seen, f.Check)
 		mu.Unlock()
-	}
+	})
 
 	findings := []Finding{
 		{Check: "pam_bruteforce", Severity: Critical},
@@ -37,9 +37,19 @@ func TestDispatch_OffersEachFindingToReportHook(t *testing.T) {
 
 func TestDispatch_NilReportHookIsSafe(t *testing.T) {
 	prev := ReportHook
-	ReportHook = nil
-	t.Cleanup(func() { ReportHook = prev })
+	SetReportHook(nil)
+	t.Cleanup(func() { SetReportHook(prev) })
 	if err := Dispatch(&config.Config{}, []Finding{{Check: "x", Severity: Critical}}); err != nil {
 		t.Fatalf("dispatch with nil hook: %v", err)
+	}
+}
+
+func TestDispatch_ReportHookPanicDoesNotAbortDispatch(t *testing.T) {
+	prev := ReportHook
+	SetReportHook(func(Finding) { panic("broken reporter") })
+	t.Cleanup(func() { SetReportHook(prev) })
+
+	if err := Dispatch(&config.Config{}, []Finding{{Check: "x", Severity: Critical}}); err != nil {
+		t.Fatalf("dispatch with panicking hook: %v", err)
 	}
 }

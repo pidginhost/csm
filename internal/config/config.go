@@ -632,7 +632,7 @@ type Config struct {
 				KeyEnv    string `yaml:"key_env"`   // ed25519 hex private key, or hmac secret
 				TokenEnv  string `yaml:"token_env"` // optional bearer for hmac collectors
 			} `yaml:"targets"`
-		} `yaml:"report"`
+		} `yaml:"report" hotreload:"restart"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {

@@ -78,6 +78,8 @@ type Daemon struct {
 	alertCh          chan alert.Finding
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
+	abuseReportStop  chan struct{}
+	abuseReportDone  chan struct{}
 	wg               sync.WaitGroup
 	smtpAuthTracker  *smtpAuthTracker
 	smtpProbeTracker *smtpProbeTracker
@@ -854,13 +856,11 @@ func (d *Daemon) Run() error {
 	obs.Go("heartbeat", d.heartbeat)
 
 	// Start abuse reporting (opt-in). startAbuseReporting installs the alert
-	// hook and returns the spool drain loop, or nil when disabled.
+	// hook and returns the spool drain loop, or nil when disabled. The reporter
+	// stops after the final shutdown alert flush so late findings can still be
+	// queued before the bbolt spool closes.
 	if reportLoop := d.startAbuseReporting(); reportLoop != nil {
-		d.wg.Add(1)
-		obs.Go("abuse-reporter", func() {
-			defer d.wg.Done()
-			reportLoop()
-		})
+		obs.Go("abuse-reporter", reportLoop)
 	}
 
 	// Start the retention sweep only when opted in. Compaction is NOT
@@ -946,6 +946,7 @@ func (d *Daemon) Run() error {
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
+	d.stopAbuseReporting()
 	if d.findingBus != nil {
 		d.findingBus.Close()
 		alert.FindingBus = nil

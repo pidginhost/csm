@@ -65,6 +65,16 @@ func NewSender(client *http.Client, now func() time.Time) *Sender {
 	return &Sender{client: client, now: now}
 }
 
+// ValidateTargetURL reports whether raw is allowed for report delivery without
+// logging or returning the raw URL.
+func ValidateTargetURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || !secureURL(u) {
+		return ErrInsecureURL
+	}
+	return nil
+}
+
 // Send signs body for t and POSTs it. A 2xx is success; 409 Conflict (the
 // collector already has this report) is treated as success. Other statuses and
 // transport errors are failures the caller should retry from the spool.

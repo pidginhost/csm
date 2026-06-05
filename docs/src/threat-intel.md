@@ -36,6 +36,13 @@ Currently shipped:
 - **Rspamd** (`reputation.rspamd.*`) - per-IP rolling-history signals from the local rspamd controller. Token resolves from `token_env` at query time so rotation does not require a daemon restart.
 - **Upstream HTTP cache** (`reputation.upstream.*`) - shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a bounded local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. CSM temporarily opens a fail-open circuit breaker after repeated upstream failures and lets only one cooldown probe through at a time. Use HTTPS for remote panels; plain HTTP is accepted only for loopback. Wire contract: [`docs/upstream-threat-intel-contract.md`](../upstream-threat-intel-contract.md).
 
+## Abuse Reporting
+
+`reputation.report` can send minimized confirmed-abuse reports to a central
+database or private collector. It is off by default. Remote targets must use
+HTTPS; plain HTTP is accepted only for loopback collectors. Keys and target
+wiring are read at daemon startup, so changes to this block require a restart.
+
 ## Web UI
 
 The **Threat Intel** page (`/threat`) provides:

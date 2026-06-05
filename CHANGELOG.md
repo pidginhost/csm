@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Abuse report delivery now refuses redirected collectors and serializes spool
   draining, avoiding credential leakage and duplicate sends.
+- Abuse reporting now skips unusable targets during startup and clears its
+  daemon hook when reporting is off, misconfigured, or shutting down.
 
 ## [3.12.0] - 2026-06-05
 
