@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private collector. Reports are minimized to an IP, an abuse class, a count,
   and timestamps, carrying no account, domain, mailbox, or path data, and are
   signed so a receiver can authenticate them.
+- Durable, bounded outbound spool and HTTPS-only signed delivery for abuse
+  reports, so a down collector or a restart does not drop them.
 
 ## [3.12.0] - 2026-06-05
 
