@@ -9,54 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Groundwork for reporting confirmed-abuse IPs to a central abuse database or a
-  private collector. Reports are minimized to an IP, an abuse class, a count,
-  and timestamps, carrying no account, domain, mailbox, or path data, and are
-  signed so a receiver can authenticate them.
-- Durable, bounded outbound spool and HTTPS-only signed delivery for abuse
-  reports, so a down collector or a restart does not drop them.
-- Abuse reporting is now wired into the daemon and configurable under
-  `reputation.report` (opt-in, default off): confirmed-abuse findings are
-  reported to the configured targets.
-- Signed scored-set consume codec: verifies the Ed25519 signature before
-  decoding, rejects noncanonical payloads, applies incremental diffs, and
-  answers per-IP reputation lookups for the central abuse database.
-- Scored-set pull client that fetches a full snapshot or an incremental diff
-  from the central service and verifies it before use.
-- Central scored-set consumer wired into the daemon under `reputation.central`
-  (opt-in, default off): refreshes the verified set and, when a finding's IP is
-  listed, challenges it (or hard-blocks only with local corroboration above the
-  threshold). Firebreaks (loopback, private, documentation ranges, infra_ips)
-  are never acted on; central data never blocks on its own.
-- `csm report enroll` generates a node key pair for abuse reporting, and the
-  dashboard settings expose the reporting and central-database options.
+- Groundwork for reporting confirmed-abuse IPs to a central abuse database or a private collector. Reports are minimized to an IP, an abuse class, a count, and timestamps, carrying no account, domain, mailbox, or path data, and are signed so a receiver can authenticate them.
+- Durable, bounded outbound spool and HTTPS-only signed delivery for abuse reports, so a down collector or a restart does not drop them.
+- Abuse reporting is now wired into the daemon and configurable under `reputation.report` (opt-in, default off): confirmed-abuse findings are reported to the configured targets.
+- Signed scored-set consume codec: verifies the Ed25519 signature before decoding, rejects noncanonical payloads, applies incremental diffs, and answers per-IP reputation lookups for the central abuse database.
+- Scored-set pull client that fetches a full snapshot or an incremental diff from the central service and verifies it before use.
+- Central scored-set consumer wired into the daemon under `reputation.central` (opt-in, default off): refreshes the verified set and, when a finding's IP is listed, challenges it (or hard-blocks only with local corroboration above the threshold). Firebreaks (loopback, private, documentation ranges, infra_ips) are never acted on; central data never blocks on its own.
+- `csm report enroll` generates a node key pair for abuse reporting, and the dashboard settings expose the reporting and central-database options.
 
 ### Fixed
 
-- Concurrent central scored-set refreshes now keep the newest accepted cache
-  version when overlapping pulls finish out of order.
-- Central scored-set consumer now rejects a snapshot at version 0 or any
-  version below the cached one, so a rolled-back or hostile endpoint cannot
-  regress a node's set or pin it to perpetual cold pulls; the snapshot and its
-  lookup set are swapped together so a concurrent refresh cannot be read torn;
-  an unrecognized `central.action` is logged; and the RFC 2544 benchmarking
-  range is firebroken alongside the documentation ranges.
-- `csm report enroll` usage now appears in the CLI help and tells operators to
-  store the generated private key in an environment variable.
-- Abuse report delivery now refuses redirected collectors and serializes spool
-  draining, avoiding credential leakage and duplicate sends.
-- Abuse reporting now skips unusable targets during startup and clears its
-  daemon hook when reporting is off, misconfigured, or shutting down.
-- Scored-set updates now reject malformed or conflicting changes before they
-  can alter a node's cached abuse score set.
-- Scored-set update pulls now reject oversized responses and malformed cursor
-  URLs before applying data.
-- Central challenge-only decisions now expire without becoming hard blocks;
-  hard blocking still requires the local corroboration policy.
-- Central firebreaks now honor all configured infrastructure IPs before
-  challenging or blocking a scored address.
-- Central set pulls now reject non-loopback HTTP endpoints and older snapshots
-  before replacing the cached scores.
+- Concurrent central scored-set refreshes now keep the newest accepted cache version when overlapping pulls finish out of order.
+- Central scored-set consumer now rejects a snapshot at version 0 or any version below the cached one, so a rolled-back or hostile endpoint cannot regress a node's set or pin it to perpetual cold pulls; the snapshot and its lookup set are swapped together so a concurrent refresh cannot be read torn; an unrecognized `central.action` is logged; and the RFC 2544 benchmarking range is firebroken alongside the documentation ranges.
+- `csm report enroll` usage now appears in the CLI help and tells operators to store the generated private key in an environment variable.
+- Abuse report delivery now refuses redirected collectors and serializes spool draining, avoiding credential leakage and duplicate sends.
+- Abuse reporting now skips unusable targets during startup and clears its daemon hook when reporting is off, misconfigured, or shutting down.
+- Scored-set updates now reject malformed or conflicting changes before they can alter a node's cached abuse score set.
+- Scored-set update pulls now reject oversized responses and malformed cursor URLs before applying data.
+- Central challenge-only decisions now expire without becoming hard blocks; hard blocking still requires the local corroboration policy.
+- Central firebreaks now honor all configured infrastructure IPs before challenging or blocking a scored address.
+- Central set pulls now reject non-loopback HTTP endpoints and older snapshots before replacing the cached scores.
 
 ## [3.12.0] - 2026-06-05
 
