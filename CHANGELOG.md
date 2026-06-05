@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Abuse reporting is now wired into the daemon and configurable under
   `reputation.report` (opt-in, default off): confirmed-abuse findings are
   reported to the configured targets.
+- Signed scored-set consume codec: verifies the Ed25519 signature before
+  decoding, rejects noncanonical payloads, applies incremental diffs, and
+  answers per-IP reputation lookups for the central abuse database.
 
 ### Fixed
 
