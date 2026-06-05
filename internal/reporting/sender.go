@@ -141,6 +141,9 @@ func (s *Sender) do(req *http.Request) (*http.Response, error) {
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
+	// The destination is an operator-configured report target, validated to
+	// HTTPS (or loopback HTTP) by secureURL; it is not attacker-controlled.
+	// #nosec G704 -- report target URL is operator config, scheme-validated.
 	return client.Do(req)
 }
 

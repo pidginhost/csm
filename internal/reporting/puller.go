@@ -62,6 +62,9 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 	if err != nil {
 		return current, false, err
 	}
+	// The scored-set URL is operator-configured (reputation.central.set_url) and
+	// the response is Ed25519-verified before use; not attacker-controlled.
+	// #nosec G704 -- central set URL is operator config, signature-verified.
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return current, false, err
