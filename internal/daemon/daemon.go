@@ -863,8 +863,18 @@ func (d *Daemon) Run() error {
 		obs.Go("abuse-reporter", reportLoop)
 	}
 
-	// Start the retention sweep only when opted in. Compaction is NOT
-	// run from this goroutine — see internal/daemon/retention.go for why.
+	// Start the central scored-set consumer (opt-in). Maintains the verified
+	// set and escalates findings whose IP is listed; nil when disabled.
+	if centralLoop := d.startCentralConsume(); centralLoop != nil {
+		d.wg.Add(1)
+		obs.Go("central-intel", func() {
+			defer d.wg.Done()
+			centralLoop()
+		})
+	}
+
+	// Start the retention sweep only when opted in. Compaction is not
+	// run from this goroutine; see internal/daemon/retention.go for why.
 	if d.cfg != nil && d.cfg.Retention.Enabled {
 		d.wg.Add(1)
 		obs.Go("retention-scanner", d.retentionScanner)

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -18,7 +19,13 @@ const (
 	centralBlockThreshold = 80
 	centralChallengeTTL   = 6 * time.Hour
 	centralBlockTTL       = 24 * time.Hour
+	centralActionQueue    = 1024
 )
+
+type centralQueuedAction struct {
+	decision reporting.Decision
+	ip       string
+}
 
 // documentationNets are reserved/documentation ranges (RFC 5737, RFC 3849) that
 // must never be acted on; they are not routable real attackers.
@@ -57,7 +64,7 @@ func (d *Daemon) startCentralConsume() func() {
 		return nil
 	}
 
-	action := reporting.ParseAction(cc.Action)
+	policy := reporting.ParseAction(cc.Action)
 	threshold := cc.BlockThreshold
 	if threshold <= 0 {
 		threshold = centralBlockThreshold
@@ -71,15 +78,30 @@ func (d *Daemon) startCentralConsume() func() {
 
 	store := reporting.NewCentralStore(reporting.NewPuller(nil, cc.SetURL, pubHex))
 	firebreak := d.centralFirebreak()
+	actions := make(chan centralQueuedAction, centralActionQueue)
+	var droppedActions atomic.Uint64
 
 	alert.SetCentralHook(func(f alert.Finding) {
-		d.applyCentral(store, action, threshold, firebreak, f)
+		a, ok := d.planCentralAction(store, policy, threshold, firebreak, f)
+		if !ok {
+			return
+		}
+		select {
+		case actions <- a:
+		default:
+			droppedActions.Add(1)
+		}
 	})
-	log.Printf("central-intel: enabled (action=%s, threshold=%d, refresh=%s)", action, threshold, interval)
+	log.Printf("central-intel: enabled (action=%s, threshold=%d, refresh=%s)", policy, threshold, interval)
 
 	return func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		logDropped := func() {
+			if n := droppedActions.Swap(0); n > 0 {
+				log.Printf("central-intel: action queue full; dropped %d action(s)", n)
+			}
+		}
 		go func() {
 			<-d.stopCh
 			cancel()
@@ -95,8 +117,18 @@ func (d *Daemon) startCentralConsume() func() {
 		for {
 			select {
 			case <-d.stopCh:
+				logDropped()
 				return
+			default:
+			}
+			select {
+			case <-d.stopCh:
+				logDropped()
+				return
+			case a := <-actions:
+				d.performCentralAction(a)
 			case <-ticker.C:
+				logDropped()
 				if err := store.Refresh(ctx); err != nil {
 					log.Printf("central-intel: refresh failed: %v", err)
 				}
@@ -109,9 +141,17 @@ func (d *Daemon) startCentralConsume() func() {
 // finding firing on the IP is the node's local corroboration. Firebreaks and
 // the action policy gate what happens; central data never blocks on its own.
 func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) {
+	a, ok := d.planCentralAction(store, action, threshold, firebreak, f)
+	if !ok {
+		return
+	}
+	d.performCentralAction(a)
+}
+
+func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) (centralQueuedAction, bool) {
 	ip := f.SourceIP
 	if ip == "" {
-		return
+		return centralQueuedAction{}, false
 	}
 	entry, found := store.Lookup(ip)
 	dec := reporting.Decide(reporting.DecisionInput{
@@ -121,15 +161,22 @@ func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Ac
 		LocallyCorroborated: true, // a finding fired on this IP
 	}, action, threshold)
 
-	switch dec {
+	if dec == reporting.DecisionIgnore {
+		return centralQueuedAction{}, false
+	}
+	return centralQueuedAction{decision: dec, ip: ip}, true
+}
+
+func (d *Daemon) performCentralAction(a centralQueuedAction) {
+	switch a.decision {
 	case reporting.DecisionChallenge:
 		if d.ipList != nil {
-			d.ipList.Add(ip, "central-intel", centralChallengeTTL)
+			d.ipList.AddNonEscalating(a.ip, "central-intel", centralChallengeTTL)
 		}
 	case reporting.DecisionBlock:
 		if d.fwEngine != nil {
-			if err := d.fwEngine.BlockIP(ip, "central-intel (locally corroborated)", centralBlockTTL); err != nil {
-				log.Printf("central-intel: block %s failed: %v", ip, err)
+			if err := d.fwEngine.BlockIP(a.ip, "central-intel (locally corroborated)", centralBlockTTL); err != nil {
+				log.Printf("central-intel: block %s failed: %v", a.ip, err)
 			}
 		}
 	}
@@ -139,8 +186,13 @@ func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Ac
 // acted on from central data: loopback/unspecified/private, documentation
 // ranges, or an operator infra_ips entry.
 func (d *Daemon) centralFirebreak() func(string) bool {
+	infraEntries := d.cfg.InfraIPs
+	if d.cfg.Firewall != nil {
+		infraEntries = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
+	}
+
 	var infra []*net.IPNet
-	for _, raw := range d.cfg.InfraIPs {
+	for _, raw := range infraEntries {
 		if _, n, err := net.ParseCIDR(raw); err == nil {
 			infra = append(infra, n)
 			continue

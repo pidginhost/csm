@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can alter a node's cached abuse score set.
 - Scored-set update pulls now reject oversized responses and malformed cursor
   URLs before applying data.
+- Central challenge-only decisions now expire without becoming hard blocks;
+  hard blocking still requires the local corroboration policy.
+- Central firebreaks now honor all configured infrastructure IPs before
+  challenging or blocking a scored address.
+- Central set pulls now reject non-loopback HTTP endpoints and older snapshots
+  before replacing the cached scores.
 
 ## [3.12.0] - 2026-06-05
 

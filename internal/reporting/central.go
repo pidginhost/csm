@@ -105,6 +105,9 @@ func (cs *CentralStore) Refresh(ctx context.Context) error {
 		return err
 	}
 	if changed {
+		if cur.Version > 0 && next.Version < cur.Version {
+			return ErrSetVersionGap
+		}
 		cs.snap.Store(&next)
 		cs.set.Store(NewSet(next))
 	}

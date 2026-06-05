@@ -62,6 +62,47 @@ func TestIPListExpiredEntries(t *testing.T) {
 	}
 }
 
+func TestIPListExpiredEntriesSkipsNonEscalating(t *testing.T) {
+	dir := t.TempDir()
+	l := NewIPList(dir)
+	l.Add("203.0.113.5", "escalate", -1*time.Second)
+	l.AddNonEscalating("203.0.113.6", "challenge-only", -1*time.Second)
+
+	expired := l.ExpiredEntries()
+	if len(expired) != 1 {
+		t.Fatalf("got %d expired, want 1", len(expired))
+	}
+	if expired[0].IP != "203.0.113.5" {
+		t.Fatalf("expired IP = %q, want 203.0.113.5", expired[0].IP)
+	}
+	if l.Contains("203.0.113.5") {
+		t.Error("escalating expired IP should have been removed")
+	}
+	if l.Contains("203.0.113.6") {
+		t.Error("non-escalating expired IP should have been removed")
+	}
+}
+
+func TestIPListExpiredEntriesFlushesNonEscalatingRemoval(t *testing.T) {
+	dir := t.TempDir()
+	l := NewIPList(dir)
+	l.AddNonEscalating("203.0.113.6", "challenge-only", -1*time.Second)
+
+	if expired := l.ExpiredEntries(); len(expired) != 0 {
+		t.Fatalf("got expired entries %v, want none", expired)
+	}
+	if l.Contains("203.0.113.6") {
+		t.Fatal("non-escalating expired IP should have been removed")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "challenge_ips.txt"))
+	if err != nil {
+		t.Fatalf("read challenge map: %v", err)
+	}
+	if strings.Contains(string(data), "203.0.113.6 challenge") {
+		t.Fatalf("challenge map still contains expired non-escalating IP: %s", data)
+	}
+}
+
 func TestIPListCleanExpiredRemovesOld(t *testing.T) {
 	dir := t.TempDir()
 	l := NewIPList(dir)

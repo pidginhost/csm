@@ -86,3 +86,89 @@ func TestCentralStoreRefreshAndLookup(t *testing.T) {
 		t.Fatal("IP not found after refresh")
 	}
 }
+
+func TestCentralStoreRefreshVersionGapFallsBackToFullPull(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	baseBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
+	fullBytes, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 8, Entries: []ScoredEntry{
+		{IP: "203.0.113.9", Score: 88, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+	gapDiffBytes, _ := MarshalScoredDiff(ScoredDiff{
+		FromVersion: 99,
+		ToVersion:   100,
+		Added: []ScoredEntry{
+			{IP: "203.0.113.10", Score: 90, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+		},
+	})
+
+	var sinceSeen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sinceSeen = append(sinceSeen, r.URL.Query().Get("since"))
+		switch len(sinceSeen) {
+		case 1:
+			writeSigned(w, priv, baseBytes, "snapshot")
+		case 2:
+			writeSigned(w, priv, gapDiffBytes, "diff")
+		default:
+			writeSigned(w, priv, fullBytes, "snapshot")
+		}
+	}))
+	defer srv.Close()
+
+	cs := NewCentralStore(NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub)))
+	if err := cs.Refresh(context.Background()); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+	if err := cs.Refresh(context.Background()); err != nil {
+		t.Fatalf("gap fallback refresh: %v", err)
+	}
+
+	if want := []string{"", "7", ""}; len(sinceSeen) != len(want) {
+		t.Fatalf("since sequence = %v, want %v", sinceSeen, want)
+	} else {
+		for i := range want {
+			if sinceSeen[i] != want[i] {
+				t.Fatalf("since sequence = %v, want %v", sinceSeen, want)
+			}
+		}
+	}
+	if cs.Version() != 8 {
+		t.Fatalf("version = %d, want 8", cs.Version())
+	}
+	if _, ok := cs.Lookup("203.0.113.9"); !ok {
+		t.Fatal("fallback snapshot IP not found")
+	}
+}
+
+func TestCentralStoreRefreshRejectsSnapshotRollback(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	baseBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
+	oldBytes, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 6, Entries: []ScoredEntry{
+		{IP: "203.0.113.8", Score: 60, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			writeSigned(w, priv, baseBytes, "snapshot")
+			return
+		}
+		writeSigned(w, priv, oldBytes, "snapshot")
+	}))
+	defer srv.Close()
+
+	cs := NewCentralStore(NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub)))
+	if err := cs.Refresh(context.Background()); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+	if err := cs.Refresh(context.Background()); err != ErrSetVersionGap {
+		t.Fatalf("rollback refresh err = %v, want ErrSetVersionGap", err)
+	}
+	if cs.Version() != 7 {
+		t.Fatalf("version = %d, want cached version 7", cs.Version())
+	}
+	if _, ok := cs.Lookup("203.0.113.8"); ok {
+		t.Fatal("rolled-back snapshot replaced the cached set")
+	}
+}

@@ -55,6 +55,9 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 			return current, false, err
 		}
 	}
+	if validateErr := ValidateTargetURL(reqURL); validateErr != nil {
+		return current, false, validateErr
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return current, false, err

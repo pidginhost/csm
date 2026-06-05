@@ -188,6 +188,23 @@ func TestPullerRejectsMalformedSinceURL(t *testing.T) {
 	}
 }
 
+func TestPullerRejectsNonLoopbackHTTP(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+
+	p := NewPuller(client, "http://198.51.100.10/decisions", hex.EncodeToString(pub))
+	if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != ErrInsecureURL || changed {
+		t.Fatalf("changed=%v err=%v, want ErrInsecureURL", changed, err)
+	}
+	if called {
+		t.Fatal("puller called transport for insecure URL")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

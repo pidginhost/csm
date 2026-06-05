@@ -14,21 +14,23 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
 func TestCentralFirebreakProtects(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.InfraIPs = []string{"10.10.10.0/24", "198.18.0.1"}
+	cfg.Firewall = &firewall.FirewallConfig{InfraIPs: []string{"45.76.1.0/24"}}
 	d := New(cfg, nil, nil, "")
 	fb := d.centralFirebreak()
 
-	for _, ip := range []string{"127.0.0.1", "10.10.10.5", "198.18.0.1", "192.0.2.7", "203.0.113.9", "::1", "fe80::1", "not-an-ip"} {
+	for _, ip := range []string{"127.0.0.1", "10.10.10.5", "198.18.0.1", "45.76.1.7", "192.0.2.7", "203.0.113.9", "::1", "fe80::1", "not-an-ip"} {
 		if !fb(ip) {
 			t.Errorf("firebreak(%q) = false, want protected", ip)
 		}
 	}
-	for _, ip := range []string{"45.76.1.1", "8.8.8.8"} {
+	for _, ip := range []string{"46.76.1.1", "8.8.8.8"} {
 		if fb(ip) {
 			t.Errorf("firebreak(%q) = true, want actionable", ip)
 		}
@@ -55,6 +57,96 @@ func TestStartCentralConsumeMisconfiguredReturnsNil(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	if loop := d.startCentralConsume(); loop != nil {
 		t.Fatal("misconfigured consumer returned a loop")
+	}
+}
+
+func TestStartCentralConsumeDefaultsThresholdAndClearsHook(t *testing.T) {
+	prev := alert.CentralHook
+	t.Cleanup(func() { alert.SetCentralHook(prev) })
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	snap := reporting.ScoredSnapshot{Version: 1, Entries: []reporting.ScoredEntry{
+		{IP: "45.76.1.1", Score: centralBlockThreshold - 1, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()},
+	}}
+	payload, ok := reporting.MarshalScoredSnapshot(snap)
+	if !ok {
+		t.Fatal("marshal snapshot")
+	}
+	pulled := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sig := ed25519.Sign(priv, payload)
+		w.Header().Set("X-CSM-Signature", "ed25519="+hex.EncodeToString(sig))
+		w.Header().Set("X-CSM-Kind", "snapshot")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+		select {
+		case pulled <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{}
+	cfg.Reputation.Central.Enabled = true
+	cfg.Reputation.Central.SetURL = srv.URL + "/decisions"
+	cfg.Reputation.Central.PubkeyEnv = "CSM_TEST_CENTRAL_PUB"
+	cfg.Reputation.Central.Action = string(reporting.ActionBlockIfLocalCorroborated)
+	t.Setenv("CSM_TEST_CENTRAL_PUB", hex.EncodeToString(pub))
+
+	d := New(cfg, nil, nil, "")
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "iplist"))
+	loop := d.startCentralConsume()
+	if loop == nil {
+		t.Fatal("enabled consumer returned nil loop")
+	}
+	if alert.CentralHook == nil {
+		t.Fatal("enabled consumer did not install hook")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		loop()
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-d.stopCh:
+		default:
+			close(d.stopCh)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("central loop did not stop")
+		}
+	})
+
+	select {
+	case <-pulled:
+	case <-time.After(time.Second):
+		t.Fatal("central consumer did not pull initial set")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		alert.CentralHook(alert.Finding{Check: "pam_bruteforce", SourceIP: "45.76.1.1"})
+		if d.ipList.Contains("45.76.1.1") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !d.ipList.Contains("45.76.1.1") {
+		t.Fatal("score below default block threshold should challenge, not block")
+	}
+
+	close(d.stopCh)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("central loop did not stop")
+	}
+	if alert.CentralHook != nil {
+		t.Fatal("central loop did not clear hook on stop")
 	}
 }
 

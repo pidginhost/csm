@@ -372,6 +372,13 @@ reputation:
         key_id: ""                      # receiver key ID
         key_env: ""                     # HMAC secret or Ed25519 private key env var
         token_env: ""                   # optional bearer token env var for HMAC targets
+  central:
+    enabled: false                      # opt-in central scored-set consume; restart required
+    set_url: ""                         # HTTPS scored-set endpoint; HTTP only for loopback
+    pubkey_env: ""                      # env var with Ed25519 public key hex
+    refresh_interval: 6h                # pull interval; default 6h
+    action: "challenge"                 # off | challenge | block_if_local_corroborated
+    block_threshold: 80                 # score needed before local corroboration can block
 
 # --- Signatures ---
 signatures:
