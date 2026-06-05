@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 func allClasses() map[Class]bool {
@@ -44,6 +45,18 @@ func TestConsiderReportsConfirmedAbuse(t *testing.T) {
 	}
 	if !r.FirstSeen.Equal(ts) || !r.LastSeen.Equal(ts) {
 		t.Fatalf("times = %v..%v", r.FirstSeen, r.LastSeen)
+	}
+}
+
+func TestConsiderNormalizesIPv4MappedAddress(t *testing.T) {
+	g := Gate{Enabled: allClasses()}
+	f := alert.Finding{Check: "pam_bruteforce", Severity: alert.Critical, SourceIP: "::ffff:203.0.113.5", Timestamp: ts}
+	r, ok := g.Consider(f)
+	if !ok {
+		t.Fatal("IPv4-mapped address not reported")
+	}
+	if r.IP != "203.0.113.5" {
+		t.Fatalf("IP = %q, want central canonical key 203.0.113.5", r.IP)
 	}
 }
 
@@ -107,6 +120,14 @@ func TestMinimizedReportLeaksNoPII(t *testing.T) {
 		Details:   "secret details",
 		CPUser:    "cpuser123",
 		MsgIDs:    []string{"abc@host"},
+		Process: &processctx.ProcessContext{
+			PID:     4242,
+			UID:     1001,
+			Account: "cpuser123",
+			Comm:    "evil-worker",
+			Exe:     "/tmp/payload",
+			Cmdline: []string{"/tmp/payload", "--mailbox=ceo@victim.example"},
+		},
 	}
 	r, ok := g.Consider(f)
 	if !ok {
@@ -116,10 +137,17 @@ func TestMinimizedReportLeaksNoPII(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, leak := range []string{"cpuser123", "victim.example", "ceo@victim.example", "shell.php", "secret details", "abc@host"} {
+	for _, leak := range []string{"cpuser123", "victim.example", "ceo@victim.example", "shell.php", "secret details", "abc@host", "evil-worker", "/tmp/payload"} {
 		if bytes.Contains(body, []byte(leak)) {
 			t.Fatalf("report leaked %q: %s", leak, body)
 		}
+	}
+	wantJSON := "" +
+		`{"ip":"203.0.113.5","class":"php_relay","count":1,` +
+		`"first_seen":"2023-11-14T22:13:20Z",` +
+		`"last_seen":"2023-11-14T22:13:20Z"}`
+	if string(body) != wantJSON {
+		t.Fatalf("report JSON = %s, want exactly %s", body, wantJSON)
 	}
 	// Exactly the minimal field set.
 	var got map[string]any

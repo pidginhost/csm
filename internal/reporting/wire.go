@@ -4,7 +4,7 @@
 //
 // The signed-envelope wire format here MUST stay byte-identical to the central
 // service's verifier (csm-abuse-db internal/envelope). It is duplicated rather
-// than imported to keep this repo's build self-contained; TestEnvelopeGolden
+// than imported to keep this repo's build self-contained; the wire-format test
 // pins the canonical bytes so any divergence fails the build.
 package reporting
 

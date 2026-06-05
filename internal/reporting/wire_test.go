@@ -1,10 +1,12 @@
 package reporting
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 )
 
@@ -50,8 +52,20 @@ func TestCanonicalMatchesWireFormat(t *testing.T) {
 		t.Fatalf("canonical: %v", err)
 	}
 	want := manualCanonical(e)
-	if string(got) != string(want) {
+	if !bytes.Equal(got, want) {
 		t.Fatalf("canonical drift:\n got=%x\nwant=%x", got, want)
+	}
+	const goldenHex = "" +
+		"000000066e5f37663361000000026b3100000004504f5354" +
+		"000000072f7265706f7274000000203afbb0c331433d7fdf" +
+		"d670a648fbb4dddfd15a356aebe7abc800217711eec38a" +
+		"000000076e6f6e63652d31000000006553f100"
+	golden, err := hex.DecodeString(goldenHex)
+	if err != nil {
+		t.Fatalf("golden fixture: %v", err)
+	}
+	if !bytes.Equal(got, golden) {
+		t.Fatalf("canonical golden drift:\n got=%x\nwant=%x", got, golden)
 	}
 }
 
