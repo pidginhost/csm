@@ -252,6 +252,17 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var"},
 			{YAMLPath: "upstream.cache_ttl_min", Type: "int", Label: "Upstream cache TTL (min)", Min: int64p(1), Max: int64p(1440)},
 			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)", Min: int64p(1), Max: int64p(60)},
+
+			{YAMLPath: "report.enabled", Type: "bool", Label: "Report confirmed abuse", Help: "Send signed, minimized reports for confirmed-abuse IPs. Targets are configured in YAML.", FieldGroup: "Abuse reporting"},
+			{YAMLPath: "report.classes", Type: "[]string", Label: "Reported classes", Help: "bruteforce, php_relay, credential_stuffing, bad_asn_egress", FieldGroup: "Abuse reporting"},
+			{YAMLPath: "report.spool_max", Type: "int", Label: "Report spool size", Min: int64p(0), FieldGroup: "Abuse reporting"},
+
+			{YAMLPath: "central.enabled", Type: "bool", Label: "Consume central abuse database", FieldGroup: "Central database"},
+			{YAMLPath: "central.set_url", Type: "string", Label: "Scored-set URL", FieldGroup: "Central database"},
+			{YAMLPath: "central.pubkey_env", Type: "string", Label: "Central public-key env var", FieldGroup: "Central database"},
+			{YAMLPath: "central.action", Type: "string", Label: "Action on listed IPs", Help: "off | challenge | block_if_local_corroborated", FieldGroup: "Central database"},
+			{YAMLPath: "central.block_threshold", Type: "int", Label: "Block score threshold", Min: int64p(0), Max: int64p(100), FieldGroup: "Central database"},
+			{YAMLPath: "central.refresh_interval", Type: "string", Label: "Refresh interval", Help: "e.g. 6h", FieldGroup: "Central database"},
 		},
 	},
 	{

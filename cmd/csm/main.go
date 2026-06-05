@@ -142,6 +142,8 @@ func main() {
 		runWebserverIntegration()
 	case "pam":
 		runPAM()
+	case "report":
+		runReport()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()

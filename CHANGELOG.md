@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed, challenges it (or hard-blocks only with local corroboration above the
   threshold). Firebreaks (loopback, private, documentation ranges, infra_ips)
   are never acted on; central data never blocks on its own.
+- `csm report enroll` generates a node key pair for abuse reporting, and the
+  dashboard settings expose the reporting and central-database options.
 
 ### Fixed
 
