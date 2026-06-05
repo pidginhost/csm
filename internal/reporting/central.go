@@ -66,37 +66,44 @@ func Decide(in DecisionInput, action Action, blockThreshold int) Decision {
 	return DecisionChallenge
 }
 
+// centralState bundles the current snapshot and its derived lookup set so both
+// are swapped in a single atomic store; two separate pointers could be read in
+// a torn intermediate state.
+type centralState struct {
+	snapshot ScoredSnapshot
+	set      *Set
+}
+
 // CentralStore holds the current verified scored-set for concurrent lookups and
-// is refreshed by a Puller. The set pointer is swapped atomically so readers on
-// the block/challenge path never block on a refresh.
+// is refreshed by a Puller. The state is swapped atomically so readers on the
+// block/challenge path never block on a refresh and never see a torn snapshot.
 type CentralStore struct {
 	puller *Puller
-	snap   atomic.Pointer[ScoredSnapshot]
-	set    atomic.Pointer[Set]
+	state  atomic.Pointer[centralState]
 }
 
 // NewCentralStore builds an empty store backed by puller.
 func NewCentralStore(puller *Puller) *CentralStore {
 	cs := &CentralStore{puller: puller}
 	empty := ScoredSnapshot{}
-	cs.snap.Store(&empty)
-	cs.set.Store(NewSet(empty))
+	cs.state.Store(&centralState{snapshot: empty, set: NewSet(empty)})
 	return cs
 }
 
 // Lookup returns the scored entry for ip from the current set.
 func (cs *CentralStore) Lookup(ip string) (ScoredEntry, bool) {
-	return cs.set.Load().Lookup(ip)
+	return cs.state.Load().set.Lookup(ip)
 }
 
 // Version returns the current set version.
-func (cs *CentralStore) Version() uint64 { return cs.set.Load().Version() }
+func (cs *CentralStore) Version() uint64 { return cs.state.Load().set.Version() }
 
-// Refresh pulls an update and swaps in the new set on change. On a version gap
-// it retries once from a cold pull (since=0) so a node that fell behind the
-// diff window recovers with a full snapshot.
+// Refresh pulls an update and swaps in the new state on change. On a version
+// gap it retries once from a cold pull (since=0) so a node that fell behind the
+// diff window recovers with a full snapshot. A non-increasing version is
+// rejected so a rolled-back or hostile endpoint cannot regress the cache.
 func (cs *CentralStore) Refresh(ctx context.Context) error {
-	cur := *cs.snap.Load()
+	cur := cs.state.Load().snapshot
 	next, changed, err := cs.puller.Refresh(ctx, cur)
 	if err == ErrSetVersionGap {
 		next, changed, err = cs.puller.Refresh(ctx, ScoredSnapshot{})
@@ -105,11 +112,10 @@ func (cs *CentralStore) Refresh(ctx context.Context) error {
 		return err
 	}
 	if changed {
-		if cur.Version > 0 && next.Version < cur.Version {
+		if next.Version < cur.Version {
 			return ErrSetVersionGap
 		}
-		cs.snap.Store(&next)
-		cs.set.Store(NewSet(next))
+		cs.state.Store(&centralState{snapshot: next, set: NewSet(next)})
 	}
 	return nil
 }

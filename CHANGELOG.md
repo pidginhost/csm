@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Central scored-set consumer now rejects a snapshot at version 0 or any
+  version below the cached one, so a rolled-back or hostile endpoint cannot
+  regress a node's set or pin it to perpetual cold pulls; the snapshot and its
+  lookup set are swapped together so a concurrent refresh cannot be read torn;
+  an unrecognized `central.action` is logged; and the RFC 2544 benchmarking
+  range is firebroken alongside the documentation ranges.
 - `csm report enroll` usage now appears in the CLI help and tells operators to
   store the generated private key in an environment variable.
 - Abuse report delivery now refuses redirected collectors and serializes spool

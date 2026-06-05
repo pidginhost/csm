@@ -364,6 +364,16 @@ func TestApplyDiffNormalizesBaseAndRemovalIP(t *testing.T) {
 	}
 }
 
+func TestOpenSnapshotRejectsVersionZero(t *testing.T) {
+	// A wire snapshot at version 0 (the empty-cache sentinel) must be rejected
+	// so a hostile endpoint cannot pin the node to perpetual cold pulls.
+	payload := []byte(`{"version":0,"entries":[{"ip":"203.0.113.5","score":80,"classes":["bruteforce"],"last_seen":"2023-11-14T22:13:20Z"}]}`)
+	sig, pub := signRawSet(t, payload)
+	if _, err := OpenSnapshot(payload, sig, pub); err != ErrSetInvalid {
+		t.Fatalf("got %v, want ErrSetInvalid for version 0", err)
+	}
+}
+
 func TestApplyDiffVersionGap(t *testing.T) {
 	base := ScoredSnapshot{Version: 5}
 	if _, err := ApplyDiff(base, openDiffForApply(t, ScoredDiff{FromVersion: 4, ToVersion: 6})); err != ErrSetVersionGap {

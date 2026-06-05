@@ -27,11 +27,22 @@ type centralQueuedAction struct {
 	ip       string
 }
 
-// documentationNets are reserved/documentation ranges (RFC 5737, RFC 3849) that
-// must never be acted on; they are not routable real attackers.
+// documentationNets are reserved/non-routable ranges (RFC 5737 documentation,
+// RFC 3849 IPv6 documentation, RFC 2544 benchmarking) that must never be acted
+// on; they are not routable real attackers.
 var documentationNets = mustCIDRs(
-	"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "2001:db8::/32",
+	"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.18.0.0/15", "2001:db8::/32",
 )
+
+// knownCentralAction reports whether s is a recognized central action policy.
+func knownCentralAction(s string) bool {
+	switch reporting.Action(s) {
+	case reporting.ActionOff, reporting.ActionChallenge, reporting.ActionBlockIfLocalCorroborated:
+		return true
+	default:
+		return false
+	}
+}
 
 func mustCIDRs(cidrs ...string) []*net.IPNet {
 	out := make([]*net.IPNet, 0, len(cidrs))
@@ -65,6 +76,9 @@ func (d *Daemon) startCentralConsume() func() {
 	}
 
 	policy := reporting.ParseAction(cc.Action)
+	if cc.Action != "" && !knownCentralAction(cc.Action) {
+		log.Printf("central-intel: unrecognized action %q, defaulting to challenge", cc.Action)
+	}
 	threshold := cc.BlockThreshold
 	if threshold <= 0 {
 		threshold = centralBlockThreshold

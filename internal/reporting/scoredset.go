@@ -271,6 +271,12 @@ func OpenSnapshot(payload, sig []byte, pubHex string) (ScoredSnapshot, error) {
 	if err := decodeStrict(payload, &s); err != nil {
 		return ScoredSnapshot{}, ErrSetInvalid
 	}
+	// A published snapshot is always version >= 1; version 0 is the node's
+	// empty-cache sentinel and must never be accepted from the wire (it would
+	// let a hostile endpoint pin the node to perpetual cold pulls).
+	if s.Version == 0 {
+		return ScoredSnapshot{}, ErrSetInvalid
+	}
 	entries, ok := canonicalScoredEntries(s.Entries)
 	if !ok {
 		return ScoredSnapshot{}, ErrSetInvalid

@@ -87,6 +87,40 @@ func TestCentralStoreRefreshAndLookup(t *testing.T) {
 	}
 }
 
+func TestCentralStoreRejectsVersionRegression(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	v8b, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 8, Entries: []ScoredEntry{
+		{IP: "203.0.113.5", Score: 80, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+	v5b, _ := MarshalScoredSnapshot(ScoredSnapshot{Version: 5, Entries: []ScoredEntry{
+		{IP: "203.0.113.9", Score: 70, Classes: []Class{ClassBruteforce}, LastSeen: setTS},
+	}})
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			writeSigned(w, priv, v8b, "snapshot")
+			return
+		}
+		writeSigned(w, priv, v5b, "snapshot") // rolled back / hostile
+	}))
+	defer srv.Close()
+
+	cs := NewCentralStore(NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub)))
+	if err := cs.Refresh(context.Background()); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+	if err := cs.Refresh(context.Background()); err != ErrSetVersionGap {
+		t.Fatalf("regression refresh err = %v, want ErrSetVersionGap", err)
+	}
+	if cs.Version() != 8 {
+		t.Fatalf("version = %d, want 8 (regression rejected)", cs.Version())
+	}
+	if _, ok := cs.Lookup("203.0.113.9"); ok {
+		t.Fatal("rolled-back entry was applied")
+	}
+}
+
 func TestCentralStoreRefreshVersionGapFallsBackToFullPull(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	baseBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
