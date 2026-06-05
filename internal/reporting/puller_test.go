@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +23,10 @@ func writeSigned(w http.ResponseWriter, priv ed25519.PrivateKey, payload []byte,
 func TestPullerColdSnapshot(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	snapBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["since"]; ok {
+			t.Errorf("cold pull sent since query: %q", r.URL.RawQuery)
+		}
 		writeSigned(w, priv, snapBytes, "snapshot")
 	}))
 	defer srv.Close()
@@ -46,8 +51,8 @@ func TestPullerAppliesDiff(t *testing.T) {
 		Added: []ScoredEntry{{IP: "203.0.113.9", Score: 55, Classes: []Class{ClassBruteforce}, LastSeen: setTS}},
 	})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("since") != "1" {
-			t.Errorf("since = %q, want 1", r.URL.Query().Get("since"))
+		if got := r.URL.Query()["since"]; len(got) != 1 || got[0] != "1" {
+			t.Errorf("since = %q, want exactly 1", got)
 		}
 		writeSigned(w, priv, diffBytes, "diff")
 	}))
@@ -65,15 +70,22 @@ func TestPullerAppliesDiff(t *testing.T) {
 
 func TestPullerNotModified(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotModified)
-	}))
-	defer srv.Close()
-	p := NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub))
+	body := &trackingBody{}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNotModified,
+			Header:     make(http.Header),
+			Body:       body,
+		}, nil
+	})}
+	p := NewPuller(client, "https://example.invalid/decisions", hex.EncodeToString(pub))
 	cur := ScoredSnapshot{Version: 5}
 	got, changed, err := p.Refresh(context.Background(), cur)
 	if err != nil || changed || got.Version != 5 {
 		t.Fatalf("304: changed=%v err=%v ver=%d", changed, err, got.Version)
+	}
+	if body.read {
+		t.Fatal("304 response body was read")
 	}
 }
 
@@ -88,6 +100,38 @@ func TestPullerRejectsBadSignature(t *testing.T) {
 	p := NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub))
 	if _, _, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != ErrSetSignature {
 		t.Fatalf("got %v, want ErrSetSignature", err)
+	}
+}
+
+func TestPullerRejectsMissingOrGarbageSignatureHeader(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	snapBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
+	tests := []struct {
+		name      string
+		signature string
+	}{
+		{name: "missing"},
+		{name: "garbage", signature: "garbage"},
+		{name: "wrong scheme", signature: "hmac=00"},
+		{name: "bad hex", signature: "ed25519=not-hex"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.signature != "" {
+					w.Header().Set("X-CSM-Signature", tt.signature)
+				}
+				w.Header().Set("X-CSM-Kind", "snapshot")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(snapBytes)
+			}))
+			defer srv.Close()
+
+			p := NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub))
+			if _, _, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != ErrSetSignature {
+				t.Fatalf("got %v, want ErrSetSignature", err)
+			}
+		})
 	}
 }
 
@@ -118,4 +162,47 @@ func TestPullerBadStatus(t *testing.T) {
 	if _, _, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != ErrPullStatus {
 		t.Fatalf("got %v, want ErrPullStatus", err)
 	}
+}
+
+func TestPullerRejectsOversizedBody(t *testing.T) {
+	if _, err := readScoredSetBody(strings.NewReader("abcd"), 3); err != ErrPullBodyTooLarge {
+		t.Fatalf("got %v, want ErrPullBodyTooLarge", err)
+	}
+}
+
+func TestPullerRejectsMalformedSinceURL(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	p := NewPuller(srv.Client(), srv.URL+"/decisions?token=a;b", hex.EncodeToString(pub))
+	if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{Version: 1}); err == nil || changed {
+		t.Fatalf("changed=%v err=%v, want malformed URL error", changed, err)
+	}
+	if called {
+		t.Fatal("server was called after malformed query")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type trackingBody struct {
+	read bool
+}
+
+func (b *trackingBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, io.EOF
+}
+
+func (b *trackingBody) Close() error {
+	return nil
 }

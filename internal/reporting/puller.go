@@ -16,8 +16,13 @@ import (
 // endpoint cannot exhaust memory.
 const maxScoredSetBytes = 64 << 20 // 64 MiB
 
-// ErrPullStatus means the endpoint returned an unexpected HTTP status.
-var ErrPullStatus = errors.New("reporting: scored-set pull bad status")
+var (
+	// ErrPullStatus means the endpoint returned an unexpected HTTP status.
+	ErrPullStatus = errors.New("reporting: scored-set pull bad status")
+	// ErrPullBodyTooLarge means the endpoint returned more bytes than a node
+	// will verify and cache.
+	ErrPullBodyTooLarge = errors.New("reporting: scored-set pull body too large")
+)
 
 // Puller fetches and verifies the signed scored-set from the central service.
 // It pulls a full snapshot on a cold cache and a one-step diff thereafter,
@@ -43,8 +48,12 @@ func NewPuller(client *http.Client, setURL, pubHex string) *Puller {
 // back by returning an error so the caller retries with a full pull (since=0).
 func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSnapshot, bool, error) {
 	reqURL := p.url
+	var err error
 	if current.Version > 0 {
-		reqURL = withSince(p.url, current.Version)
+		reqURL, err = withSince(p.url, current.Version)
+		if err != nil {
+			return current, false, err
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -63,7 +72,7 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 		return current, false, ErrPullStatus
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxScoredSetBytes))
+	body, err := readScoredSetBody(resp.Body, maxScoredSetBytes)
 	if err != nil {
 		return current, false, err
 	}
@@ -92,15 +101,29 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 	}
 }
 
-func withSince(base string, version uint64) string {
+func readScoredSetBody(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, ErrPullBodyTooLarge
+	}
+	return body, nil
+}
+
+func withSince(base string, version uint64) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
-		return base
+		return "", err
 	}
-	q := u.Query()
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "", err
+	}
 	q.Set("since", strconv.FormatUint(version, 10))
 	u.RawQuery = q.Encode()
-	return u.String()
+	return u.String(), nil
 }
 
 func parseSetSignature(h string) ([]byte, error) {

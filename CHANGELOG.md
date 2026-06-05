@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemon hook when reporting is off, misconfigured, or shutting down.
 - Scored-set updates now reject malformed or conflicting changes before they
   can alter a node's cached abuse score set.
+- Scored-set update pulls now reject oversized responses and malformed cursor
+  URLs before applying data.
 
 ## [3.12.0] - 2026-06-05
 
