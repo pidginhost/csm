@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signed scored-set consume codec: verifies the Ed25519 signature before
   decoding, rejects noncanonical payloads, applies incremental diffs, and
   answers per-IP reputation lookups for the central abuse database.
+- Scored-set pull client that fetches a full snapshot or an incremental diff
+  from the central service and verifies it before use.
 
 ### Fixed
 
