@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   draining, avoiding credential leakage and duplicate sends.
 - Abuse reporting now skips unusable targets during startup and clears its
   daemon hook when reporting is off, misconfigured, or shutting down.
+- Scored-set updates now reject malformed or conflicting changes before they
+  can alter a node's cached abuse score set.
 
 ## [3.12.0] - 2026-06-05
 
