@@ -68,7 +68,9 @@ verify_signature() {
     # Treat that as "cannot verify" (the SHA-256 checksum above is already
     # enforced), never as a tamper -- otherwise upgrades would hard-fail on
     # every 1.1.1 host the moment a release is signed.
-    if ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+    local pkeyutl_help
+    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
+    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
         if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
             die "CSM_REQUIRE_SIGNATURES=1 but openssl ($(openssl version 2>/dev/null)) lacks Ed25519 one-shot verify (needs OpenSSL 3.0+)"
         fi
