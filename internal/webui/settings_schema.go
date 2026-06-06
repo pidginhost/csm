@@ -217,6 +217,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: "24h"},
 			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: "0 uses the default 50/hour cap."},
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
+			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance."},
 			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts"},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},
 			{YAMLPath: "netblock_threshold", Type: "int", Label: "Netblock threshold", Min: int64p(1)},
@@ -383,6 +384,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "wp_memory_limit_max_mb", Type: "int", Label: "WP memory limit max (MB)", Min: int64p(32)},
 			{YAMLPath: "wp_transient_warn_mb", Type: "int", Label: "WP transient warn (MB)", Min: int64p(1)},
 			{YAMLPath: "wp_transient_critical_mb", Type: "int", Label: "WP transient critical (MB)", Min: int64p(1)},
+			{YAMLPath: "wp_cron_fix.interval_minutes", Type: "int", Label: "WP-Cron fix: system cron interval (min)", Min: int64p(1), Max: int64p(60), Help: "How often the installed system cron runs wp-cron.php. Default 5."},
+			{YAMLPath: "wp_cron_fix.php_bin", Type: "string", Label: "WP-Cron fix: PHP binary", Placeholder: "/usr/local/bin/php", Help: "Interpreter for the cron line. Leave empty to auto-detect."},
 		},
 	},
 	{

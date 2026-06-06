@@ -416,6 +416,7 @@ type Config struct {
 		BlockIPs           bool   `yaml:"block_ips"`
 		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
 		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
+		FixWPCron          bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
 		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
 		NetBlock           bool   `yaml:"netblock"`            // auto-block IPv4 /24 or IPv6 /64 at threshold
 		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
@@ -801,6 +802,15 @@ type Config struct {
 		WPMemoryLimitMaxMB          int     `yaml:"wp_memory_limit_max_mb"`
 		WPTransientWarnMB           int     `yaml:"wp_transient_warn_mb"`
 		WPTransientCriticalMB       int     `yaml:"wp_transient_critical_mb"`
+
+		// WPCronFix tunes the WP-Cron remediation (manual fix from the Web UI
+		// and the daemon auto-response). Disabling WP-Cron without a real cron
+		// would stop scheduled tasks, so the fix also installs a per-user system
+		// cron that runs wp-cron.php on this interval.
+		WPCronFix struct {
+			IntervalMinutes int    `yaml:"interval_minutes"` // system cron frequency; default 5, clamped to [1,60]
+			PHPBin          string `yaml:"php_bin"`          // php interpreter for the cron line; empty => detect
+		} `yaml:"wp_cron_fix"`
 	} `yaml:"performance" hotreload:"restart"`
 
 	Cloudflare struct {
@@ -1378,6 +1388,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Performance.WPTransientCriticalMB == 0 {
 		cfg.Performance.WPTransientCriticalMB = 10
+	}
+	if cfg.Performance.WPCronFix.IntervalMinutes == 0 {
+		cfg.Performance.WPCronFix.IntervalMinutes = 5
 	}
 
 	if cfg.Cloudflare.RefreshHours == 0 {
