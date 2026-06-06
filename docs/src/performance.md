@@ -30,16 +30,41 @@ The **Performance** page (`/performance`) shows real-time metrics:
 - MySQL and Redis health
 - WordPress performance indicators
 
-The findings list also exposes admin-only actions for two low-risk fixes:
+The findings list also exposes admin-only fixes, per-row and as a **Bulk fix**
+dropdown that applies one fix to every matching finding at once:
 
 - `perf_error_logs`: truncate a bloated `error_log` in place. The inode is
   preserved so running PHP processes keep writing to the same file.
 - `perf_wp_config`: disable `display_errors` in `.user.ini`, `php.ini`, or
   `.htaccess` by commenting the matched line and appending an Off override.
+- `perf_wp_cron`: add `define('DISABLE_WP_CRON', true)` to `wp-config.php`
+  and install a per-user system cron that runs `wp-cron.php` on a fixed
+  interval. Disabling WP-Cron alone would stop scheduled WordPress tasks, so
+  the cron is installed in the account owner's own crontab (visible and
+  editable by the customer). The define is inserted before the
+  "stop editing" marker (or the `wp-settings.php` require); the fix refuses a
+  `wp-config.php` with no safe insertion point rather than corrupt it.
 
 These actions are limited to configured account roots, reject symlinks and
 unsupported file types, and remove the fixed row from the active findings
 view after a successful edit.
+
+### WP-Cron fix settings
+
+Tune the WP-Cron remediation under **Settings -> Performance**:
+
+- `performance.wp_cron_fix.interval_minutes` (default `5`, range 1-60): how
+  often the installed system cron runs `wp-cron.php`. 5 minutes balances
+  scheduled-task responsiveness against the load that HTTP-triggered WP-Cron
+  creates.
+- `performance.wp_cron_fix.php_bin` (default empty = auto-detect): the PHP
+  interpreter for the cron line. CLI php is used instead of an HTTP request so
+  the job never ties up a web worker.
+
+To let the daemon apply this fix automatically on every WP-Cron finding, set
+`auto_response.fix_wp_cron: true` (default `false`; requires
+`auto_response.enabled: true`). It is opt-in because it edits customer
+`wp-config.php` files and crontabs.
 
 ### MySQL telemetry auth
 
@@ -74,4 +99,5 @@ The dashboard uses that password for its in-process Redis client.
 GET /api/v1/performance    Current performance metrics snapshot
 POST /api/v1/perf/fix-error-log
 POST /api/v1/perf/fix-display-errors
+POST /api/v1/perf/fix-wp-cron
 ```

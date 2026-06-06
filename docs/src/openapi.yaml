@@ -952,6 +952,26 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/perf/fix-wp-cron":
+    post:
+      operationId: post_perf_fix_wp_cron
+      summary: "post /api/v1/perf/fix-wp-cron (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/perf/fix-error-log":
     post:
       operationId: post_perf_fix_error_log

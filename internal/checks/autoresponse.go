@@ -284,6 +284,59 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 	return actions, fixedKeys
 }
 
+// AutoFixWPCron disables WP-Cron and installs a per-user system cron for every
+// perf_wp_cron finding. Returns the auto-response action findings and the keys
+// of the originals so the caller can dismiss them. Gated behind an explicit
+// opt-in because it edits customer wp-config.php and crontabs.
+func AutoFixWPCron(cfg *config.Config, findings []alert.Finding) (actions []alert.Finding, fixedKeys []string) {
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.FixWPCron {
+		return nil, nil
+	}
+
+	opts := WPCronFixOptions{
+		IntervalMinutes: cfg.Performance.WPCronFix.IntervalMinutes,
+		PHPBin:          cfg.Performance.WPCronFix.PHPBin,
+	}
+
+	for _, f := range findings {
+		if f.Check != "perf_wp_cron" {
+			continue
+		}
+		path := extractWPConfigPath(f.Details)
+		if path == "" {
+			continue
+		}
+		res := FixDisableWPCron(path, opts)
+		if !res.Success {
+			continue
+		}
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-FIX: %s", res.Description),
+			Timestamp: time.Now(),
+		})
+		fixedKeys = append(fixedKeys, f.Check+":"+f.Message)
+	}
+
+	return actions, fixedKeys
+}
+
+// extractWPConfigPath pulls the wp-config.php path out of a perf_wp_cron
+// finding's Details, formatted as "File: <path> - add define(...)".
+func extractWPConfigPath(details string) string {
+	const prefix = "File: "
+	idx := strings.Index(details, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := details[idx+len(prefix):]
+	if j := strings.Index(rest, " - "); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest)
+}
+
 func extractPID(details string) string {
 	// Look for "PID: 12345" pattern. Stop at the first whitespace, comma,
 	// or newline so a trailing word ("PID: 42 exe=/bin/ls") doesn't get

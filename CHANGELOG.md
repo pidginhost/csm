@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WP-Cron findings now have a one-click fix (per-row and bulk) that disables WP-Cron in wp-config.php and installs a per-user system cron to run wp-cron.php, so scheduled tasks keep running. Interval and PHP binary are configurable, and an opt-in auto-response can apply it automatically.
 - Groundwork for reporting confirmed-abuse IPs to a central abuse database or a private collector. Reports are minimized to an IP, an abuse class, a count, and timestamps, carrying no account, domain, mailbox, or path data, and are signed so a receiver can authenticate them.
 - Durable, bounded outbound spool and HTTPS-only signed delivery for abuse reports, so a down collector or a restart does not drop them.
 - Abuse reporting is now wired into the daemon and configurable under `reputation.report` (opt-in, default off): confirmed-abuse findings are reported to the configured targets.

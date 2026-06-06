@@ -227,6 +227,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/performance", s.requireAuth(http.HandlerFunc(s.apiPerformance)))
 	mux.Handle("/api/v1/perf/fix-error-log", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixErrorLog))))
 	mux.Handle("/api/v1/perf/fix-display-errors", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixDisplayErrors))))
+	mux.Handle("/api/v1/perf/fix-wp-cron", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixWPCron))))
 	mux.Handle("/api/v1/hardening", s.requireAuth(http.HandlerFunc(s.apiHardening)))
 	mux.Handle("/api/v1/hardening/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiHardeningRun))))
 

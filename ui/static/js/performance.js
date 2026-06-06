@@ -60,6 +60,22 @@
                 confirm: 'Truncate ' + path + ' to zero bytes? The file stays in place so PHP keeps writing to it.'
             };
         }
+        if (f.check === 'perf_wp_cron') {
+            var wpDetails = f.details || '';
+            var wpMatch = /File:\s*([^\s]+wp-config\.php)/i.exec(wpDetails);
+            if (!wpMatch) return null;
+            var wpPath = wpMatch[1].trim();
+            if (!wpPath) return null;
+            return {
+                endpoint: '/api/v1/perf/fix-wp-cron',
+                path: wpPath,
+                key: f.key || '',
+                label: 'Disable WP-Cron',
+                bulkLabel: 'Disable WP-Cron + install system cron',
+                icon: 'ti-clock-off',
+                confirm: 'Add DISABLE_WP_CRON to ' + wpPath + ' and install a per-user system cron that runs wp-cron.php? The account owner can edit or remove the cron later.'
+            };
+        }
         if (f.check === 'perf_wp_config' && (f.message || '').indexOf('display_errors enabled') === 0) {
             var details = f.details || '';
             var match = /File:\s*([^,]+),\s*Value:\s*On/i.exec(details);
