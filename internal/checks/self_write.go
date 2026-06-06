@@ -32,9 +32,19 @@ func RecordSelfWrite(path string, content []byte) {
 	sum := sha256.Sum256(content)
 	selfWriteMu.Lock()
 	defer selfWriteMu.Unlock()
+	now := selfWriteNow()
+	pruneExpiredSelfWritesLocked(now)
 	selfWrites[path] = selfWriteRecord{
 		hash:    hex.EncodeToString(sum[:]),
-		expires: selfWriteNow().Add(selfWriteTTL),
+		expires: now.Add(selfWriteTTL),
+	}
+}
+
+func forgetSelfWrites(paths ...string) {
+	selfWriteMu.Lock()
+	defer selfWriteMu.Unlock()
+	for _, path := range paths {
+		delete(selfWrites, path)
 	}
 }
 
@@ -44,14 +54,20 @@ func RecordSelfWrite(path string, content []byte) {
 func isExpectedSelfWrite(path string, content []byte) bool {
 	selfWriteMu.Lock()
 	defer selfWriteMu.Unlock()
+	now := selfWriteNow()
+	pruneExpiredSelfWritesLocked(now)
 	rec, ok := selfWrites[path]
 	if !ok {
 		return false
 	}
-	if selfWriteNow().After(rec.expires) {
-		delete(selfWrites, path)
-		return false
-	}
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:]) == rec.hash
+}
+
+func pruneExpiredSelfWritesLocked(now time.Time) {
+	for path, rec := range selfWrites {
+		if now.After(rec.expires) {
+			delete(selfWrites, path)
+		}
+	}
 }

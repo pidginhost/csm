@@ -303,25 +303,65 @@ func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, erro
 		return false, fmt.Errorf("close crontab spool: %v", err)
 	}
 
+	expected := append([]byte(nil), buf.Bytes()...)
+	preRecordCrontabSelfWrite(owner, expected)
 	if _, err := cmdExec.Run("crontab", "-u", owner, tmpPath); err != nil {
+		forgetSelfWrites(crontabSpoolPaths(owner)...)
 		return false, fmt.Errorf("crontab install: %v", err)
 	}
-	recordCrontabSelfWrite(owner)
+	recordCrontabSelfWrite(owner, expected)
 	return true, nil
+}
+
+func preRecordCrontabSelfWrite(owner string, expected []byte) {
+	for _, p := range crontabSpoolPaths(owner) {
+		RecordSelfWrite(p, expected)
+	}
 }
 
 // recordCrontabSelfWrite registers the just-installed crontab with the
 // self-write ledger so the sensitive-file detectors do not flag CSM's own
 // change. The on-disk spool content (cron may normalize it) is what the
 // detectors hash, so record the spool file rather than our staged buffer.
-func recordCrontabSelfWrite(owner string) {
-	for _, dir := range []string{"/var/spool/cron", "/var/spool/cron/crontabs"} {
-		p := filepath.Join(dir, owner)
-		if data, err := osFS.ReadFile(p); err == nil {
+func recordCrontabSelfWrite(owner string, expected []byte) {
+	paths := crontabSpoolPaths(owner)
+	recorded := ""
+	for _, p := range paths {
+		data, err := osFS.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if crontabContentEqual(data, expected) {
 			RecordSelfWrite(p, data)
-			return
+			recorded = p
+		}
+		break
+	}
+	for _, p := range paths {
+		if p != recorded {
+			forgetSelfWrites(p)
 		}
 	}
+}
+
+func crontabSpoolPaths(owner string) []string {
+	return []string{
+		filepath.Join("/var/spool/cron", owner),
+		filepath.Join("/var/spool/cron/crontabs", owner),
+	}
+}
+
+func crontabContentEqual(got, want []byte) bool {
+	got = normalizeCrontabLineEndings(got)
+	want = normalizeCrontabLineEndings(want)
+	if bytes.Equal(got, want) {
+		return true
+	}
+	return bytes.HasSuffix(want, []byte("\n")) && bytes.Equal(got, bytes.TrimSuffix(want, []byte("\n")))
+}
+
+func normalizeCrontabLineEndings(data []byte) []byte {
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 // wpCronJobLine builds the crontab entry. CLI php is used (not an HTTP hit) so

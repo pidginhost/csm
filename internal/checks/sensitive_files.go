@@ -124,9 +124,12 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	// Read content up front so a CSM self-write (e.g. an installed wp-cron)
 	// can be matched and suppressed. The cron-content heuristic below reuses
 	// the same bytes.
-	content, _ := osFS.ReadFile(path)
-	if isExpectedSelfWrite(path, content) {
-		return alert.Finding{}, false
+	var content []byte
+	if data, err := osFS.ReadFile(path); err == nil {
+		content = data
+		if isExpectedSelfWrite(path, content) {
+			return alert.Finding{}, false
+		}
 	}
 	now := time.Now()
 	f := alert.Finding{
