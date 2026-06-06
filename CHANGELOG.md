@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The "excessive non-expiring keys" Redis finding no longer fires when the eviction policy already reclaims any key (allkeys-*), removing a false alarm on object caches that intentionally store entries without a TTL.
 - WP-Cron remediation now uses configured account roots, keeps scheduling unchanged when a crontab install fails, ignores commented config examples, and serializes per-user crontab writes to avoid duplicate or lost cron lines.
 - Concurrent central scored-set refreshes now keep the newest accepted cache version when overlapping pulls finish out of order.
 - Central scored-set consumer now rejects a snapshot at version 0 or any version below the cached one, so a rolled-back or hostile endpoint cannot regress a node's set or pin it to perpetual cold pulls; the snapshot and its lookup set are swapped together so a concurrent refresh cannot be read torn; an unrecognized `central.action` is logged; and the RFC 2544 benchmarking range is firebroken alongside the documentation ranges.

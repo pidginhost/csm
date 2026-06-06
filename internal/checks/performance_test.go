@@ -211,6 +211,72 @@ func TestCheckRedisConfigUsesRawUint64ForHeadroomRatio(t *testing.T) {
 	}
 }
 
+// redisNonExpiringFixture wires a Redis with maxmemory set, a given eviction
+// policy, and a 98.9% non-expiring keyspace (the cluster6 shape).
+func redisNonExpiringFixture(t *testing.T, policy string) []alert.Finding {
+	t.Helper()
+	redisinfo.SetMemoryUsageForTest(func(context.Context) (uint64, uint64, error) {
+		return 502 << 20, 22 << 30, nil // 502M used / 22G max -> tons of headroom
+	})
+	redisinfo.SetKeyspaceStatsForTest(func(context.Context) (redisinfo.KeyspaceStat, error) {
+		return redisinfo.KeyspaceStat{TotalKeys: 826095, TotalExpires: 8934}, nil
+	})
+	redisinfo.SetConfigGetForTest(func(_ context.Context, name string) (string, error) {
+		switch name {
+		case "maxmemory":
+			return "23622320128", nil
+		case "maxmemory-policy":
+			return policy, nil
+		default:
+			return "", nil
+		}
+	})
+	t.Cleanup(func() {
+		redisinfo.SetMemoryUsageForTest(nil)
+		redisinfo.SetKeyspaceStatsForTest(nil)
+		redisinfo.SetConfigGetForTest(nil)
+	})
+	return CheckRedisConfig(context.Background(), testPerfConfig(), nil)
+}
+
+func hasNonExpiringFinding(findings []alert.Finding) bool {
+	for _, f := range findings {
+		if strings.Contains(f.Message, "non-expiring keys") {
+			return true
+		}
+	}
+	return false
+}
+
+// allkeys-* policies evict any key under pressure, so a high non-expiring
+// ratio is harmless: the warning is a false alarm and must be suppressed.
+func TestCheckRedisConfig_NonExpiringSuppressedUnderAllkeysPolicy(t *testing.T) {
+	for _, policy := range []string{"allkeys-lru", "allkeys-lfu", "allkeys-random"} {
+		if hasNonExpiringFinding(redisNonExpiringFixture(t, policy)) {
+			t.Errorf("policy %s: non-expiring warning must be suppressed (allkeys-* evicts non-TTL keys)", policy)
+		}
+	}
+}
+
+// volatile-* policies evict ONLY keys carrying a TTL. A 98.9% non-expiring
+// ratio shrinks the eviction pool to almost nothing, so the instance behaves
+// like noeviction under memory pressure -> the warning must still fire.
+func TestCheckRedisConfig_NonExpiringWarnsUnderVolatilePolicy(t *testing.T) {
+	for _, policy := range []string{"volatile-lru", "volatile-lfu", "volatile-ttl", "volatile-random"} {
+		if !hasNonExpiringFinding(redisNonExpiringFixture(t, policy)) {
+			t.Errorf("policy %s: non-expiring warning must fire (volatile-* cannot evict non-TTL keys)", policy)
+		}
+	}
+}
+
+// noeviction cannot evict at all; the non-expiring ratio compounds the risk,
+// so the warning fires alongside the dedicated noeviction finding.
+func TestCheckRedisConfig_NonExpiringWarnsUnderNoeviction(t *testing.T) {
+	if !hasNonExpiringFinding(redisNonExpiringFixture(t, "noeviction")) {
+		t.Error("noeviction: non-expiring warning must fire")
+	}
+}
+
 func TestCheckLoadAverage_Disabled(t *testing.T) {
 	cfg := &config.Config{}
 	f := false
