@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-06-06
+
 ### Added
 
 - WP-Cron findings now have a one-click fix (per-row and bulk) that disables WP-Cron in wp-config.php and installs a per-user system cron to run wp-cron.php, so scheduled tasks keep running. Interval and PHP binary are configurable, and an opt-in auto-response can apply it automatically.
