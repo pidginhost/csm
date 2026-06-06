@@ -57,7 +57,24 @@ verify_signature() {
         return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
+        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
+            die "CSM_REQUIRE_SIGNATURES=1 but openssl is not installed"
+        fi
         echo "  WARNING: openssl not found, skipping signature verification" >&2
+        return 0
+    fi
+    # Ed25519 one-shot verification needs OpenSSL 3.0+ (the -rawin flag). EL8 /
+    # CloudLinux 8 ship OpenSSL 1.1.1, which cannot verify Ed25519 from the CLI.
+    # Treat that as "cannot verify" (the SHA-256 checksum above is already
+    # enforced), never as a tamper -- otherwise upgrades would hard-fail on
+    # every 1.1.1 host the moment a release is signed.
+    local pkeyutl_help
+    pkeyutl_help=$(openssl pkeyutl -help 2>&1 || true)
+    if ! grep -q -- '-rawin' <<<"$pkeyutl_help"; then
+        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
+            die "CSM_REQUIRE_SIGNATURES=1 but openssl ($(openssl version 2>/dev/null)) lacks Ed25519 one-shot verify (needs OpenSSL 3.0+)"
+        fi
+        echo "  WARNING: openssl too old for Ed25519 verification (needs 3.0+); skipping signature check (checksum already verified)" >&2
         return 0
     fi
     local sig_file
