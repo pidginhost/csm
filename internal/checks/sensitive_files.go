@@ -92,6 +92,12 @@ func EvaluateSensitiveFileWrite(path string, uid, pid uint32, comm string) (aler
 	if kind == "" {
 		return alert.Finding{}, false
 	}
+	// Suppress writes CSM itself just performed (e.g. installing a per-user
+	// wp-cron). Content-bound: a tamper layered on top changes the hash and
+	// is still reported.
+	if content, err := osFS.ReadFile(path); err == nil && isExpectedSelfWrite(path, content) {
+		return alert.Finding{}, false
+	}
 	sev := alert.High
 	if uid != 0 {
 		sev = alert.Critical
@@ -115,6 +121,13 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	if kind == "" {
 		return alert.Finding{}, false
 	}
+	// Read content up front so a CSM self-write (e.g. an installed wp-cron)
+	// can be matched and suppressed. The cron-content heuristic below reuses
+	// the same bytes.
+	content, _ := osFS.ReadFile(path)
+	if isExpectedSelfWrite(path, content) {
+		return alert.Finding{}, false
+	}
 	now := time.Now()
 	f := alert.Finding{
 		Severity:  alert.High,
@@ -124,11 +137,11 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 		FilePath:  path,
 		Timestamp: now,
 	}
-	var content []byte
+	var scoreContent []byte
 	if kind == "cron" {
-		content, _ = osFS.ReadFile(path)
+		scoreContent = content
 	}
-	return rescoreSensitive(f, kind, content, 0, now), true
+	return rescoreSensitive(f, kind, scoreContent, 0, now), true
 }
 
 // CheckSensitiveFiles is the periodic safety-net that runs when the BPF
@@ -169,6 +182,11 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 			continue
 		}
 		store.SetRaw(key, hashHex)
+		// A content change CSM itself made (e.g. installing a wp-cron) updates
+		// the stored baseline above but raises no finding.
+		if isExpectedSelfWrite(path, data) {
+			continue
+		}
 		kind := classifySensitive(path)
 		var contentForScore []byte
 		if kind == "cron" {

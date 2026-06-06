@@ -306,7 +306,22 @@ func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, erro
 	if _, err := cmdExec.Run("crontab", "-u", owner, tmpPath); err != nil {
 		return false, fmt.Errorf("crontab install: %v", err)
 	}
+	recordCrontabSelfWrite(owner)
 	return true, nil
+}
+
+// recordCrontabSelfWrite registers the just-installed crontab with the
+// self-write ledger so the sensitive-file detectors do not flag CSM's own
+// change. The on-disk spool content (cron may normalize it) is what the
+// detectors hash, so record the spool file rather than our staged buffer.
+func recordCrontabSelfWrite(owner string) {
+	for _, dir := range []string{"/var/spool/cron", "/var/spool/cron/crontabs"} {
+		p := filepath.Join(dir, owner)
+		if data, err := osFS.ReadFile(p); err == nil {
+			RecordSelfWrite(p, data)
+			return
+		}
+	}
 }
 
 // wpCronJobLine builds the crontab entry. CLI php is used (not an HTTP hit) so
