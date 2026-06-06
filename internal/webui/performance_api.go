@@ -466,6 +466,46 @@ func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, res)
 }
 
+// apiPerfFixWPCron disables WP-Cron in an account-owned wp-config.php
+// identified by a perf_wp_cron finding and installs a per-user system cron
+// that runs wp-cron.php. Admin scope; CSRF enforced at the route.
+func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Path string `json:"path"`
+		Key  string `json:"key"`
+	}
+	if err := decodeJSONBodyLimited(w, r, 1<<14, &req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" {
+		writeJSONError(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	res := checks.FixDisableWPCronInRoots(req.Path, s.perfFixAllowedRoots(), s.wpCronFixOptions())
+	if !res.Success {
+		writeJSON(w, res)
+		return
+	}
+	s.dismissPerfFinding(req.Key)
+	s.auditLog(r, "perf_fix_wp_cron", req.Path, res.Description)
+	writeJSON(w, res)
+}
+
+func (s *Server) wpCronFixOptions() checks.WPCronFixOptions {
+	if s.cfg == nil {
+		return checks.WPCronFixOptions{}
+	}
+	return checks.WPCronFixOptions{
+		IntervalMinutes: s.cfg.Performance.WPCronFix.IntervalMinutes,
+		PHPBin:          s.cfg.Performance.WPCronFix.PHPBin,
+	}
+}
+
 func (s *Server) perfFixAllowedRoots() []string {
 	if s.cfg == nil {
 		return []string{"/home"}

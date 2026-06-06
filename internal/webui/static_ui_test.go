@@ -1708,7 +1708,7 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	}
 	allText := text + "\n" + string(settingsSrc)
 	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*(?://.*)?$`)
-	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
 	handlerSymbol := regexp.MustCompile(`s\.(api[A-Za-z0-9]+)`)
 	internalCSRF := map[string]string{
 		"apiSettings": "s.requireCSRF(http.HandlerFunc(s.apiSettingsPost)).ServeHTTP(w, r)",
@@ -1820,6 +1820,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/settings/firewall/revert"},
 		{"POST", "/api/v1/perf/fix-error-log"},
 		{"POST", "/api/v1/perf/fix-display-errors"},
+		{"POST", "/api/v1/perf/fix-wp-cron"},
 		{"POST", "/api/v1/email/quarantine/foo/release"},
 		{"DELETE", "/api/v1/email/quarantine/foo"},
 		{"POST", "/api/v1/geoip/batch"},

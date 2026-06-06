@@ -228,6 +228,7 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
   block_cpanel_logins: false
+  fix_wp_cron: false          # auto-disable WP-Cron + install per-user system cron on WP-Cron findings
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
   netblock_threshold: 3
   permblock: false            # auto-promote to permanent after N temp blocks
@@ -242,6 +243,15 @@ auto_response:
     allow_unsigned: false
     require_response_signature: true
     timeout_sec: 2
+
+performance:
+  # WP-Cron remediation (manual fix in the Web UI and the auto_response above).
+  # Disabling WP-Cron alone would stop scheduled WordPress tasks, so the fix
+  # also installs a per-user system cron running wp-cron.php. The account owner
+  # can edit or remove that cron afterwards.
+  wp_cron_fix:
+    interval_minutes: 5       # system cron frequency; 1-60
+    php_bin: ""               # php interpreter for the cron line; empty = auto-detect
 
 firewall:
   enabled: false              # enable to activate nftables-based firewall engine
