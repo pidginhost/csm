@@ -41,9 +41,12 @@ dropdown that applies one fix to every matching finding at once:
   and install a per-user system cron that runs `wp-cron.php` on a fixed
   interval. Disabling WP-Cron alone would stop scheduled WordPress tasks, so
   the cron is installed in the account owner's own crontab (visible and
-  editable by the customer). The define is inserted before the
-  "stop editing" marker (or the `wp-settings.php` require); the fix refuses a
-  `wp-config.php` with no safe insertion point rather than corrupt it.
+  editable by the customer). The cron is installed before the define is
+  written, so a crontab failure leaves WordPress scheduling unchanged. The
+  define is inserted before the "stop editing" marker (or the
+  `wp-settings.php` require); insertion points inside multiline comments or
+  heredocs are ignored, and the fix refuses a `wp-config.php` with no safe
+  insertion point rather than corrupt it.
 
 These actions are limited to configured account roots, reject symlinks and
 unsupported file types, and remove the fixed row from the active findings

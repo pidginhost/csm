@@ -2,6 +2,7 @@ package checks
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,11 +49,13 @@ func TestAutoFixWPCronIgnoresUnrelatedChecks(t *testing.T) {
 }
 
 func TestAutoFixWPCronAppliesAndReportsAction(t *testing.T) {
-	cfgPath, _ := wpCronTestEnv(t, sampleWPConfig)
+	cfgPath, docroot := wpCronTestEnv(t, sampleWPConfig)
+	withPerfFixRoots(t, filepath.Join(realTempDir(t), "unrelated"))
 	rec := &crontabRecorder{}
 	withMockCmd(t, rec.mock())
 
 	cfg := &config.Config{}
+	cfg.AccountRoots = []string{docroot}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.FixWPCron = true
 	cfg.Performance.WPCronFix.IntervalMinutes = 5

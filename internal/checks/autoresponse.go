@@ -297,6 +297,7 @@ func AutoFixWPCron(cfg *config.Config, findings []alert.Finding) (actions []aler
 		IntervalMinutes: cfg.Performance.WPCronFix.IntervalMinutes,
 		PHPBin:          cfg.Performance.WPCronFix.PHPBin,
 	}
+	allowedRoots := ResolveWebRoots(cfg)
 
 	for _, f := range findings {
 		if f.Check != "perf_wp_cron" {
@@ -306,7 +307,7 @@ func AutoFixWPCron(cfg *config.Config, findings []alert.Finding) (actions []aler
 		if path == "" {
 			continue
 		}
-		res := FixDisableWPCron(path, opts)
+		res := FixDisableWPCronInRoots(path, allowedRoots, opts)
 		if !res.Success {
 			continue
 		}

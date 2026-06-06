@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
 const sampleWPConfig = `<?php
@@ -122,7 +125,7 @@ func TestFixDisableWPCronInsertsDefineAndInstallsCron(t *testing.T) {
 	if !strings.Contains(cron, "*/5 * * * *") {
 		t.Errorf("cron interval not 5 min:\n%s", cron)
 	}
-	if !strings.Contains(cron, "cd "+docroot+" &&") {
+	if !strings.Contains(cron, "cd "+shellQuote(docroot)+" &&") {
 		t.Errorf("cron missing docroot %q:\n%s", docroot, cron)
 	}
 	if !strings.Contains(cron, "wp-cron.php") || !strings.Contains(cron, "/usr/local/bin/php") {
@@ -170,6 +173,61 @@ func TestFixDisableWPCronInstallsCronWhenDefinePresentButCronMissing(t *testing.
 	}
 	if rec.installCalls != 1 {
 		t.Errorf("expected cron install when define present but cron absent, got %d", rec.installCalls)
+	}
+}
+
+func TestFixDisableWPCronOwnerLookupFailureLeavesFileUntouched(t *testing.T) {
+	cfgPath, _ := wpCronTestEnv(t, sampleWPConfig)
+	prev := wpCronOwnerName
+	wpCronOwnerName = func(os.FileInfo) (string, error) { return "", fmt.Errorf("owner lookup failed") }
+	t.Cleanup(func() { wpCronOwnerName = prev })
+	rec := &crontabRecorder{}
+	withMockCmd(t, rec.mock())
+
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := FixDisableWPCron(cfgPath, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if res.Success {
+		t.Fatalf("expected owner lookup failure")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("wp-config.php must stay unchanged when owner lookup fails")
+	}
+	if rec.installCalls != 0 {
+		t.Errorf("must not install cron when owner lookup fails, got %d installs", rec.installCalls)
+	}
+}
+
+func TestFixDisableWPCronIgnoresCommentedDisableDefine(t *testing.T) {
+	commented := strings.Replace(sampleWPConfig,
+		"$table_prefix = 'wp_';",
+		"$table_prefix = 'wp_';\n// define( 'DISABLE_WP_CRON', true );", 1)
+	cfgPath, _ := wpCronTestEnv(t, commented)
+	rec := &crontabRecorder{existing: ""}
+	withMockCmd(t, rec.mock())
+
+	res := FixDisableWPCron(cfgPath, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), wpCronEditMarker) {
+		t.Fatalf("expected active remediation define, got:\n%s", string(body))
+	}
+	if !wpCronHasActiveDisableDefine(body) {
+		t.Fatalf("expected an active DISABLE_WP_CRON define, got:\n%s", string(body))
+	}
+	if rec.installCalls != 1 {
+		t.Errorf("expected cron install, got %d", rec.installCalls)
 	}
 }
 
@@ -234,6 +292,31 @@ func TestFixDisableWPCronInsertsBeforeRequireWhenNoMarker(t *testing.T) {
 	}
 }
 
+func TestInsertDisableWPCronSkipsMarkerInsideBlockComment(t *testing.T) {
+	inComment := "<?php\n/*\nThat's all, stop editing!\n*/\nrequire_once ABSPATH . 'wp-settings.php';\n"
+	out, ok := insertDisableWPCron([]byte(inComment))
+	if !ok {
+		t.Fatalf("expected fallback to active wp-settings.php require")
+	}
+	body := string(out)
+	defineIdx := strings.Index(body, "DISABLE_WP_CRON")
+	commentEndIdx := strings.Index(body, "*/")
+	requireIdx := strings.Index(body, "wp-settings.php")
+	if defineIdx < 0 || commentEndIdx < 0 || requireIdx < 0 {
+		t.Fatalf("missing expected text after rewrite:\n%s", body)
+	}
+	if defineIdx < commentEndIdx || defineIdx > requireIdx {
+		t.Fatalf("define must land after the block comment and before require:\n%s", body)
+	}
+}
+
+func TestInsertDisableWPCronRefusesHeredocOnlyInsertionPoint(t *testing.T) {
+	inHeredoc := "<?php\n$banner = <<<TXT\nrequire_once ABSPATH . 'wp-settings.php';\nThat's all, stop editing!\nTXT;\n"
+	if out, ok := insertDisableWPCron([]byte(inHeredoc)); ok {
+		t.Fatalf("expected refusal for insertion points inside heredoc, got:\n%s", string(out))
+	}
+}
+
 func TestWPCronIntervalClamping(t *testing.T) {
 	cases := []struct {
 		in   int
@@ -252,9 +335,135 @@ func TestWPCronIntervalClamping(t *testing.T) {
 		if !res.Success {
 			t.Fatalf("interval %d: expected success, got %+v", tc.in, res)
 		}
-		if !strings.Contains(rec.lastInstalled, tc.want+" cd "+docroot) {
+		if !strings.Contains(rec.lastInstalled, tc.want+" cd "+shellQuote(docroot)) {
 			t.Errorf("interval %d: want schedule %q, cron:\n%s", tc.in, tc.want, rec.lastInstalled)
 		}
+	}
+}
+
+func TestCrontabHasWPCronJobRecognizesExistingForms(t *testing.T) {
+	docroot := "/home/alice/public_html"
+	cases := []struct {
+		name    string
+		line    string
+		present bool
+	}{
+		{
+			name:    "absolute path",
+			line:    "*/10 * * * * /usr/local/bin/php " + filepath.Join(docroot, "wp-cron.php") + " >/dev/null 2>&1",
+			present: true,
+		},
+		{
+			name:    "quoted cd",
+			line:    "*/10 * * * * cd " + shellQuote(docroot) + " && /usr/local/bin/php wp-cron.php >/dev/null 2>&1",
+			present: true,
+		},
+		{
+			name:    "other docroot prefix",
+			line:    "*/10 * * * * cd " + shellQuote(docroot+"2") + " && /usr/local/bin/php wp-cron.php >/dev/null 2>&1",
+			present: false,
+		},
+		{
+			name:    "comment",
+			line:    "# */10 * * * * cd " + shellQuote(docroot) + " && /usr/local/bin/php wp-cron.php",
+			present: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := crontabHasWPCronJob(tc.line+"\n", docroot); got != tc.present {
+				t.Fatalf("crontabHasWPCronJob() = %v, want %v", got, tc.present)
+			}
+		})
+	}
+}
+
+func TestInstallUserWPCronSerializesPerUserCrontabWrites(t *testing.T) {
+	docrootA := "/home/alice/public_html"
+	docrootB := "/home/alice/blog"
+	var mu sync.Mutex
+	crontab := ""
+	readCalls := 0
+	firstReadStarted := make(chan struct{})
+	secondReadStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+			if name != "crontab" || !containsArg(args, "-l") {
+				return nil, nil
+			}
+			mu.Lock()
+			readCalls++
+			call := readCalls
+			current := crontab
+			mu.Unlock()
+			switch call {
+			case 1:
+				close(firstReadStarted)
+				<-releaseFirst
+			case 2:
+				close(secondReadStarted)
+			}
+			return []byte(current), nil
+		},
+		run: func(name string, args ...string) ([]byte, error) {
+			if name == "crontab" && !containsArg(args, "-l") && len(args) > 0 {
+				b, err := os.ReadFile(args[len(args)-1])
+				if err != nil {
+					return nil, err
+				}
+				mu.Lock()
+				crontab = string(b)
+				mu.Unlock()
+			}
+			return nil, nil
+		},
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := installUserWPCron("alice", docrootA, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+		firstDone <- err
+	}()
+	select {
+	case <-firstReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first crontab read did not start")
+	}
+
+	secondCalling := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondCalling)
+		_, err := installUserWPCron("alice", docrootB, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+		secondDone <- err
+	}()
+	<-secondCalling
+
+	secondReadBeforeRelease := false
+	select {
+	case <-secondReadStarted:
+		secondReadBeforeRelease = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if secondReadBeforeRelease {
+		t.Fatal("second crontab read started before the first install completed")
+	}
+
+	mu.Lock()
+	final := crontab
+	mu.Unlock()
+	if !strings.Contains(final, docrootA) || !strings.Contains(final, docrootB) {
+		t.Fatalf("final crontab must contain both installs, got:\n%s", final)
 	}
 }
 
