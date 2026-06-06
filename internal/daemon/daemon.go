@@ -646,6 +646,9 @@ func (d *Daemon) Run() error {
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
 	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
+	wpcronActions, wpcronFixedKeys := checks.AutoFixWPCron(initialCfg, initialAutoResponseFindings)
+	permActions = append(permActions, wpcronActions...)
+	permFixedKeys = append(permFixedKeys, wpcronFixedKeys...)
 
 	// Challenge routing runs on ALL findings unconditionally when enabled.
 	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
@@ -1094,6 +1097,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	blockActions := checks.AutoBlockIPs(cfg, autoResponseFindings)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
+	wpcronActions, wpcronFixedKeys := checks.AutoFixWPCron(cfg, autoResponseFindings)
+	permActions = append(permActions, wpcronActions...)
+	permFixedKeys = append(permFixedKeys, wpcronFixedKeys...)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {

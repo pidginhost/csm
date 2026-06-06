@@ -247,6 +247,19 @@ func TestScanWPCronSilentWhenWPCronDisabled(t *testing.T) {
 	}
 }
 
+func TestScanWPCronEmitsForCommentedDisableDefine(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "wp-config.php"),
+		[]byte("<?php\n// define('DISABLE_WP_CRON', true);\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanWPCron(tmp, "alice", 4, &findings)
+	if len(findings) != 1 {
+		t.Fatalf("commented DISABLE_WP_CRON must not count as disabled, got %+v", findings)
+	}
+}
+
 func TestScanWPCronRecursesIntoSubdirs(t *testing.T) {
 	tmp := t.TempDir()
 	sub := filepath.Join(tmp, "subsite")

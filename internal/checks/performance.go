@@ -1284,23 +1284,7 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 			continue
 		}
 
-		defined := false
-		enabled := false // true when defined as true
-
-		for _, line := range strings.Split(string(data), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if !strings.Contains(trimmed, "DISABLE_WP_CRON") {
-				continue
-			}
-			val := strings.ToLower(extractPHPDefine(trimmed))
-			defined = true
-			if val == "true" || val == "1" {
-				enabled = true
-			}
-			break
-		}
-
-		if !defined || !enabled {
+		if !wpCronHasActiveDisableDefine(data) {
 			*findings = append(*findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "perf_wp_cron",
