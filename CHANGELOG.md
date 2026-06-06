@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CSM no longer raises sensitive-file alerts for changes it makes itself (e.g. installing a per-user WP-Cron job), while a later independent tamper of the same file is still reported.
 - The Redis non-expiring-key warning no longer fires when the eviction policy can reclaim any key, still warns when the policy cannot be read, and now explains TTL-only and no-eviction cases accurately.
 - WP-Cron remediation now uses configured account roots, keeps scheduling unchanged when a crontab install fails, ignores commented config examples, and serializes per-user crontab writes to avoid duplicate or lost cron lines.
 - Concurrent central scored-set refreshes now keep the newest accepted cache version when overlapping pulls finish out of order.
