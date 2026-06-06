@@ -214,6 +214,10 @@ func TestCheckRedisConfigUsesRawUint64ForHeadroomRatio(t *testing.T) {
 // redisNonExpiringFixture wires a Redis with maxmemory set, a given eviction
 // policy, and a 98.9% non-expiring keyspace (the cluster6 shape).
 func redisNonExpiringFixture(t *testing.T, policy string) []alert.Finding {
+	return redisNonExpiringFixtureWithPolicyError(t, policy, nil)
+}
+
+func redisNonExpiringFixtureWithPolicyError(t *testing.T, policy string, policyErr error) []alert.Finding {
 	t.Helper()
 	redisinfo.SetMemoryUsageForTest(func(context.Context) (uint64, uint64, error) {
 		return 502 << 20, 22 << 30, nil // 502M used / 22G max -> tons of headroom
@@ -226,7 +230,7 @@ func redisNonExpiringFixture(t *testing.T, policy string) []alert.Finding {
 		case "maxmemory":
 			return "23622320128", nil
 		case "maxmemory-policy":
-			return policy, nil
+			return policy, policyErr
 		default:
 			return "", nil
 		}
@@ -239,13 +243,18 @@ func redisNonExpiringFixture(t *testing.T, policy string) []alert.Finding {
 	return CheckRedisConfig(context.Background(), testPerfConfig(), nil)
 }
 
-func hasNonExpiringFinding(findings []alert.Finding) bool {
+func nonExpiringFinding(findings []alert.Finding) (alert.Finding, bool) {
 	for _, f := range findings {
 		if strings.Contains(f.Message, "non-expiring keys") {
-			return true
+			return f, true
 		}
 	}
-	return false
+	return alert.Finding{}, false
+}
+
+func hasNonExpiringFinding(findings []alert.Finding) bool {
+	_, ok := nonExpiringFinding(findings)
+	return ok
 }
 
 // allkeys-* policies evict any key under pressure, so a high non-expiring
@@ -258,7 +267,7 @@ func TestCheckRedisConfig_NonExpiringSuppressedUnderAllkeysPolicy(t *testing.T) 
 	}
 }
 
-// volatile-* policies evict ONLY keys carrying a TTL. A 98.9% non-expiring
+// volatile-* policies evict only keys carrying a TTL. A 98.9% non-expiring
 // ratio shrinks the eviction pool to almost nothing, so the instance behaves
 // like noeviction under memory pressure -> the warning must still fire.
 func TestCheckRedisConfig_NonExpiringWarnsUnderVolatilePolicy(t *testing.T) {
@@ -274,6 +283,60 @@ func TestCheckRedisConfig_NonExpiringWarnsUnderVolatilePolicy(t *testing.T) {
 func TestCheckRedisConfig_NonExpiringWarnsUnderNoeviction(t *testing.T) {
 	if !hasNonExpiringFinding(redisNonExpiringFixture(t, "noeviction")) {
 		t.Error("noeviction: non-expiring warning must fire")
+	}
+}
+
+func TestCheckRedisConfig_NonExpiringWarnsWhenPolicyUnavailable(t *testing.T) {
+	findings := redisNonExpiringFixtureWithPolicyError(t, "noeviction", fmt.Errorf("config get failed"))
+
+	for _, finding := range findings {
+		if finding.Message == "Redis maxmemory-policy is noeviction" {
+			t.Fatalf("config-get error must not produce dedicated noeviction finding: %+v", finding)
+		}
+	}
+
+	finding, ok := nonExpiringFinding(findings)
+	if !ok {
+		t.Fatal("missing non-expiring warning when policy is unavailable")
+	}
+	if !strings.Contains(finding.Details, "maxmemory-policy is unavailable") {
+		t.Fatalf("non-expiring detail should explain unavailable policy, got %q", finding.Details)
+	}
+}
+
+func TestCheckRedisConfig_NonExpiringDetailExplainsPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy string
+		want   string
+	}{
+		{
+			name:   "volatile",
+			policy: "volatile-lru",
+			want:   `maxmemory-policy "volatile-lru" only evicts keys with a TTL`,
+		},
+		{
+			name:   "noeviction",
+			policy: "noeviction",
+			want:   "maxmemory-policy noeviction does not evict keys",
+		},
+		{
+			name:   "unknown",
+			policy: "unknown-policy",
+			want:   `maxmemory-policy "unknown-policy" may leave non-expiring keys unreclaimable`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finding, ok := nonExpiringFinding(redisNonExpiringFixture(t, tt.policy))
+			if !ok {
+				t.Fatalf("missing non-expiring warning for policy %s", tt.policy)
+			}
+			if !strings.Contains(finding.Details, tt.want) {
+				t.Fatalf("non-expiring detail = %q, want substring %q", finding.Details, tt.want)
+			}
+		})
 	}
 }
 

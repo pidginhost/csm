@@ -691,8 +691,11 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	// --- maxmemory-policy ---
-	policy, _ := redisinfo.ConfigGet(ctx, "maxmemory-policy")
-	policyLower := strings.ToLower(strings.TrimSpace(policy))
+	policy, policyErr := redisinfo.ConfigGet(ctx, "maxmemory-policy")
+	policyLower := ""
+	if policyErr == nil {
+		policyLower = strings.ToLower(strings.TrimSpace(policy))
+	}
 	if policyLower == "noeviction" {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.High,
@@ -705,20 +708,20 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 
 	// --- Non-expiring keys ratio via keyspace ---
 	// A high non-expiring ratio only breaks eviction under volatile-* policies
-	// (which evict ONLY keys carrying a TTL) or noeviction. Under allkeys-*
-	// Redis evicts any key, so non-expiring keys are reclaimable and the ratio
-	// is benign -- skip the warning to avoid a false alarm on a correctly
-	// configured object cache (WordPress/WooCommerce store cache entries with
-	// no TTL by design).
+	// (which evict keys carrying a TTL) or noeviction. Under allkeys-* Redis
+	// evicts any key, so non-expiring keys are reclaimable and the ratio is
+	// benign.
 	if stats, err := redisinfo.KeyspaceStats(ctx); err == nil && stats.TotalKeys > 0 && !strings.HasPrefix(policyLower, "allkeys-") {
 		nonExpiring := stats.TotalKeys - stats.TotalExpires
 		ratio := float64(nonExpiring) / float64(stats.TotalKeys) * 100
 		if ratio > 95.0 {
+			details := fmt.Sprintf("Non-expiring: %d / %d total keys (%.1f%%); %s",
+				nonExpiring, stats.TotalKeys, ratio, redisNonExpiringPolicyDetail(policyLower))
 			findings = append(findings, alert.Finding{
 				Severity:  alert.Warning,
 				Check:     "perf_redis_config",
 				Message:   "Redis has excessive non-expiring keys",
-				Details:   fmt.Sprintf("Non-expiring: %d / %d total keys (%.1f%%); maxmemory-policy %q cannot reclaim them under memory pressure", nonExpiring, stats.TotalKeys, ratio, policyLower),
+				Details:   details,
 				Timestamp: time.Now(),
 			})
 		}
@@ -800,6 +803,19 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	return findings
+}
+
+func redisNonExpiringPolicyDetail(policyLower string) string {
+	switch {
+	case policyLower == "":
+		return "maxmemory-policy is unavailable, so non-expiring keys may be unsafe under memory pressure"
+	case policyLower == "noeviction":
+		return "maxmemory-policy noeviction does not evict keys under memory pressure"
+	case strings.HasPrefix(policyLower, "volatile-"):
+		return fmt.Sprintf("maxmemory-policy %q only evicts keys with a TTL under memory pressure", policyLower)
+	default:
+		return fmt.Sprintf("maxmemory-policy %q may leave non-expiring keys unreclaimable under memory pressure", policyLower)
+	}
 }
 
 // ---------------------------------------------------------------------------
