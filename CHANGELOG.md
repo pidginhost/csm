@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The release install/upgrade scripts no longer abort with a false "tampered binary" error on OpenSSL 1.1.1 hosts (EL8/CloudLinux 8) once releases are signed. Signature verification runs on OpenSSL 3.0+, is skipped with a warning where the platform cannot perform it (the SHA-256 checksum is still enforced), and only fails the upgrade on a genuine signature mismatch.
+
 ## [3.13.0] - 2026-06-06
 
 ### Added
