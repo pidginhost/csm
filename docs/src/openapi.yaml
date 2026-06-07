@@ -237,6 +237,21 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/deferrals":
+    get:
+      operationId: get_email_deferrals
+      summary: "get /api/v1/email/deferrals (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/forwarders":
     get:
       operationId: get_email_forwarders

@@ -103,6 +103,14 @@ func (f Forwarder) HasFreeProvider() bool {
 	return false
 }
 
+// ClassifyAddress returns the provider class of a mail address with no
+// local-domain context. Use it where the address is known to be a remote
+// recipient (e.g. a deferral target parsed from exim_mainlog), so a bare
+// free-provider domain classifies as that provider rather than local.
+func ClassifyAddress(addr string) ProviderClass {
+	return classifyProvider(addr, nil)
+}
+
 // classifyProvider returns the provider class of a destination address.
 // localDomains are the domains hosted on this server (lowercased keys).
 func classifyProvider(addr string, localDomains map[string]bool) ProviderClass {
