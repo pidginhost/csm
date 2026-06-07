@@ -625,6 +625,13 @@ func (d *Daemon) Run() error {
 	}
 	_, _ = sdnotify.Status(fmt.Sprintf("watchers attached: %d", countAttachedWatchers(d.WatcherStatuses())))
 
+	// Reconcile the opt-in email forward-guard to the current config (installs
+	// the exim rule when enabled+enforcing, removes it otherwise), then keep its
+	// bad-IP lookup fresh. Both no-op off cPanel and fail open on error.
+	d.reconcileForwardGuard()
+	d.wg.Add(1)
+	obs.Go("forward-guard-refresh", d.forwardGuardRefresher)
+
 	// Snapshot the live config ONCE for the entire initial-scan tick
 	// (detection + auto-response). Earlier code called d.currentCfg()
 	// for RunTier and then again later for the auto-response batch;

@@ -77,6 +77,7 @@ type Server struct {
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
 	queueFlusher       intel.QueueFlusher
+	forwardHeld        heldForwardStore
 	version            string
 	perfSnapshot       atomic.Pointer[perfMetrics]
 	perfCancel         context.CancelFunc
@@ -118,6 +119,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		deferralReporter: selectDeferralReporter(),
 		queueReporter:    selectQueueReporter(),
 		queueFlusher:     selectQueueFlusher(),
+		forwardHeld:      selectForwardHeld(),
 	}
 
 	// Check if UI directory exists on disk
@@ -238,6 +240,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
 	mux.Handle("/api/v1/email/queue-composition", s.requireRead(http.HandlerFunc(s.apiEmailQueueComposition)))
 	mux.Handle("/api/v1/email/queue/flush-backscatter", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailFlushBackscatter))))
+	mux.Handle("/api/v1/email/held", s.requireAuth(http.HandlerFunc(s.apiEmailHeldList)))
+	mux.Handle("/api/v1/email/held/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailHeldAction))))
 	mux.Handle("/api/v1/performance", s.requireAuth(http.HandlerFunc(s.apiPerformance)))
 	mux.Handle("/api/v1/perf/fix-error-log", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixErrorLog))))
 	mux.Handle("/api/v1/perf/fix-display-errors", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixDisplayErrors))))

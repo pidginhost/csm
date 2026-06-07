@@ -148,6 +148,10 @@ func (d *Daemon) reloadConfig() {
 		names = append(names, c.Field)
 	}
 	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: config reloaded; safe fields updated: %v\n", ts(), names)
+
+	// A forward-guard config change is a safe (hot-reload) field; re-reconcile
+	// so enabling/disabling or toggling enforce takes effect without a restart.
+	d.reconcileForwardGuard()
 }
 
 // activeOrStartupCfg returns the current live config, falling back

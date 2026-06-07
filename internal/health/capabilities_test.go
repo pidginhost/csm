@@ -69,7 +69,7 @@ func TestPrefsAndUndoCapabilitiesAlwaysPresent(t *testing.T) {
 
 func TestMailVisibilityCapabilitiesAlwaysPresent(t *testing.T) {
 	caps := Capabilities()
-	for _, want := range []string{"mail.filter.exfil.v1", "mail.queue.composition.v1"} {
+	for _, want := range []string{"mail.filter.exfil.v1", "mail.queue.composition.v1", "mail.forward_guard.v1"} {
 		if !contains(caps, want) {
 			t.Errorf("%s capability missing", want)
 		}
