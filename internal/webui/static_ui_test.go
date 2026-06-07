@@ -836,6 +836,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-queue"`,
 		`id="email-tab-quarantine"`,
 		`id="email-tab-senders"`,
+		`id="email-tab-forwarders"`,
+		`id="email-tab-deliverability"`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -871,6 +873,14 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`refreshStatusStrip`,
 		`CSM.summaryItem`,
 		`CSM.detailPanel.open`,
+		`/api/v1/email/forwarders`,
+		`renderForwarders`,
+		`/api/v1/email/deferrals`,
+		`renderDeliverability`,
+		`/api/v1/email/queue-composition`,
+		`renderQueueComposition`,
+		`/api/v1/email/queue/flush-backscatter`,
+		`flushBackscatter`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
@@ -882,6 +892,110 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	} {
 		if strings.Contains(jsText, banned) {
 			t.Errorf("email.js still references removed helper %q", banned)
+		}
+	}
+}
+
+func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`var FWD_PROVIDER_BADGE = Object.create(null);`,
+		`Object.prototype.hasOwnProperty.call(FWD_PROVIDER_BADGE, provider)`,
+		`'<span class="badge ' + CSM.attr(cls) + ' me-1">' + CSM.esc(provider) + '</span>'`,
+		`CSM.esc(f.destinations[d].address)`,
+		`CSM.esc(f.source)`,
+		`CSM.esc(f.owner)`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("email.js forwarder renderer missing escape fragment %q", fragment)
+		}
+	}
+}
+
+// TestEmailDeliverabilityRenderEscapesProviderValues ensures the deferral
+// panels escape provider/IP/reason text parsed from a remote MTA's error.
+func TestEmailDeliverabilityRenderEscapesProviderValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`providerBadge(p.provider)`, // provider escaped inside providerBadge (see forwarder escape test)
+		`CSM.esc(ip.ip)`,
+		`CSM.esc(r.code)`,
+		`CSM.esc(formatDeferralCount(r.count))`,
+		`CSM.esc(formatDeferralCount(p.deferrals))`,
+		`CSM.esc(formatDeferralCount(ip.deferrals))`,
+		`CSM.esc(formatDeferralCount(item.count))`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("email.js deliverability renderer missing escape fragment %q", fragment)
+		}
+	}
+}
+
+func TestEmailDeliverabilityCountsPreserveLargeValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "// ---------- Deliverability tab")
+	end := strings.Index(text, "// ---------- Tab activation")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing deliverability block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`| 0`, `|0`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("deliverability counts must not use 32-bit bitwise coercion %q", banned)
+		}
+	}
+	for _, fragment := range []string{
+		`function formatDeferralCount(value)`,
+		`if (/^\d+$/.test(trimmed)) return formatIntegerString(trimmed);`,
+		`return CSM.formatNumber(Math.floor(value));`,
+		`return '0';`,
+	} {
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js deliverability count formatter missing fragment %q", fragment)
+		}
+	}
+}
+
+func TestEmailQueueCompositionRenderEscapesValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "// ---------- Queue composition")
+	end := strings.Index(text, "// ---------- Tab activation")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing queue composition block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`| 0`, `|0`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("queue composition counts must not use 32-bit bitwise coercion %q", banned)
+		}
+	}
+	for _, fragment := range []string{
+		`function queueCount(value)`,
+		`return Math.floor(n);`,
+		`CSM.esc(rc.address)`,
+		`CSM.formatNumber(queueCount(rc.count))`,
+		`CSM.esc(label)`,
+		`CSM.attr(cls || '')`,
+		`CSM.esc(String(value))`,
+	} {
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js queue composition renderer missing fragment %q", fragment)
 		}
 	}
 }
@@ -1708,7 +1822,7 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	}
 	allText := text + "\n" + string(settingsSrc)
 	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*(?://.*)?$`)
-	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiEmailFlushBackscatter|apiIncidentRouter|apiGeoIPBatch)\b`)
 	handlerSymbol := regexp.MustCompile(`s\.(api[A-Za-z0-9]+)`)
 	internalCSRF := map[string]string{
 		"apiSettings": "s.requireCSRF(http.HandlerFunc(s.apiSettingsPost)).ServeHTTP(w, r)",
@@ -1823,6 +1937,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/perf/fix-wp-cron"},
 		{"POST", "/api/v1/email/quarantine/foo/release"},
 		{"DELETE", "/api/v1/email/quarantine/foo"},
+		{"POST", "/api/v1/email/queue/flush-backscatter"},
 		{"POST", "/api/v1/geoip/batch"},
 		{"POST", "/api/v1/incidents/abc/status"},
 		{"PUT", "/api/v1/prefs/user"},

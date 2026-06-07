@@ -94,6 +94,16 @@
                     <i class="ti ti-send"></i>&nbsp;Senders
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-forwarders" data-bs-toggle="tab" data-bs-target="#email-pane-forwarders" type="button" role="tab" aria-controls="email-pane-forwarders" aria-selected="false">
+                    <i class="ti ti-mail-forward"></i>&nbsp;Forwarders
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-deliverability" data-bs-toggle="tab" data-bs-target="#email-pane-deliverability" type="button" role="tab" aria-controls="email-pane-deliverability" aria-selected="false">
+                    <i class="ti ti-gauge"></i>&nbsp;Deliverability
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content">
@@ -189,6 +199,13 @@
                 <div class="card-body" id="queue-health">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
+                <hr class="my-0">
+                <div class="card-body">
+                    <div class="subheader mb-2"><i class="ti ti-chart-pie"></i>&nbsp;Queue composition</div>
+                    <div id="queue-composition">
+                        <div class="text-muted small">Composition loads when this tab is opened.</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Quarantine tab (full width) -->
@@ -217,6 +234,72 @@
             <div class="tab-pane fade" id="email-pane-senders" role="tabpanel" aria-labelledby="email-tab-senders" tabindex="0">
                 <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Forwarders tab -->
+            <div class="tab-pane fade" id="email-pane-forwarders" role="tabpanel" aria-labelledby="email-tab-forwarders" tabindex="0">
+                <div class="csm-toolbar">
+                    <input type="text" id="email-fwd-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search source / destination / owner..." aria-label="Search forwarders">
+                    <select id="email-fwd-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter forwarders">
+                        <option value="">All forwarders</option>
+                        <option value="external">External only</option>
+                        <option value="free">Free providers</option>
+                        <option value="forward_only">Forward-only (no local copy)</option>
+                    </select>
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-fwd-count"></span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-fwd-table">
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Owner</th>
+                                <th>Destinations</th>
+                                <th>Providers</th>
+                                <th>Local copy</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-fwd-tbody">
+                            <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Deliverability tab: outbound deferral picture from exim_mainlog -->
+            <div class="tab-pane fade" id="email-pane-deliverability" role="tabpanel" aria-labelledby="email-tab-deliverability" tabindex="0">
+                <div class="card-body">
+                    <div class="text-muted small mb-3" id="email-deliv-summary">Deferral activity loads when this tab is opened.</div>
+                    <div class="row row-cards">
+                        <div class="col-lg-6">
+                            <div class="subheader mb-2"><i class="ti ti-building-broadcast-tower"></i>&nbsp;Providers throttling this server</div>
+                            <div class="table-responsive">
+                                <table class="table table-vcenter card-table table-sm" id="email-deliv-providers">
+                                    <thead>
+                                        <tr><th>Provider</th><th class="text-end">Deferrals</th><th>Reasons</th></tr>
+                                    </thead>
+                                    <tbody id="email-deliv-providers-body">
+                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="subheader mb-2"><i class="ti ti-router"></i>&nbsp;Outbound IP reputation</div>
+                            <div class="table-responsive">
+                                <table class="table table-vcenter card-table table-sm" id="email-deliv-ips">
+                                    <thead>
+                                        <tr><th>Sending IP</th><th class="text-end">Deferrals</th><th>Deferred by</th></tr>
+                                    </thead>
+                                    <tbody id="email-deliv-ips-body">
+                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

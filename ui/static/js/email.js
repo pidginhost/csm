@@ -44,6 +44,10 @@
     var emailTable = null;
     var quarantineLoaded = false;
     var authGroupsLoaded = false;
+    var forwardersLoaded = false;
+    var _forwarders = [];
+    var deliverabilityLoaded = false;
+    var queueCompositionLoaded = false;
 
     function localDateInputValue(date) {
         var d = date || new Date();
@@ -890,6 +894,295 @@
         }).catch(function() { /* cancelled */ });
     }
 
+    // ---------- Forwarders tab (inventory table) ----------
+
+    // Provider class -> badge colour. Free providers are the reputation-risk
+    // case (forwarding spam to them tanks the outbound IP), so they read red.
+    var FWD_PROVIDER_BADGE = Object.create(null);
+    FWD_PROVIDER_BADGE.yahoo = 'bg-red';
+    FWD_PROVIDER_BADGE.gmail = 'bg-red';
+    FWD_PROVIDER_BADGE.outlook = 'bg-red';
+    FWD_PROVIDER_BADGE.external = 'bg-yellow';
+    FWD_PROVIDER_BADGE.local = 'bg-green';
+
+    function providerBadge(provider) {
+        provider = String(provider || '');
+        var cls = Object.prototype.hasOwnProperty.call(FWD_PROVIDER_BADGE, provider)
+            ? FWD_PROVIDER_BADGE[provider]
+            : 'bg-secondary';
+        return '<span class="badge ' + CSM.attr(cls) + ' me-1">' + CSM.esc(provider) + '</span>';
+    }
+
+    function loadForwarders() {
+        if (forwardersLoaded) return;
+        forwardersLoaded = true;
+        CSM.get('/api/v1/email/forwarders')
+            .then(function(data) {
+                _forwarders = (data && data.forwarders) || [];
+                renderForwarders();
+            })
+            .catch(function() {
+                forwardersLoaded = false;
+                var tb = document.getElementById('email-fwd-tbody');
+                if (tb) tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Could not load forwarders. Retry from the refresh button.</td></tr>';
+            });
+    }
+
+    function forwarderMatchesFilter(f, mode) {
+        if (mode === 'external') return f.has_external;
+        if (mode === 'free') return f.has_free_provider;
+        if (mode === 'forward_only') return f.forward_only;
+        return true;
+    }
+
+    function forwarderMatchesSearch(f, q) {
+        if (!q) return true;
+        if (f.source.toLowerCase().indexOf(q) !== -1) return true;
+        if (f.owner && f.owner.toLowerCase().indexOf(q) !== -1) return true;
+        for (var i = 0; i < f.destinations.length; i++) {
+            if (f.destinations[i].address.toLowerCase().indexOf(q) !== -1) return true;
+        }
+        return false;
+    }
+
+    function renderForwarders() {
+        var tb = document.getElementById('email-fwd-tbody');
+        if (!tb) return;
+        var mode = (document.getElementById('email-fwd-filter') || {}).value || '';
+        var q = ((document.getElementById('email-fwd-search') || {}).value || '').trim().toLowerCase();
+
+        var rows = _forwarders.filter(function(f) {
+            return forwarderMatchesFilter(f, mode) && forwarderMatchesSearch(f, q);
+        });
+
+        var countEl = document.getElementById('email-fwd-count');
+        if (countEl) countEl.textContent = rows.length + ' of ' + _forwarders.length;
+
+        if (rows.length === 0) {
+            var msg = _forwarders.length === 0
+                ? 'No forwarders found on this host.'
+                : 'No forwarders match the current filter.';
+            tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + msg + '</td></tr>';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < rows.length; i++) {
+            var f = rows[i];
+            var dests = '';
+            for (var d = 0; d < f.destinations.length; d++) {
+                dests += '<div class="font-monospace small">' + CSM.esc(f.destinations[d].address) + '</div>';
+            }
+            var badges = '';
+            for (var p = 0; p < f.providers.length; p++) {
+                badges += providerBadge(f.providers[p]);
+            }
+            var copy = f.forward_only
+                ? '<span class="badge bg-red-lt">Forward-only</span>'
+                : '<span class="badge bg-green-lt">Keep local</span>';
+            html += '<tr>';
+            html += '<td class="font-monospace small">' + CSM.esc(f.source) + '</td>';
+            html += '<td>' + (f.owner ? CSM.esc(f.owner) : '<span class="text-muted">--</span>') + '</td>';
+            html += '<td>' + dests + '</td>';
+            html += '<td>' + badges + '</td>';
+            html += '<td>' + copy + '</td>';
+            html += '</tr>';
+        }
+        tb.innerHTML = html;
+    }
+
+    // ---------- Deliverability tab (outbound deferral intel) ----------
+
+    function deliverabilityArray(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
+    function formatIntegerString(digits) {
+        return digits.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    function formatDeferralCount(value) {
+        if (value == null || (typeof value === 'string' && value.trim() === '')) return '0';
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (/^\d+$/.test(trimmed)) return formatIntegerString(trimmed);
+            value = Number(trimmed);
+        }
+        if (typeof value !== 'number' || !isFinite(value) || value <= 0) return '0';
+        return CSM.formatNumber(Math.floor(value));
+    }
+
+    function reasonBadges(reasons) {
+        reasons = deliverabilityArray(reasons);
+        if (!reasons || reasons.length === 0) return '<span class="text-muted">--</span>';
+        var out = '';
+        for (var i = 0; i < reasons.length; i++) {
+            var r = reasons[i] || {};
+            out += '<span class="badge bg-secondary-lt me-1">' + CSM.esc(r.code) + ' &times;' + CSM.esc(formatDeferralCount(r.count)) + '</span>';
+        }
+        return out;
+    }
+
+    function loadDeliverability() {
+        if (deliverabilityLoaded) return;
+        deliverabilityLoaded = true;
+        CSM.get('/api/v1/email/deferrals')
+            .then(function(data) { renderDeliverability(data || {}); })
+            .catch(function() {
+                deliverabilityLoaded = false;
+                var msg = 'Could not load deferral activity. Retry from the refresh button.';
+                setRowMessage('email-deliv-providers-body', 3, msg);
+                setRowMessage('email-deliv-ips-body', 3, msg);
+            });
+    }
+
+    function setRowMessage(tbodyID, cols, msg) {
+        var tb = document.getElementById(tbodyID);
+        if (tb) tb.innerHTML = '<tr><td colspan="' + cols + '" class="text-center text-muted py-4">' + msg + '</td></tr>';
+    }
+
+    function renderDeliverability(data) {
+        data = data || {};
+        var providers = deliverabilityArray(data.providers);
+        var ips = deliverabilityArray(data.outbound_ips);
+        var total = formatDeferralCount(data.deferrals);
+
+        var summary = document.getElementById('email-deliv-summary');
+        if (summary) {
+            summary.textContent = total === '0'
+                ? 'No outbound deferrals seen in the recent log window.'
+                : total + ' outbound deferral(s) across ' + providers.length + ' provider(s) and ' + ips.length + ' sending IP(s).';
+        }
+
+        if (providers.length === 0) {
+            setRowMessage('email-deliv-providers-body', 3, 'No providers are deferring mail from this server.');
+        } else {
+            var ph = '';
+            for (var i = 0; i < providers.length; i++) {
+                var p = providers[i] || {};
+                ph += '<tr>';
+                ph += '<td>' + providerBadge(p.provider) + '</td>';
+                ph += '<td class="text-end">' + CSM.esc(formatDeferralCount(p.deferrals)) + '</td>';
+                ph += '<td>' + reasonBadges(p.reasons) + '</td>';
+                ph += '</tr>';
+            }
+            var pb = document.getElementById('email-deliv-providers-body');
+            if (pb) pb.innerHTML = ph;
+        }
+
+        if (ips.length === 0) {
+            setRowMessage('email-deliv-ips-body', 3, 'No sending IP has been deferred.');
+        } else {
+            var ih = '';
+            for (var j = 0; j < ips.length; j++) {
+                var ip = ips[j] || {};
+                var by = '';
+                var byList = deliverabilityArray(ip.providers);
+                for (var k = 0; k < byList.length; k++) {
+                    var item = byList[k] || {};
+                    by += providerBadge(item.provider) + '<span class="text-muted small me-2">&times;' + CSM.esc(formatDeferralCount(item.count)) + '</span>';
+                }
+                ih += '<tr>';
+                ih += '<td class="font-monospace small">' + CSM.esc(ip.ip) + '</td>';
+                ih += '<td class="text-end">' + CSM.esc(formatDeferralCount(ip.deferrals)) + '</td>';
+                ih += '<td>' + (by || '<span class="text-muted">--</span>') + '</td>';
+                ih += '</tr>';
+            }
+            var ib = document.getElementById('email-deliv-ips-body');
+            if (ib) ib.innerHTML = ih;
+        }
+    }
+
+    // ---------- Queue composition (Queue tab) ----------
+
+    function loadQueueComposition() {
+        if (queueCompositionLoaded) return;
+        queueCompositionLoaded = true;
+        CSM.get('/api/v1/email/queue-composition')
+            .then(function(data) { renderQueueComposition(data || {}); })
+            .catch(function() {
+                queueCompositionLoaded = false;
+                var el = document.getElementById('queue-composition');
+                if (el) el.innerHTML = '<div class="text-muted small">Could not load queue composition. Retry from the refresh button.</div>';
+            });
+    }
+
+    function queueCount(value) {
+        var n = Number(value);
+        if (!isFinite(n) || n < 0) return 0;
+        return Math.floor(n);
+    }
+
+    function renderQueueComposition(data) {
+        var el = document.getElementById('queue-composition');
+        if (!el) return;
+        var total = queueCount(data.total);
+        if (total === 0) {
+            el.innerHTML = '<div class="text-muted small">The mail queue is empty.</div>';
+            return;
+        }
+        var bounce = queueCount(data.bounce);
+        var real = queueCount(data.real);
+        var frozen = queueCount(data.frozen);
+        var flushable = queueCount(data.flushable_backscatter);
+        var bouncePct = Math.round(bounce / total * 100);
+
+        var html = '<div class="row g-2 mb-3">';
+        html += metricCol('Total', CSM.formatNumber(total), '');
+        html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
+        html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
+        html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
+        html += metricCol('Oldest', data.oldest_age || '--', '');
+        html += '</div>';
+
+        // Flush is offered only for frozen null-sender messages: undeliverable
+        // backscatter that cannot belong to a real sender or a live retry.
+        if (flushable > 0) {
+            html += '<button type="button" class="btn btn-sm btn-outline-danger mb-3" id="flush-backscatter-btn">' +
+                '<i class="ti ti-trash"></i>&nbsp;Flush ' + CSM.formatNumber(flushable) + ' frozen backscatter message(s)</button>';
+        }
+
+        var recips = deliverabilityArray(data.top_recipients);
+        if (recips.length > 0) {
+            html += '<div class="subheader mb-1 small">Top stuck recipients</div>';
+            html += '<div class="list-group list-group-flush">';
+            for (var i = 0; i < recips.length; i++) {
+                var rc = recips[i] || {};
+                html += '<div class="list-group-item py-1 px-0 d-flex">';
+                html += '<span class="font-monospace small">' + CSM.esc(rc.address) + '</span>';
+                html += '<span class="ms-auto small text-muted">' + CSM.formatNumber(queueCount(rc.count)) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        el.innerHTML = html;
+    }
+
+    function metricCol(label, value, cls) {
+        return '<div class="col-auto"><div class="small text-muted">' + CSM.esc(label) + '</div>' +
+            '<div class="h3 mb-0 ' + CSM.attr(cls || '') + '">' + CSM.esc(String(value)) + '</div></div>';
+    }
+
+    function flushBackscatter() {
+        CSM.confirm('Remove all frozen null-sender bounce messages from the mail queue? This deletes undeliverable backscatter only -- real mail and live retries are not touched.').then(function() {
+            CSM.post('/api/v1/email/queue/flush-backscatter', {})
+                .then(function(res) {
+                    CSM.toast('Removed ' + queueCount(res && res.removed) + ' backscatter message(s)', 'success');
+                    queueCompositionLoaded = false;
+                    loadQueueComposition();
+                    loadEmailStats(); // refresh the queue-size chip in the status strip
+                })
+                .catch(function(err) { CSM.toast('Flush failed: ' + (err.message || ''), 'error'); });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    var queueCompEl = document.getElementById('queue-composition');
+    if (queueCompEl) {
+        queueCompEl.addEventListener('click', function(e) {
+            if (e.target.closest('#flush-backscatter-btn')) flushBackscatter();
+        });
+    }
+
     // ---------- Tab activation ----------
 
     function activateTab(name) {
@@ -912,6 +1205,8 @@
             loadAuthGroups();
         } else if (id === 'queue') {
             if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health');
+            if (force) queueCompositionLoaded = false;
+            loadQueueComposition();
         } else if (id === 'quarantine') {
             if (force) quarantineLoaded = false;
             if (!quarantineLoaded) loadQuarantine();
@@ -922,6 +1217,12 @@
             } else if (force) {
                 loadEmailStats();
             }
+        } else if (id === 'forwarders') {
+            if (force) forwardersLoaded = false;
+            loadForwarders();
+        } else if (id === 'deliverability') {
+            if (force) deliverabilityLoaded = false;
+            loadDeliverability();
         }
     }
 
@@ -931,7 +1232,7 @@
             var id = ev.target.id.replace('email-tab-', '');
             CSM.urlState.set({ tab: id === 'findings' ? '' : id });
             if (id === 'auth')        loadAuthGroups();
-            else if (id === 'queue')  { if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health'); }
+            else if (id === 'queue')  { if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health'); loadQueueComposition(); }
             else if (id === 'quarantine' && !quarantineLoaded) loadQuarantine();
             else if (id === 'senders') {
                 if (_pendingSenders) {
@@ -941,8 +1242,19 @@
                     loadEmailStats();
                 }
             }
+            else if (id === 'forwarders') loadForwarders();
+            else if (id === 'deliverability') loadDeliverability();
         });
     }
+
+    // ---------- Forwarders filter/search (client-side, no refetch) ----------
+
+    ['email-fwd-filter', 'email-fwd-search'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var evt = id === 'email-fwd-search' ? 'input' : 'change';
+        el.addEventListener(evt, renderForwarders);
+    });
 
     // ---------- Filter handlers (auto-apply on change) ----------
 
@@ -996,6 +1308,9 @@
             loadActionGroups();
             loadFindings();
             authGroupsLoaded = false;
+            forwardersLoaded = false;
+            deliverabilityLoaded = false;
+            queueCompositionLoaded = false;
             loadActiveEmailTab(true);
         });
     }

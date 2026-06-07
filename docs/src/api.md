@@ -40,7 +40,8 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
-                                 `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`). Use for orchestrator feature-detect.
+                                 `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`,
+                                 `mail.queue.composition.v1`). Use for orchestrator feature-detect.
 GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.
@@ -142,6 +143,10 @@ POST /api/v1/rules/modsec-escalation   ModSec escalation override
 
 ```
 GET  /api/v1/email/stats         Email scanning statistics
+GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
+GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog (read scope)
+GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients (read scope)
+POST /api/v1/email/queue/flush-backscatter  Remove only frozen null-sender (backscatter) messages from the exim queue on cPanel hosts; returns removed count or 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status

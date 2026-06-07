@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -132,6 +133,59 @@ func TestAPIEmailGroupsContract(t *testing.T) {
 		t.Fatalf("group payload = %T, want object", groups[0])
 	}
 	assertJSONKeys(t, group, jsonStructKeys(reflect.TypeOf(emailGroup{})))
+}
+
+func TestAPIEmailForwardersContract(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.forwarderSource = fakeForwarderSource{fwds: []inventory.Forwarder{{
+		Source: "sales@example.com",
+		Domain: "example.com",
+		Owner:  "siteuser",
+		Destinations: []inventory.Destination{{
+			Address:  "owner@gmail.com",
+			Domain:   "gmail.com",
+			Provider: inventory.ProviderGmail,
+		}},
+		ForwardOnly: true,
+	}}}
+
+	rec := httptest.NewRecorder()
+	s.apiEmailForwarders(rec, httptest.NewRequest(http.MethodGet, "/api/v1/email/forwarders", nil))
+
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal email forwarders: %v", err)
+	}
+	assertJSONKeys(t, raw, jsonStructKeys(reflect.TypeOf(forwardersResponse{})))
+	forwarders, ok := raw["forwarders"].([]any)
+	if !ok {
+		t.Fatalf("forwarders payload = %T, want array", raw["forwarders"])
+	}
+	if len(forwarders) != 1 {
+		t.Fatalf("forwarders = %d, want 1", len(forwarders))
+	}
+	entry, ok := forwarders[0].(map[string]any)
+	if !ok {
+		t.Fatalf("forwarder payload = %T, want object", forwarders[0])
+	}
+	assertJSONKeys(t, entry, jsonStructKeys(reflect.TypeOf(forwarderEntry{})))
+	destinations, ok := entry["destinations"].([]any)
+	if !ok {
+		t.Fatalf("destinations payload = %T, want array", entry["destinations"])
+	}
+	if len(destinations) != 1 {
+		t.Fatalf("destinations = %d, want 1", len(destinations))
+	}
+	destination, ok := destinations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("destination payload = %T, want object", destinations[0])
+	}
+	assertJSONKeys(t, destination, jsonStructKeys(reflect.TypeOf(forwarderDestination{})))
+	summary, ok := raw["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary payload = %T, want object", raw["summary"])
+	}
+	assertJSONKeys(t, summary, jsonStructKeys(reflect.TypeOf(forwardersSummary{})))
 }
 
 func TestAPIModSecBlocksContract(t *testing.T) {
