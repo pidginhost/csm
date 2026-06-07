@@ -15,6 +15,8 @@ type fakeGuard struct {
 	removed      int
 	refreshedBad []string
 	applyErr     error
+	removeErr    error
+	refreshErr   error
 }
 
 func (f *fakeGuard) Apply(cfg policy.Config, badIPs []string) error {
@@ -26,9 +28,18 @@ func (f *fakeGuard) Apply(cfg policy.Config, badIPs []string) error {
 	f.appliedBad = badIPs
 	return nil
 }
-func (f *fakeGuard) Remove() error                       { f.removed++; return nil }
-func (f *fakeGuard) Status() (adapter.Status, error)     { return adapter.Status{}, nil }
-func (f *fakeGuard) RefreshBadIPs(badIPs []string) error { f.refreshedBad = badIPs; return nil }
+func (f *fakeGuard) Remove() error {
+	f.removed++
+	return f.removeErr
+}
+func (f *fakeGuard) Status() (adapter.Status, error) { return adapter.Status{}, nil }
+func (f *fakeGuard) RefreshBadIPs(badIPs []string) error {
+	if f.refreshErr != nil {
+		return f.refreshErr
+	}
+	f.refreshedBad = badIPs
+	return nil
+}
 
 func enforceCfg() config.ForwardGuardConfig {
 	return config.ForwardGuardConfig{
@@ -101,6 +112,17 @@ func TestReconcileApplyErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestReconcileRemoveErrorPropagates(t *testing.T) {
+	g := &fakeGuard{removeErr: errors.New("remove failed")}
+	r := Reconciler{Guard: g, Active: true}
+	if err := r.Reconcile(config.ForwardGuardConfig{Enabled: false}); err == nil {
+		t.Fatal("expected remove error to propagate")
+	}
+	if g.removed != 1 {
+		t.Fatalf("removed = %d, want 1", g.removed)
+	}
+}
+
 func TestRefreshBadIPsOnlyWhenEnforcing(t *testing.T) {
 	g := &fakeGuard{}
 	r := Reconciler{Guard: g, Active: true, BadIPs: func() []string { return []string{"203.0.113.9"} }}
@@ -121,5 +143,30 @@ func TestRefreshBadIPsOnlyWhenEnforcing(t *testing.T) {
 	}
 	if g.refreshedBad != nil {
 		t.Error("refresh ran while dry-run")
+	}
+
+	disabled := enforceCfg()
+	disabled.Enabled = false
+	if err := r.RefreshBadIPs(disabled); err != nil {
+		t.Fatal(err)
+	}
+	if g.refreshedBad != nil {
+		t.Error("refresh ran while disabled")
+	}
+
+	r.Active = false
+	if err := r.RefreshBadIPs(enforceCfg()); err != nil {
+		t.Fatal(err)
+	}
+	if g.refreshedBad != nil {
+		t.Error("refresh ran on inactive platform")
+	}
+}
+
+func TestRefreshBadIPsErrorPropagates(t *testing.T) {
+	g := &fakeGuard{refreshErr: errors.New("write failed")}
+	r := Reconciler{Guard: g, Active: true}
+	if err := r.RefreshBadIPs(enforceCfg()); err == nil {
+		t.Fatal("expected refresh error to propagate")
 	}
 }
