@@ -1151,8 +1151,8 @@
     }
 
     function metricCol(label, value, cls) {
-        return '<div class="col-auto"><div class="small text-muted">' + label + '</div>' +
-            '<div class="h3 mb-0 ' + (cls || '') + '">' + CSM.esc(String(value)) + '</div></div>';
+        return '<div class="col-auto"><div class="small text-muted">' + CSM.esc(label) + '</div>' +
+            '<div class="h3 mb-0 ' + CSM.attr(cls || '') + '">' + CSM.esc(String(value)) + '</div></div>';
     }
 
     // ---------- Tab activation ----------

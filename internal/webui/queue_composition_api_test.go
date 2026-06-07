@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 type fakeQueueReporter struct {
@@ -15,6 +16,32 @@ type fakeQueueReporter struct {
 }
 
 func (f fakeQueueReporter) Composition() (intel.QueueComposition, error) { return f.comp, f.err }
+
+func TestSelectQueueReporterUsesEmptyReporterOffCPanel(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelNone
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+		t.Fatal("platform override rejected before Detect")
+	}
+
+	if _, ok := selectQueueReporter().(intel.EmptyQueueReporter); !ok {
+		t.Fatalf("selectQueueReporter returned %T, want EmptyQueueReporter", selectQueueReporter())
+	}
+}
+
+func TestSelectQueueReporterUsesEximSourceOnCPanel(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelCPanel
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+		t.Fatal("platform override rejected before Detect")
+	}
+
+	if _, ok := selectQueueReporter().(*intel.EximQueueSource); !ok {
+		t.Fatalf("selectQueueReporter returned %T, want *EximQueueSource", selectQueueReporter())
+	}
+}
 
 func TestApiEmailQueueCompositionSerialization(t *testing.T) {
 	s := newTestServer(t, "tok")

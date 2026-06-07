@@ -966,6 +966,38 @@ func TestEmailDeliverabilityCountsPreserveLargeValues(t *testing.T) {
 	}
 }
 
+func TestEmailQueueCompositionRenderEscapesValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "// ---------- Queue composition")
+	end := strings.Index(text, "// ---------- Tab activation")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing queue composition block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`| 0`, `|0`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("queue composition counts must not use 32-bit bitwise coercion %q", banned)
+		}
+	}
+	for _, fragment := range []string{
+		`function queueCount(value)`,
+		`return Math.floor(n);`,
+		`CSM.esc(rc.address)`,
+		`CSM.formatNumber(queueCount(rc.count))`,
+		`CSM.esc(label)`,
+		`CSM.attr(cls || '')`,
+		`CSM.esc(String(value))`,
+	} {
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js queue composition renderer missing fragment %q", fragment)
+		}
+	}
+}
+
 // TestFindingsPageUsesPhase4Primitives ensures findings.html adopted the
 // shared layout primitives in phase 4 and that findings.js routes detail
 // rendering through CSM.detailPanel rather than inserting an inline

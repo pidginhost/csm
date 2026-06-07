@@ -34,6 +34,7 @@ var (
 	// A queue header line: "<age> <size> <msgid> <sender> [*** frozen ***]".
 	queueMsgIDRe = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`)
 	queueAgeRe   = regexp.MustCompile(`^\d+[smhdw]$`)
+	queueSizeRe  = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmgt]?$`)
 )
 
 // ParseQueue parses `exim -bp` output into a composition summary.
@@ -65,12 +66,25 @@ func ParseQueue(out string) QueueComposition {
 		if !inMessage {
 			continue
 		}
-		addr := strings.TrimSpace(line)
-		if addr == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
+		if queueHeaderCandidate(line) {
+			inMessage = false
+			continue
+		}
+		if !queueRecipientLine(line) {
+			inMessage = false
+			continue
+		}
+		addr := trimmed
 		// Exim prefixes an already-delivered recipient with "D"; it is not stuck.
 		if strings.HasPrefix(addr, "D ") {
+			continue
+		}
+		addr = strings.Trim(addr, "<>")
+		if len(addr) > maxAddressLen {
 			continue
 		}
 		if strings.Contains(addr, "@") {
@@ -87,12 +101,21 @@ func parseQueueHeader(line string) (age string, ageSeconds int, bounce, frozen, 
 	if len(fields) < 4 {
 		return "", 0, false, false, false
 	}
-	if !queueAgeRe.MatchString(fields[0]) || !queueMsgIDRe.MatchString(fields[2]) {
+	if !queueAgeRe.MatchString(fields[0]) || !queueSizeRe.MatchString(fields[1]) || !queueMsgIDRe.MatchString(fields[2]) {
 		return "", 0, false, false, false
 	}
 	bounce = fields[3] == "<>"
 	frozen = strings.Contains(line, "*** frozen ***")
 	return fields[0], ageToSeconds(fields[0]), bounce, frozen, true
+}
+
+func queueHeaderCandidate(line string) bool {
+	fields := strings.Fields(line)
+	return len(fields) >= 3 && queueMsgIDRe.MatchString(fields[2])
+}
+
+func queueRecipientLine(line string) bool {
+	return len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
 }
 
 // ageToSeconds converts an exim age token (e.g. "25m", "4d") to seconds. An

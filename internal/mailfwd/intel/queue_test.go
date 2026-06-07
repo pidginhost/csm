@@ -1,6 +1,9 @@
 package intel
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // exim -bp output: age, size, msgid, sender, then indented recipient lines.
 // "<>" sender is a null-sender bounce (backscatter); "*** frozen ***" marks a
@@ -62,6 +65,63 @@ func TestParseQueueEmpty(t *testing.T) {
 		if c.TopRecipients == nil {
 			t.Errorf("%s: TopRecipients must be non-nil empty slice", name)
 		}
+	}
+}
+
+func TestParseQueueOnlyCountsIndentedRecipients(t *testing.T) {
+	in := ` 10m   900 1rZZz2-000JKL-4C <>
+          stuck@example.net
+not-a-recipient@example.net
+-- summary from a wrapper: operator@example.net
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 1 || c.Bounce != 1 || c.Real != 0 {
+		t.Fatalf("composition = %+v, want one bounce message", c)
+	}
+	if len(c.TopRecipients) != 1 {
+		t.Fatalf("top recipients = %+v, want one stuck recipient", c.TopRecipients)
+	}
+	if c.TopRecipients[0].Address != "stuck@example.net" || c.TopRecipients[0].Count != 1 {
+		t.Fatalf("top recipient = %+v, want stuck@example.net x1", c.TopRecipients[0])
+	}
+}
+
+func TestParseQueueMalformedHeaderDoesNotLeakRecipients(t *testing.T) {
+	in := ` 10m   900 1rZZz2-000JKL-4C <>
+          stuck@example.net
+ 1y   900 1rBADd-000BAD-5F sender@example.org
+          leaked@example.org
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 1 {
+		t.Fatalf("total = %d, want only the valid header counted", c.Total)
+	}
+	if len(c.TopRecipients) != 1 {
+		t.Fatalf("top recipients = %+v, want only the valid message recipient", c.TopRecipients)
+	}
+	if c.TopRecipients[0].Address != "stuck@example.net" {
+		t.Fatalf("top recipient = %+v, want malformed message recipient ignored", c.TopRecipients[0])
+	}
+}
+
+func TestEximQueueSourceCompositionReturnsEmptyOnCommandError(t *testing.T) {
+	src := &EximQueueSource{run: func() ([]byte, error) {
+		return nil, errors.New("exim unavailable")
+	}}
+
+	c, err := src.Composition()
+	if err != nil {
+		t.Fatalf("Composition returned error: %v", err)
+	}
+	if c.Total != 0 || c.Bounce != 0 || c.Real != 0 || c.Frozen != 0 {
+		t.Fatalf("composition = %+v, want empty on command error", c)
+	}
+	if c.TopRecipients == nil {
+		t.Fatal("TopRecipients must be a non-nil empty slice")
 	}
 }
 
