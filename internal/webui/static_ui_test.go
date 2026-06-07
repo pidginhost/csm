@@ -837,6 +837,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-quarantine"`,
 		`id="email-tab-senders"`,
 		`id="email-tab-forwarders"`,
+		`id="email-tab-deliverability"`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -874,6 +875,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`CSM.detailPanel.open`,
 		`/api/v1/email/forwarders`,
 		`renderForwarders`,
+		`/api/v1/email/deferrals`,
+		`renderDeliverability`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
@@ -905,6 +908,25 @@ func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("email.js forwarder renderer missing escape fragment %q", fragment)
+		}
+	}
+}
+
+// TestEmailDeliverabilityRenderEscapesProviderValues ensures the deferral
+// panels escape provider/IP/reason text parsed from a remote MTA's error.
+func TestEmailDeliverabilityRenderEscapesProviderValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`providerBadge(p.provider)`, // provider escaped inside providerBadge (see forwarder escape test)
+		`CSM.esc(ip.ip)`,
+		`CSM.esc(r.code)`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("email.js deliverability renderer missing escape fragment %q", fragment)
 		}
 	}
 }

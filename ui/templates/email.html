@@ -99,6 +99,11 @@
                     <i class="ti ti-mail-forward"></i>&nbsp;Forwarders
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-deliverability" data-bs-toggle="tab" data-bs-target="#email-pane-deliverability" type="button" role="tab" aria-controls="email-pane-deliverability" aria-selected="false">
+                    <i class="ti ti-gauge"></i>&nbsp;Deliverability
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content">
@@ -253,6 +258,41 @@
                             <tr><td colspan="5" class="text-center text-muted py-4">Forwarder inventory loads when this tab is opened.</td></tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <!-- Deliverability tab: outbound deferral picture from exim_mainlog -->
+            <div class="tab-pane fade" id="email-pane-deliverability" role="tabpanel" aria-labelledby="email-tab-deliverability" tabindex="0">
+                <div class="card-body">
+                    <div class="text-muted small mb-3" id="email-deliv-summary">Deferral activity loads when this tab is opened.</div>
+                    <div class="row row-cards">
+                        <div class="col-lg-6">
+                            <div class="subheader mb-2"><i class="ti ti-building-broadcast-tower"></i>&nbsp;Providers throttling this server</div>
+                            <div class="table-responsive">
+                                <table class="table table-vcenter card-table table-sm" id="email-deliv-providers">
+                                    <thead>
+                                        <tr><th>Provider</th><th class="text-end">Deferrals</th><th>Reasons</th></tr>
+                                    </thead>
+                                    <tbody id="email-deliv-providers-body">
+                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="subheader mb-2"><i class="ti ti-router"></i>&nbsp;Outbound IP reputation</div>
+                            <div class="table-responsive">
+                                <table class="table table-vcenter card-table table-sm" id="email-deliv-ips">
+                                    <thead>
+                                        <tr><th>Sending IP</th><th class="text-end">Deferrals</th><th>Deferred by</th></tr>
+                                    </thead>
+                                    <tbody id="email-deliv-ips-body">
+                                        <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

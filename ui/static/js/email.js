@@ -46,6 +46,7 @@
     var authGroupsLoaded = false;
     var forwardersLoaded = false;
     var _forwarders = [];
+    var deliverabilityLoaded = false;
 
     function localDateInputValue(date) {
         var d = date || new Date();
@@ -989,6 +990,86 @@
         tb.innerHTML = html;
     }
 
+    // ---------- Deliverability tab (outbound deferral intel) ----------
+
+    function reasonBadges(reasons) {
+        if (!reasons || reasons.length === 0) return '<span class="text-muted">--</span>';
+        var out = '';
+        for (var i = 0; i < reasons.length; i++) {
+            var r = reasons[i];
+            out += '<span class="badge bg-secondary-lt me-1">' + CSM.esc(r.code) + ' &times;' + (r.count | 0) + '</span>';
+        }
+        return out;
+    }
+
+    function loadDeliverability() {
+        if (deliverabilityLoaded) return;
+        deliverabilityLoaded = true;
+        CSM.get('/api/v1/email/deferrals')
+            .then(function(data) { renderDeliverability(data || {}); })
+            .catch(function() {
+                deliverabilityLoaded = false;
+                var msg = 'Could not load deferral activity. Retry from the refresh button.';
+                setRowMessage('email-deliv-providers-body', 3, msg);
+                setRowMessage('email-deliv-ips-body', 3, msg);
+            });
+    }
+
+    function setRowMessage(tbodyID, cols, msg) {
+        var tb = document.getElementById(tbodyID);
+        if (tb) tb.innerHTML = '<tr><td colspan="' + cols + '" class="text-center text-muted py-4">' + msg + '</td></tr>';
+    }
+
+    function renderDeliverability(data) {
+        var providers = data.providers || [];
+        var ips = data.outbound_ips || [];
+        var total = data.deferrals | 0;
+
+        var summary = document.getElementById('email-deliv-summary');
+        if (summary) {
+            summary.textContent = total === 0
+                ? 'No outbound deferrals seen in the recent log window.'
+                : total + ' outbound deferral(s) across ' + providers.length + ' provider(s) and ' + ips.length + ' sending IP(s).';
+        }
+
+        if (providers.length === 0) {
+            setRowMessage('email-deliv-providers-body', 3, 'No providers are deferring mail from this server.');
+        } else {
+            var ph = '';
+            for (var i = 0; i < providers.length; i++) {
+                var p = providers[i];
+                ph += '<tr>';
+                ph += '<td>' + providerBadge(p.provider) + '</td>';
+                ph += '<td class="text-end">' + (p.deferrals | 0) + '</td>';
+                ph += '<td>' + reasonBadges(p.reasons) + '</td>';
+                ph += '</tr>';
+            }
+            var pb = document.getElementById('email-deliv-providers-body');
+            if (pb) pb.innerHTML = ph;
+        }
+
+        if (ips.length === 0) {
+            setRowMessage('email-deliv-ips-body', 3, 'No sending IP has been deferred.');
+        } else {
+            var ih = '';
+            for (var j = 0; j < ips.length; j++) {
+                var ip = ips[j];
+                var by = '';
+                var byList = ip.providers || [];
+                for (var k = 0; k < byList.length; k++) {
+                    by += providerBadge(byList[k].provider) + '<span class="text-muted small me-2">&times;' + (byList[k].count | 0) + '</span>';
+                }
+                ih += '<tr>';
+                ih += '<td class="font-monospace small">' + CSM.esc(ip.ip) + '</td>';
+                ih += '<td class="text-end">' + (ip.deferrals | 0) + '</td>';
+                ih += '<td>' + (by || '<span class="text-muted">--</span>') + '</td>';
+                ih += '</tr>';
+            }
+            var ib = document.getElementById('email-deliv-ips-body');
+            if (ib) ib.innerHTML = ih;
+        }
+    }
+
     // ---------- Tab activation ----------
 
     function activateTab(name) {
@@ -1024,6 +1105,9 @@
         } else if (id === 'forwarders') {
             if (force) forwardersLoaded = false;
             loadForwarders();
+        } else if (id === 'deliverability') {
+            if (force) deliverabilityLoaded = false;
+            loadDeliverability();
         }
     }
 
@@ -1044,6 +1128,7 @@
                 }
             }
             else if (id === 'forwarders') loadForwarders();
+            else if (id === 'deliverability') loadDeliverability();
         });
     }
 
@@ -1109,6 +1194,7 @@
             loadFindings();
             authGroupsLoaded = false;
             forwardersLoaded = false;
+            deliverabilityLoaded = false;
             loadActiveEmailTab(true);
         });
     }

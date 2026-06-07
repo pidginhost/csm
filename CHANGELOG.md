@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Email Security page has a new Forwarders tab listing every mail forwarder on the host, where it delivers, who owns it, and whether mail also stays in a local mailbox, so operators can see at a glance which accounts relay mail off-server to free providers.
-- A new read-only endpoint reports outbound mail deferrals grouped by provider and by sending IP, with the provider's stated reason, so operators can see which mail providers are throttling the server and why.
+- The Email Security page has a new Deliverability tab showing which mail providers are throttling the server and which sending IPs are affected, with each provider's stated reason, so operators can see why outbound mail is backing up.
 
 ### Fixed
 
