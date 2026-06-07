@@ -407,5 +407,7 @@ func runBuildEximConf() error {
 func chownToUser(path, user string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// #nosec G204 -- user is the constant transportUser ("mailnull") and path is
+	// the operator-fixed quarantine dir; neither is attacker-controlled.
 	return exec.CommandContext(ctx, "chown", "-R", user+":"+user, path).Run()
 }
