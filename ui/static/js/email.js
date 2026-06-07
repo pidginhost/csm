@@ -1124,6 +1124,7 @@
         var bounce = queueCount(data.bounce);
         var real = queueCount(data.real);
         var frozen = queueCount(data.frozen);
+        var flushable = queueCount(data.flushable_backscatter);
         var bouncePct = Math.round(bounce / total * 100);
 
         var html = '<div class="row g-2 mb-3">';
@@ -1133,6 +1134,13 @@
         html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
         html += metricCol('Oldest', data.oldest_age || '--', '');
         html += '</div>';
+
+        // Flush is offered only for frozen null-sender messages: undeliverable
+        // backscatter that cannot belong to a real sender or a live retry.
+        if (flushable > 0) {
+            html += '<button type="button" class="btn btn-sm btn-outline-danger mb-3" id="flush-backscatter-btn">' +
+                '<i class="ti ti-trash"></i>&nbsp;Flush ' + CSM.formatNumber(flushable) + ' frozen backscatter message(s)</button>';
+        }
 
         var recips = deliverabilityArray(data.top_recipients);
         if (recips.length > 0) {
@@ -1153,6 +1161,26 @@
     function metricCol(label, value, cls) {
         return '<div class="col-auto"><div class="small text-muted">' + CSM.esc(label) + '</div>' +
             '<div class="h3 mb-0 ' + CSM.attr(cls || '') + '">' + CSM.esc(String(value)) + '</div></div>';
+    }
+
+    function flushBackscatter() {
+        CSM.confirm('Remove all frozen null-sender bounce messages from the mail queue? This deletes undeliverable backscatter only -- real mail and live retries are not touched.').then(function() {
+            CSM.post('/api/v1/email/queue/flush-backscatter', {})
+                .then(function(res) {
+                    CSM.toast('Removed ' + queueCount(res && res.removed) + ' backscatter message(s)', 'success');
+                    queueCompositionLoaded = false;
+                    loadQueueComposition();
+                    loadEmailStats(); // refresh the queue-size chip in the status strip
+                })
+                .catch(function(err) { CSM.toast('Flush failed: ' + (err.message || ''), 'error'); });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    var queueCompEl = document.getElementById('queue-composition');
+    if (queueCompEl) {
+        queueCompEl.addEventListener('click', function(e) {
+            if (e.target.closest('#flush-backscatter-btn')) flushBackscatter();
+        });
     }
 
     // ---------- Tab activation ----------

@@ -879,6 +879,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`renderDeliverability`,
 		`/api/v1/email/queue-composition`,
 		`renderQueueComposition`,
+		`/api/v1/email/queue/flush-backscatter`,
+		`flushBackscatter`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)

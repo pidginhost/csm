@@ -14,12 +14,13 @@ import (
 // trying to deliver versus null-sender bounce backscatter, how much is frozen,
 // and which recipients are stuck the most.
 type QueueComposition struct {
-	Total         int              `json:"total"`
-	Bounce        int              `json:"bounce"` // null-sender <> messages (backscatter)
-	Real          int              `json:"real"`
-	Frozen        int              `json:"frozen"`
-	OldestAge     string           `json:"oldest_age"`
-	TopRecipients []RecipientCount `json:"top_recipients"`
+	Total                int              `json:"total"`
+	Bounce               int              `json:"bounce"` // null-sender <> messages (backscatter)
+	Real                 int              `json:"real"`
+	Frozen               int              `json:"frozen"`
+	FlushableBackscatter int              `json:"flushable_backscatter"` // frozen AND null-sender: safe to flush
+	OldestAge            string           `json:"oldest_age"`
+	TopRecipients        []RecipientCount `json:"top_recipients"`
 }
 
 // RecipientCount is a recipient address and how many queued messages target it.
@@ -45,7 +46,7 @@ func ParseQueue(out string) QueueComposition {
 	inMessage := false
 
 	for _, line := range strings.Split(out, "\n") {
-		if age, ageSec, bounce, frozen, ok := parseQueueHeader(line); ok {
+		if _, age, ageSec, bounce, frozen, ok := parseQueueHeader(line); ok {
 			comp.Total++
 			if bounce {
 				comp.Bounce++
@@ -54,6 +55,9 @@ func ParseQueue(out string) QueueComposition {
 			}
 			if frozen {
 				comp.Frozen++
+			}
+			if bounce && frozen {
+				comp.FlushableBackscatter++
 			}
 			if ageSec > oldestSeconds {
 				oldestSeconds = ageSec
@@ -96,17 +100,17 @@ func ParseQueue(out string) QueueComposition {
 	return comp
 }
 
-func parseQueueHeader(line string) (age string, ageSeconds int, bounce, frozen, ok bool) {
+func parseQueueHeader(line string) (msgID, age string, ageSeconds int, bounce, frozen, ok bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
-		return "", 0, false, false, false
+		return "", "", 0, false, false, false
 	}
 	if !queueAgeRe.MatchString(fields[0]) || !queueSizeRe.MatchString(fields[1]) || !queueMsgIDRe.MatchString(fields[2]) {
-		return "", 0, false, false, false
+		return "", "", 0, false, false, false
 	}
 	bounce = fields[3] == "<>"
 	frozen = strings.Contains(line, "*** frozen ***")
-	return fields[0], ageToSeconds(fields[0]), bounce, frozen, true
+	return fields[2], fields[0], ageToSeconds(fields[0]), bounce, frozen, true
 }
 
 func queueHeaderCandidate(line string) bool {
