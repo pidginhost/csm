@@ -1,6 +1,9 @@
 package attackdb
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestComputeScoreEmpty(t *testing.T) {
 	r := &IPRecord{AttackCounts: make(map[AttackType]int), Accounts: make(map[string]int)}
@@ -101,15 +104,15 @@ func TestSortRecordsByScore(t *testing.T) {
 }
 
 func TestComputeScore_SustainedBruteForceReachesBlockThreshold(t *testing.T) {
-	// A persistent single-account mail brute force (e.g. 1255 dovecot
-	// SMTP-AUTH failures from one IP over hours) must reach the
-	// local_threat_score auto-block threshold (70). Without the sustained
-	// brute tier it tops out at volume 30 + brute 15 = 45 and is never
-	// auto-blocked, which is exactly how 79.133.42.191 evaded blocking.
+	now := time.Now()
 	r := &IPRecord{
-		EventCount:   1255,
-		AttackCounts: map[AttackType]int{AttackBruteForce: 1255},
-		Accounts:     map[string]int{"florin": 1255},
+		EventCount:            1255,
+		AttackCounts:          map[AttackType]int{AttackBruteForce: 1255},
+		Accounts:              map[string]int{"florin": 1255},
+		LastSeen:              now,
+		BruteForceWindowStart: now.Add(-20 * time.Minute),
+		BruteForceWindowCount: 1255,
+		BruteForceSustainedAt: now,
 	}
 	got := ComputeScore(r)
 	if got < 70 {
@@ -117,10 +120,55 @@ func TestComputeScore_SustainedBruteForceReachesBlockThreshold(t *testing.T) {
 	}
 }
 
+func TestComputeScore_SlowStalePasswordDoesNotReachBlockThreshold(t *testing.T) {
+	now := time.Now()
+	r := &IPRecord{
+		EventCount:            50,
+		AttackCounts:          map[AttackType]int{AttackBruteForce: 50},
+		Accounts:              map[string]int{"owner": 50},
+		LastSeen:              now,
+		BruteForceWindowStart: now.Add(-4 * time.Hour),
+		BruteForceWindowCount: 50,
+		BruteForceSustainedAt: now.Add(-3 * time.Hour),
+	}
+	got := ComputeScore(r)
+	if got >= 70 {
+		t.Errorf("slow stale-password score = %d, want < 70 (no auto-block)", got)
+	}
+}
+
+func TestComputeScore_SustainedBruteForceSurvivesLaterEvent(t *testing.T) {
+	now := time.Now()
+	r := &IPRecord{
+		EventCount:            51,
+		AttackCounts:          map[AttackType]int{AttackBruteForce: 50, AttackWAFBlock: 1},
+		Accounts:              map[string]int{"victim": 50},
+		LastSeen:              now,
+		BruteForceWindowStart: now.Add(-40 * time.Minute),
+		BruteForceWindowCount: 50,
+		BruteForceSustainedAt: now.Add(-20 * time.Minute),
+	}
+	got := ComputeScore(r)
+	if got < 70 {
+		t.Errorf("recent sustained brute score after later event = %d, want >= 70", got)
+	}
+}
+
+func TestComputeScore_CumulativeBruteWithoutRecentSustainedMarkerStaysBelowBlock(t *testing.T) {
+	now := time.Now()
+	r := &IPRecord{
+		EventCount:   50,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 50},
+		Accounts:     map[string]int{"owner": 50},
+		LastSeen:     now,
+	}
+	got := ComputeScore(r)
+	if got >= 70 {
+		t.Errorf("cumulative brute score without recent marker = %d, want < 70", got)
+	}
+}
+
 func TestComputeScore_BriefAuthFailuresStayBelowBlock(t *testing.T) {
-	// A legitimate user with a stale saved password produces a handful of
-	// auth failures, not dozens. This must stay well under the block
-	// threshold so a brief credential mishap is never a 24h IP block.
 	r := &IPRecord{
 		EventCount:   6,
 		AttackCounts: map[AttackType]int{AttackBruteForce: 6},

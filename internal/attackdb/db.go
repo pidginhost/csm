@@ -122,14 +122,17 @@ type Event struct {
 
 // IPRecord is the per-IP aggregated intelligence record.
 type IPRecord struct {
-	IP           string             `json:"ip"`
-	FirstSeen    time.Time          `json:"first_seen"`
-	LastSeen     time.Time          `json:"last_seen"`
-	EventCount   int                `json:"event_count"`
-	AttackCounts map[AttackType]int `json:"attack_counts"`
-	Accounts     map[string]int     `json:"accounts"`
-	ThreatScore  int                `json:"threat_score"`
-	AutoBlocked  bool               `json:"auto_blocked"`
+	IP                    string             `json:"ip"`
+	FirstSeen             time.Time          `json:"first_seen"`
+	LastSeen              time.Time          `json:"last_seen"`
+	EventCount            int                `json:"event_count"`
+	AttackCounts          map[AttackType]int `json:"attack_counts"`
+	Accounts              map[string]int     `json:"accounts"`
+	ThreatScore           int                `json:"threat_score"`
+	AutoBlocked           bool               `json:"auto_blocked"`
+	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitempty"`
+	BruteForceWindowCount int                `json:"brute_force_window_count,omitempty"`
+	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitempty"`
 }
 
 // DB is the in-memory attack database backed by JSON files.
@@ -290,12 +293,12 @@ func (db *DB) RecordFinding(f alert.Finding) {
 		return // not an attack-related check
 	}
 
-	ip := extractIP(f.Message)
+	ip := extractFindingIP(f)
 	if ip == "" {
 		return
 	}
 
-	account := extractAccount(f.Message, f.Details)
+	account := extractFindingAccount(f)
 
 	event := Event{
 		Timestamp:  f.Timestamp,
@@ -326,10 +329,13 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	rec.LastSeen = now
 	rec.EventCount++
 	rec.AttackCounts[attackType]++
+	if tracksSustainedBruteScore(f.Check) {
+		updateBruteForceWindow(rec, now)
+	}
 	if account != "" {
 		rec.Accounts[account]++
 	}
-	rec.ThreatScore = ComputeScore(rec)
+	rec.ThreatScore = computeScoreAt(rec, now)
 	db.pendingEvents = append(db.pendingEvents, event)
 	db.dirty = true
 	db.mu.Unlock()
@@ -456,6 +462,44 @@ func extractIP(message string) string {
 	return ""
 }
 
+func extractFindingIP(f alert.Finding) string {
+	if ip := normalizeRecordIP(f.SourceIP); ip != "" {
+		return ip
+	}
+	return extractIP(f.Message)
+}
+
+func normalizeRecordIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func extractFindingAccount(f alert.Finding) string {
+	mailbox := strings.TrimSpace(f.Mailbox)
+	domain := strings.TrimSpace(f.Domain)
+	if mailbox != "" {
+		if strings.Contains(mailbox, "@") || domain == "" {
+			return mailbox
+		}
+		return mailbox + "@" + strings.ToLower(domain)
+	}
+	if tenant := strings.TrimSpace(f.TenantID); tenant != "" {
+		return tenant
+	}
+	return extractAccount(f.Message, f.Details)
+}
+
 // extractAccount tries to pull a cPanel account name from message or details.
 func extractAccount(message, details string) string {
 	// Check details first: "Account: username"
@@ -484,6 +528,25 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+func updateBruteForceWindow(rec *IPRecord, ts time.Time) {
+	if rec.BruteForceWindowStart.IsZero() ||
+		ts.Before(rec.BruteForceWindowStart) ||
+		ts.Sub(rec.BruteForceWindowStart) > sustainedBruteForceWindow {
+		rec.BruteForceWindowStart = ts
+		rec.BruteForceWindowCount = 1
+		return
+	}
+	rec.BruteForceWindowCount++
+	if rec.BruteForceWindowCount >= sustainedBruteForceThreshold &&
+		(rec.BruteForceSustainedAt.IsZero() || !ts.Before(rec.BruteForceSustainedAt)) {
+		rec.BruteForceSustainedAt = ts
+	}
+}
+
+func tracksSustainedBruteScore(check string) bool {
+	return check == "email_auth_failure_realtime"
 }
 
 // RemoveIP removes an IP from the attack database entirely.

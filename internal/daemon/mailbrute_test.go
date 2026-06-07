@@ -464,6 +464,24 @@ func TestMailAuthTracker_ConcurrentNoRace(t *testing.T) {
 	tr.Purge() // must not race
 }
 
+func TestMailAuthTracker_StatsCountCallsAndEmits(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 7, 5, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+
+	for i := 0; i < 6; i++ {
+		tr.Record("203.0.113.9", "victim@example.test")
+		clock.t = clock.t.Add(time.Second)
+	}
+
+	calls, emits := tr.Stats()
+	if calls != 6 {
+		t.Errorf("record calls = %d, want 6", calls)
+	}
+	if emits != 1 {
+		t.Errorf("findings emitted = %d, want 1", emits)
+	}
+}
+
 func TestExtractMailLoginEvent_IMAPFailure(t *testing.T) {
 	line := `Apr 14 12:00:00 host dovecot: imap-login: Aborted login (auth failed, 1 attempts in 2 secs): user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=1.1.1.1, TLS`
 	ip, account, success := extractMailLoginEvent(line)

@@ -521,7 +521,10 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	type blockFile struct {
-		IPs []blockedEntry `json:"ips"`
+		IPs     []blockedEntry `json:"ips"`
+		Pending []struct {
+			IP string `json:"ip"`
+		} `json:"pending,omitempty"`
 	}
 
 	data, err := osFS.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
@@ -533,6 +536,9 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 				if now.Before(entry.ExpiresAt) {
 					blocked[entry.IP] = true
 				}
+			}
+			for _, entry := range bf.Pending {
+				blocked[entry.IP] = true
 			}
 		}
 	}

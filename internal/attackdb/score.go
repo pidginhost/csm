@@ -1,6 +1,14 @@
 package attackdb
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
+
+const (
+	sustainedBruteForceThreshold = 50
+	sustainedBruteForceWindow    = 30 * time.Minute
+)
 
 // ComputeScore returns a 0-100 local threat score from an IPRecord.
 //
@@ -11,6 +19,10 @@ import "sort"
 //   - Auto-blocked floor: 50
 //   - Hard cap: 100
 func ComputeScore(r *IPRecord) int {
+	return computeScoreAt(r, time.Now())
+}
+
+func computeScoreAt(r *IPRecord, now time.Time) int {
 	score := 0
 
 	// Volume component - caps at 30
@@ -33,14 +45,10 @@ func ComputeScore(r *IPRecord) int {
 	if r.AttackCounts[AttackBruteForce] > 0 {
 		score += 15
 	}
-	// Sustained brute force from a single IP is a high-confidence attacker
-	// signal: no legitimate mail or login client retries a known-bad
-	// credential dozens of times. This lifts a persistent single-account
-	// brute (otherwise capped at volume 30 + 15 = 45) over the 70 block
-	// threshold, closing the gap where a slow brute that never trips the
-	// per-window realtime tracker still goes unblocked. The 50-event floor
-	// stays far above a user's brief stale-password mishap.
-	if r.AttackCounts[AttackBruteForce] >= 50 {
+	// The sustained-brute tier is rate-bound and tied to the raw mail-auth
+	// signal so stale passwords and unrelated brute-force checks cannot become
+	// block-eligible by slowly accumulating failures over retention.
+	if hasSustainedBruteForce(r, now) {
 		score += 30
 	}
 	if r.AttackCounts[AttackWAFBlock] > 5 {
@@ -66,6 +74,14 @@ func ComputeScore(r *IPRecord) int {
 	}
 
 	return score
+}
+
+func hasSustainedBruteForce(r *IPRecord, now time.Time) bool {
+	if r.AttackCounts[AttackBruteForce] < sustainedBruteForceThreshold ||
+		r.BruteForceSustainedAt.IsZero() {
+		return false
+	}
+	return !r.BruteForceSustainedAt.Before(now.Add(-sustainedBruteForceWindow))
 }
 
 // sortRecords sorts by threat score descending, then event count descending.

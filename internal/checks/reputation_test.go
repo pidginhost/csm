@@ -184,6 +184,24 @@ func TestLoadAllBlockedIPsFlatFile(t *testing.T) {
 	}
 }
 
+func TestLoadAllBlockedIPsIncludesPendingQueue(t *testing.T) {
+	dir := t.TempDir()
+	blockedState := map[string]interface{}{
+		"pending": []map[string]interface{}{
+			{"ip": "203.0.113.44", "reason": "rate limited"},
+		},
+	}
+	data, _ := json.Marshal(blockedState)
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	blocked := loadAllBlockedIPs(dir)
+	if !blocked["203.0.113.44"] {
+		t.Error("pending IP should be treated as handled")
+	}
+}
+
 func TestLoadAllBlockedIPsEmpty(t *testing.T) {
 	blocked := loadAllBlockedIPs(t.TempDir())
 	if len(blocked) != 0 {

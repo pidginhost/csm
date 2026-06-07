@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A single IP that hammers one mailbox with mail or SMTP login failures is now auto-blocked once its sustained activity is high enough to be unambiguously an attack, instead of going unblocked because per-event auth failures were never counted toward the attacker's local reputation score. A brief stale-password mishap from a real user stays well below the block threshold.
+- A single IP that hammers one mailbox with mail or SMTP login failures is now auto-blocked only after a recent high-rate pattern, instead of going unblocked because per-event auth failures were not counted toward the attacker's local reputation score. Slow stale-password retries from a real user stay below the block threshold.
 - A domain hitting the cPanel hourly defer/fail limit is no longer reported as a spam outbreak or auto-held on its own, since the same limit trips on inbound junk, full mailboxes, and bounce backscatter. It now surfaces as a deliverability event, and an outgoing-mail hold is applied only when outbound volume confirms a real outbreak, so clearing a false-positive hold no longer gets the account re-held.
 
 ## [3.13.1] - 2026-06-07
