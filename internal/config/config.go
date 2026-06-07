@@ -729,6 +729,12 @@ type Config struct {
 			AllowUsers   []string `yaml:"allow_users"`
 			AllowDomains []string `yaml:"allow_domains"`
 		} `yaml:"cloud_relay"`
+
+		// ForwardGuard is the opt-in protection that holds spam/backscatter
+		// forward copies before they relay to an external provider. Default
+		// off; dry-run first. The MTA enforces; CSM only generates the rule
+		// and owns the quarantine, so it is never in the live mail path.
+		ForwardGuard ForwardGuardConfig `yaml:"forward_guard"`
 	} `yaml:"email_protection" hotreload:"safe"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall" hotreload:"restart"`
@@ -1115,6 +1121,40 @@ func (c *Config) BotVerifyEnabled() bool {
 
 type defaultPresence struct {
 	smtpProbeThreshold bool
+	forwardGuard       forwardGuardPresence
+}
+
+// forwardGuardPresence records which forward-guard fields were set explicitly,
+// so an operator's literal false survives the safe default-true.
+type forwardGuardPresence struct {
+	dryRun            bool
+	retention         bool
+	bounceBackscatter bool
+	spamFlagged       bool
+	malware           bool
+	badSenderIP       bool
+	authFail          bool
+}
+
+// ForwardGuardConfig configures the email forward-guard. Enabled is the master
+// switch (default off); DryRun (default true) accounts without holding. Each
+// hold signal is individually toggleable; unset signals default on but only
+// matter once Enabled.
+type ForwardGuardConfig struct {
+	Enabled                 bool               `yaml:"enabled"`
+	DryRun                  bool               `yaml:"dry_run"`
+	HoldSignals             ForwardHoldSignals `yaml:"hold_signals"`
+	SkipForwarders          []string           `yaml:"skip_forwarders"`
+	QuarantineRetentionDays int                `yaml:"quarantine_retention_days"`
+}
+
+// ForwardHoldSignals toggles which layered signals may hold a forward copy.
+type ForwardHoldSignals struct {
+	BounceBackscatter bool `yaml:"bounce_backscatter"`
+	SpamFlagged       bool `yaml:"spam_flagged"`
+	Malware           bool `yaml:"malware"`
+	BadSenderIP       bool `yaml:"bad_sender_ip"`
+	AuthFail          bool `yaml:"auth_fail"`
 }
 
 func applyDefaults(cfg *Config, presence defaultPresence) {
@@ -1304,6 +1344,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.EmailProtection.RateWindowMin == 0 {
 		cfg.EmailProtection.RateWindowMin = 10
 	}
+
+	applyForwardGuardDefaults(&cfg.EmailProtection.ForwardGuard, presence.forwardGuard)
 
 	// EmailProtection.PHPRelay defaults. Freeze/DryRun are *bool and
 	// remain nil here -- accessors resolve the safe defaults
@@ -1524,6 +1566,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateDirectSMTPEgress(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateForwardGuard(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -1534,13 +1579,76 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 
 	var raw struct {
-		Thresholds map[string]yaml.Node `yaml:"thresholds"`
+		Thresholds      map[string]yaml.Node `yaml:"thresholds"`
+		EmailProtection struct {
+			ForwardGuard map[string]yaml.Node `yaml:"forward_guard"`
+		} `yaml:"email_protection"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
+
+	fg := raw.EmailProtection.ForwardGuard
+	_, presence.forwardGuard.dryRun = fg["dry_run"]
+	_, presence.forwardGuard.retention = fg["quarantine_retention_days"]
+	if node, ok := fg["hold_signals"]; ok {
+		var sig map[string]yaml.Node
+		if err := node.Decode(&sig); err != nil {
+			return presence, err
+		}
+		_, presence.forwardGuard.bounceBackscatter = sig["bounce_backscatter"]
+		_, presence.forwardGuard.spamFlagged = sig["spam_flagged"]
+		_, presence.forwardGuard.malware = sig["malware"]
+		_, presence.forwardGuard.badSenderIP = sig["bad_sender_ip"]
+		_, presence.forwardGuard.authFail = sig["auth_fail"]
+	}
 	return presence, nil
+}
+
+// applyForwardGuardDefaults fills unset forward-guard fields. dry_run and every
+// hold signal default on; an explicit false (tracked via presence) is kept.
+func applyForwardGuardDefaults(fg *ForwardGuardConfig, p forwardGuardPresence) {
+	if !p.dryRun {
+		fg.DryRun = true
+	}
+	if !p.bounceBackscatter {
+		fg.HoldSignals.BounceBackscatter = true
+	}
+	if !p.spamFlagged {
+		fg.HoldSignals.SpamFlagged = true
+	}
+	if !p.malware {
+		fg.HoldSignals.Malware = true
+	}
+	if !p.badSenderIP {
+		fg.HoldSignals.BadSenderIP = true
+	}
+	if !p.authFail {
+		fg.HoldSignals.AuthFail = true
+	}
+	if !p.retention {
+		fg.QuarantineRetentionDays = 14
+	}
+}
+
+// validateForwardGuard rejects nonsensical or unsafe forward-guard configs. The
+// guard only matters when enabled, so an off guard never fails validation.
+func validateForwardGuard(cfg *Config) error {
+	fg := cfg.EmailProtection.ForwardGuard
+	if !fg.Enabled {
+		return nil
+	}
+	if fg.QuarantineRetentionDays <= 0 {
+		return fmt.Errorf("email_protection.forward_guard.quarantine_retention_days must be > 0 when enabled")
+	}
+	// Enforce mode requires a signal exim can actually evaluate at routing time.
+	// spam_flagged/malware/auth_fail are accounted in dry-run but not yet
+	// enforceable, so enforcing with only those on would silently hold nothing.
+	if !fg.DryRun && !fg.HoldSignals.BounceBackscatter && !fg.HoldSignals.BadSenderIP {
+		return fmt.Errorf("email_protection.forward_guard: enforce mode (dry_run:false) requires bounce_backscatter or bad_sender_ip enabled; spam_flagged/malware/auth_fail are dry-run only until exim content scanning is enabled")
+	}
+	return nil
 }
 
 func validateReputation(cfg *Config) error {
