@@ -23,7 +23,7 @@ func FuzzStripControlHeaders(f *testing.F) {
 		// No X-CSM- header line may survive in the cleaned header block.
 		cleanHdr := string(clean[:headerBlockEnd(clean)])
 		for _, line := range strings.Split(cleanHdr, "\n") {
-			if strings.HasPrefix(strings.TrimRight(line, "\r"), hdrPrefix) {
+			if hasControlHeaderPrefix(strings.TrimRight(line, "\r")) {
 				t.Fatalf("X-CSM header leaked into cleaned output: %q", line)
 			}
 		}

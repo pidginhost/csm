@@ -10,12 +10,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -114,11 +116,7 @@ func (q *Quarantine) List() ([]HeldMessage, error) {
 
 func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
 	path := filepath.Join(q.sub(dir), id)
-	data, err := os.ReadFile(path) // #nosec G304 -- id is a Maildir entry name under the CSM-owned base
-	if err != nil {
-		return HeldMessage{}, err
-	}
-	info, err := os.Stat(path)
+	data, info, err := readMessageFile(path)
 	if err != nil {
 		return HeldMessage{}, err
 	}
@@ -142,7 +140,7 @@ func (q *Quarantine) Release(id string) error {
 	if path == "" {
 		return fmt.Errorf("held message %q not found", id)
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- id located under the CSM-owned base
+	data, _, err := readMessageFile(path)
 	if err != nil {
 		return err
 	}
@@ -184,7 +182,7 @@ func (q *Quarantine) PruneOlderThan(maxAge time.Duration) (int, error) {
 			if err != nil {
 				continue
 			}
-			if info.ModTime().Before(cutoff) {
+			if info.Mode().IsRegular() && info.ModTime().Before(cutoff) {
 				if err := os.Remove(filepath.Join(q.sub(dir), e.Name())); err == nil {
 					removed++
 				}
@@ -215,13 +213,42 @@ func (q *Quarantine) pathOf(id string) string {
 
 func (q *Quarantine) locate(id string) (dir, path string) {
 	id = filepath.Base(id) // defend against traversal in a caller-supplied id
+	if id == "" || id == "." || id == ".." || id == string(filepath.Separator) {
+		return "", ""
+	}
 	for _, d := range []string{"new", "cur"} {
 		p := filepath.Join(q.sub(d), id)
-		if _, err := os.Stat(p); err == nil {
+		info, err := os.Lstat(p)
+		if err != nil {
+			continue
+		}
+		if info.Mode().IsRegular() {
 			return d, p
 		}
 	}
 	return "", ""
+}
+
+func readMessageFile(path string) ([]byte, os.FileInfo, error) {
+	// #nosec G304 -- path is a located Maildir entry under the CSM-owned base;
+	// O_NOFOLLOW rejects symlink entries and symlink swaps before reading.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("held message %q is not a regular file", filepath.Base(path))
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
 }
 
 // headerValue collapses a control-header value to a single safe line (no CR/LF
@@ -272,18 +299,42 @@ func parseControlHeaders(data []byte) map[string]string {
 	header := data[:headerBlockEnd(data)]
 	for _, line := range strings.Split(string(header), "\n") {
 		line = strings.TrimRight(line, "\r")
-		if !strings.HasPrefix(line, hdrPrefix) {
-			continue
-		}
 		colon := strings.IndexByte(line, ':')
 		if colon < 0 {
 			continue
 		}
-		key := strings.TrimSpace(line[:colon])
-		val := strings.TrimSpace(line[colon+1:])
-		out[key] = val
+		key, ok := canonicalControlHeader(line[:colon])
+		if !ok {
+			continue
+		}
+		if _, exists := out[key]; exists {
+			continue
+		}
+		out[key] = headerValue(line[colon+1:])
 	}
 	return out
+}
+
+func canonicalControlHeader(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	switch {
+	case strings.EqualFold(name, hdrForwarder):
+		return hdrForwarder, true
+	case strings.EqualFold(name, hdrRecipient):
+		return hdrRecipient, true
+	case strings.EqualFold(name, hdrSender):
+		return hdrSender, true
+	case strings.EqualFold(name, hdrReasons):
+		return hdrReasons, true
+	case hasControlHeaderPrefix(name):
+		return name, true
+	default:
+		return "", false
+	}
+}
+
+func hasControlHeaderPrefix(line string) bool {
+	return len(line) >= len(hdrPrefix) && strings.EqualFold(line[:len(hdrPrefix)], hdrPrefix)
 }
 
 // stripControlHeaders removes every X-CSM-* header line, leaving the original
@@ -293,6 +344,7 @@ func parseControlHeaders(data []byte) map[string]string {
 func stripControlHeaders(data []byte) []byte {
 	var kept bytes.Buffer
 	rest := data
+	droppingControl := false
 	for len(rest) > 0 {
 		nl := bytes.IndexByte(rest, '\n')
 		var line []byte
@@ -308,7 +360,15 @@ func stripControlHeaders(data []byte) []byte {
 			kept.Write(rest)
 			return kept.Bytes()
 		}
-		if strings.HasPrefix(trimmed, hdrPrefix) {
+		if line[0] == ' ' || line[0] == '\t' {
+			if droppingControl {
+				continue
+			}
+			kept.Write(line)
+			continue
+		}
+		droppingControl = hasControlHeaderPrefix(trimmed)
+		if droppingControl {
 			continue
 		}
 		kept.Write(line)
@@ -319,6 +379,8 @@ func stripControlHeaders(data []byte) []byte {
 func runSendmail(sender, recipient string, body []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	sender = headerValue(sender)
+	recipient = headerValue(recipient)
 	// -i: do not treat lone "." as end; -f: envelope sender ("" yields null
 	// sender); -- terminates options so a hostile recipient cannot be a flag.
 	cmd := exec.CommandContext(ctx, sendmailPath, "-i", "-f", sender, "--", recipient) // #nosec G204 -- recipient guarded by --, args are envelope addresses
