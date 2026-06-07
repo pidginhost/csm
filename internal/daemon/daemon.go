@@ -78,6 +78,7 @@ type Daemon struct {
 	alertCh          chan alert.Finding
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
+	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
 	wg               sync.WaitGroup
@@ -402,6 +403,13 @@ func (d *Daemon) Run() error {
 	csmlog.Init()
 
 	csmlog.Info("CSM daemon starting")
+
+	// Install the scan shutdown context so an in-flight periodic scan aborts
+	// when shutdown cancels it, instead of blocking the shutdown drain for a
+	// whole tier. Cancelled right after stopCh closes in the shutdown path.
+	scanCtx, scanCancel := context.WithCancel(context.Background())
+	d.scanCancel = scanCancel
+	checks.SetScanShutdownContext(scanCtx)
 
 	// Wire the active config to the incident-singleton's auto-close
 	// loop BEFORE the singleton is constructed, so the loop reads the
@@ -922,7 +930,15 @@ func (d *Daemon) Run() error {
 	}
 
 	csmlog.Info("shutting down")
+	shutdownStart := time.Now()
 	close(d.stopCh)
+
+	// Abort any in-flight periodic scan so d.wg.Wait below is not held for a
+	// whole tier. Scanners observe d.stopCh between cycles; this cancels the
+	// scan currently executing inside RunTier.
+	if d.scanCancel != nil {
+		d.scanCancel()
+	}
 
 	// Log watchers own their files and close them when their Run loop exits on
 	// d.stopCh; d.wg.Wait below blocks until that happens. Calling Stop here
@@ -954,8 +970,10 @@ func (d *Daemon) Run() error {
 		d.controlListener.Stop()
 	}
 	d.stopYaraBackend()
+	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
+	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
@@ -978,6 +996,7 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] error closing state store: %v\n", ts(), err)
 	}
 	d.lock.Release()
+	csmlog.Info("daemon stopped", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon stopped\n", ts())
 	return nil
 }

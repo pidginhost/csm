@@ -226,6 +226,34 @@ type namedCheck struct {
 // ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
 
+// scanShutdownParent is the parent context for periodic scans. The daemon sets
+// it to a context it cancels on shutdown so an in-flight scan aborts promptly
+// instead of blocking the shutdown drain for a whole tier. One-shot callers
+// (CLI, control socket) never set it and get context.Background(), so their
+// behaviour is unchanged. A plain mutex-guarded var (not atomic.Value) because
+// the stored concrete context type varies between Background and cancelCtx.
+var (
+	scanShutdownMu     sync.RWMutex
+	scanShutdownParent context.Context = context.Background()
+)
+
+// SetScanShutdownContext installs the parent context used by periodic scans.
+// Passing nil resets to context.Background().
+func SetScanShutdownContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	scanShutdownMu.Lock()
+	scanShutdownParent = ctx
+	scanShutdownMu.Unlock()
+}
+
+func scanShutdownContext() context.Context {
+	scanShutdownMu.RLock()
+	defer scanShutdownMu.RUnlock()
+	return scanShutdownParent
+}
+
 // Tier identifies which set of checks to run.
 type Tier string
 
@@ -589,7 +617,10 @@ func runAll(cfg *config.Config, store *state.Store, dryRun bool) ([]alert.Findin
 func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
-	scanCtx, truncations := withAccountScanTruncationCollector(context.Background())
+	// Derive from the daemon-supplied shutdown parent so an in-flight scan
+	// aborts when the daemon cancels it, instead of running the whole tier to
+	// completion and stalling the shutdown drain.
+	scanCtx, truncations := withAccountScanTruncationCollector(scanShutdownContext())
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -642,6 +673,13 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 			case <-ctx.Done():
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
+				// Distinguish a real per-check timeout from a daemon shutdown.
+				// On shutdown the parent scan context is cancelled, so abort
+				// quietly rather than flooding the scan with bogus check_timeout
+				// findings for work that was deliberately interrupted.
+				if scanCtx.Err() != nil {
+					return
+				}
 				mu.Lock()
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
