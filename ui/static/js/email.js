@@ -992,12 +992,32 @@
 
     // ---------- Deliverability tab (outbound deferral intel) ----------
 
+    function deliverabilityArray(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
+    function formatIntegerString(digits) {
+        return digits.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    function formatDeferralCount(value) {
+        if (value == null || (typeof value === 'string' && value.trim() === '')) return '0';
+        if (typeof value === 'string') {
+            var trimmed = value.trim();
+            if (/^\d+$/.test(trimmed)) return formatIntegerString(trimmed);
+            value = Number(trimmed);
+        }
+        if (typeof value !== 'number' || !isFinite(value) || value <= 0) return '0';
+        return CSM.formatNumber(Math.floor(value));
+    }
+
     function reasonBadges(reasons) {
+        reasons = deliverabilityArray(reasons);
         if (!reasons || reasons.length === 0) return '<span class="text-muted">--</span>';
         var out = '';
         for (var i = 0; i < reasons.length; i++) {
-            var r = reasons[i];
-            out += '<span class="badge bg-secondary-lt me-1">' + CSM.esc(r.code) + ' &times;' + (r.count | 0) + '</span>';
+            var r = reasons[i] || {};
+            out += '<span class="badge bg-secondary-lt me-1">' + CSM.esc(r.code) + ' &times;' + CSM.esc(formatDeferralCount(r.count)) + '</span>';
         }
         return out;
     }
@@ -1021,13 +1041,14 @@
     }
 
     function renderDeliverability(data) {
-        var providers = data.providers || [];
-        var ips = data.outbound_ips || [];
-        var total = data.deferrals | 0;
+        data = data || {};
+        var providers = deliverabilityArray(data.providers);
+        var ips = deliverabilityArray(data.outbound_ips);
+        var total = formatDeferralCount(data.deferrals);
 
         var summary = document.getElementById('email-deliv-summary');
         if (summary) {
-            summary.textContent = total === 0
+            summary.textContent = total === '0'
                 ? 'No outbound deferrals seen in the recent log window.'
                 : total + ' outbound deferral(s) across ' + providers.length + ' provider(s) and ' + ips.length + ' sending IP(s).';
         }
@@ -1037,10 +1058,10 @@
         } else {
             var ph = '';
             for (var i = 0; i < providers.length; i++) {
-                var p = providers[i];
+                var p = providers[i] || {};
                 ph += '<tr>';
                 ph += '<td>' + providerBadge(p.provider) + '</td>';
-                ph += '<td class="text-end">' + (p.deferrals | 0) + '</td>';
+                ph += '<td class="text-end">' + CSM.esc(formatDeferralCount(p.deferrals)) + '</td>';
                 ph += '<td>' + reasonBadges(p.reasons) + '</td>';
                 ph += '</tr>';
             }
@@ -1053,15 +1074,16 @@
         } else {
             var ih = '';
             for (var j = 0; j < ips.length; j++) {
-                var ip = ips[j];
+                var ip = ips[j] || {};
                 var by = '';
-                var byList = ip.providers || [];
+                var byList = deliverabilityArray(ip.providers);
                 for (var k = 0; k < byList.length; k++) {
-                    by += providerBadge(byList[k].provider) + '<span class="text-muted small me-2">&times;' + (byList[k].count | 0) + '</span>';
+                    var item = byList[k] || {};
+                    by += providerBadge(item.provider) + '<span class="text-muted small me-2">&times;' + CSM.esc(formatDeferralCount(item.count)) + '</span>';
                 }
                 ih += '<tr>';
                 ih += '<td class="font-monospace small">' + CSM.esc(ip.ip) + '</td>';
-                ih += '<td class="text-end">' + (ip.deferrals | 0) + '</td>';
+                ih += '<td class="text-end">' + CSM.esc(formatDeferralCount(ip.deferrals)) + '</td>';
                 ih += '<td>' + (by || '<span class="text-muted">--</span>') + '</td>';
                 ih += '</tr>';
             }

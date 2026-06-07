@@ -924,9 +924,42 @@ func TestEmailDeliverabilityRenderEscapesProviderValues(t *testing.T) {
 		`providerBadge(p.provider)`, // provider escaped inside providerBadge (see forwarder escape test)
 		`CSM.esc(ip.ip)`,
 		`CSM.esc(r.code)`,
+		`CSM.esc(formatDeferralCount(r.count))`,
+		`CSM.esc(formatDeferralCount(p.deferrals))`,
+		`CSM.esc(formatDeferralCount(ip.deferrals))`,
+		`CSM.esc(formatDeferralCount(item.count))`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("email.js deliverability renderer missing escape fragment %q", fragment)
+		}
+	}
+}
+
+func TestEmailDeliverabilityCountsPreserveLargeValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "// ---------- Deliverability tab")
+	end := strings.Index(text, "// ---------- Tab activation")
+	if start < 0 || end < start {
+		t.Fatal("email.js missing deliverability block")
+	}
+	block := text[start:end]
+	for _, banned := range []string{`| 0`, `|0`} {
+		if strings.Contains(block, banned) {
+			t.Fatalf("deliverability counts must not use 32-bit bitwise coercion %q", banned)
+		}
+	}
+	for _, fragment := range []string{
+		`function formatDeferralCount(value)`,
+		`if (/^\d+$/.test(trimmed)) return formatIntegerString(trimmed);`,
+		`return CSM.formatNumber(Math.floor(value));`,
+		`return '0';`,
+	} {
+		if !strings.Contains(block, fragment) {
+			t.Fatalf("email.js deliverability count formatter missing fragment %q", fragment)
 		}
 	}
 }
