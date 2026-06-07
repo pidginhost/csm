@@ -19,8 +19,15 @@ func TestClassifyProvider(t *testing.T) {
 		{"a@ymail.com", ProviderYahoo},
 		{"a@outlook.com", ProviderOutlook},
 		{"a@hotmail.com", ProviderOutlook},
+		{"a@hotmail.co.uk", ProviderOutlook},
 		{"a@live.ro", ProviderOutlook},
+		{"a@outlook.de", ProviderOutlook},
 		{"a@somecorp.example", ProviderExternal},
+		{"a@yahoo.fanclub.ro", ProviderExternal},
+		{"a@live.mycorp.test", ProviderExternal},
+		{"a@live.ly", ProviderExternal},
+		{"a@livestream.com", ProviderExternal},
+		{"a@liverpool.com", ProviderExternal},
 		{"A@GMAIL.COM", ProviderGmail}, // case-insensitive
 	}
 	for _, c := range cases {
@@ -90,6 +97,75 @@ func TestParseForwarderLine(t *testing.T) {
 			t.Error("local-only alias must report no external destinations")
 		}
 	})
+
+	t.Run("bare local part keeps local copy when mixed with external", func(t *testing.T) {
+		fwd, ok := parseForwarderLine("psihologa.test", "owner: owner, ext@gmail.com", local)
+		if !ok {
+			t.Fatal("expected a forwarder")
+		}
+		if !fwd.KeepLocal || fwd.ForwardOnly {
+			t.Errorf("bare local part must keep local copy, got KeepLocal=%v ForwardOnly=%v", fwd.KeepLocal, fwd.ForwardOnly)
+		}
+		if got := fwd.Destinations[0].Provider; got != ProviderLocal {
+			t.Errorf("bare local part provider = %q, want %q", got, ProviderLocal)
+		}
+		if !fwd.HasExternal() {
+			t.Error("mixed local and external destinations must report external")
+		}
+	})
+
+	t.Run("quoted mailbox addresses are classified", func(t *testing.T) {
+		fwd, ok := parseForwarderLine("psihologa.test", "owner: \"quoted-address@outlook.com\", \"sales team\"@gmail.com", local)
+		if !ok {
+			t.Fatal("expected a forwarder")
+		}
+		if len(fwd.Destinations) != 2 {
+			t.Fatalf("want 2 destinations, got %d", len(fwd.Destinations))
+		}
+		if got := fwd.Destinations[0]; got.Address != "quoted-address@outlook.com" || got.Provider != ProviderOutlook {
+			t.Errorf("whole-quoted destination = %+v, want canonical Outlook address", got)
+		}
+		if got := fwd.Destinations[1]; got.Address != "\"sales team\"@gmail.com" || got.Provider != ProviderGmail {
+			t.Errorf("quoted local-part destination = %+v, want Gmail address", got)
+		}
+	})
+
+	t.Run("hosting domain is normalized", func(t *testing.T) {
+		fwd, ok := parseForwarderLine("PSIHOLOGA.TEST.", "contact: ext@gmail.com", local)
+		if !ok {
+			t.Fatal("expected a forwarder")
+		}
+		if fwd.Source != "contact@psihologa.test" || fwd.Domain != "psihologa.test" {
+			t.Errorf("forwarder domain not normalized: %+v", fwd)
+		}
+	})
+}
+
+func TestIsAddressDestination_BounceAndTaggedAddresses(t *testing.T) {
+	for _, dest := range []string{
+		"SRS0=HHH=TT=sender.example=alice@yahoo.com@forwarder.test",
+		"list-owner+bob=example.com@gmail.com",
+		"sales+vip@outlook.com",
+		"\"sales team\"@gmail.com",
+		"\"quoted-address@outlook.com\"",
+	} {
+		if !isAddressDestination(dest) {
+			t.Errorf("isAddressDestination(%q) = false, want true", dest)
+		}
+	}
+}
+
+func TestIsAddressDestination_QuotedDirectives(t *testing.T) {
+	for _, dest := range []string{
+		"\"|/usr/local/cpanel/bin/autorespond\"",
+		"\"/dev/null\"",
+		"\":fail: No Such User Here\"",
+		"\"unterminated@gmail.com",
+	} {
+		if isAddressDestination(dest) {
+			t.Errorf("isAddressDestination(%q) = true, want false", dest)
+		}
+	}
 }
 
 func TestForwarderHasExternal(t *testing.T) {

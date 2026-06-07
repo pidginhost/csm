@@ -19,21 +19,24 @@ type Source interface {
 }
 
 // CPanelSource reads forwarders from cPanel's /etc/valiases directory, with
-// local domains from /etc/localdomains and owners from /etc/userdomains.
+// local domains from /etc/localdomains and /etc/virtualdomains and owners from
+// /etc/userdomains.
 type CPanelSource struct {
-	fs               FS
-	valiasGlob       string
-	localDomainsPath string
-	userDomainsPath  string
+	fs                 FS
+	valiasGlob         string
+	localDomainsPath   string
+	virtualDomainsPath string
+	userDomainsPath    string
 }
 
 // NewCPanelSource returns a source reading the standard cPanel locations.
 func NewCPanelSource() *CPanelSource {
 	return &CPanelSource{
-		fs:               osFS{},
-		valiasGlob:       "/etc/valiases/*",
-		localDomainsPath: "/etc/localdomains",
-		userDomainsPath:  "/etc/userdomains",
+		fs:                 osFS{},
+		valiasGlob:         "/etc/valiases/*",
+		localDomainsPath:   "/etc/localdomains",
+		virtualDomainsPath: "/etc/virtualdomains",
+		userDomainsPath:    "/etc/userdomains",
 	}
 }
 
@@ -51,7 +54,7 @@ func (s *CPanelSource) Forwarders() ([]Forwarder, error) {
 
 	var out []Forwarder
 	for _, path := range files {
-		domain := strings.ToLower(filepath.Base(path))
+		domain := normalizeDomain(filepath.Base(path))
 		content, err := s.fs.ReadFile(path)
 		if err != nil {
 			continue
@@ -71,26 +74,30 @@ func (s *CPanelSource) Forwarders() ([]Forwarder, error) {
 	return out, nil
 }
 
-// loadLocalDomains reads /etc/localdomains (one domain per line) into a
-// lowercased set. Returns an empty set when the file is unavailable, which
-// makes every destination classify as external -- the safe direction for a
-// reputation tool (over-report external, never hide it).
+// loadLocalDomains reads cPanel's local-domain files into a normalized set.
+// Returns an empty set when the files are unavailable, which makes every
+// destination classify as external -- the safe direction for a reputation tool
+// (over-report external, never hide it).
 func (s *CPanelSource) loadLocalDomains() map[string]bool {
 	domains := make(map[string]bool)
-	content, err := s.fs.ReadFile(s.localDomainsPath)
-	if err != nil {
-		return domains
-	}
-	for _, line := range strings.Split(string(content), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+	for _, path := range []string{s.localDomainsPath, s.virtualDomainsPath} {
+		if path == "" {
 			continue
 		}
-		// Tolerate "domain: user" form as well as a bare domain.
-		if idx := strings.IndexByte(line, ':'); idx > 0 {
-			line = strings.TrimSpace(line[:idx])
+		content, err := s.fs.ReadFile(path)
+		if err != nil {
+			continue
 		}
-		domains[strings.ToLower(line)] = true
+		for _, line := range strings.Split(string(content), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			domain := configDomain(line)
+			if domain != "" {
+				domains[domain] = true
+			}
+		}
 	}
 	return domains
 }
@@ -111,11 +118,23 @@ func (s *CPanelSource) loadOwners() map[string]string {
 		if idx <= 0 {
 			continue
 		}
-		domain := strings.ToLower(strings.TrimSpace(line[:idx]))
+		domain := configDomain(line[:idx])
 		owner := strings.TrimSpace(line[idx+1:])
 		if domain != "" && owner != "" {
 			owners[domain] = owner
 		}
 	}
 	return owners
+}
+
+func configDomain(line string) string {
+	line = strings.TrimSpace(line)
+	if idx := strings.IndexByte(line, ':'); idx >= 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	domain := normalizeDomain(line)
+	if domain == "" || strings.ContainsAny(domain, " \t\r\n/:\\") {
+		return ""
+	}
+	return domain
 }

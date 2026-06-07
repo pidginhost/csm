@@ -7,10 +7,15 @@ import (
 
 // fakeFS is an in-memory FS for deterministic enumeration tests.
 type fakeFS struct {
-	files map[string]string // path -> content
+	files    map[string]string // path -> content
+	readErrs map[string]error
+	globErr  error
 }
 
 func (f fakeFS) Glob(pattern string) ([]string, error) {
+	if f.globErr != nil {
+		return nil, f.globErr
+	}
 	var out []string
 	for p := range f.files {
 		if ok, _ := matchGlob(pattern, p); ok {
@@ -22,6 +27,9 @@ func (f fakeFS) Glob(pattern string) ([]string, error) {
 }
 
 func (f fakeFS) ReadFile(name string) ([]byte, error) {
+	if err, ok := f.readErrs[name]; ok {
+		return nil, err
+	}
 	c, ok := f.files[name]
 	if !ok {
 		return nil, errNotFound
@@ -136,5 +144,103 @@ func TestCPanelSource_NoLocalDomainsClassifiesAllExternal(t *testing.T) {
 	}
 	if len(fwds) != 1 || !fwds[0].HasExternal() {
 		t.Errorf("want 1 external forwarder when localdomains missing, got %+v", fwds)
+	}
+}
+
+func TestCPanelSource_VirtualDomainsAreLocal(t *testing.T) {
+	fs := fakeFS{files: map[string]string{
+		"/etc/virtualdomains":       "hosted.test: owner\n",
+		"/etc/valiases/hosted.test": "team: team@hosted.test\n",
+	}}
+	src := &CPanelSource{
+		fs:                 fs,
+		valiasGlob:         "/etc/valiases/*",
+		localDomainsPath:   "/etc/localdomains",
+		virtualDomainsPath: "/etc/virtualdomains",
+		userDomainsPath:    "/etc/userdomains",
+	}
+
+	fwds, err := src.Forwarders()
+	if err != nil {
+		t.Fatalf("Forwarders() error: %v", err)
+	}
+	if len(fwds) != 1 {
+		t.Fatalf("got %d forwarders, want 1: %+v", len(fwds), fwds)
+	}
+	if fwds[0].HasExternal() || fwds[0].ForwardOnly || !fwds[0].KeepLocal {
+		t.Errorf("virtualdomains target should be local, got %+v", fwds[0])
+	}
+}
+
+func TestCPanelSource_LoadersTolerateMalformedFiles(t *testing.T) {
+	fs := fakeFS{files: map[string]string{
+		"/etc/localdomains": "" +
+			"# comment\n" +
+			"HOSTED.TEST.\n" +
+			": missing-domain\n" +
+			"external.test: owner\n" +
+			"bad line with spaces\n",
+		"/etc/userdomains": "" +
+			"malformed\n" +
+			": missing-domain\n" +
+			"Hosted.Test.: siteowner\n" +
+			"other.test:\n",
+		"/etc/valiases/hosted.test": "team: team@hosted.test, ext@gmail.com\n",
+	}}
+	src := &CPanelSource{
+		fs:               fs,
+		valiasGlob:       "/etc/valiases/*",
+		localDomainsPath: "/etc/localdomains",
+		userDomainsPath:  "/etc/userdomains",
+	}
+	localDomains := src.loadLocalDomains()
+	for _, malformed := range []string{": missing-domain", "bad line with spaces"} {
+		if localDomains[malformed] {
+			t.Fatalf("malformed local-domain line %q must be skipped", malformed)
+		}
+	}
+	if !localDomains["external.test"] {
+		t.Fatal("domain: owner form should still load the domain part")
+	}
+
+	fwds, err := src.Forwarders()
+	if err != nil {
+		t.Fatalf("Forwarders() error: %v", err)
+	}
+	if len(fwds) != 1 {
+		t.Fatalf("got %d forwarders, want 1: %+v", len(fwds), fwds)
+	}
+	if fwds[0].Owner != "siteowner" {
+		t.Errorf("owner = %q, want siteowner", fwds[0].Owner)
+	}
+	if !fwds[0].KeepLocal || fwds[0].ForwardOnly || !fwds[0].HasExternal() {
+		t.Errorf("mixed local/external forwarder classified incorrectly: %+v", fwds[0])
+	}
+}
+
+func TestCPanelSource_SkipsUnreadableValiasFile(t *testing.T) {
+	fs := fakeFS{
+		files: map[string]string{
+			"/etc/localdomains":         "hosted.test\n",
+			"/etc/valiases/broken.test": "",
+			"/etc/valiases/hosted.test": "team: ext@gmail.com\n",
+		},
+		readErrs: map[string]error{
+			"/etc/valiases/broken.test": errNotFound,
+		},
+	}
+	src := &CPanelSource{
+		fs:               fs,
+		valiasGlob:       "/etc/valiases/*",
+		localDomainsPath: "/etc/localdomains",
+		userDomainsPath:  "/etc/userdomains",
+	}
+
+	fwds, err := src.Forwarders()
+	if err != nil {
+		t.Fatalf("Forwarders() error: %v", err)
+	}
+	if len(fwds) != 1 || fwds[0].Source != "team@hosted.test" {
+		t.Fatalf("unreadable valias file should be skipped, got %+v", fwds)
 	}
 }

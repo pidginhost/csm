@@ -7,7 +7,11 @@
 // testable without root or a live mail server.
 package inventory
 
-import "strings"
+import (
+	"strings"
+
+	"golang.org/x/net/publicsuffix"
+)
 
 // ProviderClass labels a forwarder destination by where it delivers. Free
 // providers (Yahoo/Gmail/Outlook) are split out because forwarding spam to
@@ -22,26 +26,42 @@ const (
 	ProviderExternal ProviderClass = "external"
 )
 
-// freeProviderDomains maps known free-provider mail domains to their class.
-// Matched by exact domain or, for multi-ccTLD families like Yahoo, by the
-// leading label (yahoo.*). Lowercase keys; lookups lowercase the input.
+// freeProviderExact maps known free-provider mail domains to their class.
+// Lowercase keys; lookups lowercase the input.
 var freeProviderExact = map[string]ProviderClass{
 	"gmail.com":      ProviderGmail,
 	"googlemail.com": ProviderGmail,
-	"ymail.com":      ProviderYahoo,
-	"rocketmail.com": ProviderYahoo,
-	"hotmail.com":    ProviderOutlook,
-	"outlook.com":    ProviderOutlook,
-	"msn.com":        ProviderOutlook,
-}
 
-// freeProviderPrefixes matches provider families that span many ccTLDs
-// (yahoo.com, yahoo.co.uk, yahoo.fr; live.com, live.ro; hotmail.co.uk).
-var freeProviderPrefixes = map[string]ProviderClass{
-	"yahoo.":   ProviderYahoo,
-	"hotmail.": ProviderOutlook,
-	"outlook.": ProviderOutlook,
-	"live.":    ProviderOutlook,
+	"rocketmail.com": ProviderYahoo,
+	"yahoo.ca":       ProviderYahoo,
+	"yahoo.co.in":    ProviderYahoo,
+	"yahoo.co.jp":    ProviderYahoo,
+	"yahoo.co.uk":    ProviderYahoo,
+	"yahoo.com":      ProviderYahoo,
+	"yahoo.com.au":   ProviderYahoo,
+	"yahoo.com.br":   ProviderYahoo,
+	"yahoo.com.mx":   ProviderYahoo,
+	"yahoo.de":       ProviderYahoo,
+	"yahoo.es":       ProviderYahoo,
+	"yahoo.fr":       ProviderYahoo,
+	"yahoo.it":       ProviderYahoo,
+	"yahoo.ro":       ProviderYahoo,
+	"ymail.com":      ProviderYahoo,
+
+	"hotmail.co.uk": ProviderOutlook,
+	"hotmail.com":   ProviderOutlook,
+	"hotmail.de":    ProviderOutlook,
+	"hotmail.fr":    ProviderOutlook,
+	"live.co.uk":    ProviderOutlook,
+	"live.com":      ProviderOutlook,
+	"live.com.au":   ProviderOutlook,
+	"live.de":       ProviderOutlook,
+	"live.fr":       ProviderOutlook,
+	"live.it":       ProviderOutlook,
+	"live.ro":       ProviderOutlook,
+	"msn.com":       ProviderOutlook,
+	"outlook.com":   ProviderOutlook,
+	"outlook.de":    ProviderOutlook,
 }
 
 // Destination is one resolved target of a forwarder.
@@ -86,24 +106,37 @@ func (f Forwarder) HasFreeProvider() bool {
 // classifyProvider returns the provider class of a destination address.
 // localDomains are the domains hosted on this server (lowercased keys).
 func classifyProvider(addr string, localDomains map[string]bool) ProviderClass {
+	addr = strings.TrimSpace(addr)
 	at := strings.LastIndexByte(addr, '@')
 	if at < 0 || at >= len(addr)-1 {
 		// No domain: a bare local part is delivered to the local mailbox.
 		return ProviderLocal
 	}
-	domain := strings.ToLower(addr[at+1:])
+	domain := normalizeDomain(addr[at+1:])
 	if localDomains[domain] {
 		return ProviderLocal
 	}
 	if c, ok := freeProviderExact[domain]; ok {
 		return c
 	}
-	for prefix, c := range freeProviderPrefixes {
-		if strings.HasPrefix(domain, prefix) {
+	if registered, ok := registeredDomain(domain); ok {
+		if c, ok := freeProviderExact[registered]; ok {
 			return c
 		}
 	}
 	return ProviderExternal
+}
+
+func registeredDomain(domain string) (string, bool) {
+	registered, err := publicsuffix.EffectiveTLDPlusOne(domain)
+	if err != nil {
+		return "", false
+	}
+	return normalizeDomain(registered), true
+}
+
+func normalizeDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
 // parseForwarderLine parses one alias/valias line ("local_part: dest[, dest]")
@@ -113,6 +146,10 @@ func classifyProvider(addr string, localDomains map[string]bool) ProviderClass {
 // reputation risk. A line is still returned for purely local aliases so the
 // inventory is complete; callers filter on HasExternal as needed.
 func parseForwarderLine(domain, line string, localDomains map[string]bool) (Forwarder, bool) {
+	domain = normalizeDomain(domain)
+	if domain == "" {
+		return Forwarder{}, false
+	}
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
 		return Forwarder{}, false
@@ -158,6 +195,13 @@ func parseForwarderLine(domain, line string, localDomains map[string]bool) (Forw
 // isAddressDestination reports whether a valias destination is a mailbox
 // address (as opposed to a pipe, discard, fail, or file delivery).
 func isAddressDestination(dest string) bool {
+	dest = strings.TrimSpace(dest)
+	if quotedLocalPartAddress(dest) {
+		return true
+	}
+	if len(dest) >= 2 && dest[0] == '"' && dest[len(dest)-1] == '"' {
+		dest = strings.TrimSpace(dest[1 : len(dest)-1])
+	}
 	switch {
 	case dest == "":
 		return false
@@ -167,20 +211,44 @@ func isAddressDestination(dest string) bool {
 		return false
 	case strings.HasPrefix(dest, "/"): // file / /dev/null
 		return false
-	case strings.HasPrefix(dest, "\""): // quoted local delivery directive
+	case strings.HasPrefix(dest, "\""): // malformed quote or quoted directive
 		return false
 	}
 	return true
 }
 
+func quotedLocalPartAddress(dest string) bool {
+	if !strings.HasPrefix(dest, "\"") {
+		return false
+	}
+	closing := strings.IndexByte(dest[1:], '"')
+	if closing < 0 {
+		return false
+	}
+	closing++ // convert offset in dest[1:] to index in dest
+	return closing+1 < len(dest) && dest[closing+1] == '@'
+}
+
 func newDestination(addr string, localDomains map[string]bool) Destination {
+	addr = normalizeAddressDestination(addr)
 	domain := ""
 	if at := strings.LastIndexByte(addr, '@'); at >= 0 && at < len(addr)-1 {
-		domain = strings.ToLower(addr[at+1:])
+		domain = normalizeDomain(addr[at+1:])
 	}
 	return Destination{
 		Address:  addr,
 		Domain:   domain,
 		Provider: classifyProvider(addr, localDomains),
 	}
+}
+
+func normalizeAddressDestination(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if len(addr) >= 2 && addr[0] == '"' && addr[len(addr)-1] == '"' {
+		inner := strings.TrimSpace(addr[1 : len(addr)-1])
+		if strings.Contains(inner, "@") {
+			return inner
+		}
+	}
+	return addr
 }
