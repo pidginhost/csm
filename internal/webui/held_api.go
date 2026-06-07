@@ -2,11 +2,17 @@ package webui
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/mailfwd/quarantine"
 	"github.com/pidginhost/csm/internal/platform"
 )
+
+// heldIDRe bounds a held-message id to a Maildir filename shape. The store also
+// defends (filepath.Base + regular-file check), but validating at the handler
+// boundary rejects traversal/control input before it reaches the filesystem.
+var heldIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // heldForwardStore is the held-forward quarantine surface the webui needs.
 // *quarantine.Quarantine satisfies it; tests use a fake.
@@ -63,6 +69,11 @@ func (s *Server) apiEmailHeldAction(w http.ResponseWriter, r *http.Request) {
 	action := ""
 	if len(parts) == 2 {
 		action = parts[1]
+	}
+
+	if !heldIDRe.MatchString(id) || strings.Contains(id, "..") {
+		writeJSONError(w, "Invalid held message ID", http.StatusBadRequest)
+		return
 	}
 
 	if s.forwardHeld == nil {

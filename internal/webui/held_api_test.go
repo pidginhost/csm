@@ -119,6 +119,24 @@ func TestApiEmailHeldActionUnavailableWhenNoStore(t *testing.T) {
 	}
 }
 
+func TestApiEmailHeldActionRejectsInvalidID(t *testing.T) {
+	fake := &fakeHeldStore{}
+	s := newTestServer(t, "tok")
+	s.forwardHeld = fake
+	for _, id := range []string{"..", "../etc/passwd", "a b", "a\tb", strings.Repeat("x", 200)} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/email/held/x", nil)
+		req.URL.Path = "/api/v1/email/held/" + id // set raw id without re-parsing the URL
+		s.apiEmailHeldAction(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("id %q: status = %d, want 400", id, w.Code)
+		}
+	}
+	if len(fake.deleted) != 0 || len(fake.released) != 0 {
+		t.Errorf("store touched with an invalid id: del=%v rel=%v", fake.deleted, fake.released)
+	}
+}
+
 func TestApiEmailHeldListMethodNotAllowed(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.forwardHeld = &fakeHeldStore{}
