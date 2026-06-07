@@ -67,6 +67,15 @@ func TestPrefsAndUndoCapabilitiesAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestMailVisibilityCapabilitiesAlwaysPresent(t *testing.T) {
+	caps := Capabilities()
+	for _, want := range []string{"mail.filter.exfil.v1", "mail.queue.composition.v1"} {
+		if !contains(caps, want) {
+			t.Errorf("%s capability missing", want)
+		}
+	}
+}
+
 // TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
 // "bpf-connection-tracker" string appears iff the connection_tracker
 // backend has been set to BPF.

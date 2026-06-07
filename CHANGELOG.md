@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Email Security page has a new Forwarders tab listing every mail forwarder on the host, where it delivers, who owns it, and whether mail also stays in a local mailbox, so operators can see at a glance which accounts relay mail off-server to free providers.
+- The Email Security page has a new Deliverability tab showing which mail providers are throttling the server and which sending IPs are affected, with each provider's stated reason, so operators can see why outbound mail is backing up.
+- The Email Security Queue tab now breaks down the mail queue into real mail versus null-sender bounce backscatter, with frozen count, oldest age, and the most stuck recipients, so operators can tell a genuine backlog from junk filling the queue.
+- The Email Security Queue tab can flush frozen null-sender bounce messages from the mail queue in one click, clearing undeliverable backscatter without touching real mail or messages still being retried.
+
 ### Fixed
 
 - The Email Security action-groups list now orders groups of the same severity by event count, so the busiest clusters surface at the top instead of just the most recent.

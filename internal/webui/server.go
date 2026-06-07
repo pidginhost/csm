@@ -27,6 +27,8 @@ import (
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/mailfwd/intel"
+	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -71,6 +73,10 @@ type Server struct {
 	geoIPDB            atomic.Pointer[geoip.DB]
 	emailQuarantine    *emailav.Quarantine
 	emailAVWatcherMode string
+	forwarderSource    inventory.Source
+	deferralReporter   intel.Reporter
+	queueReporter      intel.QueueReporter
+	queueFlusher       intel.QueueFlusher
 	version            string
 	perfSnapshot       atomic.Pointer[perfMetrics]
 	perfCancel         context.CancelFunc
@@ -102,12 +108,16 @@ type Server struct {
 // New creates a new web UI server.
 func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	s := &Server{
-		cfg:           cfg,
-		store:         store,
-		startTime:     time.Now(),
-		loginAttempts: make(map[string][]time.Time),
-		apiRequests:   make(map[string][]time.Time),
-		pruneDone:     make(chan struct{}),
+		cfg:              cfg,
+		store:            store,
+		startTime:        time.Now(),
+		loginAttempts:    make(map[string][]time.Time),
+		apiRequests:      make(map[string][]time.Time),
+		pruneDone:        make(chan struct{}),
+		forwarderSource:  selectForwarderSource(),
+		deferralReporter: selectDeferralReporter(),
+		queueReporter:    selectQueueReporter(),
+		queueFlusher:     selectQueueFlusher(),
 	}
 
 	// Check if UI directory exists on disk
@@ -224,6 +234,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
 	mux.Handle("/api/v1/email/av/status", s.requireAuth(http.HandlerFunc(s.apiEmailAVStatus)))
 	mux.Handle("/api/v1/email/groups", s.requireRead(http.HandlerFunc(s.apiEmailGroups)))
+	mux.Handle("/api/v1/email/forwarders", s.requireRead(http.HandlerFunc(s.apiEmailForwarders)))
+	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
+	mux.Handle("/api/v1/email/queue-composition", s.requireRead(http.HandlerFunc(s.apiEmailQueueComposition)))
+	mux.Handle("/api/v1/email/queue/flush-backscatter", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailFlushBackscatter))))
 	mux.Handle("/api/v1/performance", s.requireAuth(http.HandlerFunc(s.apiPerformance)))
 	mux.Handle("/api/v1/perf/fix-error-log", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixErrorLog))))
 	mux.Handle("/api/v1/perf/fix-display-errors", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPerfFixDisplayErrors))))

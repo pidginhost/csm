@@ -40,6 +40,7 @@ func Capabilities() []string {
 		"webui.prefs.v1",       // operator preferences + saved views
 		"webui.undo.v1",        // bulk-action undo
 		"mail.filter.exfil.v1", // BEC mail-filter exfiltration detection
+		"mail.queue.composition.v1",
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")
