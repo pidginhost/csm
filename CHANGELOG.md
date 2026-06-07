@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A corrupt auto-block or alert-suppression state file is now logged instead of being silently discarded, so operators notice when queued blocks, escalation history, or suppression data are lost.
 - Reverse-DNS enrichment now caps how many lookups run at once, so a wedged resolver can no longer accumulate stuck background work under a flood of distinct addresses.
 - Default ModSecurity no-escalate seeding now writes the rule and completion marker together, so startup retries after a failed seed instead of treating it as done.
+- Daemon shutdown now cancels an in-flight security scan without clearing the last completed scan state, so stop and restart are no longer delayed by tens of seconds; shutdown phases are logged with timing.
 
 ## [3.13.1] - 2026-06-07
 

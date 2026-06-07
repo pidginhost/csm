@@ -174,6 +174,27 @@ func TestStoreLatestScanFindingsFiltersVolatileAndRefreshesCorrelation(t *testin
 	}
 }
 
+func TestStoreLatestScanFindingsNoopsWithoutPurgeOrFindings(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "account_scan_truncated", Message: "old truncation"},
+		{Check: "cross_account_malware", Message: "old correlation"},
+		{Check: "webshell", Message: "old webshell"},
+	})
+
+	StoreLatestScanFindings(st, nil, nil)
+
+	got := st.LatestFindings()
+	for _, check := range []string{"account_scan_truncated", "cross_account_malware", "webshell"} {
+		if !containsFindingCheck(got, check) {
+			t.Fatalf("finding %q was removed by an empty update: %+v", check, got)
+		}
+	}
+}
+
 func containsFindingCheck(findings []alert.Finding, check string) bool {
 	for _, f := range findings {
 		if f.Check == check {
