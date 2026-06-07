@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daemon now refuses to start when migrating its on-disk state fails, instead of booting on partial security state and silently retrying the same broken migration on every restart.
 - A corrupt auto-block or alert-suppression state file is now logged instead of being silently discarded, so operators notice when queued blocks, escalation history, or suppression data are lost.
 - Reverse-DNS enrichment now caps how many lookups run at once, so a wedged resolver can no longer accumulate stuck background work under a flood of distinct addresses.
+- Default ModSecurity no-escalate seeding now writes the rule and completion marker together, so startup retries after a failed seed instead of treating it as done.
 
 ## [3.13.1] - 2026-06-07
 

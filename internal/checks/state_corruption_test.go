@@ -63,3 +63,35 @@ func TestLoadAllBlockedIPsWarnsOnCorruptFirewallState(t *testing.T) {
 		t.Errorf("expected a warning naming firewall state.json on corrupt suppression state; got %q", out)
 	}
 }
+
+func TestLoadAllBlockedIPsWarnsOnCorruptLegacyState(t *testing.T) {
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte("{ not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStderr(t, func() { loadAllBlockedIPs(dir) })
+	if !strings.Contains(out, "blocked_ips.json") {
+		t.Errorf("expected a warning naming blocked_ips.json on corrupt suppression state; got %q", out)
+	}
+}
+
+func TestStateLoadersDoNotWarnOnMissingFiles(t *testing.T) {
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+
+	dir := t.TempDir()
+	out := captureStderr(t, func() {
+		loadBlockState(dir)
+		loadPermBlockTracker(dir)
+		loadAllBlockedIPs(dir)
+	})
+	if out != "" {
+		t.Fatalf("missing state files should be a clean no-op; stderr = %q", out)
+	}
+}
