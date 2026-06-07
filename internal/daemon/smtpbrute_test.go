@@ -387,3 +387,26 @@ func TestSMTPAuthTracker_ConcurrentNoRace(t *testing.T) {
 	wg.Wait()
 	tr.Purge() // must not race
 }
+
+// Diagnostic counters let the daemon log whether Record is actually invoked
+// and whether it ever emits, so a silent "0 smtp_bruteforce in production
+// despite thousands of auth failures" can be pinned from monitor.log instead
+// of guessed at.
+func TestSMTPAuthTracker_StatsCountCallsAndEmits(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 7, 5, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+
+	for i := 0; i < 6; i++ {
+		tr.Record("203.0.113.9", "victim")
+		clock.t = clock.t.Add(time.Second)
+	}
+
+	calls, emits := tr.Stats()
+	if calls != 6 {
+		t.Errorf("record calls = %d, want 6", calls)
+	}
+	// Fires once at the 5th call (per-IP threshold), then suppressed.
+	if emits != 1 {
+		t.Errorf("findings emitted = %d, want 1", emits)
+	}
+}

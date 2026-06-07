@@ -687,6 +687,14 @@ func TestAutoBlock_SMTPBruteForceMessageFormatIsExtractable(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_LocalThreatScoreMessageFormatIsExtractable(t *testing.T) {
+	msg := "High local threat score: 203.0.113.5 (score 75/100, 50 attacks)"
+	got := extractIPFromFinding(alert.Finding{Check: "local_threat_score", Message: msg})
+	if got != "203.0.113.5" {
+		t.Errorf("extractIPFromFinding(%q) = %q, want 203.0.113.5", msg, got)
+	}
+}
+
 func TestAutoBlock_ExtractIPFromFindingUsesStructuredSourceIP(t *testing.T) {
 	f := alert.Finding{
 		Message:  "SMTP brute force threshold reached",

@@ -247,6 +247,11 @@ func eximAutoHoldConfig() *config.Config {
 	cfg.AutoResponse.Enabled = true
 	dryRun := false
 	cfg.AutoResponse.DryRun = &dryRun
+	// Corroborating an outbreak from a max-defers governor line requires a
+	// configured outbound rate window; without it the line is treated as a
+	// deliverability event, never an auto-hold.
+	cfg.EmailProtection.RateWarnThreshold = 50
+	cfg.EmailProtection.RateWindowMin = 60
 	return cfg
 }
 
@@ -291,6 +296,8 @@ func TestMaybeHoldOutgoingMail_GatedByConfig(t *testing.T) {
 // defaults (auto-response disabled, dry-run on) a spam-outbreak line surfaces
 // the finding for the operator but does NOT hold the customer's mail.
 func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
+	resetEmailRateState()
+	primeOutboundWindow("user@example.com", 120)
 	withGlobalStore(t, func(db *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
@@ -304,6 +311,8 @@ func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
 		cfg := &config.Config{} // disabled + dry-run on (defaults)
+		cfg.EmailProtection.RateWarnThreshold = 50
+		cfg.EmailProtection.RateWindowMin = 60
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 		findings := parseEximLogLine(line, cfg)
@@ -331,6 +340,8 @@ func TestParseEximLogLine_MaxDefersDryRunDoesNotHold(t *testing.T) {
 // threshold line still escalates when CSM has not recently seen cPanel hold
 // the domain already.
 func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
+	resetEmailRateState()
+	primeOutboundWindow("user@example.com", 120)
 	withGlobalStore(t, func(_ *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
@@ -398,6 +409,8 @@ func TestParseEximLogLine_MaxDefersAfterRecentHoldDoesNotReportOutbreak(t *testi
 // branch must record the hold-seen marker so subsequent identical lines
 // fall through the existing 2-hour dedup window.
 func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
+	resetEmailRateState()
+	primeOutboundWindow("user@example.com", 120)
 	withGlobalStore(t, func(db *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
@@ -435,6 +448,8 @@ func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
 }
 
 func TestParseEximLogLine_MaxDefersDoesNotRecordHoldDedupWhenSuspendFails(t *testing.T) {
+	resetEmailRateState()
+	primeOutboundWindow("user@example.com", 120)
 	withGlobalStore(t, func(db *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
@@ -549,6 +564,8 @@ func TestAutoSuspendOutgoingMail_ReturnsFalseWhenHoldFails(t *testing.T) {
 }
 
 func TestParseEximLogLine_MaxDefersAfterStaleHoldStillSuspends(t *testing.T) {
+	resetEmailRateState()
+	primeOutboundWindow("user@example.com", 120)
 	withGlobalStore(t, func(db *store.DB) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string

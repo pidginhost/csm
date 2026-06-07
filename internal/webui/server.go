@@ -633,6 +633,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"email_compromised_account":      "Compromised Account",
 			"email_cloud_relay_abuse":        "Cloud-Relay Credential Abuse",
 			"email_spam_outbreak":            "Spam Outbreak",
+			"email_defer_fail_governor":      "Defer/Fail Governor",
 			"email_credential_leak":          "Credential Leak",
 			"email_auth_failure_realtime":    "Auth Failure",
 			"smtp_bruteforce":                "SMTP Brute Force",

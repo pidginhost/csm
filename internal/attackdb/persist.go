@@ -24,14 +24,17 @@ func (db *DB) load() {
 		storeRecords := sdb.LoadAllIPRecords()
 		for ip, sr := range storeRecords {
 			rec := &IPRecord{
-				IP:           sr.IP,
-				FirstSeen:    sr.FirstSeen,
-				LastSeen:     sr.LastSeen,
-				EventCount:   sr.EventCount,
-				ThreatScore:  sr.ThreatScore,
-				AutoBlocked:  sr.AutoBlocked,
-				AttackCounts: make(map[AttackType]int),
-				Accounts:     make(map[string]int),
+				IP:                    sr.IP,
+				FirstSeen:             sr.FirstSeen,
+				LastSeen:              sr.LastSeen,
+				EventCount:            sr.EventCount,
+				ThreatScore:           sr.ThreatScore,
+				AutoBlocked:           sr.AutoBlocked,
+				BruteForceWindowStart: sr.BruteForceWindowStart,
+				BruteForceWindowCount: sr.BruteForceWindowCount,
+				BruteForceSustainedAt: sr.BruteForceSustainedAt,
+				AttackCounts:          make(map[AttackType]int),
+				Accounts:              make(map[string]int),
 			}
 			for k, v := range sr.AttackCounts {
 				rec.AttackCounts[AttackType(k)] = v
@@ -39,6 +42,7 @@ func (db *DB) load() {
 			for k, v := range sr.Accounts {
 				rec.Accounts[k] = v
 			}
+			normalizeLoadedRecord(rec)
 			db.records[ip] = rec
 		}
 		return
@@ -56,16 +60,28 @@ func (db *DB) load() {
 		fmt.Fprintf(os.Stderr, "attackdb: error loading %s: %v\n", path, err)
 		return
 	}
-	// Ensure maps are initialized
 	for _, rec := range records {
-		if rec.AttackCounts == nil {
-			rec.AttackCounts = make(map[AttackType]int)
-		}
-		if rec.Accounts == nil {
-			rec.Accounts = make(map[string]int)
-		}
+		normalizeLoadedRecord(rec)
 	}
 	db.records = records
+}
+
+func normalizeLoadedRecord(rec *IPRecord) {
+	if rec.AttackCounts == nil {
+		rec.AttackCounts = make(map[AttackType]int)
+	}
+	if rec.Accounts == nil {
+		rec.Accounts = make(map[string]int)
+	}
+	bruteCount := rec.AttackCounts[AttackBruteForce]
+	if rec.BruteForceWindowCount > bruteCount {
+		rec.BruteForceWindowCount = bruteCount
+	}
+	if rec.BruteForceSustainedAt.IsZero() &&
+		rec.BruteForceWindowCount >= sustainedBruteForceThreshold {
+		rec.BruteForceSustainedAt = rec.LastSeen
+	}
+	rec.ThreatScore = ComputeScore(rec)
 }
 
 // saveRecords writes records to the bbolt store (if available) or to
@@ -75,14 +91,17 @@ func (db *DB) saveRecords() {
 		db.mu.RLock()
 		for _, rec := range db.records {
 			sr := store.IPRecord{
-				IP:           rec.IP,
-				FirstSeen:    rec.FirstSeen,
-				LastSeen:     rec.LastSeen,
-				EventCount:   rec.EventCount,
-				ThreatScore:  rec.ThreatScore,
-				AutoBlocked:  rec.AutoBlocked,
-				AttackCounts: make(map[string]int),
-				Accounts:     make(map[string]int),
+				IP:                    rec.IP,
+				FirstSeen:             rec.FirstSeen,
+				LastSeen:              rec.LastSeen,
+				EventCount:            rec.EventCount,
+				ThreatScore:           rec.ThreatScore,
+				AutoBlocked:           rec.AutoBlocked,
+				BruteForceWindowStart: rec.BruteForceWindowStart,
+				BruteForceWindowCount: rec.BruteForceWindowCount,
+				BruteForceSustainedAt: rec.BruteForceSustainedAt,
+				AttackCounts:          make(map[string]int),
+				Accounts:              make(map[string]int),
 			}
 			for k, v := range rec.AttackCounts {
 				sr.AttackCounts[string(k)] = v

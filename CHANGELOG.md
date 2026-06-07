@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A single IP that hammers one mailbox with mail or SMTP login failures is now auto-blocked only after a recent high-rate pattern, instead of going unblocked because per-event auth failures were not counted toward the attacker's local reputation score. Slow stale-password retries from a real user stay below the block threshold.
+- A domain hitting the cPanel hourly defer/fail limit is no longer reported as a spam outbreak or auto-held on its own, since the same limit trips on inbound junk, full mailboxes, and bounce backscatter. It now surfaces as a deliverability event, and an outgoing-mail hold is applied only when outbound volume confirms a real outbreak, so clearing a false-positive hold no longer gets the account re-held.
 - The daemon now refuses to start when migrating its on-disk state fails, instead of booting on partial security state and silently retrying the same broken migration on every restart.
 - A corrupt auto-block or alert-suppression state file is now logged instead of being silently discarded, so operators notice when queued blocks, escalation history, or suppression data are lost.
 - Reverse-DNS enrichment now caps how many lookups run at once, so a wedged resolver can no longer accumulate stuck background work under a flood of distinct addresses.

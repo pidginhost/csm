@@ -1194,19 +1194,20 @@ func TestParseEximLogLine_BulkMailService(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseEximLogLine_MaxDefersExceeded(t *testing.T) {
+	resetEmailRateState()
 	cfg := &config.Config{}
 	line := `2026-04-12 10:00:00 Domain spammer.com has exceeded max defers and failures per hour`
 
 	findings := parseEximLogLine(line, cfg)
 	var found bool
 	for _, f := range findings {
-		if f.Check == "email_spam_outbreak" && strings.Contains(f.Message, "spammer.com") {
+		if f.Check == "email_defer_fail_governor" && strings.Contains(f.Message, "spammer.com") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected spam outbreak finding, got %v", findings)
+		t.Errorf("expected defer/fail governor finding, got %v", findings)
 	}
 }
 

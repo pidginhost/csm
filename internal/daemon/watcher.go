@@ -407,32 +407,49 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	// 3. Max defers/failures exceeded - active spam outbreak
+	// 3. Max defers/failures exceeded.
+	//
+	// cPanel's TailWatch::Eximstats has already throttled the domain by the
+	// time exim emits this line from enforce_mail_permissions, so the line is
+	// not independent evidence of an outbound spam blast: the same governor
+	// trips on inbound junk, full mailboxes, and forwarder bounces. Escalate
+	// to a compromise (CRITICAL + auto-hold) only when CSM's own
+	// authenticated-send rate window corroborates a real outbound blast for
+	// the domain. Otherwise report a deliverability event and leave the hold
+	// to cPanel, so an operator who clears a false-positive hold is not
+	// immediately re-held.
 	if strings.Contains(line, "max defers and failures per hour") {
 		domain := extractEximDomain(line)
 		if recentOutgoingMailHold(domain) {
 			return findings
 		}
-		// Record the hold-seen marker only after CSM confirms the hold was
-		// applied or already active. If lookup or whmapi1 fails, later
-		// max-defers lines must still retry and alert.
-		held := maybeHoldOutgoingMail(cfg, domain)
-		if held {
-			recordRecentOutgoingMailHold(domain)
-		}
-		message := fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures", domain)
-		if held {
-			message += " - outgoing mail auto-suspended"
-		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "email_spam_outbreak",
-			Message:  message,
-			Details:  truncateDaemon(line, 300),
-			Domain:   domain,
-		})
-		if domain != "" {
-			RecordCompromisedDomain(domain)
+		if domainHasOutboundBlast(domain, cfg) {
+			held := maybeHoldOutgoingMail(cfg, domain)
+			if held {
+				recordRecentOutgoingMailHold(domain)
+			}
+			message := fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures with high outbound volume", domain)
+			if held {
+				message += " - outgoing mail auto-suspended"
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "email_spam_outbreak",
+				Message:  message,
+				Details:  truncateDaemon(line, 300),
+				Domain:   domain,
+			})
+			if domain != "" {
+				RecordCompromisedDomain(domain)
+			}
+		} else {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "email_defer_fail_governor",
+				Message:  fmt.Sprintf("%s hit the cPanel defer/fail governor; no outbound spam volume observed", domain),
+				Details:  truncateDaemon(line, 300),
+				Domain:   domain,
+			})
 		}
 	}
 
@@ -1163,6 +1180,40 @@ func RecordCompromisedDomain(domain string) {
 	emailRateSuppressed.mu.Lock()
 	defer emailRateSuppressed.mu.Unlock()
 	emailRateSuppressed.domains[domain] = time.Now()
+}
+
+// domainHasOutboundBlast reports whether authenticated senders under the given
+// domain have produced enough outbound volume within the rate window to
+// corroborate an actual spam outbreak. A cPanel defer/fail governor trip alone
+// is not such evidence. Returns false when rate thresholds are unconfigured, so
+// an operator who has not tuned the rate window never auto-holds on a bare
+// governor line.
+func domainHasOutboundBlast(domain string, cfg *config.Config) bool {
+	if domain == "" || cfg == nil {
+		return false
+	}
+	threshold := cfg.EmailProtection.RateWarnThreshold
+	windowDur := time.Duration(cfg.EmailProtection.RateWindowMin) * time.Minute
+	if threshold <= 0 || windowDur <= 0 {
+		return false
+	}
+	now := time.Now()
+	total := 0
+	emailRateWindows.Range(func(key, val any) bool {
+		user, ok := key.(string)
+		if !ok || !strings.EqualFold(extractDomainFromEmail(user), domain) {
+			return true
+		}
+		rw, ok := val.(*rateWindow)
+		if !ok {
+			return true
+		}
+		rw.mu.Lock()
+		total += rw.countInWindow(now, windowDur)
+		rw.mu.Unlock()
+		return total < threshold // stop iterating once corroborated
+	})
+	return total >= threshold
 }
 
 // checkEmailRate processes an outbound email for rate limiting.

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,13 +27,16 @@ func TestCheckLocalThreatScoreEmitsForHighUnblocked(t *testing.T) {
 	// IP C: high score, blocked → skipped (alreadyBlocked wins).
 	db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
 		"203.0.113.10": {
-			IP:          "203.0.113.10",
-			ThreatScore: 85,
-			EventCount:  12,
-			FirstSeen:   now.Add(-2 * time.Hour),
-			LastSeen:    now,
+			IP:                    "203.0.113.10",
+			ThreatScore:           85,
+			EventCount:            50,
+			FirstSeen:             now.Add(-20 * time.Minute),
+			LastSeen:              now,
+			BruteForceWindowStart: now.Add(-20 * time.Minute),
+			BruteForceWindowCount: 50,
+			BruteForceSustainedAt: now,
 			AttackCounts: map[attackdb.AttackType]int{
-				attackdb.AttackBruteForce: 12,
+				attackdb.AttackBruteForce: 50,
 			},
 			Accounts: map[string]int{"alice": 5, "bob": 7},
 		},
@@ -44,11 +48,17 @@ func TestCheckLocalThreatScoreEmitsForHighUnblocked(t *testing.T) {
 			LastSeen:    now,
 		},
 		"203.0.113.30": {
-			IP:          "203.0.113.30",
-			ThreatScore: 95,
-			EventCount:  50,
-			FirstSeen:   now.Add(-24 * time.Hour),
-			LastSeen:    now,
+			IP:                    "203.0.113.30",
+			ThreatScore:           95,
+			EventCount:            50,
+			FirstSeen:             now.Add(-20 * time.Minute),
+			LastSeen:              now,
+			BruteForceWindowStart: now.Add(-20 * time.Minute),
+			BruteForceWindowCount: 50,
+			BruteForceSustainedAt: now,
+			AttackCounts: map[attackdb.AttackType]int{
+				attackdb.AttackBruteForce: 50,
+			},
 		},
 	})
 	attackdb.SetGlobal(db)
@@ -87,5 +97,71 @@ func TestCheckLocalThreatScoreEmitsForHighUnblocked(t *testing.T) {
 	want := "203.0.113.10"
 	if !strings.Contains(f.Message, want) {
 		t.Errorf("message must mention %s; got %q", want, f.Message)
+	}
+	if f.SourceIP != want {
+		t.Errorf("SourceIP = %q, want %q", f.SourceIP, want)
+	}
+}
+
+func TestCheckLocalThreatScoreBlockedTopAttackersDoNotStarveUnblocked(t *testing.T) {
+	now := time.Now()
+	records := map[string]*attackdb.IPRecord{
+		"203.0.113.200": {
+			IP:                    "203.0.113.200",
+			ThreatScore:           75,
+			EventCount:            50,
+			FirstSeen:             now.Add(-20 * time.Minute),
+			LastSeen:              now,
+			BruteForceWindowStart: now.Add(-20 * time.Minute),
+			BruteForceWindowCount: 50,
+			BruteForceSustainedAt: now,
+			AttackCounts: map[attackdb.AttackType]int{
+				attackdb.AttackBruteForce: 50,
+			},
+			Accounts: map[string]int{"alice": 50},
+		},
+	}
+	for i := 0; i < 60; i++ {
+		ip := fmt.Sprintf("203.0.113.%d", i+1)
+		records[ip] = &attackdb.IPRecord{
+			IP:          ip,
+			ThreatScore: 100,
+			EventCount:  100,
+			FirstSeen:   now.Add(-1 * time.Hour),
+			LastSeen:    now,
+			AttackCounts: map[attackdb.AttackType]int{
+				attackdb.AttackC2:       1,
+				attackdb.AttackWebshell: 1,
+			},
+			Accounts: map[string]int{},
+		}
+	}
+
+	db := attackdb.NewForTest(records)
+	attackdb.SetGlobal(db)
+	t.Cleanup(func() { attackdb.SetGlobal(nil) })
+
+	statePath := t.TempDir()
+	var blocked []map[string]any
+	for i := 0; i < 60; i++ {
+		blocked = append(blocked, map[string]any{
+			"ip":         fmt.Sprintf("203.0.113.%d", i+1),
+			"expires_at": now.Add(24 * time.Hour),
+		})
+	}
+	data, err := json.Marshal(map[string]any{"ips": blocked})
+	if err != nil {
+		t.Fatalf("marshal blocked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(statePath, "blocked_ips.json"), data, 0600); err != nil {
+		t.Fatalf("write blocked_ips.json: %v", err)
+	}
+
+	findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: statePath}, nil)
+	if len(findings) != 1 {
+		t.Fatalf("findings: got %d, want 1. findings=%+v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0].Message, "203.0.113.200") {
+		t.Fatalf("finding message = %q, want unblocked attacker", findings[0].Message)
 	}
 }

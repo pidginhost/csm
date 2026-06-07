@@ -54,6 +54,12 @@ type mailAuthTracker struct {
 	ips      map[string]*mailIPEntry
 	subnets  map[string]*mailSubnetEntry
 	accounts map[string]*mailAccountEntry
+
+	// Diagnostic counters (guarded by mu): cumulative Record invocations and
+	// findings emitted, logged periodically by the daemon to pin whether the
+	// non-cPanel dovecot brute-force path sees traffic and escalates.
+	recordCalls     int64
+	findingsEmitted int64
 }
 
 // newMailAuthTracker constructs a tracker. `now` is injected so tests can
@@ -102,6 +108,8 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	t.recordCalls++
 
 	now := t.now()
 	cutoff := now.Add(-t.window)
@@ -193,7 +201,16 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	}
 
 	t.enforceMaxTracked()
+	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// Stats returns cumulative Record invocations and findings emitted since
+// startup. Used by the daemon's periodic diagnostic log.
+func (t *mailAuthTracker) Stats() (calls, emits int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.recordCalls, t.findingsEmitted
 }
 
 // RecordSuccess processes a successful mail login. Emits mail_account_compromised

@@ -228,6 +228,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_php_relay_rate_limit_hit", Category: CategoryEmail, Internal: true},
 	{Name: "email_php_relay_sweep_failed", Category: CategoryEmail, Internal: true},
 	{Name: "email_php_relay_watcher_failed", Category: CategoryEmail, Internal: true},
+	{Name: "email_defer_fail_governor", Category: CategoryEmail},
 	{Name: "email_pipe_forwarder", Category: CategoryEmail},
 	{Name: "email_rate_critical", Category: CategoryEmail},
 	{Name: "email_rate_warning", Category: CategoryEmail},
