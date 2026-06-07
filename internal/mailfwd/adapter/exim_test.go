@@ -476,6 +476,39 @@ func TestStatusErrorsOnPartialInstall(t *testing.T) {
 	}
 }
 
+func TestRefreshBadIPsOnlyRewritesLookup(t *testing.T) {
+	a, fs := testAdapter(t)
+	existing := strings.Replace(eximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator setting\n", 1)
+	if err := os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.RefreshBadIPs([]string{"198.51.100.7", "203.0.113.9"}); err != nil {
+		t.Fatal(err)
+	}
+
+	conf, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(conf) != existing {
+		t.Fatalf("RefreshBadIPs changed exim.conf.local:\n%s", conf)
+	}
+	if fs.rebuilds != 0 {
+		t.Fatalf("RefreshBadIPs ran buildeximconf %d time(s), want 0", fs.rebuilds)
+	}
+	if fs.chownPath != "" || fs.chownUser != "" {
+		t.Fatalf("RefreshBadIPs touched quarantine ownership path=%q user=%q", fs.chownPath, fs.chownUser)
+	}
+	bad, err := os.ReadFile(a.badIPsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(bad), "198.51.100.7: 1") || !strings.Contains(string(bad), "203.0.113.9: 1") {
+		t.Fatalf("bad_ips contents = %q", bad)
+	}
+}
+
 func TestReadLocalConfErrorsAreNotTreatedAsMissing(t *testing.T) {
 	a, _ := testAdapter(t)
 	if err := os.RemoveAll(a.localConf); err != nil {

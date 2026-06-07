@@ -41,6 +41,7 @@ func Capabilities() []string {
 		"webui.undo.v1",        // bulk-action undo
 		"mail.filter.exfil.v1", // BEC mail-filter exfiltration detection
 		"mail.queue.composition.v1",
+		"mail.forward_guard.v1", // opt-in MTA-native forward-guard (hold spam/backscatter forward copies)
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")

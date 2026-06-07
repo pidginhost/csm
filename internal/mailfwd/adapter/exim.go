@@ -36,6 +36,7 @@ type ForwardGuard interface {
 	Apply(cfg policy.Config, badIPs []string) error
 	Remove() error
 	Status() (Status, error)
+	RefreshBadIPs(badIPs []string) error
 }
 
 // Default on-disk locations (overridable in tests).
@@ -264,6 +265,13 @@ func (a *EximAdapter) renderTransport() string {
 		`  headers_add = "` + headers + `"`,
 		transportEnd,
 	}, "\n")
+}
+
+// RefreshBadIPs rewrites only the bad-IP lookup file. exim reads the lsearch
+// file at lookup time, so the change takes effect immediately with no rebuild
+// or reload -- cheap to call on a schedule as the attack DB changes.
+func (a *EximAdapter) RefreshBadIPs(ips []string) error {
+	return a.writeBadIPs(ips)
 }
 
 func (a *EximAdapter) writeBadIPs(ips []string) error {
