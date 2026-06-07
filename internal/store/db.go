@@ -123,9 +123,12 @@ func Open(statePath string) (*DB, error) {
 
 	db := &DB{bolt: bdb, path: dbPath}
 
-	// Run migration if needed
+	// Run migration if needed. A failed migration does not set the "migrated"
+	// sentinel, so proceeding would boot the daemon on partial security state
+	// and retry the same broken migration every restart. Fail loud instead.
 	if err := db.migrateIfNeeded(statePath); err != nil {
-		fmt.Fprintf(os.Stderr, "store: migration warning: %v\n", err)
+		_ = bdb.Close()
+		return nil, fmt.Errorf("store migration: %w", err)
 	}
 
 	// One-time backfill of stats:daily from existing history. Runs on

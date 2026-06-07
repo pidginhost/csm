@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,6 +127,55 @@ func TestRDNSCacheEvictsFirstInsertedWhenTimestampsTie(t *testing.T) {
 		if !rdnsCacheContains(c, "203.0.113.20") || !rdnsCacheContains(c, "203.0.113.30") {
 			t.Fatalf("newer tied entries should remain cached")
 		}
+	}
+}
+
+// TestRDNSCacheBoundsConcurrentResolves proves the deadline path caps the
+// number of in-flight resolve goroutines. A resolve goroutine blocked on a
+// wedged DNS server cannot be cancelled in Go, so without a cap a burst of
+// distinct IPs under deadline saturation spawns one abandonable goroutine per
+// IP. With MaxConcurrent the cache spawns at most that many; the rest fail
+// fast and return "" exactly as a deadline miss would.
+func TestRDNSCacheBoundsConcurrentResolves(t *testing.T) {
+	const maxConcurrent = 2
+	release := make(chan struct{})
+	var inflight, peak atomic.Int32
+
+	c := NewRDNSCache(RDNSCacheConfig{
+		TTL:             time.Minute,
+		ResolveDeadline: 25 * time.Millisecond,
+		MaxConcurrent:   maxConcurrent,
+		Resolve: func(ip net.IP) (string, error) {
+			n := inflight.Add(1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			<-release
+			inflight.Add(-1)
+			return "host.example.com", nil
+		},
+	})
+
+	var wg sync.WaitGroup
+	for i := range 10 {
+		ip := net.IPv4(203, 0, 113, byte(i)).To4()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.Lookup(ip)
+		}()
+	}
+	wg.Wait() // every Lookup returns once its deadline fires
+	close(release)
+
+	if got := peak.Load(); got == 0 {
+		t.Fatalf("resolver never ran; test did not exercise the deadline path")
+	}
+	if got := peak.Load(); got > maxConcurrent {
+		t.Fatalf("peak concurrent resolves = %d, want <= %d", got, maxConcurrent)
 	}
 }
 

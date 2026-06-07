@@ -34,19 +34,20 @@ func migrationSentinelSet(db *DB) bool {
 // reputation_cache.json surfaces as a partial-migration error from runMigration.
 func TestRunMigrationMalformedReputationReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "reputation_cache.json"), []byte("{not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
+	// Open on a clean dir so migration is a no-op; the malformed file is
+	// injected afterwards to exercise runMigration's error branch directly.
 	db, err := Open(dir)
 	if err != nil {
-		t.Fatalf("Open should succeed even when migration fails: %v", err)
+		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
 
 	// Clear the sentinel so runMigration re-runs end-to-end.
 	if cerr := clearMigratedSentinel(db); cerr != nil {
 		t.Fatal(cerr)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "reputation_cache.json"), []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	rerr := db.runMigration(dir)
 	if rerr == nil {
@@ -65,14 +66,6 @@ func TestRunMigrationMalformedReputationReturnsError(t *testing.T) {
 // migration error branch via an invalid state.json.
 func TestRunMigrationMalformedFirewallReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	fwDir := filepath.Join(dir, "firewall")
-	if err := os.MkdirAll(fwDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("{bad"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
 	db, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +74,13 @@ func TestRunMigrationMalformedFirewallReturnsError(t *testing.T) {
 
 	if cerr := clearMigratedSentinel(db); cerr != nil {
 		t.Fatal(cerr)
+	}
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("{bad"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	rerr := db.runMigration(dir)
 	if rerr == nil {
@@ -95,14 +95,6 @@ func TestRunMigrationMalformedFirewallReturnsError(t *testing.T) {
 // migration error branch via invalid records.json.
 func TestRunMigrationMalformedAttackRecordsReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	atkDir := filepath.Join(dir, "attack_db")
-	if err := os.MkdirAll(atkDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(atkDir, "records.json"), []byte("not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
 	db, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +103,13 @@ func TestRunMigrationMalformedAttackRecordsReturnsError(t *testing.T) {
 
 	if cerr := clearMigratedSentinel(db); cerr != nil {
 		t.Fatal(cerr)
+	}
+	atkDir := filepath.Join(dir, "attack_db")
+	if err := os.MkdirAll(atkDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(atkDir, "records.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
 	}
 	rerr := db.runMigration(dir)
 	if rerr == nil {
@@ -125,6 +124,15 @@ func TestRunMigrationMalformedAttackRecordsReturnsError(t *testing.T) {
 // migrations fail, runMigration aggregates their messages into one error.
 func TestRunMigrationMultipleErrorsCombined(t *testing.T) {
 	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if cerr := clearMigratedSentinel(db); cerr != nil {
+		t.Fatal(cerr)
+	}
 
 	// Malformed reputation file.
 	if err := os.WriteFile(filepath.Join(dir, "reputation_cache.json"), []byte("x"), 0600); err != nil {
@@ -137,16 +145,6 @@ func TestRunMigrationMultipleErrorsCombined(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("y"), 0600); err != nil {
 		t.Fatal(err)
-	}
-
-	db, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if cerr := clearMigratedSentinel(db); cerr != nil {
-		t.Fatal(cerr)
 	}
 	rerr := db.runMigration(dir)
 	if rerr == nil {

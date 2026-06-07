@@ -7,6 +7,30 @@ import (
 	"time"
 )
 
+// A failed flat-file migration leaves bbolt half-populated and does not set
+// the "migrated" sentinel, so the daemon would otherwise boot on partial
+// security state and retry the same broken migration every restart. Open must
+// surface the error instead of logging a warning and proceeding.
+func TestOpenFailsWhenMigrationErrors(t *testing.T) {
+	dir := t.TempDir()
+	attackDir := filepath.Join(dir, "attack_db")
+	if err := os.MkdirAll(attackDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed records.json makes migrateAttackDB return a hard error.
+	if err := os.WriteFile(filepath.Join(attackDir, "records.json"), []byte("{ not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dir)
+	if err == nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		t.Fatal("Open must fail when migration returns an error; got nil")
+	}
+}
+
 func TestOpenCreatesStateDirWithRestrictedPerms(t *testing.T) {
 	// The bbolt file holds firewall rules, attack history, threat-intel
 	// cache, and other state that's private to the CSM daemon. The
