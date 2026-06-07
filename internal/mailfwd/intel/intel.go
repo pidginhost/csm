@@ -24,7 +24,13 @@ const eximTimeLayout = "2006-01-02 15:04:05"
 
 // maxTextLen bounds the stored remote error text so a hostile MTA cannot bloat
 // the report with a multi-kilobyte error string.
-const maxTextLen = 240
+const (
+	maxAddressLen = 254
+	maxDomainLen  = 253
+	maxHostLen    = 253
+	maxIPLen      = 45
+	maxTextLen    = 240
+)
 
 // Deferral is one parsed exim "==" deferral event.
 type Deferral struct {
@@ -41,11 +47,11 @@ type Deferral struct {
 }
 
 var (
-	hostRe      = regexp.MustCompile(`\bH=(\S+)\s+\[([0-9a-fA-F:.]+)\]`)
-	smtpCodeRe  = regexp.MustCompile(`\b([45]\d{2})\b`)
-	reasonRe    = regexp.MustCompile(`\[([A-Za-z][A-Za-z0-9]{1,7})\]`)
-	ipv4Re      = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
-	whitespaceR = regexp.MustCompile(`\s+`)
+	hostBoundaryRe = regexp.MustCompile(`\bH=(\S{1,253})\s+\[([0-9a-fA-F:.]{1,45})\]:\s*`)
+	smtpCodeRe     = regexp.MustCompile(`\b([45]\d{2})\b`)
+	reasonRe       = regexp.MustCompile(`\[([A-Za-z][A-Za-z0-9]{1,7})\]`)
+	ipv4Re         = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
+	whitespaceR    = regexp.MustCompile(`\s+`)
 )
 
 // parseDeferralLine parses one exim_mainlog line. ok is false for anything that
@@ -58,7 +64,7 @@ func parseDeferralLine(line string) (Deferral, bool) {
 	}
 
 	recipient := strings.Trim(fields[4], "<>")
-	if recipient == "" || !strings.Contains(recipient, "@") {
+	if recipient == "" || len(recipient) > maxAddressLen || !strings.Contains(recipient, "@") {
 		return Deferral{}, false
 	}
 
@@ -69,31 +75,77 @@ func parseDeferralLine(line string) (Deferral, bool) {
 	if at := strings.LastIndexByte(recipient, '@'); at >= 0 && at < len(recipient)-1 {
 		d.Domain = strings.ToLower(recipient[at+1:])
 	}
+	if d.Domain == "" || len(d.Domain) > maxDomainLen {
+		return Deferral{}, false
+	}
 	if t, err := time.ParseInLocation(eximTimeLayout, fields[0]+" "+fields[1], time.Local); err == nil {
 		d.Time = t
 	}
 
-	if m := hostRe.FindStringSubmatch(line); m != nil {
-		d.RemoteHost = m[1]
-		d.RemoteIP = m[2]
+	errText := fallbackDeferralText(line)
+	canExtractOutboundIP := false
+	if m := hostBoundaryRe.FindStringSubmatchIndex(line); m != nil {
+		d.RemoteHost = line[m[2]:m[3]]
+		d.RemoteIP = parseIPLiteral(line[m[4]:m[5]])
+		errText = line[m[1]:]
+		canExtractOutboundIP = true
 	}
 
-	// The remote error text is everything after the "H=host [ip]:" boundary.
-	// Scanning only this slice keeps the deferring MX address (which sits before
-	// the boundary) out of the outbound-IP and code extraction.
-	errText := line
-	if i := strings.Index(line, "]: "); i >= 0 {
-		errText = line[i+3:]
+	d.SMTPCode = firstSMTPCode(errText)
+	if canExtractOutboundIP {
+		d.OutboundIP = firstIPv4(errText)
 	}
-
-	if m := smtpCodeRe.FindStringSubmatch(errText); m != nil {
-		d.SMTPCode = m[1]
-	}
-	d.OutboundIP = firstIPv4(errText)
 	d.ReasonCode = classifyReason(errText)
 	d.Text = boundText(errText)
 
 	return d, true
+}
+
+func fallbackDeferralText(line string) string {
+	if i := strings.Index(line, " defer ("); i >= 0 {
+		if j := strings.Index(line[i:], "):"); j >= 0 {
+			return strings.TrimSpace(line[i+j+2:])
+		}
+	}
+	return line
+}
+
+func parseIPLiteral(s string) string {
+	if len(s) > maxIPLen {
+		return ""
+	}
+	ip := net.ParseIP(s)
+	if ip == nil {
+		return ""
+	}
+	return s
+}
+
+func firstSMTPCode(s string) string {
+	for _, m := range smtpCodeRe.FindAllStringSubmatchIndex(s, -1) {
+		start, end := m[2], m[3]
+		if smtpCodeIsAddressFragment(s, start, end) {
+			continue
+		}
+		return s[start:end]
+	}
+	return ""
+}
+
+func smtpCodeIsAddressFragment(s string, start, end int) bool {
+	if start > 0 {
+		switch s[start-1] {
+		case '.', ':':
+			return true
+		}
+	}
+	if end < len(s) {
+		switch s[end] {
+		case '.', ':':
+			return true
+		}
+	}
+	return false
 }
 
 // firstIPv4 returns the first syntactically valid IPv4 address in s, or "".
@@ -110,8 +162,10 @@ func firstIPv4(s string) string {
 // (e.g. TSS04) when present, otherwise a keyword label derived from the error
 // text. Returns "" when nothing recognizable is found.
 func classifyReason(errText string) string {
-	if m := reasonRe.FindStringSubmatch(errText); m != nil {
-		return m[1]
+	for _, m := range reasonRe.FindAllStringSubmatch(errText, -1) {
+		if validReasonCode(m[1]) {
+			return m[1]
+		}
 	}
 	low := strings.ToLower(errText)
 	switch {
@@ -130,6 +184,21 @@ func classifyReason(errText string) string {
 		return "blocked"
 	}
 	return ""
+}
+
+func validReasonCode(code string) bool {
+	upper := strings.ToUpper(code)
+	if strings.HasPrefix(upper, "TLS") {
+		return false
+	}
+	trailingDigits := 0
+	for i := len(code) - 1; i >= 0; i-- {
+		if code[i] < '0' || code[i] > '9' {
+			break
+		}
+		trailingDigits++
+	}
+	return trailingDigits >= 2
 }
 
 func boundText(s string) string {

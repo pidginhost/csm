@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 type fakeReporter struct {
@@ -24,6 +25,32 @@ func decodeReport(t *testing.T, body []byte) intel.Report {
 		t.Fatalf("unmarshal report: %v\nbody: %s", err, body)
 	}
 	return rep
+}
+
+func TestSelectDeferralReporterUsesEmptyReporterOffCPanel(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelNone
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+		t.Fatal("platform override rejected before Detect")
+	}
+
+	if _, ok := selectDeferralReporter().(intel.EmptyReporter); !ok {
+		t.Fatalf("selectDeferralReporter returned %T, want EmptyReporter", selectDeferralReporter())
+	}
+}
+
+func TestSelectDeferralReporterUsesEximSourceOnCPanel(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelCPanel
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+		t.Fatal("platform override rejected before Detect")
+	}
+
+	if _, ok := selectDeferralReporter().(*intel.EximSource); !ok {
+		t.Fatalf("selectDeferralReporter returned %T, want *EximSource", selectDeferralReporter())
+	}
 }
 
 func TestApiEmailDeferralsSerialization(t *testing.T) {

@@ -16,6 +16,8 @@ const (
 
 	spamhausBlock = `2026-06-07 09:30:01 1uXw11-000AAA-1B == contact@partner.example R=dkim_lookuphost T=remote_smtp defer (-1) H=mx.partner.example [203.0.113.99]: SMTP error from remote mail server after RCPT TO: 421 4.7.1 Service unavailable; client host [198.51.100.8] blocked using zen.spamhaus.org`
 
+	greylistNoHost = `2026-06-07 12:00:00 1uXg00-000GGG-1A == user@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-53): host mta7.am0.yahoodns.net [203.0.113.40] said: 451 4.7.1 Greylisted, try again later`
+
 	// Non-deferral lines that must never be parsed as deferrals.
 	deliveryLine = `2026-06-07 10:00:00 1uXa00-000111-22 => user@example.com R=dnslookup T=remote_smtp H=mx.example.com [203.0.113.1]`
 	arrivalLine  = `2026-06-07 10:00:00 1uXb00-000222-33 <= sender@local.example H=localhost [127.0.0.1] P=esmtp S=1234`
@@ -95,6 +97,64 @@ func TestParseDeferralLineSpamhaus(t *testing.T) {
 	}
 	if d.ReasonCode != "spamhaus" {
 		t.Errorf("reason = %q, want spamhaus", d.ReasonCode)
+	}
+}
+
+func TestParseDeferralLineWithoutHostDoesNotAttributeMXIP(t *testing.T) {
+	d, ok := parseDeferralLine(greylistNoHost)
+	if !ok {
+		t.Fatal("greylist line without H= not parsed as a deferral")
+	}
+	if d.RemoteIP != "" {
+		t.Errorf("remote ip = %q, want empty without H= boundary", d.RemoteIP)
+	}
+	if d.OutboundIP != "" {
+		t.Errorf("outbound ip = %q, want empty so MX IP is not misattributed", d.OutboundIP)
+	}
+	if d.SMTPCode != "451" {
+		t.Errorf("smtp code = %q, want 451", d.SMTPCode)
+	}
+	if d.ReasonCode != "greylist" {
+		t.Errorf("reason = %q, want greylist", d.ReasonCode)
+	}
+}
+
+func TestParseDeferralLineDoesNotReadSMTPCodeFromDottedLiteral(t *testing.T) {
+	line := `2026-06-07 12:30:00 1uXd00-000DDD-1A == user@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-46) H=mta7.am0.yahoodns.net [203.0.113.40]: SMTP error from remote mail server after end of data: client 400.300.2.1 was checked before provider returned 421 4.7.0 messages from 198.51.100.7 temporarily deferred`
+	d, ok := parseDeferralLine(line)
+	if !ok {
+		t.Fatal("line not parsed as a deferral")
+	}
+	if d.SMTPCode != "421" {
+		t.Errorf("smtp code = %q, want 421, not the invalid dotted address fragment", d.SMTPCode)
+	}
+	if d.OutboundIP != "198.51.100.7" {
+		t.Errorf("outbound ip = %q, want 198.51.100.7", d.OutboundIP)
+	}
+}
+
+func TestParseDeferralLineRejectsTLSBracketAsReason(t *testing.T) {
+	line := `2026-06-07 12:45:00 1uXt00-000TTT-1A == user@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-46) H=mta7.am0.yahoodns.net [203.0.113.40]: SMTP error from remote mail server after end of data: 421 4.7.0 [TLS1] handshake failed for messages from 198.51.100.7`
+	d, ok := parseDeferralLine(line)
+	if !ok {
+		t.Fatal("line not parsed as a deferral")
+	}
+	if d.ReasonCode != "" {
+		t.Errorf("reason code = %q, want empty because TLS bracket tokens are not provider reasons", d.ReasonCode)
+	}
+}
+
+func TestParseDeferralLineValidatesRemoteIP(t *testing.T) {
+	line := `2026-06-07 13:00:00 1uXi00-000III-1A == user@yahoo.com R=dkim_lookuphost T=remote_smtp defer (-46) H=mta7.am0.yahoodns.net [999.999.999.999]: SMTP error from remote mail server after end of data: 421 4.7.0 [TSS04] messages from 198.51.100.7 temporarily deferred`
+	d, ok := parseDeferralLine(line)
+	if !ok {
+		t.Fatal("line not parsed as a deferral")
+	}
+	if d.RemoteIP != "" {
+		t.Errorf("remote ip = %q, want empty for invalid IP literal", d.RemoteIP)
+	}
+	if d.OutboundIP != "198.51.100.7" {
+		t.Errorf("outbound ip = %q, want 198.51.100.7", d.OutboundIP)
 	}
 }
 

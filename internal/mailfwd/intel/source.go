@@ -57,6 +57,9 @@ func (s *EximSource) Report() (Report, error) {
 // the last maxBytes so a huge log never loads whole into memory. A partial
 // first line (from the byte-window cut) is dropped.
 func tailLines(path string, maxBytes int64, maxLines int) []string {
+	if maxBytes <= 0 || maxLines <= 0 {
+		return nil
+	}
 	f, err := os.Open(path) // #nosec G304 -- fixed exim_mainlog path, operator-scoped.
 	if err != nil {
 		return nil
@@ -82,7 +85,11 @@ func tailLines(path string, maxBytes int64, maxLines int) []string {
 		data, _ = io.ReadAll(f)
 	}
 
-	lines := strings.Split(string(data), "\n")
+	text := strings.TrimSuffix(string(data), "\n")
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
 	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}

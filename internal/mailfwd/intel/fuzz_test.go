@@ -1,6 +1,9 @@
 package intel
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 // FuzzParseDeferralLine feeds attacker-controlled log content (a deferral line
 // echoes a remote server's free-text error) through the parser. It must never
@@ -23,8 +26,20 @@ func FuzzParseDeferralLine(f *testing.F) {
 		if len(d.Text) > maxTextLen {
 			t.Fatalf("Text exceeds bound: %d", len(d.Text))
 		}
+		if len(d.Recipient) > maxAddressLen {
+			t.Fatalf("Recipient exceeds bound: %d", len(d.Recipient))
+		}
+		if len(d.Domain) > maxDomainLen {
+			t.Fatalf("Domain exceeds bound: %d", len(d.Domain))
+		}
+		if len(d.RemoteHost) > maxHostLen {
+			t.Fatalf("RemoteHost exceeds bound: %d", len(d.RemoteHost))
+		}
 		if d.OutboundIP != "" && firstIPv4(d.OutboundIP) != d.OutboundIP {
 			t.Fatalf("OutboundIP not a valid IPv4: %q", d.OutboundIP)
+		}
+		if d.RemoteIP != "" && net.ParseIP(d.RemoteIP) == nil {
+			t.Fatalf("RemoteIP not a valid IP: %q", d.RemoteIP)
 		}
 		// A parsed deferral always carries a recipient with a domain.
 		if d.Recipient == "" {
