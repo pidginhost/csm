@@ -302,3 +302,39 @@ func TestAPIEmailGroupsReadScopeAccess(t *testing.T) {
 		t.Fatalf("read-scope GET status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
+
+func TestEmailGroupsSortByCountWithinSeverity(t *testing.T) {
+	now := time.Now()
+	in := []alert.Finding{
+		// one HIGH group with a single, most-recent event
+		emailFinding("email_auth_failure_realtime", alert.High, "solo@example.com", "example.com", "192.0.2.1", now),
+	}
+	// a HIGH group with many (older) events
+	for i := 0; i < 50; i++ {
+		in = append(in, emailFinding("email_auth_failure_realtime", alert.High, "busy@example.com", "example.com",
+			"192.0.2."+itoa(10+i), now.Add(-10*time.Minute)))
+	}
+	// a HIGH group with a middling count
+	for i := 0; i < 5; i++ {
+		in = append(in, emailFinding("email_auth_failure_realtime", alert.High, "mid@example.com", "example.com",
+			"198.51.100."+itoa(10+i), now.Add(-5*time.Minute)))
+	}
+	// a CRITICAL group with a single event must still outrank all HIGH groups
+	in = append(in, emailFinding("email_compromised_account", alert.Critical, "owned@example.com", "example.com", "203.0.113.9", now.Add(-30*time.Minute)))
+
+	groups := buildEmailGroups(in, now.Add(-1*time.Hour), now, "")
+	if len(groups) != 4 {
+		t.Fatalf("got %d groups, want 4", len(groups))
+	}
+	if groups[0].Severity != int(alert.Critical) {
+		t.Errorf("group[0] severity = %d, want critical first", groups[0].Severity)
+	}
+	gotCounts := []int{groups[1].Count, groups[2].Count, groups[3].Count}
+	wantCounts := []int{50, 5, 1}
+	for i := range wantCounts {
+		if gotCounts[i] != wantCounts[i] {
+			t.Errorf("HIGH group order by count: got %v, want %v", gotCounts, wantCounts)
+			break
+		}
+	}
+}

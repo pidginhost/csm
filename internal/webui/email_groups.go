@@ -285,6 +285,9 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		if out[i].Severity != out[j].Severity {
 			return out[i].Severity > out[j].Severity
 		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
 		return out[i].LastSeen > out[j].LastSeen
 	})
 	return out
