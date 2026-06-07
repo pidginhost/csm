@@ -928,6 +928,78 @@
             });
     }
 
+    var heldLoaded = false;
+
+    function loadHeld() {
+        if (heldLoaded) return;
+        heldLoaded = true;
+        CSM.get('/api/v1/email/held')
+            .then(renderHeld)
+            .catch(function() {
+                heldLoaded = false;
+                var tb = document.getElementById('email-held-tbody');
+                if (tb) tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Could not load held forwards.</td></tr>';
+            });
+    }
+
+    function renderHeld(msgs) {
+        var tb = document.getElementById('email-held-tbody');
+        if (!tb) return;
+        msgs = Array.isArray(msgs) ? msgs : [];
+        var c = document.getElementById('email-held-count');
+        if (c) c.textContent = msgs.length ? '(' + msgs.length + ')' : '';
+        if (msgs.length === 0) {
+            tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Nothing held.</td></tr>';
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < msgs.length; i++) {
+            var m = msgs[i] || {};
+            var reasons = '';
+            var rs = Array.isArray(m.reasons) ? m.reasons : [];
+            for (var j = 0; j < rs.length; j++) {
+                reasons += '<span class="badge bg-red-lt me-1">' + CSM.esc(rs[j]) + '</span>';
+            }
+            html += '<tr>';
+            html += '<td class="small text-muted">' + CSM.esc(ageLabel(m.held_at)) + '</td>';
+            html += '<td class="font-monospace small">' + CSM.esc(m.forwarder) + '</td>';
+            html += '<td class="font-monospace small">' + CSM.esc(m.recipient) + '</td>';
+            html += '<td>' + (reasons || '<span class="text-muted">--</span>') + '</td>';
+            html += '<td class="text-end">' +
+                '<button type="button" class="btn btn-sm btn-ghost-secondary" data-held-release="' + CSM.attr(m.id) + '"><i class="ti ti-mail-forward"></i>&nbsp;Release</button> ' +
+                '<button type="button" class="btn btn-sm btn-ghost-danger" data-held-delete="' + CSM.attr(m.id) + '" aria-label="Delete held forward"><i class="ti ti-trash"></i></button>' +
+                '</td>';
+            html += '</tr>';
+        }
+        tb.innerHTML = html;
+    }
+
+    function releaseHeld(id) {
+        CSM.confirm('Release this held forward copy to its external recipient? Only do this for confirmed false positives.').then(function() {
+            CSM.post('/api/v1/email/held/' + encodeURIComponent(id) + '/release', {})
+                .then(function() { CSM.toast('Released held forward', 'success'); heldLoaded = false; loadHeld(); })
+                .catch(function(err) { CSM.toast('Release failed: ' + (err.message || ''), 'error'); });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    function deleteHeld(id) {
+        CSM.confirm('Permanently delete this held forward copy?').then(function() {
+            CSM.delete('/api/v1/email/held/' + encodeURIComponent(id))
+                .then(function() { CSM.toast('Deleted held forward', 'success'); heldLoaded = false; loadHeld(); })
+                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    var _heldBody = document.getElementById('email-held-tbody');
+    if (_heldBody) {
+        _heldBody.addEventListener('click', function(e) {
+            var rel = e.target.closest('[data-held-release]');
+            if (rel) { releaseHeld(rel.getAttribute('data-held-release')); return; }
+            var del = e.target.closest('[data-held-delete]');
+            if (del) { deleteHeld(del.getAttribute('data-held-delete')); }
+        });
+    }
+
     function forwarderMatchesFilter(f, mode) {
         if (mode === 'external') return f.has_external;
         if (mode === 'free') return f.has_free_provider;
@@ -1218,8 +1290,9 @@
                 loadEmailStats();
             }
         } else if (id === 'forwarders') {
-            if (force) forwardersLoaded = false;
+            if (force) { forwardersLoaded = false; heldLoaded = false; }
             loadForwarders();
+            loadHeld();
         } else if (id === 'deliverability') {
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
@@ -1242,7 +1315,7 @@
                     loadEmailStats();
                 }
             }
-            else if (id === 'forwarders') loadForwarders();
+            else if (id === 'forwarders') { loadForwarders(); loadHeld(); }
             else if (id === 'deliverability') loadDeliverability();
         });
     }
@@ -1309,6 +1382,7 @@
             loadFindings();
             authGroupsLoaded = false;
             forwardersLoaded = false;
+            heldLoaded = false;
             deliverabilityLoaded = false;
             queueCompositionLoaded = false;
             loadActiveEmailTab(true);
