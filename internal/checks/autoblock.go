@@ -599,9 +599,12 @@ func parseExpiry(s string) time.Duration {
 
 func loadBlockState(statePath string) *blockState {
 	state := &blockState{}
-	data, err := osFS.ReadFile(filepath.Join(statePath, blockStateFile))
+	path := filepath.Join(statePath, blockStateFile)
+	data, err := osFS.ReadFile(path)
 	if err == nil {
-		_ = json.Unmarshal(data, state)
+		if uerr := json.Unmarshal(data, state); uerr != nil {
+			fmt.Fprintf(os.Stderr, "autoblock: %s is corrupt, ignoring queued blocks: %v\n", path, uerr)
+		}
 	}
 	return state
 }
@@ -692,9 +695,12 @@ func checkPermBlockEscalation(statePath, ip string, count int, interval time.Dur
 
 func loadPermBlockTracker(statePath string) *permBlockTracker {
 	tracker := &permBlockTracker{IPs: make(map[string][]time.Time)}
-	data, err := osFS.ReadFile(filepath.Join(statePath, "permblock_tracker.json"))
+	path := filepath.Join(statePath, "permblock_tracker.json")
+	data, err := osFS.ReadFile(path)
 	if err == nil {
-		_ = json.Unmarshal(data, tracker)
+		if uerr := json.Unmarshal(data, tracker); uerr != nil {
+			fmt.Fprintf(os.Stderr, "autoblock: %s is corrupt, ignoring escalation history: %v\n", path, uerr)
+		}
 		if tracker.IPs == nil {
 			tracker.IPs = make(map[string][]time.Time)
 		}

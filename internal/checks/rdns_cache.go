@@ -20,9 +20,18 @@ type RDNSCacheConfig struct {
 	Resolve         func(ip net.IP) (string, error)
 	ResolveDeadline time.Duration
 	MaxSize         int
+	// MaxConcurrent caps the number of deadline-bound resolve goroutines in
+	// flight at once. A goroutine blocked on a wedged resolver cannot be
+	// cancelled in Go, so without a cap a burst of distinct IPs under deadline
+	// saturation spawns one abandonable goroutine per IP. 0 falls back to
+	// rdnsCacheDefaultMaxConcurrent.
+	MaxConcurrent int
 }
 
-const rdnsCacheDefaultMaxSize = 10000
+const (
+	rdnsCacheDefaultMaxSize       = 10000
+	rdnsCacheDefaultMaxConcurrent = 64
+)
 
 // RDNSCache is a small TTL cache around reverse DNS lookups. Cached
 // negative results (resolver error / NXDOMAIN) are kept until TTL too,
@@ -38,6 +47,7 @@ type RDNSCache struct {
 	now     func() time.Time
 	order   *list.List
 	entries map[string]*list.Element
+	sem     chan struct{}
 }
 
 type rdnsEntry struct {
@@ -52,6 +62,10 @@ func NewRDNSCache(cfg RDNSCacheConfig) *RDNSCache {
 	if maxSize <= 0 {
 		maxSize = rdnsCacheDefaultMaxSize
 	}
+	maxConcurrent := cfg.MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = rdnsCacheDefaultMaxConcurrent
+	}
 	return &RDNSCache{
 		ttl:     cfg.TTL,
 		deadln:  cfg.ResolveDeadline,
@@ -60,6 +74,7 @@ func NewRDNSCache(cfg RDNSCacheConfig) *RDNSCache {
 		now:     time.Now,
 		order:   list.New(),
 		entries: map[string]*list.Element{},
+		sem:     make(chan struct{}, maxConcurrent),
 	}
 }
 
@@ -121,12 +136,22 @@ func (c *RDNSCache) runWithDeadline(ip net.IP) string {
 		}
 		return host
 	}
+	// Cap in-flight resolve goroutines. A goroutine blocked on a wedged
+	// resolver keeps its slot until the syscall finally returns, so under
+	// deadline saturation further lookups fail fast (return "" like a
+	// deadline miss) instead of spawning more abandonable goroutines.
+	select {
+	case c.sem <- struct{}{}:
+	default:
+		return ""
+	}
 	type result struct {
 		host string
 		err  error
 	}
 	ch := make(chan result, 1)
 	go func() {
+		defer func() { <-c.sem }()
 		host, err := c.resolve(ip)
 		ch <- result{host, err}
 	}()

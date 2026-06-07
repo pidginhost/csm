@@ -5,7 +5,100 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
+
+// A failed flat-file migration leaves bbolt half-populated and does not set
+// the "migrated" sentinel, so the daemon would otherwise boot on partial
+// security state and retry the same broken migration every restart. Open must
+// surface the error instead of logging a warning and proceeding.
+func TestOpenFailsWhenMigrationErrors(t *testing.T) {
+	dir := t.TempDir()
+	attackDir := filepath.Join(dir, "attack_db")
+	if err := os.MkdirAll(attackDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed records.json makes migrateAttackDB return a hard error.
+	if err := os.WriteFile(filepath.Join(attackDir, "records.json"), []byte("{ not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dir)
+	if err == nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		t.Fatal("Open must fail when migration returns an error; got nil")
+	}
+
+	if writeErr := os.WriteFile(filepath.Join(attackDir, "records.json"), []byte("{}"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatalf("Open after fixing migration input: %v", err)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+}
+
+func TestOpenSeedsDefaultModSecNoEscalateRulesOnce(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := db.GetModSecNoEscalateRules(); !got[defaultModSecNoEscalateWPEnumerationID] {
+		t.Fatalf("default ModSecurity no-escalate rule was not seeded: %v", got)
+	}
+	if setErr := db.SetModSecNoEscalateRules(map[int]bool{}); setErr != nil {
+		t.Fatal(setErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if got := db.GetModSecNoEscalateRules(); len(got) != 0 {
+		t.Fatalf("operator-cleared ModSecurity no-escalate rules were re-seeded: %v", got)
+	}
+}
+
+func TestOpenDoesNotClobberExistingModSecNoEscalateRules(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]bool{900500: true}
+	if setErr := db.SetModSecNoEscalateRules(want); setErr != nil {
+		t.Fatal(setErr)
+	}
+	if updateErr := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Delete([]byte(modsecNoEscalateSeededKey))
+	}); updateErr != nil {
+		t.Fatal(updateErr)
+	}
+	if closeErr := db.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
+	db, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	got := db.GetModSecNoEscalateRules()
+	if len(got) != len(want) || !got[900500] {
+		t.Fatalf("existing ModSecurity no-escalate rules were clobbered: %v", got)
+	}
+}
 
 func TestOpenCreatesStateDirWithRestrictedPerms(t *testing.T) {
 	// The bbolt file holds firewall rules, attack history, threat-intel

@@ -123,9 +123,12 @@ func Open(statePath string) (*DB, error) {
 
 	db := &DB{bolt: bdb, path: dbPath}
 
-	// Run migration if needed
+	// Run migration if needed. A failed migration does not set the "migrated"
+	// sentinel, so proceeding would boot the daemon on partial security state
+	// and retry the same broken migration every restart. Fail loud instead.
 	if err := db.migrateIfNeeded(statePath); err != nil {
-		fmt.Fprintf(os.Stderr, "store: migration warning: %v\n", err)
+		_ = bdb.Close()
+		return nil, fmt.Errorf("store migration: %w", err)
 	}
 
 	// One-time backfill of stats:daily from existing history. Runs on
@@ -135,26 +138,37 @@ func Open(statePath string) (*DB, error) {
 		fmt.Fprintf(os.Stderr, "store: stats:daily backfill warning: %v\n", err)
 	}
 
-	// Seed default ModSecurity no-escalate rules (one-time only).
-	// Uses a sentinel key so an admin who deliberately empties the set
-	// won't have defaults re-added on every restart.
-	var seeded bool
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket([]byte("meta")).Get([]byte("modsec:no_escalate_seeded")); v != nil {
-			seeded = true
-		}
-		return nil
-	})
-	if !seeded {
-		_ = db.SetModSecNoEscalateRules(map[int]bool{
-			900112: true, // WordPress user enumeration - blocks at HTTP level only
-		})
-		_ = db.bolt.Update(func(tx *bolt.Tx) error {
-			return tx.Bucket([]byte("meta")).Put([]byte("modsec:no_escalate_seeded"), []byte("1"))
-		})
+	if err := db.seedDefaultModSecNoEscalateRules(); err != nil {
+		fmt.Fprintf(os.Stderr, "store: ModSecurity no-escalate seed warning: %v\n", err)
 	}
 
 	return db, nil
+}
+
+const (
+	modsecNoEscalateSeededKey              = "modsec:no_escalate_seeded"
+	defaultModSecNoEscalateWPEnumerationID = 900112
+)
+
+func (db *DB) seedDefaultModSecNoEscalateRules() error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket([]byte("meta"))
+		if meta.Get([]byte(modsecNoEscalateSeededKey)) != nil {
+			return nil
+		}
+		if meta.Get([]byte(modsecNoEscalateKey)) != nil {
+			return meta.Put([]byte(modsecNoEscalateSeededKey), []byte("1"))
+		}
+		// WordPress user enumeration is blocked at the HTTP layer only.
+		val, err := json.Marshal([]int{defaultModSecNoEscalateWPEnumerationID})
+		if err != nil {
+			return err
+		}
+		if err := meta.Put([]byte(modsecNoEscalateKey), val); err != nil {
+			return err
+		}
+		return meta.Put([]byte(modsecNoEscalateSeededKey), []byte("1"))
+	})
 }
 
 // Close closes the bbolt database.

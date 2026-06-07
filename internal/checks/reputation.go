@@ -498,14 +498,17 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 	// every block to firewall/state.json; the parallel bbolt fw:blocked
 	// bucket is written only at migration, so reading it would return a
 	// frozen snapshot that misses live blocks.
-	if fwData, err := osFS.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+	fwPath := filepath.Join(statePath, "firewall", "state.json")
+	if fwData, err := osFS.ReadFile(fwPath); err == nil {
 		var fwState struct {
 			Blocked []struct {
 				IP        string    `json:"ip"`
 				ExpiresAt time.Time `json:"expires_at"`
 			} `json:"blocked"`
 		}
-		if json.Unmarshal(fwData, &fwState) == nil {
+		if uerr := json.Unmarshal(fwData, &fwState); uerr != nil {
+			fmt.Fprintf(os.Stderr, "reputation: %s is corrupt, alert suppression degraded: %v\n", fwPath, uerr)
+		} else {
 			now := time.Now()
 			for _, entry := range fwState.Blocked {
 				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
@@ -524,10 +527,13 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		IPs []blockedEntry `json:"ips"`
 	}
 
-	data, err := osFS.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
+	legacyPath := filepath.Join(statePath, "blocked_ips.json")
+	data, err := osFS.ReadFile(legacyPath)
 	if err == nil {
 		var bf blockFile
-		if err := json.Unmarshal(data, &bf); err == nil {
+		if uerr := json.Unmarshal(data, &bf); uerr != nil {
+			fmt.Fprintf(os.Stderr, "reputation: %s is corrupt, alert suppression degraded: %v\n", legacyPath, uerr)
+		} else {
 			now := time.Now()
 			for _, entry := range bf.IPs {
 				if now.Before(entry.ExpiresAt) {
