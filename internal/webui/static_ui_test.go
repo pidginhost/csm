@@ -838,6 +838,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-senders"`,
 		`id="email-tab-forwarders"`,
 		`id="email-tab-deliverability"`,
+		`id="email-held-tbody"`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -881,6 +882,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`renderQueueComposition`,
 		`/api/v1/email/queue/flush-backscatter`,
 		`flushBackscatter`,
+		`/api/v1/email/held`,
+		`renderHeld`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
