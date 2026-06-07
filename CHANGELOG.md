@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Email Security page has a new Deliverability tab showing which mail providers are throttling the server and which sending IPs are affected, with each provider's stated reason, so operators can see why outbound mail is backing up.
 - The Email Security Queue tab now breaks down the mail queue into real mail versus null-sender bounce backscatter, with frozen count, oldest age, and the most stuck recipients, so operators can tell a genuine backlog from junk filling the queue.
 - The Email Security Queue tab can flush frozen null-sender bounce messages from the mail queue in one click, clearing undeliverable backscatter without touching real mail or messages still being retried.
+- New opt-in email forward guard (off by default): when enabled on a cPanel host, the mail server itself holds spam-bounce and bad-sender forward copies before they relay to an external provider, while the local copy still delivers. Held copies are recoverable and can be released or deleted. CSM never sits in the live mail path, so mail keeps flowing if CSM is down.
 
 ### Fixed
 
