@@ -47,6 +47,7 @@
     var forwardersLoaded = false;
     var _forwarders = [];
     var deliverabilityLoaded = false;
+    var queueCompositionLoaded = false;
 
     function localDateInputValue(date) {
         var d = date || new Date();
@@ -1092,6 +1093,68 @@
         }
     }
 
+    // ---------- Queue composition (Queue tab) ----------
+
+    function loadQueueComposition() {
+        if (queueCompositionLoaded) return;
+        queueCompositionLoaded = true;
+        CSM.get('/api/v1/email/queue-composition')
+            .then(function(data) { renderQueueComposition(data || {}); })
+            .catch(function() {
+                queueCompositionLoaded = false;
+                var el = document.getElementById('queue-composition');
+                if (el) el.innerHTML = '<div class="text-muted small">Could not load queue composition. Retry from the refresh button.</div>';
+            });
+    }
+
+    function queueCount(value) {
+        var n = Number(value);
+        if (!isFinite(n) || n < 0) return 0;
+        return Math.floor(n);
+    }
+
+    function renderQueueComposition(data) {
+        var el = document.getElementById('queue-composition');
+        if (!el) return;
+        var total = queueCount(data.total);
+        if (total === 0) {
+            el.innerHTML = '<div class="text-muted small">The mail queue is empty.</div>';
+            return;
+        }
+        var bounce = queueCount(data.bounce);
+        var real = queueCount(data.real);
+        var frozen = queueCount(data.frozen);
+        var bouncePct = Math.round(bounce / total * 100);
+
+        var html = '<div class="row g-2 mb-3">';
+        html += metricCol('Total', CSM.formatNumber(total), '');
+        html += metricCol('Real mail', CSM.formatNumber(real), 'text-success');
+        html += metricCol('Backscatter', CSM.formatNumber(bounce) + ' (' + bouncePct + '%)', bounce > 0 ? 'text-danger' : 'text-muted');
+        html += metricCol('Frozen', CSM.formatNumber(frozen), frozen > 0 ? 'text-warning' : 'text-muted');
+        html += metricCol('Oldest', data.oldest_age || '--', '');
+        html += '</div>';
+
+        var recips = deliverabilityArray(data.top_recipients);
+        if (recips.length > 0) {
+            html += '<div class="subheader mb-1 small">Top stuck recipients</div>';
+            html += '<div class="list-group list-group-flush">';
+            for (var i = 0; i < recips.length; i++) {
+                var rc = recips[i] || {};
+                html += '<div class="list-group-item py-1 px-0 d-flex">';
+                html += '<span class="font-monospace small">' + CSM.esc(rc.address) + '</span>';
+                html += '<span class="ms-auto small text-muted">' + CSM.formatNumber(queueCount(rc.count)) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        el.innerHTML = html;
+    }
+
+    function metricCol(label, value, cls) {
+        return '<div class="col-auto"><div class="small text-muted">' + label + '</div>' +
+            '<div class="h3 mb-0 ' + (cls || '') + '">' + CSM.esc(String(value)) + '</div></div>';
+    }
+
     // ---------- Tab activation ----------
 
     function activateTab(name) {
@@ -1114,6 +1177,8 @@
             loadAuthGroups();
         } else if (id === 'queue') {
             if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health');
+            if (force) queueCompositionLoaded = false;
+            loadQueueComposition();
         } else if (id === 'quarantine') {
             if (force) quarantineLoaded = false;
             if (!quarantineLoaded) loadQuarantine();
@@ -1139,7 +1204,7 @@
             var id = ev.target.id.replace('email-tab-', '');
             CSM.urlState.set({ tab: id === 'findings' ? '' : id });
             if (id === 'auth')        loadAuthGroups();
-            else if (id === 'queue')  { if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health'); }
+            else if (id === 'queue')  { if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health'); loadQueueComposition(); }
             else if (id === 'quarantine' && !quarantineLoaded) loadQuarantine();
             else if (id === 'senders') {
                 if (_pendingSenders) {
@@ -1217,6 +1282,7 @@
             authGroupsLoaded = false;
             forwardersLoaded = false;
             deliverabilityLoaded = false;
+            queueCompositionLoaded = false;
             loadActiveEmailTab(true);
         });
     }

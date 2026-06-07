@@ -47,3 +47,25 @@ func FuzzParseDeferralLine(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseQueue feeds arbitrary `exim -bp`-shaped content (recipient addresses
+// are attacker-influenced) through the queue parser. It must never panic and
+// must keep its counts internally consistent.
+func FuzzParseQueue(f *testing.F) {
+	f.Add(eximBpSample)
+	f.Add("")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@b.example")
+	f.Add("garbage\nlines\nonly")
+	f.Fuzz(func(t *testing.T, out string) {
+		c := ParseQueue(out)
+		if c.Bounce+c.Real != c.Total {
+			t.Fatalf("bounce(%d)+real(%d) != total(%d)", c.Bounce, c.Real, c.Total)
+		}
+		if c.Frozen > c.Total {
+			t.Fatalf("frozen(%d) > total(%d)", c.Frozen, c.Total)
+		}
+		if len(c.TopRecipients) > topRecipientLimit {
+			t.Fatalf("top recipients exceeds limit: %d", len(c.TopRecipients))
+		}
+	})
+}
