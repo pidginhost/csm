@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A domain hitting the cPanel hourly defer/fail limit is no longer reported as a spam outbreak or auto-held on its own, since the same limit trips on inbound junk, full mailboxes, and bounce backscatter. It now surfaces as a deliverability event, and an outgoing-mail hold is applied only when outbound volume confirms a real outbreak, so clearing a false-positive hold no longer gets the account re-held.
+
 ## [3.13.1] - 2026-06-07
 
 ### Fixed

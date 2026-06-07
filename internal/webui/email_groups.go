@@ -85,6 +85,7 @@ func emailKindForCheck(check string) string {
 		return "malware"
 	case "mail_per_account",
 		"mail_queue",
+		"email_defer_fail_governor",
 		"exim_frozen_realtime":
 		return "queue_alert"
 	}

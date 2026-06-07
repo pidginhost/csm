@@ -94,6 +94,7 @@ var componentCheckOrigin = map[string]string{
 	"email_php_relay_rate_limit_hit":             "phprelay",
 	"email_php_relay_sweep_failed":               "phprelay",
 	"email_php_relay_watcher_failed":             "phprelay",
+	"email_defer_fail_governor":                  "maillog",
 	"email_rate_critical":                        "maillog",
 	"email_rate_warning":                         "maillog",
 	"email_spam_outbreak":                        "maillog",
