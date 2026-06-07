@@ -13,9 +13,12 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -113,16 +116,40 @@ func NewEximAdapter() *EximAdapter {
 	}
 }
 
-// Apply installs (or refreshes) the forward-guard rule. It is transactional: on
-// any failure the previous exim.conf.local is restored and exim is rebuilt back
-// to its prior state, so a failed apply never leaves a half-installed rule.
+// Apply installs (or refreshes) the forward-guard rule for an enabled,
+// non-dry-run policy. It is transactional: on any failure the previous
+// exim.conf.local is restored and exim is rebuilt back to its prior state, so a
+// failed apply never leaves a half-installed rule.
 func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
+	if !cfg.Enabled {
+		return fmt.Errorf("forward-guard adapter: cannot apply disabled policy")
+	}
+	if cfg.DryRun {
+		return fmt.Errorf("forward-guard adapter: cannot apply dry-run policy")
+	}
+
 	router, err := a.renderRouter(cfg.HoldSignals)
 	if err != nil {
 		return err
 	}
 
-	prev, hadPrev := a.readLocalConf()
+	prev, hadPrev, err := a.readLocalConf()
+	if err != nil {
+		return err
+	}
+
+	base := prev
+	if !hadPrev || strings.TrimSpace(base) == "" {
+		base = eximLocalSkeleton
+	}
+	next, err := injectBlock(base, "@ROUTERSTART@", router)
+	if err != nil {
+		return err
+	}
+	next, err = injectBlock(next, "@TRANSPORTSTART@", a.renderTransport())
+	if err != nil {
+		return err
+	}
 
 	// Quarantine dir must exist and be writable by the transport user before
 	// exim can deliver into it.
@@ -136,19 +163,14 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 		return err
 	}
 
-	base := prev
-	if !hadPrev || strings.TrimSpace(base) == "" {
-		base = eximLocalSkeleton
-	}
-	next := injectBlock(base, "@ROUTERSTART@", router)
-	next = injectBlock(next, "@TRANSPORTSTART@", a.renderTransport())
-
 	if err := writeFileAtomic(a.localConf, []byte(next)); err != nil {
 		return err
 	}
 	if err := a.rebuild(); err != nil {
 		// Roll back to the prior config so mail keeps flowing as before.
-		a.restore(prev, hadPrev)
+		if restoreErr := a.restore(prev, hadPrev); restoreErr != nil {
+			return fmt.Errorf("buildeximconf failed: %w; rollback failed: %v", err, restoreErr)
+		}
 		return fmt.Errorf("buildeximconf failed, rolled back: %w", err)
 	}
 	return nil
@@ -156,7 +178,10 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 
 // Remove strips the managed blocks and rebuilds, restoring normal forwarding.
 func (a *EximAdapter) Remove() error {
-	cur, had := a.readLocalConf()
+	cur, had, err := a.readLocalConf()
+	if err != nil {
+		return err
+	}
 	if !had {
 		return nil // nothing installed
 	}
@@ -169,19 +194,29 @@ func (a *EximAdapter) Remove() error {
 		return err
 	}
 	if err := a.rebuild(); err != nil {
-		a.restore(cur, true)
+		if restoreErr := a.restore(cur, true); restoreErr != nil {
+			return fmt.Errorf("buildeximconf failed during remove: %w; rollback failed: %v", err, restoreErr)
+		}
 		return fmt.Errorf("buildeximconf failed during remove, rolled back: %w", err)
 	}
 	return nil
 }
 
-// Status reports whether the managed router block is present.
+// Status reports whether both managed blocks are present.
 func (a *EximAdapter) Status() (Status, error) {
-	cur, had := a.readLocalConf()
+	cur, had, err := a.readLocalConf()
+	if err != nil {
+		return Status{}, err
+	}
 	if !had {
 		return Status{}, nil
 	}
-	return Status{Installed: strings.Contains(cur, routerBegin)}, nil
+	routerInstalled := strings.Contains(cur, routerBegin)
+	transportInstalled := strings.Contains(cur, transportBegin)
+	if routerInstalled != transportInstalled {
+		return Status{}, fmt.Errorf("forward-guard adapter: partial install in exim.conf.local (router=%t transport=%t)", routerInstalled, transportInstalled)
+	}
+	return Status{Installed: routerInstalled}, nil
 }
 
 func (a *EximAdapter) renderRouter(sig policy.HoldSignals) (string, error) {
@@ -232,6 +267,10 @@ func (a *EximAdapter) renderTransport() string {
 }
 
 func (a *EximAdapter) writeBadIPs(ips []string) error {
+	if err := a.mkdirAll(filepath.Dir(a.badIPsPath), 0755); err != nil {
+		return fmt.Errorf("creating bad IP lookup dir: %w", err)
+	}
+
 	var buf bytes.Buffer
 	for _, ip := range ips {
 		ip = strings.TrimSpace(ip)
@@ -243,27 +282,37 @@ func (a *EximAdapter) writeBadIPs(ips []string) error {
 	return writeFileAtomic(a.badIPsPath, buf.Bytes())
 }
 
-func (a *EximAdapter) readLocalConf() (string, bool) {
+func (a *EximAdapter) readLocalConf() (string, bool, error) {
 	data, err := os.ReadFile(a.localConf) // #nosec G304 -- operator-fixed exim.conf.local path
 	if err != nil {
-		return "", false
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("reading %s: %w", a.localConf, err)
 	}
-	return string(data), true
+	return string(data), true, nil
 }
 
-func (a *EximAdapter) restore(prev string, had bool) {
+func (a *EximAdapter) restore(prev string, had bool) error {
 	if had {
-		_ = writeFileAtomic(a.localConf, []byte(prev))
+		if err := writeFileAtomic(a.localConf, []byte(prev)); err != nil {
+			return fmt.Errorf("restoring exim.conf.local: %w", err)
+		}
 	} else {
-		_ = os.Remove(a.localConf)
+		if err := os.Remove(a.localConf); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing new exim.conf.local: %w", err)
+		}
 	}
-	_ = a.rebuild()
+	if err := a.rebuild(); err != nil {
+		return fmt.Errorf("rebuilding restored exim config: %w", err)
+	}
+	return nil
 }
 
 // injectBlock removes any existing managed block of the same kind, then inserts
 // block immediately after the marker line. Idempotent: re-injecting yields the
 // same file.
-func injectBlock(conf, marker, block string) string {
+func injectBlock(conf, marker, block string) (string, error) {
 	// Strip a prior copy of this block so re-apply doesn't duplicate it.
 	begin, end := blockSentinels(block)
 	conf = stripBlock(conf, begin, end)
@@ -271,12 +320,10 @@ func injectBlock(conf, marker, block string) string {
 	markerLine := marker + "\n"
 	idx := strings.Index(conf, markerLine)
 	if idx < 0 {
-		// Marker missing (unexpected on cPanel): append the block so the rule is
-		// still present rather than silently dropped.
-		return strings.TrimRight(conf, "\n") + "\n\n" + block + "\n"
+		return "", fmt.Errorf("exim.conf.local missing %s marker", marker)
 	}
 	at := idx + len(markerLine)
-	return conf[:at] + block + "\n" + conf[at:]
+	return conf[:at] + block + "\n" + conf[at:], nil
 }
 
 var blockSentinelRe = regexp.MustCompile(`^(# CSM-FORWARD-GUARD \w+ BEGIN)`)
@@ -294,25 +341,47 @@ func blockSentinels(block string) (begin, end string) {
 
 // stripBlock removes the inclusive begin..end region (and a trailing newline).
 func stripBlock(conf, begin, end string) string {
-	bi := strings.Index(conf, begin)
-	if bi < 0 {
-		return conf
+	for {
+		bi := strings.Index(conf, begin)
+		if bi < 0 {
+			return conf
+		}
+		ei := strings.Index(conf[bi:], end)
+		if ei < 0 {
+			return conf
+		}
+		stop := bi + ei + len(end)
+		if stop < len(conf) && conf[stop] == '\n' {
+			stop++
+		}
+		conf = conf[:bi] + conf[stop:]
 	}
-	ei := strings.Index(conf[bi:], end)
-	if ei < 0 {
-		return conf
-	}
-	stop := bi + ei + len(end)
-	if stop < len(conf) && conf[stop] == '\n' {
-		stop++
-	}
-	return conf[:bi] + conf[stop:]
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	tmp := path + ".csmtmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil { // #nosec G306 -- exim.conf.local is world-readable by design
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.csmtmp") // #nosec G304 -- caller owns the destination path
+	if err != nil {
+		return fmt.Errorf("opening temp file for %s: %w", path, err)
+	}
+	tmp := f.Name()
+	if err := f.Chmod(0644); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod temp file for %s: %w", path, err)
+	}
+	if n, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("writing %s: %w", path, err)
+	} else if n != len(data) {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("writing %s: %w", path, io.ErrShortWrite)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("closing temp file for %s: %w", path, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

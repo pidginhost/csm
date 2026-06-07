@@ -27,9 +27,9 @@ func testAdapter(t *testing.T) (*EximAdapter, *fakeState) {
 	fs := &fakeState{}
 	a := &EximAdapter{
 		localConf:     filepath.Join(dir, "exim.conf.local"),
-		badIPsPath:    filepath.Join(dir, "bad_ips"),
+		badIPsPath:    filepath.Join(dir, "forward_guard", "bad_ips"),
 		quarantineDir: filepath.Join(dir, "held"),
-		rebuild:       func() error { fs.rebuilds++; return fs.rebuildErr },
+		rebuild:       fs.rebuild,
 		chown:         func(p, u string) error { fs.chownUser = u; fs.chownPath = p; return nil },
 		mkdirAll:      os.MkdirAll,
 	}
@@ -37,10 +37,21 @@ func testAdapter(t *testing.T) (*EximAdapter, *fakeState) {
 }
 
 type fakeState struct {
-	rebuilds   int
-	rebuildErr error
-	chownUser  string
-	chownPath  string
+	rebuilds    int
+	rebuildErr  error
+	rebuildErrs []error
+	chownUser   string
+	chownPath   string
+}
+
+func (fs *fakeState) rebuild() error {
+	fs.rebuilds++
+	if len(fs.rebuildErrs) > 0 {
+		err := fs.rebuildErrs[0]
+		fs.rebuildErrs = fs.rebuildErrs[1:]
+		return err
+	}
+	return fs.rebuildErr
 }
 
 func TestRenderRouterBothSignals(t *testing.T) {
@@ -140,6 +151,92 @@ func TestApplyInjectsIntoSkeletonAndSideEffects(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsDisabledAndDryRunPolicies(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  policy.Config
+	}{
+		{
+			name: "disabled",
+			cfg: policy.Config{
+				Enabled: false,
+				HoldSignals: policy.HoldSignals{
+					BounceBackscatter: true,
+					BadSenderIP:       true,
+				},
+			},
+		},
+		{
+			name: "dry_run",
+			cfg: policy.Config{
+				Enabled: true,
+				DryRun:  true,
+				HoldSignals: policy.HoldSignals{
+					BounceBackscatter: true,
+					BadSenderIP:       true,
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fs := testAdapter(t)
+			if err := a.Apply(tc.cfg, []string{"198.51.100.7"}); err == nil {
+				t.Fatal("expected Apply to reject non-enforcing policy")
+			}
+			if fs.rebuilds != 0 {
+				t.Fatalf("rebuilds = %d, want 0", fs.rebuilds)
+			}
+			if _, err := os.Stat(a.localConf); !os.IsNotExist(err) {
+				t.Fatalf("local conf was written for rejected policy: %v", err)
+			}
+			if _, err := os.Stat(a.badIPsPath); !os.IsNotExist(err) {
+				t.Fatalf("bad IP lookup was written for rejected policy: %v", err)
+			}
+		})
+	}
+}
+
+func TestApplyFailsBeforeSideEffectsWhenCPanelMarkersMissing(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "router_marker_missing",
+			content: strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "", 1),
+		},
+		{
+			name:    "transport_marker_missing",
+			content: strings.Replace(eximLocalSkeleton, "@TRANSPORTSTART@\n", "", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, fs := testAdapter(t)
+			if err := os.WriteFile(a.localConf, []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Apply(bothSignals(), []string{"198.51.100.7"}); err == nil {
+				t.Fatal("expected Apply to reject exim.conf.local without required cPanel marker")
+			}
+			got, err := os.ReadFile(a.localConf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.content {
+				t.Fatalf("local conf changed despite marker error:\n%s", got)
+			}
+			if fs.rebuilds != 0 {
+				t.Fatalf("rebuilds = %d, want 0", fs.rebuilds)
+			}
+			if _, err := os.Stat(a.badIPsPath); !os.IsNotExist(err) {
+				t.Fatalf("bad IP lookup was written despite marker error: %v", err)
+			}
+		})
+	}
+}
+
 func TestApplyIsIdempotent(t *testing.T) {
 	a, _ := testAdapter(t)
 	if err := a.Apply(bothSignals(), []string{"198.51.100.7"}); err != nil {
@@ -155,6 +252,35 @@ func TestApplyIsIdempotent(t *testing.T) {
 	}
 	if strings.Count(string(second), routerBegin) != 1 {
 		t.Errorf("router block duplicated: %d copies", strings.Count(string(second), routerBegin))
+	}
+}
+
+func TestApplyRemovesDuplicateManagedBlocksOnReapply(t *testing.T) {
+	a, _ := testAdapter(t)
+	router, err := a.renderRouter(bothSignals().HoldSignals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := a.renderTransport()
+	existing := strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
+	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
+	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = a.Apply(bothSignals(), []string{"198.51.100.7"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if strings.Count(s, routerBegin) != 1 {
+		t.Fatalf("router block count = %d, want 1\n%s", strings.Count(s, routerBegin), s)
+	}
+	if strings.Count(s, transportBegin) != 1 {
+		t.Fatalf("transport block count = %d, want 1\n%s", strings.Count(s, transportBegin), s)
 	}
 }
 
@@ -183,7 +309,7 @@ func TestApplyRollsBackOnRebuildFailure(t *testing.T) {
 	if err := os.WriteFile(a.localConf, []byte(prior), 0644); err != nil {
 		t.Fatal(err)
 	}
-	fs.rebuildErr = errors.New("buildeximconf boom")
+	fs.rebuildErrs = []error{errors.New("buildeximconf boom"), nil}
 
 	if err := a.Apply(bothSignals(), nil); err == nil {
 		t.Fatal("expected apply error on rebuild failure")
@@ -195,6 +321,36 @@ func TestApplyRollsBackOnRebuildFailure(t *testing.T) {
 	}
 	if !strings.Contains(string(s), "# operator marker") {
 		t.Errorf("prior content not restored:\n%s", s)
+	}
+	if fs.rebuilds != 2 {
+		t.Errorf("rebuilds = %d, want 2 (failed apply + rollback rebuild)", fs.rebuilds)
+	}
+}
+
+func TestApplyReportsRollbackRebuildFailure(t *testing.T) {
+	a, fs := testAdapter(t)
+	prior := strings.Replace(eximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator marker\n", 1)
+	if err := os.WriteFile(a.localConf, []byte(prior), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fs.rebuildErrs = []error{errors.New("new config failed"), errors.New("rollback failed")}
+
+	err := a.Apply(bothSignals(), nil)
+	if err == nil {
+		t.Fatal("expected apply error")
+	}
+	if !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("error did not report rollback failure: %v", err)
+	}
+	s, readErr := os.ReadFile(a.localConf)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(s) != prior {
+		t.Fatalf("prior content not restored before failed rollback rebuild:\n%s", s)
+	}
+	if fs.rebuilds != 2 {
+		t.Errorf("rebuilds = %d, want 2", fs.rebuilds)
 	}
 }
 
@@ -219,6 +375,61 @@ func TestRemoveStripsBlocksAndRebuilds(t *testing.T) {
 	}
 }
 
+func TestRemoveStripsDuplicateManagedBlocks(t *testing.T) {
+	a, _ := testAdapter(t)
+	router, err := a.renderRouter(bothSignals().HoldSignals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := a.renderTransport()
+	existing := strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
+	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
+	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = a.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if strings.Contains(s, routerBegin) || strings.Contains(s, transportBegin) {
+		t.Fatalf("managed blocks remain after Remove:\n%s", s)
+	}
+	if !strings.Contains(s, "@ROUTERSTART@") || !strings.Contains(s, "@TRANSPORTSTART@") {
+		t.Fatalf("cPanel markers damaged by Remove:\n%s", s)
+	}
+}
+
+func TestRemoveRollsBackOnRebuildFailure(t *testing.T) {
+	a, fs := testAdapter(t)
+	if err := a.Apply(bothSignals(), nil); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.rebuildErrs = []error{errors.New("remove config failed"), nil}
+
+	if err = a.Remove(); err == nil {
+		t.Fatal("expected remove error on rebuild failure")
+	}
+	after, err := os.ReadFile(a.localConf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(installed) {
+		t.Fatalf("installed config not restored after failed remove:\n%s", after)
+	}
+	if fs.rebuilds != 3 {
+		t.Errorf("rebuilds = %d, want 3 (apply + failed remove + rollback rebuild)", fs.rebuilds)
+	}
+}
+
 func TestStatusReflectsInstalled(t *testing.T) {
 	a, _ := testAdapter(t)
 	if st, _ := a.Status(); st.Installed {
@@ -235,5 +446,51 @@ func TestStatusReflectsInstalled(t *testing.T) {
 	}
 	if st, _ := a.Status(); st.Installed {
 		t.Error("status installed after remove")
+	}
+}
+
+func TestStatusErrorsOnPartialInstall(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "router_only",
+			content: strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+routerBegin+"\n"+routerEnd+"\n", 1),
+		},
+		{
+			name:    "transport_only",
+			content: strings.Replace(eximLocalSkeleton, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transportBegin+"\n"+transportEnd+"\n", 1),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := testAdapter(t)
+			if err := os.WriteFile(a.localConf, []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.Status(); err == nil {
+				t.Fatal("expected Status error for partial install")
+			}
+		})
+	}
+}
+
+func TestReadLocalConfErrorsAreNotTreatedAsMissing(t *testing.T) {
+	a, _ := testAdapter(t)
+	if err := os.RemoveAll(a.localConf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(a.localConf, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply(bothSignals(), nil); err == nil {
+		t.Fatal("expected Apply to return read error")
+	}
+	if err := a.Remove(); err == nil {
+		t.Fatal("expected Remove to return read error")
+	}
+	if _, err := a.Status(); err == nil {
+		t.Fatal("expected Status to return read error")
 	}
 }
