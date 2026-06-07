@@ -33,6 +33,16 @@ func ComputeScore(r *IPRecord) int {
 	if r.AttackCounts[AttackBruteForce] > 0 {
 		score += 15
 	}
+	// Sustained brute force from a single IP is a high-confidence attacker
+	// signal: no legitimate mail or login client retries a known-bad
+	// credential dozens of times. This lifts a persistent single-account
+	// brute (otherwise capped at volume 30 + 15 = 45) over the 70 block
+	// threshold, closing the gap where a slow brute that never trips the
+	// per-window realtime tracker still goes unblocked. The 50-event floor
+	// stays far above a user's brief stale-password mishap.
+	if r.AttackCounts[AttackBruteForce] >= 50 {
+		score += 30
+	}
 	if r.AttackCounts[AttackWAFBlock] > 5 {
 		score += 10
 	}

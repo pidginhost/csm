@@ -1665,6 +1665,7 @@ func (d *Daemon) startLogWatchers() {
 		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
+		tick := 0
 		for {
 			select {
 			case <-d.stopCh:
@@ -1675,6 +1676,24 @@ func (d *Daemon) startLogWatchers() {
 				}
 				if d.smtpProbeTracker != nil {
 					d.smtpProbeTracker.Purge()
+				}
+				// Diagnostic: surface whether the SMTP/mail brute-force
+				// trackers are actually seeing auth failures and emitting
+				// blockable findings. A nonzero record_calls with zero
+				// findings_emitted over a sustained attack means the
+				// threshold path, not the wiring, is the gap to chase.
+				tick++
+				if tick%10 == 0 {
+					if d.smtpAuthTracker != nil {
+						sc, se := d.smtpAuthTracker.Stats()
+						csmlog.Info("smtp brute tracker stats",
+							"record_calls", sc, "findings_emitted", se, "tracked", d.smtpAuthTracker.Size())
+					}
+					if d.mailAuthTracker != nil {
+						mc, me := d.mailAuthTracker.Stats()
+						csmlog.Info("mail brute tracker stats",
+							"record_calls", mc, "findings_emitted", me, "tracked", d.mailAuthTracker.Size())
+					}
 				}
 			}
 		}

@@ -99,3 +99,35 @@ func TestSortRecordsByScore(t *testing.T) {
 		t.Errorf("third = %q, want a", recs[2].IP)
 	}
 }
+
+func TestComputeScore_SustainedBruteForceReachesBlockThreshold(t *testing.T) {
+	// A persistent single-account mail brute force (e.g. 1255 dovecot
+	// SMTP-AUTH failures from one IP over hours) must reach the
+	// local_threat_score auto-block threshold (70). Without the sustained
+	// brute tier it tops out at volume 30 + brute 15 = 45 and is never
+	// auto-blocked, which is exactly how 79.133.42.191 evaded blocking.
+	r := &IPRecord{
+		EventCount:   1255,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 1255},
+		Accounts:     map[string]int{"florin": 1255},
+	}
+	got := ComputeScore(r)
+	if got < 70 {
+		t.Errorf("sustained single-IP brute force score = %d, want >= 70 (block threshold)", got)
+	}
+}
+
+func TestComputeScore_BriefAuthFailuresStayBelowBlock(t *testing.T) {
+	// A legitimate user with a stale saved password produces a handful of
+	// auth failures, not dozens. This must stay well under the block
+	// threshold so a brief credential mishap is never a 24h IP block.
+	r := &IPRecord{
+		EventCount:   6,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 6},
+		Accounts:     map[string]int{"owner": 6},
+	}
+	got := ComputeScore(r)
+	if got >= 70 {
+		t.Errorf("brief auth failures score = %d, want < 70 (no auto-block)", got)
+	}
+}

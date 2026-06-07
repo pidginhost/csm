@@ -49,6 +49,13 @@ type smtpAuthTracker struct {
 	ips      map[string]*smtpIPEntry
 	subnets  map[string]*smtpSubnetEntry
 	accounts map[string]*smtpAccountEntry
+
+	// Diagnostic counters (guarded by mu): cumulative Record invocations and
+	// findings emitted. The daemon logs these so a "zero smtp_bruteforce in
+	// production despite thousands of auth failures" can be pinned to either
+	// "Record never called" or "called but never crosses threshold".
+	recordCalls     int64
+	findingsEmitted int64
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -97,6 +104,8 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	t.recordCalls++
 
 	now := t.now()
 	cutoff := now.Add(-t.window)
@@ -181,7 +190,16 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	}
 
 	t.enforceMaxTracked()
+	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// Stats returns cumulative Record invocations and findings emitted since
+// startup. Used by the daemon's periodic diagnostic log.
+func (t *smtpAuthTracker) Stats() (calls, emits int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.recordCalls, t.findingsEmitted
 }
 
 // pruneTimes drops timestamps older than cutoff. Reuses the backing array.
