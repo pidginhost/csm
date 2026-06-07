@@ -836,6 +836,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-queue"`,
 		`id="email-tab-quarantine"`,
 		`id="email-tab-senders"`,
+		`id="email-tab-forwarders"`,
 		`class="csm-toolbar"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -871,6 +872,8 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`refreshStatusStrip`,
 		`CSM.summaryItem`,
 		`CSM.detailPanel.open`,
+		`/api/v1/email/forwarders`,
+		`renderForwarders`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("email.js missing phase-8 hook %q", want)
@@ -882,6 +885,26 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	} {
 		if strings.Contains(jsText, banned) {
 			t.Errorf("email.js still references removed helper %q", banned)
+		}
+	}
+}
+
+func TestEmailForwardersRenderEscapesInventoryValues(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`var FWD_PROVIDER_BADGE = Object.create(null);`,
+		`Object.prototype.hasOwnProperty.call(FWD_PROVIDER_BADGE, provider)`,
+		`'<span class="badge ' + CSM.attr(cls) + ' me-1">' + CSM.esc(provider) + '</span>'`,
+		`CSM.esc(f.destinations[d].address)`,
+		`CSM.esc(f.source)`,
+		`CSM.esc(f.owner)`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("email.js forwarder renderer missing escape fragment %q", fragment)
 		}
 	}
 }

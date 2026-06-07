@@ -896,17 +896,19 @@
 
     // Provider class -> badge colour. Free providers are the reputation-risk
     // case (forwarding spam to them tanks the outbound IP), so they read red.
-    var FWD_PROVIDER_BADGE = {
-        yahoo:    'bg-red',
-        gmail:    'bg-red',
-        outlook:  'bg-red',
-        external: 'bg-yellow',
-        local:    'bg-green'
-    };
+    var FWD_PROVIDER_BADGE = Object.create(null);
+    FWD_PROVIDER_BADGE.yahoo = 'bg-red';
+    FWD_PROVIDER_BADGE.gmail = 'bg-red';
+    FWD_PROVIDER_BADGE.outlook = 'bg-red';
+    FWD_PROVIDER_BADGE.external = 'bg-yellow';
+    FWD_PROVIDER_BADGE.local = 'bg-green';
 
     function providerBadge(provider) {
-        var cls = FWD_PROVIDER_BADGE[provider] || 'bg-secondary';
-        return '<span class="badge ' + cls + ' me-1">' + CSM.esc(provider) + '</span>';
+        provider = String(provider || '');
+        var cls = Object.prototype.hasOwnProperty.call(FWD_PROVIDER_BADGE, provider)
+            ? FWD_PROVIDER_BADGE[provider]
+            : 'bg-secondary';
+        return '<span class="badge ' + CSM.attr(cls) + ' me-1">' + CSM.esc(provider) + '</span>';
     }
 
     function loadForwarders() {

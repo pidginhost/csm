@@ -23,7 +23,7 @@ type Source interface {
 // Source instead of a nil.
 type EmptySource struct{}
 
-func (EmptySource) Forwarders() ([]Forwarder, error) { return nil, nil }
+func (EmptySource) Forwarders() ([]Forwarder, error) { return []Forwarder{}, nil }
 
 // CPanelSource reads forwarders from cPanel's /etc/valiases directory, with
 // local domains from /etc/localdomains and /etc/virtualdomains and owners from

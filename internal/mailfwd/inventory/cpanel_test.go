@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"encoding/json"
 	"sort"
 	"testing"
 )
@@ -42,6 +43,23 @@ var errNotFound = &fsError{"not found"}
 type fsError struct{ s string }
 
 func (e *fsError) Error() string { return e.s }
+
+func TestEmptySourceForwardersReturnsEmptySlice(t *testing.T) {
+	fwds, err := (EmptySource{}).Forwarders()
+	if err != nil {
+		t.Fatalf("Forwarders() error: %v", err)
+	}
+	if fwds == nil {
+		t.Fatal("Forwarders() returned nil slice, want empty slice")
+	}
+	data, err := json.Marshal(fwds)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(data) != "[]" {
+		t.Fatalf("marshal = %s, want []", data)
+	}
+}
 
 // matchGlob does a minimal "/etc/valiases/*" style match: prefix dir + no
 // further slash. Enough for the fixed globs this source uses.
