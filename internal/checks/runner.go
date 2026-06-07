@@ -226,34 +226,6 @@ type namedCheck struct {
 // ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
 
-// scanShutdownParent is the parent context for periodic scans. The daemon sets
-// it to a context it cancels on shutdown so an in-flight scan aborts promptly
-// instead of blocking the shutdown drain for a whole tier. One-shot callers
-// (CLI, control socket) never set it and get context.Background(), so their
-// behaviour is unchanged. A plain mutex-guarded var (not atomic.Value) because
-// the stored concrete context type varies between Background and cancelCtx.
-var (
-	scanShutdownMu     sync.RWMutex
-	scanShutdownParent context.Context = context.Background()
-)
-
-// SetScanShutdownContext installs the parent context used by periodic scans.
-// Passing nil resets to context.Background().
-func SetScanShutdownContext(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	scanShutdownMu.Lock()
-	scanShutdownParent = ctx
-	scanShutdownMu.Unlock()
-}
-
-func scanShutdownContext() context.Context {
-	scanShutdownMu.RLock()
-	defer scanShutdownMu.RUnlock()
-	return scanShutdownParent
-}
-
 // Tier identifies which set of checks to run.
 type Tier string
 
@@ -479,6 +451,9 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 	if st == nil {
 		return
 	}
+	if len(purgeChecks) == 0 && len(findings) == 0 {
+		return
+	}
 	st.PurgeAndMergeFindings(latestPurgeWithVolatile(purgeChecks), latestPersistentFindings(findings))
 
 	now := time.Now()
@@ -566,13 +541,20 @@ func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
 // parameter rather than the previous package-level toggle, so concurrent
 // periodic scanners no longer race with a manual `csm check` invocation.
 func RunTier(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
-	return runParallel(cfg, store, checksForTier(tier), string(tier), false)
+	return RunTierWithContext(context.Background(), cfg, store, tier)
+}
+
+// RunTierWithContext is RunTier with a caller-owned parent context. Daemon
+// periodic scans pass their shutdown context here so an interrupted scan does
+// not stall process exit.
+func RunTierWithContext(ctx context.Context, cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
+	return runParallelWithContext(ctx, cfg, store, checksForTier(tier), string(tier), false)
 }
 
 // RunTierDryRun is the dry-run variant of RunTier: auto-response actions
 // are skipped. Used by `csm check*` socket commands and the legacy CLI.
 func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
-	return runParallel(cfg, store, checksForTier(tier), string(tier), true)
+	return runParallelWithContext(context.Background(), cfg, store, checksForTier(tier), string(tier), true)
 }
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
@@ -586,7 +568,13 @@ func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.F
 // The second return value is the per-scan purge name list scoped to the
 // checks that actually executed this cycle.
 func RunReducedDeep(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
-	return runParallel(cfg, store, reducedDeepChecks(), string(TierDeep), false)
+	return RunReducedDeepWithContext(context.Background(), cfg, store)
+}
+
+// RunReducedDeepWithContext is RunReducedDeep with a caller-owned parent
+// context for daemon shutdown cancellation.
+func RunReducedDeepWithContext(ctx context.Context, cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
+	return runParallelWithContext(ctx, cfg, store, reducedDeepChecks(), string(TierDeep), false)
 }
 
 // RunAll runs critical checks always. Deep checks run if throttle allows or
@@ -606,7 +594,7 @@ func runAll(cfg *config.Config, store *state.Store, dryRun bool) ([]alert.Findin
 	if ForceAll || store.ShouldRunThrottled("deep_scan", cfg.Thresholds.DeepScanIntervalMin) {
 		toRun = append(toRun, deepChecks()...)
 	}
-	return runParallel(cfg, store, toRun, string(TierAll), dryRun)
+	return runParallelWithContext(context.Background(), cfg, store, toRun, string(TierAll), dryRun)
 }
 
 // runParallel executes the supplied checks concurrently. It returns the
@@ -615,12 +603,16 @@ func runAll(cfg *config.Config, store *state.Store, dryRun bool) ([]alert.Findin
 // findings persist. Disabled checks do not run, but their names stay in the
 // purge list so disabling a check clears any findings it previously owned.
 func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
+	return runParallelWithContext(context.Background(), cfg, store, checks, tier, dryRun)
+}
+
+func runParallelWithContext(parent context.Context, cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
-	// Derive from the daemon-supplied shutdown parent so an in-flight scan
-	// aborts when the daemon cancels it, instead of running the whole tier to
-	// completion and stalling the shutdown drain.
-	scanCtx, truncations := withAccountScanTruncationCollector(scanShutdownContext())
+	scanCtx, truncations := withAccountScanTruncationCollector(parent)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -649,8 +641,16 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 		// alive.
 		obs.SafeGo("check-runner", func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-scanCtx.Done():
+				return
+			}
 			defer func() { <-sem }()
+
+			if scanCtx.Err() != nil {
+				return
+			}
 
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
@@ -693,6 +693,12 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 	}
 
 	wg.Wait()
+
+	if scanCtx.Err() != nil {
+		// The scan did not complete, so keep the caller from replacing the
+		// last completed scan state with partial findings or an empty purge.
+		return nil, nil
+	}
 
 	now := time.Now()
 	findings = append(findings, truncations.findings(now)...)

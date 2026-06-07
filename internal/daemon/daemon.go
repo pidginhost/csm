@@ -78,6 +78,7 @@ type Daemon struct {
 	alertCh          chan alert.Finding
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
+	scanCtx          context.Context
 	scanCancel       context.CancelFunc // cancels in-flight periodic scans on shutdown
 	abuseReportStop  chan struct{}
 	abuseReportDone  chan struct{}
@@ -404,12 +405,12 @@ func (d *Daemon) Run() error {
 
 	csmlog.Info("CSM daemon starting")
 
-	// Install the scan shutdown context so an in-flight periodic scan aborts
-	// when shutdown cancels it, instead of blocking the shutdown drain for a
-	// whole tier. Cancelled right after stopCh closes in the shutdown path.
+	// Periodic scans use this context so shutdown can abort an in-flight tier
+	// instead of blocking the worker drain for the full check budget.
 	scanCtx, scanCancel := context.WithCancel(context.Background())
+	d.scanCtx = scanCtx
 	d.scanCancel = scanCancel
-	checks.SetScanShutdownContext(scanCtx)
+	defer scanCancel()
 
 	// Wire the active config to the incident-singleton's auto-close
 	// loop BEFORE the singleton is constructed, so the loop reads the
@@ -633,7 +634,7 @@ func (d *Daemon) Run() error {
 
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
-	initialFindings, initialPurge := checks.RunTier(initialCfg, d.store, checks.TierCritical)
+	initialFindings, initialPurge := checks.RunTierWithContext(d.scanContext(), initialCfg, d.store, checks.TierCritical)
 
 	// Seed the attack database with initial scan findings
 	if adb := attackdb.Global(); adb != nil {
@@ -1007,6 +1008,13 @@ func (d *Daemon) DroppedAlerts() int64 {
 	return atomic.LoadInt64(&d.droppedAlerts)
 }
 
+func (d *Daemon) scanContext() context.Context {
+	if d.scanCtx != nil {
+		return d.scanCtx
+	}
+	return context.Background()
+}
+
 // FindingBus returns the per-daemon broadcast.Bus used by passive
 // observers like the SSE event stream. Returns nil before Run starts.
 func (d *Daemon) FindingBus() *broadcast.Bus {
@@ -1289,12 +1297,12 @@ func (d *Daemon) deepScanner() {
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTier(d.currentCfg(), d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), d.currentCfg(), d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeep(d.currentCfg(), d.store)
+				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), d.currentCfg(), d.store)
 			default:
-				findings, purgeChecks = checks.RunTier(d.currentCfg(), d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), d.currentCfg(), d.store, checks.TierDeep)
 			}
 			// Atomically purge stale findings owned by this scan and merge new ones.
 			checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
@@ -1354,7 +1362,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
 	}
 
-	findings, purgeChecks := checks.RunTier(cfg, d.store, tier)
+	findings, purgeChecks := checks.RunTierWithContext(d.scanContext(), cfg, d.store, tier)
 	// Atomically purge stale findings owned by this scan and merge new ones.
 	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 	for _, f := range findings {
