@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The Email Security page has a new Forwarders tab listing every mail forwarder on the host, where it delivers, who owns it, and whether mail also stays in a local mailbox, so operators can see at a glance which accounts relay mail off-server to free providers.
+
 ### Fixed
 
 - The Email Security action-groups list now orders groups of the same severity by event count, so the busiest clusters surface at the top instead of just the most recent.

@@ -18,6 +18,13 @@ type Source interface {
 	Forwarders() ([]Forwarder, error)
 }
 
+// EmptySource reports no forwarders. It stands in on platforms whose
+// enumeration is not wired yet (non-cPanel), so callers always hold a usable
+// Source instead of a nil.
+type EmptySource struct{}
+
+func (EmptySource) Forwarders() ([]Forwarder, error) { return nil, nil }
+
 // CPanelSource reads forwarders from cPanel's /etc/valiases directory, with
 // local domains from /etc/localdomains and /etc/virtualdomains and owners from
 // /etc/userdomains.

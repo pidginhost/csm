@@ -44,6 +44,8 @@
     var emailTable = null;
     var quarantineLoaded = false;
     var authGroupsLoaded = false;
+    var forwardersLoaded = false;
+    var _forwarders = [];
 
     function localDateInputValue(date) {
         var d = date || new Date();
@@ -890,6 +892,101 @@
         }).catch(function() { /* cancelled */ });
     }
 
+    // ---------- Forwarders tab (inventory table) ----------
+
+    // Provider class -> badge colour. Free providers are the reputation-risk
+    // case (forwarding spam to them tanks the outbound IP), so they read red.
+    var FWD_PROVIDER_BADGE = {
+        yahoo:    'bg-red',
+        gmail:    'bg-red',
+        outlook:  'bg-red',
+        external: 'bg-yellow',
+        local:    'bg-green'
+    };
+
+    function providerBadge(provider) {
+        var cls = FWD_PROVIDER_BADGE[provider] || 'bg-secondary';
+        return '<span class="badge ' + cls + ' me-1">' + CSM.esc(provider) + '</span>';
+    }
+
+    function loadForwarders() {
+        if (forwardersLoaded) return;
+        forwardersLoaded = true;
+        CSM.get('/api/v1/email/forwarders')
+            .then(function(data) {
+                _forwarders = (data && data.forwarders) || [];
+                renderForwarders();
+            })
+            .catch(function() {
+                forwardersLoaded = false;
+                var tb = document.getElementById('email-fwd-tbody');
+                if (tb) tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">Could not load forwarders. Retry from the refresh button.</td></tr>';
+            });
+    }
+
+    function forwarderMatchesFilter(f, mode) {
+        if (mode === 'external') return f.has_external;
+        if (mode === 'free') return f.has_free_provider;
+        if (mode === 'forward_only') return f.forward_only;
+        return true;
+    }
+
+    function forwarderMatchesSearch(f, q) {
+        if (!q) return true;
+        if (f.source.toLowerCase().indexOf(q) !== -1) return true;
+        if (f.owner && f.owner.toLowerCase().indexOf(q) !== -1) return true;
+        for (var i = 0; i < f.destinations.length; i++) {
+            if (f.destinations[i].address.toLowerCase().indexOf(q) !== -1) return true;
+        }
+        return false;
+    }
+
+    function renderForwarders() {
+        var tb = document.getElementById('email-fwd-tbody');
+        if (!tb) return;
+        var mode = (document.getElementById('email-fwd-filter') || {}).value || '';
+        var q = ((document.getElementById('email-fwd-search') || {}).value || '').trim().toLowerCase();
+
+        var rows = _forwarders.filter(function(f) {
+            return forwarderMatchesFilter(f, mode) && forwarderMatchesSearch(f, q);
+        });
+
+        var countEl = document.getElementById('email-fwd-count');
+        if (countEl) countEl.textContent = rows.length + ' of ' + _forwarders.length;
+
+        if (rows.length === 0) {
+            var msg = _forwarders.length === 0
+                ? 'No forwarders found on this host.'
+                : 'No forwarders match the current filter.';
+            tb.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' + msg + '</td></tr>';
+            return;
+        }
+
+        var html = '';
+        for (var i = 0; i < rows.length; i++) {
+            var f = rows[i];
+            var dests = '';
+            for (var d = 0; d < f.destinations.length; d++) {
+                dests += '<div class="font-monospace small">' + CSM.esc(f.destinations[d].address) + '</div>';
+            }
+            var badges = '';
+            for (var p = 0; p < f.providers.length; p++) {
+                badges += providerBadge(f.providers[p]);
+            }
+            var copy = f.forward_only
+                ? '<span class="badge bg-red-lt">Forward-only</span>'
+                : '<span class="badge bg-green-lt">Keep local</span>';
+            html += '<tr>';
+            html += '<td class="font-monospace small">' + CSM.esc(f.source) + '</td>';
+            html += '<td>' + (f.owner ? CSM.esc(f.owner) : '<span class="text-muted">--</span>') + '</td>';
+            html += '<td>' + dests + '</td>';
+            html += '<td>' + badges + '</td>';
+            html += '<td>' + copy + '</td>';
+            html += '</tr>';
+        }
+        tb.innerHTML = html;
+    }
+
     // ---------- Tab activation ----------
 
     function activateTab(name) {
@@ -922,6 +1019,9 @@
             } else if (force) {
                 loadEmailStats();
             }
+        } else if (id === 'forwarders') {
+            if (force) forwardersLoaded = false;
+            loadForwarders();
         }
     }
 
@@ -941,8 +1041,18 @@
                     loadEmailStats();
                 }
             }
+            else if (id === 'forwarders') loadForwarders();
         });
     }
+
+    // ---------- Forwarders filter/search (client-side, no refetch) ----------
+
+    ['email-fwd-filter', 'email-fwd-search'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var evt = id === 'email-fwd-search' ? 'input' : 'change';
+        el.addEventListener(evt, renderForwarders);
+    });
 
     // ---------- Filter handlers (auto-apply on change) ----------
 
@@ -996,6 +1106,7 @@
             loadActionGroups();
             loadFindings();
             authGroupsLoaded = false;
+            forwardersLoaded = false;
             loadActiveEmailTab(true);
         });
     }
