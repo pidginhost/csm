@@ -266,6 +266,27 @@
                         </tbody>
                     </table>
                 </div>
+
+                <div class="card-body border-top">
+                    <div class="subheader mb-2"><i class="ti ti-mail-pause"></i>&nbsp;Held forward copies <span class="text-muted small" id="email-held-count"></span></div>
+                    <div class="text-muted small mb-2">Spam-bounce or bad-sender forward copies the guard held before they relayed externally. The local copy still delivered. Release re-sends a copy to its external recipient; delete discards it.</div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-sm" id="email-held-table">
+                            <thead>
+                                <tr>
+                                    <th>Held</th>
+                                    <th>Forwarder</th>
+                                    <th>Recipient</th>
+                                    <th>Reason</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="email-held-tbody">
+                                <tr><td colspan="5" class="text-center text-muted py-4">Held forwards load when this tab is opened.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
             <!-- Deliverability tab: outbound deferral picture from exim_mainlog -->
