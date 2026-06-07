@@ -2,7 +2,11 @@ package intel
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +15,24 @@ func TestFrozenBackscatterIDs(t *testing.T) {
 	// The other two <> messages are not frozen; the real-sender message is neither.
 	got := FrozenBackscatterIDs(eximBpSample)
 	want := []string{"1rABcd-000ABC-2A"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FrozenBackscatterIDs = %v, want %v", got, want)
+	}
+}
+
+func TestFrozenBackscatterIDsRejectsRealSenderAndMalformedHeaders(t *testing.T) {
+	in := ` 25m  2.5K 1rREAL-000ABC-2A sender@example.com *** frozen ***
+          real-recipient@example.com
+ 25m  2.5K 1rLIVE-000ABC-2A <>
+          *** frozen *** is recipient text, not a header marker
+ 25m  2.5K 1rEXTR-000ABC-2A <> *** frozen *** injected
+          malformed@example.com
+ 25m  2.5K 1rGOOD-000ABC-2A <> *** frozen ***
+          victim@example.com
+`
+
+	got := FrozenBackscatterIDs(in)
+	want := []string{"1rGOOD-000ABC-2A"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("FrozenBackscatterIDs = %v, want %v", got, want)
 	}
@@ -83,5 +105,35 @@ func TestEximQueueFlusherRemoveErrorIsReturned(t *testing.T) {
 	}
 	if _, err := f.FlushBackscatter(); err == nil {
 		t.Fatal("expected error when removal fails")
+	}
+}
+
+func TestRunEximRemoveBatchesIDs(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	eximPath := filepath.Join(dir, "exim")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$#\" >> \"$EXIM_ARG_LOG\"\n"
+	if err := os.WriteFile(eximPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write fake exim: %v", err)
+	}
+	t.Setenv("EXIM_ARG_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var ids []string
+	for i := 0; i < eximRemoveBatch*2+1; i++ {
+		ids = append(ids, fmt.Sprintf("1r%04d-000ABC-2A", i))
+	}
+
+	if err := runEximRemove(ids); err != nil {
+		t.Fatalf("runEximRemove: %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake exim log: %v", err)
+	}
+	got := strings.Fields(string(data))
+	want := []string{"101", "101", "2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("batch argument counts = %v, want %v", got, want)
 	}
 }

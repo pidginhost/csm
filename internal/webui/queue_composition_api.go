@@ -18,12 +18,12 @@ func selectQueueReporter() intel.QueueReporter {
 }
 
 // selectQueueFlusher picks the backscatter-flush executor for the host. Only
-// cPanel/exim is wired; other platforms get the empty flusher.
+// cPanel/exim is wired; other platforms expose the route as unavailable.
 func selectQueueFlusher() intel.QueueFlusher {
 	if platform.Detect().IsCPanel() {
 		return intel.NewEximQueueFlusher()
 	}
-	return intel.EmptyQueueFlusher{}
+	return nil
 }
 
 // apiEmailFlushBackscatter handles POST /api/v1/email/queue/flush-backscatter.

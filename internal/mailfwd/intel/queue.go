@@ -102,14 +102,19 @@ func ParseQueue(out string) QueueComposition {
 
 func parseQueueHeader(line string) (msgID, age string, ageSeconds int, bounce, frozen, ok bool) {
 	fields := strings.Fields(line)
-	if len(fields) < 4 {
+	if len(fields) != 4 && len(fields) != 7 {
 		return "", "", 0, false, false, false
 	}
 	if !queueAgeRe.MatchString(fields[0]) || !queueSizeRe.MatchString(fields[1]) || !queueMsgIDRe.MatchString(fields[2]) {
 		return "", "", 0, false, false, false
 	}
+	if len(fields) == 7 {
+		if fields[4] != "***" || fields[5] != "frozen" || fields[6] != "***" {
+			return "", "", 0, false, false, false
+		}
+		frozen = true
+	}
 	bounce = fields[3] == "<>"
-	frozen = strings.Contains(line, "*** frozen ***")
 	return fields[2], fields[0], ageToSeconds(fields[0]), bounce, frozen, true
 }
 

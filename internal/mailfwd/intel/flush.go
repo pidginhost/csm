@@ -17,11 +17,6 @@ type QueueFlusher interface {
 	FlushBackscatter() (FlushResult, error)
 }
 
-// EmptyQueueFlusher is the non-cPanel stub: nothing to flush.
-type EmptyQueueFlusher struct{}
-
-func (EmptyQueueFlusher) FlushBackscatter() (FlushResult, error) { return FlushResult{}, nil }
-
 // FrozenBackscatterIDs returns the message IDs of messages that are BOTH frozen
 // AND null-sender (<>) in `exim -bp` output. This is the only set the flush
 // touches: a frozen null-sender message is undeliverable bounce backscatter,
