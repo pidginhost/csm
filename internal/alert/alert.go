@@ -54,6 +54,14 @@ type Finding struct {
 	SourceIP  string   `json:"source_ip,omitempty"`  // IP after "for " in X-PHP-Script
 	CPUser    string   `json:"cp_user,omitempty"`    // cPanel user from spool -H line 2
 
+	// RelayTotal is the trigger count for the PHP-relay path that fired
+	// (qualifying/volume/fanout/account-window count). RelayBreakdown lists
+	// the scripts that contributed, with per-script hit counts and a sample
+	// subject. Both optional; volume_account carries RelayTotal with no
+	// breakdown (account log-tail path has no trustworthy script key).
+	RelayTotal     int              `json:"relay_total,omitempty"`
+	RelayBreakdown []RelayScriptHit `json:"relay_breakdown,omitempty"`
+
 	// Tenant context (added v2.12.0). Optional - populated when the check
 	// has enough info to attribute the finding to a specific tenant within
 	// a multi-tenant host. Empty strings render as omitted JSON keys so
@@ -69,6 +77,14 @@ type Finding struct {
 	Process *processctx.ProcessContext `json:"process,omitempty"`
 
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// RelayScriptHit is one script's contribution to a PHP-relay finding.
+type RelayScriptHit struct {
+	ScriptKey     string    `json:"script_key"` // "host:/path" from X-PHP-Script
+	Hits          int       `json:"hits"`       // messages counted in the path window
+	LastSeen      time.Time `json:"last_seen"`
+	SampleSubject string    `json:"sample_subject,omitempty"` // attacker-controlled; render escaped
 }
 
 func (f Finding) String() string {
