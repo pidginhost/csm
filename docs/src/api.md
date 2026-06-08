@@ -292,6 +292,8 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `tenant_id` | Tenant attribution from the verdict callback or panel-side webhook reply |
 | `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
+| `relay_total` | PHP-relay trigger count for the path that fired |
+| `relay_breakdown` | PHP-relay script samples that contributed to the alert, with script key, hit count, last seen time, and a bounded sample subject when available |
 
 Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."
 

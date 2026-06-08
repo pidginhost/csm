@@ -238,33 +238,35 @@ func (p *spoolPipeline) OnFile(path string) {
 		return
 	}
 
+	now := time.Now()
 	if p.msgIndex != nil {
 		p.msgIndex.Put(msgID, indexEntry{
 			ScriptKey: string(sig.ScriptKey),
 			SourceIP:  sig.SourceIP,
 			CPUser:    h.EnvelopeUser,
-			At:        time.Now(),
+			At:        now,
 		})
 	}
 
 	state := p.eng.scripts.getOrCreate(sig.ScriptKey)
 	state.append(scriptEvent{
-		At:               time.Now(),
+		At:               now,
 		MsgID:            msgID,
+		Subject:          truncateDaemon(h.Subject, phpRelayBreakdownSubjectMax),
 		FromMismatch:     sig.FromMismatch,
 		AdditionalSignal: sig.AdditionalSignal,
 		SourceIP:         sig.SourceIP,
 	})
-	state.recordActive(msgID, time.Now())
+	state.recordActive(msgID, now)
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
-		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, time.Now())
+		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, now, h.Subject)
 	}
 
 	if p.rebuilding.Load() {
 		return
 	}
-	findings := p.eng.evaluatePaths(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, time.Now())
+	findings := p.eng.evaluatePaths(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, now)
 	for _, f := range findings {
 		p.alerter(f)
 	}

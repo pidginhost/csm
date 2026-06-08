@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PHP-relay findings now include the relay count and contributing script samples they advertise, so the email page can show which script caused a mail-abuse alert.
 - The Email Security Queue tab no longer reports an empty queue (and the flush-backscatter button no longer does nothing) while the header shows queued, frozen, and stuck messages: the queue parser now accepts the message-id format Exim 4.97+ emits, not just the legacy short form, and handles entries that name the local submitting user before the sender.
 - Email phishing remediation now accepts modern Exim message IDs when quarantining spool files, so the fix action does not reject valid Exim 4.97+ messages.
 - The Email Security pagination footer ("Showing 1-25 of 250") no longer leaks onto every tab; per-table pagination controls now stay scoped to their own tab pane.
