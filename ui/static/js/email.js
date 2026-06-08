@@ -1189,20 +1189,23 @@
             return;
         }
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
-        html += '<thead><tr><th>Severity</th><th>Type</th><th>Source IP</th><th>Account</th><th>Mails</th><th>Detected</th><th></th></tr></thead><tbody>';
+        html += '<thead><tr><th>Severity</th><th>Type</th><th>Source IP</th><th>Account</th><th>Count</th><th>Detected</th><th></th></tr></thead><tbody>';
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var rid = 'oab-' + i;
+            // Fanout trips on distinct scripts from one IP; the other paths trip
+            // on message volume. Label the unit per path so the count is honest.
+            var unit = e.path === 'fanout' ? 'scripts' : 'messages';
             html += '<tr>';
             html += '<td>' + CSM.severityBadge(e.severity) + '</td>';
             html += '<td>' + CSM.esc(e.path_label) + '</td>';
             html += '<td>' + (e.source_ip ? '<code>' + CSM.esc(e.source_ip) + '</code>' : '<span class="text-muted">-</span>') + '</td>';
             html += '<td>' + CSM.esc(e.cp_user || '') + '</td>';
-            html += '<td>' + CSM.esc(String(e.trigger_count)) + '</td>';
+            html += '<td>' + CSM.esc(String(e.trigger_count) + ' ' + unit) + '</td>';
             html += '<td>' + (CSM.timeAgo ? CSM.timeAgo(e.detected_at) : CSM.esc(e.detected_at)) + '</td>';
             html += '<td class="text-end">';
             if (e.source_ip) {
-                html += '<button class="btn btn-sm btn-outline-danger oab-block" data-ip="' + CSM.esc(e.source_ip) + '" data-reason="' + CSM.esc('PHP mail relay abuse: ' + e.path_label + ' (' + e.trigger_count + ' messages)') + '">Block 24h</button>';
+                html += '<button class="btn btn-sm btn-outline-danger oab-block" data-ip="' + CSM.esc(e.source_ip) + '" data-reason="' + CSM.esc('PHP mail relay abuse: ' + e.path_label + ' (' + e.trigger_count + ' ' + unit + ')') + '">Block 24h</button>';
             }
             if (e.sites && e.sites.length > 0) {
                 html += ' <button class="btn btn-sm btn-link oab-toggle" data-target="' + rid + '">Sites (' + e.sites.length + ')</button>';
