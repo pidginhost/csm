@@ -47,6 +47,7 @@
     var forwardersLoaded = false;
     var _forwarders = [];
     var deliverabilityLoaded = false;
+    var outboundAbuseLoaded = false;
     var queueCompositionLoaded = false;
 
     function localDateInputValue(date) {
@@ -1165,6 +1166,76 @@
         }
     }
 
+    // ---------- Outbound mail abuse (Outbound abuse tab) ----------
+
+    function loadOutboundAbuse() {
+        var body = document.getElementById('outbound-abuse-body');
+        if (!body) return;
+        CSM.get('/api/v1/email/relay-abuse?' + emailDateQuery('limit=20'))
+            .then(function(resp) {
+                outboundAbuseLoaded = true;
+                renderOutboundAbuse(resp);
+            })
+            .catch(function() {
+                body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">Failed to load outbound mail abuse.</div></div>';
+            });
+    }
+
+    function renderOutboundAbuse(resp) {
+        var body = document.getElementById('outbound-abuse-body');
+        var entries = (resp && resp.entries) || [];
+        if (entries.length === 0) {
+            body.innerHTML = '<div class="csm-empty"><div class="csm-empty__reason">No outbound mail abuse detected.</div></div>';
+            return;
+        }
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
+        html += '<thead><tr><th>Severity</th><th>Type</th><th>Source IP</th><th>Account</th><th>Mails</th><th>Detected</th><th></th></tr></thead><tbody>';
+        for (var i = 0; i < entries.length; i++) {
+            var e = entries[i];
+            var rid = 'oab-' + i;
+            html += '<tr>';
+            html += '<td>' + CSM.severityBadge(e.severity) + '</td>';
+            html += '<td>' + CSM.esc(e.path_label) + '</td>';
+            html += '<td>' + (e.source_ip ? '<code>' + CSM.esc(e.source_ip) + '</code>' : '<span class="text-muted">-</span>') + '</td>';
+            html += '<td>' + CSM.esc(e.cp_user || '') + '</td>';
+            html += '<td>' + CSM.esc(String(e.trigger_count)) + '</td>';
+            html += '<td>' + (CSM.timeAgo ? CSM.timeAgo(e.detected_at) : CSM.esc(e.detected_at)) + '</td>';
+            html += '<td class="text-end">';
+            if (e.source_ip) {
+                html += '<button class="btn btn-sm btn-outline-danger oab-block" data-ip="' + CSM.esc(e.source_ip) + '" data-reason="' + CSM.esc('PHP mail relay abuse: ' + e.path_label + ' (' + e.trigger_count + ' messages)') + '">Block 24h</button>';
+            }
+            if (e.sites && e.sites.length > 0) {
+                html += ' <button class="btn btn-sm btn-link oab-toggle" data-target="' + rid + '">Sites (' + e.sites.length + ')</button>';
+            }
+            html += '</td></tr>';
+            if (e.sites && e.sites.length > 0) {
+                html += '<tr id="' + rid + '" class="d-none"><td colspan="7"><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Site</th><th>Script</th><th>Hits</th><th>Last seen</th><th>Sample subject</th></tr></thead><tbody>';
+                for (var j = 0; j < e.sites.length; j++) {
+                    var st = e.sites[j];
+                    html += '<tr><td>' + CSM.esc(st.site) + '</td><td><code>' + CSM.esc(st.script) + '</code></td><td>' + CSM.esc(String(st.hits)) + '</td><td>' + (CSM.timeAgo ? CSM.timeAgo(st.last_seen) : CSM.esc(st.last_seen)) + '</td><td class="text-wrap csm-tw-400">' + CSM.esc(st.sample_subject || '') + '</td></tr>';
+                }
+                html += '</tbody></table></div></td></tr>';
+            }
+        }
+        html += '</tbody></table></div>';
+        body.innerHTML = html;
+
+        body.querySelectorAll('.oab-toggle').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var row = document.getElementById(btn.getAttribute('data-target'));
+                if (row) row.classList.toggle('d-none');
+            });
+        });
+        body.querySelectorAll('.oab-block').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                btn.disabled = true;
+                CSM.post('/api/v1/block-ip', { ip: btn.getAttribute('data-ip'), reason: btn.getAttribute('data-reason'), duration: '24h' })
+                    .then(function() { btn.textContent = 'Blocked'; })
+                    .catch(function() { btn.disabled = false; btn.textContent = 'Block failed'; });
+            });
+        });
+    }
+
     // ---------- Queue composition (Queue tab) ----------
 
     function loadQueueComposition() {
@@ -1296,6 +1367,9 @@
         } else if (id === 'deliverability') {
             if (force) deliverabilityLoaded = false;
             loadDeliverability();
+        } else if (id === 'outbound-abuse') {
+            if (force) outboundAbuseLoaded = false;
+            loadOutboundAbuse();
         }
     }
 
@@ -1317,6 +1391,7 @@
             }
             else if (id === 'forwarders') { loadForwarders(); loadHeld(); }
             else if (id === 'deliverability') loadDeliverability();
+            else if (id === 'outbound-abuse') { if (!outboundAbuseLoaded) loadOutboundAbuse(); }
         });
     }
 
@@ -1384,6 +1459,7 @@
             forwardersLoaded = false;
             heldLoaded = false;
             deliverabilityLoaded = false;
+            outboundAbuseLoaded = false;
             queueCompositionLoaded = false;
             loadActiveEmailTab(true);
         });
