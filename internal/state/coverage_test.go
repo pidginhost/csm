@@ -590,6 +590,33 @@ func TestDismissLatestFinding(t *testing.T) {
 	}
 }
 
+func TestDismissLatestFindingPersists(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	f1 := alert.Finding{Check: "a", Message: "1"}
+	f2 := alert.Finding{Check: "b", Message: "2"}
+	s.SetLatestFindings([]alert.Finding{f1, f2})
+
+	s.DismissLatestFinding(f1.Key())
+	if closeErr := s.Close(); closeErr != nil {
+		t.Fatalf("close first store: %v", closeErr)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	got := reopened.LatestFindings()
+	if len(got) != 1 || got[0].Check != "b" {
+		t.Fatalf("dismissed latest finding reloaded from disk: %+v", got)
+	}
+}
+
 func TestDismissFindingMarksBaseline(t *testing.T) {
 	s := openTestStore(t)
 	f := alert.Finding{Check: "c", Message: "m"}

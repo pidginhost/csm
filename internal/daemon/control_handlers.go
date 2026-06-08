@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -194,25 +194,14 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		findings    []alert.Finding
 		purgeChecks []string
 	)
+	cfg := c.d.currentCfg()
 	if dryRun {
-		findings, purgeChecks = checks.RunTierDryRun(c.d.currentCfg(), c.d.store, tier)
+		findings, purgeChecks = checks.RunTierDryRun(cfg, c.d.store, tier)
 	} else {
-		findings, purgeChecks = checks.RunTier(c.d.currentCfg(), c.d.store, tier)
+		findings, purgeChecks = checks.RunTier(cfg, c.d.store, tier)
 	}
 
-	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
-	if args.Alerts {
-		for _, f := range findings {
-			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-				continue
-			}
-			select {
-			case c.d.alertCh <- f:
-			default:
-				atomic.AddInt64(&c.d.droppedAlerts, 1)
-			}
-		}
-	}
+	c.recordTierRunFindings(cfg, findings, purgeChecks, !dryRun, args.Alerts)
 
 	// Dry-run history + FindingList: the live path writes history via
 	// Daemon.runPeriodicChecks when the internal scanners fire; the
@@ -236,6 +225,19 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		}
 	}
 	return result, nil
+}
+
+// recordTierRunFindings persists a control-socket tier run's findings. Auto-fix
+// is gated on a live run so a dry run never edits a customer's wp-config.php,
+// and the alert push is gated separately on whether the caller asked for alerts.
+func (c *ControlListener) recordTierRunFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, live, alerts bool) {
+	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
+	if live {
+		c.d.applyWPCronAutoFix(cfg, findings)
+	}
+	if alerts {
+		c.d.enqueueScanAlerts(findings, "control")
+	}
 }
 
 func (c *ControlListener) verifyTierRunIntegrity() error {

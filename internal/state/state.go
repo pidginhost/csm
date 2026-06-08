@@ -808,6 +808,7 @@ func (s *Store) DismissLatestFinding(key string) {
 		}
 	}
 	s.latestFindings = filtered
+	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, s.latestFindings)
 }
 
 // DismissFinding marks a finding as baseline (acknowledged/dismissed).
@@ -893,7 +894,7 @@ func suppressionPathCandidates(f alert.Finding) []string {
 		return []string{f.FilePath}
 	}
 
-	fields := strings.Fields(f.Message)
+	fields := strings.Fields(f.Message + " " + f.Details)
 	seen := make(map[string]bool)
 	var paths []string
 	for _, field := range fields {

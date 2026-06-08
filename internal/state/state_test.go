@@ -60,6 +60,23 @@ func TestIsSuppressedMatchesExtractedMessagePath(t *testing.T) {
 	}
 }
 
+func TestIsSuppressedMatchesExtractedDetailsPath(t *testing.T) {
+	store := &Store{path: t.TempDir()}
+	finding := alert.Finding{
+		Check:   "perf_wp_cron",
+		Message: "WP-Cron not disabled for alice",
+		Details: "File: /home/alice/public_html/wp-config.php - add define('DISABLE_WP_CRON', true);",
+	}
+	rules := []SuppressionRule{{
+		Check:       "perf_wp_cron",
+		PathPattern: "/home/alice/public_html/wp-config.php",
+	}}
+
+	if !store.IsSuppressed(finding, rules) {
+		t.Fatal("expected suppression to match path extracted from details")
+	}
+}
+
 // TestMarkAlertedResetsDedupWindow guards the long-lived-finding dedup bug:
 // once AlertSent ages past 24h, every dispatched re-emit must reset the
 // timestamp so subsequent ticks within the next 24h are suppressed again.

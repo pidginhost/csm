@@ -1222,9 +1222,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.MarkAlerted(newFindings)
 }
 
-// autoFixWPCron is a seam over checks.AutoFixWPCron so the scan-finding wiring
-// can be tested without the real wp-config.php and crontab side effects, which
-// the checks package already covers.
+// autoFixWPCron lets daemon wiring tests avoid real wp-config.php and crontab
+// edits; the checks package covers those side effects directly.
 var autoFixWPCron = checks.AutoFixWPCron
 
 // processScanFindings handles the output of a deep or periodic scan: it persists
@@ -1236,6 +1235,14 @@ var autoFixWPCron = checks.AutoFixWPCron
 func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
 	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 	d.applyWPCronAutoFix(cfg, findings)
+	d.enqueueScanAlerts(findings, label)
+}
+
+// enqueueScanAlerts forwards a scan's findings to the alert dispatcher.
+// Warning-severity perf findings stay off the channel so they never page an
+// operator; that is also why the WP-Cron auto-fix runs against the scan
+// findings directly rather than in dispatchBatch, which only sees the channel.
+func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
 	for _, f := range findings {
 		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 			continue
@@ -1251,8 +1258,15 @@ func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Findin
 
 // applyWPCronAutoFix disables WP-Cron and installs a per-user system cron for
 // every perf_wp_cron finding, then clears the fixed findings from the
-// latest-findings surface and records the actions in history.
+// latest-findings surface and records the actions in history. Findings the
+// operator has suppressed are left untouched, so a suppression also stops the
+// automated edit of that account's wp-config.php.
 func (d *Daemon) applyWPCronAutoFix(cfg *config.Config, findings []alert.Finding) {
+	if d.store != nil {
+		if suppressions := d.store.LoadSuppressions(); len(suppressions) > 0 {
+			findings = filterUnsuppressedFindings(d.store, findings, suppressions)
+		}
+	}
 	actions, fixedKeys := autoFixWPCron(cfg, findings)
 	for _, key := range fixedKeys {
 		d.store.DismissLatestFinding(key)

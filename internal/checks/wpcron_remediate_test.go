@@ -133,6 +133,105 @@ func TestFixDisableWPCronInsertsDefineAndInstallsCron(t *testing.T) {
 	}
 }
 
+func TestFixDisableWPCronSerializesConfigWrites(t *testing.T) {
+	cfgPath, _ := wpCronTestEnv(t, sampleWPConfig)
+
+	prevOwner := wpCronOwnerName
+	var ownerMu sync.Mutex
+	ownerCalls := 0
+	ownerSecondSeen := make(chan struct{})
+	var closeOwnerSecond sync.Once
+	wpCronOwnerName = func(os.FileInfo) (string, error) {
+		ownerMu.Lock()
+		ownerCalls++
+		call := ownerCalls
+		if call == 2 {
+			closeOwnerSecond.Do(func() { close(ownerSecondSeen) })
+		}
+		ownerMu.Unlock()
+
+		if call == 1 {
+			select {
+			case <-ownerSecondSeen:
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		return "alice", nil
+	}
+	t.Cleanup(func() { wpCronOwnerName = prevOwner })
+
+	var cronMu sync.Mutex
+	crontab := ""
+	installCalls := 0
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+			if name == "crontab" && containsArg(args, "-l") {
+				cronMu.Lock()
+				defer cronMu.Unlock()
+				return []byte(crontab), nil
+			}
+			return nil, nil
+		},
+		run: func(name string, args ...string) ([]byte, error) {
+			if name == "crontab" && !containsArg(args, "-l") && len(args) > 0 {
+				b, err := os.ReadFile(args[len(args)-1])
+				if err != nil {
+					return nil, err
+				}
+				cronMu.Lock()
+				crontab = string(b)
+				installCalls++
+				cronMu.Unlock()
+			}
+			return nil, nil
+		},
+	})
+
+	start := make(chan struct{})
+	results := make(chan RemediationResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			results <- FixDisableWPCron(cfgPath, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+		}()
+	}
+	close(start)
+
+	var got []RemediationResult
+	for range 2 {
+		select {
+		case res := <-results:
+			if !res.Success {
+				t.Fatalf("concurrent WP-Cron fix should be idempotent, got %+v", res)
+			}
+			got = append(got, res)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for concurrent WP-Cron fixes")
+		}
+	}
+
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(body), "DISABLE_WP_CRON") != 1 {
+		t.Fatalf("expected one DISABLE_WP_CRON define after concurrent fixes, got:\n%s", string(body))
+	}
+	if installCalls != 1 {
+		t.Fatalf("expected one crontab install after concurrent fixes, got %d", installCalls)
+	}
+
+	noChange := 0
+	for _, res := range got {
+		if strings.Contains(res.Description, "already disabled and system cron already present") {
+			noChange++
+		}
+	}
+	if noChange != 1 {
+		t.Fatalf("expected one concurrent caller to observe the completed fix, got results: %+v", got)
+	}
+}
+
 func TestFixDisableWPCronIdempotent(t *testing.T) {
 	already := strings.Replace(sampleWPConfig,
 		"$table_prefix = 'wp_';",

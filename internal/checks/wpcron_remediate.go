@@ -51,6 +51,10 @@ var wpCronHeredocStartRe = regexp.MustCompile(`<<<['"]?([A-Za-z_][A-Za-z0-9_]*)[
 // Crontab installs are read-modify-write; serialize each account in-process.
 var wpCronCrontabLocks sync.Map
 
+// wp-config.php edits are read-modify-write too. Deep and periodic scans can
+// overlap, so serialize each config path before resolving, reading, and writing.
+var wpCronConfigLocks sync.Map
+
 // wpCronOwnerName resolves the account that owns a wp-config.php. It is a var
 // so tests can inject a deterministic owner regardless of who runs `go test`.
 var wpCronOwnerName = fileOwnerName
@@ -69,7 +73,15 @@ func FixDisableWPCronInRoots(path string, allowedRoots []string, opts WPCronFixO
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	resolved, info, err := resolveExistingFixPath(path, allowedRoots)
+	lockPath, err := sanitizeFixPath(path, allowedRoots)
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
+	lock := wpCronConfigLock(lockPath)
+	lock.Lock()
+	defer lock.Unlock()
+
+	resolved, info, err := resolveExistingFixPath(lockPath, allowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -395,6 +407,11 @@ func crontabHasWPCronJob(crontab, docroot string) bool {
 
 func wpCronCrontabLock(owner string) *sync.Mutex {
 	lock, _ := wpCronCrontabLocks.LoadOrStore(owner, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func wpCronConfigLock(path string) *sync.Mutex {
+	lock, _ := wpCronConfigLocks.LoadOrStore(path, &sync.Mutex{})
 	return lock.(*sync.Mutex)
 }
 
