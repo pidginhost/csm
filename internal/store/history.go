@@ -22,11 +22,11 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 		b := tx.Bucket([]byte("history"))
 
 		for i, f := range findings {
-			key := TimeKey(f.Timestamp, i)
 			val, err := json.Marshal(f)
 			if err != nil {
 				return err
 			}
+			key := nextHistoryKey(b, f.Timestamp, i)
 			if err := b.Put([]byte(key), val); err != nil {
 				return err
 			}
@@ -76,6 +76,17 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 
 		return nil
 	})
+}
+
+func nextHistoryKey(b *bolt.Bucket, timestamp time.Time, start int) string {
+	for counter := start; ; counter++ {
+		key := TimeKey(timestamp, counter)
+		// Shutdown drains can persist separate batches whose findings carry
+		// the same detector timestamp. Probe instead of overwriting history.
+		if b.Get([]byte(key)) == nil {
+			return key
+		}
+	}
 }
 
 // ReadHistory reads findings from the history bucket, newest-first.
