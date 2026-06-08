@@ -53,6 +53,131 @@ func TestParseQueueComposition(t *testing.T) {
 	}
 }
 
+// Exim 4.97+ emits a longer local message-id (base62, e.g. 6-11-4 like
+// "1wVR8E-0000000C9po-1DDg") instead of the legacy 6-6-2 form. The parser must
+// accept both, otherwise a live queue on a modern exim is reported as empty
+// while `exim -bpc` still counts it.
+const eximBpSampleNewID = `  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.example>
+          user@gmail.com
+
+  3d  5.7K 1wVRAI-0000000CAT0-41m1 <> *** frozen ***
+          victim@yahoo.com
+
+  5d  8.9K 1wVRTm-0000000CFyG-2uK8 <>
+          victim@yahoo.com
+`
+
+func TestParseQueueNewEximMessageIDFormat(t *testing.T) {
+	c := ParseQueue(eximBpSampleNewID)
+
+	if c.Total != 3 {
+		t.Fatalf("total = %d, want 3 (exim 4.97+ message ids must parse)", c.Total)
+	}
+	if c.Real != 1 {
+		t.Errorf("real = %d, want 1", c.Real)
+	}
+	if c.Bounce != 2 {
+		t.Errorf("bounce = %d, want 2", c.Bounce)
+	}
+	if c.Frozen != 1 {
+		t.Errorf("frozen = %d, want 1", c.Frozen)
+	}
+	if c.OldestAge != "5d" {
+		t.Errorf("oldest age = %q, want 5d", c.OldestAge)
+	}
+	if len(c.TopRecipients) == 0 || c.TopRecipients[0].Address != "victim@yahoo.com" || c.TopRecipients[0].Count != 2 {
+		t.Errorf("top recipient = %+v, want victim@yahoo.com x2", c.TopRecipients)
+	}
+}
+
+func TestParseQueueAcceptsLocalUserSenderMarker(t *testing.T) {
+	in := `  1h  1.2K 1wVR8E-0000000C9po-1DDg (mailman) sender@example.net
+          rcpt@example.net
+
+  2h   900 1wVRAI-0000000CAT0-41m1 (nobody) <> *** frozen ***
+          bounce@example.net
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 2 {
+		t.Fatalf("total = %d, want 2", c.Total)
+	}
+	if c.Real != 1 {
+		t.Errorf("real = %d, want 1", c.Real)
+	}
+	if c.Bounce != 1 {
+		t.Errorf("bounce = %d, want 1", c.Bounce)
+	}
+	if c.Frozen != 1 {
+		t.Errorf("frozen = %d, want 1", c.Frozen)
+	}
+	if c.FlushableBackscatter != 1 {
+		t.Errorf("flushable backscatter = %d, want 1", c.FlushableBackscatter)
+	}
+	gotRecipients := map[string]int{}
+	for _, r := range c.TopRecipients {
+		gotRecipients[r.Address] = r.Count
+	}
+	for _, want := range []string{"rcpt@example.net", "bounce@example.net"} {
+		if gotRecipients[want] != 1 {
+			t.Fatalf("top recipients = %+v, want %s counted once", c.TopRecipients, want)
+		}
+	}
+}
+
+func TestParseQueueDoesNotCountHeaderShapedContinuation(t *testing.T) {
+	in := `  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.example>
+          1d 1K 1wVRAI-0000000CAT0-41m1 recipient@example.net
+          real@example.net
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 1 {
+		t.Fatalf("total = %d, want 1", c.Total)
+	}
+	if len(c.TopRecipients) != 1 {
+		t.Fatalf("top recipients = %+v, want only the real recipient", c.TopRecipients)
+	}
+	if c.TopRecipients[0].Address != "real@example.net" || c.TopRecipients[0].Count != 1 {
+		t.Fatalf("top recipient = %+v, want real@example.net x1", c.TopRecipients[0])
+	}
+}
+
+func TestParseQueueDoesNotCountTabIndentedHeaderShapedContinuation(t *testing.T) {
+	in := "  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.example>\n" +
+		"\t1d 1K 1wVRAI-0000000CAT0-41m1 recipient@example.net\n" +
+		"          real@example.net\n"
+
+	c := ParseQueue(in)
+
+	if c.Total != 1 {
+		t.Fatalf("total = %d, want 1", c.Total)
+	}
+	if len(c.TopRecipients) != 1 {
+		t.Fatalf("top recipients = %+v, want only the real recipient", c.TopRecipients)
+	}
+	if c.TopRecipients[0].Address != "real@example.net" || c.TopRecipients[0].Count != 1 {
+		t.Fatalf("top recipient = %+v, want real@example.net x1", c.TopRecipients[0])
+	}
+}
+
+func TestParseQueueRejectsUnknownLongMessageIDToken(t *testing.T) {
+	in := `  3d  4.3K 1wVR8E-0000000C9poX-1DDg <sender@shop.example>
+          victim@example.net
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 0 {
+		t.Fatalf("total = %d, want 0 for non-exim message-id token", c.Total)
+	}
+	if len(c.TopRecipients) != 0 {
+		t.Fatalf("top recipients = %+v, want none", c.TopRecipients)
+	}
+}
+
 func TestParseQueueEmpty(t *testing.T) {
 	for name, in := range map[string]string{
 		"blank":   "",
@@ -91,6 +216,12 @@ not-a-recipient@example.net
 func TestParseQueueMalformedHeaderDoesNotLeakRecipients(t *testing.T) {
 	in := ` 10m   900 1rZZz2-000JKL-4C <>
           stuck@example.net
+ 1d   900 1wVR8E-0000000C9poX-1DDg sender@example.org
+          leaked-long@example.org
+ 1d   900 1rEXTR-000ABC-2A <> *** frozen *** injected
+          leaked-extra@example.org
+ 1d  badsize 1rBADs-000BAD-6F sender@example.org
+          leaked-size@example.org
  1y   900 1rBADd-000BAD-5F sender@example.org
           leaked@example.org
 `
