@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.14.0] - 2026-06-08
 
 ### Added
 
@@ -13,12 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Email Security page has a new Deliverability tab showing which mail providers are throttling the server and which sending IPs are affected, with each provider's stated reason, so operators can see why outbound mail is backing up.
 - The Email Security Queue tab now breaks down the mail queue into real mail versus null-sender bounce backscatter, with frozen count, oldest age, and the most stuck recipients, so operators can tell a genuine backlog from junk filling the queue.
 - The Email Security Queue tab can flush frozen null-sender bounce messages from the mail queue in one click, clearing undeliverable backscatter without touching real mail or messages still being retried.
-- New opt-in email forward guard (off by default): when enabled on a cPanel host, the mail server itself holds spam-bounce and bad-sender forward copies before they relay to an external provider, while the local copy still delivers. Held copies are recoverable and can be released or deleted. CSM never sits in the live mail path, so mail keeps flowing if CSM is down.
+- New opt-in email forward guard (off by default): on a cPanel host the mail server itself holds spam-bounce and bad-sender forward copies before they relay to an external provider, while the local copy still delivers. Held copies can be released or deleted, and mail keeps flowing if CSM is down since CSM never sits in the live mail path.
 
 ### Fixed
 
 - PHP-relay findings now include the relay count and contributing script samples they advertise, so the email page can show which script caused a mail-abuse alert.
-- Stopping the daemon (e.g. during an upgrade) is fast again: queued findings are recorded to history on shutdown instead of running the auto-response pipeline (firewall blocks, permission fixes, alert delivery) while the service waits to stop. The next startup re-detects and re-acts on anything still outstanding.
+- Stopping the daemon (e.g. during an upgrade) is fast again: it cancels an in-flight scan and records queued findings to history instead of running the full auto-response pipeline (firewall blocks, permission fixes, alert delivery) while the service waits to stop. The next startup re-detects anything still outstanding, and the last completed scan results are preserved.
 - The attacker-IP database now saves only the records that changed since the last save, instead of rewriting the whole set every save and on shutdown. On hosts tracking tens of thousands of IPs this removes a multi-second CPU spike that was slowing daemon shutdown and briefly stalling attack recording.
 - Attack database deletes are now retried if the store is unavailable, a re-added IP is no longer removed by a stale pending delete, and load-time score repairs are saved.
 - The Email Security Queue tab no longer reports an empty queue (and the flush-backscatter button no longer does nothing) while the header shows queued, frozen, and stuck messages: the queue parser now accepts the message-id format Exim 4.97+ emits, not just the legacy short form, and handles entries that name the local submitting user before the sender.
@@ -31,7 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A corrupt auto-block or alert-suppression state file is now logged instead of being silently discarded, so operators notice when queued blocks, escalation history, or suppression data are lost.
 - Reverse-DNS enrichment now caps how many lookups run at once, so a wedged resolver can no longer accumulate stuck background work under a flood of distinct addresses.
 - Default ModSecurity no-escalate seeding now writes the rule and completion marker together, so startup retries after a failed seed instead of treating it as done.
-- Daemon shutdown now cancels an in-flight security scan without clearing the last completed scan state, so stop and restart are no longer delayed by tens of seconds; shutdown phases are logged with timing.
 
 ## [3.13.1] - 2026-06-07
 
