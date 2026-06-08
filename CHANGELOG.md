@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Email Security Queue tab no longer reports an empty queue (and the flush-backscatter button no longer does nothing) while the header shows queued, frozen, and stuck messages: the queue parser now accepts the message-id format Exim 4.97+ emits, not just the legacy short form, and handles entries that name the local submitting user before the sender.
+- The Email Security pagination footer ("Showing 1-25 of 250") no longer leaks onto every tab; per-table pagination controls now stay scoped to their own tab pane.
 - The Email Security action-groups list now orders groups of the same severity by event count, so the busiest clusters surface at the top instead of just the most recent.
 - A single IP that hammers one mailbox with mail or SMTP login failures is now auto-blocked only after a recent high-rate pattern, instead of going unblocked because per-event auth failures were not counted toward the attacker's local reputation score. Slow stale-password retries from a real user stay below the block threshold.
 - A domain hitting the cPanel hourly defer/fail limit is no longer reported as a spam outbreak or auto-held on its own, since the same limit trips on inbound junk, full mailboxes, and bounce backscatter. It now surfaces as a deliverability event, and an outgoing-mail hold is applied only when outbound volume confirms a real outbreak, so clearing a false-positive hold no longer gets the account re-held.

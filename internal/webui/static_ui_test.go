@@ -294,6 +294,24 @@ func TestSharedTablePersistsFilterState(t *testing.T) {
 	}
 }
 
+func TestSharedTableControlsPreferInnerCardBeforeTabPane(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"var tabPane = this.table.closest('.tab-pane');",
+		"var card = this.table.closest('.card');",
+		"tabPane.contains(card)",
+		"? card : tabPane",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("table.js missing tab-scoped card footer selection fragment %q", want)
+		}
+	}
+}
+
 func TestModsecRuleFiltersTrackToggleState(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/modsec-rules.js")
 	if err != nil {
