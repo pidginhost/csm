@@ -711,6 +711,7 @@ func TestValidateEximMessageIDRejectsTraversal(t *testing.T) {
 	for _, ok := range []string{
 		"abc",
 		"1tBzCo-0007Lc-Vx",
+		"1wVRAI-0000000CAT0-41m1",
 		"AaZz09-AaZz09-12",
 		"testmsg123",
 	} {
