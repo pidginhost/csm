@@ -89,13 +89,20 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	match := func(f alert.Finding) bool {
-		return f.Check == "email_php_relay_abuse" && !f.Timestamp.Before(from) && !f.Timestamp.After(to)
-	}
-	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, match)
-	if len(rows) > emailGroupsScanCap {
-		rows = rows[:emailGroupsScanCap]
+	// Bound the scan, not the match count: read newest-first history since
+	// from, cap the rows inspected (same scan budget as /email/groups), then
+	// filter. truncated means the inspected cap was hit, so older matches may
+	// exist beyond the window we looked at.
+	history := s.store.ReadHistorySince(from)
+	if len(history) > emailGroupsScanCap {
+		history = history[:emailGroupsScanCap]
 		resp.Truncated = true
+	}
+	var rows []alert.Finding
+	for _, f := range history {
+		if f.Check == "email_php_relay_abuse" && !f.Timestamp.Before(from) && !f.Timestamp.After(to) {
+			rows = append(rows, f)
+		}
 	}
 	resp.Matched = len(rows)
 
@@ -162,10 +169,13 @@ func relayTriggerCount(f alert.Finding) int {
 	return len(f.MsgIDs)
 }
 
-// splitScriptKey splits "host:/path" on the first colon. A key with no colon
-// yields ("", key) so the row still renders.
+// splitScriptKey splits a "host:/path" script key into host and path. The key
+// is built as host + ":" + path with path starting at "/", so the delimiter is
+// the ":/" boundary. Splitting there (not the first colon) keeps host:port and
+// IPv6-literal hosts intact. A key without ":/" yields ("", key) so the row
+// still renders.
 func splitScriptKey(k string) (site, script string) {
-	if i := strings.IndexByte(k, ':'); i >= 0 {
+	if i := strings.Index(k, ":/"); i >= 0 {
 		return k[:i], k[i+1:]
 	}
 	return "", k

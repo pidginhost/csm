@@ -94,3 +94,21 @@ func TestRelayAbuseEmptyStoreReturnsEmptySlice(t *testing.T) {
 		t.Errorf("entries raw = %s, want []", raw.Entries)
 	}
 }
+
+// splitScriptKey must split on the ":/" boundary, not the first colon, so a
+// host:port or IPv6-literal host stays intact.
+func TestSplitScriptKey(t *testing.T) {
+	cases := []struct{ in, site, script string }{
+		{"a.example.com:/wp-comments-post.php", "a.example.com", "/wp-comments-post.php"},
+		{"example.com:8080:/x.php", "example.com:8080", "/x.php"},
+		{"host:/", "host", "/"},
+		{"missingcolonkey", "", "missingcolonkey"},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		site, script := splitScriptKey(c.in)
+		if site != c.site || script != c.script {
+			t.Errorf("splitScriptKey(%q) = (%q, %q), want (%q, %q)", c.in, site, script, c.site, c.script)
+		}
+	}
+}

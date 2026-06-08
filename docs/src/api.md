@@ -151,6 +151,7 @@ GET  /api/v1/email/held          Forward copies held by the forward guard (admin
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
+GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 POST /api/v1/email/quarantine/   Release or delete quarantined email
