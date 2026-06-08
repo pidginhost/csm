@@ -67,8 +67,11 @@ func TestAutoFixWPCronAppliesAndReportsAction(t *testing.T) {
 	if len(actions) != 1 || len(fixed) != 1 {
 		t.Fatalf("expected 1 action + 1 fixed key, got %v / %v", actions, fixed)
 	}
-	if fixed[0] != f.Check+":"+f.Message {
-		t.Errorf("fixed key mismatch: %q", fixed[0])
+	// The fixed key must be the finding's dismissal key so the caller's
+	// DismissLatestFinding clears it; perf_wp_cron findings carry Details, so a
+	// bare Check:Message would never match the stored finding's Key().
+	if fixed[0] != f.Key() {
+		t.Errorf("fixed key %q should equal finding Key() %q", fixed[0], f.Key())
 	}
 	if actions[0].Check != "auto_response" || !strings.Contains(actions[0].Message, "AUTO-FIX") {
 		t.Errorf("unexpected action finding: %+v", actions[0])

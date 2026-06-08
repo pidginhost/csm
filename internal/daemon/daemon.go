@@ -662,9 +662,6 @@ func (d *Daemon) Run() error {
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
 	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
-	wpcronActions, wpcronFixedKeys := checks.AutoFixWPCron(initialCfg, initialAutoResponseFindings)
-	permActions = append(permActions, wpcronActions...)
-	permFixedKeys = append(permFixedKeys, wpcronFixedKeys...)
 
 	// Challenge routing runs on ALL findings unconditionally when enabled.
 	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
@@ -1131,9 +1128,6 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	blockActions := checks.AutoBlockIPs(cfg, autoResponseFindings)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
-	wpcronActions, wpcronFixedKeys := checks.AutoFixWPCron(cfg, autoResponseFindings)
-	permActions = append(permActions, wpcronActions...)
-	permFixedKeys = append(permFixedKeys, wpcronFixedKeys...)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -1228,6 +1222,46 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.MarkAlerted(newFindings)
 }
 
+// autoFixWPCron is a seam over checks.AutoFixWPCron so the scan-finding wiring
+// can be tested without the real wp-config.php and crontab side effects, which
+// the checks package already covers.
+var autoFixWPCron = checks.AutoFixWPCron
+
+// processScanFindings handles the output of a deep or periodic scan: it persists
+// the findings to the latest-findings surface, runs the auto-responses that act
+// on warning-severity perf findings, then forwards the remaining findings to the
+// alert dispatcher. Warning-severity perf findings stay off the alert channel so
+// they never page an operator; that is exactly why the WP-Cron auto-fix runs
+// here and not in dispatchBatch, which only ever sees what the channel carries.
+func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Finding, purgeChecks []string, label string) {
+	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
+	d.applyWPCronAutoFix(cfg, findings)
+	for _, f := range findings {
+		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+			continue
+		}
+		select {
+		case d.alertCh <- f:
+		default:
+			atomic.AddInt64(&d.droppedAlerts, 1)
+			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping %s finding: %s\n", ts(), label, f.Check)
+		}
+	}
+}
+
+// applyWPCronAutoFix disables WP-Cron and installs a per-user system cron for
+// every perf_wp_cron finding, then clears the fixed findings from the
+// latest-findings surface and records the actions in history.
+func (d *Daemon) applyWPCronAutoFix(cfg *config.Config, findings []alert.Finding) {
+	actions, fixedKeys := autoFixWPCron(cfg, findings)
+	for _, key := range fixedKeys {
+		d.store.DismissLatestFinding(key)
+	}
+	if len(actions) > 0 {
+		d.store.AppendHistory(actions)
+	}
+}
+
 func filterUnsuppressedFindings(store *state.Store, findings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
 	if len(suppressions) == 0 {
 		return findings
@@ -1299,31 +1333,20 @@ func (d *Daemon) deepScanner() {
 			// new ruleset gets a full sweep against existing files;
 			// without this, only files that change AFTER the rule
 			// update would catch the new patterns.
+			cfg := d.currentCfg()
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), d.currentCfg(), d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), d.currentCfg(), d.store)
+				findings, purgeChecks = checks.RunReducedDeepWithContext(d.scanContext(), cfg, d.store)
 			default:
-				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), d.currentCfg(), d.store, checks.TierDeep)
+				findings, purgeChecks = checks.RunTierWithContext(d.scanContext(), cfg, d.store, checks.TierDeep)
 			}
-			// Atomically purge stale findings owned by this scan and merge new ones.
-			checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
-			for _, f := range findings {
-				if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-					continue
-				}
-				select {
-				case d.alertCh <- f:
-				default:
-					atomic.AddInt64(&d.droppedAlerts, 1)
-					fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping deep finding: %s\n", ts(), f.Check)
-				}
-			}
+			d.processScanFindings(cfg, findings, purgeChecks, "deep")
 		}
 	}
 }
@@ -1370,19 +1393,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	}
 
 	findings, purgeChecks := checks.RunTierWithContext(d.scanContext(), cfg, d.store, tier)
-	// Atomically purge stale findings owned by this scan and merge new ones.
-	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
-	for _, f := range findings {
-		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-			continue
-		}
-		select {
-		case d.alertCh <- f:
-		default:
-			atomic.AddInt64(&d.droppedAlerts, 1)
-			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
-		}
-	}
+	d.processScanFindings(cfg, findings, purgeChecks, "periodic")
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {

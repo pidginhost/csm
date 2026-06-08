@@ -317,7 +317,7 @@ func AutoFixWPCron(cfg *config.Config, findings []alert.Finding) (actions []aler
 			Message:   fmt.Sprintf("AUTO-FIX: %s", res.Description),
 			Timestamp: time.Now(),
 		})
-		fixedKeys = append(fixedKeys, f.Check+":"+f.Message)
+		fixedKeys = append(fixedKeys, f.Key())
 	}
 
 	return actions, fixedKeys
