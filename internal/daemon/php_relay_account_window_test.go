@@ -105,6 +105,12 @@ func TestParsePHPRelayAccountVolume_FiresOnEffectiveLimit(t *testing.T) {
 			if f.CPUser != "exampleuser" {
 				t.Errorf("CPUser = %q", f.CPUser)
 			}
+			if f.RelayTotal != 5 {
+				t.Errorf("RelayTotal = %d, want 5", f.RelayTotal)
+			}
+			if len(f.RelayBreakdown) != 0 {
+				t.Errorf("volume_account must not carry script breakdown: %+v", f.RelayBreakdown)
+			}
 		}
 	}
 	if fired == 0 {
