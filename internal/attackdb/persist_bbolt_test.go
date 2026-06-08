@@ -62,6 +62,7 @@ func TestSaveRecordsViaBbolt(t *testing.T) {
 		AttackCounts: map[AttackType]int{AttackBruteForce: 3},
 		Accounts:     map[string]int{"bob": 1},
 	}
+	db.dirtyIPs = map[string]struct{}{"203.0.113.5": {}}
 	db.saveRecords()
 
 	// Verify via store

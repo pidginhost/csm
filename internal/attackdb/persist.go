@@ -88,36 +88,36 @@ func normalizeLoadedRecord(rec *IPRecord) {
 // the flat-file records.json.
 func (db *DB) saveRecords() {
 	if sdb := store.Global(); sdb != nil {
-		db.mu.RLock()
-		for _, rec := range db.records {
-			sr := store.IPRecord{
-				IP:                    rec.IP,
-				FirstSeen:             rec.FirstSeen,
-				LastSeen:              rec.LastSeen,
-				EventCount:            rec.EventCount,
-				ThreatScore:           rec.ThreatScore,
-				AutoBlocked:           rec.AutoBlocked,
-				BruteForceWindowStart: rec.BruteForceWindowStart,
-				BruteForceWindowCount: rec.BruteForceWindowCount,
-				BruteForceSustainedAt: rec.BruteForceSustainedAt,
-				AttackCounts:          make(map[string]int),
-				Accounts:              make(map[string]int),
+		// Incremental: only records changed since the last flush are
+		// re-serialized. On a host tracking tens of thousands of IPs the old
+		// full rewrite cost seconds of CPU on every 30s flush and on shutdown.
+		// Snapshot and clear the dirty set under the lock so concurrent
+		// mutations land in the fresh set for the next flush; a write that
+		// fails is re-marked dirty below so it retries.
+		db.mu.Lock()
+		dirty := db.dirtyIPs
+		db.dirtyIPs = make(map[string]struct{})
+		records := make([]store.IPRecord, 0, len(dirty))
+		for ip := range dirty {
+			rec, ok := db.records[ip]
+			if !ok {
+				continue // removed since marked; deletedIPs carries the removal
 			}
-			for k, v := range rec.AttackCounts {
-				sr.AttackCounts[string(k)] = v
-			}
-			for k, v := range rec.Accounts {
-				sr.Accounts[k] = v
-			}
-			if err := sdb.SaveIPRecord(sr); err != nil {
-				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", rec.IP, err)
-			}
+			records = append(records, toStoreIPRecord(rec))
 		}
 		var deleted []string
 		for ip := range db.deletedIPs {
 			deleted = append(deleted, ip)
 		}
-		db.mu.RUnlock()
+		db.mu.Unlock()
+
+		var failed []string
+		for _, sr := range records {
+			if err := sdb.SaveIPRecord(sr); err != nil {
+				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", sr.IP, err)
+				failed = append(failed, sr.IP)
+			}
+		}
 		if len(deleted) > 0 {
 			var removed []string
 			for _, ip := range deleted {
@@ -134,6 +134,13 @@ func (db *DB) saveRecords() {
 				}
 				db.mu.Unlock()
 			}
+		}
+		if len(failed) > 0 {
+			db.mu.Lock()
+			for _, ip := range failed {
+				db.markDirtyLocked(ip)
+			}
+			db.mu.Unlock()
 		}
 		return
 	}
@@ -167,13 +174,40 @@ func (db *DB) saveRecords() {
 		fmt.Fprintf(os.Stderr, "attackdb: error renaming %s: %v\n", path, err)
 		return
 	}
-	if len(drained) > 0 {
-		db.mu.Lock()
-		for _, ip := range drained {
-			delete(db.deletedIPs, ip)
-		}
-		db.mu.Unlock()
+	db.mu.Lock()
+	for _, ip := range drained {
+		delete(db.deletedIPs, ip)
 	}
+	// The flat file is a full snapshot of db.records, so every dirty record was
+	// just written; clear the set. A mutation after the marshal above re-marks
+	// itself and is picked up next flush.
+	db.dirtyIPs = make(map[string]struct{})
+	db.mu.Unlock()
+}
+
+// toStoreIPRecord projects an in-memory record into the store's persistence
+// shape, copying the count maps so the store never aliases live maps.
+func toStoreIPRecord(rec *IPRecord) store.IPRecord {
+	sr := store.IPRecord{
+		IP:                    rec.IP,
+		FirstSeen:             rec.FirstSeen,
+		LastSeen:              rec.LastSeen,
+		EventCount:            rec.EventCount,
+		ThreatScore:           rec.ThreatScore,
+		AutoBlocked:           rec.AutoBlocked,
+		BruteForceWindowStart: rec.BruteForceWindowStart,
+		BruteForceWindowCount: rec.BruteForceWindowCount,
+		BruteForceSustainedAt: rec.BruteForceSustainedAt,
+		AttackCounts:          make(map[string]int, len(rec.AttackCounts)),
+		Accounts:              make(map[string]int, len(rec.Accounts)),
+	}
+	for k, v := range rec.AttackCounts {
+		sr.AttackCounts[string(k)] = v
+	}
+	for k, v := range rec.Accounts {
+		sr.Accounts[k] = v
+	}
+	return sr
 }
 
 // appendEvents writes events to the bbolt store (if available) or appends

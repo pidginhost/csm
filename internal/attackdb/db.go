@@ -140,11 +140,23 @@ type DB struct {
 	mu            sync.RWMutex
 	records       map[string]*IPRecord
 	deletedIPs    map[string]struct{}
+	dirtyIPs      map[string]struct{}
 	pendingEvents []Event
 	dbPath        string
 	dirty         bool
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
+}
+
+// markDirtyLocked records that ip's record changed and must be persisted on the
+// next flush. The caller must hold db.mu. dirty stays as the flush gate so
+// Flush keeps its existing "anything to write?" check.
+func (db *DB) markDirtyLocked(ip string) {
+	if db.dirtyIPs == nil {
+		db.dirtyIPs = make(map[string]struct{})
+	}
+	db.dirtyIPs[ip] = struct{}{}
+	db.dirty = true
 }
 
 var (
@@ -232,10 +244,8 @@ func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 			Severity:   2,
 			Message:    truncate(reason, 200),
 		})
+		db.markDirtyLocked(ip)
 		imported++
-	}
-	if imported > 0 {
-		db.dirty = true
 	}
 	db.mu.Unlock()
 	return imported
@@ -337,7 +347,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 	rec.ThreatScore = computeScoreAt(rec, now)
 	db.pendingEvents = append(db.pendingEvents, event)
-	db.dirty = true
+	db.markDirtyLocked(ip)
 	db.mu.Unlock()
 }
 
@@ -347,7 +357,7 @@ func (db *DB) MarkBlocked(ip string) {
 	if rec, ok := db.records[ip]; ok {
 		rec.AutoBlocked = true
 		rec.ThreatScore = ComputeScore(rec)
-		db.dirty = true
+		db.markDirtyLocked(ip)
 	}
 	db.mu.Unlock()
 }

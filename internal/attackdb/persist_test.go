@@ -33,7 +33,8 @@ func TestSaveRecordsDeletesRemovedIPsFromStore(t *testing.T) {
 		AttackCounts: make(map[AttackType]int),
 		Accounts:     make(map[string]int),
 	}
-	db.saveRecords()
+	db.dirtyIPs = map[string]struct{}{"203.0.113.5": {}}
+	db.saveRecords() // record now actually persisted to the store
 
 	db.RemoveIP("203.0.113.5")
 	db.saveRecords()
