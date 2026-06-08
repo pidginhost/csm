@@ -1042,9 +1042,7 @@ func (d *Daemon) alertDispatcher() {
 		select {
 		case <-d.stopCh:
 			batch = d.drainAlertChannel(batch)
-			if len(batch) > 0 {
-				d.flushAlertBatchWithTimeout(batch)
-			}
+			d.persistPendingFindingsOnShutdown(batch)
 			return
 
 		case f := <-d.alertCh:
@@ -1074,27 +1072,23 @@ func (d *Daemon) drainAlertChannel(batch []alert.Finding) []alert.Finding {
 }
 
 func (d *Daemon) flushPendingAlertsOnShutdown() {
-	batch := d.drainAlertChannel(nil)
+	d.persistPendingFindingsOnShutdown(d.drainAlertChannel(nil))
+}
+
+// persistPendingFindingsOnShutdown records findings still queued at shutdown to
+// the history log for forensics, then returns. It deliberately does NOT run the
+// auto-response pipeline (nftables blocks, permission fixes, kill/quarantine,
+// DB cleanup) or network alert dispatch: that work blocked the service stop for
+// tens of seconds -- up to twice, once here and once in the dispatcher's stop
+// branch -- while systemd waited. It is also redundant, because the next
+// startup baseline scan re-detects and re-acts on the same conditions. Writing
+// history only also leaves each finding re-alertable (it is not marked sent via
+// store.Update), so the restart's dispatch is not suppressed.
+func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
 	if len(batch) == 0 {
 		return
 	}
-	d.flushAlertBatchWithTimeout(batch)
-}
-
-func (d *Daemon) flushAlertBatchWithTimeout(batch []alert.Finding) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	done := make(chan struct{})
-	obs.SafeGo("shutdown-flush", func() {
-		defer close(done)
-		d.dispatchBatch(batch)
-	})
-	select {
-	case <-done:
-	case <-ctx.Done():
-		fmt.Fprintf(os.Stderr, "[%s] shutdown flush timed out after 30s, %d findings not dispatched\n", ts(), len(batch))
-	}
+	d.store.AppendHistory(batch)
 }
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {

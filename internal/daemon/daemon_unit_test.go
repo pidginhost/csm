@@ -332,6 +332,47 @@ func TestFlushPendingAlertsOnShutdown_DrainsAlertsLeftAfterDispatcherExit(t *tes
 	assertHistoryContainsChecks(t, sdb, []alert.Finding{late})
 }
 
+// On shutdown the daemon must persist pending findings for forensics but must
+// NOT run the auto-response/alert pipeline (nftables blocks, permission fixes,
+// kill/quarantine, network alert dispatch). That work holds systemd's stop for
+// tens of seconds and is redundant: the next startup baseline scan re-detects
+// and re-acts on the same conditions. So a finding flushed at shutdown stays
+// re-alertable (FilterNew still sees it as new) instead of being consumed as
+// already-dispatched.
+func TestShutdownFlushPersistsButDefersAutoResponse(t *testing.T) {
+	dir := t.TempDir()
+	sdb, restore := openTestBoltStore(t, dir)
+	defer restore()
+
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	d := New(&config.Config{}, st, nil, "")
+	pending := alert.Finding{
+		Check:     "shutdown_pending_x",
+		Severity:  alert.High,
+		Message:   "queued at shutdown",
+		SourceIP:  "203.0.113.7",
+		Timestamp: time.Now(),
+	}
+	d.alertCh <- pending
+
+	d.flushPendingAlertsOnShutdown()
+
+	// Forensic record kept so the event is not lost.
+	assertHistoryContainsChecks(t, sdb, []alert.Finding{pending})
+
+	// Not consumed as alerted: the restart baseline scan must be free to
+	// re-detect, re-act, and re-alert. dispatchBatch would mark it seen via
+	// store.Update, leaving FilterNew empty -- that is the slow path we removed.
+	if n := st.FilterNew([]alert.Finding{pending}); len(n) != 1 {
+		t.Fatalf("shutdown flush must leave the finding re-alertable, FilterNew=%d want 1", len(n))
+	}
+}
+
 func openTestBoltStore(t *testing.T, dir string) (*store.DB, func()) {
 	t.Helper()
 
