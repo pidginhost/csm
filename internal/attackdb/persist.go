@@ -22,6 +22,11 @@ const (
 func (db *DB) load() {
 	if sdb := store.Global(); sdb != nil {
 		storeRecords := sdb.LoadAllIPRecords()
+		db.mu.Lock()
+		defer db.mu.Unlock()
+		if db.records == nil {
+			db.records = make(map[string]*IPRecord, len(storeRecords))
+		}
 		for ip, sr := range storeRecords {
 			rec := &IPRecord{
 				IP:                    sr.IP,
@@ -42,7 +47,9 @@ func (db *DB) load() {
 			for k, v := range sr.Accounts {
 				rec.Accounts[k] = v
 			}
-			normalizeLoadedRecord(rec)
+			if normalizeLoadedRecord(rec) {
+				db.markDirtyLocked(ip)
+			}
 			db.records[ip] = rec
 		}
 		return
@@ -60,13 +67,20 @@ func (db *DB) load() {
 		fmt.Fprintf(os.Stderr, "attackdb: error loading %s: %v\n", path, err)
 		return
 	}
-	for _, rec := range records {
-		normalizeLoadedRecord(rec)
+	db.mu.Lock()
+	for ip, rec := range records {
+		if normalizeLoadedRecord(rec) {
+			db.markDirtyLocked(ip)
+		}
 	}
 	db.records = records
+	db.mu.Unlock()
 }
 
-func normalizeLoadedRecord(rec *IPRecord) {
+func normalizeLoadedRecord(rec *IPRecord) bool {
+	changed := false
+	// Empty maps are an in-memory invariant; bbolt omits them, so nil-to-empty
+	// alone should not dirty every account-free record on each startup.
 	if rec.AttackCounts == nil {
 		rec.AttackCounts = make(map[AttackType]int)
 	}
@@ -76,12 +90,19 @@ func normalizeLoadedRecord(rec *IPRecord) {
 	bruteCount := rec.AttackCounts[AttackBruteForce]
 	if rec.BruteForceWindowCount > bruteCount {
 		rec.BruteForceWindowCount = bruteCount
+		changed = true
 	}
 	if rec.BruteForceSustainedAt.IsZero() &&
 		rec.BruteForceWindowCount >= sustainedBruteForceThreshold {
 		rec.BruteForceSustainedAt = rec.LastSeen
+		changed = true
 	}
-	rec.ThreatScore = ComputeScore(rec)
+	score := ComputeScore(rec)
+	if rec.ThreatScore != score {
+		rec.ThreatScore = score
+		changed = true
+	}
+	return changed
 }
 
 // saveRecords writes records to the bbolt store (if available) or to
@@ -120,9 +141,11 @@ func (db *DB) saveRecords() {
 		}
 		if len(deleted) > 0 {
 			var removed []string
+			var failedDeletes []string
 			for _, ip := range deleted {
 				if err := sdb.DeleteIPRecord(ip); err != nil {
 					fmt.Fprintf(os.Stderr, "attackdb: store delete %s: %v\n", ip, err)
+					failedDeletes = append(failedDeletes, ip)
 					continue
 				}
 				removed = append(removed, ip)
@@ -132,6 +155,11 @@ func (db *DB) saveRecords() {
 				for _, ip := range removed {
 					delete(db.deletedIPs, ip)
 				}
+				db.mu.Unlock()
+			}
+			if len(failedDeletes) > 0 {
+				db.mu.Lock()
+				db.dirty = true
 				db.mu.Unlock()
 			}
 		}
@@ -148,19 +176,22 @@ func (db *DB) saveRecords() {
 	// Fallback: flat-file records.json. The whole records map is rewritten
 	// each flush, so removals are reflected by absence and deletedIPs is
 	// redundant here -- but it must still be drained or it grows for the
-	// process lifetime on a host with no bbolt store. Snapshot the keys under
-	// the same lock as the marshal, then clear exactly those after a
-	// successful write (a removal added later stays for the next flush).
-	db.mu.RLock()
+	// process lifetime on a host with no bbolt store. Snapshot under the same
+	// lock as the marshal and swap dirtyIPs before disk I/O, so mutations
+	// during the write land in a fresh set. Failed writes requeue the snapshot.
+	db.mu.Lock()
 	data, err := json.Marshal(db.records)
 	var drained []string
 	for ip := range db.deletedIPs {
 		drained = append(drained, ip)
 	}
-	db.mu.RUnlock()
+	flushedDirty := db.dirtyIPs
+	db.dirtyIPs = make(map[string]struct{})
+	db.mu.Unlock()
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attackdb: error marshaling records: %v\n", err)
+		db.requeueDirty(flushedDirty, len(drained) > 0)
 		return
 	}
 
@@ -168,20 +199,32 @@ func (db *DB) saveRecords() {
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "attackdb: error writing %s: %v\n", tmpPath, err)
+		db.requeueDirty(flushedDirty, len(drained) > 0)
 		return
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		fmt.Fprintf(os.Stderr, "attackdb: error renaming %s: %v\n", path, err)
+		db.requeueDirty(flushedDirty, len(drained) > 0)
 		return
 	}
 	db.mu.Lock()
 	for _, ip := range drained {
 		delete(db.deletedIPs, ip)
 	}
-	// The flat file is a full snapshot of db.records, so every dirty record was
-	// just written; clear the set. A mutation after the marshal above re-marks
-	// itself and is picked up next flush.
-	db.dirtyIPs = make(map[string]struct{})
+	db.mu.Unlock()
+}
+
+func (db *DB) requeueDirty(dirty map[string]struct{}, hasPendingDelete bool) {
+	if len(dirty) == 0 && !hasPendingDelete {
+		return
+	}
+	db.mu.Lock()
+	if hasPendingDelete {
+		db.dirty = true
+	}
+	for ip := range dirty {
+		db.markDirtyLocked(ip)
+	}
 	db.mu.Unlock()
 }
 

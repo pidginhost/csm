@@ -159,6 +159,15 @@ func (db *DB) markDirtyLocked(ip string) {
 	db.dirty = true
 }
 
+func (db *DB) markDeletedLocked(ip string) {
+	if db.deletedIPs == nil {
+		db.deletedIPs = make(map[string]struct{})
+	}
+	db.deletedIPs[ip] = struct{}{}
+	delete(db.dirtyIPs, ip)
+	db.dirty = true
+}
+
 var (
 	globalDB   *DB
 	globalMu   sync.Mutex
@@ -244,6 +253,7 @@ func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 			Severity:   2,
 			Message:    truncate(reason, 200),
 		})
+		delete(db.deletedIPs, ip)
 		db.markDirtyLocked(ip)
 		imported++
 	}
@@ -347,6 +357,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	}
 	rec.ThreatScore = computeScoreAt(rec, now)
 	db.pendingEvents = append(db.pendingEvents, event)
+	delete(db.deletedIPs, ip)
 	db.markDirtyLocked(ip)
 	db.mu.Unlock()
 }
@@ -357,6 +368,7 @@ func (db *DB) MarkBlocked(ip string) {
 	if rec, ok := db.records[ip]; ok {
 		rec.AutoBlocked = true
 		rec.ThreatScore = ComputeScore(rec)
+		delete(db.deletedIPs, ip)
 		db.markDirtyLocked(ip)
 	}
 	db.mu.Unlock()
@@ -563,11 +575,7 @@ func tracksSustainedBruteScore(check string) bool {
 func (db *DB) RemoveIP(ip string) {
 	db.mu.Lock()
 	delete(db.records, ip)
-	if db.deletedIPs == nil {
-		db.deletedIPs = make(map[string]struct{})
-	}
-	db.deletedIPs[ip] = struct{}{}
-	db.dirty = true
+	db.markDeletedLocked(ip)
 	db.mu.Unlock()
 }
 
@@ -582,11 +590,7 @@ func (db *DB) pruneExpired() {
 	for ip, rec := range db.records {
 		if rec.LastSeen.Before(cutoff) {
 			delete(db.records, ip)
-			if db.deletedIPs == nil {
-				db.deletedIPs = make(map[string]struct{})
-			}
-			db.deletedIPs[ip] = struct{}{}
-			db.dirty = true
+			db.markDeletedLocked(ip)
 		}
 	}
 	db.mu.Unlock()
