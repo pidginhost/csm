@@ -57,11 +57,11 @@ func decodeJSONBodyLimited(w http.ResponseWriter, r *http.Request, limit int64, 
 
 // validateEximMessageID rejects message ids that would be unsafe to
 // interpolate into filesystem paths. Real Exim ids are of the form
-// `[a-zA-Z0-9]{6}-[a-zA-Z0-9]{6}-[a-zA-Z0-9]{2,3}`; the validator
-// accepts anything with the same character class so callers can use
-// shorter fixtures in tests while still blocking `..`, `/`, `\`, dots,
-// NUL bytes, and other shell / path-traversal metacharacters even if
-// the inner Quarantine layer's filepath.Base() guard regresses.
+// 6-6-2 on Exim 4.96 and older, and 6-11-4 on Exim 4.97 and newer. The
+// validator accepts anything with the same character class so callers can use
+// shorter fixtures in tests while still blocking `..`, `/`, `\`, dots, NUL
+// bytes, and other shell / path-traversal metacharacters even if the inner
+// Quarantine layer's filepath.Base() guard regresses.
 func validateEximMessageID(id string) error {
 	if id == "" {
 		return fmt.Errorf("message id is required")

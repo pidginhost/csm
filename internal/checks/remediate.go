@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// eximMsgIDRegex validates Exim message ID format (e.g., 2jKPFm-000abc-1X).
-var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`)
+// eximMsgIDRegex validates Exim message ID format. Exim 4.96 and older use
+// 6-6-2 ids; Exim 4.97 and newer use 6-11-4 ids.
+var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A-Za-z]{2}|[0-9A-Za-z]{11}-[0-9A-Za-z]{4})$`)
 
 // Allowed roots for each fix action. Declared as vars (not consts) so tests
 // can redirect remediation under t.TempDir() without writing to real /home,
