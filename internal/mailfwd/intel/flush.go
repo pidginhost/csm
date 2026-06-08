@@ -73,9 +73,8 @@ func runEximRemove(ids []string) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		args := append([]string{"-Mrm"}, ids[start:end]...)
-		// #nosec G204 -- ids are exim message IDs parsed by the regex-validated
-		// parseQueueHeader (^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$); no
-		// attacker-controlled text reaches argv.
+		// #nosec G204 -- ids are exim message IDs parsed by parseQueueHeader's
+		// fixed legacy/new-format regex; no attacker-controlled text reaches argv.
 		err := exec.CommandContext(ctx, "exim", args...).Run()
 		cancel()
 		if err != nil {

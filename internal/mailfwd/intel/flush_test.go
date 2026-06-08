@@ -20,6 +20,25 @@ func TestFrozenBackscatterIDs(t *testing.T) {
 	}
 }
 
+func TestFrozenBackscatterIDsAcceptsNewEximMessageIDFormat(t *testing.T) {
+	got := FrozenBackscatterIDs(eximBpSampleNewID)
+	want := []string{"1wVRAI-0000000CAT0-41m1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FrozenBackscatterIDs = %v, want %v", got, want)
+	}
+}
+
+func TestFrozenBackscatterIDsAcceptsLocalUserSenderMarker(t *testing.T) {
+	in := `  2h   900 1wVRAI-0000000CAT0-41m1 (nobody) <> *** frozen ***
+          bounce@example.net
+`
+	got := FrozenBackscatterIDs(in)
+	want := []string{"1wVRAI-0000000CAT0-41m1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FrozenBackscatterIDs = %v, want %v", got, want)
+	}
+}
+
 func TestFrozenBackscatterIDsRejectsRealSenderAndMalformedHeaders(t *testing.T) {
 	in := ` 25m  2.5K 1rREAL-000ABC-2A sender@example.com *** frozen ***
           real-recipient@example.com

@@ -29,11 +29,18 @@ type RecipientCount struct {
 	Count   int    `json:"count"`
 }
 
-const topRecipientLimit = 10
+const (
+	topRecipientLimit = 10
+	// Queue headers are padded for age alignment. Recipient and continuation
+	// lines are indented much deeper and must not be parsed as new messages.
+	maxQueueHeaderIndent = 4
+)
 
 var (
-	// A queue header line: "<age> <size> <msgid> <sender> [*** frozen ***]".
-	queueMsgIDRe = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`)
+	// A queue header line: "<age> <size> <msgid> [(user)] <sender> [*** frozen ***]".
+	// Accept both the legacy 6-6-2 message id and the longer base62 form exim
+	// 4.97+ emits (6-11-4, e.g. "1wVR8E-0000000C9po-1DDg").
+	queueMsgIDRe = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A-Za-z]{2}|[0-9A-Za-z]{11}-[0-9A-Za-z]{4})$`)
 	queueAgeRe   = regexp.MustCompile(`^\d+[smhdw]$`)
 	queueSizeRe  = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmgt]?$`)
 )
@@ -78,20 +85,15 @@ func ParseQueue(out string) QueueComposition {
 			inMessage = false
 			continue
 		}
+		if queueHeaderIndent(line) <= maxQueueHeaderIndent {
+			inMessage = false
+			continue
+		}
 		if !queueRecipientLine(line) {
 			inMessage = false
 			continue
 		}
-		addr := trimmed
-		// Exim prefixes an already-delivered recipient with "D"; it is not stuck.
-		if strings.HasPrefix(addr, "D ") {
-			continue
-		}
-		addr = strings.Trim(addr, "<>")
-		if len(addr) > maxAddressLen {
-			continue
-		}
-		if strings.Contains(addr, "@") {
+		if addr, ok := queueRecipientAddress(trimmed); ok {
 			recipients[addr]++
 		}
 	}
@@ -101,30 +103,82 @@ func ParseQueue(out string) QueueComposition {
 }
 
 func parseQueueHeader(line string) (msgID, age string, ageSeconds int, bounce, frozen, ok bool) {
+	if queueHeaderIndent(line) > maxQueueHeaderIndent {
+		return "", "", 0, false, false, false
+	}
 	fields := strings.Fields(line)
-	if len(fields) != 4 && len(fields) != 7 {
+	if len(fields) != 4 && len(fields) != 5 && len(fields) != 7 && len(fields) != 8 {
 		return "", "", 0, false, false, false
 	}
 	if !queueAgeRe.MatchString(fields[0]) || !queueSizeRe.MatchString(fields[1]) || !queueMsgIDRe.MatchString(fields[2]) {
 		return "", "", 0, false, false, false
 	}
-	if len(fields) == 7 {
-		if fields[4] != "***" || fields[5] != "frozen" || fields[6] != "***" {
+	senderIndex := 3
+	frozenIndex := 4
+	if len(fields) == 5 || len(fields) == 8 {
+		if !queueLocalUserField(fields[3]) {
+			return "", "", 0, false, false, false
+		}
+		senderIndex = 4
+		frozenIndex = 5
+	}
+	if len(fields) == 7 || len(fields) == 8 {
+		if fields[frozenIndex] != "***" || fields[frozenIndex+1] != "frozen" || fields[frozenIndex+2] != "***" {
 			return "", "", 0, false, false, false
 		}
 		frozen = true
 	}
-	bounce = fields[3] == "<>"
+	bounce = fields[senderIndex] == "<>"
 	return fields[2], fields[0], ageToSeconds(fields[0]), bounce, frozen, true
 }
 
 func queueHeaderCandidate(line string) bool {
+	if queueHeaderIndent(line) > maxQueueHeaderIndent {
+		return false
+	}
 	fields := strings.Fields(line)
-	return len(fields) >= 3 && queueMsgIDRe.MatchString(fields[2])
+	return (len(fields) == 4 || len(fields) == 7) && queueMsgIDRe.MatchString(fields[2])
 }
 
 func queueRecipientLine(line string) bool {
 	return len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+}
+
+func queueRecipientAddress(trimmed string) (string, bool) {
+	fields := strings.Fields(trimmed)
+	// Exim prefixes an already-delivered recipient with "D"; it is not stuck.
+	if len(fields) == 2 && fields[0] == "D" {
+		return "", false
+	}
+	if len(fields) != 1 {
+		return "", false
+	}
+	addr := strings.Trim(fields[0], "<>")
+	if len(addr) > maxAddressLen || !strings.Contains(addr, "@") {
+		return "", false
+	}
+	return addr, true
+}
+
+func queueLocalUserField(field string) bool {
+	if len(field) < 3 || field[0] != '(' || field[len(field)-1] != ')' {
+		return false
+	}
+	return !strings.ContainsAny(field[1:len(field)-1], "() \t\r\n")
+}
+
+func queueHeaderIndent(line string) int {
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case ' ':
+			continue
+		case '\t':
+			return maxQueueHeaderIndent + 1
+		default:
+			return i
+		}
+	}
+	return len(line)
 }
 
 // ageToSeconds converts an exim age token (e.g. "25m", "4d") to seconds. An

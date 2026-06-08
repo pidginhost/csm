@@ -277,9 +277,13 @@ CSM.Table.prototype._buildControls = function(opts) {
         controls = document.createElement('div');
         controls.id = controlsId;
         controls.className = 'card-footer d-flex justify-content-between align-items-center';
-        // Append to card level so controls don't end up inside table-responsive overflow
+        var tabPane = this.table.closest('.tab-pane');
         var card = this.table.closest('.card');
-        (card || this.table.parentNode).appendChild(controls);
+        // Keep controls in an inner per-tab card when one exists. If the only
+        // card is the shared tab container, use the pane so the footer does not
+        // leak onto sibling tabs.
+        var host = card && (!tabPane || tabPane.contains(card)) ? card : tabPane;
+        (host || this.table.parentNode).appendChild(controls);
         this._createdControls = true;
     }
     this.controlsEl = controls;
