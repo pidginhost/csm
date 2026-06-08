@@ -151,6 +151,7 @@ GET  /api/v1/email/held          Forward copies held by the forward guard (admin
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
+GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 POST /api/v1/email/quarantine/   Release or delete quarantined email
@@ -292,6 +293,8 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `tenant_id` | Tenant attribution from the verdict callback or panel-side webhook reply |
 | `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
+| `relay_total` | PHP-relay trigger count for the path that fired |
+| `relay_breakdown` | PHP-relay script samples that contributed to the alert, with script key, hit count, last seen time, and a bounded sample subject when available |
 
 Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."
 

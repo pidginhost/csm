@@ -81,6 +81,7 @@ func TestFixtureExpectations(t *testing.T) {
 			psw.getOrCreate(sig.ScriptKey).append(scriptEvent{
 				At:               time.Now(),
 				MsgID:            "fixture",
+				Subject:          truncateDaemon(h.Subject, phpRelayBreakdownSubjectMax),
 				FromMismatch:     sig.FromMismatch,
 				AdditionalSignal: sig.AdditionalSignal,
 				SourceIP:         sig.SourceIP,

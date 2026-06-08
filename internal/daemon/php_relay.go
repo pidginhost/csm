@@ -6,6 +6,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ type scriptKey = string
 type scriptEvent struct {
 	At               time.Time
 	MsgID            string
+	Subject          string
 	FromMismatch     bool
 	AdditionalSignal bool // Reply-To external mismatch OR X-Mailer suspicious-not-safe
 	SourceIP         string
@@ -126,6 +128,30 @@ func (s *scriptState) qualifyingCount(since time.Time, match func(scriptEvent) b
 //nolint:unused // consumed by Path 2 evaluator in Task F2
 func (s *scriptState) volumeCount(since time.Time) int {
 	return s.qualifyingCount(since, func(scriptEvent) bool { return true })
+}
+
+func (s *scriptState) relayHit(k scriptKey, since time.Time, match func(scriptEvent) bool) (alert.RelayScriptHit, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hit := alert.RelayScriptHit{ScriptKey: string(k)}
+	var sampleAt time.Time
+	for _, e := range s.events {
+		if e.At.Before(since) || !match(e) {
+			continue
+		}
+		hit.Hits++
+		if e.At.After(hit.LastSeen) {
+			hit.LastSeen = e.At
+		}
+		if e.Subject != "" && (sampleAt.IsZero() || e.At.After(sampleAt)) {
+			hit.SampleSubject = truncateDaemon(e.Subject, phpRelayBreakdownSubjectMax)
+			sampleAt = e.At
+		}
+	}
+	if hit.Hits == 0 {
+		return alert.RelayScriptHit{}, false
+	}
+	return hit, true
 }
 
 func (s *scriptState) recordActive(msgID string, at time.Time) {
@@ -263,8 +289,14 @@ func (w *perScriptWindow) Snapshot() map[scriptKey]*scriptState {
 
 type ipState struct {
 	mu        sync.Mutex
-	scripts   map[scriptKey]time.Time
+	scripts   map[scriptKey]*ipScriptState
 	lastEvent time.Time
+}
+
+type ipScriptState struct {
+	lastSeen      time.Time
+	sampleAt      time.Time
+	sampleSubject string
 }
 
 type perIPWindow struct {
@@ -279,11 +311,11 @@ func newPerIPWindow(capPerIP int) *perIPWindow {
 	return &perIPWindow{capPerIP: capPerIP}
 }
 
-func (w *perIPWindow) append(ip string, k scriptKey, at time.Time) {
+func (w *perIPWindow) append(ip string, k scriptKey, at time.Time, subject ...string) {
 	if ip == "" {
 		return
 	}
-	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]time.Time, 8)})
+	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -291,16 +323,31 @@ func (w *perIPWindow) append(ip string, k scriptKey, at time.Time) {
 		var oldestK scriptKey
 		var oldest time.Time
 		first := true
-		for kk, tt := range s.scripts {
-			if first || tt.Before(oldest) {
+		for kk, ss := range s.scripts {
+			if first || ss.lastSeen.Before(oldest) {
 				oldestK = kk
-				oldest = tt
+				oldest = ss.lastSeen
 				first = false
 			}
 		}
 		delete(s.scripts, oldestK)
 	}
-	s.scripts[k] = at
+	ss := s.scripts[k]
+	if ss == nil {
+		ss = &ipScriptState{}
+		s.scripts[k] = ss
+	}
+	sampleSubject := ""
+	if len(subject) > 0 {
+		sampleSubject = truncateDaemon(subject[0], phpRelayBreakdownSubjectMax)
+	}
+	if at.After(ss.lastSeen) {
+		ss.lastSeen = at
+	}
+	if sampleSubject != "" && (ss.sampleAt.IsZero() || at.After(ss.sampleAt)) {
+		ss.sampleAt = at
+		ss.sampleSubject = sampleSubject
+	}
 	if at.After(s.lastEvent) {
 		s.lastEvent = at
 	}
@@ -315,12 +362,40 @@ func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
-	for _, t := range s.scripts {
-		if !t.Before(since) {
+	for _, ss := range s.scripts {
+		if !ss.lastSeen.Before(since) {
 			n++
 		}
 	}
 	return n
+}
+
+func (w *perIPWindow) relaySamplesSince(ip string, since time.Time) []alert.RelayScriptHit {
+	v, ok := w.states.Load(ip)
+	if !ok {
+		return nil
+	}
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]alert.RelayScriptHit, 0, len(s.scripts))
+	for k, ss := range s.scripts {
+		if ss.lastSeen.Before(since) {
+			continue
+		}
+		sampleSubject := ""
+		if !ss.sampleAt.Before(since) {
+			sampleSubject = ss.sampleSubject
+		}
+		out = append(out, alert.RelayScriptHit{
+			ScriptKey:     string(k),
+			Hits:          1,
+			LastSeen:      ss.lastSeen,
+			SampleSubject: sampleSubject,
+		})
+	}
+	return out
 }
 
 func (w *perIPWindow) SweepIdle(cutoff time.Time) int {
@@ -502,7 +577,8 @@ func parseXPHPScript(v string) (scriptKey, string) {
 }
 
 const (
-	phpRelayPathCooldown = 30 * time.Minute
+	phpRelayPathCooldown        = 30 * time.Minute
+	phpRelayBreakdownSubjectMax = 160
 )
 
 // evaluator combines windows + config + alerter in one object so the
@@ -542,7 +618,11 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	})
 	if qualifying >= e.cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin {
 		if s.shouldFire("header", now, phpRelayPathCooldown) {
-			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win))
+			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win), now)
+			f.RelayTotal = qualifying
+			f.RelayBreakdown = e.scriptRelayBreakdown(k, now.Add(-win), func(ev scriptEvent) bool {
+				return ev.FromMismatch && ev.AdditionalSignal
+			})
 			if e.metrics != nil {
 				e.metrics.Findings.With("header").Inc()
 			}
@@ -555,7 +635,11 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	if absVol >= e.cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour {
 		if s.shouldFire("volume", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
-				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol))
+				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol), now)
+			f.RelayTotal = absVol
+			f.RelayBreakdown = e.scriptRelayBreakdown(k, now.Add(-60*time.Minute), func(scriptEvent) bool {
+				return true
+			})
 			if e.metrics != nil {
 				e.metrics.Findings.With("volume").Inc()
 			}
@@ -571,7 +655,9 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 			if distinct >= e.cfg.EmailProtection.PHPRelay.FanoutDistinctScripts {
 				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
 					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
-						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin))
+						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin), now)
+					f.RelayTotal = distinct
+					f.RelayBreakdown = e.fanoutRelayBreakdown(sourceIP, now.Add(-fwin))
 					if e.metrics != nil {
 						e.metrics.Findings.With("fanout").Inc()
 					}
@@ -585,7 +671,7 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 }
 
 // makeFinding builds a Critical Finding for the given path.
-func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *scriptState, message string) alert.Finding {
+func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *scriptState, message string, now time.Time) alert.Finding {
 	msgIDs, _ := s.snapshotActiveMsgs()
 	// Cap the sample shown in the finding so the alert payload stays bounded;
 	// AutoFreezePHPRelayQueue takes its own complete snapshot.
@@ -601,8 +687,54 @@ func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *s
 		SourceIP:  sourceIP,
 		CPUser:    cpuser,
 		MsgIDs:    msgIDs,
-		Timestamp: time.Now(),
+		Timestamp: now,
 	}
+}
+
+func (e *evaluator) scriptRelayBreakdown(k scriptKey, since time.Time, match func(scriptEvent) bool) []alert.RelayScriptHit {
+	hit, ok := e.scripts.getOrCreate(k).relayHit(k, since, match)
+	if !ok {
+		return nil
+	}
+	return []alert.RelayScriptHit{hit}
+}
+
+func (e *evaluator) fanoutRelayBreakdown(sourceIP string, since time.Time) []alert.RelayScriptHit {
+	if e.ips == nil || sourceIP == "" {
+		return nil
+	}
+	samples := e.ips.relaySamplesSince(sourceIP, since)
+	if len(samples) == 0 {
+		return nil
+	}
+	out := make([]alert.RelayScriptHit, 0, len(samples))
+	for _, sample := range samples {
+		hit := sample
+		if e.scripts != nil {
+			if v, ok := e.scripts.states.Load(scriptKey(sample.ScriptKey)); ok {
+				if counted, ok := v.(*scriptState).relayHit(scriptKey(sample.ScriptKey), since, func(ev scriptEvent) bool {
+					return ev.SourceIP == sourceIP
+				}); ok {
+					hit = counted
+				}
+			}
+		}
+		out = append(out, hit)
+	}
+	sortRelayScriptHits(out)
+	return out
+}
+
+func sortRelayScriptHits(out []alert.RelayScriptHit) {
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hits != out[j].Hits {
+			return out[i].Hits > out[j].Hits
+		}
+		if !out[i].LastSeen.Equal(out[j].LastSeen) {
+			return out[i].LastSeen.After(out[j].LastSeen)
+		}
+		return out[i].ScriptKey < out[j].ScriptKey
+	})
 }
 
 func fmtHeaderMessage(qualifying int, win time.Duration) string {
@@ -744,7 +876,8 @@ func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []ale
 		return nil
 	}
 	e.accounts.append(user, now)
-	if e.accounts.volumeSince(user, now.Add(-phpRelayAccountWindowDur)) < e.effectiveAccountLimit {
+	volume := e.accounts.volumeSince(user, now.Add(-phpRelayAccountWindowDur))
+	if volume < e.effectiveAccountLimit {
 		return nil
 	}
 	if !e.accounts.shouldFire(user, now, phpRelayAccountFireCooldown) {
@@ -754,12 +887,13 @@ func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []ale
 		e.metrics.Findings.With("volume_account").Inc()
 	}
 	return []alert.Finding{{
-		Severity:  alert.Critical,
-		Check:     "email_php_relay_abuse",
-		Path:      "volume_account",
-		Message:   fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, e.effectiveAccountLimit),
-		CPUser:    user,
-		Timestamp: now,
+		Severity:   alert.Critical,
+		Check:      "email_php_relay_abuse",
+		Path:       "volume_account",
+		Message:    fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, e.effectiveAccountLimit),
+		CPUser:     user,
+		RelayTotal: volume,
+		Timestamp:  now,
 	}}
 }
 

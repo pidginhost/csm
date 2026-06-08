@@ -1,6 +1,8 @@
 package alert
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +26,44 @@ func TestDeduplicateEmpty(t *testing.T) {
 	result := Deduplicate(nil)
 	if len(result) != 0 {
 		t.Errorf("expected 0 findings, got %d", len(result))
+	}
+}
+
+func TestFindingRelayBreakdownJSONRoundTrip(t *testing.T) {
+	lastSeen := time.Unix(1_700_000_000, 0).UTC()
+	in := Finding{
+		Check:      "email_php_relay_abuse",
+		Path:       "fanout",
+		SourceIP:   "192.0.2.10",
+		RelayTotal: 7,
+		RelayBreakdown: []RelayScriptHit{
+			{ScriptKey: "site.example.com:/wp-comments-post.php", Hits: 4, LastSeen: lastSeen, SampleSubject: "Please moderate"},
+			{ScriptKey: "other.example.com:/wp-comments-post.php", Hits: 3, LastSeen: lastSeen.Add(-time.Minute)},
+		},
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Finding
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.RelayTotal != 7 || len(out.RelayBreakdown) != 2 {
+		t.Fatalf("round trip lost data: total=%d len=%d", out.RelayTotal, len(out.RelayBreakdown))
+	}
+	if out.RelayBreakdown[0].Hits != 4 || out.RelayBreakdown[0].SampleSubject != "Please moderate" {
+		t.Fatalf("breakdown[0] wrong: %+v", out.RelayBreakdown[0])
+	}
+	if !out.RelayBreakdown[0].LastSeen.Equal(lastSeen) {
+		t.Fatalf("breakdown[0] last_seen = %s, want %s", out.RelayBreakdown[0].LastSeen, lastSeen)
+	}
+}
+
+func TestFindingOmitsRelayFieldsWhenEmpty(t *testing.T) {
+	b, _ := json.Marshal(Finding{Check: "waf", Message: "m"})
+	if strings.Contains(string(b), "relay_total") || strings.Contains(string(b), "relay_breakdown") {
+		t.Fatalf("empty relay fields must be omitted: %s", b)
 	}
 }
 

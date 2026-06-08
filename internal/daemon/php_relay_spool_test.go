@@ -129,6 +129,15 @@ info@example.com
 	if findings[0].Path != "header" {
 		t.Errorf("Path = %q, want header", findings[0].Path)
 	}
+	if findings[0].RelayTotal != 2 {
+		t.Errorf("RelayTotal = %d, want 2", findings[0].RelayTotal)
+	}
+	if len(findings[0].RelayBreakdown) != 1 || findings[0].RelayBreakdown[0].Hits != 2 {
+		t.Fatalf("RelayBreakdown = %+v, want one 2-hit script", findings[0].RelayBreakdown)
+	}
+	if findings[0].RelayBreakdown[0].SampleSubject == "" {
+		t.Fatal("RelayBreakdown must carry a sample subject from parsed spool headers")
+	}
 }
 
 func TestStartupSpoolWalker_DefersFindings(t *testing.T) {

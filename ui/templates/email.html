@@ -104,6 +104,11 @@
                     <i class="ti ti-gauge"></i>&nbsp;Deliverability
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-outbound-abuse" data-bs-toggle="tab" data-bs-target="#email-pane-outbound-abuse" type="button" role="tab" aria-controls="email-pane-outbound-abuse" aria-selected="false">
+                    <i class="ti ti-mail-exclamation"></i>&nbsp;Outbound abuse
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content">
@@ -321,6 +326,13 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Outbound abuse tab -->
+            <div class="tab-pane fade" id="email-pane-outbound-abuse" role="tabpanel" aria-labelledby="email-tab-outbound-abuse" tabindex="0">
+                <div id="outbound-abuse-body">
+                    <div class="csm-empty"><div class="csm-empty__reason">Outbound mail abuse loads when this tab is opened.</div></div>
                 </div>
             </div>
         </div>

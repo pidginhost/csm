@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,24 @@ func TestScriptState_SnapshotActiveMsgs(t *testing.T) {
 	msgIDs[0] = "BOGUS"
 	if _, ok := s.activeMsgs["BOGUS"]; ok {
 		t.Errorf("snapshot must return a copy")
+	}
+}
+
+func TestScriptState_RelayHitTruncatesSubject(t *testing.T) {
+	s := newScriptState()
+	k := scriptKey("k:/p")
+	now := time.Now()
+	s.append(scriptEvent{
+		At:      now,
+		Subject: strings.Repeat("a", phpRelayBreakdownSubjectMax+20),
+	})
+
+	hit, ok := s.relayHit(k, now.Add(-time.Minute), func(scriptEvent) bool { return true })
+	if !ok {
+		t.Fatal("expected relay hit")
+	}
+	if len(hit.SampleSubject) != phpRelayBreakdownSubjectMax+3 {
+		t.Fatalf("SampleSubject len = %d, want capped length", len(hit.SampleSubject))
 	}
 }
 
@@ -218,12 +237,13 @@ func TestEvaluatePaths_Path1_FiresOnSustainedQualifyingEvents(t *testing.T) {
 	eng := newEvaluator(psw, pip, nil, cfg, nil)
 
 	k := scriptKey("attacker.example.com:/admin-ajax.php")
-	now := time.Now()
+	now := time.Unix(1_700_000_000, 0).UTC()
 	// 5 qualifying events within 5 min (FromMismatch + AdditionalSignal).
 	for i := 0; i < 5; i++ {
 		psw.getOrCreate(k).append(scriptEvent{
 			At:               now.Add(time.Duration(-i*30) * time.Second),
 			MsgID:            "id" + string(rune('0'+i)),
+			Subject:          "relay subject " + string(rune('0'+i)),
 			FromMismatch:     true,
 			AdditionalSignal: true,
 		})
@@ -236,6 +256,15 @@ func TestEvaluatePaths_Path1_FiresOnSustainedQualifyingEvents(t *testing.T) {
 			foundHeader = true
 			if f.ScriptKey != string(k) {
 				t.Errorf("ScriptKey = %q, want %q", f.ScriptKey, k)
+			}
+			if f.RelayTotal != 5 {
+				t.Errorf("RelayTotal = %d, want 5", f.RelayTotal)
+			}
+			if len(f.RelayBreakdown) != 1 {
+				t.Fatalf("RelayBreakdown len = %d, want 1: %+v", len(f.RelayBreakdown), f.RelayBreakdown)
+			}
+			if got := f.RelayBreakdown[0]; got.ScriptKey != string(k) || got.Hits != 5 || !got.LastSeen.Equal(now) || got.SampleSubject != "relay subject 0" {
+				t.Errorf("RelayBreakdown[0] = %+v", got)
 			}
 		}
 	}
@@ -305,6 +334,7 @@ func TestEvaluatePaths_Path2_FiresOnAbsoluteVolume(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		psw.getOrCreate(k).append(scriptEvent{
 			At:               now.Add(time.Duration(-i*10) * time.Minute),
+			Subject:          "bulk subject " + string(rune('0'+i)),
 			FromMismatch:     false,
 			AdditionalSignal: false,
 		})
@@ -314,6 +344,12 @@ func TestEvaluatePaths_Path2_FiresOnAbsoluteVolume(t *testing.T) {
 	for _, f := range findings {
 		if f.Path == "volume" {
 			foundVolume = true
+			if f.RelayTotal != 6 {
+				t.Errorf("RelayTotal = %d, want 6", f.RelayTotal)
+			}
+			if len(f.RelayBreakdown) != 1 || f.RelayBreakdown[0].Hits != 6 {
+				t.Errorf("RelayBreakdown = %+v, want one 6-hit script", f.RelayBreakdown)
+			}
 		}
 		if f.Path == "header" {
 			t.Errorf("Path 1 must not fire here: %+v", f)
@@ -349,24 +385,97 @@ func TestEvaluatePaths_Path4_FiresOnFanout(t *testing.T) {
 	pip := newPerIPWindow(64)
 	eng := newEvaluator(psw, pip, nil, cfg, nil)
 
-	now := time.Now()
-	pip.append("192.0.2.99", "kA:/", now)
-	pip.append("192.0.2.99", "kB:/", now)
-	pip.append("192.0.2.99", "kC:/", now)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sourceIP := "192.0.2.99"
+	addFanoutEvent := func(k scriptKey, at time.Time, subject string) {
+		psw.getOrCreate(k).append(scriptEvent{
+			At:       at,
+			Subject:  subject,
+			SourceIP: sourceIP,
+		})
+		pip.append(sourceIP, k, at, subject)
+	}
+	addFanoutEvent("kA:/", now.Add(-2*time.Minute), "first script older")
+	addFanoutEvent("kA:/", now.Add(-time.Minute), "first script latest")
+	addFanoutEvent("kB:/", now.Add(-30*time.Second), "second script")
+	addFanoutEvent("kC:/", now, "third script")
 
-	findings := eng.evaluatePaths("kC:/", "192.0.2.99", "u", now)
+	findings := eng.evaluatePaths("kC:/", sourceIP, "u", now)
 	foundFanout := false
 	for _, f := range findings {
 		if f.Path == "fanout" {
 			foundFanout = true
-			if f.SourceIP != "192.0.2.99" {
+			if f.SourceIP != sourceIP {
 				t.Errorf("SourceIP = %q", f.SourceIP)
+			}
+			if f.RelayTotal != 3 {
+				t.Errorf("RelayTotal = %d, want 3", f.RelayTotal)
+			}
+			if len(f.RelayBreakdown) != 3 {
+				t.Fatalf("RelayBreakdown len = %d, want 3: %+v", len(f.RelayBreakdown), f.RelayBreakdown)
+			}
+			if got := f.RelayBreakdown[0]; got.ScriptKey != "kA:/" || got.Hits != 2 || got.SampleSubject != "first script latest" {
+				t.Errorf("RelayBreakdown[0] = %+v, want kA hits=2 with latest subject", got)
 			}
 		}
 	}
 	if !foundFanout {
 		t.Errorf("Path 4 expected, got %+v", findings)
 	}
+}
+
+func TestEvaluatePaths_Path4BreakdownSurvivesScriptHistoryRollover(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	sourceIP := "192.0.2.99"
+	addSourceEvent := func(k scriptKey, at time.Time, subject string) {
+		psw.getOrCreate(k).append(scriptEvent{
+			At:       at,
+			Subject:  subject,
+			SourceIP: sourceIP,
+		})
+		pip.append(sourceIP, k, at, subject)
+	}
+	addSourceEvent("kA:/", now.Add(-4*time.Minute), "rolled source subject")
+	addSourceEvent("kB:/", now.Add(-time.Minute), "second script")
+	addSourceEvent("kC:/", now, "third script")
+
+	for i := 0; i < phpRelayMaxEventsPerScript; i++ {
+		psw.getOrCreate("kA:/").append(scriptEvent{
+			At:       now.Add(-3 * time.Minute).Add(time.Duration(i) * time.Millisecond),
+			Subject:  "other source",
+			SourceIP: "198.51.100.10",
+		})
+	}
+
+	findings := eng.evaluatePaths("kC:/", sourceIP, "u", now)
+	for _, f := range findings {
+		if f.Path != "fanout" {
+			continue
+		}
+		if f.RelayTotal != 3 {
+			t.Errorf("RelayTotal = %d, want 3", f.RelayTotal)
+		}
+		if len(f.RelayBreakdown) != 3 {
+			t.Fatalf("RelayBreakdown len = %d, want 3: %+v", len(f.RelayBreakdown), f.RelayBreakdown)
+		}
+		for _, hit := range f.RelayBreakdown {
+			if hit.ScriptKey == "kA:/" {
+				if hit.Hits != 1 || hit.SampleSubject != "rolled source subject" {
+					t.Fatalf("rolled-over hit = %+v, want one preserved source-IP sample", hit)
+				}
+				return
+			}
+		}
+		t.Fatalf("RelayBreakdown missing rolled-over kA contributor: %+v", f.RelayBreakdown)
+	}
+	t.Fatalf("Path 4 expected, got %+v", findings)
 }
 
 func TestEvaluatePaths_Path4_SkipsProxyIPs(t *testing.T) {
