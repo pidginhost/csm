@@ -89,10 +89,15 @@ func TestFixQuarantineSpoolMessageInvalidMsgIDFormat(t *testing.T) {
 }
 
 func TestFixQuarantineSpoolMessageNotFound(t *testing.T) {
-	// Valid format but no spool file present.
-	got := fixQuarantineSpoolMessage("(message: 2jKPFm-000abc-1X)")
-	if got.Success || !strings.Contains(got.Error, "not found") {
-		t.Errorf("expected not-found error, got %+v", got)
+	for _, msgID := range []string{
+		"2jKPFm-000abc-1X",
+		"1wVRAI-0000000CAT0-41m1",
+	} {
+		// Valid format but no spool file present.
+		got := fixQuarantineSpoolMessage("(message: " + msgID + ")")
+		if got.Success || !strings.Contains(got.Error, "not found") {
+			t.Errorf("expected not-found error for %s, got %+v", msgID, got)
+		}
 	}
 }
 
