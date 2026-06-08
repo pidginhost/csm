@@ -166,6 +166,41 @@ func TestHistoryCountAfterAppend(t *testing.T) {
 	}
 }
 
+func TestAppendHistoryKeepsDuplicateTimestampAcrossCalls(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ts := time.Date(2026, 6, 8, 15, 30, 0, 123, time.UTC)
+	first := alert.Finding{Severity: alert.High, Check: "shutdown-a", Message: "first", Timestamp: ts}
+	second := alert.Finding{Severity: alert.High, Check: "shutdown-b", Message: "second", Timestamp: ts}
+
+	if err := db.AppendHistory([]alert.Finding{first}); err != nil {
+		t.Fatalf("AppendHistory(first): %v", err)
+	}
+	if err := db.AppendHistory([]alert.Finding{second}); err != nil {
+		t.Fatalf("AppendHistory(second): %v", err)
+	}
+
+	results, total := db.ReadHistory(10, 0)
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+
+	seen := map[string]bool{}
+	for _, f := range results {
+		seen[f.Check] = true
+	}
+	if !seen[first.Check] || !seen[second.Check] {
+		t.Fatalf("history lost duplicate-timestamp findings, seen=%v", seen)
+	}
+}
+
 func TestHistoryPruning(t *testing.T) {
 	// Override maxHistoryEntries for this test.
 	orig := maxHistoryEntries

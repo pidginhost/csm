@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Stopping the daemon (e.g. during an upgrade) is fast again: pending findings are recorded to history on shutdown instead of running the full auto-response pipeline (firewall blocks, permission fixes, alert delivery) — which previously ran up to twice while the service waited to stop. The next startup re-detects and re-acts on anything still outstanding.
+- Stopping the daemon (e.g. during an upgrade) is fast again: queued findings are recorded to history on shutdown instead of running the auto-response pipeline (firewall blocks, permission fixes, alert delivery) while the service waits to stop. The next startup re-detects and re-acts on anything still outstanding.
 - The Email Security Queue tab no longer reports an empty queue (and the flush-backscatter button no longer does nothing) while the header shows queued, frozen, and stuck messages: the queue parser now accepts the message-id format Exim 4.97+ emits, not just the legacy short form, and handles entries that name the local submitting user before the sender.
 - Email phishing remediation now accepts modern Exim message IDs when quarantining spool files, so the fix action does not reject valid Exim 4.97+ messages.
 - The Email Security pagination footer ("Showing 1-25 of 250") no longer leaks onto every tab; per-table pagination controls now stay scoped to their own tab pane.
