@@ -78,6 +78,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 | Webshells, obfuscated/eval-chain PHP, tail-appended payloads | fanotify watcher + 7 cleaning strategies; quarantine preserves owner/perms/mtime | [Real-time](docs/src/detection-realtime.md), [Auto-response](docs/src/auto-response.md) |
 | PHP-relay form abuse (PHPMailer with spoofed `From`) | Inotify watcher on `/var/spool/exim/input`, 4 detection paths, optional `exim -Mf` auto-freeze | [Real-time](docs/src/detection-realtime.md#php-relay-mail-abuse-cpanel-only) |
 | Outbound abuse to GCP/AWS/Azure cloud relays | Exim mainlog watcher plus startup replay; optional mail hold and IP block | [Real-time](docs/src/detection-realtime.md) |
+| Compromised forwarders relaying backscatter or bad-sender mail to free providers | Opt-in cPanel Exim forward guard starts in dry-run and can hold risky forward copies before they relay off-server while the local copy still delivers; CSM is not in the live SMTP path | [Web UI](docs/src/webui.md) |
 | ModSecurity rule sprawl and triage | Web UI on/off + edit, WAF blocks feed attacker scoring | [ModSecurity](docs/src/modsecurity.md) |
 | Subnet-spread brute force | Per-/24 scoring + auto-block of the whole CIDR | [Auto-response](docs/src/auto-response.md) |
 | Kernel-level CVEs you can't immediately patch | `csm harden`, continuous enforcement, live exploit-signature detection | [CVE Mitigations](docs/src/cve-mitigations.md) |
