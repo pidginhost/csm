@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A new metric counts failed alert deliveries (email, webhook, phpanel) so operators can see when findings are detected but not reaching anyone, instead of the daemon appearing healthy while alerts silently fail.
+
 ### Fixed
 
 - The web UI CSRF check now fails closed when no admin secret is configured, instead of accepting a token any client could compute from an empty key.

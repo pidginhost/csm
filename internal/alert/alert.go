@@ -12,8 +12,32 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/processctx"
 )
+
+// alertDispatchFailures counts individual channel send failures (email,
+// webhook, phpanel) so an operator can see when alerts are silently failing
+// to deliver instead of the daemon looking healthy while findings never
+// reach anyone. Registered once on first dispatch error.
+var (
+	alertDispatchFailures     *metrics.Counter
+	alertDispatchFailuresOnce sync.Once
+)
+
+func recordDispatchFailures(n int) {
+	if n <= 0 {
+		return
+	}
+	alertDispatchFailuresOnce.Do(func() {
+		alertDispatchFailures = metrics.NewCounter(
+			"csm_alert_dispatch_failures_total",
+			"Alert deliveries that failed (email/webhook/phpanel). Sustained growth means findings are being detected but not reaching operators -- check SMTP/webhook reachability and credentials.",
+		)
+		metrics.MustRegister("csm_alert_dispatch_failures_total", alertDispatchFailures)
+	})
+	alertDispatchFailures.Add(float64(n))
+}
 
 // Severity levels for findings.
 type Severity int
@@ -581,6 +605,7 @@ func formatDispatchErrors(errs []error) error {
 	if len(errs) == 0 {
 		return nil
 	}
+	recordDispatchFailures(len(errs))
 	msgs := make([]string, len(errs))
 	for i, e := range errs {
 		msgs[i] = e.Error()

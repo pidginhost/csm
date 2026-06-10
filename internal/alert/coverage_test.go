@@ -2,6 +2,7 @@ package alert
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -1217,5 +1218,31 @@ func TestFinding_TenantFieldsAreOmitemptyWhenZero(t *testing.T) {
 		if strings.Contains(string(b), `"`+k+`"`) {
 			t.Fatalf("expected %s omitted when empty, got %s", k, b)
 		}
+	}
+}
+
+// formatDispatchErrors must bump the dispatch-failure counter so operators
+// can see when alerts are failing to deliver. A clean dispatch must not.
+func TestFormatDispatchErrorsRecordsFailureMetric(t *testing.T) {
+	if err := formatDispatchErrors(nil); err != nil {
+		t.Fatalf("no errors should produce nil, got %v", err)
+	}
+	before := 0.0
+	if alertDispatchFailures != nil {
+		before = alertDispatchFailures.Value()
+	}
+
+	if err := formatDispatchErrors([]error{
+		fmt.Errorf("smtp down"),
+		fmt.Errorf("webhook 500"),
+	}); err == nil {
+		t.Fatal("errors should produce a non-nil error")
+	}
+
+	if alertDispatchFailures == nil {
+		t.Fatal("dispatch failure counter was not registered after a failure")
+	}
+	if got := alertDispatchFailures.Value() - before; got != 2 {
+		t.Fatalf("counter delta = %g, want 2", got)
 	}
 }
