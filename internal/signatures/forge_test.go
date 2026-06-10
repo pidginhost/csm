@@ -1,9 +1,59 @@
 package signatures
 
 import (
+	"archive/zip"
+	"bytes"
 	"strings"
 	"testing"
 )
+
+// A compromised CDN or signing key could serve a small ZIP whose .yar entry
+// decompresses to gigabytes (a zip bomb). forgeExtractYar must cap the
+// decompressed read so installing rules cannot OOM the daemon.
+func TestForgeExtractYarCapsDecompressedSize(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("rules.yar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Highly compressible payload far larger than the cap.
+	big := bytes.Repeat([]byte("A"), forgeMaxYarSize+1024*1024)
+	if _, err := w.Write(big); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := forgeExtractYar(buf.Bytes(), "rules.yar"); err == nil {
+		t.Fatal("forgeExtractYar must reject a .yar entry exceeding the decompressed cap")
+	}
+}
+
+func TestForgeExtractYarAcceptsNormalEntry(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("rules.yar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("rule x { condition: true }\n")
+	if _, werr := w.Write(body); werr != nil {
+		t.Fatal(werr)
+	}
+	if cerr := zw.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+
+	got, err := forgeExtractYar(buf.Bytes(), "rules.yar")
+	if err != nil {
+		t.Fatalf("forgeExtractYar: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("got %q, want %q", got, body)
+	}
+}
 
 func TestExtractRuleName(t *testing.T) {
 	tests := []struct {

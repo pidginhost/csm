@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- YARA rule downloads now cap the decompressed size of the rules file and install it through an atomic, fsynced write, so a zip-bomb or torn write during a rule update cannot OOM or corrupt the daemon's ruleset.
 - The live audit-log AF_ALG listener now caps its partial-line buffer, so a truncated or never-terminated audit record can no longer grow daemon memory without bound.
 - The new-file index scan is now interruptible and no longer promotes a partial file list as its baseline when a scan is cut short, which would have made every un-walked file look newly created on the next cycle.
 - The YARA worker restart delay no longer grows after successful restarts: a few early crashes used to lock every later restart at the maximum delay even after the worker was healthy again.

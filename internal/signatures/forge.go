@@ -19,6 +19,11 @@ const (
 	forgeReleasesURL = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
 	forgeHTTPTimeout = 30 * time.Second
 	forgeMaxZIPSize  = 20 * 1024 * 1024
+	// forgeMaxYarSize caps the decompressed size of a single .yar entry. The
+	// compressed ZIP is bounded by forgeMaxZIPSize, but a zip bomb (or a
+	// compromised CDN / signing key) can encode a far larger decompressed
+	// payload; the full ruleset tier is a few MiB, so 64 MiB is generous.
+	forgeMaxYarSize = 64 * 1024 * 1024
 )
 
 var forgeTierAsset = map[string]string{
@@ -172,9 +177,12 @@ func forgeExtractYar(zipData []byte, assetPath string) ([]byte, error) {
 				return nil, fmt.Errorf("opening %s in ZIP: %w", assetPath, err)
 			}
 			defer rc.Close()
-			data, err := io.ReadAll(rc)
+			data, err := io.ReadAll(io.LimitReader(rc, forgeMaxYarSize+1))
 			if err != nil {
 				return nil, fmt.Errorf("reading %s: %w", assetPath, err)
+			}
+			if len(data) > forgeMaxYarSize {
+				return nil, fmt.Errorf("%s exceeds decompressed size limit of %d bytes", assetPath, forgeMaxYarSize)
 			}
 			return data, nil
 		}

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 // Update downloads the latest rules from the configured URL.
@@ -70,14 +72,10 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 		return 0, fmt.Errorf("creating rules dir: %w", err)
 	}
 
-	// Atomic write: temp file + rename
+	// Atomic write: write-temp, fsync, rename, dir-fsync. The daemon reloads
+	// these rules on the next tick, so a torn write must never be observable.
 	destPath := filepath.Join(rulesDir, "malware.yml")
-	tmpPath := destPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return 0, fmt.Errorf("writing rules: %w", err)
-	}
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		os.Remove(tmpPath)
+	if err := atomicio.AtomicWrite(destPath, 0600, data); err != nil {
 		return 0, fmt.Errorf("installing rules: %w", err)
 	}
 
