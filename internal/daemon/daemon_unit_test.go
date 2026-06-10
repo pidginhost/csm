@@ -852,6 +852,28 @@ func TestLogWatcher_Reopen_OpenFailureClearsStaleFile(t *testing.T) {
 	}
 }
 
+func TestReadOffsetMarker_PartialReadReportsNotOK(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("0123456789"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// Offset past EOF simulates the file shrinking between Seek and ReadAt.
+	if _, ok := readOffsetMarker(f, 100); ok {
+		t.Fatal("partial marker read must report ok=false")
+	}
+
+	marker, ok := readOffsetMarker(f, 10)
+	if !ok || string(marker) != "0123456789" {
+		t.Fatalf("full marker read = %q ok=%v, want full content ok=true", marker, ok)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LogWatcher.Stop — idempotent, does not panic on nil file
 // ---------------------------------------------------------------------------

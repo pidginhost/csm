@@ -106,8 +106,11 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 
 	marker, markerOK := readOffsetMarker(f, offset)
 	if !markerOK {
-		_ = f.Close()
-		return nil, fmt.Errorf("read offset marker for %s", path)
+		// The file rotated or shrank between Seek and ReadAt. Start without a
+		// marker rather than fail: a constructor error would disable this
+		// watcher until daemon restart, while readNewLines/reopen re-establish
+		// the marker on the next tick.
+		marker = nil
 	}
 	return &LogWatcher{
 		path:    path,
