@@ -16,25 +16,28 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// mockOSWithSecureLog returns a mockOS that serves the given content as
-// /var/log/secure when osFS.Open is called with that path. ReadFile and
-// other operations fall through to the real filesystem so reputation_cache
-// (read via osFS.ReadFile from the test's temp StatePath) and other
-// genuine file lookups succeed.
-func mockOSWithSecureLog(t *testing.T, content string) *mockOS {
+// mockOSWithAuthLog returns a mockOS that serves the given content as the
+// platform auth log. ReadFile and other operations fall through to the real
+// filesystem so reputation_cache and other genuine file lookups succeed.
+func mockOSWithAuthLog(t *testing.T, content string) *mockOS {
 	t.Helper()
-	tmp := filepath.Join(t.TempDir(), "secure")
+	tmp := filepath.Join(t.TempDir(), "auth.log")
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return &mockOS{
 		open: func(name string) (*os.File, error) {
-			if name == "/var/log/secure" {
+			if name == "/var/log/secure" || name == "/var/log/auth.log" {
 				return os.Open(tmp)
 			}
-			return os.Open(name)
+			return nil, os.ErrNotExist
 		},
-		stat:     os.Stat,
+		stat: func(name string) (os.FileInfo, error) {
+			if name == "/var/log/secure" || name == "/var/log/auth.log" {
+				return os.Stat(tmp)
+			}
+			return nil, os.ErrNotExist
+		},
 		readFile: os.ReadFile,
 	}
 }
@@ -53,10 +56,9 @@ func TestCheckIPReputationCachedHighScoreEmitsCritical(t *testing.T) {
 	}}
 	saveReputationCache(statePath, cache)
 
-	// Surface the IP via SSH log (collectRecentIPs reads /var/log/secure
-	// looking for "Accepted ... from <ip>").
+	// Surface the IP via the platform auth log.
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 203.0.113.99 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	findings := CheckIPReputation(context.Background(), cfg, nil)
@@ -88,7 +90,7 @@ func TestCheckIPReputationCachedLowScoreNoFinding(t *testing.T) {
 	saveReputationCache(statePath, cache)
 
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 203.0.113.50 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	findings := CheckIPReputation(context.Background(), cfg, nil)
@@ -109,7 +111,7 @@ func TestCheckIPReputationFreshLookupHighScoreEmits(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.7 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -137,7 +139,7 @@ func TestCheckIPReputationFreshLookupLowScoreNoFinding(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.42 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -163,7 +165,7 @@ func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.77 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.Rspamd.Enabled = true
@@ -206,7 +208,7 @@ func TestCheckIPReputationUpstreamOnlyEmitsWithoutAbuseKey(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.79 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.Upstream.Enabled = true
@@ -243,7 +245,7 @@ func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.88 port 22 ssh2\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -281,7 +283,7 @@ func TestCheckIPReputationQuotaExhaustedStopsLookups(t *testing.T) {
 		"Apr 14 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
 		"Apr 14 10:00:02 host sshd[1]: Accepted publickey for x from 198.51.100.3 port 22 ssh2",
 	}, "\n") + "\n"
-	withMockOS(t, mockOSWithSecureLog(t, logContent))
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
@@ -310,7 +312,7 @@ func TestCheckIPReputationRespectsPerCycleLimit(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		lines = append(lines, fmt.Sprintf("Apr 14 10:00:00 host sshd[1]: Accepted publickey for x from 198.51.100.%d port 22 ssh2", i))
 	}
-	withMockOS(t, mockOSWithSecureLog(t, strings.Join(lines, "\n")+"\n"))
+	withMockOS(t, mockOSWithAuthLog(t, strings.Join(lines, "\n")+"\n"))
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"

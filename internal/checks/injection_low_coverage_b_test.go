@@ -1595,7 +1595,7 @@ func TestCollectRecentIPs_SSHLogAccepted(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
-			if name == "/var/log/secure" {
+			if name == "/var/log/secure" || name == "/var/log/auth.log" {
 				return os.Open(sshPath)
 			}
 			return nil, os.ErrNotExist
@@ -1627,6 +1627,8 @@ func TestCollectRecentIPs_DovecotAuthFailure(t *testing.T) {
 	})
 
 	cfg := &config.Config{}
+	cfg.MailLogs.Source = "file"
+	cfg.MailLogs.File = "/var/log/maillog"
 	ips := collectRecentIPs(cfg)
 	if _, ok := ips["198.51.100.5"]; !ok {
 		t.Errorf("expected Dovecot IP 198.51.100.5, got %v", ips)
@@ -1643,7 +1645,7 @@ func TestCollectRecentIPs_SkipsLoopback(t *testing.T) {
 
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
-			if name == "/var/log/secure" {
+			if name == "/var/log/secure" || name == "/var/log/auth.log" {
 				return os.Open(sshPath)
 			}
 			return nil, os.ErrNotExist
@@ -1658,7 +1660,7 @@ func TestCollectRecentIPs_SkipsLoopback(t *testing.T) {
 }
 
 func TestCollectRecentIPs_EximAuthFailure(t *testing.T) {
-	forceCPanelPlatform(t) // exim log is parsed only on cPanel hosts
+	forceCPanelPlatform(t)
 	eximLog := "2026-04-13 10:00:00 H=host [198.51.100.20] F=<a@b.com> authenticator failed\n"
 	tmpDir := t.TempDir()
 	eximPath := filepath.Join(tmpDir, "exim_mainlog")

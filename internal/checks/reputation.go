@@ -23,6 +23,8 @@ import (
 
 const (
 	reputationCacheFile      = "reputation_cache.json"
+	reputationEximMainlog    = "/var/log/exim_mainlog"
+	reputationWHMAccessLog   = "/usr/local/cpanel/logs/access_log"
 	cacheExpiry              = 6 * time.Hour
 	errorCacheExpiry         = 1 * time.Hour // cache transient API errors to avoid retrying same IP
 	abuseConfidenceThreshold = 50
@@ -384,9 +386,11 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		}
 	}
 
-	// Web server access logs, platform-detected (Apache/Nginx/LiteSpeed +
-	// per-vhost domlogs). Replaces the cPanel/Apache-only hardcoded list.
+	// Web server access logs, platform-detected (Apache/Nginx/LiteSpeed).
 	for _, path := range info.AccessLogPaths {
+		if path == "" || isWHMAccessLog(path) {
+			continue
+		}
 		lines := tailFile(path, 100)
 		if len(lines) == 0 {
 			continue
@@ -396,27 +400,30 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 				addIfNotInfra(ips, ip, "HTTP request", cfg)
 			}
 		}
-		break
 	}
 
 	// Dovecot - IMAP/POP3 auth failures.
-	for _, line := range tailFile(info.MailLogPath(), 50) {
-		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
-			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
-				addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
+	if mailLog := reputationMailLogPath(cfg, info); mailLog != "" {
+		for _, line := range tailFile(mailLog, 50) {
+			if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
+				if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+					addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
+				}
 			}
 		}
 	}
 
 	if info.IsCPanel() {
 		// cPanel/WHM access log.
-		for _, line := range tailFile("/usr/local/cpanel/logs/access_log", 100) {
+		for _, line := range tailFile(reputationWHMAccessLog, 100) {
 			if ip := firstField(line); ip != "" {
 				addIfNotInfra(ips, ip, "cPanel/WHM access", cfg)
 			}
 		}
-		// Exim log - SMTP auth failures (cPanel ships exim with this path).
-		for _, line := range tailFile("/var/log/exim_mainlog", 50) {
+	}
+
+	if shouldCollectEximMainlog(info) {
+		for _, line := range tailFile(reputationEximMainlog, 50) {
 			if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
 				if ip := extractBracketedIP(line); ip != "" {
 					addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
@@ -426,6 +433,33 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 	}
 
 	return ips
+}
+
+func reputationMailLogPath(cfg *config.Config, info platform.Info) string {
+	if cfg == nil {
+		return info.MailLogPath()
+	}
+	if cfg.MailLogs.Source == "journal" {
+		return ""
+	}
+	if cfg.MailLogs.File != "" {
+		return cfg.MailLogs.File
+	}
+	return info.MailLogPath()
+}
+
+func isWHMAccessLog(path string) bool {
+	return filepath.Clean(path) == reputationWHMAccessLog
+}
+
+func shouldCollectEximMainlog(info platform.Info) bool {
+	if info.IsCPanel() {
+		return true
+	}
+	if _, err := osFS.Stat(reputationEximMainlog); err != nil {
+		return !os.IsNotExist(err)
+	}
+	return true
 }
 
 func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config) {
