@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 )
@@ -203,10 +204,17 @@ func validReasonCode(code string) bool {
 
 func boundText(s string) string {
 	s = strings.TrimSpace(whitespaceR.ReplaceAllString(s, " "))
-	if len(s) > maxTextLen {
-		return s[:maxTextLen]
+	if len(s) <= maxTextLen {
+		return s
 	}
-	return s
+	// Truncate on a rune boundary: the deferral text is attacker-influenced,
+	// so a byte-position cut could split a multi-byte rune and store invalid
+	// UTF-8 that JSON would then mangle.
+	cut := maxTextLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // ReasonCount is a reason token and how often it occurred.

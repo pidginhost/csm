@@ -202,8 +202,9 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "verdict callback: HTTP %d for %s\n", resp.StatusCode, req.IP)
-		return Response{}, fmt.Errorf("verdict callback HTTP %d", resp.StatusCode)
+		// Return the IP in the error so the caller logs it through the
+		// structured audit path instead of leaking it to raw stderr.
+		return Response{}, fmt.Errorf("verdict callback HTTP %d for %s", resp.StatusCode, req.IP)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, verdictMaxResponseBytes+1))
 	if err != nil {

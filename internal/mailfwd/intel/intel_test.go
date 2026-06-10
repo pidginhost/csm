@@ -1,7 +1,9 @@
 package intel
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
 )
@@ -219,5 +221,19 @@ func TestBuildReportEmpty(t *testing.T) {
 	}
 	if rep.Providers == nil || rep.OutboundIPs == nil {
 		t.Error("rollups must be non-nil empty slices, not nil")
+	}
+}
+
+// boundText truncates attacker-influenced deferral text; a multi-byte rune
+// straddling the byte limit must not be split into invalid UTF-8.
+func TestBoundTextTruncatesOnRuneBoundary(t *testing.T) {
+	// 239 ASCII bytes then a 3-byte rune crosses the 240-byte cap.
+	s := strings.Repeat("a", maxTextLen-1) + "世界"
+	got := boundText(s)
+	if !utf8.ValidString(got) {
+		t.Fatalf("boundText produced invalid UTF-8: %q", got)
+	}
+	if len(got) > maxTextLen {
+		t.Fatalf("boundText length = %d, want <= %d", len(got), maxTextLen)
 	}
 }
