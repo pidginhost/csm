@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The email AV spool watcher no longer leaks scanner workers and file descriptors when its kernel event-loop setup fails: workers now start only after the event loop is ready, so daemon shutdown cannot hang on them.
 - Log watchers no longer lose unread lines around periodic reopen, replacement-file rotation, or in-place truncate/regrow rotation. Failed reopens also recover cleanly when the log path returns.
 
 ### Documentation

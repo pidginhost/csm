@@ -156,6 +156,30 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 
 // Run starts the event loop and scanner workers. Blocks until Stop() is called.
 func (sw *SpoolWatcher) Run() {
+	// Event loop. Set up epoll before starting any workers so a setup
+	// failure has nothing to unwind beyond drainAndClose: workers started
+	// first would park on scanCh forever and hang daemon shutdown.
+	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_create: %v\n", ts(), err)
+		sw.drainAndClose()
+		return
+	}
+	defer func() { _ = unix.Close(epfd) }()
+
+	// #nosec G115 -- POSIX fd fits in int32 (rlimit ~1024). Same for all fd→int32 in this file.
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.fd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.fd)}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(fanotify fd): %v\n", ts(), err)
+		sw.drainAndClose()
+		return
+	}
+	// #nosec G115 -- POSIX fd fits in int32.
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.pipeFds[0], &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.pipeFds[0])}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(pipe fd): %v\n", ts(), err)
+		sw.drainAndClose()
+		return
+	}
+
 	// Start scanner workers
 	concurrency := sw.cfg.EmailAV.ScanConcurrency
 	if concurrency < 1 {
@@ -164,25 +188,6 @@ func (sw *SpoolWatcher) Run() {
 	for i := 0; i < concurrency; i++ {
 		sw.wg.Add(1)
 		obs.Go("spool-scanner", sw.scanWorker)
-	}
-
-	// Event loop
-	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_create: %v\n", ts(), err)
-		return
-	}
-	defer func() { _ = unix.Close(epfd) }()
-
-	// #nosec G115 -- POSIX fd fits in int32 (rlimit ~1024). Same for all fd→int32 in this file.
-	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.fd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.fd)}); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(fanotify fd): %v\n", ts(), err)
-		return
-	}
-	// #nosec G115 -- POSIX fd fits in int32.
-	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.pipeFds[0], &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.pipeFds[0])}); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(pipe fd): %v\n", ts(), err)
-		return
 	}
 
 	events := make([]unix.EpollEvent, 16)
