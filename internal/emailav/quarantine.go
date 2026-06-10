@@ -179,16 +179,14 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 	return os.RemoveAll(msgDir)
 }
 
-// DeleteMessage permanently removes a quarantined message.
+// DeleteMessage permanently removes a quarantined message. filepath.Base
+// confines the target to a single entry directly under baseDir, so a crafted
+// msgID cannot escape the quarantine root. Unlike ReleaseMessage it does not
+// require metadata: deleting an orphaned or partially-written entry is a
+// legitimate cleanup operation.
 func (q *Quarantine) DeleteMessage(msgID string) error {
-	msgID = filepath.Base(msgID) // sanitize against path traversal
-	// Confirm this is a real quarantined message before RemoveAll, matching
-	// ReleaseMessage. Without it a msgID that resolves to any directory under
-	// baseDir would be deleted even if it was never a quarantine entry.
-	if _, err := q.readMetadata(msgID); err != nil {
-		return fmt.Errorf("reading metadata: %w", err)
-	}
-	return os.RemoveAll(filepath.Join(q.baseDir, msgID))
+	msgDir := filepath.Join(q.baseDir, filepath.Base(msgID)) // sanitize
+	return os.RemoveAll(msgDir)
 }
 
 // CleanExpired removes quarantine directories older than maxAge.

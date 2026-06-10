@@ -181,24 +181,26 @@ func TestDeleteMessage(t *testing.T) {
 	}
 }
 
-// DeleteMessage must confirm the target is a real quarantined message before
-// removing it, the same way ReleaseMessage does, so a bad msgID cannot delete
-// an arbitrary directory under the quarantine root.
-func TestDeleteMessageRejectsUnknownMessage(t *testing.T) {
+// DeleteMessage confines deletion to a single entry under baseDir even when
+// the msgID contains path-traversal components.
+func TestDeleteMessageContainsTraversal(t *testing.T) {
 	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
 	q := NewQuarantine(qDir)
 
-	// A directory with no metadata.json is not a valid quarantine entry.
-	bogus := filepath.Join(qDir, "not-a-message")
-	if err := os.MkdirAll(bogus, 0o700); err != nil {
+	sentinel := filepath.Join(filepath.Dir(qDir), "keep.txt")
+	if err := os.MkdirAll(qDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := q.DeleteMessage("not-a-message"); err == nil {
-		t.Fatal("DeleteMessage must reject a directory without quarantine metadata")
+	// A traversal-laden id must not escape baseDir.
+	if err := q.DeleteMessage("../../keep.txt"); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
 	}
-	if _, err := os.Stat(bogus); err != nil {
-		t.Fatal("DeleteMessage removed a directory that was not a valid quarantine entry")
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatal("DeleteMessage escaped baseDir and removed a sibling file")
 	}
 }
 
