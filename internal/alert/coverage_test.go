@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -430,7 +431,7 @@ func TestSendWebhookReusesTransportConnectionAfterResponseDrain(t *testing.T) {
 	}
 }
 
-// Chunked / connection-close webhook responses report ContentLength == -1.
+// Chunked keepalive webhook responses report ContentLength == -1.
 // The body must still be drained so the keepalive pool can reuse the TCP
 // connection; otherwise every per-finding webhook pays a fresh handshake.
 func TestSendWebhookReusesConnectionWithChunkedResponse(t *testing.T) {
@@ -477,6 +478,104 @@ func TestSendWebhookReusesConnectionWithChunkedResponse(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("new TCP connections = %d, want 1 (chunked body not drained for reuse)", got)
 	}
+}
+
+func TestCloseWebhookResponseBodySkipsConnectionCloseDrain(t *testing.T) {
+	body := newBlockingReadCloser()
+	resp := &http.Response{Body: body, ContentLength: -1, Close: true}
+
+	assertCloseWebhookResponseBodyReturns(t, resp, body, 500*time.Millisecond)
+
+	if got := body.reads.Load(); got != 0 {
+		t.Fatalf("body reads = %d, want 0 for connection-close response", got)
+	}
+}
+
+func TestCloseWebhookResponseBodySkipsOversizedKnownLengthDrain(t *testing.T) {
+	body := newBlockingReadCloser()
+	resp := &http.Response{Body: body, ContentLength: maxWebhookResponseDrainBytes + 1}
+
+	assertCloseWebhookResponseBodyReturns(t, resp, body, 500*time.Millisecond)
+
+	if got := body.reads.Load(); got != 0 {
+		t.Fatalf("body reads = %d, want 0 for oversized response", got)
+	}
+}
+
+func TestCloseWebhookResponseBodyStopsSlowUnknownLengthDrain(t *testing.T) {
+	body := newBlockingReadCloser()
+	resp := &http.Response{Body: body, ContentLength: -1}
+
+	assertCloseWebhookResponseBodyReturns(t, resp, body, maxWebhookResponseDrainDuration+500*time.Millisecond)
+}
+
+func TestCloseWebhookResponseBodyReadsEOFAtDrainLimit(t *testing.T) {
+	body := &eofTrackingBody{r: bytes.NewReader(make([]byte, int(maxWebhookResponseDrainBytes)))}
+	resp := &http.Response{Body: body, ContentLength: maxWebhookResponseDrainBytes}
+
+	closeWebhookResponseBody(resp)
+
+	if !body.sawEOF.Load() {
+		t.Fatal("body EOF was not reached for an exactly-at-limit response")
+	}
+}
+
+func assertCloseWebhookResponseBodyReturns(t *testing.T, resp *http.Response, body *blockingReadCloser, timeout time.Duration) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		closeWebhookResponseBody(resp)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		_ = body.Close()
+		<-done
+		t.Fatalf("closeWebhookResponseBody did not return within %s", timeout)
+	}
+}
+
+type blockingReadCloser struct {
+	closed chan struct{}
+	once   sync.Once
+	reads  atomic.Int32
+}
+
+func newBlockingReadCloser() *blockingReadCloser {
+	return &blockingReadCloser{closed: make(chan struct{})}
+}
+
+func (b *blockingReadCloser) Read(_ []byte) (int, error) {
+	b.reads.Add(1)
+	<-b.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (b *blockingReadCloser) Close() error {
+	b.once.Do(func() {
+		close(b.closed)
+	})
+	return nil
+}
+
+type eofTrackingBody struct {
+	r      *bytes.Reader
+	sawEOF atomic.Bool
+}
+
+func (b *eofTrackingBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		b.sawEOF.Store(true)
+	}
+	return n, err
+}
+
+func (b *eofTrackingBody) Close() error {
+	return nil
 }
 
 // --- Dispatch ----------------------------------------------------------

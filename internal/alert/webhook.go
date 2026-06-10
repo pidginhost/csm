@@ -27,6 +27,7 @@ import (
 var webhookTransport http.RoundTripper = http.DefaultTransport
 
 const maxWebhookResponseDrainBytes int64 = 512 << 10
+const maxWebhookResponseDrainDuration = 250 * time.Millisecond
 
 // httpClient returns a webhook client with the requested timeout
 // backed by the shared transport, so the keepalive pool is shared
@@ -48,12 +49,26 @@ func closeWebhookResponseBody(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	// Drain up to a bounded amount before closing so the transport can reuse
-	// the keepalive connection. ContentLength is -1 for chunked / close-
-	// delimited responses (Slack, Discord, most generic endpoints), so gating
-	// the drain on a known length skipped reuse for exactly those servers and
-	// forced a fresh TLS handshake per finding.
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxWebhookResponseDrainBytes))
+
+	if resp.Close || resp.ContentLength == 0 || resp.ContentLength > maxWebhookResponseDrainBytes {
+		_ = resp.Body.Close()
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		// Read one sentinel byte past the reuse limit so an exactly-at-limit
+		// response still reaches the underlying EOF and can be pooled.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxWebhookResponseDrainBytes+1))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(maxWebhookResponseDrainDuration):
+		// A slow or streaming response is not worth holding alert dispatch
+		// open just to preserve a keepalive connection.
+	}
 	_ = resp.Body.Close()
 }
 
