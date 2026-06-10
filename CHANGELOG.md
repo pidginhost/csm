@@ -9,11 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The web UI no longer serves a browsable listing of its static asset directory; individual assets still load (the login page needs them) but the file set can no longer be enumerated.
 - IPv4 connections seen through a dual-stack listener (reported as IPv4-mapped IPv6) are now canonicalized before block lookups, so a blocked address can no longer slip past the challenge and firewall checks in its mapped form.
 
 - Filtering the history view by an older date range is now much faster on hosts with large history, because the query seeks to the end of the range instead of scanning back over every newer entry first.
-
-- Deleting a quarantined email now verifies the target is a real quarantine entry first, so a bad message id can no longer remove an unrelated directory under the quarantine root.
 
 - Mail-provider deferral text captured from remote servers is now truncated on a character boundary, so a multi-byte character at the limit can no longer be stored as corrupt text.
 - A failed verdict-callback now reports the IP through the normal error path instead of writing it to standard error.

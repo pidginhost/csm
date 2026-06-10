@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -3969,5 +3970,47 @@ func TestWhatsNewBadgeWired(t *testing.T) {
 	}
 	if !strings.Contains(string(css), ".csm-whats-new-dot {") {
 		t.Fatal("csm.css missing .csm-whats-new-dot rule")
+	}
+}
+
+// The /static/ handler serves unauthenticated assets (the login page needs
+// them) but must not let anyone enumerate the shipped file set. noListDir
+// returns a 404 for directory requests while still serving individual files.
+func TestNoListDirRejectsDirectoryListing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "js"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "js", "app.js"), []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.StripPrefix("/static/", http.FileServer(noListDir{http.Dir(root)})))
+	defer srv.Close()
+
+	// A real asset is still served.
+	resp, err := http.Get(srv.URL + "/static/js/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("asset request = %d, want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// Directory requests must not list contents.
+	for _, dir := range []string{"/static/", "/static/js/"} {
+		resp, err := http.Get(srv.URL + dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("directory %q returned 200 (listing); body=%q", dir, body)
+		}
+		if strings.Contains(string(body), "app.js") {
+			t.Fatalf("directory %q leaked file listing: %q", dir, body)
+		}
 	}
 }

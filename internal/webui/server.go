@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,30 @@ func blockIPForOperator(b IPBlocker, ip, reason string, timeout time.Duration) e
 		return fb.BlockIPForce(ip, reason, timeout)
 	}
 	return b.BlockIP(ip, reason, timeout)
+}
+
+// noListDir wraps an http.FileSystem so http.FileServer cannot serve a
+// directory index. Opening a directory returns fs.ErrNotExist, which the
+// FileServer turns into a 404, while individual files are served normally.
+// This keeps the unauthenticated /static/ assets reachable for the login
+// page without letting anyone enumerate the shipped file set.
+type noListDir struct{ fs http.FileSystem }
+
+func (d noListDir) Open(name string) (http.File, error) {
+	f, err := d.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		_ = f.Close()
+		return nil, fs.ErrNotExist
+	}
+	return f, nil
 }
 
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
@@ -173,7 +198,11 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 
 	// Static files and HTML pages - only if UI directory exists
 	if s.hasUI {
-		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+		// Static assets must stay reachable pre-auth (the login page loads its
+		// own CSS/JS), so they are not behind requireAuth. They must not be
+		// enumerable, though: noListDir makes directory requests 404 instead of
+		// returning an index listing of every shipped file.
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(noListDir{http.Dir(staticDir)})))
 		mux.HandleFunc("/login", s.handleLogin)
 		mux.Handle("/", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
 		mux.Handle("/dashboard", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
