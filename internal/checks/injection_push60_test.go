@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -130,6 +131,208 @@ func TestCheckFileIndexCanceledScanDoesNotPromoteBaseline(t *testing.T) {
 	}
 	if string(got) != baseline {
 		t.Fatalf("cancelled scan overwrote baseline index:\n got %q\nwant %q", got, baseline)
+	}
+}
+
+func TestCheckFileIndexNilContextUsesBackground(t *testing.T) {
+	stateDir := t.TempDir()
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			if name == "/home" {
+				return nil, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.ReadFile(name)
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.Stat(name)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{StatePath: stateDir}
+	var ctx context.Context
+	findings := CheckFileIndex(ctx, cfg, nil)
+	if len(findings) != 0 {
+		t.Fatalf("empty scan with nil context returned findings: %+v", findings)
+	}
+	for _, name := range []string{"fileindex.current", "fileindex.previous"} {
+		if _, err := os.Stat(filepath.Join(stateDir, name)); err != nil {
+			t.Fatalf("nil-context scan did not write %s: %v", name, err)
+		}
+	}
+}
+
+func TestCheckFileIndexCanceledFirstScanDoesNotSaveDirCache(t *testing.T) {
+	stateDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{testDirEntry{name: "alice", isDir: true}}, nil
+			case "/home/alice":
+				return nil, nil
+			case "/home/alice/public_html/wp-content/uploads":
+				cancel()
+				return []os.DirEntry{testDirEntry{name: "shell.php", isDir: false}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			return fakeFileInfo{name: filepath.Base(name), size: 100}, nil
+		},
+	})
+
+	cfg := &config.Config{StatePath: stateDir}
+	_ = CheckFileIndex(ctx, cfg, nil)
+
+	for _, name := range []string{"dircache.json", "fileindex.current", "fileindex.previous"} {
+		if _, err := os.Stat(filepath.Join(stateDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("cancelled first scan wrote %s: %v", name, err)
+		}
+	}
+}
+
+func TestBuildFileIndexAlreadyCanceledDoesNotReadHomeDirs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			t.Fatalf("buildFileIndex read %s after starting canceled", name)
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			t.Fatalf("buildFileIndex statted %s after starting canceled", name)
+			return nil, os.ErrNotExist
+		},
+	})
+
+	entries := buildFileIndex(ctx, dirMtimeCache{}, nil, true)
+	if len(entries) != 0 {
+		t.Fatalf("already-canceled scan returned entries: %v", entries)
+	}
+}
+
+func TestBuildFileIndexStopsAfterCancellationInsideUploadDir(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{testDirEntry{name: "alice", isDir: true}}, nil
+			case "/home/alice":
+				return nil, nil
+			case "/home/alice/public_html/wp-content/uploads":
+				cancel()
+				return []os.DirEntry{testDirEntry{name: "shell.php", isDir: false}}, nil
+			case "/tmp", "/dev/shm", "/var/tmp":
+				t.Fatalf("buildFileIndex read %s after cancellation", name)
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			return fakeFileInfo{name: filepath.Base(name), size: 100}, nil
+		},
+	})
+
+	entries := buildFileIndex(ctx, dirMtimeCache{}, nil, true)
+	if len(entries) != 0 {
+		t.Fatalf("cancelled scan returned entries: %v", entries)
+	}
+}
+
+func TestBuildFileIndexStopsAfterCancellationDuringAddonDiscovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{testDirEntry{name: "alice", isDir: true}}, nil
+			case "/home/alice":
+				cancel()
+				return []os.DirEntry{testDirEntry{name: "example.com", isDir: true}}, nil
+			default:
+				t.Fatalf("buildFileIndex read %s after cancellation", name)
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			t.Fatalf("buildFileIndex statted %s after cancellation", name)
+			return nil, os.ErrNotExist
+		},
+	})
+
+	entries := buildFileIndex(ctx, dirMtimeCache{}, nil, true)
+	if len(entries) != 0 {
+		t.Fatalf("cancelled addon discovery returned entries: %v", entries)
+	}
+}
+
+func TestFileIndexScanHelpersStopWhenDirStatCancels(t *testing.T) {
+	const dir = "/home/alice/public_html/wp-content/uploads"
+	mtime := time.Unix(1234, 0)
+
+	tests := []struct {
+		name string
+		scan func(context.Context, dirMtimeCache, map[string][]string, *[]string)
+	}{
+		{
+			name: "php",
+			scan: func(ctx context.Context, cache dirMtimeCache, prev map[string][]string, entries *[]string) {
+				scanDirForPHPContext(ctx, dir, 3, cache, prev, false, phpHandlerOverlay{}, entries)
+			},
+		},
+		{
+			name: "executables",
+			scan: func(ctx context.Context, cache dirMtimeCache, prev map[string][]string, entries *[]string) {
+				scanDirForExecutablesContext(ctx, dir, 3, cache, prev, false, entries)
+			},
+		},
+		{
+			name: "suspicious-ext",
+			scan: func(ctx context.Context, cache dirMtimeCache, prev map[string][]string, entries *[]string) {
+				scanDirForSuspiciousExtContext(ctx, dir, 3, cache, prev, false, entries)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			withMockOS(t, &mockOS{
+				readFile: func(string) ([]byte, error) {
+					return nil, os.ErrNotExist
+				},
+				readDir: func(name string) ([]os.DirEntry, error) {
+					t.Fatalf("scan helper read %s after cancellation", name)
+					return nil, os.ErrNotExist
+				},
+				stat: func(name string) (os.FileInfo, error) {
+					if name == dir {
+						cancel()
+						return &fakeFileInfoMtime{name: filepath.Base(name), mtime: mtime, dir: true}, nil
+					}
+					return nil, os.ErrNotExist
+				},
+			})
+
+			cache := dirMtimeCache{dir: mtime.Unix()}
+			prev := map[string][]string{dir: {filepath.Join(dir, "old.php")}}
+			var entries []string
+
+			tt.scan(ctx, cache, prev, &entries)
+			if len(entries) != 0 {
+				t.Fatalf("cancelled stat carried entries forward: %v", entries)
+			}
+		})
 	}
 }
 

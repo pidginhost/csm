@@ -74,6 +74,9 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 // without calling ReadDir, while changed dirs are re-scanned.
 func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
 	forceFullScan := scanNum%6 == 0 // full rescan every 6th cycle
@@ -93,15 +96,15 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// Build current index
 	currentEntries := buildFileIndex(ctx, dirCache, prevByDir, forceFullScan)
 
-	// Save updated dir cache
-	saveDirCache(indexDir, dirCache)
-
 	// A cancelled scan produced a partial index. Do not write or promote it:
-	// the partial set would drop un-walked files from the baseline, and the
-	// next full scan would then report them all as newly created.
+	// the partial set or its mtimes would make the next scan compare against
+	// stale cache state instead of the last complete baseline.
 	if ctx.Err() != nil {
 		return nil
 	}
+
+	// Save updated dir cache
+	saveDirCache(indexDir, dirCache)
 
 	// Write current index (atomic)
 	writeIndex(currentPath, currentEntries)
@@ -286,6 +289,12 @@ func groupEntriesByUploadDir(entries []string) map[string][]string {
 // If forceFullScan is true, all directories are re-scanned regardless of mtime.
 func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[string][]string, forceFullScan bool) []string {
 	var entries []string
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	homeDirs, err := GetScanHomeDirs(ctx)
 	if err != nil {
@@ -317,6 +326,9 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		}
 		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
+			if ctx.Err() != nil {
+				return entries
+			}
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
@@ -326,6 +338,9 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 				}
 				// Also track sensitive dirs for addon domains
 				for _, subDir := range []string{"languages", "upgrade", "mu-plugins"} {
+					if ctx.Err() != nil {
+						return entries
+					}
 					sensitiveDir := filepath.Join(homeDir, sd.Name(), "wp-content", subDir)
 					if info, err := osFS.Stat(sensitiveDir); err == nil && info.IsDir() {
 						sensitiveWPDirs = append(sensitiveWPDirs, sensitiveDir)
@@ -335,23 +350,35 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		}
 
 		for _, uploadsDir := range uploadDirs {
-			scanDirForPHP(uploadsDir, 6, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
+			if ctx.Err() != nil {
+				return entries
+			}
+			scanDirForPHPContext(ctx, uploadsDir, 6, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
 		}
 
 		// Scan sensitive WP directories for any PHP files
 		for _, sensitiveDir := range sensitiveWPDirs {
-			scanDirForPHP(sensitiveDir, 4, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
+			if ctx.Err() != nil {
+				return entries
+			}
+			scanDirForPHPContext(ctx, sensitiveDir, 4, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
 		}
 
 		// Scan .config for executables
 		configDir := filepath.Join(homeDir, ".config")
-		scanDirForExecutables(configDir, 3, dirCache, prevByDir, forceFullScan, &entries)
+		if ctx.Err() != nil {
+			return entries
+		}
+		scanDirForExecutablesContext(ctx, configDir, 3, dirCache, prevByDir, forceFullScan, &entries)
 	}
 
 	if AccountFromContext(ctx) == "" {
 		// Scan tmp dirs
 		for _, tmpDir := range []string{"/tmp", "/dev/shm", "/var/tmp"} {
-			scanDirForSuspiciousExt(tmpDir, 2, dirCache, prevByDir, forceFullScan, &entries)
+			if ctx.Err() != nil {
+				return entries
+			}
+			scanDirForSuspiciousExtContext(ctx, tmpDir, 2, dirCache, prevByDir, forceFullScan, &entries)
 		}
 	}
 
@@ -362,15 +389,26 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 // scanDirForPHP recursively reads directories for PHP-executable files.
 // If directory mtime is unchanged, carries forward previous entries.
 func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
-	if maxDepth <= 0 {
+	scanDirForPHPContext(context.Background(), dir, maxDepth, cache, prev, forceFullScan, overlay, entries)
+}
+
+func scanDirForPHPContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
+	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
 
 	if htaccess, err := osFS.ReadFile(filepath.Join(dir, ".htaccess")); err == nil {
 		overlay = overlay.mergeHtaccess(htaccess)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 
-	if !dirChanged(dir, cache, forceFullScan || overlay.active()) {
+	changed := dirChanged(dir, cache, forceFullScan || overlay.active())
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed {
 		// Carry forward previous entries for this directory
 		*entries = append(*entries, prev[dir]...)
 		return
@@ -382,11 +420,14 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 	}
 
 	for _, entry := range dirEntries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
 		if entry.IsDir() {
-			scanDirForPHP(fullPath, maxDepth-1, cache, prev, forceFullScan, overlay, entries)
+			scanDirForPHPContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, overlay, entries)
 			continue
 		}
 
@@ -405,10 +446,18 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 
 // scanDirForExecutables reads .config dirs for executable files.
 func scanDirForExecutables(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
-	if maxDepth <= 0 {
+	scanDirForExecutablesContext(context.Background(), dir, maxDepth, cache, prev, forceFullScan, entries)
+}
+
+func scanDirForExecutablesContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
+	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
-	if !dirChanged(dir, cache, forceFullScan) {
+	changed := dirChanged(dir, cache, forceFullScan)
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
@@ -419,9 +468,12 @@ func scanDirForExecutables(dir string, maxDepth int, cache dirMtimeCache, prev m
 	}
 
 	for _, entry := range dirEntries {
+		if ctx.Err() != nil {
+			return
+		}
 		fullPath := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
-			scanDirForExecutables(fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
+			scanDirForExecutablesContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
 			continue
 		}
 		info, err := entry.Info()
@@ -436,10 +488,18 @@ func scanDirForExecutables(dir string, maxDepth int, cache dirMtimeCache, prev m
 
 // scanDirForSuspiciousExt reads tmp dirs for files with suspicious extensions.
 func scanDirForSuspiciousExt(dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
-	if maxDepth <= 0 {
+	scanDirForSuspiciousExtContext(context.Background(), dir, maxDepth, cache, prev, forceFullScan, entries)
+}
+
+func scanDirForSuspiciousExtContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
+	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
-	if !dirChanged(dir, cache, forceFullScan) {
+	changed := dirChanged(dir, cache, forceFullScan)
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
@@ -450,10 +510,13 @@ func scanDirForSuspiciousExt(dir string, maxDepth int, cache dirMtimeCache, prev
 	}
 
 	for _, entry := range dirEntries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 		if entry.IsDir() {
-			scanDirForSuspiciousExt(fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
+			scanDirForSuspiciousExtContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
 			continue
 		}
 		ext := filepath.Ext(strings.ToLower(name))
