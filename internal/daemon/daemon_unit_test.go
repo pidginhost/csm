@@ -725,6 +725,64 @@ func TestLogWatcher_ReadNewLines_SameInodeRewriteResetsOffset(t *testing.T) {
 	}
 }
 
+func TestLogWatcher_ReadNewLines_MissingMarkerResetsOffset(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	initial := "old content\n"
+	if err := os.WriteFile(tmp, []byte(initial), 0644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+	w := &LogWatcher{
+		path:    tmp,
+		cfg:     &config.Config{},
+		handler: handler,
+		alertCh: alertCh,
+		file:    f,
+		offset:  int64(len(initial)),
+		fileID:  fileID(before),
+	}
+	defer w.Stop()
+
+	replacement := "new content\n"
+	if len(replacement) != len(initial) {
+		t.Fatal("test replacement must stay the same size as the initial log")
+	}
+	if writeErr := os.WriteFile(tmp, []byte(replacement), 0644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	after, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeID, afterID := fileID(before), fileID(after)
+	if beforeID.known && afterID.known && !beforeID.same(afterID) {
+		t.Fatal("test setup replaced the file instead of rewriting the same inode")
+	}
+
+	w.readNewLines()
+
+	select {
+	case finding := <-alertCh:
+		if finding.Message != strings.TrimSuffix(replacement, "\n") {
+			t.Fatalf("got %q, want full rewritten line", finding.Message)
+		}
+	default:
+		t.Fatal("markerless non-zero offset skipped rewritten same-size content")
+	}
+}
+
 func TestLogWatcher_Reopen_UnknownPreviousIdentityUsesOffsetMarker(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "test.log")
 	if err := os.WriteFile(tmp, []byte("old line\n"), 0644); err != nil {
@@ -864,13 +922,42 @@ func TestReadOffsetMarker_PartialReadReportsNotOK(t *testing.T) {
 	defer f.Close()
 
 	// Offset past EOF simulates the file shrinking between Seek and ReadAt.
-	if _, ok := readOffsetMarker(f, 100); ok {
-		t.Fatal("partial marker read must report ok=false")
+	if _, ok, markerErr := readOffsetMarker(f, 100); ok || markerErr != nil {
+		t.Fatalf("partial marker read ok=%v err=%v, want ok=false err=nil", ok, markerErr)
 	}
 
-	marker, ok := readOffsetMarker(f, 10)
-	if !ok || string(marker) != "0123456789" {
-		t.Fatalf("full marker read = %q ok=%v, want full content ok=true", marker, ok)
+	marker, ok, markerErr := readOffsetMarker(f, 10)
+	if markerErr != nil || !ok || string(marker) != "0123456789" {
+		t.Fatalf("full marker read = %q ok=%v err=%v, want full content ok=true", marker, ok, markerErr)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, markerErr := readOffsetMarker(f, 10); ok || markerErr == nil {
+		t.Fatalf("closed file marker read ok=%v err=%v, want ok=false err!=nil", ok, markerErr)
+	}
+}
+
+func TestLogWatcher_RefreshOffsetMarkerClearsStaleMarker(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("0123456789"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	w := &LogWatcher{
+		file:   f,
+		offset: 100,
+		marker: []byte("stale"),
+	}
+	w.refreshOffsetMarker()
+	if w.marker != nil {
+		t.Fatalf("stale marker after partial marker refresh = %q, want nil", w.marker)
 	}
 }
 

@@ -67,9 +67,9 @@ func (id logFileID) same(other logFileID) bool {
 	return id.known && other.known && id.dev == other.dev && id.ino == other.ino
 }
 
-func readOffsetMarker(f *os.File, offset int64) ([]byte, bool) {
+func readOffsetMarker(f *os.File, offset int64) ([]byte, bool, error) {
 	if f == nil || offset <= 0 {
-		return nil, true
+		return nil, true, nil
 	}
 	n := int64(logWatcherOffsetMarkerBytes)
 	if offset < n {
@@ -78,9 +78,9 @@ func readOffsetMarker(f *os.File, offset int64) ([]byte, bool) {
 	buf := make([]byte, n)
 	read, err := f.ReadAt(buf, offset-n)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, false
+		return nil, false, err
 	}
-	return buf[:read], read == len(buf)
+	return buf[:read], read == len(buf), nil
 }
 
 // NewLogWatcher creates a watcher for a log file.
@@ -104,12 +104,16 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		return nil, err
 	}
 
-	marker, markerOK := readOffsetMarker(f, offset)
+	marker, markerOK, err := readOffsetMarker(f, offset)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("read offset marker for %s: %w", path, err)
+	}
 	if !markerOK {
 		// The file rotated or shrank between Seek and ReadAt. Start without a
 		// marker rather than fail: a constructor error would disable this
-		// watcher until daemon restart, while readNewLines/reopen re-establish
-		// the marker on the next tick.
+		// watcher until daemon restart, while readNewLines treats the saved
+		// position as untrusted and reads from the beginning on the next tick.
 		marker = nil
 	}
 	return &LogWatcher{
@@ -331,18 +335,23 @@ func (w *LogWatcher) reopen() {
 }
 
 func (w *LogWatcher) offsetMarkerMatches(f *os.File) bool {
-	if w.offset == 0 || len(w.marker) == 0 {
+	if w.offset == 0 {
 		return true
 	}
-	marker, ok := readOffsetMarker(f, w.offset)
-	return ok && bytes.Equal(marker, w.marker)
+	if len(w.marker) == 0 {
+		return false
+	}
+	marker, ok, err := readOffsetMarker(f, w.offset)
+	return err == nil && ok && bytes.Equal(marker, w.marker)
 }
 
 func (w *LogWatcher) refreshOffsetMarker() {
-	marker, ok := readOffsetMarker(w.file, w.offset)
-	if ok {
-		w.marker = marker
+	marker, ok, err := readOffsetMarker(w.file, w.offset)
+	if err != nil || !ok {
+		w.marker = nil
+		return
 	}
+	w.marker = marker
 }
 
 // --- Log line handlers ---
