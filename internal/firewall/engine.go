@@ -1757,14 +1757,30 @@ func (e *Engine) UnblockIP(ip string) error {
 		return err
 	}
 
+	// Remove from state BEFORE the kernel delete: a crash between the two
+	// must converge to the operator's intent (unblocked) on the next Apply,
+	// not silently re-block the IP from a stale state row. On kernel failure
+	// the prior state is restored so the entry stays visible for a retry.
+	priorState := e.loadStateFile()
+	nextState := copyFirewallState(priorState)
+	removeBlockedIPFromState(&nextState, ip)
+	if err := e.saveState(&nextState); err != nil {
+		return fmt.Errorf("persisting unblock for %s: %w", ip, err)
+	}
+
 	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("removing from blocked set: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("removing from blocked set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	e.removeBlockedState(ip)
 	AppendAudit(e.statePath, "unblock", ip, "", "", 0)
 
 	return nil
@@ -2032,37 +2048,47 @@ func (e *Engine) CleanExpiredAllows() int {
 		for _, entry := range active {
 			activeIPs[entry.IP] = true
 		}
-		queueFailed := false
+		queueFailedIPs := make(map[string]bool)
 		queuedDeletes := false
 		for ip := range expiredIPs {
 			if !activeIPs[ip] {
 				if set, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6); err == nil {
 					if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
 						logNftSetOpErr("CleanExpiredAllows remove", ip, err)
-						queueFailed = true
+						queueFailedIPs[ip] = true
 					} else {
 						queuedDeletes = true
 					}
 				}
 			}
 		}
-		if queueFailed {
-			if queuedDeletes {
-				if err := e.conn.Flush(); err != nil {
-					fmt.Fprintf(os.Stderr, "firewall: nft flush after failed expired-allow cleanup failed: %v\n", err)
-				}
+		if queuedDeletes {
+			if err := e.conn.Flush(); err != nil {
+				// The netlink batch is atomic: a failed flush applied nothing,
+				// so keep every expired row in state and retry next tick.
+				fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-allow cleanup failed: %v\n", err)
+				return 0
 			}
-			return 0
 		}
-		if err := e.conn.Flush(); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-allow cleanup failed: %v\n", err)
-			return 0 // don't update state; will retry on next tick
+		// Drop state rows whose kernel element was removed (or had none to
+		// remove). Rows whose queue op failed stay in state so the next tick
+		// retries the kernel delete instead of wedging forever: the previous
+		// all-or-nothing handling kept already-flushed deletes in state, and
+		// re-deleting their missing elements failed every following tick.
+		dropped := make([]AllowedEntry, 0, len(expired))
+		for _, entry := range expired {
+			if queueFailedIPs[entry.IP] {
+				active = append(active, entry)
+				continue
+			}
+			dropped = append(dropped, entry)
 		}
 		state.Allowed = active
 		_ = e.saveState(&state)
-		for _, entry := range expired {
+		for _, entry := range dropped {
 			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
 		}
+		return len(dropped)
 	}
 	return removed
 }
@@ -2080,7 +2106,7 @@ func (e *Engine) CleanExpiredSubnets() int {
 	var active []SubnetEntry
 	var expired []SubnetEntry
 	removed := 0
-	queueFailed := false
+	queueFailedCIDRs := make(map[string]bool)
 	queuedDeletes := false
 
 	for _, entry := range state.BlockedNet {
@@ -2090,7 +2116,7 @@ func (e *Engine) CleanExpiredSubnets() int {
 					if elements := intervalSetElements(start, end); len(elements) > 0 {
 						if err := e.conn.SetDeleteElements(set, elements); err != nil {
 							logNftSetOpErr("CleanExpiredSubnets remove", entry.CIDR, err)
-							queueFailed = true
+							queueFailedCIDRs[entry.CIDR] = true
 						} else {
 							queuedDeletes = true
 						}
@@ -2105,23 +2131,30 @@ func (e *Engine) CleanExpiredSubnets() int {
 	}
 
 	if removed > 0 {
-		if queueFailed {
-			if queuedDeletes {
-				if err := e.conn.Flush(); err != nil {
-					fmt.Fprintf(os.Stderr, "firewall: nft flush after failed expired-subnet cleanup failed: %v\n", err)
-				}
+		if queuedDeletes {
+			if err := e.conn.Flush(); err != nil {
+				// The netlink batch is atomic: a failed flush applied nothing,
+				// so keep every expired row in state and retry next tick.
+				fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-subnet cleanup failed: %v\n", err)
+				return 0
 			}
-			return 0
 		}
-		if err := e.conn.Flush(); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-subnet cleanup failed: %v\n", err)
-			return 0
+		// Keep queue-failed rows in state for a retry next tick; drop the
+		// rest. See CleanExpiredAllows for the wedge this avoids.
+		dropped := make([]SubnetEntry, 0, len(expired))
+		for _, entry := range expired {
+			if queueFailedCIDRs[entry.CIDR] {
+				active = append(active, entry)
+				continue
+			}
+			dropped = append(dropped, entry)
 		}
 		state.BlockedNet = active
 		_ = e.saveState(&state)
-		for _, entry := range expired {
+		for _, entry := range dropped {
 			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
 		}
+		return len(dropped)
 	}
 	return removed
 }
@@ -2329,12 +2362,6 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	if len(elements) == 0 {
 		return fmt.Errorf("CIDR has no safe interval end: %s", network.String())
 	}
-	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
-		return fmt.Errorf("adding to blocked_nets: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
-	}
 
 	entry := SubnetEntry{
 		CIDR:      network.String(),
@@ -2345,7 +2372,31 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	if timeout > 0 {
 		entry.ExpiresAt = time.Now().Add(timeout)
 	}
-	e.saveSubnetEntry(entry)
+
+	// Persist to state BEFORE the kernel add, mirroring blockIPLocked: state
+	// seeds the next Apply, so a crash between the kernel add and a later
+	// state write would otherwise leave a kernel block that silently
+	// disappears on restart. On kernel failure the prior state is restored.
+	priorState := e.loadStateFile()
+	nextState := copyFirewallState(priorState)
+	nextState.BlockedNet = append(nextState.BlockedNet, entry)
+	if err := e.saveState(&nextState); err != nil {
+		return fmt.Errorf("persisting subnet block for %s: %w", network.String(), err)
+	}
+
+	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("adding to blocked_nets: %w (state restore failed: %v)", err, restoreErr)
+		}
+		return fmt.Errorf("adding to blocked_nets: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+		}
+		return fmt.Errorf("flushing: %w", err)
+	}
+
 	AppendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
 	return nil
 }

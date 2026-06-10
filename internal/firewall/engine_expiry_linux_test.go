@@ -133,6 +133,30 @@ func TestCleanExpiredAllowsQueueErrorKeepsState(t *testing.T) {
 	}
 }
 
+// An expired allow whose address family has no kernel set (IPv6 with v6
+// disabled) has nothing to delete from the kernel; the state row must still
+// be dropped instead of surviving every cleanup tick forever.
+func TestCleanExpiredAllowsDropsRowWithoutKernelSet(t *testing.T) {
+	e := &Engine{
+		conn:      &nftables.Conn{},
+		statePath: t.TempDir(),
+		cfg:       &FirewallConfig{},
+	}
+	writeRawFirewallState(t, e, FirewallState{
+		Allowed: []AllowedEntry{
+			{IP: "2001:db8::5", Reason: "expired v6", Source: SourceCLI, ExpiresAt: time.Now().Add(-time.Hour)},
+		},
+	})
+
+	if removed := e.CleanExpiredAllows(); removed != 1 {
+		t.Fatalf("CleanExpiredAllows removed %d, want 1", removed)
+	}
+	state := readRawFirewallState(t, e)
+	if len(state.Allowed) != 0 {
+		t.Fatalf("expired allow without kernel set survived cleanup: %+v", state.Allowed)
+	}
+}
+
 func TestCleanExpiredSubnetsUsesRawState(t *testing.T) {
 	e := &Engine{
 		conn:      &nftables.Conn{},

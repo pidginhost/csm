@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Subnet blocks and IP unblocks now persist their state change before touching the kernel, so a crash between the two can no longer leave a kernel block that silently disappears on restart or re-block an IP the operator just unblocked.
+- Expired temporary allows and subnet blocks whose kernel cleanup partially fails are now retried entry by entry instead of wedging the whole cleanup until the daemon restarts.
 - Config saves, integrity hash updates, default-config deployment, config migration, and firewall profile restore now write through atomic renames. The legacy config symlink is preserved and adjacent scratch files are left alone.
 - The email AV spool watcher no longer leaks scanner workers and file descriptors when its kernel event-loop setup fails: workers now start only after the event loop is ready, so daemon shutdown cannot hang on them.
 - The email AV spool watcher now retries restart setup with a fresh instance after setup failures, avoiding reuse of a stopped watcher.

@@ -86,6 +86,48 @@ func TestEngineBlockSubnetRejectsSaturatedCIDRBeforeNetlink(t *testing.T) {
 	}
 }
 
+// BlockSubnet persists state before the kernel add (state seeds the next
+// Apply); on a kernel failure the un-applied row must be rolled back so
+// state never advertises a block the kernel does not enforce.
+func TestBlockSubnetRollsBackStateOnKernelQueueFailure(t *testing.T) {
+	e := newTestEngine(t)
+	e.conn = &nftables.Conn{}
+	e.setBlockedNet = anonymousIPv4Set("blocked_nets")
+
+	err := e.BlockSubnet("198.51.100.0/24", "spray", time.Hour)
+	if err == nil {
+		t.Fatal("BlockSubnet must fail when the kernel add cannot be queued")
+	}
+	state := e.loadStateFile()
+	if len(state.BlockedNet) != 0 {
+		t.Fatalf("state kept un-applied subnet block after kernel failure: %+v", state.BlockedNet)
+	}
+}
+
+// UnblockIP removes the state row before the kernel delete; a kernel failure
+// must restore it so the operator still sees the block and can retry.
+func TestUnblockIPRestoresStateOnKernelQueueFailure(t *testing.T) {
+	e := newTestEngine(t)
+	e.conn = &nftables.Conn{}
+	e.setBlocked = anonymousIPv4Set("blocked_ips")
+	if err := e.saveBlockedEntry(BlockedEntry{
+		IP:        "203.0.113.9",
+		Reason:    "test",
+		BlockedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.UnblockIP("203.0.113.9")
+	if err == nil {
+		t.Fatal("UnblockIP must fail when the kernel delete cannot be queued")
+	}
+	state := e.loadStateFile()
+	if len(state.Blocked) != 1 || state.Blocked[0].IP != "203.0.113.9" {
+		t.Fatalf("blocked entry must be restored after failed kernel delete: %+v", state.Blocked)
+	}
+}
+
 func TestEngineIsSubnetBlockedUsesCanonicalCIDR(t *testing.T) {
 	e := newTestEngine(t)
 
