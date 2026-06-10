@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Filtering the history view by an older date range is now much faster on hosts with large history, because the query seeks to the end of the range instead of scanning back over every newer entry first.
+
 - Deleting a quarantined email now verifies the target is a real quarantine entry first, so a bad message id can no longer remove an unrelated directory under the quarantine root.
 
 - Mail-provider deferral text captured from remote servers is now truncated on a character boundary, so a multi-byte character at the limit can no longer be stored as corrupt text.

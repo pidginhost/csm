@@ -144,11 +144,26 @@ func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity i
 		b := tx.Bucket([]byte("history"))
 		c := b.Cursor()
 
-		// Start from the end (newest) and iterate backward.
-		for k, v := c.Last(); k != nil; k, v = c.Prev() {
+		// Seek to the first key past the upper bound, then step back so the
+		// descending walk starts at the newest in-range entry. Without this the
+		// loop walked (and skipped) every entry newer than `to`, which is O(N)
+		// of the whole bucket when querying an old range on a large history.
+		k, v := c.Last()
+		if toPrefix != "" {
+			if sk, _ := c.Seek([]byte(toPrefix)); sk != nil {
+				// Seek lands on the first key >= toPrefix (out of range);
+				// the previous key is the newest in-range entry.
+				k, v = c.Prev()
+			} else {
+				// All keys are below toPrefix; Last() is already in range.
+				k, v = c.Last()
+			}
+		}
+
+		for ; k != nil; k, v = c.Prev() {
 			key := string(k)
 
-			// Time-range: if key is above toPrefix, skip it.
+			// Defensive: anything still above the upper bound is out of range.
 			if toPrefix != "" && key > toPrefix {
 				continue
 			}

@@ -282,6 +282,36 @@ func TestReadHistoryFilteredByDateRange(t *testing.T) {
 	}
 }
 
+// Querying an old date range when much newer history exists must return only
+// the in-range entries (and skip everything after the upper bound), so the
+// upper-bound seek must not drop or include the wrong rows.
+func TestReadHistoryFilteredUpperBoundExcludesNewer(t *testing.T) {
+	db := openTestDB(t)
+	day1 := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 1, 2, 9, 0, 0, 0, time.UTC)
+	day9 := time.Date(2026, 1, 9, 9, 0, 0, 0, time.UTC)
+	writeFindings(t, db, []alert.Finding{
+		{Timestamp: day1, Severity: alert.High, Check: "d1"},
+		{Timestamp: day2, Severity: alert.High, Check: "d2"},
+		{Timestamp: day9, Severity: alert.High, Check: "d9"},
+	})
+
+	results, matched := db.ReadHistoryFiltered(10, 0, "", "2026-01-02", -1, "")
+	if matched != 2 {
+		t.Fatalf("matched = %d, want 2 (d1, d2; d9 is after the upper bound)", matched)
+	}
+	for _, r := range results {
+		if r.Check == "d9" {
+			t.Fatalf("entry after upper bound leaked into results: %q", r.Check)
+		}
+	}
+
+	// Newest-first ordering preserved.
+	if len(results) == 2 && results[0].Check != "d2" {
+		t.Fatalf("expected newest-first (d2 then d1), got %q first", results[0].Check)
+	}
+}
+
 func TestReadHistoryFilteredPagination(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()
