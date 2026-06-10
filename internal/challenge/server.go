@@ -621,12 +621,24 @@ func (s *Server) extractIP(r *http.Request) string {
 			for i := len(parts) - 1; i >= 0; i-- {
 				ip := strings.TrimSpace(parts[i])
 				if net.ParseIP(ip) != nil {
-					return ip
+					return canonicalIP(ip)
 				}
 			}
 		}
 	}
-	return peerIP
+	return canonicalIP(peerIP)
+}
+
+// canonicalIP normalizes an IP string so downstream exact-match lookups (the
+// firewall's blocked-IP index) agree on one form. A dual-stack listener
+// reports an IPv4 peer as "::ffff:1.2.3.4"; net.IP.String collapses that to
+// the plain IPv4 form the firewall stores. Non-parseable input is returned
+// unchanged.
+func canonicalIP(ip string) string {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		return parsed.String()
+	}
+	return ip
 }
 
 func generateNonce() string {

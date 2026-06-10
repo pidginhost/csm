@@ -1804,8 +1804,20 @@ func (e *Engine) IsBlocked(ip string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ensureStateCacheLocked()
-	_, ok := e.blockedIPIndex[ip]
-	return ok
+	if _, ok := e.blockedIPIndex[ip]; ok {
+		return true
+	}
+	// The index is keyed by canonical form (blockIPLocked stores
+	// net.ParseIP(ip).String()). A caller passing a non-canonical form -- an
+	// IPv4-mapped IPv6 like "::ffff:1.2.3.4" from a dual-stack listener --
+	// would otherwise miss the block. Retry with the canonical form.
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if canon := parsed.String(); canon != ip {
+			_, ok := e.blockedIPIndex[canon]
+			return ok
+		}
+	}
+	return false
 }
 
 // IsBlockedLive queries the live nftables set, not the in-memory cache built

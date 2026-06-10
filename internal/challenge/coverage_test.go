@@ -584,6 +584,18 @@ func TestExtractIPTrustedProxyBogusXFFFallsBackToRemote(t *testing.T) {
 	}
 }
 
+// A dual-stack listener reports an IPv4 peer as an IPv4-mapped IPv6 address
+// ("::ffff:1.2.3.4"). extractIP must canonicalize it to the plain IPv4 form
+// so a block stored as "1.2.3.4" is matched, not bypassed.
+func TestExtractIPCanonicalizesIPv4MappedIPv6(t *testing.T) {
+	s := New(baseCfg(), nil, nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "[::ffff:203.0.113.10]:1234"
+	if got := s.extractIP(req); got != "203.0.113.10" {
+		t.Errorf("got %q, want canonical 203.0.113.10", got)
+	}
+}
+
 func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
 	// Safety-contract test: handleChallenge interpolates extractIP's return
 	// value into an HTML response via fmt.Fprintf (see the #nosec G705 on
