@@ -78,6 +78,46 @@ integrity:
 	}
 }
 
+func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "etc", "csm.yaml")
+	link := filepath.Join(dir, "opt", "csm.yaml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("hostname: prod\nintegrity:\n  binary_hash: \"sha256:old\"\n  config_hash: \"sha256:old\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	configHash, _, err := SignConfigFilePreserving(link, "", "sha256:newbin")
+	if err != nil {
+		t.Fatalf("SignConfigFilePreserving: %v", err)
+	}
+	if configHash == "" {
+		t.Fatal("config hash is empty")
+	}
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("config symlink was replaced, want symlink preserved")
+	}
+	final, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(final), "binary_hash: sha256:newbin") {
+		t.Fatalf("target config was not signed through symlink:\n%s", final)
+	}
+}
+
 func TestSignAndSavePreservingRejectsDrift(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "csm.yaml")

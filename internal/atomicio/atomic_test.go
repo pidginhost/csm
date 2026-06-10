@@ -92,6 +92,28 @@ func TestAtomicWrite_RoundTripAndMode(t *testing.T) {
 	}
 }
 
+func TestAtomicWrite_LeavesSiblingTmpFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw.yaml")
+	tmp := path + ".tmp"
+	tmpBody := []byte("operator scratch\n")
+	if err := os.WriteFile(tmp, tmpBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AtomicWrite(path, 0o600, []byte("key: value\n")); err != nil {
+		t.Fatalf("AtomicWrite: %v", err)
+	}
+
+	got, err := os.ReadFile(tmp)
+	if err != nil {
+		t.Fatalf("read sibling tmp: %v", err)
+	}
+	if string(got) != string(tmpBody) {
+		t.Fatalf("sibling tmp = %q, want %q", got, tmpBody)
+	}
+}
+
 // A replaced destination must come from a rename, never an in-place
 // truncate+write: a crash mid-write would otherwise leave a torn file.
 func TestAtomicWrite_ReplacesViaRename(t *testing.T) {

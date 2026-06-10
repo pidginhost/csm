@@ -64,6 +64,24 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp into %s: %w", path, err)
 	}
+	if err := syncParentDir(filepath.Dir(targetPath)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncParentDir(dir string) error {
+	parent, err := os.Open(dir) // #nosec G304 -- dir is derived from caller-owned target path.
+	if err != nil {
+		return fmt.Errorf("open parent dir %s: %w", dir, err)
+	}
+	if err := parent.Sync(); err != nil {
+		_ = parent.Close()
+		return fmt.Errorf("fsync parent dir %s: %w", dir, err)
+	}
+	if err := parent.Close(); err != nil {
+		return fmt.Errorf("close parent dir %s: %w", dir, err)
+	}
 	return nil
 }
 

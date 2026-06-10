@@ -455,7 +455,7 @@ backdoor_ports:
   - 55555
   - 31337
 `
-	return os.WriteFile(path, []byte(content), 0600)
+	return writeFileAtomic(path, []byte(content), 0600)
 }
 
 func deploySystemdTimer() error {

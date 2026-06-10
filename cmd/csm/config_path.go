@@ -207,8 +207,7 @@ func copyFilePreserveMeta(src, dst string) error {
 		return err
 	}
 	mode := info.Mode().Perm()
-	// #nosec G306 G703 -- dst is a package-constant config path; mode preserved from src.
-	if err := os.WriteFile(dst, data, mode); err != nil {
+	if err := writeFileAtomic(dst, data, mode); err != nil {
 		return fmt.Errorf("writing %s: %w", dst, err)
 	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {

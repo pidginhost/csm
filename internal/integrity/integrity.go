@@ -133,7 +133,11 @@ func SignAndSaveAtomic(cfg *config.Config, binaryHash string) error {
 // same filesystem (which is why the temp is created in the target's
 // dir, not /tmp). Permission is applied before the rename.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
+	targetPath, err := atomicWriteTarget(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(targetPath)
 	tmp, err := os.CreateTemp(dir, ".csm-cfg-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
@@ -162,9 +166,46 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 		cleanup()
 		return fmt.Errorf("close temp: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, targetPath); err != nil {
 		cleanup()
 		return fmt.Errorf("rename: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func atomicWriteTarget(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("stat config path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve config symlink: %w", err)
+	}
+	return resolved, nil
+}
+
+func syncDirectory(dir string) error {
+	// #nosec G304 -- dir is derived from the caller-owned config path.
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open dir: %w", err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("fsync dir: %w", err)
+	}
+	if err := d.Close(); err != nil {
+		return fmt.Errorf("close dir: %w", err)
 	}
 	return nil
 }

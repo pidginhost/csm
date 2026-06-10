@@ -26,17 +26,21 @@ func AtomicWriteJSON(path string, perm os.FileMode, v any) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return AtomicWrite(path, perm, data)
+	legacyTmp := path + ".tmp"
+	if removeErr := os.Remove(legacyTmp); removeErr != nil && !os.IsNotExist(removeErr) {
+		return fmt.Errorf("remove stale tmp: %w", removeErr)
+	}
+	return atomicWrite(path, perm, data)
 }
 
 // AtomicWrite writes already-serialized bytes to path atomically with the
 // same write-tmp, fsync, rename, dir-fsync sequence as AtomicWriteJSON.
 func AtomicWrite(path string, perm os.FileMode, data []byte) error {
+	return atomicWrite(path, perm, data)
+}
+
+func atomicWrite(path string, perm os.FileMode, data []byte) error {
 	dir := filepath.Dir(path)
-	legacyTmp := path + ".tmp"
-	if removeErr := os.Remove(legacyTmp); removeErr != nil && !os.IsNotExist(removeErr) {
-		return fmt.Errorf("remove stale tmp: %w", removeErr)
-	}
 	// #nosec G304 -- caller owns the destination path; tmp lives in
 	// the same operator-owned state directory.
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")

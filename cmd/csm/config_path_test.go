@@ -134,6 +134,35 @@ func TestMigrateDefaultConfigPathsRejectsDifferentOperatorConfigs(t *testing.T) 
 	}
 }
 
+func TestCopyFilePreserveMetaReplacesDestinationAtomically(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "hostname: SET_HOSTNAME_HERE\n")
+	writeConfig(t, legacy, "hostname: prod\n")
+	if err := os.Chmod(legacy, 0o640); err != nil {
+		t.Fatalf("chmod legacy: %v", err)
+	}
+	before, err := os.Stat(preferred)
+	if err != nil {
+		t.Fatalf("stat preferred before: %v", err)
+	}
+
+	if copyErr := copyFilePreserveMeta(legacy, preferred); copyErr != nil {
+		t.Fatalf("copyFilePreserveMeta: %v", copyErr)
+	}
+
+	after, err := os.Stat(preferred)
+	if err != nil {
+		t.Fatalf("stat preferred after: %v", err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("preferred config was rewritten in place, want rename")
+	}
+	if got := after.Mode().Perm(); got != 0o640 {
+		t.Fatalf("preferred mode = %o, want 0640", got)
+	}
+	assertFileContent(t, preferred, "hostname: prod\n")
+}
+
 func testConfigPaths(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()

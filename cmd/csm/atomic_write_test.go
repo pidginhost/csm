@@ -36,8 +36,12 @@ func TestWriteFileAtomic_OverwritesExisting(t *testing.T) {
 	if err := os.WriteFile(path, []byte("OLD"), 0640); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := writeFileAtomic(path, []byte("NEW"), 0644); err != nil {
-		t.Fatalf("write: %v", err)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before: %v", err)
+	}
+	if writeErr := writeFileAtomic(path, []byte("NEW"), 0644); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -52,6 +56,9 @@ func TestWriteFileAtomic_OverwritesExisting(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0640 {
 		t.Errorf("mode = %04o, want 0640", info.Mode().Perm())
+	}
+	if os.SameFile(before, info) {
+		t.Fatal("target was rewritten in place, want rename of a new inode")
 	}
 }
 

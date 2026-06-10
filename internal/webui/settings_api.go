@@ -694,7 +694,7 @@ func decodeJSONForYAML(raw json.RawMessage, field *SettingsField) (interface{}, 
 func applyToClone(cfg *config.Config, path []string, raw json.RawMessage) error {
 	v := reflect.ValueOf(cfg).Elem()
 	for i, key := range path {
-		if v.Kind() == reflect.Ptr {
+		if v.Kind() == reflect.Pointer {
 			if v.IsNil() {
 				v.Set(reflect.New(v.Type().Elem()))
 			}

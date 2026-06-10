@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -1969,7 +1970,31 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
+	path, err := saveTargetPath(cfg.ConfigFile)
+	if err != nil {
+		return err
+	}
 	// csm.yaml is the daemon's only config: a truncate-in-place write torn
 	// by a crash would block the next daemon start with a parse error.
-	return atomicio.AtomicWrite(cfg.ConfigFile, 0600, data)
+	return atomicio.AtomicWrite(path, 0600, data)
+}
+
+func saveTargetPath(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		return "", fmt.Errorf("checking config path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	// FHS migration leaves the legacy config path as a symlink to the
+	// main config. Save must update the target instead of replacing the link.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving config symlink: %w", err)
+	}
+	return resolved, nil
 }

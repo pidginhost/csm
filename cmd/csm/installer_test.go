@@ -95,8 +95,8 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 
 func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
-	if err := deployDefaultConfig(path); err != nil {
-		t.Fatalf("deployDefaultConfig: %v", err)
+	if deployErr := deployDefaultConfig(path); deployErr != nil {
+		t.Fatalf("deployDefaultConfig: %v", deployErr)
 	}
 
 	data, err := os.ReadFile(path)
@@ -130,5 +130,38 @@ func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	}
 	if cfg.WebUI.MetricsToken != "" {
 		t.Fatalf("WebUI.MetricsToken = %q, want empty placeholder", cfg.WebUI.MetricsToken)
+	}
+}
+
+func TestDeployDefaultConfigReplacesAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("hostname: old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if deployErr := deployDefaultConfig(path); deployErr != nil {
+		t.Fatalf("deployDefaultConfig: %v", deployErr)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("default config was rewritten in place, want rename")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadBytes(data); err != nil {
+		t.Fatalf("LoadBytes generated config: %v", err)
 	}
 }

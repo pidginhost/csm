@@ -91,6 +91,44 @@ func TestSaveReplacesConfigAtomically(t *testing.T) {
 	}
 }
 
+func TestSaveFollowsConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "etc", "csm.yaml")
+	link := filepath.Join(dir, "opt", "csm.yaml")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("hostname: old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	cfg := &Config{ConfigFile: link, Hostname: "via-link"}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("Save replaced the config symlink, want symlink preserved")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "via-link") {
+		t.Fatalf("target config was not updated through symlink:\n%s", data)
+	}
+}
+
 func TestSaveFailsOnUnwritablePath(t *testing.T) {
 	cfg := &Config{ConfigFile: "/nonexistent/dir/csm.yaml", Hostname: "h"}
 	if err := Save(cfg); err == nil {

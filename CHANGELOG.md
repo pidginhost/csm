@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Saving the main config now writes atomically (write-temp, fsync, rename), so a crash or power loss mid-save can no longer leave a truncated csm.yaml that blocks the next daemon start.
+- Config saves, integrity hash updates, default-config deployment, config migration, and firewall profile restore now write through atomic renames. The legacy config symlink is preserved and adjacent scratch files are left alone.
 - The email AV spool watcher no longer leaks scanner workers and file descriptors when its kernel event-loop setup fails: workers now start only after the event loop is ready, so daemon shutdown cannot hang on them.
 - The email AV spool watcher now retries restart setup with a fresh instance after setup failures, avoiding reuse of a stopped watcher.
 - Log watchers no longer lose unread lines around periodic reopen, replacement-file rotation, or in-place truncate/regrow rotation. Failed reopens also recover cleanly when the log path returns.
