@@ -679,6 +679,97 @@ func TestLogWatcher_Reopen_SameFileKeepsOffset(t *testing.T) {
 	}
 }
 
+func TestLogWatcher_ReadNewLines_SameInodeRewriteResetsOffset(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("old line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	replacement := "replacement line after truncate and regrow\n"
+	if writeErr := os.WriteFile(tmp, []byte(replacement), 0644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	after, err := os.Stat(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeID, afterID := fileID(before), fileID(after)
+	if beforeID.known && afterID.known && !beforeID.same(afterID) {
+		t.Fatal("test setup replaced the file instead of rewriting the same inode")
+	}
+
+	w.readNewLines()
+
+	select {
+	case finding := <-alertCh:
+		if finding.Message != strings.TrimSuffix(replacement, "\n") {
+			t.Fatalf("got %q, want full rewritten line", finding.Message)
+		}
+	default:
+		t.Fatal("rewritten same-inode log content was lost")
+	}
+}
+
+func TestLogWatcher_Reopen_UnknownPreviousIdentityUsesOffsetMarker(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("old line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	// Simulate a prior Stat_t miss: the watcher still has its saved offset
+	// marker, but no trusted file identity to compare against.
+	w.fileID = logFileID{}
+
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	replacement := "replacement line larger than the old offset\n"
+	if err := os.WriteFile(tmp, []byte(replacement), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w.reopen()
+	if w.offset != 0 {
+		t.Fatalf("offset after replacement with unknown prior identity = %d, want 0", w.offset)
+	}
+
+	w.readNewLines()
+	select {
+	case finding := <-alertCh:
+		if finding.Message != strings.TrimSuffix(replacement, "\n") {
+			t.Fatalf("got %q, want replacement file content", finding.Message)
+		}
+	default:
+		t.Fatal("replacement file content was lost with unknown prior identity")
+	}
+}
+
 func TestLogWatcher_Reopen_RotatedLargerFile(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "test.log")
 	if err := os.WriteFile(tmp, []byte("short\n"), 0644); err != nil {
@@ -696,7 +787,7 @@ func TestLogWatcher_Reopen_RotatedLargerFile(t *testing.T) {
 	}
 	defer w.Stop()
 
-	// Rotation by rename+create: new inode, larger than the old offset.
+	// Rotation by rename+create: new file identity, larger than the old offset.
 	if err := os.Remove(tmp); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +797,7 @@ func TestLogWatcher_Reopen_RotatedLargerFile(t *testing.T) {
 
 	w.reopen()
 	if w.offset != 0 {
-		t.Fatalf("offset after rotation to new inode = %d, want 0", w.offset)
+		t.Fatalf("offset after rotation to new file = %d, want 0", w.offset)
 	}
 
 	w.readNewLines()

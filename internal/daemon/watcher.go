@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 const (
 	recentOutgoingMailHoldWindow = 2 * time.Hour
 	logWatcherMaxLineBytes       = 256 * 1024
+	logWatcherOffsetMarkerBytes  = 256
 )
 
 // LogLineHandler parses a log line and returns findings (if any).
@@ -36,17 +38,49 @@ type LogWatcher struct {
 	alertCh   chan<- alert.Finding
 	file      *os.File
 	offset    int64
-	ino       uint64
+	fileID    logFileID
+	marker    []byte
 	closeOnce sync.Once
 }
 
-// fileIno returns the inode number for rotation detection, or 0 when the
-// platform's Stat does not expose one.
-func fileIno(info os.FileInfo) uint64 {
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Ino) // #nosec G115 -- inode numbers are non-negative
+type logFileID struct {
+	dev   uint64
+	ino   uint64
+	known bool
+}
+
+func fileID(info os.FileInfo) logFileID {
+	if info == nil {
+		return logFileID{}
 	}
-	return 0
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return logFileID{
+			dev:   uint64(st.Dev), // #nosec G115 -- device IDs are non-negative on supported Unix hosts
+			ino:   uint64(st.Ino), // #nosec G115 -- inode numbers are non-negative
+			known: st.Dev != 0 || st.Ino != 0,
+		}
+	}
+	return logFileID{}
+}
+
+func (id logFileID) same(other logFileID) bool {
+	return id.known && other.known && id.dev == other.dev && id.ino == other.ino
+}
+
+func readOffsetMarker(f *os.File, offset int64) ([]byte, bool) {
+	if f == nil || offset <= 0 {
+		return nil, true
+	}
+	n := int64(logWatcherOffsetMarkerBytes)
+	if offset < n {
+		n = offset
+	}
+	buf := make([]byte, n)
+	read, err := f.ReadAt(buf, offset-n)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return buf[:read], read == len(buf)
 }
 
 // NewLogWatcher creates a watcher for a log file.
@@ -64,11 +98,17 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		return nil, err
 	}
 
-	var ino uint64
-	if info, statErr := f.Stat(); statErr == nil {
-		ino = fileIno(info)
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
 	}
 
+	marker, markerOK := readOffsetMarker(f, offset)
+	if !markerOK {
+		_ = f.Close()
+		return nil, fmt.Errorf("read offset marker for %s", path)
+	}
 	return &LogWatcher{
 		path:    path,
 		cfg:     cfg,
@@ -76,7 +116,8 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		alertCh: alertCh,
 		file:    f,
 		offset:  offset,
-		ino:     ino,
+		fileID:  fileID(info),
+		marker:  marker,
 	}, nil
 }
 
@@ -155,6 +196,11 @@ func (w *LogWatcher) readNewLines() {
 		return
 	}
 
+	if !w.offsetMarkerMatches(w.file) {
+		w.offset = 0
+		w.marker = nil
+	}
+
 	// No new data
 	if info.Size() == w.offset {
 		return
@@ -203,6 +249,7 @@ func (w *LogWatcher) readNewLines() {
 	newOffset, err := w.file.Seek(0, io.SeekCurrent)
 	if err == nil {
 		w.offset = newOffset
+		w.refreshOffsetMarker()
 	}
 }
 
@@ -255,19 +302,44 @@ func (w *LogWatcher) reopen() {
 	}
 
 	w.file = f
-	ino := fileIno(info)
+	id := fileID(info)
 	switch {
-	case ino != 0 && w.ino != 0 && ino != w.ino:
-		// Rotated by rename+create: new inode, read the new file from the
-		// start regardless of its size.
+	case w.fileID.known && id.known && !w.fileID.same(id):
+		// Rotated by rename+create: new file, read from the start regardless
+		// of its size.
 		w.offset = 0
 	case info.Size() < w.offset:
 		// Truncated in place (copytruncate rotation).
 		w.offset = 0
+	case !w.offsetMarkerMatches(f):
+		// The saved offset now points into different content. This catches a
+		// truncate-and-regrow between polling ticks and cheap inode reuse.
+		w.offset = 0
 	}
-	// Same inode, size >= offset: keep w.offset so lines written since the
-	// last read tick are not skipped. readNewLines seeks before every read.
-	w.ino = ino
+	if w.offset == 0 {
+		w.marker = nil
+	} else {
+		w.refreshOffsetMarker()
+	}
+	// Same file, size >= offset, matching marker: keep w.offset so lines
+	// written since the last read tick are not skipped. readNewLines seeks
+	// before every read.
+	w.fileID = id
+}
+
+func (w *LogWatcher) offsetMarkerMatches(f *os.File) bool {
+	if w.offset == 0 || len(w.marker) == 0 {
+		return true
+	}
+	marker, ok := readOffsetMarker(f, w.offset)
+	return ok && bytes.Equal(marker, w.marker)
+}
+
+func (w *LogWatcher) refreshOffsetMarker() {
+	marker, ok := readOffsetMarker(w.file, w.offset)
+	if ok {
+		w.marker = marker
+	}
 }
 
 // --- Log line handlers ---
