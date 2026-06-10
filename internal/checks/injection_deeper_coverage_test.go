@@ -288,6 +288,7 @@ func TestCheckWebmailLoginsSuppressed(t *testing.T) {
 }
 
 func TestCheckWebmailLoginsBruteForce(t *testing.T) {
+	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 15; i++ {
 		lines = append(lines, fmt.Sprintf(
@@ -413,6 +414,7 @@ func TestCheckWebmailLoginsGETNotCounted(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckAPIAuthFailures401AndJSON(t *testing.T) {
+	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 12; i++ {
 		lines = append(lines, `203.0.113.5 - - [12/Apr/2026:10:00:00 +0000] "GET /json-api/listaccts HTTP/1.1" 401 50`)
@@ -440,6 +442,7 @@ func TestCheckAPIAuthFailures401AndJSON(t *testing.T) {
 }
 
 func TestCheckAPIAuthFailures403Execute(t *testing.T) {
+	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 11; i++ {
 		lines = append(lines, `198.51.100.1 - - [12/Apr/2026:10:00:00 +0000] "GET /execute/Email/list_pops HTTP/1.1" 403 50`)
@@ -467,6 +470,7 @@ func TestCheckAPIAuthFailures403Execute(t *testing.T) {
 }
 
 func TestCheckAPIAuthFailuresCpsessEndpoint(t *testing.T) {
+	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 11; i++ {
 		lines = append(lines, `203.0.113.9 - - [12/Apr/2026:10:00:00 +0000] "GET /cpsess1234/something HTTP/1.1" 401 50`)
@@ -1498,6 +1502,7 @@ func TestMakeAccountBackdoorCheckNoMatches(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckWebmailLoginsAuthKeyword(t *testing.T) {
+	forceCPanelPlatform(t)
 	var lines []string
 	for i := 0; i < 12; i++ {
 		lines = append(lines, `203.0.113.77 - - [12/Apr/2026:10:00:00 +0000] "POST /auth/check?port=2095 HTTP/1.1" 200 1234`)

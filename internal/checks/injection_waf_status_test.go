@@ -342,3 +342,13 @@ func TestCheckWAFStatusModsecAssembleRetryStillAlertsWhenTrulyEmpty(t *testing.T
 // Helpers for taking address of constants for Overrides.
 func ptrPanel(p platform.Panel) *platform.Panel             { return &p }
 func ptrWebServer(w platform.WebServer) *platform.WebServer { return &w }
+
+// forceCPanelPlatform makes platform.Detect() report cPanel for the duration
+// of a test. cPanel-only checks (webmail / WHM-API access-log parsing) gate
+// on this, so tests exercising them must declare the platform explicitly.
+func forceCPanelPlatform(t *testing.T) {
+	t.Helper()
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: ptrPanel(platform.PanelCPanel)})
+}

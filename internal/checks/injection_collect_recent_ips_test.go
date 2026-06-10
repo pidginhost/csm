@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // writeMockLog stores `content` at path `name` inside a temp dir and
@@ -42,6 +43,9 @@ func TestCollectRecentIPsSSHLogins(t *testing.T) {
 }
 
 func TestCollectRecentIPsEximSMTPAuthFailure(t *testing.T) {
+	// The exim log is parsed only on cPanel hosts (that is where this path
+	// and exim layout live), so the test must declare the platform.
+	forceCPanelPlatform(t)
 	// Real exim lines: the first bracketed group in the line is the
 	// client IP, which is what extractBracketedIP picks up.
 	content := "2026-04-14 10:00:00 H=client [198.51.100.9]:1234 F=<spam@x> rejected RCPT <victim@host>: relay not permitted\n" +
@@ -93,6 +97,11 @@ func TestCollectRecentIPsSkipsInfraIPs(t *testing.T) {
 }
 
 func TestCollectRecentIPsWebAccessLogPreferred(t *testing.T) {
+	// Web access logs come from platform.Detect().AccessLogPaths; declare the
+	// path the test serves so detection points the check at it.
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{AccessLogPaths: []string{"/usr/local/apache/logs/access_log"}})
 	// Apache access log with a real Combined Log Format line.
 	content := "203.0.113.42 - - [14/Apr/2026:10:00:00 +0000] \"GET /index.php HTTP/1.1\" 200 1234 \"-\" \"-\"\n"
 	withMockOS(t, writeMockLog(t, "/usr/local/apache/logs/access_log", content))

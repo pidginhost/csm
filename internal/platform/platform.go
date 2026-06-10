@@ -96,6 +96,15 @@ func (i Info) MailLogPath() string {
 	return "/var/log/maillog"
 }
 
+// AuthLogPath returns the platform-default SSH/PAM auth log file.
+// Debian-family uses /var/log/auth.log; RHEL-family uses /var/log/secure.
+func (i Info) AuthLogPath() string {
+	if i.IsDebianFamily() {
+		return "/var/log/auth.log"
+	}
+	return "/var/log/secure"
+}
+
 // Overrides lets the operator override auto-detected values from csm.yaml.
 // Any field left blank or nil falls back to the auto-detected value.
 //

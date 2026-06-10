@@ -477,6 +477,11 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 	if cfg.Suppressions.SuppressWebmail {
 		return nil
 	}
+	// Webmail ports and this log are cPanel-specific; on other panels the
+	// path does not exist and the check would silently return nothing.
+	if !platform.Detect().IsCPanel() {
+		return nil
+	}
 
 	var findings []alert.Finding
 
@@ -521,6 +526,11 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 
 // CheckAPIAuthFailures parses cPanel access log for failed API authentication.
 func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	// The cPanel/WHM API access log is cPanel-specific.
+	if !platform.Detect().IsCPanel() {
+		return nil
+	}
+
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)

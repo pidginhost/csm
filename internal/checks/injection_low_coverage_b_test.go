@@ -1658,6 +1658,7 @@ func TestCollectRecentIPs_SkipsLoopback(t *testing.T) {
 }
 
 func TestCollectRecentIPs_EximAuthFailure(t *testing.T) {
+	forceCPanelPlatform(t) // exim log is parsed only on cPanel hosts
 	eximLog := "2026-04-13 10:00:00 H=host [198.51.100.20] F=<a@b.com> authenticator failed\n"
 	tmpDir := t.TempDir()
 	eximPath := filepath.Join(tmpDir, "exim_mainlog")

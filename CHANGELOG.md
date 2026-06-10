@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- IP-reputation collection now reads the SSH, web, and mail logs through platform detection instead of hardcoded cPanel/RHEL paths, so it works on Ubuntu/Nginx and other supported hosts; cPanel-only sources (WHM access log, exim) and the webmail/WHM-API brute-force checks are gated to cPanel rather than silently scanning missing files.
 - Webhook alert delivery now drains chunked and connection-close responses before closing, so the keepalive connection is reused instead of forcing a fresh TLS handshake per finding when firing many per-finding webhooks.
 - YARA rule downloads now cap the decompressed size of the rules file and install it through an atomic, fsynced write, so a zip-bomb or torn write during a rule update cannot OOM or corrupt the daemon's ruleset.
 - The live audit-log AF_ALG listener now caps its partial-line buffer, so a truncated or never-terminated audit record can no longer grow daemon memory without bound.

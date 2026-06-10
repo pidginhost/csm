@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/threatintel"
@@ -370,9 +371,11 @@ func abuseQuotaReady(sdb *store.DB, now time.Time) bool {
 // Returns map of IP → source description (e.g. "SSH login", "Dovecot IMAP auth failure").
 func collectRecentIPs(cfg *config.Config) map[string]string {
 	ips := make(map[string]string)
+	info := platform.Detect()
 
-	// SSH logins
-	for _, line := range tailFile("/var/log/secure", 50) {
+	// SSH logins. Path differs by OS family (secure vs auth.log); the old
+	// hardcoded /var/log/secure made this loop dead on Debian/Ubuntu.
+	for _, line := range tailFile(info.AuthLogPath(), 50) {
 		if !strings.Contains(line, "Accepted") {
 			continue
 		}
@@ -381,20 +384,9 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		}
 	}
 
-	// cPanel access log
-	for _, line := range tailFile("/usr/local/cpanel/logs/access_log", 100) {
-		if ip := firstField(line); ip != "" {
-			addIfNotInfra(ips, ip, "cPanel/WHM access", cfg)
-		}
-	}
-
-	// Web server access log (LiteSpeed/Apache)
-	webLogPaths := []string{
-		"/usr/local/apache/logs/access_log",
-		"/var/log/apache2/access_log",
-		"/etc/apache2/logs/access_log",
-	}
-	for _, path := range webLogPaths {
+	// Web server access logs, platform-detected (Apache/Nginx/LiteSpeed +
+	// per-vhost domlogs). Replaces the cPanel/Apache-only hardcoded list.
+	for _, path := range info.AccessLogPaths {
 		lines := tailFile(path, 100)
 		if len(lines) == 0 {
 			continue
@@ -407,20 +399,28 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		break
 	}
 
-	// Exim log - SMTP auth failures
-	for _, line := range tailFile("/var/log/exim_mainlog", 50) {
-		if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
-			if ip := extractBracketedIP(line); ip != "" {
-				addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
+	// Dovecot - IMAP/POP3 auth failures.
+	for _, line := range tailFile(info.MailLogPath(), 50) {
+		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
+			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+				addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
 			}
 		}
 	}
 
-	// Dovecot - IMAP/POP3 auth failures
-	for _, line := range tailFile("/var/log/maillog", 50) {
-		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
-			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
-				addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
+	if info.IsCPanel() {
+		// cPanel/WHM access log.
+		for _, line := range tailFile("/usr/local/cpanel/logs/access_log", 100) {
+			if ip := firstField(line); ip != "" {
+				addIfNotInfra(ips, ip, "cPanel/WHM access", cfg)
+			}
+		}
+		// Exim log - SMTP auth failures (cPanel ships exim with this path).
+		for _, line := range tailFile("/var/log/exim_mainlog", 50) {
+			if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
+				if ip := extractBracketedIP(line); ip != "" {
+					addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
+				}
 			}
 		}
 	}
