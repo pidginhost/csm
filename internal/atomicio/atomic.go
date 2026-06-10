@@ -26,6 +26,12 @@ func AtomicWriteJSON(path string, perm os.FileMode, v any) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+	return AtomicWrite(path, perm, data)
+}
+
+// AtomicWrite writes already-serialized bytes to path atomically with the
+// same write-tmp, fsync, rename, dir-fsync sequence as AtomicWriteJSON.
+func AtomicWrite(path string, perm os.FileMode, data []byte) error {
 	dir := filepath.Dir(path)
 	legacyTmp := path + ".tmp"
 	if removeErr := os.Remove(legacyTmp); removeErr != nil && !os.IsNotExist(removeErr) {

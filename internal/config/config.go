@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
@@ -1968,5 +1969,7 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	return os.WriteFile(cfg.ConfigFile, data, 0600)
+	// csm.yaml is the daemon's only config: a truncate-in-place write torn
+	// by a crash would block the next daemon start with a parse error.
+	return atomicio.AtomicWrite(cfg.ConfigFile, 0600, data)
 }

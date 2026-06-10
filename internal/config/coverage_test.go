@@ -64,6 +64,33 @@ func TestSaveRoundTripsConfig(t *testing.T) {
 	}
 }
 
+// Save must replace the config via rename, not truncate-in-place: csm.yaml
+// is the daemon's only config, and a torn write would block the next start.
+func TestSaveReplacesConfigAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	cfg := &Config{ConfigFile: path, Hostname: "h1"}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Hostname = "h2"
+	if serr := Save(cfg); serr != nil {
+		t.Fatalf("Save: %v", serr)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("Save rewrote csm.yaml in place, want atomic rename")
+	}
+}
+
 func TestSaveFailsOnUnwritablePath(t *testing.T) {
 	cfg := &Config{ConfigFile: "/nonexistent/dir/csm.yaml", Hostname: "h"}
 	if err := Save(cfg); err == nil {

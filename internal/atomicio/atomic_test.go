@@ -69,6 +69,53 @@ func TestAtomicWriteJSON_ReplacesStaleTmpWithRequestedMode(t *testing.T) {
 	}
 }
 
+func TestAtomicWrite_RoundTripAndMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw.yaml")
+	want := []byte("key: value\n")
+	if err := AtomicWrite(path, 0o600, want); err != nil {
+		t.Fatalf("AtomicWrite: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0o600", mode)
+	}
+}
+
+// A replaced destination must come from a rename, never an in-place
+// truncate+write: a crash mid-write would otherwise leave a torn file.
+func TestAtomicWrite_ReplacesViaRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw.yaml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if werr := AtomicWrite(path, 0o600, []byte("new")); werr != nil {
+		t.Fatal(werr)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("destination was rewritten in place, want rename of a new inode")
+	}
+}
+
 func TestAtomicWriteJSON_MarshalError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
