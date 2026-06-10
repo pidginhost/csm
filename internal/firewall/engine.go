@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -1775,6 +1776,12 @@ func (e *Engine) UnblockIP(ip string) error {
 		return fmt.Errorf("removing from blocked set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
+		if isNftNotFound(err) {
+			// The delete target already disappeared from nft, so the
+			// persisted unblock is the only remaining state to keep.
+			AppendAudit(e.statePath, "unblock", ip, "", "", 0)
+			return nil
+		}
 		if restoreErr := e.saveState(&priorState); restoreErr != nil {
 			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
 		}
@@ -1947,41 +1954,16 @@ func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {
 // AllowIP adds an IP to the allowed set and persists it.
 // If the IP is currently blocked, the block is removed first.
 func (e *Engine) AllowIP(ip string, reason string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	blockedSet, blockedKey, _ := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
-	allowedSet, allowedKey, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
-	if err != nil {
-		return err
-	}
-
-	// Remove from blocked set + add to allowed set in same batch
-	if blockedSet != nil {
-		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
-			logNftSetOpErr("AllowIP remove from blocked", ip, err)
-			return fmt.Errorf("removing from blocked set: %w", err)
-		}
-	}
-	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
-		return fmt.Errorf("adding to allowed set: %w", err)
-	}
-	if err := e.conn.Flush(); err != nil {
-		return fmt.Errorf("flushing: %w", err)
-	}
-
-	// State mutations only after successful flush
-	e.removeBlockedState(ip)
-	entry := AllowedEntry{IP: ip, Reason: reason, Source: InferProvenance("allow", reason)}
-	e.saveAllowedEntry(entry)
-	AppendAudit(e.statePath, "allow", ip, reason, entry.Source, 0)
-
-	return nil
+	return e.allowIP(ip, reason, 0, "allow")
 }
 
 // TempAllowIP adds a temporary allow with expiry. Uses the same allowed set
 // but tracks expiry in state - CleanExpiredAllows removes them periodically.
 func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) error {
+	return e.allowIP(ip, reason, timeout, "temp_allow")
+}
+
+func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1990,28 +1972,76 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 	if err != nil {
 		return err
 	}
+	if allowedSet == nil {
+		return fmt.Errorf("allowed set unavailable for %s", ip)
+	}
+
+	entry := AllowedEntry{IP: ip, Reason: reason, Source: InferProvenance(action, reason)}
+	if action == "temp_allow" && timeout > 0 {
+		entry.ExpiresAt = time.Now().Add(timeout)
+	}
+
+	priorState := e.loadStateFile()
+	nextState := copyFirewallState(priorState)
+	removeBlockedIPFromState(&nextState, ip)
+	upsertAllowedEntryInState(&nextState, entry)
+	if err := e.saveState(&nextState); err != nil {
+		return fmt.Errorf("persisting %s for %s: %w", action, ip, err)
+	}
 
 	if blockedSet != nil {
 		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
-			logNftSetOpErr("TempAllowIP remove from blocked", ip, err)
+			if restoreErr := e.saveState(&priorState); restoreErr != nil {
+				return fmt.Errorf("removing from blocked set: %w (state restore failed: %v)", err, restoreErr)
+			}
+			logNftSetOpErr(action+" remove from blocked", ip, err)
 			return fmt.Errorf("removing from blocked set: %w", err)
 		}
 	}
 	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("adding to allowed set: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("adding to allowed set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
+		retryErr := e.retryAllowAfterBenignFlushError(blockedSet, blockedKey, allowedSet, allowedKey, err)
+		if retryErr == nil {
+			AppendAudit(e.statePath, action, ip, reason, entry.Source, timeout)
+			return nil
+		}
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+		}
+		if isNftNotFound(err) {
+			return fmt.Errorf("flushing: %w (retry failed: %v)", err, retryErr)
+		}
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	e.removeBlockedState(ip)
-	entry := AllowedEntry{IP: ip, Reason: reason, Source: InferProvenance("temp_allow", reason)}
-	if timeout > 0 {
-		entry.ExpiresAt = time.Now().Add(timeout)
-	}
-	e.saveAllowedEntry(entry)
-	AppendAudit(e.statePath, "temp_allow", ip, reason, entry.Source, timeout)
+	AppendAudit(e.statePath, action, ip, reason, entry.Source, timeout)
 
+	return nil
+}
+
+func (e *Engine) retryAllowAfterBenignFlushError(blockedSet *nftables.Set, blockedKey []byte, allowedSet *nftables.Set, allowedKey []byte, flushErr error) error {
+	if !isNftNotFound(flushErr) {
+		return flushErr
+	}
+	if blockedSet != nil {
+		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
+			return fmt.Errorf("retry removing from blocked set: %w", err)
+		}
+		if err := e.conn.Flush(); err != nil && !isNftNotFound(err) {
+			return fmt.Errorf("retry flushing blocked delete: %w", err)
+		}
+	}
+	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
+		return fmt.Errorf("retry adding to allowed set: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("retry flushing allowed add: %w", err)
+	}
 	return nil
 }
 
@@ -2379,7 +2409,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	// disappears on restart. On kernel failure the prior state is restored.
 	priorState := e.loadStateFile()
 	nextState := copyFirewallState(priorState)
-	nextState.BlockedNet = append(nextState.BlockedNet, entry)
+	addSubnetEntryIfMissingInState(&nextState, entry)
 	if err := e.saveState(&nextState); err != nil {
 		return fmt.Errorf("persisting subnet block for %s: %w", network.String(), err)
 	}
@@ -3130,6 +3160,30 @@ func removeBlockedIPFromState(state *FirewallState, ip string) {
 	state.Blocked = remaining
 }
 
+func upsertAllowedEntryInState(state *FirewallState, entry AllowedEntry) {
+	for i, existing := range state.Allowed {
+		if existing.IP == entry.IP && existing.Source == entry.Source {
+			state.Allowed[i] = entry
+			return
+		}
+	}
+	state.Allowed = append(state.Allowed, entry)
+}
+
+func addSubnetEntryIfMissingInState(state *FirewallState, entry SubnetEntry) bool {
+	for _, existing := range state.BlockedNet {
+		if existing.CIDR == entry.CIDR {
+			return false
+		}
+	}
+	state.BlockedNet = append(state.BlockedNet, entry)
+	return true
+}
+
+func isNftNotFound(err error) bool {
+	return errors.Is(err, syscall.ENOENT)
+}
+
 func (e *Engine) restoreBlockStateAfterFailureLocked(state FirewallState, ip string) error {
 	if err := e.saveState(&state); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: restore state after failed block for %s failed: %v\n", ip, err)
@@ -3224,12 +3278,9 @@ func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
 		entry.Source = InferProvenance("block_subnet", entry.Reason)
 	}
 	state := e.loadStateFile()
-	for _, existing := range state.BlockedNet {
-		if existing.CIDR == entry.CIDR {
-			return
-		}
+	if !addSubnetEntryIfMissingInState(&state, entry) {
+		return
 	}
-	state.BlockedNet = append(state.BlockedNet, entry)
 	_ = e.saveState(&state)
 }
 

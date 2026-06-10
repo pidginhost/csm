@@ -210,6 +210,7 @@ func TestAllowMethodsReturnBlockedDeleteQueueError(t *testing.T) {
 				statePath:  t.TempDir(),
 				cfg:        &FirewallConfig{},
 				setBlocked: anonymousIPv4Set("blocked_ips"),
+				setAllowed: anonymousIPv4Set("allowed_ips"),
 			}
 			_ = e.saveBlockedEntry(BlockedEntry{
 				IP:        "10.0.0.44",
@@ -220,6 +221,9 @@ func TestAllowMethodsReturnBlockedDeleteQueueError(t *testing.T) {
 			err := tc.call(e)
 			if err == nil || !strings.Contains(err.Error(), "removing from blocked set") {
 				t.Fatalf("%s error = %v, want blocked-delete error", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), "anonymous sets cannot be updated") {
+				t.Fatalf("%s error = %v, want anonymous-set update error", tc.name, err)
 			}
 
 			state := readRawFirewallState(t, e)
