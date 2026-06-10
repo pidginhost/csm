@@ -108,9 +108,10 @@ const phpContentTailSize = 64 << 10 // 64 KiB tail window
 
 // readPHPContentWindows returns the bytes to analyse for a PHP file: the
 // first phpContentReadSize bytes, plus the last phpContentTailSize bytes when
-// the file is larger than the head window (joined with a newline so patterns
-// are not spliced across the gap). readOK is false only on a real read error.
-func readPHPContentWindows(f io.ReaderAt, size int64) (head, tail []byte, readOK bool) {
+// the file is larger than the head window. tailOffset is -1 when tail is empty.
+// readOK is false only on a real read error.
+func readPHPContentWindows(f io.ReaderAt, size int64) (head, tail []byte, tailOffset int64, readOK bool) {
+	tailOffset = -1
 	headLen := int64(phpContentReadSize)
 	if size >= 0 && size < headLen {
 		headLen = size
@@ -118,7 +119,7 @@ func readPHPContentWindows(f io.ReaderAt, size int64) (head, tail []byte, readOK
 	headBuf := make([]byte, headLen)
 	n, err := f.ReadAt(headBuf, 0)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, nil, false
+		return nil, nil, -1, false
 	}
 	head = headBuf[:n]
 
@@ -134,12 +135,28 @@ func readPHPContentWindows(f io.ReaderAt, size int64) (head, tail []byte, readOK
 			tailBuf := make([]byte, tailLen)
 			tn, terr := f.ReadAt(tailBuf, off)
 			if terr != nil && !errors.Is(terr, io.EOF) {
-				return nil, nil, false
+				return nil, nil, -1, false
 			}
 			tail = tailBuf[:tn]
+			tailOffset = off
 		}
 	}
-	return head, tail, true
+	return head, tail, tailOffset, true
+}
+
+func combinePHPContentWindows(head, tail []byte) []byte {
+	if len(tail) == 0 {
+		return head
+	}
+	capacity := len(head) + len(tail)
+	raw := make([]byte, 0, capacity)
+	raw = append(raw, head...)
+	raw = append(raw, tail...)
+	return raw
+}
+
+func phpCodeOnlyWindows(head, tail []byte) string {
+	return phpCodeOnly(string(combinePHPContentWindows(head, tail)))
 }
 
 func hasBacktickSuperglobal(code string) bool {
@@ -1343,12 +1360,13 @@ func phpContentReadable(path string) bool {
 }
 
 type phpAnalysisResult struct {
-	severity alert.Severity
-	check    string
-	message  string
-	details  string
-	readOK   bool
-	empty    bool
+	severity   alert.Severity
+	check      string
+	message    string
+	details    string
+	indicators []string
+	readOK     bool
+	empty      bool
 }
 
 // analyzePHPContent reads a PHP file's head window (and tail window for large
@@ -1364,18 +1382,38 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	if info, statErr := f.Stat(); statErr == nil {
 		size = info.Size()
 	}
-	head, tail, readOK := readPHPContentWindows(f, size)
+	head, tail, tailOffset, readOK := readPHPContentWindows(f, size)
 	if !readOK {
 		return phpAnalysisResult{severity: -1, readOK: false}
 	}
 	if len(head) == 0 && len(tail) == 0 {
 		return phpAnalysisResult{severity: -1, readOK: true, empty: true}
 	}
-	raw := head
-	if len(tail) > 0 {
-		raw = append(append(append([]byte(nil), head...), '\n'), tail...)
+	if len(tail) > 0 && tailOffset > int64(len(head)) {
+		// The skipped bytes may close a quote or comment that starts in the
+		// head. Score windows independently so head parser state cannot hide
+		// executable tail code we did read.
+		return mergePHPAnalysisResults(
+			analyzePHPCode(path, phpCodeOnly(string(head)), readOK),
+			analyzePHPCode(path, phpCodeOnly("<?php\n"+string(tail)), readOK),
+		)
 	}
-	content := phpCodeOnly(string(raw))
+	return analyzePHPCode(path, phpCodeOnlyWindows(head, tail), readOK)
+}
+
+func mergePHPAnalysisResults(results ...phpAnalysisResult) phpAnalysisResult {
+	readOK := true
+	var indicators []string
+	for _, result := range results {
+		readOK = readOK && result.readOK
+		if result.severity >= 0 {
+			indicators = append(indicators, result.indicators...)
+		}
+	}
+	return phpAnalysisFromIndicators(indicators, readOK)
+}
+
+func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	contentLower := strings.ToLower(content)
 
 	var indicators []string
@@ -1701,10 +1739,14 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 
 	// --- Determine severity based on indicators ---
+	return phpAnalysisFromIndicators(indicators, readOK)
+}
+
+func phpAnalysisFromIndicators(indicators []string, readOK bool) phpAnalysisResult {
+	indicators = dedupePHPIndicators(indicators)
 	if len(indicators) == 0 {
 		return phpAnalysisResult{severity: -1, readOK: readOK}
 	}
-
 	// Auto-quarantine in autoresponse.AutoQuarantineFiles acts only on
 	// Critical findings. A single heuristic indicator has false-positive
 	// classes severe enough to rm live production files (WPML's PHPZip
@@ -1716,21 +1758,36 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// in the operator queue.
 	if len(indicators) >= 2 {
 		return phpAnalysisResult{
-			severity: alert.Critical,
-			check:    "obfuscated_php",
-			message:  "Obfuscated/malicious PHP detected",
-			details:  fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
-			readOK:   true,
+			severity:   alert.Critical,
+			check:      "obfuscated_php",
+			message:    "Obfuscated/malicious PHP detected",
+			details:    fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
+			readOK:     readOK,
+			indicators: indicators,
 		}
 	}
 
 	return phpAnalysisResult{
-		severity: alert.High,
-		check:    "suspicious_php_content",
-		message:  "Suspicious PHP content detected",
-		details:  fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
-		readOK:   true,
+		severity:   alert.High,
+		check:      "suspicious_php_content",
+		message:    "Suspicious PHP content detected",
+		details:    fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
+		readOK:     readOK,
+		indicators: indicators,
 	}
+}
+
+func dedupePHPIndicators(indicators []string) []string {
+	seen := make(map[string]struct{}, len(indicators))
+	out := indicators[:0]
+	for _, indicator := range indicators {
+		if _, ok := seen[indicator]; ok {
+			continue
+		}
+		seen[indicator] = struct{}{}
+		out = append(out, indicator)
+	}
+	return out
 }
 
 func countOccurrences(s, substr string) int {

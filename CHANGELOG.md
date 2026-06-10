@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- PHP content analysis now scans a much larger window plus the tail of large files, so a malicious payload can no longer hide behind a wall of benign padding that pushed it past the old fixed read size.
+- PHP content analysis now scans a much larger head window plus the tail of large files, and treats skipped middle content as a hard boundary. Malicious payloads can no longer hide behind padding that pushed them past the old fixed read size.
 - IP-reputation collection now reads the SSH, web, and mail logs through platform detection instead of hardcoded cPanel/RHEL paths, so it works on Ubuntu/Nginx and other supported hosts; cPanel-only sources (WHM access log, exim) and the webmail/WHM-API brute-force checks are gated to cPanel rather than silently scanning missing files.
 - Webhook alert delivery now drains chunked and connection-close responses before closing, so the keepalive connection is reused instead of forcing a fresh TLS handshake per finding when firing many per-finding webhooks.
 - YARA rule downloads now cap the decompressed size of the rules file and install it through an atomic, fsynced write, so a zip-bomb or torn write during a rule update cannot OOM or corrupt the daemon's ruleset.

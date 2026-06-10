@@ -147,7 +147,7 @@ that feed the rollup still drive normal block decisions.
 Beyond standard malware patterns, CSM detects advanced evasion techniques:
 
 - **Fragmented function names**: attackers split `base64_decode` across variables (`$a="base"; $b="64_decode"`) to evade simple string matching
-- **Appended payloads**: malicious code added to the end of large legitimate files, beyond typical scan windows. CSM scans both the first and last 32KB of every PHP file.
+- **Appended payloads**: malicious code added to the end of large legitimate files, beyond typical scan windows. Realtime PHP checks scan the first and last 32KB, and periodic PHP content analysis scans a larger head window plus the tail.
 - **Non-PHP backdoors**: Perl, Python, Bash CGI scripts in web directories (detects toolkits like LEVIATHAN)
 - **SEO spam injection**: gambling/togel dofollow link injection into theme files
 - **WordPress brute force**: real-time access log monitoring for wp-login.php and xmlrpc.php floods (blocks within seconds, not the 10-minute periodic scan)

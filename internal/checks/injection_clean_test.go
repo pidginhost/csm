@@ -414,13 +414,12 @@ func TestShannonEntropyBoundaries(t *testing.T) {
 	}
 }
 
-// An attacker drops a file whose first bytes match a malware signature
-// (analyzePHPContent only reads the first 32 KB) then pads it to many
-// gigabytes. CleanInfectedFile runs as root and previously did
-// io.ReadAll on the whole file, then strings.Split + multiple regex
-// passes, multiplying that into an OOM that kills the daemon. The size
-// guard must refuse to read an oversized file so auto-response falls
-// back to quarantine-by-rename, which never reads content.
+// An attacker drops a file whose scanned windows match a malware signature,
+// then pads it to many gigabytes. CleanInfectedFile runs as root and
+// previously did io.ReadAll on the whole file, then strings.Split + multiple
+// regex passes, multiplying that into an OOM that kills the daemon. The size
+// guard must refuse to read an oversized file so auto-response falls back to
+// quarantine-by-rename, which never reads content.
 func TestCleanInfectedFileRefusesOversizedFile(t *testing.T) {
 	withQuarantineDirT(t, t.TempDir())
 
