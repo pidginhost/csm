@@ -96,6 +96,13 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// Save updated dir cache
 	saveDirCache(indexDir, dirCache)
 
+	// A cancelled scan produced a partial index. Do not write or promote it:
+	// the partial set would drop un-walked files from the baseline, and the
+	// next full scan would then report them all as newly created.
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	// Write current index (atomic)
 	writeIndex(currentPath, currentEntries)
 
@@ -286,6 +293,11 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 	}
 
 	for _, homeEntry := range homeDirs {
+		// A cancelled scan must stop walking and let the caller discard the
+		// partial index rather than promote it as the new baseline.
+		if ctx.Err() != nil {
+			return entries
+		}
 		if !homeEntry.IsDir() {
 			continue
 		}

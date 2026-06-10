@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The new-file index scan is now interruptible and no longer promotes a partial file list as its baseline when a scan is cut short, which would have made every un-walked file look newly created on the next cycle.
+- The YARA worker restart delay no longer grows after successful restarts: a few early crashes used to lock every later restart at the maximum delay even after the worker was healthy again.
+- Email attachment extraction now caps how deeply multipart wrappers can nest: a crafted message can no longer hide attachments under unbounded nesting, and over-deep messages route through the existing partial-extraction policy instead of delivering as if they had no attachments.
 - Forwarder and mail-filter files that first appear after the initial audit now alert as newly added: the first-sight suppression meant a freshly dropped BEC forwarder was never reported, because the next scan already saw an unchanged hash. Pre-existing files at install time stay quiet, account-scoped scans no longer mark the global audit complete, and an unavailable state store is now reported instead of looking like a clean host.
-- Subnet blocks and IP unblocks now persist their state change before touching the kernel, so a crash between the two can no longer leave a kernel block that silently disappears on restart or re-block an IP the operator just unblocked.
+- Subnet blocks, IP unblocks, and IP allows now persist their state change before touching the kernel, so crashes converge to the operator's last firewall action. Unblocking an IP whose kernel element already disappeared now clears stale state instead of forcing repeated retries.
 - Expired temporary allows and subnet blocks whose kernel cleanup partially fails are now retried entry by entry instead of wedging the whole cleanup until the daemon restarts.
 - Config saves, integrity hash updates, default-config deployment, config migration, and firewall profile restore now write through atomic renames. The legacy config symlink is preserved and adjacent scratch files are left alone.
 - The email AV spool watcher no longer leaks scanner workers and file descriptors when its kernel event-loop setup fails: workers now start only after the event loop is ready, so daemon shutdown cannot hang on them.

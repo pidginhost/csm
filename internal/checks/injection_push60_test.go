@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +79,58 @@ func TestCheckFileIndexWithDiff(t *testing.T) {
 	// Second call = detect new files
 	findings := CheckFileIndex(context.Background(), cfg, nil)
 	_ = findings
+}
+
+// A scan cut short by context cancellation walks only part of the tree, so
+// its index is incomplete. Promoting that partial index to the baseline
+// would make every un-walked file look "new" next cycle and flood alerts.
+// The previous baseline must survive a cancelled scan untouched.
+//
+// The mock cancels the context after the first account's uploads dir is
+// read, so the walk reaches the second account already cancelled and
+// returns a partial index that still clears the half-of-previous guard.
+func TestCheckFileIndexCanceledScanDoesNotPromoteBaseline(t *testing.T) {
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	baseline := "/home/alice/public_html/wp-content/uploads/a.php\n" +
+		"/home/bob/public_html/wp-content/uploads/b.php\n"
+	if err := os.WriteFile(previousPath, []byte(baseline), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch {
+			case name == "/home":
+				return []os.DirEntry{
+					testDirEntry{name: "alice", isDir: true},
+					testDirEntry{name: "bob", isDir: true},
+				}, nil
+			case strings.Contains(name, "alice") && strings.HasSuffix(name, "uploads"):
+				// alice's tree walked; cancel before bob is reached.
+				cancel()
+				return []os.DirEntry{testDirEntry{name: "a.php", isDir: false}}, nil
+			case strings.Contains(name, "bob") && strings.HasSuffix(name, "uploads"):
+				return []os.DirEntry{testDirEntry{name: "b.php", isDir: false}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			return fakeFileInfo{name: "test", size: 100}, nil
+		},
+	})
+
+	cfg := &config.Config{StatePath: stateDir}
+	_ = CheckFileIndex(ctx, cfg, nil)
+
+	got, err := os.ReadFile(previousPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != baseline {
+		t.Fatalf("cancelled scan overwrote baseline index:\n got %q\nwant %q", got, baseline)
+	}
 }
 
 // --- CheckFTPLogins with log data ------------------------------------
