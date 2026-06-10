@@ -756,7 +756,14 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 	db := store.Global()
 	if db == nil {
-		return nil
+		// Without the store the whole check is inoperative (hashes and the
+		// throttle live there). Say so instead of looking like a clean host.
+		return []alert.Finding{{
+			Severity:  alert.Warning,
+			Check:     "email_mail_filters",
+			Message:   "Mail filter audit skipped: state store unavailable",
+			Timestamp: time.Now(),
+		}}
 	}
 
 	if !ForceAll {
@@ -801,11 +808,8 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 			continue
 		}
 
-		isNew := false
 		currentHash := sha256Hex(data)
-		if old, found := db.GetForwarderHash("mailfilter:" + path); found && old != currentHash {
-			isNew = true
-		}
+		isNew := forwarderFileIsNew(db, "email:mailfilter_last_refresh", "mailfilter:"+path, currentHash)
 		_ = db.SetForwarderHash("mailfilter:"+path, currentHash)
 
 		mb := mailboxFromFilterPath(path)
@@ -834,7 +838,13 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	if ctx.Err() != nil {
 		return nil
 	}
-	_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
+	// Only a full scan establishes the baseline / refreshes the throttle:
+	// an account-scoped scan hashes one account's files, and marking it
+	// complete would make the next full scan treat every other account's
+	// existing filters as newly created.
+	if AccountFromContext(ctx) == "" {
+		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
+	}
 	return findingsFromPending(collected)
 }
 

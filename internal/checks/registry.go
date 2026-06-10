@@ -209,6 +209,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_filter_exfil", Category: CategoryEmail},
 	{Name: "email_filter_forwarder", Category: CategoryEmail},
 	{Name: "email_filter_pipe", Category: CategoryEmail},
+	{Name: "email_mail_filters", Category: CategoryEmail, Internal: true},
 	{Name: "email_malware", Category: CategoryEmail},
 	{Name: "email_phishing_content", Category: CategoryEmail},
 	{Name: "email_php_relay_abuse", Category: CategoryEmail},

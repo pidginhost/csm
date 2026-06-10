@@ -236,6 +236,21 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	return findings
 }
 
+// forwarderFileIsNew reports whether a forwarder/filter file should be
+// treated as newly added. A stored hash that differs means the file changed.
+// No stored hash means one of two things: before the first complete audit
+// (no baseline marker) it is pre-existing install backlog and stays quiet;
+// after the baseline it genuinely appeared post-audit -- the classic BEC
+// drop the first-sight suppression used to silence forever, because the
+// next scan saw an unchanged hash.
+func forwarderFileIsNew(db *store.DB, baselineKey, hashKey, currentHash string) bool {
+	old, found := db.GetForwarderHash(hashKey)
+	if found {
+		return old != currentHash
+	}
+	return db.GetMetaString(baselineKey) != ""
+}
+
 // auditValiasFile parses a valiases file and returns findings for dangerous entries.
 func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
 	f, err := osFS.Open(path)
@@ -247,18 +262,11 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 	db := store.Global()
 	var findings []alert.Finding
 
-	// Check if file hash changed (for "newly added" context).
-	// On first scan (no prior hash), store baseline but don't mark as new —
-	// only flag as "newly added" when the hash actually changed from a
-	// previously known value. This prevents flooding on fresh installs.
 	isNew := false
 	if db != nil {
 		currentHash, hashErr := fileContentHash(path)
 		if hashErr == nil {
-			oldHash, found := db.GetForwarderHash("valiases:" + domain)
-			if found && oldHash != currentHash {
-				isNew = true // hash changed — genuinely new forwarder
-			}
+			isNew = forwarderFileIsNew(db, "email:fwd_last_refresh", "valiases:"+domain, currentHash)
 			// Always store current hash (establishes baseline on first run)
 			_ = db.SetForwarderHash("valiases:"+domain, currentHash)
 		}
@@ -338,14 +346,11 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 	db := store.Global()
 	content := string(data)
 
-	// Check if file hash changed — same first-run logic as valiases above.
+	// Same newness logic as valiases above.
 	isNew := false
 	if db != nil {
 		currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
-		oldHash, found := db.GetForwarderHash("vfilters:" + domain)
-		if found && oldHash != currentHash {
-			isNew = true
-		}
+		isNew = forwarderFileIsNew(db, "email:fwd_last_refresh", "vfilters:"+domain, currentHash)
 		_ = db.SetForwarderHash("vfilters:"+domain, currentHash)
 	}
 

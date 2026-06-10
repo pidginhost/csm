@@ -217,6 +217,140 @@ func TestCheckForwardersCanceledDuringMtimeRankDoesNotRefreshThrottle(t *testing
 	}
 }
 
+func TestForwarderFileIsNewQuadrants(t *testing.T) {
+	db := withTestStore(t)
+	const baselineKey = "email:fwd_last_refresh"
+	const hashKey = "valiases:quad.test"
+
+	// No stored hash, no baseline: first-install backlog, not new.
+	if forwarderFileIsNew(db, baselineKey, hashKey, "h1") {
+		t.Fatal("file with no hash before baseline must not be new (install flood protection)")
+	}
+
+	// No stored hash, baseline established: file appeared after a complete
+	// audit, genuinely new.
+	if err := db.SetMetaString(baselineKey, "2026-05-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if !forwarderFileIsNew(db, baselineKey, hashKey, "h1") {
+		t.Fatal("file appearing after baseline must be new")
+	}
+
+	// Stored hash matches: unchanged, not new.
+	if err := db.SetForwarderHash(hashKey, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if forwarderFileIsNew(db, baselineKey, hashKey, "h1") {
+		t.Fatal("unchanged file must not be new")
+	}
+
+	// Stored hash differs: changed, new.
+	if !forwarderFileIsNew(db, baselineKey, hashKey, "h2") {
+		t.Fatal("changed file must be new")
+	}
+}
+
+// A valiases file that first appears after a completed audit is a classic
+// BEC indicator (new domain or new forwarder drop) and must alert; the
+// old first-sight suppression silenced it forever because the second scan
+// saw an unchanged hash.
+func TestCheckForwardersFlagsExternalForwarderInNewFileAfterBaseline(t *testing.T) {
+	db := withTestStore(t)
+	if err := db.SetMetaString("email:fwd_last_refresh", "2026-05-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := "/etc/valiases/newdomain.test"
+	content := "victim: attacker@evil.example\n"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		open: func(name string) (*os.File, error) {
+			if name != path {
+				return nil, os.ErrNotExist
+			}
+			tmp := filepath.Join(t.TempDir(), "valias")
+			if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(tmp)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("newdomain.test\n"), nil
+			}
+			if name == path {
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	var hit bool
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" && strings.Contains(f.Message, "newly added") {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("new external forwarder file after baseline produced no finding: %+v", findings)
+	}
+}
+
+// Before the first complete audit, unknown files are install backlog and
+// must stay silent.
+func TestCheckForwardersStaysSilentForUnknownFilesBeforeBaseline(t *testing.T) {
+	withTestStore(t)
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := "/etc/valiases/legacy.test"
+	content := "victim: customer@gmail.example\n"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		open: func(name string) (*os.File, error) {
+			if name != path {
+				return nil, os.ErrNotExist
+			}
+			tmp := filepath.Join(t.TempDir(), "valias")
+			if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(tmp)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("legacy.test\n"), nil
+			}
+			if name == path {
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" {
+			t.Fatalf("pre-baseline file must not alert as new forwarder: %+v", f)
+		}
+	}
+}
+
 func TestCheckForwardersRanksValiasesByMtime(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
