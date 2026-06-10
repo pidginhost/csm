@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,74 @@ func TestExtractMultipartNestedMultipart(t *testing.T) {
 	}
 	if result.Parts[0].Filename != "malware.bin" {
 		t.Errorf("Filename = %q, want malware.bin", result.Parts[0].Filename)
+	}
+}
+
+// A crafted email can nest multipart wrappers arbitrarily deep; recursion
+// must stop at a sane cap and mark the extraction partial instead of
+// recursing once per wrapper. The attachment hidden below the cap is then
+// handled by the partial-extraction policy (tempfail/fail-open), not
+// silently delivered as "no attachments".
+func TestExtractMultipartCapsMimeNestingDepth(t *testing.T) {
+	const depth = 64
+	part := "Content-Type: application/octet-stream\r\n" +
+		"Content-Disposition: attachment; filename=\"payload.bin\"\r\n\r\n" +
+		"DATA\r\n"
+	for i := depth - 1; i >= 1; i-- {
+		bnd := fmt.Sprintf("nest%03d", i)
+		part = "Content-Type: multipart/mixed; boundary=\"" + bnd + "\"\r\n\r\n" +
+			"--" + bnd + "\r\n" + part + "--" + bnd + "--\r\n"
+	}
+	outer := "nest000"
+	body := "--" + outer + "\r\n" + part + "--" + outer + "--\r\n"
+
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="nest000"`, body)
+	result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			os.Remove(p.TempPath)
+		}
+	}()
+
+	if !result.Partial {
+		t.Fatal("64-deep MIME nesting must mark the extraction partial")
+	}
+}
+
+// Legitimate mail commonly nests mixed > alternative > related; a shallow
+// nest must extract normally and not be marked partial.
+func TestExtractMultipartAllowsTypicalNesting(t *testing.T) {
+	inner := "Content-Type: application/octet-stream\r\n" +
+		"Content-Disposition: attachment; filename=\"report.bin\"\r\n\r\n" +
+		"DATA\r\n"
+	part := inner
+	for i := 3; i >= 1; i-- {
+		bnd := fmt.Sprintf("lvl%03d", i)
+		part = "Content-Type: multipart/mixed; boundary=\"" + bnd + "\"\r\n\r\n" +
+			"--" + bnd + "\r\n" + part + "--" + bnd + "--\r\n"
+	}
+	outer := "lvl000"
+	body := "--" + outer + "\r\n" + part + "--" + outer + "--\r\n"
+
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="lvl000"`, body)
+	result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			os.Remove(p.TempPath)
+		}
+	}()
+
+	if result.Partial {
+		t.Fatalf("typical 4-level nesting must not be partial: %s", result.PartialReason)
+	}
+	if len(result.Parts) != 1 || result.Parts[0].Filename != "report.bin" {
+		t.Fatalf("Parts = %+v, want the nested attachment", result.Parts)
 	}
 }
 

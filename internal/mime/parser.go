@@ -337,8 +337,27 @@ func detectDirection(hdrs textproto.MIMEHeader) string {
 	return "inbound"
 }
 
+// maxMIMENestingDepth caps multipart-in-multipart recursion. Legitimate
+// mail rarely nests beyond mixed > alternative > related; a crafted message
+// can nest arbitrarily and would otherwise consume one stack frame per
+// wrapper while hiding attachments below any scanner's patience.
+const maxMIMENestingDepth = 16
+
 // extractMultipart recursively walks MIME parts, extracting attachments.
+// depth counts archive nesting (zip-in-zip), not MIME nesting: an archive
+// attached five multipart levels down is still archive depth 0.
 func extractMultipart(r io.Reader, boundary string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) error {
+	return extractMultipartNested(r, boundary, limits, result, totalSize, depth, 0)
+}
+
+func extractMultipartNested(r io.Reader, boundary string, limits Limits, result *ExtractionResult, totalSize *int64, depth, mimeDepth int) error {
+	if mimeDepth >= maxMIMENestingDepth {
+		result.Partial = true
+		if result.PartialReason == "" {
+			result.PartialReason = "MIME nesting exceeds depth limit"
+		}
+		return nil
+	}
 	mr := multipart.NewReader(r, boundary)
 	for {
 		part, err := mr.NextPart()
@@ -358,7 +377,7 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 		// Recurse into nested multipart
 		if strings.HasPrefix(mediaType, "multipart/") {
 			if b := params["boundary"]; b != "" {
-				if nestedErr := extractMultipart(part, b, limits, result, totalSize, depth); nestedErr != nil {
+				if nestedErr := extractMultipartNested(part, b, limits, result, totalSize, depth, mimeDepth+1); nestedErr != nil {
 					return nestedErr
 				}
 			}
