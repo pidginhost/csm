@@ -335,19 +335,29 @@ func (s *Supervisor) supervise() {
 			return
 		}
 
-		if err := s.spawnAndWaitReady(); err != nil {
+		err := s.spawnAndWaitReady()
+		backoff = nextBackoff(backoff, err != nil, s.cfg.MaxRestartInterval)
+		if err != nil {
 			s.logf("restart failed: %v", err)
-			backoff *= 2
-			if backoff > s.cfg.MaxRestartInterval {
-				backoff = s.cfg.MaxRestartInterval
-			}
-			continue
-		}
-		backoff *= 2
-		if backoff > s.cfg.MaxRestartInterval {
-			backoff = s.cfg.MaxRestartInterval
 		}
 	}
+}
+
+// nextBackoff returns the restart delay to use after a spawn attempt.
+// It grows only on failed spawns: a successful spawn keeps the current
+// delay, and the stability check at the top of the supervise loop is the
+// only thing that resets it. Doubling on success as well locked every
+// restart at MaxRestartInterval after a handful of early crashes, even
+// once the worker was healthy again.
+func nextBackoff(current time.Duration, spawnFailed bool, max time.Duration) time.Duration {
+	if !spawnFailed {
+		return current
+	}
+	next := current * 2
+	if next > max {
+		next = max
+	}
+	return next
 }
 
 // waitForChild blocks until the current worker exits, then returns its

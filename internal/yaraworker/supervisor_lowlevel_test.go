@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/yaraipc"
 )
@@ -65,6 +66,24 @@ func TestRestartWorkerOnNeverStartedErrors(t *testing.T) {
 	}
 	if !errors.Is(rwErr, rwErr) { // smoke check: error value preserved
 		t.Errorf("RestartWorker error: got %v", rwErr)
+	}
+}
+
+// Backoff escalates only on failed spawns. A successful spawn must keep the
+// current delay: the old behavior doubled it after every successful restart
+// too, so a few early crashes locked every later restart at the maximum
+// delay even once the worker was healthy again.
+func TestNextBackoffGrowsOnlyOnFailedSpawns(t *testing.T) {
+	const max = 60 * time.Second
+
+	if got := nextBackoff(time.Second, false, max); got != time.Second {
+		t.Fatalf("successful spawn changed backoff to %v, want unchanged 1s", got)
+	}
+	if got := nextBackoff(time.Second, true, max); got != 2*time.Second {
+		t.Fatalf("failed spawn backoff = %v, want 2s", got)
+	}
+	if got := nextBackoff(40*time.Second, true, max); got != max {
+		t.Fatalf("failed spawn backoff = %v, want capped at %v", got, max)
 	}
 }
 
