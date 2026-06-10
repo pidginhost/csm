@@ -41,11 +41,17 @@ type AFAlgAuditListener struct {
 	path      string
 	inotifyFd int
 	file      *os.File
-	pos       int64
-	leftover  []byte // partial line accumulator across reads
+	pos             int64
+	leftover        []byte // partial line accumulator across reads
+	droppedOversize bool   // mid-drop of a line that overflowed the cap
 
 	eventCount atomic.Uint64 // observed by tests / metrics
 }
+
+// afAlgMaxLeftoverBytes caps the partial-line accumulator. A real auditd
+// SYSCALL record is well under 1 KiB; 64 KiB leaves generous headroom while
+// bounding memory if a record never terminates.
+const afAlgMaxLeftoverBytes = 64 * 1024
 
 // Mode reports the live-monitor backend kind. Matches the BPF path's
 // "bpf-lsm" return so the coordinator and operator-visible logs use a
@@ -247,10 +253,25 @@ func (l *AFAlgAuditListener) feed(chunk []byte) {
 	for {
 		idx := bytes.IndexByte(l.leftover, '\n')
 		if idx < 0 {
+			// No complete line yet. A real audit record fits well under the
+			// cap; an unterminated buffer past it is garbage (truncated write,
+			// binary noise, or an attacker-stretched exe= path). Drop it so the
+			// accumulator cannot grow without bound, and resync at the next
+			// newline.
+			if len(l.leftover) > afAlgMaxLeftoverBytes {
+				l.leftover = l.leftover[:0]
+				l.droppedOversize = true
+			}
 			return
 		}
 		line := l.leftover[:idx]
 		l.leftover = l.leftover[idx+1:]
+		// Skip the remainder of a line whose head was already dropped for
+		// exceeding the cap: it is a partial record, not a parseable line.
+		if l.droppedOversize {
+			l.droppedOversize = false
+			continue
+		}
 		l.handleLine(string(line))
 	}
 }

@@ -212,3 +212,29 @@ func TestAFAlgAuditListener_DropsFindingsWhenChannelFull(t *testing.T) {
 		t.Error("channel should have at least the first finding")
 	}
 }
+
+// A malformed or never-terminated audit record (binary garbage, a write
+// truncated at rotation, or an attacker-influenced long exe= path) must not
+// grow the leftover accumulator without bound. feed caps it and drops the
+// runaway partial line instead of buffering toward OOM.
+func TestAFAlgFeedCapsUnterminatedLeftover(t *testing.T) {
+	l := &AFAlgAuditListener{alertCh: make(chan alert.Finding, 1)}
+
+	// 4 MiB with no newline: far past any real audit record.
+	huge := make([]byte, 4*1024*1024)
+	for i := range huge {
+		huge[i] = 'A'
+	}
+	l.feed(huge)
+
+	if len(l.leftover) > afAlgMaxLeftoverBytes {
+		t.Fatalf("leftover = %d bytes, want <= %d (cap not enforced)", len(l.leftover), afAlgMaxLeftoverBytes)
+	}
+
+	// After dropping the runaway partial, a following complete line must
+	// still parse: the cap must not wedge the listener.
+	l.feed([]byte("\n" + sampleAFAlgLine + "\n"))
+	if l.EventCount() != 1 {
+		t.Fatalf("EventCount = %d, want 1 after recovery", l.EventCount())
+	}
+}
