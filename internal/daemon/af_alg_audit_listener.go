@@ -36,11 +36,11 @@ var auditLogPath = "/var/log/audit/audit.log"
 // CheckAFAlgSocketUsage handles backfill via its (timestamp, serial)
 // cursor in state.Store.
 type AFAlgAuditListener struct {
-	alertCh   chan<- alert.Finding
-	cfg       *config.Config
-	path      string
-	inotifyFd int
-	file      *os.File
+	alertCh         chan<- alert.Finding
+	cfg             *config.Config
+	path            string
+	inotifyFd       int
+	file            *os.File
 	pos             int64
 	leftover        []byte // partial line accumulator across reads
 	droppedOversize bool   // mid-drop of a line that overflowed the cap
@@ -123,6 +123,7 @@ func (l *AFAlgAuditListener) open() error {
 	l.pos = end
 	l.inotifyFd = fd
 	l.leftover = nil
+	l.droppedOversize = false
 	return nil
 }
 
@@ -259,7 +260,7 @@ func (l *AFAlgAuditListener) feed(chunk []byte) {
 			// accumulator cannot grow without bound, and resync at the next
 			// newline.
 			if len(l.leftover) > afAlgMaxLeftoverBytes {
-				l.leftover = l.leftover[:0]
+				l.leftover = nil
 				l.droppedOversize = true
 			}
 			return

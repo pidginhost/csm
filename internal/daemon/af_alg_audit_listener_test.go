@@ -230,11 +230,44 @@ func TestAFAlgFeedCapsUnterminatedLeftover(t *testing.T) {
 	if len(l.leftover) > afAlgMaxLeftoverBytes {
 		t.Fatalf("leftover = %d bytes, want <= %d (cap not enforced)", len(l.leftover), afAlgMaxLeftoverBytes)
 	}
+	if cap(l.leftover) > afAlgMaxLeftoverBytes {
+		t.Fatalf("leftover cap = %d bytes, want <= %d (dropped buffer retained)", cap(l.leftover), afAlgMaxLeftoverBytes)
+	}
 
 	// After dropping the runaway partial, a following complete line must
 	// still parse: the cap must not wedge the listener.
 	l.feed([]byte("\n" + sampleAFAlgLine + "\n"))
 	if l.EventCount() != 1 {
 		t.Fatalf("EventCount = %d, want 1 after recovery", l.EventCount())
+	}
+}
+
+func TestAFAlgOpenClearsOversizeDropState(t *testing.T) {
+	_, _ = withAuditLog(t)
+	l, err := NewAFAlgAuditListener(make(chan alert.Finding, 1), &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		l.Run(ctx)
+	}()
+
+	l.leftover = []byte("stale partial")
+	l.droppedOversize = true
+	if err := l.open(); err != nil {
+		t.Fatalf("reopen audit log: %v", err)
+	}
+	if l.droppedOversize {
+		t.Fatal("reopen left oversize drop state set")
+	}
+	if len(l.leftover) != 0 {
+		t.Fatalf("leftover length after reopen = %d, want 0", len(l.leftover))
+	}
+
+	l.feed([]byte(sampleAFAlgLine + "\n"))
+	if l.EventCount() != 1 {
+		t.Fatalf("EventCount = %d, want 1 after reopen", l.EventCount())
 	}
 }
