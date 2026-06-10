@@ -6,8 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,18 +209,13 @@ func TestUpdateSuccessInstallsRules(t *testing.T) {
 	payload := []byte(sampleRulesYAML)
 	sig := sign(priv, payload)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rules.yml", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(payload)
-	})
-	mux.HandleFunc("/rules.yml.sig", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(sig)
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml":     {body: payload},
+		"/rules.yml.sig": {body: sig},
+	}})
 
 	rulesDir := t.TempDir()
-	n, err := Update(rulesDir, srv.URL+"/rules.yml", pubHex)
+	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex)
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -239,13 +234,12 @@ func TestUpdateFailsOnWrongSignature(t *testing.T) {
 	payload := []byte(sampleRulesYAML)
 	badSig := sign(priv, payload)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rules.yml", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) })
-	mux.HandleFunc("/rules.yml.sig", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(badSig) })
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml":     {body: payload},
+		"/rules.yml.sig": {body: badSig},
+	}})
 
-	_, err := Update(t.TempDir(), srv.URL+"/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
 	if err == nil {
 		t.Fatal("Update with wrong signature should fail")
 	}
@@ -255,12 +249,11 @@ func TestUpdateFailsOnWrongSignature(t *testing.T) {
 }
 
 func TestUpdateFailsOnHTTPError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml": {status: http.StatusInternalServerError},
+	}})
 
-	_, err := Update(t.TempDir(), srv.URL+"/rules.yml", "deadbeef")
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", "deadbeef")
 	if err == nil {
 		t.Fatal("Update with HTTP 500 should fail")
 	}
@@ -272,13 +265,12 @@ func TestUpdateFailsOnInvalidYAML(t *testing.T) {
 	payload := []byte("rules:\n  - name: oops\n    severity: \"unterminated\n")
 	sig := sign(priv, payload)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rules.yml", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) })
-	mux.HandleFunc("/rules.yml.sig", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(sig) })
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml":     {body: payload},
+		"/rules.yml.sig": {body: sig},
+	}})
 
-	_, err := Update(t.TempDir(), srv.URL+"/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
 	if err == nil {
 		t.Fatal("Update with invalid YAML should fail")
 	}
@@ -292,13 +284,12 @@ func TestUpdateFailsOnEmptyRules(t *testing.T) {
 	payload := []byte("version: 1\nrules: []\n")
 	sig := sign(priv, payload)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rules.yml", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) })
-	mux.HandleFunc("/rules.yml.sig", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(sig) })
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml":     {body: payload},
+		"/rules.yml.sig": {body: sig},
+	}})
 
-	_, err := Update(t.TempDir(), srv.URL+"/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
 	if err == nil || !strings.Contains(err.Error(), "no rules") {
 		t.Fatalf("Update with empty rules = %v, want 'no rules' error", err)
 	}
@@ -308,15 +299,12 @@ func TestUpdateFailsOnMissingSignature(t *testing.T) {
 	pubHex, _ := genSigningKey(t)
 	payload := []byte(sampleRulesYAML)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rules.yml", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(payload) })
-	mux.HandleFunc("/rules.yml.sig", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml":     {body: payload},
+		"/rules.yml.sig": {status: http.StatusNotFound},
+	}})
 
-	_, err := Update(t.TempDir(), srv.URL+"/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
 	if err == nil {
 		t.Fatal("Update with missing signature should fail")
 	}
@@ -326,12 +314,11 @@ func TestUpdateFailsOnMissingSignature(t *testing.T) {
 
 func TestFetchSignatureOK(t *testing.T) {
 	want := []byte("sig-bytes-here")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(want)
-	}))
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml.sig": {body: want},
+	}})
 
-	got, err := fetchSignature(srv.URL + "/rules.yml.sig")
+	got, err := fetchSignature("https://rules.example/rules.yml.sig")
 	if err != nil {
 		t.Fatalf("fetchSignature: %v", err)
 	}
@@ -341,19 +328,20 @@ func TestFetchSignatureOK(t *testing.T) {
 }
 
 func TestFetchSignatureNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
+	swapDefaultTransport(t, routeRoundTripper{routes: map[string]httpTestResponse{
+		"/rules.yml.sig": {status: http.StatusForbidden},
+	}})
 
-	_, err := fetchSignature(srv.URL + "/rules.yml.sig")
+	_, err := fetchSignature("https://rules.example/rules.yml.sig")
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Errorf("err = %v, want 403", err)
 	}
 }
 
 func TestFetchSignatureDialFailure(t *testing.T) {
-	_, err := fetchSignature("http://127.0.0.1:1/nonexistent.sig")
+	swapDefaultTransport(t, errorRoundTripper{err: errors.New("dial failed")})
+
+	_, err := fetchSignature("https://rules.example/nonexistent.sig")
 	if err == nil {
 		t.Fatal("fetchSignature on unreachable should error")
 	}
@@ -411,9 +399,33 @@ func TestForgeExtractYarInvalidZip(t *testing.T) {
 //
 // forge.go talks to hardcoded api.github.com and github.com URLs via
 // fresh &http.Client{Timeout: X}, which defaults to http.DefaultTransport.
-// We hijack DefaultTransport for the duration of the test to route the
-// requests to a local httptest server. Tests in this package run
-// sequentially so the global mutation is safe.
+// Tests replace DefaultTransport with in-memory transports and run
+// sequentially, so the global mutation is safe.
+
+type httpTestResponse struct {
+	status int
+	body   []byte
+}
+
+type routeRoundTripper struct {
+	routes map[string]httpTestResponse
+}
+
+func (rt routeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	res, ok := rt.routes[req.URL.Path]
+	if !ok {
+		res.status = http.StatusNotFound
+	}
+	return httpTestReply(req, res.status, res.body), nil
+}
+
+type errorRoundTripper struct {
+	err error
+}
+
+func (rt errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, rt.err
+}
 
 type forgeRoundTripper struct {
 	releases []byte // JSON for /repos/YARAHQ/yara-forge/releases/latest
@@ -438,6 +450,13 @@ func (rt *forgeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	if rt.status != 0 {
 		status = rt.status
 	}
+	return httpTestReply(req, status, body), nil
+}
+
+func httpTestReply(req *http.Request, status int, body []byte) *http.Response {
+	if status == 0 {
+		status = http.StatusOK
+	}
 	return &http.Response{
 		StatusCode:    status,
 		Status:        http.StatusText(status),
@@ -445,7 +464,7 @@ func (rt *forgeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		ContentLength: int64(len(body)),
 		Header:        make(http.Header),
 		Request:       req,
-	}, nil
+	}
 }
 
 type readCloserWrap struct{ *bytes.Reader }

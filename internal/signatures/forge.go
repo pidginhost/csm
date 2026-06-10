@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
@@ -31,6 +32,8 @@ var forgeTierAsset = map[string]string{
 	"extended": "packages/extended/yara-rules-extended.yar",
 	"full":     "packages/full/yara-rules-full.yar",
 }
+
+var forgeAtomicWrite = atomicio.AtomicWrite
 
 // ForgeUpdate checks for a new YARA Forge release and downloads it if newer.
 // A detached signature is fetched from the ZIP URL + ".sig" and verified
@@ -89,29 +92,50 @@ func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL 
 	ruleCount = countRules(yarContent)
 
 	outFile := filepath.Join(rulesDir, fmt.Sprintf("yara-forge-%s.yar", tier))
-	tmpFile := outFile + ".tmp"
-	if err := os.WriteFile(tmpFile, yarContent, 0600); err != nil {
-		return "", 0, fmt.Errorf("writing temp file: %w", err)
+	outFileExisted := false
+	if _, err := os.Stat(outFile); err == nil {
+		outFileExisted = true
+	} else if !os.IsNotExist(err) {
+		return "", 0, fmt.Errorf("checking existing Forge tier: %w", err)
 	}
 
 	if err := yara.TestCompile(string(yarContent)); err != nil {
-		_ = os.Remove(tmpFile)
 		return "", 0, fmt.Errorf("YARA compilation test failed (keeping existing rules): %w", err)
 	}
 
-	// Remove other tier files (only one tier active at a time)
-	for t := range forgeTierAsset {
-		if t != tier {
-			_ = os.Remove(filepath.Join(rulesDir, fmt.Sprintf("yara-forge-%s.yar", t)))
-		}
+	if err := os.MkdirAll(rulesDir, 0700); err != nil {
+		return "", 0, fmt.Errorf("creating rules dir: %w", err)
 	}
-
-	if err := os.Rename(tmpFile, outFile); err != nil {
-		_ = os.Remove(tmpFile)
+	if outFileExisted {
+		if err := removeInactiveForgeTiers(rulesDir, tier); err != nil {
+			return "", 0, err
+		}
+		if err := forgeAtomicWrite(outFile, 0600, yarContent); err != nil {
+			return "", 0, fmt.Errorf("installing rules: %w", err)
+		}
+		return latestTag, ruleCount, nil
+	}
+	if err := forgeAtomicWrite(outFile, 0600, yarContent); err != nil {
 		return "", 0, fmt.Errorf("installing rules: %w", err)
+	}
+	if err := removeInactiveForgeTiers(rulesDir, tier); err != nil {
+		return "", 0, err
 	}
 
 	return latestTag, ruleCount, nil
+}
+
+func removeInactiveForgeTiers(rulesDir, activeTier string) error {
+	for t := range forgeTierAsset {
+		if t == activeTier {
+			continue
+		}
+		path := filepath.Join(rulesDir, fmt.Sprintf("yara-forge-%s.yar", t))
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing inactive Forge tier %s: %w", t, err)
+		}
+	}
+	return nil
 }
 
 func forgeDownloadURL(tmpl, tier, version string) string {

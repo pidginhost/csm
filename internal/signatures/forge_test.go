@@ -3,6 +3,9 @@ package signatures
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -17,10 +20,16 @@ func TestForgeExtractYarCapsDecompressedSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Highly compressible payload far larger than the cap.
-	big := bytes.Repeat([]byte("A"), forgeMaxYarSize+1024*1024)
-	if _, err := w.Write(big); err != nil {
-		t.Fatal(err)
+	chunk := bytes.Repeat([]byte("A"), 32*1024)
+	for remaining := forgeMaxYarSize + 1024*1024; remaining > 0; {
+		n := len(chunk)
+		if remaining < n {
+			n = remaining
+		}
+		if _, err := w.Write(chunk[:n]); err != nil {
+			t.Fatal(err)
+		}
+		remaining -= n
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
@@ -52,6 +61,151 @@ func TestForgeExtractYarAcceptsNormalEntry(t *testing.T) {
 	}
 	if !bytes.Equal(got, body) {
 		t.Fatalf("got %q, want %q", got, body)
+	}
+}
+
+func TestForgeUpdateCreatesRulesDir(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+
+	rulesDir := filepath.Join(t.TempDir(), "missing", "rules")
+	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil); err != nil {
+		t.Fatalf("ForgeUpdate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); err != nil {
+		t.Fatalf("installed file missing: %v", err)
+	}
+}
+
+func TestForgeUpdateKeepsExistingTierWhenInstallFails(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+
+	rulesDir := t.TempDir()
+	oldTier := filepath.Join(rulesDir, "yara-forge-extended.yar")
+	if err := os.WriteFile(oldTier, []byte("rule old_tier { condition: true }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := forgeAtomicWrite
+	forgeAtomicWrite = func(string, os.FileMode, []byte) error {
+		return errors.New("disk full")
+	}
+	t.Cleanup(func() { forgeAtomicWrite = prev })
+
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil)
+	if err == nil || !strings.Contains(err.Error(), "installing rules") {
+		t.Fatalf("err = %v, want installing rules", err)
+	}
+	if _, statErr := os.Stat(oldTier); statErr != nil {
+		t.Fatalf("existing tier was not preserved: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); !os.IsNotExist(statErr) {
+		t.Fatalf("new tier should not exist after failed install, stat err=%v", statErr)
+	}
+}
+
+func TestForgeUpdateRemovesInactiveTierAfterInstall(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+
+	rulesDir := t.TempDir()
+	oldTier := filepath.Join(rulesDir, "yara-forge-extended.yar")
+	if err := os.WriteFile(oldTier, []byte("rule old_tier { condition: true }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil); err != nil {
+		t.Fatalf("ForgeUpdate: %v", err)
+	}
+	if _, err := os.Stat(oldTier); !os.IsNotExist(err) {
+		t.Fatalf("inactive tier should be removed after successful install, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); err != nil {
+		t.Fatalf("new tier missing: %v", err)
+	}
+}
+
+func TestForgeUpdateCleanupFailureKeepsNewTier(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+
+	rulesDir := t.TempDir()
+	staleTier := filepath.Join(rulesDir, "yara-forge-extended.yar")
+	if err := os.Mkdir(staleTier, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleTier, "child"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil)
+	if err == nil || !strings.Contains(err.Error(), "removing inactive Forge tier extended") {
+		t.Fatalf("err = %v, want inactive tier removal failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rulesDir, "yara-forge-core.yar")); statErr != nil {
+		t.Fatalf("new tier should remain after cleanup failure: %v", statErr)
+	}
+}
+
+func TestForgeUpdateSameTierCleanupFailureKeepsExistingRules(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+		zipBody:  zipData,
+		sigBody:  sign(priv, zipData),
+	})
+
+	rulesDir := t.TempDir()
+	active := filepath.Join(rulesDir, "yara-forge-core.yar")
+	oldRules := []byte("rule old_core { condition: true }\n")
+	if err := os.WriteFile(active, oldRules, 0600); err != nil {
+		t.Fatal(err)
+	}
+	staleTier := filepath.Join(rulesDir, "yara-forge-extended.yar")
+	if err := os.Mkdir(staleTier, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleTier, "child"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := ForgeUpdateFromURL(rulesDir, "core", "v2026.01.01", pubHex, "https://mirror.example/yara-forge-rules-{tier}.zip", nil)
+	if err == nil || !strings.Contains(err.Error(), "removing inactive Forge tier extended") {
+		t.Fatalf("err = %v, want inactive tier removal failure", err)
+	}
+	got, readErr := os.ReadFile(active)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, oldRules) {
+		t.Fatalf("active rules changed after failed cleanup: got %q, want %q", got, oldRules)
 	}
 }
 
