@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,5 +56,19 @@ func TestSpoolWatcher_Run_EpollSetupFailureDrainsWorkers(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("scanCh not closed after failed Run - scanner workers leaked")
+	}
+
+	if got := atomic.LoadInt32(&sw.fdClosed); got != 1 {
+		t.Fatalf("fdClosed = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&sw.pipeClosed); got != 1 {
+		t.Fatalf("pipeClosed = %d, want 1", got)
+	}
+
+	sw.Stop()
+	select {
+	case <-sw.stopCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not close stopCh after failed Run")
 	}
 }

@@ -2032,7 +2032,9 @@ func (d *Daemon) startSpoolWatcher() {
 // instance registered via setSpoolWatcher) can miss, hanging wg.Wait forever.
 func superviseWatcherRun(daemonStop <-chan struct{}, run, stop func()) {
 	done := make(chan struct{})
+	helperDone := make(chan struct{})
 	go func() {
+		defer close(helperDone)
 		select {
 		case <-daemonStop:
 			stop()
@@ -2041,10 +2043,26 @@ func superviseWatcherRun(daemonStop <-chan struct{}, run, stop func()) {
 	}()
 	run()
 	close(done)
+	<-helperDone
+}
+
+type spoolWatcherRuntime interface {
+	Run()
+	Stop()
 }
 
 func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
-	current := sw
+	d.runSpoolWatcherLoopWithFactory(sw, 2*time.Second, func() (spoolWatcherRuntime, error) {
+		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
+		if err != nil {
+			return nil, err
+		}
+		d.setSpoolWatcher(next)
+		return next, nil
+	})
+}
+
+func (d *Daemon) runSpoolWatcherLoopWithFactory(current spoolWatcherRuntime, restartDelay time.Duration, newWatcher func() (spoolWatcherRuntime, error)) {
 	for {
 		superviseWatcherRun(d.stopCh, current.Run, current.Stop)
 
@@ -2054,20 +2072,22 @@ func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrato
 		default:
 		}
 
-		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher stopped unexpectedly; restarting in 2s\n", ts())
-		select {
-		case <-d.stopCh:
-			return
-		case <-time.After(2 * time.Second):
-		}
+		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher stopped unexpectedly; restarting in %s\n", ts(), restartDelay)
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case <-time.After(restartDelay):
+			}
 
-		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher restart failed: %v\n", ts(), err)
-			continue
+			next, err := newWatcher()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher restart failed: %v\n", ts(), err)
+				continue
+			}
+			current = next
+			break
 		}
-		current = next
-		d.setSpoolWatcher(next)
 	}
 }
 

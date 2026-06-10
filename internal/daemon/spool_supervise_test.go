@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -87,5 +89,91 @@ func TestSuperviseWatcherRunReapsHelperOnNormalExit(t *testing.T) {
 	}
 	if stopCalls != 0 {
 		t.Fatalf("stop() must not be called when run() exits on its own, got %d calls", stopCalls)
+	}
+}
+
+type testSpoolWatcherRuntime struct {
+	runCalls  atomic.Int32
+	stopCalls atomic.Int32
+	entered   chan struct{}
+	stopped   chan struct{}
+	stopOnce  sync.Once
+	block     bool
+}
+
+func newTestSpoolWatcherRuntime(block bool) *testSpoolWatcherRuntime {
+	return &testSpoolWatcherRuntime{
+		entered: make(chan struct{}, 16),
+		stopped: make(chan struct{}),
+		block:   block,
+	}
+}
+
+func (w *testSpoolWatcherRuntime) Run() {
+	w.runCalls.Add(1)
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	if w.block {
+		<-w.stopped
+	}
+}
+
+func (w *testSpoolWatcherRuntime) Stop() {
+	w.stopCalls.Add(1)
+	w.stopOnce.Do(func() {
+		close(w.stopped)
+	})
+}
+
+func TestRunSpoolWatcherLoopDoesNotRerunStoppedWatcherDuringRestartFailures(t *testing.T) {
+	d := &Daemon{stopCh: make(chan struct{})}
+	stopDaemon := func() {
+		select {
+		case <-d.stopCh:
+		default:
+			close(d.stopCh)
+		}
+	}
+	defer stopDaemon()
+
+	first := newTestSpoolWatcherRuntime(false)
+	second := newTestSpoolWatcherRuntime(true)
+	var attempts atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		d.runSpoolWatcherLoopWithFactory(first, 10*time.Millisecond, func() (spoolWatcherRuntime, error) {
+			if attempts.Add(1) < 3 {
+				return nil, errors.New("fanotify unavailable")
+			}
+			return second, nil
+		})
+		close(done)
+	}()
+
+	select {
+	case <-second.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart loop never reached the replacement watcher")
+	}
+
+	stopDaemon()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSpoolWatcherLoopWithFactory did not stop the replacement watcher on shutdown")
+	}
+
+	if got := first.runCalls.Load(); got != 1 {
+		t.Fatalf("drained watcher Run() called %d times, want 1", got)
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("restart factory called %d times, want 3", got)
+	}
+	if got := second.stopCalls.Load(); got == 0 {
+		t.Fatal("replacement watcher was not stopped on shutdown")
 	}
 }
