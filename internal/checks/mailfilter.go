@@ -750,12 +750,15 @@ func mailboxFromFilterPath(path string) filterMailbox {
 // CheckMailFilters scans per-mailbox and domain-wide Exim filters for BEC-style
 // exfiltration rules. Throttled to PasswordCheckIntervalMin, like the forwarder
 // audit it complements.
-func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	db := store.Global()
 	if db == nil {
+		if !shouldReportMailFilterStoreUnavailable(st, cfg) {
+			return nil
+		}
 		// Without the store the whole check is inoperative (hashes and the
 		// throttle live there). Say so instead of looking like a clean host.
 		return []alert.Finding{{
@@ -783,16 +786,23 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	localDomains := loadLocalDomains()
 
 	var files []string
+	baselineComplete := true
 	if perMailbox, err := homeGlob(ctx, "etc", "*", "*", "filter"); err == nil {
 		files = append(files, perMailbox...)
+	} else {
+		baselineComplete = false
 	}
 	if AccountFromContext(ctx) == "" {
 		if vfilters, err := osFS.Glob("/etc/vfilters/*"); err == nil {
 			files = append(files, vfilters...)
+		} else {
+			baselineComplete = false
 		}
 	}
 
-	ranked := rankPathsByMtimeDesc(ctx, files, effectiveAccountScanMaxFiles(cfg))
+	maxFiles := effectiveAccountScanMaxFiles(cfg)
+	baselineComplete = baselineComplete && scanCoversAllFiles(files, maxFiles)
+	ranked := rankPathsByMtimeDesc(ctx, files, maxFiles)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -805,12 +815,15 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		}
 		data, err := osFS.ReadFile(path)
 		if err != nil {
+			baselineComplete = false
 			continue
 		}
 
 		currentHash := sha256Hex(data)
 		isNew := forwarderFileIsNew(db, "email:mailfilter_last_refresh", "mailfilter:"+path, currentHash)
-		_ = db.SetForwarderHash("mailfilter:"+path, currentHash)
+		if err := db.SetForwarderHash("mailfilter:"+path, currentHash); err != nil {
+			baselineComplete = false
+		}
 
 		mb := mailboxFromFilterPath(path)
 		rules := parseEximFilter(string(data))
@@ -842,10 +855,25 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// an account-scoped scan hashes one account's files, and marking it
 	// complete would make the next full scan treat every other account's
 	// existing filters as newly created.
-	if AccountFromContext(ctx) == "" {
+	baselineExists := db.GetMetaString("email:mailfilter_last_refresh") != ""
+	if AccountFromContext(ctx) == "" && (baselineComplete || baselineExists) {
 		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
 	}
 	return findingsFromPending(collected)
+}
+
+func shouldReportMailFilterStoreUnavailable(st *state.Store, cfg *config.Config) bool {
+	if st == nil {
+		return true
+	}
+	return st.ShouldRunThrottled("email_mail_filters_store_unavailable", mailFilterAuditIntervalMin(cfg))
+}
+
+func mailFilterAuditIntervalMin(cfg *config.Config) int {
+	if cfg == nil || cfg.EmailProtection.PasswordCheckIntervalMin <= 0 {
+		return 1440
+	}
+	return cfg.EmailProtection.PasswordCheckIntervalMin
 }
 
 func mailFilterDetails(mb filterMailbox, path string, ff filterFinding) string {

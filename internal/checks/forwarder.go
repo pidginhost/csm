@@ -185,8 +185,14 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	if ctx.Err() != nil {
 		return findings
 	}
-	valiasFiles, _ := osFS.Glob("/etc/valiases/*")
-	rankedValiasFiles := rankPathsByMtimeDesc(ctx, valiasFiles, effectiveAccountScanMaxFiles(cfg))
+	maxFiles := effectiveAccountScanMaxFiles(cfg)
+	baselineComplete := true
+	valiasFiles, err := osFS.Glob("/etc/valiases/*")
+	if err != nil {
+		baselineComplete = false
+	}
+	baselineComplete = baselineComplete && scanCoversAllFiles(valiasFiles, maxFiles)
+	rankedValiasFiles := rankPathsByMtimeDesc(ctx, valiasFiles, maxFiles)
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -195,22 +201,23 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			return findings
 		}
 		domain := filepath.Base(path)
-		entries := auditValiasFile(path, domain, localDomains, cfg)
-		findings = append(findings, entries...)
-
-		// Store hash for change detection (enrichment, not filtering)
-		hash, err := fileContentHash(path)
-		if err == nil {
-			_ = db.SetForwarderHash("valiases:"+domain, hash)
+		entries, ok := auditValiasFileWithStatus(path, domain, localDomains, cfg)
+		if !ok {
+			baselineComplete = false
 		}
+		findings = append(findings, entries...)
 	}
 
 	// Audit vfilters
 	if ctx.Err() != nil {
 		return findings
 	}
-	vfilterFiles, _ := osFS.Glob("/etc/vfilters/*")
-	rankedVfilterFiles := rankPathsByMtimeDesc(ctx, vfilterFiles, effectiveAccountScanMaxFiles(cfg))
+	vfilterFiles, err := osFS.Glob("/etc/vfilters/*")
+	if err != nil {
+		baselineComplete = false
+	}
+	baselineComplete = baselineComplete && scanCoversAllFiles(vfilterFiles, maxFiles)
+	rankedVfilterFiles := rankPathsByMtimeDesc(ctx, vfilterFiles, maxFiles)
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -219,19 +226,20 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			return findings
 		}
 		domain := filepath.Base(path)
-		entries := auditVfilterFile(path, domain, localDomains, cfg)
-		findings = append(findings, entries...)
-
-		hash, err := fileContentHash(path)
-		if err == nil {
-			_ = db.SetForwarderHash("vfilters:"+domain, hash)
+		entries, ok := auditVfilterFileWithStatus(path, domain, localDomains, cfg)
+		if !ok {
+			baselineComplete = false
 		}
+		findings = append(findings, entries...)
 	}
 
 	if ctx.Err() != nil {
 		return findings
 	}
-	_ = db.SetMetaString("email:fwd_last_refresh", time.Now().Format(time.RFC3339))
+	baselineExists := db.GetMetaString("email:fwd_last_refresh") != ""
+	if baselineComplete || baselineExists {
+		_ = db.SetMetaString("email:fwd_last_refresh", time.Now().Format(time.RFC3339))
+	}
 
 	return findings
 }
@@ -251,24 +259,37 @@ func forwarderFileIsNew(db *store.DB, baselineKey, hashKey, currentHash string) 
 	return db.GetMetaString(baselineKey) != ""
 }
 
+func scanCoversAllFiles(paths []string, maxFiles int) bool {
+	return maxFiles <= 0 || len(paths) <= maxFiles
+}
+
 // auditValiasFile parses a valiases file and returns findings for dangerous entries.
 func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
+	findings, _ := auditValiasFileWithStatus(path, domain, localDomains, cfg)
+	return findings
+}
+
+func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool, cfg *config.Config) ([]alert.Finding, bool) {
 	f, err := osFS.Open(path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer f.Close()
 
 	db := store.Global()
 	var findings []alert.Finding
+	complete := true
 
 	isNew := false
+	hashKey := "valiases:" + domain
+	var currentHash string
 	if db != nil {
-		currentHash, hashErr := fileContentHash(path)
+		var hashErr error
+		currentHash, hashErr = fileContentHash(path)
 		if hashErr == nil {
-			isNew = forwarderFileIsNew(db, "email:fwd_last_refresh", "valiases:"+domain, currentHash)
-			// Always store current hash (establishes baseline on first run)
-			_ = db.SetForwarderHash("valiases:"+domain, currentHash)
+			isNew = forwarderFileIsNew(db, "email:fwd_last_refresh", hashKey, currentHash)
+		} else {
+			complete = false
 		}
 	}
 
@@ -333,25 +354,42 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 		}
 	}
 
-	return findings
+	if err := scanner.Err(); err != nil {
+		complete = false
+	}
+	if complete && db != nil {
+		if err := db.SetForwarderHash(hashKey, currentHash); err != nil {
+			complete = false
+		}
+	}
+
+	return findings, complete
 }
 
 // auditVfilterFile parses a vfilters file and returns findings for external destinations.
 func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
+	findings, _ := auditVfilterFileWithStatus(path, domain, localDomains, cfg)
+	return findings
+}
+
+func auditVfilterFileWithStatus(path, domain string, localDomains map[string]bool, cfg *config.Config) ([]alert.Finding, bool) {
 	data, err := osFS.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	db := store.Global()
 	content := string(data)
+	complete := true
 
 	// Same newness logic as valiases above.
 	isNew := false
 	if db != nil {
 		currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
 		isNew = forwarderFileIsNew(db, "email:fwd_last_refresh", "vfilters:"+domain, currentHash)
-		_ = db.SetForwarderHash("vfilters:"+domain, currentHash)
+		if err := db.SetForwarderHash("vfilters:"+domain, currentHash); err != nil {
+			complete = false
+		}
 	}
 
 	externalDests := parseVfilterExternalDests(content, localDomains)
@@ -363,7 +401,7 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 			continue
 		}
 
-		// Only alert when the vfilter file actually changed — existing forwarders
+		// Only alert when the vfilter file actually changed; existing forwarders
 		// are normal customer configuration, not an attack indicator.
 		if !isNew {
 			continue
@@ -377,5 +415,5 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 		})
 	}
 
-	return findings
+	return findings, complete
 }
