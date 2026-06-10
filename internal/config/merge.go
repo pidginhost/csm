@@ -54,13 +54,39 @@ func mergeNodesAt(b, o *yaml.Node, path string, onCollision CollisionFn) {
 	case b.Kind == yaml.MappingNode && o.Kind == yaml.MappingNode:
 		mergeMapAt(b, o, path, onCollision)
 	case b.Kind == yaml.SequenceNode && o.Kind == yaml.SequenceNode:
-		b.Content = append(b.Content, o.Content...)
+		b.Content = dedupScalarSequence(append(b.Content, o.Content...))
 	default:
 		if onCollision != nil && b.Kind == yaml.ScalarNode && o.Kind == yaml.ScalarNode && b.Value != o.Value {
 			onCollision(path, b.Value, o.Value)
 		}
 		*b = *o
 	}
+}
+
+// dedupScalarSequence removes duplicate scalar entries (by value+tag),
+// keeping the first occurrence and preserving order. It only acts when every
+// element is a scalar: lists of maps (e.g. webui.tokens) keep every entry,
+// where position and identity matter. Idempotent-by-content security lists
+// (infra_ips, c2_blocklist, trusted_countries, disabled_checks) merged from a
+// fragment that repeats a main-config entry would otherwise carry duplicates
+// into validation and enforcement on every load.
+func dedupScalarSequence(content []*yaml.Node) []*yaml.Node {
+	for _, n := range content {
+		if n.Kind != yaml.ScalarNode {
+			return content
+		}
+	}
+	seen := make(map[string]struct{}, len(content))
+	out := content[:0]
+	for _, n := range content {
+		key := n.Tag + "\x00" + n.Value
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, n)
+	}
+	return out
 }
 
 func mergeMapAt(b, o *yaml.Node, parent string, onCollision CollisionFn) {

@@ -26,6 +26,37 @@ func TestDeepMerge_SequenceAppends(t *testing.T) {
 	}
 }
 
+// A scalar that exists in both the main config and a fragment must not
+// duplicate after merge: firewall/allowlist lists are content-idempotent,
+// and duplicates would be validated and acted on twice every load.
+func TestDeepMerge_ScalarSequenceDedupes(t *testing.T) {
+	base := unmarshalDoc(t, "infra_ips:\n  - 1.1.1.1\n  - 2.2.2.2\n")
+	overlay := unmarshalDoc(t, "infra_ips:\n  - 2.2.2.2\n  - 3.3.3.3\n")
+	got := DeepMerge(base, overlay)
+	seq := fieldOf(t, got.Content[0], "infra_ips")
+	want := []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"}
+	if len(seq.Content) != len(want) {
+		t.Fatalf("expected deduped %v, got %v", want, flatten(seq))
+	}
+	for i, w := range want {
+		if seq.Content[i].Value != w {
+			t.Fatalf("expected %v, got %v", want, flatten(seq))
+		}
+	}
+}
+
+// Sequences of non-scalars (maps) must NOT be deduped by value: order and
+// every entry matter (e.g. webui.tokens).
+func TestDeepMerge_MapSequenceNotDeduped(t *testing.T) {
+	base := unmarshalDoc(t, "tokens:\n  - name: a\n    token: x\n")
+	overlay := unmarshalDoc(t, "tokens:\n  - name: a\n    token: x\n")
+	got := DeepMerge(base, overlay)
+	seq := fieldOf(t, got.Content[0], "tokens")
+	if len(seq.Content) != 2 {
+		t.Fatalf("map sequence must append both entries, got %d", len(seq.Content))
+	}
+}
+
 func TestDeepMerge_MapRecurses(t *testing.T) {
 	base := unmarshalDoc(t, "webui:\n  enabled: true\n  port: 9443\n")
 	overlay := unmarshalDoc(t, "webui:\n  port: 9000\n")
