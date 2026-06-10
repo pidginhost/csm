@@ -1058,6 +1058,15 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 		return true
 	}
 
+	// Fail closed when no admin secret is configured: csrfToken() would
+	// otherwise be HMAC over an empty key -- a value any client can compute --
+	// turning the CSRF check into a no-op. No admin secret also means no
+	// cookie session can exist (login requires the admin token), so rejecting
+	// here cannot block a legitimate request.
+	if s.csrfSecret() == "" {
+		return false
+	}
+
 	expected := s.csrfToken()
 
 	// Check header (API calls from JS use this)

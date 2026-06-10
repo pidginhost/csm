@@ -79,6 +79,8 @@ func (s *Server) apiSettingsSections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
+	// This prefix serves both GET (read settings) and POST (update); CSRF is
+	// enforced only on the mutating POST path.
 	switch r.Method {
 	case http.MethodGet:
 		s.apiSettingsGet(w, r)

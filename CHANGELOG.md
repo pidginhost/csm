@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The web UI CSRF check now fails closed when no admin secret is configured, instead of accepting a token any client could compute from an empty key.
+
 - Country blocking now covers IPv6 as well as IPv4: the geo database fetches IPv6 ranges and the firewall drops blocked-country traffic on both families, closing a path where an attacker on an IPv6 address from a blocked country was never stopped.
 - The web UI no longer serves a browsable listing of its static asset directory; individual assets still load (the login page needs them) but the file set can no longer be enumerated.
 - IPv4 connections seen through a dual-stack listener (reported as IPv4-mapped IPv6) are now canonicalized before block lookups, so a blocked address can no longer slip past the challenge and firewall checks in its mapped form.

@@ -247,6 +247,18 @@ func TestRequireCSRFRejectsDeleteNoToken(t *testing.T) {
 	}
 }
 
+// With no admin secret configured, csrfToken() is an HMAC over an empty key
+// that any client can reproduce. validateCSRF must fail closed in that case
+// rather than accept the attacker-computable token.
+func TestValidateCSRFFailsClosedWithoutSecret(t *testing.T) {
+	s := newTestServer(t, "") // no admin token => empty csrfSecret
+	req := httptest.NewRequest("POST", "/api/x", nil)
+	req.Header.Set("X-CSRF-Token", s.csrfToken()) // the "valid" empty-key token
+	if s.validateCSRF(req) {
+		t.Fatal("validateCSRF must reject state-changing requests when no admin secret is set")
+	}
+}
+
 func TestValidateCSRFViaFormField(t *testing.T) {
 	s := newTestServer(t, "tok")
 	form := "csrf_token=" + s.csrfToken()
