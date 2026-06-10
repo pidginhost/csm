@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Log watchers no longer lose lines written between the last read and the periodic 5-minute reopen: reopen used to jump to end of file, silently skipping a window of every active log, and now resumes from the saved position while detecting rotation by inode change. A failed reopen also no longer leaves a dead file handle behind.
+
 ### Documentation
 
 - Documented the opt-in email forward guard (config, defaults, and which signals actually hold versus log) and the Email page's new Forwarders, Deliverability, and queue-backscatter views.

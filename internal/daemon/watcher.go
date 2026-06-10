@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -35,7 +36,17 @@ type LogWatcher struct {
 	alertCh   chan<- alert.Finding
 	file      *os.File
 	offset    int64
+	ino       uint64
 	closeOnce sync.Once
+}
+
+// fileIno returns the inode number for rotation detection, or 0 when the
+// platform's Stat does not expose one.
+func fileIno(info os.FileInfo) uint64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Ino) // #nosec G115 -- inode numbers are non-negative
+	}
+	return 0
 }
 
 // NewLogWatcher creates a watcher for a log file.
@@ -53,6 +64,11 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		return nil, err
 	}
 
+	var ino uint64
+	if info, statErr := f.Stat(); statErr == nil {
+		ino = fileIno(info)
+	}
+
 	return &LogWatcher{
 		path:    path,
 		cfg:     cfg,
@@ -60,6 +76,7 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		alertCh: alertCh,
 		file:    f,
 		offset:  offset,
+		ino:     ino,
 	}, nil
 }
 
@@ -119,6 +136,13 @@ func (w *LogWatcher) closeFile() {
 }
 
 func (w *LogWatcher) readNewLines() {
+	if w.file == nil {
+		w.reopen()
+		if w.file == nil {
+			return
+		}
+	}
+
 	info, err := w.file.Stat()
 	if err != nil {
 		w.reopen()
@@ -214,6 +238,9 @@ func trimWatcherLineEnding(line string) string {
 func (w *LogWatcher) reopen() {
 	if w.file != nil {
 		_ = w.file.Close()
+		// Drop the closed handle so a failed open below doesn't leave a dead
+		// fd behind for the next readNewLines to Stat in a loop.
+		w.file = nil
 	}
 
 	f, err := os.Open(w.path)
@@ -221,7 +248,6 @@ func (w *LogWatcher) reopen() {
 		return
 	}
 
-	// If the file is new (after rotation), start from beginning
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
@@ -229,13 +255,19 @@ func (w *LogWatcher) reopen() {
 	}
 
 	w.file = f
-	if info.Size() < w.offset {
-		// File was rotated - read from start
+	ino := fileIno(info)
+	switch {
+	case ino != 0 && w.ino != 0 && ino != w.ino:
+		// Rotated by rename+create: new inode, read the new file from the
+		// start regardless of its size.
 		w.offset = 0
-	} else {
-		// Same file or larger - seek to where we were
-		w.offset, _ = f.Seek(0, io.SeekEnd)
+	case info.Size() < w.offset:
+		// Truncated in place (copytruncate rotation).
+		w.offset = 0
 	}
+	// Same inode, size >= offset: keep w.offset so lines written since the
+	// last read tick are not skipped. readNewLines seeks before every read.
+	w.ino = ino
 }
 
 // --- Log line handlers ---

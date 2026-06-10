@@ -640,6 +640,127 @@ func TestLogWatcher_Reopen_NewSmallerFile(t *testing.T) {
 	}
 }
 
+func TestLogWatcher_Reopen_SameFileKeepsOffset(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("old line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	// Lines land between the last read tick and the periodic reopen tick.
+	f, err := os.OpenFile(tmp, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("missed line\n")
+	_ = f.Close()
+
+	// Periodic reopen must not skip data written since the last read.
+	w.reopen()
+	w.readNewLines()
+
+	select {
+	case finding := <-alertCh:
+		if finding.Message != "missed line" {
+			t.Fatalf("got %q, want %q", finding.Message, "missed line")
+		}
+	default:
+		t.Fatal("line written before periodic reopen was lost")
+	}
+}
+
+func TestLogWatcher_Reopen_RotatedLargerFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("short\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	// Rotation by rename+create: new inode, larger than the old offset.
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tmp, []byte("a much longer replacement first line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	w.reopen()
+	if w.offset != 0 {
+		t.Fatalf("offset after rotation to new inode = %d, want 0", w.offset)
+	}
+
+	w.readNewLines()
+	select {
+	case finding := <-alertCh:
+		if finding.Message != "a much longer replacement first line" {
+			t.Fatalf("got %q, want rotated file content", finding.Message)
+		}
+	default:
+		t.Fatal("content of rotated replacement file was lost")
+	}
+}
+
+func TestLogWatcher_Reopen_OpenFailureClearsStaleFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, []byte("data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	os.Remove(tmp)
+	w.reopen()
+	if w.file != nil {
+		t.Fatal("failed reopen must not retain a closed file handle")
+	}
+
+	// readNewLines on the dead watcher must not panic, and the watcher must
+	// recover once the file reappears.
+	w.readNewLines()
+	if err := os.WriteFile(tmp, []byte("recovered\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	w.readNewLines()
+
+	select {
+	case finding := <-alertCh:
+		if finding.Message != "recovered" {
+			t.Fatalf("got %q, want %q", finding.Message, "recovered")
+		}
+	default:
+		t.Fatal("watcher did not recover after log file reappeared")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LogWatcher.Stop — idempotent, does not panic on nil file
 // ---------------------------------------------------------------------------
