@@ -48,9 +48,12 @@ func closeWebhookResponseBody(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	if resp.ContentLength >= 0 && resp.ContentLength <= maxWebhookResponseDrainBytes {
-		_, _ = io.Copy(io.Discard, resp.Body)
-	}
+	// Drain up to a bounded amount before closing so the transport can reuse
+	// the keepalive connection. ContentLength is -1 for chunked / close-
+	// delimited responses (Slack, Discord, most generic endpoints), so gating
+	// the drain on a known length skipped reuse for exactly those servers and
+	// forced a fresh TLS handshake per finding.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxWebhookResponseDrainBytes))
 	_ = resp.Body.Close()
 }
 
