@@ -309,6 +309,29 @@ func TestLookupIPMultipleCountries(t *testing.T) {
 	}
 }
 
+// IPv6 addresses must match against .cidr6 files, and IPv4 lookups must not
+// pick up .cidr6 entries (or vice versa).
+func TestLookupIPMatchesIPv6Cidr6Files(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AA.cidr"), []byte("203.0.113.0/24\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AA.cidr6"), []byte("2001:db8::/32\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if m := LookupIP(dir, "2001:db8::1"); len(m) != 1 || m[0] != "AA" {
+		t.Fatalf("IPv6 lookup = %v, want [AA] from .cidr6", m)
+	}
+	if m := LookupIP(dir, "203.0.113.5"); len(m) != 1 || m[0] != "AA" {
+		t.Fatalf("IPv4 lookup = %v, want [AA] from .cidr", m)
+	}
+	// An IPv6 address outside the range matches nothing.
+	if m := LookupIP(dir, "2606:4700::1"); len(m) != 0 {
+		t.Fatalf("out-of-range IPv6 = %v, want none", m)
+	}
+}
+
 // --- LoadState edge cases -------------------------------------------------
 
 func TestLoadStateAllExpiredBlocksNetAllows(t *testing.T) {

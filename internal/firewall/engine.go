@@ -73,6 +73,7 @@ type Engine struct {
 	setBlockedNet6 *nftables.Set
 	setAllowed6    *nftables.Set
 	setInfra6      *nftables.Set
+	setCountry6    *nftables.Set
 
 	// Meters for per-IP rate limiting
 	meterSYN        *nftables.Set
@@ -591,6 +592,26 @@ func (e *Engine) createSets() error {
 		if err := e.conn.AddSet(e.setInfra6, infra6Elements); err != nil {
 			return fmt.Errorf("infra6 set: %w", err)
 		}
+
+		// IPv6 country-block set, mirroring the IPv4 set above. Without it an
+		// attacker on an IPv6 address from a blocked country was never dropped.
+		if len(e.cfg.CountryBlock) > 0 && e.cfg.CountryDBPath != "" {
+			e.setCountry6 = &nftables.Set{
+				Table: e.table, Name: "country_blocked6",
+				KeyType: nftables.TypeIP6Addr, Interval: true,
+			}
+			var country6Elements []nftables.SetElement
+			for _, code := range e.cfg.CountryBlock {
+				country6Elements = append(country6Elements, loadCountryCIDRs6(e.cfg.CountryDBPath, code)...)
+			}
+			if err := e.conn.AddSet(e.setCountry6, country6Elements); err != nil {
+				fmt.Fprintf(os.Stderr, "firewall: warning creating IPv6 country set: %v\n", err)
+				e.setCountry6 = nil
+			} else if len(country6Elements) > 0 {
+				fmt.Fprintf(os.Stderr, "firewall: loaded %d IPv6 country block ranges for %v\n",
+					len(country6Elements)/2, e.cfg.CountryBlock)
+			}
+		}
 	}
 
 	// Meter sets for per-IP rate limiting (dynamic sets)
@@ -928,6 +949,9 @@ func (e *Engine) createInputChain() error {
 	// Rule 9: Country block - drop traffic from blocked countries
 	if e.setCountry != nil {
 		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
+	}
+	if e.setCountry6 != nil {
+		e.addSetMatchRuleV6(e.setCountry6, expr.VerdictDrop)
 	}
 
 	// Per-port flood protection - rate-limit new connections per source IP.
@@ -3340,6 +3364,39 @@ func loadCountryCIDRs(dbPath, countryCode string) []nftables.SetElement {
 		end := lastIPInRange(network)
 		if start != nil && end != nil {
 			elements = appendIntervalSetElements(elements, start, end)
+		}
+	}
+	return elements
+}
+
+// loadCountryCIDRs6 reads IPv6 CIDR ranges from {dbPath}/{CODE}.cidr6 and
+// builds interval set elements. v4 CIDRs in the file (if any) are skipped so
+// only IPv6 ranges reach the IPv6 set.
+func loadCountryCIDRs6(dbPath, countryCode string) []nftables.SetElement {
+	file := filepath.Join(dbPath, strings.ToUpper(countryCode)+".cidr6")
+	// #nosec G304 -- filepath.Join under operator-configured GeoIP dbPath.
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+
+	var elements []nftables.SetElement
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, network, err := net.ParseCIDR(line)
+		if err != nil {
+			continue
+		}
+		if network.IP.To4() != nil {
+			continue // not an IPv6 range
+		}
+		start := network.IP.To16()
+		end := lastIPInRange(network)
+		if start != nil && end != nil {
+			elements = appendIntervalSetElements(elements, start, end.To16())
 		}
 	}
 	return elements
