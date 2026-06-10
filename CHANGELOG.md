@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Deleting a quarantined email now verifies the target is a real quarantine entry first, so a bad message id can no longer remove an unrelated directory under the quarantine root.
+
 - Mail-provider deferral text captured from remote servers is now truncated on a character boundary, so a multi-byte character at the limit can no longer be stored as corrupt text.
 - A failed verdict-callback now reports the IP through the normal error path instead of writing it to standard error.
 

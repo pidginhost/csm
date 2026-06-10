@@ -181,6 +181,27 @@ func TestDeleteMessage(t *testing.T) {
 	}
 }
 
+// DeleteMessage must confirm the target is a real quarantined message before
+// removing it, the same way ReleaseMessage does, so a bad msgID cannot delete
+// an arbitrary directory under the quarantine root.
+func TestDeleteMessageRejectsUnknownMessage(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+
+	// A directory with no metadata.json is not a valid quarantine entry.
+	bogus := filepath.Join(qDir, "not-a-message")
+	if err := os.MkdirAll(bogus, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.DeleteMessage("not-a-message"); err == nil {
+		t.Fatal("DeleteMessage must reject a directory without quarantine metadata")
+	}
+	if _, err := os.Stat(bogus); err != nil {
+		t.Fatal("DeleteMessage removed a directory that was not a valid quarantine entry")
+	}
+}
+
 func TestCleanExpired(t *testing.T) {
 	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
 	q := NewQuarantine(qDir)
