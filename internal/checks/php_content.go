@@ -96,7 +96,51 @@ var (
 	callUserFuncCallNames      = map[string]struct{}{"call_user_func": {}, "call_user_func_array": {}}
 )
 
-const phpContentReadSize = 32768 // Read first 32KB for analysis
+// phpContentReadSize bounds the head window read from a PHP file for content
+// analysis. Most real PHP is far smaller; the window is large enough that an
+// attacker cannot cheaply hide a payload by prepending benign padding.
+const phpContentReadSize = 1 << 20 // 1 MiB head window
+
+// phpContentTailSize is also scanned for files larger than the head window so
+// a payload appended after >1 MiB of padding is still seen. The two windows
+// are scanned together; bounded total memory is head+tail.
+const phpContentTailSize = 64 << 10 // 64 KiB tail window
+
+// readPHPContentWindows returns the bytes to analyse for a PHP file: the
+// first phpContentReadSize bytes, plus the last phpContentTailSize bytes when
+// the file is larger than the head window (joined with a newline so patterns
+// are not spliced across the gap). readOK is false only on a real read error.
+func readPHPContentWindows(f io.ReaderAt, size int64) (head, tail []byte, readOK bool) {
+	headLen := int64(phpContentReadSize)
+	if size >= 0 && size < headLen {
+		headLen = size
+	}
+	headBuf := make([]byte, headLen)
+	n, err := f.ReadAt(headBuf, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, nil, false
+	}
+	head = headBuf[:n]
+
+	if size > int64(phpContentReadSize) {
+		tailLen := int64(phpContentTailSize)
+		off := size - tailLen
+		if off < int64(phpContentReadSize) {
+			// Overlap into the head window is fine; it only re-scans bytes.
+			off = int64(phpContentReadSize)
+			tailLen = size - off
+		}
+		if tailLen > 0 {
+			tailBuf := make([]byte, tailLen)
+			tn, terr := f.ReadAt(tailBuf, off)
+			if terr != nil && !errors.Is(terr, io.EOF) {
+				return nil, nil, false
+			}
+			tail = tailBuf[:tn]
+		}
+	}
+	return head, tail, true
+}
 
 func hasBacktickSuperglobal(code string) bool {
 	for i := 0; i < len(code); i++ {
@@ -1307,8 +1351,8 @@ type phpAnalysisResult struct {
 	empty    bool
 }
 
-// analyzePHPContent reads the first phpContentReadSize bytes of a PHP file
-// and checks for obfuscation and malicious patterns.
+// analyzePHPContent reads a PHP file's head window (and tail window for large
+// files) and checks for obfuscation and malicious patterns.
 func analyzePHPContent(path string) phpAnalysisResult {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -1316,13 +1360,22 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, phpContentReadSize)
-	n, readErr := f.Read(buf)
-	readOK := readErr == nil || errors.Is(readErr, io.EOF)
-	if n == 0 {
-		return phpAnalysisResult{severity: -1, readOK: readOK, empty: readOK}
+	var size int64 = -1
+	if info, statErr := f.Stat(); statErr == nil {
+		size = info.Size()
 	}
-	content := phpCodeOnly(string(buf[:n]))
+	head, tail, readOK := readPHPContentWindows(f, size)
+	if !readOK {
+		return phpAnalysisResult{severity: -1, readOK: false}
+	}
+	if len(head) == 0 && len(tail) == 0 {
+		return phpAnalysisResult{severity: -1, readOK: true, empty: true}
+	}
+	raw := head
+	if len(tail) > 0 {
+		raw = append(append(append([]byte(nil), head...), '\n'), tail...)
+	}
+	content := phpCodeOnly(string(raw))
 	contentLower := strings.ToLower(content)
 
 	var indicators []string

