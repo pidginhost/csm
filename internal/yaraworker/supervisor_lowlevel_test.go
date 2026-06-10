@@ -2,6 +2,7 @@ package yaraworker
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -69,21 +70,65 @@ func TestRestartWorkerOnNeverStartedErrors(t *testing.T) {
 	}
 }
 
-// Backoff escalates only on failed spawns. A successful spawn must keep the
-// current delay: the old behavior doubled it after every successful restart
-// too, so a few early crashes locked every later restart at the maximum
-// delay even once the worker was healthy again.
-func TestNextBackoffGrowsOnlyOnFailedSpawns(t *testing.T) {
+func TestWaitForChildClearsExitedWorkerState(t *testing.T) {
+	sup, err := NewSupervisor(SupervisorConfig{BinaryPath: "/usr/bin/true", SocketPath: "/tmp/x.sock"})
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	cmd := exec.Command("/usr/bin/true")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	sup.mu.Lock()
+	sup.cmd = cmd
+	sup.client = yaraipc.NewClientWithDialer(nil, time.Second)
+	sup.mu.Unlock()
+
+	exitCode, sig := sup.waitForChild()
+	if exitCode != 0 || sig != 0 {
+		t.Fatalf("waitForChild = (%d, %v), want (0, 0)", exitCode, sig)
+	}
+	if got := sup.ChildPID(); got != 0 {
+		t.Fatalf("ChildPID after waitForChild = %d, want 0", got)
+	}
+	sup.mu.Lock()
+	client := sup.client
+	sup.mu.Unlock()
+	if client != nil {
+		t.Fatal("client still set after worker exit")
+	}
+}
+
+func TestRestartBackoffAfterAttempt(t *testing.T) {
 	const max = 60 * time.Second
 
-	if got := nextBackoff(time.Second, false, max); got != time.Second {
-		t.Fatalf("successful spawn changed backoff to %v, want unchanged 1s", got)
+	got, recorded := restartBackoffAfterAttempt(time.Second, false, false, max)
+	if got != 2*time.Second || !recorded {
+		t.Fatalf("unstable exit with clean spawn: got (%v, %t), want (2s, true)", got, recorded)
 	}
-	if got := nextBackoff(time.Second, true, max); got != 2*time.Second {
-		t.Fatalf("failed spawn backoff = %v, want 2s", got)
+
+	got, recorded = restartBackoffAfterAttempt(time.Second, true, false, max)
+	if got != time.Second || !recorded {
+		t.Fatalf("stable exit with clean spawn: got (%v, %t), want (1s, true)", got, recorded)
 	}
-	if got := nextBackoff(40*time.Second, true, max); got != max {
-		t.Fatalf("failed spawn backoff = %v, want capped at %v", got, max)
+
+	got, recorded = restartBackoffAfterAttempt(time.Second, true, true, max)
+	if got != 2*time.Second || !recorded {
+		t.Fatalf("stable exit with failed spawn: got (%v, %t), want (2s, true)", got, recorded)
+	}
+
+	got, recorded = restartBackoffAfterAttempt(time.Second, false, true, max)
+	if got != 2*time.Second || !recorded {
+		t.Fatalf("unstable exit with failed spawn: got (%v, %t), want (2s, true)", got, recorded)
+	}
+	got, recorded = restartBackoffAfterAttempt(got, recorded, false, max)
+	if got != 2*time.Second || !recorded {
+		t.Fatalf("clean spawn after failed retry: got (%v, %t), want (2s, true)", got, recorded)
+	}
+
+	got, recorded = restartBackoffAfterAttempt(40*time.Second, true, true, max)
+	if got != max || !recorded {
+		t.Fatalf("failed spawn cap: got (%v, %t), want (%v, true)", got, recorded, max)
 	}
 }
 

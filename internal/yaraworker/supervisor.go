@@ -322,42 +322,55 @@ func (s *Supervisor) supervise() {
 			s.cfg.OnRestart(exitCode, sig, runDuration)
 		}
 
-		if runDuration >= s.cfg.StableDuration {
+		// A stable exit already reset the delay. Short-lived workers and
+		// failed spawn retries still advance the backoff.
+		exitBackoffRecorded := runDuration >= s.cfg.StableDuration
+		if exitBackoffRecorded {
 			backoff = s.cfg.MinRestartInterval
 		}
 
-		s.logf("worker exited code=%d signal=%v ran=%s, restarting in %s",
-			exitCode, sig, runDuration.Round(time.Millisecond), backoff)
+		for {
+			s.logf("worker exited code=%d signal=%v ran=%s, restarting in %s",
+				exitCode, sig, runDuration.Round(time.Millisecond), backoff)
 
-		select {
-		case <-time.After(backoff):
-		case <-s.ctx.Done():
-			return
-		}
+			select {
+			case <-time.After(backoff):
+			case <-s.ctx.Done():
+				return
+			}
 
-		err := s.spawnAndWaitReady()
-		backoff = nextBackoff(backoff, err != nil, s.cfg.MaxRestartInterval)
-		if err != nil {
+			err := s.spawnAndWaitReady()
+			backoff, exitBackoffRecorded = restartBackoffAfterAttempt(
+				backoff,
+				exitBackoffRecorded,
+				err != nil,
+				s.cfg.MaxRestartInterval,
+			)
+			if err == nil {
+				break
+			}
+			if s.ctx.Err() != nil {
+				return
+			}
 			s.logf("restart failed: %v", err)
 		}
 	}
 }
 
-// nextBackoff returns the restart delay to use after a spawn attempt.
-// It grows only on failed spawns: a successful spawn keeps the current
-// delay, and the stability check at the top of the supervise loop is the
-// only thing that resets it. Doubling on success as well locked every
-// restart at MaxRestartInterval after a handful of early crashes, even
-// once the worker was healthy again.
-func nextBackoff(current time.Duration, spawnFailed bool, max time.Duration) time.Duration {
-	if !spawnFailed {
-		return current
+func restartBackoffAfterAttempt(
+	current time.Duration,
+	exitBackoffRecorded bool,
+	spawnFailed bool,
+	max time.Duration,
+) (time.Duration, bool) {
+	if exitBackoffRecorded && !spawnFailed {
+		return current, exitBackoffRecorded
 	}
 	next := current * 2
 	if next > max {
 		next = max
 	}
-	return next
+	return next, true
 }
 
 // waitForChild blocks until the current worker exits, then returns its
@@ -371,6 +384,15 @@ func (s *Supervisor) waitForChild() (int, syscall.Signal) {
 		return -1, 0
 	}
 	err := cmd.Wait()
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.cmd = nil
+	}
+	if s.client != nil {
+		_ = s.client.Close()
+		s.client = nil
+	}
+	s.mu.Unlock()
 	if err == nil {
 		return 0, 0
 	}
