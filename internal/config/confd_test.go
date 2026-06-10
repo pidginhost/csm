@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -189,6 +190,24 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	}
 	if cfg.AutoResponse.VerdictCallback.TimeoutSec != 2 {
 		t.Fatalf("VerdictCallback.TimeoutSec = %d, want 2", cfg.AutoResponse.VerdictCallback.TimeoutSec)
+	}
+}
+
+func TestLoadWithDir_DedupesScalarSequenceEntries(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("hostname: host.example\ninfra_ips:\n  - 10.0.0.1\n  - 10.0.0.2\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "10-infra.yaml"), []byte("infra_ips:\n  - 10.0.0.2\n  - 10.0.0.3\n"), 0o600))
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if !slices.Equal(cfg.InfraIPs, want) {
+		t.Fatalf("InfraIPs = %v, want %v", cfg.InfraIPs, want)
 	}
 }
 

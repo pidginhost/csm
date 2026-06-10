@@ -42,9 +42,9 @@ func TestDeepMergeTracked_ReportsScalarCollision(t *testing.T) {
 	}
 }
 
-// Sequence + sequence appends. Two fragments contributing extra
-// entries to the same list is the documented merge semantics, not a
-// collision the operator needs to know about.
+// Sequence + sequence merges do not replace the existing value. Two fragments
+// contributing entries to the same list is not a collision the operator needs
+// to know about, even when scalar duplicates are collapsed.
 func TestDeepMergeTracked_NoCollisionOnSequenceAppend(t *testing.T) {
 	base := mustYAML(t, "infra_ips:\n  - 10.0.0.1\n")
 	overlay := mustYAML(t, "infra_ips:\n  - 10.0.0.2\n")

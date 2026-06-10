@@ -12,7 +12,8 @@ type CollisionFn func(keyPath, oldVal, newVal string)
 // DeepMerge merges overlay into base in place and returns base.
 // Both inputs must be DocumentNodes. Rules:
 //   - mapping ∩ mapping → key-by-key recurse
-//   - sequence ∩ sequence → append (base then overlay)
+//   - sequence ∩ sequence → append (base then overlay), with duplicate
+//     scalar entries removed from all-scalar lists
 //   - any other combination → overlay replaces base
 //
 // AliasNodes are treated as opaque scalars: an overlay alias replaces the

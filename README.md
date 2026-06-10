@@ -44,7 +44,7 @@ sudo csm baseline
 
 `csm baseline` talks to the running daemon and records state for change tracking. Dangerous privileged accounts or WHM root tokens can still be reported on that first scan. Add `--confirm` if the command warns that existing history would be cleared.
 
-Web UI at `https://<server>:9443`. Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after the main config in lexicographic order. Scalars override; lists append. Use drop-ins for automation that should not touch the operator's config.
+Web UI at `https://<server>:9443`. Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after the main config in lexicographic order. Scalars override; lists append, with duplicate entries dropped from all-scalar lists. Use drop-ins for automation that should not touch the operator's config.
 
 No repository setup: `curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash`. Full install reference: [Installation](docs/src/installation.md).
 
