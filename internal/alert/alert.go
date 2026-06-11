@@ -16,27 +16,24 @@ import (
 	"github.com/pidginhost/csm/internal/processctx"
 )
 
+const alertDispatchFailuresMetric = "csm_alert_dispatch_failures_total"
+
 // alertDispatchFailures counts individual channel send failures (email,
 // webhook, phpanel) so an operator can see when alerts are silently failing
 // to deliver instead of the daemon looking healthy while findings never
-// reach anyone. Registered once on first dispatch error.
-var (
-	alertDispatchFailures     *metrics.Counter
-	alertDispatchFailuresOnce sync.Once
+// reach anyone.
+var alertDispatchFailures = metrics.NewCounter(
+	alertDispatchFailuresMetric,
+	"Alert deliveries that failed (email/webhook/phpanel). Sustained growth means findings are being detected but not reaching operators -- check SMTP/webhook reachability and credentials.",
 )
 
-func recordDispatchFailures(n int) {
-	if n <= 0 {
-		return
-	}
-	alertDispatchFailuresOnce.Do(func() {
-		alertDispatchFailures = metrics.NewCounter(
-			"csm_alert_dispatch_failures_total",
-			"Alert deliveries that failed (email/webhook/phpanel). Sustained growth means findings are being detected but not reaching operators -- check SMTP/webhook reachability and credentials.",
-		)
-		metrics.MustRegister("csm_alert_dispatch_failures_total", alertDispatchFailures)
-	})
-	alertDispatchFailures.Add(float64(n))
+func init() {
+	metrics.MustRegister(alertDispatchFailuresMetric, alertDispatchFailures)
+}
+
+func addDispatchError(errs *[]error, err error) {
+	*errs = append(*errs, err)
+	alertDispatchFailures.Inc()
 }
 
 // Severity levels for findings.
@@ -605,7 +602,6 @@ func formatDispatchErrors(errs []error) error {
 	if len(errs) == 0 {
 		return nil
 	}
-	recordDispatchFailures(len(errs))
 	msgs := make([]string, len(errs))
 	for i, e := range errs {
 		msgs[i] = e.Error()
@@ -652,7 +648,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	if phpanelWebhook {
 		for _, f := range findings {
 			if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
-				errs = append(errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
+				addDispatchError(&errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
 			}
 		}
 	}
@@ -704,7 +700,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		subject := buildSubject(cfg.Hostname, emailFindings)
 		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
-			errs = append(errs, fmt.Errorf("email: %w", err))
+			addDispatchError(&errs, fmt.Errorf("email: %w", err))
 		} else {
 			dispatched = true
 		}
@@ -714,7 +710,7 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		subject := buildSubject(cfg.Hostname, webhookFindings)
 		body := FormatAlert(cfg.Hostname, webhookFindings)
 		if err := SendWebhook(cfg, subject, body); err != nil {
-			errs = append(errs, fmt.Errorf("webhook: %w", err))
+			addDispatchError(&errs, fmt.Errorf("webhook: %w", err))
 		} else {
 			dispatched = true
 		}

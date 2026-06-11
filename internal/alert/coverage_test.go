@@ -18,6 +18,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 var alertLogCaptureMu sync.Mutex
@@ -1320,28 +1321,49 @@ func TestFinding_TenantFieldsAreOmitemptyWhenZero(t *testing.T) {
 	}
 }
 
-// formatDispatchErrors must bump the dispatch-failure counter so operators
-// can see when alerts are failing to deliver. A clean dispatch must not.
-func TestFormatDispatchErrorsRecordsFailureMetric(t *testing.T) {
+func TestAlertDispatchFailuresMetricIsRegistered(t *testing.T) {
+	var buf bytes.Buffer
+	if err := metrics.WriteOpenMetrics(&buf); err != nil {
+		t.Fatalf("WriteOpenMetrics: %v", err)
+	}
+	if !strings.Contains(buf.String(), alertDispatchFailuresMetric) {
+		t.Fatalf("metric %s was not exported", alertDispatchFailuresMetric)
+	}
+}
+
+func TestDispatchEmailErrorRecordsFailureMetric(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 10
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.From = "csm@example.com"
+	cfg.Alerts.Email.SMTP = "127.0.0.1:1"
+
+	before := alertDispatchFailures.Value()
+	err := Dispatch(cfg, []Finding{{Check: "c", Message: "m", Severity: Critical, Timestamp: time.Now()}})
+	if err == nil {
+		t.Fatal("unreachable SMTP should produce a dispatch error")
+	}
+	if got := alertDispatchFailures.Value() - before; got != 1 {
+		t.Fatalf("counter delta = %g, want 1", got)
+	}
+}
+
+func TestFormatDispatchErrorsDoesNotRecordFailureMetric(t *testing.T) {
 	if err := formatDispatchErrors(nil); err != nil {
 		t.Fatalf("no errors should produce nil, got %v", err)
 	}
-	before := 0.0
-	if alertDispatchFailures != nil {
-		before = alertDispatchFailures.Value()
-	}
+	before := alertDispatchFailures.Value()
 
-	if err := formatDispatchErrors([]error{
+	errs := []error{
 		fmt.Errorf("smtp down"),
 		fmt.Errorf("webhook 500"),
-	}); err == nil {
-		t.Fatal("errors should produce a non-nil error")
 	}
-
-	if alertDispatchFailures == nil {
-		t.Fatal("dispatch failure counter was not registered after a failure")
+	for i := 0; i < 2; i++ {
+		if err := formatDispatchErrors(errs); err == nil {
+			t.Fatal("errors should produce a non-nil error")
+		}
 	}
-	if got := alertDispatchFailures.Value() - before; got != 2 {
-		t.Fatalf("counter delta = %g, want 2", got)
+	if got := alertDispatchFailures.Value() - before; got != 0 {
+		t.Fatalf("counter delta from formatting = %g, want 0", got)
 	}
 }

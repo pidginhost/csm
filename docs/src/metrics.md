@@ -83,6 +83,13 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   `WARNING` (matching the `alert.Severity` enum). Use `rate(...)`
   for arrival velocity; watch for sudden CRITICAL spikes.
 
+### Alert delivery
+
+- `csm_alert_dispatch_failures_total` (counter): alert channel sends
+  that failed after CSM detected findings. Counts email, webhook, and
+  phpanel delivery failures. Sustained growth means findings are not
+  reaching operators; check SMTP, webhook reachability, and credentials.
+
 ### State
 
 - `csm_store_size_bytes` (gauge): on-disk size of the bbolt state

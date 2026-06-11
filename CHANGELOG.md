@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Failed alert delivery metrics are now recorded once when a channel send fails, so repeated error handling cannot inflate the count.
+
 - Email quarantine actions now reject empty, dot, parent, and path-like message IDs before touching disk, so a malformed ID cannot resolve to the quarantine root or its parent.
 
 - The web UI CSRF check now fails closed without an active admin credential and no longer derives tokens from disabled legacy credentials.
