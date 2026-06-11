@@ -10,10 +10,8 @@ import (
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
-// numericIDRe validates that a post ID is digits only before it is
-// interpolated into a DELETE. Compiled once: it was previously rebuilt on
-// every 100-row batch of every spam pattern.
-var numericIDRe = regexp.MustCompile(`^\d+$`)
+// spamPostIDRe guards the ID list interpolated into root DELETE statements.
+var spamPostIDRe = regexp.MustCompile(`^[0-9]+$`)
 
 // DBCleanResult describes the outcome of a database cleanup operation.
 type DBCleanResult struct {
@@ -262,7 +260,7 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 			var validIDs []string
 			for _, id := range batch {
 				id = strings.TrimSpace(id)
-				if numericIDRe.MatchString(id) {
+				if spamPostIDRe.MatchString(id) {
 					validIDs = append(validIDs, id)
 				}
 			}

@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mail-provider deferral text captured from remote servers is now truncated on a character boundary, so a multi-byte character at the limit can no longer be stored as corrupt text.
 - A failed verdict-callback now reports the IP through the normal error path instead of writing it to standard error.
 
-- Database spam cleanup no longer recompiles the post-ID validation pattern for every batch of every spam pattern, speeding up remediation on large infected databases.
+- Database spam cleanup now avoids repeated validation setup, speeding up remediation on large infected databases.
 
 - Config drop-in fragments that repeat a list entry already in the main config (infra IPs, blocklists, trusted countries, disabled checks) no longer produce duplicates after merge; lists of structured entries such as tokens are still appended unchanged.
 - PHP content analysis now scans a much larger head window plus the tail of large files, and treats skipped middle content as a hard boundary. Malicious payloads can no longer hide behind padding that pushed them past the old fixed read size.

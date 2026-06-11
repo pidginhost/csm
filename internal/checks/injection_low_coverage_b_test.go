@@ -580,6 +580,7 @@ $table_prefix = 'wp_';
 `
 	withMockOS(t, wpConfigFixture(t, "nnuser", wpCfg))
 
+	var deleteQueries []string
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "mysql" {
@@ -593,6 +594,10 @@ $table_prefix = 'wp_';
 					if strings.Contains(a, "SELECT ID") {
 						return []byte("NOTANUMBER\nALSOBAD\n"), nil
 					}
+					if strings.Contains(a, "DELETE") {
+						deleteQueries = append(deleteQueries, a)
+						return nil, nil
+					}
 				}
 			}
 			return nil, nil
@@ -602,6 +607,12 @@ $table_prefix = 'wp_';
 	result := DBDeleteSpam("nnuser", false)
 	if !result.Success {
 		t.Errorf("should succeed even with 0 deletions, got: %s", result.Message)
+	}
+	if len(deleteQueries) != 0 {
+		t.Fatalf("expected no DELETE queries for nonnumeric IDs, got %d: %v", len(deleteQueries), deleteQueries)
+	}
+	if !strings.Contains(result.Message, "Deleted 0 spam posts") {
+		t.Errorf("expected zero-deletion message, got: %s", result.Message)
 	}
 }
 
