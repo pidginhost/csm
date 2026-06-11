@@ -80,7 +80,11 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 
 	trusted := make(map[string]bool)
 	for _, p := range cfg.Challenge.TrustedProxies {
-		trusted[strings.TrimSpace(p)] = true
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		trusted[canonicalIP(p)] = true
 	}
 
 	s := &Server{
@@ -614,6 +618,7 @@ func (s *Server) CleanExpired() {
 // to mint firewall allow rules for arbitrary addresses.
 func (s *Server) extractIP(r *http.Request) string {
 	peerIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	peerIP = canonicalIP(peerIP)
 	if len(s.trustedProxies) > 0 && s.trustedProxies[peerIP] {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
@@ -626,7 +631,7 @@ func (s *Server) extractIP(r *http.Request) string {
 			}
 		}
 	}
-	return canonicalIP(peerIP)
+	return peerIP
 }
 
 // canonicalIP normalizes an IP string so downstream exact-match lookups (the

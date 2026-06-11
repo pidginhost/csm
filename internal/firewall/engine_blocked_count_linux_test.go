@@ -56,6 +56,26 @@ func TestEngineBlockedCount_ExpiredEntriesNotCounted(t *testing.T) {
 	}
 }
 
+func TestEngineBlockedCountDeduplicatesIPv4MappedRows(t *testing.T) {
+	dir := t.TempDir()
+	state := FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.10", Reason: "canonical", BlockedAt: time.Now()},
+			{IP: "::ffff:203.0.113.10", Reason: "mapped", BlockedAt: time.Now()},
+			{IP: "not-an-ip", Reason: "invalid", BlockedAt: time.Now()},
+		},
+	}
+	data, _ := json.MarshalIndent(state, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0600); err != nil {
+		t.Fatalf("write state.json: %v", err)
+	}
+
+	e := &Engine{statePath: dir}
+	if got := e.BlockedCount(); got != 1 {
+		t.Errorf("BlockedCount = %d, want 1 canonical enforced IP", got)
+	}
+}
+
 func TestEngineBlockedCount_MissingStateFileReturnsZero(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}

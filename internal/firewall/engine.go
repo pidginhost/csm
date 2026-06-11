@@ -101,8 +101,7 @@ type Engine struct {
 	// All four fields are written only while e.mu is held. The index
 	// maps are rebuilt every time stateCache is repopulated so
 	// O(1) lookups stay coherent with the cached slices. blockedIPIndex
-	// stores the slice position for each IP so saveBlockedEntry can
-	// update in place without a linear dedup scan.
+	// stores the slice position for each canonical IP.
 	stateCache       *FirewallState
 	stateCacheKey    stateFileCacheKey
 	blockedIPIndex   map[string]int
@@ -1259,6 +1258,127 @@ func (e *Engine) resolveIPSet(ip string, set4, set6 *nftables.Set) (*nftables.Se
 	return set6, parsed.To16(), nil
 }
 
+func canonicalFirewallIP(ip string) (string, error) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", fmt.Errorf("invalid IP: %s", ip)
+	}
+	return parsed.String(), nil
+}
+
+func canonicalIPKey(ip string) (string, bool) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+func stateIPKey(ip string) string {
+	if key, ok := canonicalIPKey(ip); ok {
+		return key
+	}
+	return ip
+}
+
+func sameIPString(a, b string) bool {
+	if a == b {
+		return true
+	}
+	aKey, aOK := canonicalIPKey(a)
+	if !aOK {
+		return false
+	}
+	bKey, bOK := canonicalIPKey(b)
+	return bOK && aKey == bKey
+}
+
+func preferLongerLivedBlock(current, candidate BlockedEntry) BlockedEntry {
+	if current.ExpiresAt.IsZero() {
+		return current
+	}
+	if candidate.ExpiresAt.IsZero() || candidate.ExpiresAt.After(current.ExpiresAt) {
+		return candidate
+	}
+	return current
+}
+
+func preferLongerLivedAllow(current, candidate AllowedEntry) AllowedEntry {
+	if current.ExpiresAt.IsZero() {
+		return current
+	}
+	if candidate.ExpiresAt.IsZero() || candidate.ExpiresAt.After(current.ExpiresAt) {
+		return candidate
+	}
+	return current
+}
+
+func normalizeFirewallStateIPs(state *FirewallState) {
+	blockedPos := make(map[string]int, len(state.Blocked))
+	blocked := state.Blocked[:0]
+	for _, entry := range state.Blocked {
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
+			blocked = append(blocked, entry)
+			continue
+		}
+		entry.IP = key
+		if i, exists := blockedPos[key]; exists {
+			blocked[i] = preferLongerLivedBlock(blocked[i], entry)
+			continue
+		}
+		blockedPos[key] = len(blocked)
+		blocked = append(blocked, entry)
+	}
+	state.Blocked = blocked
+
+	type allowedKey struct {
+		ip     string
+		source string
+	}
+	allowedPos := make(map[allowedKey]int, len(state.Allowed))
+	allowed := state.Allowed[:0]
+	for _, entry := range state.Allowed {
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
+			allowed = append(allowed, entry)
+			continue
+		}
+		entry.IP = key
+		dedupKey := allowedKey{ip: key, source: entry.Source}
+		if i, exists := allowedPos[dedupKey]; exists {
+			allowed[i] = preferLongerLivedAllow(allowed[i], entry)
+			continue
+		}
+		allowedPos[dedupKey] = len(allowed)
+		allowed = append(allowed, entry)
+	}
+	state.Allowed = allowed
+
+	type portAllowKey struct {
+		ip    string
+		port  int
+		proto string
+	}
+	portAllowedPos := make(map[portAllowKey]struct{}, len(state.PortAllowed))
+	portAllowed := state.PortAllowed[:0]
+	for _, entry := range state.PortAllowed {
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
+			portAllowed = append(portAllowed, entry)
+			continue
+		}
+		entry.IP = key
+		dedupKey := portAllowKey{ip: key, port: entry.Port, proto: entry.Proto}
+		if _, exists := portAllowedPos[dedupKey]; exists {
+			continue
+		}
+		portAllowedPos[dedupKey] = struct{}{}
+		portAllowed = append(portAllowed, entry)
+	}
+	state.PortAllowed = portAllowed
+}
+
 // addSetMatchRule adds an IPv4 source-IP set match rule on the input chain.
 func (e *Engine) addSetMatchRule(set *nftables.Set, verdict expr.VerdictKind) {
 	e.conn.AddRule(&nftables.Rule{
@@ -1405,6 +1525,12 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
 func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration) (BlockOutcome, error) {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return BlockOutcomeNoop, err
+	}
+	ip = canonical
+
 	// Local safety checks always run before consulting the external callback.
 	// The callback can downgrade a block decision, but it cannot bypass
 	// malformed-IP, IPv6-disabled, infra-IP, or block-limit guards.
@@ -1474,12 +1600,15 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) e
 // the block the operator wanted made permanent. Returns an error if the IP is
 // not currently blocked (nothing to promote).
 func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if net.ParseIP(ip) == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
-	}
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
 		return err
@@ -1490,7 +1619,7 @@ func (e *Engine) PromoteToPermanentBlock(ip, reason string) error {
 	found := false
 	wasTemporary := false
 	for _, b := range priorState.Blocked {
-		if b.IP == ip {
+		if sameIPString(b.IP, ip) {
 			found = true
 			wasTemporary = !b.ExpiresAt.IsZero()
 			entry.BlockedAt = b.BlockedAt
@@ -1557,6 +1686,12 @@ func (e *Engine) recordDryRunBlock(ip, reason string, timeout time.Duration) {
 
 // blockIPLocked is the real implementation called by both BlockIP and BlockIPForce.
 func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, skipExisting bool) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1634,6 +1769,12 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 }
 
 func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return false, err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	_, _, alreadyBlocked, _, err := e.blockIPTarget(ip, timeout, skipExisting)
@@ -1645,6 +1786,7 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if parsed == nil {
 		return nil, nil, false, "", fmt.Errorf("invalid IP: %s", ip)
 	}
+	ip = parsed.String()
 
 	// SAFETY: never block infra IPs - prevents admin lockout.
 	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
@@ -1703,17 +1845,11 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
 		perm, temp, ok := e.livePermTempCountsLocked(st)
 		if !ok {
-			perm, temp = 0, 0
-			for _, b := range st.Blocked {
-				if cachedBlockMissingLive && b.IP == ip {
-					continue
-				}
-				if b.ExpiresAt.IsZero() {
-					perm++
-				} else {
-					temp++
-				}
+			excludeIP := ""
+			if cachedBlockMissingLive {
+				excludeIP = ip
 			}
+			perm, temp = blockedStatePermTempCounts(st, excludeIP)
 		}
 		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
 			return nil, nil, false, "", fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
@@ -1743,7 +1879,7 @@ func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 	var bestExp time.Time
 	found := false
 	for _, b := range st.Blocked {
-		if b.IP == excludeIP || b.ExpiresAt.IsZero() {
+		if sameIPString(b.IP, excludeIP) || b.ExpiresAt.IsZero() {
 			continue
 		}
 		if !found || b.ExpiresAt.Before(bestExp) {
@@ -1755,7 +1891,7 @@ func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 
 func firewallStateHasBlocked(state FirewallState, ip string) bool {
 	for _, entry := range state.Blocked {
-		if entry.IP == ip {
+		if sameIPString(entry.IP, ip) {
 			return true
 		}
 	}
@@ -1763,17 +1899,47 @@ func firewallStateHasBlocked(state FirewallState, ip string) bool {
 }
 
 func countPermanentBlockedEntries(state FirewallState) int {
-	count := 0
+	perm, _ := blockedStatePermTempCounts(state, "")
+	return perm
+}
+
+func blockedStatePermTempCounts(state FirewallState, excludeIP string) (perm, temp int) {
+	seen := make(map[string]bool, len(state.Blocked))
 	for _, entry := range state.Blocked {
-		if entry.ExpiresAt.IsZero() {
-			count++
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
+			continue
+		}
+		if excludeIP != "" && sameIPString(key, excludeIP) {
+			continue
+		}
+		isTemp := !entry.ExpiresAt.IsZero()
+		if priorTemp, exists := seen[key]; exists {
+			if priorTemp && !isTemp {
+				seen[key] = false
+			}
+			continue
+		}
+		seen[key] = isTemp
+	}
+	for _, isTemp := range seen {
+		if isTemp {
+			temp++
+		} else {
+			perm++
 		}
 	}
-	return count
+	return perm, temp
 }
 
 // UnblockIP removes an IP from the blocked set and state.
 func (e *Engine) UnblockIP(ip string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2000,6 +2166,12 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 }
 
 func (e *Engine) allowIP(ip string, reason string, timeout time.Duration, action string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2100,7 +2272,7 @@ func (e *Engine) CleanExpiredAllows() int {
 
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			expiredIPs[entry.IP] = true
+			expiredIPs[stateIPKey(entry.IP)] = true
 			expired = append(expired, entry)
 			removed++
 		} else {
@@ -2112,7 +2284,7 @@ func (e *Engine) CleanExpiredAllows() int {
 		// Only remove from nftables if no active entries remain for the IP
 		activeIPs := make(map[string]bool)
 		for _, entry := range active {
-			activeIPs[entry.IP] = true
+			activeIPs[stateIPKey(entry.IP)] = true
 		}
 		queueFailedIPs := make(map[string]bool)
 		queuedDeletes := false
@@ -2143,7 +2315,7 @@ func (e *Engine) CleanExpiredAllows() int {
 		// re-deleting their missing elements failed every following tick.
 		dropped := make([]AllowedEntry, 0, len(expired))
 		for _, entry := range expired {
-			if queueFailedIPs[entry.IP] {
+			if queueFailedIPs[stateIPKey(entry.IP)] {
 				active = append(active, entry)
 				continue
 			}
@@ -2227,6 +2399,12 @@ func (e *Engine) CleanExpiredSubnets() int {
 
 // RemoveAllowIP removes an IP from the allowed set and state.
 func (e *Engine) RemoveAllowIP(ip string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2250,6 +2428,12 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 // RemoveAllowIPBySource removes only allow entries from a specific source.
 // The IP is only removed from the nftables set if no other sources remain.
 func (e *Engine) RemoveAllowIPBySource(ip, source string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2274,9 +2458,11 @@ func (e *Engine) RemoveAllowIPBySource(ip, source string) error {
 // AllowIPPort adds a port-specific IP allow. The rule is persisted to state
 // and applied on the next Apply(). For immediate effect, call Apply() after.
 func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) error {
-	if net.ParseIP(ip) == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
 	}
+	ip = canonical
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("invalid port: %d", port)
 	}
@@ -2290,7 +2476,7 @@ func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) e
 	st := e.loadStateFile()
 	// Deduplicate
 	for _, existing := range st.PortAllowed {
-		if existing.IP == ip && existing.Port == port && existing.Proto == proto {
+		if sameIPString(existing.IP, ip) && existing.Port == port && existing.Proto == proto {
 			return nil // already exists
 		}
 	}
@@ -2304,6 +2490,12 @@ func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) e
 
 // RemoveAllowIPPort removes a port-specific IP allow from state.
 func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return err
+	}
+	ip = canonical
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -2311,7 +2503,7 @@ func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
 	var remaining []PortAllowEntry
 	found := false
 	for _, entry := range st.PortAllowed {
-		if entry.IP == ip && entry.Port == port && entry.Proto == proto {
+		if sameIPString(entry.IP, ip) && entry.Port == port && entry.Proto == proto {
 			found = true
 			continue
 		}
@@ -2710,7 +2902,8 @@ func (e *Engine) isLocalAddrLocked(ip string) bool {
 func (e *Engine) BlockedCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return len(e.loadStateFile().Blocked)
+	s := e.loadStateFile()
+	return countBlockedRules(s.Blocked, e.cfg != nil && e.cfg.IPv6)
 }
 
 // RuleCounts returns the cardinality of every firewall rule category from
@@ -2768,14 +2961,19 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	state := e.loadStateFile()
 	now := time.Now()
 	var ibs initialBlockState
+	restoredBlocked := make(map[string]bool)
 	for _, entry := range state.Blocked {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
 		}
-		parsed := net.ParseIP(entry.IP)
-		if parsed == nil {
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
 			continue
 		}
+		if restoredBlocked[key] {
+			continue
+		}
+		parsed := net.ParseIP(entry.IP)
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
 			timeout = time.Until(entry.ExpiresAt)
@@ -2785,25 +2983,27 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 		} else if e.cfg.IPv6 {
 			ibs.blocked6 = append(ibs.blocked6, nftables.SetElement{Key: parsed.To16(), Timeout: timeout})
 		}
+		restoredBlocked[key] = true
 	}
 	restoredAllowed := make(map[string]bool)
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
 		}
-		if restoredAllowed[entry.IP] {
+		key, ok := canonicalIPKey(entry.IP)
+		if !ok {
+			continue
+		}
+		if restoredAllowed[key] {
 			continue
 		}
 		parsed := net.ParseIP(entry.IP)
-		if parsed == nil {
-			continue
-		}
 		if ip4 := parsed.To4(); ip4 != nil {
 			ibs.allowed4 = append(ibs.allowed4, nftables.SetElement{Key: ip4})
 		} else if e.cfg.IPv6 {
 			ibs.allowed6 = append(ibs.allowed6, nftables.SetElement{Key: parsed.To16()})
 		}
-		restoredAllowed[entry.IP] = true
+		restoredAllowed[key] = true
 	}
 	for _, entry := range state.BlockedNet {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
@@ -2969,6 +3169,7 @@ func (e *Engine) ensureStateCacheLocked() {
 		return
 	}
 
+	normalizeFirewallStateIPs(&fresh)
 	e.stateCache = &fresh
 	e.applyExpiryLocked()
 	e.rebuildIndexLocked()
@@ -3024,11 +3225,17 @@ func (e *Engine) rebuildIndexLocked() {
 	blocked := make(map[string]int, len(s.Blocked))
 	for i, entry := range s.Blocked {
 		blocked[entry.IP] = i
+		if key, ok := canonicalIPKey(entry.IP); ok {
+			blocked[key] = i
+		}
 	}
 	e.blockedIPIndex = blocked
 	allowed := make(map[string]struct{}, len(s.Allowed))
 	for _, entry := range s.Allowed {
 		allowed[entry.IP] = struct{}{}
+		if key, ok := canonicalIPKey(entry.IP); ok {
+			allowed[key] = struct{}{}
+		}
 	}
 	e.allowedIPIndex = allowed
 	subnets := make(map[string]struct{}, len(s.BlockedNet))
@@ -3112,18 +3319,20 @@ var writeFirewallStateJSON = atomicio.AtomicWriteJSON
 // keeps mutating the local FirewallState after saveState returns cannot
 // corrupt the cache.
 func (e *Engine) saveState(s *FirewallState) error {
+	state := copyFirewallState(*s)
+	normalizeFirewallStateIPs(&state)
 	path := filepath.Join(e.statePath, "state.json")
-	if err := writeFirewallStateJSON(path, 0o600, s); err != nil {
-		if firewallStateFileMatches(path, 0o600, s) {
+	if err := writeFirewallStateJSON(path, 0o600, &state); err != nil {
+		if firewallStateFileMatches(path, 0o600, &state) {
 			fmt.Fprintf(os.Stderr, "firewall: state.json committed with persistence warning: %v\n", err)
-			e.setStateCacheLocked(path, s)
+			e.setStateCacheLocked(path, &state)
 			return nil
 		}
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
 		return err
 	}
-	e.setStateCacheLocked(path, s)
+	e.setStateCacheLocked(path, &state)
 	return nil
 }
 
@@ -3150,11 +3359,13 @@ func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 		cacheKey = stateFileCacheKeyFromInfo(info)
 	}
 
+	state := copyFirewallState(*s)
+	normalizeFirewallStateIPs(&state)
 	e.stateCache = &FirewallState{
-		Blocked:     append([]BlockedEntry(nil), s.Blocked...),
-		BlockedNet:  append([]SubnetEntry(nil), s.BlockedNet...),
-		Allowed:     append([]AllowedEntry(nil), s.Allowed...),
-		PortAllowed: append([]PortAllowEntry(nil), s.PortAllowed...),
+		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
+		BlockedNet:  append([]SubnetEntry(nil), state.BlockedNet...),
+		Allowed:     append([]AllowedEntry(nil), state.Allowed...),
+		PortAllowed: append([]PortAllowEntry(nil), state.PortAllowed...),
 	}
 	e.stateCacheKey = cacheKey
 	e.rebuildIndexLocked()
@@ -3176,19 +3387,31 @@ func copyFirewallState(s FirewallState) FirewallState {
 }
 
 func upsertBlockedEntryInState(state *FirewallState, entry BlockedEntry) {
-	for i := range state.Blocked {
-		if state.Blocked[i].IP == entry.IP {
-			state.Blocked[i] = entry
-			return
-		}
+	if key, ok := canonicalIPKey(entry.IP); ok {
+		entry.IP = key
 	}
-	state.Blocked = append(state.Blocked, entry)
+	out := state.Blocked[:0]
+	written := false
+	for _, existing := range state.Blocked {
+		if sameIPString(existing.IP, entry.IP) {
+			if !written {
+				out = append(out, entry)
+				written = true
+			}
+			continue
+		}
+		out = append(out, existing)
+	}
+	if !written {
+		out = append(out, entry)
+	}
+	state.Blocked = out
 }
 
 func removeBlockedIPFromState(state *FirewallState, ip string) {
 	remaining := state.Blocked[:0]
 	for _, entry := range state.Blocked {
-		if entry.IP == ip {
+		if sameIPString(entry.IP, ip) {
 			continue
 		}
 		remaining = append(remaining, entry)
@@ -3197,13 +3420,25 @@ func removeBlockedIPFromState(state *FirewallState, ip string) {
 }
 
 func upsertAllowedEntryInState(state *FirewallState, entry AllowedEntry) {
-	for i, existing := range state.Allowed {
-		if existing.IP == entry.IP && existing.Source == entry.Source {
-			state.Allowed[i] = entry
-			return
-		}
+	if key, ok := canonicalIPKey(entry.IP); ok {
+		entry.IP = key
 	}
-	state.Allowed = append(state.Allowed, entry)
+	out := state.Allowed[:0]
+	written := false
+	for _, existing := range state.Allowed {
+		if sameIPString(existing.IP, entry.IP) && existing.Source == entry.Source {
+			if !written {
+				out = append(out, entry)
+				written = true
+			}
+			continue
+		}
+		out = append(out, existing)
+	}
+	if !written {
+		out = append(out, entry)
+	}
+	state.Allowed = out
 }
 
 func addSubnetEntryIfMissingInState(state *FirewallState, entry SubnetEntry) bool {
@@ -3232,14 +3467,11 @@ func (e *Engine) saveBlockedEntry(entry BlockedEntry) error {
 	if entry.Source == "" {
 		entry.Source = InferProvenance("block", entry.Reason)
 	}
-	state := e.loadStateFile()
-	// Position index makes dedup O(1) instead of a linear scan over every
-	// blocked entry per call. Hot during correlator-driven block bursts.
-	if i, ok := e.blockedIPIndex[entry.IP]; ok && i >= 0 && i < len(state.Blocked) && state.Blocked[i].IP == entry.IP {
-		state.Blocked[i] = entry
-		return e.saveState(&state)
+	if key, ok := canonicalIPKey(entry.IP); ok {
+		entry.IP = key
 	}
-	state.Blocked = append(state.Blocked, entry)
+	state := e.loadStateFile()
+	upsertBlockedEntryInState(&state, entry)
 	return e.saveState(&state)
 }
 
@@ -3247,7 +3479,7 @@ func (e *Engine) removeBlockedState(ip string) {
 	state := e.loadStateFile()
 	var remaining []BlockedEntry
 	for _, entry := range state.Blocked {
-		if entry.IP != ip {
+		if !sameIPString(entry.IP, ip) {
 			remaining = append(remaining, entry)
 		}
 	}
@@ -3259,15 +3491,11 @@ func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
 	if entry.Source == "" {
 		entry.Source = InferProvenance("allow", entry.Reason)
 	}
-	state := e.loadStateFile()
-	for i, existing := range state.Allowed {
-		if existing.IP == entry.IP && existing.Source == entry.Source {
-			state.Allowed[i] = entry // update reason/expiry for same source
-			_ = e.saveState(&state)
-			return
-		}
+	if key, ok := canonicalIPKey(entry.IP); ok {
+		entry.IP = key
 	}
-	state.Allowed = append(state.Allowed, entry)
+	state := e.loadStateFile()
+	upsertAllowedEntryInState(&state, entry)
 	_ = e.saveState(&state)
 }
 
@@ -3275,7 +3503,7 @@ func (e *Engine) removeAllowedState(ip string) {
 	state := e.loadStateFile()
 	var remaining []AllowedEntry
 	for _, entry := range state.Allowed {
-		if entry.IP != ip {
+		if !sameIPString(entry.IP, ip) {
 			remaining = append(remaining, entry)
 		}
 	}
@@ -3292,12 +3520,12 @@ func (e *Engine) removeAllowedStateBySource(ip, source string) bool {
 	found := false
 	ipStillPresent := false
 	for _, entry := range state.Allowed {
-		if entry.IP == ip && entry.Source == source {
+		if sameIPString(entry.IP, ip) && entry.Source == source {
 			found = true
 			continue
 		}
 		remaining = append(remaining, entry)
-		if entry.IP == ip {
+		if sameIPString(entry.IP, ip) {
 			ipStillPresent = true
 		}
 	}

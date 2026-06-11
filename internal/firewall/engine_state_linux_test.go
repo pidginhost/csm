@@ -112,6 +112,113 @@ func TestEngineSaveBlockedEntryDedup(t *testing.T) {
 	}
 }
 
+func TestBlockedStateHelpersMatchIPv4MappedForms(t *testing.T) {
+	state := FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.10", Reason: "old"},
+			{IP: "::ffff:203.0.113.10", Reason: "duplicate"},
+		},
+	}
+
+	upsertBlockedEntryInState(&state, BlockedEntry{IP: "::ffff:203.0.113.10", Reason: "new"})
+	if len(state.Blocked) != 1 {
+		t.Fatalf("blocked entries = %d, want 1", len(state.Blocked))
+	}
+	if state.Blocked[0].IP != "203.0.113.10" {
+		t.Fatalf("stored IP = %q, want canonical 203.0.113.10", state.Blocked[0].IP)
+	}
+	if state.Blocked[0].Reason != "new" {
+		t.Fatalf("reason = %q, want new", state.Blocked[0].Reason)
+	}
+
+	removeBlockedIPFromState(&state, "::ffff:203.0.113.10")
+	if len(state.Blocked) != 0 {
+		t.Fatalf("mapped remove left blocked entries: %+v", state.Blocked)
+	}
+}
+
+func TestFirewallStateNormalizationCanonicalizesIPv4MappedRows(t *testing.T) {
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}}
+	now := time.Now()
+	state := FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "::ffff:203.0.113.10", Reason: "temporary", ExpiresAt: now.Add(time.Hour)},
+			{IP: "203.0.113.10", Reason: "permanent"},
+		},
+		Allowed: []AllowedEntry{
+			{IP: "::ffff:10.0.0.42", Source: SourceCLI, ExpiresAt: now.Add(time.Hour)},
+			{IP: "10.0.0.42", Source: SourceCLI},
+			{IP: "::ffff:10.0.0.42", Source: SourceDynDNS},
+		},
+		PortAllowed: []PortAllowEntry{
+			{IP: "::ffff:10.0.0.50", Port: 993, Proto: "tcp", Reason: "mapped"},
+			{IP: "10.0.0.50", Port: 993, Proto: "tcp", Reason: "duplicate"},
+		},
+	}
+	if err := e.saveState(&state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	got := e.loadStateFile()
+	if len(got.Blocked) != 1 || got.Blocked[0].IP != "203.0.113.10" || !got.Blocked[0].ExpiresAt.IsZero() {
+		t.Fatalf("blocked rows = %+v, want one canonical permanent row", got.Blocked)
+	}
+	if len(got.Allowed) != 2 {
+		t.Fatalf("allowed rows = %+v, want two sources for the canonical IP", got.Allowed)
+	}
+	for _, entry := range got.Allowed {
+		if entry.IP != "10.0.0.42" {
+			t.Fatalf("allowed IP = %q, want canonical 10.0.0.42", entry.IP)
+		}
+		if entry.Source == SourceCLI && !entry.ExpiresAt.IsZero() {
+			t.Fatalf("CLI allow = %+v, want permanent row to win", entry)
+		}
+	}
+	if len(got.PortAllowed) != 1 || got.PortAllowed[0].IP != "10.0.0.50" {
+		t.Fatalf("port-allowed rows = %+v, want one canonical row", got.PortAllowed)
+	}
+}
+
+func TestBlockedStateCountsDeduplicateIPv4MappedRows(t *testing.T) {
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.10"},
+		{IP: "::ffff:203.0.113.10", ExpiresAt: time.Now().Add(time.Hour)},
+		{IP: "::ffff:203.0.113.11", ExpiresAt: time.Now().Add(time.Hour)},
+		{IP: "203.0.113.11", ExpiresAt: time.Now().Add(2 * time.Hour)},
+		{IP: "not-an-ip"},
+	}}
+
+	perm, temp := blockedStatePermTempCounts(state, "")
+	if perm != 1 || temp != 1 {
+		t.Fatalf("counts = perm %d temp %d, want perm 1 temp 1", perm, temp)
+	}
+	if got := countPermanentBlockedEntries(state); got != 1 {
+		t.Fatalf("permanent count = %d, want 1", got)
+	}
+	perm, temp = blockedStatePermTempCounts(state, "::ffff:203.0.113.10")
+	if perm != 0 || temp != 1 {
+		t.Fatalf("excluded counts = perm %d temp %d, want perm 0 temp 1", perm, temp)
+	}
+}
+
+func TestInitialBlockStateDeduplicatesIPv4MappedRows(t *testing.T) {
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{IPv6: true}}
+	if err := e.saveState(&FirewallState{Blocked: []BlockedEntry{
+		{IP: "::ffff:203.0.113.10", Reason: "mapped"},
+		{IP: "203.0.113.10", Reason: "canonical"},
+	}}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	ibs := e.computeInitialBlockStateLocked()
+	if len(ibs.blocked4) != 1 {
+		t.Fatalf("IPv4 blocked elements = %d, want 1", len(ibs.blocked4))
+	}
+	if got := net.IP(ibs.blocked4[0].Key).String(); got != "203.0.113.10" {
+		t.Fatalf("blocked key = %q, want 203.0.113.10", got)
+	}
+}
+
 func TestEngineRemoveBlockedState(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{statePath: dir}

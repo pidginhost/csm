@@ -290,13 +290,19 @@ func TestNewRandomSecretWhenEmpty(t *testing.T) {
 
 func TestNewWiresTrustedProxies(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Challenge.TrustedProxies = []string{"10.0.0.1", "  10.0.0.2  "}
+	cfg.Challenge.TrustedProxies = []string{"10.0.0.1", "  10.0.0.2  ", "::ffff:10.0.0.3", ""}
 	s := New(cfg, nil, nil)
 	if !s.trustedProxies["10.0.0.1"] {
 		t.Error("10.0.0.1 should be trusted")
 	}
 	if !s.trustedProxies["10.0.0.2"] {
 		t.Error("10.0.0.2 should be trusted after whitespace trim")
+	}
+	if !s.trustedProxies["10.0.0.3"] {
+		t.Error("IPv4-mapped trusted proxy should be stored in canonical form")
+	}
+	if s.trustedProxies[""] {
+		t.Error("empty trusted proxy entries should be ignored")
 	}
 }
 
@@ -558,6 +564,19 @@ func TestExtractIPTrustedProxyUsesRightmostXFF(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "8.8.8.8, 203.0.113.10")
 	if got := s.extractIP(req); got != "203.0.113.10" {
 		t.Errorf("got %q, want 203.0.113.10 (rightmost XFF)", got)
+	}
+}
+
+func TestExtractIPTrustedProxyCanonicalizesPeerBeforeLookup(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
+	s := New(cfg, nil, nil)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "[::ffff:10.0.0.1]:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.10")
+	if got := s.extractIP(req); got != "203.0.113.10" {
+		t.Errorf("got %q, want trusted XFF client 203.0.113.10", got)
 	}
 }
 

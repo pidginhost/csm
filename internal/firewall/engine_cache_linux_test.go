@@ -59,6 +59,50 @@ func TestEngine_IsBlockedHitsCache(t *testing.T) {
 	}
 }
 
+func TestEngine_IsBlockedMatchesIPv4MappedStateRows(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{statePath: dir}
+
+	state := FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "::ffff:203.0.113.10", Reason: "legacy", BlockedAt: time.Now()},
+		},
+	}
+	data, err := json.MarshalIndent(&state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !e.IsBlocked("203.0.113.10") {
+		t.Error("canonical IPv4 lookup should match legacy IPv4-mapped state row")
+	}
+	if !e.IsBlocked("::ffff:203.0.113.10") {
+		t.Error("IPv4-mapped lookup should match legacy IPv4-mapped state row")
+	}
+}
+
+func TestSaveBlockedEntryCanonicalizesIPv4MappedIP(t *testing.T) {
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}}
+
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "::ffff:203.0.113.10", Reason: "test"}); err != nil {
+		t.Fatalf("saveBlockedEntry: %v", err)
+	}
+
+	state := e.loadStateFile()
+	if len(state.Blocked) != 1 {
+		t.Fatalf("blocked entries = %d, want 1", len(state.Blocked))
+	}
+	if state.Blocked[0].IP != "203.0.113.10" {
+		t.Fatalf("stored IP = %q, want canonical 203.0.113.10", state.Blocked[0].IP)
+	}
+	if !e.IsBlocked("::ffff:203.0.113.10") {
+		t.Error("mapped lookup should match canonical saved row")
+	}
+}
+
 // An external writer (CLI, test, migrated import) replacing state.json
 // must take effect on the next read. The cache uses mtime equality as
 // the invalidation key; bump mtime and confirm new entries appear.

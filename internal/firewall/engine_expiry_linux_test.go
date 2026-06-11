@@ -102,6 +102,33 @@ func TestCleanExpiredAllowsUsesRawStateForMixedSourceExpiry(t *testing.T) {
 	}
 }
 
+func TestCleanExpiredAllowsKeepsCanonicalActiveAllow(t *testing.T) {
+	e := &Engine{
+		conn:       &nftables.Conn{},
+		statePath:  t.TempDir(),
+		cfg:        &FirewallConfig{},
+		setAllowed: anonymousIPv4Set("allowed_ips"),
+	}
+	writeRawFirewallState(t, e, FirewallState{
+		Allowed: []AllowedEntry{
+			{IP: "::ffff:10.0.0.42", Reason: "expired cli", Source: SourceCLI, ExpiresAt: time.Now().Add(-time.Hour)},
+			{IP: "10.0.0.42", Reason: "active dyndns", Source: SourceDynDNS, ExpiresAt: time.Now().Add(time.Hour)},
+		},
+	})
+
+	if removed := e.CleanExpiredAllows(); removed != 1 {
+		t.Fatalf("CleanExpiredAllows removed %d, want 1", removed)
+	}
+
+	state := readRawFirewallState(t, e)
+	if len(state.Allowed) != 1 {
+		t.Fatalf("allowed entries = %d, want 1: %+v", len(state.Allowed), state.Allowed)
+	}
+	if state.Allowed[0].IP != "10.0.0.42" || state.Allowed[0].Source != SourceDynDNS {
+		t.Fatalf("remaining allow = %+v, want active canonical dyndns row", state.Allowed[0])
+	}
+}
+
 func TestCleanExpiredAllowsQueueErrorKeepsState(t *testing.T) {
 	e := &Engine{
 		conn:       &nftables.Conn{},
