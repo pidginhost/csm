@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -3981,32 +3980,28 @@ func TestNoListDirRejectsDirectoryListing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.StripPrefix("/static/", http.FileServer(noListDir{http.Dir(root)})))
-	defer srv.Close()
+	handler := http.StripPrefix("/static/", http.FileServer(noListDir{http.Dir(root)}))
+	serve := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
+	}
 
 	// A real asset is still served.
-	resp, err := http.Get(srv.URL + "/static/js/app.js")
-	if err != nil {
-		t.Fatal(err)
+	resp := serve("/static/js/app.js")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("asset request = %d, want 200", resp.Code)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("asset request = %d, want 200", resp.StatusCode)
-	}
-	_ = resp.Body.Close()
 
 	// Directory requests must not list contents.
-	for _, dir := range []string{"/static/", "/static/js/"} {
-		resp, err := http.Get(srv.URL + dir)
-		if err != nil {
-			t.Fatal(err)
+	for _, dir := range []string{"/static/", "/static/js", "/static/js/"} {
+		resp := serve(dir)
+		if resp.Code != http.StatusNotFound {
+			t.Fatalf("directory %q status = %d, want 404; body=%q", dir, resp.Code, resp.Body.String())
 		}
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			t.Fatalf("directory %q returned 200 (listing); body=%q", dir, body)
-		}
-		if strings.Contains(string(body), "app.js") {
-			t.Fatalf("directory %q leaked file listing: %q", dir, body)
+		if strings.Contains(resp.Body.String(), "app.js") {
+			t.Fatalf("directory %q leaked file listing: %q", dir, resp.Body.String())
 		}
 	}
 }
