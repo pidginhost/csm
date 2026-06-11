@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -62,7 +63,10 @@ func NewQuarantine(baseDir string) *Quarantine {
 // QuarantineMessage moves spool files into a per-message quarantine directory
 // and writes metadata.json.
 func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResult, env QuarantineEnvelope) error {
-	msgID = filepath.Base(msgID) // sanitize against path traversal
+	msgID, err := cleanQuarantineMessageID(msgID)
+	if err != nil {
+		return err
+	}
 	msgDir := filepath.Join(q.baseDir, msgID)
 	meta := QuarantineMetadata{
 		MessageID:        msgID,
@@ -147,13 +151,20 @@ func (q *Quarantine) ListMessages() ([]QuarantineMetadata, error) {
 
 // GetMessage returns the metadata for a single quarantined message.
 func (q *Quarantine) GetMessage(msgID string) (*QuarantineMetadata, error) {
-	return q.readMetadata(filepath.Base(msgID))
+	msgID, err := cleanQuarantineMessageID(msgID)
+	if err != nil {
+		return nil, err
+	}
+	return q.readMetadata(msgID)
 }
 
 // ReleaseMessage moves spool files back to the original spool directory
 // and removes the quarantine directory.
 func (q *Quarantine) ReleaseMessage(msgID string) error {
-	msgID = filepath.Base(msgID) // sanitize against path traversal
+	msgID, err := cleanQuarantineMessageID(msgID)
+	if err != nil {
+		return err
+	}
 	meta, err := q.readMetadata(msgID)
 	if err != nil {
 		return fmt.Errorf("reading metadata: %w", err)
@@ -179,13 +190,15 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 	return os.RemoveAll(msgDir)
 }
 
-// DeleteMessage permanently removes a quarantined message. filepath.Base
-// confines the target to a single entry directly under baseDir, so a crafted
-// msgID cannot escape the quarantine root. Unlike ReleaseMessage it does not
-// require metadata: deleting an orphaned or partially-written entry is a
-// legitimate cleanup operation.
+// DeleteMessage permanently removes a quarantined message. Unlike
+// ReleaseMessage it does not require metadata: deleting an orphaned or
+// partially-written entry is a legitimate cleanup operation.
 func (q *Quarantine) DeleteMessage(msgID string) error {
-	msgDir := filepath.Join(q.baseDir, filepath.Base(msgID)) // sanitize
+	msgID, err := cleanQuarantineMessageID(msgID)
+	if err != nil {
+		return err
+	}
+	msgDir := filepath.Join(q.baseDir, msgID)
 	return os.RemoveAll(msgDir)
 }
 
@@ -219,9 +232,12 @@ func (q *Quarantine) CleanExpired(maxAge time.Duration) (int, error) {
 }
 
 func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
-	msgID = filepath.Base(msgID) // defense in depth
+	msgID, err := cleanQuarantineMessageID(msgID)
+	if err != nil {
+		return nil, err
+	}
 	metaPath := filepath.Join(q.baseDir, msgID, "metadata.json")
-	// #nosec G304 -- msgID sanitized with filepath.Base; filepath.Join under baseDir.
+	// #nosec G304 -- msgID is restricted to a single path segment under baseDir.
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return nil, err
@@ -233,10 +249,23 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	return &meta, nil
 }
 
+func cleanQuarantineMessageID(msgID string) (string, error) {
+	if msgID == "" {
+		return "", fmt.Errorf("message id is required")
+	}
+	if msgID == "." || msgID == ".." || strings.ContainsAny(msgID, `/\`) {
+		return "", fmt.Errorf("invalid message id")
+	}
+	if filepath.Base(msgID) != msgID {
+		return "", fmt.Errorf("invalid message id")
+	}
+	return msgID, nil
+}
+
 // moveFile renames src to dst, falling back to a fd-bound copy when
 // rename fails (cross-device or other EXDEV-style errors). Callers
 // construct dst by filepath.Join under the quarantine base dir
-// (config-owned) plus a filepath.Base-sanitized identifier.
+// (config-owned) plus a validated single-segment identifier.
 //
 // The cross-device path opens src with O_NOFOLLOW, copies content
 // from the open fd into a freshly-created dst, and unlinks src by the

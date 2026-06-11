@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Email quarantine actions now reject empty, dot, parent, and path-like message IDs before touching disk, so a malformed ID cannot resolve to the quarantine root or its parent.
+
 - The web UI CSRF check now fails closed when no admin secret is configured, instead of accepting a token any client could compute from an empty key.
 
 - Country blocking now covers IPv6 as well as IPv4: the geo database fetches IPv6 ranges and the firewall drops blocked-country traffic on both families, closing a path where an attacker on an IPv6 address from a blocked country was never stopped.

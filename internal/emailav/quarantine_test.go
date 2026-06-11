@@ -181,9 +181,27 @@ func TestDeleteMessage(t *testing.T) {
 	}
 }
 
-// DeleteMessage confines deletion to a single entry under baseDir even when
-// the msgID contains path-traversal components.
-func TestDeleteMessageContainsTraversal(t *testing.T) {
+func TestDeleteMessageDeletesOrphanedEntry(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+	msgID := "orphaned-message"
+	msgDir := filepath.Join(qDir, msgID)
+	if err := os.MkdirAll(msgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(msgDir, msgID+"-D"), []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.DeleteMessage(msgID); err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+	if _, err := os.Stat(msgDir); !os.IsNotExist(err) {
+		t.Fatalf("orphaned quarantine entry should be removed, got %v", err)
+	}
+}
+
+func TestDeleteMessageRejectsUnsafeMessageIDs(t *testing.T) {
 	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
 	q := NewQuarantine(qDir)
 
@@ -195,12 +213,16 @@ func TestDeleteMessageContainsTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A traversal-laden id must not escape baseDir.
-	if err := q.DeleteMessage("../../keep.txt"); err != nil {
-		t.Fatalf("DeleteMessage: %v", err)
-	}
-	if _, err := os.Stat(sentinel); err != nil {
-		t.Fatal("DeleteMessage escaped baseDir and removed a sibling file")
+	for _, msgID := range []string{"", ".", "..", "/", "../../keep.txt", `..\keep.txt`} {
+		if err := q.DeleteMessage(msgID); err == nil {
+			t.Fatalf("DeleteMessage(%q) = nil, want invalid message id error", msgID)
+		}
+		if _, err := os.Stat(qDir); err != nil {
+			t.Fatalf("quarantine root was touched after %q: %v", msgID, err)
+		}
+		if _, err := os.Stat(sentinel); err != nil {
+			t.Fatalf("DeleteMessage(%q) escaped baseDir and removed a sibling file", msgID)
+		}
 	}
 }
 
