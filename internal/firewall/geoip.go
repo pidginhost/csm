@@ -19,15 +19,19 @@ const (
 
 // UpdateGeoIPDB downloads country CIDR lists from a public source.
 // Creates one file per country code per family: {dbPath}/{CC}.cidr (IPv4)
-// and {dbPath}/{CC}.cidr6 (IPv6). A country is counted as updated if either
-// family downloaded; the IPv6 list is best-effort so a country with no v6
-// allocation does not fail the update.
+// and {dbPath}/{CC}.cidr6 (IPv6). IPv6 is best-effort so a country with no v6
+// allocation does not fail the update. The return value is the number of CIDR
+// files refreshed.
 func UpdateGeoIPDB(dbPath string, countryCodes []string) (int, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	return updateGeoIPDBWithClient(dbPath, countryCodes, client)
+}
+
+func updateGeoIPDBWithClient(dbPath string, countryCodes []string, client *http.Client) (int, error) {
 	if err := os.MkdirAll(dbPath, 0700); err != nil {
 		return 0, fmt.Errorf("creating geoip directory: %w", err)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	updated := 0
 
 	for _, code := range countryCodes {
@@ -37,9 +41,10 @@ func UpdateGeoIPDB(dbPath string, countryCodes []string) (int, error) {
 		}
 
 		cc := strings.ToUpper(code)
-		v4 := downloadCIDRFile(client, geoIPBaseURL+code+".cidr", filepath.Join(dbPath, cc+".cidr"))
-		v6 := downloadCIDRFile(client, geoIPBaseURLv6+code+".cidr", filepath.Join(dbPath, cc+".cidr6"))
-		if v4 || v6 {
+		if downloadCIDRFile(client, geoIPBaseURL+code+".cidr", filepath.Join(dbPath, cc+".cidr")) {
+			updated++
+		}
+		if downloadCIDRFile(client, geoIPBaseURLv6+code+".cidr", filepath.Join(dbPath, cc+".cidr6")) {
 			updated++
 		}
 	}
@@ -66,16 +71,31 @@ func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 	// #nosec G304 -- filepath.Join under operator-configured dbPath; code from fixed list.
 	f, err := os.Create(tmpPath)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "geoip: error creating %s: %v\n", tmpPath, err)
 		return false
 	}
-	n, _ := io.Copy(f, resp.Body)
-	f.Close()
+	n, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "geoip: error writing %s: %v\n", tmpPath, copyErr)
+		return false
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "geoip: error closing %s: %v\n", tmpPath, closeErr)
+		return false
+	}
 	if n < 10 {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		fmt.Fprintf(os.Stderr, "geoip: %s too small (%d bytes), skipping\n", url, n)
 		return false
 	}
-	_ = os.Rename(tmpPath, outPath)
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		_ = os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "geoip: error installing %s: %v\n", outPath, err)
+		return false
+	}
 	fmt.Fprintf(os.Stderr, "geoip: updated %s (%d bytes)\n", outPath, n)
 	return true
 }

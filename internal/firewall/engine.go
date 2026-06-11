@@ -1381,33 +1381,41 @@ func normalizeFirewallStateIPs(state *FirewallState) {
 
 // addSetMatchRule adds an IPv4 source-IP set match rule on the input chain.
 func (e *Engine) addSetMatchRule(set *nftables.Set, verdict expr.VerdictKind) {
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
-			&expr.Verdict{Kind: verdict},
-		},
-	})
-}
-
-// addSetMatchRuleV6 adds an IPv6 source-IP set match rule on the input chain.
-func (e *Engine) addSetMatchRuleV6(set *nftables.Set, verdict expr.VerdictKind) {
-	if set == nil {
+	exprs := buildSetMatchRuleExprs(set, verdict, 2, 12, 4)
+	if exprs == nil {
 		return
 	}
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
-			&expr.Verdict{Kind: verdict},
-		},
+		Exprs: exprs,
 	})
+}
+
+// addSetMatchRuleV6 adds an IPv6 source-IP set match rule on the input chain.
+func (e *Engine) addSetMatchRuleV6(set *nftables.Set, verdict expr.VerdictKind) {
+	exprs := buildSetMatchRuleExprs(set, verdict, 10, 8, 16)
+	if exprs == nil {
+		return
+	}
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainIn,
+		Exprs: exprs,
+	})
+}
+
+func buildSetMatchRuleExprs(set *nftables.Set, verdict expr.VerdictKind, nfproto byte, sourceOffset, sourceLen uint32) []expr.Any {
+	if set == nil {
+		return nil
+	}
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: sourceOffset, Len: sourceLen},
+		&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
+		&expr.Verdict{Kind: verdict},
+	}
 }
 
 // addCFWhitelistRule adds an accept rule for Cloudflare IPs on TCP ports 80 and 443.
