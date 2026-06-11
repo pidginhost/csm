@@ -14,25 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Failed alert delivery metrics are now recorded once when a channel send fails, so repeated error handling cannot inflate the count.
-
 - Email quarantine actions now reject empty, dot, parent, and path-like message IDs before touching disk, so a malformed ID cannot resolve to the quarantine root or its parent.
-
 - The web UI CSRF check now fails closed without an active admin credential and no longer derives tokens from disabled legacy credentials.
-
 - Country blocking now covers IPv6 as well as IPv4: the geo database fetches IPv6 ranges and the firewall drops blocked-country traffic on both families, closing a path where an attacker on an IPv6 address from a blocked country was never stopped.
 - Firewall source-address lists now match only their own packet family, so dual-stack traffic is no longer checked against the wrong list.
 - The web UI no longer serves a browsable listing of its static asset directory; individual assets still load (the login page needs them) but the file set can no longer be enumerated.
 - IPv4 addresses reported in IPv4-mapped IPv6 form are now canonicalized consistently across challenge handling and firewall state, so dual-stack traffic keeps the same block and allow decisions after restarts and cleanup.
-
 - Filtering the history view by an older date range is now much faster on hosts with large history, because the query seeks to the end of the range instead of scanning back over every newer entry first.
-
 - Filtered history requests now return older matching rows even when many newer rows exist, instead of reporting only the recent scan window.
-
 - Mail-provider deferral text captured from remote servers is now normalized and truncated on a character boundary, so invalid bytes or a multi-byte character at the limit can no longer be stored as corrupt text.
 - A failed verdict-callback now reports the IP through the normal error path instead of writing it to standard error.
-
 - Database spam cleanup now avoids repeated validation setup, speeding up remediation on large infected databases.
-
 - Config drop-in fragments that repeat a list entry already in the main config (infra IPs, blocklists, trusted countries, disabled checks) no longer produce duplicates after merge; lists of structured entries such as tokens are still appended unchanged.
 - PHP content analysis now scans a much larger head window plus the tail of large files, and treats skipped middle content as a hard boundary. Malicious payloads can no longer hide behind padding that pushed them past the old fixed read size.
 - IP-reputation collection now reads SSH, web, and mail file logs through platform detection and configured mail log paths, so it works on Ubuntu/Nginx and other supported hosts. WHM access parsing and the webmail/WHM-API brute-force checks stay cPanel-gated, while Exim mainlog parsing still runs when that log exists.
