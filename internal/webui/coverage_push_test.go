@@ -1,7 +1,11 @@
 package webui
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -247,15 +251,23 @@ func TestRequireCSRFRejectsDeleteNoToken(t *testing.T) {
 	}
 }
 
-// With no admin secret configured, csrfToken() is an HMAC over an empty key
-// that any client can reproduce. validateCSRF must fail closed in that case
-// rather than accept the attacker-computable token.
+// This matches the token an empty secret used to produce. validateCSRF must
+// fail closed rather than accept that attacker-computable value.
 func TestValidateCSRFFailsClosedWithoutSecret(t *testing.T) {
 	s := newTestServer(t, "") // no admin token => empty csrfSecret
 	req := httptest.NewRequest("POST", "/api/x", nil)
-	req.Header.Set("X-CSRF-Token", s.csrfToken()) // the "valid" empty-key token
+	mac := hmac.New(sha256.New, nil)
+	fmt.Fprintf(mac, "csm-csrf-v1:%d", s.startTime.Unix())
+	req.Header.Set("X-CSRF-Token", hex.EncodeToString(mac.Sum(nil))[:32])
 	if s.validateCSRF(req) {
 		t.Fatal("validateCSRF must reject state-changing requests when no admin secret is set")
+	}
+}
+
+func TestCSRFTokenEmptyWithoutSecret(t *testing.T) {
+	s := newTestServer(t, "")
+	if got := s.csrfToken(); got != "" {
+		t.Fatalf("csrfToken without admin secret = %q, want empty", got)
 	}
 }
 

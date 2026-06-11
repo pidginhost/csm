@@ -1019,24 +1019,28 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 // --- CSRF protection ---
 
-// csrfToken generates a deterministic CSRF token from the admin auth secret.
-// This is safe because the auth token is secret and the CSRF token is
-// derived via HMAC - knowing the CSRF token doesn't reveal the auth token.
+// csrfToken generates a deterministic CSRF token from an active admin secret.
+// This is safe because the credential is secret and the CSRF token is derived
+// via HMAC - knowing the CSRF token doesn't reveal the credential.
 func (s *Server) csrfToken() string {
-	mac := hmac.New(sha256.New, []byte(s.csrfSecret()))
+	secret := s.csrfSecret()
+	if secret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
 	// Include start time so token rotates on each daemon restart
 	fmt.Fprintf(mac, "csm-csrf-v1:%d", s.startTime.Unix())
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 
 func (s *Server) csrfSecret() string {
-	if s.cfg.WebUI.AuthToken != "" {
-		return s.cfg.WebUI.AuthToken
-	}
 	for _, tok := range s.cfg.WebUI.Tokens {
 		if tok.Scope == "admin" && tok.Token != "" {
 			return tok.Token
 		}
+	}
+	if len(s.cfg.WebUI.Tokens) == 0 {
+		return s.cfg.WebUI.AuthToken
 	}
 	return ""
 }
@@ -1058,16 +1062,12 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 		return true
 	}
 
-	// Fail closed when no admin secret is configured: csrfToken() would
-	// otherwise be HMAC over an empty key -- a value any client can compute --
-	// turning the CSRF check into a no-op. No admin secret also means no
-	// cookie session can exist (login requires the admin token), so rejecting
-	// here cannot block a legitimate request.
-	if s.csrfSecret() == "" {
+	expected := s.csrfToken()
+	// A request without an active admin secret cannot prove it came from a
+	// browser session, so the mutating path stays closed.
+	if expected == "" {
 		return false
 	}
-
-	expected := s.csrfToken()
 
 	// Check header (API calls from JS use this)
 	if token := r.Header.Get("X-CSRF-Token"); token != "" {

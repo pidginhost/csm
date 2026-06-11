@@ -69,6 +69,23 @@ func TestCSRFSecretUsesAdminScopedToken(t *testing.T) {
 	}
 }
 
+func TestCSRFSecretIgnoresLegacyAuthTokenWhenScopedTokensConfigured(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	s.cfg.WebUI.AuthToken = "rotated-legacy-secret"
+	s.cfg.WebUI.Tokens = []config.WebUIToken{
+		{Name: "read", Token: "read-secret", Scope: "read"},
+		{Name: "admin", Token: "admin-secret", Scope: "admin"},
+	}
+	if got := s.csrfSecret(); got != "admin-secret" {
+		t.Fatalf("csrfSecret = %q, want active admin token", got)
+	}
+
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read"}}
+	if got := s.csrfSecret(); got != "" {
+		t.Fatalf("csrfSecret with no active admin token = %q, want empty", got)
+	}
+}
+
 func TestRequireReadRejectsWriteMethods(t *testing.T) {
 	s := &Server{cfg: &config.Config{}}
 	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read"}}
