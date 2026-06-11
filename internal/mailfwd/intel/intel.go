@@ -203,6 +203,7 @@ func validReasonCode(code string) bool {
 }
 
 func boundText(s string) string {
+	s = strings.ToValidUTF8(s, "?")
 	s = strings.TrimSpace(whitespaceR.ReplaceAllString(s, " "))
 	if len(s) <= maxTextLen {
 		return s

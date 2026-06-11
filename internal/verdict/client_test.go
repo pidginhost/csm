@@ -159,6 +159,27 @@ func TestClient_5xxReturnsError(t *testing.T) {
 	}
 }
 
+func TestClient_HTTPErrorIncludesRequestIP(t *testing.T) {
+	c := New(Config{URL: "https://panel.example.test/verdict", Timeout: time.Second})
+	c.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("bad gateway")),
+		}, nil
+	})
+
+	_, err := c.Ask(context.Background(), Request{IP: "198.51.100.44"})
+	if err == nil {
+		t.Fatal("expected error on 5xx")
+	}
+	for _, want := range []string{"502", "198.51.100.44"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
 func TestClient_RejectsUnknownVerdict(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(Response{Verdict: "downgrade"})
@@ -378,6 +399,12 @@ type failingRandReader struct{}
 
 func (failingRandReader) Read([]byte) (int, error) {
 	return 0, errors.New("entropy unavailable")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }
 
 // TestClient_RejectsResponseMissingNonce: when response signing is

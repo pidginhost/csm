@@ -3,6 +3,7 @@ package intel
 import (
 	"net"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzParseDeferralLine feeds attacker-controlled log content (a deferral line
@@ -25,6 +26,9 @@ func FuzzParseDeferralLine(f *testing.F) {
 		}
 		if len(d.Text) > maxTextLen {
 			t.Fatalf("Text exceeds bound: %d", len(d.Text))
+		}
+		if !utf8.ValidString(d.Text) {
+			t.Fatalf("Text is not valid UTF-8: %q", d.Text)
 		}
 		if len(d.Recipient) > maxAddressLen {
 			t.Fatalf("Recipient exceeds bound: %d", len(d.Recipient))

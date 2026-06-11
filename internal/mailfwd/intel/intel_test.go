@@ -228,12 +228,28 @@ func TestBuildReportEmpty(t *testing.T) {
 // straddling the byte limit must not be split into invalid UTF-8.
 func TestBoundTextTruncatesOnRuneBoundary(t *testing.T) {
 	// 239 ASCII bytes then a 3-byte rune crosses the 240-byte cap.
-	s := strings.Repeat("a", maxTextLen-1) + "世界"
+	prefix := strings.Repeat("a", maxTextLen-1)
+	s := prefix + "世界"
 	got := boundText(s)
 	if !utf8.ValidString(got) {
 		t.Fatalf("boundText produced invalid UTF-8: %q", got)
 	}
 	if len(got) > maxTextLen {
 		t.Fatalf("boundText length = %d, want <= %d", len(got), maxTextLen)
+	}
+	if got != prefix {
+		t.Fatalf("boundText = %q, want crossing rune removed", got)
+	}
+}
+
+func TestBoundTextReplacesInvalidUTF8BeforeTruncating(t *testing.T) {
+	prefix := strings.Repeat("a", maxTextLen-2)
+	got := boundText(prefix + "\xff世界")
+	want := prefix + "?"
+	if !utf8.ValidString(got) {
+		t.Fatalf("boundText produced invalid UTF-8: %q", got)
+	}
+	if got != want {
+		t.Fatalf("boundText = %q, want %q", got, want)
 	}
 }
