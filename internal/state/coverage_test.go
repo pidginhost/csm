@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // openTestStore opens a fresh Store in a temp dir and schedules cleanup.
@@ -820,6 +821,56 @@ func TestReadHistoryJSONLOffsetBeyondEnd(t *testing.T) {
 	got, total := s.ReadHistory(10, 100)
 	if total != 1 || got != nil {
 		t.Errorf("offset beyond end = (%v, %d), want (nil, 1)", got, total)
+	}
+}
+
+func TestReadHistoryFilteredJSONLFallbackAppliesFilters(t *testing.T) {
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "history.jsonl")
+	day := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
+	findings := []alert.Finding{
+		{Timestamp: day, Severity: alert.High, Check: "old-target", Message: "needle"},
+		{Timestamp: day.Add(time.Hour), Severity: alert.Warning, Check: "old-target", Message: "needle"},
+		{Timestamp: day, Severity: alert.High, Check: "other", Message: "needle"},
+		{Timestamp: day.Add(30 * 24 * time.Hour), Severity: alert.High, Check: "old-target", Message: "needle"},
+	}
+	var data []byte
+	for _, f := range findings {
+		line, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(jsonlPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	got, total := s.ReadHistoryFilteredWithChecks(
+		10,
+		0,
+		"2026-01-02",
+		"2026-01-02",
+		int(alert.High),
+		"needle",
+		map[string]bool{"old-target": true},
+	)
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(got) != 1 || got[0].Check != "old-target" || got[0].Severity != alert.High {
+		t.Fatalf("got = %+v, want only high old-target finding", got)
 	}
 }
 

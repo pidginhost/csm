@@ -1790,20 +1790,16 @@ func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
 	}
 }
 
-// TestMemoryBoundedHandlersPinCaps pins WEB_ROADMAP P1.5: the three
-// previously-unbounded JSON handlers (history filtered scan, incident
-// timeline snapshot walk, modsec aggregate map) carry explicit caps in
-// the source so a future refactor cannot silently remove them. The
-// caps are checked by name to keep this lint cheap; the runtime tests
-// for each handler live in their _test.go siblings.
+// TestMemoryBoundedHandlersPinCaps pins WEB_ROADMAP P1.5: JSON handlers
+// that still materialize snapshots carry explicit caps in the source so a
+// future refactor cannot silently remove them. The caps are checked by name
+// to keep this lint cheap; the runtime tests for each handler live in their
+// _test.go siblings.
 func TestMemoryBoundedHandlersPinCaps(t *testing.T) {
 	for _, tc := range []struct {
 		path     string
 		fragment string
 	}{
-		{"../../internal/webui/api.go", "const historyFilterScanCap = 5000"},
-		{"../../internal/webui/api.go", "historyTruncated := historyTotal > len(allFindings)"},
-		{"../../internal/webui/api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
 		{"../../internal/webui/incident_api.go", "const incidentSnapshotScanCap = 1000"},
 		{"../../internal/webui/incident_api.go", "SnapshotPageStatuses(nil, 0, incidentSnapshotScanCap)"},
 		{"../../internal/webui/incident_api.go", `w.Header().Set("X-CSM-Truncated", "1")`},

@@ -295,7 +295,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// apiHistory returns paginated history from history.jsonl.
+// apiHistory returns paginated finding history.
 // Supports optional filtering via "from", "to" (YYYY-MM-DD), and "severity" (0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
@@ -334,80 +334,28 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// With filters: read all history, filter, then paginate
-	var fromDate, toDate time.Time
-	if fromStr != "" {
-		fromDate, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
-	}
-	if toStr != "" {
-		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
-		toDate = toDate.Add(24*time.Hour - time.Nanosecond)
-	}
 	sevFilter := -1
 	if sevStr != "" {
 		sevFilter = queryInt(r, "severity", -1)
 	}
-	searchLower := strings.ToLower(searchStr)
 
-	// Read up to historyFilterScanCap rows for the filtered path. When the
-	// cap is reached the response carries truncated=true so the UI can
-	// surface a "showing X most recent matches" hint instead of silently
-	// pretending the older rows don't exist.
-	allFindings, historyTotal := s.store.ReadHistory(historyFilterScanCap, 0)
-	historyTruncated := historyTotal > len(allFindings)
-	var filtered []alert.Finding
-	for _, f := range allFindings {
-		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
-			continue
-		}
-		if !toDate.IsZero() && f.Timestamp.After(toDate) {
-			continue
-		}
-		if sevFilter >= 0 && int(f.Severity) != sevFilter {
-			continue
-		}
-		if searchStr != "" {
-			if !strings.Contains(strings.ToLower(f.Check), searchLower) &&
-				!strings.Contains(strings.ToLower(f.Message), searchLower) &&
-				!strings.Contains(strings.ToLower(f.Details), searchLower) {
-				continue
-			}
-		}
-		if checksFilter != nil && !checksFilter[f.Check] {
-			continue
-		}
-		filtered = append(filtered, f)
-	}
-
-	total := len(filtered)
-	// Apply offset and limit
-	if offset > len(filtered) {
-		filtered = nil
-	} else {
-		filtered = filtered[offset:]
-		if len(filtered) > limit {
-			filtered = filtered[:limit]
-		}
-	}
-
-	if historyTruncated {
-		w.Header().Set("X-CSM-Truncated", "1")
-	}
+	findings, total := s.store.ReadHistoryFilteredWithChecks(
+		limit,
+		offset,
+		fromStr,
+		toStr,
+		sevFilter,
+		searchStr,
+		checksFilter,
+	)
 	writeJSON(w, map[string]interface{}{
-		"findings":  filtered,
+		"findings":  findings,
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
-		"truncated": historyTruncated,
+		"truncated": false,
 	})
 }
-
-// historyFilterScanCap bounds how many history rows the filtered path
-// loads into memory before filtering and paginating. The unfiltered
-// path reads directly from the store with native offset/limit and is
-// not affected. The cap is sized so the worst case (5000 Findings at
-// ~1 KB each) is comfortably under 10 MB peak per request.
-const historyFilterScanCap = 5000
 
 // var (not const) so tests can redirect to t.TempDir(). Production
 // callers must not mutate at runtime.

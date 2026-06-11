@@ -181,40 +181,99 @@ func TestAPIHistoryLargeLimit(t *testing.T) {
 	}
 }
 
-func TestAPIHistoryFilteredExactScanCapIsNotMarkedTruncated(t *testing.T) {
+const oldHistoryFilterScanCap = 5000
+
+func TestAPIHistoryChecksDateFilterFindsRowsOlderThanOldScanCap(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
-	base := time.Now().Add(-time.Hour)
-	findings := make([]alert.Finding, 0, historyFilterScanCap)
-	for i := 0; i < historyFilterScanCap; i++ {
+	oldDay := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
+	s.store.AppendHistory([]alert.Finding{
+		{Severity: alert.High, Check: "old-target", Message: "older row", Timestamp: oldDay},
+	})
+
+	newer := time.Date(2026, 2, 1, 0, 0, 0, 0, time.Local)
+	findings := make([]alert.Finding, 0, oldHistoryFilterScanCap+1)
+	for i := 0; i < oldHistoryFilterScanCap+1; i++ {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Warning,
-			Check:     "scan_cap_exact",
-			Message:   "cap-row",
-			Timestamp: base.Add(time.Duration(i) * time.Millisecond),
+			Check:     "newer-noise",
+			Message:   "outside requested day",
+			Timestamp: newer.Add(time.Duration(i) * time.Second),
 		})
 	}
 	s.store.AppendHistory(findings)
 
 	w := httptest.NewRecorder()
-	s.apiHistory(w, httptest.NewRequest("GET", "/?search=cap-row&limit=1", nil))
+	req := httptest.NewRequest("GET", "/?checks=old-target&from=2026-01-02&to=2026-01-02&limit=10", nil)
+	s.apiHistory(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	if got := w.Header().Get("X-CSM-Truncated"); got != "" {
-		t.Fatalf("X-CSM-Truncated = %q, want unset when history count exactly equals scan cap", got)
+		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
 	}
 	var resp struct {
-		Total     int  `json:"total"`
-		Truncated bool `json:"truncated"`
+		Findings  []alert.Finding `json:"findings"`
+		Total     int             `json:"total"`
+		Truncated bool            `json:"truncated"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.Total != historyFilterScanCap {
-		t.Fatalf("total = %d, want %d", resp.Total, historyFilterScanCap)
+	if resp.Total != 1 {
+		t.Fatalf("total = %d, want 1", resp.Total)
+	}
+	if len(resp.Findings) != 1 || resp.Findings[0].Check != "old-target" {
+		t.Fatalf("findings = %+v, want old-target only", resp.Findings)
 	}
 	if resp.Truncated {
-		t.Fatal("truncated = true, want false when no rows were omitted")
+		t.Fatal("truncated = true, want false for exact store-filtered results")
+	}
+}
+
+func TestAPIHistoryDateFilterFindsRowsOlderThanScanCap(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	oldDay := time.Date(2026, 1, 2, 12, 0, 0, 0, time.Local)
+	s.store.AppendHistory([]alert.Finding{
+		{Severity: alert.High, Check: "old-target", Message: "older row", Timestamp: oldDay},
+	})
+
+	newer := time.Date(2026, 2, 1, 0, 0, 0, 0, time.Local)
+	findings := make([]alert.Finding, 0, oldHistoryFilterScanCap+1)
+	for i := 0; i < oldHistoryFilterScanCap+1; i++ {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "newer-noise",
+			Message:   "outside requested day",
+			Timestamp: newer.Add(time.Duration(i) * time.Second),
+		})
+	}
+	s.store.AppendHistory(findings)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/?from=2026-01-02&to=2026-01-02&limit=10", nil)
+	s.apiHistory(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-CSM-Truncated"); got != "" {
+		t.Fatalf("X-CSM-Truncated = %q, want unset for exact store-filtered results", got)
+	}
+	var resp struct {
+		Findings  []alert.Finding `json:"findings"`
+		Total     int             `json:"total"`
+		Truncated bool            `json:"truncated"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Total != 1 {
+		t.Fatalf("total = %d, want 1", resp.Total)
+	}
+	if len(resp.Findings) != 1 || resp.Findings[0].Check != "old-target" {
+		t.Fatalf("findings = %+v, want old-target only", resp.Findings)
+	}
+	if resp.Truncated {
+		t.Fatal("truncated = true, want false for exact store-filtered results")
 	}
 }
 

@@ -263,6 +263,24 @@ func TestReadHistoryFilteredBySearch(t *testing.T) {
 	}
 }
 
+func TestReadHistoryFilteredWithChecks(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	writeFindings(t, db, []alert.Finding{
+		{Timestamp: now.Add(-2 * time.Hour), Severity: alert.High, Check: "webshell", Message: "target"},
+		{Timestamp: now.Add(-1 * time.Hour), Severity: alert.High, Check: "ssh_brute", Message: "target"},
+		{Timestamp: now.Add(-30 * time.Minute), Severity: alert.Warning, Check: "webshell", Message: "target"},
+	})
+
+	results, matched := db.ReadHistoryFilteredWithChecks(10, 0, "", "", int(alert.High), "target", map[string]bool{"webshell": true})
+	if matched != 1 {
+		t.Fatalf("matched = %d, want 1", matched)
+	}
+	if len(results) != 1 || results[0].Check != "webshell" || results[0].Severity != alert.High {
+		t.Fatalf("results = %+v, want only high webshell finding", results)
+	}
+}
+
 func TestReadHistoryFilteredByDateRange(t *testing.T) {
 	db := openTestDB(t)
 	old := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)

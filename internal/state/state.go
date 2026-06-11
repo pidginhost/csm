@@ -503,6 +503,74 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 	return all[offset:end], total
 }
 
+// ReadHistoryFiltered reads matching history entries newest-first.
+// Date strings that are not YYYY-MM-DD are ignored before they reach the
+// lexicographic bbolt key filter.
+func (s *Store) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
+	return s.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
+}
+
+// ReadHistoryFilteredWithChecks reads matching history entries newest-first,
+// optionally constrained to an exact check-name set.
+func (s *Store) ReadHistoryFilteredWithChecks(
+	limit, offset int,
+	from, to string,
+	severity int,
+	search string,
+	checks map[string]bool,
+) ([]alert.Finding, int) {
+	var fromDate, toDate time.Time
+	fromFilter := ""
+	toFilter := ""
+	if from != "" {
+		if t, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+			fromDate = t
+			fromFilter = from
+		}
+	}
+	if to != "" {
+		if t, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
+			toDate = t.Add(24*time.Hour - time.Nanosecond)
+			toFilter = to
+		}
+	}
+
+	if db := store.Global(); db != nil {
+		return db.ReadHistoryFilteredWithChecks(limit, offset, fromFilter, toFilter, severity, search, checks)
+	}
+
+	all, _ := s.ReadHistory(1<<30, 0)
+	searchLower := strings.ToLower(search)
+	var results []alert.Finding
+	matched := 0
+	for _, f := range all {
+		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
+			continue
+		}
+		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+			continue
+		}
+		if severity >= 0 && int(f.Severity) != severity {
+			continue
+		}
+		if checks != nil && !checks[f.Check] {
+			continue
+		}
+		if search != "" {
+			if !strings.Contains(strings.ToLower(f.Check), searchLower) &&
+				!strings.Contains(strings.ToLower(f.Message), searchLower) &&
+				!strings.Contains(strings.ToLower(f.Details), searchLower) {
+				continue
+			}
+		}
+		matched++
+		if matched > offset && len(results) < limit {
+			results = append(results, f)
+		}
+	}
+	return results, matched
+}
+
 // ReadHistorySince returns all findings since the given time.
 // Uses bbolt cursor seeking for efficiency. Results are newest-first.
 // Falls back to the JSONL store with a linear cutoff filter when bbolt

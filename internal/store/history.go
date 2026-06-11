@@ -126,6 +126,18 @@ func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 //   - severity: filter by severity level (-1 for no filter)
 //   - search: case-insensitive substring match on check/message/details (empty to skip)
 func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
+	return db.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
+}
+
+// ReadHistoryFilteredWithChecks reads findings with optional filters, including
+// an exact check-name set when checks is non-nil.
+func (db *DB) ReadHistoryFilteredWithChecks(
+	limit, offset int,
+	from, to string,
+	severity int,
+	search string,
+	checks map[string]bool,
+) ([]alert.Finding, int) {
 	var results []alert.Finding
 	matched := 0
 	searchLower := strings.ToLower(search)
@@ -180,6 +192,11 @@ func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity i
 
 			// Severity filter.
 			if severity >= 0 && int(f.Severity) != severity {
+				continue
+			}
+
+			// Exact check-name filter.
+			if checks != nil && !checks[f.Check] {
 				continue
 			}
 

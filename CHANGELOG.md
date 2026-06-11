@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Filtering the history view by an older date range is now much faster on hosts with large history, because the query seeks to the end of the range instead of scanning back over every newer entry first.
 
+- Filtered history requests now return older matching rows even when many newer rows exist, instead of reporting only the recent scan window.
+
 - Mail-provider deferral text captured from remote servers is now normalized and truncated on a character boundary, so invalid bytes or a multi-byte character at the limit can no longer be stored as corrupt text.
 - A failed verdict-callback now reports the IP through the normal error path instead of writing it to standard error.
 
