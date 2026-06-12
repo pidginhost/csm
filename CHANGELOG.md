@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Realtime alerts for executables created in temp directories are demoted to warnings when the file is root-owned and the writing process descends from an active package-manager transaction, so kernel updates no longer page operators with hundreds of criticals. Demoted findings stay visible with an annotation; nothing is suppressed.
+- DNS zone-change monitoring now separates routine cPanel edits (serial bumps, AutoSSL and DKIM records, owner address repoints) from tampering, so it no longer alerts on every customer DNS change. Delegation or mail-record changes, and any zone edit made outside cPanel, still raise an alert.
+
 ## [3.15.0] - 2026-06-11
 
 ### Added

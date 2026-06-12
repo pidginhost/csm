@@ -968,9 +968,19 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				if (isCpanelWork || isDracutWork) && tmpStat.Uid == 0 {
 					// Root-owned executable in system work dir - legitimate, skip
 				} else {
-					fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
+					// Root-owned drops from a live package transaction
+					// (e.g. weak-modules extracting initramfs via cpio
+					// after a kernel update) are rescored to Warning,
+					// never suppressed. See demoteTmpExec for the gates.
+					severity := alert.Critical
+					details := fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid)
+					if ok, reason := tmpExecDemote(tmpStat.Uid, event.pid, time.Now()); ok {
+						severity = alert.Warning
+						details += " [demoted: " + reason + "]"
+					}
+					fm.sendAlertWithPath(severity, "executable_in_tmp_realtime",
 						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-						fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid), path, procInfo)
+						details, path, procInfo)
 				}
 			}
 		}

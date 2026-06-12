@@ -117,6 +117,16 @@ func TestPkgManagerWindow(t *testing.T) {
 			t.Error("expected pkg window to be open for fresh log")
 		}
 	})
+	t.Run("exported_wrapper_uses_default_window", func(t *testing.T) {
+		pkgManagerLogs = []string{fresh}
+		if !PkgManagerRecentlyActive(time.Now()) {
+			t.Error("expected PkgManagerRecentlyActive true for fresh log")
+		}
+		pkgManagerLogs = []string{stale}
+		if PkgManagerRecentlyActive(time.Now()) {
+			t.Error("expected PkgManagerRecentlyActive false for stale log")
+		}
+	})
 	t.Run("stale_log_outside_window", func(t *testing.T) {
 		pkgManagerLogs = []string{stale}
 		if pkgManagerWindow(time.Now(), 2*time.Minute) {

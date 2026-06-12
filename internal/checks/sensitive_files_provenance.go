@@ -128,6 +128,14 @@ func rescoreSensitive(f alert.Finding, class string, content []byte, pid uint32,
 	return f
 }
 
+// PkgManagerRecentlyActive reports whether any package-manager log was
+// modified within the provenance demotion window. Exported for the fanotify
+// /tmp-executable demotion, which gates on the same evidence as
+// rescoreSensitive.
+func PkgManagerRecentlyActive(now time.Time) bool {
+	return pkgManagerWindow(now, pkgWindowDefault)
+}
+
 // pkgWindowDefault is the slack we give for a legitimate root-driven file
 // system change after a package transaction. dnf scriptlets observed up to
 // a few seconds between the rpm log entry and post-install file drops; 2
