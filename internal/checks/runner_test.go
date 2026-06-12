@@ -457,6 +457,50 @@ func TestRunParallelLiveInvokesAutoResponse(t *testing.T) {
 	}
 }
 
+func TestRunParallelRoutesChallengeBeforeAutoBlock(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Challenge.Enabled = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	challengeList := &staticChallengeIPList{ips: make(map[string]bool)}
+	SetChallengeIPList(challengeList)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	checks := []namedCheck{{
+		"synthetic_scanner_profile",
+		func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return []alert.Finding{{
+				Check:    "http_scanner_profile",
+				Severity: alert.High,
+				SourceIP: "203.0.113.79",
+				Message:  "URL scanner profile from 203.0.113.79: 50 of 50 requests",
+			}}
+		},
+	}}
+
+	findings, _ := runParallel(cfg, nil, checks, "test", false)
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("runParallel hard-blocked challenge-routed IPs: %v", blocker.blocked)
+	}
+	if !challengeList.ips["203.0.113.79"] {
+		t.Fatal("scanner profile IP was not added to the challenge list")
+	}
+	if !containsFindingCheck(findings, "challenge_route") {
+		t.Fatalf("runParallel did not append challenge_route finding: %+v", findings)
+	}
+	if containsFindingCheck(findings, "auto_block") {
+		t.Fatalf("challenge-routed scanner profile also emitted auto_block: %+v", findings)
+	}
+}
+
 // A throttled check that gets skipped in cycle N must NOT appear in the
 // per-scan purge list, otherwise StoreLatestScanFindings wipes the
 // findings emitted during cycle N-1 (when the throttle window had not

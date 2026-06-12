@@ -10,11 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it, tuning values are validated, settings are editable from the web UI, and flagged IPs feed auto-block and the distributed rollup without counting unrelated vhost misses.
-
 - IPs flagged by the URL scanner-profile detector are routed to the proof-of-work challenge by default so a real visitor behind a shared IP can clear themselves, with a switch to hard-block instead available in both the config file and the web UI; when the challenge subsystem is disabled both settings block. Panels can feature-detect the detector via the capabilities endpoint.
 
 ### Fixed
 
+- Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
 - The suspicious PHP content detector no longer flags assert() calls whose argument provably evaluates to a boolean or number (file-existence checks, comparisons, arithmetic, shifts, logical expressions), fixing a false positive on a legitimate WordPress plugin. Multiline code-eval calls stay correlated to their full argument list, arguments that can carry an attacker-built string stay flagged, and builtin names are not trusted in files that could redefine them via namespaces or function aliases.
 - The firewall page now chunks GeoIP batch lookups, so hosts with more than 500 blocked IPs no longer get an HTTP 400 followed by a per-IP request flood that tripped the API rate limit with 429 errors.
 - WP-Cron system crons installed by the remediation are now staggered per account instead of all firing in the same second, run under a lock so slow passes cannot overlap, and default to every 15 minutes instead of 5. Existing CSM-installed cron lines are upgraded automatically at daemon start; tampered or unsafe marker content is rejected and customer-authored cron entries are never touched.

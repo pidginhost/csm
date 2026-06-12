@@ -299,8 +299,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		// Skip IPs on the challenge list (they'll be challenged, not blocked)
-		if cl := GetChallengeIPList(); cl != nil && cl.Contains(ip) {
+		// Skip IPs that are already being challenged, but do not let a
+		// prior challenge suppress a later hard-block-only finding.
+		if cl := GetChallengeIPList(); cl != nil && cl.Contains(ip) && shouldSkipAutoBlockForChallenge(cfg, f.Check) {
 			continue
 		}
 
@@ -505,6 +506,16 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 		return firewall.BlockOutcomeNoop, err
 	}
 	return firewall.BlockOutcomeLive, nil
+}
+
+func shouldSkipAutoBlockForChallenge(cfg *config.Config, check string) bool {
+	if !isChallengeableCheck(check) {
+		return false
+	}
+	if check == "http_scanner_profile" && cfg.AutoResponse.HTTPScannerAction == "block" {
+		return false
+	}
+	return true
 }
 
 // promoteToPermanentBlock upgrades an existing temp block to permanent. The

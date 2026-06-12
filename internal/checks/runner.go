@@ -720,6 +720,14 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// Auto-response: skip when the caller requested a dry run
 	// (check/baseline commands).
 	if !dryRun {
+		challengeActions := ChallengeRouteIPs(cfg, findings)
+		for i := range challengeActions {
+			if challengeActions[i].Timestamp.IsZero() {
+				challengeActions[i].Timestamp = now
+			}
+		}
+		findings = append(findings, challengeActions...)
+
 		killActions := AutoKillProcesses(cfg, findings)
 		for i := range killActions {
 			if killActions[i].Timestamp.IsZero() {
