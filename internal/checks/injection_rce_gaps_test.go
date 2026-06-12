@@ -510,6 +510,28 @@ func TestAnalyzePHPContentAssertUseFunctionAliasFlagged(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentAssertGlobalBuiltinPolyfillFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"function str_contains($haystack, $needle) { return $_POST['code']; }\n" +
+		"assert(str_contains($_POST['haystack'], 'x'));\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("global builtin polyfill shadow not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertClassMethodNamedBuiltinNotShadow(t *testing.T) {
+	body := "<?php\n" +
+		"class Validator { function file_exists($path) { return $path; } }\n" +
+		"assert(file_exists($_POST['p']));\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("class method named builtin disabled global builtin trust; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentAssertMethodNamedAndNotBooleanContext(t *testing.T) {
 	// $obj->and(...) is a method call, not the logical operator; its return
 	// value can be any string so the call stays flagged.
@@ -528,6 +550,32 @@ func TestAnalyzePHPContentAssertUnbalancedParenWithRequestFlagged(t *testing.T) 
 	res := analyzePHPString(t, body)
 	if !strings.Contains(res.details, indCodeEvalPrim) {
 		t.Errorf("multiline assert with request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertHeredocRequestCodeFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"assert(<<<PHP\n" +
+		"system($_POST['cmd']);\n" +
+		"PHP\n" +
+		");\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("heredoc assert code with request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertNowdocRequestCodeFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"assert(<<<'PHP'\n" +
+		"system($_POST['cmd']);\n" +
+		"PHP\n" +
+		");\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("nowdoc assert code with request input not flagged; details=%q", res.details)
 	}
 }
 
@@ -583,6 +631,11 @@ func TestAnalyzePHPContentAssertArithmeticWithRequestNotFlagged(t *testing.T) {
 		"<?php assert($_POST['n'] << 1); ?>",
 		"<?php assert($_POST['n'] >> 1); ?>",
 		"<?php assert(-$_POST['n']); ?>",
+		"<?php assert($_POST['n'] + 1.5); ?>",
+		"<?php assert($_POST['n'] + .5); ?>",
+		"<?php assert($_POST['n'] + 1.); ?>",
+		"<?php assert($_POST['n'] + 1.e2); ?>",
+		"<?php assert($_POST['n'] + 1_000.5); ?>",
 	}
 	for _, content := range cases {
 		res := analyzePHPString(t, content)
@@ -596,6 +649,36 @@ func TestAnalyzePHPContentAssertConcatAfterArithmeticFlagged(t *testing.T) {
 	res := analyzePHPString(t, "<?php assert(($_POST['n'] + 0) . 'x'); ?>")
 	if !strings.Contains(res.details, indCodeEvalPrim) {
 		t.Errorf("assert concat after arithmetic not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertConcatAfterShiftFlagged(t *testing.T) {
+	cases := []string{
+		"<?php assert($_POST['n'] << 1 . $_GET['code']); ?>",
+		"<?php assert($_POST['n'] >> 1 . $_GET['code']); ?>",
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if !strings.Contains(res.details, indCodeEvalPrim) {
+			t.Errorf("assert concat after shift not flagged; content=%q details=%q", content, res.details)
+		}
+	}
+}
+
+func TestAnalyzePHPContentAssertConcatAfterNumericLiteralFlagged(t *testing.T) {
+	cases := []string{
+		"<?php assert($_POST['n'] + 1.0.$_GET['code']); ?>",
+		"<?php assert($_POST['n'] + 1e3.$_GET['code']); ?>",
+		"<?php assert($_POST['n'] + 1e-3.$_GET['code']); ?>",
+		"<?php assert($_POST['n'] + 0x1.$_GET['code']); ?>",
+		"<?php assert($_POST['n'] + 0b1.$_GET['code']); ?>",
+		"<?php assert($_POST['n'] + 1_000.0.$_GET['code']); ?>",
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if !strings.Contains(res.details, indCodeEvalPrim) {
+			t.Errorf("assert concat after numeric literal not flagged; content=%q details=%q", content, res.details)
+		}
 	}
 }
 

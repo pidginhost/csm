@@ -253,6 +253,10 @@ func hasCallbackExecName(code string) bool {
 func matchingParen(code string, openParen int) int {
 	depth := 0
 	for i := openParen; i < len(code); i++ {
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = skipPHPString(code, i)
 			continue
@@ -308,7 +312,7 @@ func hasDangerousInclude(code string) bool {
 // never return strings) are not code-eval sinks. Anything not provably
 // non-string stays flagged, fail closed.
 func hasCodeEvalPrimitiveWithRequest(code string) bool {
-	trustUnqualified := !phpDeclaresNamespaceOrFunctionAlias(code)
+	trustUnqualified := !phpMayRedirectUnqualifiedBuiltin(code)
 	searchFrom := 0
 	for {
 		callStart, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, codeEvalPrimitiveCallNames)
@@ -357,8 +361,8 @@ const (
 	phpRankBitwiseXor     = 7   // ^ -- string-capable when both operands are strings
 	phpRankBitwiseAnd     = 8   // & -- string-capable when both operands are strings
 	phpRankComparison     = 9   // == != === !== <> <=> < > <= >= instanceof -- non-string
-	phpRankShift          = 10  // << >> -- integer result
-	phpRankConcat         = 11  // . -- string result
+	phpRankShift          = 10  // << >> -- integer result; tied with . for PHP 7/8 precedence drift
+	phpRankConcat         = 10  // . -- string result
 	phpRankAdditive       = 12  // + - -- numeric/array result, never string
 	phpRankMultiplicative = 13  // * / % -- numeric result
 	phpRankPower          = 14  // ** -- numeric result
@@ -420,6 +424,12 @@ func phpTopLevelOperatorValue(expr string) phpOperatorValue {
 	i := 0
 	for i < len(expr) {
 		c := expr[i]
+		if label, bodyStart, ok := phpHeredocOpen(expr, i); ok {
+			observe(phpRankNone, phpOperatorStringCapable)
+			i = phpHeredocEnd(expr, bodyStart, label)
+			prev = '"'
+			continue
+		}
 		if isPHPQuote(c) {
 			i = skipPHPString(expr, i) + 1
 			prev = '"'
@@ -560,7 +570,9 @@ func phpTopLevelOperatorValue(expr string) phpOperatorValue {
 		case '^':
 			observe(phpRankBitwiseXor, phpOperatorStringCapable)
 		case '.':
-			observe(phpRankConcat, phpOperatorStringCapable)
+			if !phpDotBelongsToNumberLiteral(expr, i) {
+				observe(phpRankConcat, phpOperatorStringCapable)
+			}
 		case '*':
 			if next == '*' {
 				observe(phpRankPower, phpOperatorNonString)
@@ -575,6 +587,48 @@ func phpTopLevelOperatorValue(expr string) phpOperatorValue {
 		i += consumed
 	}
 	return value
+}
+
+func phpDotBelongsToNumberLiteral(expr string, dot int) bool {
+	if dot > 0 && isPHPDecimalDigit(expr[dot-1]) {
+		return phpDotContinuesDecimalLiteral(expr, dot)
+	}
+	if dot+1 >= len(expr) || !isPHPDecimalDigit(expr[dot+1]) {
+		return false
+	}
+	for i := dot - 1; i >= 0; i-- {
+		if isPHPSpace(expr[i]) {
+			continue
+		}
+		switch expr[i] {
+		case '(', '[', '{', ',', '?', ':', '=', '!', '<', '>', '+', '-', '*', '/', '%', '&', '|', '^', '~':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func phpDotContinuesDecimalLiteral(expr string, dot int) bool {
+	for i := dot - 1; i >= 0; i-- {
+		if isPHPDecimalDigit(expr[i]) || expr[i] == '_' {
+			continue
+		}
+		switch expr[i] {
+		case '.', 'e', 'E', 'x', 'X', 'b', 'B', 'o', 'O':
+			return false
+		case '+', '-':
+			return i == 0 || (expr[i-1] != 'e' && expr[i-1] != 'E')
+		default:
+			return !isPHPIdentifierPart(expr[i]) && expr[i] != '$' && expr[i] != '\\'
+		}
+	}
+	return true
+}
+
+func isPHPDecimalDigit(c byte) bool {
+	return c >= '0' && c <= '9'
 }
 
 // phpNonStringReturnBuiltins lists PHP builtins (plus the isset/empty
@@ -641,16 +695,25 @@ func phpIsNonStringBuiltinCall(expr string, trustUnqualified bool) bool {
 	return qualified || trustUnqualified
 }
 
-// phpDeclaresNamespaceOrFunctionAlias reports whether the source declares a
-// namespace or imports a function alias (use function ..., or a group import
-// containing a function entry). Either lets an unqualified builtin name
-// resolve to attacker-defined code. Closure captures (function () use ($x))
-// and trait use inside classes do not count.
-func phpDeclaresNamespaceOrFunctionAlias(code string) bool {
+// phpMayRedirectUnqualifiedBuiltin reports whether the source can make an
+// unqualified trusted builtin name resolve to attacker-defined code: namespace
+// fallback/shadowing, use-function imports, or same-file global polyfills for
+// names that are builtins only on newer PHP versions. Closure captures
+// (function () use ($x)), class methods, and trait use inside classes do not
+// count.
+func phpMayRedirectUnqualifiedBuiltin(code string) bool {
 	prev := byte(0) // last significant byte
+	classDepth := 0
+	var braceStack []bool
+	pendingClassScope := false
 	i := 0
 	for i < len(code) {
 		c := code[i]
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label)
+			prev = '"'
+			continue
+		}
 		if isPHPQuote(c) {
 			i = skipPHPString(code, i) + 1
 			prev = '"'
@@ -659,6 +722,31 @@ func phpDeclaresNamespaceOrFunctionAlias(code string) bool {
 		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
 			i++
 			continue
+		}
+		switch c {
+		case '{':
+			braceStack = append(braceStack, pendingClassScope)
+			if pendingClassScope {
+				classDepth++
+			}
+			pendingClassScope = false
+			prev = c
+			i++
+			continue
+		case '}':
+			if len(braceStack) > 0 {
+				last := len(braceStack) - 1
+				if braceStack[last] && classDepth > 0 {
+					classDepth--
+				}
+				braceStack = braceStack[:last]
+			}
+			pendingClassScope = false
+			prev = c
+			i++
+			continue
+		case ';':
+			pendingClassScope = false
 		}
 		if !isPHPIdentifierStart(c) {
 			prev = c
@@ -676,9 +764,18 @@ func phpDeclaresNamespaceOrFunctionAlias(code string) bool {
 			continue
 		}
 		switch word {
+		case "class", "interface", "trait", "enum":
+			pendingClassScope = true
 		case "namespace":
 			return true
+		case "function":
+			if classDepth == 0 && phpFunctionDeclarationShadowsNonStringBuiltin(code, i) {
+				return true
+			}
 		case "use":
+			if classDepth > 0 {
+				continue
+			}
 			j := skipPHPWhitespace(code, i)
 			if j < len(code) && code[j] == '(' {
 				continue // closure capture
@@ -689,6 +786,22 @@ func phpDeclaresNamespaceOrFunctionAlias(code string) bool {
 		}
 	}
 	return false
+}
+
+func phpFunctionDeclarationShadowsNonStringBuiltin(code string, from int) bool {
+	i := skipPHPWhitespace(code, from)
+	if i < len(code) && code[i] == '&' {
+		i = skipPHPWhitespace(code, i+1)
+	}
+	if i >= len(code) || !isPHPIdentifierStart(code[i]) {
+		return false
+	}
+	start := i
+	for i < len(code) && isPHPIdentifierPart(code[i]) {
+		i++
+	}
+	_, shadows := phpNonStringReturnBuiltins[strings.ToLower(code[start:i])]
+	return shadows
 }
 
 // phpUseStatementImportsFunction scans one use statement (until the first
@@ -941,6 +1054,10 @@ func phpCallArguments(code string, start, end int) []string {
 	argStart := skipPHPWhitespace(code, start)
 	depth := 0
 	for i := start; i < end; i++ {
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
 		if isPHPQuote(code[i]) {
 			i = skipPHPString(code, i)
 			continue
