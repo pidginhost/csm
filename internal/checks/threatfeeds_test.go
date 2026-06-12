@@ -3,7 +3,6 @@ package checks
 import (
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,13 +22,11 @@ func TestDownloadFeedParsesIPsAndCIDRs(t *testing.T) {
 invalid-entry
 203.0.113.3 # inline hash
 `
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
 	}))
-	defer srv.Close()
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	ips, nets, err := downloadFeed(client, srv.URL, "test-feed")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL, "test-feed")
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}
@@ -58,33 +55,27 @@ invalid-entry
 }
 
 func TestDownloadFeedHTTPError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer srv.Close()
 
-	_, _, err := downloadFeed(&http.Client{Timeout: 5 * time.Second}, srv.URL, "broken")
+	_, _, err := downloadFeed(client, localHTTPTestURL, "broken")
 	if err == nil {
 		t.Error("expected error for HTTP 500")
 	}
 }
 
 func TestDownloadFeedNetworkError(t *testing.T) {
-	// Closed server → connection refused
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-
-	_, _, err := downloadFeed(&http.Client{Timeout: 2 * time.Second}, srv.URL, "dead")
+	_, _, err := downloadFeed(newFailingHTTPClient("forced feed transport failure"), localHTTPTestURL, "dead")
 	if err == nil {
 		t.Error("expected network error")
 	}
 }
 
 func TestDownloadFeedEmptyBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	defer srv.Close()
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 
-	ips, nets, err := downloadFeed(&http.Client{Timeout: 5 * time.Second}, srv.URL, "empty")
+	ips, nets, err := downloadFeed(client, localHTTPTestURL, "empty")
 	if err != nil {
 		t.Fatalf("downloadFeed: %v", err)
 	}

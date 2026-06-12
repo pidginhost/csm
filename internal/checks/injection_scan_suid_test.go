@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
@@ -88,17 +89,16 @@ func TestScanForSUIDSkipsVirtfsAndMailAndPublicHtml(t *testing.T) {
 }
 
 func TestScanForSUIDFlagsSUIDBinary(t *testing.T) {
-	tmp := t.TempDir()
-	suid := filepath.Join(tmp, "evil")
-	if err := os.WriteFile(suid, []byte("x"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	// Force the setuid bit.
-	if err := os.Chmod(suid, 0755|os.ModeSetuid); err != nil {
-		t.Fatal(err)
-	}
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			if name == "/scan" {
+				return []os.DirEntry{suidDirEntry{name: "evil", mode: 0755 | os.ModeSetuid}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
 	var findings []alert.Finding
-	scanForSUID(context.Background(), tmp, 4, &findings)
+	scanForSUID(context.Background(), "/scan", 4, &findings)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 SUID finding, got %d: %+v", len(findings), findings)
 	}
@@ -111,21 +111,50 @@ func TestScanForSUIDFlagsSUIDBinary(t *testing.T) {
 }
 
 func TestScanForSUIDRecursesIntoNormalSubdirs(t *testing.T) {
-	tmp := t.TempDir()
-	sub := filepath.Join(tmp, "config")
-	if err := os.MkdirAll(sub, 0755); err != nil {
-		t.Fatal(err)
-	}
-	suid := filepath.Join(sub, "deep")
-	if err := os.WriteFile(suid, []byte("x"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(suid, 0755|os.ModeSetuid); err != nil {
-		t.Fatal(err)
-	}
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/scan":
+				return []os.DirEntry{suidDirEntry{name: "config", isDir: true}}, nil
+			case "/scan/config":
+				return []os.DirEntry{suidDirEntry{name: "deep", mode: 0755 | os.ModeSetuid}}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
 	var findings []alert.Finding
-	scanForSUID(context.Background(), tmp, 4, &findings)
+	scanForSUID(context.Background(), "/scan", 4, &findings)
 	if len(findings) != 1 {
 		t.Errorf("expected nested SUID file to be flagged, got %+v", findings)
 	}
 }
+
+type suidDirEntry struct {
+	name  string
+	isDir bool
+	mode  os.FileMode
+}
+
+func (d suidDirEntry) Name() string      { return d.name }
+func (d suidDirEntry) IsDir() bool       { return d.isDir }
+func (d suidDirEntry) Type() os.FileMode { return d.mode.Type() }
+func (d suidDirEntry) Info() (os.FileInfo, error) {
+	mode := d.mode
+	if d.isDir {
+		mode |= os.ModeDir
+	}
+	return suidFileInfo{name: d.name, mode: mode}, nil
+}
+
+type suidFileInfo struct {
+	name string
+	mode os.FileMode
+}
+
+func (f suidFileInfo) Name() string       { return f.name }
+func (f suidFileInfo) Size() int64        { return 1 }
+func (f suidFileInfo) Mode() os.FileMode  { return f.mode }
+func (f suidFileInfo) ModTime() time.Time { return time.Time{} }
+func (f suidFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f suidFileInfo) Sys() interface{}   { return nil }

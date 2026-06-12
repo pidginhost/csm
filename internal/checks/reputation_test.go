@@ -3,7 +3,6 @@ package checks
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -212,24 +211,21 @@ func TestLoadAllBlockedIPsEmpty(t *testing.T) {
 // --- queryAbuseIPDB ---------------------------------------------------
 
 func TestQueryAbuseIPDBSuccess(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Key") != "test-key" {
 			t.Errorf("API key not sent: %q", r.Header.Get("Key"))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"abuseConfidenceScore":85,"usageType":"Data Center","isp":"BadISP","totalReports":42}}`))
 	}))
-	defer srv.Close()
 
 	// Override endpoint for this test
 	origEndpoint := abuseIPDBEndpoint
 	defer func() { /* can't restore const */ }()
 	_ = origEndpoint
 
-	// queryAbuseIPDB hardcodes the endpoint, so use a client that redirects to our server.
-	// Instead, test the response parsing directly by hitting our httptest server.
-	client := srv.Client()
-	req, _ := http.NewRequest("GET", srv.URL+"?ipAddress=1.2.3.4&maxAgeInDays=90", nil)
+	// Test the response parsing directly by hitting the in-process handler.
+	req, _ := http.NewRequest("GET", localHTTPTestURL+"?ipAddress=1.2.3.4&maxAgeInDays=90", nil)
 	req.Header.Set("Key", "test-key")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)

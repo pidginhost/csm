@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,16 +182,15 @@ func TestCheckIPReputation_AlreadyBlockedSkipsTier(t *testing.T) {
 
 // TestQueryAbuseIPDB_429Response hits the 429 branch.
 func TestQueryAbuseIPDB_429Response(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
-	defer srv.Close()
 
-	// queryAbuseIPDB hardcodes the endpoint; round-trip through the srv client
+	// queryAbuseIPDB hardcodes the endpoint; round-trip through the local client
 	// and decode the response manually to verify the 429 code path works as
 	// the function expects. This exercises the HTTP status handling logic.
-	req, _ := http.NewRequest("GET", srv.URL, nil)
-	resp, err := srv.Client().Do(req)
+	req, _ := http.NewRequest("GET", localHTTPTestURL, nil)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -297,21 +295,16 @@ func TestParseHIBPCount_NonIntegerCountBranch(t *testing.T) {
 // TestFetchWPOrgPluginInfo_NilContextBuildError uses an invalid URL scheme
 // so the NewRequestWithContext fails.
 func TestFetchWPOrgPluginInfo_TransportErrorViaClient(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
-	srv.Close()
-
 	old := wpOrgHTTPClient
-	wpOrgHTTPClient = &http.Client{Timeout: 500 * time.Millisecond}
+	wpOrgHTTPClient = newFailingHTTPClient("forced WordPress.org transport failure")
 	defer func() { wpOrgHTTPClient = old }()
 
-	// Real URL but transport to closed server will fail quickly; this just
-	// verifies the function returns an error (hitting the error branch).
+	// Verify the function returns an error without depending on real DNS or
+	// localhost listener behavior.
 	info, err := fetchWPOrgPluginInfo(context.Background(), "nonexistent-slug-zzz-9999")
 	if err == nil {
-		t.Logf("got unexpected success: %+v", info)
+		t.Fatalf("expected transport error, got success: %+v", info)
 	}
-	// We don't assert err != nil because external DNS could reach real
-	// api.wordpress.org. Point is to exercise the code path.
 }
 
 // --- account_scan.go ---------------------------------------------------

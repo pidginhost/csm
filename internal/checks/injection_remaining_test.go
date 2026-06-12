@@ -2,7 +2,6 @@ package checks
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -17,12 +16,11 @@ import (
 // queryAbuseIPDB test is in reputation_test.go.
 
 func TestQueryAbuseIPDB429(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(429)
 	}))
-	defer srv.Close()
 
-	_, _, err := queryAbuseIPDB(srv.Client(), "1.2.3.4", "key")
+	_, _, err := queryAbuseIPDB(client, "1.2.3.4", "key")
 	if err == nil {
 		t.Error("429 should return error")
 	}

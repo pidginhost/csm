@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,14 +153,13 @@ func TestCheckIPReputationFreshLookupLowScoreNoFinding(t *testing.T) {
 
 func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 	rspamdCalls := 0
-	rspamd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rspamdCalls++
 		if r.URL.Path != "/history" {
 			t.Fatalf("expected /history request, got %s", r.URL.Path)
 		}
 		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.77","action":"reject","score":8}]}`)
 	}))
-	defer rspamd.Close()
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.77 port 22 ssh2\n"
@@ -169,7 +167,7 @@ func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.Rspamd.Enabled = true
-	cfg.Reputation.Rspamd.URL = rspamd.URL
+	cfg.Reputation.Rspamd.URL = localHTTPTestURL
 
 	findings := CheckIPReputation(context.Background(), cfg, nil)
 	hasCritical := false
@@ -191,7 +189,7 @@ func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 
 func TestCheckIPReputationUpstreamOnlyEmitsWithoutAbuseKey(t *testing.T) {
 	upstreamCalls := 0
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
 		if r.URL.Path != "/lookup" {
 			t.Fatalf("expected /lookup request, got %s", r.URL.Path)
@@ -204,7 +202,6 @@ func TestCheckIPReputationUpstreamOnlyEmitsWithoutAbuseKey(t *testing.T) {
 		}
 		_, _ = fmt.Fprintln(w, `{"ip":"198.51.100.79","score":80,"source":"panel"}`)
 	}))
-	defer upstream.Close()
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.79 port 22 ssh2\n"
@@ -212,7 +209,7 @@ func TestCheckIPReputationUpstreamOnlyEmitsWithoutAbuseKey(t *testing.T) {
 
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.Upstream.Enabled = true
-	cfg.Reputation.Upstream.URL = upstream.URL
+	cfg.Reputation.Upstream.URL = localHTTPTestURL
 	cfg.Reputation.Upstream.Token = "upstream-token"
 
 	findings := CheckIPReputation(context.Background(), cfg, nil)
@@ -238,10 +235,9 @@ func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = fmt.Fprintln(w, `{"errors":[{"detail":"temporary failure"}]}`)
 	})
-	rspamd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.88","action":"reject","score":8}]}`)
 	}))
-	defer rspamd.Close()
 
 	statePath := t.TempDir()
 	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.88 port 22 ssh2\n"
@@ -250,7 +246,7 @@ func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 	cfg := &config.Config{StatePath: statePath}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 	cfg.Reputation.Rspamd.Enabled = true
-	cfg.Reputation.Rspamd.URL = rspamd.URL
+	cfg.Reputation.Rspamd.URL = localHTTPTestURL
 
 	findings := CheckIPReputation(context.Background(), cfg, nil)
 	for _, f := range findings {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -153,9 +152,9 @@ func TestRefreshPluginCache_NoInstalls(t *testing.T) {
 	}
 }
 
-// fetchWPOrgPluginInfo parse helper: exercise via httptest server.
+// fetchWPOrgPluginInfo parse helper: exercise via in-process handler.
 func TestFetchWPOrgPluginInfo_ValidResponseFormat(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("action") != "plugin_information" {
 			t.Errorf("missing action param")
@@ -163,10 +162,9 @@ func TestFetchWPOrgPluginInfo_ValidResponseFormat(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"slug":"jetpack","version":"12.5","tested":"6.5"}`))
 	}))
-	defer srv.Close()
 
-	u := srv.URL + "?action=plugin_information&request[slug]=" + url.QueryEscape("jetpack")
-	resp, err := http.Get(u)
+	u := localHTTPTestURL + "?action=plugin_information&request[slug]=" + url.QueryEscape("jetpack")
+	resp, err := client.Get(u)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,13 +710,11 @@ func TestSaveLines_Sorted(t *testing.T) {
 // downloadFeed handles semicolon/hash trailing comments.
 func TestDownloadFeed_TrailingComments(t *testing.T) {
 	body := "1.2.3.4 ; hello\n5.6.7.8 # hi there\n"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newHandlerHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
 	}))
-	defer srv.Close()
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	ips, _, err := downloadFeed(client, srv.URL, "test")
+	ips, _, err := downloadFeed(client, localHTTPTestURL, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -52,12 +52,10 @@ func TestQueryAbuseIPDBAppendsISPAndReportCountToCategory(t *testing.T) {
 }
 
 func TestQueryAbuseIPDBTransportErrorReturnsError(t *testing.T) {
-	// Point the client at a dead TCP port (127.0.0.1:1 is never listening).
-	// client.Do fails, function returns the error unchanged.
 	origURL := abuseIPDBEndpoint
 	origClient := abuseIPDBClient
-	abuseIPDBEndpoint = "http://127.0.0.1:1"
-	abuseIPDBClient = &http.Client{}
+	abuseIPDBEndpoint = localHTTPTestURL
+	abuseIPDBClient = newFailingHTTPClient("forced AbuseIPDB transport failure")
 	t.Cleanup(func() {
 		abuseIPDBEndpoint = origURL
 		abuseIPDBClient = origClient

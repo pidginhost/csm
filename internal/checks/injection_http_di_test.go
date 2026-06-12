@@ -4,44 +4,37 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// Tests for HTTP-backed Check functions, exercised via httptest.Server
-// with the package-level endpoint+client vars temporarily redirected.
+// Tests for HTTP-backed Check functions, exercised with package-level
+// endpoint+client vars temporarily redirected to in-process handlers.
 
-// withTestAbuseIPDB starts a test server, points abuseIPDBEndpoint+Client
-// at it for the duration of the test, and returns the URL.
+// withTestAbuseIPDB points abuseIPDBEndpoint+Client at an in-process
+// handler for the duration of the test, and returns the URL.
 func withTestAbuseIPDB(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-
 	origURL := abuseIPDBEndpoint
 	origClient := abuseIPDBClient
-	abuseIPDBEndpoint = srv.URL
-	abuseIPDBClient = srv.Client()
+	abuseIPDBEndpoint = localHTTPTestURL
+	abuseIPDBClient = newHandlerHTTPClient(handler)
 	t.Cleanup(func() {
 		abuseIPDBEndpoint = origURL
 		abuseIPDBClient = origClient
 	})
-	return srv.URL
+	return abuseIPDBEndpoint
 }
 
-// withTestHIBP swaps hibpEndpoint+Client to a test server.
+// withTestHIBP swaps hibpEndpoint+Client to an in-process handler.
 func withTestHIBP(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-
 	origURL := hibpEndpoint
 	origClient := hibpClient
-	hibpEndpoint = srv.URL + "/"
-	hibpClient = srv.Client()
+	hibpEndpoint = localHTTPTestURL + "/"
+	hibpClient = newHandlerHTTPClient(handler)
 	t.Cleanup(func() {
 		hibpEndpoint = origURL
 		hibpClient = origClient
@@ -213,11 +206,10 @@ func TestCheckHIBPNon200StatusReturnsZero(t *testing.T) {
 }
 
 func TestCheckHIBPNetworkErrorReturnsZero(t *testing.T) {
-	// Point endpoint at an unreachable address. Restored on cleanup.
 	origURL := hibpEndpoint
 	origClient := hibpClient
-	hibpEndpoint = "http://127.0.0.1:1/" // port 1 should refuse
-	hibpClient = &http.Client{}
+	hibpEndpoint = localHTTPTestURL + "/"
+	hibpClient = newFailingHTTPClient("forced HIBP transport failure")
 	t.Cleanup(func() {
 		hibpEndpoint = origURL
 		hibpClient = origClient

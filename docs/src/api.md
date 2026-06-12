@@ -41,7 +41,8 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`,
-                                 `mail.queue.composition.v1`). Use for orchestrator feature-detect.
+                                 `mail.queue.composition.v1`,
+                                 `detect.http_scanner_profile.v1`). Use for orchestrator feature-detect.
 GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.

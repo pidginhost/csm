@@ -4,8 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,21 +16,8 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// helpers — swap package-level *http.Client with a server-redirecting one.
+// helpers — swap package-level *http.Client with an in-process handler.
 // ---------------------------------------------------------------------------
-
-// rewriteTransport rewrites every outgoing request to the given test server's
-// host/scheme. The original path/query are preserved so the handler still sees
-// what the production code constructed.
-type rewriteTransport struct{ targetURL *url.URL }
-
-func (rt *rewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r2 := r.Clone(r.Context())
-	r2.URL.Scheme = rt.targetURL.Scheme
-	r2.URL.Host = rt.targetURL.Host
-	r2.Host = rt.targetURL.Host
-	return http.DefaultTransport.RoundTrip(r2)
-}
 
 // resetWeakPasswords zeros the weak password cache + sync.Once so the next
 // loadWeakPasswords() call re-runs the loader. We do not "save+restore" the
@@ -48,28 +33,21 @@ func resetWeakPasswords(t *testing.T) {
 	})
 }
 
-// withRewriteHTTPClient swaps the supplied package-level *http.Client pointer
-// with one that redirects all requests to the test server, restored on cleanup.
-func withRewriteHTTPClient(t *testing.T, holder **http.Client, srv *httptest.Server) {
+// withHandlerHTTPClient swaps the supplied package-level *http.Client pointer
+// with one that routes all requests to the handler, restored on cleanup.
+func withHandlerHTTPClient(t *testing.T, holder **http.Client, handler http.HandlerFunc) {
 	t.Helper()
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatalf("parse server url: %v", err)
-	}
 	old := *holder
-	*holder = &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &rewriteTransport{targetURL: u},
-	}
+	*holder = newHandlerHTTPClient(handler)
 	t.Cleanup(func() { *holder = old })
 }
 
 // ---------------------------------------------------------------------------
-// plugincheck.go — fetchWPOrgPluginInfo via httptest server
+// plugincheck.go — fetchWPOrgPluginInfo via in-process handler
 // ---------------------------------------------------------------------------
 
 func TestFetchWPOrgPluginInfo_SuccessViaTransport(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &wpOrgHTTPClient, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.RawQuery, "plugin_information") {
 			t.Errorf("expected action=plugin_information in query: %s", r.URL.RawQuery)
 		}
@@ -78,10 +56,7 @@ func TestFetchWPOrgPluginInfo_SuccessViaTransport(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"slug":"akismet","version":"5.3","tested":"6.4"}`))
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &wpOrgHTTPClient, srv)
+	})
 
 	info, err := fetchWPOrgPluginInfo(context.Background(), "akismet")
 	if err != nil {
@@ -99,13 +74,10 @@ func TestFetchWPOrgPluginInfo_SuccessViaTransport(t *testing.T) {
 }
 
 func TestFetchWPOrgPluginInfo_NotFoundError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &wpOrgHTTPClient, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"error":"Plugin not found."}`))
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &wpOrgHTTPClient, srv)
+	})
 
 	_, err := fetchWPOrgPluginInfo(context.Background(), "definitely-not-real")
 	if err == nil {
@@ -117,12 +89,9 @@ func TestFetchWPOrgPluginInfo_NotFoundError(t *testing.T) {
 }
 
 func TestFetchWPOrgPluginInfo_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &wpOrgHTTPClient, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &wpOrgHTTPClient, srv)
+	})
 
 	_, err := fetchWPOrgPluginInfo(context.Background(), "anything")
 	if err == nil {
@@ -134,12 +103,9 @@ func TestFetchWPOrgPluginInfo_NonOKStatus(t *testing.T) {
 }
 
 func TestFetchWPOrgPluginInfo_InvalidJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &wpOrgHTTPClient, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `not valid json`)
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &wpOrgHTTPClient, srv)
+	})
 
 	_, err := fetchWPOrgPluginInfo(context.Background(), "x")
 	if err == nil {
@@ -151,11 +117,9 @@ func TestFetchWPOrgPluginInfo_InvalidJSON(t *testing.T) {
 }
 
 func TestFetchWPOrgPluginInfo_TransportFailure(t *testing.T) {
-	// Empty server then close it, so the client's request fails.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // immediately closed → connection refused
-
-	withRewriteHTTPClient(t, &wpOrgHTTPClient, srv)
+	old := wpOrgHTTPClient
+	wpOrgHTTPClient = newFailingHTTPClient("forced WordPress.org transport failure")
+	t.Cleanup(func() { wpOrgHTTPClient = old })
 
 	_, err := fetchWPOrgPluginInfo(context.Background(), "x")
 	if err == nil {
@@ -454,21 +418,18 @@ func TestCheckWordlist_NoMatchesWhenEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// emailpasswd.go — checkHIBP via httptest with rewrite transport
+// emailpasswd.go — checkHIBP via in-process handler
 // ---------------------------------------------------------------------------
 
 func TestCheckHIBP_FoundCount(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &hibpClient, func(w http.ResponseWriter, r *http.Request) {
 		// HIBP path is /range/{prefix}; we don't enforce it here but echo a body
 		// containing the SHA-1 suffix the production code computes for "password".
 		// SHA1("password") = 5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8
 		// prefix = "5BAA6", suffix = "1E4C9B93F3F0682250B6CF8331B7EE68FD8"
 		_, _ = io.WriteString(w, "1E4C9B93F3F0682250B6CF8331B7EE68FD8:42\r\n"+
 			"DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEAD:7\r\n")
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &hibpClient, srv)
+	})
 
 	if n := checkHIBP("password"); n != 42 {
 		t.Errorf("checkHIBP(password) = %d, want 42", n)
@@ -476,12 +437,9 @@ func TestCheckHIBP_FoundCount(t *testing.T) {
 }
 
 func TestCheckHIBP_NotFoundReturnsZero(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &hibpClient, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA:1\r\n")
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &hibpClient, srv)
+	})
 
 	if n := checkHIBP("password"); n != 0 {
 		t.Errorf("not-found suffix should return 0, got %d", n)
@@ -489,12 +447,9 @@ func TestCheckHIBP_NotFoundReturnsZero(t *testing.T) {
 }
 
 func TestCheckHIBP_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withHandlerHTTPClient(t, &hibpClient, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-
-	withRewriteHTTPClient(t, &hibpClient, srv)
+	})
 
 	if n := checkHIBP("password"); n != 0 {
 		t.Errorf("non-200 should return 0, got %d", n)
@@ -502,10 +457,9 @@ func TestCheckHIBP_NonOKStatus(t *testing.T) {
 }
 
 func TestCheckHIBP_TransportFailureReturnsZero(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close() // immediately closed
-
-	withRewriteHTTPClient(t, &hibpClient, srv)
+	old := hibpClient
+	hibpClient = newFailingHTTPClient("forced HIBP transport failure")
+	t.Cleanup(func() { hibpClient = old })
 
 	if n := checkHIBP("password"); n != 0 {
 		t.Errorf("transport failure should return 0, got %d", n)

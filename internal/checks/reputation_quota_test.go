@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -239,11 +238,10 @@ func TestCheckIPReputationNearDailyCapReservesOnlyRemainingSlots(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"data":{"abuseConfidenceScore":10,"usageType":"ISP"}}`)
 	})
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.URL.Query().Get("ip")
 		_, _ = fmt.Fprintf(w, `{"ip":%q,"score":80,"source":"panel"}`, ip)
 	}))
-	defer upstream.Close()
 
 	logContent := strings.Join([]string{
 		"Apr 18 10:00:00 host sshd[1]: Accepted publickey for x from 198.51.100.1 port 22 ssh2",
@@ -255,7 +253,7 @@ func TestCheckIPReputationNearDailyCapReservesOnlyRemainingSlots(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 	cfg.Reputation.Upstream.Enabled = true
-	cfg.Reputation.Upstream.URL = upstream.URL
+	cfg.Reputation.Upstream.URL = localHTTPTestURL
 
 	findings := CheckIPReputation(context.Background(), cfg, nil)
 	if got := abuseCalls.Load(); got != 1 {

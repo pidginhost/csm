@@ -250,6 +250,7 @@ alerts:
 auto_response:
   enabled: true
   block_ips: false
+  http_scanner_action: "challenge"
   netblock_threshold: 3
   max_blocks_per_hour: 50
 `
@@ -263,7 +264,7 @@ auto_response:
 		t.Fatal("missing ETag from GET")
 	}
 
-	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true,"netblock_threshold":5,"max_blocks_per_hour":75}}`)
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true,"http_scanner_action":"block","netblock_threshold":5,"max_blocks_per_hour":75}}`)
 	postReq.Header.Set("If-Match", etag)
 	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
 	postW := httptest.NewRecorder()
@@ -288,6 +289,9 @@ auto_response:
 	if !live.AutoResponse.BlockIPs {
 		t.Error("live AutoResponse.BlockIPs not updated")
 	}
+	if live.AutoResponse.HTTPScannerAction != "block" {
+		t.Errorf("HTTPScannerAction = %q, want block", live.AutoResponse.HTTPScannerAction)
+	}
 	if live.AutoResponse.NetBlockThreshold != 5 {
 		t.Errorf("NetBlockThreshold = %d", live.AutoResponse.NetBlockThreshold)
 	}
@@ -298,11 +302,60 @@ auto_response:
 	if !loaded.AutoResponse.BlockIPs {
 		t.Error("disk not updated")
 	}
+	if loaded.AutoResponse.HTTPScannerAction != "block" {
+		t.Errorf("disk HTTPScannerAction = %q, want block", loaded.AutoResponse.HTTPScannerAction)
+	}
 	if loaded.AutoResponse.MaxBlocksPerHour != 75 {
 		t.Errorf("disk MaxBlocksPerHour = %d, want 75", loaded.AutoResponse.MaxBlocksPerHour)
 	}
 	if loaded.Integrity.ConfigHash != resp.NewETag {
 		t.Errorf("disk config_hash = %q, new_etag = %q", loaded.Integrity.ConfigHash, resp.NewETag)
+	}
+}
+
+func TestSettingsPOSTRejectsUnknownHTTPScannerAction(t *testing.T) {
+	body := `hostname: t.example.com
+auto_response:
+  enabled: true
+  http_scanner_action: "challenge"
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"http_scanner_action":"captcha"}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	var resp struct {
+		Errors []struct {
+			Field   string `json:"field"`
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %+v, want one http_scanner_action error", resp.Errors)
+	}
+	if resp.Errors[0].Field != "http_scanner_action" || !strings.Contains(resp.Errors[0].Message, "captcha") {
+		t.Fatalf("errors = %+v, want rejected scanner action value", resp.Errors)
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AutoResponse.HTTPScannerAction != "challenge" {
+		t.Fatalf("disk HTTPScannerAction = %q, want unchanged challenge", loaded.AutoResponse.HTTPScannerAction)
 	}
 }
 
@@ -999,9 +1052,6 @@ alerts:
 }
 
 func TestSettingsPOSTRejectsUnknownEnumValue(t *testing.T) {
-	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	t.Cleanup(hookSrv.Close)
-
 	body := `hostname: t.example.com
 alerts:
   email:
@@ -1009,8 +1059,7 @@ alerts:
     to: ["ops@t.example.com"]
     from: csm@t.example.com
   webhook:
-    enabled: true
-    url: "` + hookSrv.URL + `"
+    enabled: false
     type: "slack"
   max_per_hour: 20
 `
@@ -1036,42 +1085,28 @@ alerts:
 	}
 }
 
-func TestSettingsPOSTAcceptsKnownEnumValues(t *testing.T) {
-	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	t.Cleanup(hookSrv.Close)
-
-	body := `hostname: t.example.com
-alerts:
-  email:
-    enabled: false
-    to: ["ops@t.example.com"]
-    from: csm@t.example.com
-  webhook:
-    enabled: true
-    url: "` + hookSrv.URL + `"
-    type: "slack"
-  max_per_hour: 20
-`
-	s, _ := newSettingsTestServer(t, "tok", body)
-
-	getReq := settingsAuthedReq("GET", "/api/v1/settings/alerts", "tok", "")
-	getW := httptest.NewRecorder()
-	s.apiSettingsGet(getW, getReq)
-	etag := getW.Header().Get("ETag")
-
-	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
-		`{"changes":{"email.disabled_checks":["webshell","perf_memory"]}}`)
-	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
-	postW := httptest.NewRecorder()
-	s.apiSettingsPost(postW, postReq)
-
-	if postW.Code != 200 {
-		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+func TestBuildChangeSetAcceptsKnownEnumValues(t *testing.T) {
+	section, ok := LookupSettingsSection("alerts")
+	if !ok {
+		t.Fatal("alerts section missing")
 	}
-	live := config.Active()
-	if len(live.Alerts.Email.DisabledChecks) != 2 {
-		t.Fatalf("DisabledChecks = %v, want 2 entries", live.Alerts.Email.DisabledChecks)
+	clone := &config.Config{}
+	changes := map[string]json.RawMessage{
+		"email.disabled_checks": json.RawMessage(`["webshell","perf_memory"]`),
+	}
+
+	yamlChanges, errs := buildChangeSet(section, clone, changes)
+	if len(errs) > 0 {
+		t.Fatalf("buildChangeSet errors = %+v, want none", errs)
+	}
+	if len(yamlChanges) != 1 {
+		t.Fatalf("YAML changes = %+v, want one change", yamlChanges)
+	}
+	if got := yamlChanges[0].Path; len(got) != 3 || got[0] != "alerts" || got[1] != "email" || got[2] != "disabled_checks" {
+		t.Fatalf("YAML change path = %v, want alerts.email.disabled_checks", got)
+	}
+	if got := clone.Alerts.Email.DisabledChecks; len(got) != 2 || got[0] != "webshell" || got[1] != "perf_memory" {
+		t.Fatalf("DisabledChecks = %v, want [webshell perf_memory]", got)
 	}
 }
 
