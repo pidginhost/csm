@@ -223,6 +223,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
 			{YAMLPath: "fix_wp_cron", Type: "bool", Label: "Auto-disable WP-Cron + install system cron", Help: "On perf_wp_cron findings, edit wp-config.php and add a per-user cron. Tune interval/php under Performance."},
 			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts"},
+			{YAMLPath: "http_scanner_action", Type: "enum", Label: "URL scanner response", Options: []string{"challenge", "block"}, Help: "Response to http_scanner_profile findings. challenge routes the IP to the PoW challenge when the challenge subsystem is enabled, falling back to a block when it is not; block always hard-blocks."},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},
 			{YAMLPath: "netblock_threshold", Type: "int", Label: "Netblock threshold", Min: int64p(1)},
 			{YAMLPath: "permblock", Type: "bool", Label: "Auto-promote to permanent"},

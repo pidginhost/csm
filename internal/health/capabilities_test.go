@@ -76,6 +76,12 @@ func TestMailVisibilityCapabilitiesAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestHTTPScannerProfileCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "detect.http_scanner_profile.v1") {
+		t.Error("detect.http_scanner_profile.v1 capability missing")
+	}
+}
+
 // TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
 // "bpf-connection-tracker" string appears iff the connection_tracker
 // backend has been set to BPF.

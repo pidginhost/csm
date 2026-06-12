@@ -356,6 +356,23 @@ func TestThresholdsSchemaIncludesHTTPScannerProfileFields(t *testing.T) {
 	}
 }
 
+func TestAutoResponseSchemaIncludesHTTPScannerAction(t *testing.T) {
+	s, ok := LookupSettingsSection("auto_response")
+	if !ok {
+		t.Fatal("auto_response section missing")
+	}
+	f := findSchemaField(s, "http_scanner_action")
+	if f == nil {
+		t.Fatal("http_scanner_action field missing")
+	}
+	if f.Type != "enum" {
+		t.Fatalf("type = %q, want enum", f.Type)
+	}
+	if len(f.Options) != 2 || f.Options[0] != "challenge" || f.Options[1] != "block" {
+		t.Fatalf("options = %v, want [challenge block]", f.Options)
+	}
+}
+
 func TestThresholdsSchemaIncludesCredStuffingDistinctAccounts(t *testing.T) {
 	s, _ := LookupSettingsSection("thresholds")
 	f := findSchemaField(s, "cred_stuffing_distinct_accounts")
