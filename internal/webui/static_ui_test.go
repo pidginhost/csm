@@ -4011,8 +4011,8 @@ func TestNoListDirRejectsDirectoryListing(t *testing.T) {
 // unchunked /api/v1/geoip/batch POST got a 400 ("maximum 500 IPs per
 // request"), and the per-IP fallback then fired hundreds of /api/v1/geoip
 // GETs that tripped the 600 req/min API rate limit. firewall.js must chunk
-// unique IPs like modsec.js does and must not fall back to a per-IP request
-// flood.
+// unique IPs like modsec.js does, and request failures mark the affected
+// chunk's cells unavailable instead of falling back to a request per cell.
 func TestFirewallGeoIPEnrichmentChunksBatchRequests(t *testing.T) {
 	js, err := os.ReadFile("../../ui/static/js/firewall.js")
 	if err != nil {
@@ -4021,7 +4021,8 @@ func TestFirewallGeoIPEnrichmentChunksBatchRequests(t *testing.T) {
 	jsText := string(js)
 	for _, fragment := range []string{
 		`var GEOIP_CHUNK = 250;`,
-		`uniqueIPs.slice(s, s + GEOIP_CHUNK)`,
+		`requestGeoIPChunk(uniqueIPs.slice(s, s + GEOIP_CHUNK));`,
+		`catch(function() { markUnavailable(ips); });`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Errorf("firewall.js missing geoip chunking fragment %q", fragment)
@@ -4029,7 +4030,6 @@ func TestFirewallGeoIPEnrichmentChunksBatchRequests(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`enrichGeoIPFallback`,
-		`CSM.post('/api/v1/geoip/batch', { ips: ips })`,
 	} {
 		if strings.Contains(jsText, bad) {
 			t.Errorf("firewall.js still contains rate-limit-storm fragment %q", bad)

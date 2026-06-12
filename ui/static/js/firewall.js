@@ -834,11 +834,24 @@ function enrichGeoIP(container) {
         }
     }
 
-    for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
-        var slice = uniqueIPs.slice(s, s + GEOIP_CHUNK);
-        CSM.post('/api/v1/geoip/batch', { ips: slice })
+    function markUnavailable(ips) {
+        for (var i = 0; i < ips.length; i++) {
+            var targets = cellMap[ips[i]];
+            if (!targets) continue;
+            for (var j = 0; j < targets.length; j++) {
+                targets[j].textContent = '-';
+            }
+        }
+    }
+
+    function requestGeoIPChunk(ips) {
+        CSM.post('/api/v1/geoip/batch', { ips: ips })
             .then(function(data) { paint(data.results || {}); })
-            .catch(function() { /* non-fatal: cells keep their placeholder */ });
+            .catch(function() { markUnavailable(ips); });
+    }
+
+    for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
+        requestGeoIPChunk(uniqueIPs.slice(s, s + GEOIP_CHUNK));
     }
 }
 
