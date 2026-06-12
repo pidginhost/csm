@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -61,6 +62,14 @@ func CheckDNSZoneChanges(_ context.Context, _ *config.Config, store *state.Store
 			continue
 		}
 
+		key := "_dns_zone:" + name
+		rawPrev, exists := store.GetRaw(key)
+		var prev dnsZoneState
+		prevOK := false
+		if exists {
+			prev, prevOK = decodeDNSZoneState(rawPrev)
+		}
+
 		secHash, delegHash := parseZoneSecurity(data, zoneOrigin(name))
 		cur := dnsZoneState{
 			File:  hashBytes(data),
@@ -68,16 +77,22 @@ func CheckDNSZoneChanges(_ context.Context, _ *config.Config, store *state.Store
 			Deleg: delegHash,
 			Prov:  zoneUpdateTime(data),
 		}
-
-		key := "_dns_zone:" + name
-		rawPrev, exists := store.GetRaw(key)
+		cur.Panel = cur.Prov > 0
+		if exists && prevOK && !prev.Panel {
+			cur.Panel = false
+			cur.Prov = 0
+		}
+		if !cur.Panel {
+			cur.Prov = 0
+		} else if exists && prevOK && prev.Panel && cur.Prov < prev.Prov {
+			cur.Prov = prev.Prov
+		}
 		store.SetRaw(key, cur.encode())
 
 		if !exists {
 			continue // first sight: baseline only
 		}
-		prev, ok := decodeDNSZoneState(rawPrev)
-		if !ok {
+		if !prevOK {
 			continue // legacy bare-hash state: re-baseline silently, no alert
 		}
 		if prev.File == cur.File {
@@ -88,7 +103,7 @@ func CheckDNSZoneChanges(_ context.Context, _ *config.Config, store *state.Store
 		}
 
 		// A security-relevant record changed. Weigh it against cPanel provenance.
-		if cur.Prov <= prev.Prov {
+		if !prev.Panel || !cur.Panel || cur.Prov <= prev.Prov {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "dns_zone_change",
@@ -114,13 +129,16 @@ func CheckDNSZoneChanges(_ context.Context, _ *config.Config, store *state.Store
 // dnsZoneState is the per-zone watch state persisted under "_dns_zone:<name>".
 // File is the whole-file hash (cheap "did anything change" gate); Sec is the
 // hash of the security-relevant record set (NS, MX, apex/wildcard A/AAAA);
-// Deleg is the hash of the delegation/mail subset (NS, MX); Prov is the cPanel
-// "(update_time):" stamp, 0 when the zone carries no cPanel header.
+// Deleg is the hash of the delegation/mail subset (NS, MX). Panel records
+// whether the zone was already known as cPanel-managed; manually managed zones
+// cannot become trusted just by adding a cPanel-looking file header later. Prov
+// is the cPanel "(update_time):" stamp, 0 when Panel is false.
 type dnsZoneState struct {
 	File  string `json:"f"`
 	Sec   string `json:"s"`
 	Deleg string `json:"d"`
 	Prov  int64  `json:"p"`
+	Panel bool   `json:"c,omitempty"`
 }
 
 func (z dnsZoneState) encode() string {
@@ -135,9 +153,28 @@ func decodeDNSZoneState(s string) (dnsZoneState, bool) {
 	if !strings.HasPrefix(s, "{") {
 		return dnsZoneState{}, false
 	}
-	var z dnsZoneState
-	if err := json.Unmarshal([]byte(s), &z); err != nil || z.File == "" {
+	var raw struct {
+		File  string `json:"f"`
+		Sec   string `json:"s"`
+		Deleg string `json:"d"`
+		Prov  int64  `json:"p"`
+		Panel *bool  `json:"c"`
+	}
+	if err := json.Unmarshal([]byte(s), &raw); err != nil || raw.File == "" {
 		return dnsZoneState{}, false
+	}
+	z := dnsZoneState{
+		File:  raw.File,
+		Sec:   raw.Sec,
+		Deleg: raw.Deleg,
+		Prov:  raw.Prov,
+		Panel: raw.Prov > 0,
+	}
+	if raw.Panel != nil {
+		z.Panel = *raw.Panel
+	}
+	if !z.Panel {
+		z.Prov = 0
 	}
 	return z, true
 }
@@ -145,28 +182,41 @@ func decodeDNSZoneState(s string) (dnsZoneState, bool) {
 // zoneOrigin derives the zone apex (FQDN, trailing dot) from a zone file name,
 // e.g. "example.com.db" -> "example.com.".
 func zoneOrigin(filename string) string {
-	return ensureTrailingDot(strings.TrimSuffix(filename, ".db"))
+	return canonicalZoneName(strings.TrimSuffix(filename, ".db"))
 }
 
 // zoneUpdateTime extracts the epoch from cPanel's "(update_time):<n>" zone
 // header. Returns 0 when absent (manually managed or non-cPanel zone).
 func zoneUpdateTime(data []byte) int64 {
 	const marker = "(update_time):"
-	s := string(data)
-	i := strings.Index(s, marker)
-	if i < 0 {
-		return 0
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ";") {
+			return 0
+		}
+		if !strings.HasPrefix(line, "; cPanel ") ||
+			!strings.Contains(line, "Cpanel::ZoneFile::VERSION:") ||
+			!strings.Contains(line, marker) {
+			continue
+		}
+		rest := line[strings.Index(line, marker)+len(marker):]
+		j := 0
+		for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+			j++
+		}
+		if j == 0 {
+			return 0
+		}
+		n, err := strconv.ParseInt(rest[:j], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
 	}
-	rest := s[i+len(marker):]
-	j := 0
-	for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
-		j++
-	}
-	if j == 0 {
-		return 0
-	}
-	n, _ := strconv.ParseInt(rest[:j], 10, 64)
-	return n
+	return 0
 }
 
 // parseZoneSecurity parses a BIND zone file and returns two hashes: the
@@ -177,79 +227,104 @@ func zoneUpdateTime(data []byte) int64 {
 func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 	var secRecs, delegRecs []string
 
-	lastOwner := ""
-	curOrigin := origin
+	lastOwnerFQDN := ""
+	zoneOrigin := canonicalZoneName(origin)
+	curOrigin := zoneOrigin
 	parenDepth := 0
+	pendingRaw := ""
+	pendingLine := ""
 
-	for _, raw := range strings.Split(string(data), "\n") {
-		if parenDepth > 0 {
-			// Inside a multi-line record (typically SOA); just track depth.
-			l := stripZoneComment(raw)
-			parenDepth += strings.Count(l, "(") - strings.Count(l, ")")
-			if parenDepth < 0 {
-				parenDepth = 0
-			}
-			continue
-		}
-
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, ";") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "$") {
-			f := strings.Fields(trimmed)
-			if len(f) >= 2 && strings.EqualFold(f[0], "$ORIGIN") {
-				curOrigin = ensureTrailingDot(f[1])
-			}
-			continue
-		}
-
-		line := stripZoneComment(raw)
-		fields := strings.Fields(line)
+	processRecord := func(raw, line string) {
+		fields := zoneRecordFields(line)
 		if len(fields) == 0 {
-			continue
+			return
 		}
 
 		// A leading blank means "same owner as the previous record".
-		owner := lastOwner
+		fqdn := lastOwnerFQDN
 		rest := fields
 		if r := []rune(raw); len(r) > 0 && r[0] != ' ' && r[0] != '\t' {
-			owner = fields[0]
+			fqdn = toFQDN(fields[0], curOrigin)
+			lastOwnerFQDN = fqdn
 			rest = fields[1:]
 		}
-		lastOwner = owner
 
 		typ, rdata := zoneRecordType(rest)
-
-		// Account for parentheses opened on this line (inline SOA, etc.).
-		parenDepth += strings.Count(line, "(") - strings.Count(line, ")")
-		if parenDepth < 0 {
-			parenDepth = 0
-		}
-		if typ == "" {
-			continue
+		if typ == "" || fqdn == "" {
+			return
 		}
 
-		fqdn := toFQDN(owner, curOrigin)
 		switch typ {
 		case "NS":
 			if len(rdata) >= 1 {
-				rec := "NS " + fqdn + " " + strings.ToLower(toFQDN(rdata[0], curOrigin))
+				rec := "NS " + fqdn + " " + toFQDN(rdata[0], curOrigin)
 				delegRecs = append(delegRecs, rec)
 				secRecs = append(secRecs, rec)
 			}
 		case "MX":
 			if len(rdata) >= 2 {
-				rec := "MX " + fqdn + " " + rdata[0] + " " + strings.ToLower(toFQDN(rdata[1], curOrigin))
+				rec := "MX " + fqdn + " " + canonicalMXPreference(rdata[0]) + " " + toFQDN(rdata[1], curOrigin)
 				delegRecs = append(delegRecs, rec)
 				secRecs = append(secRecs, rec)
 			}
 		case "A", "AAAA":
-			if len(rdata) >= 1 && isApexOrWildcard(owner, fqdn, curOrigin) {
-				rec := typ + " " + fqdn + " " + strings.ToLower(rdata[0])
+			if len(rdata) >= 1 && isApexOrWildcard(fqdn, zoneOrigin) {
+				rec := typ + " " + fqdn + " " + canonicalIPLiteral(rdata[0])
 				secRecs = append(secRecs, rec)
 			}
 		}
+	}
+
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := stripZoneComment(raw)
+		trimmed := strings.TrimSpace(line)
+		if parenDepth > 0 {
+			if trimmed != "" {
+				pendingLine += " " + trimmed
+			}
+			parenDepth += zoneParenDelta(line)
+			if parenDepth > 0 {
+				continue
+			}
+			parenDepth = 0
+			processRecord(pendingRaw, pendingLine)
+			pendingRaw = ""
+			pendingLine = ""
+			continue
+		}
+
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "$") {
+			f := strings.Fields(trimmed)
+			if len(f) == 0 {
+				continue
+			}
+			if len(f) >= 2 && strings.EqualFold(f[0], "$ORIGIN") {
+				curOrigin = toFQDN(f[1], curOrigin)
+				continue
+			}
+			if rec, ok := zoneDirectiveFingerprint(f); ok {
+				delegRecs = append(delegRecs, rec)
+				secRecs = append(secRecs, rec)
+			}
+			continue
+		}
+
+		parenDepth = zoneParenDelta(line)
+		if parenDepth > 0 {
+			pendingRaw = raw
+			pendingLine = trimmed
+			continue
+		}
+		if parenDepth < 0 {
+			parenDepth = 0
+		}
+		processRecord(raw, line)
+	}
+	if pendingLine != "" {
+		processRecord(pendingRaw, pendingLine)
 	}
 
 	return hashSortedRecords(secRecs), hashSortedRecords(delegRecs)
@@ -276,54 +351,114 @@ func isZoneClass(t string) bool {
 	return false
 }
 
-// isZoneTTL reports whether a token is a BIND TTL: pure digits, optionally with
-// a single time-unit suffix (s/m/h/d/w).
+// isZoneTTL reports whether a token is a BIND TTL. BIND accepts plain seconds
+// and compact unit sequences such as 1h30m.
 func isZoneTTL(t string) bool {
 	if t == "" {
 		return false
 	}
-	end := len(t)
-	switch t[end-1] {
-	case 's', 'S', 'm', 'M', 'h', 'H', 'd', 'D', 'w', 'W':
-		end--
-	}
-	if end == 0 {
-		return false
-	}
-	for i := 0; i < end; i++ {
-		if t[i] < '0' || t[i] > '9' {
+	i := 0
+	for i < len(t) {
+		start := i
+		for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return false
+		}
+		if i == len(t) {
+			return true
+		}
+		switch t[i] {
+		case 's', 'S', 'm', 'M', 'h', 'H', 'd', 'D', 'w', 'W':
+			i++
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-func isApexOrWildcard(owner, fqdn, origin string) bool {
-	return owner == "@" || owner == "*" || strings.HasPrefix(owner, "*.") ||
-		fqdn == origin || strings.HasPrefix(fqdn, "*.")
+func zoneRecordFields(line string) []string {
+	fields := strings.Fields(line)
+	out := fields[:0]
+	for _, field := range fields {
+		cleaned := strings.Trim(field, "()")
+		if cleaned != "" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
+func zoneDirectiveFingerprint(fields []string) (string, bool) {
+	switch strings.ToUpper(fields[0]) {
+	case "$INCLUDE", "$GENERATE":
+		return "DIRECTIVE " + strings.ToUpper(fields[0]) + " " + strings.Join(fields[1:], " "), true
+	}
+	return "", false
+}
+
+func canonicalMXPreference(s string) string {
+	n, err := strconv.ParseUint(s, 10, 16)
+	if err != nil {
+		return strings.ToLower(s)
+	}
+	return strconv.FormatUint(n, 10)
+}
+
+func canonicalIPLiteral(s string) string {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return strings.ToLower(s)
+	}
+	return addr.String()
+}
+
+func isApexOrWildcard(fqdn, origin string) bool {
+	return fqdn == origin || strings.HasPrefix(fqdn, "*.")
 }
 
 func toFQDN(name, origin string) string {
+	name = strings.TrimSpace(name)
+	origin = canonicalZoneName(origin)
 	if name == "" || name == "@" {
 		return origin
 	}
 	if strings.HasSuffix(name, ".") {
-		return name
+		return canonicalZoneName(name)
 	}
-	return name + "." + origin
+	if origin == "." {
+		return canonicalZoneName(name)
+	}
+	return canonicalZoneName(name + "." + origin)
 }
 
-func ensureTrailingDot(s string) string {
-	if strings.HasSuffix(s, ".") {
-		return s
+func canonicalZoneName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "." {
+		return "."
 	}
-	return s + "."
+	s = strings.TrimRight(s, ".")
+	if s == "" {
+		return "."
+	}
+	return strings.ToLower(s) + "."
 }
 
 func stripZoneComment(line string) string {
 	inQuote := false
+	escaped := false
 	for i := 0; i < len(line); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
 		switch line[i] {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
 		case '"':
 			inQuote = !inQuote
 		case ';':
@@ -335,9 +470,45 @@ func stripZoneComment(line string) string {
 	return line
 }
 
+func zoneParenDelta(line string) int {
+	inQuote := false
+	escaped := false
+	delta := 0
+	for i := 0; i < len(line); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
+		case '"':
+			inQuote = !inQuote
+		case '(':
+			if !inQuote {
+				delta++
+			}
+		case ')':
+			if !inQuote {
+				delta--
+			}
+		}
+	}
+	return delta
+}
+
 func hashSortedRecords(recs []string) string {
 	sort.Strings(recs)
-	return hashBytes([]byte(strings.Join(recs, "\n")))
+	n := 0
+	for _, rec := range recs {
+		if n == 0 || rec != recs[n-1] {
+			recs[n] = rec
+			n++
+		}
+	}
+	return hashBytes([]byte(strings.Join(recs[:n], "\n")))
 }
 
 // CheckSSLCertIssuance monitors AutoSSL logs for new certificate issuance.

@@ -62,7 +62,7 @@ Current scanner scope:
 
 | Check | Description |
 |-------|-------------|
-| `dns_zones` | DNS zone file changes (MX record hijacking) |
+| `dns_zones` | Security-sensitive DNS zone changes (delegation, mail, apex, and wildcard records) |
 | `ssl_certs` | SSL certificate issuance (subdomain takeover) |
 | `waf_status` | WAF mode, staleness, bypass detection |
 
