@@ -871,6 +871,17 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("heartbeat", d.heartbeat)
 
+	// One-shot: stagger CSM-managed WP-Cron crontab lines left behind by
+	// older releases. The perf_wp_cron finding never re-fires once a site
+	// is fixed, so this is the only path that reaches them.
+	d.wg.Add(1)
+	obs.Go("wpcron-migrate", func() {
+		defer d.wg.Done()
+		if n := checks.MigrateWPCronCrontabs(d.cfg); n > 0 {
+			csmlog.Info("wp-cron: staggered legacy system cron entries", "upgraded", n)
+		}
+	})
+
 	// Start abuse reporting (opt-in). startAbuseReporting installs the alert
 	// hook and returns the spool drain loop, or nil when disabled. The reporter
 	// stops after the final shutdown alert flush so late findings can still be

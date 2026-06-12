@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -27,7 +28,7 @@ type WPCronFixOptions struct {
 }
 
 const (
-	wpCronDefaultIntervalMin = 5
+	wpCronDefaultIntervalMin = 15
 	wpCronMaxIntervalMin     = 60
 	// wpCronEditMarker tags the line CSM inserts so the customer can see why
 	// WP-Cron was disabled and so re-running the fix stays idempotent.
@@ -288,18 +289,25 @@ func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, erro
 		existing = string(out)
 	}
 
-	want := wpCronJobLine(docroot, opts)
-	if crontabHasWPCronJob(existing, docroot) {
-		return false, nil
-	}
+	want := wpCronJobLine(owner, docroot, opts)
 
 	var buf bytes.Buffer
-	buf.WriteString(strings.TrimRight(existing, "\n"))
-	if buf.Len() > 0 {
-		buf.WriteByte('\n')
+	switch {
+	case wpCronUpgradeManagedLine(existing, docroot, want, &buf):
+		// Stale CSM-managed line rewritten in place (legacy synchronized
+		// schedule, changed interval, or changed php path).
+	case crontabHasWPCronJob(existing, docroot):
+		// Current managed line, or a customer-authored wp-cron entry CSM
+		// must not fight over.
+		return false, nil
+	default:
+		buf.WriteString(strings.TrimRight(existing, "\n"))
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(wpCronJobMarker + docroot + "\n")
+		buf.WriteString(want + "\n")
 	}
-	buf.WriteString(wpCronJobMarker + docroot + "\n")
-	buf.WriteString(want + "\n")
 
 	tmp, err := os.CreateTemp("", "csm-wpcron-*")
 	if err != nil {
@@ -356,11 +364,16 @@ func recordCrontabSelfWrite(owner string, expected []byte) {
 	}
 }
 
+// wpCronSpoolDirs lists where cron daemons keep per-user crontabs (cronie,
+// then Debian-style cron). A var so tests can point it at a temp dir.
+var wpCronSpoolDirs = []string{"/var/spool/cron", "/var/spool/cron/crontabs"}
+
 func crontabSpoolPaths(owner string) []string {
-	return []string{
-		filepath.Join("/var/spool/cron", owner),
-		filepath.Join("/var/spool/cron/crontabs", owner),
+	paths := make([]string, 0, len(wpCronSpoolDirs))
+	for _, dir := range wpCronSpoolDirs {
+		paths = append(paths, filepath.Join(dir, owner))
 	}
+	return paths
 }
 
 func crontabContentEqual(got, want []byte) bool {
@@ -379,14 +392,76 @@ func normalizeCrontabLineEndings(data []byte) []byte {
 // wpCronJobLine builds the crontab entry. CLI php is used (not an HTTP hit) so
 // the job does not tie up a web worker, which is the load source the finding
 // flags. max_execution_time caps a runaway cron pass.
-func wpCronJobLine(docroot string, opts WPCronFixOptions) string {
+//
+// The minute field is staggered per account+docroot: a plain */N schedule is
+// wall-clock aligned, so every managed site on the host fires in the same
+// second and the load spikes once per interval. The offset hash is
+// deterministic so reinstalls are idempotent. flock skips a run while the
+// previous one still holds the lock; $HOME is expanded by crond, and the lock
+// lives in the account home because /tmp is symlink-attackable.
+func wpCronJobLine(owner, docroot string, opts WPCronFixOptions) string {
 	interval := clampInterval(opts.IntervalMinutes)
 	php := opts.PHPBin
 	if php == "" {
 		php = detectPHPBin()
 	}
-	return fmt.Sprintf("*/%d * * * * cd %s && %s -d max_execution_time=300 wp-cron.php >/dev/null 2>&1",
-		interval, shellQuote(docroot), shellQuote(php))
+	return fmt.Sprintf(`%s * * * * cd %s && flock -n "$HOME/.csm-wpcron-%08x.lock" %s -d max_execution_time=300 wp-cron.php >/dev/null 2>&1`,
+		wpCronMinuteField(wpCronStaggerOffset(owner, docroot, interval), interval),
+		shellQuote(docroot), wpCronLockID(docroot), shellQuote(php))
+}
+
+// wpCronStaggerOffset spreads managed sites across the interval. Hashing
+// owner+docroot (not just docroot) keeps multi-site accounts spread too.
+func wpCronStaggerOffset(owner, docroot string, interval int) int {
+	h := fnv.New32a()
+	h.Write([]byte(owner))
+	h.Write([]byte{0})
+	h.Write([]byte(docroot))
+	return int(h.Sum32() % uint32(interval)) // #nosec G115 -- interval clamped to [1,60]
+}
+
+func wpCronLockID(docroot string) uint32 {
+	h := fnv.New32a()
+	h.Write([]byte(docroot))
+	return h.Sum32()
+}
+
+func wpCronMinuteField(offset, interval int) string {
+	switch {
+	case interval <= 1:
+		return "*"
+	case interval >= 60:
+		return strconv.Itoa(offset)
+	default:
+		return fmt.Sprintf("%d-59/%d", offset, interval)
+	}
+}
+
+// wpCronUpgradeManagedLine rewrites the job line under this docroot's CSM
+// marker when it differs from want, writing the full crontab into buf. It
+// returns false when there is no marker, the managed line already matches, or
+// the line after the marker is not a wp-cron job for this docroot (a crontab
+// the customer rearranged is left alone rather than guessed at).
+func wpCronUpgradeManagedLine(existing, docroot, want string, buf *bytes.Buffer) bool {
+	lines := strings.Split(existing, "\n")
+	marker := wpCronJobMarker + docroot
+	for i, line := range lines {
+		if strings.TrimSpace(line) != marker || i+1 >= len(lines) {
+			continue
+		}
+		job := lines[i+1]
+		if strings.TrimSpace(job) == want {
+			return false
+		}
+		if cmd := crontabCommand(job); cmd == "" || !commandRunsWPCronForDocroot(cmd, docroot) {
+			return false
+		}
+		lines[i+1] = want
+		buf.WriteString(strings.TrimRight(strings.Join(lines, "\n"), "\n"))
+		buf.WriteByte('\n')
+		return true
+	}
+	return false
 }
 
 // crontabHasWPCronJob reports whether the crontab already runs wp-cron.php for

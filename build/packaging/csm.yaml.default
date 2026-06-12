@@ -250,7 +250,7 @@ performance:
   # also installs a per-user system cron running wp-cron.php. The account owner
   # can edit or remove that cron afterwards.
   wp_cron_fix:
-    interval_minutes: 5       # system cron frequency; 1-60
+    interval_minutes: 15      # system cron frequency; 1-60 (only bounds task latency)
     php_bin: ""               # php interpreter for the cron line; empty = auto-detect
 
 firewall:

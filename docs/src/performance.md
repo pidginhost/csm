@@ -48,6 +48,15 @@ dropdown that applies one fix to every matching finding at once:
   heredocs are ignored, and the fix refuses a `wp-config.php` with no safe
   insertion point rather than corrupt it.
 
+  The installed schedule is staggered per account and docroot (for example
+  `7-59/15`) instead of a wall-clock-aligned `*/15`, so many managed sites do
+  not all fire in the same second and spike the host load. The command also
+  runs under `flock -n` with a per-docroot lock file in the account home, so
+  a slow pass skips the next run instead of overlapping it. On daemon start,
+  managed crontab lines installed by older releases are upgraded to this
+  format automatically (only lines under the `# CSM WP-Cron` marker are
+  touched; customer-authored cron entries are never rewritten).
+
 These actions are limited to configured account roots, reject symlinks and
 unsupported file types, and remove the fixed row from the active findings
 view after a successful edit.
@@ -56,10 +65,12 @@ view after a successful edit.
 
 Tune the WP-Cron remediation under **Settings -> Performance**:
 
-- `performance.wp_cron_fix.interval_minutes` (default `5`, range 1-60): how
-  often the installed system cron runs `wp-cron.php`. 5 minutes balances
-  scheduled-task responsiveness against the load that HTTP-triggered WP-Cron
-  creates.
+- `performance.wp_cron_fix.interval_minutes` (default `15`, range 1-60): how
+  often the installed system cron runs `wp-cron.php`. The interval only
+  bounds task latency -- WordPress keeps its own event schedule and a cron
+  pass with nothing due is a wasted full bootstrap -- so 15 minutes is right
+  for most sites. Lower it per host only when busy stores need tighter
+  Action Scheduler latency.
 - `performance.wp_cron_fix.php_bin` (default empty = auto-detect): the PHP
   interpreter for the cron line. CLI php is used instead of an HTTP request so
   the job never ties up a web worker.

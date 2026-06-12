@@ -816,7 +816,7 @@ type Config struct {
 		// would stop scheduled tasks, so the fix also installs a per-user system
 		// cron that runs wp-cron.php on this interval.
 		WPCronFix struct {
-			IntervalMinutes int    `yaml:"interval_minutes"` // system cron frequency; default 5, clamped to [1,60]
+			IntervalMinutes int    `yaml:"interval_minutes"` // system cron frequency; default 15, clamped to [1,60]
 			PHPBin          string `yaml:"php_bin"`          // php interpreter for the cron line; empty => detect
 		} `yaml:"wp_cron_fix"`
 	} `yaml:"performance" hotreload:"restart"`
@@ -1434,7 +1434,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.Performance.WPTransientCriticalMB = 10
 	}
 	if cfg.Performance.WPCronFix.IntervalMinutes == 0 {
-		cfg.Performance.WPCronFix.IntervalMinutes = 5
+		cfg.Performance.WPCronFix.IntervalMinutes = 15
 	}
 
 	if cfg.Cloudflare.RefreshHours == 0 {

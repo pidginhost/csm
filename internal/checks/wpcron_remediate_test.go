@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -122,14 +124,136 @@ func TestFixDisableWPCronInsertsDefineAndInstallsCron(t *testing.T) {
 		t.Fatalf("expected exactly one crontab install, got %d", rec.installCalls)
 	}
 	cron := rec.lastInstalled
-	if !strings.Contains(cron, "*/5 * * * *") {
-		t.Errorf("cron interval not 5 min:\n%s", cron)
+	m := regexp.MustCompile(`(?m)^(\d+)-59/5 \* \* \* \* `).FindStringSubmatch(cron)
+	if m == nil {
+		t.Fatalf("cron schedule not a staggered 5-minute field:\n%s", cron)
+	}
+	if off, _ := strconv.Atoi(m[1]); off < 0 || off >= 5 {
+		t.Errorf("stagger offset %d outside [0,5):\n%s", off, cron)
 	}
 	if !strings.Contains(cron, "cd "+shellQuote(docroot)+" &&") {
 		t.Errorf("cron missing docroot %q:\n%s", docroot, cron)
 	}
+	if !strings.Contains(cron, `flock -n "$HOME/.csm-wpcron-`) {
+		t.Errorf("cron missing flock overlap guard:\n%s", cron)
+	}
 	if !strings.Contains(cron, "wp-cron.php") || !strings.Contains(cron, "/usr/local/bin/php") {
 		t.Errorf("cron missing php/wp-cron invocation:\n%s", cron)
+	}
+}
+
+func TestWPCronJobLineStaggersDeterministically(t *testing.T) {
+	opts := WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"}
+	first := wpCronJobLine("alice", "/home/alice/public_html", opts)
+	second := wpCronJobLine("alice", "/home/alice/public_html", opts)
+	if first != second {
+		t.Fatalf("job line must be deterministic:\n%s\n%s", first, second)
+	}
+
+	re := regexp.MustCompile(`^(\d+)-59/15 \* \* \* \* `)
+	offsets := map[string]bool{}
+	for i := 0; i < 40; i++ {
+		owner := fmt.Sprintf("acct%02d", i)
+		line := wpCronJobLine(owner, "/home/"+owner+"/public_html", opts)
+		m := re.FindStringSubmatch(line)
+		if m == nil {
+			t.Fatalf("job line for %s not staggered:\n%s", owner, line)
+		}
+		if off, _ := strconv.Atoi(m[1]); off < 0 || off >= 15 {
+			t.Fatalf("offset %d for %s outside [0,15)", off, owner)
+		}
+		offsets[m[1]] = true
+	}
+	// 40 accounts hashed into 15 slots: a broken (constant) hash would land
+	// on one slot; require real spread.
+	if len(offsets) < 5 {
+		t.Errorf("expected at least 5 distinct stagger offsets across 40 accounts, got %d", len(offsets))
+	}
+}
+
+func TestWPCronJobLineLocksPerDocroot(t *testing.T) {
+	opts := WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"}
+	lockRe := regexp.MustCompile(`flock -n "\$HOME/\.csm-wpcron-([0-9a-f]{8})\.lock"`)
+
+	a := wpCronJobLine("alice", "/home/alice/public_html", opts)
+	b := wpCronJobLine("alice", "/home/alice/public_html/shop.example.com", opts)
+	ma, mb := lockRe.FindStringSubmatch(a), lockRe.FindStringSubmatch(b)
+	if ma == nil || mb == nil {
+		t.Fatalf("job lines missing per-docroot lock:\n%s\n%s", a, b)
+	}
+	if ma[1] == mb[1] {
+		t.Errorf("two docroots of one account must not share a lock file: %s", ma[1])
+	}
+	// flock must wrap the php invocation, after the cd.
+	if cd, fl, php := strings.Index(a, "cd "), strings.Index(a, "flock "), strings.Index(a, "wp-cron.php"); cd >= fl || fl >= php {
+		t.Errorf("expected cd ... && flock ... php ... wp-cron.php ordering:\n%s", a)
+	}
+}
+
+func TestWPCronJobLineEveryMinuteInterval(t *testing.T) {
+	opts := WPCronFixOptions{IntervalMinutes: 1, PHPBin: "/usr/local/bin/php"}
+	line := wpCronJobLine("alice", "/home/alice/public_html", opts)
+	if !strings.HasPrefix(line, "* * * * * ") {
+		t.Errorf("interval 1 must emit a plain every-minute schedule:\n%s", line)
+	}
+}
+
+func TestInstallUserWPCronUpgradesLegacyManagedLine(t *testing.T) {
+	docroot := "/home/alice/public_html"
+	otherDocroot := "/home/alice/public_html/blog.example.com"
+	opts := WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"}
+	currentOther := wpCronJobLine("alice", otherDocroot, opts)
+	legacy := "MAILTO=ops@example.com\n" +
+		"0 3 * * * /usr/bin/backup-home\n" +
+		"# CSM WP-Cron " + docroot + "\n" +
+		"*/5 * * * * cd '" + docroot + "' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n" +
+		"# CSM WP-Cron " + otherDocroot + "\n" +
+		currentOther + "\n"
+	rec := &crontabRecorder{existing: legacy}
+	withMockCmd(t, rec.mock())
+
+	installed, err := installUserWPCron("alice", docroot, opts)
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if !installed {
+		t.Fatal("legacy managed line must be upgraded, not left in place")
+	}
+	if rec.installCalls != 1 {
+		t.Fatalf("expected one crontab install, got %d", rec.installCalls)
+	}
+
+	got := rec.lastInstalled
+	want := wpCronJobLine("alice", docroot, opts)
+	if !strings.Contains(got, "# CSM WP-Cron "+docroot+"\n"+want+"\n") {
+		t.Errorf("upgraded crontab missing marker + new job line:\n%s", got)
+	}
+	if strings.Contains(got, "*/5 * * * *") {
+		t.Errorf("legacy schedule must be replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "MAILTO=ops@example.com") || !strings.Contains(got, "0 3 * * * /usr/bin/backup-home") {
+		t.Errorf("unrelated crontab lines must survive the upgrade:\n%s", got)
+	}
+	if !strings.Contains(got, "# CSM WP-Cron "+otherDocroot+"\n"+currentOther+"\n") {
+		t.Errorf("managed line for the other docroot must stay untouched:\n%s", got)
+	}
+	if c := strings.Count(got, "# CSM WP-Cron "+docroot+"\n"); c != 1 {
+		t.Errorf("expected exactly one marker for %s, got %d:\n%s", docroot, c, got)
+	}
+}
+
+func TestInstallUserWPCronLeavesUnmanagedWPCronAlone(t *testing.T) {
+	docroot := "/home/alice/public_html"
+	existing := "*/10 * * * * cd '" + docroot + "' && /usr/local/bin/php wp-cron.php >/dev/null 2>&1\n"
+	rec := &crontabRecorder{existing: existing}
+	withMockCmd(t, rec.mock())
+
+	installed, err := installUserWPCron("alice", docroot, WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"})
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if installed || rec.installCalls != 0 {
+		t.Errorf("customer-authored wp-cron line must not be rewritten (installed=%v calls=%d)", installed, rec.installCalls)
 	}
 }
 
@@ -237,12 +361,14 @@ func TestFixDisableWPCronIdempotent(t *testing.T) {
 		"$table_prefix = 'wp_';",
 		"$table_prefix = 'wp_';\ndefine( 'DISABLE_WP_CRON', true );", 1)
 	cfgPath, docroot := wpCronTestEnv(t, already)
-	// Existing crontab already carries our managed line for this docroot.
-	rec := &crontabRecorder{existing: "# CSM WP-Cron " + docroot + "\n*/5 * * * * cd " + docroot + " && /usr/local/bin/php -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n"}
+	// Existing crontab already carries our managed line for this docroot in
+	// the current format.
+	opts := WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"}
+	rec := &crontabRecorder{existing: "# CSM WP-Cron " + docroot + "\n" + wpCronJobLine("alice", docroot, opts) + "\n"}
 	withMockCmd(t, rec.mock())
 
 	before, _ := os.ReadFile(cfgPath)
-	res := FixDisableWPCron(cfgPath, WPCronFixOptions{IntervalMinutes: 5, PHPBin: "/usr/local/bin/php"})
+	res := FixDisableWPCron(cfgPath, opts)
 	if !res.Success {
 		t.Fatalf("expected success on no-op, got %+v", res)
 	}
@@ -419,12 +545,12 @@ func TestInsertDisableWPCronRefusesHeredocOnlyInsertionPoint(t *testing.T) {
 func TestWPCronIntervalClamping(t *testing.T) {
 	cases := []struct {
 		in   int
-		want string
+		want string // regexp over the minute field
 	}{
-		{0, "*/5 * * * *"},
-		{-3, "*/5 * * * *"},
-		{15, "*/15 * * * *"},
-		{90, "*/60 * * * *"},
+		{0, `\d+-59/15`}, // non-positive falls back to the 15-minute default
+		{-3, `\d+-59/15`},
+		{5, `\d+-59/5`},
+		{90, `\d+`}, // clamped to 60: a single staggered minute per hour
 	}
 	for _, tc := range cases {
 		cfgPath, docroot := wpCronTestEnv(t, sampleWPConfig)
@@ -434,8 +560,9 @@ func TestWPCronIntervalClamping(t *testing.T) {
 		if !res.Success {
 			t.Fatalf("interval %d: expected success, got %+v", tc.in, res)
 		}
-		if !strings.Contains(rec.lastInstalled, tc.want+" cd "+shellQuote(docroot)) {
-			t.Errorf("interval %d: want schedule %q, cron:\n%s", tc.in, tc.want, rec.lastInstalled)
+		re := regexp.MustCompile(`(?m)^` + tc.want + ` \* \* \* \* cd ` + regexp.QuoteMeta(shellQuote(docroot)))
+		if !re.MatchString(rec.lastInstalled) {
+			t.Errorf("interval %d: want minute field %q, cron:\n%s", tc.in, tc.want, rec.lastInstalled)
 		}
 	}
 }

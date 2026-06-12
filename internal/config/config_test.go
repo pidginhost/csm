@@ -434,6 +434,23 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if !cfg.BPFEnforcementDryRunEnabled() {
 		t.Fatal("BPF enforcement sample must remain effectively dry-run")
 	}
+
+	// Cron frequency only bounds task latency (WordPress keeps its own event
+	// schedule); 15 minutes is the load-friendly default, and the packaged
+	// sample must match the runtime default.
+	if cfg.Performance.WPCronFix.IntervalMinutes != 15 {
+		t.Errorf("performance.wp_cron_fix.interval_minutes = %d, want 15", cfg.Performance.WPCronFix.IntervalMinutes)
+	}
+}
+
+func TestWPCronFixIntervalDefaultsTo15(t *testing.T) {
+	cfg, err := LoadBytes([]byte("auto_response:\n  enabled: true\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Performance.WPCronFix.IntervalMinutes != 15 {
+		t.Errorf("default interval_minutes = %d, want 15", cfg.Performance.WPCronFix.IntervalMinutes)
+	}
 }
 
 func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
