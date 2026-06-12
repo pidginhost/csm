@@ -253,23 +253,24 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 		if typ == "" || fqdn == "" {
 			return
 		}
+		malformedParenSuffix := zoneMalformedParenSuffix(line)
 
 		switch typ {
 		case "NS":
 			if len(rdata) >= 1 {
-				rec := "NS " + fqdn + " " + toFQDN(rdata[0], curOrigin)
+				rec := "NS " + fqdn + " " + toFQDN(rdata[0], curOrigin) + malformedParenSuffix
 				delegRecs = append(delegRecs, rec)
 				secRecs = append(secRecs, rec)
 			}
 		case "MX":
 			if len(rdata) >= 2 {
-				rec := "MX " + fqdn + " " + canonicalMXPreference(rdata[0]) + " " + toFQDN(rdata[1], curOrigin)
+				rec := "MX " + fqdn + " " + canonicalMXPreference(rdata[0]) + " " + toFQDN(rdata[1], curOrigin) + malformedParenSuffix
 				delegRecs = append(delegRecs, rec)
 				secRecs = append(secRecs, rec)
 			}
 		case "A", "AAAA":
 			if len(rdata) >= 1 && isApexOrWildcard(fqdn, zoneOrigin) {
-				rec := typ + " " + fqdn + " " + canonicalIPLiteral(rdata[0])
+				rec := typ + " " + fqdn + " " + canonicalIPLiteral(typ, rdata[0]) + malformedParenSuffix
 				secRecs = append(secRecs, rec)
 			}
 		}
@@ -279,18 +280,25 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 		line := stripZoneComment(raw)
 		trimmed := strings.TrimSpace(line)
 		if parenDepth > 0 {
-			if trimmed != "" {
-				pendingLine += " " + trimmed
-			}
-			parenDepth += zoneParenDelta(line)
-			if parenDepth > 0 {
+			if continuationStartsZoneEntry(raw, line) {
+				processRecord(pendingRaw, pendingLine)
+				pendingRaw = ""
+				pendingLine = ""
+				parenDepth = 0
+			} else {
+				if trimmed != "" {
+					pendingLine += " " + trimmed
+				}
+				parenDepth += zoneParenDelta(line)
+				if parenDepth > 0 {
+					continue
+				}
+				parenDepth = 0
+				processRecord(pendingRaw, pendingLine)
+				pendingRaw = ""
+				pendingLine = ""
 				continue
 			}
-			parenDepth = 0
-			processRecord(pendingRaw, pendingLine)
-			pendingRaw = ""
-			pendingLine = ""
-			continue
 		}
 
 		if trimmed == "" {
@@ -380,15 +388,36 @@ func isZoneTTL(t string) bool {
 }
 
 func zoneRecordFields(line string) []string {
-	fields := strings.Fields(line)
-	out := fields[:0]
-	for _, field := range fields {
-		cleaned := strings.Trim(field, "()")
-		if cleaned != "" {
-			out = append(out, cleaned)
+	var b strings.Builder
+	b.Grow(len(line))
+	inQuote := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		if escaped {
+			escaped = false
+			b.WriteByte(line[i])
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
+			b.WriteByte(line[i])
+		case '"':
+			inQuote = !inQuote
+			b.WriteByte(line[i])
+		case '(', ')':
+			if inQuote {
+				b.WriteByte(line[i])
+			} else {
+				b.WriteByte(' ')
+			}
+		default:
+			b.WriteByte(line[i])
 		}
 	}
-	return out
+	return strings.Fields(b.String())
 }
 
 func zoneDirectiveFingerprint(fields []string) (string, bool) {
@@ -399,18 +428,82 @@ func zoneDirectiveFingerprint(fields []string) (string, bool) {
 	return "", false
 }
 
+func continuationStartsZoneEntry(raw, line string) bool {
+	if raw == "" || raw[0] == ' ' || raw[0] == '\t' {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "$") {
+		return true
+	}
+	fields := zoneRecordFields(line)
+	if len(fields) < 2 {
+		return false
+	}
+	typ, _ := zoneRecordType(fields[1:])
+	return isZoneRecordType(typ)
+}
+
+func isZoneRecordType(typ string) bool {
+	switch typ {
+	case "A", "AAAA", "CAA", "CNAME", "DNAME", "DNSKEY", "DS", "HTTPS",
+		"LOC", "MX", "NAPTR", "NS", "PTR", "SOA", "SPF", "SRV", "SSHFP",
+		"SVCB", "TLSA", "TXT":
+		return true
+	}
+	if !strings.HasPrefix(typ, "TYPE") {
+		return false
+	}
+	_, err := strconv.ParseUint(strings.TrimPrefix(typ, "TYPE"), 10, 16)
+	return err == nil
+}
+
 func canonicalMXPreference(s string) string {
+	if !isDecimalUint16(s) {
+		return s
+	}
 	n, err := strconv.ParseUint(s, 10, 16)
 	if err != nil {
-		return strings.ToLower(s)
+		return s
 	}
 	return strconv.FormatUint(n, 10)
 }
 
-func canonicalIPLiteral(s string) string {
+func isDecimalUint16(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	_, err := strconv.ParseUint(s, 10, 16)
+	return err == nil
+}
+
+func canonicalIPLiteral(typ, s string) string {
+	if strings.Contains(s, "%") {
+		return s
+	}
 	addr, err := netip.ParseAddr(s)
 	if err != nil {
-		return strings.ToLower(s)
+		return s
+	}
+	switch typ {
+	case "A":
+		if !addr.Is4() {
+			return s
+		}
+	case "AAAA":
+		if !addr.Is6() {
+			return s
+		}
+	default:
+		return s
 	}
 	return addr.String()
 }
@@ -439,11 +532,40 @@ func canonicalZoneName(s string) string {
 	if s == "." {
 		return "."
 	}
-	s = strings.TrimRight(s, ".")
+	if strings.HasSuffix(s, ".") {
+		s = strings.TrimSuffix(s, ".")
+		if s == "" {
+			return "."
+		}
+		return lowerASCII(s) + "."
+	}
 	if s == "" {
 		return "."
 	}
-	return strings.ToLower(s) + "."
+	return lowerASCII(s) + "."
+}
+
+func lowerASCII(s string) string {
+	var b strings.Builder
+	changed := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			if !changed {
+				b.Grow(len(s))
+				b.WriteString(s[:i])
+				changed = true
+			}
+			c += 'a' - 'A'
+		}
+		if changed {
+			b.WriteByte(c)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
 }
 
 func stripZoneComment(line string) string {
@@ -497,6 +619,63 @@ func zoneParenDelta(line string) int {
 		}
 	}
 	return delta
+}
+
+func zoneMalformedParenSuffix(line string) string {
+	if !zoneParensMalformed(line) {
+		return ""
+	}
+	return " MALFORMED_PARENS " + strings.TrimSpace(line)
+}
+
+func zoneParensMalformed(line string) bool {
+	inQuote := false
+	escaped := false
+	depth := 0
+	for i := 0; i < len(line); i++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch line[i] {
+		case '\\':
+			if inQuote {
+				escaped = true
+			}
+		case '"':
+			inQuote = !inQuote
+		case '(':
+			if !inQuote {
+				if zoneParenAttachedToToken(line, i) {
+					return true
+				}
+				depth++
+			}
+		case ')':
+			if !inQuote {
+				if zoneParenAttachedToToken(line, i) {
+					return true
+				}
+				depth--
+				if depth < 0 {
+					return true
+				}
+			}
+		}
+	}
+	return depth != 0
+}
+
+func zoneParenAttachedToToken(line string, i int) bool {
+	return (i > 0 && !isZoneSpace(line[i-1])) || (i+1 < len(line) && !isZoneSpace(line[i+1]))
+}
+
+func isZoneSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
 }
 
 func hashSortedRecords(recs []string) string {

@@ -341,6 +341,21 @@ func TestDNSZoneLegacyStateMigration(t *testing.T) {
 	}
 }
 
+func TestDNSZonePrePanelStateKeepsCpanelDelegationWarning(t *testing.T) {
+	st := newDNSTestStore(t)
+	base := zoneFixture(1000, 2026010101, "192.0.2.1", "ns1.example.net.", "mail.example.com.", "")
+	secHash, delegHash := parseZoneSecurity([]byte(base), zoneOrigin("example.com.db"))
+	st.SetRaw("_dns_zone:example.com.db", fmt.Sprintf(`{"f":%q,"s":%q,"d":%q,"p":1000}`, hashBytes([]byte(base)), secHash, delegHash))
+
+	files := map[string]string{
+		"example.com.db": zoneFixture(1001, 2026010102, "192.0.2.1", "ns1.changed-via-panel.test.", "mail.example.com.", ""),
+	}
+	f := runDNSZoneCheck(t, files, st)
+	if len(f) != 1 || f[0].Severity != alert.Warning {
+		t.Fatalf("pre-Panel cPanel state should keep NS changes at Warning, got %+v", f)
+	}
+}
+
 // Corrupt JSON-shaped state should be repaired once. It must not create a
 // permanent re-baseline path that suppresses the next real security change.
 func TestDNSZoneCorruptJSONStateRepaired(t *testing.T) {
@@ -519,6 +534,32 @@ func TestParseZoneSecurityMultilineMXTargetChangesDelegation(t *testing.T) {
 	}
 }
 
+func TestParseZoneSecurityUnterminatedParenDoesNotHideFollowingRecord(t *testing.T) {
+	base := "txt IN TXT (\n" +
+		"example.com. IN NS ns1.example.net.\n"
+	changed := "txt IN TXT (\n" +
+		"example.com. IN NS ns2.example.net.\n"
+
+	_, baseDeleg := parseZoneSecurity([]byte(base), "example.com.")
+	_, changedDeleg := parseZoneSecurity([]byte(changed), "example.com.")
+	if baseDeleg == changedDeleg {
+		t.Fatalf("delegation hash did not change after NS target followed an unterminated parenthesis")
+	}
+}
+
+func TestParseZoneSecurityUnterminatedMXParenKeepsTargetSignal(t *testing.T) {
+	base := "example.com. IN MX 10 (\n" +
+		"    mail.example.com.\n"
+	changed := "example.com. IN MX 10 (\n" +
+		"    mail.evil.test.\n"
+
+	_, baseDeleg := parseZoneSecurity([]byte(base), "example.com.")
+	_, changedDeleg := parseZoneSecurity([]byte(changed), "example.com.")
+	if baseDeleg == changedDeleg {
+		t.Fatalf("delegation hash did not change after unterminated MX target moved")
+	}
+}
+
 func TestParseZoneSecurityCanonicalizesDelegationWithoutHidingMoves(t *testing.T) {
 	base := "Example.COM. IN NS NS1\n" +
 		"example.com. IN NS ns1.example.com.\n" +
@@ -537,6 +578,80 @@ func TestParseZoneSecurityCanonicalizesDelegationWithoutHidingMoves(t *testing.T
 	_, movedDeleg := parseZoneSecurity([]byte(moved), "example.com.")
 	if baseDeleg == movedDeleg {
 		t.Fatalf("delegation hash did not change after NS target moved")
+	}
+}
+
+func TestParseZoneSecurityCanonicalizationKeepsInvalidFormsDistinct(t *testing.T) {
+	validTarget := "example.com. IN NS ns1.example.com.\n"
+	extraDotTarget := "example.com. IN NS ns1.example.com..\n"
+	_, validDeleg := parseZoneSecurity([]byte(validTarget), "example.com.")
+	_, extraDotDeleg := parseZoneSecurity([]byte(extraDotTarget), "example.com.")
+	if validDeleg == extraDotDeleg {
+		t.Fatalf("delegation hash collapsed a valid target and one with an extra trailing dot")
+	}
+
+	validParenTarget := "example.com. IN NS (ns1.example.com.)\n"
+	strayCloseTarget := "example.com. IN NS ns1.example.com.)\n"
+	_, validParenDeleg := parseZoneSecurity([]byte(validParenTarget), "example.com.")
+	_, strayCloseDeleg := parseZoneSecurity([]byte(strayCloseTarget), "example.com.")
+	if validParenDeleg == strayCloseDeleg {
+		t.Fatalf("delegation hash collapsed valid grouping and a stray closing parenthesis")
+	}
+
+	embeddedParenTarget := "example.com. IN NS n(s)1.example.com.\n"
+	plainPrefixTarget := "example.com. IN NS n.example.com.\n"
+	_, embeddedParenDeleg := parseZoneSecurity([]byte(embeddedParenTarget), "example.com.")
+	_, plainPrefixDeleg := parseZoneSecurity([]byte(plainPrefixTarget), "example.com.")
+	if embeddedParenDeleg == plainPrefixDeleg {
+		t.Fatalf("delegation hash collapsed token-attached parentheses into a plain target")
+	}
+
+	upperInvalidMX := "example.com. IN MX BAD mail.example.com.\n"
+	lowerInvalidMX := "example.com. IN MX bad mail.example.com.\n"
+	_, upperMXDeleg := parseZoneSecurity([]byte(upperInvalidMX), "example.com.")
+	_, lowerMXDeleg := parseZoneSecurity([]byte(lowerInvalidMX), "example.com.")
+	if upperMXDeleg == lowerMXDeleg {
+		t.Fatalf("delegation hash collapsed distinct invalid MX preferences")
+	}
+
+	plainMX := "example.com. IN MX 10 mail.example.com.\n"
+	signedMX := "example.com. IN MX +10 mail.example.com.\n"
+	_, plainMXDeleg := parseZoneSecurity([]byte(plainMX), "example.com.")
+	_, signedMXDeleg := parseZoneSecurity([]byte(signedMX), "example.com.")
+	if plainMXDeleg == signedMXDeleg {
+		t.Fatalf("delegation hash collapsed signed and unsigned MX preferences")
+	}
+
+	upperInvalidA := "example.com. IN A BadIP\n"
+	lowerInvalidA := "example.com. IN A badip\n"
+	upperSec, _ := parseZoneSecurity([]byte(upperInvalidA), "example.com.")
+	lowerSec, _ := parseZoneSecurity([]byte(lowerInvalidA), "example.com.")
+	if upperSec == lowerSec {
+		t.Fatalf("security hash collapsed distinct invalid address literals")
+	}
+
+	expandedIPv6InA := "example.com. IN A 2001:0db8::1\n"
+	shortIPv6InA := "example.com. IN A 2001:db8::1\n"
+	expandedSec, _ := parseZoneSecurity([]byte(expandedIPv6InA), "example.com.")
+	shortSec, _ := parseZoneSecurity([]byte(shortIPv6InA), "example.com.")
+	if expandedSec == shortSec {
+		t.Fatalf("security hash collapsed IPv6 text inside invalid A records")
+	}
+
+	expandedScopedAAAA := "example.com. IN AAAA fe80:0:0:0:0:0:0:1%eth0\n"
+	shortScopedAAAA := "example.com. IN AAAA fe80::1%eth0\n"
+	expandedScopedSec, _ := parseZoneSecurity([]byte(expandedScopedAAAA), "example.com.")
+	shortScopedSec, _ := parseZoneSecurity([]byte(shortScopedAAAA), "example.com.")
+	if expandedScopedSec == shortScopedSec {
+		t.Fatalf("security hash collapsed scoped IPv6 text inside AAAA records")
+	}
+
+	upperNonASCIIName := "example.com. IN NS \xc3\x84.example.com.\n"
+	lowerNonASCIIName := "example.com. IN NS \xc3\xa4.example.com.\n"
+	_, upperNonASCIIDeleg := parseZoneSecurity([]byte(upperNonASCIIName), "example.com.")
+	_, lowerNonASCIIDeleg := parseZoneSecurity([]byte(lowerNonASCIIName), "example.com.")
+	if upperNonASCIIDeleg == lowerNonASCIIDeleg {
+		t.Fatalf("delegation hash collapsed non-ASCII name bytes")
 	}
 }
 
