@@ -218,6 +218,35 @@ func TestHTTPScannerProfile_DistributedRollupCounts(t *testing.T) {
 	}
 }
 
+func TestHTTPScannerProfile_DistributedRollupIgnoresIncidentalDomain404s(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	cfg.Thresholds.HTTPDistributedMinIPs = 2
+	stats := newDomlogStatsAt(scannerTestNow)
+	for _, ip := range []string{"192.0.2.10", "192.0.2.11"} {
+		for i := 0; i < 50; i++ {
+			rec := scannerRec(ip, fmt.Sprintf("/probe-%d", i), 404)
+			rec.Domain = "scanner-target.example"
+			stats.scan(rec, cfg, nopBotClassifier{})
+		}
+		rec := scannerRec(ip, "/favicon.ico", 404)
+		rec.Domain = "popular-site.example"
+		stats.scan(rec, cfg, nopBotClassifier{})
+	}
+
+	var distributed []alert.Finding
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			distributed = append(distributed, f)
+		}
+	}
+	if len(distributed) != 1 {
+		t.Fatalf("distributed findings=%d, want 1: %+v", len(distributed), distributed)
+	}
+	if distributed[0].Domain != "scanner-target.example" {
+		t.Fatalf("Domain=%q want scanner-target.example; all findings=%+v", distributed[0].Domain, distributed)
+	}
+}
+
 // End-to-end: status flows from a real Combined Log Format line through
 // the parser into the detector.
 func TestHTTPScannerProfile_StatusFromParsedLine(t *testing.T) {

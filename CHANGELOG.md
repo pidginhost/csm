@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it.
+- A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it, tuning values are validated, settings are editable from the web UI, and flagged IPs feed auto-block and the distributed rollup without counting unrelated vhost misses.
 
 ### Fixed
 

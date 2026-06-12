@@ -146,7 +146,7 @@ func (f Finding) Fingerprint() string {
 func (f Finding) sourceIPKey() string {
 	switch f.Check {
 	case "admin_panel_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse",
-		"http_request_flood", "http_ua_spoof":
+		"http_request_flood", "http_scanner_profile", "http_ua_spoof":
 	default:
 		return ""
 	}

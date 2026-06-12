@@ -104,7 +104,13 @@ type domlogStats struct {
 	// scannerSamples keeps the first error-status request per IP for the
 	// finding Details field; the generic samples map can hold a 200 hit.
 	scannerSamples map[string]httpSample
-	scanTime       time.Time
+	// scannerDomainReqs and friends track the scanner profile per vhost so
+	// the distributed rollup only attributes a source to domains where the
+	// scanner shape actually crossed the detector gates.
+	scannerDomainReqs  map[string]map[string]int
+	scannerDomainErr   map[string]map[string]int
+	scannerDomainPaths map[string]map[string]map[string]struct{}
+	scanTime           time.Time
 }
 
 func newDomlogStats() *domlogStats {
@@ -113,18 +119,21 @@ func newDomlogStats() *domlogStats {
 
 func newDomlogStatsAt(t time.Time) *domlogStats {
 	return &domlogStats{
-		wpLogin:        make(map[string]int),
-		xmlrpc:         make(map[string]int),
-		userEnum:       make(map[string]int),
-		httpReqs:       make(map[string]int),
-		uaCat:          make(map[string]map[uaKind]int),
-		samples:        make(map[string]httpSample),
-		domains:        make(map[string]map[string]struct{}),
-		abuseDomains:   make(map[string]map[string]map[string]struct{}),
-		scannerErr:     make(map[string]int),
-		scannerPaths:   make(map[string]map[string]struct{}),
-		scannerSamples: make(map[string]httpSample),
-		scanTime:       t,
+		wpLogin:            make(map[string]int),
+		xmlrpc:             make(map[string]int),
+		userEnum:           make(map[string]int),
+		httpReqs:           make(map[string]int),
+		uaCat:              make(map[string]map[uaKind]int),
+		samples:            make(map[string]httpSample),
+		domains:            make(map[string]map[string]struct{}),
+		abuseDomains:       make(map[string]map[string]map[string]struct{}),
+		scannerErr:         make(map[string]int),
+		scannerPaths:       make(map[string]map[string]struct{}),
+		scannerSamples:     make(map[string]httpSample),
+		scannerDomainReqs:  make(map[string]map[string]int),
+		scannerDomainErr:   make(map[string]map[string]int),
+		scannerDomainPaths: make(map[string]map[string]map[string]struct{}),
+		scanTime:           t,
 	}
 }
 
@@ -191,22 +200,28 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		}
 		s.httpReqs[ip]++
 
-		if cfg != nil && cfg.Thresholds.HTTPScannerMinRequests > 0 &&
-			isScannerErrorStatus(rec.Status, cfg.Thresholds.HTTPScannerStatusCodes) {
-			s.scannerErr[ip]++
-			if _, ok := s.scannerSamples[ip]; !ok {
-				s.scannerSamples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
-			}
-			paths := s.scannerPaths[ip]
-			if paths == nil {
-				paths = make(map[string]struct{})
-				s.scannerPaths[ip] = paths
-			}
-			if len(paths) < httpScannerMaxTrackedPaths {
-				paths[probePath(rec.URI)] = struct{}{}
-			}
+		_, _, scannerMinPaths, scannerEnabled := scannerProfileThresholds(cfg)
+		if scannerEnabled {
 			if rec.Domain != "" {
-				s.recordAbuseDomain("http_scanner_profile", ip, rec.Domain)
+				s.recordScannerDomainRequest(ip, rec.Domain)
+			}
+			if isScannerErrorStatus(rec.Status, cfg.Thresholds.HTTPScannerStatusCodes) {
+				path := probePath(rec.URI)
+				s.scannerErr[ip]++
+				if _, ok := s.scannerSamples[ip]; !ok {
+					s.scannerSamples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
+				}
+				paths := s.scannerPaths[ip]
+				if paths == nil {
+					paths = make(map[string]struct{})
+					s.scannerPaths[ip] = paths
+				}
+				if len(paths) < httpScannerMaxTrackedPaths {
+					paths[path] = struct{}{}
+				}
+				if rec.Domain != "" {
+					s.recordScannerDomainError(ip, rec.Domain, path, scannerMinPaths)
+				}
 			}
 		}
 
@@ -249,6 +264,38 @@ func (s *domlogStats) recordAbuseDomain(check, ip, domain string) {
 		byIP[ip] = set
 	}
 	set[domain] = struct{}{}
+}
+
+func (s *domlogStats) recordScannerDomainRequest(ip, domain string) {
+	byDomain := s.scannerDomainReqs[ip]
+	if byDomain == nil {
+		byDomain = make(map[string]int)
+		s.scannerDomainReqs[ip] = byDomain
+	}
+	byDomain[domain]++
+}
+
+func (s *domlogStats) recordScannerDomainError(ip, domain, path string, minPaths int) {
+	byDomain := s.scannerDomainErr[ip]
+	if byDomain == nil {
+		byDomain = make(map[string]int)
+		s.scannerDomainErr[ip] = byDomain
+	}
+	byDomain[domain]++
+
+	byIP := s.scannerDomainPaths[ip]
+	if byIP == nil {
+		byIP = make(map[string]map[string]struct{})
+		s.scannerDomainPaths[ip] = byIP
+	}
+	paths := byIP[domain]
+	if paths == nil {
+		paths = make(map[string]struct{})
+		byIP[domain] = paths
+	}
+	if len(paths) < min(minPaths, httpScannerMaxTrackedPaths) {
+		paths[path] = struct{}{}
+	}
 }
 
 // emitLegacy returns the three pre-existing finding kinds. Kept
@@ -377,7 +424,7 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 // A scanner cycling unique URLs past the cap keeps incrementing the
 // error counter, and any sane min_distinct_paths threshold sits far
 // below the cap, so detection quality does not depend on growth beyond it.
-const httpScannerMaxTrackedPaths = 512
+const httpScannerMaxTrackedPaths = config.HTTPScannerMaxDistinctPaths
 
 // emitScannerProfile produces http_scanner_profile findings: source IPs
 // whose in-window traffic is almost entirely probe-error responses spread
@@ -386,36 +433,19 @@ const httpScannerMaxTrackedPaths = 512
 // error-rate, and path-breadth gates must all pass so that dead
 // bookmarks, broken assets, and site migrations stay out of scope.
 func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
-	if cfg == nil {
+	minReq, pct, minPaths, ok := scannerProfileThresholds(cfg)
+	if !ok {
 		return nil
-	}
-	minReq := cfg.Thresholds.HTTPScannerMinRequests
-	if minReq <= 0 {
-		return nil
-	}
-	pct := cfg.Thresholds.HTTPScannerErrorPct
-	if pct <= 0 {
-		pct = 90
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	minPaths := cfg.Thresholds.HTTPScannerMinDistinctPaths
-	if minPaths <= 0 {
-		minPaths = 10
 	}
 	var out []alert.Finding
 	for ip, errs := range s.scannerErr {
 		total := s.httpReqs[ip]
-		if total < minReq {
-			continue
-		}
-		if errs*100 < total*pct {
-			continue
-		}
 		paths := len(s.scannerPaths[ip])
-		if paths < minPaths {
+		if !scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
 			continue
+		}
+		for _, domain := range s.scannerProfileDomains(ip, minReq, pct, minPaths) {
+			s.recordAbuseDomain("http_scanner_profile", ip, domain)
 		}
 		sample := s.scannerSamples[ip]
 		out = append(out, alert.Finding{
@@ -429,6 +459,58 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		})
 	}
 	return out
+}
+
+func scannerProfileThresholds(cfg *config.Config) (minReq, pct, minPaths int, ok bool) {
+	if cfg == nil {
+		return 0, 0, 0, false
+	}
+	minReq = cfg.Thresholds.HTTPScannerMinRequests
+	if minReq <= 0 {
+		return 0, 0, 0, false
+	}
+	pct = cfg.Thresholds.HTTPScannerErrorPct
+	if pct <= 0 {
+		pct = config.DefaultHTTPScannerErrorPct
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	minPaths = cfg.Thresholds.HTTPScannerMinDistinctPaths
+	if minPaths <= 0 {
+		minPaths = config.DefaultHTTPScannerMinDistinctPaths
+	}
+	if minPaths > httpScannerMaxTrackedPaths {
+		minPaths = httpScannerMaxTrackedPaths
+	}
+	return minReq, pct, minPaths, true
+}
+
+func scannerProfilePasses(total, errs, paths, minReq, pct, minPaths int) bool {
+	if total < minReq {
+		return false
+	}
+	if errs*100 < total*pct {
+		return false
+	}
+	return paths >= minPaths
+}
+
+func (s *domlogStats) scannerProfileDomains(ip string, minReq, pct, minPaths int) []string {
+	errsByDomain := s.scannerDomainErr[ip]
+	if len(errsByDomain) == 0 {
+		return nil
+	}
+	var domains []string
+	for domain, errs := range errsByDomain {
+		total := s.scannerDomainReqs[ip][domain]
+		paths := len(s.scannerDomainPaths[ip][domain])
+		if scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
+			domains = append(domains, domain)
+		}
+	}
+	sort.Strings(domains)
+	return domains
 }
 
 // isScannerErrorStatus reports whether status belongs to the configured

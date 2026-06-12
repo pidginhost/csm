@@ -1186,6 +1186,44 @@ func TestValidate_DomlogTailLinesRange(t *testing.T) {
 	}
 }
 
+func TestValidate_HTTPScannerProfileThresholds(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		field   string
+		wantErr bool
+	}{
+		{"min requests disabled", func(c *Config) { c.Thresholds.HTTPScannerMinRequests = 0 }, "thresholds.http_scanner_min_requests", false},
+		{"min requests positive", func(c *Config) { c.Thresholds.HTTPScannerMinRequests = 30 }, "thresholds.http_scanner_min_requests", false},
+		{"min requests negative", func(c *Config) { c.Thresholds.HTTPScannerMinRequests = -1 }, "thresholds.http_scanner_min_requests", true},
+		{"error percent default", func(c *Config) { c.Thresholds.HTTPScannerErrorPct = 0 }, "thresholds.http_scanner_error_pct", false},
+		{"error percent minimum", func(c *Config) { c.Thresholds.HTTPScannerErrorPct = 1 }, "thresholds.http_scanner_error_pct", false},
+		{"error percent maximum", func(c *Config) { c.Thresholds.HTTPScannerErrorPct = 100 }, "thresholds.http_scanner_error_pct", false},
+		{"error percent negative", func(c *Config) { c.Thresholds.HTTPScannerErrorPct = -1 }, "thresholds.http_scanner_error_pct", true},
+		{"error percent above max", func(c *Config) { c.Thresholds.HTTPScannerErrorPct = 101 }, "thresholds.http_scanner_error_pct", true},
+		{"distinct paths default", func(c *Config) { c.Thresholds.HTTPScannerMinDistinctPaths = 0 }, "thresholds.http_scanner_min_distinct_paths", false},
+		{"distinct paths minimum", func(c *Config) { c.Thresholds.HTTPScannerMinDistinctPaths = 1 }, "thresholds.http_scanner_min_distinct_paths", false},
+		{"distinct paths maximum", func(c *Config) { c.Thresholds.HTTPScannerMinDistinctPaths = HTTPScannerMaxDistinctPaths }, "thresholds.http_scanner_min_distinct_paths", false},
+		{"distinct paths negative", func(c *Config) { c.Thresholds.HTTPScannerMinDistinctPaths = -1 }, "thresholds.http_scanner_min_distinct_paths", true},
+		{"distinct paths above cap", func(c *Config) { c.Thresholds.HTTPScannerMinDistinctPaths = HTTPScannerMaxDistinctPaths + 1 }, "thresholds.http_scanner_min_distinct_paths", true},
+		{"status codes default", func(c *Config) { c.Thresholds.HTTPScannerStatusCodes = nil }, "thresholds.http_scanner_status_codes", false},
+		{"status codes accepted", func(c *Config) { c.Thresholds.HTTPScannerStatusCodes = []int{404, 403, 301} }, "thresholds.http_scanner_status_codes", false},
+		{"status code too low", func(c *Config) { c.Thresholds.HTTPScannerStatusCodes = []int{99} }, "thresholds.http_scanner_status_codes", true},
+		{"status code too high", func(c *Config) { c.Thresholds.HTTPScannerStatusCodes = []int{600} }, "thresholds.http_scanner_status_codes", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			tc.mutate(cfg)
+			results := Validate(cfg)
+			if got := hasResult(results, "error", tc.field); got != tc.wantErr {
+				t.Errorf("has error on %s = %v, want %v; results=%v", tc.field, got, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
 	cfg := &Config{}
 	cfg.Alerts.Email.Enabled = true

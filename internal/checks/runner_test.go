@@ -253,6 +253,7 @@ func TestRunParallelSkipsDisabledFindingNameAliases(t *testing.T) {
 	}{
 		{name: "waf rules finding disables WAF runner", disabled: "waf_rules", runner: "waf_status"},
 		{name: "crontab finding disables crontab runner", disabled: "suspicious_crontab", runner: "crontabs"},
+		{name: "scanner profile finding disables WP brute force runner", disabled: "http_scanner_profile", runner: "wp_bruteforce"},
 		{name: "runner ID compatibility still works", disabled: "crontabs", runner: "crontabs"},
 	}
 

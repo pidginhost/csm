@@ -693,6 +693,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"mail_account_spray":             "Mail Account Spray",
 			"mail_account_compromised":       "Mail Account Compromised",
 			"http_request_flood":             "HTTP Request Flood",
+			"http_scanner_profile":           "HTTP Scanner Profile",
 			"http_ua_spoof":                  "HTTP UA Spoof",
 			"http_distributed_flood":         "Distributed HTTP Flood",
 			"exim_frozen_realtime":           "Frozen Message",

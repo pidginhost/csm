@@ -110,6 +110,7 @@ When `auto_response.block_ips: true` and the firewall is enabled, the source IP 
 | `wp_login_bruteforce` | WordPress login flood via wp-login.php |
 | `xmlrpc_abuse` | XML-RPC endpoint flood |
 | `http_request_flood` | Per-IP HTTP request volume exceeds threshold (disabled by default; enable by setting `thresholds.http_flood_threshold > 0`) |
+| `http_scanner_profile` | Random-URL probe pattern from one source IP (disabled by default; enable by setting `thresholds.http_scanner_min_requests > 0`) |
 | `http_ua_spoof` | IP spoofing a search-engine bot UA or exceeding the UA anomaly threshold (periodic; see configuration.md for opt-in flags) |
 | `ftp_bruteforce` | FTP authentication flood |
 | `smtp_bruteforce` | SMTP authentication flood |

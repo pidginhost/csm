@@ -74,6 +74,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.HTTPDistributedMinIPs != 0 {
 		t.Errorf("http_distributed_min_ips = %d, want 0 (disabled when unset)", cfg.Thresholds.HTTPDistributedMinIPs)
 	}
+	if cfg.Thresholds.HTTPScannerMinRequests != 0 {
+		t.Errorf("http_scanner_min_requests = %d, want 0 (disabled by default)", cfg.Thresholds.HTTPScannerMinRequests)
+	}
+	if cfg.Thresholds.HTTPScannerErrorPct != 90 {
+		t.Errorf("http_scanner_error_pct = %d, want 90", cfg.Thresholds.HTTPScannerErrorPct)
+	}
+	if cfg.Thresholds.HTTPScannerMinDistinctPaths != 10 {
+		t.Errorf("http_scanner_min_distinct_paths = %d, want 10", cfg.Thresholds.HTTPScannerMinDistinctPaths)
+	}
+	if !reflect.DeepEqual(cfg.Thresholds.HTTPScannerStatusCodes, []int{404, 403}) {
+		t.Errorf("http_scanner_status_codes = %v, want [404 403]", cfg.Thresholds.HTTPScannerStatusCodes)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}

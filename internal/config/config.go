@@ -30,6 +30,24 @@ type WebUIToken struct {
 // leaves auto_response.max_blocks_per_hour unset or sets it to 0.
 const DefaultMaxBlocksPerHour = 50
 
+const (
+	// DefaultHTTPScannerErrorPct is the fallback percentage gate for the
+	// URL scanner-profile detector when the operator leaves it unset.
+	DefaultHTTPScannerErrorPct = 90
+	// DefaultHTTPScannerMinDistinctPaths is the fallback breadth gate for
+	// distinct probe paths when the operator leaves it unset.
+	DefaultHTTPScannerMinDistinctPaths = 10
+	// HTTPScannerMaxDistinctPaths matches the detector's per-IP path cap.
+	// Higher configured breadth thresholds can never be reached.
+	HTTPScannerMaxDistinctPaths = 512
+)
+
+// DefaultHTTPScannerStatusCodes returns a fresh copy of the probe-error
+// statuses used when the operator leaves the scanner status list unset.
+func DefaultHTTPScannerStatusCodes() []int {
+	return []int{404, 403}
+}
+
 // MailLogsConfig controls how postfix/dovecot logs are read.
 //
 //	source: auto    - try file first; fall back to journal if file absent.
@@ -269,7 +287,7 @@ type Config struct {
 		// error-status request paths (query strings stripped) before the
 		// detector fires. Repeated hits on one missing resource (a dead
 		// bookmark, a broken image) never look like URL enumeration no
-		// matter the volume. Default 10.
+		// matter the volume. Default 10, maximum 512.
 		HTTPScannerMinDistinctPaths int `yaml:"http_scanner_min_distinct_paths"`
 		// HTTPScannerStatusCodes is the set of response statuses counted as
 		// probe errors. Default [404, 403]. 301 is deliberately excluded:
@@ -1285,6 +1303,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	// that is the shipped behavior.
 	if cfg.Thresholds.HTTPUASpoofThreshold <= 0 {
 		cfg.Thresholds.HTTPUASpoofThreshold = 30
+	}
+	if cfg.Thresholds.HTTPScannerErrorPct == 0 {
+		cfg.Thresholds.HTTPScannerErrorPct = DefaultHTTPScannerErrorPct
+	}
+	if cfg.Thresholds.HTTPScannerMinDistinctPaths == 0 {
+		cfg.Thresholds.HTTPScannerMinDistinctPaths = DefaultHTTPScannerMinDistinctPaths
+	}
+	if len(cfg.Thresholds.HTTPScannerStatusCodes) == 0 {
+		cfg.Thresholds.HTTPScannerStatusCodes = DefaultHTTPScannerStatusCodes()
 	}
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5

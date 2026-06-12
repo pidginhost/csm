@@ -42,6 +42,7 @@ Critical checks run every 10 minutes. Typical wall-clock cost on a busy shared h
 | Check | Description |
 |-------|-------------|
 | `wp_bruteforce` | WordPress login brute force (wp-login.php, xmlrpc.php) |
+| `http_scanner_profile` | Source IPs whose traffic is mostly probe-error responses across many distinct paths in one scheduled scan window |
 | `http_ua_spoof` | IP claiming a search-engine bot UA (Googlebot, Bingbot, Applebot) that fails reverse-DNS verification, or exceeding the per-IP spoof threshold for scripting/headless/empty UAs when those opt-in flags are enabled |
 | `http_distributed_flood` | Many already-abusive HTTP source IPs hitting the same vhost in one scheduled scan window |
 | `ftp_logins` | FTP access patterns and failed auth |

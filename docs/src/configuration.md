@@ -179,7 +179,7 @@ thresholds:
   # impossible.
   http_scanner_min_requests: 0         # volume gate; 0 = disabled (default); 30 is a safe start
   http_scanner_error_pct: 90           # min % of requests with probe-error status (default: 90)
-  http_scanner_min_distinct_paths: 10  # min distinct error paths (default: 10)
+  http_scanner_min_distinct_paths: 10  # min distinct error paths, max 512 (default: 10)
   http_scanner_status_codes: [404, 403] # statuses counted as probe errors (default: 404, 403)
 
   # These three opt-in flags extend UA spoof detection to additional UA

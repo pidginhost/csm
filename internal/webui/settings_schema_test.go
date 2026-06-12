@@ -316,6 +316,46 @@ func TestThresholdsSchemaIncludesHTTPDistributedMinIPs(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesHTTPScannerProfileFields(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	cases := []struct {
+		name      string
+		typ       string
+		min, max  int64
+		hasMax    bool
+		wantGroup string
+	}{
+		{"http_scanner_min_requests", "int", 0, 0, false, FieldGroupWebBruteForce},
+		{"http_scanner_error_pct", "int", 1, 100, true, FieldGroupWebBruteForce},
+		{"http_scanner_min_distinct_paths", "int", 1, int64(config.HTTPScannerMaxDistinctPaths), true, FieldGroupWebBruteForce},
+		{"http_scanner_status_codes", "[]int", 100, 599, true, FieldGroupWebBruteForce},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := findSchemaField(s, tc.name)
+			if f == nil {
+				t.Fatalf("%s field missing", tc.name)
+			}
+			if f.Type != tc.typ {
+				t.Fatalf("%s type = %q, want %q", tc.name, f.Type, tc.typ)
+			}
+			if f.Min == nil || *f.Min != tc.min {
+				t.Fatalf("%s min = %v, want %d", tc.name, f.Min, tc.min)
+			}
+			if tc.hasMax {
+				if f.Max == nil || *f.Max != tc.max {
+					t.Fatalf("%s max = %v, want %d", tc.name, f.Max, tc.max)
+				}
+			} else if f.Max != nil {
+				t.Fatalf("%s max = %v, want nil", tc.name, f.Max)
+			}
+			if f.FieldGroup != tc.wantGroup {
+				t.Fatalf("%s group = %q, want %q", tc.name, f.FieldGroup, tc.wantGroup)
+			}
+		})
+	}
+}
+
 func TestThresholdsSchemaIncludesCredStuffingDistinctAccounts(t *testing.T) {
 	s, _ := LookupSettingsSection("thresholds")
 	f := findSchemaField(s, "cred_stuffing_distinct_accounts")
@@ -408,7 +448,7 @@ func TestResolveFieldOptionsFillsDisabledCheckNames(t *testing.T) {
 	if len(f.OptionGroups) == 0 {
 		t.Fatal("OptionGroups not populated")
 	}
-	for _, want := range []string{"waf_rules", "suspicious_crontab", "new_php_in_sensitive_dir_clean"} {
+	for _, want := range []string{"waf_rules", "suspicious_crontab", "new_php_in_sensitive_dir_clean", "http_scanner_profile"} {
 		if !hasOption(f.Options, want) {
 			t.Fatalf("%q missing from top-level disabled_checks options: %v", want, f.Options)
 		}

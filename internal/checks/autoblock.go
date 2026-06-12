@@ -192,6 +192,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"wp_login_bruteforce":         true,
 		"xmlrpc_abuse":                true,
 		"http_request_flood":          true,
+		"http_scanner_profile":        true,
 		"http_ua_spoof":               true,
 		"ftp_bruteforce":              true,
 		"smtp_bruteforce":             true,
