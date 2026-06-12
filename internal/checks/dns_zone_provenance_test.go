@@ -547,6 +547,21 @@ func TestParseZoneSecurityUnterminatedParenDoesNotHideFollowingRecord(t *testing
 	}
 }
 
+func TestParseZoneSecurityClosedContinuationRecordTextIgnored(t *testing.T) {
+	base := "txt IN TXT (\n" +
+		"example.com. IN NS ns1.example.net.\n" +
+		")\n"
+	changed := "txt IN TXT (\n" +
+		"example.com. IN NS ns2.example.net.\n" +
+		")\n"
+
+	_, baseDeleg := parseZoneSecurity([]byte(base), "example.com.")
+	_, changedDeleg := parseZoneSecurity([]byte(changed), "example.com.")
+	if baseDeleg != changedDeleg {
+		t.Fatalf("delegation hash changed for record-looking text inside a balanced TXT continuation")
+	}
+}
+
 func TestParseZoneSecurityUnterminatedMXParenKeepsTargetSignal(t *testing.T) {
 	base := "example.com. IN MX 10 (\n" +
 		"    mail.example.com.\n"

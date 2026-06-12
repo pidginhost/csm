@@ -276,11 +276,13 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 		}
 	}
 
-	for _, raw := range strings.Split(string(data), "\n") {
+	lines := strings.Split(string(data), "\n")
+	pendingCloses := false
+	for i, raw := range lines {
 		line := stripZoneComment(raw)
 		trimmed := strings.TrimSpace(line)
 		if parenDepth > 0 {
-			if continuationStartsZoneEntry(raw, line) {
+			if !pendingCloses && continuationStartsZoneEntry(raw, line) {
 				processRecord(pendingRaw, pendingLine)
 				pendingRaw = ""
 				pendingLine = ""
@@ -297,6 +299,7 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 				processRecord(pendingRaw, pendingLine)
 				pendingRaw = ""
 				pendingLine = ""
+				pendingCloses = false
 				continue
 			}
 		}
@@ -324,6 +327,7 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 		if parenDepth > 0 {
 			pendingRaw = raw
 			pendingLine = trimmed
+			pendingCloses = zoneContinuationCloses(parenDepth, lines[i+1:])
 			continue
 		}
 		if parenDepth < 0 {
@@ -336,6 +340,16 @@ func parseZoneSecurity(data []byte, origin string) (secHash, delegHash string) {
 	}
 
 	return hashSortedRecords(secRecs), hashSortedRecords(delegRecs)
+}
+
+func zoneContinuationCloses(depth int, lines []string) bool {
+	for _, raw := range lines {
+		depth += zoneParenDelta(stripZoneComment(raw))
+		if depth <= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // zoneRecordType skips leading TTL and class tokens and returns the record type
