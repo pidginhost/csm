@@ -1597,92 +1597,47 @@ func TestCheckPHPConfigChangesDetectsChange(t *testing.T) {
 // dns_ssl.go -- CheckDNSZoneChanges with zone file changes
 // ===========================================================================
 
+// A targeted out-of-band security change (one zone's NS rewritten with no
+// cPanel update_time advance) is the hijack signature and must report High.
 func TestCheckDNSZoneChangesTargetedChange(t *testing.T) {
-	callCount := 0
-	withMockOS(t, &mockOS{
-		readDir: func(name string) ([]os.DirEntry, error) {
-			if name == "/var/named" {
-				return []os.DirEntry{
-					testDirEntry{name: "example.com.db", isDir: false},
-					testDirEntry{name: "other.com.db", isDir: false},
-					testDirEntry{name: "skip.txt", isDir: false},
-				}, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		readFile: func(name string) ([]byte, error) {
-			if strings.HasSuffix(name, ".db") {
-				callCount++
-				if callCount <= 2 {
-					return []byte("zone data v1"), nil
-				}
-				if strings.Contains(name, "example.com") {
-					return []byte("zone data v2 CHANGED"), nil
-				}
-				return []byte("zone data v1"), nil
-			}
-			return nil, os.ErrNotExist
-		},
-	})
-
-	store, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	st := newDNSTestStore(t)
+	files := map[string]string{
+		"example.com.db": zoneFixture(1000, 2026010101, "192.0.2.1", "ns1.example.net.", "mail.example.com.", ""),
+		"other.com.db":   zoneFixture(1000, 2026010101, "192.0.2.2", "ns1.example.net.", "mail.other.com.", ""),
+		"skip.txt":       "not a zone file",
 	}
-	defer func() { _ = store.Close() }()
-
-	findings1 := CheckDNSZoneChanges(context.Background(), &config.Config{}, store)
-	if len(findings1) != 0 {
-		t.Error("first run should not produce findings")
+	if f := runDNSZoneCheck(t, files, st); len(f) != 0 {
+		t.Fatalf("first run should not produce findings, got %+v", f)
 	}
 
-	findings2 := CheckDNSZoneChanges(context.Background(), &config.Config{}, store)
-	if len(findings2) == 0 {
-		t.Error("expected finding for changed DNS zone")
+	files["example.com.db"] = zoneFixture(1000, 2026010101, "192.0.2.1", "ns1.evil.test.", "mail.example.com.", "")
+	f := runDNSZoneCheck(t, files, st)
+	if len(f) != 1 {
+		t.Fatalf("expected 1 finding for the targeted zone, got %d: %+v", len(f), f)
 	}
-	for _, f := range findings2 {
-		if f.Check != "dns_zone_change" {
-			t.Errorf("unexpected check: %s", f.Check)
-		}
+	if f[0].Check != "dns_zone_change" {
+		t.Errorf("unexpected check: %s", f[0].Check)
+	}
+	if f[0].Severity != alert.High {
+		t.Errorf("severity = %v, want High", f[0].Severity)
 	}
 }
 
+// Mass benign change (every zone gets a cPanel serial bump) is suppressed by
+// the per-record model -- there is no blunt bulk-count gate to abuse.
 func TestCheckDNSZoneChangesBulkSuppressed(t *testing.T) {
-	callCount := 0
-	withMockOS(t, &mockOS{
-		readDir: func(name string) ([]os.DirEntry, error) {
-			if name == "/var/named" {
-				var entries []os.DirEntry
-				for i := 0; i < 10; i++ {
-					entries = append(entries, testDirEntry{name: fmt.Sprintf("zone%d.db", i), isDir: false})
-				}
-				return entries, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		readFile: func(name string) ([]byte, error) {
-			if strings.HasSuffix(name, ".db") {
-				callCount++
-				if callCount <= 10 {
-					return []byte("zone data v1"), nil
-				}
-				return []byte("zone data v2"), nil
-			}
-			return nil, os.ErrNotExist
-		},
-	})
-
-	store, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	st := newDNSTestStore(t)
+	files := map[string]string{}
+	for i := 0; i < 10; i++ {
+		files[fmt.Sprintf("zone%d.db", i)] = zoneFixture(1000, 2026010101, "192.0.2.1", "ns1.example.net.", "mail.example.com.", "")
 	}
-	defer func() { _ = store.Close() }()
+	runDNSZoneCheck(t, files, st)
 
-	_ = CheckDNSZoneChanges(context.Background(), &config.Config{}, store)
-
-	findings := CheckDNSZoneChanges(context.Background(), &config.Config{}, store)
-	if len(findings) != 0 {
-		t.Error("bulk zone changes (>5) should be suppressed")
+	for i := 0; i < 10; i++ {
+		files[fmt.Sprintf("zone%d.db", i)] = zoneFixture(1001, 2026010102, "192.0.2.1", "ns1.example.net.", "mail.example.com.", "")
+	}
+	if f := runDNSZoneCheck(t, files, st); len(f) != 0 {
+		t.Errorf("mass benign serial bump should be suppressed, got %d: %+v", len(f), f)
 	}
 }
 

@@ -295,3 +295,24 @@ func FuzzParseEximFilter(f *testing.F) {
 		_ = scoreFilterRules(rules, mb, map[string]bool{"example.com": true}, nil)
 	})
 }
+
+func FuzzParseZoneSecurity(f *testing.F) {
+	// Zone files in /var/named are attacker-controlled once a panel account is
+	// compromised. The line/owner/paren walker and the provenance scanner must
+	// digest any bytes without panicking or running off the buffer.
+	f.Add("; cPanel first:11 (update_time):1700000000 hostname:h\n$TTL 14400\nexample.com.\t86400\tIN\tSOA\tns1. admin. 2026010101 3600 1800 1209600 86400\nexample.com.\t86400\tIN\tNS\tns1.example.net.\nexample.com.\t14400\tIN\tA\t192.0.2.1\nexample.com.\t14400\tIN\tMX\t0 mail.example.com.\n")
+	f.Add("@ IN A 192.0.2.1\n* IN A 203.0.113.9\n")
+	f.Add("example.com. IN SOA ns1. admin. (\n2026010101\n3600 )\nexample.com. IN NS ns1.\n")
+	f.Add("$ORIGIN sub.example.com.\nhost IN AAAA 2001:db8::1\n")
+	f.Add("(update_time):")                           // marker with no digits
+	f.Add("(update_time):99999999999999999999999999") // overflow digits
+	f.Add("\t\t\tIN\tNS\tns1.\n")                     // leading-blank owner, no prior owner
+	f.Add("name\t\"quoted ; not a comment\"\tIN\tTXT\t\"v=DKIM1; p=abc\"\n")
+	f.Add("((((\n))))\n")
+	f.Add("")
+	f.Add("\x00\x00 IN A 1.2.3.4")
+	f.Fuzz(func(t *testing.T, content string) {
+		_, _ = parseZoneSecurity([]byte(content), "example.com.")
+		_ = zoneUpdateTime([]byte(content))
+	})
+}
