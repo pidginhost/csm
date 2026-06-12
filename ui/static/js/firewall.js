@@ -803,51 +803,43 @@ function refreshFirewallData() {
     loadAudit();
 }
 
+// /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
+// hosts with thousands of blocked IPs otherwise see HTTP 400 — and a
+// per-IP fallback flood would trip the API rate limit with 429s.
+var GEOIP_CHUNK = 250;
+
 function enrichGeoIP(container) {
     var cells = container.querySelectorAll('.geo-cell');
     if (cells.length === 0) return;
 
-    var ips = [];
     var cellMap = {};
     for (var i = 0; i < cells.length; i++) {
         var ip = cells[i].dataset.ip;
         if (!ip) continue;
-        ips.push(ip);
         cellMap[ip] = cellMap[ip] || [];
         cellMap[ip].push(cells[i]);
     }
-    if (ips.length === 0) return;
+    var uniqueIPs = Object.keys(cellMap);
+    if (uniqueIPs.length === 0) return;
 
-    CSM.post('/api/v1/geoip/batch', { ips: ips }).then(function(data) {
-        var results = data.results || {};
+    function paint(results) {
         for (var ip in results) {
+            if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
+            var targets = cellMap[ip];
+            if (!targets) continue;
             var html = formatGeo(results[ip]);
-            var targets = cellMap[ip] || [];
             for (var j = 0; j < targets.length; j++) {
                 targets[j].innerHTML = html;
             }
         }
-    }).catch(function() {
-        enrichGeoIPFallback(cells);
-    });
-}
-
-function enrichGeoIPFallback(cells) {
-    var idx = 0;
-    function next() {
-        if (idx >= cells.length) return;
-        var cell = cells[idx++];
-        var ip = cell.dataset.ip;
-        if (!ip) {
-            next();
-            return;
-        }
-        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true })
-            .then(function(geo) { cell.innerHTML = formatGeo(geo); })
-            .catch(function() { cell.textContent = '-'; })
-            .finally(function() { setTimeout(next, 50); });
     }
-    for (var c = 0; c < 3 && c < cells.length; c++) next();
+
+    for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
+        var slice = uniqueIPs.slice(s, s + GEOIP_CHUNK);
+        CSM.post('/api/v1/geoip/batch', { ips: slice })
+            .then(function(data) { paint(data.results || {}); })
+            .catch(function() { /* non-fatal: cells keep their placeholder */ });
+    }
 }
 
 function updateTrustForm() {
