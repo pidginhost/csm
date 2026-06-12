@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -97,6 +99,62 @@ func TestProcAncestryMissingProcess(t *testing.T) {
 
 	if procAncestryIsPackageManager(424242) {
 		t.Fatal("missing /proc entry must fail closed (no demotion)")
+	}
+}
+
+func TestProcAncestryMissingStatusFailsClosed(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{
+		100: {comm: "cpio", ppid: 80},
+		80:  {comm: "dnf", ppid: 1},
+	})
+	overrideProcRoot(t, root)
+	if err := os.Remove(filepath.Join(root, "100", "status")); err != nil {
+		t.Fatal(err)
+	}
+
+	if procAncestryIsPackageManager(100) {
+		t.Fatal("missing status must fail closed before reaching package-manager parent")
+	}
+}
+
+func TestProcAncestryMalformedPPidFailsClosed(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{
+		100: {comm: "cpio", ppid: 80},
+		80:  {comm: "dnf", ppid: 1},
+	})
+	overrideProcRoot(t, root)
+	statusPath := filepath.Join(root, "100", "status")
+	if err := os.WriteFile(statusPath, []byte("Name:\tcpio\nPid:\t100\nPPid:\tnot-a-pid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if procAncestryIsPackageManager(100) {
+		t.Fatal("malformed PPid must fail closed before reaching package-manager parent")
+	}
+}
+
+func TestProcAncestryMissingPPidFailsClosed(t *testing.T) {
+	root := fakeProc(t, map[int32]struct {
+		comm string
+		ppid int32
+	}{
+		100: {comm: "cpio", ppid: 80},
+		80:  {comm: "dnf", ppid: 1},
+	})
+	overrideProcRoot(t, root)
+	statusPath := filepath.Join(root, "100", "status")
+	if err := os.WriteFile(statusPath, []byte("Name:\tcpio\nPid:\t100\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if procAncestryIsPackageManager(100) {
+		t.Fatal("missing PPid must fail closed without looping or demoting")
 	}
 }
 
@@ -224,16 +282,24 @@ func TestAnalyzeFileTmpExecDemotedToWarning(t *testing.T) {
 		t.Fatalf("chmod: %v", chmodErr)
 	}
 	fd := openRawFd(t, path)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatalf("fstat: %v", err)
+	}
+	wantPID := int32(4242)
 
 	oldDemote := tmpExecDemote
 	tmpExecDemote = func(uid uint32, pid int32, now time.Time) (bool, string) {
+		if uid != st.Uid || pid != wantPID {
+			return false, ""
+		}
 		return true, "package manager ancestry during active package window"
 	}
 	t.Cleanup(func() { tmpExecDemote = oldDemote })
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: fd})
+	fm.analyzeFile(fileEvent{path: path, fd: fd, pid: wantPID})
 
 	select {
 	case got := <-ch:
@@ -275,6 +341,13 @@ func TestAnalyzeFileTmpExecNonRootStaysCritical(t *testing.T) {
 		}
 	}
 	fd := openRawFd(t, path)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatalf("fstat: %v", err)
+	}
+	if st.Uid == 0 {
+		t.Fatal("test setup must use a non-root-owned file to exercise the uid gate")
+	}
 
 	oldW, oldA := tmpExecPkgWindow, tmpExecPkgAncestry
 	tmpExecPkgWindow = func(time.Time) bool { return true }
@@ -283,7 +356,7 @@ func TestAnalyzeFileTmpExecNonRootStaysCritical(t *testing.T) {
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: fd})
+	fm.analyzeFile(fileEvent{path: path, fd: fd, pid: 4242})
 
 	select {
 	case got := <-ch:
