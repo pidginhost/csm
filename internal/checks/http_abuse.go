@@ -93,7 +93,18 @@ type domlogStats struct {
 	// rollup uses this instead of all in-window touches so an IP that was
 	// abusive elsewhere cannot make a normal hit count against a vhost.
 	abuseDomains map[string]map[string]map[string]struct{}
-	scanTime     time.Time
+	// scannerErr counts in-window requests per IP whose status matched the
+	// configured probe-error set. httpReqs is the matching denominator, so
+	// the two counters must be gated by the same window check.
+	scannerErr map[string]int
+	// scannerPaths is the distinct error-status path set per IP, query
+	// strings stripped, capped at httpScannerMaxTrackedPaths to bound
+	// memory under a flood of unique probe URLs.
+	scannerPaths map[string]map[string]struct{}
+	// scannerSamples keeps the first error-status request per IP for the
+	// finding Details field; the generic samples map can hold a 200 hit.
+	scannerSamples map[string]httpSample
+	scanTime       time.Time
 }
 
 func newDomlogStats() *domlogStats {
@@ -102,15 +113,18 @@ func newDomlogStats() *domlogStats {
 
 func newDomlogStatsAt(t time.Time) *domlogStats {
 	return &domlogStats{
-		wpLogin:      make(map[string]int),
-		xmlrpc:       make(map[string]int),
-		userEnum:     make(map[string]int),
-		httpReqs:     make(map[string]int),
-		uaCat:        make(map[string]map[uaKind]int),
-		samples:      make(map[string]httpSample),
-		domains:      make(map[string]map[string]struct{}),
-		abuseDomains: make(map[string]map[string]map[string]struct{}),
-		scanTime:     t,
+		wpLogin:        make(map[string]int),
+		xmlrpc:         make(map[string]int),
+		userEnum:       make(map[string]int),
+		httpReqs:       make(map[string]int),
+		uaCat:          make(map[string]map[uaKind]int),
+		samples:        make(map[string]httpSample),
+		domains:        make(map[string]map[string]struct{}),
+		abuseDomains:   make(map[string]map[string]map[string]struct{}),
+		scannerErr:     make(map[string]int),
+		scannerPaths:   make(map[string]map[string]struct{}),
+		scannerSamples: make(map[string]httpSample),
+		scanTime:       t,
 	}
 }
 
@@ -176,6 +190,25 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 		}
 		s.httpReqs[ip]++
+
+		if cfg != nil && cfg.Thresholds.HTTPScannerMinRequests > 0 &&
+			isScannerErrorStatus(rec.Status, cfg.Thresholds.HTTPScannerStatusCodes) {
+			s.scannerErr[ip]++
+			if _, ok := s.scannerSamples[ip]; !ok {
+				s.scannerSamples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
+			}
+			paths := s.scannerPaths[ip]
+			if paths == nil {
+				paths = make(map[string]struct{})
+				s.scannerPaths[ip] = paths
+			}
+			if len(paths) < httpScannerMaxTrackedPaths {
+				paths[probePath(rec.URI)] = struct{}{}
+			}
+			if rec.Domain != "" {
+				s.recordAbuseDomain("http_scanner_profile", ip, rec.Domain)
+			}
+		}
 
 		kind := classifyUA(rec.UserAgent, rec.Method)
 		if kind == uaKindClaimedBot {
@@ -330,6 +363,8 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 		}
 	}
 
+	out = append(out, s.emitScannerProfile(cfg)...)
+
 	// Distributed attack: many distinct abusive IPs hitting one vhost.
 	// Built from the per-IP findings already emitted above, so only IPs
 	// that crossed an abuse threshold count -- a popular site's normal
@@ -338,14 +373,103 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	return out
 }
 
+// httpScannerMaxTrackedPaths bounds the per-IP distinct probe-path set.
+// A scanner cycling unique URLs past the cap keeps incrementing the
+// error counter, and any sane min_distinct_paths threshold sits far
+// below the cap, so detection quality does not depend on growth beyond it.
+const httpScannerMaxTrackedPaths = 512
+
+// emitScannerProfile produces http_scanner_profile findings: source IPs
+// whose in-window traffic is almost entirely probe-error responses spread
+// across many distinct paths -- the shape of URL enumeration for
+// downloadable files, exposed backups, and dormant shells. Volume,
+// error-rate, and path-breadth gates must all pass so that dead
+// bookmarks, broken assets, and site migrations stay out of scope.
+func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
+	if cfg == nil {
+		return nil
+	}
+	minReq := cfg.Thresholds.HTTPScannerMinRequests
+	if minReq <= 0 {
+		return nil
+	}
+	pct := cfg.Thresholds.HTTPScannerErrorPct
+	if pct <= 0 {
+		pct = 90
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	minPaths := cfg.Thresholds.HTTPScannerMinDistinctPaths
+	if minPaths <= 0 {
+		minPaths = 10
+	}
+	var out []alert.Finding
+	for ip, errs := range s.scannerErr {
+		total := s.httpReqs[ip]
+		if total < minReq {
+			continue
+		}
+		if errs*100 < total*pct {
+			continue
+		}
+		paths := len(s.scannerPaths[ip])
+		if paths < minPaths {
+			continue
+		}
+		sample := s.scannerSamples[ip]
+		out = append(out, alert.Finding{
+			Severity: alert.High,
+			Check:    "http_scanner_profile",
+			SourceIP: ip,
+			Domain:   s.singleDomain(ip),
+			Message: "URL scanner profile from " + ip + ": " + itoa(errs) + " of " + itoa(total) +
+				" requests hit probe-error statuses across " + itoa(paths) + " distinct paths" + s.vhostSuffix(ip),
+			Details: "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
+		})
+	}
+	return out
+}
+
+// isScannerErrorStatus reports whether status belongs to the configured
+// probe-error set. Linear scan: the set is a handful of entries, so this
+// beats building a lookup map on a per-record hot path.
+func isScannerErrorStatus(status int, codes []int) bool {
+	if status == 0 {
+		return false
+	}
+	if len(codes) == 0 {
+		return status == 404 || status == 403
+	}
+	for _, c := range codes {
+		if status == c {
+			return true
+		}
+	}
+	return false
+}
+
+// probePath strips the query string and fragment so cache-buster style
+// queries on one missing endpoint count as a single probe path.
+func probePath(uri string) string {
+	if i := strings.IndexAny(uri, "?#"); i >= 0 {
+		uri = uri[:i]
+	}
+	if uri == "" {
+		return "/"
+	}
+	return uri
+}
+
 // httpAbuseChecks are the per-IP finding kinds that mark a source IP as
 // abusive for the distributed-attack rollup.
 var httpAbuseChecks = map[string]struct{}{
-	"wp_login_bruteforce": {},
-	"xmlrpc_abuse":        {},
-	"wp_user_enumeration": {},
-	"http_request_flood":  {},
-	"http_ua_spoof":       {},
+	"wp_login_bruteforce":  {},
+	"xmlrpc_abuse":         {},
+	"wp_user_enumeration":  {},
+	"http_request_flood":   {},
+	"http_ua_spoof":        {},
+	"http_scanner_profile": {},
 }
 
 // emitDistributedFlood rolls the per-IP HTTP-abuse findings up per vhost:

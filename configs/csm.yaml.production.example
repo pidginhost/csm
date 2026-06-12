@@ -130,6 +130,17 @@ thresholds:
   # one vhost in a scan window before the per-vhost rollup fires.
   # 0 disables the rollup.
   http_distributed_min_ips: 10
+  # URL scanner profile: source IPs whose in-window traffic is almost
+  # entirely probe-error responses (default 404/403) spread across many
+  # distinct paths -- random-URL enumeration hunting for downloadable
+  # files, backups, and dormant shells. min_requests 0 disables the
+  # detector; 30 is a safe starting volume gate. 301 is deliberately
+  # not in the default status set: http->https redirects and site
+  # migrations make legitimate traffic 301-heavy.
+  http_scanner_min_requests: 0
+  http_scanner_error_pct: 90
+  http_scanner_min_distinct_paths: 10
+  http_scanner_status_codes: [404, 403]
   # Opt-in UA classes. These match many legitimate monitoring agents;
   # leave disabled unless the noise floor is known.
   http_ua_scripting_enabled: false

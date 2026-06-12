@@ -277,6 +277,13 @@ thresholds:
   http_flood_threshold: 0
   http_flood_window_min: 5
   http_ua_spoof_threshold: 30
+  # URL scanner profile detector. min_requests 0 disables; 30 is a safe
+  # starting volume gate. 301 stays out of the default status set because
+  # http->https redirects and site migrations make legit traffic 301-heavy.
+  http_scanner_min_requests: 0
+  http_scanner_error_pct: 90
+  http_scanner_min_distinct_paths: 10
+  http_scanner_status_codes: [404, 403]
   http_ua_scripting_enabled: false
   http_ua_headless_enabled: false
   http_ua_empty_enabled: false

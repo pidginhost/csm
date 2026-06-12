@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it.
+
 ### Fixed
 
 - The firewall page now chunks GeoIP batch lookups, so hosts with more than 500 blocked IPs no longer get an HTTP 400 followed by a per-IP request flood that tripped the API rate limit with 429 errors.

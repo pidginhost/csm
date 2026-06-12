@@ -255,6 +255,29 @@ type Config struct {
 		// disables the detector; the shipped sample sets 10.
 		HTTPDistributedMinIPs int `yaml:"http_distributed_min_ips"`
 
+		// HTTPScannerMinRequests is the minimum in-window requests from one
+		// source IP before the URL scanner-profile detector evaluates the IP.
+		// The volume gate keeps a visitor following a handful of dead links
+		// out of scope. 0 (default) disables the detector; the shipped
+		// sample suggests 30.
+		HTTPScannerMinRequests int `yaml:"http_scanner_min_requests"`
+		// HTTPScannerErrorPct is the minimum percentage of in-window
+		// requests answered with a probe-error status before
+		// http_scanner_profile fires. Default 90.
+		HTTPScannerErrorPct int `yaml:"http_scanner_error_pct"`
+		// HTTPScannerMinDistinctPaths is the minimum count of distinct
+		// error-status request paths (query strings stripped) before the
+		// detector fires. Repeated hits on one missing resource (a dead
+		// bookmark, a broken image) never look like URL enumeration no
+		// matter the volume. Default 10.
+		HTTPScannerMinDistinctPaths int `yaml:"http_scanner_min_distinct_paths"`
+		// HTTPScannerStatusCodes is the set of response statuses counted as
+		// probe errors. Default [404, 403]. 301 is deliberately excluded:
+		// http->https and www redirects make every legitimate visitor
+		// 301-heavy, and a site migration redirects entire domains. Add 301
+		// here only on hosts where that traffic shape is impossible.
+		HTTPScannerStatusCodes []int `yaml:"http_scanner_status_codes"`
+
 		// HTTPUAScriptingEnabled opts in to flagging scripting-language
 		// UA strings (curl, python-requests, wget, etc.) as spoof candidates.
 		// Off by default: many legitimate API integrations use these.

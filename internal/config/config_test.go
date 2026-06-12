@@ -475,6 +475,20 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.Thresholds.HTTPDistributedMinIPs != 10 {
 		t.Errorf("http_distributed_min_ips = %d, want 10", cfg.Thresholds.HTTPDistributedMinIPs)
 	}
+	if cfg.Thresholds.HTTPScannerMinRequests != 0 {
+		t.Errorf("http_scanner_min_requests = %d, want 0 (disabled by default)", cfg.Thresholds.HTTPScannerMinRequests)
+	}
+	if cfg.Thresholds.HTTPScannerErrorPct != 90 {
+		t.Errorf("http_scanner_error_pct = %d, want 90", cfg.Thresholds.HTTPScannerErrorPct)
+	}
+	if cfg.Thresholds.HTTPScannerMinDistinctPaths != 10 {
+		t.Errorf("http_scanner_min_distinct_paths = %d, want 10", cfg.Thresholds.HTTPScannerMinDistinctPaths)
+	}
+	if len(cfg.Thresholds.HTTPScannerStatusCodes) != 2 ||
+		cfg.Thresholds.HTTPScannerStatusCodes[0] != 404 ||
+		cfg.Thresholds.HTTPScannerStatusCodes[1] != 403 {
+		t.Errorf("http_scanner_status_codes = %v, want [404 403]", cfg.Thresholds.HTTPScannerStatusCodes)
+	}
 	if cfg.Reputation.BotVerifyEnabled == nil || !*cfg.Reputation.BotVerifyEnabled {
 		t.Fatal("reputation.bot_verify_enabled must be explicitly true in production reference config")
 	}
@@ -496,6 +510,10 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 		"http_flood_window_min",
 		"http_ua_spoof_threshold",
 		"http_distributed_min_ips",
+		"http_scanner_min_requests",
+		"http_scanner_error_pct",
+		"http_scanner_min_distinct_paths",
+		"http_scanner_status_codes",
 		"http_ua_scripting_enabled",
 		"http_ua_headless_enabled",
 		"http_ua_empty_enabled",

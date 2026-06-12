@@ -162,6 +162,26 @@ thresholds:
   # opt in.
   http_distributed_min_ips: 10         # sample setting; omit or set 0 to disable
 
+  # URL scanner profile: fires http_scanner_profile for source IPs whose
+  # in-window traffic is almost entirely probe-error responses spread
+  # across many distinct request paths -- the shape of random-URL
+  # enumeration hunting for downloadable files, exposed backups, and
+  # dormant shells. Three gates must all pass: a minimum request volume,
+  # a minimum error percentage, and a minimum count of distinct error
+  # paths (query strings stripped, so cache-buster URLs on one missing
+  # endpoint count once). A visitor following dead links, a broken image
+  # hammered by one page, and a site migration all stay out of scope.
+  #
+  # 301 is deliberately not in the default status set: http->https and
+  # www redirects make every legitimate visitor 301-heavy, and a site
+  # migration redirects entire domains. Add 301 to
+  # http_scanner_status_codes only on hosts where that traffic shape is
+  # impossible.
+  http_scanner_min_requests: 0         # volume gate; 0 = disabled (default); 30 is a safe start
+  http_scanner_error_pct: 90           # min % of requests with probe-error status (default: 90)
+  http_scanner_min_distinct_paths: 10  # min distinct error paths (default: 10)
+  http_scanner_status_codes: [404, 403] # statuses counted as probe errors (default: 404, 403)
+
   # These three opt-in flags extend UA spoof detection to additional UA
   # classes. Leave disabled on busy shared hosts; scripting-language agents
   # and headless browsers appear on many legitimate monitoring stacks.
