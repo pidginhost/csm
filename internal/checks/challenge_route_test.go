@@ -163,6 +163,61 @@ func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
 	}
 }
 
+// http_scanner_profile carries a client IP probing public URLs over
+// HTTP, so a browser can answer the challenge. Default action routes it
+// to the challenge; the operator can demand a hard block instead.
+func TestChallengeRoute_ScannerProfileRoutedByDefault(t *testing.T) {
+	mock := &mockIPList{ips: make(map[string]bool)}
+	old := challengeIPList
+	SetChallengeIPList(mock)
+	defer SetChallengeIPList(old)
+
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+
+	findings := []alert.Finding{
+		{Check: "http_scanner_profile", SourceIP: "192.0.2.10", Message: "URL scanner profile from 192.0.2.10"},
+	}
+	actions := ChallengeRouteIPs(cfg, findings)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 challenge action, got %d", len(actions))
+	}
+	if !mock.ips["192.0.2.10"] {
+		t.Error("192.0.2.10 should be on challenge list")
+	}
+}
+
+func TestChallengeRoute_ScannerProfileBlockActionSkipsChallenge(t *testing.T) {
+	mock := &mockIPList{ips: make(map[string]bool)}
+	old := challengeIPList
+	SetChallengeIPList(mock)
+	defer SetChallengeIPList(old)
+
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.AutoResponse.HTTPScannerAction = "block"
+
+	findings := []alert.Finding{
+		{Check: "http_scanner_profile", SourceIP: "192.0.2.10", Message: "URL scanner profile from 192.0.2.10"},
+	}
+	actions := ChallengeRouteIPs(cfg, findings)
+	if len(actions) != 0 {
+		t.Fatalf("block action must skip challenge routing, got %d actions", len(actions))
+	}
+	if mock.ips["192.0.2.10"] {
+		t.Error("192.0.2.10 must not be on challenge list when action is block")
+	}
+}
+
+func TestChallengeRoute_ScannerProfileNotHardBlocked(t *testing.T) {
+	if isHardBlockCheck("http_scanner_profile") {
+		t.Error("http_scanner_profile must not be in hardBlockChecks")
+	}
+	if !isChallengeableCheck("http_scanner_profile") {
+		t.Error("http_scanner_profile must be challenge-eligible")
+	}
+}
+
 // Regression guard: routing post-auth audit events or non-browser
 // protocols to the PoW challenge produces guaranteed timeout
 // hard-blocks because the IP has no browser session for the gate to

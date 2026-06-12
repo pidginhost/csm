@@ -461,8 +461,14 @@ type Config struct {
 		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
 		FixWPCron          bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
 		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
-		NetBlock           bool   `yaml:"netblock"`            // auto-block IPv4 /24 or IPv6 /64 at threshold
-		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
+		// HTTPScannerAction selects the response for http_scanner_profile
+		// findings. "challenge" (default) routes the IP to the PoW
+		// challenge when the challenge subsystem is enabled and falls
+		// through to a firewall block when it is not; "block" always
+		// hard-blocks without offering a challenge.
+		HTTPScannerAction string `yaml:"http_scanner_action"`
+		NetBlock          bool   `yaml:"netblock"`           // auto-block IPv4 /24 or IPv6 /64 at threshold
+		NetBlockThreshold int    `yaml:"netblock_threshold"` // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
 		// MaxBlocksPerHour caps per-IP auto-blocks per wall-clock hour.
 		// 0 uses DefaultMaxBlocksPerHour.
 		MaxBlocksPerHour    int    `yaml:"max_blocks_per_hour"`
@@ -1312,6 +1318,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if len(cfg.Thresholds.HTTPScannerStatusCodes) == 0 {
 		cfg.Thresholds.HTTPScannerStatusCodes = DefaultHTTPScannerStatusCodes()
+	}
+	if cfg.AutoResponse.HTTPScannerAction == "" {
+		cfg.AutoResponse.HTTPScannerAction = "challenge"
 	}
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5

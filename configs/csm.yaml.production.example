@@ -206,6 +206,11 @@ auto_response:
   max_blocks_per_hour: 50
   enforce_permissions: true
   block_cpanel_logins: true
+  # http_scanner_action: response for http_scanner_profile findings.
+  # "challenge" (default) routes the IP to the PoW challenge when the
+  # challenge subsystem is enabled, falling through to a block when it
+  # is not; "block" always hard-blocks.
+  http_scanner_action: "challenge"
   netblock: false
   netblock_threshold: 3
   permblock: false

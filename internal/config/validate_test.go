@@ -1224,6 +1224,29 @@ func TestValidate_HTTPScannerProfileThresholds(t *testing.T) {
 	}
 }
 
+func TestValidate_HTTPScannerAction(t *testing.T) {
+	cases := []struct {
+		action  string
+		wantErr bool
+	}{
+		{"", false},
+		{"challenge", false},
+		{"block", false},
+		{"captcha", true},
+		{"BLOCK", true},
+	}
+	for _, tc := range cases {
+		t.Run("action="+tc.action, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.AutoResponse.HTTPScannerAction = tc.action
+			results := Validate(cfg)
+			if got := hasResult(results, "error", "auto_response.http_scanner_action"); got != tc.wantErr {
+				t.Errorf("has error = %v, want %v; results=%v", got, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
 	cfg := &Config{}
 	cfg.Alerts.Email.Enabled = true

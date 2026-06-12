@@ -239,6 +239,11 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
   block_cpanel_logins: false
+  # http_scanner_action: response for http_scanner_profile findings.
+  # "challenge" (default) routes the IP to the PoW challenge when the
+  # challenge subsystem is enabled, falling through to a block when it
+  # is not; "block" always hard-blocks.
+  http_scanner_action: "challenge"
   fix_wp_cron: false          # auto-disable WP-Cron + install per-user system cron on WP-Cron findings
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
   netblock_threshold: 3

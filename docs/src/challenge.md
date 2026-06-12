@@ -33,11 +33,17 @@ When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page in
 ### Challenge-Eligible Checks
 
 Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,
-`xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`, `ip_reputation`,
-`local_threat_score`. Post-auth audit events (cPanel, webmail, file upload,
-WHM logins), WAF high-volume attacker findings, and non-browser protocols
-(SSH, FTP, DNS recursion, outbound traffic, API auth) are excluded - their IPs
-have no useful challenge step or no browser session to render the PoW page.
+`xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`,
+`http_scanner_profile`, `ip_reputation`, `local_threat_score`. Post-auth audit
+events (cPanel, webmail, file upload, WHM logins), WAF high-volume attacker
+findings, and non-browser protocols (SSH, FTP, DNS recursion, outbound
+traffic, API auth) are excluded - their IPs have no useful challenge step or
+no browser session to render the PoW page.
+
+`http_scanner_profile` routing is operator-selectable:
+`auto_response.http_scanner_action: "challenge"` (default) routes the IP here;
+`"block"` skips the challenge and hard-blocks directly. With the challenge
+subsystem disabled, both values block.
 
 ### Always Hard-Blocked
 

@@ -135,6 +135,11 @@ var challengeableChecks = map[string]bool{
 	"wp_user_enumeration": true,
 	"webmail_bruteforce":  true,
 
+	// URL enumeration over plain HTTP(S): a browser can answer the
+	// challenge. auto_response.http_scanner_action: "block" opts this
+	// check out of routing at runtime (see ChallengeRouteIPs).
+	"http_scanner_profile": true,
+
 	// Reputation / scoring on the HTTP path. The IP is suspect across
 	// many checks; before hard-blocking, give a browser one verifier.
 	"ip_reputation":      true,
@@ -181,6 +186,12 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		// challengeableChecks. Defaulting to skip prevents version numbers,
 		// sizes, and other numeric finding fields from being blocked as IPs.
 		if !isChallengeableCheck(f.Check) {
+			continue
+		}
+
+		// The scanner-profile response is operator-selectable: "block"
+		// skips routing here so AutoBlockIPs hard-blocks the IP instead.
+		if f.Check == "http_scanner_profile" && cfg.AutoResponse.HTTPScannerAction == "block" {
 			continue
 		}
 

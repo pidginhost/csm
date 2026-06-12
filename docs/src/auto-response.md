@@ -32,6 +32,12 @@ auto_response:
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion
 
+  # Response to http_scanner_profile findings: "challenge" (default)
+  # routes the IP to the PoW challenge when challenge.enabled is true,
+  # falling through to a firewall block when it is not; "block" always
+  # hard-blocks without offering a challenge.
+  http_scanner_action: "challenge"
+
   # SAFETY DEFAULT: dry_run defaults to TRUE when this key is absent.
   # In dry-run, BlockIP records the intended block to bbolt but does
   # NOT touch nftables. Manual operator commands (`csm firewall ...`)
@@ -110,7 +116,7 @@ When `auto_response.block_ips: true` and the firewall is enabled, the source IP 
 | `wp_login_bruteforce` | WordPress login flood via wp-login.php |
 | `xmlrpc_abuse` | XML-RPC endpoint flood |
 | `http_request_flood` | Per-IP HTTP request volume exceeds threshold (disabled by default; enable by setting `thresholds.http_flood_threshold > 0`) |
-| `http_scanner_profile` | Random-URL probe pattern from one source IP (disabled by default; enable by setting `thresholds.http_scanner_min_requests > 0`) |
+| `http_scanner_profile` | Random-URL probe pattern from one source IP (disabled by default; enable by setting `thresholds.http_scanner_min_requests > 0`; routed to the PoW challenge first unless `auto_response.http_scanner_action: "block"`) |
 | `http_ua_spoof` | IP spoofing a search-engine bot UA or exceeding the UA anomaly threshold (periodic; see configuration.md for opt-in flags) |
 | `ftp_bruteforce` | FTP authentication flood |
 | `smtp_bruteforce` | SMTP authentication flood |

@@ -86,6 +86,9 @@ func TestLoadDefaults(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Thresholds.HTTPScannerStatusCodes, []int{404, 403}) {
 		t.Errorf("http_scanner_status_codes = %v, want [404 403]", cfg.Thresholds.HTTPScannerStatusCodes)
 	}
+	if cfg.AutoResponse.HTTPScannerAction != "challenge" {
+		t.Errorf("auto_response.http_scanner_action = %q, want 'challenge'", cfg.AutoResponse.HTTPScannerAction)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
@@ -507,6 +510,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.AutoResponse.MaxBlocksPerHour != DefaultMaxBlocksPerHour {
 		t.Errorf("auto_response.max_blocks_per_hour = %d, want %d", cfg.AutoResponse.MaxBlocksPerHour, DefaultMaxBlocksPerHour)
 	}
+	if cfg.AutoResponse.HTTPScannerAction != "challenge" {
+		t.Errorf("auto_response.http_scanner_action = %q, want 'challenge'", cfg.AutoResponse.HTTPScannerAction)
+	}
 
 	var raw struct {
 		Thresholds   map[string]yaml.Node `yaml:"thresholds"`
@@ -540,6 +546,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	}
 	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; !ok {
 		t.Error("production reference config missing auto_response.max_blocks_per_hour")
+	}
+	if _, ok := raw.AutoResponse["http_scanner_action"]; !ok {
+		t.Error("production reference config missing auto_response.http_scanner_action")
 	}
 }
 

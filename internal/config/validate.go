@@ -355,6 +355,11 @@ func Validate(cfg *Config) []ValidationResult {
 			break
 		}
 	}
+	switch cfg.AutoResponse.HTTPScannerAction {
+	case "", "challenge", "block":
+	default:
+		results = append(results, ValidationResult{"error", "auto_response.http_scanner_action", fmt.Sprintf("http_scanner_action must be %q or %q, got %q", "challenge", "block", cfg.AutoResponse.HTTPScannerAction)})
+	}
 	if t.SMTPBruteForceThreshold != 0 && (t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_threshold", "smtp_bruteforce_threshold must be between 2 and 50"})
 	}
