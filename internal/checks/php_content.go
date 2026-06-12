@@ -309,37 +309,35 @@ func hasDangerousInclude(code string) bool {
 // non-string stays flagged, fail closed.
 func hasCodeEvalPrimitiveWithRequest(code string) bool {
 	trustUnqualified := !phpDeclaresNamespaceOrFunctionAlias(code)
-	for _, line := range strings.Split(code, "\n") {
-		searchFrom := 0
-		for {
-			callStart, openParen, closeParen, ok := nextStandalonePHPCall(line, searchFrom, codeEvalPrimitiveCallNames)
-			if !ok {
-				break
+	searchFrom := 0
+	for {
+		callStart, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, codeEvalPrimitiveCallNames)
+		if !ok {
+			break
+		}
+		name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(code[callStart:openParen]), `\`))
+		exprEnd := closeParen
+		if exprEnd < len(code) {
+			exprEnd++
+		}
+		if containsRequestSuperglobal(code[openParen:exprEnd]) {
+			if name != "assert" {
+				return true
 			}
-			name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(line[callStart:openParen]), `\`))
-			exprEnd := closeParen
-			if exprEnd < len(line) {
-				exprEnd++
+			if closeParen >= len(code) {
+				// The call is unbalanced in the scan window, so the
+				// argument cannot be classified. Fail closed.
+				return true
 			}
-			if containsRequestSuperglobal(line[openParen:exprEnd]) {
-				if name != "assert" {
-					return true
-				}
-				if closeParen >= len(line) {
-					// The call continues on the next line, so the argument
-					// cannot be classified here. Fail closed.
-					return true
-				}
-				args := phpCallArguments(line, openParen+1, closeParen)
-				if len(args) > 0 && containsRequestSuperglobal(args[0]) &&
-					!phpExpressionYieldsNonString(args[0], trustUnqualified) {
-					return true
-				}
+			args := phpCallArguments(code, openParen+1, closeParen)
+			if len(args) > 0 && containsRequestSuperglobal(args[0]) &&
+				!phpExpressionYieldsNonString(args[0], trustUnqualified) {
+				return true
 			}
-			searchFrom = exprEnd
-			if searchFrom >= len(line) {
-				break
-			}
+		}
+		searchFrom = nextSearchOffset(closeParen, len(code))
+		if searchFrom >= len(code) {
+			break
 		}
 	}
 	return false
@@ -350,13 +348,29 @@ func hasCodeEvalPrimitiveWithRequest(code string) bool {
 // the expression's final value, so it alone decides whether the result can
 // be a string.
 const (
-	phpRankWordLogical = 1   // and / or / xor -- boolean result
-	phpRankAssign      = 2   // = and compound assignments -- value passes through
-	phpRankTernary     = 3   // ?: / ?? / ?-> -- either branch value
-	phpRankLogical     = 4   // && / || -- boolean result
-	phpRankComparison  = 5   // == != === !== <> < > <= >= instanceof -- boolean
-	phpRankValueOp     = 6   // . + - * / % & | ^ << >> -- value result
-	phpRankNone        = 100 // no depth-0 binary operator: single atom
+	phpRankWordLogical    = 1   // and / or / xor -- boolean result
+	phpRankAssign         = 2   // = and compound assignments -- value passes through
+	phpRankTernary        = 3   // ?: / ?? / ?-> -- string-capable value
+	phpRankLogicalOr      = 4   // || -- boolean result
+	phpRankLogicalAnd     = 5   // && -- boolean result
+	phpRankBitwiseOr      = 6   // | -- string-capable when both operands are strings
+	phpRankBitwiseXor     = 7   // ^ -- string-capable when both operands are strings
+	phpRankBitwiseAnd     = 8   // & -- string-capable when both operands are strings
+	phpRankComparison     = 9   // == != === !== <> <=> < > <= >= instanceof -- non-string
+	phpRankShift          = 10  // << >> -- integer result
+	phpRankConcat         = 11  // . -- string result
+	phpRankAdditive       = 12  // + - -- numeric/array result, never string
+	phpRankMultiplicative = 13  // * / % -- numeric result
+	phpRankPower          = 14  // ** -- numeric result
+	phpRankNone           = 100 // no depth-0 binary operator: single atom
+)
+
+type phpOperatorValue int
+
+const (
+	phpOperatorNone phpOperatorValue = iota
+	phpOperatorNonString
+	phpOperatorStringCapable
 )
 
 // phpExpressionYieldsNonString reports whether a PHP expression provably
@@ -369,16 +383,16 @@ func phpExpressionYieldsNonString(expr string, trustUnqualified bool) bool {
 	if expr == "" {
 		return false
 	}
-	switch phpTopLevelOperatorRank(expr) {
-	case phpRankWordLogical, phpRankLogical, phpRankComparison:
+	switch phpTopLevelOperatorValue(expr) {
+	case phpOperatorNonString:
 		return true
-	case phpRankAssign, phpRankTernary, phpRankValueOp:
+	case phpOperatorStringCapable:
 		return false
 	}
 	if expr[0] == '!' {
-		// Negation of a whole atom is always boolean. Bitwise & | ^ on two
-		// strings would yield a string, but those rank as value operators
-		// above, so this point is only reached for a single negated atom.
+		// Negation of a whole atom is always boolean. Operators inside the
+		// negated expression would have been classified above, so this point
+		// is only reached for a single negated atom.
 		return true
 	}
 	if expr[0] == '(' && matchingParen(expr, 0) == len(expr)-1 {
@@ -387,10 +401,20 @@ func phpExpressionYieldsNonString(expr string, trustUnqualified bool) bool {
 	return phpIsNonStringBuiltinCall(expr, trustUnqualified)
 }
 
-// phpTopLevelOperatorRank scans expr outside string literals at paren depth 0
-// and returns the lowest rank found, or phpRankNone for a single atom.
-func phpTopLevelOperatorRank(expr string) int {
+// phpTopLevelOperatorValue scans expr outside string literals at paren depth 0
+// and returns whether the lowest-precedence operator found has a provably
+// non-string result. String-capable operators win ties to keep the classifier
+// fail-closed across PHP version precedence differences.
+func phpTopLevelOperatorValue(expr string) phpOperatorValue {
 	rank := phpRankNone
+	value := phpOperatorNone
+	observe := func(opRank int, opValue phpOperatorValue) {
+		if opRank < rank || (opRank == rank && opValue == phpOperatorStringCapable) {
+			rank = opRank
+			value = opValue
+		}
+	}
+
 	depth := 0
 	prev := byte(0) // last significant byte
 	i := 0
@@ -401,7 +425,7 @@ func phpTopLevelOperatorRank(expr string) int {
 			prev = '"'
 			continue
 		}
-		if c == ' ' || c == '\t' {
+		if isPHPSpace(c) {
 			i++
 			continue
 		}
@@ -434,9 +458,9 @@ func phpTopLevelOperatorRank(expr string) int {
 			if !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\' {
 				switch strings.ToLower(expr[start:i]) {
 				case "and", "or", "xor":
-					rank = min(rank, phpRankWordLogical)
+					observe(phpRankWordLogical, phpOperatorNonString)
 				case "instanceof":
-					rank = min(rank, phpRankComparison)
+					observe(phpRankComparison, phpOperatorNonString)
 				}
 			}
 			prev = expr[i-1]
@@ -451,7 +475,7 @@ func phpTopLevelOperatorRank(expr string) int {
 		case '=':
 			switch next {
 			case '=':
-				rank = min(rank, phpRankComparison)
+				observe(phpRankComparison, phpOperatorNonString)
 				consumed = 2
 				if i+2 < len(expr) && expr[i+2] == '=' {
 					consumed = 3
@@ -459,27 +483,36 @@ func phpTopLevelOperatorRank(expr string) int {
 			case '>':
 				// A stray => at depth 0 is not valid expression syntax;
 				// treat it like an assignment and fail closed.
-				rank = min(rank, phpRankAssign)
+				observe(phpRankAssign, phpOperatorStringCapable)
 				consumed = 2
 			default:
-				rank = min(rank, phpRankAssign)
+				observe(phpRankAssign, phpOperatorStringCapable)
 			}
 		case '!':
 			if next == '=' {
-				rank = min(rank, phpRankComparison)
+				observe(phpRankComparison, phpOperatorNonString)
 				consumed = 2
 				if i+2 < len(expr) && expr[i+2] == '=' {
 					consumed = 3
 				}
 			}
 		case '?':
-			rank = min(rank, phpRankTernary)
-		case '<':
-			if next == '<' {
-				rank = min(rank, phpRankValueOp)
+			observe(phpRankTernary, phpOperatorStringCapable)
+			if next == '?' {
 				consumed = 2
-			} else {
-				rank = min(rank, phpRankComparison)
+			} else if next == '-' && i+2 < len(expr) && expr[i+2] == '>' {
+				consumed = 3
+			}
+		case '<':
+			switch {
+			case next == '<':
+				observe(phpRankShift, phpOperatorNonString)
+				consumed = 2
+			case next == '=' && i+2 < len(expr) && expr[i+2] == '>':
+				observe(phpRankComparison, phpOperatorNonString)
+				consumed = 3
+			default:
+				observe(phpRankComparison, phpOperatorNonString)
 				if next == '=' || next == '>' {
 					consumed = 2
 				}
@@ -487,41 +520,61 @@ func phpTopLevelOperatorRank(expr string) int {
 		case '>':
 			switch next {
 			case '>':
-				rank = min(rank, phpRankValueOp)
+				observe(phpRankShift, phpOperatorNonString)
 				consumed = 2
 			case '=':
-				rank = min(rank, phpRankComparison)
+				observe(phpRankComparison, phpOperatorNonString)
 				consumed = 2
 			default:
-				rank = min(rank, phpRankComparison)
+				observe(phpRankComparison, phpOperatorNonString)
 			}
 		case '-':
-			if next == '>' {
+			switch next {
+			case '>':
 				consumed = 2 // property or method access, not an operator
+			case '-':
+				consumed = 2 // string increment/decrement is string-capable; fail closed as an atom
+			default:
+				observe(phpRankAdditive, phpOperatorNonString)
+			}
+		case '+':
+			if next == '+' {
+				consumed = 2 // string increment is string-capable; fail closed as an atom
 			} else {
-				rank = min(rank, phpRankValueOp)
+				observe(phpRankAdditive, phpOperatorNonString)
 			}
 		case '|':
 			if next == '|' {
-				rank = min(rank, phpRankLogical)
+				observe(phpRankLogicalOr, phpOperatorNonString)
 				consumed = 2
 			} else {
-				rank = min(rank, phpRankValueOp)
+				observe(phpRankBitwiseOr, phpOperatorStringCapable)
 			}
 		case '&':
 			if next == '&' {
-				rank = min(rank, phpRankLogical)
+				observe(phpRankLogicalAnd, phpOperatorNonString)
 				consumed = 2
 			} else {
-				rank = min(rank, phpRankValueOp)
+				observe(phpRankBitwiseAnd, phpOperatorStringCapable)
 			}
-		case '.', '+', '*', '/', '%', '^':
-			rank = min(rank, phpRankValueOp)
+		case '^':
+			observe(phpRankBitwiseXor, phpOperatorStringCapable)
+		case '.':
+			observe(phpRankConcat, phpOperatorStringCapable)
+		case '*':
+			if next == '*' {
+				observe(phpRankPower, phpOperatorNonString)
+				consumed = 2
+			} else {
+				observe(phpRankMultiplicative, phpOperatorNonString)
+			}
+		case '/', '%':
+			observe(phpRankMultiplicative, phpOperatorNonString)
 		}
 		prev = expr[i+consumed-1]
 		i += consumed
 	}
-	return rank
+	return value
 }
 
 // phpNonStringReturnBuiltins lists PHP builtins (plus the isset/empty

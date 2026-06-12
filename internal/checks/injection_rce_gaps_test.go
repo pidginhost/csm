@@ -531,12 +531,78 @@ func TestAnalyzePHPContentAssertUnbalancedParenWithRequestFlagged(t *testing.T) 
 	}
 }
 
+func TestAnalyzePHPContentAssertMultilineRequestArgumentFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"assert(\n" +
+		"base64_decode($_POST['c'])\n" +
+		");\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("multiline assert argument with request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentCreateFunctionMultilineRequestFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"$f = create_function('$x',\n" +
+		"$_GET['body']\n" +
+		");\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("multiline create_function with request input not flagged; details=%q", res.details)
+	}
+}
+
 func TestAnalyzePHPContentAssertBitwiseOnStringsFlagged(t *testing.T) {
 	// PHP bitwise operators on two strings yield a string, so the result can
 	// be attacker-built code.
-	res := analyzePHPString(t, "<?php assert($_POST['a'] | $_POST['b']); ?>")
+	cases := []string{
+		"<?php assert($_POST['a'] & $_POST['b']); ?>",
+		"<?php assert($_POST['a'] | $_POST['b']); ?>",
+		"<?php assert($_POST['a'] ^ $_POST['b']); ?>",
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if !strings.Contains(res.details, indCodeEvalPrim) {
+			t.Errorf("assert with string bitwise operator not flagged; content=%q details=%q", content, res.details)
+		}
+	}
+}
+
+func TestAnalyzePHPContentAssertArithmeticWithRequestNotFlagged(t *testing.T) {
+	// Arithmetic and shifts coerce to numbers/integers, never strings, so
+	// assert() cannot evaluate attacker-built PHP from the result.
+	cases := []string{
+		"<?php assert($_POST['n'] + 0); ?>",
+		"<?php assert(0 - $_GET['n']); ?>",
+		"<?php assert($_REQUEST['n'] * 1); ?>",
+		"<?php assert($_COOKIE['n'] / 1); ?>",
+		"<?php assert($_SERVER['CONTENT_LENGTH'] % 2); ?>",
+		"<?php assert($_POST['n'] << 1); ?>",
+		"<?php assert($_POST['n'] >> 1); ?>",
+		"<?php assert(-$_POST['n']); ?>",
+	}
+	for _, content := range cases {
+		res := analyzePHPString(t, content)
+		if strings.Contains(res.details, indCodeEvalPrim) {
+			t.Errorf("assert arithmetic/shift expression wrongly flagged; content=%q details=%q", content, res.details)
+		}
+	}
+}
+
+func TestAnalyzePHPContentAssertConcatAfterArithmeticFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(($_POST['n'] + 0) . 'x'); ?>")
 	if !strings.Contains(res.details, indCodeEvalPrim) {
-		t.Errorf("assert with string bitwise-or not flagged; details=%q", res.details)
+		t.Errorf("assert concat after arithmetic not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertStringIncrementFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(++$_POST['c']); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert string increment not flagged; details=%q", res.details)
 	}
 }
 
