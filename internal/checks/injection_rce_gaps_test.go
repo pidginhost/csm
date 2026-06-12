@@ -357,3 +357,194 @@ func TestAnalyzePHPContentAssertInStringNotFlagged(t *testing.T) {
 		t.Errorf("assert inside string literal wrongly flagged; details=%q", res.details)
 	}
 }
+
+// --- assert argument type classification: only string-capable arguments are
+// code-eval sinks; provably-boolean/int expressions are not ---
+
+func TestAnalyzePHPContentAssertBoolBuiltinWithRequestNotFlagged(t *testing.T) {
+	// Upstream qtranslate-xt 3.16.1 admin_options_update.php:884 shape:
+	// assert(file_exists(...)) evaluates to bool, never an attacker string.
+	res := analyzePHPString(t, "<?php assert( file_exists( QTRANSLATE_DIR . '/css/lsb/' . $_POST['lsb_style'] ) ); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(file_exists(...)) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertInArrayWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(in_array($_POST['mode'], $allowed, true)); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(in_array(...)) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertComparisonWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(strpos($_GET['url'], '/') === 0); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with top-level comparison wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertLogicalAndWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(isset($_POST['style']) && $_POST['style'] !== ''); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with logical-and wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertNegationWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(!$_POST['debug']); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(!...) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertQualifiedBuiltinWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(\\is_string($_GET['name'])); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(\\is_string(...)) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertPregMatchWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(preg_match('/^[a-z]+$/', $_POST['slug'])); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(preg_match(...)) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertParenWrappedBoolWithRequestNotFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert((is_file($_POST['p']))); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert((is_file(...))) wrongly flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertClosureUseElsewhereStillNotFlagged(t *testing.T) {
+	// A closure capture (use ($ctx)) is not a function alias import and must
+	// not disable trust in unqualified builtin names.
+	body := "<?php\n" +
+		"$f = function () use ($ctx) { return 1; };\n" +
+		"assert(is_file($_POST['p']));\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("closure use() disabled builtin trust; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertStringBuiltinWithRequestFlagged(t *testing.T) {
+	// base64_decode returns a string: assert(base64_decode($_POST[...])) is
+	// the classic eval-less webshell on PHP < 8.
+	res := analyzePHPString(t, "<?php assert(base64_decode($_POST['c'])); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(base64_decode(...)) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertUnknownFunctionWithRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert(my_decode($_POST['p'])); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert(custom_fn(...)) not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertTernaryWithRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert($_GET['a'] == '1' ? $_GET['b'] : 'x'); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with ternary not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertNullCoalesceWithRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert($_POST['c'] ?? 'x'); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with null-coalesce not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertConcatWithRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert('1' . $_GET['c']); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with concat not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertAssignmentWithRequestFlagged(t *testing.T) {
+	res := analyzePHPString(t, "<?php assert($x = $_POST['c']); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with assignment not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertStringLiteralWithRequestFlagged(t *testing.T) {
+	// A literal string argument is evaluated as PHP code by assert() < 8.0.
+	res := analyzePHPString(t, "<?php assert('is_file($_POST[\"x\"])'); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert('...code...') not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertNamespacedShadowFlagged(t *testing.T) {
+	// In a namespaced file an unqualified file_exists() can resolve to an
+	// attacker-defined shadow that returns its argument, so builtin trust is
+	// withdrawn and the call stays flagged.
+	body := "<?php\n" +
+		"namespace x;\n" +
+		"function file_exists($c) { return $c; }\n" +
+		"assert(file_exists($_POST['c']));\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("namespaced builtin shadow not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertUseFunctionAliasFlagged(t *testing.T) {
+	body := "<?php\n" +
+		"use function evil\\passthrough as file_exists;\n" +
+		"assert(file_exists($_POST['c']));\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("use-function alias shadow not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertMethodNamedAndNotBooleanContext(t *testing.T) {
+	// $obj->and(...) is a method call, not the logical operator; its return
+	// value can be any string so the call stays flagged.
+	res := analyzePHPString(t, "<?php assert($obj->and($_POST['c'])); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("method named 'and' treated as boolean operator; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertUnbalancedParenWithRequestFlagged(t *testing.T) {
+	// Splitting the call across lines must not dodge the detector.
+	body := "<?php\n" +
+		"assert(base64_decode($_POST['c'])\n" +
+		");\n" +
+		"?>"
+	res := analyzePHPString(t, body)
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("multiline assert with request input not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertBitwiseOnStringsFlagged(t *testing.T) {
+	// PHP bitwise operators on two strings yield a string, so the result can
+	// be attacker-built code.
+	res := analyzePHPString(t, "<?php assert($_POST['a'] | $_POST['b']); ?>")
+	if !strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with string bitwise-or not flagged; details=%q", res.details)
+	}
+}
+
+func TestAnalyzePHPContentAssertRequestOnlyInDescriptionNotFlagged(t *testing.T) {
+	// The second assert() argument is a description value, never evaluated as
+	// code; only the first argument is a code-eval sink.
+	res := analyzePHPString(t, "<?php assert(is_file($path), 'missing ' . $_GET['name']); ?>")
+	if strings.Contains(res.details, indCodeEvalPrim) {
+		t.Errorf("assert with request input only in description wrongly flagged; details=%q", res.details)
+	}
+}

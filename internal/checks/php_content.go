@@ -300,28 +300,364 @@ func hasDangerousInclude(code string) bool {
 }
 
 // hasCodeEvalPrimitiveWithRequest reports assert()/create_function() fed
-// request input on the same line. assert() evaluates a string argument as PHP
-// (pre-8.0) and create_function() evals its body argument; both are RCE when
-// driven by attacker input.
+// request input. create_function() evals its body argument, so any request
+// superglobal inside the call is a code-eval sink. assert() (pre-8.0) only
+// evaluates its first argument as PHP when that argument is a string, so the
+// argument expression is classified first: expressions that provably yield a
+// non-string value (boolean/comparison operators, negation, builtins that
+// never return strings) are not code-eval sinks. Anything not provably
+// non-string stays flagged, fail closed.
 func hasCodeEvalPrimitiveWithRequest(code string) bool {
+	trustUnqualified := !phpDeclaresNamespaceOrFunctionAlias(code)
 	for _, line := range strings.Split(code, "\n") {
 		searchFrom := 0
 		for {
-			_, openParen, closeParen, ok := nextStandalonePHPCall(line, searchFrom, codeEvalPrimitiveCallNames)
+			callStart, openParen, closeParen, ok := nextStandalonePHPCall(line, searchFrom, codeEvalPrimitiveCallNames)
 			if !ok {
 				break
 			}
+			name := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(line[callStart:openParen]), `\`))
 			exprEnd := closeParen
 			if exprEnd < len(line) {
 				exprEnd++
 			}
 			if containsRequestSuperglobal(line[openParen:exprEnd]) {
-				return true
+				if name != "assert" {
+					return true
+				}
+				if closeParen >= len(line) {
+					// The call continues on the next line, so the argument
+					// cannot be classified here. Fail closed.
+					return true
+				}
+				args := phpCallArguments(line, openParen+1, closeParen)
+				if len(args) > 0 && containsRequestSuperglobal(args[0]) &&
+					!phpExpressionYieldsNonString(args[0], trustUnqualified) {
+					return true
+				}
 			}
 			searchFrom = exprEnd
 			if searchFrom >= len(line) {
 				break
 			}
+		}
+	}
+	return false
+}
+
+// Precedence ranks for depth-0 binary operators inside an assert() argument,
+// lowest precedence first. The lowest-precedence operator present produces
+// the expression's final value, so it alone decides whether the result can
+// be a string.
+const (
+	phpRankWordLogical = 1   // and / or / xor -- boolean result
+	phpRankAssign      = 2   // = and compound assignments -- value passes through
+	phpRankTernary     = 3   // ?: / ?? / ?-> -- either branch value
+	phpRankLogical     = 4   // && / || -- boolean result
+	phpRankComparison  = 5   // == != === !== <> < > <= >= instanceof -- boolean
+	phpRankValueOp     = 6   // . + - * / % & | ^ << >> -- value result
+	phpRankNone        = 100 // no depth-0 binary operator: single atom
+)
+
+// phpExpressionYieldsNonString reports whether a PHP expression provably
+// evaluates to a non-string value, so assert() cannot treat it as code.
+// trustUnqualified is false when the file declares a namespace or imports a
+// function alias, because then an unqualified builtin name can resolve to
+// attacker-defined code. Anything unrecognized counts as string-capable.
+func phpExpressionYieldsNonString(expr string, trustUnqualified bool) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return false
+	}
+	switch phpTopLevelOperatorRank(expr) {
+	case phpRankWordLogical, phpRankLogical, phpRankComparison:
+		return true
+	case phpRankAssign, phpRankTernary, phpRankValueOp:
+		return false
+	}
+	if expr[0] == '!' {
+		// Negation of a whole atom is always boolean. Bitwise & | ^ on two
+		// strings would yield a string, but those rank as value operators
+		// above, so this point is only reached for a single negated atom.
+		return true
+	}
+	if expr[0] == '(' && matchingParen(expr, 0) == len(expr)-1 {
+		return phpExpressionYieldsNonString(expr[1:len(expr)-1], trustUnqualified)
+	}
+	return phpIsNonStringBuiltinCall(expr, trustUnqualified)
+}
+
+// phpTopLevelOperatorRank scans expr outside string literals at paren depth 0
+// and returns the lowest rank found, or phpRankNone for a single atom.
+func phpTopLevelOperatorRank(expr string) int {
+	rank := phpRankNone
+	depth := 0
+	prev := byte(0) // last significant byte
+	i := 0
+	for i < len(expr) {
+		c := expr[i]
+		if isPHPQuote(c) {
+			i = skipPHPString(expr, i) + 1
+			prev = '"'
+			continue
+		}
+		if c == ' ' || c == '\t' {
+			i++
+			continue
+		}
+		switch c {
+		case '(', '[', '{':
+			depth++
+			prev = c
+			i++
+			continue
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+			prev = c
+			i++
+			continue
+		}
+		if depth > 0 {
+			prev = c
+			i++
+			continue
+		}
+		if isPHPIdentifierStart(c) {
+			start := i
+			for i < len(expr) && isPHPIdentifierPart(expr[i]) {
+				i++
+			}
+			// A word preceded by $, ->, ::, or \ is a variable, member, or
+			// namespaced name, never the operator keyword.
+			if !isPHPIdentifierPart(prev) && prev != '$' && prev != '>' && prev != ':' && prev != '\\' {
+				switch strings.ToLower(expr[start:i]) {
+				case "and", "or", "xor":
+					rank = min(rank, phpRankWordLogical)
+				case "instanceof":
+					rank = min(rank, phpRankComparison)
+				}
+			}
+			prev = expr[i-1]
+			continue
+		}
+		next := byte(0)
+		if i+1 < len(expr) {
+			next = expr[i+1]
+		}
+		consumed := 1
+		switch c {
+		case '=':
+			switch next {
+			case '=':
+				rank = min(rank, phpRankComparison)
+				consumed = 2
+				if i+2 < len(expr) && expr[i+2] == '=' {
+					consumed = 3
+				}
+			case '>':
+				// A stray => at depth 0 is not valid expression syntax;
+				// treat it like an assignment and fail closed.
+				rank = min(rank, phpRankAssign)
+				consumed = 2
+			default:
+				rank = min(rank, phpRankAssign)
+			}
+		case '!':
+			if next == '=' {
+				rank = min(rank, phpRankComparison)
+				consumed = 2
+				if i+2 < len(expr) && expr[i+2] == '=' {
+					consumed = 3
+				}
+			}
+		case '?':
+			rank = min(rank, phpRankTernary)
+		case '<':
+			if next == '<' {
+				rank = min(rank, phpRankValueOp)
+				consumed = 2
+			} else {
+				rank = min(rank, phpRankComparison)
+				if next == '=' || next == '>' {
+					consumed = 2
+				}
+			}
+		case '>':
+			switch next {
+			case '>':
+				rank = min(rank, phpRankValueOp)
+				consumed = 2
+			case '=':
+				rank = min(rank, phpRankComparison)
+				consumed = 2
+			default:
+				rank = min(rank, phpRankComparison)
+			}
+		case '-':
+			if next == '>' {
+				consumed = 2 // property or method access, not an operator
+			} else {
+				rank = min(rank, phpRankValueOp)
+			}
+		case '|':
+			if next == '|' {
+				rank = min(rank, phpRankLogical)
+				consumed = 2
+			} else {
+				rank = min(rank, phpRankValueOp)
+			}
+		case '&':
+			if next == '&' {
+				rank = min(rank, phpRankLogical)
+				consumed = 2
+			} else {
+				rank = min(rank, phpRankValueOp)
+			}
+		case '.', '+', '*', '/', '%', '^':
+			rank = min(rank, phpRankValueOp)
+		}
+		prev = expr[i+consumed-1]
+		i += consumed
+	}
+	return rank
+}
+
+// phpNonStringReturnBuiltins lists PHP builtins (plus the isset/empty
+// language constructs) whose return value can never be a string, so feeding
+// their result to assert() cannot evaluate attacker input as code. Functions
+// that can return a string (filter_var, base64_decode, ...) must never be
+// added here.
+var phpNonStringReturnBuiltins = map[string]struct{}{
+	"isset": {}, "empty": {}, "defined": {},
+	"file_exists": {}, "is_file": {}, "is_dir": {}, "is_link": {},
+	"is_readable": {}, "is_writable": {}, "is_writeable": {}, "is_executable": {},
+	"is_uploaded_file": {},
+	"is_numeric":       {}, "is_string": {}, "is_array": {}, "is_int": {},
+	"is_integer": {}, "is_long": {}, "is_bool": {}, "is_float": {},
+	"is_double": {}, "is_null": {}, "is_object": {}, "is_callable": {},
+	"is_iterable": {}, "is_countable": {}, "is_resource": {}, "is_a": {},
+	"is_subclass_of": {},
+	"in_array":       {}, "array_key_exists": {}, "key_exists": {},
+	"property_exists": {}, "method_exists": {}, "function_exists": {},
+	"class_exists": {}, "interface_exists": {}, "trait_exists": {}, "enum_exists": {},
+	"str_contains": {}, "str_starts_with": {}, "str_ends_with": {},
+	"preg_match": {}, "preg_match_all": {},
+	"count": {}, "sizeof": {}, "strlen": {}, "mb_strlen": {},
+	"strcmp": {}, "strcasecmp": {}, "strncmp": {}, "strncasecmp": {},
+	"substr_compare": {}, "version_compare": {}, "hash_equals": {},
+	"password_verify": {}, "checkdate": {},
+	"ctype_alnum": {}, "ctype_alpha": {}, "ctype_cntrl": {}, "ctype_digit": {},
+	"ctype_graph": {}, "ctype_lower": {}, "ctype_print": {}, "ctype_punct": {},
+	"ctype_space": {}, "ctype_upper": {}, "ctype_xdigit": {},
+}
+
+// phpIsNonStringBuiltinCall reports whether expr is exactly one call to a
+// builtin that never returns a string. isset/empty are language constructs
+// and cannot be shadowed; other names are trusted only when fully qualified
+// (\file_exists) or when the file cannot redirect unqualified names.
+func phpIsNonStringBuiltinCall(expr string, trustUnqualified bool) bool {
+	i := 0
+	qualified := false
+	if i < len(expr) && expr[i] == '\\' {
+		qualified = true
+		i++
+	}
+	if i >= len(expr) || !isPHPIdentifierStart(expr[i]) {
+		return false
+	}
+	nameStart := i
+	for i < len(expr) && isPHPIdentifierPart(expr[i]) {
+		i++
+	}
+	name := strings.ToLower(expr[nameStart:i])
+	if _, ok := phpNonStringReturnBuiltins[name]; !ok {
+		return false
+	}
+	open := skipPHPWhitespace(expr, i)
+	if open >= len(expr) || expr[open] != '(' {
+		return false
+	}
+	if matchingParen(expr, open) != len(expr)-1 {
+		return false
+	}
+	if name == "isset" || name == "empty" {
+		return true
+	}
+	return qualified || trustUnqualified
+}
+
+// phpDeclaresNamespaceOrFunctionAlias reports whether the source declares a
+// namespace or imports a function alias (use function ..., or a group import
+// containing a function entry). Either lets an unqualified builtin name
+// resolve to attacker-defined code. Closure captures (function () use ($x))
+// and trait use inside classes do not count.
+func phpDeclaresNamespaceOrFunctionAlias(code string) bool {
+	prev := byte(0) // last significant byte
+	i := 0
+	for i < len(code) {
+		c := code[i]
+		if isPHPQuote(c) {
+			i = skipPHPString(code, i) + 1
+			prev = '"'
+			continue
+		}
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			i++
+			continue
+		}
+		if !isPHPIdentifierStart(c) {
+			prev = c
+			i++
+			continue
+		}
+		start := i
+		for i < len(code) && isPHPIdentifierPart(code[i]) {
+			i++
+		}
+		word := strings.ToLower(code[start:i])
+		guarded := isPHPIdentifierPart(prev) || prev == '$' || prev == '>' || prev == ':' || prev == '\\'
+		prev = code[i-1]
+		if guarded {
+			continue
+		}
+		switch word {
+		case "namespace":
+			return true
+		case "use":
+			j := skipPHPWhitespace(code, i)
+			if j < len(code) && code[j] == '(' {
+				continue // closure capture
+			}
+			if phpUseStatementImportsFunction(code, j) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// phpUseStatementImportsFunction scans one use statement (until the first
+// semicolon) for the function keyword, covering both use function a\b and
+// use a\{function b} forms.
+func phpUseStatementImportsFunction(code string, from int) bool {
+	i := from
+	for i < len(code) && code[i] != ';' {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i) + 1
+			continue
+		}
+		if !isPHPIdentifierStart(code[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(code) && isPHPIdentifierPart(code[i]) {
+			i++
+		}
+		if strings.ToLower(code[start:i]) == "function" {
+			return true
 		}
 	}
 	return false
