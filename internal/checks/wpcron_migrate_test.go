@@ -133,7 +133,11 @@ func TestMigrateWPCronCrontabsSkipsUnsafeDocroots(t *testing.T) {
 	tampered := "# CSM WP-Cron ../../../etc\n" +
 		"*/5 * * * * cd '../../../etc' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n" +
 		"# CSM WP-Cron relative/path\n" +
-		"*/5 * * * * cd 'relative/path' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n"
+		"*/5 * * * * cd 'relative/path' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n" +
+		"# CSM WP-Cron /home/alice/public%html\n" +
+		"*/5 * * * * cd '/home/alice/public%html' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n" +
+		"# CSM WP-Cron /home/alice/public\rhtml\n" +
+		"*/5 * * * * cd '/home/alice/public\rhtml' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n"
 	if err := os.WriteFile(filepath.Join(spool, "alice"), []byte(tampered), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -146,5 +150,67 @@ func TestMigrateWPCronCrontabsSkipsUnsafeDocroots(t *testing.T) {
 	}
 	if len(rec.installs) != 0 {
 		t.Errorf("no installs expected for unsafe docroots, got %v", rec.installs)
+	}
+}
+
+func TestMigrateWPCronCrontabsContinuesAfterStaleEmptySpool(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "cronie")
+	second := filepath.Join(t.TempDir(), "debian")
+	if err := os.Mkdir(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withWPCronSpoolDirs(t, first, second)
+
+	legacy := "# CSM WP-Cron /home/alice/public_html\n" +
+		"*/5 * * * * cd '/home/alice/public_html' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n"
+	if err := os.WriteFile(filepath.Join(first, "alice"), []byte("MAILTO=ops@example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second, "alice"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &migrateCrontabMock{crontabs: map[string]string{"alice": legacy}, installs: map[string]string{}}
+	withMockCmd(t, rec.mock())
+
+	if got := MigrateWPCronCrontabs(wpCronMigrateConfig()); got != 1 {
+		t.Fatalf("stale first spool must not hide managed second spool, got %d upgrades", got)
+	}
+	if _, ok := rec.installs["alice"]; !ok {
+		t.Fatalf("expected alice's active crontab to be upgraded, got installs for %v", rec.installs)
+	}
+}
+
+func TestMigrateWPCronCrontabsSkipsUnsafeOwnersBeforeCrontab(t *testing.T) {
+	spool := t.TempDir()
+	withWPCronSpoolDirs(t, spool)
+	legacy := "# CSM WP-Cron /home/alice/public_html\n" +
+		"*/5 * * * * cd '/home/alice/public_html' && '/usr/local/bin/php' -d max_execution_time=300 wp-cron.php >/dev/null 2>&1\n"
+	for _, owner := range []string{"root", "_alice", "Bad User"} {
+		if err := os.WriteFile(filepath.Join(spool, owner), []byte(legacy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	called := false
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+		run: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	if got := MigrateWPCronCrontabs(wpCronMigrateConfig()); got != 0 {
+		t.Errorf("unsafe owners must be skipped, got %d upgrades", got)
+	}
+	if called {
+		t.Fatal("unsafe owner names must be rejected before invoking crontab")
 	}
 }

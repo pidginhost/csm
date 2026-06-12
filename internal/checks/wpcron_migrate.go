@@ -34,15 +34,19 @@ func MigrateWPCronCrontabs(cfg *config.Config) int {
 				continue
 			}
 			owner := e.Name()
-			if seen[owner] || !validCPUser.MatchString(owner) {
+			if seen[owner] || !validCPUser.MatchString(owner) || owner == "root" {
 				continue
 			}
-			seen[owner] = true
 			data, err := osFS.ReadFile(filepath.Join(dir, owner))
 			if err != nil {
 				continue
 			}
-			for _, docroot := range wpCronManagedDocroots(string(data)) {
+			docroots := wpCronManagedDocroots(string(data))
+			if len(docroots) == 0 {
+				continue
+			}
+			seen[owner] = true
+			for _, docroot := range docroots {
 				installed, err := installUserWPCron(owner, docroot, opts)
 				if err == nil && installed {
 					upgraded++
@@ -64,7 +68,7 @@ func wpCronManagedDocroots(crontab string) []string {
 			continue
 		}
 		docroot := strings.TrimSpace(strings.TrimPrefix(trimmed, wpCronJobMarker))
-		if docroot == "" || !filepath.IsAbs(docroot) || filepath.Clean(docroot) != docroot {
+		if !safeWPCronDocroot(docroot) {
 			continue
 		}
 		roots = append(roots, docroot)

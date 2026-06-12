@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +21,7 @@ import (
 // stays free of config coupling.
 type WPCronFixOptions struct {
 	// IntervalMinutes is how often the installed system cron runs wp-cron.php.
-	// Clamped to [1,60]; a non-positive value falls back to the 5-minute default.
+	// Clamped to [1,60]; a non-positive value falls back to the 15-minute default.
 	IntervalMinutes int
 	// PHPBin is the interpreter the cron line invokes. Empty means "detect":
 	// LookPath("php") first, then the cPanel default /usr/local/bin/php.
@@ -45,7 +46,7 @@ var wpCronDefineRe = regexp.MustCompile(`(?i)define\s*\(\s*['"]DISABLE_WP_CRON['
 // validCPUser guards the username passed to `crontab -u`. cPanel usernames are
 // lowercase alnum starting with a letter; rejecting anything else keeps a
 // surprising file owner from reaching the crontab argument vector.
-var validCPUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+var validCPUser = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 var wpCronHeredocStartRe = regexp.MustCompile(`<<<['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
 
@@ -276,8 +277,17 @@ func wpCronEndsHeredoc(line, label string) bool {
 // command runner has no stdin channel; `crontab -u <user> <file>` installs and
 // validates it atomically.
 func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, error) {
-	if !validCPUser.MatchString(owner) {
+	if !validCPUser.MatchString(owner) || owner == "root" {
 		return false, fmt.Errorf("refusing crontab edit for unexpected account name %q", owner)
+	}
+	if !safeWPCronDocroot(docroot) {
+		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron docroot %q", docroot)
+	}
+	if opts.PHPBin == "" {
+		opts.PHPBin = detectPHPBin()
+	}
+	if !safeCronCommandString(opts.PHPBin) {
+		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron php binary %q", opts.PHPBin)
 	}
 
 	lock := wpCronCrontabLock(owner)
@@ -354,8 +364,8 @@ func recordCrontabSelfWrite(owner string, expected []byte) {
 		if crontabContentEqual(data, expected) {
 			RecordSelfWrite(p, data)
 			recorded = p
+			break
 		}
-		break
 	}
 	for _, p := range paths {
 		if p != recorded {
@@ -432,8 +442,19 @@ func wpCronMinuteField(offset, interval int) string {
 		return "*"
 	case interval >= 60:
 		return strconv.Itoa(offset)
-	default:
+	case 60%interval == 0:
 		return fmt.Sprintf("%d-59/%d", offset, interval)
+	default:
+		minutes := make([]int, 0, (60+interval-1)/interval)
+		for minute := 0; minute < 60; minute += interval {
+			minutes = append(minutes, (minute+offset)%60)
+		}
+		sort.Ints(minutes)
+		parts := make([]string, 0, len(minutes))
+		for _, minute := range minutes {
+			parts = append(parts, strconv.Itoa(minute))
+		}
+		return strings.Join(parts, ",")
 	}
 }
 
@@ -446,10 +467,20 @@ func wpCronUpgradeManagedLine(existing, docroot, want string, buf *bytes.Buffer)
 	lines := strings.Split(existing, "\n")
 	marker := wpCronJobMarker + docroot
 	for i, line := range lines {
-		if strings.TrimSpace(line) != marker || i+1 >= len(lines) {
+		if strings.TrimSpace(line) != marker {
 			continue
 		}
+		if i+1 >= len(lines) {
+			lines = append(lines, want)
+			writeCrontabLines(buf, lines)
+			return true
+		}
 		job := lines[i+1]
+		if strings.TrimSpace(job) == "" && i+1 == len(lines)-1 {
+			lines[i+1] = want
+			writeCrontabLines(buf, lines)
+			return true
+		}
 		if strings.TrimSpace(job) == want {
 			return false
 		}
@@ -457,11 +488,28 @@ func wpCronUpgradeManagedLine(existing, docroot, want string, buf *bytes.Buffer)
 			return false
 		}
 		lines[i+1] = want
-		buf.WriteString(strings.TrimRight(strings.Join(lines, "\n"), "\n"))
-		buf.WriteByte('\n')
+		writeCrontabLines(buf, lines)
 		return true
 	}
 	return false
+}
+
+func writeCrontabLines(buf *bytes.Buffer, lines []string) {
+	buf.WriteString(strings.TrimRight(strings.Join(lines, "\n"), "\n"))
+	buf.WriteByte('\n')
+}
+
+func safeWPCronDocroot(docroot string) bool {
+	return docroot != "" && filepath.IsAbs(docroot) && filepath.Clean(docroot) == docroot && safeCronCommandString(docroot)
+}
+
+func safeCronCommandString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' || s[i] < 0x20 || s[i] == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // crontabHasWPCronJob reports whether the crontab already runs wp-cron.php for
@@ -503,7 +551,7 @@ func crontabCommand(line string) string {
 		if len(fields) < 2 {
 			return ""
 		}
-		return strings.TrimSpace(trimmed[len(fields[0]):])
+		return crontabCommandBeforeStdin(trimmed[len(fields[0]):])
 	}
 	if len(fields) < 6 {
 		return ""
@@ -518,7 +566,22 @@ func crontabCommand(line string) string {
 		}
 		rest = rest[fieldEnd:]
 	}
-	return strings.TrimSpace(rest)
+	return crontabCommandBeforeStdin(rest)
+}
+
+func crontabCommandBeforeStdin(command string) string {
+	escaped := false
+	for i := 0; i < len(command); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case command[i] == '\\':
+			escaped = true
+		case command[i] == '%':
+			return strings.TrimSpace(command[:i])
+		}
+	}
+	return strings.TrimSpace(command)
 }
 
 func commandRunsWPCronForDocroot(command, docroot string) bool {

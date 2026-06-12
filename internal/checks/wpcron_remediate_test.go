@@ -190,11 +190,43 @@ func TestWPCronJobLineLocksPerDocroot(t *testing.T) {
 	}
 }
 
+func TestWPCronJobLineContainsNoCronPercent(t *testing.T) {
+	line := wpCronJobLine("alice", "/home/alice/public_html", WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"})
+	if strings.Contains(line, "%") {
+		t.Fatalf("cron command must not contain a literal percent:\n%s", line)
+	}
+}
+
 func TestWPCronJobLineEveryMinuteInterval(t *testing.T) {
 	opts := WPCronFixOptions{IntervalMinutes: 1, PHPBin: "/usr/local/bin/php"}
 	line := wpCronJobLine("alice", "/home/alice/public_html", opts)
 	if !strings.HasPrefix(line, "* * * * * ") {
 		t.Errorf("interval 1 must emit a plain every-minute schedule:\n%s", line)
+	}
+}
+
+func TestWPCronMinuteFieldKeepsNonDivisorIntervalBound(t *testing.T) {
+	field := wpCronMinuteField(16, 17)
+	if field != "7,16,33,50" {
+		t.Fatalf("wpCronMinuteField(16, 17) = %q, want shifted minute list", field)
+	}
+
+	var minutes []int
+	for _, part := range strings.Split(field, ",") {
+		minute, err := strconv.Atoi(part)
+		if err != nil {
+			t.Fatalf("invalid minute %q in %q", part, field)
+		}
+		minutes = append(minutes, minute)
+	}
+	for i := range minutes {
+		next := minutes[(i+1)%len(minutes)]
+		if i == len(minutes)-1 {
+			next += 60
+		}
+		if gap := next - minutes[i]; gap > 17 {
+			t.Fatalf("minute field %q has gap %d, want <= 17", field, gap)
+		}
 	}
 }
 
@@ -242,6 +274,33 @@ func TestInstallUserWPCronUpgradesLegacyManagedLine(t *testing.T) {
 	}
 }
 
+func TestInstallUserWPCronRepairsDanglingManagedMarker(t *testing.T) {
+	docroot := "/home/alice/public_html"
+	opts := WPCronFixOptions{IntervalMinutes: 15, PHPBin: "/usr/local/bin/php"}
+	existing := "MAILTO=ops@example.com\n# CSM WP-Cron " + docroot
+	rec := &crontabRecorder{existing: existing}
+	withMockCmd(t, rec.mock())
+
+	installed, err := installUserWPCron("alice", docroot, opts)
+	if err != nil {
+		t.Fatalf("installUserWPCron: %v", err)
+	}
+	if !installed {
+		t.Fatal("dangling managed marker must be repaired")
+	}
+
+	want := "# CSM WP-Cron " + docroot + "\n" + wpCronJobLine("alice", docroot, opts) + "\n"
+	if !strings.Contains(rec.lastInstalled, want) {
+		t.Fatalf("dangling marker was not repaired in place:\n%s", rec.lastInstalled)
+	}
+	if c := strings.Count(rec.lastInstalled, "# CSM WP-Cron "+docroot); c != 1 {
+		t.Fatalf("dangling marker repair must not duplicate markers, got %d:\n%s", c, rec.lastInstalled)
+	}
+	if !strings.Contains(rec.lastInstalled, "MAILTO=ops@example.com\n") {
+		t.Fatalf("unrelated crontab data must survive dangling marker repair:\n%s", rec.lastInstalled)
+	}
+}
+
 func TestInstallUserWPCronLeavesUnmanagedWPCronAlone(t *testing.T) {
 	docroot := "/home/alice/public_html"
 	existing := "*/10 * * * * cd '" + docroot + "' && /usr/local/bin/php wp-cron.php >/dev/null 2>&1\n"
@@ -254,6 +313,49 @@ func TestInstallUserWPCronLeavesUnmanagedWPCronAlone(t *testing.T) {
 	}
 	if installed || rec.installCalls != 0 {
 		t.Errorf("customer-authored wp-cron line must not be rewritten (installed=%v calls=%d)", installed, rec.installCalls)
+	}
+}
+
+func TestInstallUserWPCronRejectsUnsafeInputsBeforeCrontab(t *testing.T) {
+	cases := []struct {
+		name    string
+		owner   string
+		docroot string
+		phpBin  string
+	}{
+		{name: "root owner", owner: "root", docroot: "/home/alice/public_html", phpBin: "/usr/local/bin/php"},
+		{name: "invalid owner", owner: "_alice", docroot: "/home/alice/public_html", phpBin: "/usr/local/bin/php"},
+		{name: "percent docroot", owner: "alice", docroot: "/home/alice/public%html", phpBin: "/usr/local/bin/php"},
+		{name: "control docroot", owner: "alice", docroot: "/home/alice/public\rhtml", phpBin: "/usr/local/bin/php"},
+		{name: "unclean docroot", owner: "alice", docroot: "/home/alice/../bob/public_html", phpBin: "/usr/local/bin/php"},
+		{name: "percent php", owner: "alice", docroot: "/home/alice/public_html", phpBin: "/usr/local/bin/php%bad"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			withMockCmd(t, &mockCmd{
+				runAllowNonZero: func(string, ...string) ([]byte, error) {
+					called = true
+					return nil, nil
+				},
+				run: func(string, ...string) ([]byte, error) {
+					called = true
+					return nil, nil
+				},
+			})
+
+			installed, err := installUserWPCron(tc.owner, tc.docroot, WPCronFixOptions{IntervalMinutes: 15, PHPBin: tc.phpBin})
+			if err == nil {
+				t.Fatal("expected unsafe input to be rejected")
+			}
+			if installed {
+				t.Fatal("unsafe input must not report an install")
+			}
+			if called {
+				t.Fatal("unsafe input must be rejected before invoking crontab")
+			}
+		})
 	}
 }
 
@@ -594,6 +696,16 @@ func TestCrontabHasWPCronJobRecognizesExistingForms(t *testing.T) {
 			line:    "# */10 * * * * cd " + shellQuote(docroot) + " && /usr/local/bin/php wp-cron.php",
 			present: false,
 		},
+		{
+			name:    "cron stdin after percent",
+			line:    "*/10 * * * * cd " + shellQuote(docroot) + " % /usr/local/bin/php wp-cron.php",
+			present: false,
+		},
+		{
+			name:    "escaped percent before command",
+			line:    `*/10 * * * * cd ` + shellQuote(docroot) + ` && printf '\%' && /usr/local/bin/php wp-cron.php`,
+			present: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -774,6 +886,36 @@ func TestInstallUserWPCronRecordsOnDiskSpoolContent(t *testing.T) {
 	}
 	if isExpectedSelfWrite(path, staged) {
 		t.Fatal("installed crontab must not keep the staged buffer hash")
+	}
+}
+
+func TestRecordCrontabSelfWriteFindsMatchingLaterSpoolPath(t *testing.T) {
+	resetSelfWrites(t)
+	firstDir := filepath.Join(t.TempDir(), "cronie")
+	secondDir := filepath.Join(t.TempDir(), "debian")
+	withWPCronSpoolDirs(t, firstDir, secondDir)
+
+	paths := crontabSpoolPaths("alice")
+	expected := []byte("# CSM WP-Cron /home/alice/public_html\n* * * * * php wp-cron.php\n")
+	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
+		switch name {
+		case paths[0]:
+			return []byte("legacy cron\n"), nil
+		case paths[1]:
+			return append([]byte(nil), expected...), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}})
+
+	preRecordCrontabSelfWrite("alice", expected)
+	recordCrontabSelfWrite("alice", expected)
+
+	if isExpectedSelfWrite(paths[0], expected) {
+		t.Fatal("stale first spool path must not keep the provisional self-write")
+	}
+	if !isExpectedSelfWrite(paths[1], expected) {
+		t.Fatal("matching later spool path must be recorded for self-write suppression")
 	}
 }
 

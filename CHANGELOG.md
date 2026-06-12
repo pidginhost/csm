@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- WP-Cron system crons installed by the remediation are now staggered per account instead of all firing in the same second, run under a lock so slow passes cannot overlap, and default to every 15 minutes instead of 5. Existing CSM-installed cron lines are upgraded automatically at daemon start; customer-authored cron entries are never touched.
+- WP-Cron system crons installed by the remediation are now staggered per account instead of all firing in the same second, run under a lock so slow passes cannot overlap, and default to every 15 minutes instead of 5. Existing CSM-installed cron lines are upgraded automatically at daemon start; tampered or unsafe marker content is rejected and customer-authored cron entries are never touched.
 - Realtime alerts for executables created in temp directories are demoted to warnings when the file is root-owned and the writing process descends from an active package-manager transaction, so kernel updates no longer page operators with hundreds of criticals. Demoted findings stay visible with an annotation; nothing is suppressed.
 - DNS zone-change monitoring now separates routine cPanel edits (serial bumps, AutoSSL and DKIM records, owner address repoints) from tampering, so it no longer alerts on every customer DNS change. Delegation or mail-record changes, anything edited outside cPanel, and zones lacking trusted cPanel provenance still raise an alert, and records are canonicalized first so crafted syntax cannot hide a change.
 

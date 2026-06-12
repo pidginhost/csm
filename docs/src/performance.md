@@ -50,12 +50,13 @@ dropdown that applies one fix to every matching finding at once:
 
   The installed schedule is staggered per account and docroot (for example
   `7-59/15`) instead of a wall-clock-aligned `*/15`, so many managed sites do
-  not all fire in the same second and spike the host load. The command also
-  runs under `flock -n` with a per-docroot lock file in the account home, so
-  a slow pass skips the next run instead of overlapping it. On daemon start,
-  managed crontab lines installed by older releases are upgraded to this
-  format automatically (only lines under the `# CSM WP-Cron` marker are
-  touched; customer-authored cron entries are never rewritten).
+  not all fire in the same second and spike the host load. Non-divisor
+  intervals use a shifted minute list so the gap stays within the configured
+  interval. The command also runs under `flock -n` with a per-docroot lock file
+  in the account home, so a slow pass skips the next run instead of overlapping
+  it. On daemon start, managed crontab lines installed by older releases are
+  upgraded to this format automatically (only lines under the `# CSM WP-Cron`
+  marker are touched; customer-authored cron entries are never rewritten).
 
 These actions are limited to configured account roots, reject symlinks and
 unsupported file types, and remove the fixed row from the active findings
