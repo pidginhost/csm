@@ -217,6 +217,19 @@ Registered when `reputation.upstream.enabled: true`.
   detecting response storms:
   `rate(csm_auto_response_actions_total[5m])`.
 
+### Challenge
+
+- `csm_challenge_routed_total{check}` (counter): IPs routed to the
+  proof-of-work challenge, labelled by the source `check` that flagged
+  them (e.g. `http_scanner_profile`, `wp_login_bruteforce`,
+  `ip_reputation`). Graph per-detector challenge volume with
+  `sum by (check) (rate(csm_challenge_routed_total[5m]))`.
+- `csm_challenge_escalated_total{outcome}` (counter): challenge entries
+  that timed out and were escalated to a hard block, by firewall
+  `outcome`: `live` (a new block landed), `noop` (the IP was already
+  blocked), plus `dry_run` and `allowed`. `outcome=live` is how many
+  challenges actually became blocks.
+
 ### Retention (when `retention.enabled: true`)
 
 - `csm_retention_sweeps_total` (counter): number of retention

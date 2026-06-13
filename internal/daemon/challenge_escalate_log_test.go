@@ -48,3 +48,22 @@ func TestChallengeEscalateLogLine(t *testing.T) {
 		})
 	}
 }
+
+// Challenge-timeout escalations must be counted by firewall outcome so an
+// operator can see how many challenges became real hard blocks (live) versus
+// no-ops (the IP was already blocked).
+func TestObserveChallengeEscalatedCountsByOutcome(t *testing.T) {
+	observeChallengeEscalated(firewall.BlockOutcomeLive) // registers + increments
+	liveBefore := challengeEscalatedMetric.With(string(firewall.BlockOutcomeLive)).Value()
+	noopBefore := challengeEscalatedMetric.With(string(firewall.BlockOutcomeNoop)).Value()
+
+	observeChallengeEscalated(firewall.BlockOutcomeLive)
+	observeChallengeEscalated(firewall.BlockOutcomeNoop)
+
+	if got := challengeEscalatedMetric.With(string(firewall.BlockOutcomeLive)).Value(); got != liveBefore+1 {
+		t.Errorf("live delta = %v, want 1", got-liveBefore)
+	}
+	if got := challengeEscalatedMetric.With(string(firewall.BlockOutcomeNoop)).Value(); got != noopBefore+1 {
+		t.Errorf("noop delta = %v, want 1", got-noopBefore)
+	}
+}

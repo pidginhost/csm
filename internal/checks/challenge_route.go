@@ -4,11 +4,34 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 )
+
+var (
+	challengeRoutedMetric     *metrics.CounterVec
+	challengeRoutedMetricOnce sync.Once
+)
+
+// observeChallengeRouted counts one IP routed to the proof-of-work challenge,
+// labelled by the source check that flagged it, so operators can graph
+// challenge volume per detector (e.g. http_scanner_profile). Registered lazily
+// on first use, mirroring the auto-response metric in the runner.
+func observeChallengeRouted(check string) {
+	challengeRoutedMetricOnce.Do(func() {
+		challengeRoutedMetric = metrics.NewCounterVec(
+			"csm_challenge_routed_total",
+			"IPs routed to the proof-of-work challenge, by the source check that flagged them.",
+			[]string{"check"},
+		)
+		metrics.MustRegister("csm_challenge_routed_total", challengeRoutedMetric)
+	})
+	challengeRoutedMetric.With(check).Inc()
+}
 
 // ChallengeIPList abstracts the challenge IP list for routing.
 type ChallengeIPList interface {
@@ -252,6 +275,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 		challengeIPList.Add(ip, f.Message, challengeDuration)
 		routed[ip] = true
+		observeChallengeRouted(f.Check)
 
 		fmt.Fprintf(os.Stderr, "[%s] CHALLENGE: %s routed to challenge (check: %s)\n",
 			time.Now().Format("2006-01-02 15:04:05"), ip, f.Check)

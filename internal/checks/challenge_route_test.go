@@ -302,3 +302,32 @@ func TestShouldSkipAutoBlockForChallengeMatchesResponseAction(t *testing.T) {
 		}
 	}
 }
+
+// Challenge routing must record a per-check metric so operators can graph how
+// many IPs each detector (e.g. http_scanner_profile) sent to the challenge.
+func TestChallengeRouteIPsRecordsRoutedMetric(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+
+	oldList := GetChallengeIPList()
+	SetChallengeIPList(&staticChallengeIPList{ips: make(map[string]bool)})
+	t.Cleanup(func() { SetChallengeIPList(oldList) })
+
+	route := func(ip string) {
+		ChallengeRouteIPs(cfg, []alert.Finding{{
+			Check:    "http_scanner_profile",
+			Severity: alert.High,
+			SourceIP: ip,
+			Message:  "URL scanner profile from " + ip,
+		}})
+	}
+
+	route("203.0.113.50") // first route registers the metric and increments it
+	before := challengeRoutedMetric.With("http_scanner_profile").Value()
+	route("203.0.113.51") // a distinct IP is not deduplicated by the challenge list
+	after := challengeRoutedMetric.With("http_scanner_profile").Value()
+
+	if after != before+1 {
+		t.Errorf("csm_challenge_routed_total{check=http_scanner_profile} delta = %v, want 1", after-before)
+	}
+}

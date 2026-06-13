@@ -2271,10 +2271,32 @@ func (d *Daemon) challengeEscalator() {
 					fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 					continue
 				}
+				observeChallengeEscalated(outcome)
 				fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, outcome))
 			}
 		}
 	}
+}
+
+var (
+	challengeEscalatedMetric     *metrics.CounterVec
+	challengeEscalatedMetricOnce sync.Once
+)
+
+// observeChallengeEscalated counts one challenge-timeout escalation, labelled by
+// the firewall outcome (live=a new hard block landed, noop=the IP was already
+// blocked, plus dry_run/allowed). It lets operators see how many challenges
+// became real blocks versus no-ops. Registered lazily on first use.
+func observeChallengeEscalated(outcome firewall.BlockOutcome) {
+	challengeEscalatedMetricOnce.Do(func() {
+		challengeEscalatedMetric = metrics.NewCounterVec(
+			"csm_challenge_escalated_total",
+			"Challenge-timeout escalations, by firewall outcome (live, noop, dry_run, allowed).",
+			[]string{"outcome"},
+		)
+		metrics.MustRegister("csm_challenge_escalated_total", challengeEscalatedMetric)
+	})
+	challengeEscalatedMetric.With(string(outcome)).Inc()
 }
 
 // challengeEscalateLogLine renders the stderr line for one challenge-timeout
