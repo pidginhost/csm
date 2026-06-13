@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,28 @@ func TestHTTPScannerProfile_VerifiedBotSkipped(t *testing.T) {
 type staticBotClassifier struct{ verified bool }
 
 func (c staticBotClassifier) IsVerifiedBot(string, string) bool { return c.verified }
+
+// A verified SERanking backlink crawler (FCrDNS positive, cached) must not
+// trip the scanner profile even though it requests many distinct URLs that
+// 404 -- those are stale backlinks, not vulnerability probing. Proves the
+// SERankingBacklinksBot UA maps to the "seranking" identity and rides the
+// verified-bot skip the same as Googlebot.
+func TestHTTPScannerProfile_VerifiedSerankingBotSkipped(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	const ua = "Mozilla/5.0 (compatible; SERankingBacklinksBot/1.0; +https://seranking.com/backlinks-crawler)"
+	bot := newVerifyingClassifier(nil, func(_ net.IP, b string) (bool, bool) {
+		return b == "seranking", b == "seranking"
+	})
+	for i := 0; i < 50; i++ {
+		rec := scannerRec("203.0.113.55", fmt.Sprintf("/p%d", i), 404)
+		rec.UserAgent = ua
+		stats.scan(rec, cfg, bot)
+	}
+	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
+		t.Fatalf("fired on verified SERanking crawler traffic: %+v", got)
+	}
+}
 
 // The distinct-path set is capped to bound memory under a flood of
 // unique probe URLs. The detector must still fire past the cap.

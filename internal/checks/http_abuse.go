@@ -996,6 +996,7 @@ var (
 		// Appendix A bots: no published static IP range; rDNS-verified.
 		"amazonbot", "gptbot", "chatgpt-user", "claudebot", "claude-searchbot",
 		"perplexitybot", "meta-externalagent", "meta-webindexer", "bravebot",
+		"seranking",
 	}
 	headlessSubstrings = []string{
 		"headlesschrome", "phantomjs", "puppeteer", "playwright",

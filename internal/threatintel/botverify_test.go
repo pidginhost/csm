@@ -183,6 +183,42 @@ func TestVerify_AmazonbotDotAmazonSuffix(t *testing.T) {
 	}
 }
 
+// SERanking's backlink crawler reverse-resolves under seranking.com
+// (e.g. discovery-crawler32.blex.seranking.com) and forward-confirms.
+func TestVerify_SerankingSuffix(t *testing.T) {
+	ip := "37.27.51.141"
+	res := &mockResolver{
+		ptr: map[string][]string{ip: {"discovery-crawler32.blex.seranking.com."}},
+		a:   map[string][]net.IP{"discovery-crawler32.blex.seranking.com": {net.ParseIP(ip)}},
+	}
+	v := newVerifier(res, BotDomains["seranking"])
+	ok, err := v.verify(context.Background(), net.ParseIP(ip), "seranking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("SERanking blex.seranking.com FCrDNS must verify positive")
+	}
+}
+
+// A host claiming SERankingBacklinksBot from an IP whose PTR is not under
+// seranking.com (cheap-hosting impostors are common) must verify-fail, so
+// the scanner detector still catches a spoofed crawler UA.
+func TestVerify_SerankingImpostorRejected(t *testing.T) {
+	ip := "203.0.113.55"
+	res := &mockResolver{
+		ptr: map[string][]string{ip: {"203-0-113-55-host.colocrossing.com."}},
+	}
+	v := newVerifier(res, BotDomains["seranking"])
+	ok, err := v.verify(context.Background(), net.ParseIP(ip), "seranking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("non-seranking PTR claiming SERanking must verify-fail")
+	}
+}
+
 func TestAsyncBotVerifier_DoesNotCacheNoPTR(t *testing.T) {
 	var puts int
 	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {

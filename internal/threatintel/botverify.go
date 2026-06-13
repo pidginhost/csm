@@ -37,7 +37,7 @@ func newVerifier(r resolver, domains []string) *verifier {
 // identity mapping. The daemon calls store.DB.EnsureBotVerifyLogicVersion
 // at startup with this value; a mismatch wipes the botverify bucket so
 // the next scan re-verifies every IP under the new rules.
-const LogicVersion = 2
+const LogicVersion = 3
 
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
@@ -140,6 +140,7 @@ var BotDomains = map[string][]string{
 	"perplexitybot": {"perplexity.ai"},
 	"facebookbot":   {"fbsv.net", "tfbnw.net", "facebook.com"},
 	"bravebot":      {"brave.com"},
+	"seranking":     {"seranking.com"},
 }
 
 // NewAsyncBotVerifier constructs an async verifier backed by the

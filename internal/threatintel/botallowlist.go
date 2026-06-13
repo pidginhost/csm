@@ -139,6 +139,9 @@ func ClaimedBotFromUA(ua string) string {
 		return "facebookbot"
 	case strings.Contains(low, "bravebot"):
 		return "bravebot"
+	// SEO backlink crawlers: no published static IP range, rDNS-verified.
+	case strings.Contains(low, "seranking"):
+		return "seranking"
 	default:
 		return ""
 	}
