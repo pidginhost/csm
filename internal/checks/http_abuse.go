@@ -972,6 +972,11 @@ func classifyUA(ua, method string) uaKind {
 			return uaKindClaimedBot
 		}
 	}
+	// Operator-configured bots (reputation.verified_bots) classify as
+	// claimed bots too, so an impostor reusing the UA is caught as a spoof.
+	if threatintel.OperatorBotFromUA(low) != "" {
+		return uaKindClaimedBot
+	}
 	for _, s := range headlessSubstrings {
 		if strings.Contains(low, s) {
 			return uaKindHeadless

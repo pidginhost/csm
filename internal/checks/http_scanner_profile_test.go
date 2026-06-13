@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 // scannerTestNow anchors every record inside the flood window so the
@@ -195,6 +196,45 @@ func TestHTTPScannerProfile_VerifiedSerankingBotSkipped(t *testing.T) {
 	}
 	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
 		t.Fatalf("fired on verified SERanking crawler traffic: %+v", got)
+	}
+}
+
+// An operator-configured crawler UA is classified as a claimed bot so that an
+// impostor using the same UA from an unrelated host can be caught as a spoof.
+func TestClassifyUA_OperatorClaimedBot(t *testing.T) {
+	t.Cleanup(func() { threatintel.SetOperatorBots(nil) })
+	threatintel.SetOperatorBots([]threatintel.BotEntry{{
+		Name:         "acmebot",
+		UASubstrings: []string{"acmecrawler"},
+		RDNSSuffixes: []string{"acme.example"},
+	}})
+	if got := classifyUA("Mozilla/5.0 (compatible; AcmeCrawler/2.0)", "GET"); got != uaKindClaimedBot {
+		t.Errorf("classifyUA(operator bot) = %v, want uaKindClaimedBot", got)
+	}
+}
+
+// A verified operator-configured crawler must ride the same scanner-profile
+// skip as a built-in once verified_bots names it.
+func TestHTTPScannerProfile_VerifiedOperatorBotSkipped(t *testing.T) {
+	t.Cleanup(func() { threatintel.SetOperatorBots(nil) })
+	threatintel.SetOperatorBots([]threatintel.BotEntry{{
+		Name:         "acmebot",
+		UASubstrings: []string{"acmecrawler"},
+		RDNSSuffixes: []string{"acme.example"},
+	}})
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	const ua = "Mozilla/5.0 (compatible; AcmeCrawler/2.0; +http://acme.example/bot)"
+	bot := newVerifyingClassifier(nil, func(_ net.IP, b string) (bool, bool) {
+		return b == "acmebot", b == "acmebot"
+	})
+	for i := 0; i < 50; i++ {
+		rec := scannerRec("203.0.113.77", fmt.Sprintf("/p%d", i), 404)
+		rec.UserAgent = ua
+		stats.scan(rec, cfg, bot)
+	}
+	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
+		t.Fatalf("fired on verified operator crawler traffic: %+v", got)
 	}
 }
 

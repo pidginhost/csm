@@ -152,6 +152,10 @@ func (d *Daemon) reloadConfig() {
 	// A forward-guard config change is a safe (hot-reload) field; re-reconcile
 	// so enabling/disabling or toggling enforce takes effect without a restart.
 	d.reconcileForwardGuard()
+
+	// reputation.verified_bots is a safe field too; push the new list into the
+	// live verifier and re-stamp the PTR cache so changes take effect at once.
+	d.reconcileVerifiedBots()
 }
 
 // activeOrStartupCfg returns the current live config, falling back

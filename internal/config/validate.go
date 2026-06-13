@@ -443,6 +443,9 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	// --- Reputation.VerifiedBots ---
+	results = append(results, validateVerifiedBots(cfg)...)
+
 	// --- AutoResponse.VerdictCallback ---
 	if field, err := validateVerdictCallbackField(cfg); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})

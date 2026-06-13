@@ -116,7 +116,8 @@ type AsyncBotVerifier struct {
 	mu       sync.Mutex
 	inflight map[string]struct{}
 	ch       chan verifyJob
-	v        map[string]*verifier // bot identity -> verifier
+	v        map[string]*verifier // bot identity -> verifier; guarded by mu
+	res      resolver             // retained so SetOperatorEntries can rebuild v
 	put      func(net.IP, string, bool, time.Time) error
 }
 
@@ -151,12 +152,39 @@ func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *Async
 		inflight: make(map[string]struct{}),
 		ch:       make(chan verifyJob, 256),
 		v:        make(map[string]*verifier),
+		res:      res,
 		put:      put,
 	}
 	for bot, domains := range BotDomains {
 		a.v[bot] = newVerifier(res, domains)
 	}
 	return a
+}
+
+// SetOperatorEntries rebuilds the per-bot verifier set from the built-in
+// BotDomains plus operator-configured entries. An operator entry naming a
+// built-in extends that bot's suffix list; a new name adds its own verifier.
+// Safe to call after Run has started (SIGHUP reload): v is swapped under mu,
+// which the worker also holds when reading it.
+func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
+	m := make(map[string]*verifier, len(BotDomains)+len(entries))
+	for bot, domains := range BotDomains {
+		m[bot] = newVerifier(a.res, domains)
+	}
+	for _, e := range entries {
+		if len(e.RDNSSuffixes) == 0 {
+			continue
+		}
+		if existing, ok := m[e.Name]; ok {
+			merged := append(append([]string(nil), existing.domains...), e.RDNSSuffixes...)
+			m[e.Name] = newVerifier(a.res, merged)
+		} else {
+			m[e.Name] = newVerifier(a.res, e.RDNSSuffixes)
+		}
+	}
+	a.mu.Lock()
+	a.v = m
+	a.mu.Unlock()
 }
 
 // Enqueue queues a verification job. Drops the request on a full queue
@@ -222,7 +250,9 @@ func (a *AsyncBotVerifier) process(job verifyJob) {
 func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verifyJob) {
 	defer a.finish(job)
 
+	a.mu.Lock()
 	v, ok := a.v[job.Bot]
+	a.mu.Unlock()
 	if !ok {
 		return
 	}

@@ -143,6 +143,8 @@ func ClaimedBotFromUA(ua string) string {
 	case strings.Contains(low, "seranking"):
 		return "seranking"
 	default:
-		return ""
+		// Operator-configured bots (reputation.verified_bots) extend the
+		// built-in set without a code change.
+		return OperatorBotFromUA(low)
 	}
 }

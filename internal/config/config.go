@@ -665,6 +665,16 @@ type Config struct {
 		// Default true.
 		BotVerifyEnabled *bool `yaml:"bot_verify_enabled"`
 
+		// VerifiedBots extends the built-in good-bot allowlist with operator
+		// entries: claimed-UA substrings confirmed by forward-confirmed
+		// reverse DNS against the listed registrable-domain suffixes.
+		// Additive -- built-in bots (Googlebot etc.) always apply. Lets an
+		// operator stop a legitimate crawler (typically SEO/backlink bots)
+		// from tripping the HTTP scanner-profile detector without a code
+		// change. Suffixes are validated against shared-hosting domains so a
+		// bad entry cannot turn the allowlist into a bypass.
+		VerifiedBots []VerifiedBot `yaml:"verified_bots"`
+
 		// Report emits signed, minimized abuse reports for confirmed-abuse
 		// findings to a central abuse database or a private collector.
 		// Opt-in; default off. Keys/secrets resolve from *_env at startup.

@@ -112,6 +112,11 @@ type Daemon struct {
 	// runtime until O2 lands.
 	policies *emailspool.Policies
 
+	// botVerifier is the async rDNS bot verifier. Retained so the SIGHUP
+	// path can push reloaded reputation.verified_bots into it. nil when
+	// bot verification is disabled or no store is available.
+	botVerifier *threatintel.AsyncBotVerifier
+
 	// PHP-relay components wired by startPHPRelay (Linux only). The fields are
 	// declared cross-platform but stay nil on non-cPanel or non-Linux hosts.
 	autoFreezer      *autoFreezer
@@ -763,15 +768,23 @@ func (d *Daemon) Run() error {
 	// claimed search-engine bot IPs that are not in a static range.
 	// Gated on reputation.bot_verify_enabled (default true) and on a
 	// non-nil store so the result can be persisted.
+	// Operator-configured verified bots extend the built-in allowlist.
+	// Install them before the verifier so ClaimedBotFromUA / classifyUA
+	// recognise them even when rDNS verification is disabled.
+	botEntries := verifiedBotEntries(d.cfg)
+	threatintel.SetOperatorBots(botEntries)
+
 	if d.cfg.BotVerifyEnabled() {
 		if db := store.Global(); db != nil {
-			if dropped, err := db.EnsureBotVerifyLogicVersion(threatintel.LogicVersion); err != nil {
+			ver := threatintel.OperatorBotsCacheVersion(threatintel.LogicVersion, botEntries)
+			if dropped, err := db.EnsureBotVerifyLogicVersion(ver); err != nil {
 				csmlog.Warn("bot-verify cache version check failed", "err", err)
 			} else if dropped {
-				csmlog.Info("bot-verify cache dropped after logic upgrade",
-					"logic_version", threatintel.LogicVersion)
+				csmlog.Info("bot-verify cache dropped after logic or verified_bots change")
 			}
 			bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
+			bv.SetOperatorEntries(botEntries)
+			d.botVerifier = bv
 			d.wg.Add(1)
 			obs.Go("bot-verify", func() {
 				defer d.wg.Done()
