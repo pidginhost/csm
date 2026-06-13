@@ -990,6 +990,66 @@ disabled_checks: []
 	}
 }
 
+func TestSettingsPOSTDisabledChecksNormalizesRunnerID(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+disabled_checks: []
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/disabled_checks", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
+		`{"changes":{"":[" php_content ","php_content","","   "]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, want 200, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload after POST: %v", err)
+	}
+	if got := loaded.DisabledChecks; len(got) != 1 || got[0] != "php_content" {
+		t.Errorf("DisabledChecks = %v, want [php_content]", got)
+	}
+}
+
+func TestBuildChangeSetAcceptsResolvedDisabledCheckRunnerID(t *testing.T) {
+	section, ok := LookupSettingsSection("disabled_checks")
+	if !ok {
+		t.Fatal("disabled_checks section missing")
+	}
+	resolveFieldOptions(&section)
+	clone := &config.Config{}
+	changes := map[string]json.RawMessage{
+		"": json.RawMessage(`["php_content"]`),
+	}
+
+	yamlChanges, errs := buildChangeSet(section, clone, changes)
+	if len(errs) > 0 {
+		t.Fatalf("buildChangeSet errors = %+v, want none", errs)
+	}
+	if len(yamlChanges) != 1 {
+		t.Fatalf("YAML changes = %+v, want one change", yamlChanges)
+	}
+	if got := clone.DisabledChecks; len(got) != 1 || got[0] != "php_content" {
+		t.Fatalf("DisabledChecks = %v, want [php_content]", got)
+	}
+}
+
 func TestSettingsPOSTInfraIPsUpdates(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:

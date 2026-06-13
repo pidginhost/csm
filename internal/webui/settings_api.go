@@ -402,6 +402,14 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 		}
 
 		if field.Type == "[]enum" {
+			if field.OptionsSource == "disabled_check_names" {
+				var err error
+				raw, err = normaliseDisabledCheckNamesRaw(raw)
+				if err != nil {
+					errs = append(errs, fieldError{Field: key, Message: "decode: " + err.Error()})
+					continue
+				}
+			}
 			if badValues, ok := validateEnumArray(field, raw); !ok {
 				for _, bv := range badValues {
 					errs = append(errs, fieldError{Field: key, Message: "unknown value: " + bv})
@@ -477,6 +485,31 @@ func validateEnumScalar(field *SettingsField, raw json.RawMessage) (bad string, 
 	return value, false
 }
 
+func normaliseDisabledCheckNamesRaw(raw json.RawMessage) (json.RawMessage, error) {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("expected string array")
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
 // validateEnumArray checks that raw is a JSON array of strings, each of
 // which appears in the field's resolved Options. Returns the slice of
 // unknown values and ok=false when any value is out-of-set. An empty
@@ -513,9 +546,6 @@ func validateEnumArray(field *SettingsField, raw json.RawMessage) (bad []string,
 // []enum field, whether it uses static Options or an OptionsSource. Keeps
 // POST-side validation independent of the GET-time mutation.
 func resolvedOptionsForField(field *SettingsField) []string {
-	if len(field.Options) > 0 {
-		return field.Options
-	}
 	tmp := &SettingsField{Type: field.Type, OptionsSource: field.OptionsSource}
 	switch field.OptionsSource {
 	case "check_names":
@@ -527,6 +557,12 @@ func resolvedOptionsForField(field *SettingsField) []string {
 		return disabledCheckValidationOptions()
 	case "geoip_editions":
 		applyGeoIPEditionOptions(tmp)
+	}
+	if len(tmp.Options) > 0 {
+		return tmp.Options
+	}
+	if len(field.Options) > 0 {
+		return field.Options
 	}
 	return tmp.Options
 }
