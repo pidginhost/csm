@@ -237,24 +237,52 @@ func TestClassify_HTTPAbuseChecksAsRecon(t *testing.T) {
 	}
 }
 
-func TestRecordFinding_HTTPScannerBuildsReputation(t *testing.T) {
-	db := NewForTest(nil)
-	db.RecordFinding(alert.Finding{
-		Check:     "http_scanner_profile",
-		SourceIP:  "203.0.113.45",
-		Message:   "URL scanner profile from 203.0.113.45: 40 of 42 requests hit probe-error statuses",
-		Timestamp: time.Now(),
-	})
+func TestRecordFinding_HTTPAbuseChecksBuildReputation(t *testing.T) {
+	cases := []struct {
+		check   string
+		message string
+	}{
+		{
+			check:   "http_scanner_profile",
+			message: "URL scanner profile from 203.0.113.45: 40 of 42 requests hit probe-error statuses",
+		},
+		{
+			check:   "http_request_flood",
+			message: "HTTP request flood from 203.0.113.45: 250 requests",
+		},
+		{
+			check:   "http_ua_spoof",
+			message: "User-Agent spoof from 203.0.113.45: known scanner UA",
+		},
+	}
 
-	rec := db.LookupIP("203.0.113.45")
-	if rec == nil {
-		t.Fatal("http_scanner_profile finding built no attack record")
-	}
-	if rec.EventCount != 1 {
-		t.Errorf("EventCount = %d, want 1", rec.EventCount)
-	}
-	if rec.AttackCounts[AttackRecon] != 1 {
-		t.Errorf("AttackCounts[recon] = %d, want 1", rec.AttackCounts[AttackRecon])
+	for _, tc := range cases {
+		t.Run(tc.check, func(t *testing.T) {
+			db := NewForTest(nil)
+			db.RecordFinding(alert.Finding{
+				Check:     tc.check,
+				SourceIP:  "203.0.113.45",
+				Message:   tc.message,
+				Timestamp: time.Date(2026, 6, 13, 10, 31, 0, 0, time.UTC),
+			})
+
+			rec := db.LookupIP("203.0.113.45")
+			if rec == nil {
+				t.Fatalf("%s finding built no attack record", tc.check)
+			}
+			if rec.EventCount != 1 {
+				t.Errorf("EventCount = %d, want 1", rec.EventCount)
+			}
+			if rec.AttackCounts[AttackRecon] != 1 {
+				t.Errorf("AttackCounts[recon] = %d, want 1", rec.AttackCounts[AttackRecon])
+			}
+			if rec.AttackCounts[AttackBruteForce] != 0 {
+				t.Errorf("AttackCounts[brute_force] = %d, want 0", rec.AttackCounts[AttackBruteForce])
+			}
+			if rec.ThreatScore != 2 {
+				t.Errorf("ThreatScore = %d, want 2 for one recon event", rec.ThreatScore)
+			}
+		})
 	}
 }
 
@@ -262,6 +290,10 @@ func TestRecordFinding_HTTPScannerBuildsReputation(t *testing.T) {
 // source IP, so it is intentionally absent from the classifier: RecordFinding
 // has no IP to attribute and records nothing.
 func TestRecordFinding_HTTPDistributedFloodNotRecordedWithoutIP(t *testing.T) {
+	if attackType, ok := checkToAttack["http_distributed_flood"]; ok {
+		t.Fatalf("http_distributed_flood classified as %q, want absent", attackType)
+	}
+
 	db := NewForTest(nil)
 	db.RecordFinding(alert.Finding{
 		Check:     "http_distributed_flood",
