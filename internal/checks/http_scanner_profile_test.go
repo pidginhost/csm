@@ -301,3 +301,34 @@ func TestHTTPScannerProfile_DistributedRollupCountsThinSpreadScanner(t *testing.
 		t.Fatalf("distributed findings=%d, want %d (thin-spread scanner must feed every shared vhost)", len(distributed), len(vhosts))
 	}
 }
+
+func TestHTTPScannerProfile_DistributedRollupHonorsLowScannerThresholds(t *testing.T) {
+	cfg := scannerCfg(2, 100, 2, nil)
+	cfg.Thresholds.HTTPDistributedMinIPs = 2
+	stats := newDomlogStatsAt(scannerTestNow)
+	vhosts := []string{"a.example", "b.example"}
+	for _, ip := range []string{"192.0.2.10", "192.0.2.11"} {
+		for vi, vhost := range vhosts {
+			for i := 0; i < 2; i++ {
+				rec := scannerRec(ip, fmt.Sprintf("/probe-%d-%d", vi, i), 404)
+				rec.Domain = vhost
+				stats.scan(rec, cfg, nopBotClassifier{})
+			}
+		}
+	}
+
+	got := map[string]bool{}
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			got[f.Domain] = true
+		}
+	}
+	if len(got) != len(vhosts) {
+		t.Fatalf("distributed findings=%d, want %d under low scanner thresholds: %+v", len(got), len(vhosts), got)
+	}
+	for _, vhost := range vhosts {
+		if !got[vhost] {
+			t.Fatalf("distributed flood missing for %s under low scanner thresholds: %+v", vhost, got)
+		}
+	}
+}
