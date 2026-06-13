@@ -81,6 +81,15 @@ var checkToAttack = map[string]AttackType{
 
 	// Recon
 	"wp_user_enumeration": AttackRecon,
+	// HTTP-layer abuse from a single source IP: URL enumeration, request
+	// floods, and scanner UA spoofing. Recorded so repeat offenders build
+	// local reputation; recon-classed (volume-scored, no brute-force bonus).
+	// "http_distributed_flood" is intentionally excluded: it is an aggregate
+	// per-vhost finding with no single source IP, so RecordFinding has nothing
+	// to attribute it to.
+	"http_scanner_profile": AttackRecon,
+	"http_request_flood":   AttackRecon,
+	"http_ua_spoof":        AttackRecon,
 
 	// SPAM
 	"mail_per_account":     AttackSPAM,

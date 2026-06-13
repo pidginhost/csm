@@ -224,3 +224,52 @@ func TestNormalizeLoadedRecordDoesNotBackfillSlowBruteWindow(t *testing.T) {
 		t.Errorf("ThreatScore = %d, want < 70", rec.ThreatScore)
 	}
 }
+
+// The per-IP HTTP-abuse detectors carry a source IP and must feed the attack
+// DB so a repeat HTTP scanner / flooder builds local reputation. They are
+// reconnaissance/abuse signals, not credential brute force, so they classify
+// as recon (volume-scored, no brute-force bonus).
+func TestClassify_HTTPAbuseChecksAsRecon(t *testing.T) {
+	for _, check := range []string{"http_scanner_profile", "http_request_flood", "http_ua_spoof"} {
+		if got := checkToAttack[check]; got != AttackRecon {
+			t.Errorf("%q classified as %q, want %q", check, got, AttackRecon)
+		}
+	}
+}
+
+func TestRecordFinding_HTTPScannerBuildsReputation(t *testing.T) {
+	db := NewForTest(nil)
+	db.RecordFinding(alert.Finding{
+		Check:     "http_scanner_profile",
+		SourceIP:  "203.0.113.45",
+		Message:   "URL scanner profile from 203.0.113.45: 40 of 42 requests hit probe-error statuses",
+		Timestamp: time.Now(),
+	})
+
+	rec := db.LookupIP("203.0.113.45")
+	if rec == nil {
+		t.Fatal("http_scanner_profile finding built no attack record")
+	}
+	if rec.EventCount != 1 {
+		t.Errorf("EventCount = %d, want 1", rec.EventCount)
+	}
+	if rec.AttackCounts[AttackRecon] != 1 {
+		t.Errorf("AttackCounts[recon] = %d, want 1", rec.AttackCounts[AttackRecon])
+	}
+}
+
+// http_distributed_flood is an aggregate per-vhost finding with no single
+// source IP, so it is intentionally absent from the classifier: RecordFinding
+// has no IP to attribute and records nothing.
+func TestRecordFinding_HTTPDistributedFloodNotRecordedWithoutIP(t *testing.T) {
+	db := NewForTest(nil)
+	db.RecordFinding(alert.Finding{
+		Check:     "http_distributed_flood",
+		Domain:    "victim.example",
+		Message:   "Distributed HTTP attack on victim.example: 6 distinct abusive source IPs",
+		Timestamp: time.Now(),
+	})
+	if n := db.TotalIPs(); n != 0 {
+		t.Errorf("TotalIPs = %d, want 0 (aggregate finding has no source IP)", n)
+	}
+}
