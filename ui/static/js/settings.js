@@ -970,8 +970,10 @@
                 silent: true
             });
             if (resp.status === 202) {
-                const data = await resp.json().catch(function () { return {}; });
-                if (await pollRestart(data.started_at_token || previousStartToken)) {
+                const data = await resp.json().catch(function () { return null; });
+                const responseStartToken = startMarker(data);
+                const acceptFirstStartToken = !responseStartToken && !previousStartToken && data !== null;
+                if (await pollRestart(responseStartToken || previousStartToken, acceptFirstStartToken)) {
                     window.location.reload();
                     return;
                 }
@@ -985,7 +987,7 @@
             banner.appendChild(strong);
             banner.appendChild(document.createTextNode((data.error || "Unknown error") + ". Check journalctl -u csm -n 200 on the server."));
         } catch (e) {
-            if (await pollRestart(previousStartToken)) {
+            if (await pollRestart(previousStartToken, false)) {
                 window.location.reload();
                 return;
             }
@@ -1005,20 +1007,26 @@
         const resp = await CSM.request("/api/v1/status", {cache: "no-store", allowNonOK: true, silent: true, timeoutMs: 3000});
         if (!resp.ok) return "";
         const data = await resp.json().catch(function () { return {}; });
-        return data.started_at_token || "";
+        return startMarker(data);
     }
 
-    async function pollRestart(previousStartToken) {
+    function startMarker(data) {
+        return data ? (data.started_at_token || data.started_at || "") : "";
+    }
+
+    async function pollRestart(previousStartToken, acceptFirstStartToken) {
         let baseline = previousStartToken || "";
         const deadline = Date.now() + 60000;
         while (Date.now() < deadline) {
             try {
-                const resp = await CSM.request("/api/v1/status", {cache: "no-store", allowNonOK: true, silent: true});
+                const resp = await CSM.request("/api/v1/status", {cache: "no-store", allowNonOK: true, silent: true, timeoutMs: 3000});
                 if (resp.ok) {
                     const data = await resp.json().catch(function () { return {}; });
-                    if (data.started_at_token) {
-                        if (baseline && data.started_at_token !== baseline) return true;
-                        if (!baseline) baseline = data.started_at_token;
+                    const marker = startMarker(data);
+                    if (marker) {
+                        if (baseline && marker !== baseline) return true;
+                        if (!baseline && acceptFirstStartToken) return true;
+                        if (!baseline) baseline = marker;
                     }
                 }
             } catch (e) { /* keep polling */ }
