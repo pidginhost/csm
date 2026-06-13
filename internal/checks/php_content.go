@@ -312,7 +312,19 @@ func hasDangerousInclude(code string) bool {
 // never return strings) are not code-eval sinks. Anything not provably
 // non-string stays flagged, fail closed.
 func hasCodeEvalPrimitiveWithRequest(code string) bool {
-	trustUnqualified := !phpMayRedirectUnqualifiedBuiltin(code)
+	// Whether an unqualified builtin name can be trusted is only consulted on
+	// the assert()-with-request-argument path, which almost no file hits.
+	// phpMayRedirectUnqualifiedBuiltin tokenizes the whole scan window, so
+	// defer that pass until the first time it is actually needed, then cache.
+	trustComputed := false
+	trustUnqualified := false
+	resolveTrust := func() bool {
+		if !trustComputed {
+			trustUnqualified = !phpMayRedirectUnqualifiedBuiltin(code)
+			trustComputed = true
+		}
+		return trustUnqualified
+	}
 	searchFrom := 0
 	for {
 		callStart, openParen, closeParen, ok := nextStandalonePHPCall(code, searchFrom, codeEvalPrimitiveCallNames)
@@ -335,7 +347,7 @@ func hasCodeEvalPrimitiveWithRequest(code string) bool {
 			}
 			args := phpCallArguments(code, openParen+1, closeParen)
 			if len(args) > 0 && containsRequestSuperglobal(args[0]) &&
-				!phpExpressionYieldsNonString(args[0], trustUnqualified) {
+				!phpExpressionYieldsNonString(args[0], resolveTrust()) {
 				return true
 			}
 		}
@@ -377,32 +389,49 @@ const (
 	phpOperatorStringCapable
 )
 
+// phpAssertParenWrapCap bounds how many fully-wrapping parenthesis layers the
+// classifier peels off an assert() argument before giving up. Real conditions
+// nest a handful deep; an argument wrapped past this cap is a crafted file
+// padding the scan window with parentheses, not worth quadratic work, so the
+// classifier stops and fails closed -- the assert() call stays flagged.
+const phpAssertParenWrapCap = 64
+
 // phpExpressionYieldsNonString reports whether a PHP expression provably
 // evaluates to a non-string value, so assert() cannot treat it as code.
 // trustUnqualified is false when the file declares a namespace or imports a
 // function alias, because then an unqualified builtin name can resolve to
 // attacker-defined code. Anything unrecognized counts as string-capable.
+//
+// Wrapping parentheses are peeled iteratively (not recursively) so a payload
+// with tens of thousands of nested parens cannot exhaust the stack, and the
+// peel count is capped so classification stays linear in the argument length.
 func phpExpressionYieldsNonString(expr string, trustUnqualified bool) bool {
-	expr = strings.TrimSpace(expr)
-	if expr == "" {
-		return false
+	for peeled := 0; ; peeled++ {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			return false
+		}
+		switch phpTopLevelOperatorValue(expr) {
+		case phpOperatorNonString:
+			return true
+		case phpOperatorStringCapable:
+			return false
+		}
+		if expr[0] == '!' {
+			// Negation of a whole atom is always boolean. Operators inside the
+			// negated expression would have been classified above, so this point
+			// is only reached for a single negated atom.
+			return true
+		}
+		if expr[0] == '(' && matchingParen(expr, 0) == len(expr)-1 {
+			if peeled >= phpAssertParenWrapCap {
+				return false // too deeply wrapped to classify cheaply; fail closed
+			}
+			expr = expr[1 : len(expr)-1]
+			continue
+		}
+		return phpIsNonStringBuiltinCall(expr, trustUnqualified)
 	}
-	switch phpTopLevelOperatorValue(expr) {
-	case phpOperatorNonString:
-		return true
-	case phpOperatorStringCapable:
-		return false
-	}
-	if expr[0] == '!' {
-		// Negation of a whole atom is always boolean. Operators inside the
-		// negated expression would have been classified above, so this point
-		// is only reached for a single negated atom.
-		return true
-	}
-	if expr[0] == '(' && matchingParen(expr, 0) == len(expr)-1 {
-		return phpExpressionYieldsNonString(expr[1:len(expr)-1], trustUnqualified)
-	}
-	return phpIsNonStringBuiltinCall(expr, trustUnqualified)
 }
 
 // phpTopLevelOperatorValue scans expr outside string literals at paren depth 0
