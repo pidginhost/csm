@@ -255,21 +255,33 @@ func TestResponseActionForCheck(t *testing.T) {
 		scannerAction string
 		want          string
 	}{
-		{"challengeable defaults to challenge", "wp_login_bruteforce", "", "challenge"},
-		{"scanner profile challenges by default", "http_scanner_profile", "", "challenge"},
-		{"scanner profile blocks when configured", "http_scanner_profile", "block", "block"},
-		{"scanner action only overrides scanner check", "wp_login_bruteforce", "block", "challenge"},
-		{"non-challengeable hard-blocks", "webshell", "", "block"},
+		{"challengeable defaults to challenge", "wp_login_bruteforce", "", responseChallenge},
+		{"scanner profile challenges by default", "http_scanner_profile", "", responseChallenge},
+		{"scanner profile blocks when configured", "http_scanner_profile", responseBlock, responseBlock},
+		{"scanner action only overrides scanner check", "wp_login_bruteforce", responseBlock, responseChallenge},
+		{"non-challengeable hard-blocks", "webshell", "", responseBlock},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{}
+			cfg.Challenge.Enabled = true
 			cfg.AutoResponse.HTTPScannerAction = tc.scannerAction
 			if got := responseActionForCheck(cfg, tc.check); got != tc.want {
 				t.Errorf("responseActionForCheck(%q, action=%q) = %q, want %q",
 					tc.check, tc.scannerAction, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResponseActionForCheckFallsBackToBlockWhenChallengeDisabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = false
+
+	for _, check := range []string{"wp_login_bruteforce", "http_scanner_profile", "ip_reputation"} {
+		if got := responseActionForCheck(cfg, check); got != responseBlock {
+			t.Errorf("responseActionForCheck(%q) = %q, want %q", check, got, responseBlock)
+		}
 	}
 }
 
@@ -280,8 +292,9 @@ func TestShouldSkipAutoBlockForChallengeMatchesResponseAction(t *testing.T) {
 	for _, check := range []string{"wp_login_bruteforce", "http_scanner_profile", "webshell", "ip_reputation"} {
 		for _, action := range []string{"", "block"} {
 			cfg := &config.Config{}
+			cfg.Challenge.Enabled = true
 			cfg.AutoResponse.HTTPScannerAction = action
-			wantSkip := responseActionForCheck(cfg, check) == "challenge"
+			wantSkip := responseActionForCheck(cfg, check) == responseChallenge
 			if got := shouldSkipAutoBlockForChallenge(cfg, check); got != wantSkip {
 				t.Errorf("shouldSkipAutoBlockForChallenge(%q, action=%q) = %v, want %v",
 					check, action, got, wantSkip)

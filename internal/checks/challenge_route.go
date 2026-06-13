@@ -158,12 +158,17 @@ const (
 
 // responseActionForCheck returns the effective auto-response for a check:
 // "challenge" to route the IP to the PoW gate, or "block" to hard-block it.
-// Challengeable checks default to "challenge"; an operator-selectable override
-// (currently only http_scanner_profile via auto_response.http_scanner_action)
-// forces "block". Non-challengeable checks always resolve to "block". This is
-// the single source of truth for the challenge-vs-block decision, shared by
-// ChallengeRouteIPs and AutoBlockIPs so the two cannot diverge.
+// Challengeable checks default to "challenge" only while challenge routing is
+// enabled; otherwise they fall through to "block". An operator-selectable
+// override (currently only http_scanner_profile via
+// auto_response.http_scanner_action) forces "block". Non-challengeable checks
+// always resolve to "block". This is the single source of truth for the
+// challenge-vs-block decision, shared by ChallengeRouteIPs and AutoBlockIPs so
+// the two cannot diverge.
 func responseActionForCheck(cfg *config.Config, check string) string {
+	if !cfg.Challenge.Enabled {
+		return responseBlock
+	}
 	if !isChallengeableCheck(check) {
 		return responseBlock
 	}

@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
+- Challenge-eligible findings now fall back to hard blocks when challenge routing is disabled, even if a stale pending-challenge entry is still present.
 - IPs routed to the proof-of-work challenge no longer linger as stale entries in the findings view; the routing action is treated as a one-shot event like auto-block rather than durable state.
 - The suspicious PHP content detector no longer flags assert() calls whose argument provably evaluates to a boolean or number (file-existence checks, comparisons, arithmetic, shifts, logical expressions), fixing a false positive on a legitimate WordPress plugin. Multiline code-eval calls stay correlated to their full argument list, arguments that can carry an attacker-built string stay flagged, and builtin names are not trusted in files that could redefine them via namespaces or function aliases.
 - The firewall page now chunks GeoIP batch lookups, so hosts with more than 500 blocked IPs no longer get an HTTP 400 followed by a per-IP request flood that tripped the API rate limit with 429 errors.

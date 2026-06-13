@@ -103,6 +103,7 @@ func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
+	cfg.Challenge.Enabled = true
 
 	blocker := &recordingIPBlocker{}
 	oldBlocker := getIPBlocker()
@@ -151,6 +152,7 @@ func TestAutoBlockIPs_HTTPScannerBlockActionBypassesChallengeList(t *testing.T) 
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.HTTPScannerAction = "block"
+	cfg.Challenge.Enabled = true
 
 	blocker := &recordingIPBlocker{}
 	oldBlocker := getIPBlocker()
@@ -183,6 +185,47 @@ func TestAutoBlockIPs_HTTPScannerBlockActionBypassesChallengeList(t *testing.T) 
 	}
 	if len(actions) != 1 || !strings.Contains(actions[0].Message, "192.0.2.201") {
 		t.Fatalf("actions = %+v, want auto-block for scanner block action", actions)
+	}
+}
+
+func TestAutoBlockIPs_ChallengeDisabledBypassesChallengeList(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Challenge.Enabled = false
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(&staticChallengeIPList{
+		ips: map[string]bool{
+			"192.0.2.202": true,
+		},
+	})
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:     "wp_login_bruteforce",
+			SourceIP:  "192.0.2.202",
+			Message:   "WordPress brute force from 192.0.2.202",
+			Timestamp: time.Now(),
+		},
+	})
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "192.0.2.202" {
+		t.Fatalf("blocked=%v want [192.0.2.202]", blocker.blocked)
+	}
+	if len(actions) != 1 || !strings.Contains(actions[0].Message, "192.0.2.202") {
+		t.Fatalf("actions = %+v, want auto-block when challenge is disabled", actions)
 	}
 }
 
