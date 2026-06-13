@@ -2263,13 +2263,30 @@ func (d *Daemon) challengeEscalator() {
 					continue
 				}
 				reason := fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100))
-				if err := d.fwEngine.BlockIP(e.IP, reason, expiry); err != nil {
+				outcome, err := d.fwEngine.BlockIPOutcome(e.IP, reason, expiry)
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 					continue
 				}
-				fmt.Fprintf(os.Stderr, "[%s] CHALLENGE-ESCALATE: %s timed out, hard-blocked\n", ts(), e.IP)
+				fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, outcome))
 			}
 		}
+	}
+}
+
+// challengeEscalateLogLine renders the stderr line for one challenge-timeout
+// escalation. Only a live block claims "hard-blocked"; a no-op (the IP was
+// already hard-blocked, e.g. a confirmed-threat finding blocked it while it sat
+// on the challenge list) or a verdict downgrade must not, so incident review is
+// not misled by a block that never landed.
+func challengeEscalateLogLine(ip string, outcome firewall.BlockOutcome) string {
+	switch outcome {
+	case firewall.BlockOutcomeLive:
+		return fmt.Sprintf("CHALLENGE-ESCALATE: %s timed out, hard-blocked", ip)
+	case firewall.BlockOutcomeDryRun:
+		return fmt.Sprintf("CHALLENGE-ESCALATE [dry-run]: %s timed out, would be hard-blocked", ip)
+	default:
+		return fmt.Sprintf("challenge-escalate: %s timed out, no new block (outcome: %s)", ip, outcome)
 	}
 }
 
