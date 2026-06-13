@@ -508,14 +508,12 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 	return firewall.BlockOutcomeLive, nil
 }
 
+// shouldSkipAutoBlockForChallenge reports whether an IP carrying this check
+// should be left for the challenge gate instead of hard-blocked. It is the
+// exact inverse of responseActionForCheck resolving to a block, so the two
+// auto-response paths share one decision.
 func shouldSkipAutoBlockForChallenge(cfg *config.Config, check string) bool {
-	if !isChallengeableCheck(check) {
-		return false
-	}
-	if check == "http_scanner_profile" && cfg.AutoResponse.HTTPScannerAction == "block" {
-		return false
-	}
-	return true
+	return responseActionForCheck(cfg, check) == responseChallenge
 }
 
 // promoteToPermanentBlock upgrades an existing temp block to permanent. The

@@ -174,6 +174,30 @@ func TestStoreLatestScanFindingsFiltersVolatileAndRefreshesCorrelation(t *testin
 	}
 }
 
+// challenge_route is an auto-response action, not durable state. Like
+// auto_block / auto_response it must be purged on every store so routed IPs
+// do not accumulate one stale entry each in the latest-findings surface.
+func TestStoreLatestScanFindingsPurgesChallengeRoute(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "challenge_route", Message: "CHALLENGE: 192.0.2.7 sent to PoW challenge"},
+	})
+
+	StoreLatestScanFindings(st, []string{"wp_bruteforce"}, []alert.Finding{
+		{Severity: alert.Warning, Check: "challenge_route", Message: "CHALLENGE: 198.51.100.9 sent to PoW challenge"},
+	})
+
+	if containsFindingCheck(st.LatestFindings(), "challenge_route") {
+		t.Fatalf("challenge_route persisted in latest findings: %+v", st.LatestFindings())
+	}
+	if !isLatestVolatileFinding("challenge_route") {
+		t.Fatal("challenge_route must be classified as a volatile finding")
+	}
+}
+
 func TestStoreLatestScanFindingsNoopsWithoutPurgeOrFindings(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {

@@ -247,3 +247,45 @@ func TestChallengeRoute_AuditAndNonBrowserChecksAreNotChallengeable(t *testing.T
 		}
 	}
 }
+
+func TestResponseActionForCheck(t *testing.T) {
+	cases := []struct {
+		name          string
+		check         string
+		scannerAction string
+		want          string
+	}{
+		{"challengeable defaults to challenge", "wp_login_bruteforce", "", "challenge"},
+		{"scanner profile challenges by default", "http_scanner_profile", "", "challenge"},
+		{"scanner profile blocks when configured", "http_scanner_profile", "block", "block"},
+		{"scanner action only overrides scanner check", "wp_login_bruteforce", "block", "challenge"},
+		{"non-challengeable hard-blocks", "webshell", "", "block"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.AutoResponse.HTTPScannerAction = tc.scannerAction
+			if got := responseActionForCheck(cfg, tc.check); got != tc.want {
+				t.Errorf("responseActionForCheck(%q, action=%q) = %q, want %q",
+					tc.check, tc.scannerAction, got, tc.want)
+			}
+		})
+	}
+}
+
+// shouldSkipAutoBlockForChallenge must stay the exact inverse of a resolved
+// block action: an IP is left for the challenge gate only while the check
+// resolves to "challenge".
+func TestShouldSkipAutoBlockForChallengeMatchesResponseAction(t *testing.T) {
+	for _, check := range []string{"wp_login_bruteforce", "http_scanner_profile", "webshell", "ip_reputation"} {
+		for _, action := range []string{"", "block"} {
+			cfg := &config.Config{}
+			cfg.AutoResponse.HTTPScannerAction = action
+			wantSkip := responseActionForCheck(cfg, check) == "challenge"
+			if got := shouldSkipAutoBlockForChallenge(cfg, check); got != wantSkip {
+				t.Errorf("shouldSkipAutoBlockForChallenge(%q, action=%q) = %v, want %v",
+					check, action, got, wantSkip)
+			}
+		}
+	}
+}

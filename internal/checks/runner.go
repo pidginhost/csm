@@ -436,6 +436,7 @@ var latestVolatileCheckNames = []string{
 	"account_scan_truncated",
 	"auto_block",
 	"auto_response",
+	"challenge_route",
 }
 
 var latestDerivedCheckNames = []string{
