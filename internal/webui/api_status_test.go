@@ -11,6 +11,7 @@ import (
 )
 
 type statusFakeProvider struct {
+	started              time.Time
 	bpfEnforcementActive bool
 	latestScan           time.Time
 	baselineAt           time.Time
@@ -18,8 +19,13 @@ type statusFakeProvider struct {
 	update               health.UpdateInfo
 }
 
-func (statusFakeProvider) Hostname() string                 { return "h" }
-func (statusFakeProvider) StartedAt() time.Time             { return time.Now().Add(-time.Hour) }
+func (statusFakeProvider) Hostname() string { return "h" }
+func (f statusFakeProvider) StartedAt() time.Time {
+	if !f.started.IsZero() {
+		return f.started
+	}
+	return time.Now().Add(-time.Hour)
+}
 func (f statusFakeProvider) LatestScan() time.Time          { return f.latestScan }
 func (f statusFakeProvider) BaselineAt() time.Time          { return f.baselineAt }
 func (statusFakeProvider) WatcherStatuses() map[string]bool { return map[string]bool{"fanotify": true} }
@@ -45,8 +51,10 @@ var _ health.Provider = statusFakeProvider{}
 
 func TestApiStatus_FullSnapshot(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-1 * time.Hour)}
+	started := time.Date(2026, 5, 8, 11, 0, 0, 123, time.UTC)
 	checkedAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
 	s.SetHealthProvider(statusFakeProvider{
+		started:              started,
 		bpfEnforcementActive: true,
 		update: health.UpdateInfo{
 			LatestVersion: "3.0.1",
@@ -83,6 +91,9 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	}
 	if got["dry_run_blocks"].(float64) != 3 {
 		t.Fatalf("expected dry_run_blocks=3, got %v", got["dry_run_blocks"])
+	}
+	if got["started_at_token"] != daemonStartToken(started) {
+		t.Fatalf("expected started_at_token %q, got %v", daemonStartToken(started), got["started_at_token"])
 	}
 	automation, ok := got["automation"].(map[string]interface{})
 	if !ok {

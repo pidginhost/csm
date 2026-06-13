@@ -823,9 +823,16 @@ func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "settings-restart", "daemon", "")
-	s.scheduleDaemonRestart(settingsRestartDelay)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"status":"restart issued"}`))
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":           "restart issued",
+		"started_at_token": s.daemonStartToken(),
+	})
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	s.scheduleDaemonRestart(settingsRestartDelay)
 }

@@ -224,14 +224,14 @@ func (s *Server) apiFirewallRollbackRevert(w http.ResponseWriter, r *http.Reques
 // the server begins shutdown during the pre-restart delay, so an
 // operator-initiated stop is not chased by a phantom restart.
 func (s *Server) scheduleDaemonRestart(delay time.Duration) {
-	obs.SafeGo("webui-tentative-apply-restart", func() {
+	obs.SafeGo("webui-daemon-restart", func() {
 		select {
 		case <-s.pruneDone:
 			return
 		case <-time.After(delay):
 		}
 		if _, err := s.restartDaemon(); err != nil {
-			fmt.Fprintf(os.Stderr, "webui: tentative-apply restart failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "webui: daemon restart failed: %v\n", err)
 		}
 	})
 }

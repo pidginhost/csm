@@ -856,6 +856,13 @@ func TestSettingsRestartEndpointSchedulesRestart(t *testing.T) {
 	if postW.Code != 202 {
 		t.Errorf("code = %d, want 202", postW.Code)
 	}
+	var body map[string]string
+	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["started_at_token"] == "" {
+		t.Fatal("restart response missing started_at_token")
+	}
 	select {
 	case <-called:
 	case <-time.After(2 * time.Second):
@@ -883,6 +890,43 @@ func TestSettingsRestartAcknowledgesEvenWhenRestartErrors(t *testing.T) {
 
 	if postW.Code != 202 {
 		t.Fatalf("code = %d, want 202 (restart is async; a self-termination error must not become a 500)", postW.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["started_at_token"] == "" {
+		t.Fatal("restart response missing started_at_token")
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restartDaemon was not scheduled")
+	}
+}
+
+func TestSettingsRestartResponseUsesStatusStartToken(t *testing.T) {
+	withFastRestartDelay(t)
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
+	started := time.Date(2026, 6, 13, 19, 0, 1, 123, time.UTC)
+	s.SetHealthProvider(statusFakeProvider{started: started})
+	called := make(chan struct{}, 1)
+	s.restartDaemon = func() ([]byte, error) {
+		called <- struct{}{}
+		return []byte("ok"), nil
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsRestart(postW, postReq)
+
+	var body map[string]string
+	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := body["started_at_token"], daemonStartToken(started); got != want {
+		t.Fatalf("started_at_token = %q, want status token %q", got, want)
 	}
 	select {
 	case <-called:

@@ -1249,6 +1249,9 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 		"showValidationErrors",
 		"pendingSectionsSentence",
 		"hideSettingsBanner",
+		"currentStartToken",
+		"pollRestart(data.started_at_token || previousStartToken)",
+		"Restart not confirmed.",
 		"settings-rollback-footer",
 		"settings-secret-set",
 	} {

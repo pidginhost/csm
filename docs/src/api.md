@@ -37,6 +37,8 @@ The legacy single-token `webui.auth_token:` is migrated automatically to a `lega
 GET  /api/v1/status              Full health snapshot: version, uptime, watchers, severity counts,
                                  store health, blocklist size, capabilities[], config_hash, binary_hash,
                                  automation rollout state, challenge pending count, rollback state.
+                                 `started_at_token` changes after a daemon restart and is suitable
+                                 for restart polling.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
@@ -185,7 +187,8 @@ POST /api/v1/import                   Import state bundle (suppressions, whiteli
 GET  /api/v1/settings             List editable config sections
 GET  /api/v1/settings/<section>   Read a config section (secrets redacted)
 POST /api/v1/settings/<section>   Update a config section (safe fields reload, restart fields queue)
-POST /api/v1/settings/restart     Request a daemon restart (after editing restart-required fields)
+POST /api/v1/settings/restart     Request a daemon restart. Returns 202 with `started_at_token`
+                                  for polling until the restarted daemon reports a new marker.
 POST /api/v1/settings/firewall/tentative-apply  Save firewall config, restart, and arm rollback timer
 GET  /api/v1/settings/firewall/rollback         Read pending rollback state
 POST /api/v1/settings/firewall/confirm          Confirm tentative firewall changes

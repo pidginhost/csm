@@ -958,6 +958,10 @@
         sp.appendChild(spin);
         sp.appendChild(document.createTextNode("Restarting…"));
         banner.appendChild(sp);
+        let previousStartToken = "";
+        try {
+            previousStartToken = await currentStartToken();
+        } catch (e) { /* the restart response carries the same token */ }
         try {
             const resp = await CSM.request("/api/v1/settings/restart", {
                 method: "POST",
@@ -966,8 +970,12 @@
                 silent: true
             });
             if (resp.status === 202) {
-                await pollHealth();
-                window.location.reload();
+                const data = await resp.json().catch(function () { return {}; });
+                if (await pollRestart(data.started_at_token || previousStartToken)) {
+                    window.location.reload();
+                    return;
+                }
+                showRestartNotConfirmed(banner);
                 return;
             }
             const data = await resp.json().catch(function () { return {}; });
@@ -977,9 +985,46 @@
             banner.appendChild(strong);
             banner.appendChild(document.createTextNode((data.error || "Unknown error") + ". Check journalctl -u csm -n 200 on the server."));
         } catch (e) {
-            await pollHealth();
-            window.location.reload();
+            if (await pollRestart(previousStartToken)) {
+                window.location.reload();
+                return;
+            }
+            showRestartNotConfirmed(banner);
         }
+    }
+
+    function showRestartNotConfirmed(banner) {
+        clearNode(banner);
+        const strong = document.createElement("strong");
+        strong.textContent = "Restart not confirmed. ";
+        banner.appendChild(strong);
+        banner.appendChild(document.createTextNode("The daemon stayed reachable with the old start marker. Check journalctl -u csm -n 200 on the server."));
+    }
+
+    async function currentStartToken() {
+        const resp = await CSM.request("/api/v1/status", {cache: "no-store", allowNonOK: true, silent: true, timeoutMs: 3000});
+        if (!resp.ok) return "";
+        const data = await resp.json().catch(function () { return {}; });
+        return data.started_at_token || "";
+    }
+
+    async function pollRestart(previousStartToken) {
+        let baseline = previousStartToken || "";
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+            try {
+                const resp = await CSM.request("/api/v1/status", {cache: "no-store", allowNonOK: true, silent: true});
+                if (resp.ok) {
+                    const data = await resp.json().catch(function () { return {}; });
+                    if (data.started_at_token) {
+                        if (baseline && data.started_at_token !== baseline) return true;
+                        if (!baseline) baseline = data.started_at_token;
+                    }
+                }
+            } catch (e) { /* keep polling */ }
+            await new Promise(function (r) { setTimeout(r, 1000); });
+        }
+        return false;
     }
 
     // ---- Tentative apply (firewall section) -----------------------------

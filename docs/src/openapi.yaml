@@ -1432,8 +1432,8 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/JSONObject" }
       responses:
-        "200":
-          description: Success.
+        "202":
+          description: Restart accepted.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

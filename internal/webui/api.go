@@ -44,26 +44,28 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 			lastScan = s.store.LatestScanTime().Format(time.RFC3339)
 		}
 		writeJSON(w, map[string]interface{}{
-			"hostname":       s.cfg.Hostname,
-			"uptime":         time.Since(s.startTime).String(),
-			"started_at":     s.startTime.Format(time.RFC3339),
-			"rules_loaded":   s.sigCount,
-			"scan_running":   scanning,
-			"last_scan_time": lastScan,
-			"status":         "down",
+			"hostname":         s.cfg.Hostname,
+			"uptime":           time.Since(s.startTime).String(),
+			"started_at":       s.startTime.Format(time.RFC3339),
+			"started_at_token": daemonStartToken(s.startTime),
+			"rules_loaded":     s.sigCount,
+			"scan_running":     scanning,
+			"last_scan_time":   lastScan,
+			"status":           "down",
 		})
 		return
 	}
 
 	snap := health.Build(provider, s.version, health.Capabilities())
 	resp := map[string]interface{}{
-		"hostname":     snap.Hostname,
-		"version":      snap.Version,
-		"uptime":       time.Duration(snap.UptimeSec * int64(time.Second)).String(),
-		"uptime_sec":   snap.UptimeSec,
-		"started_at":   snap.StartedAt.Format(time.RFC3339),
-		"rules_loaded": s.sigCount,
-		"scan_running": scanning,
+		"hostname":         snap.Hostname,
+		"version":          snap.Version,
+		"uptime":           time.Duration(snap.UptimeSec * int64(time.Second)).String(),
+		"uptime_sec":       snap.UptimeSec,
+		"started_at":       snap.StartedAt.Format(time.RFC3339),
+		"started_at_token": daemonStartToken(snap.StartedAt),
+		"rules_loaded":     s.sigCount,
+		"scan_running":     scanning,
 		// last_scan_time is the legacy key kept for older clients
 		// (cphulk dashboard, status_check.go). latest_scan mirrors the
 		// health.Snapshot JSON tag and is the canonical name for new
@@ -658,6 +660,17 @@ func csvEscape(s string) string {
 // safeLogString renders a caller-controlled string into a log entry without
 // allowing embedded CR/LF/control bytes to forge a separate log line.
 func safeLogString(s string) string { return strconv.Quote(s) }
+
+func daemonStartToken(start time.Time) string {
+	return start.UTC().Format(time.RFC3339Nano)
+}
+
+func (s *Server) daemonStartToken() string {
+	if s.provider != nil {
+		return daemonStartToken(s.provider.StartedAt())
+	}
+	return daemonStartToken(s.startTime)
+}
 
 // apiFix applies a known remediation action for a finding.
 // POST /api/v1/fix  body: {"check": "check_type", "message": "...", "details": "..."}
