@@ -389,49 +389,142 @@ const (
 	phpOperatorStringCapable
 )
 
-// phpAssertParenWrapCap bounds how many fully-wrapping parenthesis layers the
-// classifier peels off an assert() argument before giving up. Real conditions
-// nest a handful deep; an argument wrapped past this cap is a crafted file
-// padding the scan window with parentheses, not worth quadratic work, so the
-// classifier stops and fails closed -- the assert() call stays flagged.
-const phpAssertParenWrapCap = 64
-
 // phpExpressionYieldsNonString reports whether a PHP expression provably
 // evaluates to a non-string value, so assert() cannot treat it as code.
 // trustUnqualified is false when the file declares a namespace or imports a
 // function alias, because then an unqualified builtin name can resolve to
 // attacker-defined code. Anything unrecognized counts as string-capable.
 //
-// Wrapping parentheses are peeled iteratively (not recursively) so a payload
-// with tens of thousands of nested parens cannot exhaust the stack, and the
-// peel count is capped so classification stays linear in the argument length.
+// Wrapping parentheses are peeled in one parser pass so a payload with tens of
+// thousands of nested parens cannot exhaust the stack or trigger quadratic
+// rescans.
 func phpExpressionYieldsNonString(expr string, trustUnqualified bool) bool {
-	for peeled := 0; ; peeled++ {
-		expr = strings.TrimSpace(expr)
-		if expr == "" {
-			return false
+	expr = peelPHPAssertionExpression(expr)
+	if expr == "" {
+		return false
+	}
+	switch phpTopLevelOperatorValue(expr) {
+	case phpOperatorNonString:
+		return true
+	case phpOperatorStringCapable:
+		return false
+	}
+	if expr[0] == '!' {
+		// Negation of a whole atom is always boolean. Operators inside the
+		// negated expression would have been classified above, so this point
+		// is only reached for a single negated atom.
+		return true
+	}
+	return phpIsNonStringBuiltinCall(expr, trustUnqualified)
+}
+
+func peelPHPAssertionExpression(expr string) string {
+	start, end := trimPHPExpressionBounds(expr, 0, len(expr))
+	if start >= end || expr[start] != '(' {
+		return expr[start:end]
+	}
+
+	prefixOpens := phpLeadingParenPositions(expr, start, end)
+	if len(prefixOpens) == 0 {
+		return expr[start:end]
+	}
+	matches, ok := phpMatchPrefixParens(expr, start, end, prefixOpens)
+	if !ok {
+		return expr[start:end]
+	}
+
+	innerStart, innerEnd := start, end
+	for idx, open := range prefixOpens {
+		if open != skipPHPWhitespaceUntil(expr, innerStart, innerEnd) {
+			break
 		}
-		switch phpTopLevelOperatorValue(expr) {
-		case phpOperatorNonString:
-			return true
-		case phpOperatorStringCapable:
-			return false
+		close := matches[idx]
+		if close != skipPHPWhitespaceBack(expr, innerStart, innerEnd)-1 {
+			break
 		}
-		if expr[0] == '!' {
-			// Negation of a whole atom is always boolean. Operators inside the
-			// negated expression would have been classified above, so this point
-			// is only reached for a single negated atom.
-			return true
+		innerStart = open + 1
+		innerEnd = close
+	}
+	start, end = trimPHPExpressionBounds(expr, innerStart, innerEnd)
+	return expr[start:end]
+}
+
+func phpLeadingParenPositions(expr string, start, end int) []int {
+	var positions []int
+	for {
+		start = skipPHPWhitespaceUntil(expr, start, end)
+		if start >= end || expr[start] != '(' {
+			return positions
 		}
-		if expr[0] == '(' && matchingParen(expr, 0) == len(expr)-1 {
-			if peeled >= phpAssertParenWrapCap {
-				return false // too deeply wrapped to classify cheaply; fail closed
-			}
-			expr = expr[1 : len(expr)-1]
+		positions = append(positions, start)
+		start++
+	}
+}
+
+func phpMatchPrefixParens(expr string, start, end int, prefixOpens []int) ([]int, bool) {
+	matches := make([]int, len(prefixOpens))
+	for i := range matches {
+		matches[i] = -1
+	}
+
+	depth := 0
+	for i := start; i < end; i++ {
+		if label, bodyStart, ok := phpHeredocOpen(expr, i); ok {
+			i = phpHeredocEnd(expr, bodyStart, label) - 1
 			continue
 		}
-		return phpIsNonStringBuiltinCall(expr, trustUnqualified)
+		if isPHPQuote(expr[i]) {
+			i = skipPHPString(expr, i)
+			continue
+		}
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return nil, false
+			}
+			depth--
+			if depth < len(matches) && matches[depth] == -1 {
+				matches[depth] = i
+			}
+		}
 	}
+	if depth != 0 {
+		return nil, false
+	}
+	for _, match := range matches {
+		if match == -1 {
+			return nil, false
+		}
+	}
+	return matches, true
+}
+
+func trimPHPExpressionBounds(expr string, start, end int) (int, int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(expr) {
+		end = len(expr)
+	}
+	start = skipPHPWhitespaceUntil(expr, start, end)
+	end = skipPHPWhitespaceBack(expr, start, end)
+	return start, end
+}
+
+func skipPHPWhitespaceUntil(expr string, start, end int) int {
+	for start < end && isPHPSpace(expr[start]) {
+		start++
+	}
+	return start
+}
+
+func skipPHPWhitespaceBack(expr string, start, end int) int {
+	for end > start && isPHPSpace(expr[end-1]) {
+		end--
+	}
+	return end
 }
 
 // phpTopLevelOperatorValue scans expr outside string literals at paren depth 0
