@@ -167,6 +167,7 @@ func NewAsyncBotVerifier(put func(net.IP, string, bool, time.Time) error) *Async
 // Safe to call after Run has started (SIGHUP reload): v is swapped under mu,
 // which the worker also holds when reading it.
 func (a *AsyncBotVerifier) SetOperatorEntries(entries []BotEntry) {
+	entries = normalizeBotEntries(entries, false)
 	m := make(map[string]*verifier, len(BotDomains)+len(entries))
 	for bot, domains := range BotDomains {
 		m[bot] = newVerifier(a.res, domains)

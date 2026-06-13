@@ -544,6 +544,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if _, ok := raw.Reputation["bot_verify_enabled"]; !ok {
 		t.Error("production reference config missing reputation.bot_verify_enabled")
 	}
+	if _, ok := raw.Reputation["verified_bots"]; !ok {
+		t.Error("production reference config missing reputation.verified_bots")
+	}
 	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; !ok {
 		t.Error("production reference config missing auto_response.max_blocks_per_hour")
 	}

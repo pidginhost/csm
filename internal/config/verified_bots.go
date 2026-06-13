@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // VerifiedBot is one operator-configured good bot. A request whose UA
@@ -19,15 +21,19 @@ type VerifiedBot struct {
 // traffic ("bot", "go"). Real crawler tokens are longer.
 const verifiedBotMinUALen = 4
 
-// browserUATokens are substrings that appear in ordinary browser UAs. An
-// operator entry keyed on one of these would allowlist real users, so they
-// are rejected.
+// browserUATokens are substrings that appear in ordinary browser UAs. Entries
+// keyed only on these tokens would match real users, so validation rejects
+// them unless the substring also carries a crawler-specific token.
 var browserUATokens = map[string]bool{
 	"mozilla": true, "applewebkit": true, "webkit": true, "gecko": true,
 	"chrome": true, "safari": true, "firefox": true, "edge": true,
 	"opera": true, "msie": true, "trident": true, "windows": true,
 	"macintosh": true, "linux": true, "android": true, "iphone": true,
 	"ipad": true, "x11": true, "mobile": true,
+}
+
+var crawlerUATokens = []string{
+	"bot", "crawler", "spider", "externalhit", "inspectiontool", "lighthouse",
 }
 
 // sharedHostingSuffixes are domains where reverse DNS is assigned to whoever
@@ -58,6 +64,7 @@ var commonPublicSuffixes = map[string]bool{
 func validateVerifiedBots(cfg *Config) []ValidationResult {
 	var results []ValidationResult
 	seen := map[string]bool{}
+	seenUA := map[string]string{}
 	for i, b := range cfg.Reputation.VerifiedBots {
 		field := fmt.Sprintf("reputation.verified_bots[%d]", i)
 		name := strings.ToLower(strings.TrimSpace(b.Name))
@@ -82,9 +89,26 @@ func validateVerifiedBots(cfg *Config) []ValidationResult {
 				results = append(results, ValidationResult{"error", field + ".ua_substrings",
 					fmt.Sprintf("UA substring %q is too short (min %d chars)", s, verifiedBotMinUALen)})
 			}
-			if browserUATokens[s] {
+			if browserUASubstringFootgun(s) {
 				results = append(results, ValidationResult{"error", field + ".ua_substrings",
 					fmt.Sprintf("UA substring %q matches ordinary browsers and would allowlist real users", s)})
+			}
+			if prev, ok := seenUA[s]; ok && prev != name {
+				results = append(results, ValidationResult{"error", field + ".ua_substrings",
+					fmt.Sprintf("UA substring %q is already used by verified bot %q", s, prev)})
+			}
+			for prev, prevName := range seenUA {
+				if prevName == name || prev == s {
+					continue
+				}
+				if strings.Contains(prev, s) || strings.Contains(s, prev) {
+					results = append(results, ValidationResult{"error", field + ".ua_substrings",
+						fmt.Sprintf("UA substring %q overlaps verified bot %q substring %q", s, prevName, prev)})
+					break
+				}
+			}
+			if _, ok := seenUA[s]; !ok {
+				seenUA[s] = name
 			}
 		}
 		if !hasUA {
@@ -111,9 +135,65 @@ func validateVerifiedBots(cfg *Config) []ValidationResult {
 	return results
 }
 
+func browserUASubstringFootgun(s string) bool {
+	if !containsKnownUAToken(s, browserUATokens) {
+		return false
+	}
+	for _, token := range crawlerUATokens {
+		if strings.Contains(s, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsKnownUAToken(s string, tokens map[string]bool) bool {
+	for token := range tokens {
+		for start := 0; start < len(s); {
+			idx := strings.Index(s[start:], token)
+			if idx == -1 {
+				break
+			}
+			idx += start
+			end := idx + len(token)
+			if uaTokenBoundary(s, idx-1) && uaTokenBoundary(s, end) {
+				return true
+			}
+			start = idx + 1
+		}
+	}
+	return false
+}
+
+func uaTokenBoundary(s string, idx int) bool {
+	if idx < 0 || idx >= len(s) {
+		return true
+	}
+	c := s[idx]
+	if c >= 'a' && c <= 'z' {
+		return false
+	}
+	if c >= '0' && c <= '9' {
+		return false
+	}
+	return true
+}
+
+func validateVerifiedBotsConfig(cfg *Config) error {
+	for _, r := range validateVerifiedBots(cfg) {
+		if r.Level == "error" {
+			return fmt.Errorf("%s: %s", r.Field, r.Message)
+		}
+	}
+	return nil
+}
+
 func verifiedBotSuffixError(s string) string {
 	if strings.ContainsAny(s, " /:") {
 		return fmt.Sprintf("rdns_suffix %q is not a domain", s)
+	}
+	if len(s) > 253 {
+		return fmt.Sprintf("rdns_suffix %q is too long", s)
 	}
 	labels := strings.Split(s, ".")
 	if len(labels) < 2 {
@@ -123,8 +203,23 @@ func verifiedBotSuffixError(s string) string {
 		if l == "" {
 			return fmt.Sprintf("rdns_suffix %q has an empty label", s)
 		}
+		if len(l) > 63 {
+			return fmt.Sprintf("rdns_suffix %q has a label longer than 63 characters", s)
+		}
+		if strings.HasPrefix(l, "-") || strings.HasSuffix(l, "-") {
+			return fmt.Sprintf("rdns_suffix %q has a label starting or ending with hyphen", s)
+		}
+		for _, r := range l {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return fmt.Sprintf("rdns_suffix %q has invalid domain characters", s)
+		}
 	}
 	if commonPublicSuffixes[s] {
+		return fmt.Sprintf("rdns_suffix %q is a public suffix, not a registrable domain", s)
+	}
+	if _, err := publicsuffix.EffectiveTLDPlusOne(s); err != nil {
 		return fmt.Sprintf("rdns_suffix %q is a public suffix, not a registrable domain", s)
 	}
 	for _, bad := range sharedHostingSuffixes {

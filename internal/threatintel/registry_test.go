@@ -18,6 +18,9 @@ func TestOperatorBotFromUA(t *testing.T) {
 	if got := OperatorBotFromUA("mozilla/5.0 (compatible; serankingbacklinksbot/1.0)"); got != "seranking" {
 		t.Errorf("OperatorBotFromUA(crawler) = %q, want seranking", got)
 	}
+	if got := OperatorBotFromUA("Mozilla/5.0 (compatible; SERankingBacklinksBot/1.0)"); got != "seranking" {
+		t.Errorf("OperatorBotFromUA(raw crawler) = %q, want seranking", got)
+	}
 	if got := OperatorBotFromUA("mozilla/5.0 (windows nt 10.0; chrome/120)"); got != "" {
 		t.Errorf("OperatorBotFromUA(browser) = %q, want empty", got)
 	}
@@ -48,9 +51,9 @@ func TestOperatorBotsCacheVersion(t *testing.T) {
 	a := []BotEntry{{Name: "x", UASubstrings: []string{"xbot"}, RDNSSuffixes: []string{"x.example"}}}
 	b := []BotEntry{{Name: "x", UASubstrings: []string{"xbot"}, RDNSSuffixes: []string{"y.example"}}}
 
-	reordered := []BotEntry{{Name: "x", UASubstrings: []string{"xbot"}, RDNSSuffixes: []string{"x.example"}}}
+	reordered := []BotEntry{{Name: " X ", UASubstrings: []string{" XBot "}, RDNSSuffixes: []string{" .X.Example "}}}
 	if OperatorBotsCacheVersion(base, a) != OperatorBotsCacheVersion(base, reordered) {
-		t.Error("cache version must be stable for equivalent entries")
+		t.Error("cache version must be stable for equivalent normalized entries")
 	}
 	if OperatorBotsCacheVersion(base, a) == OperatorBotsCacheVersion(base, b) {
 		t.Error("cache version must change when a suffix changes")
@@ -78,7 +81,7 @@ func TestAsyncBotVerifier_OperatorEntryVerifies(t *testing.T) {
 		ptr: map[string][]string{ip: {"crawl-9.acme.example."}},
 		a:   map[string][]net.IP{"crawl-9.acme.example": {net.ParseIP(ip)}},
 	}
-	a.SetOperatorEntries([]BotEntry{{Name: "acmebot", UASubstrings: []string{"acmecrawler"}, RDNSSuffixes: []string{"acme.example"}}})
+	a.SetOperatorEntries([]BotEntry{{Name: " AcmeBot ", UASubstrings: []string{"AcmeCrawler"}, RDNSSuffixes: []string{" .Acme.Example "}}})
 
 	a.process(verifyJob{IP: net.ParseIP(ip), Bot: "acmebot"})
 

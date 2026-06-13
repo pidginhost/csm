@@ -90,6 +90,14 @@ reputation:
   # Set false only if outbound DNS is unavailable and you accept
   # trusting UA strings.
   bot_verify_enabled: true
+  # Optional operator-defined crawlers. Each entry needs a stable
+  # UA substring and an rDNS suffix that forward-confirms the source IP.
+  # Suffixes on public or shared-hosting domains are rejected.
+  verified_bots: []
+  # verified_bots:
+  #   - name: "seranking"
+  #     ua_substrings: ["serankingbacklinksbot"]
+  #     rdns_suffixes: ["seranking.com"]
 
 thresholds:
   mail_queue_warn: 500

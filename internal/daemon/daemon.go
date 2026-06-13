@@ -782,15 +782,7 @@ func (d *Daemon) Run() error {
 			} else if dropped {
 				csmlog.Info("bot-verify cache dropped after logic or verified_bots change")
 			}
-			bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
-			bv.SetOperatorEntries(botEntries)
-			d.botVerifier = bv
-			d.wg.Add(1)
-			obs.Go("bot-verify", func() {
-				defer d.wg.Done()
-				bv.Run(d.stopCh)
-			})
-			checks.SetBotVerifier(bv, db.GetBotVerify)
+			d.startBotVerifier(db, botEntries)
 		}
 	}
 

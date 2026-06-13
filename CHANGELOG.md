@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verified-bot config is now normalized before DNS checks, and unsafe entries are rejected during every config load path.
 - Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
 - Challenge-eligible findings now fall back to hard blocks when challenge routing is disabled, even if a stale pending-challenge entry is still present.
 - IPs routed to the proof-of-work challenge no longer linger as stale entries in the findings view; the routing action is treated as a one-shot event like auto-block rather than durable state.

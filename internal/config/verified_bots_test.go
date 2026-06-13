@@ -33,11 +33,23 @@ func TestValidateVerifiedBots(t *testing.T) {
 		{"no ua substrings", []VerifiedBot{{Name: "x", RDNSSuffixes: []string{"x.example"}}}, true},
 		{"ua substring too short", []VerifiedBot{{Name: "x", UASubstrings: []string{"ab"}, RDNSSuffixes: []string{"x.example"}}}, true},
 		{"ua substring browser token", []VerifiedBot{{Name: "x", UASubstrings: []string{"Mozilla"}, RDNSSuffixes: []string{"x.example"}}}, true},
+		{"ua substring browser prefix", []VerifiedBot{{Name: "x", UASubstrings: []string{"Mozilla/5.0"}, RDNSSuffixes: []string{"x.example"}}}, true},
+		{"ua substring browser prefix with crawler token", []VerifiedBot{{Name: "x", UASubstrings: []string{"Mozilla/5.0 (compatible; AcmeCrawler)"}, RDNSSuffixes: []string{"x.example"}}}, false},
+		{"duplicate ua substring across bots", []VerifiedBot{
+			valid,
+			{Name: "x", UASubstrings: []string{"SERankingBacklinksBot"}, RDNSSuffixes: []string{"x.example"}},
+		}, true},
+		{"overlapping ua substring across bots", []VerifiedBot{
+			{Name: "x", UASubstrings: []string{"acmecrawler"}, RDNSSuffixes: []string{"x.example"}},
+			{Name: "y", UASubstrings: []string{"crawler"}, RDNSSuffixes: []string{"y.example"}},
+		}, true},
 		{"no rdns suffixes", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}}}, true},
 		{"bare tld suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"com"}}}, true},
 		{"two-label public suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"co.uk"}}}, true},
 		{"shared cloud suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"amazonaws.com"}}}, true},
 		{"shared cloud subdomain suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"compute.amazonaws.com"}}}, true},
+		{"wildcard suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"*.example.com"}}}, true},
+		{"leading hyphen suffix", []VerifiedBot{{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"-crawl.example.com"}}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,5 +63,37 @@ func TestValidateVerifiedBots(t *testing.T) {
 				t.Errorf("want no validation error, got %v", got)
 			}
 		})
+	}
+}
+
+func TestLoadBytesValidatesVerifiedBots(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+reputation:
+  verified_bots:
+    - name: acmebot
+      ua_substrings: ["acmecrawler"]
+      rdns_suffixes: ["amazonaws.com"]
+`))
+	if err == nil {
+		t.Fatal("LoadBytes accepted a shared-hosting verified bot suffix")
+	}
+	if !strings.Contains(err.Error(), "reputation.verified_bots[0].rdns_suffixes") {
+		t.Fatalf("LoadBytes error = %v, want verified_bots field", err)
+	}
+}
+
+func TestLoadBytesAcceptsNormalizedVerifiedBots(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+reputation:
+  verified_bots:
+    - name: " AcmeBot "
+      ua_substrings: [" AcmeCrawler "]
+      rdns_suffixes: [" .Acme.Example "]
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes valid verified_bots: %v", err)
+	}
+	if got := cfg.Reputation.VerifiedBots[0].RDNSSuffixes[0]; got != " .Acme.Example " {
+		t.Fatalf("LoadBytes should preserve operator YAML value, got %q", got)
 	}
 }

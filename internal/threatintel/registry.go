@@ -31,24 +31,52 @@ var operatorBots atomic.Pointer[[]BotEntry]
 // built-in tables. Entries without a name or any UA substring are skipped:
 // the UA substring is what links a request to the identity.
 func SetOperatorBots(entries []BotEntry) {
+	norm := normalizeBotEntries(entries, true)
+	operatorBots.Store(&norm)
+}
+
+func normalizeBotEntries(entries []BotEntry, requireUA bool) []BotEntry {
 	norm := make([]BotEntry, 0, len(entries))
 	for _, e := range entries {
-		ne := BotEntry{Name: strings.ToLower(strings.TrimSpace(e.Name))}
-		for _, s := range e.UASubstrings {
-			if s = strings.ToLower(strings.TrimSpace(s)); s != "" {
-				ne.UASubstrings = append(ne.UASubstrings, s)
+		ne := BotEntry{Name: normalizeBotName(e.Name)}
+		seenUA := map[string]struct{}{}
+		for _, raw := range e.UASubstrings {
+			s := normalizeUASubstring(raw)
+			if s == "" {
+				continue
 			}
-		}
-		for _, d := range e.RDNSSuffixes {
-			if d = normalizeSuffix(d); d != "" {
-				ne.RDNSSuffixes = append(ne.RDNSSuffixes, d)
+			if _, ok := seenUA[s]; ok {
+				continue
 			}
+			seenUA[s] = struct{}{}
+			ne.UASubstrings = append(ne.UASubstrings, s)
 		}
-		if ne.Name != "" && len(ne.UASubstrings) > 0 {
-			norm = append(norm, ne)
+		seenSuffix := map[string]struct{}{}
+		for _, raw := range e.RDNSSuffixes {
+			d := normalizeSuffix(raw)
+			if d == "" {
+				continue
+			}
+			if _, ok := seenSuffix[d]; ok {
+				continue
+			}
+			seenSuffix[d] = struct{}{}
+			ne.RDNSSuffixes = append(ne.RDNSSuffixes, d)
 		}
+		if ne.Name == "" || (requireUA && len(ne.UASubstrings) == 0) {
+			continue
+		}
+		norm = append(norm, ne)
 	}
-	operatorBots.Store(&norm)
+	return norm
+}
+
+func normalizeBotName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func normalizeUASubstring(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func normalizeSuffix(d string) string {
@@ -64,9 +92,10 @@ func operatorBotEntries() []BotEntry {
 }
 
 // OperatorBotFromUA returns the operator bot identity whose UA substring
-// matches the already-lower-cased UA, or "" if none. Built-in identities are
-// checked first by ClaimedBotFromUA; this is the fallback.
+// matches ua, or "" if none. Built-in identities are checked first by
+// ClaimedBotFromUA; this is the fallback.
 func OperatorBotFromUA(lowUA string) string {
+	lowUA = strings.ToLower(lowUA)
 	for _, e := range operatorBotEntries() {
 		for _, s := range e.UASubstrings {
 			if strings.Contains(lowUA, s) {
@@ -93,15 +122,16 @@ func operatorDomains(name string) []string {
 // staying pinned for the cache TTL. The hash is order-independent so the same
 // set in a different file order yields the same stamp.
 func OperatorBotsCacheVersion(base int, entries []BotEntry) int {
+	entries = normalizeBotEntries(entries, false)
 	lines := make([]string, 0, len(entries))
 	for _, e := range entries {
 		subs := append([]string(nil), e.UASubstrings...)
 		sufs := append([]string(nil), e.RDNSSuffixes...)
 		sort.Strings(subs)
 		sort.Strings(sufs)
-		lines = append(lines, strings.ToLower(strings.TrimSpace(e.Name))+
-			"\x00"+strings.ToLower(strings.Join(subs, ","))+
-			"\x00"+strings.ToLower(strings.Join(sufs, ",")))
+		lines = append(lines, e.Name+
+			"\x00"+strings.Join(subs, ",")+
+			"\x00"+strings.Join(sufs, ","))
 	}
 	sort.Strings(lines)
 	h := fnv.New64a()

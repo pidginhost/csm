@@ -367,6 +367,11 @@ reputation:
   # retried later. Set false only if your resolver is unreliable. See
   # docs/src/auto-response.md for the always-block behavior.
   bot_verify_enabled: true              # default: true
+  verified_bots: []                     # optional custom crawler identities
+  # verified_bots:
+  #   - name: "seranking"
+  #     ua_substrings: ["serankingbacklinksbot"]
+  #     rdns_suffixes: ["seranking.com"]
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL
@@ -743,6 +748,9 @@ Changes to their sub-keys are picked up on the next tick by the
 periodic scanners, the auto-response helpers
 (block/kill/quarantine/challenge/permission-fix), alert dispatch, and
 the heartbeat.
+
+`reputation.verified_bots` is reconciled on reload and the bot-verifier
+cache is restamped when the list changes.
 
 Two sub-keys are exceptions. They live under a safe-tagged parent
 but seed a long-lived in-memory structure at daemon startup; the

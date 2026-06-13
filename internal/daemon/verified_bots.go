@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/threatintel"
 )
@@ -33,15 +35,32 @@ func (d *Daemon) reconcileVerifiedBots() {
 	cfg := d.activeOrStartupCfg()
 	entries := verifiedBotEntries(cfg)
 	threatintel.SetOperatorBots(entries)
-	if d.botVerifier != nil {
-		d.botVerifier.SetOperatorEntries(entries)
+	if !cfg.BotVerifyEnabled() {
+		return
 	}
-	if cfg.BotVerifyEnabled() {
-		if db := store.Global(); db != nil {
-			ver := threatintel.OperatorBotsCacheVersion(threatintel.LogicVersion, entries)
-			if dropped, err := db.EnsureBotVerifyLogicVersion(ver); err == nil && dropped {
-				csmlog.Info("bot-verify cache dropped after verified_bots change")
-			}
-		}
+	db := store.Global()
+	if db == nil {
+		return
 	}
+	ver := threatintel.OperatorBotsCacheVersion(threatintel.LogicVersion, entries)
+	if dropped, err := db.EnsureBotVerifyLogicVersion(ver); err == nil && dropped {
+		csmlog.Info("bot-verify cache dropped after verified_bots change")
+	}
+	if d.botVerifier == nil {
+		d.startBotVerifier(db, entries)
+		return
+	}
+	d.botVerifier.SetOperatorEntries(entries)
+}
+
+func (d *Daemon) startBotVerifier(db *store.DB, entries []threatintel.BotEntry) {
+	bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
+	bv.SetOperatorEntries(entries)
+	d.botVerifier = bv
+	d.wg.Add(1)
+	obs.Go("bot-verify", func() {
+		defer d.wg.Done()
+		bv.Run(d.stopCh)
+	})
+	checks.SetBotVerifier(bv, db.GetBotVerify)
 }

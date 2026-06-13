@@ -36,6 +36,16 @@ Currently shipped:
 - **Rspamd** (`reputation.rspamd.*`) - per-IP rolling-history signals from the local rspamd controller. Token resolves from `token_env` at query time so rotation does not require a daemon restart.
 - **Upstream HTTP cache** (`reputation.upstream.*`) - shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a bounded local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. CSM temporarily opens a fail-open circuit breaker after repeated upstream failures and lets only one cooldown probe through at a time. Use HTTPS for remote panels; plain HTTP is accepted only for loopback. Wire contract: [`docs/upstream-threat-intel-contract.md`](../upstream-threat-intel-contract.md).
 
+### Verified crawlers
+
+`reputation.bot_verify_enabled` verifies claimed crawler User-Agents
+with static IP ranges first, then strict forward-confirmed reverse DNS.
+`reputation.verified_bots` adds operator-defined crawler identities with
+`name`, `ua_substrings`, and `rdns_suffixes`. Suffixes must be
+registrable domains; public suffixes and shared-hosting suffixes are
+rejected during config load. A PTR-only match is not trusted: the PTR
+hostname must resolve back to the source IP.
+
 ## Abuse Reporting
 
 `reputation.report` can send minimized confirmed-abuse reports to a central

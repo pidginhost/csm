@@ -1631,6 +1631,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateReputation(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateVerifiedBotsConfig(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateVerdictCallback(cfg); err != nil {
 		return nil, err
 	}
