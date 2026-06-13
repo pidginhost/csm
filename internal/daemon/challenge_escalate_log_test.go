@@ -1,30 +1,50 @@
 package daemon
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // The challenge-timeout escalator must not claim a hard block landed when the
-// engine actually no-opped (the IP was already blocked) or the verdict
-// downgraded the call. A false "hard-blocked" line misleads incident review.
+// engine actually no-opped (the IP was already blocked), dry-ran, or the
+// verdict downgraded the call. A false "hard-blocked" line misleads incident
+// review.
 func TestChallengeEscalateLogLine(t *testing.T) {
 	const ip = "192.0.2.50"
 
-	live := challengeEscalateLogLine(ip, firewall.BlockOutcomeLive)
-	if !strings.Contains(live, "hard-blocked") || strings.Contains(live, "no new block") {
-		t.Errorf("live outcome line = %q, want a hard-blocked claim", live)
+	tests := []struct {
+		name    string
+		outcome firewall.BlockOutcome
+		want    string
+	}{
+		{
+			name:    "live",
+			outcome: firewall.BlockOutcomeLive,
+			want:    "CHALLENGE-ESCALATE: 192.0.2.50 timed out, hard-blocked",
+		},
+		{
+			name:    "dry-run",
+			outcome: firewall.BlockOutcomeDryRun,
+			want:    "CHALLENGE-ESCALATE [dry-run]: 192.0.2.50 timed out, would be hard-blocked",
+		},
+		{
+			name:    "noop",
+			outcome: firewall.BlockOutcomeNoop,
+			want:    "challenge-escalate: 192.0.2.50 timed out, no new block (outcome: noop)",
+		},
+		{
+			name:    "allowed",
+			outcome: firewall.BlockOutcomeAllowed,
+			want:    "challenge-escalate: 192.0.2.50 timed out, no new block (outcome: allowed)",
+		},
 	}
 
-	for _, oc := range []firewall.BlockOutcome{firewall.BlockOutcomeNoop, firewall.BlockOutcomeAllowed} {
-		got := challengeEscalateLogLine(ip, oc)
-		if strings.Contains(got, "hard-blocked") {
-			t.Errorf("outcome %q line = %q, must not claim a block landed", oc, got)
-		}
-		if !strings.Contains(got, "no new block") {
-			t.Errorf("outcome %q line = %q, want a no-new-block notice", oc, got)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := challengeEscalateLogLine(ip, tt.outcome); got != tt.want {
+				t.Fatalf("line = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
