@@ -269,3 +269,35 @@ func TestHTTPScannerProfile_StatusFromParsedLine(t *testing.T) {
 		t.Errorf("SourceIP=%q want 192.0.2.20", got[0].SourceIP)
 	}
 }
+
+// A scanner that spreads its probes thin across many vhosts (each vhost sees
+// only a few error hits, below the per-IP minimum-requests gate) still trips
+// the per-IP profile in aggregate. The distributed rollup must attribute every
+// shared vhost it scanned, so a botnet of thin-spread scanners converging on
+// the same vhosts is still seen -- the per-domain gate must not reuse the full
+// per-IP minimum-request / min-path thresholds.
+func TestHTTPScannerProfile_DistributedRollupCountsThinSpreadScanner(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	cfg.Thresholds.HTTPDistributedMinIPs = 2
+	stats := newDomlogStatsAt(scannerTestNow)
+	vhosts := []string{"a.example", "b.example", "c.example", "d.example", "e.example"}
+	for _, ip := range []string{"192.0.2.10", "192.0.2.11"} {
+		for vi, vhost := range vhosts {
+			for i := 0; i < 6; i++ {
+				rec := scannerRec(ip, fmt.Sprintf("/probe-%d-%d", vi, i), 404)
+				rec.Domain = vhost
+				stats.scan(rec, cfg, nopBotClassifier{})
+			}
+		}
+	}
+
+	var distributed []alert.Finding
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_distributed_flood" {
+			distributed = append(distributed, f)
+		}
+	}
+	if len(distributed) != len(vhosts) {
+		t.Fatalf("distributed findings=%d, want %d (thin-spread scanner must feed every shared vhost)", len(distributed), len(vhosts))
+	}
+}

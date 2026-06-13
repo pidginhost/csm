@@ -106,11 +106,22 @@ type domlogStats struct {
 	scannerSamples map[string]httpSample
 	// scannerDomainReqs and friends track the scanner profile per vhost so
 	// the distributed rollup only attributes a source to domains where the
-	// scanner shape actually crossed the detector gates.
-	scannerDomainReqs  map[string]map[string]int
+	// scanner shape actually crossed the detector gates. scannerDomainReqs is
+	// flat-keyed by ip+"\x00"+domain so a busy host's tens of thousands of
+	// one-off client IPs do not each allocate a nested map that the gates only
+	// read for the few IPs with errors.
+	scannerDomainReqs  map[string]int
 	scannerDomainErr   map[string]map[string]int
 	scannerDomainPaths map[string]map[string]map[string]struct{}
 	scanTime           time.Time
+
+	// Scanner thresholds are derived from cfg once per scan -- cfg is stable
+	// across a single domlogStats lifetime -- instead of on every parsed record.
+	scannerThreshComputed bool
+	scannerMinReq         int
+	scannerPct            int
+	scannerMinPaths       int
+	scannerEnabled        bool
 }
 
 func newDomlogStats() *domlogStats {
@@ -130,7 +141,7 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 		scannerErr:         make(map[string]int),
 		scannerPaths:       make(map[string]map[string]struct{}),
 		scannerSamples:     make(map[string]httpSample),
-		scannerDomainReqs:  make(map[string]map[string]int),
+		scannerDomainReqs:  make(map[string]int),
 		scannerDomainErr:   make(map[string]map[string]int),
 		scannerDomainPaths: make(map[string]map[string]map[string]struct{}),
 		scanTime:           t,
@@ -200,7 +211,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		}
 		s.httpReqs[ip]++
 
-		_, _, scannerMinPaths, scannerEnabled := scannerProfileThresholds(cfg)
+		_, _, scannerMinPaths, scannerEnabled := s.scannerThresholds(cfg)
 		if scannerEnabled {
 			if rec.Domain != "" {
 				s.recordScannerDomainRequest(ip, rec.Domain)
@@ -266,13 +277,26 @@ func (s *domlogStats) recordAbuseDomain(check, ip, domain string) {
 	set[domain] = struct{}{}
 }
 
-func (s *domlogStats) recordScannerDomainRequest(ip, domain string) {
-	byDomain := s.scannerDomainReqs[ip]
-	if byDomain == nil {
-		byDomain = make(map[string]int)
-		s.scannerDomainReqs[ip] = byDomain
+// scannerDomainKey joins an IP and a domain into the flat scannerDomainReqs
+// key. The NUL separator cannot appear in either part, so distinct (ip,domain)
+// pairs never collide.
+func scannerDomainKey(ip, domain string) string {
+	return ip + "\x00" + domain
+}
+
+// scannerThresholds returns the scanner-profile gates derived from cfg, caching
+// them on first use. cfg does not change across a single scan, so this avoids
+// re-deriving the thresholds on every parsed access-log record.
+func (s *domlogStats) scannerThresholds(cfg *config.Config) (minReq, pct, minPaths int, ok bool) {
+	if !s.scannerThreshComputed {
+		s.scannerMinReq, s.scannerPct, s.scannerMinPaths, s.scannerEnabled = scannerProfileThresholds(cfg)
+		s.scannerThreshComputed = true
 	}
-	byDomain[domain]++
+	return s.scannerMinReq, s.scannerPct, s.scannerMinPaths, s.scannerEnabled
+}
+
+func (s *domlogStats) recordScannerDomainRequest(ip, domain string) {
+	s.scannerDomainReqs[scannerDomainKey(ip, domain)]++
 }
 
 func (s *domlogStats) recordScannerDomainError(ip, domain, path string, minPaths int) {
@@ -293,7 +317,9 @@ func (s *domlogStats) recordScannerDomainError(ip, domain, path string, minPaths
 		paths = make(map[string]struct{})
 		byIP[domain] = paths
 	}
-	if len(paths) < min(minPaths, httpScannerMaxTrackedPaths) {
+	// minPaths is already clamped to httpScannerMaxTrackedPaths by
+	// scannerProfileThresholds, so it bounds the set directly.
+	if len(paths) < minPaths {
 		paths[path] = struct{}{}
 	}
 }
@@ -433,7 +459,7 @@ const httpScannerMaxTrackedPaths = config.HTTPScannerMaxDistinctPaths
 // error-rate, and path-breadth gates must all pass so that dead
 // bookmarks, broken assets, and site migrations stay out of scope.
 func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
-	minReq, pct, minPaths, ok := scannerProfileThresholds(cfg)
+	minReq, pct, minPaths, ok := s.scannerThresholds(cfg)
 	if !ok {
 		return nil
 	}
@@ -444,7 +470,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		if !scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
 			continue
 		}
-		for _, domain := range s.scannerProfileDomains(ip, minReq, pct, minPaths) {
+		for _, domain := range s.scannerProfileDomains(ip, pct) {
 			s.recordAbuseDomain("http_scanner_profile", ip, domain)
 		}
 		sample := s.scannerSamples[ip]
@@ -496,21 +522,42 @@ func scannerProfilePasses(total, errs, paths, minReq, pct, minPaths int) bool {
 	return paths >= minPaths
 }
 
-func (s *domlogStats) scannerProfileDomains(ip string, minReq, pct, minPaths int) []string {
+// scannerDomainMinErrors is the small absolute floor of probe-error hits a
+// single vhost must receive before a confirmed per-IP scanner is attributed to
+// it for the distributed rollup. The per-IP gates (minReq, minPaths) already
+// proved the source is a scanner; per vhost we only require a few errors plus
+// the same error-rate gate, so a scanner spread thin across many vhosts still
+// feeds the rollup while a vhost that caught one incidental 404 does not.
+const scannerDomainMinErrors = 3
+
+// scannerProfileDomains returns the vhosts a confirmed scanner IP should be
+// attributed to in the distributed rollup. The full per-IP minimum-request and
+// min-path gates are deliberately NOT reused per vhost: a scanner that sprays a
+// few probes across many vhosts trips the per-IP profile in aggregate but lands
+// only a handful of hits on each vhost, so requiring the per-IP minimums per
+// vhost would drop it from the rollup. Instead each vhost needs a small
+// absolute error floor and the same error-rate gate.
+func (s *domlogStats) scannerProfileDomains(ip string, pct int) []string {
 	errsByDomain := s.scannerDomainErr[ip]
 	if len(errsByDomain) == 0 {
 		return nil
 	}
 	var domains []string
 	for domain, errs := range errsByDomain {
-		total := s.scannerDomainReqs[ip][domain]
-		paths := len(s.scannerDomainPaths[ip][domain])
-		if scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
+		total := s.scannerDomainReqs[scannerDomainKey(ip, domain)]
+		if scannerDomainAttributes(total, errs, pct) {
 			domains = append(domains, domain)
 		}
 	}
 	sort.Strings(domains)
 	return domains
+}
+
+func scannerDomainAttributes(total, errs, pct int) bool {
+	if errs < scannerDomainMinErrors {
+		return false
+	}
+	return errs*100 >= total*pct
 }
 
 // isScannerErrorStatus reports whether status belongs to the configured
