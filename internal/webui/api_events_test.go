@@ -170,8 +170,21 @@ func TestApiEvents_ShutdownClosesActiveStream(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := s.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown with active SSE client: %v", err)
+
+	// Run Shutdown under an outer watchdog. A regression where Shutdown blocks
+	// on the still-open SSE stream must fail fast and specifically; the ctx
+	// deadline alone is not enough, because a Shutdown that ignores ctx would
+	// hang the whole test binary until the global timeout instead of failing
+	// here. The done channel distinguishes a clean return from a hang.
+	shutdownErr := make(chan error, 1)
+	go func() { shutdownErr <- s.Shutdown(ctx) }()
+	select {
+	case err := <-shutdownErr:
+		if err != nil {
+			t.Fatalf("shutdown with active SSE client: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return while an SSE client was connected")
 	}
 	waitForHandlerDone(t, streamDone)
 }

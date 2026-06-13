@@ -1110,6 +1110,57 @@ func TestBuildChangeSetAcceptsKnownEnumValues(t *testing.T) {
 	}
 }
 
+// End-to-end companion to TestBuildChangeSetAcceptsKnownEnumValues: a known
+// enum value must survive the full POST path (CSRF + ETag + validate + persist)
+// and reload from disk, not just the buildChangeSet unit step.
+func TestSettingsPOSTAcceptsKnownEnumValues(t *testing.T) {
+	// A valid alerts section needs one reachable alert method (the validator
+	// probes email SMTP or the webhook URL). Point the webhook at a local test
+	// server so the probe succeeds hermetically and the POST reaches persist.
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(hookSrv.Close)
+
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: false
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+  webhook:
+    enabled: true
+    url: "` + hookSrv.URL + `"
+    type: "slack"
+  max_per_hour: 20
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/alerts", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag")
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
+		`{"changes":{"email.disabled_checks":["webshell","perf_memory"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, want 200, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload after POST: %v", err)
+	}
+	if got := loaded.Alerts.Email.DisabledChecks; len(got) != 2 || got[0] != "webshell" || got[1] != "perf_memory" {
+		t.Errorf("Alerts.Email.DisabledChecks = %v, want [webshell perf_memory]", got)
+	}
+}
+
 func TestSettingsPOSTMailLogsRejectsUnknownSource(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:
