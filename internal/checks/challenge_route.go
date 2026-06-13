@@ -193,6 +193,20 @@ func isHardBlockCheck(check string) bool {
 
 const challengeDuration = 30 * time.Minute
 
+// ChallengeThenBlock runs the two IP-disposition stages in their required
+// order -- challenge routing first so an eligible IP is on the challenge list
+// before AutoBlockIPs checks membership, then hard-blocking -- and returns both
+// action sets. Auto-response call sites use this single helper instead of
+// hand-ordering the two calls, so the "challenge before block" invariant cannot
+// be silently broken by reordering in one path. Both stages run on the same
+// finding set (the full/repeat-offender set); callers append the returned
+// actions wherever their pipeline expects them.
+func ChallengeThenBlock(cfg *config.Config, findings []alert.Finding) (challengeActions, blockActions []alert.Finding) {
+	challengeActions = ChallengeRouteIPs(cfg, findings)
+	blockActions = AutoBlockIPs(cfg, findings)
+	return challengeActions, blockActions
+}
+
 // ChallengeRouteIPs processes findings and routes eligible IPs to the challenge
 // list instead of hard-blocking them. Must be called BEFORE AutoBlockIPs so
 // that challenged IPs are on the list when AutoBlockIPs checks Contains().

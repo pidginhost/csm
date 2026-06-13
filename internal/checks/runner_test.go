@@ -525,6 +525,49 @@ func TestRunParallelRoutesChallengeBeforeAutoBlock(t *testing.T) {
 	}
 }
 
+// ChallengeThenBlock is the single ordered challenge->block step shared by the
+// auto-response call sites. Challenge routing must run first so an eligible IP
+// is on the challenge list before AutoBlockIPs checks membership; otherwise the
+// IP gets hard-blocked instead of gated. This pins that ordering at the helper.
+func TestChallengeThenBlockRoutesChallengeBeforeBlock(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Challenge.Enabled = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	challengeList := &staticChallengeIPList{ips: make(map[string]bool)}
+	SetChallengeIPList(challengeList)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	findings := []alert.Finding{{
+		Check:    "http_scanner_profile",
+		Severity: alert.High,
+		SourceIP: "203.0.113.79",
+		Message:  "URL scanner profile from 203.0.113.79: 50 of 50 requests",
+	}}
+
+	challengeActions, blockActions := ChallengeThenBlock(cfg, findings)
+
+	if !challengeList.ips["203.0.113.79"] {
+		t.Fatal("ChallengeThenBlock did not route the IP to the challenge list first")
+	}
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("ChallengeThenBlock hard-blocked a challenge-eligible IP: %v", blocker.blocked)
+	}
+	if !containsFindingCheck(challengeActions, "challenge_route") {
+		t.Fatalf("missing challenge_route action: %+v", challengeActions)
+	}
+	if containsFindingCheck(blockActions, "auto_block") {
+		t.Fatalf("challenge-eligible IP also auto-blocked: %+v", blockActions)
+	}
+}
+
 // A throttled check that gets skipped in cycle N must NOT appear in the
 // per-scan purge list, otherwise StoreLatestScanFindings wipes the
 // findings emitted during cycle N-1 (when the throttle window had not

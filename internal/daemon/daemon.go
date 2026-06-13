@@ -663,7 +663,11 @@ func (d *Daemon) Run() error {
 	// it's safe/idempotent and should fix baseline findings too.
 	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
 
-	// Challenge routing runs on ALL findings unconditionally when enabled.
+	// Challenge routing runs on ALL findings unconditionally when enabled, so an
+	// eligible IP is on the challenge list before AutoBlockIPs (below, guarded by
+	// newFindings) checks membership. Not folded into ChallengeThenBlock here:
+	// challenge must route even with no new findings (re-establishing challenges
+	// on restart) while the block stage stays gated on new findings.
 	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
 
 	// Other auto-response only on new findings
@@ -1129,9 +1133,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// already sent in a previous cycle.
 
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
-	challengeActions := checks.ChallengeRouteIPs(cfg, autoResponseFindings)
-
-	blockActions := checks.AutoBlockIPs(cfg, autoResponseFindings)
+	// One ordered helper guarantees that ordering on every auto-response path.
+	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, autoResponseFindings)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
 
 	// Mark auto-blocked IPs in attack database

@@ -721,7 +721,12 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// Auto-response: skip when the caller requested a dry run
 	// (check/baseline commands).
 	if !dryRun {
-		challengeActions := ChallengeRouteIPs(cfg, findings)
+		// Challenge routing and hard-blocking are resolved together, in order,
+		// so an eligible IP lands on the challenge list before the block stage
+		// checks membership. The block actions are appended in their own slot
+		// below (after the kill/quarantine/htaccess actions) to keep the
+		// emitted ordering stable; no intervening stage acts on action findings.
+		challengeActions, blockActions := ChallengeThenBlock(cfg, findings)
 		for i := range challengeActions {
 			if challengeActions[i].Timestamp.IsZero() {
 				challengeActions[i].Timestamp = now
@@ -756,7 +761,6 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		observeAutoResponse("htaccess_clean", len(htaccessActions))
 		findings = append(findings, htaccessActions...)
 
-		blockActions := AutoBlockIPs(cfg, findings)
 		for i := range blockActions {
 			if blockActions[i].Timestamp.IsZero() {
 				blockActions[i].Timestamp = now
