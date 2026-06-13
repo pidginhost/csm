@@ -803,10 +803,19 @@ func defaultRestartDaemon() ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-// apiSettingsRestart handles POST /api/v1/settings/restart. Returns 202
-// on successful systemctl invocation (the server process may die
-// mid-response, so the frontend treats a connection reset as expected).
-// Returns 500 + stderr truncated to 4 KiB on failure before teardown.
+// settingsRestartDelay is how long the restart is deferred after the 202 is
+// written, so the acknowledgement reaches the client before systemctl restart
+// SIGTERMs this process. Overridden in tests to keep them fast.
+var settingsRestartDelay = 250 * time.Millisecond
+
+// apiSettingsRestart handles POST /api/v1/settings/restart. It schedules the
+// restart asynchronously and returns 202 immediately: `systemctl restart csm`
+// SIGTERMs this very process, so a synchronous restart cannot send a clean
+// response -- the call returns "signal: terminated" and the old handler turned
+// that into a spurious 500 even though the restart had succeeded. The frontend
+// treats 202 as "restart issued" and polls for the daemon to return; a failed
+// restart surfaces as the daemon not coming back, and the error is logged
+// server-side by scheduleDaemonRestart.
 func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -814,22 +823,9 @@ func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "settings-restart", "daemon", "")
+	s.scheduleDaemonRestart(settingsRestartDelay)
 
-	output, err := s.restartDaemon()
-	if err != nil {
-		truncated := output
-		if len(truncated) > 4096 {
-			truncated = truncated[:4096]
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":  err.Error(),
-			"stderr": string(truncated),
-		})
-		return
-	}
-
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"status":"restart issued"}`))
 }

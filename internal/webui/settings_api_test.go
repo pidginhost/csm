@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -831,11 +832,19 @@ reputation:
 	}
 }
 
-func TestSettingsRestartEndpointInvokesSystemctl(t *testing.T) {
+func withFastRestartDelay(t *testing.T) {
+	t.Helper()
+	orig := settingsRestartDelay
+	settingsRestartDelay = 5 * time.Millisecond
+	t.Cleanup(func() { settingsRestartDelay = orig })
+}
+
+func TestSettingsRestartEndpointSchedulesRestart(t *testing.T) {
+	withFastRestartDelay(t)
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
-	calls := 0
+	called := make(chan struct{}, 1)
 	s.restartDaemon = func() ([]byte, error) {
-		calls++
+		called <- struct{}{}
 		return []byte("ok"), nil
 	}
 
@@ -847,15 +856,24 @@ func TestSettingsRestartEndpointInvokesSystemctl(t *testing.T) {
 	if postW.Code != 202 {
 		t.Errorf("code = %d, want 202", postW.Code)
 	}
-	if calls != 1 {
-		t.Errorf("restartDaemon called %d times, want 1", calls)
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restartDaemon was not scheduled")
 	}
 }
 
-func TestSettingsRestartEndpointSurfacesFailure(t *testing.T) {
+// systemctl restart SIGTERMs this very process, so a synchronous restart
+// reports "signal: terminated" even though the restart succeeds. The handler
+// must acknowledge with 202 before the restart fires -- never surface that as a
+// 500, which made the web UI report a spurious "Restart failed".
+func TestSettingsRestartAcknowledgesEvenWhenRestartErrors(t *testing.T) {
+	withFastRestartDelay(t)
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
+	called := make(chan struct{}, 1)
 	s.restartDaemon = func() ([]byte, error) {
-		return []byte("Failed to restart csm.service: Unit not found."), fmt.Errorf("exit status 5")
+		called <- struct{}{}
+		return []byte("signal: terminated"), fmt.Errorf("signal: terminated")
 	}
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
@@ -863,11 +881,13 @@ func TestSettingsRestartEndpointSurfacesFailure(t *testing.T) {
 	postW := httptest.NewRecorder()
 	s.apiSettingsRestart(postW, postReq)
 
-	if postW.Code != 500 {
-		t.Errorf("code = %d, want 500", postW.Code)
+	if postW.Code != 202 {
+		t.Fatalf("code = %d, want 202 (restart is async; a self-termination error must not become a 500)", postW.Code)
 	}
-	if !strings.Contains(postW.Body.String(), "Unit not found") {
-		t.Errorf("body missing stderr: %s", postW.Body.String())
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restartDaemon was not scheduled")
 	}
 }
 
