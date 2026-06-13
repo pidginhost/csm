@@ -913,6 +913,83 @@ disabled_checks: []
 	}
 }
 
+// A typo in a top-level disabled_checks value must be rejected, not silently
+// saved -- otherwise the operator believes a noisy check is disabled while it
+// keeps running. The nested alerts email.disabled_checks enum already rejects
+// unknown values; the scheduled-scan list must too.
+func TestSettingsPOSTDisabledChecksRejectsUnknown(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+disabled_checks: []
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/disabled_checks", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
+		`{"changes":{"":["waf_status","totally_bogus_check_xyz"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("POST code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "totally_bogus_check_xyz") {
+		t.Errorf("response should name the bad value, got %s", postW.Body.String())
+	}
+}
+
+// Existing operator configs disable checks by runner ID (e.g. "php_content"),
+// not just public finding names. Validation must accept those compatibility
+// IDs so a save does not reject a config the scheduler already honors.
+func TestSettingsPOSTDisabledChecksAcceptsLegacyRunnerID(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+disabled_checks: []
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/disabled_checks", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
+		`{"changes":{"":["php_content"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, want 200, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload after POST: %v", err)
+	}
+	if got := loaded.DisabledChecks; len(got) != 1 || got[0] != "php_content" {
+		t.Errorf("DisabledChecks = %v, want [php_content]", got)
+	}
+}
+
 func TestSettingsPOSTInfraIPsUpdates(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:

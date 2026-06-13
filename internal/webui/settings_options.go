@@ -81,6 +81,14 @@ func applyDisabledCheckNameOptions(f *SettingsField) {
 	f.OptionGroups = groups
 }
 
+// disabledCheckValidationOptions returns the values a POST to the scheduled-scan
+// disabled_checks list may contain: public finding names plus the compatibility
+// runner IDs the scheduler still honors. Wider than the UI option set so saving
+// an existing config that disables a check by runner ID does not get rejected.
+func disabledCheckValidationOptions() []string {
+	return checks.DisabledCheckConfigNames()
+}
+
 func applyGeoIPEditionOptions(f *SettingsField) {
 	free, commercial := geoip.KnownEditions()
 	flat := append([]string{}, free...)

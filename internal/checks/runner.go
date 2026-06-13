@@ -129,6 +129,27 @@ func DisabledCheckNames() []string {
 	return out
 }
 
+// DisabledCheckConfigNames returns every value top-level disabled_checks
+// accepts: this is exactly the set splitDisabledChecks honors -- every emitted
+// finding name (including internal ones) plus every compatibility runner ID.
+// It is broader than DisabledCheckNames (the UI vocabulary) so POST-side
+// validation never rejects a value an existing operator config relies on.
+func DisabledCheckConfigNames() []string {
+	seen := make(map[string]struct{}, len(findingNameToRunnerNames)+len(runnerFindingNames))
+	for finding := range findingNameToRunnerNames {
+		seen[finding] = struct{}{}
+	}
+	for runner := range runnerFindingNames {
+		seen[runner] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 var findingNameToRunnerNames = buildFindingNameToRunnerNames()
 
 func buildFindingNameToRunnerNames() map[string][]string {

@@ -520,6 +520,11 @@ func resolvedOptionsForField(field *SettingsField) []string {
 	switch field.OptionsSource {
 	case "check_names":
 		applyCheckNameOptions(tmp)
+	case "disabled_check_names":
+		// Validation accepts a wider set than the UI dropdown (which lists
+		// public finding names only): the scheduler also honors compatibility
+		// runner IDs, so rejecting them here would break existing configs.
+		return disabledCheckValidationOptions()
 	case "geoip_editions":
 		applyGeoIPEditionOptions(tmp)
 	}
