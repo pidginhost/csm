@@ -413,16 +413,17 @@
                 var byCheck = d.routed_by_check || {};
                 var scanner = byCheck['http_scanner_profile'] || 0;
                 var total = Object.keys(byCheck).reduce(function(s, k) { return s + (byCheck[k] || 0); }, 0);
-                function row(label, val, cls) {
-                    return '<div class="d-flex justify-content-between py-1"><span>' + label +
-                        '</span><span class="badge ' + cls + '">' + (val || 0) + '</span></div>';
+                function stat(label, val, cls) {
+                    return '<div class="col-6 col-md-3">' +
+                        '<div class="h1 m-0 ' + cls + '">' + (val || 0) + '</div>' +
+                        '<div class="subheader">' + label + '</div></div>';
                 }
-                el.innerHTML =
-                    row('Pending now', d.pending, 'bg-azure-lt') +
-                    row('Escalated to block', d.escalated, 'bg-red-lt') +
-                    row('Scanner routed', scanner, 'bg-azure-lt') +
-                    row('Total routed', total, 'bg-secondary-lt') +
-                    '<div class="mt-2"><a href="/firewall" class="small">View on Firewall &rarr;</a></div>';
+                el.innerHTML = '<div class="row g-3 text-center">' +
+                    stat('Pending now', d.pending, '') +
+                    stat('Escalated to block', d.escalated, (d.escalated ? 'text-danger' : '')) +
+                    stat('Scanner routed', scanner, '') +
+                    stat('Total routed', total, 'text-secondary') +
+                    '</div>';
             }).catch(function() { el.innerHTML = '<div class="text-muted small">Unavailable.</div>'; });
         }
 

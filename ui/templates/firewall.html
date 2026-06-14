@@ -139,8 +139,13 @@
                         <div id="fw-chal-bychecks" class="mt-1"></div>
                     </div>
                 </div>
-                <div class="subheader mt-3">Recent routes</div>
-                <div id="fw-chal-recent" class="mt-1"></div>
+                <div class="subheader mt-3 mb-1">Recent routes</div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-vcenter mb-0">
+                        <thead><tr><th class="w-1 text-nowrap">Time</th><th>Source IP</th><th>Check</th></tr></thead>
+                        <tbody id="fw-chal-recent"></tbody>
+                    </table>
+                </div>
             </div>
         </div>
     </section>

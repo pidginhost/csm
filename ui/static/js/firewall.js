@@ -816,28 +816,33 @@ function loadChallenges() {
             var byCheck = d.routed_by_check || {};
             var rows = Object.keys(byCheck).map(function(k) { return [k, byCheck[k]]; });
             rows.sort(function(a, b) { return b[1] - a[1]; });
+            var max = rows.length ? rows[0][1] : 0;
             var bc = document.getElementById('fw-chal-bychecks');
             if (rows.length === 0) {
                 bc.innerHTML = '<div class="text-muted small">No challenges routed since restart.</div>';
             } else {
                 bc.innerHTML = rows.map(function(r) {
-                    return '<div class="d-flex justify-content-between border-bottom py-1">' +
-                        '<span class="font-monospace small">' + CSM.esc(r[0]) + '</span>' +
-                        '<span class="badge bg-azure-lt">' + r[1] + '</span></div>';
+                    var pct = max > 0 ? Math.max(3, Math.round(r[1] / max * 100)) : 0;
+                    return '<div class="mb-2">' +
+                        '<div class="d-flex justify-content-between"><span class="font-monospace small">' + CSM.esc(r[0]) + '</span>' +
+                        '<span class="small text-secondary">' + r[1] + '</span></div>' +
+                        '<div class="progress" style="height:5px"><div class="progress-bar" style="width:' + pct + '%"></div></div>' +
+                        '</div>';
                 }).join('');
             }
 
-            var recent = (d.recent || []).slice().reverse();
+            var recent = (d.recent || []).slice().reverse().slice(0, 8);
             var rc = document.getElementById('fw-chal-recent');
             if (recent.length === 0) {
-                rc.innerHTML = '<div class="text-muted small">None yet.</div>';
+                rc.innerHTML = '<tr><td colspan="3" class="text-muted small">None yet.</td></tr>';
             } else {
                 rc.innerHTML = recent.map(function(e) {
-                    var t = e.at ? new Date(e.at).toLocaleString() : '';
-                    return '<div class="small py-1">' +
-                        '<span class="font-monospace">' + CSM.esc(e.ip || '') + '</span> ' +
-                        '<span class="badge bg-azure-lt">' + CSM.esc(e.check || '') + '</span> ' +
-                        '<span class="text-muted">' + CSM.esc(t) + '</span></div>';
+                    var t = e.at ? new Date(e.at).toLocaleTimeString() : '';
+                    return '<tr>' +
+                        '<td class="text-muted small text-nowrap">' + CSM.esc(t) + '</td>' +
+                        '<td class="font-monospace small">' + CSM.esc(e.ip || '') + '</td>' +
+                        '<td><span class="badge bg-azure-lt">' + CSM.esc(e.check || '') + '</span></td>' +
+                        '</tr>';
                 }).join('');
             }
         })
