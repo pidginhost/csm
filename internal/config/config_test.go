@@ -397,6 +397,26 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 	}
 }
 
+// The packaged default config must ship bot_ranges with the same auto-update
+// posture as the production reference and the installer template, so the three
+// default-config sources do not drift.
+func TestPackagedDefaultConfigEnablesBotRangesAutoUpdate(t *testing.T) {
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Skipf("packaged default config not readable from this layout: %v", err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Reputation.BotRanges.AutoUpdate == nil || !*cfg.Reputation.BotRanges.AutoUpdate {
+		t.Fatal("packaged default reputation.bot_ranges.auto_update must be explicitly true")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("packaged default reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
+}
+
 func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
 	if err != nil {

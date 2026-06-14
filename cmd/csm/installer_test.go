@@ -93,6 +93,30 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 	}
 }
 
+// The installer template must ship bot_ranges with the same auto-update posture
+// as the packaged default and production reference, so the three default-config
+// sources stay in sync.
+func TestDeployDefaultConfigEnablesBotRangesAutoUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if deployErr := deployDefaultConfig(path); deployErr != nil {
+		t.Fatalf("deployDefaultConfig: %v", deployErr)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes generated config: %v", err)
+	}
+	if cfg.Reputation.BotRanges.AutoUpdate == nil || !*cfg.Reputation.BotRanges.AutoUpdate {
+		t.Fatal("installer default reputation.bot_ranges.auto_update must be explicitly true")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("installer default reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
+}
+
 func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
 	if deployErr := deployDefaultConfig(path); deployErr != nil {
