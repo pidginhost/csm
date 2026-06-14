@@ -826,9 +826,12 @@ function loadChallenges() {
                     return '<div class="mb-2">' +
                         '<div class="d-flex justify-content-between"><span class="font-monospace small">' + CSM.esc(r[0]) + '</span>' +
                         '<span class="small text-secondary">' + r[1] + '</span></div>' +
-                        '<div class="progress" style="height:5px"><div class="progress-bar" style="width:' + pct + '%"></div></div>' +
+                        '<div class="progress csm-progress-thin"><div class="progress-bar" data-pct="' + pct + '"></div></div>' +
                         '</div>';
                 }).join('');
+                bc.querySelectorAll('.progress-bar[data-pct]').forEach(function(el) {
+                    el.style.width = el.getAttribute('data-pct') + '%';
+                });
             }
 
             var recent = (d.recent || []).slice().reverse().slice(0, 8);

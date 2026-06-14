@@ -985,6 +985,7 @@ body.theme-dark { background-color: #1a2234; }
 .csm-opacity-30 { opacity: 0.3; }
 .csm-modal-footer-compact { padding: 0.5rem 0.75rem; }
 .csm-progress-zero { width: 0%; }
+.csm-progress-thin { height: 5px; }
 
 /* ==========================================================================
    Phase 2: navigation shell. Sidebar groups + active state + mobile drawer
