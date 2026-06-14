@@ -50,6 +50,15 @@ must fall in one of the published CIDRs -- this is for AI agents
 crawler reverse DNS. Over-broad or non-public ranges are rejected. All
 checks run at config load and on reload.
 
+GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are recognized out of
+the box: their published IP ranges ship as an embedded snapshot and are
+refreshed from the vendor endpoints by an auto-updater (`reputation.bot_ranges`,
+default on, outbound HTTPS, configurable interval). Fetched ranges are
+validated with the same over-broad and non-public guards as operator entries,
+and the embedded snapshot is the trusted fallback when a fetch fails. Anthropic
+ClaudeBot has no published machine-readable range feed, so it stays
+reverse-DNS verified (`anthropic.com`).
+
 ## Abuse Reporting
 
 `reputation.report` can send minimized confirmed-abuse reports to a central

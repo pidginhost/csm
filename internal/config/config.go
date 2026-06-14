@@ -675,6 +675,15 @@ type Config struct {
 		// bad entry cannot turn the allowlist into a bypass.
 		VerifiedBots []VerifiedBot `yaml:"verified_bots"`
 
+		// BotRanges controls the auto-updater that refreshes published
+		// AI-crawler IP ranges (OpenAI, Perplexity) used to verify those bots
+		// by address. Embedded snapshots work without it; the updater keeps
+		// them current via outbound HTTPS to the vendor endpoints. Default on.
+		BotRanges struct {
+			AutoUpdate     *bool  `yaml:"auto_update"`     // nil = true
+			UpdateInterval string `yaml:"update_interval"` // default "24h"; min 1h
+		} `yaml:"bot_ranges"`
+
 		// Report emits signed, minimized abuse reports for confirmed-abuse
 		// findings to a central abuse database or a private collector.
 		// Opt-in; default off. Keys/secrets resolve from *_env at startup.
@@ -1176,6 +1185,15 @@ func (c *Config) BotVerifyEnabled() bool {
 		return true
 	}
 	return *c.Reputation.BotVerifyEnabled
+}
+
+// BotRangesAutoUpdate reports whether the AI-crawler IP-range auto-updater
+// runs. Default true (embedded snapshots are used regardless).
+func (c *Config) BotRangesAutoUpdate() bool {
+	if c.Reputation.BotRanges.AutoUpdate == nil {
+		return true
+	}
+	return *c.Reputation.BotRanges.AutoUpdate
 }
 
 type defaultPresence struct {

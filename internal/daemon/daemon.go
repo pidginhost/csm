@@ -876,6 +876,9 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("geoip-updater", d.geoipUpdater)
 
+	d.wg.Add(1)
+	obs.Go("bot-ranges-updater", d.botRangesUpdater)
+
 	// Start heartbeat
 	d.wg.Add(1)
 	obs.Go("heartbeat", d.heartbeat)
