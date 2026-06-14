@@ -26,11 +26,11 @@
             '</div>' +
             '<div class="col-md-3">' +
             '<label class="form-label">rDNS suffixes <span class="text-muted">(one per line)</span></label>' +
-            '<textarea class="form-control vb-rdns" rows="3" placeholder="seranking.com">' + CSM.esc(rdns) + '</textarea>' +
+            '<textarea class="form-control vb-rdns" rows="3" placeholder="crawler.example.com">' + CSM.esc(rdns) + '</textarea>' +
             '</div>' +
             '<div class="col-md-3">' +
             '<label class="form-label">IP ranges <span class="text-muted">(one per line)</span></label>' +
-            '<textarea class="form-control vb-ip" rows="3" placeholder="18.97.9.96/29">' + CSM.esc(ips) + '</textarea>' +
+            '<textarea class="form-control vb-ip" rows="3" placeholder="203.0.113.0/24">' + CSM.esc(ips) + '</textarea>' +
             '</div>' +
             '</div>' +
             '<div class="d-flex justify-content-between align-items-center mt-2">' +
