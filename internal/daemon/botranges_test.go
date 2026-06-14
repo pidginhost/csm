@@ -41,3 +41,46 @@ func TestReloadBotRanges_LoadsCacheAndRecordsMetrics(t *testing.T) {
 		t.Errorf("perplexitybot prefix gauge = %v, want 1", got)
 	}
 }
+
+func TestReloadBotRanges_MissingCacheFails(t *testing.T) {
+	t.Cleanup(func() { threatintel.PublishFetchedRanges(nil) })
+
+	d := &Daemon{cfg: &config.Config{StatePath: t.TempDir()}}
+	total, _, _ := botRangesMetrics()
+	before := total.With("failure").Value()
+	if err := d.reloadBotRanges(); err == nil {
+		t.Fatal("reloadBotRanges should fail when the refreshed cache is missing")
+	}
+	if got := total.With("failure").Value() - before; got != 1 {
+		t.Fatalf("failure counter delta = %v, want 1", got)
+	}
+}
+
+func TestSetBotRangesPrefixGaugesClearsMissingBots(t *testing.T) {
+	t.Cleanup(func() { threatintel.PublishFetchedRanges(nil) })
+
+	_, oldNet, err := net.ParseCIDR("18.97.9.96/29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, newNet, err := net.ParseCIDR("74.7.241.0/25")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	threatintel.PublishFetchedRanges(map[string][]*net.IPNet{"stalebot": {oldNet}})
+	setBotRangesPrefixGauges()
+	_, prefixes, _ := botRangesMetrics()
+	if got := prefixes.With("stalebot").Value(); got != 1 {
+		t.Fatalf("stalebot prefix gauge before removal = %v, want 1", got)
+	}
+
+	threatintel.PublishFetchedRanges(map[string][]*net.IPNet{"freshbot": {newNet}})
+	setBotRangesPrefixGauges()
+	if got := prefixes.With("stalebot").Value(); got != 0 {
+		t.Fatalf("stalebot prefix gauge after removal = %v, want 0", got)
+	}
+	if got := prefixes.With("freshbot").Value(); got != 1 {
+		t.Fatalf("freshbot prefix gauge = %v, want 1", got)
+	}
+}

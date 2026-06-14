@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 // newListenerForTest builds a ControlListener wired to a minimal
@@ -399,12 +401,21 @@ func TestVerifyTierRunIntegrityUsesActiveConfigAfterReload(t *testing.T) {
 func TestDispatchRoutesEveryKnownCommand(t *testing.T) {
 	c := newListenerForTest(t)
 	c.d.cfg.StatePath = t.TempDir() // for handleGeoIPReload's OpenFresh
+	t.Cleanup(func() { threatintel.PublishFetchedRanges(nil) })
+	_, n, err := net.ParseCIDR("18.97.9.96/29")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := threatintel.SaveFetchedRanges(filepath.Join(c.d.cfg.StatePath, "botranges.json"), map[string][]*net.IPNet{"perplexitybot": {n}}); err != nil {
+		t.Fatalf("seed bot ranges cache: %v", err)
+	}
 
 	cmds := []string{
 		control.CmdStatus,
 		control.CmdHistoryRead,
 		control.CmdRulesReload,
 		control.CmdGeoIPReload,
+		control.CmdBotRangesReload,
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {

@@ -876,10 +876,11 @@ func runUpdateBotRanges() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	client := &http.Client{Timeout: 30 * time.Second}
-	n, err := threatintel.RefreshFetchedRanges(ctx, client, threatintel.DefaultRangeSources(), cachePath)
+	n, err := refreshBotRanges(ctx, client, threatintel.DefaultRangeSources(), cachePath)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Refresh error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Refresh failed: %v\n", err)
+		os.Exit(1)
 	}
 	if n == 0 {
 		fmt.Fprintf(os.Stderr, "No bot ranges refreshed (every vendor feed failed); keeping the previous snapshot.\n")
@@ -887,6 +888,10 @@ func runUpdateBotRanges() {
 	}
 	fmt.Fprintf(os.Stderr, "Refreshed %d crawler identities into %s\n", n, cachePath)
 	tryReloadDaemon(control.CmdBotRangesReload)
+}
+
+func refreshBotRanges(ctx context.Context, client *http.Client, sources []threatintel.RangeSource, cachePath string) (int, error) {
+	return threatintel.RefreshFetchedRanges(ctx, client, sources, cachePath)
 }
 
 func runClean() {

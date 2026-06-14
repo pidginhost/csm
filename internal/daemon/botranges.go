@@ -17,6 +17,8 @@ var (
 	botRangesPrefixes     *metrics.GaugeVec
 	botRangesLastSuccess  *metrics.Gauge
 	botRangesMetricsOnce  sync.Once
+	botRangesPrefixMu     sync.Mutex
+	botRangesPrefixBots   = map[string]struct{}{}
 )
 
 // botRangesMetrics lazily registers and returns the AI-crawler range-updater
@@ -49,8 +51,18 @@ func botRangesMetrics() (*metrics.CounterVec, *metrics.GaugeVec, *metrics.Gauge)
 // setBotRangesPrefixGauges syncs the per-bot prefix gauge to the active overlay.
 func setBotRangesPrefixGauges() {
 	_, prefixes, _ := botRangesMetrics()
-	for bot, nets := range threatintel.FetchedRangesSnapshot() {
+	snap := threatintel.FetchedRangesSnapshot()
+	botRangesPrefixMu.Lock()
+	defer botRangesPrefixMu.Unlock()
+	for bot := range botRangesPrefixBots {
+		if _, ok := snap[bot]; !ok {
+			prefixes.With(bot).Set(0)
+			delete(botRangesPrefixBots, bot)
+		}
+	}
+	for bot, nets := range snap {
 		prefixes.With(bot).Set(float64(len(nets)))
+		botRangesPrefixBots[bot] = struct{}{}
 	}
 }
 
@@ -77,7 +89,7 @@ func (d *Daemon) botRangesCachePath() string {
 // fetches fresh ranges, writes the cache, then asks the daemon to reload so the
 // new ranges take effect without a restart.
 func (d *Daemon) reloadBotRanges() error {
-	if err := threatintel.LoadFetchedRanges(d.botRangesCachePath()); err != nil {
+	if err := threatintel.LoadFetchedRangesRequired(d.botRangesCachePath()); err != nil {
 		observeBotRangesRefresh(false)
 		return err
 	}

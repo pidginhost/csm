@@ -216,9 +216,19 @@ func SaveFetchedRanges(path string, m map[string][]*net.IPNet) error {
 // LoadFetchedRanges reads a previously saved overlay and publishes it. A
 // missing file is not an error (first run). Entries are re-validated on load.
 func LoadFetchedRanges(path string) error {
+	return loadFetchedRanges(path, true)
+}
+
+// LoadFetchedRangesRequired is the control-command variant: by the time the
+// daemon is asked to reload, the CLI must already have written a cache file.
+func LoadFetchedRangesRequired(path string) error {
+	return loadFetchedRanges(path, false)
+}
+
+func loadFetchedRanges(path string, allowMissing bool) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- daemon-owned state path
 	if err != nil {
-		if os.IsNotExist(err) {
+		if allowMissing && os.IsNotExist(err) {
 			return nil
 		}
 		return err
