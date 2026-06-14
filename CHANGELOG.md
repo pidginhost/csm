@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Challenge activity can now be feature-detected through the capabilities endpoint.
 - Operators can extend the verified-bot allowlist from config: list a crawler's UA substrings plus either reverse-DNS suffixes or published IP ranges, and CSM confirms it (forward-confirmed reverse DNS, or address membership for AI agents like PerplexityBot/GPTBot/ClaudeBot that have no crawler reverse DNS) before trusting it, so legitimate crawlers stop tripping the URL scanner-profile alert without a code change. Shared-hosting suffixes and over-broad or non-public IP ranges are rejected so the list cannot become a bypass, and changes apply on reload.
 - GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are now recognized out of the box by their published IP ranges (they have no crawler reverse DNS), so they are no longer mistaken for scanners with no configuration. The ranges ship as a snapshot and refresh automatically from the vendors on a schedule; the fetched data is validated the same way operator entries are, so a bad feed cannot widen the allowlist. Can be disabled.
+- The verified-bot allowlist now has a web UI editor (Verified Bots page) to add, edit, and remove crawlers and AI agents, with the same validation as the config file; saved changes apply live without a restart.
 
 ### Fixed
 

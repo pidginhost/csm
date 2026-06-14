@@ -1930,6 +1930,9 @@ func (d *Daemon) startWebUI() {
 	srv.SetHealthProvider(d)
 	srv.SetFindingBus(d.findingBus)
 	srv.SetIncidentCorrelator(IncidentCorrelator())
+	// Push web-UI verified_bots edits into the live registry + verifier so they
+	// take effect without a restart, the same path SIGHUP uses.
+	srv.SetVerifiedBotsReloader(func() error { d.reconcileVerifiedBots(); return nil })
 	d.logWatchersMu.Lock()
 	numWatchers := len(d.logWatchers)
 	d.logWatchersMu.Unlock()

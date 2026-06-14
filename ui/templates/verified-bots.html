@@ -1,0 +1,39 @@
+{{define "title"}}Verified Bots{{end}}
+{{define "page"}}verified-bots{{end}}
+{{define "content"}}
+<div class="csm-page-header mb-3">
+    <div class="csm-page-header__main">
+        <h1 class="csm-page-header__title"><i class="ti ti-robot"></i>&nbsp;Verified Bots</h1>
+        <div class="text-muted">Allowlist legitimate crawlers and AI agents so they are not flagged or blocked. Each bot needs a User-Agent substring plus one verification method: a reverse-DNS suffix (search and SEO crawlers) or published IP ranges (AI agents that have no crawler reverse DNS).</div>
+    </div>
+    <div class="csm-page-header__actions">
+        <button type="button" class="btn btn-ghost-secondary btn-sm" id="vbots-add"><i class="ti ti-plus"></i>&nbsp;Add bot</button>
+        <button type="button" class="btn btn-primary btn-sm" id="vbots-save"><i class="ti ti-device-floppy"></i>&nbsp;Save</button>
+    </div>
+</div>
+
+<div class="alert alert-info" role="alert">
+    Built-in bots (Googlebot, Bingbot, Applebot, DuckDuckBot, GPTBot, ClaudeBot, PerplexityBot and others) are always verified and need no entry here. Reverse-DNS suffixes must be registrable domains; shared-hosting suffixes and over-broad or non-public IP ranges are rejected so the list cannot become a bypass.
+</div>
+
+<div id="vbots-loading" class="csm-empty">
+    <div class="csm-empty__icon"><span class="spinner-border spinner-border-sm"></span></div>
+    <div class="csm-empty__reason">Loading...</div>
+</div>
+
+<div id="vbots-empty" class="d-none">
+    <div class="card">
+        <div class="csm-empty">
+            <div class="csm-empty__icon"><i class="ti ti-robot-off"></i></div>
+            <div class="csm-empty__title">No operator-defined verified bots</div>
+            <div class="csm-empty__reason">Add a custom crawler or AI agent with the button above.</div>
+        </div>
+    </div>
+</div>
+
+<div id="vbots-list" class="d-none"></div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/verified-bots.js"></script>
+{{end}}
+{{template "layout" .}}
