@@ -298,6 +298,12 @@ web_server:
 
 reputation:
   bot_verify_enabled: true
+  # Auto-update of built-in AI-crawler IP ranges (OpenAI, Perplexity). Ships as a
+  # snapshot and refreshes from vendor endpoints on a schedule. Outbound HTTPS;
+  # set auto_update: false to use the snapshot only. Restart required.
+  bot_ranges:
+    auto_update: true
+    update_interval: "24h"
 
 suppressions:
   upcp_window_start: "00:30"

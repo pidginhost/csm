@@ -93,6 +93,31 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 	}
 }
 
+// The installer template must ship bot_ranges with the same auto-update posture
+// as the packaged default and production reference, so the three default-config
+// sources stay in sync.
+func TestDeployDefaultConfigEnablesBotRangesAutoUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if deployErr := deployDefaultConfig(path); deployErr != nil {
+		t.Fatalf("deployDefaultConfig: %v", deployErr)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes generated config: %v", err)
+	}
+	if cfg.Reputation.BotRanges.AutoUpdate == nil || !*cfg.Reputation.BotRanges.AutoUpdate {
+		t.Fatal("installer default reputation.bot_ranges.auto_update must be explicitly true")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("installer default reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
+	assertInstallerRawBotRangesAutoUpdate(t, data)
+}
+
 func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
 	if deployErr := deployDefaultConfig(path); deployErr != nil {
@@ -163,5 +188,48 @@ func TestDeployDefaultConfigReplacesAtomically(t *testing.T) {
 	}
 	if _, err := config.LoadBytes(data); err != nil {
 		t.Fatalf("LoadBytes generated config: %v", err)
+	}
+}
+
+func assertInstallerRawBotRangesAutoUpdate(t *testing.T, data []byte) {
+	t.Helper()
+
+	var raw struct {
+		Reputation map[string]yaml.Node `yaml:"reputation"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("generated config yaml.Unmarshal: %v", err)
+	}
+	botRanges, ok := raw.Reputation["bot_ranges"]
+	if !ok {
+		t.Fatal("installer default missing reputation.bot_ranges")
+	}
+	var fields map[string]yaml.Node
+	if err := botRanges.Decode(&fields); err != nil {
+		t.Fatalf("installer default reputation.bot_ranges decode: %v", err)
+	}
+
+	autoUpdateNode, ok := fields["auto_update"]
+	if !ok {
+		t.Fatal("installer default missing reputation.bot_ranges.auto_update")
+	}
+	var autoUpdate bool
+	if err := autoUpdateNode.Decode(&autoUpdate); err != nil {
+		t.Fatalf("installer default reputation.bot_ranges.auto_update decode: %v", err)
+	}
+	if !autoUpdate {
+		t.Fatal("installer default reputation.bot_ranges.auto_update = false, want true")
+	}
+
+	intervalNode, ok := fields["update_interval"]
+	if !ok {
+		t.Fatal("installer default missing reputation.bot_ranges.update_interval")
+	}
+	var interval string
+	if err := intervalNode.Decode(&interval); err != nil {
+		t.Fatalf("installer default reputation.bot_ranges.update_interval decode: %v", err)
+	}
+	if interval != "24h" {
+		t.Fatalf("installer default reputation.bot_ranges.update_interval = %q, want 24h", interval)
 	}
 }

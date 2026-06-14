@@ -56,11 +56,25 @@ func TestIsHardBlockCheck(t *testing.T) {
 }
 
 type mockIPList struct {
-	ips map[string]bool
+	ips           map[string]bool
+	nonEscalating map[string]bool
 }
 
 func (m *mockIPList) Add(ip, reason string, dur time.Duration) {
 	m.ips[ip] = true
+}
+
+func (m *mockIPList) AddNonEscalating(ip, reason string, dur time.Duration) {
+	m.ips[ip] = true
+	if m.nonEscalating == nil {
+		m.nonEscalating = make(map[string]bool)
+	}
+	m.nonEscalating[ip] = true
+}
+
+func (m *mockIPList) Remove(ip string) {
+	delete(m.ips, ip)
+	delete(m.nonEscalating, ip)
 }
 
 func (m *mockIPList) Contains(ip string) bool {
@@ -271,6 +285,54 @@ func TestResponseActionForCheck(t *testing.T) {
 					tc.check, tc.scannerAction, got, tc.want)
 			}
 		})
+	}
+}
+
+// A pending-claimed-bot abuse finding must be reversible: it routes to the
+// challenge while challenge is enabled (a real crawler clears itself, a spoofer
+// cannot) and hard-blocks only when challenge is disabled.
+func TestChallengeRoute_ClaimedBotUnverifiedRoutesThenBlocks(t *testing.T) {
+	if isHardBlockCheck("http_claimed_bot_unverified") {
+		t.Error("http_claimed_bot_unverified must not be in hardBlockChecks")
+	}
+	if !isChallengeableCheck("http_claimed_bot_unverified") {
+		t.Error("http_claimed_bot_unverified must be challenge-eligible")
+	}
+	enabled := &config.Config{}
+	enabled.Challenge.Enabled = true
+	if got := responseActionForCheck(enabled, "http_claimed_bot_unverified"); got != responseChallenge {
+		t.Errorf("with challenge enabled = %q, want %q", got, responseChallenge)
+	}
+	disabled := &config.Config{}
+	disabled.Challenge.Enabled = false
+	if got := responseActionForCheck(disabled, "http_claimed_bot_unverified"); got != responseBlock {
+		t.Errorf("with challenge disabled = %q, want %q", got, responseBlock)
+	}
+}
+
+func TestChallengeRoute_ClaimedBotUnverifiedIsNonEscalating(t *testing.T) {
+	mock := &mockIPList{ips: make(map[string]bool)}
+	old := challengeIPList
+	SetChallengeIPList(mock)
+	defer SetChallengeIPList(old)
+
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+
+	actions := ChallengeRouteIPs(cfg, []alert.Finding{{
+		Check:    "http_claimed_bot_unverified",
+		Severity: alert.High,
+		SourceIP: "203.0.113.47",
+		Message:  "Unverified claimed bot from 203.0.113.47: request flood",
+	}})
+	if len(actions) != 1 {
+		t.Fatalf("challenge actions = %d, want 1", len(actions))
+	}
+	if !mock.ips["203.0.113.47"] {
+		t.Fatal("claimed bot IP was not added to challenge list")
+	}
+	if !mock.nonEscalating["203.0.113.47"] {
+		t.Fatal("claimed bot challenge must not timeout-escalate to a hard block")
 	}
 }
 

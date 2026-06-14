@@ -554,6 +554,12 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] Attack DB initialized (%s)\n", ts(), adb.FormatTopLine())
 	}
 
+	// Install operator verified-bot ranges before the firewall engine is
+	// exposed and before the initial auto-response pass. The firewall's
+	// soft-allow gate consults this registry from its first block decision.
+	startupBotEntries := verifiedBotEntries(d.cfg)
+	threatintel.SetOperatorBots(startupBotEntries)
+
 	// Start firewall engine if enabled
 	d.startFirewall()
 
@@ -769,9 +775,10 @@ func (d *Daemon) Run() error {
 	// Gated on reputation.bot_verify_enabled (default true) and on a
 	// non-nil store so the result can be persisted.
 	// Operator-configured verified bots extend the built-in allowlist.
-	// Install them before the verifier so ClaimedBotFromUA / classifyUA
-	// recognise them even when rDNS verification is disabled.
-	botEntries := verifiedBotEntries(d.cfg)
+	// They were installed before firewall startup so auto-block soft-allow
+	// checks see them during the initial baseline pass; refresh from the
+	// current config here in case a SIGHUP landed during startup.
+	botEntries := verifiedBotEntries(d.currentCfg())
 	threatintel.SetOperatorBots(botEntries)
 
 	if d.cfg.BotVerifyEnabled() {
@@ -2301,7 +2308,7 @@ func challengeEscalatedCounter() *metrics.CounterVec {
 	challengeEscalatedMetricOnce.Do(func() {
 		challengeEscalatedMetric = metrics.NewCounterVec(
 			"csm_challenge_escalated_total",
-			"Challenge-timeout escalations, by firewall outcome (live, noop, dry_run, allowed).",
+			"Challenge-timeout escalations, by firewall outcome (live, noop, dry_run, allowed, allowlisted).",
 			[]string{"outcome"},
 		)
 		metrics.MustRegister("csm_challenge_escalated_total", challengeEscalatedMetric)
@@ -2311,8 +2318,8 @@ func challengeEscalatedCounter() *metrics.CounterVec {
 
 // observeChallengeEscalated counts one challenge-timeout escalation, labelled by
 // the firewall outcome (live=a new hard block landed, noop=the IP was already
-// blocked, plus dry_run/allowed). It lets operators see how many challenges
-// became real blocks versus no-ops. Registered lazily on first use.
+// blocked, plus dry_run/allowed/allowlisted). It lets operators see how many
+// challenges became real blocks versus no-ops. Registered lazily on first use.
 func observeChallengeEscalated(outcome firewall.BlockOutcome) {
 	challengeEscalatedCounter().With(string(outcome)).Inc()
 }
@@ -2510,6 +2517,13 @@ func (d *Daemon) startFirewall() {
 	})
 	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
 	engine.SetVerdictAsker(d.askVerdictCallback)
+	// The auto-block path skips published-crawler IPs so a high-volume bot is
+	// never re-added to blocked_ips behind the operator allowlist. Built-in and
+	// operator verified_bots ranges both flow through this lookup.
+	engine.SetSoftAllowChecker(func(ip string) bool {
+		parsed := net.ParseIP(ip)
+		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
+	})
 
 	if err := engine.Apply(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)

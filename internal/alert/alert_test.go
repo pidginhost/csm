@@ -208,7 +208,7 @@ func TestFinding_BackwardCompat_ZeroValues(t *testing.T) {
 }
 
 func TestFindingKeyHTTPAbuseNewChecksUseStructuredSourceIP(t *testing.T) {
-	for _, check := range []string{"http_request_flood", "http_scanner_profile", "http_ua_spoof"} {
+	for _, check := range []string{"http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof"} {
 		a := Finding{Check: check, SourceIP: "203.0.113.88", Message: "sample A"}
 		b := Finding{Check: check, SourceIP: "203.0.113.88", Message: "sample B"}
 		if a.Key() != b.Key() {

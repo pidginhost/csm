@@ -21,11 +21,12 @@ const DefaultSocketPath = "/var/run/csm/control.sock"
 
 // Command names. Use constants so typos fail at compile time.
 const (
-	CmdTierRun     = "tier.run"
-	CmdStatus      = "status"
-	CmdHistoryRead = "history.read"
-	CmdRulesReload = "rules.reload"
-	CmdGeoIPReload = "geoip.reload"
+	CmdTierRun         = "tier.run"
+	CmdStatus          = "status"
+	CmdHistoryRead     = "history.read"
+	CmdRulesReload     = "rules.reload"
+	CmdGeoIPReload     = "geoip.reload"
+	CmdBotRangesReload = "botranges.reload"
 
 	// Phase 2 additions.
 	CmdBaseline               = "baseline"

@@ -45,6 +45,13 @@ const (
 	uaKindBrowser uaKind = iota
 	uaKindClaimedBot
 	uaKindClaimedBotNegative
+	// uaKindClaimedBotPending is a claimed-bot UA whose rDNS verification has
+	// not resolved yet (cache miss, async job in flight). It is neither trusted
+	// (would have returned early via IsVerifiedBot) nor a confirmed spoof. Such
+	// an IP's flood/scanner abuse is routed to the reversible
+	// http_claimed_bot_unverified check instead of a hard block, so a real
+	// crawler is not blocked during the verification window.
+	uaKindClaimedBotPending
 	uaKindKnownScanner
 	uaKindWPSpoofPingback
 	uaKindScriptingLang
@@ -58,6 +65,14 @@ const (
 // nopBotClassifier below.
 type botClassifier interface {
 	IsVerifiedBot(ip string, ua string) bool
+}
+
+type confirmedNegativeBotClassifier interface {
+	ConfirmedNegative(ip, ua string) bool
+}
+
+type pendingBotVerificationClassifier interface {
+	VerificationPending(ip, ua string) bool
 }
 
 type nopBotClassifier struct{}
@@ -159,6 +174,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		return
 	}
 	if bot != nil && bot.IsVerifiedBot(ip, rec.UserAgent) {
+		removeChallengeIP(ip)
 		return
 	}
 
@@ -240,13 +256,17 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			// above. For IPs outside the static range, check whether the
 			// async rDNS verifier has confirmed a negative result. Only
 			// promote to uaKindClaimedBotNegative when the cache has a
-			// definitive negative; otherwise fail open (treat as browser)
-			// so a new-to-us legitimate bot IP does not fire ua_spoof on
-			// the first scan after it appears.
-			if cv, ok := bot.(interface {
-				ConfirmedNegative(ip, ua string) bool
-			}); ok && cv.ConfirmedNegative(ip, rec.UserAgent) {
+			// definitive negative. The reversible pending-bot route is only
+			// safe when an active verifier can resolve the cache miss later;
+			// static-only/no-verifier paths keep the old flood/scanner
+			// behavior instead of softening spoofed bot UAs forever.
+			if cv, ok := bot.(confirmedNegativeBotClassifier); ok && cv.ConfirmedNegative(ip, rec.UserAgent) {
 				kind = uaKindClaimedBotNegative
+			} else if pv, ok := bot.(pendingBotVerificationClassifier); ok && pv.VerificationPending(ip, rec.UserAgent) {
+				// Verification still pending: not a confirmed spoof, so do not
+				// flag ua_spoof. Tracked separately so a flood/scan crawl from
+				// this IP routes to the reversible challenge, not a hard block.
+				kind = uaKindClaimedBotPending
 			} else {
 				kind = uaKindBrowser
 			}
@@ -255,7 +275,7 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.uaCat[ip] = make(map[uaKind]int)
 		}
 		s.uaCat[ip][kind]++
-		if rec.Domain != "" && kind != uaKindBrowser {
+		if rec.Domain != "" && kind != uaKindBrowser && kind != uaKindClaimedBotPending {
 			s.recordAbuseDomain("http_ua_spoof", ip, rec.Domain)
 		}
 	}
@@ -358,6 +378,11 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			if count < cfg.Thresholds.HTTPFloodThreshold {
 				continue
 			}
+			if s.isPendingClaimedBot(ip) {
+				// Routed to http_claimed_bot_unverified (challenge) below so a
+				// real crawler mid-verification is not hard-blocked.
+				continue
+			}
 			sample := s.samples[ip]
 			out = append(out, alert.Finding{
 				Severity: alert.High,
@@ -419,6 +444,7 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	}
 
 	out = append(out, s.emitScannerProfile(cfg)...)
+	out = append(out, s.emitClaimedBotUnverified(cfg)...)
 
 	// Distributed attack: many distinct abusive IPs hitting one vhost.
 	// Built from the per-IP findings already emitted above, so only IPs
@@ -452,6 +478,11 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		if !scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
 			continue
 		}
+		if s.isPendingClaimedBot(ip) {
+			// Routed to http_claimed_bot_unverified (challenge) instead of a
+			// hard scanner-profile block while verification is pending.
+			continue
+		}
 		for _, domain := range s.scannerProfileDomains(ip, minReq, pct) {
 			s.recordAbuseDomain("http_scanner_profile", ip, domain)
 		}
@@ -467,6 +498,74 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 		})
 	}
 	return out
+}
+
+// isPendingClaimedBot reports whether ip's in-window traffic is dominated by a
+// claimed-bot UA whose rDNS verification has not resolved. The claimed-bot
+// requests must be a strict majority so an attacker cannot downgrade a hard
+// block to the softer challenge route by mixing in bot-UA requests.
+func (s *domlogStats) isPendingClaimedBot(ip string) bool {
+	pending := s.uaCat[ip][uaKindClaimedBotPending]
+	if pending == 0 {
+		return false
+	}
+	return pending*2 > s.httpReqs[ip]
+}
+
+// emitClaimedBotUnverified emits one http_claimed_bot_unverified finding per
+// pending-claimed-bot IP whose flood or scanner-profile volume crossed a hard
+// threshold. The check is challengeable (routes to the PoW gate when challenge
+// is enabled) and blockable (hard-blocked when it is not), so a real crawler
+// mid-verification clears itself while a spoofer that cannot solve the
+// challenge stays blocked.
+func (s *domlogStats) emitClaimedBotUnverified(cfg *config.Config) []alert.Finding {
+	if cfg == nil {
+		return nil
+	}
+	minReq, pct, minPaths, scannerOK := s.scannerThresholds(cfg)
+	floodThreshold := cfg.Thresholds.HTTPFloodThreshold
+	var out []alert.Finding
+	for ip := range s.uaCat {
+		if !s.isPendingClaimedBot(ip) {
+			continue
+		}
+		total := s.httpReqs[ip]
+		flood := floodThreshold > 0 && total >= floodThreshold
+		scanner := scannerOK && scannerProfilePasses(total, s.scannerErr[ip], len(s.scannerPaths[ip]), minReq, pct, minPaths)
+		if !flood && !scanner {
+			continue
+		}
+		reason := "request flood"
+		sample := s.samples[ip]
+		if scanner && !flood {
+			reason = "scanner-profile crawl"
+			sample = s.scannerSamples[ip]
+		}
+		s.recordClaimedBotUnverifiedDomains(ip, flood, scanner, minReq, pct)
+		out = append(out, alert.Finding{
+			Severity: alert.High,
+			Check:    "http_claimed_bot_unverified",
+			SourceIP: ip,
+			Domain:   s.singleDomain(ip),
+			Message: "Unverified claimed bot from " + ip + ": " + reason + " (" + itoa(total) +
+				" requests, rDNS not yet confirmed)" + s.vhostSuffix(ip),
+			Details: "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
+		})
+	}
+	return out
+}
+
+func (s *domlogStats) recordClaimedBotUnverifiedDomains(ip string, flood, scanner bool, minReq, pct int) {
+	if flood {
+		for domain := range s.abuseDomains["http_request_flood"][ip] {
+			s.recordAbuseDomain("http_claimed_bot_unverified", ip, domain)
+		}
+	}
+	if scanner {
+		for _, domain := range s.scannerProfileDomains(ip, minReq, pct) {
+			s.recordAbuseDomain("http_claimed_bot_unverified", ip, domain)
+		}
+	}
 }
 
 func scannerProfileThresholds(cfg *config.Config) (minReq, pct, minPaths int, ok bool) {
@@ -587,12 +686,13 @@ func probePath(uri string) string {
 // httpAbuseChecks are the per-IP finding kinds that mark a source IP as
 // abusive for the distributed-attack rollup.
 var httpAbuseChecks = map[string]struct{}{
-	"wp_login_bruteforce":  {},
-	"xmlrpc_abuse":         {},
-	"wp_user_enumeration":  {},
-	"http_request_flood":   {},
-	"http_ua_spoof":        {},
-	"http_scanner_profile": {},
+	"wp_login_bruteforce":         {},
+	"xmlrpc_abuse":                {},
+	"wp_user_enumeration":         {},
+	"http_request_flood":          {},
+	"http_claimed_bot_unverified": {},
+	"http_ua_spoof":               {},
+	"http_scanner_profile":        {},
 }
 
 // emitDistributedFlood rolls the per-IP HTTP-abuse findings up per vhost:
@@ -1000,7 +1100,7 @@ var (
 		"baiduspider", "facebookexternalhit", "twitterbot",
 		// Appendix A bots plus AI crawlers verified by published ranges.
 		"amazonbot", "gptbot", "chatgpt-user", "oai-searchbot",
-		"claudebot", "claude-searchbot",
+		"claudebot", "claude-user", "claude-searchbot",
 		"perplexitybot", "meta-externalagent", "meta-webindexer", "bravebot",
 		"seranking",
 	}
@@ -1070,8 +1170,9 @@ func (c verifyingClassifier) IsVerifiedBot(ipStr, ua string) bool {
 			return verified
 		}
 	}
-	// Enqueue async verification; treat as unverified for this scan.
-	if c.async != nil {
+	// Enqueue async verification only when a later scan can read the result;
+	// otherwise there is no bounded pending window to route through challenge.
+	if c.async != nil && c.cacheGet != nil {
 		c.async.Enqueue(ip, bot)
 	}
 	return false
@@ -1091,6 +1192,24 @@ func (c verifyingClassifier) ConfirmedNegative(ipStr, ua string) bool {
 	}
 	verified, valid := c.cacheGet(ip, bot)
 	return valid && !verified
+}
+
+func (c verifyingClassifier) VerificationPending(ipStr, ua string) bool {
+	bot := threatintel.ClaimedBotFromUA(ua)
+	if bot == "" {
+		return false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil || c.async == nil || c.cacheGet == nil {
+		return false
+	}
+	if threatintel.DefaultRanges().IPInBot(ip, bot) || threatintel.OperatorBotIPVerified(bot, ip) {
+		return false
+	}
+	if _, valid := c.cacheGet(ip, bot); valid {
+		return false
+	}
+	return true
 }
 
 var (

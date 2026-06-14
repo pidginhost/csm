@@ -80,6 +80,13 @@ reputation:
   # retried later. Set false to disable rDNS verification and trust UA
   # strings as-is.
   bot_verify_enabled: true
+  # Auto-update of the built-in AI-crawler IP ranges (OpenAI, Perplexity). They
+  # ship as a snapshot and refresh from the vendor endpoints on a schedule.
+  # Outbound HTTPS; set auto_update: false to use the snapshot only. Changes
+  # require a daemon restart because the updater starts once at boot.
+  bot_ranges:
+    auto_update: true
+    update_interval: "24h"
 
 thresholds:
   mail_queue_warn: 500

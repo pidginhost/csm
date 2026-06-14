@@ -41,6 +41,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleRulesReload(req.Args)
 	case control.CmdGeoIPReload:
 		result, err = c.handleGeoIPReload(req.Args)
+	case control.CmdBotRangesReload:
+		result, err = c.handleBotRangesReload(req.Args)
 	case control.CmdBaseline:
 		result, err = c.handleBaseline(req.Args)
 	case control.CmdFirewallStatus:
@@ -307,6 +309,16 @@ func (c *ControlListener) handleRulesReload(_ json.RawMessage) (any, error) {
 // handleGeoIPReload is the GeoIP equivalent of rules.reload.
 func (c *ControlListener) handleGeoIPReload(_ json.RawMessage) (any, error) {
 	c.d.publishGeoIP()
+	return map[string]string{"status": "reloaded"}, nil
+}
+
+// handleBotRangesReload republishes the on-disk AI-crawler range overlay that
+// `csm update-bot-ranges` just refreshed, so the new ranges apply without a
+// daemon restart.
+func (c *ControlListener) handleBotRangesReload(_ json.RawMessage) (any, error) {
+	if err := c.d.reloadBotRanges(); err != nil {
+		return nil, err
+	}
 	return map[string]string{"status": "reloaded"}, nil
 }
 

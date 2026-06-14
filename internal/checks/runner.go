@@ -234,7 +234,7 @@ var runnerFindingNames = map[string][]string{
 	"webmail_logins":        {"webmail_bruteforce"},
 	"webshells":             {"webshell", "world_writable_php"},
 	"whm_access":            {"whm_account_action", "whm_password_change"},
-	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_ua_spoof", "http_distributed_flood"},
+	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood"},
 	"wp_core":               {"wp_core_integrity"},
 }
 

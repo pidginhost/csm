@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // BotEntry is an operator-configured verified bot: claimed-UA substrings
@@ -44,7 +46,7 @@ func SetOperatorBots(entries []BotEntry) {
 	nets := make(map[string][]*net.IPNet)
 	for _, e := range norm {
 		for _, r := range e.IPRanges {
-			if n := parseCIDROrIP(r); n != nil && operatorBotIPRangeAllowed(n) {
+			if n := netutil.ParseCIDROrIP(r); n != nil && operatorBotIPRangeAllowed(n) {
 				nets[e.Name] = append(nets[e.Name], n)
 			}
 		}
@@ -53,43 +55,10 @@ func SetOperatorBots(entries []BotEntry) {
 	operatorBots.Store(&norm)
 }
 
-func parseCIDROrIP(s string) *net.IPNet {
-	s = strings.TrimSpace(s)
-	if _, n, err := net.ParseCIDR(s); err == nil {
-		return normalizeIPNet(n)
-	}
-	if ip := net.ParseIP(s); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
-			return &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)}
-		}
-		return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
-	}
-	return nil
-}
-
-func normalizeIPNet(n *net.IPNet) *net.IPNet {
-	if n == nil {
-		return nil
-	}
-	if v4 := n.IP.To4(); v4 != nil {
-		mask := n.Mask
-		if len(mask) == net.IPv6len {
-			// Go treats IPv4-mapped IPv6 CIDRs as IPv4 ranges for Contains.
-			// Keep validation and matching on that same effective prefix.
-			mask = net.IPMask(mask[12:])
-		}
-		if len(mask) != net.IPv4len {
-			return nil
-		}
-		return &net.IPNet{IP: v4.Mask(mask), Mask: mask}
-	}
-	ip := n.IP.To16()
-	if ip == nil || len(n.Mask) != net.IPv6len {
-		return nil
-	}
-	return &net.IPNet{IP: ip.Mask(n.Mask), Mask: n.Mask}
-}
-
+// operatorBotIPRangeAllowed rejects ranges too broad to be a real crawler fleet
+// and any non-public address space, so the allowlist cannot be turned into a
+// blanket detection bypass. The public-space test is shared with the config
+// validator via internal/netutil.
 func operatorBotIPRangeAllowed(n *net.IPNet) bool {
 	ones, bits := n.Mask.Size()
 	if bits == 32 && ones < 16 {
@@ -98,44 +67,31 @@ func operatorBotIPRangeAllowed(n *net.IPNet) bool {
 	if bits == 128 && ones < 32 {
 		return false
 	}
-	ip := n.IP
-	return ip.IsGlobalUnicast() && !ip.IsPrivate() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast() &&
-		!ipInAnyNet(ip, nonPublicSpecialUseNets)
+	return netutil.IsPublicIP(n.IP)
 }
 
-var nonPublicSpecialUseNets = mustParseCIDRs(
-	"100.64.0.0/10",   // carrier-grade NAT
-	"192.0.0.0/24",    // IETF protocol assignments
-	"192.0.2.0/24",    // documentation
-	"198.18.0.0/15",   // benchmarking
-	"198.51.100.0/24", // documentation
-	"203.0.113.0/24",  // documentation
-	"240.0.0.0/4",     // reserved
-	"100::/64",        // discard-only
-	"2001:2::/48",     // benchmarking
-	"2001:db8::/32",   // documentation
-	"2002::/16",       // 6to4
-	"64:ff9b::/96",    // IPv4/IPv6 translation
-	"64:ff9b:1::/48",  // IPv4/IPv6 translation
-)
-
-func mustParseCIDRs(cidrs ...string) []*net.IPNet {
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		_, n, err := net.ParseCIDR(cidr)
-		if err != nil {
-			panic(err)
-		}
-		out = append(out, n)
+// IPInAnyVerifiedBotRange reports whether ip belongs to any verified-bot IP
+// range: the built-in/auto-updated crawler snapshots plus operator
+// reputation.verified_bots IP-range entries. Unlike the UA-keyed lookups it
+// needs only an address, so the firewall auto-block guard can recognise a
+// published crawler from the finding IP alone. rDNS-only bots have no range
+// here and are handled on the request path, not by this address check.
+func IPInAnyVerifiedBotRange(ip net.IP) bool {
+	if ip == nil {
+		return false
 	}
-	return out
-}
-
-func ipInAnyNet(ip net.IP, nets []*net.IPNet) bool {
-	for _, n := range nets {
-		if n.Contains(ip) {
-			return true
+	if DefaultRanges().IPInAnyBot(ip) {
+		return true
+	}
+	p := operatorNets.Load()
+	if p == nil {
+		return false
+	}
+	for _, nets := range *p {
+		for _, n := range nets {
+			if n.Contains(ip) {
+				return true
+			}
 		}
 	}
 	return false
@@ -190,7 +146,7 @@ func normalizeBotEntries(entries []BotEntry, requireUA bool) []BotEntry {
 		}
 		seenRange := map[string]struct{}{}
 		for _, raw := range e.IPRanges {
-			n := parseCIDROrIP(raw)
+			n := netutil.ParseCIDROrIP(raw)
 			if n == nil {
 				continue
 			}

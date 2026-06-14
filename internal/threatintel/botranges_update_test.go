@@ -49,7 +49,9 @@ func TestParseRangeJSON_ValidatesAndNormalizes(t *testing.T) {
 		{"ipv4Prefix":"74.7.241.0/25"},
 		{"ipv6Prefix":"2600:1901::/48"},
 		{"ipv4Prefix":"8.0.0.0/8"},
+		{"ipv4Prefix":"0.1.0.0/16"},
 		{"ipv4Prefix":"100.64.0.0/16"},
+		{"ipv4Prefix":"192.88.99.0/24"},
 		{"ipv4Prefix":"198.18.0.0/16"},
 		{"ipv4Prefix":"192.168.0.0/24"},
 		{"ipv6Prefix":"2001:db8::/32"},
@@ -130,6 +132,29 @@ func TestFetchedRangesOverlayInIPInBot(t *testing.T) {
 	}
 }
 
+func TestAICrawlerRangePrefixCountsIncludesEmbeddedAndFetched(t *testing.T) {
+	t.Cleanup(func() { PublishFetchedRanges(nil) })
+	PublishFetchedRanges(nil)
+
+	base := AICrawlerRangePrefixCounts()
+	if base["gptbot"] == 0 {
+		t.Fatal("gptbot embedded prefixes should be included")
+	}
+	if base["perplexitybot"] == 0 {
+		t.Fatal("perplexitybot embedded prefixes should be included")
+	}
+
+	_, n, err := net.ParseCIDR("9.9.9.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	PublishFetchedRanges(map[string][]*net.IPNet{"perplexitybot": {n}})
+	counts := AICrawlerRangePrefixCounts()
+	if counts["perplexitybot"] != base["perplexitybot"]+1 {
+		t.Fatalf("perplexitybot prefixes = %d, want embedded + fetched = %d", counts["perplexitybot"], base["perplexitybot"]+1)
+	}
+}
+
 func TestRefreshFetchedRanges(t *testing.T) {
 	t.Cleanup(func() { PublishFetchedRanges(nil) })
 	gptURL := "https://ranges.test/gptbot.json"
@@ -166,6 +191,34 @@ func TestRefreshFetchedRanges(t *testing.T) {
 	}
 	if !r.IPInBot(net.ParseIP("74.7.241.37"), "gptbot") {
 		t.Error("gptbot overlay must survive a transient fetch failure")
+	}
+}
+
+func TestRefreshFetchedRangesCacheWriteFailureKeepsPreviousOverlay(t *testing.T) {
+	t.Cleanup(func() { PublishFetchedRanges(nil); setLastRefreshUnix(0) })
+	_, oldNet, _ := net.ParseCIDR("8.8.4.0/24")
+	PublishFetchedRanges(map[string][]*net.IPNet{"gptbot": {oldNet}})
+	setLastRefreshUnix(123)
+
+	gptURL := "https://ranges.test/gptbot.json"
+	client := rangeTestClient(map[string]rangeTestResponse{
+		gptURL: {body: `{"prefixes":[{"ipv4Prefix":"9.9.9.0/24"}]}`},
+	})
+	n, err := RefreshFetchedRanges(context.Background(), client, []RangeSource{
+		{Bot: "gptbot", URL: gptURL},
+	}, filepath.Join(t.TempDir(), "missing", "botranges.json"))
+	if err == nil {
+		t.Fatal("refresh should fail when the cache cannot be written")
+	}
+	if n != 0 {
+		t.Fatalf("refreshed %d bots after cache write failure, want 0", n)
+	}
+	snap := FetchedRangesSnapshot()
+	if len(snap["gptbot"]) != 1 || snap["gptbot"][0].String() != oldNet.String() {
+		t.Fatalf("overlay after failed write = %+v, want previous %s", snap["gptbot"], oldNet)
+	}
+	if got := LastFetchedRangesRefresh(); got.IsZero() || got.Unix() != 123 {
+		t.Fatalf("last refresh after failed write = %v, want unix 123", got)
 	}
 }
 

@@ -601,6 +601,7 @@ func TestClassifyUA(t *testing.T) {
 		{"WordPress/6.9.4; https://example.com", "POST", uaKindBrowser}, // POST is legit pingback
 		{"Googlebot/2.1 (+http://www.google.com/bot.html)", "GET", uaKindClaimedBot},
 		{"Mozilla/5.0 (compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot)", "GET", uaKindClaimedBot},
+		{"Claude-User/1.0", "GET", uaKindClaimedBot},
 		{"python-requests/2.31.0", "GET", uaKindScriptingLang},
 		{"curl/8.4.0", "POST", uaKindScriptingLang},
 		{"HeadlessChrome/120.0", "GET", uaKindHeadless},
@@ -750,38 +751,13 @@ func TestClaimedBot_OutsideStaticRangeDoesNotEmitYet(t *testing.T) {
 type pendingVerifyClassifier struct{}
 
 func (pendingVerifyClassifier) IsVerifiedBot(string, string) bool { return false }
-
-func TestClaimedBot_PendingVerifyStillCountsForFlood(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Thresholds.HTTPFloodThreshold = 50
-
-	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
-	line := `203.0.113.99 - - [20/May/2026:18:00:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`
-	rec, ok := parseAccessLogRecord(line)
-	if !ok {
-		t.Fatal("parse failed")
-	}
-	for i := 0; i < 75; i++ {
-		stats.scan(rec, cfg, pendingVerifyClassifier{})
-	}
-	got := stats.emit(cfg)
-	floodSeen := false
-	uaSpoofSeen := false
-	for _, f := range got {
-		if f.Check == "http_request_flood" {
-			floodSeen = true
-		}
-		if f.Check == "http_ua_spoof" {
-			uaSpoofSeen = true
-		}
-	}
-	if !floodSeen {
-		t.Error("flood must still emit while verify is pending")
-	}
-	if uaSpoofSeen {
-		t.Error("ua_spoof must NOT emit while verify is pending (fail-open)")
-	}
+func (pendingVerifyClassifier) VerificationPending(string, string) bool {
+	return true
 }
+
+// The pending-claimed-bot flood disposition is covered by
+// TestClaimedBot_PendingFloodRoutesToUnverified: such an IP is routed to the
+// reversible http_claimed_bot_unverified check rather than hard-blocked.
 
 // negativeVerifyClassifier simulates a cache-confirmed negative: the IP
 // sent a claimed-bot UA but PTR+forward-A verification failed.

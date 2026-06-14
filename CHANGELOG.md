@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anthropic's ClaudeBot is now recognized out of the box by its published IP ranges (Anthropic now ships a machine-readable feed and documents address-based verification, not reverse DNS). The ranges ship as a snapshot and refresh on the same schedule as the other AI crawlers.
+- The Verified Bots page now shows the built-in AI-crawler ranges read-only: whether auto-update is on, the refresh interval, the last refresh time, and how many IP prefixes are loaded per crawler.
+- A new `csm update-bot-ranges` command refreshes the built-in AI-crawler IP ranges from the vendor feeds on demand and tells the running daemon to apply them without a restart, mirroring `csm update-geoip`. The auto-updater now also exports metrics (refresh success/failure, prefix counts per crawler, and the last successful refresh time).
 - A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it, tuning values are validated, settings are editable from the web UI, and flagged IPs feed auto-block and the distributed rollup without counting unrelated vhost misses.
 - IPs flagged by the URL scanner-profile detector are routed to the proof-of-work challenge by default so a real visitor behind a shared IP can clear themselves, with a switch to hard-block instead available in both the config file and the web UI; when the challenge subsystem is disabled both settings block. Panels can feature-detect the detector via the capabilities endpoint.
 - New metrics make challenge activity graphable: how many IPs each detector routes to the proof-of-work challenge, and how many challenge timeouts escalate to a hard block versus a no-op, so the URL-scanner and other challenge-based protections have visibility over time.
@@ -20,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An auto-block no longer overrides the allowlist: an IP on the operator full-IP/port allowlist or in a verified-bot range is left out of the blocked set instead of being re-blocked behind it. An explicit operator deny still takes precedence.
+- A crawler that identifies by reverse DNS (no published IP range) is no longer hard-blocked during the brief window before its identity is confirmed: heavy crawling from a claimed bot is sent to the proof-of-work challenge instead, so a real crawler clears itself on the next pass while a spoofed crawler UA cannot. Matters most right after an upgrade, when the verification cache is empty. A spoofer is still hard-blocked once verification fails.
 - Verified-bot config is now normalized before DNS checks, and unsafe entries are rejected during every config load path.
+- The verified-bot IP-range validator rejects two more non-public blocks (the "this network" 0.0.0.0/8 range and the deprecated 6to4 anycast range), so neither an operator entry nor a vendor feed can slip them into the crawler allowlist.
 - Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
 - Challenge-eligible findings now fall back to hard blocks when challenge routing is disabled, even if a stale pending-challenge entry is still present.
 - IPs routed to the proof-of-work challenge no longer linger as stale entries in the findings view; the routing action is treated as a one-shot event like auto-block rather than durable state.

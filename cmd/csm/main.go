@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/threatintel"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
@@ -106,6 +108,8 @@ func main() {
 		runUpdateRules()
 	case "update-geoip":
 		runUpdateGeoIP()
+	case "update-bot-ranges":
+		runUpdateBotRanges()
 	case "clean":
 		runClean()
 	case "db-clean":
@@ -173,6 +177,7 @@ Commands:
   verify        Verify binary + config integrity
   update-rules  Download latest malware signature rules
   update-geoip  Download latest MaxMind GeoLite2 databases
+  update-bot-ranges  Refresh built-in AI-crawler IP ranges from vendor feeds
   clean <path>  Attempt to clean an infected PHP file (backup created first)
   db-clean ...  WordPress database cleanup (see: csm db-clean --help)
   store compact Reclaim unused space in the bbolt state database (daemon must be stopped; add --preview for a dry run)
@@ -861,6 +866,32 @@ func runUpdateGeoIP() {
 	if anyError {
 		os.Exit(1)
 	}
+}
+
+func runUpdateBotRanges() {
+	cfg := loadConfigLite()
+
+	cachePath := filepath.Join(cfg.StatePath, "botranges.json")
+	fmt.Fprintf(os.Stderr, "Refreshing AI-crawler IP ranges from vendor feeds...\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	client := &http.Client{Timeout: 30 * time.Second}
+	n, err := refreshBotRanges(ctx, client, threatintel.DefaultRangeSources(), cachePath)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Refresh failed: %v\n", err)
+		os.Exit(1)
+	}
+	if n == 0 {
+		fmt.Fprintf(os.Stderr, "No bot ranges refreshed (every vendor feed failed); keeping the previous snapshot.\n")
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Refreshed %d crawler identities into %s\n", n, cachePath)
+	tryReloadDaemon(control.CmdBotRangesReload)
+}
+
+func refreshBotRanges(ctx context.Context, client *http.Client, sources []threatintel.RangeSource, cachePath string) (int, error) {
+	return threatintel.RefreshFetchedRanges(ctx, client, sources, cachePath)
 }
 
 func runClean() {

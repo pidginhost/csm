@@ -36,6 +36,8 @@ func observeChallengeRouted(check string) {
 // ChallengeIPList abstracts the challenge IP list for routing.
 type ChallengeIPList interface {
 	Add(ip string, reason string, duration time.Duration)
+	AddNonEscalating(ip string, reason string, duration time.Duration)
+	Remove(ip string)
 	Contains(ip string) bool
 }
 
@@ -163,6 +165,11 @@ var challengeableChecks = map[string]bool{
 	// check out of routing at runtime (see ChallengeRouteIPs).
 	"http_scanner_profile": true,
 
+	// Claimed-bot UA whose rDNS verification has not resolved. A real crawler
+	// ignores the challenge but verifies next cycle and is skipped; a spoofer
+	// cannot solve it. Falls through to a hard block when challenge is disabled.
+	"http_claimed_bot_unverified": true,
+
 	// Reputation / scoring on the HTTP path. The IP is suspect across
 	// many checks; before hard-blocking, give a browser one verifier.
 	"ip_reputation":      true,
@@ -273,7 +280,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		challengeIPList.Add(ip, f.Message, challengeDuration)
+		addChallengeIP(f.Check, ip, f.Message, challengeDuration)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -291,4 +298,19 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	}
 
 	return actions
+}
+
+func addChallengeIP(check, ip, reason string, duration time.Duration) {
+	if check == "http_claimed_bot_unverified" {
+		challengeIPList.AddNonEscalating(ip, reason, duration)
+		return
+	}
+	challengeIPList.Add(ip, reason, duration)
+}
+
+func removeChallengeIP(ip string) {
+	if challengeIPList == nil {
+		return
+	}
+	challengeIPList.Remove(ip)
 }

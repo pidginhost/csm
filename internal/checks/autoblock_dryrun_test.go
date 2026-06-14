@@ -123,6 +123,37 @@ func TestAutoBlockIPs_VerdictAllowOutcome_DoesNotMutateState(t *testing.T) {
 	}
 }
 
+// TestAutoBlockIPs_AllowlistedOutcome_DoesNotMutateState asserts that when the
+// engine skipped a soft-allowed IP (operator allow or verified-bot range), no
+// local block state is recorded and no AUTO-BLOCK finding is emitted.
+func TestAutoBlockIPs_AllowlistedOutcome_DoesNotMutateState(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeAllowlisted}
+	swapBlocker(t, blocker)
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:     "wp_login_bruteforce",
+		Message:   "WordPress brute force from 192.0.2.22",
+		Timestamp: time.Now(),
+	}})
+
+	if blocker.outcomeHits != 1 {
+		t.Fatalf("BlockIPOutcome calls = %d, want 1", blocker.outcomeHits)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 0 {
+		t.Errorf("state.IPs grew on allowlisted outcome: %+v", state.IPs)
+	}
+	if state.BlocksThisHour != 0 {
+		t.Errorf("state.BlocksThisHour = %d on allowlisted outcome, want 0", state.BlocksThisHour)
+	}
+	for _, a := range actions {
+		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") {
+			t.Errorf("allowlisted path must not emit AUTO-BLOCK finding: %q", a.Message)
+		}
+	}
+}
+
 func TestAutoBlockIPs_UnknownOutcome_DoesNotMutateState(t *testing.T) {
 	cfg := newAutoBlockTestConfig(t)
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcome("")}

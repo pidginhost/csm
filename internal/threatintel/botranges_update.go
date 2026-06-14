@@ -11,8 +11,10 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/pidginhost/csm/internal/atomicio"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // fetchedRanges is the runtime-updatable overlay of vendor-published IP ranges,
@@ -25,6 +27,7 @@ var fetchedRanges atomic.Pointer[map[string][]*net.IPNet]
 func PublishFetchedRanges(m map[string][]*net.IPNet) {
 	if len(m) == 0 {
 		fetchedRanges.Store(nil)
+		setLastRefreshUnix(0)
 		return
 	}
 	cp := make(map[string][]*net.IPNet, len(m))
@@ -61,12 +64,31 @@ func FetchedRangesSnapshot() map[string][]*net.IPNet {
 	return out
 }
 
-// RefreshFetchedRanges fetches every source, publishes the merged overlay, and
-// persists it to cachePath (skipped when empty). The first successful feed for a
-// bot identity replaces that bot's previous overlay; later successful feeds for
-// the same identity append. A bot whose every feed fails keeps its previous
-// overlay, so a full vendor outage never narrows the allowlist. Returns the
-// number of bot identities refreshed.
+// lastRefreshUnix is the Unix time of the last successful vendor fetch. It is
+// persisted in the cache file so a restart restores the genuine fetch time
+// rather than resetting it. Zero means never refreshed.
+var lastRefreshUnix atomic.Int64
+
+func setLastRefreshUnix(ts int64) { lastRefreshUnix.Store(ts) }
+
+// LastFetchedRangesRefresh returns when the AI-crawler ranges were last fetched
+// from the vendor feeds, or the zero time if they never have been. The web UI
+// surfaces this so operators can see whether the auto-updater is keeping the
+// snapshot current.
+func LastFetchedRangesRefresh() time.Time {
+	ts := lastRefreshUnix.Load()
+	if ts == 0 {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
+// RefreshFetchedRanges fetches every source, persists the merged overlay to
+// cachePath (skipped when empty), and publishes it. The first successful feed
+// for a bot identity replaces that bot's previous overlay; later successful
+// feeds for the same identity append. A bot whose every feed fails keeps its
+// previous overlay, so a full vendor outage never narrows the allowlist.
+// Returns the number of bot identities refreshed.
 func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []RangeSource, cachePath string) (int, error) {
 	merged := FetchedRangesSnapshot()
 	updated := map[string]struct{}{}
@@ -86,12 +108,14 @@ func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []Ra
 	if len(updated) == 0 {
 		return 0, lastErr
 	}
-	PublishFetchedRanges(merged)
+	refreshedAt := time.Now().Unix()
 	if cachePath != "" {
-		if err := SaveFetchedRanges(cachePath, merged); err != nil {
-			return len(updated), err
+		if err := saveFetchedRanges(cachePath, merged, refreshedAt); err != nil {
+			return 0, err
 		}
 	}
+	PublishFetchedRanges(merged)
+	setLastRefreshUnix(refreshedAt)
 	return len(updated), nil
 }
 
@@ -105,14 +129,15 @@ type RangeSource struct {
 
 // DefaultRangeSources are the vendor feeds the auto-updater refreshes. URLs are
 // stable, vendor-published JSON in the {prefixes:[{ipv4Prefix|ipv6Prefix}]}
-// shape. Anthropic ClaudeBot is intentionally absent: it has no published
-// machine-readable range feed and stays rDNS-verified (anthropic.com).
+// shape. Anthropic's feed is one combined list for ClaudeBot, Claude-User, and
+// Claude-SearchBot, all of which verify the "claudebot" identity.
 func DefaultRangeSources() []RangeSource {
 	return []RangeSource{
 		{Bot: "gptbot", URL: "https://openai.com/gptbot.json"},
 		{Bot: "gptbot", URL: "https://openai.com/chatgpt-user.json"},
 		{Bot: "gptbot", URL: "https://openai.com/searchbot.json"},
 		{Bot: "perplexitybot", URL: "https://www.perplexity.ai/perplexitybot.json"},
+		{Bot: "claudebot", URL: "https://claude.com/crawling/bots.json"},
 	}
 }
 
@@ -141,7 +166,7 @@ func ParseRangeJSON(data []byte) ([]*net.IPNet, error) {
 			if err != nil {
 				continue
 			}
-			n = normalizeIPNet(n)
+			n = netutil.NormalizeIPNet(n)
 			if n == nil || !operatorBotIPRangeAllowed(n) {
 				continue
 			}
@@ -191,12 +216,20 @@ func FetchRange(ctx context.Context, client *http.Client, url string) ([]*net.IP
 // rangeCacheFile is the on-disk persistence shape for the fetched overlay.
 type rangeCacheFile struct {
 	Bots map[string][]string `json:"bots"`
+	// RefreshedAt is the Unix time the cache was written, i.e. when the ranges
+	// were last fetched. Persisted so the last-refresh time survives a restart.
+	RefreshedAt int64 `json:"refreshed_at,omitempty"`
 }
 
 // SaveFetchedRanges persists the overlay so a restart keeps the last-good feed
-// until the next refresh completes.
+// until the next refresh completes. The write time is stamped as the
+// last-refresh time.
 func SaveFetchedRanges(path string, m map[string][]*net.IPNet) error {
-	c := rangeCacheFile{Bots: map[string][]string{}}
+	return saveFetchedRanges(path, m, time.Now().Unix())
+}
+
+func saveFetchedRanges(path string, m map[string][]*net.IPNet, refreshedAt int64) error {
+	c := rangeCacheFile{Bots: map[string][]string{}, RefreshedAt: refreshedAt}
 	for bot, nets := range m {
 		strs := make([]string, 0, len(nets))
 		for _, n := range nets {
@@ -215,9 +248,19 @@ func SaveFetchedRanges(path string, m map[string][]*net.IPNet) error {
 // LoadFetchedRanges reads a previously saved overlay and publishes it. A
 // missing file is not an error (first run). Entries are re-validated on load.
 func LoadFetchedRanges(path string) error {
+	return loadFetchedRanges(path, true)
+}
+
+// LoadFetchedRangesRequired is the control-command variant: by the time the
+// daemon is asked to reload, the CLI must already have written a cache file.
+func LoadFetchedRangesRequired(path string) error {
+	return loadFetchedRanges(path, false)
+}
+
+func loadFetchedRanges(path string, allowMissing bool) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- daemon-owned state path
 	if err != nil {
-		if os.IsNotExist(err) {
+		if allowMissing && os.IsNotExist(err) {
 			return nil
 		}
 		return err
@@ -233,11 +276,12 @@ func LoadFetchedRanges(path string) error {
 			if err != nil {
 				continue
 			}
-			if n = normalizeIPNet(n); n != nil && operatorBotIPRangeAllowed(n) {
+			if n = netutil.NormalizeIPNet(n); n != nil && operatorBotIPRangeAllowed(n) {
 				m[bot] = append(m[bot], n)
 			}
 		}
 	}
 	PublishFetchedRanges(m)
+	setLastRefreshUnix(c.RefreshedAt)
 	return nil
 }

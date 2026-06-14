@@ -40,6 +40,13 @@ var openaiSearchBotJSON []byte
 //go:embed embed/perplexitybot.json
 var perplexitybotJSON []byte
 
+// Anthropic publishes one combined crawler feed (ClaudeBot, Claude-User,
+// Claude-SearchBot) at claude.com/crawling/bots.json. It documents IP-list
+// verification, not reverse DNS, so the snapshot is the authoritative source.
+//
+//go:embed embed/claudebot.json
+var claudebotJSON []byte
+
 // BotRanges holds the parsed allowlist data, indexed by claimed-bot
 // identity ("googlebot", "bingbot", "applebot").
 type BotRanges struct {
@@ -76,6 +83,7 @@ func DefaultRanges() *BotRanges {
 			{"gptbot", openaiChatGPTUserJSON},
 			{"gptbot", openaiSearchBotJSON},
 			{"perplexitybot", perplexitybotJSON},
+			{"claudebot", claudebotJSON},
 		} {
 			bot, raw := src.bot, src.raw
 			var f embedFile
@@ -147,6 +155,46 @@ func (r *BotRanges) IPInAnyBot(ip net.IP) bool {
 	return false
 }
 
+// AICrawlerRangePrefixCounts returns the active prefix count for each built-in
+// AI crawler that has a vendor range feed. Embedded snapshots are counted along
+// with any fetched overlay so status views never report "none" while the
+// packaged fallback ranges are still active.
+func AICrawlerRangePrefixCounts() map[string]int {
+	sourceBots := map[string]struct{}{}
+	for _, src := range DefaultRangeSources() {
+		sourceBots[src.Bot] = struct{}{}
+	}
+
+	seen := map[string]map[string]struct{}{}
+	add := func(bot string, nets []*net.IPNet) {
+		if len(nets) == 0 {
+			return
+		}
+		if seen[bot] == nil {
+			seen[bot] = map[string]struct{}{}
+		}
+		for _, n := range nets {
+			if n != nil {
+				seen[bot][n.String()] = struct{}{}
+			}
+		}
+	}
+
+	defaults := DefaultRanges()
+	for bot := range sourceBots {
+		add(bot, defaults.byBot[bot])
+	}
+	for bot, nets := range fetchedRangesSnapshot() {
+		add(bot, nets)
+	}
+
+	out := make(map[string]int, len(seen))
+	for bot, prefixes := range seen {
+		out[bot] = len(prefixes)
+	}
+	return out
+}
+
 // ClaimedBotFromUA returns the lower-case bot identity if the UA looks
 // like a known bot. Empty string otherwise. Identities match BotDomains
 // keys in botverify.go so the async verifier can look up the right
@@ -169,7 +217,9 @@ func ClaimedBotFromUA(ua string) string {
 		strings.Contains(low, "chatgpt-user"),
 		strings.Contains(low, "oai-searchbot"):
 		return "gptbot"
-	case strings.Contains(low, "claudebot"), strings.Contains(low, "claude-searchbot"):
+	case strings.Contains(low, "claudebot"),
+		strings.Contains(low, "claude-user"),
+		strings.Contains(low, "claude-searchbot"):
 		return "claudebot"
 	case strings.Contains(low, "perplexitybot"):
 		return "perplexitybot"

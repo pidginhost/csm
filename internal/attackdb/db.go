@@ -87,9 +87,10 @@ var checkToAttack = map[string]AttackType{
 	// "http_distributed_flood" is intentionally excluded: it is an aggregate
 	// per-vhost finding with no single source IP, so RecordFinding has nothing
 	// to attribute it to.
-	"http_scanner_profile": AttackRecon,
-	"http_request_flood":   AttackRecon,
-	"http_ua_spoof":        AttackRecon,
+	"http_scanner_profile":        AttackRecon,
+	"http_request_flood":          AttackRecon,
+	"http_claimed_bot_unverified": AttackRecon,
+	"http_ua_spoof":               AttackRecon,
 
 	// SPAM
 	"mail_per_account":     AttackSPAM,

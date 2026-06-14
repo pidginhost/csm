@@ -193,6 +193,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"xmlrpc_abuse":                true,
 		"http_request_flood":          true,
 		"http_scanner_profile":        true,
+		"http_claimed_bot_unverified": true,
 		"http_ua_spoof":               true,
 		"ftp_bruteforce":              true,
 		"smtp_bruteforce":             true,
@@ -360,6 +361,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// Verdict callback returned "allow": CSM intentionally did not
 			// block. Stay silent at finding level - the panel already knows
 			// it downgraded the decision and the engine logged it to stderr.
+			continue
+		case firewall.BlockOutcomeAllowlisted:
+			// IP is on a soft-allow list (operator full/port allow or a
+			// verified-bot range). The engine declined the auto-block and
+			// logged it; record nothing and emit no AUTO-BLOCK finding.
 			continue
 		case firewall.BlockOutcomeNoop:
 			// Already-blocked, deny-limit, or other guard rejected the call.

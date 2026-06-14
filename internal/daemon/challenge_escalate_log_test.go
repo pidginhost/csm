@@ -38,6 +38,11 @@ func TestChallengeEscalateLogLine(t *testing.T) {
 			outcome: firewall.BlockOutcomeAllowed,
 			want:    "challenge-escalate: 192.0.2.50 timed out, no new block (outcome: allowed)",
 		},
+		{
+			name:    "allowlisted",
+			outcome: firewall.BlockOutcomeAllowlisted,
+			want:    "challenge-escalate: 192.0.2.50 timed out, no new block (outcome: allowlisted)",
+		},
 	}
 
 	for _, tt := range tests {
