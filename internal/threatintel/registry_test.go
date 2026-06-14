@@ -121,16 +121,16 @@ func TestOperatorBotIPVerified(t *testing.T) {
 	SetOperatorBots([]BotEntry{{
 		Name:         "perplexitybot",
 		UASubstrings: []string{"perplexitybot"},
-		IPRanges:     []string{"18.97.9.96/29", "203.0.113.7", "::ffff:203.0.113.0/120"},
+		IPRanges:     []string{"18.97.9.96/29", "18.97.1.229", "::ffff:74.7.241.0/120"},
 	}})
 
 	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("18.97.9.100")) {
 		t.Error("IP inside /29 must verify")
 	}
-	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("203.0.113.7")) {
+	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("18.97.1.229")) {
 		t.Error("single configured IP must verify")
 	}
-	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("203.0.113.42")) {
+	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("74.7.241.37")) {
 		t.Error("IPv4-mapped configured range must verify by effective IPv4 prefix")
 	}
 	if OperatorBotIPVerified("perplexitybot", net.ParseIP("18.97.9.200")) {

@@ -62,11 +62,11 @@ func FetchedRangesSnapshot() map[string][]*net.IPNet {
 }
 
 // RefreshFetchedRanges fetches every source, publishes the merged overlay, and
-// persists it to cachePath (skipped when empty). A per-source failure keeps
-// that bot's previous overlay rather than dropping it, so a transient vendor
-// outage never narrows the allowlist. Returns the number of bot identities
-// refreshed this cycle; if every fetch failed it publishes nothing and returns
-// the last error.
+// persists it to cachePath (skipped when empty). The first successful feed for a
+// bot identity replaces that bot's previous overlay; later successful feeds for
+// the same identity append. A bot whose every feed fails keeps its previous
+// overlay, so a full vendor outage never narrows the allowlist. Returns the
+// number of bot identities refreshed.
 func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []RangeSource, cachePath string) (int, error) {
 	merged := FetchedRangesSnapshot()
 	updated := map[string]struct{}{}
@@ -78,8 +78,6 @@ func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []Ra
 			continue
 		}
 		if _, ok := updated[src.Bot]; !ok {
-			// First successful feed for this bot this cycle replaces the prior
-			// overlay; later feeds for the same identity append.
 			merged[src.Bot] = nil
 			updated[src.Bot] = struct{}{}
 		}
@@ -158,6 +156,9 @@ func ParseRangeJSON(data []byte) ([]*net.IPNet, error) {
 
 // FetchRange downloads and parses one vendor range feed.
 func FetchRange(ctx context.Context, client *http.Client, url string) ([]*net.IPNet, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -170,11 +171,21 @@ func FetchRange(ctx context.Context, client *http.Client, url string) ([]*net.IP
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("bot range feed %s: HTTP %d", url, resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRangeBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRangeBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	return ParseRangeJSON(data)
+	if len(data) > maxRangeBytes {
+		return nil, fmt.Errorf("bot range feed %s: exceeds %d bytes", url, maxRangeBytes)
+	}
+	nets, err := ParseRangeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(nets) == 0 {
+		return nil, fmt.Errorf("bot range feed %s: no valid prefixes", url)
+	}
+	return nets, nil
 }
 
 // rangeCacheFile is the on-disk persistence shape for the fetched overlay.

@@ -998,8 +998,9 @@ var (
 	claimedBotSubstrings = []string{
 		"googlebot", "bingbot", "applebot", "duckduckbot", "yandexbot",
 		"baiduspider", "facebookexternalhit", "twitterbot",
-		// Appendix A bots: no published static IP range; rDNS-verified.
-		"amazonbot", "gptbot", "chatgpt-user", "claudebot", "claude-searchbot",
+		// Appendix A bots plus AI crawlers verified by published ranges.
+		"amazonbot", "gptbot", "chatgpt-user", "oai-searchbot",
+		"claudebot", "claude-searchbot",
 		"perplexitybot", "meta-externalagent", "meta-webindexer", "bravebot",
 		"seranking",
 	}

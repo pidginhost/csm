@@ -245,14 +245,14 @@ func TestHTTPScannerProfile_VerifiedOperatorIPRangeBotSkipped(t *testing.T) {
 	threatintel.SetOperatorBots([]threatintel.BotEntry{{
 		Name:         "perplexitybot",
 		UASubstrings: []string{"perplexitybot"},
-		IPRanges:     []string{"203.0.113.0/24"},
+		IPRanges:     []string{"18.97.9.96/29"},
 	}})
 	cfg := scannerCfg(30, 90, 10, nil)
 	stats := newDomlogStatsAt(scannerTestNow)
 	const ua = "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/bot)"
 	bot := newVerifyingClassifier(nil, nil) // nil cacheGet: range path must not need it
 	for i := 0; i < 50; i++ {
-		rec := scannerRec("203.0.113.55", fmt.Sprintf("/p%d", i), 404)
+		rec := scannerRec("18.97.9.100", fmt.Sprintf("/p%d", i), 404)
 		rec.UserAgent = ua
 		stats.scan(rec, cfg, bot)
 	}

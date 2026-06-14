@@ -171,11 +171,48 @@ func verifiedBotIPRangeError(s string) string {
 		return fmt.Sprintf("ip_range %q is too broad (minimum prefix /32 for IPv6)", s)
 	}
 	ip := n.IP
-	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ipInAnyNet(ip, nonPublicSpecialUseNets) {
 		return fmt.Sprintf("ip_range %q is not a public address range", s)
 	}
 	return ""
+}
+
+var nonPublicSpecialUseNets = mustParseCIDRs(
+	"100.64.0.0/10",   // carrier-grade NAT
+	"192.0.0.0/24",    // IETF protocol assignments
+	"192.0.2.0/24",    // documentation
+	"198.18.0.0/15",   // benchmarking
+	"198.51.100.0/24", // documentation
+	"203.0.113.0/24",  // documentation
+	"240.0.0.0/4",     // reserved
+	"100::/64",        // discard-only
+	"2001:2::/48",     // benchmarking
+	"2001:db8::/32",   // documentation
+	"2002::/16",       // 6to4
+	"64:ff9b::/96",    // IPv4/IPv6 translation
+	"64:ff9b:1::/48",  // IPv4/IPv6 translation
+)
+
+func mustParseCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func ipInAnyNet(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCIDROrIP(s string) *net.IPNet {

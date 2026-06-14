@@ -507,6 +507,12 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.Reputation.BotVerifyEnabled == nil || !*cfg.Reputation.BotVerifyEnabled {
 		t.Fatal("reputation.bot_verify_enabled must be explicitly true in production reference config")
 	}
+	if cfg.Reputation.BotRanges.AutoUpdate == nil || !*cfg.Reputation.BotRanges.AutoUpdate {
+		t.Fatal("reputation.bot_ranges.auto_update must be explicitly true in production reference config")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
 	if cfg.AutoResponse.MaxBlocksPerHour != DefaultMaxBlocksPerHour {
 		t.Errorf("auto_response.max_blocks_per_hour = %d, want %d", cfg.AutoResponse.MaxBlocksPerHour, DefaultMaxBlocksPerHour)
 	}

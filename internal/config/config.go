@@ -682,7 +682,7 @@ type Config struct {
 		BotRanges struct {
 			AutoUpdate     *bool  `yaml:"auto_update"`     // nil = true
 			UpdateInterval string `yaml:"update_interval"` // default "24h"; min 1h
-		} `yaml:"bot_ranges"`
+		} `yaml:"bot_ranges" hotreload:"restart"`
 
 		// Report emits signed, minimized abuse reports for confirmed-abuse
 		// findings to a central abuse database or a private collector.
