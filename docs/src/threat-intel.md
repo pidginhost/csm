@@ -45,16 +45,16 @@ with static IP ranges first, then strict forward-confirmed reverse DNS.
 `ip_ranges`. With `rdns_suffixes` the source IP must forward-confirm under
 a registrable domain (public suffixes and shared-hosting suffixes are
 rejected; a PTR-only match is not trusted). With `ip_ranges` the source IP
-must fall in one of the published CIDRs -- this is for AI agents
-(PerplexityBot, GPTBot, ClaudeBot) that publish address ranges instead of
-crawler reverse DNS. Over-broad or non-public ranges are rejected. All
+must fall in one of the published CIDRs -- this is for crawlers such as
+GPTBot and PerplexityBot that publish address ranges instead of crawler
+reverse DNS. Over-broad or non-public ranges are rejected. All
 checks run at config load and on reload.
 
-The built-in crawler set covers Googlebot, Bingbot, Applebot, DuckDuckBot,
-Amazonbot, ClaudeBot, the Facebook and Meta crawlers, Brave, and the SERanking
-backlink bot. Googlebot, Bingbot, and Applebot match a shipped IP-range
-snapshot first and fall back to reverse DNS; the rest without a published range
-feed verify by reverse DNS alone.
+Built-in rDNS verification covers Googlebot, Bingbot, Applebot, DuckDuckBot,
+Amazonbot, ClaudeBot/Claude-SearchBot, the Facebook and Meta crawlers, Brave,
+and the SERanking backlink bot. Googlebot, Bingbot, and Applebot also match a
+shipped IP-range snapshot first and fall back to reverse DNS; DuckDuckBot,
+Amazonbot, ClaudeBot, Facebook/Meta, Brave, and SERanking are rDNS-only.
 
 GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are recognized out of
 the box: their published IP ranges ship as an embedded snapshot and are

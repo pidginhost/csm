@@ -91,7 +91,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 - **Single static Go binary**, real-time response on syscall events.
 - **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and REST API.
 - **nftables firewall** with TTLs, subnet escalation, country blocking (MaxMind), commit-confirmed safety.
-- **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache, plus forward-confirmed verification of search-engine and AI crawlers so real bots are never blocked.
+- **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache, plus IP-range and forward-confirmed crawler verification so verified crawler traffic is not counted as abuse.
 - **Hot-reload safe config** + `/etc/csm/conf.d/*.yaml` drop-ins for automation.
 - **bbolt-backed state** with TTL retention, `csm backup`/`csm restore`, and SIEM backfill via `csm export --since`.
 - **Signed `.deb` and `.rpm` packages**, reproducible builds, OpenSSF Scorecard.
