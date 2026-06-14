@@ -46,6 +46,15 @@ type Engine struct {
 	// package stays free of the internal/verdict import.
 	verdictAsker func(ctx context.Context, ip, reason string) (verdict, tenantID, note string, err error)
 
+	// softAllowFn, when set, reports whether an IP belongs to a verified-bot
+	// range (built-in/auto-updated crawler snapshots plus operator
+	// reputation.verified_bots IP-range entries). The auto-block path consults
+	// it so a published crawler the auto-blocker would otherwise re-add to
+	// blocked_ips is left out. Operator `firewall deny` (BlockIPForce) bypasses
+	// this gate. Set by the daemon so this package does not import
+	// internal/threatintel.
+	softAllowFn func(ip string) bool
+
 	// shutdownCtx, when set, scopes the lifetime of any in-flight verdict
 	// callback to daemon shutdown. Without it, BlockIPOutcome used
 	// context.Background() and a wedged panel callback kept the
@@ -348,6 +357,31 @@ func (e *Engine) verdictAskerFn() func(ctx context.Context, ip, reason string) (
 	fn := e.verdictAsker
 	e.mu.Unlock()
 	return fn
+}
+
+// SetSoftAllowChecker installs the callback the auto-block path consults to
+// decide whether an IP belongs to a verified-bot range. Nil disables the
+// verified-bot side of the soft-allow gate (operator allowed_ips is still
+// honoured). The daemon wires this to threatintel so the firewall package
+// stays free of that import.
+func (e *Engine) SetSoftAllowChecker(fn func(ip string) bool) {
+	e.mu.Lock()
+	e.softAllowFn = fn
+	e.mu.Unlock()
+}
+
+// autoBlockSoftAllowed reports whether an automatic block of ip must be
+// skipped because ip is on a soft-allow list: the operator allowed_ips set or
+// a verified-bot range. Only the auto-block path (BlockIPOutcome) consults
+// this; BlockIPForce bypasses it so an explicit operator deny still wins.
+func (e *Engine) autoBlockSoftAllowed(ip string) bool {
+	if e.IsAllowed(ip) {
+		return true
+	}
+	e.mu.Lock()
+	fn := e.softAllowFn
+	e.mu.Unlock()
+	return fn != nil && fn(ip)
 }
 
 // SetShutdownContext installs a context whose cancellation aborts any
@@ -1539,6 +1573,19 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 	}
 	ip = canonical
 
+	// Soft-allow gate: an automatic block must never re-add an IP the operator
+	// allowlisted or a verified-bot range to blocked_ips. The nftables input
+	// chain drops @blocked_ips before it accepts @allowed_ips, so the only safe
+	// fix is to keep the IP out of the blocked set. Checked before the local
+	// validation guards so a soft-allowed IP is skipped cleanly even when the
+	// deny limit is full. Operator `firewall deny` uses BlockIPForce, which
+	// never reaches this path, so an explicit deny still overrides a soft-allow.
+	if e.autoBlockSoftAllowed(ip) {
+		fmt.Fprintf(os.Stderr, "[%s] auto-block: %s is allowlisted or a verified bot - not blocking\n",
+			time.Now().Format("2006-01-02 15:04:05"), ip)
+		return BlockOutcomeAllowlisted, nil
+	}
+
 	// Local safety checks always run before consulting the external callback.
 	// The callback can downgrade a block decision, but it cannot bypass
 	// malformed-IP, IPv6-disabled, infra-IP, or block-limit guards.
@@ -2012,6 +2059,25 @@ func (e *Engine) IsBlocked(ip string) bool {
 	if parsed := net.ParseIP(ip); parsed != nil {
 		if canon := parsed.String(); canon != ip {
 			_, ok := e.blockedIPIndex[canon]
+			return ok
+		}
+	}
+	return false
+}
+
+// IsAllowed reports whether ip is on the operator allowed_ips set, read from
+// the in-memory cache built from state.json. Mirrors IsBlocked, including the
+// canonical-form retry for IPv4-mapped IPv6 callers.
+func (e *Engine) IsAllowed(ip string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ensureStateCacheLocked()
+	if _, ok := e.allowedIPIndex[ip]; ok {
+		return true
+	}
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if canon := parsed.String(); canon != ip {
+			_, ok := e.allowedIPIndex[canon]
 			return ok
 		}
 	}

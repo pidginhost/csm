@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An auto-block no longer overrides the allowlist: an IP on the operator allowlist or in a verified-bot range is left out of the blocked set instead of being re-blocked behind it. An explicit operator deny still takes precedence.
 - Verified-bot config is now normalized before DNS checks, and unsafe entries are rejected during every config load path.
 - Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
 - Challenge-eligible findings now fall back to hard blocks when challenge routing is disabled, even if a stale pending-challenge entry is still present.

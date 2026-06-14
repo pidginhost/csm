@@ -2510,6 +2510,13 @@ func (d *Daemon) startFirewall() {
 	})
 	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
 	engine.SetVerdictAsker(d.askVerdictCallback)
+	// The auto-block path skips published-crawler IPs so a high-volume bot is
+	// never re-added to blocked_ips behind the operator allowlist. Built-in and
+	// operator verified_bots ranges both flow through this lookup.
+	engine.SetSoftAllowChecker(func(ip string) bool {
+		parsed := net.ParseIP(ip)
+		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
+	})
 
 	if err := engine.Apply(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)

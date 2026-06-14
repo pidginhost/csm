@@ -141,6 +141,33 @@ func ipInAnyNet(ip net.IP, nets []*net.IPNet) bool {
 	return false
 }
 
+// IPInAnyVerifiedBotRange reports whether ip belongs to any verified-bot IP
+// range: the built-in/auto-updated crawler snapshots plus operator
+// reputation.verified_bots IP-range entries. Unlike the UA-keyed lookups it
+// needs only an address, so the firewall auto-block guard can recognise a
+// published crawler from the finding IP alone. rDNS-only bots have no range
+// here and are handled on the request path, not by this address check.
+func IPInAnyVerifiedBotRange(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if DefaultRanges().IPInAnyBot(ip) {
+		return true
+	}
+	p := operatorNets.Load()
+	if p == nil {
+		return false
+	}
+	for _, nets := range *p {
+		for _, n := range nets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // OperatorBotIPVerified reports whether ip falls in any IP range configured
 // for the named operator bot. Synchronous; no DNS. This is how AI agents that
 // publish address ranges (PerplexityBot, GPTBot, ClaudeBot) are confirmed.

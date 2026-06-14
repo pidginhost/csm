@@ -136,6 +136,23 @@ infrastructure IP, a resolved infra hostname, a local host address, a
 full-IP allow, or a port-specific allow. Remove the allow or narrow the
 CIDR before applying the block.
 
+### Allowlist precedence
+
+The nftables input chain accepts `infra_ips` first, then drops
+`blocked_ips`, then accepts `allowed_ips`. Because the drop is evaluated
+before the `allowed_ips` accept, an allowlisted IP that lands in
+`blocked_ips` would still be dropped. To keep the allowlist effective, the
+auto-block path refuses to add an IP to `blocked_ips` when it is on
+`allowed_ips` (set by `csm firewall allow`) or in a verified-bot range
+(built-in or `reputation.verified_bots`). Precedence:
+
+- **`infra_ips`** - hard protect. Never blocked by anything, auto or
+  manual; subnet blocks containing one are refused.
+- **`allowed_ips` and verified-bot ranges** - soft allow. The auto-block
+  path skips them, but an explicit operator deny (`csm firewall deny`,
+  Web UI manual block) still applies, because operator commands go through
+  `BlockIPForce` and bypass the soft-allow gate.
+
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.
