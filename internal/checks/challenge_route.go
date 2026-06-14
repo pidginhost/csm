@@ -163,6 +163,11 @@ var challengeableChecks = map[string]bool{
 	// check out of routing at runtime (see ChallengeRouteIPs).
 	"http_scanner_profile": true,
 
+	// Claimed-bot UA whose rDNS verification has not resolved. A real crawler
+	// ignores the challenge but verifies next cycle and is skipped; a spoofer
+	// cannot solve it. Falls through to a hard block when challenge is disabled.
+	"http_claimed_bot_unverified": true,
+
 	// Reputation / scoring on the HTTP path. The IP is suspect across
 	// many checks; before hard-blocking, give a browser one verifier.
 	"ip_reputation":      true,

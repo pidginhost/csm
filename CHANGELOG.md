@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An auto-block no longer overrides the allowlist: an IP on the operator full-IP/port allowlist or in a verified-bot range is left out of the blocked set instead of being re-blocked behind it. An explicit operator deny still takes precedence.
+- A crawler that identifies by reverse DNS (no published IP range) is no longer hard-blocked during the brief window before its identity is confirmed: heavy crawling from a claimed bot is sent to the proof-of-work challenge instead, so a real crawler clears itself on the next pass while a spoofed crawler UA cannot. Matters most right after an upgrade, when the verification cache is empty. A spoofer is still hard-blocked once verification fails.
 - Verified-bot config is now normalized before DNS checks, and unsafe entries are rejected during every config load path.
 - Challenge routing now also runs before auto-blocking on the scheduled-scan path, and a pending challenge no longer shields an IP from blocks owed to confirmed-threat or block-mode findings.
 - Challenge-eligible findings now fall back to hard blocks when challenge routing is disabled, even if a stale pending-challenge entry is still present.

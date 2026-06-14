@@ -50,6 +50,16 @@ must fall in one of the published CIDRs -- this is for AI agents
 crawler reverse DNS. Over-broad or non-public ranges are rejected. All
 checks run at config load and on reload.
 
+Reverse-DNS verification is asynchronous, so on the first request from a
+crawler IP (or right after an upgrade clears the verification cache) the
+result is not yet known. During that window a high-volume crawler that
+trips a flood or scanner-profile threshold is routed to the proof-of-work
+challenge rather than hard-blocked: a real crawler ignores the challenge
+but is recognized on the next pass once verification resolves, while a host
+merely spoofing a crawler User-Agent cannot solve it. Once verification
+fails outright, the spoofer is hard-blocked. When the challenge subsystem
+is disabled, the claimed bot is hard-blocked during the window instead.
+
 GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are recognized out of
 the box: their published IP ranges ship as an embedded snapshot and are
 refreshed from the vendor endpoints by an auto-updater (`reputation.bot_ranges`,

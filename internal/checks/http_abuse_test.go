@@ -751,37 +751,9 @@ type pendingVerifyClassifier struct{}
 
 func (pendingVerifyClassifier) IsVerifiedBot(string, string) bool { return false }
 
-func TestClaimedBot_PendingVerifyStillCountsForFlood(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.Thresholds.HTTPFloodThreshold = 50
-
-	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
-	line := `203.0.113.99 - - [20/May/2026:18:00:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`
-	rec, ok := parseAccessLogRecord(line)
-	if !ok {
-		t.Fatal("parse failed")
-	}
-	for i := 0; i < 75; i++ {
-		stats.scan(rec, cfg, pendingVerifyClassifier{})
-	}
-	got := stats.emit(cfg)
-	floodSeen := false
-	uaSpoofSeen := false
-	for _, f := range got {
-		if f.Check == "http_request_flood" {
-			floodSeen = true
-		}
-		if f.Check == "http_ua_spoof" {
-			uaSpoofSeen = true
-		}
-	}
-	if !floodSeen {
-		t.Error("flood must still emit while verify is pending")
-	}
-	if uaSpoofSeen {
-		t.Error("ua_spoof must NOT emit while verify is pending (fail-open)")
-	}
-}
+// The pending-claimed-bot flood disposition is covered by
+// TestClaimedBot_PendingFloodRoutesToUnverified: such an IP is routed to the
+// reversible http_claimed_bot_unverified check rather than hard-blocked.
 
 // negativeVerifyClassifier simulates a cache-confirmed negative: the IP
 // sent a claimed-bot UA but PTR+forward-A verification failed.

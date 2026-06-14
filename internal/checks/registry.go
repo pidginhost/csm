@@ -89,6 +89,7 @@ var checkRegistry = []CheckInfo{
 	// --- Brute Force -----------------------------------------------------
 	{Name: "http_request_flood", Category: CategoryBruteForce},
 	{Name: "http_scanner_profile", Category: CategoryBruteForce},
+	{Name: "http_claimed_bot_unverified", Category: CategoryBruteForce},
 	{Name: "http_ua_spoof", Category: CategoryBruteForce},
 	{Name: "http_distributed_flood", Category: CategoryBruteForce},
 	{Name: "mail_account_compromised", Category: CategoryBruteForce},

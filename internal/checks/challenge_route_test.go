@@ -274,6 +274,28 @@ func TestResponseActionForCheck(t *testing.T) {
 	}
 }
 
+// A pending-claimed-bot abuse finding must be reversible: it routes to the
+// challenge while challenge is enabled (a real crawler clears itself, a spoofer
+// cannot) and hard-blocks only when challenge is disabled.
+func TestChallengeRoute_ClaimedBotUnverifiedRoutesThenBlocks(t *testing.T) {
+	if isHardBlockCheck("http_claimed_bot_unverified") {
+		t.Error("http_claimed_bot_unverified must not be in hardBlockChecks")
+	}
+	if !isChallengeableCheck("http_claimed_bot_unverified") {
+		t.Error("http_claimed_bot_unverified must be challenge-eligible")
+	}
+	enabled := &config.Config{}
+	enabled.Challenge.Enabled = true
+	if got := responseActionForCheck(enabled, "http_claimed_bot_unverified"); got != responseChallenge {
+		t.Errorf("with challenge enabled = %q, want %q", got, responseChallenge)
+	}
+	disabled := &config.Config{}
+	disabled.Challenge.Enabled = false
+	if got := responseActionForCheck(disabled, "http_claimed_bot_unverified"); got != responseBlock {
+		t.Errorf("with challenge disabled = %q, want %q", got, responseBlock)
+	}
+}
+
 func TestResponseActionForCheckFallsBackToBlockWhenChallengeDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Challenge.Enabled = false
