@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -48,6 +49,29 @@ func TestBlockIPOutcome_SkipsAllowedIP(t *testing.T) {
 	}
 }
 
+// Port-specific allows are evaluated after blocked_ips too. An automatic full
+// IP block would shadow the operator's narrow allow, so it must be treated as a
+// soft allow just like allowed_ips.
+func TestBlockIPOutcome_SkipsPortAllowedIP(t *testing.T) {
+	dir := t.TempDir()
+	writeFirewallStateForTest(t, dir, FirewallState{
+		PortAllowed: []PortAllowEntry{{IP: "203.0.113.55", Port: 3306, Proto: "tcp", Reason: "mysql admin"}},
+	})
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     dir,
+		dryRunEnabled: func() bool { return true },
+	}
+
+	outcome, err := e.BlockIPOutcome("203.0.113.55", "auto", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome returned error: %v", err)
+	}
+	if outcome != BlockOutcomeAllowlisted {
+		t.Fatalf("outcome = %q, want %q (port-allowed IP must not be auto-blocked)", outcome, BlockOutcomeAllowlisted)
+	}
+}
+
 // Verified-bot ranges reach the engine through the soft-allow checker the
 // daemon wires (the engine itself does not import threatintel). A claimed-bot
 // IP in a published range must be skipped by the auto-block path.
@@ -84,6 +108,37 @@ func TestBlockIPOutcome_NonAllowlistedProceeds(t *testing.T) {
 	}
 	if outcome != BlockOutcomeDryRun {
 		t.Fatalf("outcome = %q, want %q (non-allowlisted IP must reach the dry-run gate)", outcome, BlockOutcomeDryRun)
+	}
+}
+
+func TestBlockIPOutcome_RechecksAllowAfterVerdict(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: dir,
+	}
+	e.SetVerdictAsker(func(_ context.Context, ip, _ string) (string, string, string, error) {
+		if err := func() error {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			state := e.loadStateFile()
+			upsertAllowedEntryInState(&state, AllowedEntry{IP: ip, Reason: "operator allow"})
+			return e.saveState(&state)
+		}(); err != nil {
+			t.Fatalf("save allow during verdict callback: %v", err)
+		}
+		return "block", "", "", nil
+	})
+
+	outcome, err := e.BlockIPOutcome("203.0.113.60", "auto", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome returned error: %v", err)
+	}
+	if outcome != BlockOutcomeAllowlisted {
+		t.Fatalf("outcome = %q, want %q (allow added during verdict must win)", outcome, BlockOutcomeAllowlisted)
+	}
+	if e.IsBlocked("203.0.113.60") {
+		t.Fatal("allowlisted IP must not be written to blocked state")
 	}
 }
 

@@ -20,12 +20,13 @@ package firewall
 //     should NOT emit an AUTO-BLOCK finding (the panel already knows it
 //     downgraded the decision).
 //   - BlockOutcomeAllowlisted: the IP is on a soft-allow list (operator
-//     allowed_ips or a verified-bot range), so the auto-block path declined
-//     to block it. The nftables input chain drops @blocked_ips before it
-//     accepts @allowed_ips, so an allowlisted IP added to blocked_ips would
-//     still be dropped; keeping it out of the set is the only safe fix.
-//     Operator `firewall deny` uses BlockIPForce, which bypasses this gate,
-//     so an explicit deny still wins. Caller should NOT record a block.
+//     allowed_ips, a port-specific operator allow, or a verified-bot range),
+//     so the auto-block path declined to block it. The nftables input chain
+//     drops @blocked_ips before it accepts operator allows, so an allowlisted
+//     IP added to blocked_ips would still be dropped; keeping it out of the
+//     set is the only safe fix. Operator `firewall deny` uses BlockIPForce,
+//     which bypasses this gate, so an explicit deny still wins. Caller should
+//     NOT record a block.
 //   - BlockOutcomeNoop: the IP was already blocked, or a guard
 //     (infra-IP, malformed IP, deny-limit) rejected the call. Caller
 //     should treat the call as a no-op locally.

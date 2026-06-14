@@ -141,17 +141,19 @@ CIDR before applying the block.
 The nftables input chain accepts `infra_ips` first, then drops
 `blocked_ips`, then accepts `allowed_ips`. Because the drop is evaluated
 before the `allowed_ips` accept, an allowlisted IP that lands in
-`blocked_ips` would still be dropped. To keep the allowlist effective, the
-auto-block path refuses to add an IP to `blocked_ips` when it is on
-`allowed_ips` (set by `csm firewall allow`) or in a verified-bot range
-(built-in or `reputation.verified_bots`). Precedence:
+`blocked_ips` would still be dropped. The same applies to port-specific
+allows, because those rules are evaluated after `blocked_ips` too. To keep
+operator allows effective, the auto-block path refuses to add an IP to
+`blocked_ips` when it is on `allowed_ips` (set by `csm firewall allow`), has
+a port-specific allow (`csm firewall allow-port`), or is in a verified-bot
+range (built-in or `reputation.verified_bots`). Precedence:
 
 - **`infra_ips`** - hard protect. Never blocked by anything, auto or
   manual; subnet blocks containing one are refused.
-- **`allowed_ips` and verified-bot ranges** - soft allow. The auto-block
-  path skips them, but an explicit operator deny (`csm firewall deny`,
-  Web UI manual block) still applies, because operator commands go through
-  `BlockIPForce` and bypass the soft-allow gate.
+- **`allowed_ips`, port-specific allows, and verified-bot ranges** - soft
+  allow. The auto-block path skips them, but an explicit operator deny
+  (`csm firewall deny`, Web UI manual block) still applies, because operator
+  commands go through `BlockIPForce` and bypass the soft-allow gate.
 
 ## Infrastructure IP DNS guard
 

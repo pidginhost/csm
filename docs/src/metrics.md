@@ -227,8 +227,8 @@ Registered when `reputation.upstream.enabled: true`.
 - `csm_challenge_escalated_total{outcome}` (counter): challenge entries
   that timed out and were escalated to a hard block, by firewall
   `outcome`: `live` (a new block landed), `noop` (the IP was already
-  blocked), plus `dry_run` and `allowed`. `outcome=live` is how many
-  challenges actually became blocks.
+  blocked), plus `dry_run`, `allowed`, and `allowlisted`. `outcome=live`
+  is how many challenges actually became blocks.
 
 ### Retention (when `retention.enabled: true`)
 

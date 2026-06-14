@@ -115,6 +115,7 @@ type Engine struct {
 	stateCacheKey    stateFileCacheKey
 	blockedIPIndex   map[string]int
 	allowedIPIndex   map[string]struct{}
+	portAllowedIndex map[string]struct{}
 	blockedCIDRIndex map[string]struct{}
 
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
@@ -371,17 +372,27 @@ func (e *Engine) SetSoftAllowChecker(fn func(ip string) bool) {
 }
 
 // autoBlockSoftAllowed reports whether an automatic block of ip must be
-// skipped because ip is on a soft-allow list: the operator allowed_ips set or
-// a verified-bot range. Only the auto-block path (BlockIPOutcome) consults
-// this; BlockIPForce bypasses it so an explicit operator deny still wins.
+// skipped because ip is on a soft-allow list: an operator full-IP allow,
+// an operator port-specific allow, or a verified-bot range. Only the
+// auto-block path (BlockIPOutcome) consults this; BlockIPForce bypasses it so
+// an explicit operator deny still wins.
 func (e *Engine) autoBlockSoftAllowed(ip string) bool {
-	if e.IsAllowed(ip) {
+	if e.operatorSoftAllowed(ip) {
 		return true
 	}
+	return e.autoBlockVerifiedRange(ip)
+}
+
+func (e *Engine) autoBlockVerifiedRange(ip string) bool {
 	e.mu.Lock()
 	fn := e.softAllowFn
 	e.mu.Unlock()
 	return fn != nil && fn(ip)
+}
+
+func (e *Engine) logAutoBlockSoftAllowed(ip string) {
+	fmt.Fprintf(os.Stderr, "[%s] auto-block: %s is allowlisted or a verified bot - not blocking\n",
+		time.Now().Format("2006-01-02 15:04:05"), ip)
 }
 
 // SetShutdownContext installs a context whose cancellation aborts any
@@ -1573,16 +1584,16 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 	}
 	ip = canonical
 
-	// Soft-allow gate: an automatic block must never re-add an IP the operator
-	// allowlisted or a verified-bot range to blocked_ips. The nftables input
-	// chain drops @blocked_ips before it accepts @allowed_ips, so the only safe
-	// fix is to keep the IP out of the blocked set. Checked before the local
-	// validation guards so a soft-allowed IP is skipped cleanly even when the
-	// deny limit is full. Operator `firewall deny` uses BlockIPForce, which
-	// never reaches this path, so an explicit deny still overrides a soft-allow.
+	// Soft-allow gate: an automatic block must never re-add an operator
+	// full-IP/port allow or a verified-bot range to blocked_ips. The nftables
+	// input chain drops @blocked_ips before it accepts operator allows, so the
+	// only safe fix is to keep the IP out of the blocked set. Checked before
+	// the local validation guards so a soft-allowed IP is skipped cleanly even
+	// when the deny limit is full. Operator `firewall deny` uses BlockIPForce,
+	// which never reaches this path, so an explicit deny still overrides a
+	// soft-allow.
 	if e.autoBlockSoftAllowed(ip) {
-		fmt.Fprintf(os.Stderr, "[%s] auto-block: %s is allowlisted or a verified bot - not blocking\n",
-			time.Now().Format("2006-01-02 15:04:05"), ip)
+		e.logAutoBlockSoftAllowed(ip)
 		return BlockOutcomeAllowlisted, nil
 	}
 
@@ -1618,6 +1629,11 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 		// "block" / empty / error -> proceed with default flow.
 	}
 
+	if e.autoBlockSoftAllowed(ip) {
+		e.logAutoBlockSoftAllowed(ip)
+		return BlockOutcomeAllowlisted, nil
+	}
+
 	// Dry-run gate: the daemon callback reads the current daemon config at
 	// call time so a SIGHUP takes effect without a daemon restart. Nil
 	// callback means live.
@@ -1627,8 +1643,13 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 		e.recordDryRunBlock(ip, reason, timeout)
 		return BlockOutcomeDryRun, nil
 	}
-	if err := e.blockIPLocked(ip, reason, timeout, true); err != nil {
+	allowlisted, err := e.blockIPLockedAuto(ip, reason, timeout)
+	if err != nil {
 		return BlockOutcomeNoop, err
+	}
+	if allowlisted {
+		e.logAutoBlockSoftAllowed(ip)
+		return BlockOutcomeAllowlisted, nil
 	}
 	return BlockOutcomeLive, nil
 }
@@ -1741,21 +1762,41 @@ func (e *Engine) recordDryRunBlock(ip, reason string, timeout time.Duration) {
 
 // blockIPLocked is the real implementation called by both BlockIP and BlockIPForce.
 func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, skipExisting bool) error {
+	_, err := e.blockIPLockedMaybeSoftAllowed(ip, reason, timeout, skipExisting, false)
+	return err
+}
+
+func (e *Engine) blockIPLockedAuto(ip string, reason string, timeout time.Duration) (bool, error) {
 	canonical, err := canonicalFirewallIP(ip)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if e.autoBlockVerifiedRange(canonical) {
+		return true, nil
+	}
+	return e.blockIPLockedMaybeSoftAllowed(canonical, reason, timeout, true, true)
+}
+
+func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool) (bool, error) {
+	canonical, err := canonicalFirewallIP(ip)
+	if err != nil {
+		return false, err
 	}
 	ip = canonical
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if enforceSoftAllow && e.operatorSoftAllowedLocked(ip) {
+		return true, nil
+	}
+
 	targetSet, key, alreadyBlocked, evictTempIP, err := e.blockIPTarget(ip, timeout, skipExisting)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if alreadyBlocked {
-		return nil
+		return false, nil
 	}
 
 	// Persist to state BEFORE adding the kernel element. state.json is the
@@ -1780,7 +1821,7 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	if evictTempIP != "" {
 		evictSet, evictKey, err = e.resolveIPSet(evictTempIP, e.setBlocked, e.setBlocked6)
 		if err != nil {
-			return fmt.Errorf("resolving temp block eviction target %s: %w", evictTempIP, err)
+			return false, fmt.Errorf("resolving temp block eviction target %s: %w", evictTempIP, err)
 		}
 	}
 
@@ -1791,36 +1832,36 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, 
 	}
 	upsertBlockedEntryInState(&nextState, entry)
 	if err := e.saveState(&nextState); err != nil {
-		return fmt.Errorf("persisting block for %s: %w", ip, err)
+		return false, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
 	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
 		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-			return fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
+			return false, fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
 		}
-		return fmt.Errorf("adding to blocked set: %w", err)
+		return false, fmt.Errorf("adding to blocked set: %w", err)
 	}
 	if evictTempIP != "" {
 		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-				return fmt.Errorf("evicting temp block %s: %w (state restore failed: %v)", evictTempIP, err, restoreErr)
+				return false, fmt.Errorf("evicting temp block %s: %w (state restore failed: %v)", evictTempIP, err, restoreErr)
 			}
-			return fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
+			return false, fmt.Errorf("evicting temp block %s: %w", evictTempIP, err)
 		}
 	}
 	if err := e.conn.Flush(); err != nil {
 		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-			return fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+			return false, fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
 		}
-		return fmt.Errorf("flushing: %w", err)
+		return false, fmt.Errorf("flushing: %w", err)
 	}
 	if evictTempIP != "" {
 		AppendAudit(e.statePath, "evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
 	}
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 
-	return nil
+	return false, nil
 }
 
 func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
@@ -2072,12 +2113,27 @@ func (e *Engine) IsAllowed(ip string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ensureStateCacheLocked()
-	if _, ok := e.allowedIPIndex[ip]; ok {
+	return ipSetIndexContains(e.allowedIPIndex, ip)
+}
+
+func (e *Engine) operatorSoftAllowed(ip string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.operatorSoftAllowedLocked(ip)
+}
+
+func (e *Engine) operatorSoftAllowedLocked(ip string) bool {
+	e.ensureStateCacheLocked()
+	return ipSetIndexContains(e.allowedIPIndex, ip) || ipSetIndexContains(e.portAllowedIndex, ip)
+}
+
+func ipSetIndexContains(index map[string]struct{}, ip string) bool {
+	if _, ok := index[ip]; ok {
 		return true
 	}
 	if parsed := net.ParseIP(ip); parsed != nil {
 		if canon := parsed.String(); canon != ip {
-			_, ok := e.allowedIPIndex[canon]
+			_, ok := index[canon]
 			return ok
 		}
 	}
@@ -3292,6 +3348,7 @@ func (e *Engine) rebuildIndexLocked() {
 	if e.stateCache == nil {
 		e.blockedIPIndex = nil
 		e.allowedIPIndex = nil
+		e.portAllowedIndex = nil
 		e.blockedCIDRIndex = nil
 		return
 	}
@@ -3312,6 +3369,14 @@ func (e *Engine) rebuildIndexLocked() {
 		}
 	}
 	e.allowedIPIndex = allowed
+	portAllowed := make(map[string]struct{}, len(s.PortAllowed))
+	for _, entry := range s.PortAllowed {
+		portAllowed[entry.IP] = struct{}{}
+		if key, ok := canonicalIPKey(entry.IP); ok {
+			portAllowed[key] = struct{}{}
+		}
+	}
+	e.portAllowedIndex = portAllowed
 	subnets := make(map[string]struct{}, len(s.BlockedNet))
 	for _, entry := range s.BlockedNet {
 		subnets[entry.CIDR] = struct{}{}
