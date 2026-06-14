@@ -2304,6 +2304,16 @@ func observeChallengeEscalated(outcome firewall.BlockOutcome) {
 	challengeEscalatedMetric.With(string(outcome)).Inc()
 }
 
+// challengeEscalatedCount returns how many challenge timeouts escalated to a new
+// hard block (outcome=live) since daemon start, for the web UI challenge panel.
+// Zero before the first escalation registers the metric.
+func challengeEscalatedCount() int {
+	if challengeEscalatedMetric == nil {
+		return 0
+	}
+	return int(challengeEscalatedMetric.With(string(firewall.BlockOutcomeLive)).Value())
+}
+
 // challengeEscalateLogLine renders the stderr line for one challenge-timeout
 // escalation. Only a live block claims "hard-blocked"; a no-op (the IP was
 // already hard-blocked, e.g. a confirmed-threat finding blocked it while it sat

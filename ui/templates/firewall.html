@@ -118,6 +118,31 @@
                 <div class="d-flex flex-wrap gap-2" id="fw-highlights"></div>
             </div>
         </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Challenges</h3>
+                <div class="card-actions text-muted small">Proof-of-work gate &middot; counts since restart</div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-sm-6 col-md-3">
+                        <div class="subheader">Pending now</div>
+                        <div class="h1 mb-1" id="fw-chal-pending">-</div>
+                    </div>
+                    <div class="col-sm-6 col-md-3">
+                        <div class="subheader">Escalated to block</div>
+                        <div class="h1 mb-1" id="fw-chal-escalated">-</div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="subheader">Routed by check</div>
+                        <div id="fw-chal-bychecks" class="mt-1"></div>
+                    </div>
+                </div>
+                <div class="subheader mt-3">Recent routes</div>
+                <div id="fw-chal-recent" class="mt-1"></div>
+            </div>
+        </div>
     </section>
 
     <!-- Blocks ----------------------------------------------------------- -->

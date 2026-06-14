@@ -55,6 +55,7 @@ type AutomationStatus struct {
 	ChallengePortGateEnabled      bool              `json:"challenge_port_gate_enabled"`
 	ChallengePortGateActive       bool              `json:"challenge_port_gate_active"`
 	ChallengePending              int               `json:"challenge_pending"`
+	ChallengeEscalated            int               `json:"challenge_escalated"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
 	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_seconds_remaining,omitempty"`
 	LastAction                    *AutomationAction `json:"last_action,omitempty"`

@@ -186,6 +186,7 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	if d.ipList != nil {
 		out.ChallengePending = d.ipList.Count()
 	}
+	out.ChallengeEscalated = challengeEscalatedCount()
 	out.ChallengePortGateActive = d.challengeGate != nil
 	if mgr := rollback.Global(); mgr != nil {
 		st := mgr.Status()

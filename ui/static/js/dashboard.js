@@ -405,12 +405,34 @@
         fastPoll();
         _trackInterval(CSM.refresh.interval(fastPoll, 10000));
 
-        // Slow cadence (60s): stats + health pill
+        // Slow cadence (60s): stats + health pill + challenge summary
+        function loadChallengeSummary() {
+            var el = document.getElementById('dash-challenge-summary');
+            if (!el) return;
+            CSM.get('/api/v1/challenge/stats').then(function(d) {
+                var byCheck = d.routed_by_check || {};
+                var scanner = byCheck['http_scanner_profile'] || 0;
+                var total = Object.keys(byCheck).reduce(function(s, k) { return s + (byCheck[k] || 0); }, 0);
+                function row(label, val, cls) {
+                    return '<div class="d-flex justify-content-between py-1"><span>' + label +
+                        '</span><span class="badge ' + cls + '">' + (val || 0) + '</span></div>';
+                }
+                el.innerHTML =
+                    row('Pending now', d.pending, 'bg-azure-lt') +
+                    row('Escalated to block', d.escalated, 'bg-red-lt') +
+                    row('Scanner routed', scanner, 'bg-azure-lt') +
+                    row('Total routed', total, 'bg-secondary-lt') +
+                    '<div class="mt-2"><a href="/firewall" class="small">View on Firewall &rarr;</a></div>';
+            }).catch(function() { el.innerHTML = '<div class="text-muted small">Unavailable.</div>'; });
+        }
+
         refreshStats();
         loadHealthPill();
+        loadChallengeSummary();
         _trackInterval(CSM.refresh.interval(function() {
             try { refreshStats(); } catch(e) { console.error('refreshStats:', e); }
             try { loadHealthPill(); } catch(e) { console.error('loadHealthPill:', e); }
+            try { loadChallengeSummary(); } catch(e) { console.error('loadChallengeSummary:', e); }
         }, 60000));
     }
     _startPolling();

@@ -796,11 +796,52 @@ function confirmDangerAction(message, token) {
 
 function refreshFirewallData() {
     loadStatus();
+    loadChallenges();
     loadBlocked();
     loadAllowed();
     loadSubnets();
     loadWhitelist();
     loadAudit();
+}
+
+// loadChallenges renders the proof-of-work challenge activity panel: live
+// pending count, how many timeouts escalated to a hard block, cumulative routes
+// per source check (since restart), and the most recent routes.
+function loadChallenges() {
+    CSM.get('/api/v1/challenge/stats')
+        .then(function(d) {
+            document.getElementById('fw-chal-pending').textContent = d.pending || 0;
+            document.getElementById('fw-chal-escalated').textContent = d.escalated || 0;
+
+            var byCheck = d.routed_by_check || {};
+            var rows = Object.keys(byCheck).map(function(k) { return [k, byCheck[k]]; });
+            rows.sort(function(a, b) { return b[1] - a[1]; });
+            var bc = document.getElementById('fw-chal-bychecks');
+            if (rows.length === 0) {
+                bc.innerHTML = '<div class="text-muted small">No challenges routed since restart.</div>';
+            } else {
+                bc.innerHTML = rows.map(function(r) {
+                    return '<div class="d-flex justify-content-between border-bottom py-1">' +
+                        '<span class="font-monospace small">' + CSM.esc(r[0]) + '</span>' +
+                        '<span class="badge bg-azure-lt">' + r[1] + '</span></div>';
+                }).join('');
+            }
+
+            var recent = (d.recent || []).slice().reverse();
+            var rc = document.getElementById('fw-chal-recent');
+            if (recent.length === 0) {
+                rc.innerHTML = '<div class="text-muted small">None yet.</div>';
+            } else {
+                rc.innerHTML = recent.map(function(e) {
+                    var t = e.at ? new Date(e.at).toLocaleString() : '';
+                    return '<div class="small py-1">' +
+                        '<span class="font-monospace">' + CSM.esc(e.ip || '') + '</span> ' +
+                        '<span class="badge bg-azure-lt">' + CSM.esc(e.check || '') + '</span> ' +
+                        '<span class="text-muted">' + CSM.esc(t) + '</span></div>';
+                }).join('');
+            }
+        })
+        .catch(function() {});
 }
 
 // /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;

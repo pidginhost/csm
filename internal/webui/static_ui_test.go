@@ -595,6 +595,7 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 		`id="components-matrix"`,
 		`id="components-feature-flags"`,
 		`id="dashboard-summary"`,
+		`id="dash-challenge-summary"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dashboard.html missing required section %q", want)
@@ -624,6 +625,8 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 		"/api/v1/incidents?status=open",
 		"href: '/incident#'",
 		"_incidentOwner",
+		"function loadChallengeSummary",
+		"/api/v1/challenge/stats",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("dashboard.js missing %q", want)
@@ -1130,6 +1133,10 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`id="lookup-result"`,
 		`class="csm-danger-zone`,
 		`href="/settings?section=firewall"`,
+		`id="fw-chal-pending"`,
+		`id="fw-chal-escalated"`,
+		`id="fw-chal-bychecks"`,
+		`id="fw-chal-recent"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("firewall.html missing phase-5 hook %q", want)
@@ -1170,6 +1177,8 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`data-fw-view`,
 		`switchFirewallView('overview')`,
 		`confirmDangerAction(msg, 'FLUSH')`,
+		`function loadChallenges()`,
+		`/api/v1/challenge/stats`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("firewall.js missing subview switcher hook %q", want)

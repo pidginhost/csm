@@ -276,6 +276,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		challengeIPList.Add(ip, f.Message, challengeDuration)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
+		recordChallengeRouteStat(ip, f.Check, time.Now())
 
 		fmt.Fprintf(os.Stderr, "[%s] CHALLENGE: %s routed to challenge (check: %s)\n",
 			time.Now().Format("2006-01-02 15:04:05"), ip, f.Check)
