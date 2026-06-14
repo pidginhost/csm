@@ -18,11 +18,11 @@
             '<div class="row g-2">' +
             '<div class="col-md-3">' +
             '<label class="form-label">Name</label>' +
-            '<input type="text" class="form-control vb-name" placeholder="perplexitybot" value="' + CSM.attr(bot.name || '') + '">' +
+            '<input type="text" class="form-control vb-name" placeholder="examplebot" value="' + CSM.attr(bot.name || '') + '">' +
             '</div>' +
             '<div class="col-md-3">' +
             '<label class="form-label">UA substrings <span class="text-muted">(one per line)</span></label>' +
-            '<textarea class="form-control vb-ua" rows="3" placeholder="perplexitybot">' + CSM.esc(ua) + '</textarea>' +
+            '<textarea class="form-control vb-ua" rows="3" placeholder="examplebot">' + CSM.esc(ua) + '</textarea>' +
             '</div>' +
             '<div class="col-md-3">' +
             '<label class="form-label">rDNS suffixes <span class="text-muted">(one per line)</span></label>' +
