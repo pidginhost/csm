@@ -16,6 +16,25 @@
     Built-in bots (Googlebot, Bingbot, Applebot, DuckDuckBot, GPTBot, ClaudeBot, PerplexityBot and others) are always verified and need no entry here. Reverse-DNS suffixes must be registrable domains; shared-hosting suffixes and over-broad or non-public IP ranges are rejected so the list cannot become a bypass.
 </div>
 
+<div class="card mb-3">
+    <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-world-search"></i>&nbsp;Built-in AI-crawler IP ranges</h3>
+    </div>
+    <div class="card-body">
+        <div class="text-muted mb-2">Published ranges for AI agents (GPTBot, PerplexityBot and others) refresh automatically from the vendor feeds. Run <code>csm update-bot-ranges</code> to refresh now. This view is read-only.</div>
+        <dl class="row mb-0">
+            <dt class="col-sm-3">Auto-update</dt>
+            <dd class="col-sm-9" id="vbots-ranges-auto">&mdash;</dd>
+            <dt class="col-sm-3">Interval</dt>
+            <dd class="col-sm-9" id="vbots-ranges-interval">&mdash;</dd>
+            <dt class="col-sm-3">Last refresh</dt>
+            <dd class="col-sm-9" id="vbots-ranges-refresh">&mdash;</dd>
+            <dt class="col-sm-3">Prefixes loaded</dt>
+            <dd class="col-sm-9" id="vbots-ranges-prefixes">&mdash;</dd>
+        </dl>
+    </div>
+</div>
+
 <div id="vbots-loading" class="csm-empty">
     <div class="csm-empty__icon"><span class="spinner-border spinner-border-sm"></span></div>
     <div class="csm-empty__reason">Loading...</div>

@@ -100,9 +100,25 @@
         });
     }
 
+    function renderRanges(br) {
+        br = br || {};
+        document.getElementById('vbots-ranges-auto').textContent = br.auto_update ? 'On' : 'Off';
+        document.getElementById('vbots-ranges-interval').textContent = br.update_interval || '24h';
+        document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh || 'never';
+        var prefixes = br.prefixes || {};
+        var names = Object.keys(prefixes).sort();
+        if (names.length === 0) {
+            document.getElementById('vbots-ranges-prefixes').textContent = 'none loaded yet';
+            return;
+        }
+        var parts = names.map(function (k) { return k + ': ' + prefixes[k]; });
+        document.getElementById('vbots-ranges-prefixes').textContent = parts.join(', ');
+    }
+
     function load() {
         CSM.get('/api/v1/verified-bots').then(function (data) {
             etag = data.etag || '';
+            renderRanges(data.bot_ranges);
             listEl.innerHTML = '';
             (data.bots || []).forEach(addRow);
             updateVisibility();

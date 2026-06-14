@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 // SetVerifiedBotsReloader registers the callback the Daemon uses to push a
@@ -44,9 +46,30 @@ func (s *Server) apiVerifiedBots(w http.ResponseWriter, r *http.Request) {
 		bots = []config.VerifiedBot{}
 	}
 	writeJSON(w, map[string]interface{}{
-		"bots": bots,
-		"etag": disk.Integrity.ConfigHash,
+		"bots":       bots,
+		"etag":       disk.Integrity.ConfigHash,
+		"bot_ranges": botRangesSummary(disk),
 	})
+}
+
+// botRangesSummary is the read-only view of the built-in AI-crawler ranges the
+// Verified Bots page shows: the configured auto-update posture plus the live
+// per-bot prefix counts and last-refresh time from the active overlay.
+func botRangesSummary(disk *config.Config) map[string]interface{} {
+	prefixes := map[string]int{}
+	for bot, nets := range threatintel.FetchedRangesSnapshot() {
+		prefixes[bot] = len(nets)
+	}
+	lastRefresh := ""
+	if ts := threatintel.LastFetchedRangesRefresh(); !ts.IsZero() {
+		lastRefresh = ts.UTC().Format(time.RFC3339)
+	}
+	return map[string]interface{}{
+		"auto_update":     disk.BotRangesAutoUpdate(),
+		"update_interval": disk.Reputation.BotRanges.UpdateInterval,
+		"last_refresh":    lastRefresh,
+		"prefixes":        prefixes,
+	}
 }
 
 // apiVerifiedBotsApply (POST /api/v1/verified-bots/apply) validates and

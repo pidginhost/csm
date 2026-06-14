@@ -77,7 +77,11 @@ func observeBotRangesRefresh(success bool) {
 	}
 	total.With("success").Inc()
 	setBotRangesPrefixGauges()
-	lastSuccess.Set(float64(time.Now().Unix()))
+	ts := threatintel.LastFetchedRangesRefresh()
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	lastSuccess.Set(float64(ts.Unix()))
 }
 
 func (d *Daemon) botRangesCachePath() string {
@@ -110,8 +114,14 @@ func (d *Daemon) botRangesUpdater() {
 	if err := threatintel.LoadFetchedRanges(cachePath); err != nil {
 		csmlog.Warn("bot-ranges cache load failed", "err", err)
 	} else {
-		// Reflect the cached overlay in the gauge before the first refresh.
+		// Reflect the cached overlay and its persisted refresh time in the
+		// metrics before the first live refresh, so a restart does not show the
+		// ranges as never-refreshed.
 		setBotRangesPrefixGauges()
+		if ts := threatintel.LastFetchedRangesRefresh(); !ts.IsZero() {
+			_, _, lastSuccess := botRangesMetrics()
+			lastSuccess.Set(float64(ts.Unix()))
+		}
 	}
 
 	interval := 24 * time.Hour

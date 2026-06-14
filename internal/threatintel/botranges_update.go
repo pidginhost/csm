@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/netutil"
@@ -62,6 +63,25 @@ func FetchedRangesSnapshot() map[string][]*net.IPNet {
 	return out
 }
 
+// lastRefreshUnix is the Unix time of the last successful vendor fetch. It is
+// persisted in the cache file so a restart restores the genuine fetch time
+// rather than resetting it. Zero means never refreshed.
+var lastRefreshUnix atomic.Int64
+
+func setLastRefreshUnix(ts int64) { lastRefreshUnix.Store(ts) }
+
+// LastFetchedRangesRefresh returns when the AI-crawler ranges were last fetched
+// from the vendor feeds, or the zero time if they never have been. The web UI
+// surfaces this so operators can see whether the auto-updater is keeping the
+// snapshot current.
+func LastFetchedRangesRefresh() time.Time {
+	ts := lastRefreshUnix.Load()
+	if ts == 0 {
+		return time.Time{}
+	}
+	return time.Unix(ts, 0)
+}
+
 // RefreshFetchedRanges fetches every source, publishes the merged overlay, and
 // persists it to cachePath (skipped when empty). The first successful feed for a
 // bot identity replaces that bot's previous overlay; later successful feeds for
@@ -88,6 +108,7 @@ func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []Ra
 		return 0, lastErr
 	}
 	PublishFetchedRanges(merged)
+	setLastRefreshUnix(time.Now().Unix())
 	if cachePath != "" {
 		if err := SaveFetchedRanges(cachePath, merged); err != nil {
 			return len(updated), err
@@ -192,12 +213,16 @@ func FetchRange(ctx context.Context, client *http.Client, url string) ([]*net.IP
 // rangeCacheFile is the on-disk persistence shape for the fetched overlay.
 type rangeCacheFile struct {
 	Bots map[string][]string `json:"bots"`
+	// RefreshedAt is the Unix time the cache was written, i.e. when the ranges
+	// were last fetched. Persisted so the last-refresh time survives a restart.
+	RefreshedAt int64 `json:"refreshed_at,omitempty"`
 }
 
 // SaveFetchedRanges persists the overlay so a restart keeps the last-good feed
-// until the next refresh completes.
+// until the next refresh completes. The write time is stamped as the
+// last-refresh time, since the only caller saves immediately after fetching.
 func SaveFetchedRanges(path string, m map[string][]*net.IPNet) error {
-	c := rangeCacheFile{Bots: map[string][]string{}}
+	c := rangeCacheFile{Bots: map[string][]string{}, RefreshedAt: time.Now().Unix()}
 	for bot, nets := range m {
 		strs := make([]string, 0, len(nets))
 		for _, n := range nets {
@@ -250,5 +275,8 @@ func loadFetchedRanges(path string, allowMissing bool) error {
 		}
 	}
 	PublishFetchedRanges(m)
+	if c.RefreshedAt > 0 {
+		setLastRefreshUnix(c.RefreshedAt)
+	}
 	return nil
 }
