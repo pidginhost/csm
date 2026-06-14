@@ -69,6 +69,13 @@ guards as operator entries, and the embedded snapshot is the trusted fallback
 when a fetch fails. Anthropic ClaudeBot has no published machine-readable range
 feed, so it stays reverse-DNS verified (`anthropic.com`).
 
+`csm update-bot-ranges` refreshes these ranges on demand (mirroring
+`csm update-geoip`): it fetches the vendor feeds, writes the on-disk snapshot,
+and asks the running daemon to apply them without a restart. The auto-updater
+and the manual command both export metrics -- refresh success/failure, prefix
+count per crawler, and the last successful refresh time -- under the
+`csm_botranges_*` names.
+
 ## Abuse Reporting
 
 `reputation.report` can send minimized confirmed-abuse reports to a central

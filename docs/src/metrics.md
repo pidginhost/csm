@@ -181,6 +181,17 @@ Registered when `reputation.upstream.enabled: true`.
   circuit breaker is refusing calls, 0 when closed or allowing its
   single cooldown probe.
 
+### AI-crawler IP ranges
+
+- `csm_botranges_refresh_total{result}` (counter): AI-crawler IP-range
+  refresh attempts, labelled `success` (at least one vendor feed
+  updated) or `failure`. Driven by the daemon's auto-updater and by
+  `csm update-bot-ranges`.
+- `csm_botranges_prefixes{bot}` (gauge): current number of published IP
+  prefixes per crawler identity in the active overlay.
+- `csm_botranges_last_success_timestamp_seconds` (gauge): Unix time of
+  the last successful refresh.
+
 ### Firewall
 
 - `csm_blocked_ips_total` (gauge): number of IPs currently on the
