@@ -1613,11 +1613,11 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 	// Fail-open: errors proceed with the default block. Nil callback skips
 	// the gate entirely.
 	if asker := e.verdictAskerFn(); asker != nil {
-		v, tenant, note, err := asker(e.verdictContext(), ip, reason)
+		v, tenant, note, verr := asker(e.verdictContext(), ip, reason)
 		switch {
-		case err != nil:
+		case verr != nil:
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback failed for %s: %v - proceeding with default block\n",
-				time.Now().Format("2006-01-02 15:04:05"), ip, err)
+				time.Now().Format("2006-01-02 15:04:05"), ip, verr)
 		case v == "allow":
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned allow for %s (tenant=%q note=%q) - not blocking\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, tenant, note)
