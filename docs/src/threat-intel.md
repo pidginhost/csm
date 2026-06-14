@@ -50,6 +50,12 @@ must fall in one of the published CIDRs -- this is for AI agents
 crawler reverse DNS. Over-broad or non-public ranges are rejected. All
 checks run at config load and on reload.
 
+The built-in crawler set covers Googlebot, Bingbot, Applebot, DuckDuckBot,
+Amazonbot, ClaudeBot, the Facebook and Meta crawlers, Brave, and the SERanking
+backlink bot. Googlebot, Bingbot, and Applebot match a shipped IP-range
+snapshot first and fall back to reverse DNS; the rest without a published range
+feed verify by reverse DNS alone.
+
 GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are recognized out of
 the box: their published IP ranges ship as an embedded snapshot and are
 refreshed from the vendor endpoints by an auto-updater (`reputation.bot_ranges`,

@@ -74,6 +74,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 |---|---|---|
 | Mailbox takeover via SASL brute -> outbound spam | Tails maillog, blocks on the failure-then-success pattern, auto-freezes the Exim spool | [Real-time](docs/src/detection-realtime.md) |
 | WordPress wp-login / xmlrpc flood | Real-time access-log monitor, blocks within seconds | [Real-time](docs/src/detection-realtime.md) |
+| Vulnerability scanners enumerating URLs for backups, shells, exposed files | Profiles per-IP probe-error rate across access logs and blocks the source | [Real-time](docs/src/detection-realtime.md) |
 | Compromised WP admin / siteurl injection | `csm db-clean --revoke-user`, `--option`, `--delete-spam` | [CLI](docs/src/cli.md) |
 | Webshells, obfuscated/eval-chain PHP, tail-appended payloads | fanotify watcher + 7 cleaning strategies; quarantine preserves owner/perms/mtime | [Real-time](docs/src/detection-realtime.md), [Auto-response](docs/src/auto-response.md) |
 | PHP-relay form abuse (PHPMailer with spoofed `From`) | Inotify watcher on `/var/spool/exim/input`, 4 detection paths, optional `exim -Mf` auto-freeze | [Real-time](docs/src/detection-realtime.md#php-relay-mail-abuse-cpanel-only) |
@@ -90,7 +91,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 - **Single static Go binary**, real-time response on syscall events.
 - **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and REST API.
 - **nftables firewall** with TTLs, subnet escalation, country blocking (MaxMind), commit-confirmed safety.
-- **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache.
+- **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache, plus forward-confirmed verification of search-engine and AI crawlers so real bots are never blocked.
 - **Hot-reload safe config** + `/etc/csm/conf.d/*.yaml` drop-ins for automation.
 - **bbolt-backed state** with TTL retention, `csm backup`/`csm restore`, and SIEM backfill via `csm export --since`.
 - **Signed `.deb` and `.rpm` packages**, reproducible builds, OpenSSF Scorecard.
