@@ -104,6 +104,13 @@ reputation:
   #   - name: "perplexitybot"
   #     ua_substrings: ["perplexitybot"]
   #     ip_ranges: ["18.97.9.96/29", "18.97.1.228/30"]
+  # Auto-update of built-in AI-crawler IP ranges (OpenAI, Perplexity). These
+  # ship as a snapshot and refresh from the vendor endpoints on a schedule.
+  # Outbound HTTPS; set auto_update: false to use the snapshot only. Changes
+  # require a daemon restart because the updater is started once at boot.
+  bot_ranges:
+    auto_update: true
+    update_interval: "24h"
 
 thresholds:
   mail_queue_warn: 500

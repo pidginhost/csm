@@ -433,6 +433,24 @@ func TestValidateDurations(t *testing.T) {
 		}
 	})
 
+	t.Run("bad reputation.bot_ranges.update_interval", func(t *testing.T) {
+		cfg := base()
+		cfg.Reputation.BotRanges.UpdateInterval = "soon"
+		results := Validate(cfg)
+		if !hasResult(results, "error", "reputation.bot_ranges.update_interval") {
+			t.Errorf("expected error for bad bot_ranges update_interval; results=%v", results)
+		}
+	})
+
+	t.Run("short reputation.bot_ranges.update_interval", func(t *testing.T) {
+		cfg := base()
+		cfg.Reputation.BotRanges.UpdateInterval = "30m"
+		results := Validate(cfg)
+		if !hasResult(results, "error", "reputation.bot_ranges.update_interval") {
+			t.Errorf("expected error for short bot_ranges update_interval; results=%v", results)
+		}
+	})
+
 	t.Run("bad permblock_interval", func(t *testing.T) {
 		cfg := base()
 		cfg.AutoResponse.PermBlockInterval = "bad"

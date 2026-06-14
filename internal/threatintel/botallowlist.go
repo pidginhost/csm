@@ -3,8 +3,8 @@
 // botallowlist.go owns the embedded static IP CIDR ranges and the UA
 // substring -> claimed-bot mapping. The static snapshots are a fast positive
 // allow path: if the source IP falls inside a published bot range, skip the
-// request without rDNS. Refreshed at runtime by the existing
-// `csm update-rules` plumbing (separate task -- not in this commit).
+// request without rDNS. The embedded snapshots are a trusted fallback; the
+// bot-ranges auto-updater (botranges_update.go) refreshes them at runtime.
 package threatintel
 
 import (
@@ -23,6 +23,22 @@ var bingbotJSON []byte
 
 //go:embed embed/applebot.json
 var applebotJSON []byte
+
+// AI crawlers publish IP ranges rather than crawler reverse DNS, so they ship
+// as embedded snapshots and are kept current by the auto-updater. OpenAI's
+// three feeds (GPTBot, ChatGPT-User, OAI-SearchBot) all verify "gptbot".
+//
+//go:embed embed/openai-gptbot.json
+var openaiGPTBotJSON []byte
+
+//go:embed embed/openai-chatgpt-user.json
+var openaiChatGPTUserJSON []byte
+
+//go:embed embed/openai-searchbot.json
+var openaiSearchBotJSON []byte
+
+//go:embed embed/perplexitybot.json
+var perplexitybotJSON []byte
 
 // BotRanges holds the parsed allowlist data, indexed by claimed-bot
 // identity ("googlebot", "bingbot", "applebot").
@@ -47,11 +63,21 @@ var (
 func DefaultRanges() *BotRanges {
 	rangesOnce.Do(func() {
 		defaultRanges = &BotRanges{byBot: map[string][]*net.IPNet{}}
-		for bot, raw := range map[string][]byte{
-			"googlebot": googlebotJSON,
-			"bingbot":   bingbotJSON,
-			"applebot":  applebotJSON,
+		// A slice (not a map) so several feeds can share one identity:
+		// OpenAI's three crawler feeds all populate "gptbot".
+		for _, src := range []struct {
+			bot string
+			raw []byte
+		}{
+			{"googlebot", googlebotJSON},
+			{"bingbot", bingbotJSON},
+			{"applebot", applebotJSON},
+			{"gptbot", openaiGPTBotJSON},
+			{"gptbot", openaiChatGPTUserJSON},
+			{"gptbot", openaiSearchBotJSON},
+			{"perplexitybot", perplexitybotJSON},
 		} {
+			bot, raw := src.bot, src.raw
 			var f embedFile
 			if err := json.Unmarshal(raw, &f); err != nil {
 				continue
@@ -84,6 +110,11 @@ func (r *BotRanges) IPInBot(ip net.IP, bot string) bool {
 			return true
 		}
 	}
+	for _, n := range fetchedRangesFor(bot) {
+		if n.Contains(ip) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -100,6 +131,13 @@ func (r *BotRanges) IPInAnyBot(ip net.IP) bool {
 		return false
 	}
 	for _, nets := range r.byBot {
+		for _, n := range nets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+	}
+	for _, nets := range fetchedRangesSnapshot() {
 		for _, n := range nets {
 			if n.Contains(ip) {
 				return true
@@ -127,7 +165,9 @@ func ClaimedBotFromUA(ua string) string {
 		return "duckduckbot"
 	case strings.Contains(low, "amazonbot"):
 		return "amazonbot"
-	case strings.Contains(low, "gptbot"), strings.Contains(low, "chatgpt-user"):
+	case strings.Contains(low, "gptbot"),
+		strings.Contains(low, "chatgpt-user"),
+		strings.Contains(low, "oai-searchbot"):
 		return "gptbot"
 	case strings.Contains(low, "claudebot"), strings.Contains(low, "claude-searchbot"):
 		return "claudebot"

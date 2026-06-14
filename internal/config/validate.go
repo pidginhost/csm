@@ -160,6 +160,13 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "geoip.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.GeoIP.UpdateInterval)})
 		}
 	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "" {
+		if d, err := time.ParseDuration(cfg.Reputation.BotRanges.UpdateInterval); err != nil {
+			results = append(results, ValidationResult{"error", "reputation.bot_ranges.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.Reputation.BotRanges.UpdateInterval)})
+		} else if d < time.Hour {
+			results = append(results, ValidationResult{"error", "reputation.bot_ranges.update_interval", "update_interval must be at least 1h"})
+		}
+	}
 	if cfg.AutoResponse.PermBlockInterval != "" {
 		if _, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.PermBlockInterval)})

@@ -375,6 +375,9 @@ reputation:
   #   - name: "perplexitybot"           # AI agent verified by published IP ranges
   #     ua_substrings: ["perplexitybot"]
   #     ip_ranges: ["18.97.9.96/29", "18.97.1.228/30"]
+  bot_ranges:                           # built-in AI-crawler range refresh
+    auto_update: true                   # default: true; restart required to change
+    update_interval: "24h"              # default: 24h, minimum: 1h
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL
@@ -754,6 +757,11 @@ the heartbeat.
 
 `reputation.verified_bots` is reconciled on reload and the bot-verifier
 cache is restamped when the list changes.
+
+`reputation.bot_ranges` controls a long-lived updater goroutine and is
+tagged restart-required. A reload that changes it emits
+`config_reload_restart_required`; restart the daemon to change the
+auto-update switch or interval.
 
 Two sub-keys are exceptions. They live under a safe-tagged parent
 but seed a long-lived in-memory structure at daemon startup; the

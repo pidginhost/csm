@@ -105,9 +105,9 @@ func TestValidateVerifiedBots_IPRanges(t *testing.T) {
 		wantErr bool
 	}{
 		{"ip_ranges only (no rdns) ok", VerifiedBot{Name: "perplexitybot", UASubstrings: []string{"perplexitybot"}, IPRanges: []string{"18.97.9.96/29"}}, false},
-		{"single ip ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"203.0.113.5"}}, false},
-		{"rdns and ip_ranges ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"x.example"}, IPRanges: []string{"203.0.113.0/24"}}, false},
-		{"mapped ipv4 range ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:203.0.113.0/120"}}, false},
+		{"single ip ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"18.97.1.229"}}, false},
+		{"rdns and ip_ranges ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"x.example"}, IPRanges: []string{"74.7.241.0/25"}}, false},
+		{"mapped ipv4 range ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:74.7.241.0/120"}}, false},
 		{"neither rdns nor ip_ranges", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}}, true},
 		{"invalid cidr", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"not-a-cidr"}}, true},
 		{"too broad v4", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"8.0.0.0/8"}}, true},
@@ -117,6 +117,10 @@ func TestValidateVerifiedBots_IPRanges(t *testing.T) {
 		{"private range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"192.168.0.0/24"}}, true},
 		{"mapped private range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:192.168.0.0/120"}}, true},
 		{"loopback range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"127.0.0.0/24"}}, true},
+		{"carrier-grade NAT range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"100.64.0.0/16"}}, true},
+		{"benchmarking range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"198.18.0.0/16"}}, true},
+		{"documentation range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"203.0.113.0/24"}}, true},
+		{"IPv6 documentation range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"2001:db8::/32"}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
