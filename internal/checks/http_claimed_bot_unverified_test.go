@@ -122,6 +122,134 @@ func TestClaimedBot_MixedTrafficStillFloods(t *testing.T) {
 	}
 }
 
+func TestClaimedBot_EqualMixStillFloods(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 50
+
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	botRec, _ := parseAccessLogRecord(botUALine("203.0.113.93", "Googlebot/2.1 fake"))
+	browserUA := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+	browserRec, ok := parseAccessLogRecord(botUALine("203.0.113.93", browserUA))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	for i := 0; i < 25; i++ {
+		stats.scan(botRec, cfg, pendingVerifyClassifier{})
+		stats.scan(browserRec, cfg, pendingVerifyClassifier{})
+	}
+	got := stats.emit(cfg)
+	counts := map[string]int{}
+	for _, f := range got {
+		counts[f.Check]++
+	}
+	if counts["http_request_flood"] == 0 {
+		t.Error("an even claimed-bot/browser mix must still hard-block as http_request_flood")
+	}
+	if counts["http_claimed_bot_unverified"] != 0 {
+		t.Error("an even claimed-bot/browser mix must not downgrade to http_claimed_bot_unverified")
+	}
+}
+
+func TestClaimedBot_NoVerifierFloodsNormally(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bot  botClassifier
+	}{
+		{name: "static only", bot: staticAllowlistClassifier{}},
+		{name: "verifier unavailable", bot: newVerifyingClassifier(nil, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Thresholds.HTTPFloodThreshold = 50
+
+			stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+			rec, ok := parseAccessLogRecord(botUALine("203.0.113.95", "Googlebot/2.1 fake"))
+			if !ok {
+				t.Fatal("parse failed")
+			}
+			for i := 0; i < 75; i++ {
+				stats.scan(rec, cfg, tc.bot)
+			}
+			got := stats.emit(cfg)
+			counts := map[string]int{}
+			for _, f := range got {
+				counts[f.Check]++
+			}
+			if counts["http_request_flood"] == 0 {
+				t.Error("claimed-bot flood without an active pending verifier must still hard-block as http_request_flood")
+			}
+			if counts["http_claimed_bot_unverified"] != 0 {
+				t.Error("claimed-bot flood without an active pending verifier must not route to http_claimed_bot_unverified")
+			}
+		})
+	}
+}
+
+func TestClaimedBot_DistributedRollupCountsUnverifiedFloods(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 5
+	cfg.Thresholds.HTTPDistributedMinIPs = 2
+
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	for _, ip := range []string{"203.0.113.91", "203.0.113.92"} {
+		rec, ok := parseAccessLogRecord(botUALine(ip, "Googlebot/2.1 fake"))
+		if !ok {
+			t.Fatal("parse failed")
+		}
+		rec.Domain = "victim.example"
+		for i := 0; i < 6; i++ {
+			stats.scan(rec, cfg, pendingVerifyClassifier{})
+		}
+	}
+	got := stats.emit(cfg)
+	var unverified, distributed int
+	for _, f := range got {
+		switch f.Check {
+		case "http_claimed_bot_unverified":
+			unverified++
+		case "http_distributed_flood":
+			distributed++
+			if f.Domain != "victim.example" {
+				t.Errorf("distributed Domain = %q, want victim.example", f.Domain)
+			}
+		case "http_request_flood":
+			t.Errorf("pending claimed bot should not emit http_request_flood: %+v", f)
+		}
+	}
+	if unverified != 2 {
+		t.Fatalf("http_claimed_bot_unverified findings = %d, want 2: %+v", unverified, got)
+	}
+	if distributed != 1 {
+		t.Fatalf("http_distributed_flood findings = %d, want 1: %+v", distributed, got)
+	}
+}
+
+func TestClaimedBot_VerifiedClearsChallengeList(t *testing.T) {
+	cfg := &config.Config{}
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+
+	challengeList := &mockIPList{
+		ips:           map[string]bool{"203.0.113.96": true},
+		nonEscalating: map[string]bool{"203.0.113.96": true},
+	}
+	oldList := GetChallengeIPList()
+	SetChallengeIPList(challengeList)
+	t.Cleanup(func() { SetChallengeIPList(oldList) })
+
+	rec, ok := parseAccessLogRecord(botUALine("203.0.113.96", "Googlebot/2.1"))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	stats.scan(rec, cfg, verifiedBotClassifier{})
+
+	if challengeList.Contains("203.0.113.96") {
+		t.Fatal("verified bot must be removed from the challenge list")
+	}
+	if len(challengeList.nonEscalating) != 0 {
+		t.Fatalf("non-escalating challenge metadata was not cleared: %+v", challengeList.nonEscalating)
+	}
+}
+
 // Once verification resolves positive, the bot is skipped entirely: no abuse
 // finding of any kind, even under flood-level volume.
 func TestClaimedBot_VerifiedNotCounted(t *testing.T) {

@@ -34,11 +34,11 @@ When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page in
 
 Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,
 `xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`,
-`http_scanner_profile`, `ip_reputation`, `local_threat_score`. Post-auth audit
-events (cPanel, webmail, file upload, WHM logins), WAF high-volume attacker
-findings, and non-browser protocols (SSH, FTP, DNS recursion, outbound
-traffic, API auth) are excluded - their IPs have no useful challenge step or
-no browser session to render the PoW page.
+`http_scanner_profile`, `http_claimed_bot_unverified`, `ip_reputation`,
+`local_threat_score`. Post-auth audit events (cPanel, webmail, file upload, WHM
+logins), WAF high-volume attacker findings, and non-browser protocols (SSH,
+FTP, DNS recursion, outbound traffic, API auth) are excluded - their IPs have
+no useful challenge step or no browser session to render the PoW page.
 
 `http_scanner_profile` routing is operator-selectable:
 `auto_response.http_scanner_action: "challenge"` (default) routes the IP here;
@@ -51,7 +51,12 @@ Confirmed malware (webshells, YARA/signature matches), WAF high-volume attackers
 
 ### Timeout Escalation
 
-If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically escalated to a hard firewall block.
+If an IP doesn't solve the PoW challenge within 30 minutes, it is
+automatically escalated to a hard firewall block. The pending claimed-bot path
+(`http_claimed_bot_unverified`) is the exception: it expires without timeout
+escalation because the reverse-DNS verifier decides the next action. A confirmed
+spoof is hard-blocked by the later `http_ua_spoof` finding, while a real crawler
+is removed from the challenge list once verification succeeds.
 
 ### Bind address
 

@@ -750,6 +750,9 @@ func TestClaimedBot_OutsideStaticRangeDoesNotEmitYet(t *testing.T) {
 type pendingVerifyClassifier struct{}
 
 func (pendingVerifyClassifier) IsVerifiedBot(string, string) bool { return false }
+func (pendingVerifyClassifier) VerificationPending(string, string) bool {
+	return true
+}
 
 // The pending-claimed-bot flood disposition is covered by
 // TestClaimedBot_PendingFloodRoutesToUnverified: such an IP is routed to the

@@ -230,7 +230,7 @@ func TestNormalizeLoadedRecordDoesNotBackfillSlowBruteWindow(t *testing.T) {
 // reconnaissance/abuse signals, not credential brute force, so they classify
 // as recon (volume-scored, no brute-force bonus).
 func TestClassify_HTTPAbuseChecksAsRecon(t *testing.T) {
-	for _, check := range []string{"http_scanner_profile", "http_request_flood", "http_ua_spoof"} {
+	for _, check := range []string{"http_scanner_profile", "http_request_flood", "http_claimed_bot_unverified", "http_ua_spoof"} {
 		if got := checkToAttack[check]; got != AttackRecon {
 			t.Errorf("%q classified as %q, want %q", check, got, AttackRecon)
 		}
@@ -249,6 +249,10 @@ func TestRecordFinding_HTTPAbuseChecksBuildReputation(t *testing.T) {
 		{
 			check:   "http_request_flood",
 			message: "HTTP request flood from 203.0.113.45: 250 requests",
+		},
+		{
+			check:   "http_claimed_bot_unverified",
+			message: "Unverified claimed bot from 203.0.113.45: request flood",
 		},
 		{
 			check:   "http_ua_spoof",

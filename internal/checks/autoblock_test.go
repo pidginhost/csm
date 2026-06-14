@@ -94,6 +94,14 @@ func (l *staticChallengeIPList) Add(ip, reason string, duration time.Duration) {
 	l.ips[ip] = true
 }
 
+func (l *staticChallengeIPList) AddNonEscalating(ip, reason string, duration time.Duration) {
+	l.ips[ip] = true
+}
+
+func (l *staticChallengeIPList) Remove(ip string) {
+	delete(l.ips, ip)
+}
+
 func (l *staticChallengeIPList) Contains(ip string) bool {
 	return l.ips[ip]
 }
@@ -1445,6 +1453,33 @@ func TestAutoBlock_HTTPScannerProfile(t *testing.T) {
 	AutoBlockIPs(cfg, f)
 	if len(rb.blocked) != 1 || rb.blocked[0] != "192.0.2.201" {
 		t.Fatalf("blocked=%v want [192.0.2.201]", rb.blocked)
+	}
+}
+
+func TestAutoBlock_HTTPClaimedBotUnverified(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	rb := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(rb)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	f := []alert.Finding{{
+		Check:    "http_claimed_bot_unverified",
+		Severity: alert.High,
+		SourceIP: "192.0.2.202",
+		Message:  "Unverified claimed bot from 192.0.2.202: request flood",
+	}}
+	AutoBlockIPs(cfg, f)
+	if len(rb.blocked) != 1 || rb.blocked[0] != "192.0.2.202" {
+		t.Fatalf("blocked=%v want [192.0.2.202]", rb.blocked)
 	}
 }
 
