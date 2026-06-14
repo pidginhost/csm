@@ -40,6 +40,13 @@ var openaiSearchBotJSON []byte
 //go:embed embed/perplexitybot.json
 var perplexitybotJSON []byte
 
+// Anthropic publishes one combined crawler feed (ClaudeBot, Claude-User,
+// Claude-SearchBot) at claude.com/crawling/bots.json. It documents IP-list
+// verification, not reverse DNS, so the snapshot is the authoritative source.
+//
+//go:embed embed/claudebot.json
+var claudebotJSON []byte
+
 // BotRanges holds the parsed allowlist data, indexed by claimed-bot
 // identity ("googlebot", "bingbot", "applebot").
 type BotRanges struct {
@@ -76,6 +83,7 @@ func DefaultRanges() *BotRanges {
 			{"gptbot", openaiChatGPTUserJSON},
 			{"gptbot", openaiSearchBotJSON},
 			{"perplexitybot", perplexitybotJSON},
+			{"claudebot", claudebotJSON},
 		} {
 			bot, raw := src.bot, src.raw
 			var f embedFile

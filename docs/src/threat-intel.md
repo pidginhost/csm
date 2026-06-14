@@ -60,14 +60,16 @@ merely spoofing a crawler User-Agent cannot solve it. Once verification
 fails outright, the spoofer is hard-blocked. When the challenge subsystem
 is disabled, the claimed bot is hard-blocked during the window instead.
 
-GPTBot, ChatGPT-User, OAI-SearchBot and PerplexityBot are recognized out of
-the box: their published IP ranges ship as an embedded snapshot and are
+GPTBot, ChatGPT-User, OAI-SearchBot, PerplexityBot and ClaudeBot are recognized
+out of the box: their published IP ranges ship as an embedded snapshot and are
 refreshed from the vendor endpoints by an auto-updater (`reputation.bot_ranges`,
 default on, outbound HTTPS, configurable interval; restart required for setting
 changes). Fetched ranges are validated with the same over-broad and non-public
 guards as operator entries, and the embedded snapshot is the trusted fallback
-when a fetch fails. Anthropic ClaudeBot has no published machine-readable range
-feed, so it stays reverse-DNS verified (`anthropic.com`).
+when a fetch fails. Anthropic publishes one combined feed for ClaudeBot,
+Claude-User and Claude-SearchBot and documents IP-list verification rather than
+reverse DNS, so CSM verifies ClaudeBot by address from that feed; the legacy
+`anthropic.com` reverse-DNS suffix is kept only as a fallback.
 
 `csm update-bot-ranges` refreshes these ranges on demand (mirroring
 `csm update-geoip`): it fetches the vendor feeds, writes the on-disk snapshot,

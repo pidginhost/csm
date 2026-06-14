@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Anthropic's ClaudeBot is now recognized out of the box by its published IP ranges (Anthropic now ships a machine-readable feed and documents address-based verification, not reverse DNS). The ranges ship as a snapshot and refresh on the same schedule as the other AI crawlers.
 - The Verified Bots page now shows the built-in AI-crawler ranges read-only: whether auto-update is on, the refresh interval, the last refresh time, and how many IP prefixes are loaded per crawler.
 - A new `csm update-bot-ranges` command refreshes the built-in AI-crawler IP ranges from the vendor feeds on demand and tells the running daemon to apply them without a restart, mirroring `csm update-geoip`. The auto-updater now also exports metrics (refresh success/failure, prefix counts per crawler, and the last successful refresh time).
 - A new URL scanner-profile detector flags source IPs whose traffic is almost entirely 404/403 responses spread across many distinct paths, the shape of random-URL probing for downloadable files and exposed backups. Disabled by default; volume, error-rate, and path-breadth gates keep dead bookmarks, broken assets, and site migrations from triggering it, tuning values are validated, settings are editable from the web UI, and flagged IPs feed auto-block and the distributed rollup without counting unrelated vhost misses.

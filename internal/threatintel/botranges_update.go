@@ -129,14 +129,15 @@ type RangeSource struct {
 
 // DefaultRangeSources are the vendor feeds the auto-updater refreshes. URLs are
 // stable, vendor-published JSON in the {prefixes:[{ipv4Prefix|ipv6Prefix}]}
-// shape. Anthropic ClaudeBot is intentionally absent: it has no published
-// machine-readable range feed and stays rDNS-verified (anthropic.com).
+// shape. Anthropic's feed is one combined list for ClaudeBot, Claude-User, and
+// Claude-SearchBot, all of which verify the "claudebot" identity.
 func DefaultRangeSources() []RangeSource {
 	return []RangeSource{
 		{Bot: "gptbot", URL: "https://openai.com/gptbot.json"},
 		{Bot: "gptbot", URL: "https://openai.com/chatgpt-user.json"},
 		{Bot: "gptbot", URL: "https://openai.com/searchbot.json"},
 		{Bot: "perplexitybot", URL: "https://www.perplexity.ai/perplexitybot.json"},
+		{Bot: "claudebot", URL: "https://claude.com/crawling/bots.json"},
 	}
 }
 
