@@ -22,7 +22,7 @@ func newTestServerWithTemplates(t *testing.T, token string) *Server {
 	// stubs that accept any data and output "OK".
 	pages := []string{
 		"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec",
-		"modsec-rules", "threat", "rules", "audit", "account",
+		"modsec-rules", "verified-bots", "threat", "rules", "audit", "account",
 		"incident", "email", "performance", "hardening", "login",
 	}
 	for _, page := range pages {
@@ -121,6 +121,15 @@ func TestHandleEmailRendersOK(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	w := httptest.NewRecorder()
 	s.handleEmail(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d", w.Code)
+	}
+}
+
+func TestHandleVerifiedBotsRendersOK(t *testing.T) {
+	s := newTestServerWithTemplates(t, "tok")
+	w := httptest.NewRecorder()
+	s.handleVerifiedBots(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d", w.Code)
 	}

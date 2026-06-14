@@ -68,12 +68,17 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Bots []config.VerifiedBot `json:"bots"`
+		Bots *[]config.VerifiedBot `json:"bots"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 256*1024, &body); err != nil {
 		writeJSONError(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	if body.Bots == nil {
+		writeJSONError(w, "bots is required", http.StatusBadRequest)
+		return
+	}
+	bots := normalizeVerifiedBotsForSave(*body.Bots)
 
 	diskBytes, err := os.ReadFile(s.cfg.ConfigFile) // #nosec G304 -- operator-supplied config path
 	if err != nil {
@@ -91,9 +96,12 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
 		return
 	}
+	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
+		return
+	}
 
 	clone := cloneConfigForSettingsApply(disk)
-	clone.Reputation.VerifiedBots = body.Bots
+	clone.Reputation.VerifiedBots = bots
 
 	var verr []fieldError
 	for _, v := range config.Validate(&clone) {
@@ -108,8 +116,8 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 
 	// YAMLEdit block-renders []interface{} via yaml.Marshal; a typed
 	// []config.VerifiedBot is not recognized, so wrap each entry.
-	botsVal := make([]interface{}, len(body.Bots))
-	for i, b := range body.Bots {
+	botsVal := make([]interface{}, len(bots))
+	for i, b := range bots {
 		botsVal[i] = b
 	}
 	edited, err := config.YAMLEdit(diskBytes, []config.YAMLChange{
@@ -128,7 +136,7 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 	// reputation is a hot-reload-safe section: apply to the live config now.
 	if live := config.Active(); live != nil {
 		liveClone := *live
-		liveClone.Reputation.VerifiedBots = body.Bots
+		liveClone.Reputation.VerifiedBots = bots
 		liveClone.Integrity = newIntegrity
 		config.SetActive(&liveClone)
 	} else {
@@ -141,7 +149,25 @@ func (s *Server) apiVerifiedBotsApply(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]interface{}{
 		"ok":       true,
-		"count":    len(body.Bots),
+		"count":    len(bots),
 		"new_etag": newIntegrity.ConfigHash,
 	})
+}
+
+func normalizeVerifiedBotsForSave(in []config.VerifiedBot) []config.VerifiedBot {
+	out := make([]config.VerifiedBot, len(in))
+	copy(out, in)
+	for i := range out {
+		out[i].UASubstrings = nilIfEmptyStrings(out[i].UASubstrings)
+		out[i].RDNSSuffixes = nilIfEmptyStrings(out[i].RDNSSuffixes)
+		out[i].IPRanges = nilIfEmptyStrings(out[i].IPRanges)
+	}
+	return out
+}
+
+func nilIfEmptyStrings(v []string) []string {
+	if len(v) == 0 {
+		return nil
+	}
+	return v
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -36,13 +38,23 @@ func TestVerifiedBots_GetReturnsListAndEtag(t *testing.T) {
 	}
 }
 
+func TestVerifiedBots_PageNotRegisteredWithoutUI(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\n")
+	req := settingsAuthedReq("GET", "/verified-bots", "tok", "")
+	w := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404 in API-only mode, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestVerifiedBots_SaveValidPersistsAndReloads(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\nreputation:\n  verified_bots: []\n")
 	var reloaded bool
 	s.SetVerifiedBotsReloader(func() error { reloaded = true; return nil })
 
 	etag, _ := vbotsGet(t, s, "tok")
-	body := `{"bots":[{"name":"perplexitybot","ua_substrings":["perplexitybot"],"ip_ranges":["18.97.9.96/29"]}]}`
+	body := `{"bots":[{"name":"perplexitybot","ua_substrings":["perplexitybot"],"rdns_suffixes":[],"ip_ranges":["18.97.9.96/29"]}]}`
 	req := settingsAuthedReq("POST", "/api/v1/verified-bots/apply", "tok", body)
 	req.Header.Set("If-Match", etag)
 	w := httptest.NewRecorder()
@@ -84,6 +96,18 @@ func TestVerifiedBots_SaveInvalidReturns422(t *testing.T) {
 	}
 }
 
+func TestVerifiedBots_SaveMissingBotsReturns400(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\nreputation:\n  verified_bots: []\n")
+	etag, _ := vbotsGet(t, s, "tok")
+	req := settingsAuthedReq("POST", "/api/v1/verified-bots/apply", "tok", `{}`)
+	req.Header.Set("If-Match", etag)
+	w := httptest.NewRecorder()
+	s.apiVerifiedBotsApply(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestVerifiedBots_SaveStaleEtagReturns412(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\nreputation:\n  verified_bots: []\n")
 	body := `{"bots":[]}`
@@ -93,5 +117,29 @@ func TestVerifiedBots_SaveStaleEtagReturns412(t *testing.T) {
 	s.apiVerifiedBotsApply(w, req)
 	if w.Code != http.StatusPreconditionFailed {
 		t.Fatalf("want 412, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestVerifiedBots_SaveRejectsStaleConfDir(t *testing.T) {
+	s, _, confDir := newSettingsTestServerWithConfDir(t, "tok", "hostname: t.example.com\nreputation:\n  verified_bots: []\n", map[string]string{
+		"01-reputation.yaml": "reputation:\n  whitelist: []\n",
+	})
+	var reloaded bool
+	s.SetVerifiedBotsReloader(func() error { reloaded = true; return nil })
+
+	etag, _ := vbotsGet(t, s, "tok")
+	if err := os.WriteFile(filepath.Join(confDir, "01-reputation.yaml"), []byte("reputation:\n  whitelist:\n    - 203.0.113.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := settingsAuthedReq("POST", "/api/v1/verified-bots/apply", "tok", `{"bots":[]}`)
+	req.Header.Set("If-Match", etag)
+	w := httptest.NewRecorder()
+	s.apiVerifiedBotsApply(w, req)
+	if w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("want 412, got %d: %s", w.Code, w.Body.String())
+	}
+	if reloaded {
+		t.Fatal("stale conf.d save invoked live reloader")
 	}
 }

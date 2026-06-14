@@ -385,6 +385,7 @@ func TestSidebarNavCoversEveryVisiblePage(t *testing.T) {
 		"/cleanup-history",
 		"/email",
 		"/modsec",
+		"/verified-bots",
 		"/threat",
 		"/performance",
 		"/hardening",
@@ -403,8 +404,8 @@ func TestSidebarNavCoversEveryVisiblePage(t *testing.T) {
 	// Each entry must carry a data-csm-route hook so layout.js can light it.
 	for _, route := range []string{
 		"dashboard", "incident", "findings", "firewall", "quarantine",
-		"cleanup-history", "email", "modsec", "threat", "performance",
-		"hardening", "rules", "modsec-rules", "audit", "settings",
+		"cleanup-history", "email", "modsec", "verified-bots", "threat",
+		"performance", "hardening", "rules", "modsec-rules", "audit", "settings",
 	} {
 		needle := `data-csm-route="` + route + `"`
 		if !strings.Contains(text, needle) {
@@ -444,6 +445,7 @@ func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
 	text := string(tmpl)
 	for _, want := range []string{
 		`data-csm-route="modsec-rules" data-csm-admin-only`,
+		`data-csm-route="verified-bots" data-csm-admin-only`,
 		`data-csm-nav-group="configuration" data-csm-admin-only`,
 		`data-csm-route="settings" data-csm-admin-only`,
 	} {
@@ -1304,7 +1306,7 @@ func TestEveryOperatorPageUsesSharedHeader(t *testing.T) {
 		"dashboard.html", "email.html", "findings.html", "firewall.html",
 		"hardening.html", "incident.html", "modsec.html",
 		"modsec-rules.html", "performance.html", "quarantine.html",
-		"rules.html", "settings.html", "threat.html",
+		"rules.html", "settings.html", "threat.html", "verified-bots.html",
 	}
 	for _, name := range pages {
 		path := "../../ui/templates/" + name
@@ -1856,7 +1858,7 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	}
 	allText := text + "\n" + string(settingsSrc)
 	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*(?://.*)?$`)
-	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiEmailFlushBackscatter|apiIncidentRouter|apiGeoIPBatch)\b`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiVerifiedBotsApply|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiPerfFixWPCron|apiEmailQuarantineAction|apiEmailFlushBackscatter|apiIncidentRouter|apiGeoIPBatch)\b`)
 	handlerSymbol := regexp.MustCompile(`s\.(api[A-Za-z0-9]+)`)
 	internalCSRF := map[string]string{
 		"apiSettings": "s.requireCSRF(http.HandlerFunc(s.apiSettingsPost)).ServeHTTP(w, r)",
@@ -1957,6 +1959,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"DELETE", "/api/v1/suppressions"},
 		{"POST", "/api/v1/modsec/rules/apply"},
 		{"POST", "/api/v1/modsec/rules/escalation"},
+		{"POST", "/api/v1/verified-bots/apply"},
 		{"POST", "/api/v1/import"},
 		{"POST", "/api/v1/scan-account"},
 		{"POST", "/api/v1/test-alert"},
