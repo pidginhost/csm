@@ -217,7 +217,9 @@ func ClaimedBotFromUA(ua string) string {
 		strings.Contains(low, "chatgpt-user"),
 		strings.Contains(low, "oai-searchbot"):
 		return "gptbot"
-	case strings.Contains(low, "claudebot"), strings.Contains(low, "claude-searchbot"):
+	case strings.Contains(low, "claudebot"),
+		strings.Contains(low, "claude-user"),
+		strings.Contains(low, "claude-searchbot"):
 		return "claudebot"
 	case strings.Contains(low, "perplexitybot"):
 		return "perplexitybot"

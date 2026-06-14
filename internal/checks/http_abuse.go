@@ -1100,7 +1100,7 @@ var (
 		"baiduspider", "facebookexternalhit", "twitterbot",
 		// Appendix A bots plus AI crawlers verified by published ranges.
 		"amazonbot", "gptbot", "chatgpt-user", "oai-searchbot",
-		"claudebot", "claude-searchbot",
+		"claudebot", "claude-user", "claude-searchbot",
 		"perplexitybot", "meta-externalagent", "meta-webindexer", "bravebot",
 		"seranking",
 	}

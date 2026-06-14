@@ -21,6 +21,18 @@ func TestDefaultRanges_ClaudeBotBuiltIn(t *testing.T) {
 	}
 }
 
+func TestClaimedBotFromUA_ClaudeVariants(t *testing.T) {
+	for _, ua := range []string{
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claude.com/bot)",
+		"Claude-User/1.0",
+		"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-SearchBot/1.0; +claude.com/bot)",
+	} {
+		if got := ClaimedBotFromUA(ua); got != "claudebot" {
+			t.Errorf("ClaimedBotFromUA(%q) = %q, want claudebot", ua, got)
+		}
+	}
+}
+
 func TestDefaultRangeSources_IncludesClaudeBot(t *testing.T) {
 	found := false
 	for _, src := range DefaultRangeSources() {

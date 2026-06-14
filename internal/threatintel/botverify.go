@@ -37,7 +37,7 @@ func newVerifier(r resolver, domains []string) *verifier {
 // identity mapping. The daemon calls store.DB.EnsureBotVerifyLogicVersion
 // at startup with this value; a mismatch wipes the botverify bucket so
 // the next scan re-verifies every IP under the new rules.
-const LogicVersion = 4
+const LogicVersion = 5
 
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed

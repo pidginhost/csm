@@ -601,6 +601,7 @@ func TestClassifyUA(t *testing.T) {
 		{"WordPress/6.9.4; https://example.com", "POST", uaKindBrowser}, // POST is legit pingback
 		{"Googlebot/2.1 (+http://www.google.com/bot.html)", "GET", uaKindClaimedBot},
 		{"Mozilla/5.0 (compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot)", "GET", uaKindClaimedBot},
+		{"Claude-User/1.0", "GET", uaKindClaimedBot},
 		{"python-requests/2.31.0", "GET", uaKindScriptingLang},
 		{"curl/8.4.0", "POST", uaKindScriptingLang},
 		{"HeadlessChrome/120.0", "GET", uaKindHeadless},
