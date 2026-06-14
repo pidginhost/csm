@@ -13,9 +13,11 @@ import (
 // never be treated as public crawler space: an allowlist entry inside any of
 // them would let an attacker claim addresses CSM should always scan.
 var nonPublicSpecialUseNets = mustParseCIDRs(
+	"0.0.0.0/8",       // "this network"
 	"100.64.0.0/10",   // carrier-grade NAT
 	"192.0.0.0/24",    // IETF protocol assignments
 	"192.0.2.0/24",    // documentation
+	"192.88.99.0/24",  // deprecated 6to4 relay anycast
 	"198.18.0.0/15",   // benchmarking
 	"198.51.100.0/24", // documentation
 	"203.0.113.0/24",  // documentation
@@ -87,17 +89,23 @@ func NormalizeIPNet(n *net.IPNet) *net.IPNet {
 	if v4 := n.IP.To4(); v4 != nil {
 		mask := n.Mask
 		if len(mask) == net.IPv6len {
+			if _, bits := mask.Size(); bits != net.IPv6len*8 {
+				return nil
+			}
 			// Go treats IPv4-mapped IPv6 CIDRs as IPv4 ranges for Contains.
 			// Keep validation and matching on that same effective prefix.
 			mask = net.IPMask(mask[12:])
 		}
-		if len(mask) != net.IPv4len {
+		if _, bits := mask.Size(); bits != net.IPv4len*8 {
 			return nil
 		}
 		return &net.IPNet{IP: v4.Mask(mask), Mask: mask}
 	}
 	ip := n.IP.To16()
-	if ip == nil || len(n.Mask) != net.IPv6len {
+	if ip == nil {
+		return nil
+	}
+	if _, bits := n.Mask.Size(); bits != net.IPv6len*8 {
 		return nil
 	}
 	return &net.IPNet{IP: ip.Mask(n.Mask), Mask: n.Mask}

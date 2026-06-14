@@ -19,10 +19,12 @@ func TestIsPublicIP(t *testing.T) {
 	nonPublic := []string{
 		"10.0.0.1",     // private
 		"192.168.1.1",  // private
+		"0.1.2.3",      // "this network"
 		"100.64.0.1",   // CGNAT
 		"169.254.0.1",  // link-local
 		"224.0.0.1",    // multicast
 		"192.0.2.5",    // documentation (RFC 5737)
+		"192.88.99.1",  // deprecated 6to4 relay anycast
 		"198.51.100.5", // documentation
 		"203.0.113.5",  // documentation
 		"198.18.0.5",   // benchmarking
@@ -85,5 +87,24 @@ func TestNormalizeIPNet_IPv4Mapped(t *testing.T) {
 	}
 	if !got.Contains(net.ParseIP("203.0.113.7")) {
 		t.Errorf("normalized %v should contain the effective IPv4 address", got)
+	}
+}
+
+func TestNormalizeIPNetRejectsMalformedMasks(t *testing.T) {
+	cases := []*net.IPNet{
+		{IP: net.ParseIP("18.97.9.100"), Mask: net.IPMask{0xff, 0x00, 0xff, 0x00}},
+		{
+			IP: net.ParseIP("18.97.9.100"),
+			Mask: net.IPMask{
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xff, 0x00,
+			},
+		},
+		{IP: net.ParseIP("2606:4700:4700::64"), Mask: net.IPMask{0xff, 0x00, 0xff, 0x00}},
+	}
+	for _, tc := range cases {
+		if got := NormalizeIPNet(tc); got != nil {
+			t.Errorf("NormalizeIPNet(%v) = %v, want nil", tc, got)
+		}
 	}
 }
