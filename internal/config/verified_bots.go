@@ -8,10 +8,9 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// VerifiedBot is one operator-configured good bot. A request whose UA
-// contains any UASubstrings is treated as claiming this identity, and is
-// trusted only if forward-confirmed reverse DNS places the source IP under
-// one of RDNSSuffixes. Built-in bots are unaffected; this only adds coverage.
+// VerifiedBot is one operator-configured good bot. A request whose UA contains
+// any UASubstrings is treated as claiming this identity, and is trusted only
+// if the source IP matches one configured verification method.
 type VerifiedBot struct {
 	Name         string   `yaml:"name"`
 	UASubstrings []string `yaml:"ua_substrings"`
@@ -180,8 +179,9 @@ func verifiedBotIPRangeError(s string) string {
 }
 
 func parseCIDROrIP(s string) *net.IPNet {
+	s = strings.TrimSpace(s)
 	if _, n, err := net.ParseCIDR(s); err == nil {
-		return n
+		return normalizeIPNet(n)
 	}
 	if ip := net.ParseIP(s); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
@@ -190,6 +190,30 @@ func parseCIDROrIP(s string) *net.IPNet {
 		return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 	}
 	return nil
+}
+
+func normalizeIPNet(n *net.IPNet) *net.IPNet {
+	if n == nil {
+		return nil
+	}
+	if v4 := n.IP.To4(); v4 != nil {
+		mask := n.Mask
+		if len(mask) == net.IPv6len {
+			// Go treats IPv4-mapped IPv6 CIDRs as IPv4 ranges for Contains.
+			// Validate the same effective IPv4 prefix instead of the /96
+			// mapped wrapper.
+			mask = net.IPMask(mask[12:])
+		}
+		if len(mask) != net.IPv4len {
+			return nil
+		}
+		return &net.IPNet{IP: v4.Mask(mask), Mask: mask}
+	}
+	ip := n.IP.To16()
+	if ip == nil || len(n.Mask) != net.IPv6len {
+		return nil
+	}
+	return &net.IPNet{IP: ip.Mask(n.Mask), Mask: n.Mask}
 }
 
 func browserUASubstringFootgun(s string) bool {

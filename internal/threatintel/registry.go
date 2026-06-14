@@ -10,12 +10,10 @@ import (
 )
 
 // BotEntry is an operator-configured verified bot: claimed-UA substrings
-// mapped to the registrable-domain suffixes that forward-confirm it. These
-// are additive on top of the built-in allowlist (BotDomains / the
-// ClaimedBotFromUA switch / the embedded static IP ranges); operators extend
-// coverage for crawlers CSM does not ship -- typically SEO and backlink bots
-// -- without a code change. Verification still goes through the same FCrDNS
-// check, so a spoofed UA from an unrelated host is never trusted.
+// mapped to the rDNS suffixes or IP ranges that confirm it. These are additive
+// on top of the built-in allowlist (BotDomains / the ClaimedBotFromUA switch /
+// the embedded static IP ranges); operators extend coverage for crawlers CSM
+// does not ship without a code change.
 type BotEntry struct {
 	Name         string
 	UASubstrings []string
@@ -46,7 +44,7 @@ func SetOperatorBots(entries []BotEntry) {
 	nets := make(map[string][]*net.IPNet)
 	for _, e := range norm {
 		for _, r := range e.IPRanges {
-			if n := parseCIDROrIP(r); n != nil {
+			if n := parseCIDROrIP(r); n != nil && operatorBotIPRangeAllowed(n) {
 				nets[e.Name] = append(nets[e.Name], n)
 			}
 		}
@@ -58,7 +56,7 @@ func SetOperatorBots(entries []BotEntry) {
 func parseCIDROrIP(s string) *net.IPNet {
 	s = strings.TrimSpace(s)
 	if _, n, err := net.ParseCIDR(s); err == nil {
-		return n
+		return normalizeIPNet(n)
 	}
 	if ip := net.ParseIP(s); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
@@ -67,6 +65,42 @@ func parseCIDROrIP(s string) *net.IPNet {
 		return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
 	}
 	return nil
+}
+
+func normalizeIPNet(n *net.IPNet) *net.IPNet {
+	if n == nil {
+		return nil
+	}
+	if v4 := n.IP.To4(); v4 != nil {
+		mask := n.Mask
+		if len(mask) == net.IPv6len {
+			// Go treats IPv4-mapped IPv6 CIDRs as IPv4 ranges for Contains.
+			// Keep validation and matching on that same effective prefix.
+			mask = net.IPMask(mask[12:])
+		}
+		if len(mask) != net.IPv4len {
+			return nil
+		}
+		return &net.IPNet{IP: v4.Mask(mask), Mask: mask}
+	}
+	ip := n.IP.To16()
+	if ip == nil || len(n.Mask) != net.IPv6len {
+		return nil
+	}
+	return &net.IPNet{IP: ip.Mask(n.Mask), Mask: n.Mask}
+}
+
+func operatorBotIPRangeAllowed(n *net.IPNet) bool {
+	ones, bits := n.Mask.Size()
+	if bits == 32 && ones < 16 {
+		return false
+	}
+	if bits == 128 && ones < 32 {
+		return false
+	}
+	ip := n.IP
+	return !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsMulticast()
 }
 
 // OperatorBotIPVerified reports whether ip falls in any IP range configured
@@ -118,10 +152,11 @@ func normalizeBotEntries(entries []BotEntry, requireUA bool) []BotEntry {
 		}
 		seenRange := map[string]struct{}{}
 		for _, raw := range e.IPRanges {
-			r := strings.TrimSpace(raw)
-			if r == "" {
+			n := parseCIDROrIP(raw)
+			if n == nil {
 				continue
 			}
+			r := n.String()
 			if _, ok := seenRange[r]; ok {
 				continue
 			}

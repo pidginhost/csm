@@ -107,11 +107,15 @@ func TestValidateVerifiedBots_IPRanges(t *testing.T) {
 		{"ip_ranges only (no rdns) ok", VerifiedBot{Name: "perplexitybot", UASubstrings: []string{"perplexitybot"}, IPRanges: []string{"18.97.9.96/29"}}, false},
 		{"single ip ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"203.0.113.5"}}, false},
 		{"rdns and ip_ranges ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, RDNSSuffixes: []string{"x.example"}, IPRanges: []string{"203.0.113.0/24"}}, false},
+		{"mapped ipv4 range ok", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:203.0.113.0/120"}}, false},
 		{"neither rdns nor ip_ranges", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}}, true},
 		{"invalid cidr", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"not-a-cidr"}}, true},
 		{"too broad v4", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"8.0.0.0/8"}}, true},
+		{"too broad mapped ipv4", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:8.0.0.0/104"}}, true},
+		{"all mapped ipv4", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:0.0.0.0/96"}}, true},
 		{"default route", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"0.0.0.0/0"}}, true},
 		{"private range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"192.168.0.0/24"}}, true},
+		{"mapped private range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"::ffff:192.168.0.0/120"}}, true},
 		{"loopback range", VerifiedBot{Name: "x", UASubstrings: []string{"xbotcrawler"}, IPRanges: []string{"127.0.0.0/24"}}, true},
 	}
 	for _, tc := range cases {

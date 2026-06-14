@@ -1012,11 +1012,9 @@ var (
 	}
 )
 
-// staticAllowlistClassifier consults the embedded static IP ranges only.
-// If the source IP falls inside a published bot range for the claimed bot
-// identity, the request is treated as verified and excluded from all
-// counters. rDNS verification for IPs outside the static ranges is
-// handled by verifyingClassifier.
+// staticAllowlistClassifier consults only DNS-free bot verification: embedded
+// static IP ranges and operator-configured IP ranges. rDNS verification for
+// IPs outside those ranges is handled by verifyingClassifier.
 type staticAllowlistClassifier struct{}
 
 func (staticAllowlistClassifier) IsVerifiedBot(ipStr, ua string) bool {
