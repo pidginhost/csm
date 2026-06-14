@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-06-15
+
 ### Added
 
 - Anthropic's ClaudeBot is now recognized out of the box by its published IP ranges (Anthropic now ships a machine-readable feed and documents address-based verification, not reverse DNS). The ranges ship as a snapshot and refresh on the same schedule as the other AI crawlers.
