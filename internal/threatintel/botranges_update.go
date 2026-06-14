@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/atomicio"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // fetchedRanges is the runtime-updatable overlay of vendor-published IP ranges,
@@ -141,7 +142,7 @@ func ParseRangeJSON(data []byte) ([]*net.IPNet, error) {
 			if err != nil {
 				continue
 			}
-			n = normalizeIPNet(n)
+			n = netutil.NormalizeIPNet(n)
 			if n == nil || !operatorBotIPRangeAllowed(n) {
 				continue
 			}
@@ -233,7 +234,7 @@ func LoadFetchedRanges(path string) error {
 			if err != nil {
 				continue
 			}
-			if n = normalizeIPNet(n); n != nil && operatorBotIPRangeAllowed(n) {
+			if n = netutil.NormalizeIPNet(n); n != nil && operatorBotIPRangeAllowed(n) {
 				m[bot] = append(m[bot], n)
 			}
 		}
