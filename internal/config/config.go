@@ -1265,6 +1265,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Signatures.YaraForge.UpdateInterval == "" {
 		cfg.Signatures.YaraForge.UpdateInterval = "168h"
 	}
+	if cfg.Reputation.BotRanges.UpdateInterval == "" {
+		cfg.Reputation.BotRanges.UpdateInterval = "24h"
+	}
 	if cfg.WebUI.Listen == "" {
 		cfg.WebUI.Listen = "0.0.0.0:9443"
 	}

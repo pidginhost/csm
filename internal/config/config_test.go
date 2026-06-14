@@ -415,6 +415,7 @@ func TestPackagedDefaultConfigEnablesBotRangesAutoUpdate(t *testing.T) {
 	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
 		t.Fatalf("packaged default reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
 	}
+	assertRawBotRangesAutoUpdate(t, data, "packaged default")
 }
 
 func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
@@ -533,6 +534,7 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
 		t.Fatalf("reputation.bot_ranges.update_interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
 	}
+	assertRawBotRangesAutoUpdate(t, data, "production reference config")
 	if cfg.AutoResponse.MaxBlocksPerHour != DefaultMaxBlocksPerHour {
 		t.Errorf("auto_response.max_blocks_per_hour = %d, want %d", cfg.AutoResponse.MaxBlocksPerHour, DefaultMaxBlocksPerHour)
 	}
@@ -572,6 +574,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	}
 	if _, ok := raw.Reputation["verified_bots"]; !ok {
 		t.Error("production reference config missing reputation.verified_bots")
+	}
+	if _, ok := raw.Reputation["bot_ranges"]; !ok {
+		t.Error("production reference config missing reputation.bot_ranges")
 	}
 	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; !ok {
 		t.Error("production reference config missing auto_response.max_blocks_per_hour")
@@ -939,6 +944,49 @@ func TestUpstreamTI_DisabledByDefault(t *testing.T) {
 	}
 	if cfg.Reputation.Upstream.Enabled {
 		t.Fatal("expected upstream disabled by default")
+	}
+}
+
+func TestBotRangesDefaultsToAutoUpdateDaily(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.BotRangesAutoUpdate() {
+		t.Fatal("bot range auto-update should default on")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("bot range update interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
+
+	cfg, err = LoadBytes([]byte(`
+reputation:
+  bot_ranges:
+    auto_update: false
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BotRangesAutoUpdate() {
+		t.Fatal("explicit false must disable bot range auto-update")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "24h" {
+		t.Fatalf("explicit auto_update-only interval = %q, want 24h", cfg.Reputation.BotRanges.UpdateInterval)
+	}
+
+	cfg, err = LoadBytes([]byte(`
+reputation:
+  bot_ranges:
+    update_interval: "2h"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.BotRangesAutoUpdate() {
+		t.Fatal("omitted auto_update should still default on")
+	}
+	if cfg.Reputation.BotRanges.UpdateInterval != "2h" {
+		t.Fatalf("explicit interval = %q, want 2h", cfg.Reputation.BotRanges.UpdateInterval)
 	}
 }
 
@@ -1433,5 +1481,48 @@ func TestBotVerifyEnabled_ExplicitFalse(t *testing.T) {
 	cfg.Reputation.BotVerifyEnabled = &f
 	if cfg.BotVerifyEnabled() {
 		t.Error("explicit false must be honored")
+	}
+}
+
+func assertRawBotRangesAutoUpdate(t *testing.T, data []byte, source string) {
+	t.Helper()
+
+	var raw struct {
+		Reputation map[string]yaml.Node `yaml:"reputation"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("%s yaml.Unmarshal: %v", source, err)
+	}
+	botRanges, ok := raw.Reputation["bot_ranges"]
+	if !ok {
+		t.Fatalf("%s missing reputation.bot_ranges", source)
+	}
+	var fields map[string]yaml.Node
+	if err := botRanges.Decode(&fields); err != nil {
+		t.Fatalf("%s reputation.bot_ranges decode: %v", source, err)
+	}
+
+	autoUpdateNode, ok := fields["auto_update"]
+	if !ok {
+		t.Fatalf("%s missing reputation.bot_ranges.auto_update", source)
+	}
+	var autoUpdate bool
+	if err := autoUpdateNode.Decode(&autoUpdate); err != nil {
+		t.Fatalf("%s reputation.bot_ranges.auto_update decode: %v", source, err)
+	}
+	if !autoUpdate {
+		t.Fatalf("%s reputation.bot_ranges.auto_update = false, want true", source)
+	}
+
+	intervalNode, ok := fields["update_interval"]
+	if !ok {
+		t.Fatalf("%s missing reputation.bot_ranges.update_interval", source)
+	}
+	var interval string
+	if err := intervalNode.Decode(&interval); err != nil {
+		t.Fatalf("%s reputation.bot_ranges.update_interval decode: %v", source, err)
+	}
+	if interval != "24h" {
+		t.Fatalf("%s reputation.bot_ranges.update_interval = %q, want 24h", source, interval)
 	}
 }
