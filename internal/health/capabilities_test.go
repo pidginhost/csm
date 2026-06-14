@@ -82,6 +82,12 @@ func TestHTTPScannerProfileCapabilityAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestChallengeStatsCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "challenge.stats.v1") {
+		t.Error("challenge.stats.v1 capability missing")
+	}
+}
+
 // TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
 // "bpf-connection-tracker" string appears iff the connection_tracker
 // backend has been set to BPF.

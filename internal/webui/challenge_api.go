@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/pidginhost/csm/internal/checks"
-	"github.com/pidginhost/csm/internal/health"
 )
 
 // apiChallengeStats returns challenge-routing activity for the web UI: the live
@@ -20,9 +19,9 @@ func (s *Server) apiChallengeStats(w http.ResponseWriter, _ *http.Request) {
 		"escalated":       0,
 	}
 	if s.provider != nil {
-		snap := health.Build(s.provider, s.version, health.Capabilities())
-		resp["pending"] = snap.Automation.ChallengePending
-		resp["escalated"] = snap.Automation.ChallengeEscalated
+		automation := s.provider.AutomationStatus()
+		resp["pending"] = automation.ChallengePending
+		resp["escalated"] = automation.ChallengeEscalated
 	}
 	writeJSON(w, resp)
 }

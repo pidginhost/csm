@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - IPs flagged by the URL scanner-profile detector are routed to the proof-of-work challenge by default so a real visitor behind a shared IP can clear themselves, with a switch to hard-block instead available in both the config file and the web UI; when the challenge subsystem is disabled both settings block. Panels can feature-detect the detector via the capabilities endpoint.
 - New metrics make challenge activity graphable: how many IPs each detector routes to the proof-of-work challenge, and how many challenge timeouts escalate to a hard block versus a no-op, so the URL-scanner and other challenge-based protections have visibility over time.
 - The web UI now surfaces challenge activity directly: a Challenges panel on the Firewall page and a card on the dashboard show how many IPs are pending the proof-of-work challenge, how many timed out into hard blocks, the routes per detector since restart, and the most recent routes.
+- Challenge activity can now be feature-detected through the capabilities endpoint.
 - Operators can extend the verified-bot allowlist from config: list a crawler's UA substrings and reverse-DNS suffixes and CSM confirms it by forward-confirmed reverse DNS before trusting it, so legitimate SEO and backlink crawlers stop tripping the URL scanner-profile alert without a code change. Suffixes on shared-hosting domains are rejected so the list cannot become a bypass, and changes apply on reload.
 
 ### Fixed
