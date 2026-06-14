@@ -30,8 +30,11 @@ func TestRefreshBotRangesReturnsCacheWriteFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("refreshBotRanges should report a cache write failure")
 	}
-	if n != 1 {
-		t.Fatalf("refreshed identities = %d, want 1 before the cache write failed", n)
+	// The refresh is atomic: when the cache cannot be persisted, nothing is
+	// published and the count is zero, so the caller never reports a refresh
+	// that did not durably land.
+	if n != 0 {
+		t.Fatalf("refreshed identities = %d, want 0 on cache write failure", n)
 	}
 }
 

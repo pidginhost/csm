@@ -56,10 +56,6 @@ func (s *Server) apiVerifiedBots(w http.ResponseWriter, r *http.Request) {
 // Verified Bots page shows: the configured auto-update posture plus the live
 // per-bot prefix counts and last-refresh time from the active overlay.
 func botRangesSummary(disk *config.Config) map[string]interface{} {
-	prefixes := map[string]int{}
-	for bot, nets := range threatintel.FetchedRangesSnapshot() {
-		prefixes[bot] = len(nets)
-	}
 	lastRefresh := ""
 	if ts := threatintel.LastFetchedRangesRefresh(); !ts.IsZero() {
 		lastRefresh = ts.UTC().Format(time.RFC3339)
@@ -68,7 +64,7 @@ func botRangesSummary(disk *config.Config) map[string]interface{} {
 		"auto_update":     disk.BotRangesAutoUpdate(),
 		"update_interval": disk.Reputation.BotRanges.UpdateInterval,
 		"last_refresh":    lastRefresh,
-		"prefixes":        prefixes,
+		"prefixes":        threatintel.AICrawlerRangePrefixCounts(),
 	}
 }
 

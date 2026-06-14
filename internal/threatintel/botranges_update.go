@@ -27,6 +27,7 @@ var fetchedRanges atomic.Pointer[map[string][]*net.IPNet]
 func PublishFetchedRanges(m map[string][]*net.IPNet) {
 	if len(m) == 0 {
 		fetchedRanges.Store(nil)
+		setLastRefreshUnix(0)
 		return
 	}
 	cp := make(map[string][]*net.IPNet, len(m))
@@ -82,12 +83,12 @@ func LastFetchedRangesRefresh() time.Time {
 	return time.Unix(ts, 0)
 }
 
-// RefreshFetchedRanges fetches every source, publishes the merged overlay, and
-// persists it to cachePath (skipped when empty). The first successful feed for a
-// bot identity replaces that bot's previous overlay; later successful feeds for
-// the same identity append. A bot whose every feed fails keeps its previous
-// overlay, so a full vendor outage never narrows the allowlist. Returns the
-// number of bot identities refreshed.
+// RefreshFetchedRanges fetches every source, persists the merged overlay to
+// cachePath (skipped when empty), and publishes it. The first successful feed
+// for a bot identity replaces that bot's previous overlay; later successful
+// feeds for the same identity append. A bot whose every feed fails keeps its
+// previous overlay, so a full vendor outage never narrows the allowlist.
+// Returns the number of bot identities refreshed.
 func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []RangeSource, cachePath string) (int, error) {
 	merged := FetchedRangesSnapshot()
 	updated := map[string]struct{}{}
@@ -107,13 +108,14 @@ func RefreshFetchedRanges(ctx context.Context, client *http.Client, sources []Ra
 	if len(updated) == 0 {
 		return 0, lastErr
 	}
-	PublishFetchedRanges(merged)
-	setLastRefreshUnix(time.Now().Unix())
+	refreshedAt := time.Now().Unix()
 	if cachePath != "" {
-		if err := SaveFetchedRanges(cachePath, merged); err != nil {
-			return len(updated), err
+		if err := saveFetchedRanges(cachePath, merged, refreshedAt); err != nil {
+			return 0, err
 		}
 	}
+	PublishFetchedRanges(merged)
+	setLastRefreshUnix(refreshedAt)
 	return len(updated), nil
 }
 
@@ -220,9 +222,13 @@ type rangeCacheFile struct {
 
 // SaveFetchedRanges persists the overlay so a restart keeps the last-good feed
 // until the next refresh completes. The write time is stamped as the
-// last-refresh time, since the only caller saves immediately after fetching.
+// last-refresh time.
 func SaveFetchedRanges(path string, m map[string][]*net.IPNet) error {
-	c := rangeCacheFile{Bots: map[string][]string{}, RefreshedAt: time.Now().Unix()}
+	return saveFetchedRanges(path, m, time.Now().Unix())
+}
+
+func saveFetchedRanges(path string, m map[string][]*net.IPNet, refreshedAt int64) error {
+	c := rangeCacheFile{Bots: map[string][]string{}, RefreshedAt: refreshedAt}
 	for bot, nets := range m {
 		strs := make([]string, 0, len(nets))
 		for _, n := range nets {
@@ -275,8 +281,6 @@ func loadFetchedRanges(path string, allowMissing bool) error {
 		}
 	}
 	PublishFetchedRanges(m)
-	if c.RefreshedAt > 0 {
-		setLastRefreshUnix(c.RefreshedAt)
-	}
+	setLastRefreshUnix(c.RefreshedAt)
 	return nil
 }

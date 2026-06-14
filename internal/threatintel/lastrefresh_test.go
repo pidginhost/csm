@@ -2,6 +2,7 @@ package threatintel
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -33,5 +34,32 @@ func TestLastFetchedRangesRefresh_PersistsThroughCache(t *testing.T) {
 	}
 	if LastFetchedRangesRefresh().IsZero() {
 		t.Fatal("last refresh should be set after loading a stamped cache")
+	}
+}
+
+func TestLastFetchedRangesRefresh_ClearsWithFetchedOverlay(t *testing.T) {
+	t.Cleanup(func() { PublishFetchedRanges(nil); setLastRefreshUnix(0) })
+
+	setLastRefreshUnix(123)
+	PublishFetchedRanges(nil)
+	if !LastFetchedRangesRefresh().IsZero() {
+		t.Fatal("last refresh should be zero after clearing fetched ranges")
+	}
+}
+
+func TestLastFetchedRangesRefresh_OldCacheClearsStaleTimestamp(t *testing.T) {
+	t.Cleanup(func() { PublishFetchedRanges(nil); setLastRefreshUnix(0) })
+
+	cachePath := filepath.Join(t.TempDir(), "botranges.json")
+	if err := os.WriteFile(cachePath, []byte(`{"bots":{"perplexitybot":["18.97.9.96/29"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	setLastRefreshUnix(123)
+	if err := LoadFetchedRanges(cachePath); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !LastFetchedRangesRefresh().IsZero() {
+		t.Fatal("unstamped cache should clear any stale last-refresh time")
 	}
 }

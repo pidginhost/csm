@@ -5,7 +5,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/threatintel"
 )
@@ -17,11 +19,18 @@ func TestVerifiedBots_GetIncludesBotRangesSummary(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok",
 		"hostname: t.example.com\nreputation:\n  verified_bots: []\n  bot_ranges:\n    auto_update: true\n    update_interval: \"12h\"\n")
 
-	_, n, err := net.ParseCIDR("18.97.9.96/29")
+	_, n, err := net.ParseCIDR("9.9.9.0/24")
 	if err != nil {
 		t.Fatal(err)
 	}
-	threatintel.PublishFetchedRanges(map[string][]*net.IPNet{"perplexitybot": {n}})
+	basePrefixes := threatintel.AICrawlerRangePrefixCounts()
+	cachePath := filepath.Join(t.TempDir(), "botranges.json")
+	if err := threatintel.SaveFetchedRanges(cachePath, map[string][]*net.IPNet{"perplexitybot": {n}}); err != nil {
+		t.Fatalf("save cache: %v", err)
+	}
+	if err := threatintel.LoadFetchedRanges(cachePath); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
 
 	req := settingsAuthedReq("GET", "/api/v1/verified-bots", "tok", "")
 	w := httptest.NewRecorder()
@@ -34,6 +43,7 @@ func TestVerifiedBots_GetIncludesBotRangesSummary(t *testing.T) {
 		BotRanges struct {
 			AutoUpdate     bool           `json:"auto_update"`
 			UpdateInterval string         `json:"update_interval"`
+			LastRefresh    string         `json:"last_refresh"`
 			Prefixes       map[string]int `json:"prefixes"`
 		} `json:"bot_ranges"`
 	}
@@ -46,7 +56,14 @@ func TestVerifiedBots_GetIncludesBotRangesSummary(t *testing.T) {
 	if resp.BotRanges.UpdateInterval != "12h" {
 		t.Errorf("bot_ranges.update_interval = %q, want 12h", resp.BotRanges.UpdateInterval)
 	}
-	if resp.BotRanges.Prefixes["perplexitybot"] != 1 {
-		t.Errorf("bot_ranges.prefixes[perplexitybot] = %d, want 1", resp.BotRanges.Prefixes["perplexitybot"])
+	if _, err := time.Parse(time.RFC3339, resp.BotRanges.LastRefresh); err != nil {
+		t.Errorf("bot_ranges.last_refresh = %q, want RFC3339 timestamp: %v", resp.BotRanges.LastRefresh, err)
+	}
+	wantPerplexity := basePrefixes["perplexitybot"] + 1
+	if resp.BotRanges.Prefixes["perplexitybot"] != wantPerplexity {
+		t.Errorf("bot_ranges.prefixes[perplexitybot] = %d, want %d", resp.BotRanges.Prefixes["perplexitybot"], wantPerplexity)
+	}
+	if resp.BotRanges.Prefixes["gptbot"] == 0 {
+		t.Error("bot_ranges.prefixes[gptbot] should include embedded fallback ranges")
 	}
 }
