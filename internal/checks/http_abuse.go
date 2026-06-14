@@ -1028,7 +1028,10 @@ func (staticAllowlistClassifier) IsVerifiedBot(ipStr, ua string) bool {
 	if ip == nil {
 		return false
 	}
-	return threatintel.DefaultRanges().IPInBot(ip, bot)
+	if threatintel.DefaultRanges().IPInBot(ip, bot) {
+		return true
+	}
+	return threatintel.OperatorBotIPVerified(bot, ip)
 }
 
 // verifyingClassifier consults the static allowlist first, then the
@@ -1055,6 +1058,10 @@ func (c verifyingClassifier) IsVerifiedBot(ipStr, ua string) bool {
 	}
 	// Static range is the fast positive path.
 	if threatintel.DefaultRanges().IPInBot(ip, bot) {
+		return true
+	}
+	// Operator IP-range bots (AI agents) verify synchronously, no rDNS.
+	if threatintel.OperatorBotIPVerified(bot, ip) {
 		return true
 	}
 	// Cache lookup: valid positive -> verified, valid negative -> false

@@ -21,6 +21,7 @@ func verifiedBotEntries(cfg *config.Config) []threatintel.BotEntry {
 			Name:         b.Name,
 			UASubstrings: b.UASubstrings,
 			RDNSSuffixes: b.RDNSSuffixes,
+			IPRanges:     b.IPRanges,
 		})
 	}
 	return out

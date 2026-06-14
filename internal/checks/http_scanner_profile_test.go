@@ -238,6 +238,29 @@ func TestHTTPScannerProfile_VerifiedOperatorBotSkipped(t *testing.T) {
 	}
 }
 
+// An operator bot defined by IP range (AI agent: UA + published CIDRs, no
+// rDNS) is skipped synchronously -- no rDNS cache is consulted (nil cacheGet).
+func TestHTTPScannerProfile_VerifiedOperatorIPRangeBotSkipped(t *testing.T) {
+	t.Cleanup(func() { threatintel.SetOperatorBots(nil) })
+	threatintel.SetOperatorBots([]threatintel.BotEntry{{
+		Name:         "perplexitybot",
+		UASubstrings: []string{"perplexitybot"},
+		IPRanges:     []string{"203.0.113.0/24"},
+	}})
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	const ua = "Mozilla/5.0 (compatible; PerplexityBot/1.0; +https://perplexity.ai/bot)"
+	bot := newVerifyingClassifier(nil, nil) // nil cacheGet: range path must not need it
+	for i := 0; i < 50; i++ {
+		rec := scannerRec("203.0.113.55", fmt.Sprintf("/p%d", i), 404)
+		rec.UserAgent = ua
+		stats.scan(rec, cfg, bot)
+	}
+	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
+		t.Fatalf("fired on verified operator IP-range bot: %+v", got)
+	}
+}
+
 // The distinct-path set is capped to bound memory under a flood of
 // unique probe URLs. The detector must still fire past the cap.
 func TestHTTPScannerProfile_PathCapStillFires(t *testing.T) {

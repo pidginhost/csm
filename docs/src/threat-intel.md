@@ -41,10 +41,14 @@ Currently shipped:
 `reputation.bot_verify_enabled` verifies claimed crawler User-Agents
 with static IP ranges first, then strict forward-confirmed reverse DNS.
 `reputation.verified_bots` adds operator-defined crawler identities with
-`name`, `ua_substrings`, and `rdns_suffixes`. Suffixes must be
-registrable domains; public suffixes and shared-hosting suffixes are
-rejected during config load. A PTR-only match is not trusted: the PTR
-hostname must resolve back to the source IP.
+`name`, `ua_substrings`, and one verification method: `rdns_suffixes` or
+`ip_ranges`. With `rdns_suffixes` the source IP must forward-confirm under
+a registrable domain (public suffixes and shared-hosting suffixes are
+rejected; a PTR-only match is not trusted). With `ip_ranges` the source IP
+must fall in one of the published CIDRs -- this is for AI agents
+(PerplexityBot, GPTBot, ClaudeBot) that publish address ranges instead of
+crawler reverse DNS. Over-broad or non-public ranges are rejected. All
+checks run at config load and on reload.
 
 ## Abuse Reporting
 

@@ -90,14 +90,20 @@ reputation:
   # Set false only if outbound DNS is unavailable and you accept
   # trusting UA strings.
   bot_verify_enabled: true
-  # Optional operator-defined crawlers. Each entry needs a stable
-  # UA substring and an rDNS suffix that forward-confirms the source IP.
-  # Suffixes on public or shared-hosting domains are rejected.
+  # Optional operator-defined crawlers. Each entry needs a stable UA
+  # substring plus one verification method: an rdns_suffix that
+  # forward-confirms the source IP (SEO/search crawlers), or ip_ranges of
+  # published CIDRs (AI agents like PerplexityBot/GPTBot that have no
+  # crawler rDNS). Shared-hosting suffixes and over-broad/non-public
+  # ranges are rejected.
   verified_bots: []
   # verified_bots:
   #   - name: "seranking"
   #     ua_substrings: ["serankingbacklinksbot"]
   #     rdns_suffixes: ["seranking.com"]
+  #   - name: "perplexitybot"
+  #     ua_substrings: ["perplexitybot"]
+  #     ip_ranges: ["18.97.9.96/29", "18.97.1.228/30"]
 
 thresholds:
   mail_queue_warn: 500

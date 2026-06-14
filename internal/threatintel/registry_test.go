@@ -113,3 +113,27 @@ func TestAsyncBotVerifier_OperatorExtendsBuiltinSuffixes(t *testing.T) {
 		t.Fatalf("built-in googlebot suffix must still verify after extension: ok=%v err=%v", ok, err)
 	}
 }
+
+// Operator IP-range bots (AI agents that publish ranges, not rDNS) verify
+// synchronously by CIDR membership -- no PTR, no async cache.
+func TestOperatorBotIPVerified(t *testing.T) {
+	t.Cleanup(func() { SetOperatorBots(nil) })
+	SetOperatorBots([]BotEntry{{
+		Name:         "perplexitybot",
+		UASubstrings: []string{"perplexitybot"},
+		IPRanges:     []string{"18.97.9.96/29", "203.0.113.7"},
+	}})
+
+	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("18.97.9.100")) {
+		t.Error("IP inside /29 must verify")
+	}
+	if !OperatorBotIPVerified("perplexitybot", net.ParseIP("203.0.113.7")) {
+		t.Error("single configured IP must verify")
+	}
+	if OperatorBotIPVerified("perplexitybot", net.ParseIP("18.97.9.200")) {
+		t.Error("IP outside the configured ranges must not verify")
+	}
+	if OperatorBotIPVerified("other", net.ParseIP("18.97.9.100")) {
+		t.Error("a different bot name must not verify")
+	}
+}

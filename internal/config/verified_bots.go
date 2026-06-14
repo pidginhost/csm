@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"golang.org/x/net/publicsuffix"
@@ -15,6 +16,10 @@ type VerifiedBot struct {
 	Name         string   `yaml:"name"`
 	UASubstrings []string `yaml:"ua_substrings"`
 	RDNSSuffixes []string `yaml:"rdns_suffixes"`
+	// IPRanges are published CIDRs (or single IPs) for bots that verify by
+	// address rather than reverse DNS -- typically AI agents (PerplexityBot,
+	// GPTBot, ClaudeBot). Membership is checked synchronously; no rDNS lookup.
+	IPRanges []string `yaml:"ip_ranges"`
 }
 
 // verifiedBotMinUALen rejects UA substrings short enough to match unrelated
@@ -127,12 +132,64 @@ func validateVerifiedBots(cfg *Config) []ValidationResult {
 				results = append(results, ValidationResult{"error", field + ".rdns_suffixes", msg})
 			}
 		}
-		if !hasSuffix {
-			results = append(results, ValidationResult{"error", field + ".rdns_suffixes",
-				"at least one rdns_suffix is required"})
+
+		hasRange := false
+		for _, raw := range b.IPRanges {
+			s := strings.TrimSpace(raw)
+			if s == "" {
+				continue
+			}
+			hasRange = true
+			if msg := verifiedBotIPRangeError(s); msg != "" {
+				results = append(results, ValidationResult{"error", field + ".ip_ranges", msg})
+			}
+		}
+
+		// A bot needs at least one way to be confirmed: an rDNS suffix (for
+		// crawlers with forward-confirmable reverse DNS) or an IP range (for
+		// AI agents that publish address ranges instead of rDNS).
+		if !hasSuffix && !hasRange {
+			results = append(results, ValidationResult{"error", field,
+				"at least one rdns_suffix or ip_range is required"})
 		}
 	}
 	return results
+}
+
+// verifiedBotIPRangeError validates an operator-supplied CIDR or single IP.
+// It rejects ranges too broad to be a crawler fleet and non-public space, so
+// the allowlist cannot be turned into a blanket detection bypass.
+func verifiedBotIPRangeError(s string) string {
+	n := parseCIDROrIP(s)
+	if n == nil {
+		return fmt.Sprintf("ip_range %q is not a valid CIDR or IP", s)
+	}
+	ones, bits := n.Mask.Size()
+	if bits == 32 && ones < 16 {
+		return fmt.Sprintf("ip_range %q is too broad (minimum prefix /16 for IPv4)", s)
+	}
+	if bits == 128 && ones < 32 {
+		return fmt.Sprintf("ip_range %q is too broad (minimum prefix /32 for IPv6)", s)
+	}
+	ip := n.IP
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		return fmt.Sprintf("ip_range %q is not a public address range", s)
+	}
+	return ""
+}
+
+func parseCIDROrIP(s string) *net.IPNet {
+	if _, n, err := net.ParseCIDR(s); err == nil {
+		return n
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)}
+		}
+		return &net.IPNet{IP: ip, Mask: net.CIDRMask(128, 128)}
+	}
+	return nil
 }
 
 func browserUASubstringFootgun(s string) bool {

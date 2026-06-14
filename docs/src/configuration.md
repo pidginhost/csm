@@ -369,9 +369,12 @@ reputation:
   bot_verify_enabled: true              # default: true
   verified_bots: []                     # optional custom crawler identities
   # verified_bots:
-  #   - name: "seranking"
+  #   - name: "seranking"               # rDNS-verified crawler
   #     ua_substrings: ["serankingbacklinksbot"]
   #     rdns_suffixes: ["seranking.com"]
+  #   - name: "perplexitybot"           # AI agent verified by published IP ranges
+  #     ua_substrings: ["perplexitybot"]
+  #     ip_ranges: ["18.97.9.96/29", "18.97.1.228/30"]
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL
