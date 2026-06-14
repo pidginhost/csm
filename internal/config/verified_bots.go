@@ -12,13 +12,13 @@ import (
 // any UASubstrings is treated as claiming this identity, and is trusted only
 // if the source IP matches one configured verification method.
 type VerifiedBot struct {
-	Name         string   `yaml:"name"`
-	UASubstrings []string `yaml:"ua_substrings"`
-	RDNSSuffixes []string `yaml:"rdns_suffixes"`
+	Name         string   `yaml:"name" json:"name"`
+	UASubstrings []string `yaml:"ua_substrings,omitempty" json:"ua_substrings,omitempty"`
+	RDNSSuffixes []string `yaml:"rdns_suffixes,omitempty" json:"rdns_suffixes,omitempty"`
 	// IPRanges are published CIDRs (or single IPs) for bots that verify by
 	// address rather than reverse DNS -- typically AI agents (PerplexityBot,
 	// GPTBot, ClaudeBot). Membership is checked synchronously; no rDNS lookup.
-	IPRanges []string `yaml:"ip_ranges"`
+	IPRanges []string `yaml:"ip_ranges,omitempty" json:"ip_ranges,omitempty"`
 }
 
 // verifiedBotMinUALen rejects UA substrings short enough to match unrelated

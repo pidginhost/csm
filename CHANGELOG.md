@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The web UI now surfaces challenge activity directly: a Challenges panel on the Firewall page and a card on the dashboard show how many IPs are pending the proof-of-work challenge, how many timed out into hard blocks, the routes per detector since restart, and the most recent routes.
 - Challenge activity can now be feature-detected through the capabilities endpoint.
 - Operators can extend the verified-bot allowlist from config: list a crawler's UA substrings plus either reverse-DNS suffixes or published IP ranges, and CSM confirms it (forward-confirmed reverse DNS, or address membership for AI agents like PerplexityBot/GPTBot/ClaudeBot that have no crawler reverse DNS) before trusting it, so legitimate crawlers stop tripping the URL scanner-profile alert without a code change. Shared-hosting suffixes and over-broad or non-public IP ranges are rejected so the list cannot become a bypass, and changes apply on reload.
+- The verified-bot allowlist now has a web UI editor (Verified Bots page) to add, edit, and remove crawlers and AI agents, with the same validation as the config file; saved changes apply live without a restart.
 
 ### Fixed
 

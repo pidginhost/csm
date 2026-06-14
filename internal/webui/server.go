@@ -109,13 +109,14 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
-	loginMu       sync.Mutex
-	loginAttempts map[string][]time.Time
-	apiMu         sync.Mutex
-	apiRequests   map[string][]time.Time // per-IP API rate limiting
-	scanMu        sync.Mutex
-	scanRunning   bool       // only one scan at a time
-	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+	loginMu        sync.Mutex
+	loginAttempts  map[string][]time.Time
+	apiMu          sync.Mutex
+	apiRequests    map[string][]time.Time // per-IP API rate limiting
+	scanMu         sync.Mutex
+	scanRunning    bool       // only one scan at a time
+	modSecApplyMu  sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+	verifiedBotsMu sync.Mutex // serializes verified-bots save (write+reload)
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -129,6 +130,10 @@ type Server struct {
 
 	// restartDaemon is called by apiSettingsRestart. Tests override this.
 	restartDaemon func() (output []byte, err error)
+
+	// verifiedBotsReloader pushes a saved verified_bots list into the live
+	// bot registry + verifier without a restart. Set by the Daemon; nil in tests.
+	verifiedBotsReloader func() error
 }
 
 // New creates a new web UI server.
@@ -173,7 +178,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -247,6 +252,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/modsec/rules", s.requireAuth(http.HandlerFunc(s.apiModSecRules)))
 	mux.Handle("/api/v1/modsec/rules/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesApply))))
 	mux.Handle("/api/v1/modsec/rules/escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesEscalation))))
+	mux.Handle("/verified-bots", s.requireAuth(http.HandlerFunc(s.handleVerifiedBots)))
+	mux.Handle("/api/v1/verified-bots", s.requireAuth(http.HandlerFunc(s.apiVerifiedBots)))
+	mux.Handle("/api/v1/verified-bots/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiVerifiedBotsApply))))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))

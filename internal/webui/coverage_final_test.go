@@ -685,7 +685,7 @@ func TestNewLoadsTemplatesFromUIDirFinalCoverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(templateDir, "layout.html"), []byte(layout), 0644); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
+	for _, p := range []string{"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec", "modsec-rules", "verified-bots", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
 		page := `{{define "content"}}OK {{.Hostname}}{{end}}`
 		if err := os.WriteFile(filepath.Join(templateDir, p+".html"), []byte(page), 0644); err != nil {
 			t.Fatal(err)
