@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.1] - 2026-06-15
+
 ### Changed
 
 - Inbound web attacks and remote-IP reputation hits from an external IP (ModSecurity rule hits, rule escalation, high local threat score — all with no account attribution) now open a dedicated `web_attack` incident kind that auto-closes after 24h, instead of being labelled `web_account_compromise` and held for 7 days. Account-attributed web findings still classify as `web_account_compromise`, so the compromise count and its longer review window are no longer inflated by anonymous probes.
