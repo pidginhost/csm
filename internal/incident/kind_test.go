@@ -119,11 +119,37 @@ func TestClassifyKindDomainMailChecksStayWebAccountCompromise(t *testing.T) {
 // escalation). They must classify as web_attack so they get attacker-grade
 // retention instead of the 7-day account-compromise window.
 func TestClassifyKindWebAttackForRemoteIPOnly(t *testing.T) {
-	for _, check := range []string{"modsec_warning_realtime", "modsec_csm_block_escalation", "wp_login_bruteforce"} {
+	for _, check := range []string{
+		"modsec_warning_realtime",
+		"modsec_csm_block_escalation",
+		"wp_login_bruteforce",
+		"http_ua_spoof",
+		"waf_attack_blocked",
+		"api_auth_failure",
+		"api_auth_failure_realtime",
+		"webmail_bruteforce",
+		"whm_unauth_scripts_realtime",
+	} {
 		got := ClassifyKind(alert.Finding{Check: check, SourceIP: "203.0.113.7"})
 		if got != KindWebAttack {
 			t.Errorf("check %q with only a source IP: got %v, want web_attack", check, got)
 		}
+	}
+}
+
+func TestClassifyKindNonWebRemoteIPOnlyNotWebAttack(t *testing.T) {
+	for _, check := range []string{"pam_bruteforce", "ssh_bruteforce", "c2_connection", "backdoor_port"} {
+		got := ClassifyKind(alert.Finding{Check: check, SourceIP: "203.0.113.7"})
+		if got == KindWebAttack {
+			t.Errorf("non-web check %q with only a source IP classified as web_attack", check)
+		}
+	}
+}
+
+func TestClassifyKindStateChangingAccountActionNotWebAttack(t *testing.T) {
+	got := ClassifyKind(alert.Finding{Check: "cpanel_file_upload_realtime", SourceIP: "203.0.113.7"})
+	if got != KindWebAccountCompromise {
+		t.Errorf("cpanel_file_upload_realtime with only a source IP: got %v, want web_account_compromise", got)
 	}
 }
 

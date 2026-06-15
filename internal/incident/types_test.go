@@ -74,6 +74,7 @@ func TestStatusValuesAreLowercase(t *testing.T) {
 func TestKindValuesUseSnakeCase(t *testing.T) {
 	for _, k := range []Kind{
 		KindWebAccountCompromise,
+		KindWebAttack,
 		KindMailboxTakeover,
 		KindPostExploitProcess,
 		KindHostIntegrityRisk,

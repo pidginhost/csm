@@ -163,8 +163,8 @@ Metrics: `csm_credential_spray_opened_total`,
 `spray_suppression` only handles the credential_spray super-incident
 kind. Low-and-slow scanners that never trip a per-detector window
 (modsec escalation, mail brute-force, smtp probe) still produce
-mailbox_takeover or web_account_compromise incidents but never get
-firewalled. The `incidents.auto_block` block adds a generic
+web_attack, mailbox_takeover, or web_account_compromise incidents but
+never get firewalled. The `incidents.auto_block` block adds a generic
 incident-driven firewall hand-off:
 
 ```yaml

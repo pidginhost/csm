@@ -50,7 +50,7 @@ func ClassifyKind(f alert.Finding) Kind {
 	// external IP probing the web stack, not a compromised tenant. Route
 	// it to web_attack so it does not inflate the account-compromise count
 	// or inherit the long account-compromise retention.
-	if isRemoteIPKeyed(f) {
+	if isInboundWebAttackCheck(check) && isRemoteIPKeyed(f) {
 		return KindWebAttack
 	}
 
@@ -88,6 +88,29 @@ func isRemoteIPKeyed(f alert.Finding) bool {
 		return false
 	}
 	return true
+}
+
+func isInboundWebAttackCheck(check string) bool {
+	check = strings.ToLower(strings.TrimSpace(check))
+	if strings.HasPrefix(check, "http_") || strings.HasPrefix(check, "modsec_") {
+		return true
+	}
+	switch check {
+	case "admin_panel_bruteforce",
+		"wp_login_bruteforce",
+		"wp_user_enumeration",
+		"xmlrpc_abuse",
+		"waf_attack_blocked",
+		"api_auth_failure",
+		"api_auth_failure_realtime",
+		"webmail_bruteforce",
+		"webmail_login_realtime",
+		"whm_login_realtime",
+		"whm_unauth_scripts_realtime":
+		return true
+	default:
+		return false
+	}
 }
 
 // hostIntegrityChecks lists check names whose scope is the host itself
