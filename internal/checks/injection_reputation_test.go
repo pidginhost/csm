@@ -63,16 +63,44 @@ func TestCheckIPReputationCachedHighScoreEmitsCritical(t *testing.T) {
 	findings := CheckIPReputation(context.Background(), cfg, nil)
 
 	hasCritical := false
+	sourceIP := ""
 	for _, f := range findings {
 		if f.Check == "ip_reputation" && f.Severity == alert.Critical &&
 			strings.Contains(f.Message, "203.0.113.99") {
 			hasCritical = true
+			sourceIP = f.SourceIP
 			break
 		}
 	}
 	if !hasCritical {
 		t.Errorf("expected critical ip_reputation finding for cached score 90, got: %+v", findings)
 	}
+	if sourceIP != "203.0.113.99" {
+		t.Errorf("SourceIP = %q, want 203.0.113.99", sourceIP)
+	}
+}
+
+func TestCheckIPReputationThreatDBFindingCarriesSourceIP(t *testing.T) {
+	statePath := t.TempDir()
+	restoreThreatDB := SetGlobalThreatDBForTest(statePath)
+	t.Cleanup(restoreThreatDB)
+	GetThreatDB().badIPs["203.0.113.44"] = "test-feed"
+
+	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 203.0.113.44 port 22 ssh2\n"
+	withMockOS(t, mockOSWithAuthLog(t, logContent))
+
+	cfg := &config.Config{StatePath: statePath}
+	findings := CheckIPReputation(context.Background(), cfg, nil)
+
+	for _, f := range findings {
+		if f.Check == "ip_reputation" && strings.Contains(f.Message, "203.0.113.44") {
+			if f.SourceIP != "203.0.113.44" {
+				t.Errorf("SourceIP = %q, want 203.0.113.44", f.SourceIP)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected threat DB ip_reputation finding, got: %+v", findings)
 }
 
 // --- CheckIPReputation: cache hit with low score → no finding -------

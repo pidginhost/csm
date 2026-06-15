@@ -153,13 +153,15 @@ func TestClassifyKindStateChangingAccountActionNotWebAttack(t *testing.T) {
 	}
 }
 
-// Remote-IP reputation/threat-score signals (e.g. local_threat_score) flag an
-// attacking source IP, not a compromised tenant, so they classify as web_attack
-// (24h window) rather than the 7-day web_account_compromise bucket.
+// Remote-IP reputation/threat-score signals flag an attacking source IP, not
+// a compromised tenant, so they classify as web_attack (24h window) rather
+// than the 7-day web_account_compromise bucket.
 func TestClassifyKindRemoteIPThreatScoreIsWebAttack(t *testing.T) {
-	got := ClassifyKind(alert.Finding{Check: "local_threat_score", Severity: alert.Critical, SourceIP: "203.0.113.7"})
-	if got != KindWebAttack {
-		t.Errorf("local_threat_score with only a source IP: got %v, want web_attack", got)
+	for _, check := range []string{"ip_reputation", "local_threat_score"} {
+		got := ClassifyKind(alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "203.0.113.7"})
+		if got != KindWebAttack {
+			t.Errorf("%s with only a source IP: got %v, want web_attack", check, got)
+		}
 	}
 }
 
@@ -173,6 +175,7 @@ func TestClassifyKindAccountAttributedNotWebAttack(t *testing.T) {
 		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
 		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
 		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", CPUser: "alice"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.7", TenantID: "alice"},
 		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
 	}
 	for _, f := range cases {
@@ -235,6 +238,26 @@ func TestCorrelatorClassifiesRemoteIPModsecAsWebAttack(t *testing.T) {
 	}
 	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
 		t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
+	}
+}
+
+func TestCorrelatorClassifiesRemoteIPReputationAsWebAttack(t *testing.T) {
+	for _, check := range []string{"ip_reputation", "local_threat_score"} {
+		t.Run(check, func(t *testing.T) {
+			c := newTestCorrelator()
+			f := alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "203.0.113.7"}
+			id, _, _ := c.OnFinding(f)
+			inc, ok := c.Get(id)
+			if !ok {
+				t.Fatal("expected an incident to be created")
+			}
+			if inc.Kind != KindWebAttack {
+				t.Errorf("Kind: got %v, want web_attack", inc.Kind)
+			}
+			if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+				t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
+			}
+		})
 	}
 }
 

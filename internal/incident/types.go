@@ -28,12 +28,13 @@ type Kind string
 
 const (
 	KindWebAccountCompromise Kind = "web_account_compromise"
-	// KindWebAttack is an inbound web attack attempt that carries only a
-	// remote IP -- no tenant, domain, mailbox, or process actor. These are
-	// external IPs probing the web stack (modsec rule hits, CSM rule
-	// escalation) rather than a compromised account, so they correlate on
-	// the source IP and get a short attacker-grade retention. Keeping them
-	// out of web_account_compromise stops anonymous probes from inflating
+	// KindWebAttack is an inbound web attack attempt or remote-IP
+	// reputation/threat-score signal that carries only a remote IP -- no
+	// tenant, domain, mailbox, or process actor. These are external IPs
+	// probing the web stack or flagged as attackers rather than compromised
+	// accounts, so they correlate on the source IP and get a short
+	// attacker-grade retention. Keeping them out of web_account_compromise
+	// stops anonymous probes and attacker-IP reputation hits from inflating
 	// the account-compromise count and the 7-day review window.
 	KindWebAttack          Kind = "web_attack"
 	KindMailboxTakeover    Kind = "mailbox_takeover"

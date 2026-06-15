@@ -92,14 +92,13 @@ func isRemoteIPKeyed(f alert.Finding) bool {
 }
 
 // isRemoteIPThreatCheck covers remote-IP reputation / threat-score signals
-// that flag an attacking source IP rather than a compromised tenant (e.g. an
-// accumulated local threat score). Like inbound web attacks these correlate on
-// the source IP alone, so they belong in web_attack with attacker-grade
-// retention, not the account-compromise bucket. Add future remote-IP
-// reputation checks here.
+// that flag an attacking source IP rather than a compromised tenant. Like
+// inbound web attacks these correlate on the source IP alone, so they belong
+// in web_attack with attacker-grade retention, not the account-compromise
+// bucket. Add future remote-IP reputation checks here.
 func isRemoteIPThreatCheck(check string) bool {
 	switch strings.ToLower(strings.TrimSpace(check)) {
-	case "local_threat_score":
+	case "ip_reputation", "local_threat_score":
 		return true
 	default:
 		return false

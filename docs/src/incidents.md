@@ -203,11 +203,13 @@ which then trips the generic auto_block gate.
 
 - `web_account_compromise` -- findings attributable to a hosted account
   or script (PHP relay, webshell, account-scoped login bruteforce, etc.).
-- `web_attack` -- an inbound web attack attempt that carries only a remote
-  IP and no account, domain, mailbox, or process actor (ModSecurity rule
-  hits, CSM rule escalation from an external IP). Keyed on the source IP
-  and given attacker-grade retention (default 24h) so anonymous probes do
-  not inflate the account-compromise count or its longer review window.
+- `web_attack` -- an inbound web attack or remote-IP reputation/threat-score
+  signal that carries only a remote IP and no account, domain, mailbox, or
+  process actor (ModSecurity rule hits, CSM rule escalation from an external
+  IP, high local threat score, IP reputation hit). Keyed on the source IP and
+  given attacker-grade retention (default 24h) so anonymous probes and
+  attacker-IP reputation hits do not inflate the account-compromise count or
+  its longer review window.
 - `mailbox_takeover` -- SMTP/SASL, suspicious-login, credential-abuse,
   and rate signals tied to a mailbox or cPanel-local mail account.
 - `post_exploit_process` -- process exec from `/tmp`, `/var/tmp`,
