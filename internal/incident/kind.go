@@ -47,10 +47,11 @@ func ClassifyKind(f alert.Finding) Kind {
 
 	// Inbound web attack -- a finding that would correlate on the source
 	// IP alone (no tenant, domain, mailbox, or process actor) is an
-	// external IP probing the web stack, not a compromised tenant. Route
-	// it to web_attack so it does not inflate the account-compromise count
-	// or inherit the long account-compromise retention.
-	if isInboundWebAttackCheck(check) && isRemoteIPKeyed(f) {
+	// external IP probing the web stack or flagged as an attacker by
+	// reputation, not a compromised tenant. Route it to web_attack so it
+	// does not inflate the account-compromise count or inherit the long
+	// account-compromise retention.
+	if (isInboundWebAttackCheck(check) || isRemoteIPThreatCheck(check)) && isRemoteIPKeyed(f) {
 		return KindWebAttack
 	}
 
@@ -88,6 +89,21 @@ func isRemoteIPKeyed(f alert.Finding) bool {
 		return false
 	}
 	return true
+}
+
+// isRemoteIPThreatCheck covers remote-IP reputation / threat-score signals
+// that flag an attacking source IP rather than a compromised tenant (e.g. an
+// accumulated local threat score). Like inbound web attacks these correlate on
+// the source IP alone, so they belong in web_attack with attacker-grade
+// retention, not the account-compromise bucket. Add future remote-IP
+// reputation checks here.
+func isRemoteIPThreatCheck(check string) bool {
+	switch strings.ToLower(strings.TrimSpace(check)) {
+	case "local_threat_score":
+		return true
+	default:
+		return false
+	}
 }
 
 func isInboundWebAttackCheck(check string) bool {

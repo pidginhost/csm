@@ -153,6 +153,16 @@ func TestClassifyKindStateChangingAccountActionNotWebAttack(t *testing.T) {
 	}
 }
 
+// Remote-IP reputation/threat-score signals (e.g. local_threat_score) flag an
+// attacking source IP, not a compromised tenant, so they classify as web_attack
+// (24h window) rather than the 7-day web_account_compromise bucket.
+func TestClassifyKindRemoteIPThreatScoreIsWebAttack(t *testing.T) {
+	got := ClassifyKind(alert.Finding{Check: "local_threat_score", Severity: alert.Critical, SourceIP: "203.0.113.7"})
+	if got != KindWebAttack {
+		t.Errorf("local_threat_score with only a source IP: got %v, want web_attack", got)
+	}
+}
+
 // Any account/domain/mailbox attribution keeps a finding out of web_attack,
 // even when it carries a source IP. (A mailbox attribution wins the earlier
 // mailbox_takeover tier; the guarantee here is "not an anonymous inbound
