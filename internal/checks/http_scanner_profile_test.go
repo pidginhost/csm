@@ -428,13 +428,72 @@ func TestHTTPScannerProfile_DistributedRollupHonorsLowScannerThresholds(t *testi
 func TestHTTPScannerProfile_DisplayAssetStormNotScanner(t *testing.T) {
 	cfg := scannerCfg(30, 90, 10, nil)
 	stats := newDomlogStatsAt(scannerTestNow)
-	exts := []string{".gif", ".png", ".jpg", ".jpeg", ".webp", ".css", ".js", ".mjs", ".map", ".woff", ".woff2", ".ttf", ".svg", ".ico", ".mp4"}
+	exts := []string{".gif", ".png", ".jpg", ".jpeg", ".webp", ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".svg", ".ico", ".mp4"}
 	for i := 0; i < 90; i++ {
 		uri := fmt.Sprintf("/assets/SKU-%d%s", i, exts[i%len(exts)])
 		stats.scan(scannerRec("192.0.2.20", uri, 404), cfg, nopBotClassifier{})
 	}
 	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
 		t.Fatalf("fired on a broken-asset 404 storm (display assets are not probes): %+v", got)
+	}
+}
+
+func TestHTTPScannerProfile_DisplayAssetClassificationEdges(t *testing.T) {
+	for _, tc := range []struct {
+		uri  string
+		want bool
+	}{
+		{uri: "/.env", want: false},
+		{uri: "/assets/", want: false},
+		{uri: "/IMG.GIF?cache=1#ignored", want: true},
+		{uri: "/IMG%2EGIF?cache=1#ignored", want: true},
+		{uri: "/images/product.v2.PNG", want: true},
+		{uri: "/uploads/shell.php.gif", want: false},
+		{uri: "/uploads/shell%2Ephp.gif", want: false},
+		{uri: "/backups/backup.zip.css", want: false},
+		{uri: "/backups/backup%2ezip.css", want: false},
+		{uri: "/static/app.js.map", want: false},
+	} {
+		if got := isDisplayAssetProbe(tc.uri); got != tc.want {
+			t.Fatalf("isDisplayAssetProbe(%q) = %v, want %v", tc.uri, got, tc.want)
+		}
+	}
+}
+
+func TestHTTPScannerProfile_DisplayAssetExclusionKeepsScannerCountersAligned(t *testing.T) {
+	cfg := scannerCfg(1, 1, 1, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	stats.scan(scannerRec("192.0.2.22", "/img/missing.PNG?cache=1#ignored", 404), cfg, nopBotClassifier{})
+	stats.scan(scannerRec("192.0.2.22", "/index", 200), cfg, nopBotClassifier{})
+	stats.scan(scannerRec("192.0.2.22", "/.env", 404), cfg, nopBotClassifier{})
+
+	if got := stats.scannerReqs["192.0.2.22"]; got != 2 {
+		t.Fatalf("scannerReqs = %d, want 2 (display asset 404 must not move scanner denominator)", got)
+	}
+	if got := stats.scannerErr["192.0.2.22"]; got != 1 {
+		t.Fatalf("scannerErr = %d, want 1 (only the dotfile probe should count as scanner error)", got)
+	}
+	if stats.scannerErr["192.0.2.22"] > stats.scannerReqs["192.0.2.22"] {
+		t.Fatalf("scannerErr exceeded scannerReqs: err=%d reqs=%d", stats.scannerErr["192.0.2.22"], stats.scannerReqs["192.0.2.22"])
+	}
+}
+
+func TestHTTPScannerProfile_DisguisedProbeExtensionsStillCount(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	probes := []string{
+		"/uploads/shell-%d.php.gif",
+		"/backups/archive-%d.zip.css",
+		"/configs/site-%d.env.js",
+		"/static/app-%d.js.map",
+	}
+	for i := 0; i < 40; i++ {
+		stats.scan(scannerRec("192.0.2.23", fmt.Sprintf(probes[i%len(probes)], i), 404), cfg, nopBotClassifier{})
+	}
+
+	got := findScannerFindings(stats.emit(cfg))
+	if len(got) != 1 {
+		t.Fatalf("findings=%d, want 1 (probe extensions hidden behind asset suffixes must still count): %+v", len(got), got)
 	}
 }
 

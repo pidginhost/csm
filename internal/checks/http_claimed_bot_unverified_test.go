@@ -88,6 +88,42 @@ func TestClaimedBot_PendingScannerRoutesToUnverified(t *testing.T) {
 	}
 }
 
+func TestClaimedBot_PendingScannerIgnoresDisplayAssetDenominator(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPScannerMinRequests = 30
+	cfg.Thresholds.HTTPScannerErrorPct = 90
+	cfg.Thresholds.HTTPScannerMinDistinctPaths = 10
+
+	stats := newDomlogStatsAt(scannerTestNow)
+	for i := 0; i < 60; i++ {
+		rec := scannerRec("203.0.113.94", fmt.Sprintf("/img/product-%d.png", i), 404)
+		rec.UserAgent = "ClaudeBot/1.0 fake"
+		stats.scan(rec, cfg, pendingVerifyClassifier{})
+	}
+	for i := 0; i < 30; i++ {
+		rec := scannerRec("203.0.113.94", fmt.Sprintf("/probe-%d.php", i), 404)
+		rec.UserAgent = "ClaudeBot/1.0 fake"
+		stats.scan(rec, cfg, pendingVerifyClassifier{})
+	}
+
+	got := stats.emit(cfg)
+	var scanner, unverified bool
+	for _, f := range got {
+		switch f.Check {
+		case "http_scanner_profile":
+			scanner = true
+		case "http_claimed_bot_unverified":
+			unverified = true
+		}
+	}
+	if scanner {
+		t.Error("pending claimed bot must NOT emit http_scanner_profile (hard block)")
+	}
+	if !unverified {
+		t.Error("pending claimed bot scanner route must use the non-asset scanner denominator")
+	}
+}
+
 // An attacker must not downgrade a hard block to a soft challenge by mixing in
 // a single claimed-bot request. Only when the claimed-bot UA is the in-window
 // majority is the IP treated as a pending bot; otherwise the flood is hard

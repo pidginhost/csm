@@ -9,6 +9,7 @@ package checks
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -710,10 +711,25 @@ func probePath(uri string) string {
 var displayAssetExts = map[string]struct{}{
 	".gif": {}, ".jpg": {}, ".jpeg": {}, ".png": {}, ".webp": {}, ".bmp": {},
 	".svg": {}, ".ico": {}, ".avif": {}, ".tif": {}, ".tiff": {},
-	".css": {}, ".js": {}, ".mjs": {}, ".cjs": {}, ".map": {},
+	".css": {}, ".js": {}, ".mjs": {}, ".cjs": {},
 	".woff": {}, ".woff2": {}, ".ttf": {}, ".eot": {}, ".otf": {},
 	".mp4": {}, ".webm": {}, ".ogg": {}, ".mp3": {}, ".wav": {},
 	".m4a": {}, ".mov": {}, ".avi": {}, ".flac": {},
+}
+
+// scannerProbeExts are extensions commonly used when probing for code,
+// configs, source maps, dumps, archives, and backups. If one appears before a
+// final display-asset suffix (for example shell.php.gif), the request still
+// has scanner shape and must not be hidden by the asset exclusion.
+var scannerProbeExts = map[string]struct{}{
+	".php": {}, ".phtml": {}, ".phps": {}, ".php3": {}, ".php4": {}, ".php5": {}, ".php7": {},
+	".asp": {}, ".aspx": {}, ".ashx": {}, ".asmx": {}, ".jsp": {}, ".jspx": {}, ".cfm": {},
+	".cgi": {}, ".pl": {}, ".py": {}, ".rb": {}, ".sh": {}, ".bash": {}, ".zsh": {},
+	".env": {}, ".conf": {}, ".config": {}, ".ini": {}, ".yaml": {}, ".yml": {}, ".json": {}, ".xml": {},
+	".sql": {}, ".dump": {}, ".db": {}, ".sqlite": {}, ".sqlite3": {}, ".log": {},
+	".zip": {}, ".rar": {}, ".7z": {}, ".tar": {}, ".tgz": {}, ".gz": {}, ".bz2": {}, ".xz": {},
+	".bak": {}, ".backup": {}, ".old": {}, ".orig": {}, ".save": {}, ".swp": {}, ".tmp": {},
+	".map": {},
 }
 
 // isDisplayAssetProbe reports whether uri's final path segment ends in one
@@ -724,12 +740,30 @@ func isDisplayAssetProbe(uri string) bool {
 	if i := strings.LastIndexByte(path, '/'); i >= 0 {
 		path = path[i+1:]
 	}
+	if unescaped, err := url.PathUnescape(path); err == nil {
+		path = unescaped
+	}
 	dot := strings.LastIndexByte(path, '.')
-	if dot < 0 {
+	if dot <= 0 {
 		return false
 	}
-	_, ok := displayAssetExts[strings.ToLower(path[dot:])]
-	return ok
+	if _, ok := displayAssetExts[strings.ToLower(path[dot:])]; !ok {
+		return false
+	}
+	return !hasEmbeddedScannerProbeExt(path[:dot])
+}
+
+func hasEmbeddedScannerProbeExt(pathPrefix string) bool {
+	parts := strings.Split(strings.ToLower(pathPrefix), ".")
+	for _, part := range parts[1:] {
+		if part == "" {
+			continue
+		}
+		if _, ok := scannerProbeExts["."+part]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // httpAbuseChecks are the per-IP finding kinds that mark a source IP as
