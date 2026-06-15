@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Inbound web attacks from an external IP (ModSecurity rule hits, rule escalation with no account attribution) now open a dedicated `web_attack` incident kind that auto-closes after 24h, instead of being labelled `web_account_compromise` and held for 7 days. Account-attributed web findings still classify as `web_account_compromise`, so the compromise count and its longer review window are no longer inflated by anonymous probes.
+
 ### Fixed
 
 - The URL scanner-profile detector no longer counts 404/403 responses on static display assets (images, stylesheets, scripts, fonts, media) toward its probe profile, so a site whose CDN or image paths are missing no longer makes ordinary visitors look like URL scanners and get challenged into a timeout block; archives, code, configs, dumps, and extensionless paths still count.

@@ -11,6 +11,7 @@ import (
 // later, but never downgrades. Higher number = stronger / more
 // operator-attention.
 var kindRank = map[Kind]int{
+	KindWebAttack:            0,
 	KindWebAccountCompromise: 1,
 	KindMailboxTakeover:      2,
 	KindPostExploitProcess:   3,

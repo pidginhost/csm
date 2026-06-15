@@ -45,10 +45,72 @@ func ClassifyKind(f alert.Finding) Kind {
 		return KindPostExploitProcess
 	}
 
+	// Inbound web attack -- a finding that would correlate on the source
+	// IP alone (no tenant, domain, mailbox, or process actor) is an
+	// external IP probing the web stack, not a compromised tenant. Route
+	// it to web_attack so it does not inflate the account-compromise count
+	// or inherit the long account-compromise retention.
+	if isInboundWebAttackCheck(check) && isRemoteIPKeyed(f) {
+		return KindWebAttack
+	}
+
 	// Default -- account-scoped web compromise. Most CSM findings are
 	// tenant-attributed web/PHP issues, so this fallback matches the
 	// modal incident shape operators see.
 	return KindWebAccountCompromise
+}
+
+// isRemoteIPKeyed reports whether a finding would correlate on its source
+// IP alone -- i.e. it has no account (tenant, cPanel user, process
+// account, or /home/<account>/ path), no domain, no mailbox, and no
+// stable process actor (UID/PID). It mirrors KeyFor's RemoteIP fallback
+// without calling KeyFor (KeyFor depends on ClassifyKind, so the reverse
+// call would recurse). Callers reach this only after the host-integrity,
+// mailbox, and post-exploit-process tiers have been ruled out.
+func isRemoteIPKeyed(f alert.Finding) bool {
+	if strings.TrimSpace(f.SourceIP) == "" {
+		return false
+	}
+	mailbox, domain := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
+	if mailbox != "" || domain != "" {
+		return false
+	}
+	if f.TenantID != "" || f.CPUser != "" {
+		return false
+	}
+	if f.Process != nil && f.Process.Account != "" {
+		return false
+	}
+	if accountFromHomePath(f.FilePath) != "" {
+		return false
+	}
+	if f.Process != nil && (f.Process.UID != 0 || f.Process.PID != 0) {
+		return false
+	}
+	return true
+}
+
+func isInboundWebAttackCheck(check string) bool {
+	check = strings.ToLower(strings.TrimSpace(check))
+	if strings.HasPrefix(check, "http_") || strings.HasPrefix(check, "modsec_") {
+		return true
+	}
+	switch check {
+	case "admin_panel_bruteforce",
+		"wp_login_bruteforce",
+		"wp_user_enumeration",
+		"xmlrpc_abuse",
+		"waf_attack_blocked",
+		"api_auth_failure",
+		"api_auth_failure_realtime",
+		"webmail_bruteforce",
+		"webmail_login_realtime",
+		"whm_login_realtime",
+		"whm_unauth_scripts_realtime":
+		return true
+	default:
+		return false
+	}
 }
 
 // hostIntegrityChecks lists check names whose scope is the host itself

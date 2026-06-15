@@ -156,6 +156,7 @@ func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 		"mailbox_takeover":       24 * time.Hour,
 		"credential_spray":       24 * time.Hour,
 		"web_account_compromise": 7 * 24 * time.Hour,
+		"web_attack":             24 * time.Hour,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("defaultIncidentAutoCloseThresholds = %#v, want %#v", got, want)
@@ -168,6 +169,48 @@ func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 	}
 	if _, ok := got["host_takeover"]; ok {
 		t.Fatal("default thresholds must not auto-close host_takeover")
+	}
+}
+
+func TestPackagedDefaultAutoCloseIncludesWebAttack(t *testing.T) {
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Skipf("packaged default config not readable from this layout: %v", err)
+	}
+	assertAutoCloseWebAttackThreshold(t, data, "packaged default")
+}
+
+func TestProductionReferenceAutoCloseIncludesWebAttack(t *testing.T) {
+	data, err := os.ReadFile("../../configs/csm.yaml.production.example")
+	if err != nil {
+		t.Skipf("production reference config not readable from this layout: %v", err)
+	}
+	assertAutoCloseWebAttackThreshold(t, data, "production reference")
+}
+
+func assertAutoCloseWebAttackThreshold(t *testing.T, data []byte, label string) {
+	t.Helper()
+
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes %s: %v", label, err)
+	}
+	if got := cfg.IncidentsAutoCloseThresholds()["web_attack"]; got != 24*time.Hour {
+		t.Fatalf("%s web_attack auto-close = %v, want 24h", label, got)
+	}
+
+	var raw struct {
+		Incidents struct {
+			AutoClose struct {
+				ByKind map[string]string `yaml:"by_kind"`
+			} `yaml:"auto_close"`
+		} `yaml:"incidents"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("yaml.Unmarshal %s: %v", label, err)
+	}
+	if raw.Incidents.AutoClose.ByKind["web_attack"] != "24h" {
+		t.Fatalf("%s missing incidents.auto_close.by_kind.web_attack: 24h", label)
 	}
 }
 

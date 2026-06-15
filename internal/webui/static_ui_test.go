@@ -684,6 +684,7 @@ func TestIncidentPageHasGroupedTab(t *testing.T) {
 		`id="grouped-content"`,
 		`id="grouped-status-filter"`,
 		`id="grouped-kind-filter"`,
+		`value="web_attack"`,
 		`value="host_takeover"`,
 		`csm-summary-list`,
 	} {
@@ -702,6 +703,8 @@ func TestIncidentPageHasGroupedTab(t *testing.T) {
 		`function renderGroups`,
 		`function openGroupDetail`,
 		`switchTab('grouped')`,
+		`case 'web_attack':`,
+		`Web attack`,
 		`case 'host_takeover':`,
 		`Host takeover`,
 	} {
