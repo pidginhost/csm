@@ -108,10 +108,17 @@ type domlogStats struct {
 	// rollup uses this instead of all in-window touches so an IP that was
 	// abusive elsewhere cannot make a normal hit count against a vhost.
 	abuseDomains map[string]map[string]map[string]struct{}
-	// scannerErr counts in-window requests per IP whose status matched the
-	// configured probe-error set. httpReqs is the matching denominator, so
-	// the two counters must be gated by the same window check.
+	// scannerErr counts in-window non-asset requests per IP whose status
+	// matched the configured probe-error set. scannerReqs is the matching
+	// denominator, so the two counters must be gated by the same window
+	// check and the same display-asset exclusion.
 	scannerErr map[string]int
+	// scannerReqs is the per-IP scanner-profile denominator: in-window
+	// requests excluding static display assets (see isDisplayAssetProbe),
+	// so broken images, styles, scripts, and fonts neither dilute the
+	// error rate nor pad the volume gate. Separate from httpReqs so the
+	// flood detector's denominator is unchanged.
+	scannerReqs map[string]int
 	// scannerPaths is the distinct error-status path set per IP, query
 	// strings stripped, capped at httpScannerMaxTrackedPaths to bound
 	// memory under a flood of unique probe URLs.
@@ -153,6 +160,7 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 		domains:           make(map[string]map[string]struct{}),
 		abuseDomains:      make(map[string]map[string]map[string]struct{}),
 		scannerErr:        make(map[string]int),
+		scannerReqs:       make(map[string]int),
 		scannerPaths:      make(map[string]map[string]struct{}),
 		scannerSamples:    make(map[string]httpSample),
 		scannerDomainReqs: make(map[string]int),
@@ -226,7 +234,15 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		s.httpReqs[ip]++
 
 		_, _, _, scannerEnabled := s.scannerThresholds(cfg)
-		if scannerEnabled {
+		// Static display assets (images, styles, scripts, fonts, media)
+		// are excluded from the scanner profile entirely: a 404 on a
+		// browser sub-resource is a broken-asset signal, not URL
+		// enumeration. Dropping them from both the numerator (scannerErr)
+		// and the denominator (scannerReqs) stops a site with a missing
+		// CDN from making ordinary visitors look like scanners, without
+		// blinding the profile to real probes in the same window.
+		if scannerEnabled && !isDisplayAssetProbe(rec.URI) {
+			s.scannerReqs[ip]++
 			if rec.Domain != "" {
 				s.recordScannerDomainRequest(ip, rec.Domain)
 			}
@@ -473,7 +489,7 @@ func (s *domlogStats) emitScannerProfile(cfg *config.Config) []alert.Finding {
 	}
 	var out []alert.Finding
 	for ip, errs := range s.scannerErr {
-		total := s.httpReqs[ip]
+		total := s.scannerReqs[ip]
 		paths := len(s.scannerPaths[ip])
 		if !scannerProfilePasses(total, errs, paths, minReq, pct, minPaths) {
 			continue
@@ -531,7 +547,7 @@ func (s *domlogStats) emitClaimedBotUnverified(cfg *config.Config) []alert.Findi
 		}
 		total := s.httpReqs[ip]
 		flood := floodThreshold > 0 && total >= floodThreshold
-		scanner := scannerOK && scannerProfilePasses(total, s.scannerErr[ip], len(s.scannerPaths[ip]), minReq, pct, minPaths)
+		scanner := scannerOK && scannerProfilePasses(s.scannerReqs[ip], s.scannerErr[ip], len(s.scannerPaths[ip]), minReq, pct, minPaths)
 		if !flood && !scanner {
 			continue
 		}
@@ -681,6 +697,39 @@ func probePath(uri string) string {
 		return "/"
 	}
 	return uri
+}
+
+// displayAssetExts are static, browser-rendered sub-resource extensions.
+// A 404 on one of these is a broken-asset signal -- the static-file
+// handler looked for a file and did not find it, executing no code and
+// disclosing nothing -- not URL enumeration. Excluding them keeps a site
+// whose CDN is missing its images, styles, or scripts from making every
+// ordinary visitor look like a scanner. Archives, code, configs, dumps,
+// and extensionless paths -- the targets a real scanner enumerates -- are
+// deliberately absent and keep counting toward the profile.
+var displayAssetExts = map[string]struct{}{
+	".gif": {}, ".jpg": {}, ".jpeg": {}, ".png": {}, ".webp": {}, ".bmp": {},
+	".svg": {}, ".ico": {}, ".avif": {}, ".tif": {}, ".tiff": {},
+	".css": {}, ".js": {}, ".mjs": {}, ".cjs": {}, ".map": {},
+	".woff": {}, ".woff2": {}, ".ttf": {}, ".eot": {}, ".otf": {},
+	".mp4": {}, ".webm": {}, ".ogg": {}, ".mp3": {}, ".wav": {},
+	".m4a": {}, ".mov": {}, ".avi": {}, ".flac": {},
+}
+
+// isDisplayAssetProbe reports whether uri's final path segment ends in one
+// of displayAssetExts. The query string and fragment are stripped first so
+// a cache-buster suffix cannot hide the extension.
+func isDisplayAssetProbe(uri string) bool {
+	path := probePath(uri)
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		path = path[i+1:]
+	}
+	dot := strings.LastIndexByte(path, '.')
+	if dot < 0 {
+		return false
+	}
+	_, ok := displayAssetExts[strings.ToLower(path[dot:])]
+	return ok
 }
 
 // httpAbuseChecks are the per-IP finding kinds that mark a source IP as

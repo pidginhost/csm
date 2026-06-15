@@ -418,3 +418,47 @@ func TestHTTPScannerProfile_DistributedRollupHonorsLowScannerThresholds(t *testi
 		}
 	}
 }
+
+// A real visitor browsing a catalog whose CDN is missing every image
+// fetches many distinct asset URLs that all 404. A 404 on a static
+// sub-resource (image, stylesheet, script, font) discloses nothing and
+// runs no code -- it is a broken-asset signal, not URL enumeration. Such
+// requests must stay out of the scanner profile even when their volume,
+// error rate, and path breadth would otherwise trip every gate.
+func TestHTTPScannerProfile_DisplayAssetStormNotScanner(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	exts := []string{".gif", ".png", ".jpg", ".jpeg", ".webp", ".css", ".js", ".mjs", ".map", ".woff", ".woff2", ".ttf", ".svg", ".ico", ".mp4"}
+	for i := 0; i < 90; i++ {
+		uri := fmt.Sprintf("/assets/SKU-%d%s", i, exts[i%len(exts)])
+		stats.scan(scannerRec("192.0.2.20", uri, 404), cfg, nopBotClassifier{})
+	}
+	if got := findScannerFindings(stats.emit(cfg)); len(got) != 0 {
+		t.Fatalf("fired on a broken-asset 404 storm (display assets are not probes): %+v", got)
+	}
+}
+
+// Excluding display assets must not blind the detector: an attacker who
+// sprays broken-asset requests alongside genuine probes for code, configs,
+// and backups must still trip on the probe traffic. The asset noise must
+// neither inflate the denominator (diluting the error rate) nor the volume
+// gate -- the scanner profile is computed over non-asset requests only.
+func TestHTTPScannerProfile_AssetStormWithRealProbesStillFires(t *testing.T) {
+	cfg := scannerCfg(30, 90, 10, nil)
+	stats := newDomlogStatsAt(scannerTestNow)
+	// Broken display assets: pure noise, must be ignored entirely.
+	for i := 0; i < 60; i++ {
+		stats.scan(scannerRec("192.0.2.21", fmt.Sprintf("/img/p-%d.png", i), 404), cfg, nopBotClassifier{})
+	}
+	// Genuine probes across distinct dangerous paths (code, env, dumps,
+	// archives, and an extensionless directory probe).
+	probes := []string{".php", ".env", ".sql", ".zip", ".bak", ".aspx", ".rar", ""}
+	for i := 0; i < 40; i++ {
+		uri := fmt.Sprintf("/probe-%d%s", i, probes[i%len(probes)])
+		stats.scan(scannerRec("192.0.2.21", uri, 404), cfg, nopBotClassifier{})
+	}
+	got := findScannerFindings(stats.emit(cfg))
+	if len(got) != 1 {
+		t.Fatalf("findings=%d, want 1 (real probes must fire despite asset noise): %+v", len(got), got)
+	}
+}

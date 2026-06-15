@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The URL scanner-profile detector no longer counts 404/403 responses on static display assets (images, stylesheets, scripts, fonts, media) toward its probe profile, so a site whose CDN or image paths are missing no longer makes ordinary visitors look like URL scanners and get challenged into a timeout block; archives, code, configs, dumps, and extensionless paths still count.
+
 ## [3.16.0] - 2026-06-15
 
 ### Added
