@@ -61,6 +61,7 @@
         switch (k) {
             case 'mailbox_takeover':       return 'Mailbox takeover';
             case 'web_account_compromise': return 'Web account compromise';
+            case 'web_attack':             return 'Web attack';
             case 'credential_spray':       return 'Credential spray';
             case 'post_exploit_process':   return 'Post-exploit process';
             case 'host_integrity_risk':    return 'Host integrity';

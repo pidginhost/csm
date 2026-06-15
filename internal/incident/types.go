@@ -28,9 +28,17 @@ type Kind string
 
 const (
 	KindWebAccountCompromise Kind = "web_account_compromise"
-	KindMailboxTakeover      Kind = "mailbox_takeover"
-	KindPostExploitProcess   Kind = "post_exploit_process"
-	KindHostIntegrityRisk    Kind = "host_integrity_risk"
+	// KindWebAttack is an inbound web attack attempt that carries only a
+	// remote IP -- no tenant, domain, mailbox, or process actor. These are
+	// external IPs probing the web stack (modsec rule hits, CSM rule
+	// escalation) rather than a compromised account, so they correlate on
+	// the source IP and get a short attacker-grade retention. Keeping them
+	// out of web_account_compromise stops anonymous probes from inflating
+	// the account-compromise count and the 7-day review window.
+	KindWebAttack          Kind = "web_attack"
+	KindMailboxTakeover    Kind = "mailbox_takeover"
+	KindPostExploitProcess Kind = "post_exploit_process"
+	KindHostIntegrityRisk  Kind = "host_integrity_risk"
 	// KindCredentialSpray collapses a single source IP that is brute-forcing
 	// many distinct mailboxes/accounts inside the merge window into one
 	// super-incident keyed on the source IP. Prevents the per-mailbox fan-out

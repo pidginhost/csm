@@ -649,6 +649,7 @@ incidents:
     by_kind:
       mailbox_takeover: 24h
       credential_spray: 24h
+      web_attack: 24h
       web_account_compromise: 168h
   spray_suppression:
     enabled: false                      # collapse one-source credential spray into one incident

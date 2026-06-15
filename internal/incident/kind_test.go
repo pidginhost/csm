@@ -113,6 +113,95 @@ func TestClassifyKindDomainMailChecksStayWebAccountCompromise(t *testing.T) {
 	}
 }
 
+// Inbound attack attempts that carry only a remote IP (no tenant, domain,
+// mailbox, or process actor) are not account compromises -- they are an
+// external IP probing the web stack (modsec rule hits, CSM rule
+// escalation). They must classify as web_attack so they get attacker-grade
+// retention instead of the 7-day account-compromise window.
+func TestClassifyKindWebAttackForRemoteIPOnly(t *testing.T) {
+	for _, check := range []string{"modsec_warning_realtime", "modsec_csm_block_escalation", "wp_login_bruteforce"} {
+		got := ClassifyKind(alert.Finding{Check: check, SourceIP: "203.0.113.7"})
+		if got != KindWebAttack {
+			t.Errorf("check %q with only a source IP: got %v, want web_attack", check, got)
+		}
+	}
+}
+
+// Any account/domain/mailbox attribution keeps a finding out of web_attack,
+// even when it carries a source IP. (A mailbox attribution wins the earlier
+// mailbox_takeover tier; the guarantee here is "not an anonymous inbound
+// probe".)
+func TestClassifyKindAccountAttributedNotWebAttack(t *testing.T) {
+	cases := []alert.Finding{
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", CPUser: "alice"},
+		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+	}
+	for _, f := range cases {
+		if got := ClassifyKind(f); got == KindWebAttack {
+			t.Errorf("%+v: classified as web_attack, want an account-attributed kind", f)
+		}
+	}
+}
+
+// Account-attributed web findings with no mailbox/host/process signal stay
+// web_account_compromise: a real tenant signal warranting the longer review
+// window, not an anonymous inbound probe.
+func TestClassifyKindWebCompromiseForAccountAttributed(t *testing.T) {
+	cases := []alert.Finding{
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
+		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", CPUser: "alice"},
+		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+	}
+	for _, f := range cases {
+		if got := ClassifyKind(f); got != KindWebAccountCompromise {
+			t.Errorf("%+v: got %v, want web_account_compromise", f, got)
+		}
+	}
+}
+
+// A finding with no source IP and no account attribution cannot be
+// remote-IP-keyed, so it stays web_account_compromise (the modal default).
+func TestClassifyKindNoSourceIPStaysWebAccountCompromise(t *testing.T) {
+	if got := ClassifyKind(alert.Finding{Check: "unknown_check"}); got != KindWebAccountCompromise {
+		t.Errorf("no source IP, no account: got %v, want web_account_compromise", got)
+	}
+}
+
+// A process-keyed finding (UID/PID actor, no account) is not remote-IP-keyed
+// even when it carries a source IP, so it must not become web_attack.
+func TestClassifyKindProcessKeyedNotWebAttack(t *testing.T) {
+	got := ClassifyKind(alert.Finding{
+		Check:    "outbound_connection",
+		SourceIP: "203.0.113.7",
+		Process:  &processctx.ProcessContext{UID: 99, PID: 1234},
+	})
+	if got == KindWebAttack {
+		t.Errorf("process-keyed finding must not classify as web_attack, got %v", got)
+	}
+}
+
+// A remote-IP-keyed inbound attack flows through the correlator into a
+// single web_attack incident keyed on the source IP.
+func TestCorrelatorClassifiesRemoteIPModsecAsWebAttack(t *testing.T) {
+	c := newTestCorrelator()
+	f := alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "203.0.113.7"}
+	id, _, _ := c.OnFinding(f)
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("expected an incident to be created")
+	}
+	if inc.Kind != KindWebAttack {
+		t.Errorf("Kind: got %v, want web_attack", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+		t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
+	}
+}
+
 func TestCorrelatorAssignsKindOnCreate(t *testing.T) {
 	c := newTestCorrelator()
 	f := alert.Finding{Check: "fake_kernel_thread", Severity: alert.Critical, TenantID: "root"}

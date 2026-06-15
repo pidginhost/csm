@@ -193,10 +193,13 @@ func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 		t.Errorf("blocked excluded kind: %d firings, want 0", got)
 	}
 
-	// Web account compromise -- allowed by kinds filter.
+	// Web account compromise -- allowed by kinds filter. Account-attributed
+	// (TenantID) so it classifies as web_account_compromise rather than the
+	// remote-IP-only web_attack kind.
 	wp := alert.Finding{
 		Check:     "wp_login_bruteforce",
 		Severity:  alert.High,
+		TenantID:  "alice",
 		SourceIP:  "192.0.2.55",
 		Timestamp: now.Add(time.Minute),
 	}
@@ -512,7 +515,9 @@ func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	}
 	foundAction := false
 	for _, inc := range c.Snapshot() {
-		if inc.Kind != KindWebAccountCompromise {
+		// The modsec_csm_block_escalation finding is remote-IP-only, so it
+		// classifies as web_attack.
+		if inc.Kind != KindWebAttack {
 			continue
 		}
 		if hasIncidentAction(inc.Actions, "incident_block_requested") {
