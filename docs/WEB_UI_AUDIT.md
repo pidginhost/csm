@@ -59,7 +59,7 @@ staging host should follow.
 
 P0 (data loss + wrong data):
 - [x] 1. Bulk select-all selects paginated-away rows -> mass delete (Critical) -- DONE, see change log
-- [ ] 2. Timestamps shown in mixed UTC/local across pages (High)
+- [x] 2. Timestamps shown in mixed UTC/local across pages (High) -- DONE, see change log
 - [ ] 3. Dashboard "(24h)" label on lifetime counts (High)
 - [ ] 4. False "New findings detected" banner from endpoint dedup mismatch (High)
 - [ ] 5. Size + Severity columns sort lexically, not numerically (High)
@@ -363,6 +363,16 @@ preview content (untrusted malware sample text).
   `ui/static/js/csm-ui.js`. No JS unit harness in this repo (AGENTS: webui has
   no build step/framework); verified by full `internal/webui` Go suite (1232
   pass) + read-through of all three consumers + codex review.
+- Item 2 (High): timestamps. Added Go-TDD `time_iso` (RFC3339) to the modsec
+  events endpoint (blocks already had `last_seen_iso`), then rendered quarantine
+  `quarantined_at`, modsec blocks/events, and verified-bot `last_refresh` through
+  `CSM.fmtDate` with cell-level `data-timestamp` so they show operator-local time
+  and sort chronologically. Found and fixed a coupled latent bug: quarantine put
+  `data-timestamp` on the `<tr>`, so the global 60s `initTimeAgo` (csrf.js) wiped
+  whole rows; renamed the row's date-filter attribute to `data-quar-ts` (updated
+  `_inRange` + the pinned static UI test) and moved `data-timestamp` to the cell
+  span. `modsec_api.go`, `modsec_blocks_extended_test.go`, `quarantine.js`,
+  `modsec.js`, `verified-bots.js`, `static_ui_test.go`. Suite 1233 pass.
 - Follow-up review found that table pagination/search/filter renders did not
   repaint existing bulk bars, and ModSec still counted checked hidden rows
   directly. Quarantine, email quarantine, and ModSec now refresh bulk state

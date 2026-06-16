@@ -104,7 +104,7 @@
         br = br || {};
         document.getElementById('vbots-ranges-auto').textContent = br.auto_update ? 'On' : 'Off';
         document.getElementById('vbots-ranges-interval').textContent = br.update_interval || '24h';
-        document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh || 'never';
+        document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh ? CSM.fmtDate(br.last_refresh) : 'never';
         var prefixes = br.prefixes || {};
         var names = Object.keys(prefixes).sort();
         if (names.length === 0) {

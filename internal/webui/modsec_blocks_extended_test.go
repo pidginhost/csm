@@ -190,6 +190,41 @@ func TestModSecEventsReturnsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestModSecEventsExposeISOTimestamp(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	sdb := store.Global()
+
+	ts := time.Now().Add(-5 * time.Minute)
+	if err := sdb.AppendHistory([]alert.Finding{
+		modsecBlock("198.51.100.30", "site.test", "/hit", "900113", ts),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiModSecEvents(w, httptest.NewRequest(http.MethodGet, "/api/v1/modsec/events", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp []modsecEventView
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
+	}
+	if len(resp) != 1 {
+		t.Fatalf("events = %d, want 1", len(resp))
+	}
+	// The UI renders timestamps in the operator's timezone and sorts on them, so
+	// each event must carry a full RFC3339 instant, not a date-less "15:04:05".
+	got, err := time.Parse(time.RFC3339, resp[0].TimeISO)
+	if err != nil {
+		t.Fatalf("time_iso %q is not RFC3339: %v", resp[0].TimeISO, err)
+	}
+	if want := ts.UTC().Truncate(time.Second); !got.Equal(want) {
+		t.Fatalf("time_iso = %v, want %v", got, want)
+	}
+}
+
 func TestModSecBlocksReadScopeAccess(t *testing.T) {
 	s := newTestServerWithBbolt(t, "admin-tok")
 	s.cfg.WebUI.Tokens = []config.WebUIToken{

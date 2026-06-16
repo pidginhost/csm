@@ -49,9 +49,12 @@ type modsecSampleEvent struct {
 	Severity string `json:"severity"`
 }
 
-// modsecEventView is a single ModSecurity event.
+// modsecEventView is a single ModSecurity event. Time is a date-less
+// "15:04:05" kept for compact display; TimeISO is the full RFC3339 instant the
+// UI renders in the operator's timezone and sorts on.
 type modsecEventView struct {
 	Time     string `json:"time"`
+	TimeISO  string `json:"time_iso"`
 	IP       string `json:"ip"`
 	RuleID   string `json:"rule_id"`
 	Hostname string `json:"hostname"`
@@ -321,6 +324,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, modsecEventView{
 			Time:     f.Timestamp.Format("15:04:05"),
+			TimeISO:  f.Timestamp.UTC().Format(time.RFC3339),
 			IP:       extractModSecIP(f),
 			RuleID:   extractModSecRule(f),
 			Hostname: extractModSecHostname(f),

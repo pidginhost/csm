@@ -2652,7 +2652,7 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 		`_bindQuarURLState(fromEl, toEl);`,
 		`data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '"`,
 		`data-source="' + CSM.attr(det) + '"`,
-		`data-timestamp="' + CSM.attr(f.quarantined_at || '') + '"`,
+		`data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '"`,
 		`var from = fromEl ? _quarLocalDateMillis(fromEl.value, false) : null;`,
 		`var to = toEl ? _quarLocalDateMillis(toEl.value, true) : null;`,
 		`if (to !== null && ts >= to) return false;`,
