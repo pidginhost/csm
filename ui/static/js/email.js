@@ -569,34 +569,6 @@
             });
     }
 
-    function extractAccount(msg, details) {
-        var m = (msg || '').match(/for (\S+@\S+)/);
-        if (m) return m[1];
-        m = (msg || '').match(/Account (\S+@\S+)/);
-        if (m) return m[1];
-        m = (msg || '').match(/account (\S+@\S+)/);
-        if (m) return m[1];
-        if (details) {
-            m = details.match(/Sender (\S+@\S+)/);
-            if (m) return m[1];
-            m = details.match(/set_id=(\S+)/);
-            if (m) return m[1].replace(/[)]/g, '');
-        }
-        m = (msg || '').match(/Domain (\S+)/);
-        if (m) return m[1];
-        return '';
-    }
-
-    function extractIP(msg, details) {
-        var m = (msg || '').match(/from (\d+\.\d+\.\d+\.\d+)/);
-        if (m) return m[1];
-        if (details) {
-            m = details.match(/\[(\d+\.\d+\.\d+\.\d+)\]/);
-            if (m) return m[1];
-        }
-        return '';
-    }
-
     function renderFindingsTable(findings) {
         var tbody = document.getElementById('email-tbody');
         if (!tbody) return;
@@ -606,7 +578,7 @@
                 check: f.check,
                 severity: f.severity === 2 ? 'critical' : f.severity === 1 ? 'high' : 'warning',
                 message: f.message,
-                account: extractAccount(f.message, f.details),
+                account: f.account || '',
                 timestamp: f.timestamp || ''
             };
         });
@@ -621,8 +593,8 @@
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
             var cls = CSM.severityClass(f.severity);
-            var account = extractAccount(f.message, f.details);
-            var ip = extractIP(f.message, f.details);
+            var account = f.account || '';
+            var ip = f.ip || '';
             var checkLabel = f.check.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '');
             html += '<tr data-sev="' + cls + '">';
             html += '<td>' + CSM.severityBadge(f.severity) + '</td>';

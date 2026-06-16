@@ -63,7 +63,7 @@ P0 (data loss + wrong data):
 - [x] 3. Dashboard "(24h)" label on lifetime counts (High) -- DONE, see change log
 - [x] 4. False "New findings detected" banner from endpoint dedup mismatch (High) -- DONE, see change log
 - [x] 5. Size + Severity columns sort lexically, not numerically (High) -- DONE, see change log
-- [ ] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High)
+- [x] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High) -- DONE, see change log
 - [ ] 7. NaN/null rendered: hardening score, Redis no-limit card (Medium) -- PARTIAL: size formatter fixed
 
 P1 (systemic consistency):
@@ -425,3 +425,18 @@ preview content (untrusted malware sample text).
   now returns blank for missing or invalid byte counts, and the shared formatting
   test pins that guard so size cells cannot show `null B` or `NaN B`. The same
   pass added the missing raw-byte sort key to the Rules file table.
+- Item 6 (Medium-High): email account/IP scraping. The email findings table
+  derived the account with `/for (\S+@\S+)/`-style regexes and the source IP
+  with `/from (\d+\.\d+\.\d+\.\d+)/` over the human-readable message, so any
+  IPv6 attacker left the IP column blank and any wording change broke the
+  account column. The mail and account detectors already attach the attacker IP
+  (`SourceIP`, a parsed `net.IP`, so IPv6-correct) and the account
+  (`Mailbox`/`Domain`) as structured fields. The history endpoint now normalizes
+  these into per-finding `account` and `ip` keys (account preferring `Mailbox`,
+  then the existing /home and "Account:"/"user:" extraction, then `Domain`), and
+  email.js renders them directly, dropping both regex helpers. Backend surface,
+  so TDD at the Go handler layer (TestAPIHistoryEmitsStructuredAccountAndIP, with
+  an IPv6 SourceIP that the old regex dropped) plus a static-UI test pinning the
+  JS render and the removed regex. `internal/webui/api.go`,
+  `internal/webui/api_history_test.go`, `ui/static/js/email.js`,
+  `internal/webui/static_ui_test.go`.

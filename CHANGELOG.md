@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Findings refresh now catches severity-only changes and keeps merged IP reputation source ordering stable between polls.
 - Web UI Size columns (quarantine, cleanup, database backups, rules) now sort by actual byte count and the findings Severity column sorts by severity, instead of by their formatted display text.
 - Web UI size formatting now leaves missing or invalid byte counts blank instead of rendering `null` or `NaN` text.
+- Email findings show the account and source IP from structured finding data, so IPv6 attacker addresses are no longer blank and the columns no longer break when a message is reworded.
 
 ## [3.16.1] - 2026-06-15
 

@@ -148,6 +148,50 @@ func TestAPIHistoryPagination(t *testing.T) {
 	}
 }
 
+// TestAPIHistoryEmitsStructuredAccountAndIP pins item 6: the history endpoint
+// attaches the account and attacker IP from the finding's structured fields so
+// the email UI no longer regex-scrapes the human-readable message (which is
+// IPv4-only and breaks on any wording change). The IPv6 SourceIP below is the
+// case the old `/from (\d+\.\d+\.\d+\.\d+)/` regex silently dropped.
+func TestAPIHistoryEmitsStructuredAccountAndIP(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	s.store.AppendHistory([]alert.Finding{
+		{Severity: alert.Critical, Check: "mail_bruteforce", Message: "Mail brute force burst", Mailbox: "user@example.com", SourceIP: "2001:db8::1", Timestamp: time.Now()},
+		{Severity: alert.High, Check: "obfuscated_php", Message: "shell in /home/bob/public_html/evil.php", Timestamp: time.Now()},
+		{Severity: alert.Warning, Check: "mail_filter", Message: "filter rule forwards mail", Domain: "example.net", Timestamp: time.Now()},
+	})
+
+	w := httptest.NewRecorder()
+	s.apiHistory(w, httptest.NewRequest("GET", "/?limit=10", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp struct {
+		Findings []struct {
+			Check   string `json:"check"`
+			Account string `json:"account"`
+			IP      string `json:"ip"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	type pair struct{ acct, ip string }
+	got := map[string]pair{}
+	for _, f := range resp.Findings {
+		got[f.Check] = pair{f.Account, f.IP}
+	}
+	if g := got["mail_bruteforce"]; g.acct != "user@example.com" || g.ip != "2001:db8::1" {
+		t.Errorf("mail_bruteforce account/ip = %q/%q, want user@example.com/2001:db8::1 (IPv6 must survive)", g.acct, g.ip)
+	}
+	if g := got["obfuscated_php"]; g.acct != "bob" {
+		t.Errorf("obfuscated_php account = %q, want bob (from /home path)", g.acct)
+	}
+	if g := got["mail_filter"]; g.acct != "example.net" {
+		t.Errorf("mail_filter account = %q, want example.net (domain fallback)", g.acct)
+	}
+}
+
 // --- apiBlockedIPs with bbolt data -----------------------------------
 
 func TestAPIHistoryFilteredOffsetPastEnd(t *testing.T) {

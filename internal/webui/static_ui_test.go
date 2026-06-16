@@ -799,6 +799,37 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	}
 }
 
+// TestEmailFindingsUseStructuredAccountIP pins item 6: the email findings
+// table renders the account and source IP from the structured fields the
+// history endpoint now emits, instead of regex-scraping the human-readable
+// message. The old `/from (\d+\.\d+\.\d+\.\d+)/` extractor was IPv4-only and
+// left the IP column blank for IPv6 attackers.
+func TestEmailFindingsUseStructuredAccountIP(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"var account = f.account || '';",
+		"var ip = f.ip || '';",
+		"account: f.account || '',",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("email.js missing structured account/ip fragment %q", want)
+		}
+	}
+	for _, banned := range []string{
+		`function extractAccount(`,
+		`function extractIP(`,
+		`/from (\d+\.\d+\.\d+\.\d+)/`,
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("email.js still regex-scrapes account/ip from the message %q", banned)
+		}
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

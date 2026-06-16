@@ -329,7 +329,7 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" && checksStr == "" {
 		findings, total := s.store.ReadHistory(limit, offset)
 		writeJSON(w, map[string]interface{}{
-			"findings": findings,
+			"findings": withAccountIP(findings),
 			"total":    total,
 			"limit":    limit,
 			"offset":   offset,
@@ -352,12 +352,45 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		checksFilter,
 	)
 	writeJSON(w, map[string]interface{}{
-		"findings":  findings,
+		"findings":  withAccountIP(findings),
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
 		"truncated": false,
 	})
+}
+
+// historyFinding decorates a stored finding with the normalized account and
+// remote IP so clients render structured fields instead of regex-scraping the
+// human-readable message. The embedded Finding promotes its own JSON fields, so
+// existing consumers see the same shape plus account/ip.
+type historyFinding struct {
+	alert.Finding
+	Account string `json:"account,omitempty"`
+	IP      string `json:"ip,omitempty"`
+}
+
+func withAccountIP(findings []alert.Finding) []historyFinding {
+	out := make([]historyFinding, len(findings))
+	for i, f := range findings {
+		out[i] = historyFinding{Finding: f, Account: findingAccount(f), IP: f.SourceIP}
+	}
+	return out
+}
+
+// findingAccount returns the account/mailbox attribution for a finding,
+// preferring structured fields (set by the mail and account detectors) over
+// text extraction so the value survives message wording changes. SourceIP is
+// the IP detectors already parsed, so it carries IPv6 sources the old UI regex
+// dropped; findings with no attacker IP leave it empty.
+func findingAccount(f alert.Finding) string {
+	if f.Mailbox != "" {
+		return f.Mailbox
+	}
+	if acct := extractAccountFromFinding(f); acct != "" {
+		return acct
+	}
+	return f.Domain
 }
 
 // var (not const) so tests can redirect to t.TempDir(). Production
