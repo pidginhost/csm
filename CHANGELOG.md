@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Inbound web attacks now open a `web_attack` incident even when the request names the targeted site or account. A blocked ModSecurity hit or scanner probe records the victim vhost, which is the attack target, not evidence the account is compromised, so these are keyed on the attacker IP and no longer inflate the `web_account_compromise` count or its 7-day review window. Genuine compromise is still recognised by on-disk and behavioural signals.
 
+### Fixed
+
+- Web UI bulk select-all now selects only the rows on the current page, so a permanent delete of quarantined files, ModSecurity blocks, or held messages no longer also removes rows hidden on other pages or by an active filter.
+
 ## [3.16.1] - 2026-06-15
 
 ### Changed

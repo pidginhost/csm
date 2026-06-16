@@ -252,16 +252,28 @@ CSM.bulk = function(opts) {
         return selectAllEl;
     }
 
-    function checked() {
-        return all().filter(function(cb) { return cb.checked; });
-    }
     function all() {
         return Array.prototype.slice.call(document.querySelectorAll(rowSel));
+    }
+    // A checkbox whose row is paginated or filtered away is hidden via
+    // display:none, so its offsetParent is null. Bulk actions act only on
+    // rows the operator can currently see: select-all must never reach rows
+    // on other pages (a permanent-delete footgun), and a selection left
+    // checked but hidden by a later filter change must not be acted upon.
+    // "Act on everything" is still reachable by setting the page size to All.
+    function isVisible(cb) {
+        return cb.offsetParent !== null;
+    }
+    function visible() {
+        return all().filter(isVisible);
+    }
+    function checked() {
+        return visible().filter(function(cb) { return cb.checked; });
     }
 
     function paint() {
         var sel = checked();
-        var total = all().length;
+        var total = visible().length;
         var n = sel.length;
         var selectAll = resolveSelectAll();
         if (selectAll) {
@@ -296,7 +308,7 @@ CSM.bulk = function(opts) {
         selectAllEl.dataset.csmBulkSelectAllBound = '1';
         selectAllEl.addEventListener('change', function() {
             var v = this.checked;
-            all().forEach(function(cb) { cb.checked = v; });
+            visible().forEach(function(cb) { cb.checked = v; });
             paint();
         });
     }
