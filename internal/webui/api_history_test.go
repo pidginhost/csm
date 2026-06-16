@@ -192,6 +192,98 @@ func TestAPIHistoryEmitsStructuredAccountAndIP(t *testing.T) {
 	}
 }
 
+func TestHistoryFindingAccountIPFallbacks(t *testing.T) {
+	findings := withAccountIP([]alert.Finding{
+		{
+			Check:     "email_auth_failure_realtime",
+			TenantID:  "localuser",
+			SourceIP:  "2001:db8::2",
+			Timestamp: time.Now(),
+		},
+		{
+			Check:   "email_auth_failure_realtime",
+			Details: "dovecot_login authenticator failed for H=(bad) [2001:db8::3]:465: 535 Incorrect authentication data (set_id=legacy@example.com)",
+		},
+		{
+			Check:   "email_compromised_account",
+			Message: "Account old@example.net is on cPanel outgoing mail hold",
+		},
+		{
+			Check:   "mail_bruteforce",
+			Message: "Mail auth brute force from 198.51.100.12: 10 failed auths in 1m0s",
+		},
+		{
+			Check:   "email_suspicious_geo",
+			Message: "Suspicious email login for geo@example.com from ZZ - previously seen: none",
+			Details: "dovecot: imap-login: Login: user=<geo@example.com>, rip=2001:db8::4, lip=10.0.0.1",
+		},
+		{
+			Check:   "email_weak_password",
+			Message: "Weak email password for oldbox@example.org (account: cpuser)",
+			Details: "Account: cpuser\nMailbox: oldbox@example.org\nMatch type: heuristic",
+		},
+		{
+			Check:   "webshell",
+			Message: "Account ignored@example.net from 192.0.2.44",
+		},
+	})
+
+	tests := []struct {
+		name        string
+		got         historyFinding
+		wantAccount string
+		wantIP      string
+	}{
+		{
+			name:        "bare cpanel account",
+			got:         findings[0],
+			wantAccount: "localuser",
+			wantIP:      "2001:db8::2",
+		},
+		{
+			name:        "legacy set_id and bracketed ipv6",
+			got:         findings[1],
+			wantAccount: "legacy@example.com",
+			wantIP:      "2001:db8::3",
+		},
+		{
+			name:        "legacy message account",
+			got:         findings[2],
+			wantAccount: "old@example.net",
+		},
+		{
+			name:   "legacy message ipv4 with trailing colon",
+			got:    findings[3],
+			wantIP: "198.51.100.12",
+		},
+		{
+			name:        "legacy rip token ipv6",
+			got:         findings[4],
+			wantAccount: "geo@example.com",
+			wantIP:      "2001:db8::4",
+		},
+		{
+			name:        "legacy email account beats cpanel detail",
+			got:         findings[5],
+			wantAccount: "oldbox@example.org",
+		},
+		{
+			name: "non email message ignored",
+			got:  findings[6],
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got.Account != tt.wantAccount {
+				t.Errorf("Account = %q, want %q", tt.got.Account, tt.wantAccount)
+			}
+			if tt.got.IP != tt.wantIP {
+				t.Errorf("IP = %q, want %q", tt.got.IP, tt.wantIP)
+			}
+		})
+	}
+}
+
 // --- apiBlockedIPs with bbolt data -----------------------------------
 
 func TestAPIHistoryFilteredOffsetPastEnd(t *testing.T) {

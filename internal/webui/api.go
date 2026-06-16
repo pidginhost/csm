@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -373,24 +376,150 @@ type historyFinding struct {
 func withAccountIP(findings []alert.Finding) []historyFinding {
 	out := make([]historyFinding, len(findings))
 	for i, f := range findings {
-		out[i] = historyFinding{Finding: f, Account: findingAccount(f), IP: f.SourceIP}
+		out[i] = historyFinding{Finding: f, Account: findingAccount(f), IP: findingIP(f)}
 	}
 	return out
 }
 
 // findingAccount returns the account/mailbox attribution for a finding,
-// preferring structured fields (set by the mail and account detectors) over
-// text extraction so the value survives message wording changes. SourceIP is
-// the IP detectors already parsed, so it carries IPv6 sources the old UI regex
-// dropped; findings with no attacker IP leave it empty.
+// preferring structured fields over legacy text extraction so the value
+// survives message wording changes.
 func findingAccount(f alert.Finding) string {
-	if f.Mailbox != "" {
-		return f.Mailbox
+	for _, account := range []string{f.Mailbox, f.TenantID, f.CPUser} {
+		if account = strings.TrimSpace(account); account != "" {
+			return account
+		}
+	}
+	if acct := legacyEmailAccount(f); acct != "" {
+		return acct
 	}
 	if acct := extractAccountFromFinding(f); acct != "" {
 		return acct
 	}
-	return f.Domain
+	return strings.TrimSpace(f.Domain)
+}
+
+func findingIP(f alert.Finding) string {
+	if ip := strings.TrimSpace(f.SourceIP); ip != "" {
+		return ip
+	}
+	if !isEmailHistoryCheck(f.Check) {
+		return ""
+	}
+	for _, s := range []string{f.Message, f.Details} {
+		if ip := firstIPToken(s); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func legacyEmailAccount(f alert.Finding) string {
+	if !isEmailHistoryCheck(f.Check) {
+		return ""
+	}
+	for _, source := range []string{f.Message, f.Details} {
+		for _, prefix := range []string{"for ", "Account ", "account ", "Sender "} {
+			if token := tokenAfter(source, prefix); strings.Contains(token, "@") {
+				return token
+			}
+		}
+		if token := tokenAfter(source, "set_id="); token != "" {
+			return token
+		}
+		for _, prefix := range []string{"Domain ", "Domain: ", "domain ", "domain: "} {
+			if token := tokenAfter(source, prefix); token != "" {
+				return token
+			}
+		}
+	}
+	return ""
+}
+
+func isEmailHistoryCheck(check string) bool {
+	return emailKindForCheck(check) != "" ||
+		strings.HasPrefix(check, "email_") ||
+		strings.HasPrefix(check, "mail_") ||
+		strings.HasPrefix(check, "smtp_")
+}
+
+func tokenAfter(s, prefix string) string {
+	idx := strings.Index(s, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := s[idx+len(prefix):]
+	if end := strings.IndexAny(rest, " \n\t,"); end >= 0 {
+		rest = rest[:end]
+	}
+	return cleanHistoryToken(rest)
+}
+
+func cleanHistoryToken(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, `"'<>[]()`)
+	s = strings.TrimRight(s, ".,;:")
+	return s
+}
+
+func firstIPToken(s string) string {
+	for _, raw := range strings.FieldsFunc(s, func(r rune) bool {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		switch r {
+		case ',', ';', '(', ')':
+			return true
+		default:
+			return false
+		}
+	}) {
+		if ip := normalizeHistoryIPToken(raw); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func normalizeHistoryIPToken(raw string) string {
+	raw = strings.Trim(raw, `"'<>`)
+	if ip := parseHistoryIP(raw); ip != "" {
+		return ip
+	}
+	if eq := strings.LastIndexByte(raw, '='); eq >= 0 && eq < len(raw)-1 {
+		if ip := normalizeHistoryIPToken(raw[eq+1:]); ip != "" {
+			return ip
+		}
+	}
+
+	candidate := strings.TrimRight(raw, ".,;:")
+	if host, _, err := net.SplitHostPort(candidate); err == nil {
+		if ip := parseHistoryIP(host); ip != "" {
+			return ip
+		}
+	}
+	if strings.HasPrefix(candidate, "[") {
+		if end := strings.IndexByte(candidate, ']'); end > 1 {
+			if ip := parseHistoryIP(candidate[1:end]); ip != "" {
+				return ip
+			}
+		}
+	}
+	return parseHistoryIP(candidate)
+}
+
+func parseHistoryIP(raw string) string {
+	raw = strings.TrimSpace(strings.Trim(raw, "[]"))
+	if raw == "" {
+		return ""
+	}
+	if addr, err := netip.ParseAddr(raw); err == nil {
+		return addr.String()
+	}
+	if prefix, err := netip.ParsePrefix(raw); err == nil {
+		return prefix.String()
+	}
+	return ""
 }
 
 // var (not const) so tests can redirect to t.TempDir(). Production

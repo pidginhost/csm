@@ -430,13 +430,15 @@ preview content (untrusted malware sample text).
   with `/from (\d+\.\d+\.\d+\.\d+)/` over the human-readable message, so any
   IPv6 attacker left the IP column blank and any wording change broke the
   account column. The mail and account detectors already attach the attacker IP
-  (`SourceIP`, a parsed `net.IP`, so IPv6-correct) and the account
+  (`SourceIP`, filled from parsed log addresses, so IPv6-correct) and the account
   (`Mailbox`/`Domain`) as structured fields. The history endpoint now normalizes
   these into per-finding `account` and `ip` keys (account preferring `Mailbox`,
-  then the existing /home and "Account:"/"user:" extraction, then `Domain`), and
-  email.js renders them directly, dropping both regex helpers. Backend surface,
-  so TDD at the Go handler layer (TestAPIHistoryEmitsStructuredAccountAndIP, with
-  an IPv6 SourceIP that the old regex dropped) plus a static-UI test pinning the
-  JS render and the removed regex. `internal/webui/api.go`,
+  `TenantID`, `CPUser`, then email legacy fallbacks, then the existing /home
+  and "Account:"/"user:" extraction, then `Domain`), and email.js renders
+  them directly, dropping both regex helpers. Backend surface, so TDD at the Go
+  handler layer (TestAPIHistoryEmitsStructuredAccountAndIP, with an IPv6
+  SourceIP that the old regex dropped) plus fallback coverage for bare cPanel
+  auth users and old `set_id`/`rip=` mail-log rows, and a static-UI test pinning
+  the JS render and the removed regex. `internal/webui/api.go`,
   `internal/webui/api_history_test.go`, `ui/static/js/email.js`,
   `internal/webui/static_ui_test.go`.
