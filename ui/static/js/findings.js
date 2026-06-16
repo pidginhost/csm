@@ -817,11 +817,20 @@ if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault();
 // --- Auto-refresh: poll for new findings every 15 seconds ---
 var _findingsPoller = null;
 
+function findingRefreshKey(f) {
+    if (!f) return '';
+    var check = f.check || '';
+    var message = f.message || '';
+    var severity = f.severity || '';
+    if (check === 'ip_reputation') return check + ':' + message + ':' + severity;
+    return (f.key || (check + ':' + message)) + ':' + severity;
+}
+
 function initAutoRefresh(initialFindings) {
     var currentKeys = {};
     for (var i = 0; i < initialFindings.length; i++) {
         var f = initialFindings[i];
-        currentKeys[f.check + ':' + f.message] = true;
+        currentKeys[findingRefreshKey(f)] = true;
     }
     var currentCount = initialFindings.length;
 
@@ -840,7 +849,7 @@ function initAutoRefresh(initialFindings) {
         var changed = poll.length !== currentCount;
         if (!changed) {
             for (var j = 0; j < poll.length; j++) {
-                var key = poll[j].check + ':' + poll[j].message;
+                var key = findingRefreshKey(poll[j]);
                 if (!currentKeys[key]) { changed = true; break; }
             }
         }

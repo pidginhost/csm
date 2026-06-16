@@ -213,6 +213,7 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 	}
 	for _, ip := range ipOrder {
 		g := ipGroups[ip]
+		sort.Strings(g.sources)
 		g.entry.Message = fmt.Sprintf("Known malicious IP accessing server: %s (%s)", ip, strings.Join(g.sources, ", "))
 		result = append(result, g.entry)
 	}

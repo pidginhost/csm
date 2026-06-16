@@ -708,11 +708,15 @@ func TestFindingsAutoRefreshPollsEnrichedEndpoint(t *testing.T) {
 		t.Fatal("findings.js auto-refresh polls the raw /api/v1/findings; it must poll the deduped /api/v1/findings/enriched so the count/keys match the rendered table")
 	}
 	for _, want := range []string{
+		"function findingRefreshKey(f) {",
+		"if (check === 'ip_reputation') return check + ':' + message + ':' + severity;",
+		"return (f.key || (check + ':' + message)) + ':' + severity;",
+		"currentKeys[findingRefreshKey(f)] = true;",
 		"_findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {",
 		"if (!data || !data.findings) return;",
 		"var poll = data.findings;",
 		"var changed = poll.length !== currentCount;",
-		"var key = poll[j].check + ':' + poll[j].message;",
+		"var key = findingRefreshKey(poll[j]);",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("findings.js auto-refresh missing enriched-comparison fragment %q", want)

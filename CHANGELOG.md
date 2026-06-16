@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI keeps quarantine, ModSecurity, and verified-bot timestamps in the operator's local time instead of raw UTC and sorts those columns chronologically; quarantine rows are also no longer blanked by the periodic relative-time refresh.
 - Dashboard summary line counts critical and high findings from the last 24 hours, matching its "(24h)" label and the posture cards, instead of all-time active totals.
 - Findings page no longer shows a false "New findings detected" banner; auto-refresh now compares against the same deduplicated source the table renders from, so it only appears on a real change.
+- Findings refresh now catches severity-only changes and keeps merged IP reputation source ordering stable between polls.
 
 ## [3.16.1] - 2026-06-15
 

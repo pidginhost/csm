@@ -89,3 +89,27 @@ func TestIPDedupNoIPReputation(t *testing.T) {
 		t.Fatalf("expected 2 entries (no dedup needed), got %d", len(result))
 	}
 }
+
+func TestIPDedupSortsMergedSourcesForStableMessage(t *testing.T) {
+	for name, items := range map[string][]enrichedFinding{
+		"abuse_first": {
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100)", Severity: "HIGH", SevClass: "high"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (Spamhaus score: 95/100)", Severity: "CRITICAL", SevClass: "critical"},
+		},
+		"spamhaus_first": {
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (Spamhaus score: 95/100)", Severity: "CRITICAL", SevClass: "critical"},
+			{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100)", Severity: "HIGH", SevClass: "high"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := dedupIPReputation(items)
+			if len(result) != 1 {
+				t.Fatalf("deduped entries = %d, want 1", len(result))
+			}
+			want := "Known malicious IP accessing server: 1.2.3.4 (AbuseIPDB score: 90/100, Spamhaus score: 95/100)"
+			if result[0].Message != want {
+				t.Fatalf("message = %q, want %q", result[0].Message, want)
+			}
+		})
+	}
+}

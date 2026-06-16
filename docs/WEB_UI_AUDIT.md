@@ -397,8 +397,9 @@ preview content (untrusted malware sample text).
   "New findings detected" fired on every poll whenever any ip_reputation finding
   existed, with zero state change. Pointed the poller at the enriched endpoint
   and read its `findings` array, making the comparison apples-to-apples with the
-  rendered table while still catching genuine adds/removes/severity merges.
-  Pure-JS fix (the enriched endpoint already existed and is Go-tested); pinned
-  with a static-UI regression test (TestFindingsAutoRefreshPollsEnrichedEndpoint)
-  and verified by `node --check` plus the full `internal/webui` Go suite.
-  `ui/static/js/findings.js`, `internal/webui/static_ui_test.go`.
+  rendered table while still catching genuine adds/removes/severity merges. The
+  comparison key now includes severity, and merged IP reputation source labels
+  are sorted before rendering so equivalent scan results do not flip the banner.
+  Static-UI and dedup regression tests cover the browser/backend halves.
+  `ui/static/js/findings.js`, `internal/webui/static_ui_test.go`,
+  `internal/webui/api_findings_test.go`.
