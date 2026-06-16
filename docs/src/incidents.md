@@ -5,6 +5,26 @@ escalating story per account, mailbox, or process instead of a stream
 of unrelated findings. Original findings are not mutated or suppressed
 -- the Incident is layered on top.
 
+## Classification
+
+Each incident is assigned a `kind` at create time. Inbound attacks are keyed
+on the attacker source IP, not on the victim they name:
+
+- `web_attack` -- a WAF block, scanner probe, or login brute-force. When the
+  finding names a victim domain or account, that is the attack target, not
+  evidence the account is compromised, so the incident keys on the attacker IP
+  and one attacker's hits across many vhosts collapse into one incident.
+- `mailbox_bruteforce` -- failed mailbox logins from one source IP. A failed
+  login is an attack attempt, not a takeover, so it keys on the attacker IP
+  rather than the targeted mailbox.
+
+Compromise kinds are reserved for evidence that an attack succeeded:
+`web_account_compromise` (on-disk or behavioural signals such as a webshell or
+suspicious PHP) and `mailbox_takeover` (post-authentication abuse such as
+outbound spam, cloud relay, or a compromised-account signal). Inbound-attack
+kinds carry short attacker-grade retention; compromise kinds get the longer
+review window.
+
 ## Lifecycle
 
 | Status      | Meaning                                                                |
@@ -40,6 +60,7 @@ incidents:
     dry_run: false           # set true to log decisions without writing back
     by_kind:
       mailbox_takeover: 24h
+      mailbox_bruteforce: 24h
       credential_spray: 24h
       web_attack: 24h
       web_account_compromise: 168h
@@ -75,14 +96,14 @@ Metrics: `csm_incidents_auto_closed_total` and
 
 ## Credential-spray suppression
 
-Without this path, an attacker IP that brute-forces 6500 distinct
-usernames produces 6500 `mailbox_takeover` incidents because the
-correlator keys on the mailbox, not the source IP. The
-spray-suppression detector tracks the distinct-mailbox set per source
-IP across the merge window and, once an IP exceeds `distinct_mailboxes`,
-opens a single `credential_spray` super-incident keyed on the IP.
-Subsequent findings from that IP attach to the spray incident's
-timeline instead of opening per-mailbox incidents.
+Failed mailbox logins already collapse onto the attacker IP as a single
+`mailbox_bruteforce` incident (see "Classification"). Spray suppression
+extends that across protocols: it tracks the distinct-mailbox/account set
+per source IP for the configured `per_check` detectors (mail, PAM, SSH)
+across the merge window and, once an IP exceeds `distinct_mailboxes`,
+opens a single `credential_spray` super-incident keyed on the IP with
+breadth-based severity escalation. Subsequent findings from that IP
+attach to the spray incident's timeline.
 
 Defaults (configurable in `csm.yaml`):
 
@@ -163,8 +184,8 @@ Metrics: `csm_credential_spray_opened_total`,
 `spray_suppression` only handles the credential_spray super-incident
 kind. Low-and-slow scanners that never trip a per-detector window
 (modsec escalation, mail brute-force, smtp probe) still produce
-web_attack, mailbox_takeover, or web_account_compromise incidents but
-never get firewalled. The `incidents.auto_block` block adds a generic
+web_attack, mailbox_bruteforce, mailbox_takeover, or
+web_account_compromise incidents but never get firewalled. The `incidents.auto_block` block adds a generic
 incident-driven firewall hand-off:
 
 ```yaml

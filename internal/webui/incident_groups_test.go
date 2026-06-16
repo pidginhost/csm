@@ -18,8 +18,12 @@ func seedSprayIncidents(t *testing.T, c *incident.Correlator, ip string, count i
 	t.Helper()
 	now := time.Now()
 	for i := 0; i < count; i++ {
+		// Post-auth abuse keys on the mailbox, so distinct mailboxes from one
+		// source produce distinct incidents the groups API then buckets by the
+		// shared timeline IP. (Failed-login findings would collapse onto the
+		// attacker IP as one mailbox_bruteforce incident.)
 		_, _, err := c.OnFinding(alert.Finding{
-			Check:     "email_auth_failure_realtime",
+			Check:     "email_compromised_account",
 			Severity:  alert.High,
 			Mailbox:   "victim" + strconv.Itoa(i) + "-" + strings.ReplaceAll(ip, ".", "-") + "@example.com",
 			SourceIP:  ip,

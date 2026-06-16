@@ -77,13 +77,13 @@ func TestClassifyKindFallback(t *testing.T) {
 	}
 }
 
-// Mail-stack auth checks must classify as mailbox_takeover even when the
+// Post-authentication mail abuse classifies as mailbox_takeover even when the
 // finding lacks a Mailbox attribute. Bare cPanel-local accounts route to
-// TenantID, and source-IP-only auth probes still belong to the mail incident
-// family.
+// TenantID. The failed-login signal (email_auth_failure_realtime) is handled
+// separately as mailbox_bruteforce -- a failed auth is an attack attempt, not
+// a takeover.
 func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 	mailChecks := []string{
-		"email_auth_failure_realtime",
 		"email_compromised_account",
 		"email_credential_leak",
 		"email_rate_warning",
@@ -100,6 +100,25 @@ func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})
 		if got != KindMailboxTakeover {
 			t.Errorf("check %q: got %v, want mailbox_takeover", check, got)
+		}
+	}
+}
+
+// A failed mailbox login is a brute-force attempt, not a takeover. It carries
+// the targeted mailbox (the victim) and the attacker source IP; classify by
+// the attacker so repeated failures from one IP collapse into a single
+// mailbox_bruteforce incident with short attacker-grade retention. The victim
+// mailbox/account attribution must not promote it to mailbox_takeover.
+func TestClassifyKindMailboxBruteforce(t *testing.T) {
+	cases := []alert.Finding{
+		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
+		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
+		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
+		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7"},
+	}
+	for _, f := range cases {
+		if got := ClassifyKind(f); got != KindMailboxBruteforce {
+			t.Errorf("%+v: got %v, want mailbox_bruteforce", f, got)
 		}
 	}
 }
@@ -165,35 +184,53 @@ func TestClassifyKindRemoteIPThreatScoreIsWebAttack(t *testing.T) {
 	}
 }
 
-// Any account/domain/mailbox attribution keeps a finding out of web_attack,
-// even when it carries a source IP. (A mailbox attribution wins the earlier
-// mailbox_takeover tier; the guarantee here is "not an anonymous inbound
-// probe".)
-func TestClassifyKindAccountAttributedNotWebAttack(t *testing.T) {
+// An inbound web attack classifies as web_attack even when the finding names
+// a victim domain, account, or mailbox. A ModSecurity block or scanner probe
+// records the targeted vhost in the Host header, but that is the attack
+// target, not evidence the account is compromised. Classify by the attacker
+// source IP so defended inbound traffic does not inflate the
+// account-compromise count or inherit the 7-day review window.
+func TestClassifyKindAttributedInboundAttackIsWebAttack(t *testing.T) {
 	cases := []alert.Finding{
+		{Check: "modsec_block_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
 		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
-		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
+		{Check: "modsec_csm_block_escalation", SourceIP: "203.0.113.7", CPUser: "alice"},
 		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
-		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", CPUser: "alice"},
-		{Check: "ip_reputation", SourceIP: "203.0.113.7", TenantID: "alice"},
-		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+		{Check: "http_ua_spoof", SourceIP: "203.0.113.7", Domain: "example.com"},
+		{Check: "wp_login_bruteforce", SourceIP: "203.0.113.7", Domain: "example.com"},
 	}
 	for _, f := range cases {
-		if got := ClassifyKind(f); got == KindWebAttack {
-			t.Errorf("%+v: classified as web_attack, want an account-attributed kind", f)
+		if got := ClassifyKind(f); got != KindWebAttack {
+			t.Errorf("%+v: got %v, want web_attack", f, got)
 		}
 	}
 }
 
-// Account-attributed web findings with no mailbox/host/process signal stay
-// web_account_compromise: a real tenant signal warranting the longer review
-// window, not an anonymous inbound probe.
-func TestClassifyKindWebCompromiseForAccountAttributed(t *testing.T) {
+// Signals that are not inbound web attacks stay out of web_attack even with a
+// source IP: reputation/threat-score with account attribution is no longer
+// remote-IP-keyed, and on-disk evidence (a webshell under the account home)
+// is a genuine compromise.
+func TestClassifyKindNotInboundAttackNotWebAttack(t *testing.T) {
 	cases := []alert.Finding{
-		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
-		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
-		{Check: "modsec_warning_realtime", SourceIP: "203.0.113.7", CPUser: "alice"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.7", TenantID: "alice"},
+		{Check: "local_threat_score", SourceIP: "203.0.113.7", Domain: "example.com"},
 		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+	}
+	for _, f := range cases {
+		if got := ClassifyKind(f); got == KindWebAttack {
+			t.Errorf("%+v: classified as web_attack, want a non-attack kind", f)
+		}
+	}
+}
+
+// On-disk and behavioural evidence keeps a finding in web_account_compromise:
+// a webshell under the account home is a real tenant compromise, not an
+// inbound probe, and warrants the longer review window.
+func TestClassifyKindWebCompromiseForOnDiskEvidence(t *testing.T) {
+	cases := []alert.Finding{
+		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+		{Check: "suspicious_php_content", TenantID: "alice"},
+		{Check: "php_in_uploads_realtime", TenantID: "alice"},
 	}
 	for _, f := range cases {
 		if got := ClassifyKind(f); got != KindWebAccountCompromise {
@@ -258,6 +295,48 @@ func TestCorrelatorClassifiesRemoteIPReputationAsWebAttack(t *testing.T) {
 				t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
 			}
 		})
+	}
+}
+
+// A ModSecurity block that names a victim domain still opens a single
+// web_attack incident keyed on the attacker IP, not a per-domain
+// account-compromise incident. This is the core fix: defended inbound traffic
+// against a hosted vhost is an attack on that vhost, keyed by who is attacking.
+func TestCorrelatorClassifiesAttributedModsecAsWebAttackKeyedByIP(t *testing.T) {
+	c := newTestCorrelator()
+	f := alert.Finding{Check: "modsec_block_realtime", Severity: alert.Critical, SourceIP: "203.0.113.7", Domain: "example.com"}
+	id, _, _ := c.OnFinding(f)
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("expected an incident to be created")
+	}
+	if inc.Kind != KindWebAttack {
+		t.Errorf("Kind: got %v, want web_attack", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+		t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
+	}
+	if inc.Account != "" {
+		t.Errorf("web_attack incident must not be account-scoped, got Account=%q", inc.Account)
+	}
+}
+
+// A failed mailbox login opens a mailbox_bruteforce incident keyed on the
+// attacker IP, collapsing brute-force attempts across mailboxes from one
+// source into a single incident instead of a per-mailbox takeover.
+func TestCorrelatorClassifiesFailedMailAuthAsMailboxBruteforceKeyedByIP(t *testing.T) {
+	c := newTestCorrelator()
+	f := alert.Finding{Check: "email_auth_failure_realtime", Severity: alert.High, SourceIP: "203.0.113.7", Mailbox: "bob@example.com"}
+	id, _, _ := c.OnFinding(f)
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("expected an incident to be created")
+	}
+	if inc.Kind != KindMailboxBruteforce {
+		t.Errorf("Kind: got %v, want mailbox_bruteforce", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+		t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
 	}
 }
 

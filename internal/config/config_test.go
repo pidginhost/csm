@@ -154,6 +154,7 @@ func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 	got := defaultIncidentAutoCloseThresholds()
 	want := map[string]time.Duration{
 		"mailbox_takeover":       24 * time.Hour,
+		"mailbox_bruteforce":     24 * time.Hour,
 		"credential_spray":       24 * time.Hour,
 		"web_account_compromise": 7 * 24 * time.Hour,
 		"web_attack":             24 * time.Hour,

@@ -232,10 +232,13 @@ func TestSprayDryRunIncrementsCountersWithoutRoutingChange(t *testing.T) {
 	if got := c.counters.sprayDryRunTotal.Load(); got < 1 {
 		t.Errorf("sprayDryRunTotal must increment past threshold, got %d", got)
 	}
-	// Per-mailbox incidents still open under dry_run.
+	// The failed-auth bruteforce incident still opens under dry_run; the
+	// per-mailbox fan-out is collapsed onto the attacker IP, so one source
+	// brute-forcing several mailboxes yields a single mailbox_bruteforce
+	// incident rather than the credential_spray super-incident.
 	mailboxIncidents := 0
 	for _, inc := range c.Snapshot() {
-		if inc.Kind == KindMailboxTakeover {
+		if inc.Kind == KindMailboxBruteforce {
 			mailboxIncidents++
 		}
 		if inc.Kind == KindCredentialSpray {
@@ -243,7 +246,7 @@ func TestSprayDryRunIncrementsCountersWithoutRoutingChange(t *testing.T) {
 		}
 	}
 	if mailboxIncidents == 0 {
-		t.Errorf("expected mailbox_takeover incidents under dry_run, got 0")
+		t.Errorf("expected mailbox_bruteforce incident under dry_run, got 0")
 	}
 }
 

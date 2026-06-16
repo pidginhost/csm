@@ -61,12 +61,13 @@ func TestEmailAuthFailureRealtimePopulatesCorrelationFields(t *testing.T) {
 	}
 }
 
-// Bare set_id (cPanel-local mailbox without "@domain") must attribute to
-// the cPanel account, not to SourceIP. Otherwise brute-force attempts
-// against one local mailbox from many attacker IPs each open their own
-// incident keyed by the attacker IP, instead of one incident grouped by
-// the targeted account.
-func TestEmailAuthFailureBareSetIDAttributesToAccount(t *testing.T) {
+// A bare set_id (cPanel-local mailbox without "@domain") enriches the failed
+// auth finding with the cPanel account for display and reporting. The incident
+// itself keys on the attacker IP (mailbox_bruteforce): a failed login is an
+// inbound brute-force attempt, so one source IP hammering many mailboxes
+// collapses into a single attacker-scoped incident rather than fanning out per
+// targeted account.
+func TestEmailAuthFailureBareSetIDEnrichesAccountButKeysByIP(t *testing.T) {
 	line := `2026-05-09 19:26:23 dovecot_login authenticator failed for H=(localhost) [203.0.113.10]:55330: 535 Incorrect authentication data (set_id=maxwell)`
 	cfg := &config.Config{}
 
@@ -91,11 +92,11 @@ func TestEmailAuthFailureBareSetIDAttributesToAccount(t *testing.T) {
 		t.Errorf("TenantID = %q, want maxwell", f.TenantID)
 	}
 	k := incident.KeyFor(f)
-	if k.Account != "maxwell" {
-		t.Errorf("KeyFor.Account = %q, want maxwell", k.Account)
+	if k.RemoteIP != "203.0.113.10" {
+		t.Errorf("KeyFor.RemoteIP = %q, want 203.0.113.10 (failed auth keys on the attacker IP)", k.RemoteIP)
 	}
-	if k.RemoteIP != "" {
-		t.Errorf("RemoteIP = %q, want empty (account beats IP fallback)", k.RemoteIP)
+	if k.Account != "" {
+		t.Errorf("KeyFor.Account = %q, want empty (the targeted account is not the correlation key)", k.Account)
 	}
 }
 

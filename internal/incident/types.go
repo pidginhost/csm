@@ -28,15 +28,24 @@ type Kind string
 
 const (
 	KindWebAccountCompromise Kind = "web_account_compromise"
-	// KindWebAttack is an inbound web attack attempt or remote-IP
-	// reputation/threat-score signal that carries only a remote IP -- no
-	// tenant, domain, mailbox, or process actor. These are external IPs
-	// probing the web stack or flagged as attackers rather than compromised
-	// accounts, so they correlate on the source IP and get a short
-	// attacker-grade retention. Keeping them out of web_account_compromise
-	// stops anonymous probes and attacker-IP reputation hits from inflating
-	// the account-compromise count and the 7-day review window.
-	KindWebAttack          Kind = "web_attack"
+	// KindWebAttack is an inbound web attack: a WAF hit, scanner probe,
+	// or login brute-force from a remote source, plus remote-IP
+	// reputation/threat-score signals. When such a finding names a victim
+	// domain or account, that is the attack target, not evidence the
+	// account is compromised, so these correlate on the attacker source IP
+	// and get a short attacker-grade retention. Keeping them out of
+	// web_account_compromise stops defended inbound traffic from inflating
+	// the account-compromise count and the 7-day review window. Genuine
+	// compromise is recognised by on-disk and behavioural signals
+	// (webshell, suspicious PHP, post-exploit process), not by inbound hits.
+	KindWebAttack Kind = "web_attack"
+	// KindMailboxBruteforce is a failed-authentication brute-force attempt
+	// against one or more mailboxes from a remote source IP. A failed login
+	// is an attack attempt, not a takeover, so it correlates on the attacker
+	// source IP with short attacker-grade retention. Post-authentication
+	// abuse (outbound spam, cloud relay, compromised-account, suspicious
+	// geo) stays in mailbox_takeover.
+	KindMailboxBruteforce  Kind = "mailbox_bruteforce"
 	KindMailboxTakeover    Kind = "mailbox_takeover"
 	KindPostExploitProcess Kind = "post_exploit_process"
 	KindHostIntegrityRisk  Kind = "host_integrity_risk"

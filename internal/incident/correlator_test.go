@@ -284,10 +284,12 @@ func TestCorrelatorWhitelistedSourceIPDoesNotSuppressHostIntegrity(t *testing.T)
 	}
 }
 
+// Post-authentication mailbox abuse is keyed on the mailbox, so the same
+// mailbox merges across source IPs into one mailbox_takeover incident.
 func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
 	c := newTestCorrelator()
 	f1 := alert.Finding{
-		Check:     "email_auth_failure_realtime",
+		Check:     "email_compromised_account",
 		Severity:  alert.High,
 		Mailbox:   "alice@example.com",
 		Domain:    "example.com",
@@ -300,7 +302,7 @@ func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
 	}
 
 	f2 := alert.Finding{
-		Check:     "email_auth_failure_realtime",
+		Check:     "email_compromised_account",
 		Severity:  alert.High,
 		Mailbox:   "alice@example.com",
 		Domain:    "example.com",
@@ -313,10 +315,50 @@ func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
 	}
 }
 
+// A failed mailbox login is keyed on the attacker IP (mailbox_bruteforce), the
+// mirror of the takeover case: one IP brute-forcing several mailboxes collapses
+// into a single incident, while the same mailbox hit from two IPs splits into
+// two attacker-scoped incidents.
+func TestCorrelatorFailedMailAuthKeysByAttackerIP(t *testing.T) {
+	c := newTestCorrelator()
+	id1, created1, _ := c.OnFinding(alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if !created1 {
+		t.Fatal("setup")
+	}
+	// Same attacker IP, different mailbox -> merges into the same incident.
+	id2, created2, _ := c.OnFinding(alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "bob@example.com",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000+60, 0),
+	})
+	if created2 || id1 != id2 {
+		t.Errorf("same attacker IP must merge across mailboxes; id1=%s id2=%s created2=%v", id1, id2, created2)
+	}
+	// Same mailbox, different attacker IP -> distinct incident.
+	id3, created3, _ := c.OnFinding(alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		SourceIP:  "203.0.113.20",
+		Timestamp: time.Unix(1_700_000_000+120, 0),
+	})
+	if !created3 || id3 == id1 {
+		t.Errorf("different attacker IP must open a new incident; id1=%s id3=%s created3=%v", id1, id3, created3)
+	}
+}
+
 func TestCorrelatorPreservesMailboxDomainMetadata(t *testing.T) {
 	c := newTestCorrelator()
 	id, created, err := c.OnFinding(alert.Finding{
-		Check:     "email_auth_failure_realtime",
+		Check:     "email_compromised_account",
 		Severity:  alert.High,
 		Mailbox:   "alice@example.com",
 		Domain:    "example.com",

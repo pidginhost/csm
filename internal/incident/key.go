@@ -40,8 +40,16 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
-	if ClassifyKind(f) == KindHostIntegrityRisk {
+	switch ClassifyKind(f) {
+	case KindHostIntegrityRisk:
 		return Key{Host: "host"}
+	case KindWebAttack, KindMailboxBruteforce:
+		// Inbound attacks correlate on the attacker IP; the victim
+		// domain/account/mailbox is the target, not the key. This
+		// collapses one attacker's hits across many victims into a single
+		// incident. ClassifyKind only returns these kinds when a source IP
+		// is present.
+		return Key{RemoteIP: f.SourceIP}
 	}
 
 	mailbox, domain := canonicalizeMailboxDomain(f.Mailbox, f.Domain)

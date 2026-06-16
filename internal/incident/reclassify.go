@@ -12,6 +12,7 @@ import (
 // operator-attention.
 var kindRank = map[Kind]int{
 	KindWebAttack:            0,
+	KindMailboxBruteforce:    0,
 	KindWebAccountCompromise: 1,
 	KindMailboxTakeover:      2,
 	KindPostExploitProcess:   3,

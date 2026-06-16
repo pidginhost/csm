@@ -6,34 +6,54 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// ClassifyKind returns the incident Kind for a Finding using simple rule
-// precedence: mailbox/SMTP signals first (mailbox_takeover), then
-// host-integrity checks, then ephemeral-path process exec, then the
+// ClassifyKind returns the incident Kind for a Finding using rule
+// precedence: host-integrity signals first, then inbound attacks keyed on the
+// attacker IP (web_attack, mailbox_bruteforce), then mailbox-takeover signals,
+// then ephemeral-path process exec, then remote-IP reputation, then the
 // account-scoped web-compromise default.
 func ClassifyKind(f alert.Finding) Kind {
 	check := strings.ToLower(f.Check)
+	hasAttacker := strings.TrimSpace(f.SourceIP) != ""
 
-	// Mailbox takeover -- any check with a Mailbox attribute or a
-	// mailbox-auth check name. Mailbox attribution is the
-	// strongest single signal so it wins over generic check-name
-	// classification below.
+	// Host integrity -- daemon/kernel-level signals whose blast radius is
+	// the host itself, not a single tenant or an inbound attacker. Listed
+	// explicitly so account-attributed checks that share a substring
+	// (e.g. suspicious_crontab on a per-user spool) stay in the tenant
+	// bucket.
+	if isHostIntegrityCheck(check) {
+		return KindHostIntegrityRisk
+	}
+
+	// Inbound attack keyed on the attacker IP. A defended web hit (WAF
+	// block, scanner probe, login brute-force) or a failed mailbox login
+	// names a victim domain/account/mailbox, but that is the attack
+	// target, not evidence the account is compromised. Classify by the
+	// attacker so defended traffic does not inflate the compromise /
+	// takeover buckets or inherit their long retention. Requires an
+	// attacker IP to key on; without one the finding falls through to the
+	// account-scoped tiers below. Genuine compromise is recognised by the
+	// on-disk and behavioural signals handled lower down, not by inbound
+	// hits.
+	if hasAttacker {
+		if isMailAuthAttackCheck(check) {
+			return KindMailboxBruteforce
+		}
+		if isInboundWebAttackCheck(check) {
+			return KindWebAttack
+		}
+	}
+
+	// Mailbox takeover -- a Mailbox attribute or a post-authentication
+	// mail-abuse check name. Mailbox attribution is the strongest single
+	// tenant signal so it wins over the account-scoped default below. Some
+	// authenticated-mail findings route bare cPanel-local accounts to
+	// TenantID instead of Mailbox; the check-name list keeps those here
+	// without sweeping in domain/config mail checks or PHP relay findings.
 	if f.Mailbox != "" {
 		return KindMailboxTakeover
 	}
-	// Some authenticated-mail findings route bare cPanel-local accounts to
-	// TenantID instead of Mailbox. Keep those in mailbox_takeover without
-	// sweeping domain/config mail checks or PHP relay findings into it.
 	if isMailboxTakeoverCheck(check) {
 		return KindMailboxTakeover
-	}
-
-	// Host integrity -- daemon/kernel-level signals that indicate the
-	// host itself is compromised, not a single tenant. Listed
-	// explicitly so account-attributed checks that share a substring
-	// (e.g. suspicious_crontab on a per-user spool) stay in the
-	// tenant bucket.
-	if isHostIntegrityCheck(check) {
-		return KindHostIntegrityRisk
 	}
 
 	// Post-exploit process -- exe under ephemeral paths is a strong
@@ -45,13 +65,11 @@ func ClassifyKind(f alert.Finding) Kind {
 		return KindPostExploitProcess
 	}
 
-	// Inbound web attack -- a finding that would correlate on the source
-	// IP alone (no tenant, domain, mailbox, or process actor) is an
-	// external IP probing the web stack or flagged as an attacker by
-	// reputation, not a compromised tenant. Route it to web_attack so it
-	// does not inflate the account-compromise count or inherit the long
-	// account-compromise retention.
-	if (isInboundWebAttackCheck(check) || isRemoteIPThreatCheck(check)) && isRemoteIPKeyed(f) {
+	// Remote-IP reputation / threat-score with no victim attribution -- an
+	// attacking source IP flagged by reputation, not a compromised tenant.
+	// Kept on the strict remote-IP-keyed gate: a reputation hit tied to an
+	// account is about that account, not an anonymous attacker.
+	if isRemoteIPThreatCheck(check) && isRemoteIPKeyed(f) {
 		return KindWebAttack
 	}
 
@@ -103,6 +121,15 @@ func isRemoteIPThreatCheck(check string) bool {
 	default:
 		return false
 	}
+}
+
+// isMailAuthAttackCheck covers failed mailbox-authentication signals. A failed
+// login is an inbound brute-force attempt keyed on the attacker source IP, not
+// a post-authentication takeover, so it routes to mailbox_bruteforce.
+// Post-auth abuse (spam outbreak, cloud relay, compromised-account, suspicious
+// geo) stays in isMailboxTakeoverCheck.
+func isMailAuthAttackCheck(check string) bool {
+	return strings.ToLower(strings.TrimSpace(check)) == "email_auth_failure_realtime"
 }
 
 func isInboundWebAttackCheck(check string) bool {
@@ -162,8 +189,7 @@ func isMailboxTakeoverCheck(check string) bool {
 	}
 
 	switch check {
-	case "email_auth_failure_realtime",
-		"email_cloud_relay_abuse",
+	case "email_cloud_relay_abuse",
 		"email_compromised_account",
 		"email_credential_leak",
 		"email_rate_critical",

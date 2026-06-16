@@ -178,7 +178,7 @@ func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
 
-	// Mailbox takeover with a remote_ip -- excluded by kinds filter.
+	// Mailbox bruteforce with a remote_ip -- excluded by kinds filter.
 	mb := alert.Finding{
 		Check:     "email_auth_failure_realtime",
 		Severity:  alert.High,
@@ -193,13 +193,14 @@ func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 		t.Errorf("blocked excluded kind: %d firings, want 0", got)
 	}
 
-	// Web account compromise -- allowed by kinds filter. Account-attributed
-	// (TenantID) so it classifies as web_account_compromise rather than the
-	// remote-IP-only web_attack kind.
+	// Web account compromise -- allowed by kinds filter. On-disk evidence
+	// (a webshell under the account home) classifies as web_account_compromise,
+	// not the inbound-attack web_attack kind.
 	wp := alert.Finding{
-		Check:     "wp_login_bruteforce",
+		Check:     "webshell_detected",
 		Severity:  alert.High,
 		TenantID:  "alice",
+		FilePath:  "/home/alice/public_html/x.php",
 		SourceIP:  "192.0.2.55",
 		Timestamp: now.Add(time.Minute),
 	}

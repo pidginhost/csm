@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A new `mailbox_bruteforce` incident kind covers failed mailbox logins. A failed login is an attack attempt, not a takeover, so it is keyed on the attacker IP and auto-closes after 24h; post-authentication abuse (outbound spam, cloud relay, compromised account) still classifies as `mailbox_takeover`.
+
+### Changed
+
+- Inbound web attacks now open a `web_attack` incident even when the request names the targeted site or account. A blocked ModSecurity hit or scanner probe records the victim vhost, which is the attack target, not evidence the account is compromised, so these are keyed on the attacker IP and no longer inflate the `web_account_compromise` count or its 7-day review window. Genuine compromise is still recognised by on-disk and behavioural signals.
+
 ## [3.16.1] - 2026-06-15
 
 ### Changed

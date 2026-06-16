@@ -967,10 +967,11 @@ type Config struct {
 	Incidents struct {
 		// AutoClose resolves Open / Contained incidents whose UpdatedAt
 		// exceeds the per-kind idle threshold. Default-on with safe
-		// thresholds; mailbox takeover, credential spray, and inbound
-		// web attacks expire at 24h, web-account compromise at 7d, and
-		// host-level kinds never auto-close. Operators who want to
-		// monitor decisions without writing back can flip dry_run=true.
+		// thresholds; inbound-attack kinds (mailbox takeover, mailbox
+		// bruteforce, credential spray, web attack) expire at 24h,
+		// web-account compromise at 7d, and host-level kinds never
+		// auto-close. Operators who want to monitor decisions without
+		// writing back can flip dry_run=true.
 		AutoClose struct {
 			// Enabled is tri-state: nil (default) means default-on; an
 			// explicit false in YAML disables. Pointer so absence in YAML
@@ -982,8 +983,8 @@ type Config struct {
 			// auto-closed. Use a string-keyed map so the operator can
 			// add custom kinds without recompiling. Empty map falls back
 			// to safe defaults (mailbox_takeover=24h,
-			// credential_spray=24h, web_attack=24h,
-			// web_account_compromise=7d).
+			// mailbox_bruteforce=24h, credential_spray=24h,
+			// web_attack=24h, web_account_compromise=7d).
 			ByKind map[string]string `yaml:"by_kind,omitempty"`
 		} `yaml:"auto_close"`
 
@@ -1070,9 +1071,9 @@ func (cfg *Config) IncidentsAutoCloseEnabled() bool {
 
 // IncidentsAutoCloseThresholds returns the per-kind idle thresholds in
 // parsed form. Built from the operator's by_kind YAML map, falling
-// back to safe defaults (mailbox_takeover=24h, web_account_compromise=7d,
-// credential_spray=24h, web_attack=24h) when the operator did not supply
-// a map.
+// back to safe defaults (mailbox_takeover=24h, mailbox_bruteforce=24h,
+// web_account_compromise=7d, credential_spray=24h, web_attack=24h) when the
+// operator did not supply a map.
 // Unparseable durations are skipped silently so a typo in one entry
 // does not disable the rest.
 func (cfg *Config) IncidentsAutoCloseThresholds() map[string]time.Duration {
@@ -1094,6 +1095,7 @@ func (cfg *Config) IncidentsAutoCloseThresholds() map[string]time.Duration {
 func defaultIncidentAutoCloseThresholds() map[string]time.Duration {
 	return map[string]time.Duration{
 		"mailbox_takeover":       24 * time.Hour,
+		"mailbox_bruteforce":     24 * time.Hour,
 		"credential_spray":       24 * time.Hour,
 		"web_account_compromise": 7 * 24 * time.Hour,
 		"web_attack":             24 * time.Hour,

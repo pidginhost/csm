@@ -161,7 +161,7 @@ func TestKeyForSourceIPFallback(t *testing.T) {
 
 func TestKeyForSourceIPDoesNotSplitMailboxKey(t *testing.T) {
 	f := alert.Finding{
-		Check:    "email_auth_failure_realtime",
+		Check:    "email_compromised_account",
 		Mailbox:  "alice@example.com",
 		Domain:   "example.com",
 		SourceIP: "203.0.113.44",
