@@ -295,3 +295,81 @@ func TestMaybeReclassifyKind_KeepsKindWhenNoChange(t *testing.T) {
 		t.Errorf("Kind drifted to %q, want unchanged", inc.Kind)
 	}
 }
+
+func TestMaybeReclassifyKind_RemoteIPAttackDoesNotPromoteFromRemoteFallback(t *testing.T) {
+	inc := &Incident{
+		Kind:           KindWebAttack,
+		CorrelationKey: &Key{RemoteIP: "203.0.113.7"},
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "cpanel_file_upload_realtime", SourceIP: "203.0.113.7"})
+	if inc.Kind != KindWebAttack {
+		t.Errorf("remote-IP incident promoted to %q, want web_attack", inc.Kind)
+	}
+}
+
+func TestMaybeReclassifyKind_RemoteIPAttackDoesNotCompoundPromote(t *testing.T) {
+	inc := &Incident{
+		Kind:           KindWebAttack,
+		CorrelationKey: &Key{RemoteIP: "203.0.113.7"},
+		Timeline: []IncidentEvent{
+			{Check: "webshell"},
+		},
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "c2_connection", SourceIP: "203.0.113.7"})
+	if inc.Kind != KindWebAttack {
+		t.Errorf("remote-IP incident compound-promoted to %q, want web_attack", inc.Kind)
+	}
+}
+
+func TestMaybeReclassifyKind_RemoteIPAttackEqualRankKeepsKind(t *testing.T) {
+	inc := &Incident{
+		Kind:           KindWebAttack,
+		CorrelationKey: &Key{RemoteIP: "203.0.113.7"},
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7"})
+	if inc.Kind != KindWebAttack {
+		t.Errorf("equal-rank remote-IP incident changed to %q, want web_attack", inc.Kind)
+	}
+}
+
+func TestCorrelatorRemoteIPAttackDoesNotPromoteToIPKeyedCompromise(t *testing.T) {
+	c := newTestCorrelator()
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "wp_login_bruteforce",
+		Severity:  alert.High,
+		SourceIP:  "203.0.113.7",
+		Timestamp: now,
+	})
+	if err != nil {
+		t.Fatalf("open web attack: %v", err)
+	}
+	if !created {
+		t.Fatal("expected web_attack incident to open")
+	}
+
+	c.now = func() time.Time { return now.Add(time.Minute) }
+	mergedID, created, err := c.OnFinding(alert.Finding{
+		Check:     "cpanel_file_upload_realtime",
+		Severity:  alert.Critical,
+		SourceIP:  "203.0.113.7",
+		Timestamp: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("merge remote fallback: %v", err)
+	}
+	if created || mergedID != id {
+		t.Fatalf("expected same remote-IP incident, got id=%q created=%v", mergedID, created)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident missing")
+	}
+	if inc.Kind != KindWebAttack {
+		t.Fatalf("Kind = %s, want web_attack", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+		t.Fatalf("CorrelationKey = %+v, want remote IP key", inc.CorrelationKey)
+	}
+}

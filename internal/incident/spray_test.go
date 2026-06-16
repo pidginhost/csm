@@ -133,7 +133,7 @@ func TestSprayAtThresholdOpensSprayIncident(t *testing.T) {
 	}
 }
 
-func TestSprayAtThresholdSuppressesSubsequentMailboxTakeover(t *testing.T) {
+func TestSprayAtThresholdSuppressesSubsequentMailboxBruteforce(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	now := time.Unix(1_700_000_000, 0)
 
@@ -145,7 +145,7 @@ func TestSprayAtThresholdSuppressesSubsequentMailboxTakeover(t *testing.T) {
 	preSnapshot := len(c.Snapshot())
 
 	// Two more mailboxes from the same IP. These should attach to the
-	// existing spray incident, not open new mailbox_takeover incidents.
+	// existing spray incident, not open new mailbox_bruteforce incidents.
 	for i := 3; i < 5; i++ {
 		mb := "user" + strconv.Itoa(i) + "@example.com"
 		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.1", now.Add(time.Duration(i)*time.Minute)))

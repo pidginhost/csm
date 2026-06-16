@@ -96,18 +96,38 @@ func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 	// by maxIncidentTimeline so the cost is constant.
 	hydrateCompoundFlagsFromTimeline(&inc.CompoundFlags, inc.Timeline)
 	updateCompoundFlags(&inc.CompoundFlags, f.Check)
-	if newKind := ClassifyKind(f); kindRank[newKind] > kindRank[inc.Kind] {
+	if newKind := ClassifyKind(f); kindRank[newKind] > kindRank[inc.Kind] && canPromoteKind(inc, f) {
 		inc.Kind = newKind
 	}
-	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && inc.CompoundFlags.Webshell && inc.CompoundFlags.C2 {
+	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && inc.CompoundFlags.Webshell && inc.CompoundFlags.C2 && canPromoteKind(inc, f) {
 		inc.Kind = KindPostExploitProcess
 	}
 	// Host takeover: any two of the three distinct legs (new uid-0 account,
 	// planted suid binary, outbound connection to a bad ASN) on the same
 	// host inside the window.
-	if kindRank[KindHostTakeover] > kindRank[inc.Kind] && hostTakeoverLegs(inc.CompoundFlags) >= 2 {
+	if kindRank[KindHostTakeover] > kindRank[inc.Kind] && hostTakeoverLegs(inc.CompoundFlags) >= 2 && canPromoteKind(inc, f) {
 		inc.Kind = KindHostTakeover
 	}
+}
+
+func canPromoteKind(inc *Incident, f alert.Finding) bool {
+	if !remoteIPOnlyIncidentKey(inc.CorrelationKey) {
+		return true
+	}
+	k := KeyFor(f)
+	return !remoteIPOnlyKey(k)
+}
+
+func remoteIPOnlyIncidentKey(k *Key) bool {
+	if k == nil {
+		return false
+	}
+	return remoteIPOnlyKey(*k)
+}
+
+func remoteIPOnlyKey(k Key) bool {
+	return k.RemoteIP != "" && k.Host == "" && k.Account == "" && k.Domain == "" &&
+		k.Mailbox == "" && k.UID == 0 && k.PID == 0
 }
 
 // hydrateCompoundFlagsFromTimeline OR-merges timeline-derived signals

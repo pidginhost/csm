@@ -40,11 +40,11 @@ const (
 	// (webshell, suspicious PHP, post-exploit process), not by inbound hits.
 	KindWebAttack Kind = "web_attack"
 	// KindMailboxBruteforce is a failed-authentication brute-force attempt
-	// against one or more mailboxes from a remote source IP. A failed login
-	// is an attack attempt, not a takeover, so it correlates on the attacker
-	// source IP with short attacker-grade retention. Post-authentication
-	// abuse (outbound spam, cloud relay, compromised-account, suspicious
-	// geo) stays in mailbox_takeover.
+	// or pre-auth mail probe against one or more mailboxes from a remote
+	// source. A failed login is an attack attempt, not a takeover, so it
+	// correlates on the attacker source with short attacker-grade retention.
+	// Post-authentication abuse (outbound spam, cloud relay,
+	// compromised-account, suspicious geo) stays in mailbox_takeover.
 	KindMailboxBruteforce  Kind = "mailbox_bruteforce"
 	KindMailboxTakeover    Kind = "mailbox_takeover"
 	KindPostExploitProcess Kind = "post_exploit_process"
@@ -52,7 +52,7 @@ const (
 	// KindCredentialSpray collapses a single source IP that is brute-forcing
 	// many distinct mailboxes/accounts inside the merge window into one
 	// super-incident keyed on the source IP. Prevents the per-mailbox fan-out
-	// that turns one attacker into thousands of mailbox_takeover incidents.
+	// that turns one attacker into thousands of mailbox_bruteforce incidents.
 	KindCredentialSpray Kind = "credential_spray" // #nosec G101 -- taxonomy label, not a secret
 	// KindHostTakeover is the compound escalation when more than one
 	// host-privilege-escalation leg (a new uid-0 account, a planted suid

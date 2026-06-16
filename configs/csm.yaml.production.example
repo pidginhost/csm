@@ -407,6 +407,7 @@ incidents:
     dry_run: false
     by_kind:
       mailbox_takeover: 24h
+      mailbox_bruteforce: 24h
       credential_spray: 24h
       web_attack: 24h
       web_account_compromise: 168h

@@ -14,9 +14,10 @@ on the attacker source IP, not on the victim they name:
   finding names a victim domain or account, that is the attack target, not
   evidence the account is compromised, so the incident keys on the attacker IP
   and one attacker's hits across many vhosts collapse into one incident.
-- `mailbox_bruteforce` -- failed mailbox logins from one source IP. A failed
-  login is an attack attempt, not a takeover, so it keys on the attacker IP
-  rather than the targeted mailbox.
+- `mailbox_bruteforce` -- failed mailbox logins, mail brute-force bursts, and
+  pre-auth SMTP probes from one source. A failed login is an attack attempt,
+  not a takeover, so it keys on the attacker IP rather than the targeted
+  mailbox.
 
 Compromise kinds are reserved for evidence that an attack succeeded:
 `web_account_compromise` (on-disk or behavioural signals such as a webshell or
@@ -185,8 +186,9 @@ Metrics: `csm_credential_spray_opened_total`,
 kind. Low-and-slow scanners that never trip a per-detector window
 (modsec escalation, mail brute-force, smtp probe) still produce
 web_attack, mailbox_bruteforce, mailbox_takeover, or
-web_account_compromise incidents but never get firewalled. The `incidents.auto_block` block adds a generic
-incident-driven firewall hand-off:
+web_account_compromise incidents but never get firewalled. The
+`incidents.auto_block` block adds a generic incident-driven firewall
+hand-off:
 
 ```yaml
 incidents:
@@ -225,14 +227,17 @@ which then trips the generic auto_block gate.
 - `web_account_compromise` -- findings attributable to a hosted account
   or script (PHP relay, webshell, account-scoped login bruteforce, etc.).
 - `web_attack` -- an inbound web attack or remote-IP reputation/threat-score
-  signal that carries only a remote IP and no account, domain, mailbox, or
-  process actor (ModSecurity rule hits, CSM rule escalation from an external
-  IP, high local threat score, IP reputation hit). Keyed on the source IP and
-  given attacker-grade retention (default 24h) so anonymous probes and
+  signal. When the finding includes a victim domain or account, that field is
+  recorded as target context, not as the correlation key. Keyed on the source
+  IP and given attacker-grade retention (default 24h) so defended probes and
   attacker-IP reputation hits do not inflate the account-compromise count or
   its longer review window.
-- `mailbox_takeover` -- SMTP/SASL, suspicious-login, credential-abuse,
-  and rate signals tied to a mailbox or cPanel-local mail account.
+- `mailbox_bruteforce` -- failed mailbox authentication, mail brute-force
+  bursts, account-spray signals, and pre-auth SMTP probes. Keyed on the
+  attacker source IP with attacker-grade retention (default 24h).
+- `mailbox_takeover` -- post-authentication mailbox abuse such as suspicious
+  geo, credential leaks, cloud relay abuse, spam outbreaks, and confirmed
+  compromised-account signals.
 - `post_exploit_process` -- process exec from `/tmp`, `/var/tmp`,
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
@@ -243,7 +248,7 @@ which then trips the generic auto_block gate.
 - `credential_spray` -- one source IP brute-forcing many distinct
   mailboxes/accounts inside the merge window. Keyed on the source IP
   rather than per-mailbox, so a scanner spraying thousands of usernames
-  produces one super-incident instead of thousands of mailbox_takeover
+  produces one super-incident instead of thousands of mailbox_bruteforce
   rows. Findings from the same IP after the trip attach to this
   incident's timeline. See "Credential-spray suppression" below.
 
@@ -305,7 +310,7 @@ Open **Monitor -> Incidents**. The page has three tabs:
   current firewall block state for the incident's source IP (permanent,
   temporary, cphulk, or not blocked) when an IP is known.
 - **Grouped** -- rolls up incidents by `(kind, source)` so a credential
-  spray that produced thousands of mailbox_takeover incidents shows as
+  spray that produced thousands of mailbox_bruteforce incidents shows as
   one row per attacker IP. Pageable with the same page-size selector
   as Correlated. Click a group to see member incidents in the detail
   panel, which also surfaces the source IP's firewall block state;

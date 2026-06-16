@@ -46,11 +46,12 @@ func TestClassifyKindHostIntegrityRisk(t *testing.T) {
 		"root_password_change",
 		"uid0_account",
 		"suid_binary",
+		"bad_asn_outbound",
 		"kernel_module",
 		"crontab_change",
 		"crond_change",
 	} {
-		got := ClassifyKind(alert.Finding{Check: check})
+		got := ClassifyKind(alert.Finding{Check: check, SourceIP: "203.0.113.7"})
 		if got != KindHostIntegrityRisk {
 			t.Errorf("check %q: got %v, want host_integrity_risk", check, got)
 		}
@@ -79,9 +80,8 @@ func TestClassifyKindFallback(t *testing.T) {
 
 // Post-authentication mail abuse classifies as mailbox_takeover even when the
 // finding lacks a Mailbox attribute. Bare cPanel-local accounts route to
-// TenantID. The failed-login signal (email_auth_failure_realtime) is handled
-// separately as mailbox_bruteforce -- a failed auth is an attack attempt, not
-// a takeover.
+// TenantID. Failed-login and pre-auth probe signals are handled separately as
+// mailbox_bruteforce; an attack attempt is not a takeover.
 func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 	mailChecks := []string{
 		"email_compromised_account",
@@ -91,10 +91,9 @@ func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 		"email_suspicious_geo",
 		"email_cloud_relay_abuse",
 		"email_spam_outbreak",
-		"mail_bruteforce",
-		"mail_subnet_spray",
-		"mail_account_spray",
 		"mail_account_compromised",
+		"mail_per_account",
+		"smtp_brute_failure_then_success",
 	}
 	for _, check := range mailChecks {
 		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})
@@ -115,6 +114,13 @@ func TestClassifyKindMailboxBruteforce(t *testing.T) {
 		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7", TenantID: "alice"},
 		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7", Domain: "example.com"},
 		{Check: "email_auth_failure_realtime", SourceIP: "203.0.113.7"},
+		{Check: "mail_bruteforce", SourceIP: "203.0.113.7"},
+		{Check: "mail_subnet_spray", SourceIP: "203.0.113.0/24"},
+		{Check: "mail_account_spray", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
+		{Check: "smtp_bruteforce", SourceIP: "203.0.113.7"},
+		{Check: "smtp_subnet_spray", SourceIP: "203.0.113.0/24"},
+		{Check: "smtp_account_spray", SourceIP: "203.0.113.7", Mailbox: "bob@example.com"},
+		{Check: "smtp_probe_abuse", SourceIP: "203.0.113.7"},
 	}
 	for _, f := range cases {
 		if got := ClassifyKind(f); got != KindMailboxBruteforce {
@@ -327,6 +333,22 @@ func TestCorrelatorClassifiesAttributedModsecAsWebAttackKeyedByIP(t *testing.T) 
 func TestCorrelatorClassifiesFailedMailAuthAsMailboxBruteforceKeyedByIP(t *testing.T) {
 	c := newTestCorrelator()
 	f := alert.Finding{Check: "email_auth_failure_realtime", Severity: alert.High, SourceIP: "203.0.113.7", Mailbox: "bob@example.com"}
+	id, _, _ := c.OnFinding(f)
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("expected an incident to be created")
+	}
+	if inc.Kind != KindMailboxBruteforce {
+		t.Errorf("Kind: got %v, want mailbox_bruteforce", inc.Kind)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.7" {
+		t.Errorf("expected incident keyed on remote IP, got %+v", inc.CorrelationKey)
+	}
+}
+
+func TestCorrelatorClassifiesAggregateMailAuthAsMailboxBruteforce(t *testing.T) {
+	c := newTestCorrelator()
+	f := alert.Finding{Check: "smtp_bruteforce", Severity: alert.Critical, SourceIP: "203.0.113.7"}
 	id, _, _ := c.OnFinding(f)
 	inc, ok := c.Get(id)
 	if !ok {

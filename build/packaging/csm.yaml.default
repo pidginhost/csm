@@ -418,8 +418,8 @@ updates:
 # Incident correlator knobs.
 incidents:
   # Auto-resolve Open / Contained incidents after the per-kind idle
-  # threshold elapses. Default-on with mailbox takeover and credential
-  # spray, plus remote-IP-only web attacks, expiring at 24h and
+  # threshold elapses. Default-on with mailbox takeover, mailbox brute
+  # force, credential spray, and web attacks expiring at 24h and
   # web-account compromise at 7d; host-level kinds (host integrity,
   # host takeover, post-exploit process) never
   # auto-close. Set enabled: false to disable, or dry_run: true to log
@@ -429,6 +429,7 @@ incidents:
     dry_run: false
     by_kind:
       mailbox_takeover: 24h
+      mailbox_bruteforce: 24h
       credential_spray: 24h
       web_attack: 24h
       web_account_compromise: 168h
@@ -476,8 +477,8 @@ incidents:
     # source IP to the firewall. "" / "high" / "critical".
     block_at_severity: ""
     # kinds, when non-empty, restricts the auto-block path to the listed
-    # incident kinds (mailbox_takeover, web_attack, web_account_compromise,
-    # post_exploit_process, host_integrity_risk, host_takeover). Empty
-    # means every kind that carries a remote_ip. credential_spray is
-    # always handled by spray_suppression above.
+    # incident kinds (mailbox_takeover, mailbox_bruteforce, web_attack,
+    # web_account_compromise, post_exploit_process, host_integrity_risk,
+    # host_takeover). Empty means every kind that carries a remote_ip.
+    # credential_spray is always handled by spray_suppression above.
     kinds: []

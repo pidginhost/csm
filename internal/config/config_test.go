@@ -173,31 +173,36 @@ func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 	}
 }
 
-func TestPackagedDefaultAutoCloseIncludesWebAttack(t *testing.T) {
+func TestPackagedDefaultAutoCloseIncludesAttackerKindThresholds(t *testing.T) {
 	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
 	if err != nil {
 		t.Skipf("packaged default config not readable from this layout: %v", err)
 	}
-	assertAutoCloseWebAttackThreshold(t, data, "packaged default")
+	assertAutoCloseAttackerKindThresholds(t, data, "packaged default")
 }
 
-func TestProductionReferenceAutoCloseIncludesWebAttack(t *testing.T) {
+func TestProductionReferenceAutoCloseIncludesAttackerKindThresholds(t *testing.T) {
 	data, err := os.ReadFile("../../configs/csm.yaml.production.example")
 	if err != nil {
 		t.Skipf("production reference config not readable from this layout: %v", err)
 	}
-	assertAutoCloseWebAttackThreshold(t, data, "production reference")
+	assertAutoCloseAttackerKindThresholds(t, data, "production reference")
 }
 
-func assertAutoCloseWebAttackThreshold(t *testing.T, data []byte, label string) {
+func assertAutoCloseAttackerKindThresholds(t *testing.T, data []byte, label string) {
 	t.Helper()
 
 	cfg, err := LoadBytes(data)
 	if err != nil {
 		t.Fatalf("LoadBytes %s: %v", label, err)
 	}
-	if got := cfg.IncidentsAutoCloseThresholds()["web_attack"]; got != 24*time.Hour {
-		t.Fatalf("%s web_attack auto-close = %v, want 24h", label, got)
+	for kind, want := range map[string]time.Duration{
+		"mailbox_bruteforce": 24 * time.Hour,
+		"web_attack":         24 * time.Hour,
+	} {
+		if got := cfg.IncidentsAutoCloseThresholds()[kind]; got != want {
+			t.Fatalf("%s %s auto-close = %v, want %v", label, kind, got, want)
+		}
 	}
 
 	var raw struct {
@@ -210,8 +215,10 @@ func assertAutoCloseWebAttackThreshold(t *testing.T, data []byte, label string) 
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("yaml.Unmarshal %s: %v", label, err)
 	}
-	if raw.Incidents.AutoClose.ByKind["web_attack"] != "24h" {
-		t.Fatalf("%s missing incidents.auto_close.by_kind.web_attack: 24h", label)
+	for _, kind := range []string{"mailbox_bruteforce", "web_attack"} {
+		if raw.Incidents.AutoClose.ByKind[kind] != "24h" {
+			t.Fatalf("%s missing incidents.auto_close.by_kind.%s: 24h", label, kind)
+		}
 	}
 }
 

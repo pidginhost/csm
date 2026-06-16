@@ -123,13 +123,23 @@ func isRemoteIPThreatCheck(check string) bool {
 	}
 }
 
-// isMailAuthAttackCheck covers failed mailbox-authentication signals. A failed
-// login is an inbound brute-force attempt keyed on the attacker source IP, not
-// a post-authentication takeover, so it routes to mailbox_bruteforce.
-// Post-auth abuse (spam outbreak, cloud relay, compromised-account, suspicious
-// geo) stays in isMailboxTakeoverCheck.
+// isMailAuthAttackCheck covers failed mail-authentication and pre-auth mail
+// probe signals. These are attacker attempts keyed on the source IP, not
+// evidence that the targeted mailbox was taken over.
 func isMailAuthAttackCheck(check string) bool {
-	return strings.ToLower(strings.TrimSpace(check)) == "email_auth_failure_realtime"
+	switch strings.ToLower(strings.TrimSpace(check)) {
+	case "email_auth_failure_realtime",
+		"mail_account_spray",
+		"mail_bruteforce",
+		"mail_subnet_spray",
+		"smtp_account_spray",
+		"smtp_bruteforce",
+		"smtp_probe_abuse",
+		"smtp_subnet_spray":
+		return true
+	default:
+		return false
+	}
 }
 
 func isInboundWebAttackCheck(check string) bool {
@@ -183,11 +193,6 @@ func isHostIntegrityCheck(check string) bool {
 }
 
 func isMailboxTakeoverCheck(check string) bool {
-	if strings.HasPrefix(check, "smtp_") || strings.HasPrefix(check, "sasl_") ||
-		strings.HasPrefix(check, "mail_") {
-		return true
-	}
-
 	switch check {
 	case "email_cloud_relay_abuse",
 		"email_compromised_account",
@@ -195,7 +200,10 @@ func isMailboxTakeoverCheck(check string) bool {
 		"email_rate_critical",
 		"email_rate_warning",
 		"email_spam_outbreak",
-		"email_suspicious_geo":
+		"email_suspicious_geo",
+		"mail_account_compromised",
+		"mail_per_account",
+		"smtp_brute_failure_then_success":
 		return true
 	default:
 		return false

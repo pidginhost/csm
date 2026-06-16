@@ -38,7 +38,7 @@ func TestCloseStaleLimitedCapsClosesAndReportsBacklog(t *testing.T) {
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
 	for i := 0; i < 5; i++ {
-		seedIncident(t, c, "email_auth_failure_realtime", "user"+string(rune('a'+i)), old)
+		seedIncident(t, c, "email_compromised_account", "user"+string(rune('a'+i)), old)
 	}
 
 	now := old.Add(25 * time.Hour)
@@ -58,7 +58,7 @@ func TestCloseStaleLimitedCapsClosesAndReportsBacklog(t *testing.T) {
 	}
 	// Unbounded (limit 0) closes everything and never reports backlog.
 	for i := 0; i < 3; i++ {
-		seedIncident(t, c, "email_auth_failure_realtime", "x"+string(rune('a'+i)), old)
+		seedIncident(t, c, "email_compromised_account", "x"+string(rune('a'+i)), old)
 	}
 	closed4, _, _, more4 := c.CloseStaleLimited(now, thr, false, 0)
 	if closed4 != 3 || more4 {
@@ -66,7 +66,7 @@ func TestCloseStaleLimitedCapsClosesAndReportsBacklog(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		seedIncident(t, c, "email_auth_failure_realtime", "dry"+string(rune('a'+i)), old)
+		seedIncident(t, c, "email_compromised_account", "dry"+string(rune('a'+i)), old)
 	}
 	closed5, dryRun5, scanned5, more5 := c.CloseStaleLimited(now, thr, true, 2)
 	if closed5 != 0 || dryRun5 != 5 || scanned5 != 5 || more5 {
@@ -89,8 +89,8 @@ func TestCloseStaleDelegatesToUnboundedLimitedSweep(t *testing.T) {
 	c2.now = func() time.Time { return old }
 	for i := 0; i < 3; i++ {
 		mailbox := "delegate" + string(rune('a'+i))
-		seedIncident(t, c1, "email_auth_failure_realtime", mailbox, old)
-		seedIncident(t, c2, "email_auth_failure_realtime", mailbox, old)
+		seedIncident(t, c1, "email_compromised_account", mailbox, old)
+		seedIncident(t, c2, "email_compromised_account", mailbox, old)
 	}
 
 	closed1, dryRun1, scanned1 := c1.CloseStale(now, thr, false)
@@ -118,7 +118,7 @@ func TestCloseStaleClosesIncidentsOlderThanThreshold(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
-	id := seedIncident(t, c, "email_auth_failure_realtime", "jane", old)
+	id := seedIncident(t, c, "email_compromised_account", "jane", old)
 
 	// Verify it is open before the close pass.
 	inc, ok := c.Get(id)
@@ -127,7 +127,7 @@ func TestCloseStaleClosesIncidentsOlderThanThreshold(t *testing.T) {
 	}
 
 	// Run CloseStale 25h later with a 24h threshold for mailbox_takeover.
-	// email_auth_failure_realtime classifies as mailbox_takeover (kind.go).
+	// email_compromised_account classifies as mailbox_takeover (kind.go).
 	now := old.Add(25 * time.Hour)
 	closed, dryRun, scanned := c.CloseStale(now,
 		map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}, false)
@@ -155,7 +155,7 @@ func TestCloseStaleSkipsIncidentsWithinWindow(t *testing.T) {
 	c := newTestCorrelator()
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
-	id := seedIncident(t, c, "email_auth_failure_realtime", "fresh", now)
+	id := seedIncident(t, c, "email_compromised_account", "fresh", now)
 
 	// 1 hour later: well inside the 24h threshold.
 	closed, _, scanned := c.CloseStale(now.Add(1*time.Hour),
@@ -238,7 +238,7 @@ func TestCloseStaleHonorsDryRun(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
-	id := seedIncident(t, c, "email_auth_failure_realtime", "jane", old)
+	id := seedIncident(t, c, "email_compromised_account", "jane", old)
 
 	closed, dryRun, scanned := c.CloseStale(old.Add(48*time.Hour),
 		map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}, true)
@@ -272,7 +272,7 @@ func TestCloseStalePersistsClosedReason(t *testing.T) {
 	c.now = func() time.Time { return old }
 	c.openThreshold = 1
 	_, _, err := c.OnFinding(alert.Finding{
-		Check: "email_auth_failure_realtime", Severity: alert.High,
+		Check: "email_compromised_account", Severity: alert.High,
 		Mailbox: "jane", Timestamp: old, Message: "seed",
 	})
 	if err != nil {
@@ -297,7 +297,7 @@ func TestStaleResolvedIncidentLetsKeyOpenNewIncident(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
-	first := seedIncident(t, c, "email_auth_failure_realtime", "jane", old)
+	first := seedIncident(t, c, "email_compromised_account", "jane", old)
 
 	close25h := old.Add(25 * time.Hour)
 	c.CloseStale(close25h, map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}, false)
@@ -310,7 +310,7 @@ func TestStaleResolvedIncidentLetsKeyOpenNewIncident(t *testing.T) {
 	c.now = func() time.Time { return close25h.Add(30 * time.Minute) }
 	c.openThreshold = 1
 	id2, created, err := c.OnFinding(alert.Finding{
-		Check:     "email_auth_failure_realtime",
+		Check:     "email_compromised_account",
 		Severity:  alert.High,
 		Mailbox:   "jane",
 		Timestamp: close25h.Add(30 * time.Minute),
@@ -335,7 +335,7 @@ func TestCloseStaleEmptyThresholdMapIsNoOp(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
-	seedIncident(t, c, "email_auth_failure_realtime", "jane", old)
+	seedIncident(t, c, "email_compromised_account", "jane", old)
 	closed, dryRun, scanned := c.CloseStale(old.Add(48*time.Hour), nil, false)
 	if closed != 0 || dryRun != 0 || scanned != 0 {
 		t.Errorf("nil thresholds must short-circuit (closed=%d dryRun=%d scanned=%d)", closed, dryRun, scanned)
@@ -348,7 +348,7 @@ func TestCloseStaleSkipsAlreadyResolved(t *testing.T) {
 	c := newTestCorrelator()
 	old := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return old }
-	seedIncident(t, c, "email_auth_failure_realtime", "jane", old)
+	seedIncident(t, c, "email_compromised_account", "jane", old)
 
 	now := old.Add(25 * time.Hour)
 	closed1, _, _ := c.CloseStale(now, map[Kind]time.Duration{KindMailboxTakeover: 24 * time.Hour}, false)

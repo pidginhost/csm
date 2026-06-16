@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A new `mailbox_bruteforce` incident kind covers failed mailbox logins. A failed login is an attack attempt, not a takeover, so it is keyed on the attacker IP and auto-closes after 24h; post-authentication abuse (outbound spam, cloud relay, compromised account) still classifies as `mailbox_takeover`.
+- A new `mailbox_bruteforce` incident kind covers failed mailbox logins, mail brute-force bursts, and SMTP probes. These are keyed on the attacker IP and auto-close after 24h; post-authentication abuse still classifies as `mailbox_takeover`.
 
 ### Changed
 

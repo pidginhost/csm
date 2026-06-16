@@ -967,11 +967,10 @@ type Config struct {
 	Incidents struct {
 		// AutoClose resolves Open / Contained incidents whose UpdatedAt
 		// exceeds the per-kind idle threshold. Default-on with safe
-		// thresholds; inbound-attack kinds (mailbox takeover, mailbox
-		// bruteforce, credential spray, web attack) expire at 24h,
-		// web-account compromise at 7d, and host-level kinds never
-		// auto-close. Operators who want to monitor decisions without
-		// writing back can flip dry_run=true.
+		// thresholds; mailbox takeover, mailbox bruteforce, credential
+		// spray, and web attack expire at 24h, web-account compromise at
+		// 7d, and host-level kinds never auto-close. Operators who want
+		// to monitor decisions without writing back can flip dry_run=true.
 		AutoClose struct {
 			// Enabled is tri-state: nil (default) means default-on; an
 			// explicit false in YAML disables. Pointer so absence in YAML

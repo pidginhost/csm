@@ -75,6 +75,7 @@ func TestKindValuesUseSnakeCase(t *testing.T) {
 	for _, k := range []Kind{
 		KindWebAccountCompromise,
 		KindWebAttack,
+		KindMailboxBruteforce,
 		KindMailboxTakeover,
 		KindPostExploitProcess,
 		KindHostIntegrityRisk,
