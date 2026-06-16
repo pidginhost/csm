@@ -3,6 +3,7 @@ package checks
 import (
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -13,7 +14,12 @@ import (
 // foreign command (reverse shell, curl|bash, miner) fails the match, which is
 // what keeps crontabIsExclusivelyCSMWPCron from suppressing a tampered crontab.
 var csmManagedWPCronJobRe = regexp.MustCompile(
-	`^[0-9*/,-]+ \* \* \* \* cd '[^']*' && flock -n "\$HOME/\.csm-wpcron-[0-9a-f]{8}\.lock" '[^']*' -d max_execution_time=300 wp-cron\.php >/dev/null 2>&1$`)
+	`^([0-9*/,-]+) \* \* \* \* cd ('(?:[^']|'\\'')*') && flock -n "\$HOME/\.csm-wpcron-([0-9a-f]{8})\.lock" ('(?:[^']|'\\'')*') -d max_execution_time=300 wp-cron\.php >/dev/null 2>&1$`)
+
+var (
+	cpanelPHPBinRe     = regexp.MustCompile(`^/opt/cpanel/ea-php[0-9]{2}/root/usr/bin/php$`)
+	cloudLinuxPHPBinRe = regexp.MustCompile(`^/opt/alt/php[0-9]{2}/usr/bin/php$`)
+)
 
 // safeCrontabShells is the set of SHELL values a fully CSM-managed crontab may
 // carry. SHELL is honored by crond to exec every job, so an arbitrary value is
@@ -40,28 +46,113 @@ var safeCrontabShells = map[string]bool{
 // BASH_ENV, ...), or an unsafe SHELL value makes it return false, so attacker
 // persistence layered into a crontab is still surfaced. At least one CSM job
 // line is required so an all-headers crontab is not mistaken for ours.
-func crontabIsExclusivelyCSMWPCron(content []byte) bool {
+func crontabIsExclusivelyCSMWPCron(owner string, content []byte) bool {
 	sawCSMJob := false
+	pendingMarker := ""
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			// Blank lines and comments (including the "# CSM WP-Cron" marker)
-			// are never executed by crond.
+		if line == "" {
+			pendingMarker = ""
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			// Comments are never executed by crond. The CSM marker is retained
+			// only to pin the following managed job to the docroot CSM wrote.
+			pendingMarker = ""
+			if strings.HasPrefix(line, wpCronJobMarker) {
+				pendingMarker = strings.TrimSpace(strings.TrimPrefix(line, wpCronJobMarker))
+			}
 			continue
 		}
 		if name, val, ok := splitCrontabEnv(line); ok {
 			if !safeCrontabEnvAssignment(name, val) {
 				return false
 			}
+			pendingMarker = ""
 			continue
 		}
-		if csmManagedWPCronJobRe.MatchString(line) {
+		if docroot, ok := csmManagedWPCronJob(line, owner); ok && pendingMarker == docroot {
 			sawCSMJob = true
+			pendingMarker = ""
 			continue
 		}
 		return false
 	}
 	return sawCSMJob
+}
+
+func csmManagedWPCronJob(line, owner string) (string, bool) {
+	m := csmManagedWPCronJobRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	minute, lockHex := m[1], m[3]
+	docroot, ok := unquoteShellSingle(m[2])
+	if !ok || !safeManagedWPCronDocroot(owner, docroot) {
+		return "", false
+	}
+	phpBin, ok := unquoteShellSingle(m[4])
+	if !ok || !safeManagedWPCronPHPBin(phpBin) {
+		return "", false
+	}
+	lockID, err := strconv.ParseUint(lockHex, 16, 32)
+	if err != nil || uint32(lockID) != wpCronLockID(docroot) {
+		return "", false
+	}
+	if !wpCronMinuteMatchesOwnerDocroot(minute, owner, docroot) {
+		return "", false
+	}
+	return docroot, true
+}
+
+func unquoteShellSingle(q string) (string, bool) {
+	if len(q) < 2 || q[0] != '\'' || q[len(q)-1] != '\'' {
+		return "", false
+	}
+	body := q[1 : len(q)-1]
+	var out strings.Builder
+	for len(body) > 0 {
+		i := strings.IndexByte(body, '\'')
+		if i < 0 {
+			out.WriteString(body)
+			return out.String(), true
+		}
+		out.WriteString(body[:i])
+		if !strings.HasPrefix(body[i:], `'\''`) {
+			return "", false
+		}
+		out.WriteByte('\'')
+		body = body[i+4:]
+	}
+	return out.String(), true
+}
+
+func safeManagedWPCronDocroot(owner, docroot string) bool {
+	if owner == "" || !safeWPCronDocroot(docroot) {
+		return false
+	}
+	return strings.HasPrefix(docroot, "/home/"+owner+"/")
+}
+
+func safeManagedWPCronPHPBin(path string) bool {
+	if !safeCronCommandString(path) || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	switch path {
+	case "/usr/local/bin/php", "/usr/bin/php", "/bin/php":
+		return true
+	default:
+		return cpanelPHPBinRe.MatchString(path) || cloudLinuxPHPBinRe.MatchString(path)
+	}
+}
+
+func wpCronMinuteMatchesOwnerDocroot(minute, owner, docroot string) bool {
+	for interval := 1; interval <= wpCronMaxIntervalMin; interval++ {
+		if wpCronMinuteField(wpCronStaggerOffset(owner, docroot, interval), interval) == minute {
+			return true
+		}
+	}
+	return false
 }
 
 // splitCrontabEnv parses a crontab environment line of the form NAME=value.
@@ -105,10 +196,17 @@ func safeCrontabEnvAssignment(name, value string) bool {
 	case "SHELL":
 		return safeCrontabShells[value]
 	case "HOME":
-		return value == "/root" || strings.HasPrefix(value, "/home/") || strings.HasPrefix(value, "/root/")
+		return safeCrontabHome(value)
 	default:
 		return false
 	}
+}
+
+func safeCrontabHome(value string) bool {
+	if !safeCronCommandString(value) || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return false
+	}
+	return value == "/root" || strings.HasPrefix(value, "/home/") || strings.HasPrefix(value, "/root/")
 }
 
 // suppressedAsManagedWPCron reports whether a sensitive-file finding for a user
@@ -120,8 +218,24 @@ func suppressedAsManagedWPCron(path string, content []byte) bool {
 	if len(content) == 0 {
 		return false
 	}
-	if !strings.Contains(filepath.ToSlash(path), "/var/spool/cron/") {
+	owner, ok := cronSpoolOwner(path)
+	if !ok {
 		return false
 	}
-	return crontabIsExclusivelyCSMWPCron(content)
+	return crontabIsExclusivelyCSMWPCron(owner, content)
+}
+
+func cronSpoolOwner(path string) (string, bool) {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	if filepath.ToSlash(filepath.Dir(clean)) != "/var/spool/cron" {
+		return "", false
+	}
+	owner := filepath.Base(clean)
+	if owner == "." || owner == "/" || owner == "" {
+		return "", false
+	}
+	if owner == "root" || !validCPUser.MatchString(owner) {
+		return "", false
+	}
+	return owner, true
 }
