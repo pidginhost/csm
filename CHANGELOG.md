@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard summary line counts critical and high findings from the last 24 hours, matching its "(24h)" label and the posture cards, instead of all-time active totals.
 - Findings page no longer shows a false "New findings detected" banner; auto-refresh now compares against the same deduplicated source the table renders from, so it only appears on a real change.
 - Findings refresh now catches severity-only changes and keeps merged IP reputation source ordering stable between polls.
+- Web UI Size columns (quarantine, cleanup, database backups) now sort by actual byte count and the findings Severity column sorts by severity, instead of by their formatted display text.
 
 ## [3.16.1] - 2026-06-15
 

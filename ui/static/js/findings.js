@@ -6,6 +6,15 @@
 // --- State ---
 var findingsTable = null;
 
+// Numeric severity rank for column sorting (mirrors the webui severityRank).
+// Derived from the already-promoted label so a dedup severity bump sorts right.
+function severityRank(label) {
+    if (label === 'CRITICAL') return 3;
+    if (label === 'HIGH') return 2;
+    if (label === 'WARNING') return 1;
+    return 0;
+}
+
 // --- Fetch and render findings from enriched API ---
 function loadFindings() {
     CSM.get('/api/v1/findings/enriched')
@@ -103,7 +112,7 @@ function renderFindings(data) {
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
             '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
-            '<td><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
+            '<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
             '<td class="text-secondary csm-break-all">' + CSM.esc(f.message) + '</td>' +
             '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.first_seen) + '">' + CSM.fmtDate(f.first_seen) + '</span></td>' +

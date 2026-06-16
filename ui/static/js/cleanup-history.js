@@ -125,7 +125,7 @@
                     '<td><input type="checkbox" class="form-check-input cleanup-file-cb" data-id="' + CSM.esc(f.id) + '"></td>' +
                     '<td><span class="badge bg-azure-lt">' + CSM.esc(kindLabel(f.kind)) + '</span></td>' +
                     '<td><code>' + CSM.esc(f.original_path) + '</code></td>' +
-                    '<td>' + formatSize(f.size || 0) + '</td>' +
+                    '<td data-sort="' + (f.size || 0) + '">' + formatSize(f.size || 0) + '</td>' +
                     '<td data-timestamp="' + CSM.esc(f.quarantined_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(f.quarantined_at) + '</td>' +
                     '<td>' + stateBadge(f.live_state) + '</td>' +
                     '<td class="small text-wrap csm-tw-320">' + CSM.esc(f.reason || '') + '</td>' +
@@ -291,7 +291,7 @@
                     '<td><code>' + CSM.esc(b.name) + '</code></td>' +
                     '<td data-timestamp="' + CSM.esc(b.dropped_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(b.dropped_at) + '</td>' +
                     '<td>' + CSM.esc(b.dropped_by || '') + '</td>' +
-                    '<td>' + formatSize(b.body_bytes || 0) + '</td>' +
+                    '<td data-sort="' + (b.body_bytes || 0) + '">' + formatSize(b.body_bytes || 0) + '</td>' +
                     '<td>' + status + (b.restored_at ? '<div class="text-muted small">' + CSM.esc(CSM.fmtDate(b.restored_at)) + '</div>' : '') + '</td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-ghost-secondary me-1 cleanup-db-view" data-key="' + CSM.esc(b.key) + '"><i class="ti ti-eye"></i>&nbsp;View</button>' +

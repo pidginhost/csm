@@ -724,6 +724,52 @@ func TestFindingsAutoRefreshPollsEnrichedEndpoint(t *testing.T) {
 	}
 }
 
+// TestSizeAndSeverityColumnsSortNumerically pins item 5: Size cells carry the
+// raw byte count in data-sort (the visible text is pre-formatted, so "9 B"
+// sorted after "1.2 MB" lexically) and the findings Severity cell carries a
+// numeric rank so the column sorts by severity, not by the label's first
+// letter (which only worked by alphabetical coincidence).
+func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
+	findings, err := os.ReadFile("../../ui/static/js/findings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	findingsText := string(findings)
+	for _, want := range []string{
+		"function severityRank(label) {",
+		`'<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">'`,
+	} {
+		if !strings.Contains(findingsText, want) {
+			t.Errorf("findings.js missing severity sort-rank fragment %q", want)
+		}
+	}
+	if strings.Contains(findingsText, `'<td><span class="badge badge-' + CSM.esc(f.sev_class)`) {
+		t.Error("findings.js severity cell still has no data-sort rank")
+	}
+
+	quarantine, err := os.ReadFile("../../ui/static/js/quarantine.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(quarantine), `<td data-sort="'+(f.size || 0)+'">'+formatSize(f.size)+'</td>`) {
+		t.Error("quarantine.js size cell missing raw-byte data-sort")
+	}
+
+	cleanup, err := os.ReadFile("../../ui/static/js/cleanup-history.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupText := string(cleanup)
+	for _, want := range []string{
+		`'<td data-sort="' + (f.size || 0) + '">' + formatSize(f.size || 0) + '</td>'`,
+		`'<td data-sort="' + (b.body_bytes || 0) + '">' + formatSize(b.body_bytes || 0) + '</td>'`,
+	} {
+		if !strings.Contains(cleanupText, want) {
+			t.Errorf("cleanup-history.js size cell missing raw-byte data-sort %q", want)
+		}
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

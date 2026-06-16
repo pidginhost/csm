@@ -62,7 +62,7 @@ P0 (data loss + wrong data):
 - [x] 2. Timestamps shown in mixed UTC/local across pages (High) -- DONE, see change log
 - [x] 3. Dashboard "(24h)" label on lifetime counts (High) -- DONE, see change log
 - [x] 4. False "New findings detected" banner from endpoint dedup mismatch (High) -- DONE, see change log
-- [ ] 5. Size + Severity columns sort lexically, not numerically (High)
+- [x] 5. Size + Severity columns sort lexically, not numerically (High) -- DONE, see change log
 - [ ] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High)
 - [ ] 7. NaN/null rendered: hardening score, quarantine size, Redis-red (Medium)
 
@@ -403,3 +403,19 @@ preview content (untrusted malware sample text).
   Static-UI and dedup regression tests cover the browser/backend halves.
   `ui/static/js/findings.js`, `internal/webui/static_ui_test.go`,
   `internal/webui/api_findings_test.go`.
+- Item 5 (High): numeric column sort. The shared table sorts a cell by its
+  `data-sort` attribute (numeric when the whole value parses as a number) and
+  otherwise falls back to lexical `textContent`. Size cells only had the
+  pre-formatted text ("9 B", "1.2 MB"), so they sorted as strings, and the
+  findings Severity cell had no `data-sort` (CRITICAL/HIGH/WARNING sorted right
+  only by alphabetical coincidence and would reverse if a label changed). Added
+  `data-sort` carrying the raw byte count to the quarantine, cleanup-files, and
+  DB-backup Size cells (the APIs already return raw bytes) and a numeric severity
+  rank to the findings Severity cell, derived client-side from the already
+  promoted label (the reference pattern is `incident.js`; deriving from the label
+  avoids a stored rank field that the ip_reputation dedup promotion would leave
+  stale). Pure-JS fix; pinned with a static-UI regression test
+  (TestSizeAndSeverityColumnsSortNumerically) and verified by `node --check` plus
+  the full `internal/webui` Go suite. `ui/static/js/findings.js`,
+  `ui/static/js/quarantine.js`, `ui/static/js/cleanup-history.js`,
+  `internal/webui/static_ui_test.go`.
