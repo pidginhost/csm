@@ -223,6 +223,9 @@ func TestModSecEventsExposeISOTimestamp(t *testing.T) {
 	if want := ts.UTC().Truncate(time.Second); !got.Equal(want) {
 		t.Fatalf("time_iso = %v, want %v", got, want)
 	}
+	if want := ts.Format("15:04:05"); resp[0].Time != want {
+		t.Fatalf("legacy time = %q, want %q", resp[0].Time, want)
+	}
 }
 
 func TestModSecBlocksReadScopeAccess(t *testing.T) {

@@ -381,7 +381,7 @@
             h += '<td data-label="Description">' + CSM.esc(b.description || '') + '</td>';
             h += '<td data-label="Domains">' + CSM.esc(domains) + '</td>';
             h += '<td data-label="Hits"><strong>' + b.hits + '</strong></td>';
-            h += '<td data-label="Last Seen" data-timestamp="' + CSM.attr(b.last_seen_iso || '') + '">' + CSM.esc(CSM.fmtDate(b.last_seen_iso)) + '</td>';
+            h += '<td data-label="Last Seen" data-sort="' + CSM.attr(b.last_seen_iso || '') + '">' + CSM.esc(CSM.fmtDate(b.last_seen_iso)) + '</td>';
             h += '<td data-label="Status">' + statusBadgeHTML(b) + '</td>';
             h += '</tr>';
         }
@@ -507,7 +507,7 @@
             var e = events[i];
             var sevClass = e.severity === 'CRITICAL' ? 'bg-red' : e.severity === 'HIGH' ? 'bg-orange' : 'bg-yellow';
             h += '<tr>';
-            h += '<td class="text-nowrap" data-timestamp="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
+            h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';
             h += '<td><code>' + CSM.esc(e.rule_id) + '</code></td>';
             h += '<td>' + CSM.esc(e.hostname) + '</td>';

@@ -480,6 +480,21 @@ func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
 	}
 }
 
+func TestVerifiedBotsLastRefreshUsesLocalFormatter(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/verified-bots.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	want := `document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh ? CSM.fmtDate(br.last_refresh) : 'never';`
+	if !strings.Contains(text, want) {
+		t.Fatal("verified-bots.js must render last_refresh through CSM.fmtDate")
+	}
+	if strings.Contains(text, `textContent = br.last_refresh || 'never'`) {
+		t.Fatal("verified-bots.js must not render raw UTC last_refresh")
+	}
+}
+
 func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
 	if err != nil {
@@ -839,6 +854,23 @@ func TestModSecPageUsesPhase8Primitives(t *testing.T) {
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("modsec.js missing phase-8 hook %q", want)
+		}
+	}
+	for _, want := range []string{
+		`data-label="Last Seen" data-sort="' + CSM.attr(b.last_seen_iso || '') + '"`,
+		`class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '"`,
+		`CSM.fmtDate(e.time_iso)`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("modsec.js missing local timestamp sort fragment %q", want)
+		}
+	}
+	for _, bad := range []string{
+		`data-timestamp="' + CSM.attr(b.last_seen_iso`,
+		`data-timestamp="' + CSM.attr(e.time_iso`,
+	} {
+		if strings.Contains(jsText, bad) {
+			t.Errorf("modsec.js must not mark absolute timestamp cells with initTimeAgo hook %q", bad)
 		}
 	}
 }
@@ -2653,6 +2685,7 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 		`data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '"`,
 		`data-source="' + CSM.attr(det) + '"`,
 		`data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '"`,
+		`data-sort="'+CSM.attr(f.quarantined_at || '')+'"`,
 		`var from = fromEl ? _quarLocalDateMillis(fromEl.value, false) : null;`,
 		`var to = toEl ? _quarLocalDateMillis(toEl.value, true) : null;`,
 		`if (to !== null && ts >= to) return false;`,
@@ -2671,6 +2704,9 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 	}
 	if strings.Contains(jsText, `86400000`) || strings.Contains(jsText, `new Date(fromEl.value + 'T00:00:00')`) {
 		t.Fatal("quarantine.js must use validated calendar-day bounds instead of fixed 24-hour date math")
+	}
+	if strings.Contains(jsText, `data-timestamp="'+CSM.attr(f.quarantined_at`) {
+		t.Fatal("quarantine.js must not use data-timestamp for absolute local timestamp cells")
 	}
 }
 

@@ -361,18 +361,19 @@ preview content (untrusted malware sample text).
   for destructive bulk ops; "act on all" remains reachable via page-size All.
   Fixes quarantine/email-quarantine/modsec bulk bars at the shared layer.
   `ui/static/js/csm-ui.js`. No JS unit harness in this repo (AGENTS: webui has
-  no build step/framework); verified by full `internal/webui` Go suite (1232
-  pass) + read-through of all three consumers + codex review.
+  no build step/framework); verified by full `internal/webui` Go suite plus
+  read-through of all three consumers.
 - Item 2 (High): timestamps. Added Go-TDD `time_iso` (RFC3339) to the modsec
   events endpoint (blocks already had `last_seen_iso`), then rendered quarantine
   `quarantined_at`, modsec blocks/events, and verified-bot `last_refresh` through
-  `CSM.fmtDate` with cell-level `data-timestamp` so they show operator-local time
-  and sort chronologically. Found and fixed a coupled latent bug: quarantine put
+  `CSM.fmtDate` with cell-level sort keys so they show operator-local time and
+  sort chronologically. Found and fixed a coupled latent bug: quarantine put
   `data-timestamp` on the `<tr>`, so the global 60s `initTimeAgo` (csrf.js) wiped
   whole rows; renamed the row's date-filter attribute to `data-quar-ts` (updated
-  `_inRange` + the pinned static UI test) and moved `data-timestamp` to the cell
-  span. `modsec_api.go`, `modsec_blocks_extended_test.go`, `quarantine.js`,
-  `modsec.js`, `verified-bots.js`, `static_ui_test.go`. Suite 1233 pass.
+  `_inRange` + the pinned static UI test) and kept absolute timestamp cells off
+  the relative-time refresh hook. `modsec_api.go`,
+  `modsec_blocks_extended_test.go`, `quarantine.js`, `modsec.js`,
+  `verified-bots.js`, `static_ui_test.go`.
 - Follow-up review found that table pagination/search/filter renders did not
   repaint existing bulk bars, and ModSec still counted checked hidden rows
   directly. Quarantine, email quarantine, and ModSec now refresh bulk state
