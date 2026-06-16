@@ -37,6 +37,9 @@ func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
 	}
 	text := string(src)
 	for _, fragment := range []string{
+		`if (bytes == null || (typeof bytes === 'string' && bytes.trim() === '')) return '';`,
+		`bytes = Number(bytes);`,
+		`if (!isFinite(bytes)) return '';`,
 		`if (n == null || (typeof n === 'string' && n.trim() === '')) return '';`,
 		`if (v == null || (typeof v === 'string' && v.trim() === '')) return '';`,
 		`d = Math.min(20, Math.floor(d));`,
@@ -751,8 +754,15 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(quarantine), `<td data-sort="'+(f.size || 0)+'">'+formatSize(f.size)+'</td>`) {
-		t.Error("quarantine.js size cell missing raw-byte data-sort")
+	quarantineText := string(quarantine)
+	for _, want := range []string{
+		`var size = Number(f.size || 0);`,
+		`if (!isFinite(size)) size = 0;`,
+		`<td data-sort="'+size+'">'+formatSize(f.size)+'</td>`,
+	} {
+		if !strings.Contains(quarantineText, want) {
+			t.Errorf("quarantine.js size cell missing raw-byte data-sort %q", want)
+		}
 	}
 
 	cleanup, err := os.ReadFile("../../ui/static/js/cleanup-history.js")
@@ -761,11 +771,30 @@ func TestSizeAndSeverityColumnsSortNumerically(t *testing.T) {
 	}
 	cleanupText := string(cleanup)
 	for _, want := range []string{
-		`'<td data-sort="' + (f.size || 0) + '">' + formatSize(f.size || 0) + '</td>'`,
-		`'<td data-sort="' + (b.body_bytes || 0) + '">' + formatSize(b.body_bytes || 0) + '</td>'`,
+		`var size = Number(f.size || 0);`,
+		`if (!isFinite(size)) size = 0;`,
+		`'<td data-sort="' + size + '">' + formatSize(f.size) + '</td>'`,
+		`var bodyBytes = Number(b.body_bytes || 0);`,
+		`if (!isFinite(bodyBytes)) bodyBytes = 0;`,
+		`'<td data-sort="' + bodyBytes + '">' + formatSize(b.body_bytes) + '</td>'`,
 	} {
 		if !strings.Contains(cleanupText, want) {
 			t.Errorf("cleanup-history.js size cell missing raw-byte data-sort %q", want)
+		}
+	}
+
+	rules, err := os.ReadFile("../../ui/static/js/rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesText := string(rules)
+	for _, want := range []string{
+		`var size = Number(f.size || 0);`,
+		`if (!isFinite(size)) size = 0;`,
+		`'<td class="text-muted" data-sort="' + size + '">' + fmtSize(f.size) + '</td>'`,
+	} {
+		if !strings.Contains(rulesText, want) {
+			t.Errorf("rules.js size cell missing raw-byte data-sort %q", want)
 		}
 	}
 }

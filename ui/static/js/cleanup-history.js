@@ -121,11 +121,13 @@
                 '<th>Type</th><th>Original Path</th><th>Size</th><th>Archived</th><th>State</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
             for (var i = 0; i < files.length; i++) {
                 var f = files[i];
+                var size = Number(f.size || 0);
+                if (!isFinite(size)) size = 0;
                 html += '<tr>' +
                     '<td><input type="checkbox" class="form-check-input cleanup-file-cb" data-id="' + CSM.esc(f.id) + '"></td>' +
                     '<td><span class="badge bg-azure-lt">' + CSM.esc(kindLabel(f.kind)) + '</span></td>' +
                     '<td><code>' + CSM.esc(f.original_path) + '</code></td>' +
-                    '<td data-sort="' + (f.size || 0) + '">' + formatSize(f.size || 0) + '</td>' +
+                    '<td data-sort="' + size + '">' + formatSize(f.size) + '</td>' +
                     '<td data-timestamp="' + CSM.esc(f.quarantined_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(f.quarantined_at) + '</td>' +
                     '<td>' + stateBadge(f.live_state) + '</td>' +
                     '<td class="small text-wrap csm-tw-320">' + CSM.esc(f.reason || '') + '</td>' +
@@ -182,7 +184,7 @@
 
     function viewFileBackup(id, path) {
         getJSON('/api/v1/quarantine-preview?id=' + encodeURIComponent(id)).then(function(data) {
-            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size || 0);
+            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
             showPreview(path, info, data.preview || '');
         }).catch(function(e) {
             CSM.toast('Preview failed: ' + e.message, 'error');
@@ -284,6 +286,8 @@
                 var b = items[i];
                 var status = b.restored ? '<span class="badge bg-success-lt">Restored</span>' : '<span class="badge bg-warning-lt">Backup retained</span>';
                 var restoreDisabled = b.restored ? ' disabled title="Already restored"' : '';
+                var bodyBytes = Number(b.body_bytes || 0);
+                if (!isFinite(bodyBytes)) bodyBytes = 0;
                 html += '<tr>' +
                     '<td><code>' + CSM.esc(b.account) + '</code></td>' +
                     '<td><code>' + CSM.esc(b.schema) + '</code></td>' +
@@ -291,7 +295,7 @@
                     '<td><code>' + CSM.esc(b.name) + '</code></td>' +
                     '<td data-timestamp="' + CSM.esc(b.dropped_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(b.dropped_at) + '</td>' +
                     '<td>' + CSM.esc(b.dropped_by || '') + '</td>' +
-                    '<td data-sort="' + (b.body_bytes || 0) + '">' + formatSize(b.body_bytes || 0) + '</td>' +
+                    '<td data-sort="' + bodyBytes + '">' + formatSize(b.body_bytes) + '</td>' +
                     '<td>' + status + (b.restored_at ? '<div class="text-muted small">' + CSM.esc(CSM.fmtDate(b.restored_at)) + '</div>' : '') + '</td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-ghost-secondary me-1 cleanup-db-view" data-key="' + CSM.esc(b.key) + '"><i class="ti ti-eye"></i>&nbsp;View</button>' +
@@ -323,7 +327,7 @@
     function viewDBBackup(key) {
         getJSON('/api/v1/db-object-backup-preview?key=' + encodeURIComponent(key)).then(function(data) {
             var title = data.kind + ' ' + data.schema + '.' + data.name;
-            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size || 0);
+            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
             showPreview(title, info, data.preview || '');
         }).catch(function(e) {
             CSM.toast('Preview failed: ' + e.message, 'error');

@@ -64,7 +64,7 @@ P0 (data loss + wrong data):
 - [x] 4. False "New findings detected" banner from endpoint dedup mismatch (High) -- DONE, see change log
 - [x] 5. Size + Severity columns sort lexically, not numerically (High) -- DONE, see change log
 - [ ] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High)
-- [ ] 7. NaN/null rendered: hardening score, quarantine size, Redis-red (Medium)
+- [ ] 7. NaN/null rendered: hardening score, Redis no-limit card (Medium) -- PARTIAL: size formatter fixed
 
 P1 (systemic consistency):
 - [ ] 8. Two disagreeing dark palettes + undefined CSS tokens (High)
@@ -133,8 +133,9 @@ table actually rendered.
 Size cells are pre-formatted text ("9 B" sorts after "1.2 MB"). Findings
 severity column has no numeric `data-sort` (alphabetical order works only by
 coincidence and reverses on relabel).
-Evidence: `quarantine.js:126`, `cleanup-history.js:128,294`, `table.js:373-380`;
-`findings.js:106`. Reference correct pattern: `incident.js:444`.
+Evidence: `quarantine.js:126`, `cleanup-history.js:128,294`, `rules.js:35`,
+`table.js:373-380`; `findings.js:106`. Reference correct pattern:
+`incident.js:444`.
 Fix: emit numeric `data-sort` (raw bytes; severity rank) on those cells.
 
 ### 6. Email account/IP regex-scraped from message text (Medium-High)
@@ -147,11 +148,11 @@ Fix: return structured `account`/`ip` fields from the API (finding has them
 server-side); this is the production-correct fix and is Go-testable.
 
 ### 7. NaN/null rendered to operators (Medium)
-Hardening score `score/total` with `total==0` renders "NaN / 0 checks". Quarantine
-`formatSize(null)` renders "null B"/"NaN B". Performance Redis card paints a
-healthy no-maxmemory Redis red whenever memory > 0.
-Evidence: `hardening.js:27-28`, `quarantine.js:126` (`csrf.js:105`),
-`performance.js:333-339`.
+Hardening score `score/total` with `total==0` renders "NaN / 0 checks".
+Performance Redis card paints a healthy no-maxmemory Redis red whenever memory
+is above zero. The shared size formatter now blanks missing or invalid byte
+counts instead of rendering `null B` or `NaN B`.
+Evidence: `hardening.js:27-28`, `performance.js:333-339`.
 Fix: guard zero/null; neutral styling for "no limit".
 
 ---
@@ -409,13 +410,18 @@ preview content (untrusted malware sample text).
   pre-formatted text ("9 B", "1.2 MB"), so they sorted as strings, and the
   findings Severity cell had no `data-sort` (CRITICAL/HIGH/WARNING sorted right
   only by alphabetical coincidence and would reverse if a label changed). Added
-  `data-sort` carrying the raw byte count to the quarantine, cleanup-files, and
-  DB-backup Size cells (the APIs already return raw bytes) and a numeric severity
-  rank to the findings Severity cell, derived client-side from the already
-  promoted label (the reference pattern is `incident.js`; deriving from the label
-  avoids a stored rank field that the ip_reputation dedup promotion would leave
-  stale). Pure-JS fix; pinned with a static-UI regression test
-  (TestSizeAndSeverityColumnsSortNumerically) and verified by `node --check` plus
-  the full `internal/webui` Go suite. `ui/static/js/findings.js`,
-  `ui/static/js/quarantine.js`, `ui/static/js/cleanup-history.js`,
+  `data-sort` carrying the raw byte count to the quarantine, cleanup-files,
+  DB-backup, and rule-file Size cells (the APIs already return raw bytes) and a
+  numeric severity rank to the findings Severity cell, derived client-side from
+  the already promoted label (the reference pattern is `incident.js`; deriving
+  from the label avoids a stored rank field that the ip_reputation dedup
+  promotion would leave stale). Pure-JS fix; pinned with
+  TestSizeAndSeverityColumnsSortNumerically, with JavaScript syntax checked by
+  `node --check`. `ui/static/js/findings.js`, `ui/static/js/quarantine.js`,
+  `ui/static/js/cleanup-history.js`, `ui/static/js/rules.js`,
   `internal/webui/static_ui_test.go`.
+- Follow-up review of item 5 found the new sort regression test pinned the
+  quarantine size cell to the old missing-value rendering path. `CSM.formatSize`
+  now returns blank for missing or invalid byte counts, and the shared formatting
+  test pins that guard so size cells cannot show `null B` or `NaN B`. The same
+  pass added the missing raw-byte sort key to the Rules file table.

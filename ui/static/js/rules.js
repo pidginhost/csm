@@ -30,10 +30,12 @@ function loadFiles() {
             var typeBadge = f.type === 'yara'
                 ? '<span class="badge bg-purple-lt">YARA</span>'
                 : '<span class="badge bg-blue-lt">YAML</span>';
+            var size = Number(f.size || 0);
+            if (!isFinite(size)) size = 0;
             html += '<tr data-type="' + CSM.attr(f.type || 'yaml') + '">';
             html += '<td><code class="font-monospace">' + CSM.esc(f.name) + '</code></td>';
             html += '<td>' + typeBadge + '</td>';
-            html += '<td class="text-muted">' + fmtSize(f.size) + '</td>';
+            html += '<td class="text-muted" data-sort="' + size + '">' + fmtSize(f.size) + '</td>';
             html += '</tr>';
         }
         tbody.innerHTML = html;

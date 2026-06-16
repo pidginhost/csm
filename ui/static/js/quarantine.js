@@ -122,8 +122,10 @@ function loadQuarantine() {
             var f = files[i];
             var acct = _quarAccountFromPath(f.original_path);
             var det = _quarDetectorFromReason(f.reason);
+            var size = Number(f.size || 0);
+            if (!isFinite(size)) size = 0;
             html += '<tr data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '">';
-            html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td data-sort="'+(f.size || 0)+'">'+formatSize(f.size)+'</td><td class="text-nowrap" data-sort="'+CSM.attr(f.quarantined_at || '')+'"><span class="text-muted small">'+CSM.esc(CSM.fmtDate(f.quarantined_at))+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
+            html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td data-sort="'+size+'">'+formatSize(f.size)+'</td><td class="text-nowrap" data-sort="'+CSM.attr(f.quarantined_at || '')+'"><span class="text-muted small">'+CSM.esc(CSM.fmtDate(f.quarantined_at))+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
