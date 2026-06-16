@@ -657,6 +657,40 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 	}
 }
 
+func TestDashboardSummaryUsesWindowedStatsCounts(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+
+	for _, want := range []string{
+		`var statsReq = CSM.get('/api/v1/stats').catch(function() { return null; });`,
+		`var statsData = results[2];`,
+		`var crit24h = 0, high24h = 0;`,
+		`if (statsData && statsData.last_24h) {`,
+		`statsData.last_24h.critical`,
+		`statsData.last_24h.high`,
+		`_updateSubtitle(incidents.length, crit24h, high24h);`,
+		`+ ' (24h)';`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Fatalf("dashboard summary is not pinned to /stats 24h counts; missing %q", want)
+		}
+	}
+
+	for _, stale := range []string{
+		"critCountAPI",
+		"highCountAPI",
+		"findData.critical_count",
+		"findData.high_count",
+	} {
+		if strings.Contains(jsText, stale) {
+			t.Fatalf("dashboard summary must not use all-active findings count %q", stale)
+		}
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {
