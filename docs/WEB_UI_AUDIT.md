@@ -441,4 +441,7 @@ preview content (untrusted malware sample text).
   auth users and old `set_id`/`rip=` mail-log rows, and a static-UI test pinning
   the JS render and the removed regex. `internal/webui/api.go`,
   `internal/webui/api_history_test.go`, `ui/static/js/email.js`,
-  `internal/webui/static_ui_test.go`.
+  `internal/webui/static_ui_test.go`. The legacy fallbacks parse
+  attacker-controlled message/detail text, so a fuzz target
+  (FuzzHistoryAttribution) asserts they never panic and only ever attribute a
+  netip-valid address. `internal/webui/fuzz_parsers_test.go`.
