@@ -60,7 +60,7 @@ staging host should follow.
 P0 (data loss + wrong data):
 - [x] 1. Bulk select-all selects paginated-away rows -> mass delete (Critical) -- DONE, see change log
 - [x] 2. Timestamps shown in mixed UTC/local across pages (High) -- DONE, see change log
-- [ ] 3. Dashboard "(24h)" label on lifetime counts (High)
+- [x] 3. Dashboard "(24h)" label on lifetime counts (High) -- DONE, see change log
 - [ ] 4. False "New findings detected" banner from endpoint dedup mismatch (High)
 - [ ] 5. Size + Severity columns sort lexically, not numerically (High)
 - [ ] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High)
@@ -374,6 +374,13 @@ preview content (untrusted malware sample text).
   the relative-time refresh hook. `modsec_api.go`,
   `modsec_blocks_extended_test.go`, `quarantine.js`, `modsec.js`,
   `verified-bots.js`, `static_ui_test.go`.
+- Item 3 (High): dashboard subtitle. `loadPriorityQueue` labelled the summary
+  "(24h)" but read all-active `critical_count`/`high_count` from
+  `/findings/enriched`. Now also fetches `/api/v1/stats` and uses its genuinely
+  24h-windowed `last_24h.critical`/`.high`, matching the posture cards. Pure-JS
+  sourcing fix; the 24h counts already exist in `/stats` and are covered by
+  existing Go tests (TestAPIStatsWithData et al.), so no new backend surface.
+  `dashboard.js`.
 - Follow-up review found that table pagination/search/filter renders did not
   repaint existing bulk bars, and ModSec still counted checked hidden rows
   directly. Quarantine, email quarantine, and ModSec now refresh bulk state

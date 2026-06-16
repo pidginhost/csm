@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI bulk select-all now selects only the rows on the current page, so a permanent delete of quarantined files, ModSecurity blocks, or email quarantine messages no longer also removes rows hidden on other pages or by an active filter.
 - Bulk action bars now refresh after table pagination, search, or filters change, so hidden checked rows cannot keep stale actions active.
 - Web UI keeps quarantine, ModSecurity, and verified-bot timestamps in the operator's local time instead of raw UTC and sorts those columns chronologically; quarantine rows are also no longer blanked by the periodic relative-time refresh.
+- Dashboard summary line counts critical and high findings from the last 24 hours, matching its "(24h)" label and the posture cards, instead of all-time active totals.
 
 ## [3.16.1] - 2026-06-15
 

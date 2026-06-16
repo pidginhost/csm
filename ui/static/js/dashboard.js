@@ -1137,21 +1137,29 @@
     function loadPriorityQueue() {
         var incidentReq = CSM.get('/api/v1/incidents?status=open&limit=5').catch(function() { return null; });
         var findingsReq = CSM.get('/api/v1/findings/enriched?limit=20').catch(function() { return null; });
-        Promise.all([incidentReq, findingsReq]).then(function(results) {
+        var statsReq = CSM.get('/api/v1/stats').catch(function() { return null; });
+        Promise.all([incidentReq, findingsReq, statsReq]).then(function(results) {
             var incData = results[0];
             var findData = results[1];
+            var statsData = results[2];
             var incidents = [];
             if (incData && Array.isArray(incData.items)) incidents = incData.items;
             else if (Array.isArray(incData)) incidents = incData;
 
             var findings = [];
-            var critCountAPI = 0, highCountAPI = 0;
             if (findData && Array.isArray(findData.findings)) {
                 findings = findData.findings;
-                if (typeof findData.critical_count === 'number') critCountAPI = findData.critical_count;
-                if (typeof findData.high_count === 'number')     highCountAPI = findData.high_count;
             } else if (Array.isArray(findData)) {
                 findings = findData;
+            }
+
+            // The subtitle is labelled "(24h)", so its critical/high counts must
+            // come from /stats (genuinely 24h-windowed). The findings/enriched
+            // counts are all-active and would mislabel the window.
+            var crit24h = 0, high24h = 0;
+            if (statsData && statsData.last_24h) {
+                if (typeof statsData.last_24h.critical === 'number') crit24h = statsData.last_24h.critical;
+                if (typeof statsData.last_24h.high === 'number')     high24h = statsData.last_24h.high;
             }
 
             // Take top 5 incidents + up to 5 critical/high findings (newest first)
@@ -1196,7 +1204,7 @@
             }
 
             _renderPriorityQueue(items);
-            _updateSubtitle(incidents.length, critCountAPI, highCountAPI);
+            _updateSubtitle(incidents.length, crit24h, high24h);
         });
     }
 
