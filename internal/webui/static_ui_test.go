@@ -691,6 +691,35 @@ func TestDashboardSummaryUsesWindowedStatsCounts(t *testing.T) {
 	}
 }
 
+// TestFindingsAutoRefreshPollsEnrichedEndpoint pins item 4: the auto-refresh
+// poller must hit /api/v1/findings/enriched (IP dedup + message rewrite), the
+// same shape that renders the table and seeds the comparison keys. Polling the
+// raw /api/v1/findings returns a different row count and unrewritten messages,
+// so the "New findings detected" banner fired on every poll whenever any
+// ip_reputation finding existed, with zero state change.
+func TestFindingsAutoRefreshPollsEnrichedEndpoint(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/findings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	if strings.Contains(text, "CSM.poll('/api/v1/findings',") {
+		t.Fatal("findings.js auto-refresh polls the raw /api/v1/findings; it must poll the deduped /api/v1/findings/enriched so the count/keys match the rendered table")
+	}
+	for _, want := range []string{
+		"_findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {",
+		"if (!data || !data.findings) return;",
+		"var poll = data.findings;",
+		"var changed = poll.length !== currentCount;",
+		"var key = poll[j].check + ':' + poll[j].message;",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("findings.js auto-refresh missing enriched-comparison fragment %q", want)
+		}
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

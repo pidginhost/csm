@@ -61,7 +61,7 @@ P0 (data loss + wrong data):
 - [x] 1. Bulk select-all selects paginated-away rows -> mass delete (Critical) -- DONE, see change log
 - [x] 2. Timestamps shown in mixed UTC/local across pages (High) -- DONE, see change log
 - [x] 3. Dashboard "(24h)" label on lifetime counts (High) -- DONE, see change log
-- [ ] 4. False "New findings detected" banner from endpoint dedup mismatch (High)
+- [x] 4. False "New findings detected" banner from endpoint dedup mismatch (High) -- DONE, see change log
 - [ ] 5. Size + Severity columns sort lexically, not numerically (High)
 - [ ] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High)
 - [ ] 7. NaN/null rendered: hardening score, quarantine size, Redis-red (Medium)
@@ -389,3 +389,16 @@ preview content (untrusted malware sample text).
   repaint existing bulk bars, and ModSec still counted checked hidden rows
   directly. Quarantine, email quarantine, and ModSec now refresh bulk state
   after table renders; ModSec applies only visible-scoped `CSM.bulk` values.
+- Item 4 (High): findings auto-refresh banner. The 15s poller hit raw
+  `/api/v1/findings` (no IP dedup, original per-finding messages) and compared
+  its count/keys against the table seeded from `/api/v1/findings/enriched`
+  (`dedupIPReputation` collapses ip_reputation by IP and rewrites the message to
+  "Known malicious IP accessing server: ..."). The two shapes never matched, so
+  "New findings detected" fired on every poll whenever any ip_reputation finding
+  existed, with zero state change. Pointed the poller at the enriched endpoint
+  and read its `findings` array, making the comparison apples-to-apples with the
+  rendered table while still catching genuine adds/removes/severity merges.
+  Pure-JS fix (the enriched endpoint already existed and is Go-tested); pinned
+  with a static-UI regression test (TestFindingsAutoRefreshPollsEnrichedEndpoint)
+  and verified by `node --check` plus the full `internal/webui` Go suite.
+  `ui/static/js/findings.js`, `internal/webui/static_ui_test.go`.

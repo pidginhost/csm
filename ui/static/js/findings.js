@@ -828,13 +828,19 @@ function initAutoRefresh(initialFindings) {
     // Stop any previous poller
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
 
-    _findingsPoller = CSM.poll('/api/v1/findings', 15000, function(err, data) {
+    // Poll the same enriched endpoint that renders the table and seeds
+    // currentKeys/currentCount. The raw /api/v1/findings has no IP dedup and
+    // keeps the per-finding message, so its count and keys never line up with
+    // the deduped table -- comparing the two fired the banner on every poll
+    // whenever any ip_reputation finding existed.
+    _findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {
         if (err) { console.error('findings auto-refresh:', err); return; }
-        if (!data) return;
-        var changed = data.length !== currentCount;
+        if (!data || !data.findings) return;
+        var poll = data.findings;
+        var changed = poll.length !== currentCount;
         if (!changed) {
-            for (var j = 0; j < data.length; j++) {
-                var key = data[j].check + ':' + data[j].message;
+            for (var j = 0; j < poll.length; j++) {
+                var key = poll[j].check + ':' + poll[j].message;
                 if (!currentKeys[key]) { changed = true; break; }
             }
         }
