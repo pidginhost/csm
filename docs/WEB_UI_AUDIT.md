@@ -380,7 +380,11 @@ preview content (untrusted malware sample text).
   24h-windowed `last_24h.critical`/`.high`, matching the posture cards. Pure-JS
   sourcing fix; the 24h counts already exist in `/stats` and are covered by
   existing Go tests (TestAPIStatsWithData et al.), so no new backend surface.
-  `dashboard.js`.
+  `dashboard.js`. Codex review added a static-UI regression test pinning the
+  24h sourcing (TestDashboardSummaryUsesWindowedStatsCounts, kept); it also tried
+  to add a `validateDeepSection` injection seam to server.go/settings_api.go to
+  dodge its sandbox's TCP-bind limit -- reverted as out-of-scope test-induced
+  production change (the existing httptest-based settings test passes fine here).
 - Follow-up review found that table pagination/search/filter renders did not
   repaint existing bulk bars, and ModSec still counted checked hidden rows
   directly. Quarantine, email quarantine, and ModSec now refresh bulk state
