@@ -95,7 +95,14 @@ func EvaluateSensitiveFileWrite(path string, uid, pid uint32, comm string) (aler
 	// Suppress writes CSM itself just performed (e.g. installing a per-user
 	// wp-cron). Content-bound: a tamper layered on top changes the hash and
 	// is still reported.
-	if content, err := osFS.ReadFile(path); err == nil && isExpectedSelfWrite(path, content) {
+	content, _ := osFS.ReadFile(path)
+	if content != nil && isExpectedSelfWrite(path, content) {
+		return alert.Finding{}, false
+	}
+	// Durable complement to the TTL-bounded self-write ledger: a user crontab
+	// holding only CSM-installed WP-Cron jobs is CSM's own managed block, not
+	// attacker persistence, even after a restart cleared the ledger.
+	if suppressedAsManagedWPCron(path, content) {
 		return alert.Finding{}, false
 	}
 	sev := alert.High
@@ -130,6 +137,9 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 		if isExpectedSelfWrite(path, content) {
 			return alert.Finding{}, false
 		}
+	}
+	if suppressedAsManagedWPCron(path, content) {
+		return alert.Finding{}, false
 	}
 	now := time.Now()
 	f := alert.Finding{
@@ -188,6 +198,9 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 		// A content change CSM itself made (e.g. installing a wp-cron) updates
 		// the stored baseline above but raises no finding.
 		if isExpectedSelfWrite(path, data) {
+			continue
+		}
+		if suppressedAsManagedWPCron(path, data) {
 			continue
 		}
 		kind := classifySensitive(path)
