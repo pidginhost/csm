@@ -816,7 +816,10 @@
                     stateKey: 'csm-email-quarantine',
                     mobileRowCard: true,
                     filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],
-                    rowFilter: _inRange
+                    rowFilter: _inRange,
+                    onRender: function() {
+                        if (_emailQuarBulk) _emailQuarBulk.refresh();
+                    }
                 });
                 _bindEmailQuarDateFilters(fromEl, toEl);
                 _bindEmailQuarURLState(fromEl, toEl);

@@ -150,7 +150,10 @@ function loadQuarantine() {
                 { id: 'quarantine-account-filter', attr: 'data-account' },
                 { id: 'quarantine-source-filter',  attr: 'data-source' }
             ],
-            rowFilter: _inRange
+            rowFilter: _inRange,
+            onRender: function() {
+                if (_quarBulk) _quarBulk.refresh();
+            }
         });
         _bindQuarDateFilters(fromEl, toEl);
         // WEB_ROADMAP P2.1 / P3.3: persist all filters to URL.

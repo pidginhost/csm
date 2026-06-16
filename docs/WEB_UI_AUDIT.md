@@ -363,3 +363,7 @@ preview content (untrusted malware sample text).
   `ui/static/js/csm-ui.js`. No JS unit harness in this repo (AGENTS: webui has
   no build step/framework); verified by full `internal/webui` Go suite (1232
   pass) + read-through of all three consumers + codex review.
+- Follow-up review found that table pagination/search/filter renders did not
+  repaint existing bulk bars, and ModSec still counted checked hidden rows
+  directly. Quarantine, email quarantine, and ModSec now refresh bulk state
+  after table renders; ModSec applies only visible-scoped `CSM.bulk` values.

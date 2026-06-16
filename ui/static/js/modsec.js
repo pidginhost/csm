@@ -115,18 +115,27 @@
         return id;
     }
 
-    function selectedModSecRuleIDs() {
+    function selectedModSecRuleIDs(values) {
         var ruleSet = Object.create(null);
-        document.querySelectorAll('.modsec-block-cb:checked:not(:disabled)').forEach(function(cb) {
-            var id = modsecRuleID(cb.getAttribute('data-rule'));
-            if (id !== null) ruleSet[id] = true;
-        });
+        if (!values && _modsecBulk) values = _modsecBulk.selectedValues();
+        if (values) {
+            values.forEach(function(raw) {
+                var id = modsecRuleID(raw);
+                if (id !== null) ruleSet[id] = true;
+            });
+        } else {
+            document.querySelectorAll('.modsec-block-cb:checked:not(:disabled)').forEach(function(cb) {
+                if (cb.offsetParent === null) return;
+                var id = modsecRuleID(cb.getAttribute('data-rule'));
+                if (id !== null) ruleSet[id] = true;
+            });
+        }
         return Object.keys(ruleSet).map(function(k) { return parseInt(k, 10); }).sort(function(a, b) { return a - b; });
     }
 
-    function syncModSecBulkButton(btn) {
+    function syncModSecBulkButton(btn, values) {
         if (!btn) return;
-        var n = selectedModSecRuleIDs().length;
+        var n = selectedModSecRuleIDs(values).length;
         btn.replaceChildren();
         var icon = document.createElement('i');
         icon.className = 'ti ti-circle-off';
@@ -393,6 +402,9 @@
                 title: 'No blocked IPs match',
                 reason: 'Try clearing the search or status filter.'
             },
+            onRender: function() {
+                if (_modsecBulk) _modsecBulk.refresh();
+            },
             onRowClick: function(rowEl) {
                 var ip = rowEl.getAttribute('data-csm-modsec-ip');
                 var rule = rowEl.getAttribute('data-csm-modsec-rule') || '';
@@ -410,7 +422,7 @@
                     selectAllEl: document.getElementById('modsec-select-all'),
                     selectAllSelector: '#modsec-select-all',
                     valueAttr: 'data-rule',
-                    onChange: function() { syncModSecBulkButton(modsecBulkBtn); }
+                    onChange: function(count, values) { syncModSecBulkButton(modsecBulkBtn, values); }
                 });
             } else {
                 _modsecBulk.refresh();
