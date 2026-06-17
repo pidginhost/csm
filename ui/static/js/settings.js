@@ -18,6 +18,9 @@
     let initialValues = {};
     let dirty = false;
     const dirtySections = new Set();
+    let pendingLeaveConfirm = null;
+    let pendingPopstateSection = null;
+    let popstateConfirmOpen = false;
 
     function csrfToken() {
         const meta = document.querySelector('meta[name="csrf-token"]');
@@ -173,7 +176,15 @@
     // than a synchronous boolean.
     function confirmLeaveIfDirty() {
         if (!dirty) return Promise.resolve();
-        return CSM.confirm("You have unsaved changes in this section. Discard them?");
+        if (pendingLeaveConfirm) return pendingLeaveConfirm;
+        pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?")
+            .then(function () {
+                pendingLeaveConfirm = null;
+            }, function (err) {
+                pendingLeaveConfirm = null;
+                return Promise.reject(err);
+            });
+        return pendingLeaveConfirm;
     }
 
     function pendingSectionNames(sections) {
@@ -1044,70 +1055,77 @@
     // ---- Tentative apply (firewall section) -----------------------------
     let rollbackTimer = null;
     let activeRollbackStatus = null;
+    let tentativeApplyRunning = false;
+    let revertRollbackRunning = false;
 
     async function tentativeApplyFirewall() {
         const btn = byId("settings-tentative-apply");
-        const changes = computeChanges();
-        if (Object.keys(changes).length === 0) {
-            toast("No changes to apply.", "info");
-            return;
-        }
-        let minutesStr;
+        if (tentativeApplyRunning) return;
+        tentativeApplyRunning = true;
+        if (btn) btn.disabled = true;
         try {
-            minutesStr = await CSM.prompt("Auto-revert if unconfirmed within how many minutes? (1-30)", "5");
-        } catch (e) {
-            return;
+            const changes = computeChanges();
+            if (Object.keys(changes).length === 0) {
+                toast("No changes to apply.", "info");
+                return;
+            }
+            let minutesStr;
+            try {
+                minutesStr = await CSM.prompt("Auto-revert if unconfirmed within how many minutes? (1-30)", "5");
+            } catch (e) {
+                return;
+            }
+            const minutes = parseInt(minutesStr, 10);
+            if (isNaN(minutes) || minutes < 1 || minutes > 30) {
+                toast("Timeout must be 1-30 minutes.", "error");
+                return;
+            }
+            const confirmMsg = "Apply firewall changes with a " + minutes + "-minute rollback timer?\n\n"
+                + "The daemon will restart with the new config. If you do not click Confirm before "
+                + "the timer expires, the previous config is restored automatically and the daemon "
+                + "restarts again.";
+            try {
+                await CSM.confirm(confirmMsg);
+            } catch (e) {
+                return;
+            }
+            let resp;
+            try {
+                resp = await CSM.request("/api/v1/settings/firewall/tentative-apply", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "If-Match": currentETag,
+                        "X-CSRF-Token": csrfToken()
+                    },
+                    body: JSON.stringify({changes: changes, timeout_min: minutes}),
+                    allowNonOK: true,
+                    silent: true
+                });
+            } catch (e) {
+                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                return;
+            }
+            if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
+            if (resp.status === 422) {
+                const data = await resp.json().catch(function () { return {}; });
+                showValidationErrors(data.errors || []);
+                toast("Validation errors. Review the highlighted fields.", "error");
+                return;
+            }
+            if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
+            if (!resp.ok) { toast("Tentative apply failed: " + resp.status, "error"); return; }
+            const data = await resp.json();
+            currentETag = data.new_etag;
+            dirty = false;
+            dirtySections.delete(currentSection);
+            refreshDirtyMarkers();
+            await pollHealth();
+            renderRollbackBanner(data.rollback);
+        } finally {
+            tentativeApplyRunning = false;
+            if (btn) btn.disabled = false;
         }
-        const minutes = parseInt(minutesStr, 10);
-        if (isNaN(minutes) || minutes < 1 || minutes > 30) {
-            toast("Timeout must be 1-30 minutes.", "error");
-            return;
-        }
-        const confirmMsg = "Apply firewall changes with a " + minutes + "-minute rollback timer?\n\n"
-            + "The daemon will restart with the new config. If you do not click Confirm before "
-            + "the timer expires, the previous config is restored automatically and the daemon "
-            + "restarts again.";
-        try {
-            await CSM.confirm(confirmMsg);
-        } catch (e) {
-            return;
-        }
-        btn.disabled = true;
-        let resp;
-        try {
-            resp = await CSM.request("/api/v1/settings/firewall/tentative-apply", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "If-Match": currentETag,
-                    "X-CSRF-Token": csrfToken()
-                },
-                body: JSON.stringify({changes: changes, timeout_min: minutes}),
-                allowNonOK: true,
-                silent: true
-            });
-        } catch (e) {
-            toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
-            btn.disabled = false;
-            return;
-        }
-        btn.disabled = false;
-        if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
-        if (resp.status === 422) {
-            const data = await resp.json().catch(function () { return {}; });
-            showValidationErrors(data.errors || []);
-            toast("Validation errors. Review the highlighted fields.", "error");
-            return;
-        }
-        if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
-        if (!resp.ok) { toast("Tentative apply failed: " + resp.status, "error"); return; }
-        const data = await resp.json();
-        currentETag = data.new_etag;
-        dirty = false;
-        dirtySections.delete(currentSection);
-        refreshDirtyMarkers();
-        await pollHealth();
-        renderRollbackBanner(data.rollback);
     }
 
     function renderRollbackBanner(status) {
@@ -1213,25 +1231,31 @@
     }
 
     async function revertRollback() {
+        if (revertRollbackRunning) return;
+        revertRollbackRunning = true;
         try {
-            await CSM.confirm("Revert firewall changes now? The daemon will restart with the previous config.");
-        } catch (e) {
-            return;
-        }
-        const resp = await CSM.request("/api/v1/settings/firewall/revert", {
-            method: "POST",
-            headers: {"X-CSRF-Token": csrfToken()},
-            allowNonOK: true,
-            silent: true
-        });
-        if (resp.ok) {
-            if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
-            activeRollbackStatus = null;
-            renderRollbackFooter(null);
-            await pollHealth();
-            window.location.reload();
-        } else {
-            toast("Revert failed: " + resp.status, "error");
+            try {
+                await CSM.confirm("Revert firewall changes now? The daemon will restart with the previous config.");
+            } catch (e) {
+                return;
+            }
+            const resp = await CSM.request("/api/v1/settings/firewall/revert", {
+                method: "POST",
+                headers: {"X-CSRF-Token": csrfToken()},
+                allowNonOK: true,
+                silent: true
+            });
+            if (resp.ok) {
+                if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+                activeRollbackStatus = null;
+                renderRollbackFooter(null);
+                await pollHealth();
+                window.location.reload();
+            } else {
+                toast("Revert failed: " + resp.status, "error");
+            }
+        } finally {
+            revertRollbackRunning = false;
         }
     }
 
@@ -1289,10 +1313,29 @@
             // sidebar navigation.
             window.addEventListener("popstate", function () {
                 const next = requestedSection();
+                if (popstateConfirmOpen) {
+                    // Browser history can change again while the discard modal is open.
+                    // Keep the final URL target instead of stacking another modal.
+                    pendingPopstateSection = next || currentSection;
+                    return;
+                }
                 if (next && next !== currentSection) {
+                    pendingPopstateSection = next;
+                    popstateConfirmOpen = true;
                     confirmLeaveIfDirty().then(function () {
-                        loadSection(next, {urlMode: "none"});
+                        const target = pendingPopstateSection;
+                        pendingPopstateSection = null;
+                        popstateConfirmOpen = false;
+                        if (target && target !== currentSection) {
+                            loadSection(target, {urlMode: "none"});
+                        } else if (target === currentSection && dirty) {
+                            // The operator returned to the current URL before confirming;
+                            // OK still means discard the edits in this section.
+                            loadSection(currentSection, {urlMode: "replace"});
+                        }
                     }).catch(function () {
+                        pendingPopstateSection = null;
+                        popstateConfirmOpen = false;
                         // popstate already moved the URL to `next`; restoring it
                         // happens after the operator dismisses the discard modal.
                         updateSectionURL(currentSection, "push");

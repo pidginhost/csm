@@ -3314,8 +3314,13 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 		`CSM.urlState.get("section")`,
 		`url.hash = "";`,
 		`loadSection(target, {urlMode: "replace"});`,
-		`loadSection(next, {urlMode: "none"});`,
+		`loadSection(target, {urlMode: "none"});`,
+		`loadSection(currentSection, {urlMode: "replace"});`,
 		`confirmLeaveIfDirty().then(function () {`,
+		`pendingPopstateSection = next || currentSection;`,
+		`pendingPopstateSection = next;`,
+		`if (popstateConfirmOpen) {`,
+		`const target = pendingPopstateSection;`,
 		`window.addEventListener("popstate", function () {`,
 	} {
 		if !strings.Contains(text, fragment) {
@@ -3330,6 +3335,37 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 	// CSM-unavailable fallback branch.
 	if strings.Contains(text, "window.location.hash = \"#\" + id;\n\n        const panel") {
 		t.Fatal("settings.js still always writes #hash on section change; move to CSM.urlState")
+	}
+}
+
+func TestSettingsAsyncDialogsDoNotReenter(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`let pendingLeaveConfirm = null;`,
+		`if (pendingLeaveConfirm) return pendingLeaveConfirm;`,
+		`pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?")`,
+		`let pendingPopstateSection = null;`,
+		`let popstateConfirmOpen = false;`,
+		`pendingPopstateSection = next || currentSection;`,
+		`popstateConfirmOpen = true;`,
+		`pendingPopstateSection = null;`,
+		`popstateConfirmOpen = false;`,
+		`let tentativeApplyRunning = false;`,
+		`if (tentativeApplyRunning) return;`,
+		`tentativeApplyRunning = true;`,
+		`tentativeApplyRunning = false;`,
+		`let revertRollbackRunning = false;`,
+		`if (revertRollbackRunning) return;`,
+		`revertRollbackRunning = true;`,
+		`revertRollbackRunning = false;`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("settings.js missing async dialog reentry guard fragment %q", fragment)
+		}
 	}
 }
 
@@ -4565,7 +4601,10 @@ func TestFilePreviewsUseSharedDetailPanel(t *testing.T) {
 	}
 	uiText := string(ui)
 	for _, want := range []string{
+		"titleEl.textContent = opts.title || '';",
+		"bodyEl.replaceChildren(opts.bodyNode);",
 		"CSM.filePreview = function(title, subhead, text) {",
+		"meta.textContent = subhead;",
 		"pre.textContent =",
 		"CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });",
 	} {

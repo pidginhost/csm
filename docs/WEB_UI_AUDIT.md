@@ -505,8 +505,11 @@ preview content (untrusted malware sample text).
   is async it now returns a Promise and the three callers (nav-link click, the
   Discard button, and the popstate section guard) branch on `.then`/`.catch`. The
   popstate case restores the URL after the operator dismisses the discard modal
-  rather than synchronously, since popstate has already moved it. The two async
-  firewall handlers `await` the helpers in try/catch. Separately, the quarantine
+  rather than synchronously, since popstate has already moved it; repeated
+  back/forward events while the modal is open are coalesced onto the last
+  requested section. The two async firewall handlers `await` the helpers in
+  try/catch and keep in-flight guards so duplicate triggers cannot stack prompts
+  or submit stale choices. Separately, the quarantine
   and cleanup file/DB previews hijacked the `csm-confirm-modal` element (resizing
   it, hiding Cancel, relabeling OK to Close) with two competing teardown paths
   and a stuck-modal risk; both now render through a new shared `CSM.filePreview`
@@ -516,8 +519,8 @@ preview content (untrusted malware sample text).
   shared confirm modal" lower-severity finding. Pure-JS/CSS change (no build
   step); pinned by TestNoNativeBrowserDialogsInWebUISources (no `window.*`
   dialog across any JS source) and TestFilePreviewsUseSharedDetailPanel, with
-  `node --check`. The existing P3.8 deep-link test pinned the old synchronous
-  popstate fragment; updated to the async guard, preserving its intent.
+  `node --check`. The existing P3.8 deep-link test and
+  TestSettingsAsyncDialogsDoNotReenter pin the async guard behavior.
   `ui/static/js/views.js`, `ui/static/js/settings.js`, `ui/static/js/quarantine.js`,
   `ui/static/js/cleanup-history.js`, `ui/static/js/csm-ui.js`,
   `ui/static/css/csm.css`, `internal/webui/static_ui_test.go`.
