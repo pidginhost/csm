@@ -167,7 +167,8 @@ Fix: guard zero/null; neutral styling for "no limit".
 to wrong colors. 56 `!important` exist mostly to win the literal-vs-token war.
 Evidence: `csm.css:20-32`, `47-65`, `1108,1111,1082`.
 Fix: pick one dark palette, define tokens once, replace literals with
-`var(--csm-*)`, drop the now-unneeded `!important`.
+`var(--csm-*)`, and drop the now-unneeded navbar `!important`. Keep
+`!important` only where Tabler marks the competing utility rule important.
 
 ### 9. Four badge/severity color systems (High)
 Custom `badge-critical/high/warning`, solid Tabler `bg-red/orange`, soft
@@ -472,9 +473,10 @@ preview content (untrusted malware sample text).
   page chrome, so the visible theme is essentially unchanged), added
   `--csm-bg-page`/`--csm-success`/`--csm-secondary` tokens, redefined the dark
   `--csm-border`/`--csm-text`/`--csm-text-muted` to the unified values, and
-  replaced every hardcoded surface literal with `var(--csm-*)`. The two
-  remaining `!important` in the dark override block (navbar background, muted
-  text) override Tabler's own selectors, not a token conflict, so they stay.
+  replaced every hardcoded surface literal with `var(--csm-*)`. The navbar
+  override no longer uses `!important`, so the tokenized top utility bar can
+  keep the card surface while the sidebar uses the page surface. The remaining
+  `!important` on muted text overrides Tabler's own important utility rule.
   Pure-CSS change (no build step/JS), pinned by
   TestDarkPaletteConsolidatedToSingleTokenSet, which counts each surface literal
   down to its single token definition and checks no `var(--csm-*)` is left

@@ -879,15 +879,17 @@ func TestHardeningAndRedisGuardZeroAndNoLimit(t *testing.T) {
 // literal set (#1a2234 page, #2d3a4e border, #c8d3e0 text) repeated across ~40
 // rules -- plus undefined --csm-success/--csm-secondary tokens that left the SSE
 // status dots on the light-theme fallback colors even in dark mode. The dark
-// surface palette is now defined once as tokens and every override references
-// var(--csm-*), so each surface literal survives only as its single token
-// definition.
+// surface palette is now defined once as tokens and the remaining overrides use
+// those tokens without reintroducing a competing important rule.
 func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
 	css, err := os.ReadFile("../../ui/static/css/csm.css")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(css)
+	rules := parseCSSRules(text)
+	rootVars := cssVariables(rules[":root"])
+	darkVars := cssVariables(rules[".theme-dark"])
 
 	for _, want := range []string{
 		// success/secondary defined in both themes (were undefined).
@@ -904,6 +906,7 @@ func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
 		// overrides now reference the tokens.
 		".theme-dark .card { background-color: var(--csm-bg-card); border-color: var(--csm-border); color: var(--csm-text); }",
 		".theme-dark .text-muted { color: var(--csm-text-muted) !important; }",
+		".theme-dark .navbar { background-color: var(--csm-bg-page); border-color: var(--csm-border); }",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("csm.css missing consolidated dark-palette fragment %q", want)
@@ -926,6 +929,53 @@ func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
 	// The old divergent dark border token value is gone.
 	if strings.Contains(text, "#334155") {
 		t.Error("csm.css still defines the divergent #334155 dark border; unify on --csm-border")
+	}
+
+	for _, tc := range []struct {
+		selector string
+		property string
+		want     string
+	}{
+		{".csm-sse-pill", "color", "var(--csm-secondary)"},
+		{".csm-sse-pill__dot", "background", "var(--csm-secondary)"},
+		{".csm-sse-pill.is-connecting .csm-sse-pill__dot", "background", "var(--csm-warning)"},
+		{".csm-sse-pill.is-reconnecting .csm-sse-pill__dot", "background", "var(--csm-warning)"},
+		{".csm-sse-pill.is-connected .csm-sse-pill__dot", "background", "var(--csm-success)"},
+		{".csm-sse-pill.is-disconnected .csm-sse-pill__dot", "background", "var(--csm-secondary)"},
+	} {
+		if got := cssDeclaration(t, rules, tc.selector, tc.property); got != tc.want {
+			t.Errorf("csm.css %s %s = %q, want %q", tc.selector, tc.property, got, tc.want)
+		}
+	}
+
+	navbarBG := cssDeclaration(t, rules, ".theme-dark .navbar", "background-color")
+	if strings.Contains(navbarBG, "!important") {
+		t.Fatal("dark navbar background must not be important; it prevents later tokenized component overrides from winning")
+	}
+	if got := resolveCSSColor(t, navbarBG, darkVars); got != "#1a2234" {
+		t.Fatalf("dark navbar background resolves to %s, want page token #1a2234", got)
+	}
+	if got := resolveCSSColor(t, cssDeclaration(t, rules, ".theme-dark .csm-topbar", "background"), darkVars); got != "#1e293b" {
+		t.Fatalf("dark topbar background resolves to %s, want card token #1e293b", got)
+	}
+	if navbarIdx, topbarIdx := strings.Index(text, ".theme-dark .navbar"), strings.Index(text, ".theme-dark .csm-topbar"); navbarIdx < 0 || topbarIdx < 0 || navbarIdx > topbarIdx {
+		t.Fatal("dark topbar rule must remain after dark navbar rule so equal-specificity background declarations cascade correctly")
+	}
+
+	csmVarUse := regexp.MustCompile(`var\(\s*(--csm-[a-z0-9-]+)(?:\s*,[^)]*)?\)`)
+	seen := make(map[string]struct{})
+	for _, match := range csmVarUse.FindAllStringSubmatch(text, -1) {
+		name := match[1]
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		if _, ok := rootVars[name]; !ok {
+			t.Errorf("csm.css uses %s without defining it in :root", name)
+		}
+		if _, ok := darkVars[name]; !ok {
+			t.Errorf("csm.css uses %s without defining it in .theme-dark", name)
+		}
 	}
 }
 
@@ -3871,6 +3921,7 @@ func TestDarkModeContrastPalette(t *testing.T) {
 
 	pageDark := color(".theme-dark", "background-color", darkVars)
 	cardDark := color(".theme-dark .card", "background-color", darkVars)
+	topbarDark := color(".theme-dark .csm-topbar", "background", darkVars)
 	for _, tc := range []struct {
 		name       string
 		foreground string
@@ -3898,6 +3949,7 @@ func TestDarkModeContrastPalette(t *testing.T) {
 		{"dark muted text on card", color(".theme-dark .text-muted", "color", darkVars), cardDark},
 		{"dark subheader on page", color(".theme-dark .subheader", "color", darkVars), pageDark},
 		{"dark subheader on card", color(".theme-dark .subheader", "color", darkVars), cardDark},
+		{"dark SSE pill on topbar", color(".csm-sse-pill", "color", darkVars), topbarDark},
 	} {
 		assertContrast(tc.name, tc.foreground, tc.background)
 	}
