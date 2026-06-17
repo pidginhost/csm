@@ -539,10 +539,11 @@ preview content (untrusted malware sample text).
   hardening report load runs once on page open, so its catch now toasts (the page
   passes `silent:true` precisely to own its messaging, and the empty-state with
   Run Audit stays as the recovery path). The firewall challenge panel refreshes
-  on the shared auto-refresh poll, so a per-poll toast would spam; its catch now
-  renders an inline error in the panel body and the next poll repopulates it.
+  on the shared auto-refresh poll, so a per-poll toast would spam; its request is
+  silent, its catch clears stale counts and routes while rendering an inline error
+  in the panel body, and the next poll repopulates it.
   Separately deduplicated the account page's hand-rolled loading skeleton onto the
-  shared `CSM.loading` (byte-identical markup). Pure-JS fixes; pinned by
+  shared `CSM.loading`. Pure-JS fixes; pinned by
   TestNoSilentFetchCatchesInWebUISources (global ban on no-comment empty
   `.catch`) and TestLoadFailuresAreSurfaced, with `node --check`.
   `ui/static/js/hardening.js`, `ui/static/js/firewall.js`,

@@ -807,8 +807,19 @@ function refreshFirewallData() {
 // loadChallenges renders the proof-of-work challenge activity panel: live
 // pending count, how many timeouts escalated to a hard block, cumulative routes
 // per source check (since restart), and the most recent routes.
+function renderChallengeLoadError() {
+    var pending = document.getElementById('fw-chal-pending');
+    var escalated = document.getElementById('fw-chal-escalated');
+    var bc = document.getElementById('fw-chal-bychecks');
+    var rc = document.getElementById('fw-chal-recent');
+    if (pending) pending.textContent = '-';
+    if (escalated) escalated.textContent = '-';
+    if (bc) bc.innerHTML = '<div class="text-danger small">Failed to load challenge activity.</div>';
+    if (rc) rc.innerHTML = '<tr><td colspan="3" class="text-muted small">Retrying on the next refresh.</td></tr>';
+}
+
 function loadChallenges() {
-    CSM.get('/api/v1/challenge/stats')
+    CSM.get('/api/v1/challenge/stats', { silent: true })
         .then(function(d) {
             document.getElementById('fw-chal-pending').textContent = d.pending || 0;
             document.getElementById('fw-chal-escalated').textContent = d.escalated || 0;
@@ -853,8 +864,7 @@ function loadChallenges() {
             // Refreshed on the shared auto-refresh poll, so a toast per failed
             // poll would spam; show an inline error in the panel body instead
             // and let the next poll (or manual Refresh) repopulate it.
-            var bc = document.getElementById('fw-chal-bychecks');
-            if (bc) bc.innerHTML = '<div class="text-danger small">Failed to load challenge activity.</div>';
+            renderChallengeLoadError();
         });
 }
 

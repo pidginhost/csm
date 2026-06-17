@@ -166,7 +166,9 @@
         CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
             .catch(function(err) {
-                CSM.toast(err && err.message ? err.message : 'Failed to load hardening report', 'error');
+                var msg = 'Failed to load hardening report';
+                if (err && err.message) msg += ': ' + err.message;
+                CSM.toast(msg, 'error');
             });
     }
 

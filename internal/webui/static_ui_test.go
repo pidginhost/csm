@@ -4623,6 +4623,21 @@ func TestFilePreviewsUseSharedDetailPanel(t *testing.T) {
 func TestNoSilentFetchCatchesInWebUISources(t *testing.T) {
 	files := webUISourceFiles(t, "../../ui/static/js/*.js")
 	empty := regexp.MustCompile(`\.catch\(function\s*\([^)]*\)\s*\{\s*\}\)`)
+	for _, tc := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{"empty", `.catch(function() {})`, true},
+		{"emptyWithArg", `.catch(function(err) { })`, true},
+		{"commentedCancel", `.catch(function() { /* cancelled */ })`, false},
+		{"commentedBestEffort", ".catch(function() {\n    // optional best-effort poll\n})", false},
+		{"hasBody", `.catch(function() { return null; })`, false},
+	} {
+		if got := empty.MatchString(tc.source); got != tc.want {
+			t.Fatalf("empty catch regex for %s = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 	for _, path := range files {
 		src, err := os.ReadFile(path)
 		if err != nil {
@@ -4640,22 +4655,40 @@ func TestNoSilentFetchCatchesInWebUISources(t *testing.T) {
 // challenge panel (refreshed on the shared auto-refresh poll, so a toast would
 // spam) renders an inline error instead of staying on stale placeholders; and
 // the account page reuses the shared CSM.loading skeleton instead of a
-// hand-rolled copy of the same markup.
+// hand-rolled page-local skeleton.
 func TestLoadFailuresAreSurfaced(t *testing.T) {
 	hard, err := os.ReadFile("../../ui/static/js/hardening.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(hard), "'Failed to load hardening report'") {
-		t.Error("hardening.js loadReport must surface a load failure instead of swallowing it")
+	hardText := string(hard)
+	for _, want := range []string{
+		`var msg = 'Failed to load hardening report';`,
+		`if (err && err.message) msg += ': ' + err.message;`,
+		`CSM.toast(msg, 'error');`,
+	} {
+		if !strings.Contains(hardText, want) {
+			t.Errorf("hardening.js loadReport missing load-failure fragment %q", want)
+		}
 	}
 
 	fw, err := os.ReadFile("../../ui/static/js/firewall.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(fw), `Failed to load challenge activity.`) {
-		t.Error("firewall.js loadChallenges must show an inline error when the challenge stats fail to load")
+	fwText := string(fw)
+	for _, want := range []string{
+		`CSM.get('/api/v1/challenge/stats', { silent: true })`,
+		`function renderChallengeLoadError()`,
+		`document.getElementById('fw-chal-pending')`,
+		`document.getElementById('fw-chal-escalated')`,
+		`document.getElementById('fw-chal-recent')`,
+		`Failed to load challenge activity.`,
+		`renderChallengeLoadError();`,
+	} {
+		if !strings.Contains(fwText, want) {
+			t.Errorf("firewall.js loadChallenges missing inline-error fragment %q", want)
+		}
 	}
 
 	acct, err := os.ReadFile("../../ui/static/js/account.js")
