@@ -874,6 +874,61 @@ func TestHardeningAndRedisGuardZeroAndNoLimit(t *testing.T) {
 	}
 }
 
+// TestDarkPaletteConsolidatedToSingleTokenSet pins item 8: the dark theme had
+// two disagreeing palettes -- a --csm-* token set and a parallel hardcoded
+// literal set (#1a2234 page, #2d3a4e border, #c8d3e0 text) repeated across ~40
+// rules -- plus undefined --csm-success/--csm-secondary tokens that left the SSE
+// status dots on the light-theme fallback colors even in dark mode. The dark
+// surface palette is now defined once as tokens and every override references
+// var(--csm-*), so each surface literal survives only as its single token
+// definition.
+func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(css)
+
+	for _, want := range []string{
+		// success/secondary defined in both themes (were undefined).
+		"--csm-success: #2fb344;",
+		"--csm-secondary: #6c757d;",
+		"--csm-success: #51cf66;",
+		"--csm-secondary: #94a3b8;",
+		// single dark surface palette, defined once.
+		"--csm-bg-page: #f5f7fb;",
+		"--csm-bg-page: #1a2234;",
+		"--csm-border: #2d3a4e;",
+		"--csm-text: #c8d3e0;",
+		"--csm-text-muted: #8d99ad;",
+		// overrides now reference the tokens.
+		".theme-dark .card { background-color: var(--csm-bg-card); border-color: var(--csm-border); color: var(--csm-text); }",
+		".theme-dark .text-muted { color: var(--csm-text-muted) !important; }",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("csm.css missing consolidated dark-palette fragment %q", want)
+		}
+	}
+
+	// Each dark surface literal must survive only as its single token
+	// definition (plus, for the text color, the one defensive var() fallback
+	// on the command palette), never as a scattered hardcoded value.
+	for lit, want := range map[string]int{
+		"#1a2234": 1, // --csm-bg-page definition
+		"#2d3a4e": 1, // --csm-border definition
+		"#8d99ad": 1, // --csm-text-muted definition
+		"#c8d3e0": 2, // --csm-text definition + .csm-palette__box var() fallback
+	} {
+		if got := strings.Count(text, lit); got != want {
+			t.Errorf("csm.css literal %s appears %d times, want %d (consolidate to var(--csm-*))", lit, got, want)
+		}
+	}
+	// The old divergent dark border token value is gone.
+	if strings.Contains(text, "#334155") {
+		t.Error("csm.css still defines the divergent #334155 dark border; unify on --csm-border")
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

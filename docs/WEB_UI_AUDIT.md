@@ -67,7 +67,7 @@ P0 (data loss + wrong data):
 - [x] 7. NaN/null rendered: hardening score, Redis no-limit card (Medium) -- DONE, see change log
 
 P1 (systemic consistency):
-- [ ] 8. Two disagreeing dark palettes + undefined CSS tokens (High)
+- [x] 8. Two disagreeing dark palettes + undefined CSS tokens (High) -- DONE, see change log
 - [ ] 9. Four badge/severity color systems; CRITICAL gray on incident list (High)
 - [ ] 10. Four dialog patterns incl. native window.confirm/prompt (High)
 - [ ] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High)
@@ -460,3 +460,22 @@ preview content (untrusted malware sample text).
   with TestHardeningAndRedisGuardZeroAndNoLimit and `node --check`.
   `ui/static/js/hardening.js`, `ui/static/js/performance.js`,
   `internal/webui/static_ui_test.go`.
+- Item 8 (High): two disagreeing dark palettes. The `:root`/`.theme-dark` token
+  block defined one dark surface set (border `#334155`, text `#e2e8f0`) while a
+  parallel block of hardcoded literals (page `#1a2234`, border `#2d3a4e`, text
+  `#c8d3e0`, muted `#8d99ad`) repeated across ~40 rules defined another, so
+  components styled via tokens and components styled via Tabler overrides drew
+  slightly different borders and text. `--csm-success` and `--csm-secondary`
+  were referenced by the SSE connection dots but never defined, so the dots fell
+  back to the light-theme green/gray even in dark mode. Picked the
+  literal-block values as the single dark palette (they were on the dominant
+  page chrome, so the visible theme is essentially unchanged), added
+  `--csm-bg-page`/`--csm-success`/`--csm-secondary` tokens, redefined the dark
+  `--csm-border`/`--csm-text`/`--csm-text-muted` to the unified values, and
+  replaced every hardcoded surface literal with `var(--csm-*)`. The two
+  remaining `!important` in the dark override block (navbar background, muted
+  text) override Tabler's own selectors, not a token conflict, so they stay.
+  Pure-CSS change (no build step/JS), pinned by
+  TestDarkPaletteConsolidatedToSingleTokenSet, which counts each surface literal
+  down to its single token definition and checks no `var(--csm-*)` is left
+  undefined. `ui/static/css/csm.css`, `internal/webui/static_ui_test.go`.
