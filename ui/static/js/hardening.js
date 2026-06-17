@@ -159,9 +159,15 @@
     }
 
     function loadReport() {
+        // silent:true so CSM.request does not toast; the page owns its own
+        // messaging. The empty-state ("no audit run yet") stays visible as the
+        // recovery path, but a swallowed failure would read as "nothing has run"
+        // rather than "the load failed", so surface it.
         CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
-            .catch(function() {});
+            .catch(function(err) {
+                CSM.toast(err && err.message ? err.message : 'Failed to load hardening report', 'error');
+            });
     }
 
     function runAudit() {

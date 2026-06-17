@@ -15,7 +15,7 @@
     var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
 
     function showSpinner() {
-        content.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
+        CSM.loading(content);
     }
 
     function setActiveTab(tab) {

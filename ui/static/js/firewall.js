@@ -849,7 +849,13 @@ function loadChallenges() {
                 }).join('');
             }
         })
-        .catch(function() {});
+        .catch(function() {
+            // Refreshed on the shared auto-refresh poll, so a toast per failed
+            // poll would spam; show an inline error in the panel body instead
+            // and let the next poll (or manual Refresh) repopulate it.
+            var bc = document.getElementById('fw-chal-bychecks');
+            if (bc) bc.innerHTML = '<div class="text-danger small">Failed to load challenge activity.</div>';
+        });
 }
 
 // /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;

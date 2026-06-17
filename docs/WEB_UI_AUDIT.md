@@ -70,7 +70,7 @@ P1 (systemic consistency):
 - [x] 8. Two disagreeing dark palettes + undefined CSS tokens (High) -- DONE, see change log
 - [x] 9. Four badge/severity color systems; CRITICAL gray on incident list (High) -- DONE, see change log
 - [x] 10. Four dialog patterns incl. native window.confirm/prompt (High) -- DONE, see change log
-- [ ] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High)
+- [x] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High) -- DONE, see change log
 - [ ] 12. location.reload() after actions loses filters/scroll (Medium)
 - [ ] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium)
 
@@ -524,3 +524,26 @@ preview content (untrusted malware sample text).
   `ui/static/js/views.js`, `ui/static/js/settings.js`, `ui/static/js/quarantine.js`,
   `ui/static/js/cleanup-history.js`, `ui/static/js/csm-ui.js`,
   `ui/static/css/csm.css`, `internal/webui/static_ui_test.go`.
+- Item 11 (High): silent fetch failures. The original finding bundled three
+  claims; on re-checking the current tree, two were already stale. `CSM.loading`/
+  `CSM.loadError` are NOT dead -- items 1-10 and prior work adopted `CSM.loadError`
+  (with retry) across ~10 pages (firewall, incident, rules, audit, history,
+  quarantine, cleanup, email, threat); only the one-off button busy-states and a
+  few custom-text panel loaders remain hand-rolled, which is not a defect. The
+  "two competing empty-state helpers" are `CSM.emptyState` (table `<tr><td
+  colspan>`) and `CSM.emptyStateBlock` (non-table rich block) -- different render
+  targets, not redundant, so not merged. The real, High-severity half was the
+  silent fetch catches: `loadReport` on the hardening page and `loadChallenges`
+  on the firewall page both used `.catch(function(){})`, so a failed load was
+  indistinguishable from "no audit run yet" / an empty challenge panel. The
+  hardening report load runs once on page open, so its catch now toasts (the page
+  passes `silent:true` precisely to own its messaging, and the empty-state with
+  Run Audit stays as the recovery path). The firewall challenge panel refreshes
+  on the shared auto-refresh poll, so a per-poll toast would spam; its catch now
+  renders an inline error in the panel body and the next poll repopulates it.
+  Separately deduplicated the account page's hand-rolled loading skeleton onto the
+  shared `CSM.loading` (byte-identical markup). Pure-JS fixes; pinned by
+  TestNoSilentFetchCatchesInWebUISources (global ban on no-comment empty
+  `.catch`) and TestLoadFailuresAreSurfaced, with `node --check`.
+  `ui/static/js/hardening.js`, `ui/static/js/firewall.js`,
+  `ui/static/js/account.js`, `internal/webui/static_ui_test.go`.

@@ -4613,3 +4613,60 @@ func TestFilePreviewsUseSharedDetailPanel(t *testing.T) {
 		}
 	}
 }
+
+// TestNoSilentFetchCatchesInWebUISources pins item 11: a fetch .catch with an
+// empty body swallows the load failure, so a stuck spinner or stale panel is
+// indistinguishable from genuinely-empty data and the operator never learns the
+// request failed. Catches that are deliberately quiet (a CSM.confirm cancel, an
+// optional best-effort poll) carry a comment explaining why, so the rule is
+// specifically about the no-comment empty body.
+func TestNoSilentFetchCatchesInWebUISources(t *testing.T) {
+	files := webUISourceFiles(t, "../../ui/static/js/*.js")
+	empty := regexp.MustCompile(`\.catch\(function\s*\([^)]*\)\s*\{\s*\}\)`)
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if empty.Match(src) {
+			t.Errorf("%s has a silent empty .catch; surface the load failure (toast or inline error)", path)
+		}
+	}
+}
+
+// TestLoadFailuresAreSurfaced pins the concrete item 11 fixes: the hardening
+// report load (one-time, on page open) toasts on failure instead of leaving the
+// "no audit yet" empty-state showing as if nothing had run; the firewall
+// challenge panel (refreshed on the shared auto-refresh poll, so a toast would
+// spam) renders an inline error instead of staying on stale placeholders; and
+// the account page reuses the shared CSM.loading skeleton instead of a
+// hand-rolled copy of the same markup.
+func TestLoadFailuresAreSurfaced(t *testing.T) {
+	hard, err := os.ReadFile("../../ui/static/js/hardening.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hard), "'Failed to load hardening report'") {
+		t.Error("hardening.js loadReport must surface a load failure instead of swallowing it")
+	}
+
+	fw, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fw), `Failed to load challenge activity.`) {
+		t.Error("firewall.js loadChallenges must show an inline error when the challenge stats fail to load")
+	}
+
+	acct, err := os.ReadFile("../../ui/static/js/account.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acctText := string(acct)
+	if !strings.Contains(acctText, "CSM.loading(content)") {
+		t.Error("account.js should render its loading skeleton through the shared CSM.loading helper")
+	}
+	if strings.Contains(acctText, `<span class="spinner-border spinner-border-sm"></span> Loading...`) {
+		t.Error("account.js still hand-rolls the loading skeleton; use CSM.loading")
+	}
+}
