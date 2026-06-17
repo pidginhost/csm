@@ -24,10 +24,17 @@
         document.getElementById('empty-state').classList.add('d-none');
         document.getElementById('score-card').classList.remove('d-none');
 
-        // Guard a zero or absent total: score/total would be NaN, the percent
-        // fell through every threshold below and painted the bar danger-red.
-        var total = Number(report.total) || 0;
-        var score = Number(report.score) || 0;
+        // Stored reports should carry score/total, but derive them from rows
+        // when either field is missing so incomplete payloads remain useful.
+        var rawTotal = Number(report.total);
+        var total = report.total != null && isFinite(rawTotal) && rawTotal > 0 ? Math.floor(rawTotal) : report.results.length;
+        var rawScore = Number(report.score);
+        var score = report.score != null && isFinite(rawScore) && rawScore >= 0 ? Math.floor(rawScore) : 0;
+        if (report.score == null || !isFinite(rawScore) || rawScore < 0) {
+            for (var si = 0; si < report.results.length; si++) {
+                if (report.results[si].status === 'pass') score++;
+            }
+        }
         var pct = total > 0 ? Math.round((score / total) * 100) : 0;
         document.getElementById('score-text').textContent = score + ' / ' + total + ' checks passed';
         var bar = document.getElementById('score-bar');

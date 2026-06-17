@@ -843,8 +843,12 @@ func TestHardeningAndRedisGuardZeroAndNoLimit(t *testing.T) {
 	}
 	hardeningText := string(hardening)
 	for _, want := range []string{
-		"var total = Number(report.total) || 0;",
-		"var score = Number(report.score) || 0;",
+		"var rawTotal = Number(report.total);",
+		"var total = report.total != null && isFinite(rawTotal) && rawTotal > 0 ? Math.floor(rawTotal) : report.results.length;",
+		"var rawScore = Number(report.score);",
+		"var score = report.score != null && isFinite(rawScore) && rawScore >= 0 ? Math.floor(rawScore) : 0;",
+		"if (report.score == null || !isFinite(rawScore) || rawScore < 0) {",
+		"if (report.results[si].status === 'pass') score++;",
 		"var pct = total > 0 ? Math.round((score / total) * 100) : 0;",
 		"document.getElementById('score-text').textContent = score + ' / ' + total + ' checks passed';",
 		"if (total === 0) bar.classList.add('bg-secondary');",

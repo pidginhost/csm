@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI size formatting now leaves missing or invalid byte counts blank instead of rendering `null` or `NaN` text.
 - Email findings show the account and source IP from structured finding data, so IPv6 attacker addresses are no longer blank and the columns no longer break when a message is reworded.
 - Email findings now keep account and IP values for legacy mail-log rows and bare cPanel auth users when stored rows predate structured fields.
-- Hardening score no longer renders a NaN percentage or a red bar when no checks ran, and the performance Redis card no longer paints a healthy unlimited-maxmemory Redis red.
+- Hardening score no longer renders a NaN percentage, derives missing score data from result rows, and uses a neutral bar when no checks ran. The performance Redis card no longer paints a healthy unlimited-maxmemory Redis red.
 
 ## [3.16.1] - 2026-06-15
 

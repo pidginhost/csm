@@ -448,9 +448,10 @@ preview content (untrusted malware sample text).
 - Item 7 (Medium): NaN/no-limit rendering. The hardening score computed
   `Math.round((report.score / report.total) * 100)`; an absent or zero total
   made the percent NaN, which fell through every `pct >=` threshold and painted
-  the progress bar danger-red. It now coerces `score`/`total` to numbers, shows
-  `score / total checks passed`, and renders a neutral `bg-secondary` bar when no
-  checks ran. The performance Redis card painted a healthy no-maxmemory Redis red
+  the progress bar danger-red. It now derives missing `score`/`total` values from
+  the result rows, shows `score / total checks passed`, and renders a neutral
+  `bg-secondary` bar when no checks ran. The performance Redis card painted a
+  healthy no-maxmemory Redis red
   (`text-danger` whenever used memory was above zero); an unbounded maxmemory is
   the normal default and is surfaced as a `perf_redis_config` finding when it
   matters, so the "no limit" card is now neutral. Earlier in this effort the
