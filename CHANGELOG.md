@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardening score no longer renders a NaN percentage, derives missing score data from result rows, and uses a neutral bar when no checks ran. The performance Redis card no longer paints a healthy unlimited-maxmemory Redis red.
 - Dark theme now resolves all surface colors from one set of tokens instead of two slightly different palettes. The top bar keeps the card surface, and the connection-status pill uses dark-theme colors instead of light fallbacks.
 - Incident list now shows CRITICAL as a red badge instead of a gray one, and modsec event severities use the same severity colors as the rest of the UI.
+- Severity badges now keep a neutral color for missing or unexpected values instead of showing them as warnings or unstyled badges.
 
 ## [3.16.1] - 2026-06-15
 

@@ -8,10 +8,11 @@ var _sevTitles = {
     0: 'Warning: low-risk issue to review'
 };
 CSM.severityBadge = function(severity) {
-    var cls = 'warning', label = 'WARNING';
+    var cls = 'secondary', label = 'UNKNOWN';
     if (severity === 2) { cls = 'critical'; label = 'CRITICAL'; }
     else if (severity === 1) { cls = 'high'; label = 'HIGH'; }
-    var title = _sevTitles[severity] || _sevTitles[0];
+    else if (severity === 0) { cls = 'warning'; label = 'WARNING'; }
+    var title = _sevTitles[severity] || 'Unknown severity value';
     return '<span class="badge badge-' + cls + '" title="' + title + '">' + label + '</span>';
 };
 
@@ -19,7 +20,8 @@ CSM.severityBadge = function(severity) {
 CSM.severityClass = function(severity) {
     if (severity === 2) return 'critical';
     if (severity === 1) return 'high';
-    return 'warning';
+    if (severity === 0) return 'warning';
+    return 'secondary';
 };
 
 // Severity class name from a string label (CRITICAL/HIGH/WARNING, any case).
@@ -27,11 +29,12 @@ CSM.severityClass = function(severity) {
 // text label render the same token-backed .badge-* color as the numeric paths,
 // instead of inventing their own Bootstrap/Tabler color scale.
 CSM.severityClassFromLabel = function(label) {
-    switch (String(label || '').toUpperCase()) {
+    switch (String(label || '').trim().toUpperCase()) {
         case 'CRITICAL': return 'critical';
         case 'HIGH': return 'high';
-        default: return 'warning';
+        case 'WARNING': return 'warning';
     }
+    return 'secondary';
 };
 
 // Centralized severity map: numeric level → { label, cls }

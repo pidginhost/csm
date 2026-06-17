@@ -918,7 +918,7 @@ func severityClass(sev alert.Severity) string {
 	case alert.Warning:
 		return "warning"
 	default:
-		return "info"
+		return "secondary"
 	}
 }
 

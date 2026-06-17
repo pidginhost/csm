@@ -74,7 +74,9 @@
 .badge-critical { background: var(--csm-critical); color: #fff; }
 .badge-high { background: var(--csm-high); color: #1a1a1a; }
 .badge-warning { background: var(--csm-warning); color: #1a1a1a; }
+.badge-secondary { background: var(--csm-secondary); color: #fff; }
 .theme-dark .badge-critical { color: #1a1a1a; }
+.theme-dark .badge-secondary { color: #1a1a1a; }
 .text-critical { color: var(--csm-critical); }
 .text-high { color: var(--csm-high); }
 .text-warning { color: var(--csm-warning); }

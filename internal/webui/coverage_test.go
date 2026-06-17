@@ -314,7 +314,7 @@ func TestSeverityClassAllLevels(t *testing.T) {
 		alert.Critical:     "critical",
 		alert.High:         "high",
 		alert.Warning:      "warning",
-		alert.Severity(99): "info",
+		alert.Severity(99): "secondary",
 	}
 	for sev, want := range cases {
 		if got := severityClass(sev); got != want {

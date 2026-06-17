@@ -488,10 +488,11 @@ preview content (untrusted malware sample text).
   severe. The modsec events table used a third scale (solid
   `bg-red`/`bg-orange`/`bg-yellow`). Added a shared `CSM.severityClassFromLabel`
   helper that maps a CRITICAL/HIGH/WARNING label to the same token-backed
-  `.badge-critical`/`.badge-high`/`.badge-warning` class the numeric
-  `CSM.severityBadge`/`CSM.sevMap` paths already use, and routed both tables
-  through it (dropping the incident `sevClasses` map). Status, action, verdict,
-  and check-type badges are a different semantic axis and keep their own colors.
-  Pure-JS render fix, pinned by TestSeverityBadgesUseCanonicalTokenClasses with
-  `node --check`. `ui/static/js/csm-ui.js`, `ui/static/js/incident.js`,
+  `.badge-critical`/`.badge-high`/`.badge-warning` classes the numeric paths
+  use, routed both tables through it (dropping the incident `sevClasses` map),
+  and kept missing or unexpected severity values on neutral `.badge-secondary`
+  instead of warning or unstyled info badges. Status, action, verdict, and
+  check-type badges are a different semantic axis and keep their own colors.
+  Pinned by TestSeverityBadgesUseCanonicalTokenClasses with `node --check`.
+  `ui/static/css/csm.css`, `ui/static/js/csm-ui.js`, `ui/static/js/incident.js`,
   `ui/static/js/modsec.js`, `internal/webui/static_ui_test.go`.

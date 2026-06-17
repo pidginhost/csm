@@ -979,9 +979,9 @@ func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
 	}
 }
 
-// TestSeverityBadgesUseCanonicalTokenClasses pins item 9: severity labels must
+// TestSeverityBadgesUseCanonicalTokenClasses pins item 9: severity values must
 // render through the token-backed .badge-critical/.badge-high/.badge-warning
-// classes everywhere, via the shared CSM.severityClassFromLabel helper. The
+// classes everywhere. Label-only tables use CSM.severityClassFromLabel. The
 // incident list mapped CRITICAL to the gray Bootstrap "dark" badge while HIGH
 // was red, so the most severe incident looked the least severe; the modsec
 // events table used a separate solid bg-red/bg-orange/bg-yellow scale.
@@ -992,12 +992,31 @@ func TestSeverityBadgesUseCanonicalTokenClasses(t *testing.T) {
 	}
 	uiText := string(ui)
 	for _, want := range []string{
+		"var cls = 'secondary', label = 'UNKNOWN';",
+		"else if (severity === 0) { cls = 'warning'; label = 'WARNING'; }",
+		"return 'secondary';",
 		"CSM.severityClassFromLabel = function(label) {",
+		"String(label || '').trim().toUpperCase()",
 		"case 'CRITICAL': return 'critical';",
 		"case 'HIGH': return 'high';",
+		"case 'WARNING': return 'warning';",
 	} {
 		if !strings.Contains(uiText, want) {
-			t.Errorf("csm-ui.js missing canonical severity-label helper fragment %q", want)
+			t.Errorf("csm-ui.js missing canonical severity helper fragment %q", want)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, want := range []string{
+		".badge-secondary { background: var(--csm-secondary); color: #fff; }",
+		".theme-dark .badge-secondary { color: #1a1a1a; }",
+	} {
+		if !strings.Contains(cssText, want) {
+			t.Errorf("csm.css missing neutral severity fallback badge fragment %q", want)
 		}
 	}
 
@@ -3985,9 +4004,11 @@ func TestDarkModeContrastPalette(t *testing.T) {
 		{"light critical badge", color(".badge-critical", "color", lightVars), color(".badge-critical", "background", lightVars)},
 		{"light high badge", color(".badge-high", "color", lightVars), color(".badge-high", "background", lightVars)},
 		{"light warning badge", color(".badge-warning", "color", lightVars), color(".badge-warning", "background", lightVars)},
+		{"light secondary badge", color(".badge-secondary", "color", lightVars), color(".badge-secondary", "background", lightVars)},
 		{"dark critical badge", color(".theme-dark .badge-critical", "color", darkVars), color(".badge-critical", "background", darkVars)},
 		{"dark high badge", color(".badge-high", "color", darkVars), color(".badge-high", "background", darkVars)},
 		{"dark warning badge", color(".badge-warning", "color", darkVars), color(".badge-warning", "background", darkVars)},
+		{"dark secondary badge", color(".theme-dark .badge-secondary", "color", darkVars), color(".badge-secondary", "background", darkVars)},
 		{"light high outline", color(".btn-outline-high", "color", lightVars), "#ffffff"},
 		{"light warning outline", color(".btn-outline-warning", "color", lightVars), "#ffffff"},
 		{"dark high outline on page", color(".btn-outline-high", "color", darkVars), pageDark},
