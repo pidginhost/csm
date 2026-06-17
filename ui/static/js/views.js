@@ -160,28 +160,28 @@ CSM.savedViews = (function() {
     }
 
     function promptSave(host, page) {
-        var nameInput = window.prompt('Save current filters as:', '');
-        if (nameInput == null) return;
-        var name = String(nameInput).trim();
-        if (!name) return;
-        if (name.length > 80) {
-            if (CSM && CSM.toast) CSM.toast.error('Name must be 80 characters or fewer');
-            return;
-        }
-        var params = captureParams();
-        saveView(page, name, params).then(function(r) {
-            if (!r || !r.ok) {
-                throw new Error('save failed');
+        CSM.prompt('Save current filters as:', '').then(function(nameInput) {
+            var name = String(nameInput).trim();
+            if (!name) return;
+            if (name.length > 80) {
+                if (CSM && CSM.toast) CSM.toast.error('Name must be 80 characters or fewer');
+                return;
             }
-            if (CSM && CSM.toast) CSM.toast.success('Saved view: ' + name);
-            return refreshHost(host, page);
-        }).catch(function() {
-            if (CSM && CSM.toast) CSM.toast.error('Could not save view');
-        });
+            var params = captureParams();
+            saveView(page, name, params).then(function(r) {
+                if (!r || !r.ok) {
+                    throw new Error('save failed');
+                }
+                if (CSM && CSM.toast) CSM.toast.success('Saved view: ' + name);
+                return refreshHost(host, page);
+            }).catch(function() {
+                if (CSM && CSM.toast) CSM.toast.error('Could not save view');
+            });
+        }).catch(function() { /* cancelled */ });
     }
 
     function confirmDelete(view, host, page) {
-        var go = function() {
+        CSM.confirm('Delete saved view "' + view.name + '"?').then(function() {
             deleteView(page, view.name).then(function(r) {
                 if (!r || !r.ok) throw new Error('delete failed');
                 if (CSM && CSM.toast) CSM.toast.success('Deleted view: ' + view.name);
@@ -189,14 +189,7 @@ CSM.savedViews = (function() {
             }).catch(function() {
                 if (CSM && CSM.toast) CSM.toast.error('Could not delete view');
             });
-        };
-        if (CSM && CSM.confirm) {
-            CSM.confirm('Delete saved view "' + view.name + '"?').then(function() {
-                go();
-            }).catch(function() {});
-        } else if (window.confirm('Delete saved view "' + view.name + '"?')) {
-            go();
-        }
+        }).catch(function() { /* cancelled */ });
     }
 
     function refreshHost(host, page) {

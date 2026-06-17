@@ -69,7 +69,7 @@ P0 (data loss + wrong data):
 P1 (systemic consistency):
 - [x] 8. Two disagreeing dark palettes + undefined CSS tokens (High) -- DONE, see change log
 - [x] 9. Four badge/severity color systems; CRITICAL gray on incident list (High) -- DONE, see change log
-- [ ] 10. Four dialog patterns incl. native window.confirm/prompt (High)
+- [x] 10. Four dialog patterns incl. native window.confirm/prompt (High) -- DONE, see change log
 - [ ] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High)
 - [ ] 12. location.reload() after actions loses filters/scroll (Medium)
 - [ ] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium)
@@ -496,3 +496,28 @@ preview content (untrusted malware sample text).
   Pinned by TestSeverityBadgesUseCanonicalTokenClasses with `node --check`.
   `ui/static/css/csm.css`, `ui/static/js/csm-ui.js`, `ui/static/js/incident.js`,
   `ui/static/js/modsec.js`, `internal/webui/static_ui_test.go`.
+- Item 10 (High): dialog standardization. Native `window.confirm`/`window.prompt`
+  (the unsaved-changes discard guard, the saved-views save/delete prompts, and
+  the firewall tentative-apply timer prompt + its apply/revert confirms) sat
+  inside a themed app, ignored dark mode, and can be suppressed by the browser.
+  Routed all of them through the existing `CSM.confirm`/`CSM.prompt` modal.
+  `confirmLeaveIfDirty` was synchronous (returned a bool); since the shared modal
+  is async it now returns a Promise and the three callers (nav-link click, the
+  Discard button, and the popstate section guard) branch on `.then`/`.catch`. The
+  popstate case restores the URL after the operator dismisses the discard modal
+  rather than synchronously, since popstate has already moved it. The two async
+  firewall handlers `await` the helpers in try/catch. Separately, the quarantine
+  and cleanup file/DB previews hijacked the `csm-confirm-modal` element (resizing
+  it, hiding Cancel, relabeling OK to Close) with two competing teardown paths
+  and a stuck-modal risk; both now render through a new shared `CSM.filePreview`
+  helper that mounts in `CSM.detailPanel`, with the attacker-controlled sample
+  text set via `textContent` and the duplicated preview `<pre>` styling moved to
+  a `.csm-file-preview` CSS class. This also closes the "previews hijack the
+  shared confirm modal" lower-severity finding. Pure-JS/CSS change (no build
+  step); pinned by TestNoNativeBrowserDialogsInWebUISources (no `window.*`
+  dialog across any JS source) and TestFilePreviewsUseSharedDetailPanel, with
+  `node --check`. The existing P3.8 deep-link test pinned the old synchronous
+  popstate fragment; updated to the async guard, preserving its intent.
+  `ui/static/js/views.js`, `ui/static/js/settings.js`, `ui/static/js/quarantine.js`,
+  `ui/static/js/cleanup-history.js`, `ui/static/js/csm-ui.js`,
+  `ui/static/css/csm.css`, `internal/webui/static_ui_test.go`.

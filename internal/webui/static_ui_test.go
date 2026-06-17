@@ -3315,7 +3315,7 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 		`url.hash = "";`,
 		`loadSection(target, {urlMode: "replace"});`,
 		`loadSection(next, {urlMode: "none"});`,
-		`if (!confirmLeaveIfDirty()) {`,
+		`confirmLeaveIfDirty().then(function () {`,
 		`window.addEventListener("popstate", function () {`,
 	} {
 		if !strings.Contains(text, fragment) {
@@ -4508,6 +4508,69 @@ func TestFirewallGeoIPEnrichmentChunksBatchRequests(t *testing.T) {
 	} {
 		if strings.Contains(jsText, bad) {
 			t.Errorf("firewall.js still contains rate-limit-storm fragment %q", bad)
+		}
+	}
+}
+
+// TestNoNativeBrowserDialogsInWebUISources pins item 10: decision dialogs go
+// through the themed CSM.confirm/CSM.prompt helpers, never the unstyled native
+// window.confirm/window.prompt. The native dialogs ignore the dark theme, can
+// be suppressed by the browser, and break the keyboard/focus handling the
+// shared modal provides. toast.js keeps a bare confirm()/prompt() fallback for
+// the case where the modal markup is missing; that is the helper itself, not a
+// page reaching past it, so the rule is specifically about the window.* form.
+func TestNoNativeBrowserDialogsInWebUISources(t *testing.T) {
+	files := webUISourceFiles(t, "../../ui/static/js/*.js")
+	native := regexp.MustCompile(`window\.(confirm|prompt)\s*\(`)
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if loc := native.FindIndex(src); loc != nil {
+			t.Errorf("%s calls a native window.confirm/window.prompt; use CSM.confirm/CSM.prompt", path)
+		}
+	}
+}
+
+// TestFilePreviewsUseSharedDetailPanel pins the other half of item 10: the
+// quarantine and cleanup-history file/DB previews used to hijack the
+// csm-confirm-modal element (resizing it, hiding its Cancel button, swapping
+// the OK label to Close) which left two competing teardown paths and risked a
+// stuck modal. Previews are a detail surface, so both pages now route through
+// the shared CSM.filePreview helper, which renders into the CSM.detailPanel
+// offcanvas. Untrusted sample content (malware bodies, dropped DB rows) is set
+// via textContent, never interpolated into innerHTML.
+func TestFilePreviewsUseSharedDetailPanel(t *testing.T) {
+	for _, path := range []string{
+		"../../ui/static/js/quarantine.js",
+		"../../ui/static/js/cleanup-history.js",
+	} {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(src)
+		if strings.Contains(text, "csm-confirm-modal") {
+			t.Errorf("%s still hijacks the csm-confirm-modal element for previews; use CSM.filePreview", path)
+		}
+		if !strings.Contains(text, "CSM.filePreview(") {
+			t.Errorf("%s should render file previews through the shared CSM.filePreview helper", path)
+		}
+	}
+
+	ui, err := os.ReadFile("../../ui/static/js/csm-ui.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiText := string(ui)
+	for _, want := range []string{
+		"CSM.filePreview = function(title, subhead, text) {",
+		"pre.textContent =",
+		"CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });",
+	} {
+		if !strings.Contains(uiText, want) {
+			t.Errorf("csm-ui.js CSM.filePreview missing fragment %q", want)
 		}
 	}
 }

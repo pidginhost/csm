@@ -176,6 +176,18 @@ body.theme-dark { background-color: var(--csm-bg-page); }
 }
 .csm-detail { white-space: pre-wrap; }
 .csm-pre-line { white-space: pre-line; }
+.csm-file-preview {
+    max-height: 60vh;
+    overflow: auto;
+    padding: 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+    border: 1px solid var(--csm-border);
+    background: var(--csm-bg-card);
+    color: var(--csm-text);
+}
 .feed-item { cursor: pointer; }
 
 /* Responsive chart heights */

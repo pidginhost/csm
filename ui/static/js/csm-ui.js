@@ -529,3 +529,22 @@ CSM.detailPanel = (function() {
     };
     return api;
 })();
+
+// File / DB object preview. Renders a quarantined file or dropped DB row in
+// the shared detail panel. The sample text is attacker-controlled (malware
+// bodies, dropped table contents), so it is set via textContent and never
+// interpolated into innerHTML.
+CSM.filePreview = function(title, subhead, text) {
+    var body = document.createElement('div');
+    if (subhead) {
+        var meta = document.createElement('div');
+        meta.className = 'text-muted small mb-2';
+        meta.textContent = subhead;
+        body.appendChild(meta);
+    }
+    var pre = document.createElement('pre');
+    pre.className = 'csm-file-preview';
+    pre.textContent = (text != null && text !== '') ? text : '(empty file)';
+    body.appendChild(pre);
+    CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });
+};

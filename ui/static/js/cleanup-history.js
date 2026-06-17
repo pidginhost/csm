@@ -42,69 +42,6 @@
         return '<span class="badge ' + cls + '">' + label + '</span>';
     }
 
-    function showPreview(title, subhead, preview) {
-        var modal = document.getElementById('csm-confirm-modal');
-        var dialog = modal ? modal.querySelector('.modal-dialog') : null;
-        var body = document.getElementById('csm-confirm-body');
-        var okBtn = document.getElementById('csm-confirm-ok');
-        var cancelBtn = document.getElementById('csm-confirm-cancel');
-        if (!modal || !body || !dialog || !okBtn || !cancelBtn) return;
-
-        dialog.classList.remove('modal-sm');
-        dialog.classList.add('modal-lg');
-        body.textContent = '';
-        body.style.whiteSpace = 'normal';
-
-        var header = document.createElement('div');
-        header.className = 'mb-2';
-        var strong = document.createElement('strong');
-        strong.textContent = title;
-        header.appendChild(strong);
-        if (subhead) {
-            var meta = document.createElement('div');
-            meta.className = 'text-muted small';
-            meta.textContent = subhead;
-            header.appendChild(meta);
-        }
-        body.appendChild(header);
-
-        var pre = document.createElement('pre');
-        pre.style.cssText = 'max-height:60vh;overflow:auto;padding:12px;border-radius:4px;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;border:1px solid var(--csm-border);background:var(--csm-bg-card);color:var(--csm-text)';
-        pre.textContent = preview || '(empty)';
-        body.appendChild(pre);
-
-        okBtn.textContent = 'Close';
-        cancelBtn.style.display = 'none';
-
-        function cleanup() {
-            dialog.classList.remove('modal-lg');
-            dialog.classList.add('modal-sm');
-            body.style.whiteSpace = '';
-            okBtn.textContent = 'OK';
-            cancelBtn.style.display = '';
-            okBtn.removeEventListener('click', close);
-            modal.removeEventListener('hidden.bs.modal', cleanup);
-        }
-        function close() {
-            if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-                bootstrap.Modal.getOrCreateInstance(modal).hide();
-            } else {
-                modal.classList.remove('show');
-                modal.style.display = 'none';
-                cleanup();
-            }
-        }
-
-        okBtn.addEventListener('click', close);
-        modal.addEventListener('hidden.bs.modal', cleanup, { once: true });
-        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
-            bootstrap.Modal.getOrCreateInstance(modal).show();
-        } else {
-            modal.classList.add('show');
-            modal.style.display = 'block';
-        }
-    }
-
     function loadFileBackups() {
         return getJSON('/api/v1/quarantine').then(function(files) {
             var el = document.getElementById('cleanup-files-content');
@@ -185,7 +122,7 @@
     function viewFileBackup(id, path) {
         getJSON('/api/v1/quarantine-preview?id=' + encodeURIComponent(id)).then(function(data) {
             var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
-            showPreview(path, info, data.preview || '');
+            CSM.filePreview(path, info, data.preview || '');
         }).catch(function(e) {
             CSM.toast('Preview failed: ' + e.message, 'error');
         });
@@ -328,7 +265,7 @@
         getJSON('/api/v1/db-object-backup-preview?key=' + encodeURIComponent(key)).then(function(data) {
             var title = data.kind + ' ' + data.schema + '.' + data.name;
             var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
-            showPreview(title, info, data.preview || '');
+            CSM.filePreview(title, info, data.preview || '');
         }).catch(function(e) {
             CSM.toast('Preview failed: ' + e.message, 'error');
         });

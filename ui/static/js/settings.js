@@ -105,8 +105,9 @@
                 item.appendChild(dot);
                 item.addEventListener("click", function (ev) {
                     ev.preventDefault();
-                    if (!confirmLeaveIfDirty()) return;
-                    loadSection(s.id, {urlMode: "push"});
+                    confirmLeaveIfDirty().then(function () {
+                        loadSection(s.id, {urlMode: "push"});
+                    }).catch(function () { /* stay on current section */ });
                 });
                 nav.appendChild(item);
             });
@@ -166,9 +167,13 @@
         });
     }
 
+    // Resolves when it is safe to leave the current section (no unsaved edits,
+    // or the operator chose to discard); rejects when they choose to stay. The
+    // shared modal is async, so every caller branches on the promise rather
+    // than a synchronous boolean.
     function confirmLeaveIfDirty() {
-        if (!dirty) return true;
-        return window.confirm("You have unsaved changes in this section. Discard them?");
+        if (!dirty) return Promise.resolve();
+        return CSM.confirm("You have unsaved changes in this section. Discard them?");
     }
 
     function pendingSectionNames(sections) {
@@ -397,8 +402,9 @@
         btnReset.id = "settings-reset";
         btnReset.addEventListener("click", function () {
             if (!dirty) return;
-            if (!confirmLeaveIfDirty()) return;
-            loadSection(currentSection, {urlMode: "replace"});
+            confirmLeaveIfDirty().then(function () {
+                loadSection(currentSection, {urlMode: "replace"});
+            }).catch(function () { /* keep edits */ });
         });
         footer.appendChild(btn);
         if (currentSection === "firewall") {
@@ -1046,8 +1052,12 @@
             toast("No changes to apply.", "info");
             return;
         }
-        const minutesStr = window.prompt("Auto-revert if unconfirmed within how many minutes? (1-30)", "5");
-        if (minutesStr === null) return;
+        let minutesStr;
+        try {
+            minutesStr = await CSM.prompt("Auto-revert if unconfirmed within how many minutes? (1-30)", "5");
+        } catch (e) {
+            return;
+        }
         const minutes = parseInt(minutesStr, 10);
         if (isNaN(minutes) || minutes < 1 || minutes > 30) {
             toast("Timeout must be 1-30 minutes.", "error");
@@ -1057,7 +1067,11 @@
             + "The daemon will restart with the new config. If you do not click Confirm before "
             + "the timer expires, the previous config is restored automatically and the daemon "
             + "restarts again.";
-        if (!window.confirm(confirmMsg)) return;
+        try {
+            await CSM.confirm(confirmMsg);
+        } catch (e) {
+            return;
+        }
         btn.disabled = true;
         let resp;
         try {
@@ -1199,7 +1213,11 @@
     }
 
     async function revertRollback() {
-        if (!window.confirm("Revert firewall changes now? The daemon will restart with the previous config.")) return;
+        try {
+            await CSM.confirm("Revert firewall changes now? The daemon will restart with the previous config.");
+        } catch (e) {
+            return;
+        }
         const resp = await CSM.request("/api/v1/settings/firewall/revert", {
             method: "POST",
             headers: {"X-CSRF-Token": csrfToken()},
@@ -1272,11 +1290,13 @@
             window.addEventListener("popstate", function () {
                 const next = requestedSection();
                 if (next && next !== currentSection) {
-                    if (!confirmLeaveIfDirty()) {
+                    confirmLeaveIfDirty().then(function () {
+                        loadSection(next, {urlMode: "none"});
+                    }).catch(function () {
+                        // popstate already moved the URL to `next`; restoring it
+                        // happens after the operator dismisses the discard modal.
                         updateSectionURL(currentSection, "push");
-                        return;
-                    }
-                    loadSection(next, {urlMode: "none"});
+                    });
                 }
             });
         }).catch(function (e) {
