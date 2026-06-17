@@ -68,7 +68,7 @@ P0 (data loss + wrong data):
 
 P1 (systemic consistency):
 - [x] 8. Two disagreeing dark palettes + undefined CSS tokens (High) -- DONE, see change log
-- [ ] 9. Four badge/severity color systems; CRITICAL gray on incident list (High)
+- [x] 9. Four badge/severity color systems; CRITICAL gray on incident list (High) -- DONE, see change log
 - [ ] 10. Four dialog patterns incl. native window.confirm/prompt (High)
 - [ ] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High)
 - [ ] 12. location.reload() after actions loses filters/scroll (Medium)
@@ -481,3 +481,17 @@ preview content (untrusted malware sample text).
   TestDarkPaletteConsolidatedToSingleTokenSet, which counts each surface literal
   down to its single token definition and checks no `var(--csm-*)` is left
   undefined. `ui/static/css/csm.css`, `internal/webui/static_ui_test.go`.
+- Item 9 (High): severity badge color systems. The incident list rendered the
+  severity with its own label map (`{WARNING:'warning', HIGH:'danger',
+  CRITICAL:'dark'}`) into a soft `bg-*-lt` badge, so CRITICAL drew as a gray
+  "dark" badge while HIGH was red -- the most severe row looked the least
+  severe. The modsec events table used a third scale (solid
+  `bg-red`/`bg-orange`/`bg-yellow`). Added a shared `CSM.severityClassFromLabel`
+  helper that maps a CRITICAL/HIGH/WARNING label to the same token-backed
+  `.badge-critical`/`.badge-high`/`.badge-warning` class the numeric
+  `CSM.severityBadge`/`CSM.sevMap` paths already use, and routed both tables
+  through it (dropping the incident `sevClasses` map). Status, action, verdict,
+  and check-type badges are a different semantic axis and keep their own colors.
+  Pure-JS render fix, pinned by TestSeverityBadgesUseCanonicalTokenClasses with
+  `node --check`. `ui/static/js/csm-ui.js`, `ui/static/js/incident.js`,
+  `ui/static/js/modsec.js`, `internal/webui/static_ui_test.go`.

@@ -22,6 +22,18 @@ CSM.severityClass = function(severity) {
     return 'warning';
 };
 
+// Severity class name from a string label (CRITICAL/HIGH/WARNING, any case).
+// Centralizes the label->class mapping so pages that carry the severity as a
+// text label render the same token-backed .badge-* color as the numeric paths,
+// instead of inventing their own Bootstrap/Tabler color scale.
+CSM.severityClassFromLabel = function(label) {
+    switch (String(label || '').toUpperCase()) {
+        case 'CRITICAL': return 'critical';
+        case 'HIGH': return 'high';
+        default: return 'warning';
+    }
+};
+
 // Centralized severity map: numeric level → { label, cls }
 CSM.sevMap = {
     2: { label: 'CRITICAL', cls: 'critical' },

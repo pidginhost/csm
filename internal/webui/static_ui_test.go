@@ -979,6 +979,61 @@ func TestDarkPaletteConsolidatedToSingleTokenSet(t *testing.T) {
 	}
 }
 
+// TestSeverityBadgesUseCanonicalTokenClasses pins item 9: severity labels must
+// render through the token-backed .badge-critical/.badge-high/.badge-warning
+// classes everywhere, via the shared CSM.severityClassFromLabel helper. The
+// incident list mapped CRITICAL to the gray Bootstrap "dark" badge while HIGH
+// was red, so the most severe incident looked the least severe; the modsec
+// events table used a separate solid bg-red/bg-orange/bg-yellow scale.
+func TestSeverityBadgesUseCanonicalTokenClasses(t *testing.T) {
+	ui, err := os.ReadFile("../../ui/static/js/csm-ui.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiText := string(ui)
+	for _, want := range []string{
+		"CSM.severityClassFromLabel = function(label) {",
+		"case 'CRITICAL': return 'critical';",
+		"case 'HIGH': return 'high';",
+	} {
+		if !strings.Contains(uiText, want) {
+			t.Errorf("csm-ui.js missing canonical severity-label helper fragment %q", want)
+		}
+	}
+
+	incident, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	incidentText := string(incident)
+	if strings.Contains(incidentText, "CRITICAL: 'dark'") {
+		t.Error("incident.js still maps CRITICAL to the gray Bootstrap dark badge; use the canonical severity tokens")
+	}
+	if strings.Contains(incidentText, "sevClasses[inc.severity]") {
+		t.Error("incident.js still renders the incident-list severity from its own sevClasses map")
+	}
+	if !strings.Contains(incidentText, `'<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">'`) {
+		t.Error("incident.js list severity cell must render the canonical token badge via CSM.severityClassFromLabel")
+	}
+
+	modsec, err := os.ReadFile("../../ui/static/js/modsec.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modsecText := string(modsec)
+	if strings.Contains(modsecText, "'bg-red' : e.severity === 'HIGH' ? 'bg-orange'") {
+		t.Error("modsec.js events table still uses the solid bg-red/bg-orange/bg-yellow severity scale")
+	}
+	for _, want := range []string{
+		"var sevClass = CSM.severityClassFromLabel(e.severity);",
+		`'<td><span class="badge badge-' + sevClass + '">'`,
+	} {
+		if !strings.Contains(modsecText, want) {
+			t.Errorf("modsec.js events severity badge missing canonical token fragment %q", want)
+		}
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

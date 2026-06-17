@@ -505,14 +505,14 @@
         h += '</tr></thead><tbody>';
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
-            var sevClass = e.severity === 'CRITICAL' ? 'bg-red' : e.severity === 'HIGH' ? 'bg-orange' : 'bg-yellow';
+            var sevClass = CSM.severityClassFromLabel(e.severity);
             h += '<tr>';
             h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';
             h += '<td><code>' + CSM.esc(e.rule_id) + '</code></td>';
             h += '<td>' + CSM.esc(e.hostname) + '</td>';
             h += '<td class="font-monospace small csm-truncate-middle" data-csm-truncate-middle="60">' + CSM.esc(e.uri) + '</td>';
-            h += '<td><span class="badge ' + sevClass + '">' + CSM.esc(e.severity) + '</span></td>';
+            h += '<td><span class="badge badge-' + sevClass + '">' + CSM.esc(e.severity) + '</span></td>';
             h += '</tr>';
         }
         h += '</tbody></table></div>';

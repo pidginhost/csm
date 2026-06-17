@@ -2,11 +2,6 @@
 (function() {
     'use strict';
 
-    var sevClasses = {
-        WARNING: 'warning',
-        HIGH: 'danger',
-        CRITICAL: 'dark'
-    };
     var statusClasses = {
         open: 'danger',
         contained: 'warning',
@@ -442,7 +437,7 @@
             var active = inc.id === selectedID ? ' class="table-active"' : '';
             html += '<tr data-incident-id="' + CSM.attr(inc.id) + '"' + active + '>';
             html += '<td><span class="badge bg-' + (statusClasses[inc.status] || 'secondary') + '-lt">' + CSM.esc(inc.status) + '</span></td>';
-            html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge bg-' + (sevClasses[inc.severity] || 'secondary') + '-lt">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
+            html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
             html += '<td>' + CSM.esc(labelize(inc.kind)) + '</td>';
             html += '<td><span class="text-truncate d-inline-block csm-tw-260">' + CSM.esc(owner) + '</span></td>';
             html += '<td>' + ((inc.findings || []).length) + '</td>';
