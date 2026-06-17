@@ -1206,10 +1206,14 @@
         });
         body.querySelectorAll('.oab-block').forEach(function(btn) {
             btn.addEventListener('click', function() {
-                btn.disabled = true;
-                CSM.post('/api/v1/block-ip', { ip: btn.getAttribute('data-ip'), reason: btn.getAttribute('data-reason'), duration: '24h' })
-                    .then(function() { btn.textContent = 'Blocked'; })
-                    .catch(function() { btn.disabled = false; btn.textContent = 'Block failed'; });
+                var ip = btn.getAttribute('data-ip');
+                var reason = btn.getAttribute('data-reason');
+                CSM.confirm('Block ' + ip + ' in the firewall for 24 hours?\n\n' + reason).then(function() {
+                    btn.disabled = true;
+                    CSM.post('/api/v1/block-ip', { ip: ip, reason: reason, duration: '24h' })
+                        .then(function() { btn.textContent = 'Blocked'; })
+                        .catch(function() { btn.disabled = false; btn.textContent = 'Block failed'; });
+                }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
             });
         });
     }

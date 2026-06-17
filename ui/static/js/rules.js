@@ -272,8 +272,10 @@ function renderModSecEscalation() {
     container.querySelectorAll('.modsec-remove-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var id = parseInt(this.getAttribute('data-id'), 10);
-            _modsecRules = _modsecRules.filter(function(r) { return r !== id; });
-            saveModSecEscalation();
+            CSM.confirm('Stop excluding rule ' + id + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
+                _modsecRules = _modsecRules.filter(function(r) { return r !== id; });
+                saveModSecEscalation();
+            }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
         });
     });
 }

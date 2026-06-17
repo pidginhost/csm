@@ -4874,3 +4874,45 @@ func TestGlobalOverflowUsesClipNotHidden(t *testing.T) {
 		t.Errorf("Tabler .table-responsive must keep overflow-x:auto for wide tables, got %q", got)
 	}
 }
+
+// TestDestructiveActionsConfirmAndOfferUndo pins item 14: every destructive
+// action needs a consequence-bearing confirm, and reversible bulk actions whose
+// backend hands back an undo_token wire it to the shared CSM.undo banner. The
+// outbound-abuse "Block 24h" button firewalled an IP on a single click while
+// every other block confirmed, and removing a ModSec escalation exclusion fired
+// immediately (silently re-arming firewall escalation for that rule). The threat
+// bulk block/whitelist endpoint already returns an undo_token that no caller
+// consumed.
+func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
+	email, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emailText := string(email)
+	if !strings.Contains(emailText, "CSM.confirm('Block ' + ip + ' in the firewall for 24 hours?") {
+		t.Error("email.js outbound-abuse Block 24h must confirm with consequence text before firewalling the IP")
+	}
+
+	rules, err := os.ReadFile("../../ui/static/js/rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesText := string(rules)
+	if !strings.Contains(rulesText, "CSM.confirm('Stop excluding rule ' + id + '?") {
+		t.Error("rules.js ModSec exclusion removal must confirm before re-arming firewall escalation for the rule")
+	}
+
+	threat, err := os.ReadFile("../../ui/static/js/threat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threatText := string(threat)
+	for _, want := range []string{
+		"if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Blocked '",
+		"if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted '",
+	} {
+		if !strings.Contains(threatText, want) {
+			t.Errorf("threat.js bulk action must offer undo via the returned token: missing %q", want)
+		}
+	}
+}

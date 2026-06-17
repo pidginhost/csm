@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI findings and threat pages refresh in place after a fix, dismiss, suppress, or bulk action instead of reloading the whole page, so filters, search, and scroll position survive a long triage session.
 - Web UI in-place refreshes now ignore stale overlapping responses and clear empty finding or attacker views without leaving old selections, exports, or charts behind. Load-failure retry buttons keep using a full page refresh where the page shell is replaced.
 - Web UI sticky elements (findings filter header, settings save footer, bulk-action bar) now stay pinned while scrolling; the page's horizontal-overflow guard no longer turned the page into a scroll container that disabled them.
+- Web UI outbound-abuse "Block 24h" and ModSec escalation-exclusion removal now ask for confirmation before acting, and a bulk threat block or whitelist offers a 30-second undo.
 
 ## [3.16.1] - 2026-06-15
 

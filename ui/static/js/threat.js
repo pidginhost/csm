@@ -570,6 +570,7 @@ document.getElementById('bulk-block-btn').addEventListener('click', function() {
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
+            if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Blocked ' + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
@@ -584,6 +585,7 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');
+            if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted ' + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });

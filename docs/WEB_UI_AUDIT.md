@@ -75,7 +75,7 @@ P1 (systemic consistency):
 - [x] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium) -- DONE, see change log
 
 P2 (safety, forms, interaction):
-- [ ] 14. Destructive actions without confirm/undo (High)
+- [x] 14. Destructive actions without confirm/undo (High) -- DONE, see change log
 - [ ] 15. Settings save races: lost-edit, double-submit, badge mismatch (High)
 - [ ] 16. Dead error-handling branches in modsec-rules (High)
 - [ ] 17. Interval leaks on tab visibility change -> fetch storms (Medium)
@@ -597,4 +597,25 @@ preview content (untrusted malware sample text).
   string could re-introduce a horizontal scrollbar). The print-only
   `.table-responsive { overflow: visible !important; }` is unaffected. Pure-CSS
   change; pinned by TestGlobalOverflowUsesClipNotHidden. `ui/static/css/csm.css`,
+  `internal/webui/static_ui_test.go`.
+- Item 14 (High): destructive actions without confirm/undo. Surveyed every
+  block/unblock/whitelist/delete/remove path: threat (all single and bulk) and
+  firewall (all block/unblock/whitelist/flush, flush behind a typed FLUSH
+  confirm) and the email quarantine/forward/backscatter actions already
+  confirmed. Two did not: the outbound-abuse "Block 24h" button firewalled an IP
+  on a single click, and removing a ModSec escalation exclusion fired immediately
+  -- which silently re-arms firewall escalation for that rule. Added a
+  consequence-bearing `CSM.confirm` to both (the block names the IP and 24h
+  window; the exclusion removal says matching requests will again escalate to a
+  block). For undo: `CSM.undo` (and its banner + `/api/v1/undo/run` inverse
+  registry) already existed but nothing called `offer`. Of the endpoints that
+  return an `undo_token`, only threat bulk block/whitelist is reachable from the
+  UI (the firewall bulk-unblock button is intentionally absent -- per-row unblock
+  plus Flush cover it, and a test forbids reintroducing it), so the threat bulk
+  block and whitelist handlers now hand their returned token to
+  `CSM.undo.offer`, surfacing the 30-second undo banner that re-blocks /
+  un-whitelists via the existing inverse op. No new backend undo support was
+  added (out of scope). Pure-JS fixes; pinned by
+  TestDestructiveActionsConfirmAndOfferUndo, with `node --check`.
+  `ui/static/js/email.js`, `ui/static/js/rules.js`, `ui/static/js/threat.js`,
   `internal/webui/static_ui_test.go`.
