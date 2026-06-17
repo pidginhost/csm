@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI confirmation and input dialogs now use the app's themed modal everywhere, including the firewall rollback timer prompt, instead of unstyled native browser dialogs; quarantine and cleanup file previews open in the shared detail panel.
 - Settings dialogs no longer stack or apply stale actions when browser history changes or firewall rollback controls are triggered again while a modal is open.
 - Web UI now shows a contextual hardening load error and a single inline firewall challenge load error without repeated poll toasts or stale challenge data.
+- Web UI findings and threat pages refresh in place after a fix, dismiss, suppress, or bulk action instead of reloading the whole page, so filters, search, and scroll position survive a long triage session.
 
 ## [3.16.1] - 2026-06-15
 

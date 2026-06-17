@@ -4,6 +4,15 @@ var fmtDate = CSM.fmtDate;
 
 var _threatAttackerData = [];
 
+// loadThreatStats/loadTopAttackers re-run after a bulk block/whitelist so the
+// page updates in place instead of a full reload that would lose the operator's
+// attackers-table scroll, filters, and selection. The table is module-scoped so
+// a re-render can tear down the previous instance, and the date-filter and URL
+// bindings are wired once to avoid stacking listeners across re-renders.
+var _attackersTable = null;
+var _attackerURLUnbind = null;
+var _attackerDateListenersBound = false;
+
 var countryFlag = CSM.countryFlag;
 
 function verdictBadge(v,score){
@@ -52,6 +61,23 @@ function attackerURLInputs(countrySel, fromEl, toEl) {
     };
 }
 
+// Re-binding URL state on every re-render would stack listeners, so drop the
+// previous binding first (CSM.urlState.bind returns its own unbind).
+function _bindAttackerURLState(countrySel, fromEl, toEl) {
+    if (_attackerURLUnbind) _attackerURLUnbind();
+    _attackerURLUnbind = CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });
+}
+
+// Date inputs live outside the table body, so their change listeners survive a
+// re-render; bind them once and let the latched table reference do the filter.
+function _bindAttackerDateFilters(fromEl, toEl) {
+    if (_attackerDateListenersBound) return;
+    function onDate() { if (_attackersTable) { _attackersTable.currentPage = 1; _attackersTable.applyFilters(); } }
+    if (fromEl) fromEl.addEventListener('change', onDate);
+    if (toEl) toEl.addEventListener('change', onDate);
+    _attackerDateListenersBound = true;
+}
+
 function populateAttackerCountryFilter(rows) {
     var countrySel = document.getElementById('attackers-country');
     if (!countrySel) return null;
@@ -82,7 +108,8 @@ function getJSONAllowError(url) {
 }
 
 // Load stats
-CSM.get('/api/v1/threat/stats').then(function(data){
+function loadThreatStats() {
+    CSM.get('/api/v1/threat/stats').then(function(data){
     document.getElementById('stat-total-ips').textContent=data.total_ips||0;
     document.getElementById('stat-24h').textContent=data.last_24h_events||0;
     document.getElementById('stat-7d').textContent=data.last_7d_events||0;
@@ -185,17 +212,20 @@ CSM.get('/api/v1/threat/stats').then(function(data){
             }
         });
     }
-}).catch(function(err){ console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
+}).catch(function(err){ console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), loadThreatStats); });
+}
 
 // Load top attackers
-CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
+function loadTopAttackers() {
+    if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
+    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
     var toEl = document.getElementById('attackers-to');
     var countrySel = populateAttackerCountryFilter(data || []);
     if(!data||data.length===0){
         tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';
-        CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });
+        _bindAttackerURLState(countrySel, fromEl, toEl);
         return;
     }
     _threatAttackerData = data.map(function(r) {
@@ -238,7 +268,7 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         if (to !== null && ts >= to) return false;
         return true;
     }
-    var attackersTable = new CSM.Table({
+    _attackersTable = new CSM.Table({
         tableId: 'attackers-table',
         perPage: 25,
         searchId: 'attackers-search',
@@ -251,11 +281,9 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         ],
         rowFilter: _attackerInRange
     });
-    function _onAttackerDate() { if (attackersTable) { attackersTable.currentPage = 1; attackersTable.applyFilters(); } }
-    if (fromEl) fromEl.addEventListener('change', _onAttackerDate);
-    if (toEl) toEl.addEventListener('change', _onAttackerDate);
+    _bindAttackerDateFilters(fromEl, toEl);
     // WEB_ROADMAP P2.1 / P3.5: persist all filter state to URL.
-    CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });
+    _bindAttackerURLState(countrySel, fromEl, toEl);
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){
@@ -282,7 +310,12 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         cb.addEventListener('click', function(e) { e.stopPropagation(); });
         cb.addEventListener('change', updateBulkButtons);
     });
-}).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
+}).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, loadTopAttackers); });
+}
+
+// Initial load (re-run in place after bulk block/whitelist).
+loadThreatStats();
+loadTopAttackers();
 
 // IP Lookup
 document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
@@ -504,7 +537,8 @@ document.getElementById('bulk-block-btn').addEventListener('click', function() {
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
-            location.reload();
+            loadThreatStats();
+            loadTopAttackers();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
@@ -517,7 +551,8 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');
-            location.reload();
+            loadThreatStats();
+            loadTopAttackers();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });

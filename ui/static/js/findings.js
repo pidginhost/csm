@@ -56,6 +56,20 @@ function renderFindings(data) {
     // Hide loading spinner
     document.getElementById('findings-loading').classList.add('d-none');
 
+    // renderFindings runs on first load and again after every in-place action
+    // refresh, so it must be idempotent: drop the previous table (and its
+    // listeners/controls), clear a prior error or a stale "new findings" banner,
+    // and rebuild the filter option lists from scratch rather than appending.
+    if (findingsTable) { findingsTable.destroy(); findingsTable = null; }
+    var prevError = document.getElementById('findings-error');
+    if (prevError) prevError.remove();
+    var refreshBanner = document.getElementById('refresh-banner');
+    if (refreshBanner) refreshBanner.classList.add('d-none');
+    // The header select-all persists across renders; the rebuilt rows are all
+    // unchecked, so reset it to match.
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+
     // Update header count and severity badges
     var countEl = document.getElementById('findings-count');
     if (countEl) countEl.textContent = total + ' active';
@@ -69,9 +83,11 @@ function renderFindings(data) {
         badgesEl.innerHTML = badgeHtml;
     }
 
-    // Populate check type filter dropdown
+    // Populate check type filter dropdown. Drop options past the static
+    // "All Types" first entry so a re-render does not stack duplicates.
     var checkFilter = document.getElementById('check-filter');
     if (checkFilter) {
+        while (checkFilter.options.length > 1) checkFilter.remove(1);
         for (var i = 0; i < checkTypes.length; i++) {
             var opt = document.createElement('option');
             opt.value = checkTypes[i];
@@ -80,9 +96,10 @@ function renderFindings(data) {
         }
     }
 
-    // Populate account filter datalist
+    // Populate account filter datalist (fully dynamic; clear before rebuild).
     var filterDl = document.getElementById('account-filter-list');
     if (filterDl) {
+        filterDl.replaceChildren();
         for (var j = 0; j < accounts.length; j++) {
             var opt2 = document.createElement('option');
             opt2.value = accounts[j];
@@ -95,8 +112,11 @@ function renderFindings(data) {
 
     if (findings.length === 0) {
         document.getElementById('findings-empty').classList.remove('d-none');
+        document.getElementById('findings-table-wrap').classList.add('d-none');
         return;
     }
+    // Non-empty: a prior render may have shown the empty state.
+    document.getElementById('findings-empty').classList.add('d-none');
 
     // Render table rows
     var tbody = document.getElementById('findings-tbody');
@@ -361,12 +381,13 @@ if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
     syncFindingsURL();
 });
 
-// Clear selections before reload so beforeunload guard does not block
-function clearAndReload() {
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    var sa = document.getElementById('select-all');
-    if (sa) sa.checked = false;
-    location.reload();
+// Re-fetch and re-render the findings list in place after an action. This
+// keeps the operator's filters, search, grouping, page size, and scroll
+// position instead of throwing them away with a full page reload mid-triage.
+// renderFindings rebuilds the rows (and their unchecked checkboxes), so the
+// selection clears on its own.
+function refreshFindings() {
+    loadFindings();
 }
 
 // --- Single actions ---
@@ -386,7 +407,7 @@ function fixOne(btn) {
                 row.style.opacity = '0.3';
                 btn.innerHTML = '<i class="ti ti-check"></i>';
                 btn.className = 'btn btn-success btn-sm me-1';
-                setTimeout(clearAndReload, 1000);
+                setTimeout(refreshFindings, 1000);
             } else {
                 CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
                 btn.disabled = false;
@@ -398,7 +419,7 @@ function fixOne(btn) {
 
 function dismissOne(key) {
     CSM.confirm('Dismiss this finding?').then(function() {
-        CSM.post('/api/v1/dismiss', {key: key}).then(function() { clearAndReload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        CSM.post('/api/v1/dismiss', {key: key}).then(function() { refreshFindings(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -421,7 +442,7 @@ function suppressFinding(check, message, filePath) {
             }).then(function(data) {
                 if (data.status === 'created') {
                     CSM.toast('Suppression rule created', 'success');
-                    clearAndReload();
+                    refreshFindings();
                 } else {
                     CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
                 }
@@ -452,7 +473,7 @@ function bulkAction(action) {
             var fixItems = fixable.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
-                clearAndReload();
+                refreshFindings();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
@@ -471,7 +492,7 @@ function bulkAction(action) {
                 if (failed > 0) {
                     CSM.toast('Dismissed ' + succeeded + ' of ' + (succeeded + failed) + ' (' + failed + ' failed)', 'warning');
                 }
-                clearAndReload();
+                refreshFindings();
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
@@ -480,7 +501,7 @@ function bulkAction(action) {
             var quarItems = items.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
-                clearAndReload();
+                refreshFindings();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }

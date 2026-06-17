@@ -3229,7 +3229,7 @@ func TestThreatAttackersFilterPack(t *testing.T) {
 		t.Fatal("threat.js missing no-attack-data branch")
 	}
 	emptyBody := jsText[emptyIdx:]
-	emptyBindIdx := strings.Index(emptyBody, `CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });`)
+	emptyBindIdx := strings.Index(emptyBody, `_bindAttackerURLState(countrySel, fromEl, toEl);`)
 	emptyReturnIdx := strings.Index(emptyBody, `return;`)
 	if emptyBindIdx < 0 || emptyReturnIdx < 0 || emptyBindIdx > emptyReturnIdx {
 		t.Fatal("threat.js must bind top-attackers URL state before returning from the empty-data branch")
@@ -4701,5 +4701,54 @@ func TestLoadFailuresAreSurfaced(t *testing.T) {
 	}
 	if strings.Contains(acctText, `<span class="spinner-border spinner-border-sm"></span> Loading...`) {
 		t.Error("account.js still hand-rolls the loading skeleton; use CSM.loading")
+	}
+}
+
+// TestActionsRefreshInPlaceNotFullReload pins item 12: a fix/dismiss/suppress or
+// bulk action used to call location.reload(), which throws away the operator's
+// filters, search, scroll position, and place in a long triage session. The
+// findings and threat pages now re-fetch and re-render in place (the firewall
+// refreshFirewallData pattern), so the action paths must no longer full-reload
+// and the render path must be re-entrant (old table torn down, filter option
+// lists rebuilt rather than appended). The manual Refresh button and the
+// error-retry-by-reload fallbacks legitimately still reload, so the assertions
+// target the action paths and the re-entrancy guards, not every reload.
+func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
+	findings, err := os.ReadFile("../../ui/static/js/findings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fText := string(findings)
+	if strings.Contains(fText, "clearAndReload") {
+		t.Error("findings.js still routes actions through clearAndReload (full page reload); re-render in place")
+	}
+	for _, want := range []string{
+		"function refreshFindings()",
+		"if (findingsTable) { findingsTable.destroy(); findingsTable = null; }",
+	} {
+		if !strings.Contains(fText, want) {
+			t.Errorf("findings.js missing in-place refresh fragment %q", want)
+		}
+	}
+
+	threat, err := os.ReadFile("../../ui/static/js/threat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tText := string(threat)
+	for _, want := range []string{
+		"function loadThreatStats()",
+		"function loadTopAttackers()",
+		"_attackersTable",
+	} {
+		if !strings.Contains(tText, want) {
+			t.Errorf("threat.js missing re-entrant loader fragment %q", want)
+		}
+	}
+	// The two bulk-action success paths were standalone 12-space-indented
+	// location.reload() calls; the error-retry fallbacks are inline inside a
+	// function(){...}, so this exact prefix only matched the action reloads.
+	if strings.Contains(tText, "\n            location.reload();") {
+		t.Error("threat.js bulk block/whitelist still full-reloads on success; call the in-place loaders")
 	}
 }

@@ -71,7 +71,7 @@ P1 (systemic consistency):
 - [x] 9. Four badge/severity color systems; CRITICAL gray on incident list (High) -- DONE, see change log
 - [x] 10. Four dialog patterns incl. native window.confirm/prompt (High) -- DONE, see change log
 - [x] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High) -- DONE, see change log
-- [ ] 12. location.reload() after actions loses filters/scroll (Medium)
+- [x] 12. location.reload() after actions loses filters/scroll (Medium) -- DONE, see change log
 - [ ] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium)
 
 P2 (safety, forms, interaction):
@@ -548,3 +548,28 @@ preview content (untrusted malware sample text).
   `.catch`) and TestLoadFailuresAreSurfaced, with `node --check`.
   `ui/static/js/hardening.js`, `ui/static/js/firewall.js`,
   `ui/static/js/account.js`, `internal/webui/static_ui_test.go`.
+- Item 12 (Medium): location.reload() after actions. A fix/dismiss/suppress or
+  bulk action on findings, and a bulk block/whitelist on threat, ended with
+  `location.reload()`, which threw away the operator's filters, search, grouping,
+  page size, scroll position, and expanded detail mid-triage. Both pages now
+  re-fetch and re-render in place, the same way firewall's `refreshFirewallData`
+  already worked. The findings render path was written for a one-shot full
+  reload, so it was made re-entrant: it tears down the previous `CSM.Table`
+  (listeners + controls), clears a prior error and the stale "new findings"
+  banner, resets the header select-all, rebuilds the check-type and account
+  filter option lists from scratch instead of appending duplicates, and toggles
+  the empty-state vs table-wrap both ways; filters persist because they live in
+  the URL and `restoreURLParams` re-applies them. `clearAndReload` became
+  `refreshFindings` (just calls the loader). The threat page loaded stats and the
+  top-attackers table via one-shot inline fetches with no re-callable function,
+  so both were extracted into `loadThreatStats`/`loadTopAttackers`; the attackers
+  table is module-scoped and destroyed before re-init, the date-filter listeners
+  are bound once (they live outside the table body), and the URL-state binding is
+  unbound before re-binding -- mirroring the quarantine re-loadable-table pattern
+  so re-renders do not stack listeners. The hourly chart was already re-entrant
+  (updates the existing instance). The two error-retry fallbacks now re-call the
+  loader instead of reloading. Pure-JS fixes; pinned by
+  TestActionsRefreshInPlaceNotFullReload, with `node --check`. The existing P3.5
+  filter test pinned the literal empty-branch URL bind; updated to the helper
+  call, preserving its bind-before-return intent. `ui/static/js/findings.js`,
+  `ui/static/js/threat.js`, `internal/webui/static_ui_test.go`.
