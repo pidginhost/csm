@@ -830,6 +830,46 @@ func TestEmailFindingsUseStructuredAccountIP(t *testing.T) {
 	}
 }
 
+// TestHardeningAndRedisGuardZeroAndNoLimit pins item 7: the hardening score
+// must not divide by a zero or absent total (a NaN percent fell through every
+// threshold and painted the progress bar danger-red), and the performance
+// Redis card must render a no-maxmemory ("no limit") Redis with neutral
+// styling instead of danger-red -- an unbounded maxmemory is the normal
+// default, surfaced as a finding when it matters, not a fault of the card.
+func TestHardeningAndRedisGuardZeroAndNoLimit(t *testing.T) {
+	hardening, err := os.ReadFile("../../ui/static/js/hardening.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hardeningText := string(hardening)
+	for _, want := range []string{
+		"var total = Number(report.total) || 0;",
+		"var score = Number(report.score) || 0;",
+		"var pct = total > 0 ? Math.round((score / total) * 100) : 0;",
+		"document.getElementById('score-text').textContent = score + ' / ' + total + ' checks passed';",
+		"if (total === 0) bar.classList.add('bg-secondary');",
+	} {
+		if !strings.Contains(hardeningText, want) {
+			t.Errorf("hardening.js missing zero-total guard fragment %q", want)
+		}
+	}
+	if strings.Contains(hardeningText, "Math.round((report.score / report.total) * 100)") {
+		t.Error("hardening.js still divides score by total without a zero guard (NaN percent paints the bar red)")
+	}
+
+	perf, err := os.ReadFile("../../ui/static/js/performance.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perfText := string(perf)
+	if !strings.Contains(perfText, "redisEl.className = 'h1 mb-0';") {
+		t.Error("performance.js must render a no-limit Redis card with neutral styling")
+	}
+	if strings.Contains(perfText, "(redisMem > 0 ? 'text-danger' : '')") {
+		t.Error("performance.js still paints a healthy no-maxmemory Redis card red")
+	}
+}
+
 func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
 	if err != nil {

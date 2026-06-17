@@ -64,7 +64,7 @@ P0 (data loss + wrong data):
 - [x] 4. False "New findings detected" banner from endpoint dedup mismatch (High) -- DONE, see change log
 - [x] 5. Size + Severity columns sort lexically, not numerically (High) -- DONE, see change log
 - [x] 6. Email account/IP regex-scraped from message text, drops IPv6 (Medium-High) -- DONE, see change log
-- [ ] 7. NaN/null rendered: hardening score, Redis no-limit card (Medium) -- PARTIAL: size formatter fixed
+- [x] 7. NaN/null rendered: hardening score, Redis no-limit card (Medium) -- DONE, see change log
 
 P1 (systemic consistency):
 - [ ] 8. Two disagreeing dark palettes + undefined CSS tokens (High)
@@ -445,3 +445,17 @@ preview content (untrusted malware sample text).
   attacker-controlled message/detail text, so a fuzz target
   (FuzzHistoryAttribution) asserts they never panic and only ever attribute a
   netip-valid address. `internal/webui/fuzz_parsers_test.go`.
+- Item 7 (Medium): NaN/no-limit rendering. The hardening score computed
+  `Math.round((report.score / report.total) * 100)`; an absent or zero total
+  made the percent NaN, which fell through every `pct >=` threshold and painted
+  the progress bar danger-red. It now coerces `score`/`total` to numbers, shows
+  `score / total checks passed`, and renders a neutral `bg-secondary` bar when no
+  checks ran. The performance Redis card painted a healthy no-maxmemory Redis red
+  (`text-danger` whenever used memory was above zero); an unbounded maxmemory is
+  the normal default and is surfaced as a `perf_redis_config` finding when it
+  matters, so the "no limit" card is now neutral. Earlier in this effort the
+  shared size formatter was also hardened to blank missing/invalid byte counts
+  (see the item 5 follow-up), closing the third sub-bug. Pure-JS fixes, pinned
+  with TestHardeningAndRedisGuardZeroAndNoLimit and `node --check`.
+  `ui/static/js/hardening.js`, `ui/static/js/performance.js`,
+  `internal/webui/static_ui_test.go`.

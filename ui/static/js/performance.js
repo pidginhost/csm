@@ -331,8 +331,11 @@
                     var redisMem = m.redis_mem_mb || 0;
                     var redisMax = m.redis_maxmem_mb || 0;
                     if (redisMax === 0) {
+                        // No maxmemory is the normal default; the perf_redis_config
+                        // check flags it as a finding when it matters, so the card
+                        // stays neutral rather than painting healthy usage red.
                         redisEl.textContent = redisMem + ' MB / no limit';
-                        redisEl.className = 'h1 mb-0 ' + (redisMem > 0 ? 'text-danger' : '');
+                        redisEl.className = 'h1 mb-0';
                     } else {
                         redisEl.textContent = redisMem + ' / ' + redisMax + ' MB';
                         redisEl.className = 'h1 mb-0 ' + colorClass(redisMem, redisMax * 0.75, redisMax * 0.9);

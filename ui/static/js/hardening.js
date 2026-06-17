@@ -24,12 +24,17 @@
         document.getElementById('empty-state').classList.add('d-none');
         document.getElementById('score-card').classList.remove('d-none');
 
-        var pct = Math.round((report.score / report.total) * 100);
-        document.getElementById('score-text').textContent = report.score + ' / ' + report.total + ' checks passed';
+        // Guard a zero or absent total: score/total would be NaN, the percent
+        // fell through every threshold below and painted the bar danger-red.
+        var total = Number(report.total) || 0;
+        var score = Number(report.score) || 0;
+        var pct = total > 0 ? Math.round((score / total) * 100) : 0;
+        document.getElementById('score-text').textContent = score + ' / ' + total + ' checks passed';
         var bar = document.getElementById('score-bar');
         CSM.setProgressBar(bar, pct);
         bar.className = 'progress-bar';
-        if (pct >= 80) bar.classList.add('bg-success');
+        if (total === 0) bar.classList.add('bg-secondary');
+        else if (pct >= 80) bar.classList.add('bg-success');
         else if (pct >= 60) bar.classList.add('bg-warning');
         else bar.classList.add('bg-danger');
 
