@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings dialogs no longer stack or apply stale actions when browser history changes or firewall rollback controls are triggered again while a modal is open.
 - Web UI now shows a contextual hardening load error and a single inline firewall challenge load error without repeated poll toasts or stale challenge data.
 - Web UI findings and threat pages refresh in place after a fix, dismiss, suppress, or bulk action instead of reloading the whole page, so filters, search, and scroll position survive a long triage session.
+- Web UI in-place refreshes now ignore stale overlapping responses and clear empty finding or attacker views without leaving old selections, exports, or charts behind. Load-failure retry buttons keep using a full page refresh where the page shell is replaced.
 
 ## [3.16.1] - 2026-06-15
 

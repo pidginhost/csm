@@ -559,17 +559,20 @@ preview content (untrusted malware sample text).
   banner, resets the header select-all, rebuilds the check-type and account
   filter option lists from scratch instead of appending duplicates, and toggles
   the empty-state vs table-wrap both ways; filters persist because they live in
-  the URL and `restoreURLParams` re-applies them. `clearAndReload` became
-  `refreshFindings` (just calls the loader). The threat page loaded stats and the
-  top-attackers table via one-shot inline fetches with no re-callable function,
-  so both were extracted into `loadThreatStats`/`loadTopAttackers`; the attackers
+  the URL and `restoreURLParams` re-applies them. Empty refreshes clear old rows
+  and selections, and stale overlapping loader responses are ignored.
+  `clearAndReload` became `refreshFindings` (just calls the loader). The threat
+  page loaded stats and the top-attackers table via one-shot inline fetches with
+  no re-callable function, so both were extracted into
+  `loadThreatStats`/`loadTopAttackers`; the attackers
   table is module-scoped and destroyed before re-init, the date-filter listeners
   are bound once (they live outside the table body), and the URL-state binding is
   unbound before re-binding -- mirroring the quarantine re-loadable-table pattern
-  so re-renders do not stack listeners. The hourly chart was already re-entrant
-  (updates the existing instance). The two error-retry fallbacks now re-call the
-  loader instead of reloading. Pure-JS fixes; pinned by
-  TestActionsRefreshInPlaceNotFullReload, with `node --check`. The existing P3.5
-  filter test pinned the literal empty-branch URL bind; updated to the helper
-  call, preserving its bind-before-return intent. `ui/static/js/findings.js`,
+  so re-renders do not stack listeners. Overlapping threat reloads are sequenced,
+  empty attacker responses clear export data and selection state, and the hourly
+  chart is destroyed when the data goes empty instead of keeping a stale canvas
+  instance. Manual refresh and reload fallbacks stay unchanged. Pure-JS fixes;
+  pinned by TestActionsRefreshInPlaceNotFullReload, with `node --check`. The
+  existing P3.5 filter test pinned the literal empty-branch URL bind; updated to
+  the helper call, preserving its bind-before-return intent. `ui/static/js/findings.js`,
   `ui/static/js/threat.js`, `internal/webui/static_ui_test.go`.

@@ -4725,6 +4725,10 @@ func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 	for _, want := range []string{
 		"function refreshFindings()",
 		"if (findingsTable) { findingsTable.destroy(); findingsTable = null; }",
+		"var _findingsLoadSeq = 0;",
+		"if (seq !== _findingsLoadSeq) return;",
+		"if (tbody) tbody.innerHTML = '';",
+		"updateSelection();",
 	} {
 		if !strings.Contains(fText, want) {
 			t.Errorf("findings.js missing in-place refresh fragment %q", want)
@@ -4740,6 +4744,13 @@ func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 		"function loadThreatStats()",
 		"function loadTopAttackers()",
 		"_attackersTable",
+		"var _attackersLoadSeq = 0;",
+		"var _threatStatsLoadSeq = 0;",
+		"if (seq !== _attackersLoadSeq) return;",
+		"if (seq !== _threatStatsLoadSeq) return;",
+		"function resetAttackerSelection()",
+		"_threatAttackerData = [];",
+		"window._csmThreatHourlyChart.destroy();",
 	} {
 		if !strings.Contains(tText, want) {
 			t.Errorf("threat.js missing re-entrant loader fragment %q", want)
@@ -4750,5 +4761,11 @@ func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 	// function(){...}, so this exact prefix only matched the action reloads.
 	if strings.Contains(tText, "\n            location.reload();") {
 		t.Error("threat.js bulk block/whitelist still full-reloads on success; call the in-place loaders")
+	}
+	if !strings.Contains(tText, "CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); });") {
+		t.Error("threat.js stats load-error retry must still reload because CSM.loadError replaces chart DOM")
+	}
+	if !strings.Contains(tText, "CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); });") {
+		t.Error("threat.js attackers load-error retry must still reload because CSM.loadError replaces table DOM")
 	}
 }

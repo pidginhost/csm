@@ -5,6 +5,7 @@
 
 // --- State ---
 var findingsTable = null;
+var _findingsLoadSeq = 0;
 
 // Numeric severity rank for column sorting (mirrors the webui severityRank).
 // Derived from the already-promoted label so a dedup severity bump sorts right.
@@ -17,12 +18,15 @@ function severityRank(label) {
 
 // --- Fetch and render findings from enriched API ---
 function loadFindings() {
+    var seq = ++_findingsLoadSeq;
     CSM.get('/api/v1/findings/enriched')
         .then(function(data) {
+            if (seq !== _findingsLoadSeq) return;
             if (data.error) throw new Error(data.error);
             renderFindings(data);
         })
         .catch(function(err) {
+            if (seq !== _findingsLoadSeq) return;
             var loading = document.getElementById('findings-loading');
             if (loading) loading.classList.add('d-none');
             var card = document.getElementById('findings-card');
@@ -69,6 +73,7 @@ function renderFindings(data) {
     // unchecked, so reset it to match.
     var selectAll = document.getElementById('select-all');
     if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    var tbody = document.getElementById('findings-tbody');
 
     // Update header count and severity badges
     var countEl = document.getElementById('findings-count');
@@ -111,15 +116,16 @@ function renderFindings(data) {
     initAutoRefresh(findings);
 
     if (findings.length === 0) {
+        if (tbody) tbody.innerHTML = '';
         document.getElementById('findings-empty').classList.remove('d-none');
         document.getElementById('findings-table-wrap').classList.add('d-none');
+        updateSelection();
         return;
     }
     // Non-empty: a prior render may have shown the empty state.
     document.getElementById('findings-empty').classList.add('d-none');
 
     // Render table rows
-    var tbody = document.getElementById('findings-tbody');
     var html = '';
     for (var k = 0; k < findings.length; k++) {
         var f = findings[k];

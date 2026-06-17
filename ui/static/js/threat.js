@@ -12,6 +12,8 @@ var _threatAttackerData = [];
 var _attackersTable = null;
 var _attackerURLUnbind = null;
 var _attackerDateListenersBound = false;
+var _attackersLoadSeq = 0;
+var _threatStatsLoadSeq = 0;
 
 var countryFlag = CSM.countryFlag;
 
@@ -78,6 +80,22 @@ function _bindAttackerDateFilters(fromEl, toEl) {
     _attackerDateListenersBound = true;
 }
 
+function resetAttackerSelection() {
+    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) { cb.checked = false; });
+    var selectAll = document.getElementById('select-all-attackers');
+    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
+    updateBulkButtons();
+}
+
+function resetThreatHourlyChart(message) {
+    if (window._csmThreatHourlyChart) {
+        window._csmThreatHourlyChart.destroy();
+        window._csmThreatHourlyChart = null;
+    }
+    var hourlyDiv = document.getElementById('chart-hourly');
+    if (hourlyDiv) hourlyDiv.textContent = message || '';
+}
+
 function populateAttackerCountryFilter(rows) {
     var countrySel = document.getElementById('attackers-country');
     if (!countrySel) return null;
@@ -109,7 +127,9 @@ function getJSONAllowError(url) {
 
 // Load stats
 function loadThreatStats() {
+    var seq = ++_threatStatsLoadSeq;
     CSM.get('/api/v1/threat/stats').then(function(data){
+    if (seq !== _threatStatsLoadSeq) return;
     document.getElementById('stat-total-ips').textContent=data.total_ips||0;
     document.getElementById('stat-24h').textContent=data.last_24h_events||0;
     document.getElementById('stat-7d').textContent=data.last_7d_events||0;
@@ -119,30 +139,37 @@ function loadThreatStats() {
     var typesDiv=document.getElementById('chart-types');
     var byType=data.by_type||{};
     var types=Object.keys(byType).sort(function(a,b){return byType[b]-byType[a]});
-    if(types.length===0){typesDiv.innerHTML='<p class="text-muted">No attack data yet</p>';return;}
-    var maxVal=byType[types[0]]||1;
-    var html='<table class="table table-sm mb-0">';
-    for(var i=0;i<types.length;i++){
-        var t=types[i], v=byType[t];
-        var pct=Math.round(v/maxVal*100);
-        html+='<tr><td class="csm-w-120 text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
-        html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary csm-progress-zero" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-csm-progress="'+CSM.attr(pct)+'"></div></div></td>';
-        html+='<td class="csm-w-50 text-end small font-monospace">'+v+'</td></tr>';
+    if(types.length===0){
+        typesDiv.innerHTML='<p class="text-muted">No attack data yet</p>';
+    } else {
+        var maxVal=byType[types[0]]||1;
+        var html='<table class="table table-sm mb-0">';
+        for(var i=0;i<types.length;i++){
+            var t=types[i], v=byType[t];
+            var pct=Math.round(v/maxVal*100);
+            html+='<tr><td class="csm-w-120 text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
+            html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary csm-progress-zero" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-csm-progress="'+CSM.attr(pct)+'"></div></div></td>';
+            html+='<td class="csm-w-50 text-end small font-monospace">'+v+'</td></tr>';
+        }
+        html+='</table>';
+        typesDiv.innerHTML=html;
+        CSM.applyProgressBars(typesDiv);
     }
-    html+='</table>';
-    typesDiv.innerHTML=html;
-    CSM.applyProgressBars(typesDiv);
 
     // Hourly chart (Chart.js)
     var hourlyDiv=document.getElementById('chart-hourly');
     var buckets=data.hourly_buckets||[];
-    if(buckets.length===0){hourlyDiv.textContent='No recent data';return;}
+    if(buckets.length===0){resetThreatHourlyChart('No recent data');return;}
     // Replace div with canvas if needed
     var canvas=hourlyDiv.querySelector('canvas');
     if(!canvas){
         hourlyDiv.textContent='';
         canvas=document.createElement('canvas');
         hourlyDiv.appendChild(canvas);
+    }
+    if(window._csmThreatHourlyChart && window._csmThreatHourlyChart.canvas !== canvas){
+        window._csmThreatHourlyChart.destroy();
+        window._csmThreatHourlyChart=null;
     }
     // Bucket index 0 is the oldest hour, index N-1 is the current hour.
     // Label each bar with how many hours ago it covers: "23h" at the left
@@ -212,20 +239,25 @@ function loadThreatStats() {
             }
         });
     }
-}).catch(function(err){ console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), loadThreatStats); });
+}).catch(function(err){ if (seq !== _threatStatsLoadSeq) return; console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
 }
 
 // Load top attackers
 function loadTopAttackers() {
+    var seq = ++_attackersLoadSeq;
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
+    resetAttackerSelection();
     CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
+    if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
     var toEl = document.getElementById('attackers-to');
     var countrySel = populateAttackerCountryFilter(data || []);
     if(!data||data.length===0){
+        _threatAttackerData = [];
         tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';
         _bindAttackerURLState(countrySel, fromEl, toEl);
+        resetAttackerSelection();
         return;
     }
     _threatAttackerData = data.map(function(r) {
@@ -310,7 +342,8 @@ function loadTopAttackers() {
         cb.addEventListener('click', function(e) { e.stopPropagation(); });
         cb.addEventListener('change', updateBulkButtons);
     });
-}).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, loadTopAttackers); });
+    resetAttackerSelection();
+}).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
 }
 
 // Initial load (re-run in place after bulk block/whitelist).
