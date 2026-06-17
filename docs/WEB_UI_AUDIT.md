@@ -206,11 +206,14 @@ Fix: mutate rows in place and update counts (firewall's `refreshFirewallData`).
 
 ### 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium)
 `html, body, .page { overflow-x: hidden }` clips real wide-table/long-IP overflow
-and breaks `position:sticky` for findings header, settings footer, sticky table
-headers.
-Evidence: `csm.css:119` (sticky users at 182, 277, 360, 934).
-Fix: remove the rule; fix overflow sources (`.table-responsive`, truncate-middle
-with title on long paths/IPs/UAs).
+and breaks page-level `position:sticky` for the findings header, settings
+footer, and bulk-action bar.
+Evidence: page overflow guard in `csm.css`; page-level sticky users are
+`#findings-card > .card-header`, `.settings-panel-footer`, and
+`.csm-sticky-actions`.
+Fix: use `overflow-x: clip` on the page shell so horizontal overflow stays
+clipped without creating a scroll container. Keep `.table-responsive` as the
+table scroll container for wide tables; avoid `max-width: 100vw`.
 
 ---
 

@@ -4785,21 +4785,92 @@ func TestGlobalOverflowUsesClipNotHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 	cssText := string(css)
-	if strings.Contains(cssText, "overflow-x: hidden") {
-		t.Error("global overflow-x: hidden breaks position:sticky on the findings header, settings footer, and bulk action bar; use overflow-x: clip")
+	tablerCSS, err := os.ReadFile("../../ui/static/css/tabler.min.css")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(cssText, "html, body, .page { overflow-x: clip; }") {
-		t.Error("csm.css must contain the global horizontal-overflow guard as overflow-x: clip")
+	rules := parseCSSRules(string(tablerCSS) + "\n" + cssText)
+	scrollContainerValues := map[string]struct{}{
+		"auto":    {},
+		"hidden":  {},
+		"overlay": {},
+		"scroll":  {},
 	}
-	// The page-level sticky users must remain so the clip change has something
-	// to protect; these break the moment an ancestor becomes a scroll container.
-	for _, want := range []string{
-		"#findings-card > .card-header {",
-		".settings-panel-footer {",
-		".csm-sticky-actions {",
-	} {
-		if !strings.Contains(cssText, want) {
-			t.Errorf("csm.css missing sticky rule %q that the overflow-x fix protects", want)
+	assertDoesNotCaptureSticky := func(selector string, declarations map[string]string) {
+		t.Helper()
+		for _, property := range []string{"overflow", "overflow-x", "overflow-y"} {
+			value, ok := declarations[property]
+			if !ok {
+				continue
+			}
+			for _, token := range strings.Fields(strings.ReplaceAll(value, "!important", "")) {
+				if _, captures := scrollContainerValues[token]; captures {
+					t.Errorf("%s sets %s:%s, which makes it a sticky-capturing scroll container", selector, property, value)
+				}
+			}
 		}
+	}
+
+	for _, selector := range []string{"html", "body", ".page"} {
+		declarations, ok := rules[selector]
+		if !ok {
+			t.Fatalf("csm.css missing page overflow selector %s", selector)
+		}
+		if got := declarations["overflow-x"]; got != "clip" {
+			t.Errorf("%s must use overflow-x: clip, got %q", selector, got)
+		}
+		if strings.Contains(declarations["max-width"], "100vw") {
+			t.Errorf("%s must not use max-width:100vw because viewport units include the scrollbar width", selector)
+		}
+		assertDoesNotCaptureSticky(selector, declarations)
+	}
+
+	stickyAncestorSelectors := []string{
+		".page-wrapper",
+		".page-body",
+		".container-xl",
+		".row",
+		".col-12",
+		".col-md-8",
+		".col-lg-9",
+		".col-xxl-10",
+		".card",
+		"#findings-card",
+		"#settings-panel",
+		".settings-page",
+		".settings-panel",
+	}
+	for _, selector := range stickyAncestorSelectors {
+		if declarations, ok := rules[selector]; ok {
+			assertDoesNotCaptureSticky(selector, declarations)
+		}
+	}
+
+	for _, selector := range []string{
+		"#findings-card > .card-header",
+		".settings-panel-footer",
+		".csm-sticky-actions",
+	} {
+		declarations, ok := rules[selector]
+		if !ok {
+			t.Errorf("csm.css missing sticky rule %q that the overflow-x fix protects", selector)
+			continue
+		}
+		if got := declarations["position"]; got != "sticky" {
+			t.Errorf("%s must stay sticky so the overflow-x fix protects a real sticky user, got position:%q", selector, got)
+		}
+	}
+
+	screenCSS := cssText
+	if idx := strings.Index(screenCSS, "@media print"); idx >= 0 {
+		screenCSS = screenCSS[:idx]
+	}
+	if regexp.MustCompile(`(?s)\.table-responsive\s*\{[^}]*overflow\s*:\s*visible`).MatchString(screenCSS) {
+		t.Error("screen .table-responsive must keep its scroll overflow; overflow:visible belongs only in the print stylesheet")
+	}
+
+	tablerRules := parseCSSRules(string(tablerCSS))
+	if got := tablerRules[".table-responsive"]["overflow-x"]; got != "auto" {
+		t.Errorf("Tabler .table-responsive must keep overflow-x:auto for wide tables, got %q", got)
 	}
 }
