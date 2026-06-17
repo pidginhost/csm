@@ -125,7 +125,12 @@ th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
 th[style*="cursor"] { user-select: none; }
 
 /* --- layout.html: prevent horizontal overflow ---------------------------- */
-html, body, .page { overflow-x: hidden; max-width: 100vw; }
+/* overflow-x:clip contains horizontal overflow (long IPs/paths, wide content)
+   without making html/body/.page a scroll container. overflow-x:hidden would
+   force overflow-y to compute to auto, capturing every page-level sticky
+   element (findings filter header, settings footer, bulk-action bar) so they
+   stop sticking. Wide tables scroll inside .table-responsive, not the page. */
+html, body, .page { overflow-x: clip; }
 
 /* --- dashboard.html: live-feed highlight animation ----------------------- */
 @keyframes csm-feed-highlight {

@@ -72,7 +72,7 @@ P1 (systemic consistency):
 - [x] 10. Four dialog patterns incl. native window.confirm/prompt (High) -- DONE, see change log
 - [x] 11. Dead CSM.loading/loadError helpers; silent fetch failures (High) -- DONE, see change log
 - [x] 12. location.reload() after actions loses filters/scroll (Medium) -- DONE, see change log
-- [ ] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium)
+- [x] 13. Global overflow-x:hidden hides overflow + breaks sticky (Medium) -- DONE, see change log
 
 P2 (safety, forms, interaction):
 - [ ] 14. Destructive actions without confirm/undo (High)
@@ -576,3 +576,22 @@ preview content (untrusted malware sample text).
   existing P3.5 filter test pinned the literal empty-branch URL bind; updated to
   the helper call, preserving its bind-before-return intent. `ui/static/js/findings.js`,
   `ui/static/js/threat.js`, `internal/webui/static_ui_test.go`.
+- Item 13 (Medium): global overflow-x:hidden broke sticky. The blanket
+  `html, body, .page { overflow-x: hidden; max-width: 100vw; }` swallowed
+  horizontal overflow, but per the CSS overflow spec setting one axis to `hidden`
+  forces the visible axis to compute to `auto`, which turns html/body/.page into a
+  scroll container. Every page-level `position: sticky` element then sticks to
+  that (non-scrolling) container instead of the viewport, so the findings filter
+  header, the settings save footer, and the bulk-action bar stopped sticking.
+  Switched the guard to `overflow-x: clip`, which clips the same horizontal
+  overflow but does not establish a scroll container (clip + a visible cross axis
+  leaves the cross axis visible), so sticky works again. Clip is visually
+  identical to hidden for clipping -- no content that was visible before is now
+  hidden -- and wide tables already scroll inside `.table-responsive`, so dropping
+  the blanket rule (and the `max-width: 100vw` scrollbar footgun) does not let a
+  table push the page wider. `overflow: clip` is supported in current browsers;
+  on Safari < 16 it degrades to visible (sticky still works, a long unbreakable
+  string could re-introduce a horizontal scrollbar). The print-only
+  `.table-responsive { overflow: visible !important; }` is unaffected. Pure-CSS
+  change; pinned by TestGlobalOverflowUsesClipNotHidden. `ui/static/css/csm.css`,
+  `internal/webui/static_ui_test.go`.

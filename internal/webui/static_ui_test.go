@@ -4769,3 +4769,37 @@ func TestActionsRefreshInPlaceNotFullReload(t *testing.T) {
 		t.Error("threat.js attackers load-error retry must still reload because CSM.loadError replaces table DOM")
 	}
 }
+
+// TestGlobalOverflowUsesClipNotHidden pins item 13: the page used a global
+// `overflow-x: hidden` to swallow horizontal overflow, but overflow-x:hidden
+// forces overflow-y to compute to auto, turning html/body/.page into a scroll
+// container that captures every page-level position:sticky element (the findings
+// filter header, the settings panel footer, and the bulk-action bar all stopped
+// sticking). overflow-x:clip contains the same horizontal overflow without
+// establishing a scroll container, so sticky keeps working. Wide tables already
+// scroll inside .table-responsive, so dropping the blanket rule does not let a
+// table push the page wider.
+func TestGlobalOverflowUsesClipNotHidden(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	if strings.Contains(cssText, "overflow-x: hidden") {
+		t.Error("global overflow-x: hidden breaks position:sticky on the findings header, settings footer, and bulk action bar; use overflow-x: clip")
+	}
+	if !strings.Contains(cssText, "html, body, .page { overflow-x: clip; }") {
+		t.Error("csm.css must contain the global horizontal-overflow guard as overflow-x: clip")
+	}
+	// The page-level sticky users must remain so the clip change has something
+	// to protect; these break the moment an ancestor becomes a scroll container.
+	for _, want := range []string{
+		"#findings-card > .card-header {",
+		".settings-panel-footer {",
+		".csm-sticky-actions {",
+	} {
+		if !strings.Contains(cssText, want) {
+			t.Errorf("csm.css missing sticky rule %q that the overflow-x fix protects", want)
+		}
+	}
+}
