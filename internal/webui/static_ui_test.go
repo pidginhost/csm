@@ -4882,8 +4882,21 @@ func TestGlobalOverflowUsesClipNotHidden(t *testing.T) {
 // every other block confirmed, and removing a ModSec escalation exclusion fired
 // immediately (silently re-arming firewall escalation for that rule). The threat
 // bulk block/whitelist endpoint already returns an undo_token that no caller
-// consumed.
+// consumed. Overlapping confirms share one modal, so the helper must cancel the
+// older pending dialog before wiring the next one.
 func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
+	toast, err := os.ReadFile("../../ui/static/js/toast.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toastText := string(toast)
+	if strings.Count(toastText, "cancelActiveDialog();") != 2 ||
+		strings.Count(toastText, "activeDialogCancel = cancelSelf;") != 2 ||
+		!strings.Contains(toastText, "if (activeDialogCancel === cancelSelf) activeDialogCancel = null;") ||
+		!strings.Contains(toastText, "if (settled) return;") {
+		t.Error("toast.js CSM.confirm/CSM.prompt must cancel an older pending dialog before attaching new modal handlers")
+	}
+
 	email, err := os.ReadFile("../../ui/static/js/email.js")
 	if err != nil {
 		t.Fatal(err)
@@ -4891,6 +4904,10 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 	emailText := string(email)
 	if !strings.Contains(emailText, "CSM.confirm('Block ' + ip + ' in the firewall for 24 hours?") {
 		t.Error("email.js outbound-abuse Block 24h must confirm with consequence text before firewalling the IP")
+	}
+	if !strings.Contains(emailText, "if (btn.disabled) return;\n                var ip = btn.getAttribute('data-ip');") ||
+		!strings.Contains(emailText, "btn.disabled = true;\n                CSM.confirm") {
+		t.Error("email.js outbound-abuse Block 24h must latch the button before opening confirm to prevent duplicate submits")
 	}
 
 	rules, err := os.ReadFile("../../ui/static/js/rules.js")
@@ -4900,6 +4917,14 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 	rulesText := string(rules)
 	if !strings.Contains(rulesText, "CSM.confirm('Stop excluding rule ' + id + '?") {
 		t.Error("rules.js ModSec exclusion removal must confirm before re-arming firewall escalation for the rule")
+	}
+	if !strings.Contains(rulesText, "if (btn.disabled) return;\n            var id = parseInt") ||
+		!strings.Contains(rulesText, "btn.disabled = true;\n            CSM.confirm") ||
+		!strings.Contains(rulesText, "var previousRules = _modsecRules.slice();") ||
+		!strings.Contains(rulesText, "return saveModSecEscalation().then(function(ok)") ||
+		!strings.Contains(rulesText, "if (!ok) _modsecRules = previousRules;") ||
+		!strings.Contains(rulesText, "if (document.body.contains(btn)) btn.disabled = false;") {
+		t.Error("rules.js ModSec exclusion removal must latch during confirm/save and restore on cancel or failure")
 	}
 
 	threat, err := os.ReadFile("../../ui/static/js/threat.js")

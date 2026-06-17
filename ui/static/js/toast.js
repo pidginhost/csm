@@ -83,6 +83,15 @@
 
     // ---- Confirm modal ----
 
+    var activeDialogCancel = null;
+
+    function cancelActiveDialog() {
+        if (!activeDialogCancel) return;
+        var cancel = activeDialogCancel;
+        activeDialogCancel = null;
+        cancel();
+    }
+
     /**
      * Show a styled confirmation dialog.
      * @param  {string} message - The confirmation message (newlines preserved).
@@ -90,6 +99,7 @@
      */
     CSM.confirm = function(message) {
         return new Promise(function(resolve, reject) {
+            cancelActiveDialog();
             var modal = document.getElementById('csm-confirm-modal');
             var body  = document.getElementById('csm-confirm-body');
             var okBtn = document.getElementById('csm-confirm-ok');
@@ -125,7 +135,10 @@
                 document.body.appendChild(backdrop);
             }
 
+            var settled = false;
+
             function cleanup() {
+                if (activeDialogCancel === cancelSelf) activeDialogCancel = null;
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
                 if (bsModal) {
@@ -139,8 +152,19 @@
                 }
             }
 
-            function onOk() { cleanup(); resolve(); }
-            function onCancel() { cleanup(); reject(); }
+            function settle(fn) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                fn();
+            }
+
+            function cancelSelf() {
+                settle(function() { reject(); });
+            }
+
+            function onOk() { settle(resolve); }
+            function onCancel() { cancelSelf(); }
             function onKeydown(e) {
                 if (e.key === 'Tab') {
                     // Trap focus between noBtn and okBtn
@@ -156,6 +180,7 @@
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
             document.addEventListener('keydown', onKeydown);
+            activeDialogCancel = cancelSelf;
             okBtn.focus();
 
             var _origCleanup = cleanup;
@@ -174,6 +199,7 @@
      */
     CSM.prompt = function(message, defaultValue) {
         return new Promise(function(resolve, reject) {
+            cancelActiveDialog();
             var modal  = document.getElementById('csm-confirm-modal');
             var body   = document.getElementById('csm-confirm-body');
             var okBtn  = document.getElementById('csm-confirm-ok');
@@ -214,7 +240,10 @@
 
             setTimeout(function() { input.focus(); input.select(); }, 100);
 
+            var settled = false;
+
             function cleanup() {
+                if (activeDialogCancel === cancelSelf) activeDialogCancel = null;
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
                 input.removeEventListener('keydown', onKey);
@@ -229,13 +258,28 @@
                 }
             }
 
-            function onOk() { cleanup(); resolve(input.value); }
-            function onCancel() { cleanup(); reject(); }
+            function settle(fn) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                fn();
+            }
+
+            function cancelSelf() {
+                settle(function() { reject(); });
+            }
+
+            function onOk() {
+                var value = input.value;
+                settle(function() { resolve(value); });
+            }
+            function onCancel() { cancelSelf(); }
             function onKey(e) { if (e.key === 'Enter') { onOk(); } }
 
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
             input.addEventListener('keydown', onKey);
+            activeDialogCancel = cancelSelf;
         });
     };
 

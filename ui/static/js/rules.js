@@ -271,22 +271,34 @@ function renderModSecEscalation() {
 
     container.querySelectorAll('.modsec-remove-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
+            if (btn.disabled) return;
             var id = parseInt(this.getAttribute('data-id'), 10);
+            var previousRules = _modsecRules.slice();
+            btn.disabled = true;
             CSM.confirm('Stop excluding rule ' + id + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
                 _modsecRules = _modsecRules.filter(function(r) { return r !== id; });
-                saveModSecEscalation();
-            }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+                return saveModSecEscalation().then(function(ok) {
+                    if (!ok) _modsecRules = previousRules;
+                });
+            }).catch(function(err) {
+                if (err) CSM.toast(err.message || 'Request failed', 'error');
+            }).finally(function() {
+                if (document.body.contains(btn)) btn.disabled = false;
+            });
         });
     });
 }
 
 function saveModSecEscalation() {
-    CSM.post('/api/v1/rules/modsec-escalation', {rules: _modsecRules}).then(function(data) {
+    return CSM.post('/api/v1/rules/modsec-escalation', {rules: _modsecRules}).then(function(data) {
         if (data.ok) {
             CSM.toast('ModSecurity escalation rules updated', 'success');
             renderModSecEscalation();
+            return true;
         }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        CSM.toast('Error: ' + (data.error || 'Save failed'), 'error');
+        return false;
+    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); return false; });
 }
 
 var modsecForm = document.getElementById('modsec-escalation-form');
@@ -303,9 +315,15 @@ if (modsecForm) {
             CSM.toast('Rule ' + id + ' is already excluded', 'warning');
             return;
         }
+        var previousRules = _modsecRules.slice();
         _modsecRules.push(id);
         input.value = '';
-        saveModSecEscalation();
+        saveModSecEscalation().then(function(ok) {
+            if (!ok) {
+                _modsecRules = previousRules;
+                if (input.value === '') input.value = String(id);
+            }
+        });
     });
 }
 

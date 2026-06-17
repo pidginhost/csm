@@ -607,15 +607,19 @@ preview content (untrusted malware sample text).
   -- which silently re-arms firewall escalation for that rule. Added a
   consequence-bearing `CSM.confirm` to both (the block names the IP and 24h
   window; the exclusion removal says matching requests will again escalate to a
-  block). For undo: `CSM.undo` (and its banner + `/api/v1/undo/run` inverse
+  block). Both buttons latch while confirmation or save is pending so repeated
+  clicks cannot queue duplicate destructive requests, and the shared modal now
+  cancels an older pending confirm or prompt before wiring the next one so one
+  OK click cannot resolve multiple actions. The ModSec list is restored if the
+  save fails. For undo: `CSM.undo` (and its banner + `/api/v1/undo/run` inverse
   registry) already existed but nothing called `offer`. Of the endpoints that
   return an `undo_token`, only threat bulk block/whitelist is reachable from the
   UI (the firewall bulk-unblock button is intentionally absent -- per-row unblock
   plus Flush cover it, and a test forbids reintroducing it), so the threat bulk
   block and whitelist handlers now hand their returned token to
-  `CSM.undo.offer`, surfacing the 30-second undo banner that re-blocks /
+  `CSM.undo.offer`, surfacing the 30-second undo banner that re-blocks or
   un-whitelists via the existing inverse op. No new backend undo support was
   added (out of scope). Pure-JS fixes; pinned by
   TestDestructiveActionsConfirmAndOfferUndo, with `node --check`.
   `ui/static/js/email.js`, `ui/static/js/rules.js`, `ui/static/js/threat.js`,
-  `internal/webui/static_ui_test.go`.
+  `ui/static/js/toast.js`, `internal/webui/static_ui_test.go`.
