@@ -210,9 +210,12 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 // the recipient count N, then exactly N recipient lines that run to the end of
 // the preamble. Anchoring on "index + 1 + N == len(preamble)" plus an
 // address-shape check on every claimed recipient locates the block without a
-// full grammar and tolerates option/ACL lines above it. Any ambiguity returns
-// nil so callers treat recipients as unknown and fail open.
+// full grammar and tolerates option/ACL lines above it. Any ambiguity, including
+// a malformed anchored candidate, returns nil so callers treat recipients as
+// unknown and fail open.
 func extractEximRecipients(preamble []string) []string {
+	var candidate []string
+	ambiguous := false
 	for i, line := range preamble {
 		n, ok := parseBareUint(line)
 		if !ok || n < 1 || i+1+n != len(preamble) {
@@ -228,11 +231,20 @@ func extractEximRecipients(preamble []string) []string {
 			}
 			rcpts = append(rcpts, addr)
 		}
-		if valid {
-			return rcpts
+		if !valid {
+			ambiguous = true
+			continue
 		}
+		if candidate != nil {
+			ambiguous = true
+			continue
+		}
+		candidate = rcpts
 	}
-	return nil
+	if ambiguous {
+		return nil
+	}
+	return candidate
 }
 
 // parseBareUint reports whether s is a single non-negative integer token with

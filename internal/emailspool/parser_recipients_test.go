@@ -108,3 +108,32 @@ func TestParseHeaders_DecoyIntegerNotTreatedAsCount(t *testing.T) {
 		t.Fatalf("Recipients = %v, want [real@example.com]", h.Recipients)
 	}
 }
+
+// ACL/option data above the recipient block may contain bare integers and
+// email-like payloads. It must not be treated as the recipient count; ambiguity
+// should fail open instead of returning a partial recipient suffix.
+func TestParseHeaders_ACLDataAnchoredDecoyYieldsUnknown(t *testing.T) {
+	in := buildSpoolH("2", []string{"real1@example.com", "real2@example.com"})
+	in = strings.Replace(in, "-local\n", "-local\n4\nacl@example.com\n", 1)
+	h, err := ParseHeadersReader(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Recipients) != 0 {
+		t.Fatalf("Recipients = %v, want empty on anchored ACL decoy", h.Recipients)
+	}
+}
+
+// If the claimed recipient block itself fails the '@' shape check, do not
+// salvage a later suffix that happens to start with a bare integer. Returning a
+// subset could make recipient diversity look low and suppress a real relay.
+func TestParseHeaders_MalformedRecipientBlockDoesNotReturnSuffix(t *testing.T) {
+	in := buildSpoolH("3", []string{"victim1@example.com", "1", "victim2@example.net"})
+	h, err := ParseHeadersReader(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Recipients) != 0 {
+		t.Fatalf("Recipients = %v, want empty on malformed recipient block", h.Recipients)
+	}
+}

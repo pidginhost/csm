@@ -38,6 +38,68 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	}
 }
 
+func TestPerIPWindow_StaleRecipientsAreUnknown(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.51"
+
+	w.recordRecipients(ip, []string{"old@example.com"}, now.Add(-2*time.Hour))
+
+	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
+	if count != 0 || known {
+		t.Fatalf("stale recipients = (%d,%v), want (0,false)", count, known)
+	}
+}
+
+func TestPerIPWindow_RecipientParseGapMakesWindowUnknown(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.52"
+
+	w.recordRecipients(ip, []string{"admin@example.com"}, now)
+	w.recordRecipients(ip, nil, now.Add(time.Second))
+
+	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
+	if count != 1 || known {
+		t.Fatalf("partial recipient data = (%d,%v), want (1,false)", count, known)
+	}
+}
+
+func TestPerIPWindow_StaleRecipientParseGapDoesNotHideFreshKnownData(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.53"
+
+	w.recordRecipients(ip, nil, now.Add(-2*time.Hour))
+	w.recordRecipients(ip, []string{"admin@example.com"}, now)
+
+	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
+	if count != 1 || !known {
+		t.Fatalf("fresh known data after stale gap = (%d,%v), want (1,true)", count, known)
+	}
+}
+
+func TestPerIPWindow_RecipientEvictionKeepsHighDiversityAboveGate(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.54"
+
+	for i := 0; i < maxRecipientsPerIP+50; i++ {
+		w.recordRecipients(ip, []string{fmt.Sprintf("victim%03d@example.com", i)}, now)
+	}
+
+	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
+	if !known {
+		t.Fatal("known = false, want true after recording recipients")
+	}
+	if count < 5 {
+		t.Fatalf("distinct recipients after eviction = %d, want at least 5", count)
+	}
+	if count > maxRecipientsPerIP {
+		t.Fatalf("distinct recipients after eviction = %d, want capped at %d", count, maxRecipientsPerIP)
+	}
+}
+
 // addFanout seeds both the per-script and per-IP windows so Path 4 sees the
 // script fanout, optionally recording recipients for the per-IP window.
 func seedFanout(psw *perScriptWindow, pip *perIPWindow, ip string, now time.Time) {
@@ -125,6 +187,29 @@ func TestEvaluatePaths_Path4_FiresWhenRecipientsUnknown(t *testing.T) {
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if !fanoutFired(findings) {
 		t.Fatalf("Path 4 must fire when recipients are unknown (fail open), got %+v", findings)
+	}
+}
+
+// Fail open: partial recipient data is still unknown for suppression purposes.
+// A real relay with parser gaps must not be hidden by a small known subset.
+func TestEvaluatePaths_Path4_FiresWhenRecipientWindowPartiallyUnknown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	ip := "192.0.2.99"
+
+	seedFanout(psw, pip, ip, now)
+	pip.recordRecipients(ip, []string{"info@example.com"}, now)
+	pip.recordRecipients(ip, nil, now)
+
+	findings := eng.evaluatePaths("kC:/", ip, "u", now)
+	if !fanoutFired(findings) {
+		t.Fatalf("Path 4 must fire when recipient data is partially unknown, got %+v", findings)
 	}
 }
 

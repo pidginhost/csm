@@ -226,6 +226,7 @@ func defaultPHPRelayCfg() *config.Config {
 	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5
 	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
 	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
 	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
 	return cfg
 }

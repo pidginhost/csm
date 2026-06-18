@@ -106,6 +106,28 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestPHPRelayFanoutDistinctRecipientsDefaultAndExplicitZero(t *testing.T) {
+	cfg, err := LoadBytes([]byte(""))
+	if err != nil {
+		t.Fatalf("LoadBytes default: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients; got != 5 {
+		t.Fatalf("default fanout_distinct_recipients = %d, want 5", got)
+	}
+
+	cfg, err = LoadBytes([]byte(`
+email_protection:
+  php_relay:
+    fanout_distinct_recipients: 0
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes explicit zero: %v", err)
+	}
+	if got := cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients; got != 0 {
+		t.Fatalf("explicit fanout_distinct_recipients = %d, want 0", got)
+	}
+}
+
 func TestChallengeListenAddrHonorsOperatorOverride(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "csm-config-*.yaml")
 	if err != nil {

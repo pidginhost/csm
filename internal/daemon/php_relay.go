@@ -291,12 +291,12 @@ type ipState struct {
 	mu      sync.Mutex
 	scripts map[scriptKey]*ipScriptState
 	// recipients maps a normalized recipient address to the last time it was
-	// seen from this source IP. lastRecipientAt records when recipient data
-	// was last recorded at all, so a consumer can tell "few recipients" apart
-	// from "recipients unknown" (no -H block parsed) and fail open.
-	recipients      map[string]time.Time
-	lastRecipientAt time.Time
-	lastEvent       time.Time
+	// seen from this source IP. A window is safe to gate only when at least one
+	// recipient parse succeeded and no parse gap was seen in that same window.
+	recipients             map[string]time.Time
+	lastRecipientAt        time.Time
+	lastRecipientUnknownAt time.Time
+	lastEvent              time.Time
 }
 
 type ipScriptState struct {
@@ -384,34 +384,39 @@ const maxRecipientsPerIP = 256
 
 // recordRecipients accumulates the distinct envelope recipients seen from a
 // source IP. Called from the spool pipeline with the parsed -H recipients; an
-// empty list (recipients unknown) is a no-op so the "known" signal stays false.
+// empty list marks a recipient parse gap so Path 4 fails open for that window.
 func (w *perIPWindow) recordRecipients(ip string, recipients []string, at time.Time) {
-	if ip == "" || len(recipients) == 0 {
+	if ip == "" {
 		return
 	}
 	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.recipients == nil {
-		s.recipients = make(map[string]time.Time, 8)
-	}
 	recorded := false
-	for _, raw := range recipients {
-		r := normalizeRecipient(raw)
-		if r == "" {
-			continue
+	if len(recipients) > 0 {
+		if s.recipients == nil {
+			s.recipients = make(map[string]time.Time, 8)
 		}
-		if _, exists := s.recipients[r]; !exists && len(s.recipients) >= maxRecipientsPerIP {
-			evictOldestRecipient(s.recipients)
+		for _, raw := range recipients {
+			r := normalizeRecipient(raw)
+			if r == "" {
+				continue
+			}
+			if _, exists := s.recipients[r]; !exists && len(s.recipients) >= maxRecipientsPerIP {
+				evictOldestRecipient(s.recipients)
+			}
+			if at.After(s.recipients[r]) {
+				s.recipients[r] = at
+			}
+			recorded = true
 		}
-		if at.After(s.recipients[r]) {
-			s.recipients[r] = at
-		}
-		recorded = true
 	}
 	if recorded && at.After(s.lastRecipientAt) {
 		s.lastRecipientAt = at
+	}
+	if !recorded && at.After(s.lastRecipientUnknownAt) {
+		s.lastRecipientUnknownAt = at
 	}
 	if at.After(s.lastEvent) {
 		s.lastEvent = at
@@ -429,13 +434,17 @@ func (w *perIPWindow) distinctRecipientsSince(ip string, since time.Time) (count
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	known = !s.lastRecipientAt.Before(since)
+	known = seenAtOrAfter(s.lastRecipientAt, since) && !seenAtOrAfter(s.lastRecipientUnknownAt, since)
 	for _, last := range s.recipients {
 		if !last.Before(since) {
 			count++
 		}
 	}
 	return count, known
+}
+
+func seenAtOrAfter(t, since time.Time) bool {
+	return !t.IsZero() && !t.Before(since)
 }
 
 func evictOldestRecipient(m map[string]time.Time) {
