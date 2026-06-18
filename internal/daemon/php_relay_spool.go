@@ -261,6 +261,10 @@ func (p *spoolPipeline) OnFile(path string) {
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
 		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, now, h.Subject)
+		// Track envelope recipients so Path 4 can tell genuine relay fanout
+		// (many distinct victims) from WordPress notification mail (a fixed
+		// admin set). Unknown recipients leave the gate failing open.
+		p.eng.ips.recordRecipients(sig.SourceIP, h.Recipients, now)
 	}
 
 	if p.rebuilding.Load() {

@@ -288,9 +288,15 @@ func (w *perScriptWindow) Snapshot() map[scriptKey]*scriptState {
 }
 
 type ipState struct {
-	mu        sync.Mutex
-	scripts   map[scriptKey]*ipScriptState
-	lastEvent time.Time
+	mu      sync.Mutex
+	scripts map[scriptKey]*ipScriptState
+	// recipients maps a normalized recipient address to the last time it was
+	// seen from this source IP. lastRecipientAt records when recipient data
+	// was last recorded at all, so a consumer can tell "few recipients" apart
+	// from "recipients unknown" (no -H block parsed) and fail open.
+	recipients      map[string]time.Time
+	lastRecipientAt time.Time
+	lastEvent       time.Time
 }
 
 type ipScriptState struct {
@@ -368,6 +374,89 @@ func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 		}
 	}
 	return n
+}
+
+// maxRecipientsPerIP bounds the recipient set tracked per source IP. A genuine
+// high-diversity relay blows far past the gate threshold before this cap, so
+// evicting the oldest entry here never pulls the distinct count back under the
+// threshold; it only protects memory under sustained churn.
+const maxRecipientsPerIP = 256
+
+// recordRecipients accumulates the distinct envelope recipients seen from a
+// source IP. Called from the spool pipeline with the parsed -H recipients; an
+// empty list (recipients unknown) is a no-op so the "known" signal stays false.
+func (w *perIPWindow) recordRecipients(ip string, recipients []string, at time.Time) {
+	if ip == "" || len(recipients) == 0 {
+		return
+	}
+	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.recipients == nil {
+		s.recipients = make(map[string]time.Time, 8)
+	}
+	recorded := false
+	for _, raw := range recipients {
+		r := normalizeRecipient(raw)
+		if r == "" {
+			continue
+		}
+		if _, exists := s.recipients[r]; !exists && len(s.recipients) >= maxRecipientsPerIP {
+			evictOldestRecipient(s.recipients)
+		}
+		if at.After(s.recipients[r]) {
+			s.recipients[r] = at
+		}
+		recorded = true
+	}
+	if recorded && at.After(s.lastRecipientAt) {
+		s.lastRecipientAt = at
+	}
+	if at.After(s.lastEvent) {
+		s.lastEvent = at
+	}
+}
+
+// distinctRecipientsSince returns the number of distinct recipients seen from
+// ip no earlier than since, and whether any recipient data was recorded within
+// that window. known=false means recipients are unknown; callers must fail open.
+func (w *perIPWindow) distinctRecipientsSince(ip string, since time.Time) (count int, known bool) {
+	v, ok := w.states.Load(ip)
+	if !ok {
+		return 0, false
+	}
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	known = !s.lastRecipientAt.Before(since)
+	for _, last := range s.recipients {
+		if !last.Before(since) {
+			count++
+		}
+	}
+	return count, known
+}
+
+func evictOldestRecipient(m map[string]time.Time) {
+	var oldestK string
+	var oldest time.Time
+	first := true
+	for k, t := range m {
+		if first || t.Before(oldest) {
+			oldestK, oldest, first = k, t, false
+		}
+	}
+	if !first {
+		delete(m, oldestK)
+	}
+}
+
+func normalizeRecipient(r string) string {
+	r = strings.TrimSpace(r)
+	r = strings.TrimPrefix(r, "<")
+	r = strings.TrimSuffix(r, ">")
+	return strings.ToLower(strings.TrimSpace(r))
 }
 
 func (w *perIPWindow) relaySamplesSince(ip string, since time.Time) []alert.RelayScriptHit {
@@ -652,7 +741,8 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 		if e.policies == nil || !e.policies.IsProxyIP(sourceIP) {
 			fwin := time.Duration(e.cfg.EmailProtection.PHPRelay.FanoutWindowMin) * time.Minute
 			distinct := e.ips.distinctScriptsSince(sourceIP, now.Add(-fwin))
-			if distinct >= e.cfg.EmailProtection.PHPRelay.FanoutDistinctScripts {
+			if distinct >= e.cfg.EmailProtection.PHPRelay.FanoutDistinctScripts &&
+				!e.fanoutIsLowDiversityNotification(sourceIP, now.Add(-fwin)) {
 				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
 					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
 						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin), now)
@@ -668,6 +758,22 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	}
 
 	return findings
+}
+
+// fanoutIsLowDiversityNotification reports whether a script fanout from this
+// source IP looks like WordPress notification mail (comment moderation, contact
+// forms): many distinct scripts but a small fixed recipient set. It returns
+// true only when recipient data is known AND the distinct recipient count is
+// below the configured minimum, so Path 4 still fires whenever recipients are
+// diverse (real relay) or unknown (recipient parsing gap -- fail open). A
+// non-positive threshold disables the gate and preserves the original behavior.
+func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time) bool {
+	minRcpt := e.cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients
+	if minRcpt <= 0 || e.ips == nil {
+		return false
+	}
+	count, known := e.ips.distinctRecipientsSince(sourceIP, since)
+	return known && count < minRcpt
 }
 
 // makeFinding builds a Critical Finding for the given path.

@@ -94,6 +94,11 @@ type Headers struct {
 	XMailer      string
 	UserAgent    string
 	MessageID    string
+	// Recipients holds the envelope recipient addresses when the Exim -H
+	// recipient block can be unambiguously located; empty when the block is
+	// absent or its shape cannot be validated. Consumers that gate on
+	// recipient diversity must treat empty as "unknown" and fail open.
+	Recipients []string
 }
 
 // ParseHeaders reads the given Exim -H file and returns a Headers.
@@ -156,12 +161,15 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 	// headers AFTER a blank line that follows the recipient list; recipients
 	// are preceded by a numeric count line.
 	inHeaders := false
+	var preamble []string
 	for sc.Scan() {
 		line := sc.Text()
 		if !inHeaders {
 			if line == "" {
 				inHeaders = true
+				continue
 			}
+			preamble = append(preamble, line)
 			continue
 		}
 		// RFC 5322 header section. Each header line in Exim's -H format
@@ -192,7 +200,67 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 	if !inHeaders {
 		return Headers{}, errors.New("missing header section separator")
 	}
+	h.Recipients = extractEximRecipients(preamble)
 	return h, nil
+}
+
+// extractEximRecipients recovers the envelope recipient addresses from the
+// Exim -H preamble (the lines between the envelope-user line and the blank
+// header separator). Exim writes the recipient block last: a line holding only
+// the recipient count N, then exactly N recipient lines that run to the end of
+// the preamble. Anchoring on "index + 1 + N == len(preamble)" plus an
+// address-shape check on every claimed recipient locates the block without a
+// full grammar and tolerates option/ACL lines above it. Any ambiguity returns
+// nil so callers treat recipients as unknown and fail open.
+func extractEximRecipients(preamble []string) []string {
+	for i, line := range preamble {
+		n, ok := parseBareUint(line)
+		if !ok || n < 1 || i+1+n != len(preamble) {
+			continue
+		}
+		rcpts := make([]string, 0, n)
+		valid := true
+		for _, r := range preamble[i+1:] {
+			addr := firstField(r)
+			if addr == "" || !strings.Contains(addr, "@") {
+				valid = false
+				break
+			}
+			rcpts = append(rcpts, addr)
+		}
+		if valid {
+			return rcpts
+		}
+	}
+	return nil
+}
+
+// parseBareUint reports whether s is a single non-negative integer token with
+// no other characters. The length cap rejects timestamps and other long
+// numeric option values that are not recipient counts.
+func parseBareUint(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 9 {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func firstField(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, " \t"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }
 
 // parseEximHeaderLine returns (header-name, header-value) for an Exim -H

@@ -776,6 +776,7 @@ type Config struct {
 			AccountVolumePerHour     int     `yaml:"account_volume_per_hour"`
 			ReputationFailuresPer24h int     `yaml:"reputation_failures_per_24h"`
 			FanoutDistinctScripts    int     `yaml:"fanout_distinct_scripts"`
+			FanoutDistinctRecipients int     `yaml:"fanout_distinct_recipients"`
 			FanoutWindowMin          int     `yaml:"fanout_window_min"`
 			BaselineSigma            float64 `yaml:"baseline_sigma"`
 			BaselineObservationDays  int     `yaml:"baseline_observation_days"`
@@ -1462,6 +1463,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.EmailProtection.PHPRelay.FanoutDistinctScripts == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	}
+	if cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients == 0 {
+		cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
 	}
 	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
