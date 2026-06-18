@@ -669,10 +669,11 @@ preview content (untrusted malware sample text).
   handlers now normalise a non-ok body into a thrown rejection
   (`if (!data.ok) throw new Error(data.error || 'unknown')`) so one
   `.catch` owns all failure handling, report `e.message` (no double
-  prefix), and a failed apply drops the optimistic pending changes and
-  calls `loadRules()` to resync the table with the live ruleset instead
-  of leaving toggles in a false "applied" state. Pure-JS fix (the backend
-  contract was left as-is; the throw-on-not-ok bridge handles both the
-  200 ok:false and non-OK shapes); pinned by
+  prefix), and a failed apply reverts the staged toggle state before
+  calling `loadRules()` to resync the table with the live ruleset; the
+  render path rebuilds the original enabled baseline before binding
+  toggles so no stale staged state survives the reload. Pure-JS fix (the
+  backend contract was left as-is; the throw-on-not-ok bridge handles
+  both the 200 ok:false and non-OK shapes); pinned by
   TestModSecRulesFailuresHandledInCatch, with `node --check`.
   `ui/static/js/modsec-rules.js`, `internal/webui/static_ui_test.go`.

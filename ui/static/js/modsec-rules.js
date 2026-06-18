@@ -20,6 +20,22 @@ function refreshRulesTable() {
     }
 }
 
+function resetPendingToggleState() {
+    for (var id in _pendingChanges) {
+        if (!Object.prototype.hasOwnProperty.call(_pendingChanges, id)) continue;
+        var ruleID = parseInt(id, 10);
+        var original = !!_originalEnabled[ruleID];
+        var toggle = document.querySelector('.enable-toggle[data-id="' + ruleID + '"]');
+        if (toggle) toggle.checked = original;
+        var row = document.getElementById('rule-row-' + ruleID);
+        if (row) {
+            row.style.backgroundColor = '';
+            row.setAttribute('data-status', original ? 'enabled' : 'disabled');
+        }
+    }
+    refreshRulesTable();
+}
+
 function loadRules() {
     CSM.get('/api/v1/modsec/rules')
         .then(function(data) {
@@ -59,6 +75,7 @@ function renderStats(data) {
 function renderTable() {
     var tbody = document.getElementById('modsec-rules-tbody');
     var html = '';
+    _originalEnabled = {};
     _pendingChanges = {};
 
     for (var i = 0; i < _rules.length; i++) {
@@ -253,6 +270,7 @@ document.getElementById('btn-apply').addEventListener('click', function() {
             // A failed apply (rolled back, write failed, or rejected) left
             // the live ruleset at its previous state, so drop the optimistic
             // pending changes and reload to resync the table with the server.
+            resetPendingToggleState();
             _pendingChanges = {};
             updateApplyBar();
             loadRules();
@@ -262,18 +280,8 @@ document.getElementById('btn-apply').addEventListener('click', function() {
 
 // Discard
 document.getElementById('btn-discard').addEventListener('click', function() {
-    for (var id in _pendingChanges) {
-        var toggle = document.querySelector('.enable-toggle[data-id="' + id + '"]');
-        var original = _originalEnabled[parseInt(id, 10)];
-        if (toggle) toggle.checked = original;
-        var row = document.getElementById('rule-row-' + id);
-        if (row) {
-            row.style.backgroundColor = '';
-            row.setAttribute('data-status', original ? 'enabled' : 'disabled');
-        }
-    }
+    resetPendingToggleState();
     _pendingChanges = {};
-    refreshRulesTable();
     updateApplyBar();
 });
 
