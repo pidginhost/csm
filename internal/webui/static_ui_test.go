@@ -3472,6 +3472,60 @@ func TestModSecRulesFailuresHandledInCatch(t *testing.T) {
 	}
 }
 
+// TestPollersStopBeforeRestartAndStaySilent pins audit item 17. Two
+// auto-refresh hygiene bugs caused storms. (1) dashboard.js re-added its
+// poll and chart intervals on every visibilitychange (and at init then
+// again on the first visible) without stopping the prior ones, so each
+// tab switch stacked another fetch loop against the daemon. (2) The
+// polled firewall loaders fetched with a non-silent CSM.get, so a failed
+// poll both auto-toasted (CSM.request) and rendered an inline loadError,
+// and the toast repeated every refresh cycle. The fix makes both restart
+// paths stop-before-start (one shared _startChartIntervals) and silences
+// the polled firewall loaders so the inline loadError is the only error
+// surface.
+func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
+	dash, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dashText := string(dash)
+	for _, fragment := range []string{
+		"function _startPolling() {",
+		"_stopIntervals();\n        // Fast cadence",
+		"function _startChartIntervals() {",
+		"_stopChartIntervals();\n        // Refresh charts every 60 seconds",
+		"_startChartIntervals();\n            // Immediate refresh on return",
+	} {
+		if !strings.Contains(dashText, fragment) {
+			t.Errorf("dashboard.js missing interval stop-before-start fragment %q", fragment)
+		}
+	}
+	// After consolidation the chart interval-creation pushes live only in
+	// _startChartIntervals (timeline+attack, trend) and the priority-queue
+	// helper -- three in total. The duplicated visibilitychange block is gone.
+	if n := strings.Count(dashText, "_chartIntervals.push("); n != 3 {
+		t.Errorf("dashboard.js has %d _chartIntervals.push calls, want 3 (chart restart still duplicated)", n)
+	}
+
+	fw, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fwText := string(fw)
+	for _, fragment := range []string{
+		`CSM.get('/api/v1/firewall/status', {silent: true})`,
+		`CSM.get('/api/v1/firewall/subnets', {silent: true})`,
+		`CSM.get('/api/v1/blocked-ips', {silent: true})`,
+		`CSM.get('/api/v1/firewall/allowed', {silent: true})`,
+		`CSM.get('/api/v1/threat/whitelist', {silent: true})`,
+		`CSM.get(currentAuditURL(), {silent: true})`,
+	} {
+		if !strings.Contains(fwText, fragment) {
+			t.Errorf("firewall.js polled loader missing silent option: %q", fragment)
+		}
+	}
+}
+
 // TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
 // found duplicate element IDs across templates (audit-search /
 // audit-content in firewall+audit, lookup-form / lookup-ip /

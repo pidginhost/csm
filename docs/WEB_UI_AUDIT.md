@@ -78,7 +78,7 @@ P2 (safety, forms, interaction):
 - [x] 14. Destructive actions without confirm/undo (High) -- DONE, see change log
 - [x] 15. Settings save races: lost-edit, double-submit, badge mismatch (High) -- DONE, see change log
 - [x] 16. Dead error-handling branches in modsec-rules (High) -- DONE, see change log
-- [ ] 17. Interval leaks on tab visibility change -> fetch storms (Medium)
+- [x] 17. Interval leaks on tab visibility change -> fetch storms (Medium) -- DONE, see change log
 - [ ] 18. Loose IP/CIDR validators + dead date regexes (Medium)
 - [ ] 19. Audit log renders all rows into one innerHTML; relative export (Medium)
 - [ ] 20. A11y: confirm modal ARIA, fake focus traps, login states (Medium)
@@ -677,3 +677,24 @@ preview content (untrusted malware sample text).
   both the 200 ok:false and non-OK shapes); pinned by
   TestModSecRulesFailuresHandledInCatch, with `node --check`.
   `ui/static/js/modsec-rules.js`, `internal/webui/static_ui_test.go`.
+- Item 17 (Medium): interval leaks + poll error storms. The dashboard had
+  two `visibilitychange` restart paths that re-added pollers without
+  stopping the prior ones. `_startPolling` (the 10s/60s feed pollers) ran
+  at init and again on every visible event with no `_stopIntervals()`
+  first, and the chart `visibilitychange` handler pushed a fresh copy of
+  the 60s/300s chart + priority-queue intervals onto `_chartIntervals`
+  each time, duplicating the init block. A few tab switches stacked
+  several fetch loops against the daemon. Both restart paths are now
+  stop-before-start: `_startPolling` calls `_stopIntervals()` at the top,
+  and the duplicated chart-interval creation was pulled into one
+  `_startChartIntervals()` that calls `_stopChartIntervals()` first and is
+  used by both init and the visible branch. Separately, the polled
+  firewall loaders (status, subnets, blocked, allowed, whitelist, audit)
+  fetched with a non-silent `CSM.get`, so a failed poll both auto-toasted
+  (`CSM.request`) and rendered an inline `loadError`, and the toast
+  repeated every refresh; they now pass `{silent: true}` so the inline
+  retryable error is the only surface, matching the challenge-panel poll
+  fixed in item 11. Pure-JS fix; pinned by
+  TestPollersStopBeforeRestartAndStaySilent, with `node --check`.
+  `ui/static/js/dashboard.js`, `ui/static/js/firewall.js`,
+  `internal/webui/static_ui_test.go`.

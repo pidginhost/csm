@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI outbound-abuse "Block 24h" and ModSec escalation-exclusion removal now ask for confirmation, ignore repeat clicks, and keep only one modal action active. A bulk threat block or whitelist offers a 30-second undo.
 - Web UI settings now lock the whole section form while a save is in flight, so edits made during the round-trip are no longer lost and a second submit cannot fire; the header badge no longer says "Applies live" while a restart notice is active, and a single restart notice shows instead of two.
 - Web UI ModSecurity rule changes now show the real error when an escalation toggle or apply fails, instead of a doubled "Error: Error:" prefix, and a failed apply reverts staged toggles before rebuilding from the live ruleset.
+- Web UI dashboard no longer stacks duplicate refresh loops each time the tab is hidden and shown, so switching tabs cannot build up a fetch storm; failed firewall panel refreshes now show a single inline error instead of also repeating a toast every poll.
 
 ## [3.16.1] - 2026-06-15
 

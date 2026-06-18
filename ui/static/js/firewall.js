@@ -195,7 +195,7 @@ function toggleAuditInspect(btn, ip) {
 }
 
 function loadStatus() {
-    CSM.get('/api/v1/firewall/status')
+    CSM.get('/api/v1/firewall/status', {silent: true})
         .then(function(d) {
             var allowedTotal = (d.allowed_count || 0) + (d.port_allow_count || 0);
             var countryCount = (d.country_block || []).length;
@@ -266,7 +266,7 @@ function loadStatus() {
 }
 
 function loadSubnets() {
-    CSM.get('/api/v1/firewall/subnets')
+    CSM.get('/api/v1/firewall/subnets', {silent: true})
         .then(function(subs) {
             var el = document.getElementById('subnet-content');
             resetFirewallTable('subnets', 'subnets-table-controls');
@@ -303,7 +303,7 @@ function loadSubnets() {
 }
 
 function loadBlocked() {
-    CSM.get('/api/v1/blocked-ips')
+    CSM.get('/api/v1/blocked-ips', {silent: true})
         .then(function(ips) {
             var el = document.getElementById('blocked-content');
             resetFirewallTable('blocked', 'blocked-table-controls');
@@ -415,7 +415,7 @@ function loadBlocked() {
 }
 
 function loadAllowed() {
-    CSM.get('/api/v1/firewall/allowed')
+    CSM.get('/api/v1/firewall/allowed', {silent: true})
         .then(function(data) {
             var el = document.getElementById('allowed-content');
             var allowed = data.allowed || [];
@@ -482,7 +482,7 @@ function loadAllowed() {
 }
 
 function loadWhitelist() {
-    CSM.get('/api/v1/threat/whitelist')
+    CSM.get('/api/v1/threat/whitelist', {silent: true})
         .then(function(ips) {
             var el = document.getElementById('whitelist-content');
             resetFirewallTable('whitelist', 'whitelist-table-controls');
@@ -520,7 +520,7 @@ function loadWhitelist() {
 }
 
 function loadAudit() {
-    CSM.get(currentAuditURL())
+    CSM.get(currentAuditURL(), {silent: true})
         .then(function(entries) {
             var el = document.getElementById('fw-audit-content');
             resetFirewallTable('audit', 'firewall-audit-table-controls');

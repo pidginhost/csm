@@ -398,6 +398,9 @@
 
     // Initialize - two cadences with failure isolation
     function _startPolling() {
+        // Stop any live pollers first so a repeated visibilitychange (or
+        // init followed by the first visible event) cannot stack loops.
+        _stopIntervals();
         // Fast cadence (10s): notification poll
         function fastPoll() {
             try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
@@ -981,6 +984,13 @@
         loadTrend();
         loadPriorityQueue();
 
+        _startChartIntervals();
+    }
+
+    function _startChartIntervals() {
+        // Stop existing chart intervals first so a repeated
+        // visibilitychange (or init then first visible) cannot stack pollers.
+        _stopChartIntervals();
         // Refresh charts every 60 seconds
         _chartIntervals.push(CSM.refresh.interval(function() {
             try { loadTimeline(); } catch(e) { console.error('loadTimeline:', e); }
@@ -1013,15 +1023,9 @@
         if (document.hidden) {
             _stopChartIntervals();
         } else {
-            // Restart refresh intervals (charts survive tab switches)
-            _chartIntervals.push(CSM.refresh.interval(function() {
-                try { loadTimeline(); } catch(e) {}
-                try { loadAttackTypes(); } catch(e) {}
-            }, 60000));
-            _chartIntervals.push(CSM.refresh.interval(function() {
-                try { loadTrend(); } catch(e) {}
-            }, 300000));
-            _startPriorityQueueInterval();
+            // Restart refresh intervals (charts survive tab switches);
+            // _startChartIntervals stops the prior set before re-adding.
+            _startChartIntervals();
             // Immediate refresh on return
             try { loadTimeline(); } catch(e) {}
             try { loadAttackTypes(); } catch(e) {}
