@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI in-place refreshes now ignore stale overlapping responses and clear empty finding or attacker views without leaving old selections, exports, or charts behind. Load-failure retry buttons keep using a full page refresh where the page shell is replaced.
 - Web UI sticky elements (findings filter header, settings save footer, bulk-action bar) now stay pinned while scrolling; the page's horizontal-overflow guard no longer turned the page into a scroll container that disabled them.
 - Web UI outbound-abuse "Block 24h" and ModSec escalation-exclusion removal now ask for confirmation, ignore repeat clicks, and keep only one modal action active. A bulk threat block or whitelist offers a 30-second undo.
+- Web UI settings now lock the whole section form while a save is in flight, so edits made during the round-trip are no longer lost and a second submit cannot fire; the "applies live" / "restart required" header badge follows the live config check, and a single restart notice shows instead of two.
 
 ## [3.16.1] - 2026-06-15
 

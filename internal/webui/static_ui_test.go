@@ -3355,7 +3355,7 @@ func TestSettingsAsyncDialogsDoNotReenter(t *testing.T) {
 		`pendingPopstateSection = null;`,
 		`popstateConfirmOpen = false;`,
 		`let tentativeApplyRunning = false;`,
-		`if (tentativeApplyRunning) return;`,
+		`if (tentativeApplyRunning || saving) return;`,
 		`tentativeApplyRunning = true;`,
 		`tentativeApplyRunning = false;`,
 		`let revertRollbackRunning = false;`,
@@ -3366,6 +3366,60 @@ func TestSettingsAsyncDialogsDoNotReenter(t *testing.T) {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("settings.js missing async dialog reentry guard fragment %q", fragment)
 		}
+	}
+}
+
+// TestSettingsSaveDisablesFormAndAlignsRestartBadge pins audit item 15.
+// Three races/inconsistencies were possible while saving a settings
+// section: (1) only the Save button was disabled during the POST round
+// trip, so edits typed mid-flight were clobbered by the post-save reload
+// and Discard/tentative-apply could fire a duplicate If-Match submit;
+// (2) the header "Applies live"/"Restart required" badge was driven by
+// the static section-level restart_hint, which can contradict the
+// runtime config.Diff result (pending_restart) shown in the banner;
+// (3) renderForm rendered both the top restart banner and a separate
+// in-panel "restart required" alert for the same fact.
+func TestSettingsSaveDisablesFormAndAlignsRestartBadge(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	// (1) Whole-form busy lock during save + reentry guard.
+	for _, fragment := range []string{
+		`function setPanelBusy(busy)`,
+		`panel.querySelectorAll("input, select, textarea, button")`,
+		`let saving = false;`,
+		`if (saving) return;`,
+		`saving = true;`,
+		`setPanelBusy(true);`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("settings.js missing save-race guard fragment %q", fragment)
+		}
+	}
+
+	// (2) Header badge sourced from runtime pending_restart, not the
+	// static restart_hint, so it can never claim "Applies live" while
+	// the banner says restart required.
+	for _, fragment := range []string{
+		`function restartBadgeForData(data)`,
+		`if (data.pending_restart) return {cls: "bg-orange-lt", text: "Restart required"};`,
+		`return {cls: "bg-green-lt", text: "Applies live"};`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("settings.js missing runtime-aligned restart badge fragment %q", fragment)
+		}
+	}
+	if strings.Contains(text, `data.section.restart_hint ? "bg-orange-lt" : "bg-green-lt"`) {
+		t.Error("settings.js still derives the restart badge from the static restart_hint guess")
+	}
+
+	// (3) Single restart notice: the duplicate in-panel alert is gone,
+	// leaving the top settings-banner as the only restart notice.
+	if strings.Contains(text, "Running daemon still uses previous values until restart.") {
+		t.Error("settings.js still renders a second in-panel restart notice; consolidate to the banner")
 	}
 }
 

@@ -17,10 +17,12 @@
     let currentSchema = null;
     let initialValues = {};
     let dirty = false;
+    let saving = false;
     const dirtySections = new Set();
     let pendingLeaveConfirm = null;
     let pendingPopstateSection = null;
     let popstateConfirmOpen = false;
+    let busyDisabledControls = null;
 
     function csrfToken() {
         const meta = document.querySelector('meta[name="csrf-token"]');
@@ -47,6 +49,42 @@
 
     function toast(msg, type) {
         if (window.CSM && CSM.toast) { CSM.toast(msg, type || "info"); }
+    }
+
+    // Lock the whole section form while a save/apply round-trip is in
+    // flight. Disabling only the Save button left inputs editable (those
+    // edits get clobbered by the post-save reload) and left Discard and
+    // tentative-apply clickable (a second If-Match submit). Only controls
+    // that were enabled get re-enabled, so an intentionally-disabled
+    // unset secret field stays disabled.
+    function setPanelBusy(busy) {
+        const panel = byId("settings-panel");
+        if (!panel) return;
+        if (busy) {
+            busyDisabledControls = [];
+            panel.querySelectorAll("input, select, textarea, button").forEach(function (el) {
+                if (el.disabled) return;
+                el.disabled = true;
+                busyDisabledControls.push(el);
+            });
+            panel.classList.add("settings-panel-busy");
+        } else {
+            (busyDisabledControls || []).forEach(function (el) { el.disabled = false; });
+            busyDisabledControls = null;
+            panel.classList.remove("settings-panel-busy");
+        }
+    }
+
+    // The header badge reports the live restart state from the runtime
+    // diff (pending_restart, which config.Diff computes with field-level
+    // override accuracy). The previous static restart_hint guess could
+    // claim "Applies live" while the post-save banner said restart
+    // required; pending_restart removes that contradiction. With nothing
+    // pending, restart_hint stays as a softer forward-looking hint.
+    function restartBadgeForData(data) {
+        if (data.pending_restart) return {cls: "bg-orange-lt", text: "Restart required"};
+        if (data.section && data.section.restart_hint) return {cls: "bg-blue-lt", text: "Needs restart to apply"};
+        return {cls: "bg-green-lt", text: "Applies live"};
     }
 
     function sectionHref(id) {
@@ -327,12 +365,16 @@
         h.appendChild(document.createTextNode(" " + data.section.title));
         header.appendChild(h);
 
+        const badgeState = restartBadgeForData(data);
         const restartBadge = document.createElement("span");
-        restartBadge.className = "badge " + (data.section.restart_hint ? "bg-orange-lt" : "bg-green-lt");
-        restartBadge.textContent = data.section.restart_hint ? "Restart required" : "Applies live";
+        restartBadge.className = "badge " + badgeState.cls;
+        restartBadge.textContent = badgeState.text;
         header.appendChild(restartBadge);
         panel.appendChild(header);
 
+        // Single restart notice: the top banner. pendingRestartSections
+        // always includes this section when pending_restart is set, so
+        // the banner covers the in-panel alert that used to duplicate it.
         const pendingSectionList = data.pending_sections || [];
         if (!activeRollbackStatus) {
             if (pendingSectionNames(pendingSectionList).length > 0) {
@@ -340,17 +382,6 @@
             } else {
                 hideSettingsBanner();
             }
-        }
-
-        // Pending-restart notice
-        if (data.pending_restart) {
-            const b = document.createElement("div");
-            b.className = "alert alert-warning mx-3 mt-3 mb-0";
-            const pending = (data.pending_fields || []).join(", ");
-            b.textContent = "Saved on disk. " + pendingSectionsSentence(data.pending_sections)
-                + "Running daemon still uses previous values until restart."
-                + (pending ? " Pending fields in this section: " + pending : "");
-            panel.appendChild(b);
         }
 
         // Form body: scalars in a two-column grid; wide types span full row.
@@ -891,59 +922,62 @@
     }
 
     async function save() {
-        const btn = byId("settings-save");
-        btn.disabled = true;
+        if (saving) return;
         const changes = computeChanges();
         clearValidationErrors();
         if (Object.keys(changes).length === 0) {
             toast("No changes to save.", "info");
-            btn.disabled = false;
             return;
         }
-        let resp;
+        saving = true;
+        setPanelBusy(true);
         try {
-            resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(currentSection), {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "If-Match": currentETag,
-                    "X-CSRF-Token": csrfToken()
-                },
-                body: JSON.stringify({changes: changes}),
-                allowNonOK: true,
-                silent: true
-            });
-        } catch (e) {
-            toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
-            btn.disabled = false;
-            return;
-        }
-        btn.disabled = false;
-        if (resp.status === 412) {
-            toast("Config changed externally; reloading…", "warning");
+            let resp;
+            try {
+                resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(currentSection), {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "If-Match": currentETag,
+                        "X-CSRF-Token": csrfToken()
+                    },
+                    body: JSON.stringify({changes: changes}),
+                    allowNonOK: true,
+                    silent: true
+                });
+            } catch (e) {
+                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                return;
+            }
+            if (resp.status === 412) {
+                toast("Config changed externally; reloading…", "warning");
+                loadSection(currentSection, {urlMode: "replace"});
+                return;
+            }
+            if (resp.status === 422) {
+                const data = await resp.json().catch(function () { return {}; });
+                showValidationErrors(data.errors || []);
+                toast("Validation errors. Review the highlighted fields.", "error");
+                return;
+            }
+            if (!resp.ok) { toast("Save failed: " + resp.status, "error"); return; }
+            const data = await resp.json();
+            currentETag = data.new_etag;
+            dirty = false;
+            dirtySections.delete(currentSection);
+            refreshDirtyMarkers();
+            if (data.pending_restart) {
+                const pendingSections = pendingSectionNames(data.pending_sections).length ? data.pending_sections : currentSectionSummary();
+                showRestartBanner(pendingSections);
+                toast("Saved on disk. Restart required.", "warning");
+            } else {
+                toast("Saved. Applied live.", "success");
+            }
             loadSection(currentSection, {urlMode: "replace"});
-            return;
+        } finally {
+            saving = false;
+            setPanelBusy(false);
         }
-        if (resp.status === 422) {
-            const data = await resp.json().catch(function () { return {}; });
-            showValidationErrors(data.errors || []);
-            toast("Validation errors. Review the highlighted fields.", "error");
-            return;
-        }
-        if (!resp.ok) { toast("Save failed: " + resp.status, "error"); return; }
-        const data = await resp.json();
-        currentETag = data.new_etag;
-        dirty = false;
-        dirtySections.delete(currentSection);
-        refreshDirtyMarkers();
-        if (data.pending_restart) {
-            const pendingSections = pendingSectionNames(data.pending_sections).length ? data.pending_sections : currentSectionSummary();
-            showRestartBanner(pendingSections);
-            toast("Saved on disk. Restart required.", "warning");
-        } else {
-            toast("Saved. Applied live.", "success");
-        }
-        loadSection(currentSection, {urlMode: "replace"});
     }
 
     // ---- Restart banner --------------------------------------------------
@@ -1059,10 +1093,9 @@
     let revertRollbackRunning = false;
 
     async function tentativeApplyFirewall() {
-        const btn = byId("settings-tentative-apply");
-        if (tentativeApplyRunning) return;
+        if (tentativeApplyRunning || saving) return;
         tentativeApplyRunning = true;
-        if (btn) btn.disabled = true;
+        setPanelBusy(true);
         try {
             const changes = computeChanges();
             if (Object.keys(changes).length === 0) {
@@ -1124,7 +1157,7 @@
             renderRollbackBanner(data.rollback);
         } finally {
             tentativeApplyRunning = false;
-            if (btn) btn.disabled = false;
+            setPanelBusy(false);
         }
     }
 

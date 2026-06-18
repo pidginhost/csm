@@ -383,6 +383,11 @@ body.theme-dark { background-color: var(--csm-bg-page); }
 }
 .settings-panel-title .ti { color: var(--csm-info); }
 .settings-panel-body { padding: 1.25rem; }
+/* While a save/apply round-trip is in flight the form is locked. Native
+   controls are disabled in JS; this blocks the custom multiselect widget
+   (a div, not a form control) and signals the busy state. */
+.settings-panel-busy .settings-panel-body { opacity: 0.6; }
+.settings-panel-busy .csm-multi { pointer-events: none; }
 .settings-panel-footer {
     position: sticky;
     bottom: 0;

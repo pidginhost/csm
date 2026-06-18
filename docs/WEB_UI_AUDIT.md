@@ -76,7 +76,7 @@ P1 (systemic consistency):
 
 P2 (safety, forms, interaction):
 - [x] 14. Destructive actions without confirm/undo (High) -- DONE, see change log
-- [ ] 15. Settings save races: lost-edit, double-submit, badge mismatch (High)
+- [x] 15. Settings save races: lost-edit, double-submit, badge mismatch (High) -- DONE, see change log
 - [ ] 16. Dead error-handling branches in modsec-rules (High)
 - [ ] 17. Interval leaks on tab visibility change -> fetch storms (Medium)
 - [ ] 18. Loose IP/CIDR validators + dead date regexes (Medium)
@@ -623,3 +623,33 @@ preview content (untrusted malware sample text).
   TestDestructiveActionsConfirmAndOfferUndo, with `node --check`.
   `ui/static/js/email.js`, `ui/static/js/rules.js`, `ui/static/js/threat.js`,
   `ui/static/js/toast.js`, `internal/webui/static_ui_test.go`.
+- Item 15 (High): settings save races. `save()` disabled only the Save
+  button, so during the POST round-trip the operator could keep typing
+  (the post-save `loadSection` then reloaded the section and clobbered
+  those edits) and could click Discard or the firewall tentative-apply,
+  firing a second `If-Match` submit on the same ETag. Added a module
+  `saving` guard plus `setPanelBusy`, which disables every input, select,
+  textarea, and button under the panel (recording only the ones it
+  actually disabled, so an intentionally-disabled unset secret field
+  stays disabled) and adds a `.settings-panel-busy` class that makes the
+  custom multiselect non-interactive; save and tentative-apply both lock
+  the form for the whole round-trip and release it in `finally`. The
+  header badge was driven by the static section-level `restart_hint`
+  (`HotReloadManifest`, top-level struct tag), which can disagree with
+  the runtime `config.Diff` result (`pending_restart`, field-level
+  override accurate) shown in the banner -- so a section could show
+  "Applies live" while the banner said restart required. The badge now
+  reads `pending_restart` first (amber "Restart required"), falls back to
+  `restart_hint` as a softer blue "Needs restart to apply" hint when
+  nothing is pending, and only shows green "Applies live" when neither is
+  set. `renderForm` also rendered both the top restart banner and a
+  separate in-panel restart alert for the same fact; since
+  `pendingRestartSections` always includes a section when its
+  `pending_restart` is set, the top banner already covers it, so the
+  duplicate in-panel alert was removed. Pure-JS/CSS fix (backend already
+  emits field-accurate `pending_restart`/`pending_sections`); pinned by
+  TestSettingsSaveDisablesFormAndAlignsRestartBadge, with `node --check`.
+  The existing reentry-guard test was updated for the strengthened
+  tentative-apply guard (`tentativeApplyRunning || saving`).
+  `ui/static/js/settings.js`, `ui/static/css/csm.css`,
+  `internal/webui/static_ui_test.go`.
