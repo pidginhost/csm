@@ -3417,7 +3417,7 @@ func TestSettingsSaveDisablesFormAndAlignsRestartBadge(t *testing.T) {
 	pendingIdx := strings.Index(text, `if (pendingSectionNames(data.pending_sections).length > 0)`)
 	hintIdx := strings.Index(text, `if (data.section && data.section.restart_hint)`)
 	greenIdx := strings.Index(text, `return {cls: "bg-green-lt", text: "Applies live"};`)
-	if pendingIdx < 0 || hintIdx < 0 || greenIdx < 0 || !(pendingIdx < hintIdx && hintIdx < greenIdx) {
+	if pendingIdx < 0 || hintIdx < 0 || greenIdx < 0 || pendingIdx >= hintIdx || hintIdx >= greenIdx {
 		t.Error("settings.js must check global pending_sections before restart_hint and green Applies live")
 	}
 	if strings.Contains(text, `data.section.restart_hint ? "bg-orange-lt" : "bg-green-lt"`) {
