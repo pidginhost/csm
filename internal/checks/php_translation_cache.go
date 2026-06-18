@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"io"
 	"strings"
 )
 
@@ -304,12 +305,14 @@ func isWPTranslationCache(path string) bool {
 		return false
 	}
 	defer func() { _ = f.Close() }()
-	buf := make([]byte, benignPHPStubMaxScan)
-	n, _ := f.Read(buf)
-	if n == 0 {
+
+	buf, err := io.ReadAll(io.LimitReader(f, benignPHPStubMaxScan+1))
+	if err != nil || len(buf) == 0 || len(buf) > benignPHPStubMaxScan {
 		return false
 	}
 	info, err := f.Stat()
-	complete := err == nil && info.Size() <= int64(n)
-	return IsWPTranslationCacheBytesComplete(buf[:n], complete)
+	if err != nil || info.Size() != int64(len(buf)) {
+		return false
+	}
+	return IsWPTranslationCacheBytesComplete(buf, true)
 }

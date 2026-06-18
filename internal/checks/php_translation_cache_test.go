@@ -3,6 +3,7 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -48,6 +49,18 @@ func TestSensitiveDirPHP_TranslationCacheSuppressed(t *testing.T) {
 	}
 }
 
+func TestSensitiveDirPHP_LargeTranslationCacheFailsClosedToWarning(t *testing.T) {
+	large := realL10nShape + strings.Repeat(" ", benignPHPStubMaxScan+1)
+	path := writeL10nTempPHP(t, "admin-ro_RO.l10n.php", large)
+	if isWPTranslationCache(path) {
+		t.Fatal("oversized translation cache read must fail closed")
+	}
+	sev, check, _ := classifySensitiveDirPHP(path, "admin-ro_RO.l10n.php")
+	if sev != alert.Warning || check != "new_php_in_sensitive_dir_clean" {
+		t.Fatalf("oversized translation cache must warn, got sev=%v check=%q", sev, check)
+	}
+}
+
 // True positive: the exact same translation-shaped file with executable code
 // appended after the array must still fire. Proves the recognizer is not a
 // path/name allowlist and does not weaken detection.
@@ -86,6 +99,18 @@ func TestIsWPTranslationCache_EscapedDollarLiteral(t *testing.T) {
 	}
 }
 
+func TestIsWPTranslationCache_ComplexInterpolationRejected(t *testing.T) {
+	tests := []string{
+		"<?php return ['a' => \"${payload}\"];\n",
+		"<?php return ['a' => \"{$payload}\"];\n",
+	}
+	for _, src := range tests {
+		if IsWPTranslationCacheBytesComplete([]byte(src), true) {
+			t.Fatalf("complex interpolation must be rejected: %q", src)
+		}
+	}
+}
+
 func TestIsWPTranslationCache_TruncatedNotRecognized(t *testing.T) {
 	// complete=false: a truncated buffer cannot prove the unseen tail is inert.
 	if IsWPTranslationCacheBytesComplete([]byte(realL10nShape), false) {
@@ -107,6 +132,13 @@ func TestIsWPTranslationCache_ConcatWithCallRejected(t *testing.T) {
 	}
 }
 
+func TestIsWPTranslationCache_ConcatWithVariableRejected(t *testing.T) {
+	src := "<?php return ['a' => 'x' . $payload];\n"
+	if IsWPTranslationCacheBytesComplete([]byte(src), true) {
+		t.Fatal("concatenation with a variable operand must be rejected")
+	}
+}
+
 func TestIsWPTranslationCache_DoubleQuotedInterpolationRejected(t *testing.T) {
 	src := "<?php return ['a' => \"$" + "x payload\"];\n"
 	if IsWPTranslationCacheBytesComplete([]byte(src), true) {
@@ -124,6 +156,18 @@ func TestIsWPTranslationCache_VariableValueRejected(t *testing.T) {
 func TestIsWPTranslationCache_BareScalarReturnRejected(t *testing.T) {
 	if IsWPTranslationCacheBytesComplete([]byte("<?php return 'x';\n"), true) {
 		t.Fatal("a non-array return must be rejected")
+	}
+}
+
+func TestIsWPTranslationCache_BareArrayKeywordRejected(t *testing.T) {
+	tests := []string{
+		"<?php return array;\n",
+		"<?php return ['a' => array];\n",
+	}
+	for _, src := range tests {
+		if IsWPTranslationCacheBytesComplete([]byte(src), true) {
+			t.Fatalf("bare array keyword without parentheses must be rejected: %q", src)
+		}
 	}
 }
 
