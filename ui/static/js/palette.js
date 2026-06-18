@@ -228,8 +228,7 @@ CSM.palette = (function() {
         if (ev.key === 'ArrowUp') { ev.preventDefault(); select(selectedIndex - 1); return; }
         if (ev.key === 'Enter') { ev.preventDefault(); go(selectedIndex); return; }
         if (ev.key === 'Tab') {
-            ev.preventDefault();
-            if (input) input.focus();
+            CSM.focusTrap(overlay, ev);
             return;
         }
     });

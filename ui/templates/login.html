@@ -14,13 +14,13 @@
                 <div class="card-body">
                     <h2 class="h2 text-center mb-4">CSM Security Monitor</h2>
                     {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
-                    <form method="POST" action="/login" autocomplete="off">
+                    <form id="login-form" method="POST" action="/login" autocomplete="off">
                         <div class="mb-3">
                             <label class="form-label" for="login-token">Authentication Token</label>
                             <input type="password" name="token" id="login-token" class="form-control" placeholder="Enter token" autofocus required>
                         </div>
                         <div class="form-footer">
-                            <button type="submit" class="btn btn-primary w-100">Sign In</button>
+                            <button type="submit" id="login-submit" class="btn btn-primary w-100">Sign In</button>
                         </div>
                     </form>
                 </div>

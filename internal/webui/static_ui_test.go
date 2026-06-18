@@ -3690,6 +3690,91 @@ func TestAuditTimestampsExportISOAndSurviveTimeAgo(t *testing.T) {
 	}
 }
 
+// TestAccessibilityModalFocusAndLogin pins audit item 20. (A) The shared
+// confirm/prompt modal had no role, aria-modal, accessible name, or
+// description, so assistive tech could not announce it as a dialog. (B)
+// The command palette and shortcuts-help overlays had fake focus traps
+// that just re-focused one element on Tab instead of cycling the dialog's
+// focusables the way detailPanel already did; that cycle is now a shared
+// CSM.focusTrap helper all three use. (C) The login form had no
+// submit/loading state, so a slow login round-trip invited a double
+// submit. (D) The shortcuts overlay hardcoded a dark palette, rendering a
+// dark box in light mode; it now uses the shared --csm-* theme tokens.
+func TestAccessibilityModalFocusAndLogin(t *testing.T) {
+	layout, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutText := string(layout)
+	for _, fragment := range []string{
+		`id="csm-confirm-modal"`,
+		`role="alertdialog"`,
+		`aria-modal="true"`,
+		`aria-labelledby="csm-confirm-title"`,
+		`aria-describedby="csm-confirm-body"`,
+		`id="csm-confirm-title"`,
+	} {
+		if !strings.Contains(layoutText, fragment) {
+			t.Errorf("layout.html confirm modal missing ARIA fragment %q", fragment)
+		}
+	}
+
+	csmui, err := os.ReadFile("../../ui/static/js/csm-ui.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(csmui), `CSM.focusTrap = function(container, e)`) {
+		t.Error("csm-ui.js must expose a shared CSM.focusTrap helper")
+	}
+	if !strings.Contains(string(csmui), `CSM.focusTrap(panelEl, e)`) {
+		t.Error("detailPanel should route its Tab handling through the shared CSM.focusTrap")
+	}
+
+	palette, err := os.ReadFile("../../ui/static/js/palette.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(palette), `CSM.focusTrap(overlay, ev)`) {
+		t.Error("palette.js Tab handling should use the shared CSM.focusTrap, not a single-element refocus")
+	}
+
+	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortcutsText := string(shortcuts)
+	if !strings.Contains(shortcutsText, `CSM.focusTrap(_helpOverlay, e)`) {
+		t.Error("shortcuts.js Tab handling should use the shared CSM.focusTrap")
+	}
+	if !strings.Contains(shortcutsText, `var(--csm-bg-card)`) {
+		t.Error("shortcuts help overlay should theme its surface with --csm-* tokens")
+	}
+	if strings.Contains(shortcutsText, `background:#1e293b`) {
+		t.Error("shortcuts help overlay still hardcodes a dark background, breaking light mode")
+	}
+
+	loginHTML, err := os.ReadFile("../../ui/templates/login.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginHTMLText := string(loginHTML)
+	for _, fragment := range []string{`id="login-form"`, `id="login-submit"`} {
+		if !strings.Contains(loginHTMLText, fragment) {
+			t.Errorf("login.html missing %q for the submit-state hook", fragment)
+		}
+	}
+	loginJS, err := os.ReadFile("../../ui/static/js/login.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginJSText := string(loginJS)
+	for _, fragment := range []string{`getElementById('login-form')`, `btn.disabled = true;`} {
+		if !strings.Contains(loginJSText, fragment) {
+			t.Errorf("login.js missing submit-lock fragment %q", fragment)
+		}
+	}
+}
+
 // TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
 // found duplicate element IDs across templates (audit-search /
 // audit-content in firewall+audit, lookup-form / lookup-ip /
@@ -3790,7 +3875,7 @@ func TestPhase4A11yPatchesPresent(t *testing.T) {
 		{"../../ui/static/js/toast.js", `toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');`},
 		{"../../ui/static/js/csm-ui.js", `if (e.key === 'Tab' && panelEl) {`},
 		{"../../ui/static/js/csm-ui.js", `if (e.shiftKey && document.activeElement === first) {`},
-		{"../../ui/static/js/csm-ui.js", `if (!panelEl.contains(document.activeElement)) {`},
+		{"../../ui/static/js/csm-ui.js", `if (!container.contains(document.activeElement)) {`},
 	} {
 		src, err := os.ReadFile(tc.path)
 		if err != nil {
@@ -3893,7 +3978,7 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 		`_helpOverlay.focus();`,
 		`_helpReturnFocus.focus();`,
 		`if (e.key === 'Tab') {`,
-		`if (_helpOverlay) _helpOverlay.focus();`,
+		`if (_helpOverlay) CSM.focusTrap(_helpOverlay, e);`,
 		`if (_helpOverlay && document.activeElement !== _helpOverlay) {`,
 	} {
 		if !strings.Contains(text, fragment) {

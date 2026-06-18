@@ -1,6 +1,8 @@
 # Web UI Audit and Remediation Plan
 
-Status: IN PROGRESS. Started 2026-06-16.
+Status: All 20 prioritized findings (P0-P2, items 1-20) DONE. Started
+2026-06-16. The "Additional lower-severity findings (batch later)" list
+below remains open.
 
 This document is the single source of truth for the web UI improvement effort.
 It captures every finding from a 5-agent code-level audit of `ui/` and
@@ -81,7 +83,7 @@ P2 (safety, forms, interaction):
 - [x] 17. Interval leaks on tab visibility change -> fetch storms (Medium) -- DONE, see change log
 - [x] 18. Loose IP/CIDR validators + dead date regexes (Medium) -- DONE, see change log
 - [x] 19. Audit log renders all rows into one innerHTML; relative export (Medium) -- DONE, see change log
-- [ ] 20. A11y: confirm modal ARIA, fake focus traps, login states (Medium)
+- [x] 20. A11y: confirm modal ARIA, fake focus traps, login states (Medium) -- DONE, see change log
 
 ---
 
@@ -748,3 +750,30 @@ preview content (untrusted malware sample text).
   by TestAuditTimestampsExportISOAndSurviveTimeAgo, with `node --check`;
   the P3.1 filter-pack test was updated for the renamed row attribute.
   `ui/static/js/audit.js`, `internal/webui/static_ui_test.go`.
+- Item 20 (Medium): accessibility gaps. (A) The shared confirm/prompt
+  modal had no `role`, `aria-modal`, accessible name, or description, so
+  assistive tech did not announce it as a dialog; it now carries
+  `role="alertdialog"`, `aria-modal`, a visually-hidden title via
+  `aria-labelledby`, and `aria-describedby` pointing at the message body.
+  (B) The command palette and shortcuts-help overlays had fake focus traps
+  that just re-focused one element on Tab, while detailPanel already cycled
+  its focusables; that cycle is now a shared `CSM.focusTrap(container, e)`
+  helper that detailPanel, the palette, and the shortcuts overlay all use,
+  so Tab and Shift+Tab stay inside the open dialog. (C) The login form had
+  no submit state, so a slow round-trip invited a double submit; the button
+  now locks and shows a spinner on first submit (the native POST still
+  proceeds, and the token input carries the credential, so disabling the
+  button is safe). (D) The shortcuts-help overlay hardcoded a dark palette
+  and rendered as a dark box in light mode; its surface, borders, text, and
+  kbd chips now use the shared `--csm-*` theme tokens. The sidebar
+  `aria-expanded` half of the finding was already handled at runtime:
+  `initNavGroups` (layout.js) calls `setGroupExpanded` on load, which sets
+  `aria-expanded` from the persisted localStorage state, and the static
+  `aria-expanded="true"` in the template matches the default-expanded state
+  before the script runs, so it was left as-is. Pure-JS/template/CSS-token
+  fix; pinned by TestAccessibilityModalFocusAndLogin, with `node --check`;
+  the two prior focus-trap tests were updated to follow the shared helper.
+  `ui/templates/layout.html`, `ui/templates/login.html`,
+  `ui/static/js/csm-ui.js`, `ui/static/js/palette.js`,
+  `ui/static/js/shortcuts.js`, `ui/static/js/login.js`,
+  `internal/webui/static_ui_test.go`.

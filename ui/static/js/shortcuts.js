@@ -102,7 +102,7 @@ CSM.shortcuts = (function() {
         _helpOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
 
         var box = document.createElement('div');
-        box.style.cssText = 'background:#1e293b;color:#c8d3e0;border-radius:8px;padding:24px 32px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
+        box.style.cssText = 'background:var(--csm-bg-card);color:var(--csm-text);border:1px solid var(--csm-border);border-radius:8px;padding:24px 32px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
 
         var title = document.createElement('h3');
         title.id = 'csm-shortcuts-title';
@@ -115,7 +115,7 @@ CSM.shortcuts = (function() {
             var groupID = 'csm-shortcuts-group-' + g;
             var groupHeader = document.createElement('h4');
             groupHeader.id = groupID;
-            groupHeader.style.cssText = 'margin:' + (g === 0 ? '0' : '14px') + ' 0 6px 0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0;color:#64748b;';
+            groupHeader.style.cssText = 'margin:' + (g === 0 ? '0' : '14px') + ' 0 6px 0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0;color:var(--csm-text-muted);';
             groupHeader.textContent = group.label;
             box.appendChild(groupHeader);
 
@@ -124,19 +124,19 @@ CSM.shortcuts = (function() {
             table.style.cssText = 'width:100%;border-collapse:collapse;';
             for (var i = 0; i < group.items.length; i++) {
                 var tr = document.createElement('tr');
-                tr.style.cssText = 'border-bottom:1px solid #2d3a4e;';
+                tr.style.cssText = 'border-bottom:1px solid var(--csm-border);';
                 var tdKey = document.createElement('td');
                 tdKey.style.cssText = 'padding:6px 12px 6px 0;white-space:nowrap;';
                 var parts = group.items[i].keys.split(' / ');
                 for (var p = 0; p < parts.length; p++) {
                     if (p > 0) tdKey.appendChild(document.createTextNode(' / '));
                     var kbd = document.createElement('kbd');
-                    kbd.style.cssText = 'background:#334155;border:1px solid #475569;border-radius:3px;padding:2px 6px;font-size:12px;font-family:monospace;';
+                    kbd.style.cssText = 'background:var(--csm-bg-page);border:1px solid var(--csm-border);border-radius:3px;padding:2px 6px;font-size:12px;font-family:monospace;';
                     kbd.textContent = parts[p].trim();
                     tdKey.appendChild(kbd);
                 }
                 var tdDesc = document.createElement('td');
-                tdDesc.style.cssText = 'padding:6px 0;color:#94a3b8;font-size:13px;';
+                tdDesc.style.cssText = 'padding:6px 0;color:var(--csm-text-muted);font-size:13px;';
                 tdDesc.textContent = group.items[i].desc;
                 tr.appendChild(tdKey);
                 tr.appendChild(tdDesc);
@@ -146,7 +146,7 @@ CSM.shortcuts = (function() {
         }
 
         var hint = document.createElement('div');
-        hint.style.cssText = 'margin-top:16px;text-align:center;color:#64748b;font-size:12px;';
+        hint.style.cssText = 'margin-top:16px;text-align:center;color:var(--csm-text-muted);font-size:12px;';
         hint.textContent = 'Press ? or Escape to close';
         box.appendChild(hint);
 
@@ -203,8 +203,7 @@ CSM.shortcuts = (function() {
         if (_helpVisible) {
             if (e.key === '?') { _hideHelp(); e.preventDefault(); return; }
             if (e.key === 'Tab') {
-                e.preventDefault();
-                if (_helpOverlay) _helpOverlay.focus();
+                if (_helpOverlay) CSM.focusTrap(_helpOverlay, e);
                 return;
             }
             e.preventDefault();

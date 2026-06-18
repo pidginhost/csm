@@ -350,6 +350,38 @@ CSM.bulk = function(opts) {
     };
 };
 
+// Shared focus trap. On a Tab keydown, cycle focus among the focusable
+// descendants of `container` (or the container itself when it has none) so
+// keyboard users cannot tab out of an open dialog/overlay. Callers pass the
+// keydown event; the helper calls preventDefault() when it moves focus. Used
+// by detailPanel, the command palette, and the shortcuts-help overlay so they
+// all behave the same instead of each re-focusing a single element.
+CSM.focusTrap = function(container, e) {
+    if (!container || !e || e.key !== 'Tab') return;
+    var focusables = container.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusables.length === 0) {
+        e.preventDefault();
+        if (typeof container.focus === 'function') container.focus();
+        return;
+    }
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (!container.contains(document.activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+    }
+    if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+    }
+};
+
 // Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
 // ships with Tabler. Mounts a single shared offcanvas element on first use
 // so callers do not need page-specific markup.
@@ -381,28 +413,7 @@ CSM.detailPanel = (function() {
         // descendants so keyboard users don't lose focus to the page
         // behind the panel while it's open.
         if (e.key === 'Tab' && panelEl) {
-            var focusables = panelEl.querySelectorAll(
-                'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-            );
-            if (focusables.length === 0) {
-                e.preventDefault();
-                panelEl.focus();
-                return;
-            }
-            var first = focusables[0];
-            var last = focusables[focusables.length - 1];
-            if (!panelEl.contains(document.activeElement)) {
-                e.preventDefault();
-                (e.shiftKey ? last : first).focus();
-                return;
-            }
-            if (e.shiftKey && document.activeElement === first) {
-                e.preventDefault();
-                last.focus();
-            } else if (!e.shiftKey && document.activeElement === last) {
-                e.preventDefault();
-                first.focus();
-            }
+            CSM.focusTrap(panelEl, e);
         }
     }
 

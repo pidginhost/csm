@@ -226,9 +226,10 @@
         </div>
     </div>
     <div id="csm-toasts" class="csm-toasts" aria-live="polite"></div>
-    <div class="modal fade" id="csm-confirm-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="csm-confirm-modal" tabindex="-1" aria-hidden="true" role="alertdialog" aria-modal="true" aria-labelledby="csm-confirm-title" aria-describedby="csm-confirm-body">
         <div class="modal-dialog modal-sm modal-dialog-centered">
             <div class="modal-content">
+                <h3 class="modal-title visually-hidden" id="csm-confirm-title">Confirm action</h3>
                 <div class="modal-body csm-pre-line" id="csm-confirm-body"></div>
                 <div class="modal-footer csm-modal-footer-compact">
                     <button type="button" class="btn btn-ghost-secondary btn-sm" id="csm-confirm-cancel">Cancel</button>
