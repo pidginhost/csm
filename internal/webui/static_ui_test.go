@@ -3480,9 +3480,9 @@ func TestModSecRulesFailuresHandledInCatch(t *testing.T) {
 // polled firewall loaders fetched with a non-silent CSM.get, so a failed
 // poll both auto-toasted (CSM.request) and rendered an inline loadError,
 // and the toast repeated every refresh cycle. The fix makes both restart
-// paths stop-before-start (one shared _startChartIntervals) and silences
-// the polled firewall loaders so the inline loadError is the only error
-// surface.
+// paths stop-before-start, every created dashboard interval is tracked for
+// cleanup, and the polled component/firewall loaders are silent so their
+// inline errors are the only error surface.
 func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 	dash, err := os.ReadFile("../../ui/static/js/dashboard.js")
 	if err != nil {
@@ -3495,16 +3495,28 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 		"function _startChartIntervals() {",
 		"_stopChartIntervals();\n        // Refresh charts every 60 seconds",
 		"_startChartIntervals();\n            // Immediate refresh on return",
+		"try { loadComponents(); } catch(e) {}",
+		"CSM.get('/api/v1/components', { silent: true })",
 	} {
 		if !strings.Contains(dashText, fragment) {
 			t.Errorf("dashboard.js missing interval stop-before-start fragment %q", fragment)
 		}
 	}
 	// After consolidation the chart interval-creation pushes live only in
-	// _startChartIntervals (timeline+attack, trend) and the priority-queue
-	// helper -- three in total. The duplicated visibilitychange block is gone.
-	if n := strings.Count(dashText, "_chartIntervals.push("); n != 3 {
-		t.Errorf("dashboard.js has %d _chartIntervals.push calls, want 3 (chart restart still duplicated)", n)
+	// _startChartIntervals (timeline+attack, trend, components) and the
+	// priority-queue helper -- four in total. The duplicated visibilitychange
+	// block is gone.
+	if n := strings.Count(dashText, "_chartIntervals.push("); n != 4 {
+		t.Errorf("dashboard.js has %d _chartIntervals.push calls, want 4 (chart restart still duplicated or component poller untracked)", n)
+	}
+	allIntervals := strings.Count(dashText, "CSM.refresh.interval(")
+	trackedIntervals := strings.Count(dashText, "_trackInterval(CSM.refresh.interval(") +
+		strings.Count(dashText, "_chartIntervals.push(CSM.refresh.interval(")
+	if allIntervals != trackedIntervals {
+		t.Errorf("dashboard.js tracks %d of %d CSM.refresh.interval calls", trackedIntervals, allIntervals)
+	}
+	if strings.Contains(dashText, "CSM.refresh.interval(loadComponents") {
+		t.Error("dashboard.js still starts the components poller without tracking it")
 	}
 
 	fw, err := os.ReadFile("../../ui/static/js/firewall.js")
@@ -3522,6 +3534,18 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 	} {
 		if !strings.Contains(fwText, fragment) {
 			t.Errorf("firewall.js polled loader missing silent option: %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		`CSM.loadError(document.getElementById('fw-status'), loadStatus);`,
+		`CSM.loadError(document.getElementById('subnet-content'), loadSubnets);`,
+		`CSM.loadError(document.getElementById('blocked-content'), loadBlocked);`,
+		`CSM.loadError(document.getElementById('allowed-content'), loadAllowed);`,
+		`CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist);`,
+		`CSM.loadError(document.getElementById('fw-audit-content'), loadAudit);`,
+	} {
+		if !strings.Contains(fwText, fragment) {
+			t.Errorf("firewall.js polled loader missing inline loadError: %q", fragment)
 		}
 	}
 }

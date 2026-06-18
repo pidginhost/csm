@@ -1002,6 +1002,10 @@
             try { loadTrend(); } catch(e) { console.error('loadTrend:', e); }
         }, 300000));
 
+        _chartIntervals.push(CSM.refresh.interval(function() {
+            try { loadComponents(); } catch(e) { console.error('loadComponents:', e); }
+        }, 30000));
+
         _startPriorityQueueInterval();
     }
 
@@ -1031,6 +1035,7 @@
             try { loadAttackTypes(); } catch(e) {}
             try { loadTrend(); } catch(e) {}
             try { loadPriorityQueue(); } catch(e) {}
+            try { loadComponents(); } catch(e) {}
         }
     });
 
@@ -1277,7 +1282,7 @@
     function loadComponents() {
         var el = document.getElementById('components-matrix');
         if (!el) return;
-        CSM.get('/api/v1/components')
+        CSM.get('/api/v1/components', { silent: true })
             .then(function(rows) {
                 if (!rows || rows.length === 0) {
                     el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
@@ -1348,7 +1353,6 @@
     if (_compBtn) _compBtn.addEventListener('click', loadComponents);
     try { renderFeatureFlags(); } catch (e) {}
     try { loadComponents(); } catch (e) {}
-    CSM.refresh.interval(loadComponents, 30000);
 
     _startChartPolling();
 })();

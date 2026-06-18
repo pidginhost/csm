@@ -688,8 +688,13 @@ preview content (untrusted malware sample text).
   stop-before-start: `_startPolling` calls `_stopIntervals()` at the top,
   and the duplicated chart-interval creation was pulled into one
   `_startChartIntervals()` that calls `_stopChartIntervals()` first and is
-  used by both init and the visible branch. Separately, the polled
-  firewall loaders (status, subnets, blocked, allowed, whitelist, audit)
+  used by both init and the visible branch. The dashboard components
+  matrix poller also lives in that tracked interval set, so beforeunload
+  and visibility changes stop it with the other dashboard pollers; it
+  uses the same silent fetch plus inline error pattern as the polled
+  firewall panels.
+  Separately, the polled firewall loaders (status, subnets, blocked,
+  allowed, whitelist, audit)
   fetched with a non-silent `CSM.get`, so a failed poll both auto-toasted
   (`CSM.request`) and rendered an inline `loadError`, and the toast
   repeated every refresh; they now pass `{silent: true}` so the inline
