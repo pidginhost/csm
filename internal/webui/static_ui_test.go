@@ -3729,13 +3729,32 @@ func TestAccessibilityModalFocusAndLogin(t *testing.T) {
 	if !strings.Contains(string(csmui), `CSM.focusTrap(panelEl, e)`) {
 		t.Error("detailPanel should route its Tab handling through the shared CSM.focusTrap")
 	}
+	if !strings.Contains(string(csmui), `button:not([disabled]):not([tabindex="-1"])`) {
+		t.Error("CSM.focusTrap should exclude controls deliberately removed from the Tab order")
+	}
+
+	toast, err := os.ReadFile("../../ui/static/js/toast.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toastText := string(toast)
+	if !strings.Contains(toastText, `modal.setAttribute('role', 'alertdialog');`) {
+		t.Error("toast.js must restore the alertdialog role that Bootstrap Modal overwrites on show")
+	}
+	if strings.Count(toastText, `restoreAlertDialogRoleAfterShow(modal);`) != 2 {
+		t.Error("CSM.confirm and CSM.prompt should both restore the alertdialog role after Bootstrap shows the modal")
+	}
 
 	palette, err := os.ReadFile("../../ui/static/js/palette.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(palette), `CSM.focusTrap(overlay, ev)`) {
+	paletteText := string(palette)
+	if !strings.Contains(paletteText, `CSM.focusTrap(overlay, ev)`) {
 		t.Error("palette.js Tab handling should use the shared CSM.focusTrap, not a single-element refocus")
+	}
+	if !strings.Contains(paletteText, `row.tabIndex = -1;`) {
+		t.Error("palette result rows should stay out of the Tab order so the shared trap keeps focus on the search input")
 	}
 
 	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")

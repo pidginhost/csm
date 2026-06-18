@@ -358,9 +358,15 @@ CSM.bulk = function(opts) {
 // all behave the same instead of each re-focusing a single element.
 CSM.focusTrap = function(container, e) {
     if (!container || !e || e.key !== 'Tab') return;
-    var focusables = container.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    );
+    var focusableSelector = [
+        'a[href]:not([tabindex="-1"])',
+        'button:not([disabled]):not([tabindex="-1"])',
+        'input:not([disabled]):not([type="hidden"]):not([tabindex="-1"])',
+        'select:not([disabled]):not([tabindex="-1"])',
+        'textarea:not([disabled]):not([tabindex="-1"])',
+        '[tabindex]:not([tabindex="-1"])'
+    ].join(', ');
+    var focusables = container.querySelectorAll(focusableSelector);
     if (focusables.length === 0) {
         e.preventDefault();
         if (typeof container.focus === 'function') container.focus();

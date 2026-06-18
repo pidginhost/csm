@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI now rejects malformed IPv6 addresses (such as ":::::") instead of accepting any string of colons, validates a subnet's CIDR prefix before submitting a block, keeps malformed colon queries out of incident IP search, and parses all timestamps through one shared helper.
 - Web UI audit log export now records the absolute timestamp instead of the relative "3h ago" text when available, shows the absolute time on hover, and audit rows are no longer blanked by the periodic relative-time refresh.
 - Web UI confirm dialog now announces as a labelled modal to screen readers, the command palette and shortcuts help share the detail panel's focus trap, the shortcuts help follows the light/dark theme, and the login button locks after the first submit.
+- Web UI command palette result rows now stay out of the Tab order, so Tab remains trapped on the search field and Enter cannot activate a different result than the highlighted one.
 
 ## [3.16.1] - 2026-06-15
 

@@ -92,6 +92,20 @@
         cancel();
     }
 
+    function restoreAlertDialogRole(modal) {
+        if (!modal) return;
+        modal.setAttribute('role', 'alertdialog');
+    }
+
+    function restoreAlertDialogRoleAfterShow(modal) {
+        if (!modal || !modal.addEventListener) return;
+        var shownHandler = function() {
+            modal.removeEventListener('shown.bs.modal', shownHandler);
+            restoreAlertDialogRole(modal);
+        };
+        modal.addEventListener('shown.bs.modal', shownHandler);
+    }
+
     /**
      * Show a styled confirmation dialog.
      * @param  {string} message - The confirmation message (newlines preserved).
@@ -123,7 +137,9 @@
             var bsModal;
             if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 bsModal = bootstrap.Modal.getOrCreateInstance(modal, { backdrop: 'static', keyboard: false });
+                restoreAlertDialogRoleAfterShow(modal);
                 bsModal.show();
+                restoreAlertDialogRole(modal);
             } else {
                 modal.style.display = 'block';
                 modal.classList.add('show');
@@ -227,7 +243,9 @@
             var bsModal;
             if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 bsModal = bootstrap.Modal.getOrCreateInstance(modal, { backdrop: 'static', keyboard: false });
+                restoreAlertDialogRoleAfterShow(modal);
                 bsModal.show();
+                restoreAlertDialogRole(modal);
             } else {
                 modal.style.display = 'block';
                 modal.classList.add('show');

@@ -759,14 +759,18 @@ preview content (untrusted malware sample text).
   that just re-focused one element on Tab, while detailPanel already cycled
   its focusables; that cycle is now a shared `CSM.focusTrap(container, e)`
   helper that detailPanel, the palette, and the shortcuts overlay all use,
-  so Tab and Shift+Tab stay inside the open dialog. (C) The login form had
-  no submit state, so a slow round-trip invited a double submit; the button
-  now locks and shows a spinner on first submit (the native POST still
-  proceeds, and the token input carries the credential, so disabling the
-  button is safe). (D) The shortcuts-help overlay hardcoded a dark palette
-  and rendered as a dark box in light mode; its surface, borders, text, and
-  kbd chips now use the shared `--csm-*` theme tokens. The sidebar
-  `aria-expanded` half of the finding was already handled at runtime:
+  so Tab and Shift+Tab stay inside the open dialog. Palette result rows are
+  explicitly skipped by Tab, keeping focus on the search input while
+  arrow-key selection remains the source of truth for Enter. Bootstrap's
+  modal code rewrites the shared modal role to `dialog` while showing it, so
+  the confirm/prompt helper restores `alertdialog` after each show. (C) The
+  login form had no submit state, so a slow round-trip invited a double
+  submit; the button now locks and shows a spinner on first submit (the
+  native POST still proceeds, and the token input carries the credential, so
+  disabling the button is safe). (D) The shortcuts-help overlay hardcoded a
+  dark palette and rendered as a dark box in light mode; its surface,
+  borders, text, and kbd chips now use the shared `--csm-*` theme tokens.
+  The sidebar `aria-expanded` half of the finding was already handled at runtime:
   `initNavGroups` (layout.js) calls `setGroupExpanded` on load, which sets
   `aria-expanded` from the persisted localStorage state, and the static
   `aria-expanded="true"` in the template matches the default-expanded state

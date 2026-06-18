@@ -136,6 +136,7 @@ CSM.palette = (function() {
             var entry = results[j].entry;
             var row = document.createElement('button');
             row.type = 'button';
+            row.tabIndex = -1;
             row.className = 'csm-palette__row';
             row.setAttribute('role', 'option');
             row.dataset.idx = String(j);
