@@ -786,6 +786,18 @@ func isBenignPHPStubData(fd int, data []byte) bool {
 	return checks.IsBenignPHPStubBytesComplete(data, complete)
 }
 
+func isWPTranslationCacheData(fd int, data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	complete := false
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err == nil {
+		complete = st.Size <= int64(len(data))
+	}
+	return checks.IsWPTranslationCacheBytesComplete(data, complete)
+}
+
 // readTailFromFd reads the last maxBytes of a file via its fd using pread.
 // Returns nil if the file is smaller than maxBytes (head scan already covers it).
 func readTailFromFd(fd int, maxBytes int) []byte {
@@ -1073,6 +1085,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if !fm.checkPHPContent(event.fd, path, procInfo) {
 			data := readFromFd(event.fd, 65536)
 			if isBenignPHPStubData(event.fd, data) {
+				return
+			}
+			// WordPress 6.5+ writes *.l10n.php translation caches here as pure
+			// data return arrays. Suppress by content structure, not filename.
+			if isWPTranslationCacheData(event.fd, data) {
 				return
 			}
 			fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",

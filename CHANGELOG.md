@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A user crontab that contains only CSM's own WP-Cron entries no longer raises a host-integrity alert after a daemon restart; recognition is content-based, so a crontab with any other cron entry is still flagged and attacker persistence is unaffected.
+- Auto-generated WordPress translation cache files no longer raise a sensitive-directory alert; recognition is based on their data-only content, so any such file carrying executable code is still flagged.
 - Web UI bulk select-all now selects only the rows on the current page, so a permanent delete of quarantined files, ModSecurity blocks, or email quarantine messages no longer also removes rows hidden on other pages or by an active filter.
 - Bulk action bars now refresh after table pagination, search, or filters change, so hidden checked rows cannot keep stale actions active.
 - Web UI keeps quarantine, ModSecurity, and verified-bot timestamps in the operator's local time instead of raw UTC and sorts those columns chronologically; quarantine rows are also no longer blanked by the periodic relative-time refresh.
