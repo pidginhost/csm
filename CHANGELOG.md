@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI sticky elements (findings filter header, settings save footer, bulk-action bar) now stay pinned while scrolling; the page's horizontal-overflow guard no longer turned the page into a scroll container that disabled them.
 - Web UI outbound-abuse "Block 24h" and ModSec escalation-exclusion removal now ask for confirmation, ignore repeat clicks, and keep only one modal action active. A bulk threat block or whitelist offers a 30-second undo.
 - Web UI settings now lock the whole section form while a save is in flight, so edits made during the round-trip are no longer lost and a second submit cannot fire; the header badge no longer says "Applies live" while a restart notice is active, and a single restart notice shows instead of two.
+- Web UI ModSecurity rule changes now show the real error when an escalation toggle or apply fails, instead of a doubled "Error: Error:" prefix, and a failed apply resyncs the table to the live ruleset instead of leaving toggles in a false applied state.
 
 ## [3.16.1] - 2026-06-15
 

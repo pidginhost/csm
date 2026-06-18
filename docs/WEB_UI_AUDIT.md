@@ -77,7 +77,7 @@ P1 (systemic consistency):
 P2 (safety, forms, interaction):
 - [x] 14. Destructive actions without confirm/undo (High) -- DONE, see change log
 - [x] 15. Settings save races: lost-edit, double-submit, badge mismatch (High) -- DONE, see change log
-- [ ] 16. Dead error-handling branches in modsec-rules (High)
+- [x] 16. Dead error-handling branches in modsec-rules (High) -- DONE, see change log
 - [ ] 17. Interval leaks on tab visibility change -> fetch storms (Medium)
 - [ ] 18. Loose IP/CIDR validators + dead date regexes (Medium)
 - [ ] 19. Audit log renders all rows into one innerHTML; relative export (Medium)
@@ -655,3 +655,24 @@ preview content (untrusted malware sample text).
   tentative-apply guard (`tentativeApplyRunning || saving`).
   `ui/static/js/settings.js`, `ui/static/css/csm.css`,
   `internal/webui/static_ui_test.go`.
+- Item 16 (High): dead error-handling branches in modsec-rules. `CSM.post`
+  rejects non-OK responses (it has no `allowNonOK`), so a failed escalation
+  toggle or rule apply skipped the success handler's `else`/`data.error`
+  and `data.rolled_back` branches entirely and landed in `.catch`, which
+  did `'Error: ' + e` -- and since `e` is an `Error`, its `toString()`
+  already begins "Error: ", rendering a doubled "Error: Error:" prefix.
+  The escalation `else` was fully dead (that endpoint only ever returns
+  200 ok:true or a non-OK error), and the apply path was split-brain: the
+  reload-failure rollback returns 200 with `ok:false` (handled in the
+  else) while every other apply failure returns non-OK (handled in the
+  catch), so messaging and the toggle-revert lived in two places. Both
+  handlers now normalise a non-ok body into a thrown rejection
+  (`if (!data.ok) throw new Error(data.error || 'unknown')`) so one
+  `.catch` owns all failure handling, report `e.message` (no double
+  prefix), and a failed apply drops the optimistic pending changes and
+  calls `loadRules()` to resync the table with the live ruleset instead
+  of leaving toggles in a false "applied" state. Pure-JS fix (the backend
+  contract was left as-is; the throw-on-not-ok bridge handles both the
+  200 ok:false and non-OK shapes); pinned by
+  TestModSecRulesFailuresHandledInCatch, with `node --check`.
+  `ui/static/js/modsec-rules.js`, `internal/webui/static_ui_test.go`.

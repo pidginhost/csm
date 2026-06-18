@@ -3431,6 +3431,44 @@ func TestSettingsSaveDisablesFormAndAlignsRestartBadge(t *testing.T) {
 	}
 }
 
+// TestModSecRulesFailuresHandledInCatch pins audit item 16. CSM.post
+// rejects non-OK HTTP responses, so a failed escalation toggle or rule
+// apply never reached the success handler's `else { data.error }` /
+// `data.rolled_back` branch -- those were dead, and the surviving
+// `.catch` stringified the Error object ("Error: " + e renders the
+// Error's own "Error: <msg>", a double prefix) and, for apply, left the
+// optimistic toggle state in place. The fix normalises a non-ok body
+// into a thrown rejection so one `.catch` handles every failure
+// (rejected non-OK and 200 ok:false alike), uses e.message, and resyncs
+// the table on a failed apply.
+func TestModSecRulesFailuresHandledInCatch(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/modsec-rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	for _, fragment := range []string{
+		`if (!data.ok) throw new Error(data.error || 'unknown');`,
+		`'Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown')`,
+		`'Apply failed: ' + (e && e.message ? e.message : 'unknown')`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("modsec-rules.js missing failure-handling fragment %q", fragment)
+		}
+	}
+
+	for _, banned := range []string{
+		`'Error: ' + e`,                       // double-prefixed Error stringification
+		`var msg = 'Apply failed: ' + (data.error`, // dead success-handler else
+		`if (data.rolled_back) msg +=`,        // dead rolled_back branch
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("modsec-rules.js still contains dead/broken failure path %q", banned)
+		}
+	}
+}
+
 // TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
 // found duplicate element IDs across templates (audit-search /
 // audit-content in firewall+audit, lookup-form / lookup-ip /

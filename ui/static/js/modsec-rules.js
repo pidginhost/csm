@@ -140,22 +140,21 @@ function renderTable() {
             CSM.confirm(action + ' escalation for rule ' + id + '?').then(function() {
                 CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
                     .then(function(data) {
-                        if (data.ok) {
-                            CSM.toast('Escalation updated for rule ' + id, 'success');
-                            // Update local state
-                            for (var i = 0; i < _rules.length; i++) {
-                                if (_rules[i].id === id) _rules[i].escalate = escalate;
-                            }
-                            setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no');
-                            refreshRulesTable();
-                            renderStats({total: _rules.length, active: countActive()});
-                        } else {
-                            CSM.toast('Failed to update escalation for rule ' + id + ': ' + (data.error || 'unknown'), 'error');
-                            self.checked = !escalate;
+                        // CSM.post rejects non-OK responses, so a server-side
+                        // failure lands in .catch; normalise a 200 ok:false
+                        // body the same way so one path handles every failure.
+                        if (!data.ok) throw new Error(data.error || 'unknown');
+                        CSM.toast('Escalation updated for rule ' + id, 'success');
+                        // Update local state
+                        for (var i = 0; i < _rules.length; i++) {
+                            if (_rules[i].id === id) _rules[i].escalate = escalate;
                         }
+                        setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no');
+                        refreshRulesTable();
+                        renderStats({total: _rules.length, active: countActive()});
                     })
                     .catch(function(e) {
-                        CSM.toast('Error: ' + e, 'error');
+                        CSM.toast('Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown'), 'error');
                         self.checked = !escalate; // revert toggle
                     });
             }).catch(function() {
@@ -227,49 +226,36 @@ document.getElementById('btn-apply').addEventListener('click', function() {
 
     CSM.post('/api/v1/modsec/rules/apply', {disabled: disabled})
         .then(function(data) {
+            // CSM.post rejects non-OK responses, and the reload-failure
+            // rollback returns 200 with ok:false; throw on either so the
+            // single .catch below owns all failure handling.
+            if (!data.ok) throw new Error(data.error || 'unknown');
             btn.disabled = false;
             btn.innerHTML = '<i class="ti ti-check"></i>&nbsp;Apply Changes';
-
-            if (data.ok) {
-                CSM.toast('Rules applied successfully', 'success');
-                // Update original state
-                for (var id in _pendingChanges) {
-                    _originalEnabled[parseInt(id, 10)] = _pendingChanges[id];
-                }
-                _pendingChanges = {};
-                // Clear highlights
-                document.querySelectorAll('[id^="rule-row-"]').forEach(function(row) {
-                    row.style.backgroundColor = '';
-                });
-                updateApplyBar();
-                // Reload to refresh stats
-                loadRules();
-            } else {
-                var msg = 'Apply failed: ' + (data.error || 'unknown');
-                if (data.rolled_back) msg += ' (changes rolled back)';
-                CSM.toast(msg, 'error');
-                if (data.rolled_back) {
-                    // Revert toggles
-                    for (var id in _pendingChanges) {
-                        var toggle = document.querySelector('.enable-toggle[data-id="' + id + '"]');
-                        var original = _originalEnabled[parseInt(id, 10)];
-                        if (toggle) toggle.checked = original;
-                        var row = document.getElementById('rule-row-' + id);
-                        if (row) {
-                            row.style.backgroundColor = '';
-                            row.setAttribute('data-status', original ? 'enabled' : 'disabled');
-                        }
-                    }
-                    _pendingChanges = {};
-                    refreshRulesTable();
-                    updateApplyBar();
-                }
+            CSM.toast('Rules applied successfully', 'success');
+            // Update original state
+            for (var id in _pendingChanges) {
+                _originalEnabled[parseInt(id, 10)] = _pendingChanges[id];
             }
+            _pendingChanges = {};
+            // Clear highlights
+            document.querySelectorAll('[id^="rule-row-"]').forEach(function(row) {
+                row.style.backgroundColor = '';
+            });
+            updateApplyBar();
+            // Reload to refresh stats
+            loadRules();
         })
         .catch(function(e) {
             btn.disabled = false;
             btn.innerHTML = '<i class="ti ti-check"></i>&nbsp;Apply Changes';
-            CSM.toast('Error: ' + e, 'error');
+            CSM.toast('Apply failed: ' + (e && e.message ? e.message : 'unknown'), 'error');
+            // A failed apply (rolled back, write failed, or rejected) left
+            // the live ruleset at its previous state, so drop the optimistic
+            // pending changes and reload to resync the table with the server.
+            _pendingChanges = {};
+            updateApplyBar();
+            loadRules();
         });
     }).catch(function() { /* cancelled */ });
 });
