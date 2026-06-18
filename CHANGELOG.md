@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-06-18
+
 ### Added
 
 - A new `mailbox_bruteforce` incident kind covers failed mailbox logins, mail brute-force bursts, and SMTP probes. These are keyed on the attacker IP and auto-close after 24h; post-authentication abuse still classifies as `mailbox_takeover`.
