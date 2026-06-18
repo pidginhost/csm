@@ -2953,7 +2953,7 @@ func TestAuditPageHasFilterPack(t *testing.T) {
 	jsText := string(js)
 	for _, fragment := range []string{
 		`data-action="' + CSM.attr(e.action`,
-		`data-timestamp="' + CSM.attr(e.timestamp`,
+		`data-audit-ts="' + CSM.attr(e.timestamp`,
 		`function populateAuditActionFilter(entries) {`,
 		`var current = CSM.urlState.get('action') || select.value || '';`,
 		`var opt = document.createElement('option');`,
@@ -3635,6 +3635,38 @@ func TestValidatorsTightenedAndTimestampParseShared(t *testing.T) {
 	}
 	if strings.Contains(incidentText, `query.indexOf(':') >= 0`) {
 		t.Error("incident.js search still treats any colon-containing query as an IP")
+	}
+}
+
+// TestAuditTimestampsExportISOAndSurviveTimeAgo pins audit item 19. The
+// server already caps the audit feed (see TestReadUIAuditLogLimit), so the
+// remaining defects are client-side. (1) The CSV/JSON export read the time
+// column's rendered text, which is the relative "3h ago" string, making the
+// exported timestamp useless for a compliance record. (2) The row carried
+// data-timestamp on the <tr>, and the global initTimeAgo loop sets
+// textContent on every [data-timestamp] element every 60s -- on a <tr> that
+// wipes all of its <td> cells (the same trap item 2 fixed for quarantine
+// rows). The fix moves the row's filter key to data-audit-ts, keeps the
+// inner span's data-timestamp for relative display plus an explicit
+// absolute title, and exports the raw ISO timestamp from that span.
+func TestAuditTimestampsExportISOAndSurviveTimeAgo(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/audit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`data-audit-ts="' + CSM.attr(e.timestamp || '') + '"`, // row filter key off [data-timestamp]
+		`var raw = row.getAttribute('data-audit-ts') || '';`,  // date filter reads the new attr
+		`title="' + CSM.attr(e.timestamp) + '"`,               // explicit absolute time on hover
+		`cells[0].querySelector('[data-timestamp]')`,          // export reads the raw ISO, not "3h ago"
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("audit.js missing item-19 fragment %q", fragment)
+		}
+	}
+	if strings.Contains(text, `row.getAttribute('data-timestamp')`) {
+		t.Error("audit.js still filters on the <tr> data-timestamp the global timeAgo loop overwrites")
 	}
 }
 

@@ -101,8 +101,14 @@ function loadAudit() {
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
-            html += '<tr data-action="' + CSM.attr(e.action || '') + '" data-timestamp="' + CSM.attr(e.timestamp || '') + '">';
-            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            // The row's date-filter key lives on data-audit-ts, not
+            // data-timestamp: the global initTimeAgo loop rewrites the
+            // textContent of every [data-timestamp] element every 60s, which
+            // on a <tr> would wipe all of its cells. The inner span keeps
+            // data-timestamp for relative display and an explicit title so
+            // the absolute time is always available on hover.
+            html += '<tr data-action="' + CSM.attr(e.action || '') + '" data-audit-ts="' + CSM.attr(e.timestamp || '') + '">';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
@@ -117,7 +123,7 @@ function loadAudit() {
         // predicate respectively. Row markup carries data-action and
         // data-timestamp so both filters work without extra DOM lookups.
         function _auditDateInRange(row) {
-            var raw = row.getAttribute('data-timestamp') || '';
+            var raw = row.getAttribute('data-audit-ts') || '';
             if (!raw) return true;
             var ts = CSM.parseTimestamp(raw);
             if (isNaN(ts)) return true;
@@ -175,8 +181,12 @@ function _auditExportRows() {
         if (r.style.display === 'none') return;
         var cells = r.querySelectorAll('td');
         if (cells.length < 5) return;
+        // Export the absolute ISO timestamp the cell carries, not the
+        // rendered "3h ago" relative string.
+        var tsSpan = cells[0].querySelector('[data-timestamp]');
+        var timeISO = tsSpan ? (tsSpan.getAttribute('data-timestamp') || '') : cells[0].textContent.trim();
         out.push({
-            time:     cells[0].textContent.trim(),
+            time:     timeISO,
             action:   cells[1].textContent.trim(),
             target:   cells[2].textContent.trim(),
             details:  cells[3].textContent.trim(),

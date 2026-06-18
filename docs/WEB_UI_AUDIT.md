@@ -80,7 +80,7 @@ P2 (safety, forms, interaction):
 - [x] 16. Dead error-handling branches in modsec-rules (High) -- DONE, see change log
 - [x] 17. Interval leaks on tab visibility change -> fetch storms (Medium) -- DONE, see change log
 - [x] 18. Loose IP/CIDR validators + dead date regexes (Medium) -- DONE, see change log
-- [ ] 19. Audit log renders all rows into one innerHTML; relative export (Medium)
+- [x] 19. Audit log renders all rows into one innerHTML; relative export (Medium) -- DONE, see change log
 - [ ] 20. A11y: confirm modal ARIA, fake focus traps, login states (Medium)
 
 ---
@@ -728,3 +728,21 @@ preview content (untrusted malware sample text).
   `ui/static/js/incident.js`, `ui/static/js/threat.js`, `ui/static/js/email.js`,
   `ui/static/js/audit.js`, `ui/static/js/account.js`,
   `ui/static/js/quarantine.js`, `internal/webui/static_ui_test.go`.
+- Item 19 (Medium): audit log rendering + export. The "no server-side
+  limit -> huge innerHTML freeze" half of this finding was already stale:
+  the endpoint reads `readUIAuditLog(statePath, 200)` (newest-first, capped
+  at 200, covered by TestReadUIAuditLogLimit), so the rendered set is
+  bounded. The two live defects were client-side. The CSV/JSON export read
+  the time column's rendered text, which is the relative "3h ago" string,
+  so an exported audit record carried a useless timestamp; the export now
+  pulls the absolute ISO timestamp from the cell's `data-timestamp` span.
+  And the row carried `data-timestamp` on the `<tr>`, which the global 60s
+  `initTimeAgo` loop (it sets textContent on every `[data-timestamp]`
+  element) would have collapsed to the relative string, wiping the row's
+  cells -- the same trap item 2 fixed for quarantine rows. The row's
+  date-filter key moved to `data-audit-ts`, the inner span keeps
+  `data-timestamp` for relative display and now also carries an explicit
+  absolute `title`. Pure-JS fix (server cap pre-existed and stays); pinned
+  by TestAuditTimestampsExportISOAndSurviveTimeAgo, with `node --check`;
+  the P3.1 filter-pack test was updated for the renamed row attribute.
+  `ui/static/js/audit.js`, `internal/webui/static_ui_test.go`.
