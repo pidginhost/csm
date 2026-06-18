@@ -332,8 +332,12 @@ func TestClassifySensitiveDirPHP_CleanLanguages_Warning(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Clean but genuinely executable PHP (an assignment then return-of-variable,
+	// not a pure data return array, so the translation-cache recognizer does not
+	// suppress it). It must surface as the visibility Warning, not Critical.
 	body := []byte(`<?php
-return ['items' => ['greeting' => 'hello', 'farewell' => 'bye']];
+$strings = ['greeting' => 'hello', 'farewell' => 'bye'];
+return $strings;
 `)
 	if err := os.WriteFile(cleanPath, body, 0o644); err != nil {
 		t.Fatal(err)

@@ -483,6 +483,7 @@ email_protection:
     account_volume_per_hour: 0          # Path 2b operator override; 0 = auto-derive from cpanel.config maxemailsperhour
     reputation_failures_per_24h: 3      # Path 3 threshold (Stage 2)
     fanout_distinct_scripts: 3          # Path 4 threshold
+    fanout_distinct_recipients: 5       # Path 4 recipient-diversity gate; 0 disables only this gate
     fanout_window_min: 5                # Path 4 window
     baseline_sigma: 3.0                 # Path 5 (Stage 3)
     baseline_observation_days: 7        # Path 5 (Stage 3)

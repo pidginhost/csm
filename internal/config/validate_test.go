@@ -1314,6 +1314,7 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 0 // auto-derive
 	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3
 	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
 	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
 	cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0
 	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7
@@ -1374,6 +1375,18 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 		t.Errorf("fanout_distinct_scripts=50 must be invalid (>20), got %+v", res)
 	}
 	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 101
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.fanout_distinct_recipients") {
+		t.Errorf("fanout_distinct_recipients=101 must be invalid (>100), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 0 // reset to valid (gate disabled)
+	res = Validate(cfg)
+	if hasErrorOnField(res, "email_protection.php_relay.fanout_distinct_recipients") {
+		t.Errorf("fanout_distinct_recipients=0 must be valid (disabled), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5 // reset to valid
 
 	cfg.EmailProtection.PHPRelay.BaselineSigma = 1.5
 	res = Validate(cfg)

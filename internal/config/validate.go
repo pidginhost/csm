@@ -299,6 +299,9 @@ func Validate(cfg *Config) []ValidationResult {
 	if pr.FanoutDistinctScripts != 0 && (pr.FanoutDistinctScripts < 2 || pr.FanoutDistinctScripts > 20) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_scripts", fmt.Sprintf("fanout_distinct_scripts must be between 2 and 20, got %d", pr.FanoutDistinctScripts)})
 	}
+	if pr.FanoutDistinctRecipients != 0 && (pr.FanoutDistinctRecipients < 1 || pr.FanoutDistinctRecipients > 100) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_recipients", fmt.Sprintf("fanout_distinct_recipients must be between 1 and 100, got %d", pr.FanoutDistinctRecipients)})
+	}
 	if pr.FanoutWindowMin != 0 && (pr.FanoutWindowMin < 1 || pr.FanoutWindowMin > 60) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_window_min", fmt.Sprintf("fanout_window_min must be between 1 and 60, got %d", pr.FanoutWindowMin)})
 	}

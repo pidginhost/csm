@@ -765,9 +765,10 @@ type Config struct {
 		KnownForwarders          []string `yaml:"known_forwarders"`
 
 		// PHPRelay is the operator-tunable knob block for the email
-		// PHP-relay protection feature (Stage 1). All thresholds default
-		// to the values set in applyDefaults(); leaving any field at its
-		// zero value triggers the documented default at load time.
+		// PHP-relay protection feature (Stage 1). Thresholds default to
+		// the values set in applyDefaults(), except documented zero
+		// sentinels such as AccountVolumePerHour auto-derive and
+		// FanoutDistinctRecipients disabling only that gate.
 		PHPRelay struct {
 			Enabled                  bool    `yaml:"enabled"`
 			RateWindowMin            int     `yaml:"rate_window_min"`
@@ -776,6 +777,7 @@ type Config struct {
 			AccountVolumePerHour     int     `yaml:"account_volume_per_hour"`
 			ReputationFailuresPer24h int     `yaml:"reputation_failures_per_24h"`
 			FanoutDistinctScripts    int     `yaml:"fanout_distinct_scripts"`
+			FanoutDistinctRecipients int     `yaml:"fanout_distinct_recipients"`
 			FanoutWindowMin          int     `yaml:"fanout_window_min"`
 			BaselineSigma            float64 `yaml:"baseline_sigma"`
 			BaselineObservationDays  int     `yaml:"baseline_observation_days"`
@@ -1203,6 +1205,7 @@ func (c *Config) BotRangesAutoUpdate() bool {
 type defaultPresence struct {
 	smtpProbeThreshold bool
 	forwardGuard       forwardGuardPresence
+	phpRelay           phpRelayPresence
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1215,6 +1218,12 @@ type forwardGuardPresence struct {
 	malware           bool
 	badSenderIP       bool
 	authFail          bool
+}
+
+// phpRelayPresence records PHP-relay fields where a literal zero has runtime
+// meaning and must not be overwritten by defaults.
+type phpRelayPresence struct {
+	fanoutDistinctRecipients bool
 }
 
 // ForwardGuardConfig configures the email forward-guard. Enabled is the master
@@ -1463,6 +1472,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.EmailProtection.PHPRelay.FanoutDistinctScripts == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
 	}
+	if cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients == 0 && !presence.phpRelay.fanoutDistinctRecipients {
+		cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	}
 	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
 	}
@@ -1681,12 +1693,14 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Thresholds      map[string]yaml.Node `yaml:"thresholds"`
 		EmailProtection struct {
 			ForwardGuard map[string]yaml.Node `yaml:"forward_guard"`
+			PHPRelay     map[string]yaml.Node `yaml:"php_relay"`
 		} `yaml:"email_protection"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
+	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
 
 	fg := raw.EmailProtection.ForwardGuard
 	_, presence.forwardGuard.dryRun = fg["dry_run"]

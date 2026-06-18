@@ -266,6 +266,12 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 	if IsBenignPHPStub(path) {
 		return -1, "", ""
 	}
+	// WordPress 6.5+ auto-generates *.l10n.php translation caches as pure data
+	// return arrays. Recognized by content structure (not filename), they carry
+	// no executable construct, so suppress rather than warn on every locale file.
+	if isWPTranslationCache(path) {
+		return -1, "", ""
+	}
 	return alert.Warning, "new_php_in_sensitive_dir_clean",
 		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path)
 }
