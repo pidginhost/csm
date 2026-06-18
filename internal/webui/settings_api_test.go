@@ -1574,10 +1574,14 @@ func TestSettingsPOSTRestartResponseNamesPendingSections(t *testing.T) {
 		t.Fatalf("GET code = %d, body = %s", getW.Code, getW.Body.String())
 	}
 	var getResp struct {
+		PendingRestart  bool                     `json:"pending_restart"`
 		PendingSections []pendingSettingsSection `json:"pending_sections"`
 	}
 	if err := json.Unmarshal(getW.Body.Bytes(), &getResp); err != nil {
 		t.Fatal(err)
+	}
+	if !getResp.PendingRestart {
+		t.Fatal("firewall GET pending_restart = false, want true while firewall restart is pending")
 	}
 	if len(getResp.PendingSections) != 1 || getResp.PendingSections[0].Title != "Firewall" {
 		t.Fatalf("GET pending sections = %+v, want Firewall", getResp.PendingSections)
@@ -1586,6 +1590,22 @@ func TestSettingsPOSTRestartResponseNamesPendingSections(t *testing.T) {
 	thresholdsReq := settingsAuthedReq("GET", "/api/v1/settings/thresholds", "tok", "")
 	thresholdsGetW := httptest.NewRecorder()
 	s.apiSettingsGet(thresholdsGetW, thresholdsReq)
+	if thresholdsGetW.Code != 200 {
+		t.Fatalf("thresholds GET code = %d, body = %s", thresholdsGetW.Code, thresholdsGetW.Body.String())
+	}
+	var thresholdsGetResp struct {
+		PendingRestart  bool                     `json:"pending_restart"`
+		PendingSections []pendingSettingsSection `json:"pending_sections"`
+	}
+	if err := json.Unmarshal(thresholdsGetW.Body.Bytes(), &thresholdsGetResp); err != nil {
+		t.Fatal(err)
+	}
+	if thresholdsGetResp.PendingRestart {
+		t.Fatal("thresholds GET pending_restart = true, want false when only firewall is pending")
+	}
+	if len(thresholdsGetResp.PendingSections) != 1 || thresholdsGetResp.PendingSections[0].ID != "firewall" {
+		t.Fatalf("thresholds GET pending sections = %+v, want firewall", thresholdsGetResp.PendingSections)
+	}
 	thresholdsETag := thresholdsGetW.Header().Get("ETag")
 	thresholdsPostReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"mail_queue_warn":42}}`)

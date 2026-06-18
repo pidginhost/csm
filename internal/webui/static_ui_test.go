@@ -3400,17 +3400,25 @@ func TestSettingsSaveDisablesFormAndAlignsRestartBadge(t *testing.T) {
 		}
 	}
 
-	// (2) Header badge sourced from runtime pending_restart, not the
-	// static restart_hint, so it can never claim "Applies live" while
-	// the banner says restart required.
+	// (2) Header badge sourced from runtime pending_restart and the
+	// global pending_sections list, not the static restart_hint, so it
+	// can never claim "Applies live" while the banner says restart
+	// required.
 	for _, fragment := range []string{
 		`function restartBadgeForData(data)`,
 		`if (data.pending_restart) return {cls: "bg-orange-lt", text: "Restart required"};`,
+		`if (pendingSectionNames(data.pending_sections).length > 0) return {cls: "bg-orange-lt", text: "Restart pending"};`,
 		`return {cls: "bg-green-lt", text: "Applies live"};`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("settings.js missing runtime-aligned restart badge fragment %q", fragment)
 		}
+	}
+	pendingIdx := strings.Index(text, `if (pendingSectionNames(data.pending_sections).length > 0)`)
+	hintIdx := strings.Index(text, `if (data.section && data.section.restart_hint)`)
+	greenIdx := strings.Index(text, `return {cls: "bg-green-lt", text: "Applies live"};`)
+	if pendingIdx < 0 || hintIdx < 0 || greenIdx < 0 || !(pendingIdx < hintIdx && hintIdx < greenIdx) {
+		t.Error("settings.js must check global pending_sections before restart_hint and green Applies live")
 	}
 	if strings.Contains(text, `data.section.restart_hint ? "bg-orange-lt" : "bg-green-lt"`) {
 		t.Error("settings.js still derives the restart badge from the static restart_hint guess")

@@ -639,7 +639,8 @@ preview content (untrusted malware sample text).
   the runtime `config.Diff` result (`pending_restart`, field-level
   override accurate) shown in the banner -- so a section could show
   "Applies live" while the banner said restart required. The badge now
-  reads `pending_restart` first (amber "Restart required"), falls back to
+  reads `pending_restart` first (amber "Restart required"), then the
+  global `pending_sections` list (amber "Restart pending"), falls back to
   `restart_hint` as a softer blue "Needs restart to apply" hint when
   nothing is pending, and only shows green "Applies live" when neither is
   set. `renderForm` also rendered both the top restart banner and a
@@ -648,7 +649,8 @@ preview content (untrusted malware sample text).
   `pending_restart` is set, the top banner already covers it, so the
   duplicate in-panel alert was removed. Pure-JS/CSS fix (backend already
   emits field-accurate `pending_restart`/`pending_sections`); pinned by
-  TestSettingsSaveDisablesFormAndAlignsRestartBadge, with `node --check`.
+  TestSettingsSaveDisablesFormAndAlignsRestartBadge and
+  TestSettingsPOSTRestartResponseNamesPendingSections, with `node --check`.
   The existing reentry-guard test was updated for the strengthened
   tentative-apply guard (`tentativeApplyRunning || saving`).
   `ui/static/js/settings.js`, `ui/static/css/csm.css`,

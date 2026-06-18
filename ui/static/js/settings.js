@@ -79,10 +79,13 @@
     // diff (pending_restart, which config.Diff computes with field-level
     // override accuracy). The previous static restart_hint guess could
     // claim "Applies live" while the post-save banner said restart
-    // required; pending_restart removes that contradiction. With nothing
-    // pending, restart_hint stays as a softer forward-looking hint.
+    // required; pending_restart removes that contradiction. If any section
+    // has a pending restart, keep the green live badge off while the global
+    // banner is visible. With nothing pending, restart_hint stays as a
+    // softer forward-looking hint.
     function restartBadgeForData(data) {
         if (data.pending_restart) return {cls: "bg-orange-lt", text: "Restart required"};
+        if (pendingSectionNames(data.pending_sections).length > 0) return {cls: "bg-orange-lt", text: "Restart pending"};
         if (data.section && data.section.restart_hint) return {cls: "bg-blue-lt", text: "Needs restart to apply"};
         return {cls: "bg-green-lt", text: "Applies live"};
     }
