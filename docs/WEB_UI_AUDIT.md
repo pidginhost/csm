@@ -716,13 +716,15 @@ preview content (untrusted malware sample text).
   trailing embedded IPv4, 8 groups uncompressed / fewer when compressed)
   built on shared `isValidIPv4`/`isValidIPv6` helpers; a new
   `CSM.validateCIDR` checks the address and a 0-32 (IPv4) / 0-128 (IPv6)
-  prefix and gates the firewall subnet block; and a single
+  prefix and gates the firewall subnet block; incident search no longer
+  treats every colon-containing query as an IP after validation fails; and a
+  single
   `CSM.parseTimestamp` owns the normalisation regex, with `timeAgo` and
   all five filter pages routed through it. Pure-JS fix; pinned by
   TestValidatorsTightenedAndTimestampParseShared and verified by
   exercising the validators against a vector list under node
   (":::::" rejected, valid IPv6/embedded-v4 accepted, "/99" and "/129"
   rejected). `ui/static/js/csrf.js`, `ui/static/js/firewall.js`,
-  `ui/static/js/threat.js`, `ui/static/js/email.js`,
+  `ui/static/js/incident.js`, `ui/static/js/threat.js`, `ui/static/js/email.js`,
   `ui/static/js/audit.js`, `ui/static/js/account.js`,
   `ui/static/js/quarantine.js`, `internal/webui/static_ui_test.go`.

@@ -607,7 +607,7 @@
         var query = document.getElementById('incident-query').value.trim();
         if (!query) return;
         var hours = currentHours();
-        var isIP = CSM.validateIP(query) || query.indexOf(':') >= 0;
+        var isIP = CSM.validateIP(query);
         var url = '/api/v1/incident?hours=' + hours;
         if (isIP) { url += '&ip=' + encodeURIComponent(query); }
         else { url += '&account=' + encodeURIComponent(query); }

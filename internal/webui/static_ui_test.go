@@ -3610,6 +3610,32 @@ func TestValidatorsTightenedAndTimestampParseShared(t *testing.T) {
 	if !strings.Contains(string(fw), `if (!CSM.validateCIDR(target))`) {
 		t.Error("firewall.js block form must validate a subnet target with CSM.validateCIDR")
 	}
+	if !strings.Contains(string(fw), `} else if (!CSM.validateIP(target)) {`) {
+		t.Error("firewall.js block form must still validate non-subnet targets with CSM.validateIP")
+	}
+	for _, fragment := range []string{
+		`if (CSM.validateIP(target)) return target;`,
+		`if (target.indexOf('/') > 0) {`,
+		`if (CSM.validateIP(base)) return base;`,
+		`if (target.indexOf('.') >= 0 && target.indexOf(':') > 0) {`,
+		`if (CSM.validateIP(ipv4)) return ipv4;`,
+	} {
+		if !strings.Contains(string(fw), fragment) {
+			t.Errorf("firewall.js IP lookup extraction missing fragment %q", fragment)
+		}
+	}
+
+	incident, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	incidentText := string(incident)
+	if !strings.Contains(incidentText, `var isIP = CSM.validateIP(query);`) {
+		t.Error("incident.js search should classify IP queries only through CSM.validateIP")
+	}
+	if strings.Contains(incidentText, `query.indexOf(':') >= 0`) {
+		t.Error("incident.js search still treats any colon-containing query as an IP")
+	}
 }
 
 // TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
