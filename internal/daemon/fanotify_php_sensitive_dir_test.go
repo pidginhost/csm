@@ -25,16 +25,17 @@ func TestPHPInLanguagesWPMLQueueCleanContentWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(queueDir, "sitepress.php")
-	// Representative WPML translation queue file: returns a PHP array, no
-	// webshell patterns, no suspicious URLs, no obfuscation.
+	// Clean but genuinely executable PHP in a sensitive WP dir: builds an array
+	// with assignments and returns it, no webshell patterns or obfuscation. A
+	// pure data-only "return array(...)" literal is instead recognized as a
+	// translation cache and suppressed (see TestPHPInLanguagesTranslationCacheNoAlert);
+	// executable code that is not such a literal must still surface as a Warning.
 	legit := []byte(`<?php
-return array(
-    'domain' => 'sitepress',
-    'entries' => array(
-        array( 'singular' => 'Home', 'translation' => 'Acasa' ),
-        array( 'singular' => 'About', 'translation' => 'Despre' ),
-    ),
+$queue = array( 'domain' => 'sitepress' );
+$queue['entries'] = array(
+    array( 'singular' => 'Home', 'translation' => 'Acasa' ),
 );
+return $queue;
 `)
 	if err := os.WriteFile(path, legit, 0644); err != nil {
 		t.Fatal(err)
