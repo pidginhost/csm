@@ -56,12 +56,21 @@ CSM.esc = function(s) {
 
 CSM.attr = CSM.esc;
 
+// Parse an ISO 8601 or SQL-style "YYYY-MM-DD HH:MM:SS" timestamp to epoch
+// millis. Space-separated stamps are normalised to ISO first so parsing does
+// not depend on engine-specific Date leniency. Returns NaN when unparseable.
+// This is the single home for the normalisation regex that pages used to
+// copy inline before their own new Date() calls.
+CSM.parseTimestamp = function(raw) {
+    if (raw === null || raw === undefined || raw === '') return NaN;
+    var iso = String(raw).replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2');
+    return new Date(iso).getTime();
+};
+
 // Relative timestamps: converts ISO or "YYYY-MM-DD HH:MM:SS" to "2m ago", "1h ago", etc.
 CSM.timeAgo = function(dateStr) {
     if (!dateStr) return '';
-    // Normalise "YYYY-MM-DD HH:MM:SS" to ISO by inserting a T
-    var iso = String(dateStr).replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2');
-    var ts = new Date(iso).getTime();
+    var ts = CSM.parseTimestamp(dateStr);
     if (isNaN(ts)) return dateStr;
     var diff = Math.floor((Date.now() - ts) / 1000);
     if (diff < 60) return 'just now';
@@ -767,12 +776,8 @@ CSM.sse = (function() {
     };
 })();
 
-// Client-side IP format validator (IPv4 and IPv6)
-CSM.validateIP = function(s) {
-    if (!s) return false;
-    // IPv6: contains colons
-    if (s.indexOf(':') >= 0) return /^[0-9a-fA-F:]+$/.test(s) && s.length <= 45;
-    // IPv4: reject leading zeros like "01.02.03.04"
+// Dotted-quad IPv4: four octets 0-255, no leading zeros ("01.0.0.1" is invalid).
+function isValidIPv4(s) {
     var parts = s.split('.');
     if (parts.length !== 4) return false;
     for (var i = 0; i < 4; i++) {
@@ -780,6 +785,55 @@ CSM.validateIP = function(s) {
         if (isNaN(n) || n < 0 || n > 255 || parts[i] !== String(n)) return false;
     }
     return true;
+}
+
+// IPv6 grammar: at most one "::" compression, 1-4 hex digits per group, an
+// optional embedded IPv4 allowed only as the final group (e.g. "::ffff:1.2.3.4").
+// Without "::" there must be exactly 8 groups; with "::" fewer than 8, since the
+// compression stands for one or more zero groups. The old check accepted any
+// string of hex and colons, so ":::::" and over-length addresses passed.
+function isValidIPv6(s) {
+    if (s.length > 45) return false;
+    var halves = s.split('::');
+    if (halves.length > 2) return false;
+    var compressed = halves.length === 2;
+    var groups = compressed
+        ? (halves[0] ? halves[0].split(':') : []).concat(halves[1] ? halves[1].split(':') : [])
+        : s.split(':');
+    var count = 0;
+    for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (g.indexOf('.') >= 0) {
+            if (i !== groups.length - 1 || !isValidIPv4(g)) return false;
+            count += 2; // an embedded IPv4 occupies two 16-bit groups
+            continue;
+        }
+        if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return false;
+        count += 1;
+    }
+    return compressed ? count <= 7 : count === 8;
+}
+
+// Client-side IP format validator (IPv4 and IPv6). A UX pre-check; the daemon
+// remains the authority via netip.
+CSM.validateIP = function(s) {
+    if (!s) return false;
+    return s.indexOf(':') >= 0 ? isValidIPv6(s) : isValidIPv4(s);
+};
+
+// Client-side CIDR validator: address part must be a valid IP and the prefix a
+// decimal length within range (0-32 for IPv4, 0-128 for IPv6). Rejects "/99",
+// "1.2.3.4/abc", and a missing prefix.
+CSM.validateCIDR = function(s) {
+    if (!s) return false;
+    var slash = s.indexOf('/');
+    if (slash < 0) return false;
+    var addr = s.slice(0, slash);
+    var prefix = s.slice(slash + 1);
+    if (!/^\d{1,3}$/.test(prefix) || !CSM.validateIP(addr)) return false;
+    var max = addr.indexOf(':') >= 0 ? 128 : 32;
+    var n = parseInt(prefix, 10);
+    return n >= 0 && n <= max;
 };
 
 // Debounce utility

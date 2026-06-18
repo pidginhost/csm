@@ -963,7 +963,12 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
     if (!target) return;
 
     var isSubnet = target.indexOf('/') !== -1;
-    if (!isSubnet && !CSM.validateIP(target)) {
+    if (isSubnet) {
+        if (!CSM.validateCIDR(target)) {
+            CSM.toast('Invalid CIDR format (e.g. 192.0.2.0/24)', 'error');
+            return;
+        }
+    } else if (!CSM.validateIP(target)) {
         CSM.toast('Invalid IP address format', 'error');
         return;
     }

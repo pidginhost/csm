@@ -215,7 +215,7 @@
             function _inRange(row) {
                 var raw = row.getAttribute('data-timestamp') || '';
                 if (!raw) return true;
-                var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
+                var ts = CSM.parseTimestamp(raw);
                 if (isNaN(ts)) return true;
                 var from = fromEl ? _localDateMillis(fromEl.value, false) : null;
                 var to = toEl ? _localDateMillis(toEl.value, true) : null;

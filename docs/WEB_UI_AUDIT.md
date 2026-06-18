@@ -79,7 +79,7 @@ P2 (safety, forms, interaction):
 - [x] 15. Settings save races: lost-edit, double-submit, badge mismatch (High) -- DONE, see change log
 - [x] 16. Dead error-handling branches in modsec-rules (High) -- DONE, see change log
 - [x] 17. Interval leaks on tab visibility change -> fetch storms (Medium) -- DONE, see change log
-- [ ] 18. Loose IP/CIDR validators + dead date regexes (Medium)
+- [x] 18. Loose IP/CIDR validators + dead date regexes (Medium) -- DONE, see change log
 - [ ] 19. Audit log renders all rows into one innerHTML; relative export (Medium)
 - [ ] 20. A11y: confirm modal ARIA, fake focus traps, login states (Medium)
 
@@ -703,3 +703,26 @@ preview content (untrusted malware sample text).
   TestPollersStopBeforeRestartAndStaySilent, with `node --check`.
   `ui/static/js/dashboard.js`, `ui/static/js/firewall.js`,
   `internal/webui/static_ui_test.go`.
+- Item 18 (Medium): loose validators + duplicated date regexes.
+  `CSM.validateIP` treated anything with a colon as IPv6 if it matched
+  `^[0-9a-fA-F:]+$` under 45 chars, so ":::::", over-long addresses, and
+  too-many-group strings all passed; the firewall block form skipped
+  validation entirely for any target containing "/", so "/99" or
+  "1.2.3.4/abc" went straight to the backend; and five pages
+  (threat, email, audit, account, quarantine) each inlined the same
+  `YYYY-MM-DD HH:MM:SS` -> ISO regex before `new Date()`, working only by
+  luck when the value was already RFC3339. `validateIP` now uses a real
+  IPv6 grammar (single `::` compression, 1-4 hex per group, optional
+  trailing embedded IPv4, 8 groups uncompressed / fewer when compressed)
+  built on shared `isValidIPv4`/`isValidIPv6` helpers; a new
+  `CSM.validateCIDR` checks the address and a 0-32 (IPv4) / 0-128 (IPv6)
+  prefix and gates the firewall subnet block; and a single
+  `CSM.parseTimestamp` owns the normalisation regex, with `timeAgo` and
+  all five filter pages routed through it. Pure-JS fix; pinned by
+  TestValidatorsTightenedAndTimestampParseShared and verified by
+  exercising the validators against a vector list under node
+  (":::::" rejected, valid IPv6/embedded-v4 accepted, "/99" and "/129"
+  rejected). `ui/static/js/csrf.js`, `ui/static/js/firewall.js`,
+  `ui/static/js/threat.js`, `ui/static/js/email.js`,
+  `ui/static/js/audit.js`, `ui/static/js/account.js`,
+  `ui/static/js/quarantine.js`, `internal/webui/static_ui_test.go`.

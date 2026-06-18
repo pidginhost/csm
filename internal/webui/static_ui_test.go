@@ -3550,6 +3550,68 @@ func TestPollersStopBeforeRestartAndStaySilent(t *testing.T) {
 	}
 }
 
+// TestValidatorsTightenedAndTimestampParseShared pins audit item 18.
+// CSM.validateIP accepted any colon string as IPv6 (e.g. ":::::"), the
+// firewall block form skipped CIDR validation entirely (so "/99" or
+// "1.2.3.4/abc" reached the backend), and five pages each inlined the
+// same "YYYY-MM-DD HH:MM:SS" -> ISO regex before new Date(), which only
+// worked by luck when the value was already RFC3339. The fix gives
+// validateIP a real IPv6 grammar, adds a shared CSM.validateCIDR used by
+// the firewall form, and routes every timestamp parse through one shared
+// CSM.parseTimestamp helper that owns the normalisation regex.
+func TestValidatorsTightenedAndTimestampParseShared(t *testing.T) {
+	csrf, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrfText := string(csrf)
+	for _, fragment := range []string{
+		`CSM.parseTimestamp = function(raw)`,
+		`CSM.validateCIDR = function(s)`,
+		`function isValidIPv6(`,
+		`function isValidIPv4(`,
+		`var ts = CSM.parseTimestamp(dateStr);`, // timeAgo now uses the shared helper
+	} {
+		if !strings.Contains(csrfText, fragment) {
+			t.Errorf("csrf.js missing item-18 fragment %q", fragment)
+		}
+	}
+	if strings.Contains(csrfText, `/^[0-9a-fA-F:]+$/.test(s)`) {
+		t.Error("csrf.js still uses the loose any-colons IPv6 check; tighten validateIP")
+	}
+
+	// The "$1T$2" normalisation regex must live in exactly one place
+	// (CSM.parseTimestamp) instead of being copy-pasted across pages.
+	var n int
+	for _, path := range webUISourceFiles(t, "../../ui/static/js/*.js") {
+		b, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		n += strings.Count(string(b), `'$1T$2'`)
+	}
+	if n != 1 {
+		t.Errorf("found %d inline $1T$2 timestamp regexes across the Web UI, want 1 (shared CSM.parseTimestamp)", n)
+	}
+	for _, name := range []string{"threat.js", "email.js", "audit.js", "account.js", "quarantine.js"} {
+		b, readErr := os.ReadFile("../../ui/static/js/" + name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !strings.Contains(string(b), "CSM.parseTimestamp(raw)") {
+			t.Errorf("%s should parse timestamps via CSM.parseTimestamp", name)
+		}
+	}
+
+	fw, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fw), `if (!CSM.validateCIDR(target))`) {
+		t.Error("firewall.js block form must validate a subnet target with CSM.validateCIDR")
+	}
+}
+
 // TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
 // found duplicate element IDs across templates (audit-search /
 // audit-content in firewall+audit, lookup-form / lookup-ip /
