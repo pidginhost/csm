@@ -3657,9 +3657,11 @@ func TestAuditTimestampsExportISOAndSurviveTimeAgo(t *testing.T) {
 	text := string(src)
 	for _, fragment := range []string{
 		`data-audit-ts="' + CSM.attr(e.timestamp || '') + '"`, // row filter key off [data-timestamp]
-		`var raw = row.getAttribute('data-audit-ts') || '';`,  // date filter reads the new attr
-		`title="' + CSM.attr(e.timestamp) + '"`,               // explicit absolute time on hover
-		`cells[0].querySelector('[data-timestamp]')`,          // export reads the raw ISO, not "3h ago"
+		`data-timestamp="' + CSM.attr(e.timestamp || '') + '"`,
+		`var raw = row.getAttribute('data-audit-ts') || '';`, // date filter reads the new attr
+		`title="' + CSM.attr(e.timestamp) + '"`,              // explicit absolute time on hover
+		`cells[0].querySelector('[data-timestamp]')`,         // export reads the raw ISO, not "3h ago"
+		`var timeISO = (tsSpan && tsSpan.getAttribute('data-timestamp')) || cells[0].textContent.trim();`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Errorf("audit.js missing item-19 fragment %q", fragment)
@@ -3667,6 +3669,24 @@ func TestAuditTimestampsExportISOAndSurviveTimeAgo(t *testing.T) {
 	}
 	if strings.Contains(text, `row.getAttribute('data-timestamp')`) {
 		t.Error("audit.js still filters on the <tr> data-timestamp the global timeAgo loop overwrites")
+	}
+	if strings.Contains(text, `<tr data-action="' + CSM.attr(e.action || '') + '" data-timestamp=`) {
+		t.Error("audit rows still carry data-timestamp on <tr>, so initTimeAgo can wipe their cells")
+	}
+
+	table, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableText := string(table)
+	for _, fragment := range []string{
+		`cellA.querySelector('[data-timestamp]')`,
+		`cellB.querySelector('[data-timestamp]')`,
+		`return asc ? tsA.localeCompare(tsB) : tsB.localeCompare(tsA);`,
+	} {
+		if !strings.Contains(tableText, fragment) {
+			t.Errorf("table.js missing timestamp sort fragment %q", fragment)
+		}
 	}
 }
 

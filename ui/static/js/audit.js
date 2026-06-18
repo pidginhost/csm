@@ -108,7 +108,7 @@ function loadAudit() {
             // data-timestamp for relative display and an explicit title so
             // the absolute time is always available on hover.
             html += '<tr data-action="' + CSM.attr(e.action || '') + '" data-audit-ts="' + CSM.attr(e.timestamp || '') + '">';
-            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.attr(e.timestamp || '') + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
@@ -121,7 +121,7 @@ function loadAudit() {
         // WEB_ROADMAP P3.1: action dropdown and date-range inputs are
         // filtered via CSM.Table\'s filter array and a row-level
         // predicate respectively. Row markup carries data-action and
-        // data-timestamp so both filters work without extra DOM lookups.
+        // data-audit-ts so both filters work without extra DOM lookups.
         function _auditDateInRange(row) {
             var raw = row.getAttribute('data-audit-ts') || '';
             if (!raw) return true;
@@ -184,7 +184,7 @@ function _auditExportRows() {
         // Export the absolute ISO timestamp the cell carries, not the
         // rendered "3h ago" relative string.
         var tsSpan = cells[0].querySelector('[data-timestamp]');
-        var timeISO = tsSpan ? (tsSpan.getAttribute('data-timestamp') || '') : cells[0].textContent.trim();
+        var timeISO = (tsSpan && tsSpan.getAttribute('data-timestamp')) || cells[0].textContent.trim();
         out.push({
             time:     timeISO,
             action:   cells[1].textContent.trim(),

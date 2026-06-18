@@ -257,12 +257,14 @@ Evidence: `csrf.js:771`; `firewall.js:949-953`; `threat.js:233`, `email.js:802`.
 Fix: tighten validators; drop dead regexes; one shared date/IP helper.
 
 ### 19. Audit log renders all rows into one innerHTML (Medium)
-No server-side pagination/limit; on a busy host this builds a huge HTML string
-and can freeze the tab. CSV export emits the relative "3h ago" string as the
-timestamp.
+The server-side audit feed is already capped before rendering, so the freeze
+risk was stale. The live defects are client-side: CSV/JSON export emits the
+relative "3h ago" string as the timestamp, and audit rows carry a timestamp
+attribute that the shared relative-time refresher can rewrite into row text.
 Evidence: `audit.js:100-113,179`.
-Fix: server-side limit/pagination (Go-testable); export absolute ISO; add `title`
-absolute time to the cell.
+Fix: keep the row date-filter key away from the shared relative-time attribute,
+export the absolute ISO value with a text fallback, and add `title` absolute time
+to the cell.
 
 ### 20. A11y gaps (Medium)
 Confirm modal has no title/`role`/`aria-labelledby`/`aria-describedby`; command

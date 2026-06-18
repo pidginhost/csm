@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI ModSecurity rule changes now show the real error when an escalation toggle or apply fails, instead of a doubled "Error: Error:" prefix, and a failed apply reverts staged toggles before rebuilding from the live ruleset.
 - Web UI dashboard now stops refresh loops before restarting them after tab visibility changes, so switching tabs cannot build up a fetch storm; failed dashboard and firewall panel refreshes now show a single inline error instead of also repeating a toast every poll.
 - Web UI now rejects malformed IPv6 addresses (such as ":::::") instead of accepting any string of colons, validates a subnet's CIDR prefix before submitting a block, keeps malformed colon queries out of incident IP search, and parses all timestamps through one shared helper.
-- Web UI audit log export now records the absolute timestamp instead of the relative "3h ago" text, shows the absolute time on hover, and audit rows are no longer blanked by the periodic relative-time refresh.
+- Web UI audit log export now records the absolute timestamp instead of the relative "3h ago" text when available, shows the absolute time on hover, and audit rows are no longer blanked by the periodic relative-time refresh.
 
 ## [3.16.1] - 2026-06-15
 
