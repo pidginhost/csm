@@ -903,7 +903,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := checks.VerifyFinding(req.Check, req.Message, req.Details, req.FilePath)
-	if res.Resolved {
+	if res.Checked && res.Resolved {
 		key := req.Key
 		if key == "" {
 			key = req.Check + ":" + req.Message

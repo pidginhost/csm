@@ -82,12 +82,13 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 
 Each finding row offers up to four actions: **Fix** (apply the automated
 remediation, shown only when one exists), **Re-check** (re-evaluate the finding
-against the live filesystem and clear it if the condition is gone — useful after
-fixing something by hand, instead of waiting for the next scan), **Dismiss**
+against the live filesystem and clear it if the condition is gone, useful after
+fixing something by hand instead of waiting for the next scan), **Dismiss**
 (hide it; restorable), and **Suppress** (create a rule to hide similar
 findings). Re-check resolves permission, quarantine/webshell, `.htaccess`,
-spool-message and crontab findings; for finding types it cannot re-evaluate it
-reports that and leaves the finding untouched.
+spool-message and crontab findings only when the target can be verified safely;
+for finding types or paths it cannot re-evaluate, it reports that and leaves the
+finding untouched.
 
 ## WHM Plugin
 

@@ -175,7 +175,10 @@ func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
 	if err != nil {
 		return nil, nil
 	}
+	return auditHtaccessContent(path, content)
+}
 
+func auditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
 	var findings []alert.Finding
 	var ranges []htaccessByteRange
 	for _, d := range htaccessDetectors {

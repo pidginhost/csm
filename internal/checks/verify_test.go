@@ -96,6 +96,23 @@ func TestVerifyFindingSymlinkNotVerifiable(t *testing.T) {
 	}
 }
 
+func TestVerifyFindingRejectsSymlinkAncestor(t *testing.T) {
+	tmp := t.TempDir()
+	withFixPermissionsAllowedRoots(t, tmp)
+	outside := t.TempDir()
+	target := filepath.Join(outside, "fixed.php")
+	if err := os.WriteFile(target, []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(tmp, "linked")
+	if err := os.Symlink(outside, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	if res := VerifyFinding("world_writable_php", "", "", filepath.Join(linkDir, "fixed.php")); res.Checked {
+		t.Errorf("path through symlinked directory should not be auto-verifiable, got %+v", res)
+	}
+}
+
 func TestVerifyFindingQuarantineFamilyPresenceBased(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)
@@ -109,6 +126,33 @@ func TestVerifyFindingQuarantineFamilyPresenceBased(t *testing.T) {
 	}
 	if res := VerifyFinding("phishing_page", "", "", filepath.Join(tmp, "gone.html")); !res.Checked || !res.Resolved {
 		t.Errorf("removed file should verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPathAbsentRejectsSymlinkAncestor(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	outside := t.TempDir()
+	linkDir := filepath.Join(tmp, "linked")
+	if err := os.Symlink(outside, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	if res := VerifyFinding("webshell", "", "", filepath.Join(linkDir, "gone.php")); res.Checked {
+		t.Errorf("absent path through symlinked directory should not be auto-verifiable, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPathAbsentRejectsSymlinkAllowedRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linkRoot := filepath.Join(linkParent, "home")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineAllowedRoots(t, linkRoot)
+
+	if res := VerifyFinding("webshell", "", "", filepath.Join(linkRoot, "gone.php")); res.Checked || res.Resolved {
+		t.Errorf("absent path through symlinked allowed root should not verify resolved, got %+v", res)
 	}
 }
 
@@ -148,6 +192,34 @@ func TestVerifyFindingHtaccessNonHtaccessNotVerifiable(t *testing.T) {
 	}
 }
 
+func TestVerifyFindingHtaccessDirectoryNotResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withHtaccessAllowedRoots(t, tmp)
+	dir := filepath.Join(tmp, ".htaccess")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if res := VerifyFinding("htaccess_injection", "", "", dir+string(os.PathSeparator)); res.Checked {
+		t.Errorf(".htaccess directory should not be auto-verifiable, got %+v", res)
+	}
+}
+
+func TestVerifyFindingHtaccessRejectsSymlinkAncestor(t *testing.T) {
+	tmp := t.TempDir()
+	withHtaccessAllowedRoots(t, tmp)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, ".htaccess"), []byte("# clean\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(tmp, "public_html")
+	if err := os.Symlink(outside, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	if res := VerifyFinding("htaccess_injection", "", "", filepath.Join(linkDir, ".htaccess")); res.Checked {
+		t.Errorf(".htaccess through symlinked directory should not be auto-verifiable, got %+v", res)
+	}
+}
+
 func TestVerifyFindingEximSpool(t *testing.T) {
 	tmp := t.TempDir()
 	oldSpool := eximSpoolDirs
@@ -166,6 +238,26 @@ func TestVerifyFindingEximSpool(t *testing.T) {
 	}
 	if res := VerifyFinding("email_phishing_content", msg, ""); !res.Checked || res.Resolved {
 		t.Errorf("queued spool message should verify unresolved, got %+v", res)
+	}
+}
+
+func TestVerifyFindingEximSpoolStatErrorNotResolved(t *testing.T) {
+	oldSpool := eximSpoolDirs
+	eximSpoolDirs = []string{"/var/spool/exim/input"}
+	t.Cleanup(func() { eximSpoolDirs = oldSpool })
+
+	oldOS := osFS
+	osFS = &mockOS{
+		lstat: func(string) (os.FileInfo, error) {
+			return nil, os.ErrPermission
+		},
+	}
+	t.Cleanup(func() { osFS = oldOS })
+
+	msgID := "1abcde-123456-AB"
+	msg := "Phishing email queued (message: " + msgID + ")"
+	if res := VerifyFinding("email_phishing_content", msg, ""); res.Checked || res.Resolved {
+		t.Errorf("spool stat error should not verify resolved, got %+v", res)
 	}
 }
 

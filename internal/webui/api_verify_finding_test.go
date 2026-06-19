@@ -4,26 +4,34 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 // TestApiVerifyFindingResolvedDismisses: a re-check that finds the condition
 // gone (here, a quarantine-family file that no longer exists) clears the
 // finding from the latest set.
 func TestApiVerifyFindingResolvedDismisses(t *testing.T) {
+	checks.SetOS(verifyFindingFakeOS{})
+	t.Cleanup(func() { checks.SetOS(verifyFindingRealOS{}) })
+
 	s := newTestServer(t, "tok")
+	path := "/home/alice/public_html/gone.php"
 	f := alert.Finding{
 		Check:   "webshell",
-		Message: "Known webshell found: /home/no-such-user-xyz/public_html/gone.php",
+		Message: "Known webshell found: " + path,
 	}
 	s.store.ClearLatestFindings()
 	s.store.SetLatestFindings([]alert.Finding{f})
 
 	w := httptest.NewRecorder()
-	body := `{"check":"webshell","message":"Known webshell found: /home/no-such-user-xyz/public_html/gone.php","file_path":"/home/no-such-user-xyz/public_html/gone.php"}`
+	body := `{"check":"webshell","message":"Known webshell found: ` + path + `","file_path":"` + path + `"}`
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiVerifyFinding(w, req)
@@ -77,6 +85,100 @@ func TestApiVerifyFindingNotResolvedKeeps(t *testing.T) {
 		t.Errorf("unresolved finding must remain, have %d want 1", got)
 	}
 }
+
+func TestApiVerifyFindingCheckedUnresolvedKeeps(t *testing.T) {
+	path := "/home/alice/public_html/shell.php"
+	checks.SetOS(verifyFindingFakeOS{path: path})
+	t.Cleanup(func() { checks.SetOS(verifyFindingRealOS{}) })
+
+	s := newTestServer(t, "tok")
+	f := alert.Finding{Check: "webshell", Message: "Known webshell found: " + path, FilePath: path}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	w := httptest.NewRecorder()
+	body := `{"check":"webshell","message":"Known webshell found: ` + path + `","file_path":"` + path + `"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiVerifyFinding(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var res struct {
+		Checked  bool `json:"checked"`
+		Resolved bool `json:"resolved"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if !res.Checked || res.Resolved {
+		t.Fatalf("expected checked+unresolved, got %+v (body %s)", res, w.Body.String())
+	}
+	if got := len(s.store.LatestFindings()); got != 1 {
+		t.Errorf("checked unresolved finding must remain, have %d want 1", got)
+	}
+}
+
+type verifyFindingFakeOS struct {
+	path string
+}
+
+func (v verifyFindingFakeOS) ReadFile(string) ([]byte, error) { return nil, os.ErrNotExist }
+func (v verifyFindingFakeOS) ReadDir(string) ([]os.DirEntry, error) {
+	return nil, os.ErrNotExist
+}
+func (v verifyFindingFakeOS) Stat(name string) (os.FileInfo, error)  { return v.Lstat(name) }
+func (v verifyFindingFakeOS) Lstat(name string) (os.FileInfo, error) { return v.info(name) }
+func (v verifyFindingFakeOS) Readlink(string) (string, error)        { return "", os.ErrNotExist }
+func (v verifyFindingFakeOS) Open(string) (*os.File, error)          { return nil, os.ErrNotExist }
+func (v verifyFindingFakeOS) WriteFile(string, []byte, os.FileMode) error {
+	return os.ErrPermission
+}
+func (v verifyFindingFakeOS) MkdirAll(string, os.FileMode) error { return os.ErrPermission }
+func (v verifyFindingFakeOS) Remove(string) error                { return os.ErrPermission }
+func (v verifyFindingFakeOS) Glob(string) ([]string, error)      { return nil, nil }
+
+func (v verifyFindingFakeOS) info(name string) (os.FileInfo, error) {
+	switch name {
+	case "/home", "/home/alice", "/home/alice/public_html":
+		return verifyFindingFileInfo{name: name, mode: os.ModeDir | 0755}, nil
+	case v.path:
+		return verifyFindingFileInfo{name: "shell.php", mode: 0644, size: 5}, nil
+	default:
+		return nil, os.ErrNotExist
+	}
+}
+
+type verifyFindingRealOS struct{}
+
+func (verifyFindingRealOS) ReadFile(name string) ([]byte, error)       { return os.ReadFile(name) }
+func (verifyFindingRealOS) ReadDir(name string) ([]os.DirEntry, error) { return os.ReadDir(name) }
+func (verifyFindingRealOS) Stat(name string) (os.FileInfo, error)      { return os.Stat(name) }
+func (verifyFindingRealOS) Lstat(name string) (os.FileInfo, error)     { return os.Lstat(name) }
+func (verifyFindingRealOS) Readlink(name string) (string, error)       { return os.Readlink(name) }
+func (verifyFindingRealOS) Open(name string) (*os.File, error)         { return os.Open(name) }
+func (verifyFindingRealOS) WriteFile(name string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(name, data, perm)
+}
+func (verifyFindingRealOS) MkdirAll(path string, perm os.FileMode) error {
+	return os.MkdirAll(path, perm)
+}
+func (verifyFindingRealOS) Remove(name string) error              { return os.Remove(name) }
+func (verifyFindingRealOS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
+
+type verifyFindingFileInfo struct {
+	name string
+	mode os.FileMode
+	size int64
+}
+
+func (v verifyFindingFileInfo) Name() string       { return v.name }
+func (v verifyFindingFileInfo) Size() int64        { return v.size }
+func (v verifyFindingFileInfo) Mode() os.FileMode  { return v.mode }
+func (v verifyFindingFileInfo) ModTime() time.Time { return time.Time{} }
+func (v verifyFindingFileInfo) IsDir() bool        { return v.mode.IsDir() }
+func (v verifyFindingFileInfo) Sys() any           { return nil }
 
 func TestApiVerifyFindingMissingFields(t *testing.T) {
 	s := newTestServer(t, "tok")

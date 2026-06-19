@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // VerifyResult reports whether a finding's underlying condition still holds.
@@ -57,19 +58,15 @@ func verifyWriteBit(path string, bit os.FileMode, label string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, err := sanitizeFixPath(path, fixPermissionsAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, fixPermissionsAllowedRoots)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
-	info, err := osFS.Lstat(clean)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file no longer exists: %s", clean)}
-		}
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat: %v", err)}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file no longer exists: %s", clean)}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return VerifyResult{Checked: false, Detail: "path is a symlink; not auto-verifiable"}
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: "path is not a regular file; not auto-verifiable"}
 	}
 	if info.Mode().Perm()&bit == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file is no longer %s (mode %o)", label, info.Mode().Perm())}
@@ -81,15 +78,12 @@ func verifyPathAbsent(path string, roots []string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, err := sanitizeFixPath(path, roots)
+	clean, _, exists, err := readOnlyFixPath(path, roots)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
-	if _, err := osFS.Lstat(clean); err != nil {
-		if os.IsNotExist(err) {
-			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file no longer present (removed or quarantined): %s", clean)}
-		}
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat: %v", err)}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file no longer present (removed or quarantined): %s", clean)}
 	}
 	return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("file is still present: %s", clean)}
 }
@@ -98,20 +92,24 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, err := sanitizeFixPath(path, fixHtaccessAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, fixHtaccessAllowedRoots)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
 	if filepath.Base(clean) != ".htaccess" {
 		return VerifyResult{Checked: false, Detail: "not a .htaccess file; not auto-verifiable"}
 	}
-	if _, err := osFS.Lstat(clean); err != nil {
-		if os.IsNotExist(err) {
-			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf(".htaccess no longer exists: %s", clean)}
-		}
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat: %v", err)}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf(".htaccess no longer exists: %s", clean)}
 	}
-	findings, _ := AuditHtaccessFile(clean)
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: ".htaccess path is not a regular file; not auto-verifiable"}
+	}
+	content, err := readFilePreservingIdentity(clean, info)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot read .htaccess: %v", err)}
+	}
+	findings, _ := auditHtaccessContent(clean, content)
 	if len(findings) == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: "no malicious directives remain in .htaccess"}
 	}
@@ -127,8 +125,10 @@ func verifyEximSpoolAbsent(message string) VerifyResult {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("invalid Exim message ID format: %s", msgID)}
 	}
 	for _, dir := range eximSpoolDirs {
-		if _, err := osFS.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
+		if _, err := osFS.Lstat(filepath.Join(dir, msgID+"-H")); err == nil {
 			return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("spool message %s is still queued", msgID)}
+		} else if !os.IsNotExist(err) {
+			return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat spool message %s: %v", msgID, err)}
 		}
 	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("spool message %s no longer present (delivered or removed)", msgID)}
@@ -138,16 +138,15 @@ func verifyCrontabClear(path string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract crontab path from finding"}
 	}
-	clean, err := sanitizeFixPath(path, fixCrontabAllowedRoots)
+	clean, info, exists, err := readOnlyFixPath(path, fixCrontabAllowedRoots)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
-	info, err := osFS.Lstat(clean)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("crontab no longer exists: %s", clean)}
-		}
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot stat: %v", err)}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("crontab no longer exists: %s", clean)}
+	}
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: "crontab path is not a regular file; not auto-verifiable"}
 	}
 	if info.Size() == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("crontab is empty: %s", clean)}
@@ -156,4 +155,70 @@ func verifyCrontabClear(path string) VerifyResult {
 	// out of scope for a single-finding re-check, so report it as still
 	// present rather than guessing.
 	return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("crontab is still present and non-empty: %s", clean)}
+}
+
+func readOnlyFixPath(path string, allowedRoots []string) (string, os.FileInfo, bool, error) {
+	clean, err := sanitizeFixPath(path, allowedRoots)
+	if err != nil {
+		return "", nil, false, err
+	}
+	root := matchingAllowedRoot(clean, allowedRoots)
+	if root == "" {
+		return "", nil, false, fmt.Errorf("file path is outside the allowed remediation roots: %s", clean)
+	}
+
+	current := root
+	info, err := osFS.Lstat(current)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return clean, nil, false, nil
+		}
+		return "", nil, false, fmt.Errorf("cannot stat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, false, fmt.Errorf("symlinked paths are not eligible for automated verification: %s", current)
+	}
+	if current == clean {
+		return clean, info, true, nil
+	}
+
+	rel, err := filepath.Rel(current, clean)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("cannot resolve path under allowed root: %v", err)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if !info.IsDir() {
+			return clean, nil, false, nil
+		}
+		current = filepath.Join(current, part)
+		info, err = osFS.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return clean, nil, false, nil
+			}
+			return "", nil, false, fmt.Errorf("cannot stat: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", nil, false, fmt.Errorf("symlinked paths are not eligible for automated verification: %s", current)
+		}
+		if i < len(parts)-1 && !info.IsDir() {
+			return clean, nil, false, nil
+		}
+	}
+	return clean, info, true, nil
+}
+
+func matchingAllowedRoot(path string, allowedRoots []string) string {
+	var best string
+	for _, root := range allowedRoots {
+		cleanRoot := filepath.Clean(strings.TrimSpace(root))
+		if isPathWithinOrEqual(path, cleanRoot) && len(cleanRoot) > len(best) {
+			best = cleanRoot
+		}
+	}
+	return best
 }

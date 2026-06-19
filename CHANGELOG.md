@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Findings re-check now refuses ambiguous filesystem targets instead of clearing them when the path cannot be verified safely.
 - Applying the automated permission fix for a world- or group-writable PHP finding now recognises a file an operator already corrected and clears the finding instead of failing, and explains read-only-mount failures (e.g. backup snapshots) instead of surfacing a raw "read-only file system" error.
 
 ## [3.18.0] - 2026-06-19
