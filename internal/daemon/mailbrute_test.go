@@ -312,6 +312,24 @@ func TestMailAuthTracker_RecordSuccess_NoCompromiseIfDifferentIP(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_RecordSuccess_IgnoresExpiredSameAccountFailure(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.Record("203.0.113.5", "alice@example.com")
+
+	clock.advance(11 * time.Minute)
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "bob@example.com")
+	}
+
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("expired alice failure must not combine with fresh bob failures, got %v", f)
+		}
+	}
+}
+
 func TestMailAuthTracker_RecordSuccess_FiresCompromiseWhenIPWasFailing(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -380,15 +398,14 @@ func TestMailAuthTracker_RecordSuccess_EmptyIPOrAccountIgnored(t *testing.T) {
 func TestMailAuthTracker_NoBruteForceWhenSuccessDominant(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
-	// Busy legit NAT office: many successful logins plus a handful of failures
-	// from one device with a stale saved password. Successes at least matching
-	// failures means a real client, not a brute-forcer. mail_bruteforce
-	// auto-blocks the whole IP, so emitting it here would lock out the office.
+	// Busy legit NAT office: the same mailbox logs in successfully from another
+	// device while one stale saved password keeps failing. Matched successes at
+	// least matching failures means a real client, not a brute-forcer.
 	for i := 0; i < 6; i++ {
-		tr.RecordSuccess("203.0.113.5", "alice@example.com")
+		tr.RecordSuccess("203.0.113.5", "stale-device@example.com")
 	}
 	for i := 0; i < 5; i++ { // reaches perIPThreshold
-		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+		for _, f := range tr.Record("203.0.113.5", "stale-device@example.com") {
 			if f.Check == "mail_bruteforce" {
 				t.Fatalf("mail_bruteforce must not fire for success-dominant IP (iter %d)", i)
 			}
@@ -415,6 +432,25 @@ func TestMailAuthTracker_BruteForceFiresWhenFailureDominant(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_BruteForceFiresWhenSuccessesAreUnrelated(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < 6; i++ {
+		tr.RecordSuccess("203.0.113.5", "known@example.com")
+	}
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "victim@example.com") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("unrelated successful mailbox must not hide brute-force failures")
+	}
+}
+
 func TestMailAuthTracker_NoCompromiseWhenSuccessDominant(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -431,6 +467,54 @@ func TestMailAuthTracker_NoCompromiseWhenSuccessDominant(t *testing.T) {
 	for _, f := range out {
 		if f.Check == "mail_account_compromised" {
 			t.Fatalf("mail_account_compromised must not fire for success-dominant legit IP, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_CompromiseFiresWhenSuccessPaddingIsUnrelated(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < 6; i++ {
+		tr.RecordSuccess("203.0.113.5", fmt.Sprintf("known%d@example.com", i))
+	}
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "victim@example.com")
+	}
+	out := tr.RecordSuccess("203.0.113.5", "victim@example.com")
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("unrelated successful mailbox must not hide account compromise, got %v", out)
+	}
+}
+
+func TestMailAuthTracker_NoCompromiseAfterSingleTargetMistypeWithOtherFailures(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.Record("203.0.113.5", "alice@example.com")
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "bob@example.com")
+	}
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("one target-account failure must not combine with other accounts, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_NoCompromiseAfterSingleMistype(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.Record("203.0.113.5", "alice@example.com")
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("one failed login followed by success must not flag compromise, got %v", f)
 		}
 	}
 }
@@ -549,6 +633,34 @@ func TestMailAuthTracker_StatsCountCallsAndEmits(t *testing.T) {
 	calls, emits := tr.Stats()
 	if calls != 6 {
 		t.Errorf("record calls = %d, want 6", calls)
+	}
+	if emits != 1 {
+		t.Errorf("findings emitted = %d, want 1", emits)
+	}
+}
+
+func TestMailAuthTracker_StatsCountCompromiseEmits(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 7, 5, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.9", "victim@example.test")
+		clock.t = clock.t.Add(time.Second)
+	}
+
+	out := tr.RecordSuccess("203.0.113.9", "victim@example.test")
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("expected mail_account_compromised finding, got %v", out)
+	}
+	calls, emits := tr.Stats()
+	if calls != 3 {
+		t.Errorf("record calls = %d, want 3", calls)
 	}
 	if emits != 1 {
 		t.Errorf("findings emitted = %d, want 1", emits)

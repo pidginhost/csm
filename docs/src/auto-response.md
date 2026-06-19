@@ -122,8 +122,8 @@ When `auto_response.block_ips: true` and the firewall is enabled, the source IP 
 | `ftp_bruteforce` | FTP authentication flood |
 | `smtp_bruteforce` | SMTP authentication flood |
 | `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
-| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood |
-| `mail_account_compromised` | Successful login from an IP that just failed auth on the same mailbox |
+| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood without matching successful mailbox activity |
+| `mail_account_compromised` | Successful login from an IP that repeatedly failed auth on the same mailbox |
 | `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history |
 | `ssh_login_realtime` | SSH login anomaly detected by realtime watcher |
@@ -161,7 +161,7 @@ Beyond standard malware patterns, CSM detects advanced evasion techniques:
 - **WordPress brute force**: real-time access log monitoring for wp-login.php and xmlrpc.php floods (blocks within seconds, not the 10-minute periodic scan)
 - **Admin-panel brute force**: same access-log path, tracks POSTs to `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`, and Joomla `/administrator/index.php`. Emits `admin_panel_bruteforce` and auto-blocks the IP. Path matcher is intentionally tight to avoid false positives on shared hosting; Drupal and Tomcat Manager use different attack shapes and need separate detectors.
 - **SMTP brute force and probes**: tails `/var/log/exim_mainlog` on cPanel and non-cPanel Exim hosts where the file exists. Emits `smtp_probe_abuse` and `smtp_bruteforce` (per-IP, auto-blocks), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only).
-- **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_subnet_spray`, `mail_account_spray`, and `mail_account_compromised` (the last one fires when a successful login arrives from an IP that just failed auth against the same mailbox; auto-blocks with no false positives by construction).
+- **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_subnet_spray`, `mail_account_spray`, and `mail_account_compromised`. Recent successful logins for the same mailbox are weighed before single-IP mail auth blocks, so a shared office address is not blocked because one client has a stale saved password.
 
 ## Dry-run precedence (Phase 4)
 

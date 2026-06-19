@@ -10,26 +10,38 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// mailIPEntry tracks failed-auth timestamps, successful-login timestamps, and
-// suppression state for one IP. The success timestamps let the brute-force and
-// compromise gates distinguish a busy legit client (success-dominant) from an
-// attacker (failure-dominant).
+// mailIPEntry tracks failed-auth timestamps, successful-login timestamps, the
+// mailboxes seen on each side, and suppression state for one IP. The mailbox
+// context keeps unrelated successful logins from hiding a mailbox attack.
 type mailIPEntry struct {
-	times      []time.Time
-	succ       []time.Time
-	suppressed time.Time
-	lastSeen   time.Time
+	times           []time.Time
+	succ            []time.Time
+	successAccounts map[string][]time.Time
+	failedAccounts  map[string][]time.Time
+	suppressed      time.Time
+	lastSeen        time.Time
 }
 
 // successDominant reports whether this IP behaves like a legit busy client
-// rather than a brute-forcer: it has successful logins in the window and at
-// least as many successes as failures. A NATed office mailbox cluster with one
-// stale-password device drips a few failures against thousands of successes;
-// without this gate the per-IP brute threshold would auto-block the whole
-// office. Caller must hold t.mu and must have pruned both slices to the current
-// window first.
+// rather than a brute-forcer: it has successful logins in the window, at least
+// as many successes as failures, and the successful mailboxes explain the failed
+// mailbox set. Caller must hold t.mu and must have pruned the slices and account
+// maps to the current window first.
 func (e *mailIPEntry) successDominant() bool {
-	return len(e.succ) > 0 && len(e.succ) >= len(e.times)
+	if len(e.succ) == 0 || len(e.succ) < len(e.times) || len(e.failedAccounts) == 0 {
+		return false
+	}
+	for account, failures := range e.failedAccounts {
+		if len(e.successAccounts[account]) < len(failures) {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *mailIPEntry) accountSuccessDominant(account string) bool {
+	failures := len(e.failedAccounts[account])
+	return failures > 0 && len(e.successAccounts[account]) >= failures
 }
 
 // mailSubnetEntry tracks unique attacker IPs within a /24.
@@ -137,11 +149,14 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		t.ips[ip] = e
 	}
 	e.times = pruneTimes(e.times, cutoff)
+	pruneMailAccountTimes(e.failedAccounts, cutoff)
 	e.times = append(e.times, now)
+	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
 
 	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
 		e.succ = pruneTimes(e.succ, cutoff)
+		pruneMailAccountTimes(e.successAccounts, cutoff)
 		if !e.successDominant() {
 			e.suppressed = now.Add(t.suppression)
 			findings = append(findings, alert.Finding{
@@ -231,12 +246,33 @@ func (t *mailAuthTracker) Stats() (calls, emits int64) {
 	return t.recordCalls, t.findingsEmitted
 }
 
+func pruneMailAccountTimes(accounts map[string][]time.Time, cutoff time.Time) {
+	for account, times := range accounts {
+		times = pruneTimes(times, cutoff)
+		if len(times) == 0 {
+			delete(accounts, account)
+			continue
+		}
+		accounts[account] = times
+	}
+}
+
+func appendMailAccountTime(accounts map[string][]time.Time, account string, ts time.Time) map[string][]time.Time {
+	if account == "" {
+		return accounts
+	}
+	if accounts == nil {
+		accounts = make(map[string][]time.Time)
+	}
+	accounts[account] = append(accounts[account], ts)
+	return accounts
+}
+
 // RecordSuccess processes a successful mail login. Emits mail_account_compromised
-// when the successful IP has recent failed auths for the same account AND that
-// IP is failure-dominant (it fails more than it succeeds in the window): an
-// attacker that guessed the password after repeated failures. A success-dominant
-// IP is a busy legit client that merely mistyped, so it is not flagged -- this
-// is what stops a NATed office from auto-blocking itself.
+// when the successful IP has repeated recent failed auths for the same account
+// and that mailbox is failure-dominant from this IP. Prior successful logins for
+// the same mailbox look like a legit client that merely mistyped, so they are
+// not flagged.
 //
 // ip and account MUST both be non-empty. Caller filters infra/private/loopback
 // IPs before invoking.
@@ -253,29 +289,41 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	now := t.now()
 	cutoff := now.Add(-t.window)
 
-	// Track per-IP successes first, unconditionally, so the brute-force and
-	// compromise gates see the full success history for this IP even before any
-	// account is tracked.
+	// Track per-IP successes unconditionally. The current success is recorded at
+	// function exit so the compromise gate can distinguish prior legit activity
+	// from a padding login that belongs to the event being classified.
 	e, ok := t.ips[ip]
 	if !ok {
 		e = &mailIPEntry{}
 		t.ips[ip] = e
 	}
 	e.succ = pruneTimes(e.succ, cutoff)
-	e.succ = append(e.succ, now)
-	e.lastSeen = now
+	pruneMailAccountTimes(e.successAccounts, cutoff)
+	pruneMailAccountTimes(e.failedAccounts, cutoff)
+	defer func() {
+		e.succ = append(e.succ, now)
+		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
+		e.lastSeen = now
+	}()
 
 	a, ok := t.accounts[account]
 	if !ok {
 		return nil
 	}
+	for ipKey, ts := range a.ips {
+		if ts.Before(cutoff) {
+			delete(a.ips, ipKey)
+		}
+	}
 	if _, failedRecently := a.ips[ip]; !failedRecently {
 		return nil
 	}
-	// A success from an IP that succeeds far more than it fails is a legit owner
-	// who mistyped, not a takeover. Genuine password guessing is failure-dominant.
+	// A mailbox that already succeeds from this IP is a legit owner who mistyped,
+	// not a takeover. Genuine password guessing is failure-dominant for the same
+	// mailbox.
 	e.times = pruneTimes(e.times, cutoff)
-	if e.successDominant() {
+	targetFailures := len(e.failedAccounts[account])
+	if targetFailures < 2 || e.accountSuccessDominant(account) {
 		return nil
 	}
 	if now.Before(a.compromiseSuppressed) {
@@ -283,12 +331,13 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	}
 	a.compromiseSuppressed = now.Add(t.suppression)
 	_, compDomain := alert.SplitEmail(account)
+	t.findingsEmitted++
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "mail_account_compromised",
 		Message: fmt.Sprintf("Mail account compromise: successful login for %s from %s after recent auth failures",
 			account, ip),
-		Details:   "Attacker succeeded after one or more failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
+		Details:   "Attacker succeeded after repeated failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
 		Timestamp: now,
 		SourceIP:  ip,
 		Domain:    compDomain,
@@ -308,7 +357,10 @@ func (t *mailAuthTracker) Purge() {
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, windowCutoff)
 		e.succ = pruneTimes(e.succ, windowCutoff)
-		if len(e.times) == 0 && len(e.succ) == 0 && !e.lastSeen.After(activityCutoff) {
+		pruneMailAccountTimes(e.successAccounts, windowCutoff)
+		pruneMailAccountTimes(e.failedAccounts, windowCutoff)
+		if len(e.times) == 0 && len(e.succ) == 0 && len(e.successAccounts) == 0 &&
+			len(e.failedAccounts) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

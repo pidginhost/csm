@@ -76,12 +76,12 @@ Four attack patterns:
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
-| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window | IP blocked via nftables |
+| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity | IP blocked via nftables |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
-| `mail_account_compromised` | A successful login comes from an IP that just failed auth against the same account | IP blocked immediately. Rotate the password and revoke sessions |
+| `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox | IP blocked immediately. Rotate the password and revoke sessions |
 
-Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked.
+Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Recent successful logins for the same mailbox can suppress single-IP mail auth blocks, which avoids blocking a shared office address when one client has a stale saved password.
 
 ## Admin-Panel Brute-Force Tracker
 
