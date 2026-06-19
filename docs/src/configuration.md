@@ -272,6 +272,11 @@ auto_response:
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
   disable_enforce_af_alg: false         # suspend periodic AF_ALG hardening re-assertion
   copy_fail_kill_process: false         # kill processes caught opening AF_ALG sockets via the live listener
+  mail_auth_recovery:
+    restart_enabled: false              # opt-in restart after sustained cPanel mail auth backend outage
+    down_grace: "10m"                   # continuously-down duration before restart
+    max_restarts_per_hour: 3            # hourly restart-attempt cap
+    restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
   dry_run: true                         # safe default; logs intended IP blocks without mutating nftables
   verdict_callback:
     enabled: false                      # call panel before each auto-block
@@ -766,10 +771,10 @@ tagged restart-required. A reload that changes it emits
 `config_reload_restart_required`; restart the daemon to change the
 auto-update switch or interval.
 
-Two sub-keys are exceptions. They live under a safe-tagged parent
-but seed a long-lived in-memory structure at daemon startup; the
-reload accepts the edit and re-signs the hash, but the running
-structure keeps the old value until the next restart:
+Two sub-keys are runtime-state exceptions. They live under a safe-tagged
+parent and SIGHUP accepts edits to them, but they seed long-lived
+in-memory state at daemon startup. Restart the daemon if you need the
+running process to use the new value:
 
 - `reputation.whitelist` -- seeded into the threat database at
   startup. The threat database exposes its own runtime API for
@@ -783,11 +788,14 @@ structure keeps the old value until the next restart:
   watcher at startup and read by scheduled forwarder and mail-filter
   checks. No runtime API yet; send a restart if you edit this list.
 
-If you change either of the above, send `systemctl restart csm`
-instead of a reload. The rest of the sub-keys in every safe-tagged
-section are read per-call (inside check functions, auto-response
-helpers, alert dispatchers) and hot-reload cleanly on the next
-tick.
+`auto_response.mail_auth_recovery` is a restart-required sub-key under
+the otherwise safe `auto_response` section. It is captured by the cPanel
+mail auth backend probe at startup, so a reload that changes it emits
+`config_reload_restart_required` and leaves the live config unchanged.
+
+The rest of the sub-keys in every safe-tagged section are read per-call
+(inside check functions, auto-response helpers, alert dispatchers) and
+hot-reload cleanly on the next tick.
 
 Look for one of three log shapes in the journal:
 

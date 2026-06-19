@@ -172,6 +172,13 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.PermBlockInterval)})
 		}
 	}
+	if cfg.AutoResponse.MailAuthRecovery.DownGrace != "" {
+		if d, err := time.ParseDuration(cfg.AutoResponse.MailAuthRecovery.DownGrace); err != nil {
+			results = append(results, ValidationResult{"error", "auto_response.mail_auth_recovery.down_grace", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.MailAuthRecovery.DownGrace)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.mail_auth_recovery.down_grace", "down_grace must be > 0"})
+		}
+	}
 
 	// --- Retention ---
 	if cfg.Retention.Enabled {
@@ -318,6 +325,12 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour < 0 {
 		results = append(results, ValidationResult{"error", "auto_response.max_blocks_per_hour", fmt.Sprintf("max_blocks_per_hour must be >= 0 (0 uses default %d), got %d", DefaultMaxBlocksPerHour, cfg.AutoResponse.MaxBlocksPerHour)})
+	}
+	if cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour < 0 {
+		results = append(results, ValidationResult{"error", "auto_response.mail_auth_recovery.max_restarts_per_hour", fmt.Sprintf("max_restarts_per_hour must be >= 0 (0 uses default 3), got %d", cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour)})
+	}
+	if cfg.AutoResponse.MailAuthRecovery.RestartEnabled && strings.TrimSpace(cfg.AutoResponse.MailAuthRecovery.RestartCommand) == "" {
+		results = append(results, ValidationResult{"error", "auto_response.mail_auth_recovery.restart_command", "restart_command is required when restart_enabled is true"})
 	}
 
 	// --- SMTP brute-force thresholds ---

@@ -1834,6 +1834,9 @@ func (d *Daemon) startLogWatchers() {
 	// suppress brute-force auto-block while it lasts, and optionally self-heal.
 	// cPanel only -- elsewhere there is no such socket to probe.
 	if hostInfo.IsCPanel() && d.authBackend != nil {
+		if !d.emitAuthBackendFindings() {
+			return
+		}
 		d.wg.Add(1)
 		obs.Go("mail-auth-backend-probe", func() {
 			defer d.wg.Done()
@@ -1844,12 +1847,8 @@ func (d *Daemon) startLogWatchers() {
 				case <-d.stopCh:
 					return
 				case <-ticker.C:
-					for _, f := range d.authBackend.Observe() {
-						select {
-						case d.alertCh <- f:
-						case <-d.stopCh:
-							return
-						}
+					if !d.emitAuthBackendFindings() {
+						return
 					}
 				}
 			}
@@ -1887,6 +1886,20 @@ func (d *Daemon) startLogWatchers() {
 			d.MarkWatcher(lf.name, true)
 		}
 	}
+}
+
+func (d *Daemon) emitAuthBackendFindings() bool {
+	if d.authBackend == nil {
+		return true
+	}
+	for _, f := range d.authBackend.Observe() {
+		select {
+		case d.alertCh <- f:
+		case <-d.stopCh:
+			return false
+		}
+	}
+	return true
 }
 
 func (d *Daemon) handleMailLogSourceGone(err error) {

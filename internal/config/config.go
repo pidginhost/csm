@@ -491,7 +491,7 @@ type Config struct {
 			DownGrace          string `yaml:"down_grace"`            // continuously-down duration before restarting (default "10m")
 			MaxRestartsPerHour int    `yaml:"max_restarts_per_hour"` // hourly cap on restart attempts (default 3)
 			RestartCommand     string `yaml:"restart_command"`       // command to run (default cPanel restartsrv_dovecot)
-		} `yaml:"mail_auth_recovery"`
+		} `yaml:"mail_auth_recovery" hotreload:"restart"`
 
 		// DryRun, when true (or absent - safety default), logs the intended
 		// action but does NOT touch nftables. Mirrors the PHPRelay.DryRun

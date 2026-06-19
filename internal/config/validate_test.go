@@ -460,6 +460,24 @@ func TestValidateDurations(t *testing.T) {
 		}
 	})
 
+	t.Run("bad mail_auth_recovery.down_grace", func(t *testing.T) {
+		cfg := base()
+		cfg.AutoResponse.MailAuthRecovery.DownGrace = "later"
+		results := Validate(cfg)
+		if !hasResult(results, "error", "auto_response.mail_auth_recovery.down_grace") {
+			t.Errorf("expected error for bad mail_auth_recovery.down_grace; results=%v", results)
+		}
+	})
+
+	t.Run("zero mail_auth_recovery.down_grace", func(t *testing.T) {
+		cfg := base()
+		cfg.AutoResponse.MailAuthRecovery.DownGrace = "0s"
+		results := Validate(cfg)
+		if !hasResult(results, "error", "auto_response.mail_auth_recovery.down_grace") {
+			t.Errorf("expected error for zero mail_auth_recovery.down_grace; results=%v", results)
+		}
+	})
+
 	t.Run("empty durations are fine", func(t *testing.T) {
 		cfg := base()
 		results := Validate(cfg)
@@ -467,6 +485,32 @@ func TestValidateDurations(t *testing.T) {
 			t.Errorf("expected no errors for empty durations; results=%v", results)
 		}
 	})
+}
+
+func TestValidateMailAuthRecoveryBounds(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.MailAuthRecovery.DownGrace = "10m"
+	cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour = -1
+	results := Validate(cfg)
+	if !hasResult(results, "error", "auto_response.mail_auth_recovery.max_restarts_per_hour") {
+		t.Fatalf("expected max_restarts_per_hour error; results=%v", results)
+	}
+
+	cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour = 3
+	cfg.AutoResponse.MailAuthRecovery.RestartEnabled = true
+	cfg.AutoResponse.MailAuthRecovery.RestartCommand = " "
+	results = Validate(cfg)
+	if !hasResult(results, "error", "auto_response.mail_auth_recovery.restart_command") {
+		t.Fatalf("expected restart_command error; results=%v", results)
+	}
+
+	cfg.AutoResponse.MailAuthRecovery.RestartCommand = "/usr/local/cpanel/scripts/restartsrv_dovecot"
+	results = Validate(cfg)
+	if hasResult(results, "error", "auto_response.mail_auth_recovery.max_restarts_per_hour") ||
+		hasResult(results, "error", "auto_response.mail_auth_recovery.restart_command") ||
+		hasResult(results, "error", "auto_response.mail_auth_recovery.down_grace") {
+		t.Fatalf("valid mail_auth_recovery config produced errors; results=%v", results)
+	}
 }
 
 func TestValidateFirewall(t *testing.T) {

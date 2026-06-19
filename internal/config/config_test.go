@@ -89,6 +89,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AutoResponse.HTTPScannerAction != "challenge" {
 		t.Errorf("auto_response.http_scanner_action = %q, want 'challenge'", cfg.AutoResponse.HTTPScannerAction)
 	}
+	if cfg.AutoResponse.MailAuthRecovery.DownGrace != "10m" {
+		t.Errorf("auto_response.mail_auth_recovery.down_grace = %q, want 10m", cfg.AutoResponse.MailAuthRecovery.DownGrace)
+	}
+	if cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour != 3 {
+		t.Errorf("auto_response.mail_auth_recovery.max_restarts_per_hour = %d, want 3", cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour)
+	}
+	if cfg.AutoResponse.MailAuthRecovery.RestartCommand != "/usr/local/cpanel/scripts/restartsrv_dovecot" {
+		t.Errorf("auto_response.mail_auth_recovery.restart_command = %q, want cPanel restartsrv_dovecot", cfg.AutoResponse.MailAuthRecovery.RestartCommand)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
@@ -656,6 +665,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	}
 	if _, ok := raw.AutoResponse["http_scanner_action"]; !ok {
 		t.Error("production reference config missing auto_response.http_scanner_action")
+	}
+	if _, ok := raw.AutoResponse["mail_auth_recovery"]; !ok {
+		t.Error("production reference config missing auto_response.mail_auth_recovery")
 	}
 }
 

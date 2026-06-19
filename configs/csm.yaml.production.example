@@ -237,6 +237,11 @@ auto_response:
   permblock: false
   permblock_count: 4
   permblock_interval: "24h"
+  mail_auth_recovery:
+    restart_enabled: false
+    down_grace: "10m"
+    max_restarts_per_hour: 3
+    restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
   verdict_callback:
     enabled: false
     url: ""

@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- CSM now actively probes the cPanel mail authentication backend (cpdoveauthd). When it is unreachable it raises an alert and pauses mail and SMTP brute-force auto-block, since a backend outage makes every login fail regardless of password. An opt-in setting can restart the mail service after the backend has been down past a grace period. This covers a failure that leaves dovecot's ports up, which cPanel's own service monitoring does not catch.
+- CSM now probes the cPanel mail authentication backend and pauses mail brute-force auto-block while it is down. Operators can opt in to a rate-limited mail service restart after a sustained outage.
 
 ### Fixed
 
+- Mail auth recovery now keeps auth-failure parsing responsive while probes or restarts are running, validates restart settings, and marks those settings as restart-required.
 - The Inspect IP firewall check now reports cPHulk as active for brute-force temporary bans, not only for entries on cPHulk's permanent blacklist, and avoids matching unrelated IP text.
 - Mail brute-force and account-compromise auto-blocking now weighs successful logins against failures before acting, so a busy office that shares one address across many mailboxes is not locked out because a single device kept retrying a stale saved password. Genuine attacks, which fail far more than they succeed, are still blocked.
 - Mail-auth success-ratio checks now require matching mailbox context before suppressing a block. Account-compromise detection also drops expired failure history, and diagnostics count compromise findings emitted from successful logins.

@@ -94,6 +94,26 @@ func TestDiffSafeField(t *testing.T) {
 	}
 }
 
+func TestDiffMailAuthRecoveryRequiresRestart(t *testing.T) {
+	a := &Config{}
+	b := &Config{}
+	b.AutoResponse.MailAuthRecovery.RestartEnabled = true
+
+	changes := Diff(a, b)
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %+v", changes)
+	}
+	if changes[0].Field != "auto_response.mail_auth_recovery" {
+		t.Fatalf("field = %q, want auto_response.mail_auth_recovery", changes[0].Field)
+	}
+	if changes[0].Tag != TagRestart {
+		t.Fatalf("tag = %q, want %q", changes[0].Tag, TagRestart)
+	}
+	if !RestartRequired(changes) {
+		t.Fatal("mail auth recovery wiring is startup-only and must require restart")
+	}
+}
+
 // TestDiffAllSafeFieldsClassifiedSafe nails down which top-level
 // fields are hot-reloadable today. If a future refactor accidentally
 // drops a `hotreload:"safe"` tag, this test fails immediately rather

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,11 +34,15 @@ func dialMailAuthBackend() bool {
 
 // restartMailAuthBackend runs the operator-configured restart command.
 func restartMailAuthBackend(command string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("restart command is empty")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	// #nosec G204 -- command is the operator-configured restart_command from
-	// csm.yaml (default cPanel restartsrv_dovecot), never attacker-controlled.
-	return exec.CommandContext(ctx, command).Run()
+	// Run through the shell so operators can use normal service commands with
+	// arguments, such as "systemctl restart dovecot".
+	// #nosec G204 -- command is operator-configured in root-owned csm.yaml.
+	return exec.CommandContext(ctx, "/bin/sh", "-c", command).Run()
 }
 
 // authBackendHealth tracks reachability of the mail authentication backend
@@ -101,17 +106,21 @@ func (h *authBackendHealth) Degraded() bool {
 // down alert when an outage starts, and a restart action once the outage is
 // sustained past the grace period (subject to cooldown and the hourly cap).
 func (h *authBackendHealth) Observe() []alert.Finding {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	now := h.now()
+	reachable := h.probe != nil && h.probe()
 
-	if h.probe() {
+	h.mu.Lock()
+
+	if reachable {
 		h.downSince = time.Time{}
 		h.alerted = false
+		h.mu.Unlock()
 		return nil
 	}
 
 	var out []alert.Finding
+	var runRestart bool
+	var restart func() error
 	if h.downSince.IsZero() {
 		h.downSince = now
 	}
@@ -126,10 +135,16 @@ func (h *authBackendHealth) Observe() []alert.Finding {
 		})
 	}
 
-	if h.restartEnabled && now.Sub(h.downSince) >= h.downGrace && h.allowRestart(now) {
+	if h.restartEnabled && h.restart != nil && now.Sub(h.downSince) >= h.downGrace && h.allowRestart(now) {
 		h.lastRestart = now
 		h.restartsThisHour++
-		if err := h.restart(); err != nil {
+		restart = h.restart
+		runRestart = true
+	}
+	h.mu.Unlock()
+
+	if runRestart {
+		if err := restart(); err != nil {
 			out = append(out, alert.Finding{
 				Severity:  alert.High,
 				Check:     "auto_response",
@@ -157,6 +172,9 @@ func (h *authBackendHealth) allowRestart(now time.Time) bool {
 	if h.hourKey != key {
 		h.hourKey = key
 		h.restartsThisHour = 0
+	}
+	if h.maxRestartsPerHour <= 0 {
+		return false
 	}
 	if h.restartsThisHour >= h.maxRestartsPerHour {
 		return false

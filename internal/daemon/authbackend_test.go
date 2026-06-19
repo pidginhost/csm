@@ -174,3 +174,89 @@ func TestAuthBackendHealth_RestartFailureEmitsHigh(t *testing.T) {
 		t.Fatalf("failed restart must emit a High auto_response finding, got %v", out)
 	}
 }
+
+func TestAuthBackendHealth_DegradedDoesNotWaitForBlockedProbe(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	probeEntered := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	h := newAuthBackendHealth(
+		clock.Now,
+		func() bool {
+			close(probeEntered)
+			<-releaseProbe
+			return false
+		},
+		nil,
+		false,
+		10*time.Minute,
+		2*time.Minute,
+		3,
+	)
+	h.downSince = clock.Now()
+
+	done := make(chan struct{})
+	go func() {
+		_ = h.Observe()
+		close(done)
+	}()
+	<-probeEntered
+
+	degraded := make(chan bool, 1)
+	go func() { degraded <- h.Degraded() }()
+	select {
+	case got := <-degraded:
+		if !got {
+			t.Fatal("Degraded returned false while outage state was already known")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Degraded blocked behind a slow probe")
+	}
+
+	close(releaseProbe)
+	<-done
+}
+
+func TestAuthBackendHealth_DegradedDoesNotWaitForRestart(t *testing.T) {
+	f := newHealthFixture(t, true, 1*time.Minute, 1*time.Minute, 3)
+	f.healthy = false
+	f.h.Observe()
+	f.clock.advance(2 * time.Minute)
+
+	restartEntered := make(chan struct{})
+	releaseRestart := make(chan struct{})
+	f.h.restart = func() error {
+		close(restartEntered)
+		<-releaseRestart
+		return nil
+	}
+
+	done := make(chan []alert.Finding, 1)
+	go func() { done <- f.h.Observe() }()
+	<-restartEntered
+
+	degraded := make(chan bool, 1)
+	go func() { degraded <- f.h.Degraded() }()
+	select {
+	case got := <-degraded:
+		if !got {
+			t.Fatal("Degraded returned false while restart was running")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Degraded blocked behind a slow restart")
+	}
+
+	close(releaseRestart)
+	<-done
+}
+
+func TestRestartMailAuthBackendAcceptsCommandLine(t *testing.T) {
+	if err := restartMailAuthBackend("printf authbackend"); err != nil {
+		t.Fatalf("restartMailAuthBackend command line: %v", err)
+	}
+}
+
+func TestRestartMailAuthBackendRejectsEmptyCommand(t *testing.T) {
+	if err := restartMailAuthBackend("   "); err == nil {
+		t.Fatal("restartMailAuthBackend accepted an empty command")
+	}
+}
