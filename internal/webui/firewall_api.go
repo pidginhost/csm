@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 type firewallAllowView struct {
@@ -517,6 +518,17 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 		result["cphulk"] = true
 	}
 
+	// cPHulk brute-force temp bans live in the cphulk-TempBan nftables set, not
+	// in read_cphulk_records, so the black-list query never sees them. Read the
+	// set directly -- this is what actually drops the IP at the firewall.
+	if result["cphulk"] != true && platform.Detect().IsCPanel() {
+		tempBanOut, tempBanErr := exec.CommandContext(cphulkCtx,
+			"nft", "list", "set", "inet", "filter", "cphulk-TempBan").Output()
+		if tempBanErr == nil && cphulkTempBanContainsIP(tempBanOut, ip) {
+			result["cphulk"] = true
+		}
+	}
+
 	writeJSON(w, result)
 }
 
@@ -557,6 +569,56 @@ func isCphulkRecordIPField(key string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// cphulkTempBanContainsIP reports whether the IP is a member of cPHulk's
+// brute-force temp-ban nftables set, given the text output of
+// `nft list set inet filter cphulk-TempBan`. cPHulk enforces brute-force bans
+// here, not in the read_cphulk_records black list, so this is the authoritative
+// source for "is this IP currently cPHulk-dropped". The boundary checks stop a
+// queried IP from matching a longer literal (e.g. 10.20.30.4 inside
+// 10.20.30.40) which would otherwise leak a different IP's ban state.
+func cphulkTempBanContainsIP(nftSetOutput []byte, ip string) bool {
+	if ip == "" || len(nftSetOutput) == 0 {
+		return false
+	}
+	hay := string(nftSetOutput)
+	for i := 0; i < len(hay); {
+		j := strings.Index(hay[i:], ip)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(ip)
+		if isIPLiteralBoundary(hay, start-1) && isIPLiteralBoundary(hay, end) {
+			return true
+		}
+		i = end
+	}
+	return false
+}
+
+// isIPLiteralBoundary reports whether the byte at index k is not part of an IP
+// literal, so a match between two boundaries is a whole address rather than a
+// substring of a longer one. Positions off either end of the string count as
+// boundaries.
+func isIPLiteralBoundary(s string, k int) bool {
+	if k < 0 || k >= len(s) {
+		return true
+	}
+	c := s[k]
+	switch {
+	case c >= '0' && c <= '9':
+		return false
+	case c >= 'a' && c <= 'f':
+		return false
+	case c >= 'A' && c <= 'F':
+		return false
+	case c == '.' || c == ':':
+		return false
+	default:
+		return true
 	}
 }
 

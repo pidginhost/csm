@@ -188,3 +188,39 @@ func TestCphulkBlocksIPMatchesRecordIPOnly(t *testing.T) {
 		t.Error("garbage output must not match")
 	}
 }
+
+func TestCphulkTempBanContainsIP(t *testing.T) {
+	// cPHulk brute-force temp bans live in this nftables set, not in the
+	// read_cphulk_records black list. The Inspect IP check must read the set or
+	// it reports "cPHulk: No" for an IP that is actively firewall-dropped.
+	set := []byte(`table inet filter {
+	set cphulk-TempBan {
+		type ipv4_addr
+		flags timeout
+		elements = { 86.121.184.44 expires 15h48m46s793ms,
+			     87.106.53.29 expires 10m23s653ms,
+			     10.20.30.40 expires 1h2m }
+	}
+}`)
+	if !cphulkTempBanContainsIP(set, "86.121.184.44") {
+		t.Error("temp-banned IP must match")
+	}
+	if !cphulkTempBanContainsIP(set, "10.20.30.40") {
+		t.Error("last element in the set must match")
+	}
+	if cphulkTempBanContainsIP(set, "6.121.184.44") {
+		t.Error("suffix of a banned IP must NOT match (digit boundary)")
+	}
+	if cphulkTempBanContainsIP(set, "10.20.30.4") {
+		t.Error("prefix of a banned IP must NOT match (digit boundary)")
+	}
+	if cphulkTempBanContainsIP(set, "203.0.113.9") {
+		t.Error("IP absent from the set must not match")
+	}
+	if cphulkTempBanContainsIP(set, "") {
+		t.Error("empty IP must not match")
+	}
+	if cphulkTempBanContainsIP(nil, "86.121.184.44") {
+		t.Error("empty set output must not match")
+	}
+}
