@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.18.0] - 2026-06-19
+
 ### Added
 
 - CSM now probes the cPanel mail authentication backend and pauses mail brute-force auto-block while it is down. Operators can opt in to a rate-limited mail service restart after a sustained outage.
