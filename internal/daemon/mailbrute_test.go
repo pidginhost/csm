@@ -377,6 +377,79 @@ func TestMailAuthTracker_RecordSuccess_EmptyIPOrAccountIgnored(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_NoBruteForceWhenSuccessDominant(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// Busy legit NAT office: many successful logins plus a handful of failures
+	// from one device with a stale saved password. Successes at least matching
+	// failures means a real client, not a brute-forcer. mail_bruteforce
+	// auto-blocks the whole IP, so emitting it here would lock out the office.
+	for i := 0; i < 6; i++ {
+		tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	}
+	for i := 0; i < 5; i++ { // reaches perIPThreshold
+		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+			if f.Check == "mail_bruteforce" {
+				t.Fatalf("mail_bruteforce must not fire for success-dominant IP (iter %d)", i)
+			}
+		}
+	}
+}
+
+func TestMailAuthTracker_BruteForceFiresWhenFailureDominant(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// One stray success does not excuse a failure-dominant IP: an attacker that
+	// guessed once after many failures is still a brute-forcer.
+	tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("mail_bruteforce must still fire when failures dominate despite one success")
+	}
+}
+
+func TestMailAuthTracker_NoCompromiseWhenSuccessDominant(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// Legit owner IP: logs in successfully all day, occasionally mistypes the
+	// password. A success after a couple of mistypes from an IP that succeeds
+	// far more than it fails is not a takeover.
+	for i := 0; i < 5; i++ {
+		tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	}
+	for i := 0; i < 2; i++ {
+		tr.Record("203.0.113.5", "alice@example.com")
+	}
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("mail_account_compromised must not fire for success-dominant legit IP, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_RecordSuccessRespectsMaxTracked(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	const maxTracked = 10
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	// Per-IP success tracking must stay bounded: a busy server sees far more
+	// distinct successful-login IPs than failing ones, so successes cannot be
+	// allowed to grow the tracker without limit.
+	for i := 0; i < 200; i++ {
+		tr.RecordSuccess(fmt.Sprintf("203.0.113.%d", i%256), fmt.Sprintf("u%d@example.com", i))
+	}
+	if got := tr.Size(); got > maxTracked {
+		t.Errorf("Size() = %d, want <= %d", got, maxTracked)
+	}
+}
+
 func TestMailAuthTracker_PurgeRemovesExpired(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)

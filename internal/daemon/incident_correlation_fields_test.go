@@ -202,6 +202,12 @@ func TestMailAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 	}
 	assertCorrelates(t, account)
 
+	// Drive this IP failure-dominant so the successful login reads as a genuine
+	// takeover (attacker guessed after repeated failures), not a legit owner who
+	// mistyped once: a success-dominant IP is now treated as a busy real client.
+	tracker.Record("198.51.100.11", "bob@example.org")
+	tracker.Record("198.51.100.11", "bob@example.org")
+
 	success := tracker.RecordSuccess("198.51.100.11", "bob@example.org")
 	compromised, ok := findingByCheck(success, "mail_account_compromised")
 	if !ok {
