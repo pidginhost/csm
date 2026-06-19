@@ -31,6 +31,14 @@ type firewallPortAllowView struct {
 	Source string `json:"source"`
 }
 
+const cphulkFirewallCheckTimeout = 8 * time.Second
+
+var firewallCheckCommandOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	// #nosec G204 -- command names are fixed by trusted call sites; HTTP input
+	// is parsed as an IP and passed as an execve argument without shell expansion.
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
 func formatRemaining(expiresAt time.Time) string {
 	if expiresAt.IsZero() {
 		return "permanent"
@@ -508,23 +516,12 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check cphulk (cPanel brute force detector) - read-only check.
-	// CommandContext bounds a hung whmapi1 (cPanel socket busy/down) so a
-	// stuck call cannot pin this HTTP handler goroutine indefinitely.
-	cphulkCtx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer cancel()
-	cphulkOut, cphulkErr := exec.CommandContext(cphulkCtx, "whmapi1", "read_cphulk_records",
-		"list_name=black", "--output=json").Output()
-	if cphulkErr == nil && cphulkBlocksIP(cphulkOut, ip) {
+	if platform.Detect().IsCPanel() && cphulkTempBanContainsIP(r.Context(), ip) {
 		result["cphulk"] = true
-	}
-
-	// cPHulk brute-force temp bans live in the cphulk-TempBan nftables set, not
-	// in read_cphulk_records, so the black-list query never sees them. Read the
-	// set directly -- this is what actually drops the IP at the firewall.
-	if result["cphulk"] != true && platform.Detect().IsCPanel() {
-		tempBanOut, tempBanErr := exec.CommandContext(cphulkCtx,
-			"nft", "list", "set", "inet", "filter", "cphulk-TempBan").Output()
-		if tempBanErr == nil && cphulkTempBanContainsIP(tempBanOut, ip) {
+	} else {
+		cphulkOut, cphulkErr := runFirewallCheckCommand(r.Context(), "whmapi1", "read_cphulk_records",
+			"list_name=black", "--output=json")
+		if cphulkErr == nil && cphulkBlocksIP(cphulkOut, ip) {
 			result["cphulk"] = true
 		}
 	}
@@ -572,54 +569,34 @@ func isCphulkRecordIPField(key string) bool {
 	}
 }
 
-// cphulkTempBanContainsIP reports whether the IP is a member of cPHulk's
-// brute-force temp-ban nftables set, given the text output of
-// `nft list set inet filter cphulk-TempBan`. cPHulk enforces brute-force bans
-// here, not in the read_cphulk_records black list, so this is the authoritative
-// source for "is this IP currently cPHulk-dropped". The boundary checks stop a
-// queried IP from matching a longer literal (e.g. 10.20.30.4 inside
-// 10.20.30.40) which would otherwise leak a different IP's ban state.
-func cphulkTempBanContainsIP(nftSetOutput []byte, ip string) bool {
-	if ip == "" || len(nftSetOutput) == 0 {
-		return false
-	}
-	hay := string(nftSetOutput)
-	for i := 0; i < len(hay); {
-		j := strings.Index(hay[i:], ip)
-		if j < 0 {
-			return false
-		}
-		start := i + j
-		end := start + len(ip)
-		if isIPLiteralBoundary(hay, start-1) && isIPLiteralBoundary(hay, end) {
-			return true
-		}
-		i = end
-	}
-	return false
+func runFirewallCheckCommand(parent context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, cphulkFirewallCheckTimeout)
+	defer cancel()
+	return firewallCheckCommandOutput(ctx, name, args...)
 }
 
-// isIPLiteralBoundary reports whether the byte at index k is not part of an IP
-// literal, so a match between two boundaries is a whole address rather than a
-// substring of a longer one. Positions off either end of the string count as
-// boundaries.
-func isIPLiteralBoundary(s string, k int) bool {
-	if k < 0 || k >= len(s) {
-		return true
+// cPHulk brute-force temp bans live in the cphulk-TempBan nftables set, not in
+// read_cphulk_records, so ask nftables for exact element membership instead of
+// scanning a textual set dump where one IP could match unrelated text.
+func cphulkTempBanContainsIP(parent context.Context, ip string) bool {
+	lookupIP, ok := cphulkTempBanLookupIP(ip)
+	if !ok {
+		return false
 	}
-	c := s[k]
-	switch {
-	case c >= '0' && c <= '9':
-		return false
-	case c >= 'a' && c <= 'f':
-		return false
-	case c >= 'A' && c <= 'F':
-		return false
-	case c == '.' || c == ':':
-		return false
-	default:
-		return true
+	_, err := runFirewallCheckCommand(parent, "nft", "get", "element",
+		"inet", "filter", "cphulk-TempBan", "{", lookupIP, "}")
+	return err == nil
+}
+
+func cphulkTempBanLookupIP(ip string) (string, bool) {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return "", false
 	}
+	if ip4 := parsed.To4(); ip4 != nil {
+		return net.IP(ip4).String(), true
+	}
+	return parsed.String(), true
 }
 
 // apiFirewallUnban unblocks an IP from CSM + cphulk in one call.

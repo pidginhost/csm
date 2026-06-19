@@ -1,12 +1,17 @@
 package webui
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func newTestServerWithFirewall(t *testing.T, token string) *Server {
@@ -14,6 +19,32 @@ func newTestServerWithFirewall(t *testing.T, token string) *Server {
 	s := newTestServer(t, token)
 	s.cfg.Firewall = &firewall.FirewallConfig{Enabled: true}
 	return s
+}
+
+func withCPanelPlatform(t *testing.T) {
+	t.Helper()
+	platform.ResetForTest()
+	panel := platform.PanelCPanel
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel}) {
+		t.Fatal("platform override must install before Detect")
+	}
+	t.Cleanup(platform.ResetForTest)
+}
+
+func withFirewallCheckCommand(t *testing.T, fn func(context.Context, string, ...string) ([]byte, error)) {
+	t.Helper()
+	prev := firewallCheckCommandOutput
+	firewallCheckCommandOutput = fn
+	t.Cleanup(func() { firewallCheckCommandOutput = prev })
+}
+
+func decodeFirewallCheckBody(t *testing.T, w *httptest.ResponseRecorder) map[string]interface{} {
+	t.Helper()
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
+	}
+	return body
 }
 
 // --- apiFirewallStatus ------------------------------------------------
@@ -150,6 +181,71 @@ func TestAPIFirewallCheckValidIP(t *testing.T) {
 	}
 }
 
+func TestAPIFirewallCheckReportsCphulkTempBan(t *testing.T) {
+	withCPanelPlatform(t)
+
+	var calls []string
+	withFirewallCheckCommand(t, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("command context already done: %v", err)
+		}
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if name != "nft" {
+			t.Fatalf("temp-ban hit should not call %s with args %v", name, args)
+		}
+		want := []string{"get", "element", "inet", "filter", "cphulk-TempBan", "{", "86.121.184.44", "}"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("nft args = %v, want %v", args, want)
+		}
+		return []byte("element exists"), nil
+	})
+
+	s := newTestServerWithFirewall(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiFirewallCheck(w, httptest.NewRequest("GET", "/?ip=86.121.184.44", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := decodeFirewallCheckBody(t, w)
+	if body["cphulk"] != true {
+		t.Fatalf("cphulk = %v, want true; body=%v", body["cphulk"], body)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("commands = %v, want one nft lookup", calls)
+	}
+}
+
+func TestAPIFirewallCheckCphulkTempBanUsesExactElementLookup(t *testing.T) {
+	withCPanelPlatform(t)
+
+	withFirewallCheckCommand(t, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name {
+		case "nft":
+			want := []string{"get", "element", "inet", "filter", "cphulk-TempBan", "{", "10.20.30.4", "}"}
+			if !reflect.DeepEqual(args, want) {
+				t.Fatalf("nft args = %v, want %v", args, want)
+			}
+			return nil, errors.New("element not found")
+		case "whmapi1":
+			return []byte(`{"data":{"records":[]}}`), nil
+		default:
+			t.Fatalf("unexpected command %s %v", name, args)
+			return nil, errors.New("unexpected command")
+		}
+	})
+
+	s := newTestServerWithFirewall(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiFirewallCheck(w, httptest.NewRequest("GET", "/?ip=10.20.30.4", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := decodeFirewallCheckBody(t, w)
+	if body["cphulk"] != false {
+		t.Fatalf("cphulk = %v, want false for absent prefix IP; body=%v", body["cphulk"], body)
+	}
+}
+
 // --- apiFirewallUnban (POST validation) ------------------------------
 
 func TestAPIFirewallUnbanGetRejected(t *testing.T) {
@@ -189,38 +285,15 @@ func TestCphulkBlocksIPMatchesRecordIPOnly(t *testing.T) {
 	}
 }
 
-func TestCphulkTempBanContainsIP(t *testing.T) {
-	// cPHulk brute-force temp bans live in this nftables set, not in the
-	// read_cphulk_records black list. The Inspect IP check must read the set or
-	// it reports "cPHulk: No" for an IP that is actively firewall-dropped.
-	set := []byte(`table inet filter {
-	set cphulk-TempBan {
-		type ipv4_addr
-		flags timeout
-		elements = { 86.121.184.44 expires 15h48m46s793ms,
-			     87.106.53.29 expires 10m23s653ms,
-			     10.20.30.40 expires 1h2m }
+func TestCphulkTempBanLookupIP(t *testing.T) {
+	got, ok := cphulkTempBanLookupIP("::ffff:86.121.184.44")
+	if !ok {
+		t.Fatal("IPv4-mapped address should be accepted")
 	}
-}`)
-	if !cphulkTempBanContainsIP(set, "86.121.184.44") {
-		t.Error("temp-banned IP must match")
+	if got != "86.121.184.44" {
+		t.Fatalf("lookup IP = %q, want canonical IPv4", got)
 	}
-	if !cphulkTempBanContainsIP(set, "10.20.30.40") {
-		t.Error("last element in the set must match")
-	}
-	if cphulkTempBanContainsIP(set, "6.121.184.44") {
-		t.Error("suffix of a banned IP must NOT match (digit boundary)")
-	}
-	if cphulkTempBanContainsIP(set, "10.20.30.4") {
-		t.Error("prefix of a banned IP must NOT match (digit boundary)")
-	}
-	if cphulkTempBanContainsIP(set, "203.0.113.9") {
-		t.Error("IP absent from the set must not match")
-	}
-	if cphulkTempBanContainsIP(set, "") {
-		t.Error("empty IP must not match")
-	}
-	if cphulkTempBanContainsIP(nil, "86.121.184.44") {
-		t.Error("empty set output must not match")
+	if _, ok := cphulkTempBanLookupIP("not-an-ip"); ok {
+		t.Fatal("invalid address should not be accepted")
 	}
 }

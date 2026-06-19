@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The Inspect IP firewall check now reports cPHulk as active for brute-force temporary bans, not only for entries on cPHulk's permanent blacklist. An IP that cPHulk has temporarily firewall-banned no longer shows as having no active block.
+- The Inspect IP firewall check now reports cPHulk as active for brute-force temporary bans, not only for entries on cPHulk's permanent blacklist, and avoids matching unrelated IP text.
 - Mail brute-force and account-compromise auto-blocking now weighs successful logins against failures before acting, so a busy office that shares one address across many mailboxes is not locked out because a single device kept retrying a stale saved password. Genuine attacks, which fail far more than they succeed, are still blocked.
 
 ## [3.17.0] - 2026-06-18
