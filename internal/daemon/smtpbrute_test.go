@@ -96,6 +96,38 @@ func TestSMTPAuthTracker_EmitsSMTPBruteForceAtThreshold(t *testing.T) {
 	}
 }
 
+func TestSMTPAuthTracker_BackendDownCheckSuppressesBruteForce(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	// During a cpdoveauthd outage, exim->dovecot SMTP AUTH fails for everyone;
+	// the probe-driven check must suppress smtp_bruteforce auto-block.
+	tr.SetBackendDownCheck(func() bool { return true })
+	for i := 0; i < 8; i++ {
+		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+			if f.Check == "smtp_bruteforce" {
+				t.Fatalf("smtp_bruteforce must be suppressed when probe reports backend down")
+			}
+		}
+	}
+}
+
+func TestSMTPAuthTracker_FiresWhenBackendUp(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	tr.SetBackendDownCheck(func() bool { return false })
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "") {
+			if f.Check == "smtp_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("smtp_bruteforce must fire when probe reports backend healthy")
+	}
+}
+
 func TestSMTPAuthTracker_NoDuplicatePerIPFindingsInSuppressionWindow(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(t, clock)

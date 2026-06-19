@@ -329,6 +329,13 @@ auto_response:
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4          # temp blocks before permanent
   permblock_interval: "24h"   # window for counting temp blocks
+  # mail_auth_recovery: optional self-heal for the mail auth backend (cpdoveauthd).
+  # Probe + alert + brute-force suppression are always on; only the restart is opt-in.
+  mail_auth_recovery:
+    restart_enabled: false    # run a service restart after a sustained outage
+    down_grace: "10m"         # continuously-down duration before restarting
+    max_restarts_per_hour: 3  # hourly cap on restart attempts
+    restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
 
 firewall:
   enabled: false              # enable to activate nftables-based firewall engine

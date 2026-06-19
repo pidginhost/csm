@@ -480,6 +480,19 @@ type Config struct {
 		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
 		CopyFailKillProcess bool   `yaml:"copy_fail_kill_process"` // SIGKILL processes caught opening AF_ALG sockets via the live listener (default false; alert-only)
 
+		// MailAuthRecovery optionally self-heals the mail auth backend
+		// (cPanel's cpdoveauthd). CSM always probes the socket, alerts on an
+		// outage, and pauses mail/SMTP brute-force auto-block while it is down
+		// (cPanel only); only the service restart is gated here and is off by
+		// default. A restart runs only after the backend is continuously down
+		// for DownGrace, so a brief blip during nightly maintenance never trips it.
+		MailAuthRecovery struct {
+			RestartEnabled     bool   `yaml:"restart_enabled"`       // run a service restart after a sustained outage (default false)
+			DownGrace          string `yaml:"down_grace"`            // continuously-down duration before restarting (default "10m")
+			MaxRestartsPerHour int    `yaml:"max_restarts_per_hour"` // hourly cap on restart attempts (default 3)
+			RestartCommand     string `yaml:"restart_command"`       // command to run (default cPanel restartsrv_dovecot)
+		} `yaml:"mail_auth_recovery"`
+
 		// DryRun, when true (or absent - safety default), logs the intended
 		// action but does NOT touch nftables. Mirrors the PHPRelay.DryRun
 		// pattern: pointer-bool to distinguish "operator explicitly set false"
@@ -1492,6 +1505,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
+	}
+	if cfg.AutoResponse.MailAuthRecovery.DownGrace == "" {
+		cfg.AutoResponse.MailAuthRecovery.DownGrace = "10m"
+	}
+	if cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour == 0 {
+		cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour = 3
+	}
+	if cfg.AutoResponse.MailAuthRecovery.RestartCommand == "" {
+		cfg.AutoResponse.MailAuthRecovery.RestartCommand = "/usr/local/cpanel/scripts/restartsrv_dovecot"
 	}
 
 	// Performance defaults.

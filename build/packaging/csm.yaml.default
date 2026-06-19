@@ -257,6 +257,16 @@ auto_response:
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4
   permblock_interval: "24h"
+  # mail_auth_recovery: optional self-heal for the mail auth backend (cPanel
+  # cpdoveauthd). CSM always probes the socket, alerts on an outage, and pauses
+  # mail/SMTP brute-force auto-block while it is down; only the restart is
+  # opt-in and runs only after the backend is continuously down for down_grace,
+  # so a brief blip during maintenance never trips it.
+  mail_auth_recovery:
+    restart_enabled: false    # run a service restart after a sustained outage
+    down_grace: "10m"         # continuously-down duration before restarting
+    max_restarts_per_hour: 3  # hourly cap on restart attempts
+    restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
   dry_run: true               # safe default; logs intended IP blocks only
   verdict_callback:
     enabled: false

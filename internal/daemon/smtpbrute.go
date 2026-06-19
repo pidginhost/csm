@@ -56,6 +56,21 @@ type smtpAuthTracker struct {
 	// "Record never called" or "called but never crosses threshold".
 	recordCalls     int64
 	findingsEmitted int64
+
+	// backendDownFn, when set, reports whether the active socket probe currently
+	// sees the mail auth backend down. SMTP-AUTH (exim->dovecot) fails the same
+	// way during a cpdoveauthd outage, so suppress brute/subnet auto-block then.
+	backendDownFn func() bool
+}
+
+// SetBackendDownCheck installs the active-probe callback the tracker consults to
+// learn whether the mail auth backend is down. When it returns true, brute-force
+// and subnet auto-block are suppressed. Set once at startup before log readers
+// begin.
+func (t *smtpAuthTracker) SetBackendDownCheck(fn func() bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.backendDownFn = fn
 }
 
 // newSMTPAuthTracker constructs a tracker. `now` is injected so tests can
@@ -112,6 +127,11 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 
 	var findings []alert.Finding
 
+	// During a mail-auth-backend outage exim->dovecot SMTP AUTH fails for every
+	// user regardless of password, so the failure-rate signals would mass-block
+	// legitimate senders. Suppress them while the probe reports the backend down.
+	degraded := t.backendDownFn != nil && t.backendDownFn()
+
 	// --- Per-IP tracker ---
 	e, ok := t.ips[ip]
 	if !ok {
@@ -122,7 +142,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	e.times = append(e.times, now)
 	e.lastSeen = now
 
-	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
+	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) && !degraded {
 		e.suppressed = now.Add(t.suppression)
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
@@ -146,7 +166,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		s.ips[ip] = now
 		s.lastSeen = now
 
-		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
+		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
 			s.suppressed = now.Add(t.suppression)
 			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{

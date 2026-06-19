@@ -655,6 +655,37 @@ func TestMailAuthTracker_PurgeRemovesExpiredBackendFailures(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_BackendDownCheckSuppressesBruteForce(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// Active probe reports the backend down (no log-derived errors needed).
+	tr.SetBackendDownCheck(func() bool { return true })
+	for i := 0; i < 8; i++ {
+		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+			if f.Check == "mail_bruteforce" {
+				t.Fatalf("mail_bruteforce must be suppressed when probe reports backend down")
+			}
+		}
+	}
+}
+
+func TestMailAuthTracker_BackendDownCheckFalseStillFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.SetBackendDownCheck(func() bool { return false })
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("mail_bruteforce must fire when probe reports backend healthy")
+	}
+}
+
 func TestIsMailAuthBackendError(t *testing.T) {
 	down := `Jun 19 02:00:00 host dovecot[123]: auth-worker(office@x.ro,203.0.113.4)<1><a>: conn unix:...: ` +
 		`socket error: Failed to connect to /usr/local/cpanel/var/cpdoveauthd.sock: connection refused`

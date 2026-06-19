@@ -86,6 +86,7 @@ type Daemon struct {
 	smtpAuthTracker  *smtpAuthTracker
 	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
+	authBackend      *authBackendHealth
 	startTime        time.Time
 
 	// yaraSup is the supervised YARA-X worker, wired up when
@@ -197,6 +198,27 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		cfg.Thresholds.MailBruteForceMaxTracked,
 		time.Now,
 	)
+
+	// Mail auth backend (cpdoveauthd) health: an active socket probe drives
+	// brute-force suppression for both trackers and optional self-heal restart.
+	// The probe goroutine only runs on cPanel (see Start); elsewhere Degraded()
+	// stays false, so the trackers behave exactly as before.
+	graceDur := 10 * time.Minute
+	if g, perr := time.ParseDuration(cfg.AutoResponse.MailAuthRecovery.DownGrace); perr == nil && g > 0 {
+		graceDur = g
+	}
+	restartCmd := cfg.AutoResponse.MailAuthRecovery.RestartCommand
+	d.authBackend = newAuthBackendHealth(
+		time.Now,
+		dialMailAuthBackend,
+		func() error { return restartMailAuthBackend(restartCmd) },
+		cfg.AutoResponse.MailAuthRecovery.RestartEnabled,
+		graceDur,
+		mailAuthRestartCooldown,
+		cfg.AutoResponse.MailAuthRecovery.MaxRestartsPerHour,
+	)
+	d.mailAuthTracker.SetBackendDownCheck(d.authBackend.Degraded)
+	d.smtpAuthTracker.SetBackendDownCheck(d.authBackend.Degraded)
 	return d
 }
 
@@ -1806,6 +1828,33 @@ func (d *Daemon) startLogWatchers() {
 			}
 		}
 	})
+
+	// Mail auth backend probe: actively detect a cpdoveauthd outage that
+	// chkservd's port checks miss (dovecot stays up while auth is broken),
+	// suppress brute-force auto-block while it lasts, and optionally self-heal.
+	// cPanel only -- elsewhere there is no such socket to probe.
+	if hostInfo.IsCPanel() && d.authBackend != nil {
+		d.wg.Add(1)
+		obs.Go("mail-auth-backend-probe", func() {
+			defer d.wg.Done()
+			ticker := time.NewTicker(mailAuthProbeInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-d.stopCh:
+					return
+				case <-ticker.C:
+					for _, f := range d.authBackend.Observe() {
+						select {
+						case d.alertCh <- f:
+						case <-d.stopCh:
+							return
+						}
+					}
+				}
+			}
+		})
+	}
 
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)

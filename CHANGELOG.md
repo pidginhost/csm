@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CSM now actively probes the cPanel mail authentication backend (cpdoveauthd). When it is unreachable it raises an alert and pauses mail and SMTP brute-force auto-block, since a backend outage makes every login fail regardless of password. An opt-in setting can restart the mail service after the backend has been down past a grace period. This covers a failure that leaves dovecot's ports up, which cPanel's own service monitoring does not catch.
+
 ### Fixed
 
 - The Inspect IP firewall check now reports cPHulk as active for brute-force temporary bans, not only for entries on cPHulk's permanent blacklist, and avoids matching unrelated IP text.

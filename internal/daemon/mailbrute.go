@@ -104,6 +104,21 @@ type mailAuthTracker struct {
 	// suppression window.
 	backendErr       []time.Time
 	backendWarnUntil time.Time
+
+	// backendDownFn, when set, reports whether the active socket probe currently
+	// sees the mail auth backend down. It augments the log-derived backendErr
+	// heuristic so suppression also triggers on the authoritative probe signal.
+	backendDownFn func() bool
+}
+
+// SetBackendDownCheck installs the active-probe callback the tracker consults to
+// learn whether the mail auth backend is down. When it returns true, brute-force
+// and subnet auto-block are suppressed. Set once at startup before log readers
+// begin.
+func (t *mailAuthTracker) SetBackendDownCheck(fn func() bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.backendDownFn = fn
 }
 
 // newMailAuthTracker constructs a tracker. `now` is injected so tests can
@@ -161,7 +176,11 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 
 	// During an auth-backend outage every login fails regardless of password, so
 	// the failure-rate signals are meaningless and would mass-block real users.
+	// Either the log-derived heuristic or the authoritative socket probe trips it.
 	degraded := t.backendDegraded(now)
+	if !degraded && t.backendDownFn != nil {
+		degraded = t.backendDownFn()
+	}
 
 	// --- Per-IP tracker ---
 	e, ok := t.ips[ip]
