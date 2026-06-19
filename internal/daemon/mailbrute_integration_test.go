@@ -34,7 +34,11 @@ func makeDovecotSuccessLine(protocol, ip, account string) string {
 func buildMailHandler(cfg *config.Config, tr *mailAuthTracker) LogLineHandler {
 	return func(line string, c *config.Config) []alert.Finding {
 		findings := parseDovecotLogLine(line, c)
-		if !isMailAuthLine(line) {
+		authLine := isMailAuthLine(line)
+		if tr != nil && !authLine && isMailAuthBackendError(line) {
+			return append(findings, tr.RecordBackendFailure()...)
+		}
+		if !authLine {
 			return findings
 		}
 		ip, account, success := extractMailLoginEvent(line)
@@ -159,6 +163,48 @@ func TestMailHandler_NilTrackerSafe(t *testing.T) {
 			f.Check == "mail_account_spray" || f.Check == "mail_account_compromised" {
 			t.Fatalf("nil tracker must not emit tracker findings: %v", out)
 		}
+	}
+}
+
+func TestMailHandler_BackendErrorEmitsWarning(t *testing.T) {
+	cfg := &config.Config{}
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	h := buildMailHandler(cfg, tr)
+	line := `Jun 19 02:00:00 host dovecot[123]: auth-worker(alice@example.com,203.0.113.4)<1><a>: conn unix:...: ` +
+		`socket error: Failed to connect to /usr/local/cpanel/var/cpdoveauthd.sock: connection refused`
+	var fired bool
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		for _, f := range h(line, cfg) {
+			if f.Check == "mail_auth_backend_degraded" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatal("backend error lines must emit the degraded warning through the mail handler")
+	}
+}
+
+func TestMailHandler_LoginTextCannotSpoofBackendDegraded(t *testing.T) {
+	cfg := &config.Config{}
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	h := buildMailHandler(cfg, tr)
+	line := makeDovecotFailLine("imap", "203.0.113.5", "Temporary authentication failure cpdoveauthd.sock")
+	var brute bool
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		for _, f := range h(line, cfg) {
+			if f.Check == "mail_auth_backend_degraded" {
+				t.Fatalf("ordinary login failure with user-controlled text spoofed backend degradation: %+v", f)
+			}
+			if f.Check == "mail_bruteforce" {
+				brute = true
+			}
+		}
+	}
+	if !brute {
+		t.Fatal("spoofed backend-error text in login failures must still count toward brute-force detection")
 	}
 }
 

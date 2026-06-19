@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mail brute-force and account-compromise auto-blocking now weighs successful logins against failures before acting, so a busy office that shares one address across many mailboxes is not locked out because a single device kept retrying a stale saved password. Genuine attacks, which fail far more than they succeed, are still blocked.
 - Mail-auth success-ratio checks now require matching mailbox context before suppressing a block. Account-compromise detection also drops expired failure history, and diagnostics count compromise findings emitted from successful logins.
 - Mail brute-force and subnet auto-blocking pause, and an operator warning is raised, when the mail authentication backend is failing. A backend outage makes every login fail regardless of password, so without this it would lock out legitimate users en masse. Detection resumes automatically once the backend recovers.
+- Mail auth backend outage detection now validates backend-error evidence more narrowly and bounds outage state under log floods.
 
 ## [3.17.0] - 2026-06-18
 

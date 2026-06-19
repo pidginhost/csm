@@ -109,6 +109,7 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 		{check: "modsec_block_realtime", watcher: "modsec"},
 		{check: "webshell_realtime", watcher: "fanotify"},
 		{check: "email_auth_failure_realtime", watcher: "maillog"},
+		{check: "mail_auth_backend_degraded", watcher: "maillog"},
 		{check: "mail_log_source_unavailable", watcher: "maillog"},
 		{check: "email_php_relay_abuse", watcher: "phprelay"},
 		{check: "email_malware", watcher: "email_av_spool"},

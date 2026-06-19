@@ -276,8 +276,7 @@ func (t *mailAuthTracker) RecordBackendFailure() []alert.Finding {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	t.backendErr = pruneTimes(t.backendErr, now.Add(-t.window))
-	t.backendErr = append(t.backendErr, now)
+	t.recordBackendFailureTime(now)
 	if len(t.backendErr) < mailBackendDegradedThreshold || now.Before(t.backendWarnUntil) {
 		return nil
 	}
@@ -293,11 +292,39 @@ func (t *mailAuthTracker) RecordBackendFailure() []alert.Finding {
 	}}
 }
 
+// recordBackendFailureTime keeps only the newest observations needed to prove
+// the degraded invariant. Backend outages can flood logs; tracking more than
+// the threshold would add memory pressure without changing detection.
+func (t *mailAuthTracker) recordBackendFailureTime(now time.Time) {
+	t.backendErr = pruneTimes(t.backendErr, now.Add(-t.window))
+	if len(t.backendErr) == 0 {
+		t.backendErr = nil
+	}
+	if len(t.backendErr) >= mailBackendDegradedThreshold {
+		const keep = mailBackendDegradedThreshold - 1
+		if cap(t.backendErr) > mailBackendDegradedThreshold {
+			recent := make([]time.Time, mailBackendDegradedThreshold)
+			copy(recent, t.backendErr[len(t.backendErr)-keep:])
+			recent[keep] = now
+			t.backendErr = recent
+			return
+		}
+		copy(t.backendErr, t.backendErr[len(t.backendErr)-keep:])
+		t.backendErr = t.backendErr[:mailBackendDegradedThreshold]
+		t.backendErr[keep] = now
+		return
+	}
+	t.backendErr = append(t.backendErr, now)
+}
+
 // backendDegraded reports whether the mail auth backend looks down: at least
 // mailBackendDegradedThreshold backend-failure observations within the window.
 // Caller must hold t.mu.
 func (t *mailAuthTracker) backendDegraded(now time.Time) bool {
 	t.backendErr = pruneTimes(t.backendErr, now.Add(-t.window))
+	if len(t.backendErr) == 0 {
+		t.backendErr = nil
+	}
 	return len(t.backendErr) >= mailBackendDegradedThreshold
 }
 
@@ -439,6 +466,10 @@ func (t *mailAuthTracker) Purge() {
 			delete(t.accounts, k)
 		}
 	}
+	t.backendErr = pruneTimes(t.backendErr, windowCutoff)
+	if len(t.backendErr) == 0 {
+		t.backendErr = nil
+	}
 }
 
 // enforceMaxTracked evicts the least-recently-seen entries until the IP count
@@ -491,29 +522,105 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 // ordinary wrong-password failure. During such an outage every login fails, so
 // these events must drive the degraded gate, not the brute-force counters.
 func isMailAuthBackendError(line string) bool {
-	if !strings.Contains(line, "dovecot") {
+	if isMailAuthLine(line) {
 		return false
 	}
-	if strings.Contains(line, "cpdoveauthd.sock") {
+	msg := dovecotServiceMessage(line)
+	if msg == "" {
+		return false
+	}
+	detail := msg
+	if strings.HasPrefix(detail, "auth-worker") {
+		detail = authWorkerDetail(detail)
+	}
+	lowerDetail := strings.ToLower(detail)
+	if strings.Contains(lowerDetail, "cpdoveauthd.sock") {
+		return strings.Contains(lowerDetail, "failed to connect") ||
+			strings.Contains(lowerDetail, "socket error") ||
+			strings.Contains(lowerDetail, "connection refused")
+	}
+	if strings.Contains(lowerDetail, "temporary authentication failure") {
+		return strings.HasPrefix(msg, "auth-worker") || strings.Contains(strings.ToLower(msg), "auth:")
+	}
+	if !strings.HasPrefix(msg, "auth-worker") {
+		return false
+	}
+	return strings.Contains(lowerDetail, "connection refused") ||
+		strings.Contains(lowerDetail, "internal error")
+}
+
+func dovecotServiceMessage(line string) string {
+	tagEnd := strings.Index(line, ": ")
+	if tagEnd < 0 {
+		return ""
+	}
+	prefix := line[:tagEnd]
+	tagStart := strings.LastIndexAny(prefix, " \t")
+	if tagStart >= 0 {
+		prefix = prefix[tagStart+1:]
+	}
+	if !isDovecotProgramTag(prefix) {
+		return ""
+	}
+	return strings.TrimSpace(line[tagEnd+2:])
+}
+
+func isDovecotProgramTag(tag string) bool {
+	if tag == "dovecot" {
 		return true
 	}
-	if strings.Contains(line, "auth-worker") &&
-		(strings.Contains(line, "connection refused") ||
-			strings.Contains(line, "Connection refused") ||
-			strings.Contains(line, "Internal error")) {
-		return true
+	const prefix = "dovecot["
+	if !strings.HasPrefix(tag, prefix) || !strings.HasSuffix(tag, "]") {
+		return false
 	}
-	return strings.Contains(line, "Temporary authentication failure")
+	pid := tag[len(prefix) : len(tag)-1]
+	if pid == "" {
+		return false
+	}
+	for i := 0; i < len(pid); i++ {
+		if pid[i] < '0' || pid[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func authWorkerDetail(msg string) string {
+	parenDepth := 0
+	angleDepth := 0
+	for i := 0; i < len(msg); i++ {
+		switch msg[i] {
+		case '(':
+			if angleDepth == 0 {
+				parenDepth++
+			}
+		case ')':
+			if angleDepth == 0 && parenDepth > 0 {
+				parenDepth--
+			}
+		case '<':
+			if parenDepth == 0 {
+				angleDepth++
+			}
+		case '>':
+			if parenDepth == 0 && angleDepth > 0 {
+				angleDepth--
+			}
+		case ':':
+			if parenDepth == 0 && angleDepth == 0 {
+				return strings.TrimSpace(msg[i+1:])
+			}
+		}
+	}
+	return ""
 }
 
 // isMailAuthLine returns true for dovecot imap/pop3/managesieve login events.
 func isMailAuthLine(line string) bool {
-	if !strings.Contains(line, "dovecot:") {
-		return false
-	}
-	return strings.Contains(line, "imap-login:") ||
-		strings.Contains(line, "pop3-login:") ||
-		strings.Contains(line, "managesieve-login:")
+	msg := dovecotServiceMessage(line)
+	return strings.HasPrefix(msg, "imap-login:") ||
+		strings.HasPrefix(msg, "pop3-login:") ||
+		strings.HasPrefix(msg, "managesieve-login:")
 }
 
 // extractMailLoginEvent parses a dovecot login line and returns

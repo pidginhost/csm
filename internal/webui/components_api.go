@@ -106,6 +106,7 @@ var componentCheckOrigin = map[string]string{
 	"htaccess_injection_realtime":                "fanotify",
 	"mail_account_compromised":                   "maillog",
 	"mail_account_spray":                         "maillog",
+	"mail_auth_backend_degraded":                 "maillog",
 	"mail_bruteforce":                            "maillog",
 	"mail_log_source_unavailable":                "maillog",
 	"mail_subnet_spray":                          "maillog",

@@ -1590,14 +1590,15 @@ func (d *Daemon) startLogWatchers() {
 	// subnet spray, account spray, and compromise detection.
 	mailHandler := func(line string, cfg *config.Config) []alert.Finding {
 		findings := parseDovecotLogLine(line, cfg)
+		authLine := isMailAuthLine(line)
 		// Auth-backend failures (dovecot cannot reach the credential backend)
 		// arrive on their own lines, not login lines. Feed them to the degraded
 		// gate so a backend outage pauses brute-force auto-block instead of
 		// mass-blocking every legitimate user whose login now fails.
-		if d.mailAuthTracker != nil && isMailAuthBackendError(line) {
+		if d.mailAuthTracker != nil && !authLine && isMailAuthBackendError(line) {
 			return append(findings, d.mailAuthTracker.RecordBackendFailure()...)
 		}
-		if !isMailAuthLine(line) {
+		if !authLine {
 			return findings
 		}
 		ip, account, success := extractMailLoginEvent(line)

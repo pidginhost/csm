@@ -698,6 +698,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"smtp_account_spray":             "SMTP Account Spray",
 			"mail_bruteforce":                "Mail Brute Force",
 			"mail_subnet_spray":              "Mail Subnet Spray",
+			"mail_auth_backend_degraded":     "Mail Auth Backend Degraded",
 			"admin_panel_bruteforce":         "Admin Panel Brute Force",
 			"mail_account_spray":             "Mail Account Spray",
 			"mail_account_compromised":       "Mail Account Compromised",

@@ -625,6 +625,36 @@ func TestMailAuthTracker_BackendDegradedEmitsWarningOnce(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_BackendFailureStateBounded(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < mailBackendDegradedThreshold*100; i++ {
+		tr.RecordBackendFailure()
+	}
+	tr.mu.Lock()
+	got := len(tr.backendErr)
+	tr.mu.Unlock()
+	if got != mailBackendDegradedThreshold {
+		t.Fatalf("backend failure timestamps = %d, want bounded at %d", got, mailBackendDegradedThreshold)
+	}
+}
+
+func TestMailAuthTracker_PurgeRemovesExpiredBackendFailures(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		tr.RecordBackendFailure()
+	}
+	clock.advance(11 * time.Minute)
+	tr.Purge()
+	tr.mu.Lock()
+	got := len(tr.backendErr)
+	tr.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("backend failure timestamps after purge = %d, want 0", got)
+	}
+}
+
 func TestIsMailAuthBackendError(t *testing.T) {
 	down := `Jun 19 02:00:00 host dovecot[123]: auth-worker(office@x.ro,203.0.113.4)<1><a>: conn unix:...: ` +
 		`socket error: Failed to connect to /usr/local/cpanel/var/cpdoveauthd.sock: connection refused`
@@ -639,6 +669,16 @@ func TestIsMailAuthBackendError(t *testing.T) {
 	success := `Jun 19 02:00:00 host dovecot[123]: imap-login: Logged in: user=<a@x.ro>, method=PLAIN, rip=203.0.113.4`
 	if isMailAuthBackendError(success) {
 		t.Error("a successful login must not be a backend error")
+	}
+	spoofedFailure := `Jun 19 02:00:00 host dovecot[123]: imap-login: Login aborted: Logged out ` +
+		`(auth failed, 1 attempts in 1 secs): user=<Failed to connect to cpdoveauthd.sock Temporary authentication failure>, method=PLAIN, rip=203.0.113.4`
+	if isMailAuthBackendError(spoofedFailure) {
+		t.Error("user-controlled login text must not be classified as a backend error")
+	}
+	postfixSpoof := `Jun 19 02:00:00 host postfix/smtpd[222]: warning: ` +
+		`dovecot: auth-worker: Temporary authentication failure`
+	if isMailAuthBackendError(postfixSpoof) {
+		t.Error("non-dovecot service messages must not be classified as backend errors")
 	}
 }
 
@@ -917,9 +957,14 @@ func TestIsMailAuthLine_Variants(t *testing.T) {
 		want bool
 	}{
 		{"dovecot: imap-login: Aborted login", true},
+		{"dovecot[123]: imap-login: Aborted login", true},
 		{"dovecot: pop3-login: Login:", true},
+		{"dovecot[123]: pop3-login: Login:", true},
 		{"dovecot: managesieve-login: Aborted login", true},
+		{"dovecot[123]: managesieve-login: Aborted login", true},
 		{"dovecot: lmtp: whatever", false},
+		{"postfix/smtpd[222]: warning: dovecot: imap-login: Aborted login", false},
+		{"mydovecot: imap-login: Aborted login", false},
 		{"exim: some other line", false},
 		{"", false},
 	} {
