@@ -49,6 +49,9 @@ func TestFixPermissionsChmodsTo644(t *testing.T) {
 	if err := os.WriteFile(target, []byte("<?php"), 0666); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0666); err != nil {
+		t.Fatal(err)
+	}
 
 	res := fixPermissions(target, "world_writable_php")
 	if !res.Success {

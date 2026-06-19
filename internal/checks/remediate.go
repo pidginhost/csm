@@ -159,7 +159,7 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 // it by hand, or it changed since the scan -- the finding is treated as
 // already resolved and no chmod is attempted. This is the path an operator
 // hits when they manually correct perms and then click "Apply automated fix":
-// rather than erroring, the finding clears (GitHub issue #23).
+// rather than erroring, the finding clears.
 func fixPermissions(path, checkType string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}

@@ -20,10 +20,9 @@ func withChmodFunc(t *testing.T, fn func(string, os.FileMode) error) {
 }
 
 // TestFixPermissionsAlreadyCompliantIsResolved covers the operator who has
-// already chmodded the flagged file by hand (GitHub issue #23). Clicking
-// "Apply automated fix" must recognise the file is no longer world-writable
-// and report success WITHOUT touching it, so the finding clears instead of
-// erroring.
+// already chmodded the flagged file by hand. Clicking "Apply automated fix"
+// must recognise the file is no longer world-writable and report success
+// without touching it, so the finding clears instead of erroring.
 func TestFixPermissionsAlreadyCompliantIsResolved(t *testing.T) {
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
@@ -75,6 +74,81 @@ func TestFixPermissionsGroupWritableAlreadyCompliant(t *testing.T) {
 	}
 }
 
+func TestFixPermissionsGroupWritableGetsChmodded(t *testing.T) {
+	tmp := t.TempDir()
+	withFixPermissionsAllowedRoots(t, tmp)
+
+	target := filepath.Join(tmp, "loose-group.php")
+	if err := os.WriteFile(target, []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0660); err != nil {
+		t.Fatal(err)
+	}
+
+	res := ApplyFix("group_writable_php", "", "", target)
+	if !res.Success {
+		t.Fatalf("expected success, got error %q", res.Error)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0644 {
+		t.Errorf("expected mode 0644 after fix, got %o", info.Mode().Perm())
+	}
+}
+
+func TestFixPermissionsResolvedWhenOnlyOtherWriteBitRemains(t *testing.T) {
+	tests := []struct {
+		name      string
+		checkType string
+		mode      os.FileMode
+	}{
+		{
+			name:      "world finding ignores remaining group write",
+			checkType: "world_writable_php",
+			mode:      0620,
+		},
+		{
+			name:      "group finding ignores remaining world write",
+			checkType: "group_writable_php",
+			mode:      0602,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			withFixPermissionsAllowedRoots(t, tmp)
+			withChmodFunc(t, func(string, os.FileMode) error {
+				t.Error("chmod must not run when the finding's write bit is gone")
+				return nil
+			})
+
+			target := filepath.Join(tmp, "stale.php")
+			if err := os.WriteFile(target, []byte("<?php"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(target, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+
+			res := ApplyFix(tc.checkType, "", "", target)
+			if !res.Success {
+				t.Fatalf("expected resolved finding, got error %q", res.Error)
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != tc.mode {
+				t.Errorf("mode changed unexpectedly: got %o, want %o", got, tc.mode)
+			}
+		})
+	}
+}
+
 // TestFixPermissionsWorldWritableGetsChmodded is the regression guard: a still
 // world-writable file is set to 0644.
 func TestFixPermissionsWorldWritableGetsChmodded(t *testing.T) {
@@ -104,11 +178,9 @@ func TestFixPermissionsWorldWritableGetsChmodded(t *testing.T) {
 	}
 }
 
-// TestFixPermissionsReadOnlyMountFriendlyError covers the issue #23 symptom:
-// the flagged file is still world-writable but lives on a read-only mount
-// (e.g. a backup snapshot or bind mount). chmod returns EROFS; the operator
-// must get a clear explanation, not the raw kernel "read-only file system"
-// string.
+// TestFixPermissionsReadOnlyMountFriendlyError covers the read-only snapshot
+// case: the flagged file is still world-writable, but chmod returns EROFS. The
+// operator must get a clear explanation, not the raw kernel error.
 func TestFixPermissionsReadOnlyMountFriendlyError(t *testing.T) {
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
