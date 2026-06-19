@@ -21,6 +21,10 @@ func TestFindingsJSWiresVerifyAction(t *testing.T) {
 		"/api/v1/verify-finding",
 		"function verifyOne(",
 		"verifyBtn.addEventListener('click'",
+		// Button is gated on has_verify so it never appears on findings that
+		// have no automated re-check (e.g. outdated_plugins, brute_force).
+		"data-hasVerify=",
+		"if (hasVerify)",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("findings.js missing verify-action fragment %q", want)

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Security Findings now have a "Re-check" action that re-evaluates a finding against the live filesystem and clears it if the condition is gone, so an operator who fixed something by hand can confirm it without waiting for the next scan.
+- Security Findings now have a "Re-check" action that re-evaluates a finding against the live filesystem and clears it if the condition is gone, so an operator who fixed something by hand can confirm it without waiting for the next scan. It appears only on findings CSM can re-evaluate (file-permission, webshell/malware, phishing, `.htaccess`, Exim spool and crontab); event findings such as brute force do not show it.
 
 ### Changed
 

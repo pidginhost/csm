@@ -169,6 +169,7 @@ type enrichedFinding struct {
 	FirstSeen string `json:"first_seen"`
 	LastSeen  string `json:"last_seen"`
 	HasFix    bool   `json:"has_fix"`
+	HasVerify bool   `json:"has_verify"`
 	FixDesc   string `json:"fix_desc,omitempty"`
 }
 
@@ -253,6 +254,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			FirstSeen: firstSeen.Format(time.RFC3339),
 			LastSeen:  lastSeen.Format(time.RFC3339),
 			HasFix:    checks.HasFix(f.Check),
+			HasVerify: checks.CanVerify(f.Check),
 			FixDesc:   checks.FixDescription(f.Check, f.Message, f.FilePath),
 		})
 	}

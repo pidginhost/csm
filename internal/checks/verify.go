@@ -19,39 +19,87 @@ type VerifyResult struct {
 	Detail   string `json:"detail"`
 }
 
+// presenceVerifiableChecks are findings whose remediation removes or
+// quarantines a single flagged file, so the honest, cheap re-check is "is the
+// flagged path still there?". Resolving only on confirmed absence (never on a
+// stat error) cannot falsely clear a still-present threat. We deliberately do
+// NOT re-run content scanning here: a file that is still present but edited
+// stays reported, so a partial clean is never mistaken for a fix.
+var presenceVerifiableChecks = []string{
+	"webshell", "webshell_realtime", "webshell_content_realtime",
+	"new_webshell_file",
+	"obfuscated_php", "obfuscated_php_realtime",
+	"php_dropper_realtime",
+	"suspicious_php_content", "suspicious_file",
+	"new_php_in_sensitive_dir", "new_php_in_uploads", "new_suspicious_php",
+	"php_in_sensitive_dir_realtime", "php_in_uploads_realtime",
+	"nulled_plugin", "symlink_attack",
+	"backdoor_binary", "new_executable_in_config",
+	"executable_in_config_realtime", "executable_in_tmp_realtime",
+	"cgi_backdoor_realtime", "cgi_suspicious_location_realtime",
+	"yara_match_realtime", "signature_match_realtime",
+	"phishing_page", "phishing_directory", "phishing_php",
+	"phishing_kit_archive", "phishing_kit_realtime", "phishing_iframe",
+	"phishing_redirector", "phishing_credential_log", "phishing_realtime",
+}
+
+// htaccessVerifiableChecks re-audit the .htaccess and resolve when no malicious
+// directive remains (or the file is gone).
+var htaccessVerifiableChecks = []string{
+	"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse",
+	"htaccess_auto_prepend", "htaccess_errordocument_hijack",
+	"htaccess_filesmatch_shield", "htaccess_header_injection",
+	"htaccess_php_in_uploads", "htaccess_spam_redirect",
+	"htaccess_user_agent_cloak",
+}
+
+// findingVerifiers maps a finding's Check to a read-only re-check. A check not
+// present here has no automated re-check -- either an event finding (a brute
+// force, a past login: history cannot be re-evaluated by reading current state)
+// or a condition we cannot yet cheaply and safely confirm. CanVerify reports
+// membership so the Web UI shows the "Re-check" action only where it can act.
+var findingVerifiers = buildFindingVerifiers()
+
+func buildFindingVerifiers() map[string]func(checkType, message, details, path string) VerifyResult {
+	m := map[string]func(checkType, message, details, path string) VerifyResult{}
+	register := func(fn func(checkType, message, details, path string) VerifyResult, names ...string) {
+		for _, n := range names {
+			m[n] = fn
+		}
+	}
+
+	register(func(_, _, _, p string) VerifyResult { return verifyWriteBit(p, 0002, "world-writable") },
+		"world_writable_php")
+	register(func(_, _, _, p string) VerifyResult { return verifyWriteBit(p, 0020, "group-writable") },
+		"group_writable_php")
+	register(func(_, _, _, p string) VerifyResult { return verifyPathAbsent(p, fixQuarantineAllowedRoots) },
+		presenceVerifiableChecks...)
+	register(func(_, _, _, p string) VerifyResult { return verifyHtaccessClean(p) },
+		htaccessVerifiableChecks...)
+	register(func(_, msg, _, _ string) VerifyResult { return verifyEximSpoolAbsent(msg) },
+		"email_phishing_content")
+	register(func(_, _, _, p string) VerifyResult { return verifyCrontabClear(p) },
+		"suspicious_crontab")
+	return m
+}
+
 // VerifyFinding re-evaluates a finding's condition against the live filesystem
 // so an operator can confirm a manual fix without waiting for the next scan.
 // It only reads state; it never modifies anything.
 func VerifyFinding(checkType, message, details string, filePath ...string) VerifyResult {
 	path := selectFindingPath(message, filePath...)
-
-	switch checkType {
-	case "world_writable_php":
-		return verifyWriteBit(path, 0002, "world-writable")
-	case "group_writable_php":
-		return verifyWriteBit(path, 0020, "group-writable")
-	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
-		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
-		"phishing_page", "phishing_directory", "backdoor_binary",
-		"new_executable_in_config":
-		// These fixes quarantine/remove the file. The honest, cheap signal is
-		// presence: if the flagged path is gone it was remediated; if it is
-		// still there the threat file remains (we do not re-run content
-		// scanning here, which would be heavy and could mask a partial clean).
-		return verifyPathAbsent(path, fixQuarantineAllowedRoots)
-	case "htaccess_injection", "htaccess_handler_abuse",
-		"htaccess_auto_prepend", "htaccess_errordocument_hijack",
-		"htaccess_filesmatch_shield", "htaccess_header_injection",
-		"htaccess_php_in_uploads", "htaccess_spam_redirect",
-		"htaccess_user_agent_cloak":
-		return verifyHtaccessClean(path)
-	case "email_phishing_content":
-		return verifyEximSpoolAbsent(message)
-	case "suspicious_crontab":
-		return verifyCrontabClear(path)
-	default:
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("no automated re-check available for '%s'", checkType)}
+	if fn, ok := findingVerifiers[checkType]; ok {
+		return fn(checkType, message, details, path)
 	}
+	return VerifyResult{Checked: false, Detail: fmt.Sprintf("no automated re-check available for '%s'", checkType)}
+}
+
+// CanVerify reports whether VerifyFinding has an automated re-check for the
+// given check type. The Web UI gates the per-finding "Re-check" action on this
+// so it never shows a button that could only report "not auto-verifiable".
+func CanVerify(checkType string) bool {
+	_, ok := findingVerifiers[checkType]
+	return ok
 }
 
 func verifyWriteBit(path string, bit os.FileMode, label string) VerifyResult {

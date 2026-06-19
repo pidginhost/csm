@@ -286,6 +286,40 @@ func TestVerifyFindingUnknownTypeNotVerifiable(t *testing.T) {
 	}
 }
 
+// TestCanVerifyMembership documents the verifiable set and guards two
+// invariants: every verifiable check is a real registered finding type (no
+// phantom names), and event findings are never verifiable.
+func TestCanVerifyMembership(t *testing.T) {
+	verifiable := []string{
+		"world_writable_php", "group_writable_php",
+		"email_phishing_content", "suspicious_crontab",
+	}
+	verifiable = append(verifiable, presenceVerifiableChecks...)
+	verifiable = append(verifiable, htaccessVerifiableChecks...)
+
+	for _, c := range verifiable {
+		if !CanVerify(c) {
+			t.Errorf("CanVerify(%q) = false, want true", c)
+		}
+		if _, ok := LookupCheck(c); !ok {
+			t.Errorf("verifiable check %q is not in the check registry (phantom name)", c)
+		}
+	}
+
+	// Event findings and not-yet-supported state findings must NOT show a
+	// Re-check button.
+	for _, c := range []string{
+		"outdated_plugins", "wp_core_integrity", "supply_chain_vuln",
+		"brute_force", "mail_bruteforce", "ip_reputation",
+		"modsec_block_realtime", "cpanel_login", "db_spam_found",
+		"", "definitely_not_a_check",
+	} {
+		if CanVerify(c) {
+			t.Errorf("CanVerify(%q) = true, want false", c)
+		}
+	}
+}
+
 func TestVerifyFindingEmptyPathNotVerifiable(t *testing.T) {
 	if res := VerifyFinding("world_writable_php", "no path here", ""); res.Checked {
 		t.Errorf("missing path should not be auto-verifiable, got %+v", res)

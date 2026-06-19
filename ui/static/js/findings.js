@@ -136,6 +136,7 @@ function renderFindings(data) {
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
+            ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
             '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
             '<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
@@ -195,11 +196,14 @@ function buildActionButtons(row) {
     var cell = row.querySelector('.action-cell');
     if (!cell) return;
     var hasFix = row.getAttribute('data-hasFix') === 'true';
+    var hasVerify = row.getAttribute('data-hasVerify') === 'true';
     var btnHtml = '';
     if (hasFix) {
         btnHtml += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="Apply automated fix for this finding" aria-label="Fix finding"><i class="ti ti-tool"></i></button>';
     }
-    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 verify-btn" title="Re-check whether this finding is still present" aria-label="Re-check finding"><i class="ti ti-refresh"></i></button>';
+    if (hasVerify) {
+        btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 verify-btn" title="Re-check whether this finding is still present" aria-label="Re-check finding"><i class="ti ti-refresh"></i></button>';
+    }
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss this finding (can be restored)" aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Create a suppression rule to hide similar findings" aria-label="Suppress finding"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = btnHtml;

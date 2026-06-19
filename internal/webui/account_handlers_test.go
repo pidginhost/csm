@@ -818,6 +818,39 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	}
 }
 
+// --- apiFindingsEnriched: has_verify gates the Re-check button ---------
+
+func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Now()
+	s.store.SetLatestFindings([]alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/a/public_html/s.php", FilePath: "/home/a/public_html/s.php", Timestamp: now},
+		{Severity: alert.High, Check: "outdated_plugins", Message: "8 outdated plugins on x.ro", Timestamp: now},
+	})
+
+	w := httptest.NewRecorder()
+	s.apiFindingsEnriched(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var data struct {
+		Findings []enrichedFinding `json:"findings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	byCheck := map[string]enrichedFinding{}
+	for _, f := range data.Findings {
+		byCheck[f.Check] = f
+	}
+	if !byCheck["webshell"].HasVerify {
+		t.Error("webshell should have has_verify=true")
+	}
+	if byCheck["outdated_plugins"].HasVerify {
+		t.Error("outdated_plugins should have has_verify=false (no automated re-check yet)")
+	}
+}
+
 // --- apiFindings: does not expose internal checks ----------------------
 
 func TestAPIFindingsSkipsInternalChecks(t *testing.T) {

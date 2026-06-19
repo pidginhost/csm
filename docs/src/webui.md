@@ -85,10 +85,19 @@ remediation, shown only when one exists), **Re-check** (re-evaluate the finding
 against the live filesystem and clear it if the condition is gone, useful after
 fixing something by hand instead of waiting for the next scan), **Dismiss**
 (hide it; restorable), and **Suppress** (create a rule to hide similar
-findings). Re-check resolves permission, quarantine/webshell, `.htaccess`,
-spool-message and crontab findings only when the target can be verified safely;
-for finding types or paths it cannot re-evaluate, it reports that and leaves the
-finding untouched.
+findings).
+
+Re-check is shown only on findings whose condition CSM can re-evaluate from
+current state: file-permission (world/group-writable), webshell and malware
+file findings, phishing pages/kits, `.htaccess` directives, Exim spool messages
+and crontabs. It resolves a finding only on confirmed evidence (the file is
+gone, the bit is cleared, the directives are clean) — never on an ambiguous or
+unreadable target. Event findings (brute force, login history, IP reputation,
+WAF/ModSecurity blocks) reflect things that already happened and cannot be
+re-evaluated from current state, so they show no Re-check button; they age out
+or are dismissed. Some current-state findings that need a heavier per-account
+re-scan (outdated plugins, WordPress core integrity, database content) are not
+yet re-checkable per-finding — use the account scan to refresh those.
 
 ## WHM Plugin
 
