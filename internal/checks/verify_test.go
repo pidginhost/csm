@@ -3,6 +3,7 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,6 +127,72 @@ func TestVerifyFindingQuarantineFamilyPresenceBased(t *testing.T) {
 	}
 	if res := VerifyFinding("phishing_page", "", "", filepath.Join(tmp, "gone.html")); !res.Checked || !res.Resolved {
 		t.Errorf("removed file should verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPresenceEmptyPathAndOutsideRootNotVerifiable(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+
+	if res := VerifyFinding("webshell", "no path here", ""); res.Checked || res.Resolved {
+		t.Errorf("missing presence path should not be auto-verifiable, got %+v", res)
+	}
+
+	outside := filepath.Join(t.TempDir(), "shell.php")
+	if res := VerifyFinding("webshell", "", "", outside); res.Checked || res.Resolved {
+		t.Errorf("outside presence path should not be auto-verifiable, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPresenceStatErrorNotResolved(t *testing.T) {
+	withQuarantineAllowedRoots(t, "/home")
+	target := "/home/alice/public_html/shell.php"
+	withMockOS(t, &mockOS{
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "/home", "/home/alice", "/home/alice/public_html":
+				return accountScanFakeInfo{name: filepath.Base(name), mode: os.ModeDir | 0755, isDir: true}, nil
+			case target:
+				return nil, os.ErrPermission
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
+
+	if res := VerifyFinding("webshell", "", "", target); res.Checked || res.Resolved {
+		t.Errorf("presence stat error should not verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPresenceTargetSymlinkStillPresent(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	outside := t.TempDir()
+	target := filepath.Join(outside, "shell.php")
+	if err := os.WriteFile(target, []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "shell.php")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := VerifyFinding("symlink_attack", "", "", link); !res.Checked || res.Resolved {
+		t.Errorf("present symlink target should verify unresolved, got %+v", res)
+	}
+}
+
+func TestVerifyFindingPresenceNonDirectoryAncestorNotResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	ancestor := filepath.Join(tmp, "not-dir")
+	if err := os.WriteFile(ancestor, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := VerifyFinding("webshell", "", "", filepath.Join(ancestor, "shell.php")); res.Checked || res.Resolved {
+		t.Errorf("non-directory ancestor should not verify resolved, got %+v", res)
 	}
 }
 
@@ -316,6 +383,35 @@ func TestCanVerifyMembership(t *testing.T) {
 	} {
 		if CanVerify(c) {
 			t.Errorf("CanVerify(%q) = true, want false", c)
+		}
+	}
+}
+
+func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
+	verifiable := []string{
+		"world_writable_php", "group_writable_php",
+		"email_phishing_content", "suspicious_crontab",
+	}
+	verifiable = append(verifiable, presenceVerifiableChecks...)
+	verifiable = append(verifiable, htaccessVerifiableChecks...)
+
+	for _, c := range verifiable {
+		path := "/home/alice/public_html/missing.php"
+		msg := "Finding at " + path
+		switch {
+		case c == "email_phishing_content":
+			path = ""
+			msg = "Phishing email queued (message: 1abcde-123456-AB)"
+		case c == "suspicious_crontab":
+			path = "/var/spool/cron/alice"
+			msg = "Suspicious crontab: " + path
+		case strings.HasPrefix(c, "htaccess_"):
+			path = "/home/alice/public_html/.htaccess"
+			msg = "Malicious .htaccess: " + path
+		}
+		res := VerifyFinding(c, msg, "", path)
+		if strings.Contains(res.Detail, "no automated re-check available") {
+			t.Errorf("CanVerify(%q) = true but VerifyFinding used default verifier: %+v", c, res)
 		}
 	}
 }

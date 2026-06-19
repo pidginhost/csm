@@ -41,6 +41,7 @@ var presenceVerifiableChecks = []string{
 	"phishing_page", "phishing_directory", "phishing_php",
 	"phishing_kit_archive", "phishing_kit_realtime", "phishing_iframe",
 	"phishing_redirector", "phishing_credential_log", "phishing_realtime",
+	"credential_log_realtime",
 }
 
 // htaccessVerifiableChecks re-audit the .htaccess and resolve when no malicious
@@ -126,7 +127,7 @@ func verifyPathAbsent(path string, roots []string) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
-	clean, _, exists, err := readOnlyFixPath(path, roots)
+	clean, exists, err := readOnlyPathPresence(path, roots)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
@@ -240,7 +241,7 @@ func readOnlyFixPath(path string, allowedRoots []string) (string, os.FileInfo, b
 			continue
 		}
 		if !info.IsDir() {
-			return clean, nil, false, nil
+			return "", nil, false, fmt.Errorf("path ancestor is not a directory; not auto-verifiable: %s", current)
 		}
 		current = filepath.Join(current, part)
 		info, err = osFS.Lstat(current)
@@ -254,10 +255,67 @@ func readOnlyFixPath(path string, allowedRoots []string) (string, os.FileInfo, b
 			return "", nil, false, fmt.Errorf("symlinked paths are not eligible for automated verification: %s", current)
 		}
 		if i < len(parts)-1 && !info.IsDir() {
-			return clean, nil, false, nil
+			return "", nil, false, fmt.Errorf("path ancestor is not a directory; not auto-verifiable: %s", current)
 		}
 	}
 	return clean, info, true, nil
+}
+
+func readOnlyPathPresence(path string, allowedRoots []string) (string, bool, error) {
+	clean, err := sanitizeFixPath(path, allowedRoots)
+	if err != nil {
+		return "", false, err
+	}
+	root := matchingAllowedRoot(clean, allowedRoots)
+	if root == "" {
+		return "", false, fmt.Errorf("file path is outside the allowed remediation roots: %s", clean)
+	}
+
+	current := root
+	info, err := osFS.Lstat(current)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return clean, false, nil
+		}
+		return "", false, fmt.Errorf("cannot stat: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", false, fmt.Errorf("symlinked paths are not eligible for automated verification: %s", current)
+	}
+	if current == clean {
+		return clean, true, nil
+	}
+
+	rel, err := filepath.Rel(current, clean)
+	if err != nil {
+		return "", false, fmt.Errorf("cannot resolve path under allowed root: %v", err)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if !info.IsDir() {
+			return "", false, fmt.Errorf("path ancestor is not a directory; not auto-verifiable: %s", current)
+		}
+		current = filepath.Join(current, part)
+		info, err = osFS.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return clean, false, nil
+			}
+			return "", false, fmt.Errorf("cannot stat: %v", err)
+		}
+		if i < len(parts)-1 {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", false, fmt.Errorf("symlinked paths are not eligible for automated verification: %s", current)
+			}
+			if !info.IsDir() {
+				return "", false, fmt.Errorf("path ancestor is not a directory; not auto-verifiable: %s", current)
+			}
+		}
+	}
+	return clean, true, nil
 }
 
 func matchingAllowedRoot(path string, allowedRoots []string) string {

@@ -251,6 +251,9 @@ func TestMakeAccountCrontabCheckSuspiciousPatternEmits(t *testing.T) {
 	for _, f := range got {
 		if f.Check == "suspicious_crontab" && f.Severity == alert.Critical {
 			hasCritical = true
+			if f.FilePath != "/var/spool/cron/alice" {
+				t.Errorf("suspicious_crontab FilePath = %q, want /var/spool/cron/alice", f.FilePath)
+			}
 		}
 	}
 	if !hasCritical {

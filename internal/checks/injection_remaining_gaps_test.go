@@ -1143,6 +1143,11 @@ func TestCheckCrontabs_MultipleSuspiciousPatterns(t *testing.T) {
 	if len(findings) < 3 {
 		t.Fatalf("expected at least 3 suspicious pattern findings, got %d", len(findings))
 	}
+	for _, f := range findings {
+		if f.Check == "suspicious_crontab" && f.FilePath != "/var/spool/cron/alice" {
+			t.Errorf("suspicious_crontab FilePath = %q, want /var/spool/cron/alice", f.FilePath)
+		}
+	}
 }
 
 func TestCheckCrontabs_ReadError(t *testing.T) {

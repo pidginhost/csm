@@ -108,6 +108,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 				Check:    "suspicious_crontab",
 				Message:  fmt.Sprintf("Suspicious pattern in crontab for user %s: %s", user, pattern),
 				Details:  fmt.Sprintf("File: %s\nContent:\n%s", path, truncate(content, 500)),
+				FilePath: path,
 			})
 		}
 	}
