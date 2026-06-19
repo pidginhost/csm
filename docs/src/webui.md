@@ -80,6 +80,15 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | `d` | Dismiss selected finding |
 | `f` | Fix selected finding |
 
+Each finding row offers up to four actions: **Fix** (apply the automated
+remediation, shown only when one exists), **Re-check** (re-evaluate the finding
+against the live filesystem and clear it if the condition is gone — useful after
+fixing something by hand, instead of waiting for the next scan), **Dismiss**
+(hide it; restorable), and **Suppress** (create a rule to hide similar
+findings). Re-check resolves permission, quarantine/webshell, `.htaccess`,
+spool-message and crontab findings; for finding types it cannot re-evaluate it
+reports that and leaves the finding untouched.
+
 ## WHM Plugin
 
 CSM installs a WHM plugin (`addon_csm.cgi`) that redirects operators from WHM to the daemon Web UI. After the redirect, API calls are same-origin requests to the daemon.

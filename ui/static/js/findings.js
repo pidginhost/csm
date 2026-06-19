@@ -199,12 +199,15 @@ function buildActionButtons(row) {
     if (hasFix) {
         btnHtml += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="Apply automated fix for this finding" aria-label="Fix finding"><i class="ti ti-tool"></i></button>';
     }
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 verify-btn" title="Re-check whether this finding is still present" aria-label="Re-check finding"><i class="ti ti-refresh"></i></button>';
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss this finding (can be restored)" aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Create a suppression rule to hide similar findings" aria-label="Suppress finding"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = btnHtml;
 
     var fixBtn = cell.querySelector('.fix-btn');
     if (fixBtn) fixBtn.addEventListener('click', function() { fixOne(this); });
+    var verifyBtn = cell.querySelector('.verify-btn');
+    if (verifyBtn) verifyBtn.addEventListener('click', function() { verifyOne(this); });
     var dismissBtn = cell.querySelector('.dismiss-btn');
     if (dismissBtn) dismissBtn.addEventListener('click', function() {
         dismissOne(row.getAttribute('data-key') || (row.getAttribute('data-check') + ':' + row.getAttribute('data-message')));
@@ -421,6 +424,37 @@ function fixOne(btn) {
             }
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+}
+
+// Re-check whether a finding's condition still holds. Resolves on the server
+// against the live filesystem; a resolved finding is dismissed there and
+// removed here, while an unresolved or non-verifiable finding stays put with an
+// explanatory toast.
+function verifyOne(btn) {
+    var row = btn.closest('tr');
+    btn.disabled = true;
+    var orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    CSM.post('/api/v1/verify-finding', {
+        key: row.getAttribute('data-key') || '',
+        check: row.getAttribute('data-check'),
+        message: row.getAttribute('data-message'),
+        file_path: row.getAttribute('data-filepath') || ''
+    }).then(function(data) {
+        if (data.resolved) {
+            row.style.opacity = '0.3';
+            CSM.toast('Resolved: ' + (data.detail || 'finding cleared'), 'success');
+            setTimeout(refreshFindings, 1000);
+        } else if (data.checked) {
+            CSM.toast('Still present: ' + (data.detail || ''), 'warning');
+            btn.disabled = false;
+            btn.innerHTML = orig;
+        } else {
+            CSM.toast('Cannot auto-verify: ' + (data.detail || ''), 'info');
+            btn.disabled = false;
+            btn.innerHTML = orig;
+        }
+    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = orig; });
 }
 
 function dismissOne(key) {

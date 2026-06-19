@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Security Findings now have a "Re-check" action that re-evaluates a finding against the live filesystem and clears it if the condition is gone, so an operator who fixed something by hand can confirm it without waiting for the next scan.
+
 ### Changed
 
 - Updated the Sentry Go SDK to 0.47.0.

@@ -739,6 +739,26 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/verify-finding":
+    post:
+      operationId: post_verify_finding
+      summary: "post /api/v1/verify-finding (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/geoip":
     get:
       operationId: get_geoip

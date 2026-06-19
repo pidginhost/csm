@@ -879,6 +879,43 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+// apiVerifyFinding re-checks whether a finding's condition still holds against
+// the live filesystem and, when it no longer does, dismisses the finding. This
+// lets an operator confirm a manual fix immediately instead of waiting for the
+// next scan, and is the "Re-check" action behind a finding row.
+// POST /api/v1/verify-finding  body: {"check":"...","message":"...","file_path":"...","key":"..."}
+func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Check    string `json:"check"`
+		Message  string `json:"message"`
+		Details  string `json:"details"`
+		FilePath string `json:"file_path"`
+		Key      string `json:"key"`
+	}
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.Check == "" || req.Message == "" {
+		writeJSONError(w, "check and message are required", http.StatusBadRequest)
+		return
+	}
+
+	res := checks.VerifyFinding(req.Check, req.Message, req.Details, req.FilePath)
+	if res.Resolved {
+		key := req.Key
+		if key == "" {
+			key = req.Check + ":" + req.Message
+		}
+		s.store.DismissFinding(key)
+		s.store.DismissLatestFinding(key)
+		s.auditLog(r, "verify-resolved", req.Check, res.Detail)
+	}
+
+	writeJSON(w, res)
+}
+
 // apiBulkFix applies fixes to multiple findings at once.
 // POST /api/v1/fix-bulk  body: [{"check":"...", "message":"...", "details":"..."}, ...]
 func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
