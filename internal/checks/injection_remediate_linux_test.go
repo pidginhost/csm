@@ -50,7 +50,7 @@ func TestFixPermissionsChmodsTo644(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixPermissions(target)
+	res := fixPermissions(target, "world_writable_php")
 	if !res.Success {
 		t.Fatalf("expected success, got %+v", res)
 	}
@@ -76,7 +76,7 @@ func TestFixPermissionsRejectsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := fixPermissions(link)
+	res := fixPermissions(link, "world_writable_php")
 	if res.Success || !strings.Contains(res.Error, "symlinked") {
 		t.Errorf("expected symlink rejection, got %+v", res)
 	}

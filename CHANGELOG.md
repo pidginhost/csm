@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated the Sentry Go SDK to 0.47.0.
 
+### Fixed
+
+- Applying the automated permission fix for a world- or group-writable PHP finding now recognises a file an operator already corrected and clears the finding instead of failing, and explains read-only-mount failures (e.g. backup snapshots) instead of surfacing a raw "read-only file system" error.
+
 ## [3.18.0] - 2026-06-19
 
 ### Added

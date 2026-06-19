@@ -629,7 +629,7 @@ func TestApplyFix_SuspiciousPHPContent_RoutesToQuarantine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFixPermissions_EmptyPath(t *testing.T) {
-	r := fixPermissions("")
+	r := fixPermissions("", "world_writable_php")
 	if r.Success {
 		t.Error("empty path must not succeed")
 	}
@@ -639,7 +639,7 @@ func TestFixPermissions_EmptyPath(t *testing.T) {
 }
 
 func TestFixPermissions_OutsideHomeRejected(t *testing.T) {
-	r := fixPermissions("/etc/passwd")
+	r := fixPermissions("/etc/passwd", "world_writable_php")
 	if r.Success {
 		t.Error("must not chmod /etc/passwd")
 	}
@@ -649,7 +649,7 @@ func TestFixPermissions_OutsideHomeRejected(t *testing.T) {
 }
 
 func TestFixPermissions_NonexistentUnderHome(t *testing.T) {
-	r := fixPermissions("/home/never_exists_account/never_exists.php")
+	r := fixPermissions("/home/never_exists_account/never_exists.php", "world_writable_php")
 	if r.Success {
 		t.Error("nonexistent file must not succeed")
 	}

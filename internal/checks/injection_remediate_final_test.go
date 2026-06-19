@@ -89,7 +89,7 @@ func TestFixHtaccess_BasenameIsNotHtaccess(t *testing.T) {
 
 // TestFixPermissions_EmptyPathReturnsError covers the early guard.
 func TestFixPermissions_EmptyPathReturnsError(t *testing.T) {
-	res := fixPermissions("")
+	res := fixPermissions("", "world_writable_php")
 	if res.Success {
 		t.Fatal("empty path should not succeed")
 	}
@@ -106,7 +106,7 @@ func TestFixPermissions_OutsideAllowedRoot(t *testing.T) {
 	if err := os.WriteFile(p, []byte("<?php"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	res := fixPermissions(p)
+	res := fixPermissions(p, "world_writable_php")
 	if res.Success {
 		t.Fatal("path outside /home must be rejected")
 	}
@@ -114,7 +114,7 @@ func TestFixPermissions_OutsideAllowedRoot(t *testing.T) {
 
 // TestFixPermissions_RelativePathRejected drives the absolute-path check.
 func TestFixPermissions_RelativePathRejected(t *testing.T) {
-	res := fixPermissions("relative/path.php")
+	res := fixPermissions("relative/path.php", "world_writable_php")
 	if res.Success {
 		t.Fatal("relative path must be rejected")
 	}
@@ -126,7 +126,7 @@ func TestFixPermissions_RelativePathRejected(t *testing.T) {
 // TestFixPermissions_NonexistentHomeDeepPath drives the Lstat failure in
 // resolveExistingFixPath for a well-formed /home path that doesn't exist.
 func TestFixPermissions_NonexistentHomeDeepPath(t *testing.T) {
-	res := fixPermissions("/home/csm-deep-nonexistent-user/sub/dir/missing.php")
+	res := fixPermissions("/home/csm-deep-nonexistent-user/sub/dir/missing.php", "world_writable_php")
 	if res.Success {
 		t.Fatal("missing file should not succeed")
 	}

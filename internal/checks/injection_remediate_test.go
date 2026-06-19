@@ -9,14 +9,14 @@ import (
 // validation guards and run on any platform (no real file ops).
 
 func TestFixPermissionsEmptyPath(t *testing.T) {
-	got := fixPermissions("")
+	got := fixPermissions("", "world_writable_php")
 	if got.Success || !strings.Contains(got.Error, "could not extract") {
 		t.Errorf("expected error for empty path, got %+v", got)
 	}
 }
 
 func TestFixPermissionsRelativePath(t *testing.T) {
-	got := fixPermissions("relative/path.php")
+	got := fixPermissions("relative/path.php", "world_writable_php")
 	if got.Success || !strings.Contains(got.Error, "must be absolute") {
 		t.Errorf("expected absolute-path error, got %+v", got)
 	}
@@ -24,14 +24,14 @@ func TestFixPermissionsRelativePath(t *testing.T) {
 
 func TestFixPermissionsOutsideAllowedRoots(t *testing.T) {
 	// /etc is not under /home, the only root allowed for fixPermissions.
-	got := fixPermissions("/etc/passwd")
+	got := fixPermissions("/etc/passwd", "world_writable_php")
 	if got.Success || !strings.Contains(got.Error, "outside the allowed") {
 		t.Errorf("expected outside-roots error, got %+v", got)
 	}
 }
 
 func TestFixPermissionsNonExistentPath(t *testing.T) {
-	got := fixPermissions("/home/nobody/missing.php")
+	got := fixPermissions("/home/nobody/missing.php", "world_writable_php")
 	if got.Success || !strings.Contains(got.Error, "file not found") {
 		t.Errorf("expected not-found error, got %+v", got)
 	}

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,12 @@ var (
 	fixHtaccessAllowedRoots    = []string{"/home"}
 	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 )
+
+// chmodFunc performs the permission change for fixPermissions. It is a var so
+// tests can simulate failures (e.g. a read-only mount returning EROFS) without
+// an actual read-only filesystem, and assert an already-compliant file is
+// never chmodded.
+var chmodFunc = os.Chmod
 
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
@@ -115,7 +122,7 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
-		return fixPermissions(path)
+		return fixPermissions(path, checkType)
 	case "webshell", "new_webshell_file", "obfuscated_php", "php_dropper",
 		"suspicious_php_content", "new_php_in_languages", "new_php_in_upgrade",
 		"phishing_page", "phishing_directory":
@@ -144,8 +151,16 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 	}
 }
 
-// fixPermissions sets file permissions to 0644.
-func fixPermissions(path string) RemediationResult {
+// fixPermissions sets file permissions to 0644. checkType selects which write
+// bit is the dangerous one: world-writable (0002) for world_writable_php,
+// group-writable (0020) for group_writable_php.
+//
+// If the file no longer carries that bit -- because an operator already fixed
+// it by hand, or it changed since the scan -- the finding is treated as
+// already resolved and no chmod is attempted. This is the path an operator
+// hits when they manually correct perms and then click "Apply automated fix":
+// rather than erroring, the finding clears (GitHub issue #23).
+func fixPermissions(path, checkType string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
@@ -156,11 +171,28 @@ func fixPermissions(path string) RemediationResult {
 	}
 
 	oldMode := info.Mode().Perm()
+	dangerBit, label := os.FileMode(0002), "world-writable"
+	if checkType == "group_writable_php" {
+		dangerBit, label = 0020, "group-writable"
+	}
+	if oldMode&dangerBit == 0 {
+		return RemediationResult{
+			Success:     true,
+			Action:      fmt.Sprintf("verified %s: no longer %s (mode %o)", path, label, oldMode),
+			Description: fmt.Sprintf("File is already not %s; no change needed", label),
+		}
+	}
+
 	// #nosec G302 -- Intentional: this is the remediation that sets the
 	// canonical "safe web content" mode on a user file after we flagged
 	// the file as having dangerous perms (e.g. 0777). 0644 is what the
 	// webserver needs to serve static content as the file owner.
-	if err := os.Chmod(path, 0644); err != nil {
+	if err := chmodFunc(path, 0644); err != nil {
+		if errors.Is(err, syscall.EROFS) {
+			return RemediationResult{Error: fmt.Sprintf(
+				"cannot fix %s: the file is on a read-only mount (e.g. a backup snapshot or bind mount), not the live site. Dismiss or suppress this finding instead.",
+				path)}
+		}
 		return RemediationResult{Error: fmt.Sprintf("chmod failed: %v", err)}
 	}
 
