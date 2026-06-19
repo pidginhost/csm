@@ -60,6 +60,15 @@ type mailAccountEntry struct {
 	lastSeen             time.Time
 }
 
+// mailBackendDegradedThreshold is how many auth-backend failure observations
+// (dovecot unable to reach the credential backend, e.g. cPanel's cpdoveauthd)
+// within the tracker window mark the mail auth subsystem as degraded. A healthy
+// host produces zero of these; a backend outage produces thousands. While
+// degraded, every login fails regardless of credentials, so the per-IP and
+// per-subnet brute signals are suppressed to avoid auto-blocking legitimate
+// users en masse.
+const mailBackendDegradedThreshold = 10
+
 // mailAuthTracker aggregates dovecot IMAP/POP3/ManageSieve auth events into
 // four detection signals: per-IP brute force, per-/24 password spray,
 // per-mailbox account spray, and per-account compromise (success after
@@ -87,6 +96,14 @@ type mailAuthTracker struct {
 	// non-cPanel dovecot brute-force path sees traffic and escalates.
 	recordCalls     int64
 	findingsEmitted int64
+
+	// backendErr holds recent auth-backend failure timestamps. While the
+	// windowed count is at or above mailBackendDegradedThreshold the auth
+	// subsystem is treated as down and brute/subnet auto-block signals are
+	// suppressed. backendWarnUntil rate-limits the operator warning to one per
+	// suppression window.
+	backendErr       []time.Time
+	backendWarnUntil time.Time
 }
 
 // newMailAuthTracker constructs a tracker. `now` is injected so tests can
@@ -142,6 +159,10 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	cutoff := now.Add(-t.window)
 	var findings []alert.Finding
 
+	// During an auth-backend outage every login fails regardless of password, so
+	// the failure-rate signals are meaningless and would mass-block real users.
+	degraded := t.backendDegraded(now)
+
 	// --- Per-IP tracker ---
 	e, ok := t.ips[ip]
 	if !ok {
@@ -157,7 +178,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
-		if !e.successDominant() {
+		if !e.successDominant() && !degraded {
 			e.suppressed = now.Add(t.suppression)
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
@@ -186,7 +207,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		s.ips[ip] = now
 		s.lastSeen = now
 
-		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
+		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
 			s.suppressed = now.Add(t.suppression)
 			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{
@@ -244,6 +265,40 @@ func (t *mailAuthTracker) Stats() (calls, emits int64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.recordCalls, t.findingsEmitted
+}
+
+// RecordBackendFailure records one auth-backend failure observation (dovecot
+// could not reach the credential backend). It returns a one-shot operator
+// warning the first time the subsystem crosses into "degraded" within a
+// suppression window, so an outage is visible rather than silently pausing
+// detection. Callers feed this from log lines matched by isMailAuthBackendError.
+func (t *mailAuthTracker) RecordBackendFailure() []alert.Finding {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	t.backendErr = pruneTimes(t.backendErr, now.Add(-t.window))
+	t.backendErr = append(t.backendErr, now)
+	if len(t.backendErr) < mailBackendDegradedThreshold || now.Before(t.backendWarnUntil) {
+		return nil
+	}
+	t.backendWarnUntil = now.Add(t.suppression)
+	t.findingsEmitted++
+	return []alert.Finding{{
+		Severity: alert.Warning,
+		Check:    "mail_auth_backend_degraded",
+		Message: fmt.Sprintf("Mail auth backend degraded: %d backend failures in %v; mail brute-force auto-block paused",
+			len(t.backendErr), t.window),
+		Details:   "Dovecot could not reach the credential backend (e.g. cpdoveauthd). Logins fail regardless of password, so brute-force and subnet auto-blocks are paused to avoid locking out legitimate users. Investigate the auth daemon.",
+		Timestamp: now,
+	}}
+}
+
+// backendDegraded reports whether the mail auth backend looks down: at least
+// mailBackendDegradedThreshold backend-failure observations within the window.
+// Caller must hold t.mu.
+func (t *mailAuthTracker) backendDegraded(now time.Time) bool {
+	t.backendErr = pruneTimes(t.backendErr, now.Add(-t.window))
+	return len(t.backendErr) >= mailBackendDegradedThreshold
 }
 
 func pruneMailAccountTimes(accounts map[string][]time.Time, cutoff time.Time) {
@@ -429,6 +484,26 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 			delete(t.accounts, v.key)
 		}
 	}
+}
+
+// isMailAuthBackendError reports whether a dovecot log line shows the auth
+// backend itself failing (could not verify ANY credential), as opposed to an
+// ordinary wrong-password failure. During such an outage every login fails, so
+// these events must drive the degraded gate, not the brute-force counters.
+func isMailAuthBackendError(line string) bool {
+	if !strings.Contains(line, "dovecot") {
+		return false
+	}
+	if strings.Contains(line, "cpdoveauthd.sock") {
+		return true
+	}
+	if strings.Contains(line, "auth-worker") &&
+		(strings.Contains(line, "connection refused") ||
+			strings.Contains(line, "Connection refused") ||
+			strings.Contains(line, "Internal error")) {
+		return true
+	}
+	return strings.Contains(line, "Temporary authentication failure")
 }
 
 // isMailAuthLine returns true for dovecot imap/pop3/managesieve login events.

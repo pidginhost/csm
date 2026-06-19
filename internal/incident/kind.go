@@ -171,21 +171,22 @@ func isInboundWebAttackCheck(check string) bool {
 // straight to KindHostIntegrityRisk so incident severity reflects the
 // blast radius.
 var hostIntegrityChecks = map[string]bool{
-	"bulk_password_change":    true,
-	"sensitive_file_write":    true,
-	"sensitive_file_modified": true,
-	"fake_kernel_thread":      true,
-	"auditd_disabled":         true,
-	"modsec_disabled":         true,
-	"shadow_change":           true,
-	"sshd_config_change":      true,
-	"root_password_change":    true,
-	"uid0_account":            true,
-	"suid_binary":             true,
-	"bad_asn_outbound":        true,
-	"kernel_module":           true,
-	"crontab_change":          true,
-	"crond_change":            true,
+	"bulk_password_change":       true,
+	"sensitive_file_write":       true,
+	"sensitive_file_modified":    true,
+	"fake_kernel_thread":         true,
+	"auditd_disabled":            true,
+	"modsec_disabled":            true,
+	"shadow_change":              true,
+	"sshd_config_change":         true,
+	"root_password_change":       true,
+	"uid0_account":               true,
+	"suid_binary":                true,
+	"bad_asn_outbound":           true,
+	"kernel_module":              true,
+	"crontab_change":             true,
+	"crond_change":               true,
+	"mail_auth_backend_degraded": true,
 }
 
 func isHostIntegrityCheck(check string) bool {

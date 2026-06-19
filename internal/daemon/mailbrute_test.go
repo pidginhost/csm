@@ -534,6 +534,114 @@ func TestMailAuthTracker_RecordSuccessRespectsMaxTracked(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_BackendDegradedSuppressesBruteForce(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// Auth backend is down (e.g. cPanel's dovecot auth daemon refusing
+	// connections): every login fails regardless of credentials, so a per-IP
+	// failure flood is not attacker evidence and must not auto-block.
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		tr.RecordBackendFailure()
+	}
+	for i := 0; i < 8; i++ {
+		for _, f := range tr.Record("203.0.113.5", "alice@example.com") {
+			if f.Check == "mail_bruteforce" {
+				t.Fatalf("mail_bruteforce must be suppressed while auth backend degraded (iter %d)", i)
+			}
+		}
+	}
+}
+
+func TestMailAuthTracker_BruteForceFiresWhenBackendErrorsBelowThreshold(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < mailBackendDegradedThreshold-1; i++ {
+		tr.RecordBackendFailure()
+	}
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("mail_bruteforce must fire when backend errors stay below the degraded threshold")
+	}
+}
+
+func TestMailAuthTracker_BackendDegradedRecoversAfterWindow(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		tr.RecordBackendFailure()
+	}
+	clock.advance(11 * time.Minute) // backend errors age out of the window
+	var fired bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record("203.0.113.5", "") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("mail_bruteforce must resume once backend errors age out of the window")
+	}
+}
+
+func TestMailAuthTracker_BackendDegradedSuppressesSubnetSpray(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < mailBackendDegradedThreshold; i++ {
+		tr.RecordBackendFailure()
+	}
+	for i := 1; i <= 8; i++ {
+		for _, f := range tr.Record(fmt.Sprintf("203.0.113.%d", i), "") {
+			if f.Check == "mail_subnet_spray" {
+				t.Fatalf("mail_subnet_spray must be suppressed while auth backend degraded")
+			}
+		}
+	}
+}
+
+func TestMailAuthTracker_BackendDegradedEmitsWarningOnce(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	var warns int
+	for i := 0; i < mailBackendDegradedThreshold+5; i++ {
+		for _, f := range tr.RecordBackendFailure() {
+			if f.Check == "mail_auth_backend_degraded" {
+				if f.Severity != alert.Warning {
+					t.Errorf("backend-degraded severity = %v, want Warning", f.Severity)
+				}
+				warns++
+			}
+		}
+	}
+	if warns != 1 {
+		t.Fatalf("expected exactly one backend-degraded warning per suppression window, got %d", warns)
+	}
+}
+
+func TestIsMailAuthBackendError(t *testing.T) {
+	down := `Jun 19 02:00:00 host dovecot[123]: auth-worker(office@x.ro,203.0.113.4)<1><a>: conn unix:...: ` +
+		`socket error: Failed to connect to /usr/local/cpanel/var/cpdoveauthd.sock: connection refused`
+	if !isMailAuthBackendError(down) {
+		t.Error("cpdoveauthd connection-refused must be classified a backend error")
+	}
+	credFail := `Jun 19 02:00:00 host dovecot[123]: imap-login: Login aborted: Logged out ` +
+		`(auth failed, 3 attempts in 5 secs): user=<a@x.ro>, method=PLAIN, rip=203.0.113.4`
+	if isMailAuthBackendError(credFail) {
+		t.Error("an ordinary credential auth failure must NOT be a backend error")
+	}
+	success := `Jun 19 02:00:00 host dovecot[123]: imap-login: Logged in: user=<a@x.ro>, method=PLAIN, rip=203.0.113.4`
+	if isMailAuthBackendError(success) {
+		t.Error("a successful login must not be a backend error")
+	}
+}
+
 func TestMailAuthTracker_PurgeRemovesExpired(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)

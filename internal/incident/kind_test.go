@@ -50,6 +50,7 @@ func TestClassifyKindHostIntegrityRisk(t *testing.T) {
 		"kernel_module",
 		"crontab_change",
 		"crond_change",
+		"mail_auth_backend_degraded",
 	} {
 		got := ClassifyKind(alert.Finding{Check: check, SourceIP: "203.0.113.7"})
 		if got != KindHostIntegrityRisk {

@@ -83,6 +83,8 @@ Four attack patterns:
 
 Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Recent successful logins for the same mailbox can suppress single-IP mail auth blocks, which avoids blocking a shared office address when one client has a stale saved password.
 
+When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. Detection resumes automatically once the backend recovers.
+
 ## Admin-Panel Brute-Force Tracker
 
 Counts repeated POST requests to high-value non-WordPress admin login endpoints. Runs as part of the web access-log watcher.
