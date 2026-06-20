@@ -103,21 +103,28 @@ just-applied update or cleanup is reflected immediately -- the plugin check runs
 as the site owner and resolves when no active plugin is outdated, the core check
 runs `wp core verify-checksums` and resolves only when the install is gone or
 the checksum verification is clean. Other `wp-cli` errors or checksum warnings
-keep the finding active for a full account scan. Database-content findings are
-also re-checkable: injected WordPress options/posts/spam, siteurl/home hijacks,
-Drupal/Joomla/Magento/OpenCart settings and content injections, malicious or
-unexpected database triggers/events/procedures/functions, the backdoor
-magic-token user, and rogue or disposable-email administrator accounts. These
-re-query the one flagged row, object, or account as root against the install's
-own database and clear the finding only when it is gone or no longer matches the
-detector; any database error or an install that can no longer be located leaves
-the finding in place. Event findings (brute force,
-login history, IP reputation, WAF/ModSecurity blocks) reflect things that
-already happened and cannot be re-evaluated from current state, so they show no
-Re-check button; they age out or are dismissed. A few findings still need a full
-account scan and are not re-checkable per-finding: dependency/supply-chain
-advisories, running database-dump processes, and the cross-account
-admin-overlap / credential-reuse aggregates -- use the account scan for those.
+keep the finding active for a full account scan. Database findings with a
+concrete current-state target are also re-checkable: injected WordPress
+options/posts, cloaked-spam post injections, siteurl/home hijacks,
+Drupal/Joomla/Magento/OpenCart settings and content injections, the backdoor
+magic-token user, WordPress rogue/disposable-email administrator accounts,
+per-CMS administrator-account findings, and malicious or unexpected database
+triggers/events/procedures/functions. Row and account re-checks re-discover the
+CMS install, query the flagged row or account as root against that install's
+database, and clear only when it is gone or no longer matches the detector. If
+the query fails or the install cannot be located, the finding stays active.
+Database-object re-checks read the current trigger/event/procedure/function body
+from `INFORMATION_SCHEMA`; unexpected
+objects stay active while the object exists, and malicious objects clear only
+when the object is gone or its current body no longer matches the malware
+classifier. Event findings, such as brute force, login history, IP reputation,
+and WAF/ModSecurity blocks, reflect things that already happened and cannot be
+re-evaluated from current state, so they show no Re-check button; they age out
+or are dismissed. A few findings still need a full account scan and are not
+re-checkable per-finding: dependency/supply-chain advisories, running
+database-dump processes, database spam cleanup summaries and manual-review spam
+findings, and the cross-account admin-overlap / credential-reuse aggregates --
+use the account scan for those.
 
 ## WHM Plugin
 
