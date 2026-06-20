@@ -96,7 +96,8 @@ SUID binaries in unusual locations (re-stats the setuid bit), and modified
 system binaries (re-runs `rpm -V` / `debsums` / `dpkg --verify` for the
 package). It resolves a finding only on confirmed evidence (the
 file is gone, the bit is cleared, the directives are clean) -- never on an
-ambiguous or unreadable target. The WordPress re-checks are heavier than the
+ambiguous or unreadable target. Package-manager errors or unparsed output leave
+the finding in place. The WordPress re-checks are heavier than the
 file checks: they re-run `wp-cli` for that one site (bounded timeout) so a
 just-applied update or cleanup is reflected immediately -- the plugin check runs
 as the site owner and resolves when no active plugin is outdated, the core check

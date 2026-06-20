@@ -10,7 +10,7 @@ import (
 
 // pkgVerifyTimeout bounds the synchronous package-manager re-check a Re-check
 // click runs.
-const pkgVerifyTimeout = 30 * time.Second
+var pkgVerifyTimeout = 30 * time.Second
 
 // pkgNameRe is the safe character set for a package name passed as an argument
 // to rpm/dpkg/debsums. Findings carry CSM-generated package names, but the
@@ -38,31 +38,113 @@ func parsePkgIntegrityFinding(message string) (file, pkg string, ok bool) {
 	return file, pkg, true
 }
 
+type packageVerifyOutputState struct {
+	targetFlagged bool
+	sawReport     bool
+	sawUnknown    bool
+}
+
 // verifyManifestLineFlagsFile reports whether an rpm -V / dpkg --verify output
 // line marks the target file as size/checksum-modified (mirrors the detector:
 // skip config/doc, require S or 5, require an executable or library).
-func verifyManifestLineFlagsFile(line, file string) bool {
-	if len(line) < 9 {
-		return false
+func verifyManifestLineFlagsFile(line, file string) (targetFlagged, recognized bool) {
+	flags, got, ok := parseManifestVerifyLine(line)
+	if !ok {
+		return false, false
+	}
+	if !manifestVerifyLineHasPackagePath(line, got) {
+		return false, false
 	}
 	if strings.Contains(line, " c ") || strings.Contains(line, " d ") {
-		return false
+		return false, true
 	}
-	flags := line[:9]
 	if !strings.Contains(flags, "S") && !strings.Contains(flags, "5") {
-		return false
+		return false, true
 	}
-	got := strings.TrimSpace(line[9:])
-	return got == file && looksExecutableOrLibrary(got)
+	return got == file && looksExecutableOrLibrary(got), true
 }
 
-func manifestOutputStillFlagsFile(out []byte, file string) bool {
-	for _, line := range strings.Split(string(out), "\n") {
-		if verifyManifestLineFlagsFile(line, file) {
-			return true
+func manifestVerifyLineHasPackagePath(line, got string) bool {
+	if strings.HasPrefix(got, "/") {
+		return true
+	}
+	fields := strings.Fields(strings.TrimSpace(line[9:]))
+	if len(fields) != 2 || (fields[0] != "c" && fields[0] != "d") {
+		return false
+	}
+	return strings.HasPrefix(fields[1], "/")
+}
+
+func parseManifestVerifyLine(line string) (flags, file string, ok bool) {
+	if len(line) < 10 {
+		return "", "", false
+	}
+	flags = line[:9]
+	for _, ch := range flags {
+		if !strings.ContainsRune(".?SM5DLUGTP", ch) {
+			return "", "", false
 		}
 	}
-	return false
+	file = strings.TrimSpace(line[9:])
+	if file == "" {
+		return "", "", false
+	}
+	return flags, file, true
+}
+
+func manifestOutputState(out []byte, file string) packageVerifyOutputState {
+	var state packageVerifyOutputState
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		targetFlagged, recognized := verifyManifestLineFlagsFile(line, file)
+		if !recognized {
+			state.sawUnknown = true
+			continue
+		}
+		state.sawReport = true
+		if targetFlagged {
+			state.targetFlagged = true
+		}
+	}
+	return state
+}
+
+func debsumsOutputState(out []byte, file string) packageVerifyOutputState {
+	var state packageVerifyOutputState
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		got := strings.TrimSpace(line)
+		if got == "" {
+			continue
+		}
+		if !strings.HasPrefix(got, "/") {
+			state.sawUnknown = true
+			continue
+		}
+		state.sawReport = true
+		if got == file && looksExecutableOrLibrary(got) {
+			state.targetFlagged = true
+		}
+	}
+	return state
+}
+
+func resolvePkgVerifyOutput(state packageVerifyOutputState, file, verifier string) VerifyResult {
+	if state.targetFlagged {
+		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%s is still reported as modified", file)}
+	}
+	if state.sawReport && !state.sawUnknown {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("%s is no longer reported as modified", file)}
+	}
+	return VerifyResult{Checked: false, Detail: fmt.Sprintf("could not parse %s output (try again, or run an account scan)", verifier)}
+}
+
+func pkgVerifyTimedOut(ctx context.Context, verifier string) (VerifyResult, bool) {
+	if ctx.Err() == nil {
+		return VerifyResult{}, false
+	}
+	return VerifyResult{Checked: false, Detail: fmt.Sprintf("%s timed out (try again, or run an account scan)", verifier)}, true
 }
 
 // verifyRPMIntegrity re-runs `rpm -V <pkg>` and resolves the finding when the
@@ -83,16 +165,16 @@ func verifyRPMIntegrity(message string) VerifyResult {
 	// rpm -V exits non-zero when files are modified; treat output, not exit
 	// code, as the signal.
 	out, err := cmdExec.RunContext(ctx, "rpm", "-V", pkg)
-	if len(out) == 0 {
+	if res, timedOut := pkgVerifyTimedOut(ctx, "rpm -V"); timedOut {
+		return res
+	}
+	if strings.TrimSpace(string(out)) == "" {
 		if err == nil {
 			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("package %s verifies clean", pkg)}
 		}
 		return VerifyResult{Checked: false, Detail: "could not run rpm -V (try again, or run an account scan)"}
 	}
-	if manifestOutputStillFlagsFile(out, file) {
-		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%s is still reported as modified", file)}
-	}
-	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("%s is no longer reported as modified", file)}
+	return resolvePkgVerifyOutput(manifestOutputState(out, file), file, "rpm -V")
 }
 
 // verifyDpkgIntegrity re-runs debsums (preferred) or `dpkg --verify` for the
@@ -113,30 +195,27 @@ func verifyDpkgIntegrity(message string) VerifyResult {
 	if _, err := cmdExec.LookPath("debsums"); err == nil {
 		// debsums -c prints one modified file path per line (exit 2 on mismatch).
 		out, err := cmdExec.RunContext(ctx, "debsums", "-c", pkg)
-		if len(out) == 0 {
+		if res, timedOut := pkgVerifyTimedOut(ctx, "debsums"); timedOut {
+			return res
+		}
+		if strings.TrimSpace(string(out)) == "" {
 			if err == nil {
 				return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("package %s verifies clean", pkg)}
 			}
 			return VerifyResult{Checked: false, Detail: "could not run debsums (try again, or run an account scan)"}
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			got := strings.TrimSpace(line)
-			if got == file && looksExecutableOrLibrary(got) {
-				return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%s is still reported as modified", file)}
-			}
-		}
-		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("%s is no longer reported as modified", file)}
+		return resolvePkgVerifyOutput(debsumsOutputState(out, file), file, "debsums")
 	}
 
 	out, err := cmdExec.RunContext(ctx, "dpkg", "--verify", pkg)
-	if len(out) == 0 {
+	if res, timedOut := pkgVerifyTimedOut(ctx, "dpkg --verify"); timedOut {
+		return res
+	}
+	if strings.TrimSpace(string(out)) == "" {
 		if err == nil {
 			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("package %s verifies clean", pkg)}
 		}
 		return VerifyResult{Checked: false, Detail: "could not run dpkg --verify (try again, or run an account scan)"}
 	}
-	if manifestOutputStillFlagsFile(out, file) {
-		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%s is still reported as modified", file)}
-	}
-	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("%s is no longer reported as modified", file)}
+	return resolvePkgVerifyOutput(manifestOutputState(out, file), file, "dpkg --verify")
 }
