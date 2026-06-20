@@ -369,6 +369,11 @@ func TestCanVerifyMembership(t *testing.T) {
 		"joomla_extensions_injection", "joomla_content_injection",
 		"magento_settings_injection", "magento_content_injection",
 		"opencart_settings_injection", "opencart_content_injection",
+		"db_unexpected_trigger", "db_unexpected_event",
+		"db_unexpected_procedure", "db_unexpected_function",
+		"db_malicious_trigger", "db_malicious_event",
+		"db_malicious_procedure", "db_malicious_function",
+		"db_magic_token_user",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -409,6 +414,11 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"joomla_extensions_injection", "joomla_content_injection",
 		"magento_settings_injection", "magento_content_injection",
 		"opencart_settings_injection", "opencart_content_injection",
+		"db_unexpected_trigger", "db_unexpected_event",
+		"db_unexpected_procedure", "db_unexpected_function",
+		"db_malicious_trigger", "db_malicious_event",
+		"db_malicious_procedure", "db_malicious_function",
+		"db_magic_token_user",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)

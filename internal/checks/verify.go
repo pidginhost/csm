@@ -117,6 +117,14 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"opencart_settings_injection")
 	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartContentInjection(msg, details) },
 		"opencart_content_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBObject(msg, details, false) },
+		"db_unexpected_trigger", "db_unexpected_event",
+		"db_unexpected_procedure", "db_unexpected_function")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBObject(msg, details, true) },
+		"db_malicious_trigger", "db_malicious_event",
+		"db_malicious_procedure", "db_malicious_function")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBMagicTokenUser(msg, details) },
+		"db_magic_token_user")
 	return m
 }
 
