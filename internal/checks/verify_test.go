@@ -374,6 +374,9 @@ func TestCanVerifyMembership(t *testing.T) {
 		"db_malicious_trigger", "db_malicious_event",
 		"db_malicious_procedure", "db_malicious_function",
 		"db_magic_token_user",
+		"db_rogue_admin", "db_suspicious_admin_email",
+		"drupal_admin_injection", "joomla_admin_injection",
+		"magento_admin_injection", "opencart_admin_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -419,6 +422,9 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"db_malicious_trigger", "db_malicious_event",
 		"db_malicious_procedure", "db_malicious_function",
 		"db_magic_token_user",
+		"db_rogue_admin", "db_suspicious_admin_email",
+		"drupal_admin_injection", "joomla_admin_injection",
+		"magento_admin_injection", "opencart_admin_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)

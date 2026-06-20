@@ -125,6 +125,18 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"db_malicious_procedure", "db_malicious_function")
 	register(func(_, msg, details, _ string) VerifyResult { return verifyDBMagicTokenUser(msg, details) },
 		"db_magic_token_user")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBRogueAdmin(msg, details) },
+		"db_rogue_admin")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSuspiciousAdminEmail(msg, details) },
+		"db_suspicious_admin_email")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalAdminInjection(msg, details) },
+		"drupal_admin_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaAdminInjection(msg, details) },
+		"joomla_admin_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoAdminInjection(msg, details) },
+		"magento_admin_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartAdminInjection(msg, details) },
+		"opencart_admin_injection")
 	return m
 }
 

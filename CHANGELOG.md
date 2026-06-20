@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-check now also covers WordPress database-content findings (injected options, siteurl/home hijack, injected posts, cloaked spam): it re-queries the affected row as root and clears the finding only when the row is gone or no longer matches the detector; any database error leaves it in place.
 - Re-check now also covers Drupal, Joomla, Magento, and OpenCart database-injection findings (settings/config and content/article rows): it re-reads the one flagged row and clears the finding only when it is gone or no longer matches the malware classifier.
 - Re-check now also covers malicious/unexpected database triggers, events, procedures and functions, and the backdoor magic-token user finding: it re-reads the object's current definition from the database and clears the finding only when the object is gone (or, for malicious objects, no longer matches a malware pattern).
+- Re-check now also covers database administrator-account findings (WordPress rogue admin and disposable-email admin, and Drupal/Joomla/Magento/OpenCart admin accounts): it re-queries the flagged account and clears the finding only when that account is gone or no longer privileged.
 
 ### Changed
 
