@@ -460,7 +460,7 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 
 				outStr := string(out)
 				for _, line := range strings.Split(outStr, "\n") {
-					if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
+					if wpChecksumLineHasExtraneousCoreFile(line) {
 						mu.Lock()
 						findings = append(findings, alert.Finding{
 							Severity: alert.High,

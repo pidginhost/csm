@@ -771,6 +771,7 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 			Severity:  alert.Critical,
 			Check:     "webshell",
 			Message:   "Found /home/alice/public_html/shell.php",
+			Details:   "Path: /home/alice/public_html\nRule: test",
 			FilePath:  "/home/alice/public_html/shell.php",
 			Timestamp: now,
 		},
@@ -806,6 +807,9 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	}
 	if f.FilePath != "/home/alice/public_html/shell.php" {
 		t.Errorf("file_path = %q, want /home/alice/public_html/shell.php", f.FilePath)
+	}
+	if f.Details != "Path: /home/alice/public_html\nRule: test" {
+		t.Errorf("details = %q, want stored finding details", f.Details)
 	}
 	if f.FirstSeen == "" {
 		t.Error("first_seen should not be empty")

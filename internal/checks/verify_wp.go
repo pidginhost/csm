@@ -30,6 +30,10 @@ func findingDetailPath(details string) string {
 	return ""
 }
 
+func wpChecksumLineHasExtraneousCoreFile(line string) bool {
+	return strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log")
+}
+
 // verifyOutdatedPlugins re-inventories a single WordPress site with wp-cli (run
 // as the site owner) and resolves the finding when no active plugin still has
 // an available update. It is heavier than the file re-checks but read-only and
@@ -76,9 +80,9 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 // resolves the finding when no extraneous core file ("should not exist")
 // remains -- mirroring CheckWPCore, which only flags those lines. It is
 // read-only and bounded by wpVerifyTimeout. To avoid ever clearing a real
-// compromise it resolves only when verification is clean or positively shows no
-// remaining extra files; any other error (a wp-cli failure, or only-modified
-// files it cannot disambiguate from an error) returns Checked:false.
+// compromise it resolves only when verification is clean or the install is
+// gone; any wp-cli error (including modified files with no remaining
+// extra-file line) returns Checked:false.
 func verifyWPCoreIntegrity(details string) VerifyResult {
 	wpPath := findingDetailPath(details)
 	if wpPath == "" {
@@ -114,7 +118,7 @@ func verifyWPCoreIntegrity(details string) VerifyResult {
 		return VerifyResult{Checked: false, Detail: "could not run wp core verify-checksums (try again, or run an account scan)"}
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
+		if wpChecksumLineHasExtraneousCoreFile(line) {
 			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has extraneous files"}
 		}
 	}

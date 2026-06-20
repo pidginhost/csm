@@ -133,6 +133,7 @@ function renderFindings(data) {
             ' data-key="' + CSM.esc(f.key || (f.check + ':' + f.message)) + '"' +
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
+            ' data-details="' + CSM.esc(f.details || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
@@ -414,6 +415,7 @@ function fixOne(btn) {
             key: row.getAttribute('data-key') || '',
             check: row.getAttribute('data-check'),
             message: row.getAttribute('data-message'),
+            details: row.getAttribute('data-details') || '',
             file_path: row.getAttribute('data-filepath') || ''
         }).then(function(data) {
             if (data.success) {
@@ -443,6 +445,7 @@ function verifyOne(btn) {
         key: row.getAttribute('data-key') || '',
         check: row.getAttribute('data-check'),
         message: row.getAttribute('data-message'),
+        details: row.getAttribute('data-details') || '',
         file_path: row.getAttribute('data-filepath') || ''
     }).then(function(data) {
         if (data.resolved) {
@@ -505,6 +508,7 @@ function bulkAction(action) {
             key: row.getAttribute('data-key') || '',
             check: row.getAttribute('data-check'),
             message: row.getAttribute('data-message'),
+            details: row.getAttribute('data-details') || '',
             file_path: row.getAttribute('data-filepath') || '',
             fixable: row.getAttribute('data-hasFix') === 'true'
         };
@@ -514,7 +518,7 @@ function bulkAction(action) {
         var fixable = items.filter(function(i) { return i.fixable; });
         if (fixable.length === 0) { CSM.toast('None of the selected findings have automated fixes.', 'warning'); return; }
         CSM.confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.').then(function() {
-            var fixItems = fixable.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
+            var fixItems = fixable.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: i.details, file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 refreshFindings();
@@ -542,7 +546,7 @@ function bulkAction(action) {
 
     } else if (action === 'quarantine') {
         CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            var quarItems = items.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
+            var quarItems = items.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: i.details, file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
                 refreshFindings();

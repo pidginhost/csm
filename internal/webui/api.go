@@ -164,6 +164,7 @@ type enrichedFinding struct {
 	SevClass  string `json:"sev_class"`
 	Check     string `json:"check"`
 	Message   string `json:"message"`
+	Details   string `json:"details,omitempty"`
 	FilePath  string `json:"file_path,omitempty"`
 	Account   string `json:"account,omitempty"`
 	FirstSeen string `json:"first_seen"`
@@ -249,6 +250,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			SevClass:  severityClass(f.Severity),
 			Check:     f.Check,
 			Message:   f.Message,
+			Details:   f.Details,
 			FilePath:  f.FilePath,
 			Account:   extractAccountFromFinding(f),
 			FirstSeen: firstSeen.Format(time.RFC3339),
@@ -885,7 +887,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 // the live filesystem and, when it no longer does, dismisses the finding. This
 // lets an operator confirm a manual fix immediately instead of waiting for the
 // next scan, and is the "Re-check" action behind a finding row.
-// POST /api/v1/verify-finding  body: {"check":"...","message":"...","file_path":"...","key":"..."}
+// POST /api/v1/verify-finding  body: {"check":"...","message":"...","details":"...","file_path":"...","key":"..."}
 func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

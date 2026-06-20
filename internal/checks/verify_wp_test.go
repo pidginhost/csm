@@ -257,7 +257,10 @@ func wpCoreVerifyMock(t *testing.T, out []byte, err error) {
 	t.Helper()
 	old := cmdExec
 	SetCmdRunner(&mockCmd{
-		runContext: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		runContext: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "wp" {
+				t.Fatalf("unexpected command name: %s", name)
+			}
 			joined := strings.Join(args, " ")
 			if !strings.Contains(joined, "verify-checksums") {
 				t.Fatalf("unexpected command args: %s", joined)
@@ -310,15 +313,119 @@ func TestVerifyWPCoreOtherChecksumIssueNotConfirmed(t *testing.T) {
 	}
 }
 
-func TestVerifyWPCoreExecErrorNoOutputNotResolved(t *testing.T) {
+func TestVerifyWPCoreFatalErrorOutputNotResolved(t *testing.T) {
 	tmp := t.TempDir()
 	withWPVerifyAllowedRoots(t, tmp)
 	dir := makeWPInstall(t, tmp, "dave")
-	wpCoreVerifyMock(t, nil, errors.New("wp: command not found"))
+	wpCoreVerifyMock(t, []byte("Error: This does not seem to be a WordPress installation.\n"), errors.New("exit status 1"))
 
 	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for dave", "Path: "+dir)
 	if res.Checked || res.Resolved {
+		t.Fatalf("wp-cli fatal error must not verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreErrorLogExtraLineNotConfirmed(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "dave")
+	wpCoreVerifyMock(t, []byte("Warning: File should not exist: wp-content/error_log\n"), errors.New("exit status 1"))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for dave", "Path: "+dir)
+	if res.Checked || res.Resolved {
+		t.Fatalf("error_log-only checksum output must not resolve, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreExecErrorNoOutputNotResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "erin")
+	wpCoreVerifyMock(t, nil, errors.New("wp: command not found"))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for erin", "Path: "+dir)
+	if res.Checked || res.Resolved {
 		t.Fatalf("wp-cli exec failure must not verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreCommandUsesSanitizedPathAndBoundedContext(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "frank")
+	rawPath := filepath.Dir(dir) + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "frank" + string(os.PathSeparator) + "public_html"
+	if rawPath == dir {
+		t.Fatal("test raw path should differ from cleaned path")
+	}
+
+	old := cmdExec
+	var cmdCtx context.Context
+	SetCmdRunner(&mockCmd{
+		runContext: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			cmdCtx = ctx
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("wp-cli core re-check context should have a deadline")
+			}
+			if name != "wp" {
+				t.Fatalf("command name = %q, want wp", name)
+			}
+			wantArgs := []string{"core", "verify-checksums", "--path=" + dir, "--allow-root"}
+			if len(args) != len(wantArgs) {
+				t.Fatalf("args = %#v, want %#v", args, wantArgs)
+			}
+			for i, want := range wantArgs {
+				if args[i] != want {
+					t.Fatalf("arg %d = %q, want %q in %#v", i, args[i], want, args)
+				}
+			}
+			for _, arg := range args {
+				if arg == rawPath || strings.Contains(arg, rawPath) {
+					t.Fatalf("command used raw finding path %q in args %#v", rawPath, args)
+				}
+			}
+			return []byte("Success: WordPress verifies against checksums."), nil
+		},
+	})
+	t.Cleanup(func() { SetCmdRunner(old) })
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for frank", "Path: "+rawPath)
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("clean core should verify resolved, got %+v", res)
+	}
+	if cmdCtx == nil {
+		t.Fatal("wp-cli core verify command was not called")
+	}
+	select {
+	case <-cmdCtx.Done():
+	default:
+		t.Fatal("wp-cli core re-check context was not cancelled after verification returned")
+	}
+}
+
+func TestVerifyWPCoreRejectsSymlinkAncestorBeforeCommand(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	realDir := makeWPInstall(t, tmp, "grace")
+	linkDir := filepath.Join(tmp, "link")
+	if err := os.Symlink(filepath.Dir(realDir), linkDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	old := cmdExec
+	calls := 0
+	SetCmdRunner(&mockCmd{
+		runContext: func(context.Context, string, ...string) ([]byte, error) {
+			calls++
+			return []byte("Success: WordPress verifies against checksums."), nil
+		},
+	})
+	t.Cleanup(func() { SetCmdRunner(old) })
+
+	res := VerifyFinding("wp_core_integrity", "msg", "Path: "+filepath.Join(linkDir, "public_html"))
+	if res.Checked || res.Resolved {
+		t.Fatalf("symlink ancestor should not be auto-verifiable, got %+v", res)
+	}
+	if calls != 0 {
+		t.Fatalf("wp-cli should not run before path validation succeeds, got %d calls", calls)
 	}
 }
 

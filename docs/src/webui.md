@@ -97,13 +97,15 @@ ambiguous or unreadable target. The WordPress re-checks are heavier than the
 file checks: they re-run `wp-cli` for that one site (bounded timeout) so a
 just-applied update or cleanup is reflected immediately -- the plugin check runs
 as the site owner and resolves when no active plugin is outdated, the core check
-runs `wp core verify-checksums` and resolves when no extraneous core file
-remains. Event findings (brute force, login history, IP reputation,
-WAF/ModSecurity blocks) reflect things that already happened and cannot be
-re-evaluated from current state, so they show no Re-check button; they age out
-or are dismissed. Some current-state findings still need a full account scan
-(database content, dependency/supply-chain advisories) and are not yet
-re-checkable per-finding -- use the account scan for those.
+runs `wp core verify-checksums` and resolves only when the install is gone or
+the checksum verification is clean. Other `wp-cli` errors or checksum warnings
+keep the finding active for a full account scan. Event findings (brute force,
+login history, IP reputation, WAF/ModSecurity blocks) reflect things that
+already happened and cannot be re-evaluated from current state, so they show no
+Re-check button; they age out or are dismissed. Some current-state findings
+still need a full account scan (database content, dependency/supply-chain
+advisories) and are not yet re-checkable per-finding -- use the account scan for
+those.
 
 ## WHM Plugin
 
