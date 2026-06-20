@@ -83,6 +83,8 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"suspicious_crontab")
 	register(func(_, _, details, _ string) VerifyResult { return verifyOutdatedPlugins(details) },
 		"outdated_plugins")
+	register(func(_, _, details, _ string) VerifyResult { return verifyWPCoreIntegrity(details) },
+		"wp_core_integrity")
 	return m
 }
 

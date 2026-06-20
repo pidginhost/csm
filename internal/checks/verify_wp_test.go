@@ -251,6 +251,93 @@ func TestVerifyOutdatedPluginsNoPathNotVerifiable(t *testing.T) {
 	}
 }
 
+// wpCoreVerifyMock installs a mockCmd whose RunContext (combined output)
+// answers `wp core verify-checksums` with the given output/err.
+func wpCoreVerifyMock(t *testing.T, out []byte, err error) {
+	t.Helper()
+	old := cmdExec
+	SetCmdRunner(&mockCmd{
+		runContext: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, "verify-checksums") {
+				t.Fatalf("unexpected command args: %s", joined)
+			}
+			return out, err
+		},
+	})
+	t.Cleanup(func() { SetCmdRunner(old) })
+}
+
+func TestVerifyWPCoreCleanResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "alice")
+	wpCoreVerifyMock(t, []byte("Success: WordPress verifies against checksums."), nil)
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for alice", "Path: "+dir)
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("clean core should verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreStillHasExtraFileUnresolved(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "bob")
+	wpCoreVerifyMock(t, []byte("Warning: File should not exist: wp-admin/evil.php\n"), errors.New("exit status 1"))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for bob", "Path: "+dir)
+	if !res.Checked || res.Resolved {
+		t.Fatalf("remaining extraneous core file should verify unresolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreOtherChecksumIssueNotConfirmed(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "carol")
+	// Non-zero exit, but no "should not exist" line (e.g. a modified file). The
+	// finding's specific condition (extra files) can't be confirmed gone, and
+	// the output might be a wp-cli error, so we must NOT resolve.
+	wpCoreVerifyMock(t, []byte("Warning: wp-includes/x.php doesn't verify against checksum.\n"), errors.New("exit status 1"))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for carol", "Path: "+dir)
+	if res.Resolved {
+		t.Fatalf("ambiguous verify output must not resolve, got %+v", res)
+	}
+	if res.Checked {
+		t.Errorf("ambiguous verify output should be reported as not auto-confirmable, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreExecErrorNoOutputNotResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	dir := makeWPInstall(t, tmp, "dave")
+	wpCoreVerifyMock(t, nil, errors.New("wp: command not found"))
+
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for dave", "Path: "+dir)
+	if res.Checked || res.Resolved {
+		t.Fatalf("wp-cli exec failure must not verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreMissingInstallResolved(t *testing.T) {
+	tmp := t.TempDir()
+	withWPVerifyAllowedRoots(t, tmp)
+	res := VerifyFinding("wp_core_integrity", "msg", "Path: "+filepath.Join(tmp, "home", "gone", "public_html"))
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("missing install should verify resolved, got %+v", res)
+	}
+}
+
+func TestVerifyWPCoreNoPathNotVerifiable(t *testing.T) {
+	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure", "no path")
+	if res.Checked {
+		t.Errorf("finding without a Path should not be auto-verifiable, got %+v", res)
+	}
+}
+
 func TestInventoryWPSitePassesUserAfterSuOptionBoundary(t *testing.T) {
 	tmp := t.TempDir()
 	wpConfig := filepath.Join(tmp, "home", "alice", "public_html", "wp-config.php")

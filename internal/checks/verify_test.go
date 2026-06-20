@@ -360,7 +360,7 @@ func TestCanVerifyMembership(t *testing.T) {
 	verifiable := []string{
 		"world_writable_php", "group_writable_php",
 		"email_phishing_content", "suspicious_crontab",
-		"outdated_plugins",
+		"outdated_plugins", "wp_core_integrity",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -377,7 +377,7 @@ func TestCanVerifyMembership(t *testing.T) {
 	// Event findings and not-yet-supported state findings must NOT show a
 	// Re-check button.
 	for _, c := range []string{
-		"wp_core_integrity", "supply_chain_vuln",
+		"supply_chain_vuln",
 		"brute_force", "mail_bruteforce", "ip_reputation",
 		"modsec_block_realtime", "cpanel_login", "db_spam_found",
 		"", "definitely_not_a_check",
@@ -392,7 +392,7 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 	verifiable := []string{
 		"world_writable_php", "group_writable_php",
 		"email_phishing_content", "suspicious_crontab",
-		"outdated_plugins",
+		"outdated_plugins", "wp_core_integrity",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)

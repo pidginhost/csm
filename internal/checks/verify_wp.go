@@ -71,3 +71,54 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: "no active plugins are outdated anymore"}
 }
+
+// verifyWPCoreIntegrity re-runs `wp core verify-checksums` for one install and
+// resolves the finding when no extraneous core file ("should not exist")
+// remains -- mirroring CheckWPCore, which only flags those lines. It is
+// read-only and bounded by wpVerifyTimeout. To avoid ever clearing a real
+// compromise it resolves only when verification is clean or positively shows no
+// remaining extra files; any other error (a wp-cli failure, or only-modified
+// files it cannot disambiguate from an error) returns Checked:false.
+func verifyWPCoreIntegrity(details string) VerifyResult {
+	wpPath := findingDetailPath(details)
+	if wpPath == "" {
+		return VerifyResult{Checked: false, Detail: "could not determine the WordPress path from the finding"}
+	}
+	clean, _, exists, err := readOnlyFixPath(wpPath, wpVerifyAllowedRoots)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: err.Error()}
+	}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer exists: %s", clean)}
+	}
+	_, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), wpVerifyAllowedRoots)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: err.Error()}
+	}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer present: %s", clean)}
+	}
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: "wp-config.php path is not a regular file; not auto-verifiable"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), wpVerifyTimeout)
+	defer cancel()
+	// Mirrors CheckWPCore: run as root with --allow-root (not su as the user).
+	// Args are passed directly (no shell), so the sanitized path cannot inject.
+	out, err := cmdExec.RunContext(ctx, "wp", "core", "verify-checksums", "--path="+clean, "--allow-root")
+	if err == nil {
+		return VerifyResult{Checked: true, Resolved: true, Detail: "WordPress core checksums verify clean"}
+	}
+	if len(out) == 0 {
+		return VerifyResult{Checked: false, Detail: "could not run wp core verify-checksums (try again, or run an account scan)"}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
+			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has extraneous files"}
+		}
+	}
+	// Non-zero exit with no remaining "should not exist" line: could be a
+	// modified-file note or a wp-cli error we cannot tell apart. Do not resolve.
+	return VerifyResult{Checked: false, Detail: "could not confirm core integrity (verify-checksums reported other issues); re-run or use an account scan"}
+}

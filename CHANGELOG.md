@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Security Findings now have a "Re-check" action that re-evaluates a finding against the live filesystem and clears it if the condition is gone, so an operator who fixed something by hand can confirm it without waiting for the next scan. It appears only on findings CSM can re-evaluate (file-permission, webshell/malware, phishing, `.htaccess`, Exim spool and crontab); event findings such as brute force do not show it.
 - Re-check now also covers outdated-WordPress-plugin findings: it re-runs `wp-cli` for that one site and clears the finding when no active plugin is outdated anymore, so an operator who just updated plugins gets immediate confirmation.
+- Re-check now also covers WordPress core-integrity findings: it re-runs `wp core verify-checksums` for that install and clears the finding when no extraneous core file remains.
 
 ### Changed
 
