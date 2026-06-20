@@ -351,7 +351,8 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 				Severity: alert.Critical,
 				Check:    "db_siteurl_hijack",
 				Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
-				Details:  fmt.Sprintf("Database: %s\n%s = %s", creds.dbName, optName, truncateDB(parts[1], 200)),
+				Details: dbContentFindingDetails(creds.dbName, prefix,
+					fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 			})
 		}
 	}
@@ -385,7 +386,10 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious script injection in wp_options '%s' (account: %s)", optName, user),
-			Details:  fmt.Sprintf("Database: %s\nOption: %s\nMalicious URL: %s\nContent preview: %s", creds.dbName, optName, maliciousURL, truncateDB(optValue, 200)),
+			Details: dbContentFindingDetails(creds.dbName, prefix,
+				fmt.Sprintf("Option: %s", optName),
+				fmt.Sprintf("Malicious URL: %s", maliciousURL),
+				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
 	}
 
@@ -407,7 +411,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious content in core wp_option '%s' (account: %s)", parts[0], user),
-			Details:  fmt.Sprintf("Database: %s\nOption: %s\nContent preview: %s", creds.dbName, parts[0], truncateDB(parts[1], 200)),
+			Details: dbContentFindingDetails(creds.dbName, prefix,
+				fmt.Sprintf("Option: %s", parts[0]),
+				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
 		})
 	}
 
@@ -483,8 +489,9 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: mp.severity,
 			Check:    "db_post_injection",
 			Message:  fmt.Sprintf("WordPress posts contain %s (account: %s, %d posts)", mp.desc, user, len(confirmedIDs)),
-			Details: fmt.Sprintf("Database: %s\nAffected post IDs: %s\nPattern: %s",
-				creds.dbName, strings.Join(confirmedIDs, ", "), mp.pattern),
+			Details: dbContentFindingDetails(creds.dbName, prefix,
+				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
+				fmt.Sprintf("Pattern: %s", mp.pattern)),
 		})
 	}
 
@@ -528,11 +535,20 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: alert.High,
 			Check:    "db_spam_injection",
 			Message:  fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%d posts, account: %s)", sp.keyword, n, user),
-			Details:  fmt.Sprintf("Database: %s", creds.dbName),
+			Details:  dbContentFindingDetails(creds.dbName, prefix),
 		})
 	}
 
 	return findings
+}
+
+func dbContentFindingDetails(dbName, prefix string, lines ...string) string {
+	out := []string{
+		fmt.Sprintf("Database: %s", dbName),
+		fmt.Sprintf("Table prefix: %s", prefix),
+	}
+	out = append(out, lines...)
+	return strings.Join(out, "\n")
 }
 
 // checkWPUsers checks for rogue admin accounts created recently.

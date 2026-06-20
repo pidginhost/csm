@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPress database-content Re-check now handles multisite and shared-database installs without clearing a finding from the wrong WordPress tables.
 - UID 0 account re-check now keeps findings active when another matching account record is still privileged, and refuses account names that cannot map safely to the account database.
 - Automated fix and re-check now use stored finding paths exactly, avoiding false clears on unusual filenames.
 - Findings Re-check now sends stored finding details from the table, so WordPress re-checks can locate the affected install.

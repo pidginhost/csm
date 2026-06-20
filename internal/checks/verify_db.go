@@ -10,7 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
-// Per-finding Re-check for the database-content family (Phase C3).
+// Per-finding Re-check for the database-content family.
 //
 // These verifiers re-evaluate a single database finding against the live
 // database and clear it only on confirmed evidence -- the row is gone, or its
@@ -31,7 +31,7 @@ var dbVerifyTimeout = 30 * time.Second
 
 // validAccountName guards an account name parsed out of finding text before it
 // is interpolated into a /home/<account>/... glob.
-var validAccountName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var validAccountName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
 
 // messageAccountRe pulls the account out of a "(account: <user>)" suffix that
 // the WordPress content findings carry in their message.
@@ -91,18 +91,25 @@ func dbVerifyNotLocatable(kind string) VerifyResult {
 	return VerifyResult{Checked: false, Detail: fmt.Sprintf("could not locate the %s to re-check (run an account scan)", kind)}
 }
 
-// findWPVerifyCreds re-discovers the WordPress install for account whose
-// database matches dbName, returning the validated table prefix. Uses the same
-// /home/<account> globs as the detector. ok=false when nothing matches so the
-// caller refuses to guess against the wrong database.
-func findWPVerifyCreds(account, dbName string) (prefix string, ok bool) {
+// findWPVerifyPrefixes re-discovers the WordPress install for account whose
+// database matches dbName, returning the table prefixes a verifier should query.
+// New findings carry an exact Table prefix detail. Older findings do not, so the
+// fallback enumerates every prefix in that WordPress install, including active
+// multisite secondary blogs. ok=false means the caller refuses to guess.
+func findWPVerifyPrefixes(account, dbName, details string) (prefixes []string, ok bool) {
 	if !validAccountName.MatchString(account) || dbName == "" {
-		return "", false
+		return nil, false
 	}
 	patterns := []string{fmt.Sprintf("/home/%s/public_html/wp-config.php", account)}
 	addon, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
 	patterns = append(patterns, addon...)
 
+	targetPrefix := detailField(details, "Table prefix")
+	if targetPrefix != "" && !validTablePrefix.MatchString(targetPrefix) {
+		return nil, false
+	}
+
+	seen := map[string]bool{}
 	for _, path := range patterns {
 		creds := parseWPConfig(path)
 		if creds.dbName != dbName {
@@ -110,11 +117,67 @@ func findWPVerifyCreds(account, dbName string) (prefix string, ok bool) {
 		}
 		p, ok := resolveTablePrefix(creds)
 		if !ok {
-			return "", false
+			return nil, false
 		}
-		return p, true
+		if targetPrefix != "" {
+			if wpVerifyPrefixMatchesBase(targetPrefix, p) {
+				return []string{targetPrefix}, true
+			}
+			continue
+		}
+		addPrefix(&prefixes, seen, p)
+		if creds.multisite {
+			multisitePrefixes, err := wpVerifyMultisitePrefixes(dbName, p)
+			if err != nil {
+				return nil, false
+			}
+			for _, prefix := range multisitePrefixes {
+				addPrefix(&prefixes, seen, prefix)
+			}
+		}
 	}
-	return "", false
+	if len(prefixes) == 0 {
+		return nil, false
+	}
+	return prefixes, true
+}
+
+func addPrefix(prefixes *[]string, seen map[string]bool, prefix string) {
+	if seen[prefix] {
+		return
+	}
+	seen[prefix] = true
+	*prefixes = append(*prefixes, prefix)
+}
+
+func wpVerifyPrefixMatchesBase(prefix, base string) bool {
+	if prefix == base {
+		return true
+	}
+	if !strings.HasPrefix(prefix, base) || !strings.HasSuffix(prefix, "_") {
+		return false
+	}
+	blogID := strings.TrimSuffix(strings.TrimPrefix(prefix, base), "_")
+	return isAllDigits(blogID)
+}
+
+func wpVerifyMultisitePrefixes(dbName, basePrefix string) ([]string, error) {
+	rows, err := runDBVerifyQueryRoot(dbName, fmt.Sprintf(
+		"SELECT blog_id FROM `%sblogs` WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1",
+		basePrefix,
+	))
+	if err != nil {
+		return nil, err
+	}
+	var prefixes []string
+	for _, row := range rows {
+		blogID := strings.TrimSpace(row)
+		if blogID == "" || blogID == "1" || !isAllDigits(blogID) {
+			continue
+		}
+		prefixes = append(prefixes, fmt.Sprintf("%s%s_", basePrefix, blogID))
+	}
+	return prefixes, nil
 }
 
 // dbInjectionCoreOptions are the wp_options names that must never carry a
@@ -133,20 +196,26 @@ func verifyDBOptionsInjection(message, details string) VerifyResult {
 	if optName == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the option name from the finding"}
 	}
-	prefix, ok := findWPVerifyCreds(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	rows, err := runDBVerifyQueryRoot(dbName,
-		fmt.Sprintf("SELECT option_value FROM `%soptions` WHERE option_name = ?", prefix), optName)
-	if err != nil {
-		return dbVerifyQueryError()
+	present := false
+	for _, prefix := range prefixes {
+		rows, err := runDBVerifyQueryRoot(dbName,
+			fmt.Sprintf("SELECT option_value FROM `%soptions` WHERE option_name = ?", prefix), optName)
+		if err != nil {
+			return dbVerifyQueryError()
+		}
+		for _, row := range rows {
+			present = true
+			if optionValueStillMalicious(optName, row) {
+				return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q still contains injected content", optName)}
+			}
+		}
 	}
-	if len(rows) == 0 {
+	if !present {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q is no longer present", optName)}
-	}
-	if optionValueStillMalicious(optName, rows[0]) {
-		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q still contains injected content", optName)}
 	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q no longer contains injected content", optName)}
 }
@@ -170,23 +239,33 @@ func verifyDBSiteurlHijack(message, details string) VerifyResult {
 	if optName == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the option name from the finding"}
 	}
-	prefix, ok := findWPVerifyCreds(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	rows, err := runDBVerifyQueryRoot(dbName,
-		fmt.Sprintf("SELECT option_value FROM `%soptions` WHERE option_name = ?", prefix), optName)
-	if err != nil {
-		return dbVerifyQueryError()
+	present := false
+	for _, prefix := range prefixes {
+		rows, err := runDBVerifyQueryRoot(dbName,
+			fmt.Sprintf("SELECT option_value FROM `%soptions` WHERE option_name = ?", prefix), optName)
+		if err != nil {
+			return dbVerifyQueryError()
+		}
+		for _, row := range rows {
+			present = true
+			if siteurlValueStillMalicious(row) {
+				return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q still contains malicious code", optName)}
+			}
+		}
 	}
-	if len(rows) == 0 {
+	if !present {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q is no longer present", optName)}
 	}
-	lower := strings.ToLower(rows[0])
-	if strings.Contains(lower, "eval(") || strings.Contains(lower, "<script") {
-		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q still contains malicious code", optName)}
-	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q no longer contains malicious code", optName)}
+}
+
+func siteurlValueStillMalicious(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "eval(") || strings.Contains(lower, "<script")
 }
 
 // siteurlOptionFromDetails extracts the option name from a db_siteurl_hijack
@@ -204,11 +283,9 @@ func siteurlOptionFromDetails(details string) string {
 	return ""
 }
 
-// verifyDBPostInjection re-reads the affected posts and resolves the finding
-// when none of them still match the injected pattern (mirrors checkWPPosts'
-// per-pattern external-script post-filter). A post that was deleted simply does
-// not return a row; a post that is still injected -- published or not -- keeps
-// the finding active, which is the conservative choice.
+// verifyDBPostInjection re-reads the affected published posts and resolves the
+// finding when none of them still match the injected pattern (mirrors
+// checkWPPosts' post-status, post-type, and external-script filters).
 func verifyDBPostInjection(message, details string) VerifyResult {
 	dbName := detailField(details, "Database")
 	ids := parsePostIDList(detailField(details, "Affected post IDs"))
@@ -220,29 +297,32 @@ func verifyDBPostInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "finding pattern is not auto-verifiable"}
 	}
-	prefix, ok := findWPVerifyCreds(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
 	placeholders, args := inClausePlaceholders(ids)
-	rows, err := runDBVerifyQueryRoot(dbName,
-		fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE ID IN (%s)", prefix, placeholders),
-		args...)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
 	stillInjected := 0
-	for _, row := range rows {
-		parts := strings.SplitN(row, "\t", 3)
-		var content string
-		if len(parts) >= 2 {
-			content = parts[1]
+	for _, prefix := range prefixes {
+		rows, err := runDBVerifyQueryRoot(dbName,
+			fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE ID IN (%s) AND post_status='publish' AND post_type NOT IN (%s)",
+				prefix, placeholders, nonScannablePostTypesSQLList()),
+			args...)
+		if err != nil {
+			return dbVerifyQueryError()
 		}
-		if len(parts) >= 3 {
-			content += "\n" + parts[2]
-		}
-		if postContentMatchesPattern(pattern, requiresExternalScript, content) {
-			stillInjected++
+		for _, row := range rows {
+			parts := strings.SplitN(row, "\t", 3)
+			var content string
+			if len(parts) >= 2 {
+				content = parts[1]
+			}
+			if len(parts) >= 3 {
+				content += "\n" + parts[2]
+			}
+			if postContentMatchesPattern(pattern, requiresExternalScript, content) {
+				stillInjected++
+			}
 		}
 	}
 	if stillInjected == 0 {
@@ -285,21 +365,23 @@ func verifyDBSpamInjection(message, details string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "spam keyword is not auto-verifiable"}
 	}
-	prefix, ok := findWPVerifyCreds(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	rows, err := runDBVerifyQueryRoot(dbName,
-		fmt.Sprintf("SELECT ID, post_content FROM `%sposts` WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE ? LIMIT 200",
-			prefix, nonScannablePostTypesSQLList()), sp.likeFragment)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
-	contents := make([]string, 0, len(rows))
-	for _, row := range rows {
-		parts := strings.SplitN(row, "\t", 2)
-		if len(parts) >= 2 {
-			contents = append(contents, parts[1])
+	var contents []string
+	for _, prefix := range prefixes {
+		rows, err := runDBVerifyQueryRoot(dbName,
+			fmt.Sprintf("SELECT ID, post_content FROM `%sposts` WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE ? LIMIT 200",
+				prefix, nonScannablePostTypesSQLList()), sp.likeFragment)
+		if err != nil {
+			return dbVerifyQueryError()
+		}
+		for _, row := range rows {
+			parts := strings.SplitN(row, "\t", 2)
+			if len(parts) >= 2 {
+				contents = append(contents, parts[1])
+			}
 		}
 	}
 	if countCloakedSpamMatches(sp, contents) == 0 {
