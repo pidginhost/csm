@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
@@ -85,48 +86,87 @@ func fetchDBObjectBody(schema string, kind dbObjectKind, name string) (body stri
 	return rows[0], true, nil
 }
 
-// findWPBasePrefix returns the single base table prefix for the WordPress
-// install whose database matches dbName. Unlike findWPVerifyPrefixes this does
-// not enumerate multisite secondary blogs -- the wp_users table is network-wide,
-// so the base prefix is the only one the magic-token lookup needs.
-func findWPBasePrefix(account, dbName string) (string, bool) {
-	if !validAccountName.MatchString(account) || dbName == "" {
-		return "", false
-	}
-	patterns := []string{fmt.Sprintf("/home/%s/public_html/wp-config.php", account)}
-	addon, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
-	patterns = append(patterns, addon...)
-	for _, path := range patterns {
-		creds := parseWPConfig(path)
-		if creds.dbName != dbName {
-			continue
-		}
-		return resolveTablePrefix(creds)
-	}
-	return "", false
-}
-
 // verifyDBMagicTokenUser re-queries the WordPress users table for any account
-// whose display_name still carries the backdoor activation token. The token is
-// validated as the high-entropy [A-Za-z0-9_-]{10,32} shape the detector emits
-// before it is used in the LIKE.
+// whose flagged user row still matches the trigger's backdoor activation
+// pattern. The token is validated as the high-entropy [A-Za-z0-9_-]{10,32}
+// shape the detector emits before it is used in the LIKE.
 func verifyDBMagicTokenUser(message, details string) VerifyResult {
 	token := detailField(details, "Token")
 	if token == "" || !validMagicToken(token) {
 		return VerifyResult{Checked: false, Detail: "could not parse a valid activation token from the finding"}
 	}
-	schema := detailField(details, "Schema")
-	prefix, ok := findWPBasePrefix(dbFindingAccount(message, details), schema)
+	schema := strings.TrimSpace(detailField(details, "Schema"))
+	if schema == "" {
+		return VerifyResult{Checked: false, Detail: "could not parse the database schema from the finding"}
+	}
+	userID, ok := dbMagicTokenUserID(details)
+	if !ok {
+		return VerifyResult{Checked: false, Detail: "could not parse the WordPress user ID from the finding"}
+	}
+	prefix, ok := dbMagicTokenUserTablePrefix(message, details)
+	if !ok {
+		return VerifyResult{Checked: false, Detail: "could not parse the WordPress table prefix from the finding"}
+	}
+	prefix, ok = locateDBMagicTokenUserPrefix(dbFindingAccount(message, details), schema, prefix)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
+	table, err := QuoteIdent(prefix + "users")
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: "could not validate the WordPress users table from the finding"}
+	}
 	rows, err := runDBVerifyQueryRoot(schema,
-		fmt.Sprintf("SELECT ID FROM `%susers` WHERE display_name LIKE ?", prefix), "%"+token+"%")
+		fmt.Sprintf("SELECT ID FROM %s WHERE ID = ? AND display_name LIKE ?", table),
+		userID, "%"+token+"%")
 	if err != nil {
 		return dbVerifyQueryError()
 	}
 	if len(rows) == 0 {
-		return VerifyResult{Checked: true, Resolved: true, Detail: "no user still carries the backdoor activation token"}
+		return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged user no longer carries the backdoor activation token"}
 	}
-	return VerifyResult{Checked: true, Resolved: false, Detail: "a user still carries the backdoor activation token"}
+	return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged user still carries the backdoor activation token"}
+}
+
+func dbMagicTokenUserID(details string) (string, bool) {
+	userID := strings.TrimSpace(detailField(details, "User ID"))
+	if userID == "" || !isAllDigits(userID) {
+		return "", false
+	}
+	return userID, true
+}
+
+func dbMagicTokenUserTablePrefix(message, details string) (string, bool) {
+	if prefix, ok := validDBMagicTokenTablePrefix(detailField(details, "Table prefix")); ok {
+		return prefix, true
+	}
+	const marker = " in "
+	idx := strings.LastIndex(message, marker)
+	if idx < 0 {
+		return "", false
+	}
+	ref := strings.TrimSpace(message[idx+len(marker):])
+	if !strings.HasSuffix(ref, "users") {
+		return "", false
+	}
+	dot := strings.LastIndex(ref, ".")
+	if dot < 0 {
+		return "", false
+	}
+	return validDBMagicTokenTablePrefix(strings.TrimSuffix(ref[dot+1:], "users"))
+}
+
+func validDBMagicTokenTablePrefix(prefix string) (string, bool) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || !validTablePrefix.MatchString(prefix) {
+		return "", false
+	}
+	return prefix, true
+}
+
+func locateDBMagicTokenUserPrefix(account, schema, prefix string) (string, bool) {
+	prefixes, ok := findWPVerifyPrefixes(account, schema, "Table prefix: "+prefix)
+	if !ok || len(prefixes) != 1 {
+		return "", false
+	}
+	return prefixes[0], true
 }

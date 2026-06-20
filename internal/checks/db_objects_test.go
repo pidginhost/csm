@@ -495,6 +495,13 @@ func TestBodyHasMalwarePattern_RoleEscalationTrigger(t *testing.T) {
 	}
 }
 
+func TestBodyHasMalwarePattern_MySQLBatchEscapedWhitespace(t *testing.T) {
+	escaped := strings.NewReplacer("\n", `\n`, "\t", `\t`, "\r", `\r`).Replace(todaysRoleEscalationTrigger)
+	if !bodyHasMalwarePattern(escaped) {
+		t.Error("mysql batch-escaped trigger body must classify the same as raw SQL")
+	}
+}
+
 func TestBodyHasMalwarePattern_MagicTokenDisplayNameGate(t *testing.T) {
 	// Synthetic: trigger gates a privileged action on a magic token in a
 	// user-controllable field. Capability write absent here -- the magic
@@ -640,6 +647,14 @@ END`
 	}
 }
 
+func TestExtractMagicTokens_MySQLBatchEscapedWhitespace(t *testing.T) {
+	body := `BEGIN\nIF NEW.display_name\nLIKE '%TokenAlpha1%' THEN x;\nEND`
+	tokens := extractMagicTokens(body)
+	if len(tokens) != 1 || tokens[0] != "TokenAlpha1" {
+		t.Errorf("escaped whitespace tokens = %v, want [TokenAlpha1]", tokens)
+	}
+}
+
 func TestExtractMagicTokens_DedupesRepeatedToken(t *testing.T) {
 	body := `display_name LIKE '%SameToken1%' OR display_name LIKE '%SameToken1%'`
 	tokens := extractMagicTokens(body)
@@ -696,7 +711,7 @@ func TestScanMagicTokenUsers_MatchEmitsCriticalFinding(t *testing.T) {
 	if f.Check != "db_magic_token_user" {
 		t.Errorf("check = %q, want db_magic_token_user", f.Check)
 	}
-	if !strings.Contains(f.Message, "bob") || !strings.Contains(f.Details, "Lei5pahtebue") {
+	if !strings.Contains(f.Message, "bob") || !strings.Contains(f.Details, "Lei5pahtebue") || !strings.Contains(f.Details, "Table prefix: wp_") {
 		t.Errorf("finding missing identifying details: msg=%q details=%q", f.Message, f.Details)
 	}
 }

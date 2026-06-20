@@ -246,6 +246,7 @@ func classifyDBObject(account, schema string, kind dbObjectKind, name, body stri
 // Substring matching stays case-insensitive via ToLower; the regex tier
 // keeps its own `(?i)` flags so its semantics travel with the pattern.
 func bodyHasMalwarePattern(body string) bool {
+	body = normalizeDBPatternBody(body)
 	lower := strings.ToLower(body)
 	for _, p := range dbMalwarePatterns {
 		if strings.Contains(lower, strings.ToLower(p.pattern)) {
@@ -266,6 +267,11 @@ func bodyHasMalwarePattern(body string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeDBPatternBody(body string) string {
+	repl := strings.NewReplacer(`\n`, "\n", `\r`, "\r", `\t`, "\t")
+	return repl.Replace(body)
 }
 
 // toFinding renders the structured hit into the alert.Finding shape
@@ -376,6 +382,7 @@ func IsDBObjectKind(s string) bool {
 //
 // Returns nil for benign bodies so callers can skip MySQL entirely.
 func extractMagicTokens(body string) []string {
+	body = normalizeDBPatternBody(body)
 	matches := magicTokenRegex.FindAllStringSubmatch(body, -1)
 	if len(matches) == 0 {
 		return nil
@@ -457,7 +464,7 @@ func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) [
 				Severity:  alert.Critical,
 				Check:     "db_magic_token_user",
 				Message:   fmt.Sprintf("User %s (ID %s) carries backdoor activation token in %s.%susers", userLogin, userID, account, tablePrefix),
-				Details:   fmt.Sprintf("Account: %s\nSchema: %s\nToken: %s\nUser ID: %s\nUser login: %s\nUser email: %s\nDisplay name: %s", account, schema, tok, userID, userLogin, userEmail, displayName),
+				Details:   fmt.Sprintf("Account: %s\nSchema: %s\nTable prefix: %s\nToken: %s\nUser ID: %s\nUser login: %s\nUser email: %s\nDisplay name: %s", account, schema, tablePrefix, tok, userID, userLogin, userEmail, displayName),
 				Timestamp: time.Now(),
 			})
 		}

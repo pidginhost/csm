@@ -92,15 +92,13 @@ func TestVerifyDBObjectRejectsBadKind(t *testing.T) {
 }
 
 func TestVerifyDBMagicTokenUser(t *testing.T) {
-	details := "Account: alice\nSchema: alice_wp\nToken: Ab1cdefghij\nUser ID: 5\nUser login: x"
+	details := "Account: alice\nSchema: alice_wp\nTable prefix: wp_\nToken: Ab1cdefghij\nUser ID: 5\nUser login: x"
 	msg := "User x (ID 5) carries backdoor activation token in alice.wp_users"
 
-	t.Run("resolved when no user carries token", func(t *testing.T) {
+	t.Run("resolved when flagged user no longer carries token", func(t *testing.T) {
 		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
-		withRootQuery(t, func(schema, query string, _ ...any) ([]string, error) {
-			if schema != "alice_wp" || !strings.Contains(query, "`wp_users`") {
-				t.Fatalf("schema=%q query=%s", schema, query)
-			}
+		withRootQuery(t, func(schema, query string, args ...any) ([]string, error) {
+			requireMagicTokenUserQuery(t, schema, query, "`wp_users`", args...)
 			return nil, nil
 		})
 		res := verifyDBMagicTokenUser(msg, details)
@@ -109,14 +107,54 @@ func TestVerifyDBMagicTokenUser(t *testing.T) {
 		}
 	})
 
-	t.Run("unresolved when a user still carries token", func(t *testing.T) {
+	t.Run("unresolved when flagged user still carries token", func(t *testing.T) {
 		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
-		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) {
+		withRootQuery(t, func(schema, query string, args ...any) ([]string, error) {
+			requireMagicTokenUserQuery(t, schema, query, "`wp_users`", args...)
 			return []string{"5"}, nil
 		})
 		res := verifyDBMagicTokenUser(msg, details)
 		if !res.Checked || res.Resolved {
 			t.Errorf("want checked+unresolved, got %+v", res)
+		}
+	})
+
+	t.Run("uses legacy message prefix when details lack it", func(t *testing.T) {
+		legacyDetails := "Account: alice\nSchema: alice_wp\nToken: Ab1cdefghij\nUser ID: 5\nUser login: x"
+		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
+		withRootQuery(t, func(schema, query string, args ...any) ([]string, error) {
+			requireMagicTokenUserQuery(t, schema, query, "`wp_users`", args...)
+			return nil, nil
+		})
+		res := verifyDBMagicTokenUser(msg, legacyDetails)
+		if !res.Checked || !res.Resolved {
+			t.Errorf("want checked+resolved from legacy message prefix, got %+v", res)
+		}
+	})
+
+	t.Run("does not query a different current prefix", func(t *testing.T) {
+		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_new_")
+		mysqlclient.SetRootQueryForTest(func(_ context.Context, _, _ string, _ ...any) ([]string, error) {
+			t.Fatal("must not query a table other than the finding table")
+			return nil, nil
+		})
+		t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
+		res := verifyDBMagicTokenUser(msg, details)
+		if res.Checked {
+			t.Errorf("changed prefix must not be checked, got %+v", res)
+		}
+	})
+
+	t.Run("not checked for invalid user id", func(t *testing.T) {
+		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
+		mysqlclient.SetRootQueryForTest(func(_ context.Context, _, _ string, _ ...any) ([]string, error) {
+			t.Fatal("must not query for invalid user id")
+			return nil, nil
+		})
+		t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
+		res := verifyDBMagicTokenUser(msg, "Account: alice\nSchema: alice_wp\nTable prefix: wp_\nToken: Ab1cdefghij\nUser ID: 5 OR 1=1")
+		if res.Checked {
+			t.Errorf("invalid user id must not be checked, got %+v", res)
 		}
 	})
 
@@ -127,9 +165,22 @@ func TestVerifyDBMagicTokenUser(t *testing.T) {
 			return nil, nil
 		})
 		t.Cleanup(func() { mysqlclient.SetRootQueryForTest(nil) })
-		res := verifyDBMagicTokenUser(msg, "Account: alice\nSchema: alice_wp\nToken: short")
+		res := verifyDBMagicTokenUser(msg, "Account: alice\nSchema: alice_wp\nTable prefix: wp_\nToken: short\nUser ID: 5")
 		if res.Checked {
 			t.Errorf("invalid token must not be checked, got %+v", res)
 		}
 	})
+}
+
+func requireMagicTokenUserQuery(t *testing.T, schema, query, table string, args ...any) {
+	t.Helper()
+	if schema != "alice_wp" || !strings.Contains(query, table) {
+		t.Fatalf("schema=%q query=%s", schema, query)
+	}
+	if !strings.Contains(query, "ID = ?") || !strings.Contains(query, "display_name LIKE ?") {
+		t.Fatalf("query must target the flagged user and token: %s", query)
+	}
+	if len(args) != 2 || args[0] != "5" || args[1] != "%Ab1cdefghij%" {
+		t.Fatalf("args = %#v, want user ID and token LIKE pattern", args)
+	}
 }
