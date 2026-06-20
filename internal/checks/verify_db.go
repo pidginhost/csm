@@ -34,34 +34,50 @@ var dbVerifyTimeout = 30 * time.Second
 var validAccountName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
 
 // messageAccountRe pulls account tokens out of WordPress finding messages.
-var messageAccountRe = regexp.MustCompile(`account:\s*([^,)]+)`)
+var messageAccountRe = regexp.MustCompile(`(^|[,(])\s*account:\s*([A-Za-z][A-Za-z0-9_-]{0,31})([,)]|$)`)
 
 // detailField returns the value of a "Key: value" line in a finding's Details
 // block, or "" when the key is absent. The key match is case-sensitive and the
 // value is whitespace-trimmed.
 func detailField(details, key string) string {
+	value, ok := detailFieldPresent(details, key)
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+func detailFieldPresent(details, key string) (string, bool) {
 	want := key + ":"
 	for _, line := range strings.Split(details, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, want) {
-			return strings.TrimSpace(line[len(want):])
+			return strings.TrimSpace(line[len(want):]), true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // dbFindingAccount resolves the cPanel account a database finding belongs to.
 // CMS, DB-object, and admin findings carry it as an "Account:" detail line; the
 // WordPress content findings carry it only in the message "(account: <user>)".
 func dbFindingAccount(message, details string) string {
-	if a := detailField(details, "Account"); a != "" {
-		return a
+	if a, ok := detailFieldPresent(details, "Account"); ok {
+		return validFindingAccount(a)
 	}
 	matches := messageAccountRe.FindAllStringSubmatch(message, -1)
 	if len(matches) > 0 {
-		return strings.TrimSpace(matches[len(matches)-1][1])
+		return matches[len(matches)-1][2]
 	}
 	return ""
+}
+
+func validFindingAccount(account string) string {
+	account = strings.TrimSpace(account)
+	if !validAccountName.MatchString(account) {
+		return ""
+	}
+	return account
 }
 
 // runDBVerifyQueryRoot runs a root-credential query against an explicit schema

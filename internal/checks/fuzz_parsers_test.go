@@ -7,8 +7,8 @@ import (
 
 // These are fuzz targets for the string parsers that accept external input
 // (log lines, finding messages, wp-config bodies, /proc/net/tcp rows).
-// Each target just asserts that the function returns without panicking on
-// any input -- the goal is crash-finding, not output verification.
+// Most targets assert that the function returns without panicking on any input.
+// Parsers whose output crosses a boundary also assert shape invariants.
 //
 // Run the seed corpus with `go test -run=Fuzz`. Run actual fuzzing with
 // `go test -fuzz=FuzzFoo -fuzztime=30s ./internal/checks/` during
@@ -317,13 +317,12 @@ func FuzzParseZoneSecurity(f *testing.F) {
 	})
 }
 
-// --- Database-content finding parsers (Phase C3 re-check) ------------------
+// --- Database-content finding parsers --------------------------------------
 //
 // These read finding Details/Message text that embeds attacker-influenced
 // substrings (WordPress logins, option names, post content). Beyond crash-
-// finding, the ID/enum parsers carry a safety invariant: their output gates
-// what reaches a SQL identifier or LIKE, so a malformed finding must never
-// yield anything but digits (for IDs) or a fixed option name.
+// finding, selected parsers carry safety invariants: account outputs must be
+// valid account tokens, IDs must be digits, and enum outputs must stay fixed.
 
 func FuzzDetailField(f *testing.F) {
 	f.Add("Database: alice_wp\nOption: siteurl\nContent preview: x", "Option")
@@ -343,9 +342,13 @@ func FuzzDBFindingAccount(f *testing.F) {
 	f.Add("WordPress posts contain base64_decode (account: alice, 2 posts)", "")
 	f.Add("anything", "Account: bob\nConfig name: x")
 	f.Add("admin 'evil account: hijack' flagged (account: realuser)", "")
+	f.Add("anything", "Account: ../alice\nConfig name: x")
+	f.Add("Malicious script injection in wp_options 'x' (account: alice)", "Account: ../alice\nConfig name: x")
 	f.Add("", "")
 	f.Fuzz(func(t *testing.T, message, details string) {
-		_ = dbFindingAccount(message, details)
+		if got := dbFindingAccount(message, details); got != "" && !validAccountName.MatchString(got) {
+			t.Fatalf("dbFindingAccount returned an invalid account: %q", got)
+		}
 	})
 }
 

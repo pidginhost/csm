@@ -167,8 +167,26 @@ func TestDBFindingAccount(t *testing.T) {
 	if got := dbFindingAccount("Malicious script injection in wp_options 'x' (account: alice)", ""); got != "alice" {
 		t.Errorf("account from message = %q, want alice", got)
 	}
+	if got := dbFindingAccount("WordPress posts contain base64_decode (account: alice, 2 posts)", ""); got != "alice" {
+		t.Errorf("account before message count = %q, want alice", got)
+	}
+	if got := dbFindingAccount("WordPress posts contain cloaked spam keyword 'viagra' (3 posts, account: alice)", ""); got != "alice" {
+		t.Errorf("account after message count = %q, want alice", got)
+	}
 	if got := dbFindingAccount("WordPress admin 'x (account: mallory)' has disposable email (account: alice)", ""); got != "alice" {
 		t.Errorf("account from trailing message token = %q, want alice", got)
+	}
+	if got := dbFindingAccount("WordPress admin 'evil account: hijack' has disposable email (account: alice)", ""); got != "alice" {
+		t.Errorf("account after forged message token = %q, want alice", got)
+	}
+	if got := dbFindingAccount("anything", "Account: ../alice\nConfig name: x"); got != "" {
+		t.Errorf("invalid account from details = %q, want empty", got)
+	}
+	if got := dbFindingAccount("Malicious script injection in wp_options 'x' (account: alice)", "Account: ../alice\nConfig name: x"); got != "" {
+		t.Errorf("invalid detail account must not fall back to message account, got %q", got)
+	}
+	if got := dbFindingAccount("Malicious script injection in wp_options 'x' (account: alice)", "Account: \nConfig name: x"); got != "" {
+		t.Errorf("empty detail account must not fall back to message account, got %q", got)
 	}
 }
 
