@@ -316,3 +316,88 @@ func FuzzParseZoneSecurity(f *testing.F) {
 		_ = zoneUpdateTime([]byte(content))
 	})
 }
+
+// --- Database-content finding parsers (Phase C3 re-check) ------------------
+//
+// These read finding Details/Message text that embeds attacker-influenced
+// substrings (WordPress logins, option names, post content). Beyond crash-
+// finding, the ID/enum parsers carry a safety invariant: their output gates
+// what reaches a SQL identifier or LIKE, so a malformed finding must never
+// yield anything but digits (for IDs) or a fixed option name.
+
+func FuzzDetailField(f *testing.F) {
+	f.Add("Database: alice_wp\nOption: siteurl\nContent preview: x", "Option")
+	f.Add("Account: bob\nRow: 42\tadmin\tx@y", "Row")
+	f.Add("", "Database")
+	f.Add("Key without colon", "Key")
+	f.Fuzz(func(t *testing.T, details, key string) {
+		got := detailField(details, key)
+		if strings.ContainsRune(got, '\n') {
+			t.Fatalf("detailField returned a multi-line value: %q", got)
+		}
+	})
+}
+
+func FuzzDBFindingAccount(f *testing.F) {
+	f.Add("Malicious script injection in wp_options 'x' (account: alice)", "")
+	f.Add("WordPress posts contain base64_decode (account: alice, 2 posts)", "")
+	f.Add("anything", "Account: bob\nConfig name: x")
+	f.Add("admin 'evil account: hijack' flagged (account: realuser)", "")
+	f.Add("", "")
+	f.Fuzz(func(t *testing.T, message, details string) {
+		_ = dbFindingAccount(message, details)
+	})
+}
+
+func FuzzParsePostIDList(f *testing.F) {
+	f.Add("12, 34, 56")
+	f.Add("1,,2, ,3")
+	f.Add("not, numbers, here")
+	f.Add("9'9; DROP TABLE")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		for _, id := range parsePostIDList(s) {
+			if !isAllDigits(id) {
+				t.Fatalf("parsePostIDList emitted a non-numeric id: %q", id)
+			}
+		}
+	})
+}
+
+func FuzzSiteurlOptionFromDetails(f *testing.F) {
+	f.Add("Database: alice_wp\nsiteurl = http://evil")
+	f.Add("Database: alice_wp\nhome = x")
+	f.Add("Database: alice_wp\nadmin_email = a@b")
+	f.Add("siteurlx = not a real match")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, details string) {
+		switch got := siteurlOptionFromDetails(details); got {
+		case "", "siteurl", "home":
+		default:
+			t.Fatalf("siteurlOptionFromDetails returned an unexpected option: %q", got)
+		}
+	})
+}
+
+func FuzzDBAdminRowID(f *testing.F) {
+	f.Add("Account: bob\nRow: 42\tadmin\tx@y\nReview: confirm")
+	f.Add("Account: bob\nRow: 7 admin x")
+	f.Add("Account: bob\nRow: notanid")
+	f.Add("Account: bob\nRow: 9; DROP")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, details string) {
+		if id, ok := dbAdminRowID(details); ok && !isAllDigits(id) {
+			t.Fatalf("dbAdminRowID returned a non-numeric id: %q", id)
+		}
+	})
+}
+
+func FuzzSpamKeywordFromMessage(f *testing.F) {
+	f.Add("WordPress posts contain cloaked spam keyword 'viagra' (3 posts, account: alice)")
+	f.Add("no keyword here")
+	f.Add("cloaked spam keyword '' empty")
+	f.Add("cloaked spam keyword 'unterminated")
+	f.Fuzz(func(t *testing.T, message string) {
+		_ = spamKeywordFromMessage(message)
+	})
+}
