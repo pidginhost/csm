@@ -18,8 +18,92 @@ type mailIPEntry struct {
 	succ            []time.Time
 	successAccounts map[string][]time.Time
 	failedAccounts  map[string][]time.Time
-	suppressed      time.Time
-	lastSeen        time.Time
+	// goodFirst/goodLast record, per mailbox, the earliest and most recent
+	// successful auth from this IP within mailGoodSourceTTL. They outlive the
+	// short failure window so an established legitimate sender (e.g. a working
+	// POP3 profile) is not mistaken for an attacker when a second misconfigured
+	// profile produces a burst of auth failures.
+	goodFirst  map[string]time.Time
+	goodLast   map[string]time.Time
+	suppressed time.Time
+	lastSeen   time.Time
+}
+
+// recordGoodAuth notes a successful auth for account at now, maintaining the
+// established-sender window. A success after a gap longer than the TTL starts a
+// fresh relationship. Caller must hold t.mu.
+func (e *mailIPEntry) recordGoodAuth(account string, now time.Time) {
+	if account == "" {
+		return
+	}
+	if e.goodFirst == nil {
+		e.goodFirst = make(map[string]time.Time)
+		e.goodLast = make(map[string]time.Time)
+	}
+	if last, ok := e.goodLast[account]; !ok || now.Sub(last) > mailGoodSourceTTL {
+		e.goodFirst[account] = now
+	}
+	e.goodLast[account] = now
+	if len(e.goodLast) > mailGoodSourceMaxAccountsPerIP {
+		e.evictOldestGoodSource()
+	}
+}
+
+// evictOldestGoodSource drops the least-recently-successful mailbox so a single
+// IP's good-source records stay bounded. Caller must hold t.mu.
+func (e *mailIPEntry) evictOldestGoodSource() {
+	var oldestAcct string
+	var oldest time.Time
+	for acct, ts := range e.goodLast {
+		if oldestAcct == "" || ts.Before(oldest) {
+			oldestAcct, oldest = acct, ts
+		}
+	}
+	delete(e.goodLast, oldestAcct)
+	delete(e.goodFirst, oldestAcct)
+}
+
+// pruneGoodSource drops good-source records whose most recent success is older
+// than cutoff (now - mailGoodSourceTTL). Caller must hold t.mu.
+func (e *mailIPEntry) pruneGoodSource(cutoff time.Time) {
+	for account, last := range e.goodLast {
+		if last.Before(cutoff) {
+			delete(e.goodLast, account)
+			delete(e.goodFirst, account)
+		}
+	}
+}
+
+// establishedGood reports whether this IP is an established legitimate sender
+// for account: it authenticated successfully longer ago than the failure window
+// (so the current failure burst is not its first contact) and recently enough
+// to still be live. Caller must hold t.mu.
+func (e *mailIPEntry) establishedGood(account string, now time.Time, window time.Duration) bool {
+	last, ok := e.goodLast[account]
+	if !ok || now.Sub(last) > mailGoodSourceTTL {
+		return false
+	}
+	return now.Sub(e.goodFirst[account]) >= window
+}
+
+// establishedGoodFailing reports whether every mailbox this IP is currently
+// failing against is one it has established good standing for, with no
+// account-less failures mixed in. Used to suppress per-IP brute-force
+// auto-block for a misconfigured legitimate client without blinding the
+// detector when the same IP also probes mailboxes it does not own. Caller must
+// hold t.mu and must have pruned e.times and e.failedAccounts to the window.
+func (e *mailIPEntry) establishedGoodFailing(now time.Time, window time.Duration) bool {
+	if len(e.failedAccounts) == 0 {
+		return false
+	}
+	named := 0
+	for account, times := range e.failedAccounts {
+		named += len(times)
+		if !e.establishedGood(account, now, window) {
+			return false
+		}
+	}
+	return named == len(e.times)
 }
 
 // successDominant reports whether this IP behaves like a legit busy client
@@ -68,6 +152,19 @@ type mailAccountEntry struct {
 // per-subnet brute signals are suppressed to avoid auto-blocking legitimate
 // users en masse.
 const mailBackendDegradedThreshold = 10
+
+// mailGoodSourceTTL is how long a successful authentication keeps an (IP,
+// mailbox) pair on record as an established legitimate sender. A real owner
+// authenticates successfully at least this often; once the last success ages
+// past the TTL the standing is forgotten, so an IP cannot be permanently
+// whitelisted by a single old success.
+const mailGoodSourceTTL = 24 * time.Hour
+
+// mailGoodSourceMaxAccountsPerIP caps how many distinct mailboxes one IP keeps
+// good-source records for. A carrier-grade NAT can carry many legitimate
+// mailboxes; the cap bounds memory without affecting detection (eviction is
+// least-recently-successful first).
+const mailGoodSourceMaxAccountsPerIP = 256
 
 // mailAuthTracker aggregates dovecot IMAP/POP3/ManageSieve auth events into
 // four detection signals: per-IP brute force, per-/24 password spray,
@@ -197,7 +294,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
-		if !e.successDominant() && !degraded {
+		if !e.successDominant() && !degraded && !e.establishedGoodFailing(now, t.window) {
 			e.suppressed = now.Add(t.suppression)
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
@@ -404,6 +501,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	defer func() {
 		e.succ = append(e.succ, now)
 		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
+		e.recordGoodAuth(account, now)
 		e.lastSeen = now
 	}()
 
@@ -424,7 +522,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	// mailbox.
 	e.times = pruneTimes(e.times, cutoff)
 	targetFailures := len(e.failedAccounts[account])
-	if targetFailures < 2 || e.accountSuccessDominant(account) {
+	if targetFailures < 2 || e.accountSuccessDominant(account) || e.establishedGood(account, now, t.window) {
 		return nil
 	}
 	if now.Before(a.compromiseSuppressed) {
@@ -455,13 +553,15 @@ func (t *mailAuthTracker) Purge() {
 	activityCutoff := now.Add(-(t.window + t.suppression))
 	windowCutoff := now.Add(-t.window)
 
+	goodCutoff := now.Add(-mailGoodSourceTTL)
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, windowCutoff)
 		e.succ = pruneTimes(e.succ, windowCutoff)
 		pruneMailAccountTimes(e.successAccounts, windowCutoff)
 		pruneMailAccountTimes(e.failedAccounts, windowCutoff)
+		e.pruneGoodSource(goodCutoff)
 		if len(e.times) == 0 && len(e.succ) == 0 && len(e.successAccounts) == 0 &&
-			len(e.failedAccounts) == 0 && !e.lastSeen.After(activityCutoff) {
+			len(e.failedAccounts) == 0 && len(e.goodLast) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

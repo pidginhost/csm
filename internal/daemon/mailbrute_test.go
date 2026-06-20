@@ -519,6 +519,130 @@ func TestMailAuthTracker_NoCompromiseAfterSingleMistype(t *testing.T) {
 	}
 }
 
+// establishGoodSource logs successful auths spread over time so (ip, account)
+// becomes an established legitimate sender, then leaves the clock at a fresh
+// point. Five successes land at +0,+20,+40,+60,+80 minutes; the clock ends at
+// +100 minutes. goodFirst stays at +0, goodLast at +80.
+func establishGoodSource(tr *mailAuthTracker, clock *staticClock, ip, account string) {
+	for i := 0; i < 5; i++ {
+		tr.RecordSuccess(ip, account)
+		clock.advance(20 * time.Minute)
+	}
+}
+
+func TestMailAuthTracker_NoCompromiseFromEstablishedGoodSource(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.7"
+	acct := "comenzi@example.ro"
+	// Customer's working POP3 profile authenticates successfully over hours.
+	establishGoodSource(tr, clock, ip, acct)
+	// A second device with a misconfigured profile (wrong/old password) sends a
+	// burst of auth failures inside the 10m window.
+	for i := 0; i < 6; i++ {
+		tr.Record(ip, acct)
+		clock.advance(30 * time.Second)
+	}
+	// The working profile authenticates successfully again. This is not a
+	// takeover: the IP has owned the mailbox for hours.
+	out := tr.RecordSuccess(ip, acct)
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("established good source must not flag compromise, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_CompromiseFiresOnFirstSuccessBreakthrough(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.8"
+	acct := "victim@example.ro"
+	// Attacker IP with no prior successful history for the mailbox: failures
+	// followed by the first-ever success is a genuine guessing breakthrough.
+	for i := 0; i < 4; i++ {
+		tr.Record(ip, acct)
+		clock.advance(30 * time.Second)
+	}
+	out := tr.RecordSuccess(ip, acct)
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("first-success breakthrough from a novel IP must still flag compromise, got %v", out)
+	}
+}
+
+func TestMailAuthTracker_CompromiseFiresWhenGoodSourceStale(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.10"
+	acct := "dormant@example.ro"
+	establishGoodSource(tr, clock, ip, acct)
+	// More than the good-source TTL passes with no successful login. The old
+	// standing must not whitelist a later guessing breakthrough.
+	clock.advance(mailGoodSourceTTL + time.Hour)
+	for i := 0; i < 3; i++ {
+		tr.Record(ip, acct)
+		clock.advance(30 * time.Second)
+	}
+	out := tr.RecordSuccess(ip, acct)
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("stale good standing must not suppress a fresh breakthrough, got %v", out)
+	}
+}
+
+func TestMailAuthTracker_NoBruteForceFromEstablishedGoodSource(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.11"
+	acct := "comenzi@example.ro"
+	establishGoodSource(tr, clock, ip, acct)
+	var fired bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, acct) {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if fired {
+		t.Fatalf("established good source must not trigger mail_bruteforce for its own mailbox")
+	}
+}
+
+func TestMailAuthTracker_BruteForceFiresWhenGoodSourceAlsoFailsOtherMailbox(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.12"
+	good := "owner@example.ro"
+	establishGoodSource(tr, clock, ip, good)
+	// Same IP guesses a different mailbox it has no standing for: brute-force
+	// must still fire. Good standing is per-mailbox, not a blanket IP pass.
+	var fired bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, "stranger@example.ro") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !fired {
+		t.Fatalf("good standing for one mailbox must not suppress brute-force against another, got no finding")
+	}
+}
+
 func TestMailAuthTracker_RecordSuccessRespectsMaxTracked(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	const maxTracked = 10
