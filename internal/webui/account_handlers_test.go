@@ -825,7 +825,7 @@ func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
 	now := time.Now()
 	s.store.SetLatestFindings([]alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found /home/a/public_html/s.php", FilePath: "/home/a/public_html/s.php", Timestamp: now},
-		{Severity: alert.High, Check: "outdated_plugins", Message: "8 outdated plugins on x.ro", Timestamp: now},
+		{Severity: alert.High, Check: "ip_reputation", Message: "Known malicious IP 198.51.100.9 (abuseipdb)", Timestamp: now},
 	})
 
 	w := httptest.NewRecorder()
@@ -846,8 +846,8 @@ func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
 	if !byCheck["webshell"].HasVerify {
 		t.Error("webshell should have has_verify=true")
 	}
-	if byCheck["outdated_plugins"].HasVerify {
-		t.Error("outdated_plugins should have has_verify=false (no automated re-check yet)")
+	if byCheck["ip_reputation"].HasVerify {
+		t.Error("ip_reputation is an event finding and should have has_verify=false")
 	}
 }
 

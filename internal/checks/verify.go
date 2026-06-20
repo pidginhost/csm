@@ -81,6 +81,8 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"email_phishing_content")
 	register(func(_, _, _, p string) VerifyResult { return verifyCrontabClear(p) },
 		"suspicious_crontab")
+	register(func(_, _, details, _ string) VerifyResult { return verifyOutdatedPlugins(details) },
+		"outdated_plugins")
 	return m
 }
 

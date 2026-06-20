@@ -90,15 +90,18 @@ findings).
 Re-check is shown only on findings whose condition CSM can re-evaluate from
 current state: file-permission (world/group-writable), webshell and malware
 file findings, phishing pages/kits and credential logs, `.htaccess`
-directives, Exim spool messages and crontabs. It resolves a finding only on
-confirmed evidence (the file is gone, the bit is cleared, the directives are
-clean) -- never on an ambiguous or unreadable target. Event findings (brute
-force, login history, IP reputation,
-WAF/ModSecurity blocks) reflect things that already happened and cannot be
-re-evaluated from current state, so they show no Re-check button; they age out
-or are dismissed. Some current-state findings that need a heavier per-account
-re-scan (outdated plugins, WordPress core integrity, database content) are not
-yet re-checkable per-finding -- use the account scan to refresh those.
+directives, Exim spool messages, crontabs, and outdated WordPress plugins. It
+resolves a finding only on confirmed evidence (the file is gone, the bit is
+cleared, the directives are clean) -- never on an ambiguous or unreadable
+target. The outdated-plugins re-check is heavier than the file checks: it
+re-runs `wp-cli` for that one site (as the site owner, bounded timeout) so a
+just-applied update is reflected immediately, and resolves only when no active
+plugin still has an available update. Event findings (brute force, login
+history, IP reputation, WAF/ModSecurity blocks) reflect things that already
+happened and cannot be re-evaluated from current state, so they show no
+Re-check button; they age out or are dismissed. Some current-state findings
+that still need a full account scan (WordPress core integrity, database
+content) are not yet re-checkable per-finding -- use the account scan for those.
 
 ## WHM Plugin
 

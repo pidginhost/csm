@@ -269,8 +269,6 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 					return
 				}
 				wpPath := filepath.Dir(wpConfig)
-				user := extractUser(wpPath)
-				domain := extractWPDomain(ctx, wpPath, user)
 				if ctx.Err() != nil {
 					return
 				}
@@ -279,51 +277,29 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 				discoveredPaths[wpPath] = true
 				mu.Unlock()
 
-				// Run wp plugin list as the site owner on stdout-only so PHP
-				// notices/warnings on stderr can't corrupt the JSON we parse.
-				// Use --path instead of shell cd to avoid shell injection via
-				// crafted directory names on shared hosting.
-				out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
-					wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
-				)
+				sitePlugins, err := inventoryWPSite(ctx, wpConfig)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
 					mu.Lock()
-					if errors.Is(err, context.DeadlineExceeded) {
+					switch {
+					case errors.Is(err, context.DeadlineExceeded):
 						timeoutCount++
-					} else {
+					case errors.Is(err, errWPInventoryParse):
+						parseFailCount++
+					default:
 						execFailCount++
 					}
 					mu.Unlock()
 					continue
 				}
 
-				var entries []wpCLIPluginEntry
-				if err := json.Unmarshal(out, &entries); err != nil {
-					mu.Lock()
-					parseFailCount++
-					mu.Unlock()
-					continue
+				mu.Lock()
+				for _, p := range sitePlugins.Plugins {
+					slugsSeen[p.Slug] = true
 				}
-
-				sitePlugins := store.SitePlugins{
-					Account: user,
-					Domain:  domain,
-				}
-				for _, e := range entries {
-					sitePlugins.Plugins = append(sitePlugins.Plugins, store.SitePluginEntry{
-						Slug:             e.Name,
-						Name:             e.Name,
-						Status:           e.Status,
-						InstalledVersion: e.Version,
-						UpdateVersion:    e.UpdateVersion,
-					})
-					mu.Lock()
-					slugsSeen[e.Name] = true
-					mu.Unlock()
-				}
+				mu.Unlock()
 
 				if err := db.SetSitePlugins(wpPath, sitePlugins); err != nil {
 					fmt.Fprintf(os.Stderr, "plugincheck: store failed for %s: %v\n", wpPath, err)
@@ -454,46 +430,18 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 		// whose constituents are all Warning, leaving worstSevLabel empty.
 		worstSet := false
 		for _, p := range site.Plugins {
-			if p.Status != "active" && p.Status != "active-network" {
+			severity, sevLabel, available, ok := pluginOutdatedSeverity(p, db)
+			if !ok {
 				continue
-			}
-
-			// Determine the best available version: prefer wp-cli's update_version,
-			// fall back to WordPress.org API cache.
-			available := p.UpdateVersion
-			if available == "" {
-				if info, ok := db.GetPluginInfo(p.Slug); ok {
-					available = info.LatestVersion
-				}
-			}
-
-			if available == "" {
-				// No update source - skip silently (custom/private plugins).
-				continue
-			}
-
-			sev := pluginAlertSeverity(p.InstalledVersion, available)
-			if sev == "" {
-				continue
-			}
-
-			var severity alert.Severity
-			switch sev {
-			case "critical":
-				severity = alert.Critical
-			case "high":
-				severity = alert.High
-			default:
-				severity = alert.Warning
 			}
 
 			outdatedTotal++
 			detailLines = append(detailLines, fmt.Sprintf("- %s (%s): %s -> %s [%s]",
-				p.Slug, p.Name, p.InstalledVersion, available, sev))
+				p.Slug, p.Name, p.InstalledVersion, available, sevLabel))
 
 			if !worstSet || severityRank(severity) > severityRank(worstSeverity) {
 				worstSeverity = severity
-				worstSevLabel = sev
+				worstSevLabel = sevLabel
 				worstSet = true
 			}
 		}
@@ -513,6 +461,92 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 	}
 
 	return findings
+}
+
+// errWPInventoryParse marks a wp-cli plugin-list response that ran but produced
+// unparseable JSON, so callers can tell a parse failure from an exec failure.
+var errWPInventoryParse = errors.New("wp-cli plugin list: invalid JSON")
+
+// inventoryWPSite runs wp-cli for a single site (as the site owner) and returns
+// its current plugin inventory. Shared by the periodic cache refresh and the
+// per-finding re-check so both see identical results. Read-only: it inventories,
+// it does not change anything.
+func inventoryWPSite(ctx context.Context, wpConfig string) (store.SitePlugins, error) {
+	wpPath := filepath.Dir(wpConfig)
+	user := extractUser(wpPath)
+	domain := extractWPDomain(ctx, wpPath, user)
+
+	// Run wp plugin list as the site owner on stdout-only so PHP
+	// notices/warnings on stderr can't corrupt the JSON we parse. Use --path
+	// instead of a shell cd to avoid shell injection via crafted directory
+	// names on shared hosting.
+	out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+		wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
+	)
+	if err != nil {
+		return store.SitePlugins{}, err
+	}
+
+	var entries []wpCLIPluginEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return store.SitePlugins{}, fmt.Errorf("%w: %v", errWPInventoryParse, err)
+	}
+
+	site := store.SitePlugins{Account: user, Domain: domain}
+	for _, e := range entries {
+		site.Plugins = append(site.Plugins, store.SitePluginEntry{
+			Slug:             e.Name,
+			Name:             e.Name,
+			Status:           e.Status,
+			InstalledVersion: e.Version,
+			UpdateVersion:    e.UpdateVersion,
+		})
+	}
+	return site, nil
+}
+
+// pluginOutdatedSeverity classifies one plugin entry. It returns ok=false for
+// inactive plugins, plugins with no known available version (custom/premium),
+// and plugins already current. The "available" version prefers wp-cli's
+// update_version and falls back to the cached WordPress.org latest version.
+func pluginOutdatedSeverity(p store.SitePluginEntry, db *store.DB) (severity alert.Severity, sevLabel, available string, ok bool) {
+	if p.Status != "active" && p.Status != "active-network" {
+		return 0, "", "", false
+	}
+	available = p.UpdateVersion
+	if available == "" && db != nil {
+		if info, found := db.GetPluginInfo(p.Slug); found {
+			available = info.LatestVersion
+		}
+	}
+	if available == "" {
+		return 0, "", "", false
+	}
+	sevLabel = pluginAlertSeverity(p.InstalledVersion, available)
+	if sevLabel == "" {
+		return 0, "", "", false
+	}
+	switch sevLabel {
+	case "critical":
+		severity = alert.Critical
+	case "high":
+		severity = alert.High
+	default:
+		severity = alert.Warning
+	}
+	return severity, sevLabel, available, true
+}
+
+// countOutdatedActivePlugins reports how many active plugins on a site still
+// have an available update, using the same classification as the alert path.
+func countOutdatedActivePlugins(site store.SitePlugins, db *store.DB) int {
+	n := 0
+	for _, p := range site.Plugins {
+		if _, _, _, ok := pluginOutdatedSeverity(p, db); ok {
+			n++
+		}
+	}
+	return n
 }
 
 // severityRank orders severities so an aggregate can pick the worst.
