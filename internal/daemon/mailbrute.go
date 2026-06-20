@@ -115,12 +115,14 @@ func (e *mailIPEntry) successDominant() bool {
 	if len(e.succ) == 0 || len(e.succ) < len(e.times) || len(e.failedAccounts) == 0 {
 		return false
 	}
+	named := 0
 	for account, failures := range e.failedAccounts {
+		named += len(failures)
 		if len(e.successAccounts[account]) < len(failures) {
 			return false
 		}
 	}
-	return true
+	return named == len(e.times)
 }
 
 func (e *mailIPEntry) accountSuccessDominant(account string) bool {
@@ -498,10 +500,14 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	e.succ = pruneTimes(e.succ, cutoff)
 	pruneMailAccountTimes(e.successAccounts, cutoff)
 	pruneMailAccountTimes(e.failedAccounts, cutoff)
+	// A guessed-password success should not train the long-lived good-source cache.
+	recordGoodSource := true
 	defer func() {
 		e.succ = append(e.succ, now)
 		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
-		e.recordGoodAuth(account, now)
+		if recordGoodSource {
+			e.recordGoodAuth(account, now)
+		}
 		e.lastSeen = now
 	}()
 
@@ -525,6 +531,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	if targetFailures < 2 || e.accountSuccessDominant(account) || e.establishedGood(account, now, t.window) {
 		return nil
 	}
+	recordGoodSource = false
 	if now.Before(a.compromiseSuppressed) {
 		return nil
 	}
@@ -544,7 +551,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	}}
 }
 
-// Purge removes stale entries older than (window + suppression).
+// Purge removes stale tracker entries. Good-source-only IPs live until
+// mailGoodSourceTTL; failure and short success history uses the detector window.
 // Called from a background goroutine every minute.
 func (t *mailAuthTracker) Purge() {
 	t.mu.Lock()
@@ -591,9 +599,9 @@ func (t *mailAuthTracker) Purge() {
 	}
 }
 
-// enforceMaxTracked evicts the least-recently-seen entries until the IP count
-// is <= 95% of maxTracked. Batch target avoids re-sorting on every subsequent
-// insert. Caller must hold t.mu.
+// enforceMaxTracked evicts the least-recently-seen entries until total tracked
+// state is <= 95% of maxTracked. Batch target avoids re-sorting on every
+// subsequent insert. Caller must hold t.mu.
 func (t *mailAuthTracker) enforceMaxTracked() {
 	total := len(t.ips) + len(t.subnets) + len(t.accounts)
 	if total <= t.maxTracked {

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mail brute-force trust handling now stays conservative when login context is incomplete or a success follows repeated failures, so attacker activity is not hidden by the legitimate-sender exception.
 - Mail brute-force and account-compromise alerts no longer fire when the source IP is already an established legitimate sender for that mailbox, so a second device with a misconfigured password (for example IMAP failing while POP3 keeps working) no longer gets the customer's own IP auto-blocked.
 - Database-object Re-check now keeps multiline malicious bodies classified consistently and checks the exact WordPress user row for backdoor-token user findings.
 - WordPress administrator-account Re-check now checks the matching WordPress install instead of clearing a finding from another install under the same account.

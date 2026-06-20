@@ -432,6 +432,29 @@ func TestMailAuthTracker_BruteForceFiresWhenFailureDominant(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_BruteForceFiresWhenSuccessDominantHasAccountlessFailures(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.6"
+	acct := "alice@example.com"
+	for i := 0; i < 5; i++ {
+		tr.RecordSuccess(ip, acct)
+	}
+	for i := 0; i < 4; i++ {
+		tr.Record(ip, acct)
+	}
+	out := tr.Record(ip, "")
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_bruteforce" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("accountless failures must not be hidden by success-dominant named failures, got %v", out)
+	}
+}
+
 func TestMailAuthTracker_BruteForceFiresWhenSuccessesAreUnrelated(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -576,6 +599,40 @@ func TestMailAuthTracker_CompromiseFiresOnFirstSuccessBreakthrough(t *testing.T)
 	}
 }
 
+func TestMailAuthTracker_CompromiseSuccessDoesNotEstablishGoodSource(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.9"
+	acct := "victim@example.ro"
+	for i := 0; i < 3; i++ {
+		tr.Record(ip, acct)
+		clock.advance(30 * time.Second)
+	}
+	out := tr.RecordSuccess(ip, acct)
+	var compromised bool
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			compromised = true
+		}
+	}
+	if !compromised {
+		t.Fatalf("expected first breakthrough to flag compromise, got %v", out)
+	}
+
+	clock.advance(11 * time.Minute)
+	var brute bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, acct) {
+			if f.Check == "mail_bruteforce" {
+				brute = true
+			}
+		}
+	}
+	if !brute {
+		t.Fatalf("a compromise success must not seed good-source suppression")
+	}
+}
+
 func TestMailAuthTracker_CompromiseFiresWhenGoodSourceStale(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -621,6 +678,69 @@ func TestMailAuthTracker_NoBruteForceFromEstablishedGoodSource(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_GoodSourceWindowBoundary(t *testing.T) {
+	start := time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)
+	t.Run("before boundary fires", func(t *testing.T) {
+		clock := &staticClock{t: start}
+		tr := newTestMailTracker(t, clock)
+		ip := "203.0.113.13"
+		acct := "owner@example.ro"
+		tr.RecordSuccess(ip, acct)
+		clock.advance(10*time.Minute - time.Nanosecond)
+		var fired bool
+		for i := 0; i < 5; i++ {
+			for _, f := range tr.Record(ip, acct) {
+				if f.Check == "mail_bruteforce" {
+					fired = true
+				}
+			}
+		}
+		if !fired {
+			t.Fatalf("good source just before the window boundary must not suppress brute-force")
+		}
+	})
+	t.Run("at boundary suppresses", func(t *testing.T) {
+		clock := &staticClock{t: start}
+		tr := newTestMailTracker(t, clock)
+		ip := "203.0.113.14"
+		acct := "owner@example.ro"
+		tr.RecordSuccess(ip, acct)
+		clock.advance(10 * time.Minute)
+		var fired bool
+		for i := 0; i < 5; i++ {
+			for _, f := range tr.Record(ip, acct) {
+				if f.Check == "mail_bruteforce" {
+					fired = true
+				}
+			}
+		}
+		if fired {
+			t.Fatalf("good source at the window boundary must suppress brute-force")
+		}
+	})
+}
+
+func TestMailAuthTracker_BruteForceFiresWhenEstablishedGoodSourceHasAccountlessFailures(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.15"
+	acct := "owner@example.ro"
+	establishGoodSource(tr, clock, ip, acct)
+	for i := 0; i < 4; i++ {
+		tr.Record(ip, acct)
+	}
+	out := tr.Record(ip, "")
+	var fired bool
+	for _, f := range out {
+		if f.Check == "mail_bruteforce" {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatalf("accountless failures must not be hidden by established good-source failures, got %v", out)
+	}
+}
+
 func TestMailAuthTracker_BruteForceFiresWhenGoodSourceAlsoFailsOtherMailbox(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -655,6 +775,24 @@ func TestMailAuthTracker_RecordSuccessRespectsMaxTracked(t *testing.T) {
 	}
 	if got := tr.Size(); got > maxTracked {
 		t.Errorf("Size() = %d, want <= %d", got, maxTracked)
+	}
+}
+
+func TestMailAuthTracker_PurgeKeepsGoodSourceUntilTTL(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.RecordSuccess("203.0.113.16", "owner@example.ro")
+
+	clock.advance(71 * time.Minute)
+	tr.Purge()
+	if got := tr.Size(); got == 0 {
+		t.Fatalf("good source was purged before TTL")
+	}
+
+	clock.advance(mailGoodSourceTTL)
+	tr.Purge()
+	if got := tr.Size(); got != 0 {
+		t.Fatalf("Size() after good-source TTL = %d, want 0", got)
 	}
 }
 
@@ -904,6 +1042,32 @@ func TestMailAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
 	// Sanity: not over-evicted to nothing.
 	if total < 80 {
 		t.Errorf("total tracked = %d, want close to %d (not over-evicted)", total, maxTracked)
+	}
+}
+
+func TestMailAuthTracker_MaxTrackedKeepsActiveFailureAheadOfIdleGoodSources(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	const maxTracked = 10
+	tr := newMailAuthTracker(5, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	for i := 0; i < maxTracked; i++ {
+		tr.RecordSuccess(fmt.Sprintf("203.0.113.%d", i+1), fmt.Sprintf("u%d@example.ro", i))
+		clock.advance(time.Millisecond)
+	}
+
+	var fired bool
+	for i := 0; i < 5; i++ {
+		clock.advance(time.Millisecond)
+		for _, f := range tr.Record("198.51.100.44", "victim@example.ro") {
+			if f.Check == "mail_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("active failure tracking was evicted behind idle good sources")
+	}
+	if got := tr.Size(); got > maxTracked {
+		t.Fatalf("Size() = %d, want <= %d", got, maxTracked)
 	}
 }
 
