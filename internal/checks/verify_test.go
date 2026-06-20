@@ -365,6 +365,10 @@ func TestCanVerifyMembership(t *testing.T) {
 		"rpm_integrity", "dpkg_integrity",
 		"db_options_injection", "db_siteurl_hijack",
 		"db_post_injection", "db_spam_injection",
+		"drupal_settings_injection", "drupal_content_injection",
+		"joomla_extensions_injection", "joomla_content_injection",
+		"magento_settings_injection", "magento_content_injection",
+		"opencart_settings_injection", "opencart_content_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -401,6 +405,10 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"rpm_integrity", "dpkg_integrity",
 		"db_options_injection", "db_siteurl_hijack",
 		"db_post_injection", "db_spam_injection",
+		"drupal_settings_injection", "drupal_content_injection",
+		"joomla_extensions_injection", "joomla_content_injection",
+		"magento_settings_injection", "magento_content_injection",
+		"opencart_settings_injection", "opencart_content_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)

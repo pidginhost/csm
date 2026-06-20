@@ -101,6 +101,22 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"db_post_injection")
 	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSpamInjection(msg, details) },
 		"db_spam_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalSettingsInjection(msg, details) },
+		"drupal_settings_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalContentInjection(msg, details) },
+		"drupal_content_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaExtensionsInjection(msg, details) },
+		"joomla_extensions_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaContentInjection(msg, details) },
+		"joomla_content_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoSettingsInjection(msg, details) },
+		"magento_settings_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoContentInjection(msg, details) },
+		"magento_content_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartSettingsInjection(msg, details) },
+		"opencart_settings_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartContentInjection(msg, details) },
+		"opencart_content_injection")
 	return m
 }
 

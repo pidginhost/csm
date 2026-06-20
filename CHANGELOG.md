@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-check now also covers modified-system-binary findings: it re-runs `rpm -V` (RPM) or `debsums` / `dpkg --verify` (Debian) for the package and clears the finding when that file is no longer reported as modified.
 - Package-integrity re-checks now leave findings in place when package-manager output cannot be parsed.
 - Re-check now also covers WordPress database-content findings (injected options, siteurl/home hijack, injected posts, cloaked spam): it re-queries the affected row as root and clears the finding only when the row is gone or no longer matches the detector; any database error leaves it in place.
+- Re-check now also covers Drupal, Joomla, Magento, and OpenCart database-injection findings (settings/config and content/article rows): it re-reads the one flagged row and clears the finding only when it is gone or no longer matches the malware classifier.
 
 ### Changed
 
