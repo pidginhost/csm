@@ -93,6 +93,14 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"rpm_integrity")
 	register(func(_, msg, _, _ string) VerifyResult { return verifyDpkgIntegrity(msg) },
 		"dpkg_integrity")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBOptionsInjection(msg, details) },
+		"db_options_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSiteurlHijack(msg, details) },
+		"db_siteurl_hijack")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBPostInjection(msg, details) },
+		"db_post_injection")
+	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSpamInjection(msg, details) },
+		"db_spam_injection")
 	return m
 }
 

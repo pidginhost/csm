@@ -363,6 +363,8 @@ func TestCanVerifyMembership(t *testing.T) {
 		"outdated_plugins", "wp_core_integrity",
 		"uid0_account", "suid_binary",
 		"rpm_integrity", "dpkg_integrity",
+		"db_options_injection", "db_siteurl_hijack",
+		"db_post_injection", "db_spam_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -397,6 +399,8 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"outdated_plugins", "wp_core_integrity",
 		"uid0_account", "suid_binary",
 		"rpm_integrity", "dpkg_integrity",
+		"db_options_injection", "db_siteurl_hijack",
+		"db_post_injection", "db_spam_injection",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
