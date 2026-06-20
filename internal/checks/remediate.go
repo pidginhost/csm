@@ -407,7 +407,8 @@ func extractFilePathFromMessage(message string) string {
 
 func selectFindingPath(message string, filePath ...string) string {
 	if len(filePath) > 0 {
-		if path := strings.TrimSpace(filePath[0]); path != "" {
+		path := filePath[0]
+		if strings.TrimSpace(path) != "" {
 			return path
 		}
 	}
@@ -452,10 +453,10 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 }
 
 func sanitizeFixPath(path string, allowedRoots []string) (string, error) {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("file path is required")
 	}
+	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("file path must be absolute")
 	}

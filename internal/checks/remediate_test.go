@@ -43,3 +43,23 @@ func TestSelectFindingPath_PrefersExplicitFilePath(t *testing.T) {
 		t.Fatalf("selectFindingPath() = %q, want explicit path", got)
 	}
 }
+
+func TestSelectFindingPath_PreservesExplicitFilePathWhitespace(t *testing.T) {
+	got := selectFindingPath("World-writable PHP file: /tmp/ignored.php", "/tmp/explicit.php ")
+	if got != "/tmp/explicit.php " {
+		t.Fatalf("selectFindingPath() = %q, want exact explicit path", got)
+	}
+}
+
+func TestSanitizeFixPath_PreservesTrailingWhitespace(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "tool ")
+
+	got, err := sanitizeFixPath(path, []string{base})
+	if err != nil {
+		t.Fatalf("sanitizeFixPath() error = %v", err)
+	}
+	if got != path {
+		t.Fatalf("sanitizeFixPath() = %q, want %q", got, path)
+	}
+}

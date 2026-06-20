@@ -34,23 +34,30 @@ func verifyUID0Account(message string) VerifyResult {
 	if !ok {
 		return VerifyResult{Checked: false, Detail: "could not determine the account from the finding"}
 	}
-	user := strings.TrimSpace(rest)
+	user := rest
 	if user == "" {
 		return VerifyResult{Checked: false, Detail: "could not determine the account from the finding"}
+	}
+	if strings.ContainsAny(user, ":\r\n") {
+		return VerifyResult{Checked: false, Detail: "account name in finding is not auto-verifiable"}
 	}
 
 	data, err := osFS.ReadFile("/etc/passwd")
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot read /etc/passwd: %v", err)}
 	}
+	found := false
 	for _, line := range strings.Split(string(data), "\n") {
 		u, unauthorized := classifyUID0Line(line)
 		if u != user {
 			continue
 		}
+		found = true
 		if unauthorized {
 			return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%s is still an unauthorized UID 0 account", user)}
 		}
+	}
+	if found {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("%s is no longer an unauthorized UID 0 account", user)}
 	}
 	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("account %s no longer exists", user)}
