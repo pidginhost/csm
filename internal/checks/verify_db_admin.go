@@ -14,14 +14,20 @@ import (
 // legitimate site administrator -- keeps the finding active for operator review.
 // Any query failure or undiscoverable install returns Checked:false.
 
-// wpInstallBasePrefix re-derives the base table prefix for the WordPress install
-// whose database matches dbName. The users/usermeta tables the admin checks read
-// are network-wide in multisite, so the base prefix (never a secondary blog's)
-// is the correct one.
-func wpInstallBasePrefix(account, dbName string) (string, bool) {
+// findWPAdminVerifyPrefixes re-derives the base table prefixes for WordPress
+// installs whose database matches dbName. The users/usermeta tables are
+// network-wide in multisite, so this returns only each install's base prefix,
+// never secondary blog prefixes.
+func findWPAdminVerifyPrefixes(account, dbName, details string) ([]string, bool) {
 	if !validAccountName.MatchString(account) || dbName == "" {
-		return "", false
+		return nil, false
 	}
+	targetPrefix := detailField(details, "Table prefix")
+	if targetPrefix != "" && !validTablePrefix.MatchString(targetPrefix) {
+		return nil, false
+	}
+	var prefixes []string
+	seen := map[string]bool{}
 	patterns := []string{fmt.Sprintf("/home/%s/public_html/wp-config.php", account)}
 	addon, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
 	patterns = append(patterns, addon...)
@@ -30,9 +36,22 @@ func wpInstallBasePrefix(account, dbName string) (string, bool) {
 		if creds.dbName != dbName {
 			continue
 		}
-		return resolveTablePrefix(creds)
+		prefix, ok := resolveTablePrefix(creds)
+		if !ok {
+			return nil, false
+		}
+		if targetPrefix != "" {
+			if targetPrefix == prefix {
+				return []string{prefix}, true
+			}
+			continue
+		}
+		addPrefix(&prefixes, seen, prefix)
 	}
-	return "", false
+	if len(prefixes) == 0 {
+		return nil, false
+	}
+	return prefixes, true
 }
 
 // wpAdminQueryTables backtick-quotes the users and usermeta table names for the
@@ -60,24 +79,26 @@ func verifyDBRogueAdmin(message, details string) VerifyResult {
 	if userID == "" || !isAllDigits(userID) {
 		return VerifyResult{Checked: false, Detail: "could not parse the user ID from the finding"}
 	}
-	prefix, ok := wpInstallBasePrefix(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPAdminVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	users, usermeta, ok := wpAdminQueryTables(prefix)
-	if !ok {
-		return VerifyResult{Checked: false, Detail: "could not validate the WordPress tables from the finding"}
+	for _, prefix := range prefixes {
+		users, usermeta, ok := wpAdminQueryTables(prefix)
+		if !ok {
+			return VerifyResult{Checked: false, Detail: "could not validate the WordPress tables from the finding"}
+		}
+		rows, err := runDBVerifyQueryRoot(dbName, fmt.Sprintf(
+			"SELECT u.ID FROM %s u JOIN %s m ON u.ID = m.user_id WHERE m.meta_key = ? AND m.meta_value LIKE '%%administrator%%' AND u.ID = ?",
+			users, usermeta), prefix+"capabilities", userID)
+		if err != nil {
+			return dbVerifyQueryError()
+		}
+		if len(rows) > 0 {
+			return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged account is still a WordPress administrator"}
+		}
 	}
-	rows, err := runDBVerifyQueryRoot(dbName, fmt.Sprintf(
-		"SELECT u.ID FROM %s u JOIN %s m ON u.ID = m.user_id WHERE m.meta_key = ? AND m.meta_value LIKE '%%administrator%%' AND u.ID = ?",
-		users, usermeta), prefix+"capabilities", userID)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
-	if len(rows) == 0 {
-		return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged account is no longer a WordPress administrator"}
-	}
-	return VerifyResult{Checked: true, Resolved: false, Detail: "the flagged account is still a WordPress administrator"}
+	return VerifyResult{Checked: true, Resolved: true, Detail: "the flagged account is no longer a WordPress administrator"}
 }
 
 // verifyDBSuspiciousAdminEmail resolves when no administrator still uses the
@@ -88,24 +109,26 @@ func verifyDBSuspiciousAdminEmail(message, details string) VerifyResult {
 	if email == "" {
 		return VerifyResult{Checked: false, Detail: "could not parse the admin email from the finding"}
 	}
-	prefix, ok := wpInstallBasePrefix(dbFindingAccount(message, details), dbName)
+	prefixes, ok := findWPAdminVerifyPrefixes(dbFindingAccount(message, details), dbName, details)
 	if !ok {
 		return dbVerifyNotLocatable("WordPress site")
 	}
-	users, usermeta, ok := wpAdminQueryTables(prefix)
-	if !ok {
-		return VerifyResult{Checked: false, Detail: "could not validate the WordPress tables from the finding"}
+	for _, prefix := range prefixes {
+		users, usermeta, ok := wpAdminQueryTables(prefix)
+		if !ok {
+			return VerifyResult{Checked: false, Detail: "could not validate the WordPress tables from the finding"}
+		}
+		rows, err := runDBVerifyQueryRoot(dbName, fmt.Sprintf(
+			"SELECT u.ID FROM %s u JOIN %s m ON u.ID = m.user_id WHERE m.meta_key = ? AND m.meta_value LIKE '%%administrator%%' AND LOWER(u.user_email) = ?",
+			users, usermeta), prefix+"capabilities", email)
+		if err != nil {
+			return dbVerifyQueryError()
+		}
+		if len(rows) > 0 {
+			return VerifyResult{Checked: true, Resolved: false, Detail: "an administrator still uses the flagged email address"}
+		}
 	}
-	rows, err := runDBVerifyQueryRoot(dbName, fmt.Sprintf(
-		"SELECT u.ID FROM %s u JOIN %s m ON u.ID = m.user_id WHERE m.meta_key = ? AND m.meta_value LIKE '%%administrator%%' AND LOWER(u.user_email) = ?",
-		users, usermeta), prefix+"capabilities", email)
-	if err != nil {
-		return dbVerifyQueryError()
-	}
-	if len(rows) == 0 {
-		return VerifyResult{Checked: true, Resolved: true, Detail: "no administrator still uses the flagged email address"}
-	}
-	return VerifyResult{Checked: true, Resolved: false, Detail: "an administrator still uses the flagged email address"}
+	return VerifyResult{Checked: true, Resolved: true, Detail: "no administrator still uses the flagged email address"}
 }
 
 // dbAdminRowID extracts the numeric account id from a per-CMS admin finding's

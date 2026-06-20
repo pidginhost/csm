@@ -7,7 +7,7 @@ import (
 )
 
 func TestVerifyDBRogueAdmin(t *testing.T) {
-	details := "Database: alice_wp\nUser ID: 5\nLogin: rogue\nEmail: x@tempmail.com\nRegistered: 2026-06-20"
+	details := "Database: alice_wp\nTable prefix: wp_\nUser ID: 5\nLogin: rogue\nEmail: x@tempmail.com\nRegistered: 2026-06-20"
 	msg := "New WordPress admin account created in last 7 days: rogue (account: alice)"
 
 	t.Run("resolved when account gone or demoted", func(t *testing.T) {
@@ -33,6 +33,28 @@ func TestVerifyDBRogueAdmin(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolved when legacy finding matches a later shared-database prefix", func(t *testing.T) {
+		withMultiWPVerifyDiscovery(t, []wpVerifySite{
+			{account: "alice", path: "/home/alice/public_html/wp-config.php", dbName: "alice_wp", prefix: "wp_"},
+			{account: "alice", path: "/home/alice/shop/wp-config.php", dbName: "alice_wp", prefix: "shop_"},
+		})
+		var queried []string
+		withRootQuery(t, func(_ string, _ string, args ...any) ([]string, error) {
+			queried = append(queried, args[0].(string))
+			if args[0] == "shop_capabilities" {
+				return []string{"5"}, nil
+			}
+			return nil, nil
+		})
+		res := verifyDBRogueAdmin(msg, strings.ReplaceAll(details, "Table prefix: wp_\n", ""))
+		if !res.Checked || res.Resolved {
+			t.Errorf("want checked+unresolved, got %+v", res)
+		}
+		if strings.Join(queried, ",") != "wp_capabilities,shop_capabilities" {
+			t.Errorf("queried prefixes = %v", queried)
+		}
+	})
+
 	t.Run("not checked on query error", func(t *testing.T) {
 		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) { return nil, context.DeadlineExceeded })
@@ -52,7 +74,7 @@ func TestVerifyDBRogueAdmin(t *testing.T) {
 }
 
 func TestVerifyDBSuspiciousAdminEmail(t *testing.T) {
-	details := "Database: alice_wp\nEmail: x@tempmail.com"
+	details := "Database: alice_wp\nTable prefix: wp_\nEmail: x@tempmail.com"
 	msg := "WordPress admin 'rogue' has disposable email (account: alice)"
 
 	t.Run("resolved when no admin uses the email", func(t *testing.T) {
@@ -68,6 +90,25 @@ func TestVerifyDBSuspiciousAdminEmail(t *testing.T) {
 		withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
 		withRootQuery(t, func(_, _ string, _ ...any) ([]string, error) { return []string{"5"}, nil })
 		res := verifyDBSuspiciousAdminEmail(msg, details)
+		if !res.Checked || res.Resolved {
+			t.Errorf("want checked+unresolved, got %+v", res)
+		}
+	})
+
+	t.Run("honors the table prefix on new findings", func(t *testing.T) {
+		withMultiWPVerifyDiscovery(t, []wpVerifySite{
+			{account: "alice", path: "/home/alice/public_html/wp-config.php", dbName: "alice_wp", prefix: "wp_"},
+			{account: "alice", path: "/home/alice/shop/wp-config.php", dbName: "alice_wp", prefix: "shop_"},
+		})
+		withRootQuery(t, func(_ string, _ string, args ...any) ([]string, error) {
+			if args[0] != "shop_capabilities" {
+				t.Fatalf("capability key = %v, want shop_capabilities", args[0])
+			}
+			return []string{"5"}, nil
+		})
+		res := verifyDBSuspiciousAdminEmail(
+			"WordPress admin 'rogue' has disposable email (account: alice)",
+			"Database: alice_wp\nTable prefix: shop_\nEmail: x@tempmail.com")
 		if !res.Checked || res.Resolved {
 			t.Errorf("want checked+unresolved, got %+v", res)
 		}

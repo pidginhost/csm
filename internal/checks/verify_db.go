@@ -33,8 +33,7 @@ var dbVerifyTimeout = 30 * time.Second
 // is interpolated into a /home/<account>/... glob.
 var validAccountName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
 
-// messageAccountRe pulls the account out of a "(account: <user>)" suffix that
-// the WordPress content findings carry in their message.
+// messageAccountRe pulls account tokens out of WordPress finding messages.
 var messageAccountRe = regexp.MustCompile(`account:\s*([^,)]+)`)
 
 // detailField returns the value of a "Key: value" line in a finding's Details
@@ -58,8 +57,9 @@ func dbFindingAccount(message, details string) string {
 	if a := detailField(details, "Account"); a != "" {
 		return a
 	}
-	if m := messageAccountRe.FindStringSubmatch(message); m != nil {
-		return strings.TrimSpace(m[1])
+	matches := messageAccountRe.FindAllStringSubmatch(message, -1)
+	if len(matches) > 0 {
+		return strings.TrimSpace(matches[len(matches)-1][1])
 	}
 	return ""
 }

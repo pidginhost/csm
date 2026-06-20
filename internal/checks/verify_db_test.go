@@ -57,6 +57,62 @@ func (m *wpVerifyOS) Open(name string) (*os.File, error) {
 	return tmp, nil
 }
 
+type wpVerifySite struct {
+	account   string
+	path      string
+	dbName    string
+	prefix    string
+	multisite bool
+}
+
+type multiWPVerifyOS struct {
+	mockOS
+	t     *testing.T
+	sites []wpVerifySite
+}
+
+func (m *multiWPVerifyOS) Glob(pattern string) ([]string, error) {
+	var out []string
+	for _, site := range m.sites {
+		if strings.Contains(pattern, "/home/"+site.account+"/") {
+			out = append(out, site.path)
+		}
+	}
+	return out, nil
+}
+
+func (m *multiWPVerifyOS) Open(name string) (*os.File, error) {
+	for _, site := range m.sites {
+		if name != site.path {
+			continue
+		}
+		prefix := site.prefix
+		if prefix == "" {
+			prefix = "wp_"
+		}
+		body := fmt.Sprintf(
+			"define('DB_NAME','%s');\ndefine('DB_USER','u');\ndefine('DB_PASSWORD','p');\n$table_prefix = '%s';\n",
+			site.dbName, prefix)
+		if site.multisite {
+			body += "define('MULTISITE', true);\n"
+		}
+		tmp, err := os.CreateTemp(m.t.TempDir(), "wpcfg*.php")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tmp.WriteString(body); err != nil {
+			_ = tmp.Close()
+			return nil, err
+		}
+		if _, err := tmp.Seek(0, 0); err != nil {
+			_ = tmp.Close()
+			return nil, err
+		}
+		return tmp, nil
+	}
+	return nil, os.ErrNotExist
+}
+
 // withWPVerifyDiscovery points osFS at a wpVerifyOS for one account/db/prefix.
 func withWPVerifyDiscovery(t *testing.T, account, dbName, prefix string) {
 	t.Helper()
@@ -69,6 +125,13 @@ func withWPVerifyMultisiteDiscovery(t *testing.T, account, dbName, prefix string
 	t.Helper()
 	old := osFS
 	osFS = &wpVerifyOS{t: t, account: account, dbName: dbName, prefix: prefix, multisite: true}
+	t.Cleanup(func() { osFS = old })
+}
+
+func withMultiWPVerifyDiscovery(t *testing.T, sites []wpVerifySite) {
+	t.Helper()
+	old := osFS
+	osFS = &multiWPVerifyOS{t: t, sites: sites}
 	t.Cleanup(func() { osFS = old })
 }
 
@@ -103,6 +166,9 @@ func TestDBFindingAccount(t *testing.T) {
 	// WP content findings carry it only in the message.
 	if got := dbFindingAccount("Malicious script injection in wp_options 'x' (account: alice)", ""); got != "alice" {
 		t.Errorf("account from message = %q, want alice", got)
+	}
+	if got := dbFindingAccount("WordPress admin 'x (account: mallory)' has disposable email (account: alice)", ""); got != "alice" {
+		t.Errorf("account from trailing message token = %q, want alice", got)
 	}
 }
 

@@ -574,8 +574,8 @@ func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: alert.Critical,
 			Check:    "db_rogue_admin",
 			Message:  fmt.Sprintf("New WordPress admin account created in last 7 days: %s (account: %s)", parts[1], user),
-			Details: fmt.Sprintf("Database: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
-				creds.dbName, parts[0], parts[1], parts[2], safeGet(parts, 3)),
+			Details: fmt.Sprintf("Database: %s\nTable prefix: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
+				creds.dbName, prefix, parts[0], parts[1], parts[2], safeGet(parts, 3)),
 		})
 	}
 
@@ -605,7 +605,7 @@ func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 					Severity: alert.High,
 					Check:    "db_suspicious_admin_email",
 					Message:  fmt.Sprintf("WordPress admin '%s' has disposable email (account: %s)", parts[0], user),
-					Details:  fmt.Sprintf("Database: %s\nEmail: %s", creds.dbName, email),
+					Details:  fmt.Sprintf("Database: %s\nTable prefix: %s\nEmail: %s", creds.dbName, prefix, email),
 				})
 				break
 			}
