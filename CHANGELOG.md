@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Outdated-plugin Re-check now validates the WordPress install path and site owner before running `wp-cli`, and keeps the finding active when the re-scan cannot be trusted.
 - Findings re-check now keeps path-presence findings active when the flagged path still exists, and refuses ambiguous filesystem targets instead of clearing them when the path cannot be verified safely.
 - Crontab findings now carry their target path, so Re-check can validate them from the Findings page.
 - Applying the automated permission fix for a world- or group-writable PHP finding now recognises a file an operator already corrected and clears the finding instead of failing, and explains read-only-mount failures (e.g. backup snapshots) instead of surfacing a raw "read-only file system" error.

@@ -472,15 +472,29 @@ var errWPInventoryParse = errors.New("wp-cli plugin list: invalid JSON")
 // per-finding re-check so both see identical results. Read-only: it inventories,
 // it does not change anything.
 func inventoryWPSite(ctx context.Context, wpConfig string) (store.SitePlugins, error) {
+	return inventoryWPSiteWithDomain(ctx, wpConfig, true)
+}
+
+func inventoryWPSiteForVerify(ctx context.Context, wpConfig string) (store.SitePlugins, error) {
+	return inventoryWPSiteWithDomain(ctx, wpConfig, false)
+}
+
+func inventoryWPSiteWithDomain(ctx context.Context, wpConfig string, includeDomain bool) (store.SitePlugins, error) {
 	wpPath := filepath.Dir(wpConfig)
 	user := extractUser(wpPath)
-	domain := extractWPDomain(ctx, wpPath, user)
+	if !validWPCLIUser(user) {
+		return store.SitePlugins{}, fmt.Errorf("invalid WordPress site owner: %q", user)
+	}
+	domain := user
+	if includeDomain {
+		domain = extractWPDomain(ctx, wpPath, user)
+	}
 
 	// Run wp plugin list as the site owner on stdout-only so PHP
 	// notices/warnings on stderr can't corrupt the JSON we parse. Use --path
 	// instead of a shell cd to avoid shell injection via crafted directory
 	// names on shared hosting.
-	out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+	out, err := runWPCLIStdout(ctx, user,
 		wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
 	)
 	if err != nil {
@@ -503,6 +517,37 @@ func inventoryWPSite(ctx context.Context, wpConfig string) (store.SitePlugins, e
 		})
 	}
 	return site, nil
+}
+
+func validWPCLIUser(user string) bool {
+	if user == "" || user == "unknown" || strings.HasPrefix(user, "-") {
+		return false
+	}
+	for _, r := range user {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '_', '-', '.', '@', '$':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func runWPCLIStdout(ctx context.Context, user, command string) ([]byte, error) {
+	if !validWPCLIUser(user) {
+		return nil, fmt.Errorf("invalid WordPress site owner: %q", user)
+	}
+	return cmdExec.RunContextStdout(ctx, "su", "-l", "-s", "/bin/bash", "-c", command, "--", user)
 }
 
 // pluginOutdatedSeverity classifies one plugin entry. It returns ok=false for
@@ -577,7 +622,7 @@ func extractWPDomain(ctx context.Context, wpPath, user string) string {
 	// Stdout-only: some sites print "WARNING: MYSQL_OPT_RECONNECT deprecated"
 	// or similar on stderr during wp-cli boot. Mixing that into the value
 	// would produce a poisoned domain like "Warning: ... https://site.com".
-	out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+	out, err := runWPCLIStdout(ctx, user,
 		wpCLIFlags+"option get siteurl --path="+shellQuote(wpPath),
 	)
 	if err == nil {

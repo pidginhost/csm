@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -49,17 +48,20 @@ func verifyOutdatedPlugins(details string) VerifyResult {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer exists: %s", clean)}
 	}
 
-	wpConfig := filepath.Join(clean, "wp-config.php")
-	if _, statErr := osFS.Lstat(wpConfig); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer present: %s", clean)}
-		}
-		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot access WordPress install: %v", statErr)}
+	wpConfig, info, exists, err := readOnlyFixPath(filepath.Join(clean, "wp-config.php"), wpVerifyAllowedRoots)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: err.Error()}
+	}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("WordPress install no longer present: %s", clean)}
+	}
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: "wp-config.php path is not a regular file; not auto-verifiable"}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), wpVerifyTimeout)
 	defer cancel()
-	site, err := inventoryWPSite(ctx, wpConfig)
+	site, err := inventoryWPSiteForVerify(ctx, wpConfig)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("could not re-scan plugins (try again, or run an account scan): %v", err)}
 	}
