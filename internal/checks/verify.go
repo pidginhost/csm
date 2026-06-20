@@ -89,6 +89,10 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"uid0_account")
 	register(func(_, _, _, p string) VerifyResult { return verifySuidCleared(p) },
 		"suid_binary")
+	register(func(_, msg, _, _ string) VerifyResult { return verifyRPMIntegrity(msg) },
+		"rpm_integrity")
+	register(func(_, msg, _, _ string) VerifyResult { return verifyDpkgIntegrity(msg) },
+		"dpkg_integrity")
 	return m
 }
 

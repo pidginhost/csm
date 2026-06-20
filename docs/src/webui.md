@@ -92,8 +92,9 @@ current state: file-permission (world/group-writable), webshell and malware
 file findings, phishing pages/kits and credential logs, `.htaccess`
 directives, Exim spool messages, crontabs, outdated WordPress plugins,
 WordPress core integrity, unauthorized UID 0 accounts (re-reads `/etc/passwd`),
-and SUID binaries in unusual locations (re-stats the setuid bit). It resolves a
-finding only on confirmed evidence (the
+SUID binaries in unusual locations (re-stats the setuid bit), and modified
+system binaries (re-runs `rpm -V` / `debsums` / `dpkg --verify` for the
+package). It resolves a finding only on confirmed evidence (the
 file is gone, the bit is cleared, the directives are clean) -- never on an
 ambiguous or unreadable target. The WordPress re-checks are heavier than the
 file checks: they re-run `wp-cli` for that one site (bounded timeout) so a

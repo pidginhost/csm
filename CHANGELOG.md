@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-check now also covers outdated-WordPress-plugin findings: it re-runs `wp-cli` for that one site and clears the finding when no active plugin is outdated anymore, so an operator who just updated plugins gets immediate confirmation.
 - Re-check now also covers WordPress core-integrity findings: it re-runs `wp core verify-checksums` for that install and clears the finding when the install is gone or checksum verification is clean.
 - Re-check now also covers unauthorized-UID-0-account and SUID-binary findings: it re-reads `/etc/passwd` (cleared when the account is gone or no longer UID 0) and re-stats the binary (cleared when removed or no longer setuid).
+- Re-check now also covers modified-system-binary findings: it re-runs `rpm -V` (RPM) or `debsums` / `dpkg --verify` (Debian) for the package and clears the finding when that file is no longer reported as modified.
 
 ### Changed
 

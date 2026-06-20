@@ -362,6 +362,7 @@ func TestCanVerifyMembership(t *testing.T) {
 		"email_phishing_content", "suspicious_crontab",
 		"outdated_plugins", "wp_core_integrity",
 		"uid0_account", "suid_binary",
+		"rpm_integrity", "dpkg_integrity",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
@@ -395,6 +396,7 @@ func TestCanVerifyDoesNotAdvertiseDefaultVerifier(t *testing.T) {
 		"email_phishing_content", "suspicious_crontab",
 		"outdated_plugins", "wp_core_integrity",
 		"uid0_account", "suid_binary",
+		"rpm_integrity", "dpkg_integrity",
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
