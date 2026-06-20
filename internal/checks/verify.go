@@ -85,6 +85,10 @@ func buildFindingVerifiers() map[string]func(checkType, message, details, path s
 		"outdated_plugins")
 	register(func(_, _, details, _ string) VerifyResult { return verifyWPCoreIntegrity(details) },
 		"wp_core_integrity")
+	register(func(_, msg, _, _ string) VerifyResult { return verifyUID0Account(msg) },
+		"uid0_account")
+	register(func(_, _, _, p string) VerifyResult { return verifySuidCleared(p) },
+		"suid_binary")
 	return m
 }
 

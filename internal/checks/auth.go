@@ -250,19 +250,9 @@ func CheckUID0Accounts(ctx context.Context, _ *config.Config, _ *state.Store) []
 		return nil
 	}
 
-	allowedUID0 := map[string]bool{
-		"root": true, "sync": true, "shutdown": true,
-		"halt": true, "operator": true,
-	}
-
 	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) < 4 {
-			continue
-		}
-		user := fields[0]
-		uid := fields[2]
-		if uid == "0" && !allowedUID0[user] {
+		user, unauthorized := classifyUID0Line(line)
+		if unauthorized {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "uid0_account",
