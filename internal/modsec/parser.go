@@ -39,7 +39,8 @@ var (
 // in a single rule. Metadata keywords (log, msg, severity, tag, ...) are
 // intentionally excluded - a rule that carries only metadata inherits
 // SecDefaultAction, which CSM does not parse, so the registry leaves
-// Action empty and the LiteSpeed classifier defaults that rule to block.
+// Action empty. A populated registry treats that rule as unknown and the
+// LiteSpeed classifier defaults it to block.
 var dispositionPriority = []string{
 	"deny", "drop", "block", "redirect", "proxy", "pause", "allow", "pass",
 }

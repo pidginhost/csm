@@ -24,9 +24,8 @@ const modsecRegistryRefresh = 5 * time.Minute
 // that hits them three times in ten minutes.
 //
 // The build is failure-soft: missing rule directories yield an empty
-// registry, which the classifier interprets the same way as the legacy
-// behaviour (default to block on unknown rule). New installs and hosts
-// without ModSecurity therefore see no behaviour change.
+// registry. With no prior healthy registry, ambiguous LiteSpeed "triggered!"
+// lines are warnings until a later refresh loads rule actions.
 func (d *Daemon) initModSecRegistry() {
 	d.refreshModSecRegistry()
 	d.wg.Add(1)
@@ -34,12 +33,29 @@ func (d *Daemon) initModSecRegistry() {
 }
 
 func (d *Daemon) refreshModSecRegistry() {
-	dirs := modsec.RuleDirs(platform.Detect())
+	// DetectFreshWithOverrides (not the cached Detect) so a web-server
+	// mis-detection at boot -- LiteSpeed probed before lsws finished starting,
+	// which points RuleDirs at non-existent directories -- self-heals on a
+	// later refresh once the host has settled, instead of staying wrong (and
+	// the registry empty) for the daemon's lifetime.
+	dirs := modsec.RuleDirs(platform.DetectFreshWithOverrides())
 	reg, err := modsec.BuildRegistry(dirs)
 	if err != nil {
 		csmlog.Warn("modsec rule-action registry build had errors", "err", err, "rules_loaded", reg.Len())
 	}
-	modsec.SetGlobal(reg)
+	// ReplaceGlobal keeps a previously-healthy registry rather than blanking
+	// it to empty: the vendor rule tree is briefly empty during cPanel's
+	// modsec_assemble rewrite, and a blank registry loses known pass and deny
+	// actions.
+	if !modsec.ReplaceGlobal(reg) {
+		previousRules := 0
+		if prev := modsec.Global(); prev != nil {
+			previousRules = prev.Len()
+		}
+		csmlog.Warn("modsec rule-action registry refresh returned 0 rules; keeping previous rule actions",
+			"previous_rules", previousRules, "dirs", len(dirs))
+		return
+	}
 	csmlog.Info("modsec rule-action registry loaded", "rules", reg.Len(), "dirs", len(dirs))
 }
 

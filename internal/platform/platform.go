@@ -143,13 +143,14 @@ var (
 func SetOverrides(o Overrides) bool {
 	overrideMu.Lock()
 	defer overrideMu.Unlock()
-	// Use a local mutex + a check on detectedOnce state. detectedOnce has
-	// no public "was it called" query, so we track it via the pending var.
-	if pendingOverride != nil && isDetected() {
+	// sync.Once has no public "was called" query, so detectedFlag is the
+	// guard that makes late override attempts a true no-op for both Detect
+	// and fresh re-probes.
+	if isDetected() {
 		return false
 	}
 	pendingOverride = &o
-	return !isDetected()
+	return true
 }
 
 // isDetected returns true if Detect() has already cached a result.
@@ -168,8 +169,8 @@ func Detect() Info {
 		if pendingOverride != nil {
 			detected = applyOverrides(detected, *pendingOverride)
 		}
-		overrideMu.Unlock()
 		detectedFlag.Store(true)
+		overrideMu.Unlock()
 	})
 	return detected
 }
@@ -183,6 +184,32 @@ func DetectFresh() Info {
 	detectPanel(&i)
 	detectWebServer(&i)
 	populatePaths(&i)
+	return i
+}
+
+// DetectFreshWithOverrides re-runs detection (ignoring the one-shot Detect()
+// cache) and merges in any operator-supplied overrides, returning the same
+// view Detect() would produce but without the process-lifetime cache.
+//
+// Periodic re-probes (the ModSec rule-action registry refresh) use this so a
+// detection that was wrong at boot -- for example a LiteSpeed host probed
+// before lsws finished starting, which resolves to the wrong rule
+// directories and yields an empty registry -- self-heals on the next refresh
+// instead of staying wrong for the daemon's lifetime. A configured
+// web_server.type override still wins, exactly as it does through Detect().
+func DetectFreshWithOverrides() Info {
+	i := DetectFresh()
+	var o Overrides
+	hasOverride := false
+	overrideMu.Lock()
+	if pendingOverride != nil {
+		o = *pendingOverride
+		hasOverride = true
+	}
+	overrideMu.Unlock()
+	if hasOverride {
+		i = applyOverrides(i, o)
+	}
 	return i
 }
 

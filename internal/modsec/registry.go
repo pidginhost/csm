@@ -22,7 +22,7 @@ type Registry struct {
 
 // Action returns the declared action for ruleID and whether it is known.
 // An unknown ID is the safe default: callers should treat it as a potential
-// block to preserve coverage when the rule files have not been parsed yet.
+// block when they have a populated registry but not this specific rule.
 func (r *Registry) Action(ruleID int) (action string, known bool) {
 	if r == nil {
 		return "", false
@@ -115,6 +115,33 @@ var globalRegistry atomic.Pointer[Registry]
 // rebuild and re-set on a refresh interval. Safe for concurrent use.
 func SetGlobal(r *Registry) {
 	globalRegistry.Store(r)
+}
+
+// ReplaceGlobal installs r as the daemon-wide registry, EXCEPT when r is empty
+// (or nil) while the currently-installed registry is non-empty: in that case
+// the previous registry is kept and false is returned.
+//
+// The vendor rule tree is transiently empty or unreadable during cPanel's
+// nightly modsec_assemble rewrite and during a boot-time web-server
+// mis-detection window (a LiteSpeed host probed before lsws has finished
+// starting resolves to the wrong rule directories). Replacing a populated
+// registry with an empty one would discard known pass and deny actions until
+// the next successful refresh.
+//
+// Refresh callers should use this instead of SetGlobal. Returns true if r was
+// installed, false if the previous registry was kept.
+func ReplaceGlobal(r *Registry) bool {
+	for {
+		prev := globalRegistry.Load()
+		if r == nil || r.Len() == 0 {
+			if prev != nil && prev.Len() > 0 {
+				return false
+			}
+		}
+		if globalRegistry.CompareAndSwap(prev, r) {
+			return true
+		}
+	}
 }
 
 // Global returns the currently installed registry, or nil if none has been

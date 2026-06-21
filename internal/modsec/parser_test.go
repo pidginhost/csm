@@ -235,7 +235,7 @@ func TestIsBlockingAction(t *testing.T) {
 		"pass":     false,
 		"allow":    false,
 		"log":      false, // metadata, not a disposition; caller treats as unknown
-		"":         false, // unknown - caller defaults to block on the LiteSpeed path
+		"":         false, // unknown - populated LiteSpeed registry defaults to block
 	}
 	for action, want := range cases {
 		if got := IsBlockingAction(action); got != want {

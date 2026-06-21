@@ -72,22 +72,60 @@ func TestLiteSpeedTriggered_DenyActionRuleClassifiedAsBlock(t *testing.T) {
 	}
 }
 
-func TestLiteSpeedTriggered_UnknownRuleDefaultsToBlock(t *testing.T) {
-	// Empty registry on purpose: the registry-build path may not yet have
-	// run on a fresh install, and the legacy behaviour of defaulting to
-	// block must be preserved so we never silently drop coverage.
+func TestLiteSpeedTriggered_EmptyRegistryDoesNotEscalate(t *testing.T) {
+	// An empty registry means CSM has no rule-action knowledge at all: the
+	// build has not run yet, or the vendor rule tree was transiently empty
+	// (cPanel modsec_assemble mid-rewrite, or a boot-time web-server
+	// mis-detection). In that state it cannot tell a pass-action scoring rule
+	// from a real deny, so an ambiguous "triggered" line must NOT be
+	// classified as a block -- doing so false-escalated benign Comodo CWAF
+	// rules (210710/214930) into 24h auto-bans of real visitors. Explicit
+	// "Access denied" lines are still classified as blocks upstream; a
+	// LiteSpeed deny that logs only "triggered!" is degraded to warning until
+	// a refresh loads rule actions again.
 	installModSecRegistryForTest(t, map[int]string{})
 
 	findings := parseModSecLogLine(liteSpeedTriggerLine949110, &config.Config{})
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
-	if findings[0].Check != "modsec_block_realtime" {
-		t.Errorf("check = %q, want modsec_block_realtime (unknown rule defaults to block)", findings[0].Check)
+	if findings[0].Check != "modsec_warning_realtime" {
+		t.Errorf("check = %q, want modsec_warning_realtime (empty registry must not escalate)", findings[0].Check)
 	}
 }
 
-func TestLiteSpeedTriggered_NilRegistryDefaultsToBlock(t *testing.T) {
+func TestApacheAccessDenied_EmptyRegistryStillBlocks(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{})
+
+	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.164] ModSecurity: Access denied with code 403, [id "949110"] [msg "Inbound Anomaly Score Exceeded"] [hostname "www.example.com"] [uri "/xmlrpc.php"]`
+	findings := parseModSecLogLine(line, &config.Config{})
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Check != "modsec_block_realtime" {
+		t.Errorf("check = %q, want modsec_block_realtime (Access denied does not depend on registry)", findings[0].Check)
+	}
+}
+
+func TestLiteSpeedTriggered_UnknownRuleInPopulatedRegistryDefaultsToBlock(t *testing.T) {
+	// When the registry IS populated, a genuinely unrecognised rule stays
+	// conservative and classifies as a block so an unknown deny rule still
+	// escalates. Rule 210710 is absent from this registry.
+	installModSecRegistryForTest(t, map[int]string{949110: "deny"})
+
+	findings := parseModSecLogLine(liteSpeedTriggerLine210710, &config.Config{})
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Check != "modsec_block_realtime" {
+		t.Errorf("check = %q, want modsec_block_realtime (unknown rule in a populated registry stays conservative)", findings[0].Check)
+	}
+}
+
+func TestLiteSpeedTriggered_NilRegistryDoesNotEscalate(t *testing.T) {
+	// No registry installed at all: same reasoning as the empty-registry
+	// case -- without rule-action knowledge, ambiguous "triggered" lines must
+	// not be auto-escalated into blocks.
 	prev := modsec.Global()
 	modsec.SetGlobal(nil)
 	t.Cleanup(func() { modsec.SetGlobal(prev) })
@@ -96,8 +134,8 @@ func TestLiteSpeedTriggered_NilRegistryDefaultsToBlock(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d", len(findings))
 	}
-	if findings[0].Check != "modsec_block_realtime" {
-		t.Errorf("check = %q, want modsec_block_realtime (nil registry defaults to block)", findings[0].Check)
+	if findings[0].Check != "modsec_warning_realtime" {
+		t.Errorf("check = %q, want modsec_warning_realtime (nil registry must not escalate)", findings[0].Check)
 	}
 }
 

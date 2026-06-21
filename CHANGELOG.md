@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The dashboard health badge now also follows degraded daemon state, so detached watchers or store failures no longer appear healthy.
 - Outdated WordPress plugin scans now collapse cPanel document-root symlinks before scanning, avoiding duplicate install findings.
 - FTP brute-force detection now follows pure-ftpd logs across scan cycles and restarts, including IPv6 peer tokens, so slow same-source attacks are counted reliably on busy system logs.
+- ModSecurity LiteSpeed handling no longer turns pass-action rule hits into auto-blocks during temporary rule-load gaps, while keeping the last known rule actions when refreshes briefly see no rules.
+- Late platform override attempts are now ignored consistently by fresh re-probes, so background refreshes stay aligned with the startup platform view.
 
 ## [3.19.0] - 2026-06-20
 

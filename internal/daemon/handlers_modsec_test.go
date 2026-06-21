@@ -56,6 +56,11 @@ func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
 }
 
 func TestParseModSecLogLine_LiteSpeedTriggered(t *testing.T) {
+	// 920170 (OWASP CRS REQUEST-920-PROTOCOL-ENFORCEMENT) is a deny rule;
+	// install a populated registry so classification reflects the rule's
+	// real action rather than the empty-registry fallback (which must not
+	// escalate -- see TestLiteSpeedTriggered_EmptyRegistryDoesNotEscalate).
+	installModSecRegistryForTest(t, map[int]string{920170: "deny"})
 	line := `2026-04-01 17:13:53.887905 [NOTICE] [2288689] [T1] [122.9.114.57:41920-13#APVH_*_server.example.com] [MODSEC] mod_security rule [id "920170"] at [/etc/apache2/conf.d/modsec_vendor_configs/OWASP3/rules/REQUEST-920-PROTOCOL-ENFORCEMENT.conf:180] triggered!`
 	cfg := &config.Config{}
 

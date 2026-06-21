@@ -107,8 +107,9 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// would be counted as a deny, escalating to a 24-hour auto-block after
 	// three pass-action triggers from the same IP. Consult the rule-action
 	// registry built at daemon start: pass/log/allow rules produce a
-	// warning, deny/drop/block produce a block, and an unknown rule ID
-	// keeps the legacy default-to-block behaviour for safety.
+	// warning, deny/drop/block produce a block, and an unknown rule ID in a
+	// populated registry stays conservative. When the registry is empty, the
+	// line remains a warning until a refresh loads rule actions.
 	check := "modsec_warning_realtime"
 	if strings.Contains(line, "Access denied") {
 		check = "modsec_block_realtime"
@@ -183,20 +184,35 @@ func domainOrEmpty(hostname string) string {
 // classifyLiteSpeedTrigger decides whether a LiteSpeed mod_security
 // "triggered!" line represents a real deny (block_realtime) or merely an
 // informational pass-action match (warning_realtime), based on the rule's
-// declared action in the rule-action registry. Unknown rules default to
-// block to preserve coverage when the registry has not been populated yet
-// (very early daemon startup, or hosts without parseable rule files).
+// declared action in the rule-action registry. A populated registry with an
+// unknown rule defaults to block; a nil or empty registry cannot distinguish
+// pass-action matches from denies, so ambiguous lines stay warnings until a
+// refresh loads rule actions.
 func classifyLiteSpeedTrigger(ruleID string) string {
 	num, err := strconv.Atoi(ruleID)
 	if err != nil {
 		return "modsec_block_realtime"
 	}
 	reg := modsec.Global()
-	if reg == nil {
-		return "modsec_block_realtime"
+	// No rule-action knowledge available: the registry has not been built yet,
+	// or the vendor rule tree was transiently empty (cPanel modsec_assemble
+	// mid-rewrite, or a boot-time web-server mis-detection). We cannot tell a
+	// pass-action scoring rule -- e.g. Comodo CWAF 210710 / 214930, which only
+	// add anomaly points and never deny -- from a real deny. Defaulting every
+	// "triggered" line to a block in this state false-escalates benign hits
+	// into 24h auto-bans of real visitors. Explicit "Access denied" lines are
+	// classified as blocks before this function is reached. LiteSpeed deny
+	// rules that log only "triggered!" are degraded to warning during this
+	// empty-registry window, but ambiguous lines must not auto-escalate while
+	// the registry is unavailable.
+	if reg == nil || reg.Len() == 0 {
+		return "modsec_warning_realtime"
 	}
 	action, known := reg.Action(num)
 	if !known {
+		// Registry IS populated but this specific rule is unrecognised -- stay
+		// conservative and treat it as a block so a genuinely unknown deny
+		// rule still escalates.
 		return "modsec_block_realtime"
 	}
 	if modsec.IsBlockingAction(action) {
