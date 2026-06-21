@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Re-check now also covers content findings (suspicious/obfuscated PHP, webshells, droppers, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
+
 ### Fixed
 
 - The dashboard header now counts every active incident instead of the first page, so it no longer reports a handful when hundreds are open or contained.
