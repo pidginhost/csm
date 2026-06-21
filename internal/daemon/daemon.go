@@ -815,6 +815,29 @@ func (d *Daemon) Run() error {
 		}
 	}
 
+	// Auto-clear stale content findings when the detection logic has changed
+	// since the last start (new signatures, YARA rules, or heuristic version).
+	// Runs in a goroutine so it does not block startup; it only dismisses
+	// findings that the re-verifier confirms are no longer flagged AND whose
+	// bytes have not changed since detection.
+	if db := store.Global(); db != nil && d.store != nil {
+		token := checks.ContentDetectionVersion()
+		if changed, err := db.EnsureContentLogicVersion(token); err != nil {
+			csmlog.Warn("content logic version check failed", "err", err)
+		} else if changed {
+			go func() {
+				dismissed := checks.ReverifyStaleContentFindings(d.store)
+				for _, dm := range dismissed {
+					csmlog.Info("stale content finding auto-cleared",
+						"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
+				}
+				if len(dismissed) > 0 {
+					csmlog.Info("content re-verification sweep complete", "cleared", len(dismissed))
+				}
+			}()
+		}
+	}
+
 	// Live AF_ALG listener (Copy Fail / CVE-2026-31431) — only started
 	// when the kernel is actually exploitable. Hosts with a KernelCare
 	// livepatch covering CVE-2026-31431, OR built without the AF_ALG
