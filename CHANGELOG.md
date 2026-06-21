@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The dashboard header now counts every active incident instead of the first page, so it no longer reports a handful when hundreds are open or contained.
 - The dashboard health badge now reflects active critical and high incidents, not just whether the daemon is running, so it stops showing "Healthy" while critical incidents are open or contained.
 - The dashboard health badge now also follows degraded daemon state, so detached watchers or store failures no longer appear healthy.
+- Outdated WordPress plugin scans now collapse cPanel document-root symlinks before scanning, avoiding duplicate install findings.
 - FTP brute-force detection now reads pure-ftpd peer tokens for IPv4 and IPv6 while keeping email-like tokens in web and WAF logs from changing the source IP used for blocking. FTP findings carry the parsed source IP so IPv6 autoblock uses the firewall path directly.
 
 ## [3.19.0] - 2026-06-20

@@ -214,6 +214,7 @@ func findAllWPInstalls() []string {
 	for _, pattern := range patterns {
 		matches, _ := osFS.Glob(pattern)
 		for _, m := range matches {
+			m = canonicalWPInstallPath(m)
 			skip := false
 			lower := strings.ToLower(m)
 			for _, sub := range skipSubstrings {
@@ -233,6 +234,35 @@ func findAllWPInstalls() []string {
 	}
 
 	return results
+}
+
+func canonicalWPInstallPath(wpConfig string) string {
+	clean := filepath.Clean(wpConfig)
+	dir := filepath.Dir(clean)
+	info, err := osFS.Lstat(dir)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return clean
+	}
+
+	target, err := osFS.Readlink(dir)
+	if err != nil || target == "" {
+		return clean
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(dir), target)
+	}
+	target = filepath.Clean(target)
+
+	home := homeAccountRoot(clean)
+	if home == "" || !isPathWithinOrEqual(target, home) {
+		return clean
+	}
+
+	targetInfo, err := osFS.Lstat(target)
+	if err != nil || !targetInfo.IsDir() || targetInfo.Mode()&os.ModeSymlink != 0 {
+		return clean
+	}
+	return filepath.Join(target, filepath.Base(clean))
 }
 
 // wpCLIPluginEntry mirrors the JSON output of `wp plugin list --format=json`.
