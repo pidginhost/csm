@@ -380,6 +380,7 @@ func TestCanVerifyMembership(t *testing.T) {
 	}
 	verifiable = append(verifiable, presenceVerifiableChecks...)
 	verifiable = append(verifiable, htaccessVerifiableChecks...)
+	verifiable = append(verifiable, contentReverifiableChecks...)
 
 	for _, c := range verifiable {
 		if !CanVerify(c) {
