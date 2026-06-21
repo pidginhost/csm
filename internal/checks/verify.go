@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // VerifyResult reports whether a finding's underlying condition still holds.
@@ -19,25 +22,25 @@ type VerifyResult struct {
 	Detail   string `json:"detail"`
 }
 
+// VerifyInput carries everything a finding verifier may need. ContentSHA256 and
+// DetectLogic are populated only for content findings emitted with a fingerprint.
+type VerifyInput struct {
+	Check, Message, Details, Path string
+	ContentSHA256, DetectLogic    string
+}
+
 // presenceVerifiableChecks are findings whose remediation removes or
 // quarantines a single flagged file, so the honest, cheap re-check is "is the
-// flagged path still there?". Resolving only on confirmed absence (never on a
-// stat error) cannot falsely clear a still-present threat. We deliberately do
-// NOT re-run content scanning here: a file that is still present but edited
-// stays reported, so a partial clean is never mistaken for a fix.
+// flagged path still there?". Content-family checks (PHP heuristics, YARA,
+// signatures) are handled by reverifyContentFinding via contentReverifiableChecks
+// instead — they can resolve a still-present file when its bytes are unchanged
+// and the current classifier no longer flags them.
 var presenceVerifiableChecks = []string{
-	"webshell", "webshell_realtime", "webshell_content_realtime",
-	"new_webshell_file",
-	"obfuscated_php", "obfuscated_php_realtime",
-	"php_dropper_realtime",
-	"suspicious_php_content", "suspicious_file",
-	"new_php_in_sensitive_dir", "new_php_in_uploads", "new_suspicious_php",
-	"php_in_sensitive_dir_realtime", "php_in_uploads_realtime",
+	"suspicious_file",
 	"nulled_plugin", "symlink_attack",
 	"backdoor_binary", "new_executable_in_config",
 	"executable_in_config_realtime", "executable_in_tmp_realtime",
 	"cgi_backdoor_realtime", "cgi_suspicious_location_realtime",
-	"yara_match_realtime", "signature_match_realtime",
 	"phishing_page", "phishing_directory", "phishing_php",
 	"phishing_kit_archive", "phishing_kit_realtime", "phishing_iframe",
 	"phishing_redirector", "phishing_credential_log", "phishing_realtime",
@@ -61,94 +64,182 @@ var htaccessVerifiableChecks = []string{
 // membership so the Web UI shows the "Re-check" action only where it can act.
 var findingVerifiers = buildFindingVerifiers()
 
-func buildFindingVerifiers() map[string]func(checkType, message, details, path string) VerifyResult {
-	m := map[string]func(checkType, message, details, path string) VerifyResult{}
-	register := func(fn func(checkType, message, details, path string) VerifyResult, names ...string) {
+func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
+	m := map[string]func(VerifyInput) VerifyResult{}
+	register := func(fn func(VerifyInput) VerifyResult, names ...string) {
 		for _, n := range names {
 			m[n] = fn
 		}
 	}
 
-	register(func(_, _, _, p string) VerifyResult { return verifyWriteBit(p, 0002, "world-writable") },
+	register(func(in VerifyInput) VerifyResult { return verifyWriteBit(in.Path, 0002, "world-writable") },
 		"world_writable_php")
-	register(func(_, _, _, p string) VerifyResult { return verifyWriteBit(p, 0020, "group-writable") },
+	register(func(in VerifyInput) VerifyResult { return verifyWriteBit(in.Path, 0020, "group-writable") },
 		"group_writable_php")
-	register(func(_, _, _, p string) VerifyResult { return verifyPathAbsent(p, fixQuarantineAllowedRoots) },
+	register(func(in VerifyInput) VerifyResult { return verifyPathAbsent(in.Path, fixQuarantineAllowedRoots) },
 		presenceVerifiableChecks...)
-	register(func(_, _, _, p string) VerifyResult { return verifyHtaccessClean(p) },
+	register(reverifyContentFinding, contentReverifiableChecks...)
+	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path) },
 		htaccessVerifiableChecks...)
-	register(func(_, msg, _, _ string) VerifyResult { return verifyEximSpoolAbsent(msg) },
+	register(func(in VerifyInput) VerifyResult { return verifyEximSpoolAbsent(in.Message) },
 		"email_phishing_content")
-	register(func(_, _, _, p string) VerifyResult { return verifyCrontabClear(p) },
+	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },
 		"suspicious_crontab")
-	register(func(_, _, details, _ string) VerifyResult { return verifyOutdatedPlugins(details) },
+	register(func(in VerifyInput) VerifyResult { return verifyOutdatedPlugins(in.Details) },
 		"outdated_plugins")
-	register(func(_, _, details, _ string) VerifyResult { return verifyWPCoreIntegrity(details) },
+	register(func(in VerifyInput) VerifyResult { return verifyWPCoreIntegrity(in.Details) },
 		"wp_core_integrity")
-	register(func(_, msg, _, _ string) VerifyResult { return verifyUID0Account(msg) },
+	register(func(in VerifyInput) VerifyResult { return verifyUID0Account(in.Message) },
 		"uid0_account")
-	register(func(_, _, _, p string) VerifyResult { return verifySuidCleared(p) },
+	register(func(in VerifyInput) VerifyResult { return verifySuidCleared(in.Path) },
 		"suid_binary")
-	register(func(_, msg, _, _ string) VerifyResult { return verifyRPMIntegrity(msg) },
+	register(func(in VerifyInput) VerifyResult { return verifyRPMIntegrity(in.Message) },
 		"rpm_integrity")
-	register(func(_, msg, _, _ string) VerifyResult { return verifyDpkgIntegrity(msg) },
+	register(func(in VerifyInput) VerifyResult { return verifyDpkgIntegrity(in.Message) },
 		"dpkg_integrity")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBOptionsInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBOptionsInjection(in.Message, in.Details) },
 		"db_options_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSiteurlHijack(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBSiteurlHijack(in.Message, in.Details) },
 		"db_siteurl_hijack")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBPostInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBPostInjection(in.Message, in.Details) },
 		"db_post_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSpamInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBSpamInjection(in.Message, in.Details) },
 		"db_spam_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalSettingsInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDrupalSettingsInjection(in.Message, in.Details) },
 		"drupal_settings_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalContentInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDrupalContentInjection(in.Message, in.Details) },
 		"drupal_content_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaExtensionsInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyJoomlaExtensionsInjection(in.Message, in.Details) },
 		"joomla_extensions_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaContentInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyJoomlaContentInjection(in.Message, in.Details) },
 		"joomla_content_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoSettingsInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyMagentoSettingsInjection(in.Message, in.Details) },
 		"magento_settings_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoContentInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyMagentoContentInjection(in.Message, in.Details) },
 		"magento_content_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartSettingsInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyOpenCartSettingsInjection(in.Message, in.Details) },
 		"opencart_settings_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartContentInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyOpenCartContentInjection(in.Message, in.Details) },
 		"opencart_content_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBObject(msg, details, false) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Message, in.Details, false) },
 		"db_unexpected_trigger", "db_unexpected_event",
 		"db_unexpected_procedure", "db_unexpected_function")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBObject(msg, details, true) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBObject(in.Message, in.Details, true) },
 		"db_malicious_trigger", "db_malicious_event",
 		"db_malicious_procedure", "db_malicious_function")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBMagicTokenUser(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBMagicTokenUser(in.Message, in.Details) },
 		"db_magic_token_user")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBRogueAdmin(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBRogueAdmin(in.Message, in.Details) },
 		"db_rogue_admin")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDBSuspiciousAdminEmail(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDBSuspiciousAdminEmail(in.Message, in.Details) },
 		"db_suspicious_admin_email")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyDrupalAdminInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyDrupalAdminInjection(in.Message, in.Details) },
 		"drupal_admin_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyJoomlaAdminInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyJoomlaAdminInjection(in.Message, in.Details) },
 		"joomla_admin_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyMagentoAdminInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyMagentoAdminInjection(in.Message, in.Details) },
 		"magento_admin_injection")
-	register(func(_, msg, details, _ string) VerifyResult { return verifyOpenCartAdminInjection(msg, details) },
+	register(func(in VerifyInput) VerifyResult { return verifyOpenCartAdminInjection(in.Message, in.Details) },
 		"opencart_admin_injection")
 	return m
 }
 
-// VerifyFinding re-evaluates a finding's condition against the live filesystem
-// so an operator can confirm a manual fix without waiting for the next scan.
-// It only reads state; it never modifies anything.
+// VerifyFinding re-evaluates a finding by check type + message/details/path.
+// Preserved signature for CLI/legacy callers; carries no content fingerprint.
 func VerifyFinding(checkType, message, details string, filePath ...string) VerifyResult {
-	path := selectFindingPath(message, filePath...)
-	if fn, ok := findingVerifiers[checkType]; ok {
-		return fn(checkType, message, details, path)
+	return VerifyFindingInput(VerifyInput{
+		Check: checkType, Message: message, Details: details,
+		Path: selectFindingPath(message, filePath...),
+	})
+}
+
+// VerifyFindingInput re-evaluates a finding from a full VerifyInput (used by
+// the Web UI Re-check, which forwards the finding's content fingerprint).
+func VerifyFindingInput(in VerifyInput) VerifyResult {
+	if in.Path == "" {
+		in.Path = selectFindingPath(in.Message)
 	}
-	return VerifyResult{Checked: false, Detail: fmt.Sprintf("no automated re-check available for '%s'", checkType)}
+	if fn, ok := findingVerifiers[in.Check]; ok {
+		return fn(in)
+	}
+	return VerifyResult{Checked: false, Detail: fmt.Sprintf("no automated re-check available for '%s'", in.Check)}
+}
+
+// reverifyContentFinding re-runs the content classifier that originally
+// produced the finding. It resolves only when the file is gone OR the file's
+// bytes are byte-for-byte identical to detection time AND the current
+// classifier no longer flags them — a superseded-heuristic false positive.
+// A file modified since detection is never auto-cleared to prevent partial
+// cleans or evasion edits from being mistaken for a fix.
+func reverifyContentFinding(in VerifyInput) VerifyResult {
+	if in.Path == "" {
+		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
+	}
+	clean, info, exists, err := readOnlyFixPath(in.Path, fixQuarantineAllowedRoots)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: err.Error()}
+	}
+	if !exists {
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("file no longer present (removed or quarantined): %s", clean)}
+	}
+	if !info.Mode().IsRegular() {
+		return VerifyResult{Checked: false, Detail: "path is not a regular file; not auto-verifiable"}
+	}
+	matched, label, err := contentStillMatches(in.Check, clean, info)
+	if err != nil {
+		return VerifyResult{Checked: false, Detail: err.Error()}
+	}
+	if matched {
+		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("still flagged by current detection logic: %s", label)}
+	}
+	currentHash := FileContentSHA256(clean)
+	switch {
+	case in.ContentSHA256 != "" && currentHash != "" && currentHash == in.ContentSHA256:
+		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf(
+			"identical content (sha256 unchanged) is no longer flagged by current detection logic (%s) -- superseded-heuristic false positive",
+			ContentDetectionVersion())}
+	case in.ContentSHA256 != "":
+		return VerifyResult{Checked: true, Resolved: false, Detail: "file modified since detection (sha256 mismatch); not auto-cleared -- run a full rescan or review manually"}
+	default:
+		return VerifyResult{Checked: true, Resolved: false, Detail: "current detection logic no longer flags this file, but no detection-time fingerprint exists to rule out modification; review and dismiss if benign"}
+	}
+}
+
+// contentStillMatches re-runs the appropriate classifier for the check type
+// against the file's current bytes. Returns (true, label, nil) if the
+// classifier still flags the file, (false, "", nil) if it no longer does, or
+// (false, "", err) on read failure.
+func contentStillMatches(check, path string, info os.FileInfo) (bool, string, error) {
+	switch check {
+	case "signature_match_realtime":
+		data, err := readFilePreservingIdentity(path, info)
+		if err != nil {
+			return false, "", fmt.Errorf("cannot read file: %v", err)
+		}
+		if s := signatures.Global(); s != nil {
+			if hits := s.ScanContent(data, strings.ToLower(filepath.Ext(path))); len(hits) > 0 {
+				return true, fmt.Sprintf("%d signature match(es)", len(hits)), nil
+			}
+		}
+		return false, "", nil
+	case "yara_match_realtime":
+		data, err := readFilePreservingIdentity(path, info)
+		if err != nil {
+			return false, "", fmt.Errorf("cannot read file: %v", err)
+		}
+		if y := yara.Active(); y != nil {
+			if hits := y.ScanBytes(data); len(hits) > 0 {
+				return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), nil
+			}
+		}
+		return false, "", nil
+	default: // PHP heuristic content family
+		res := analyzePHPContent(path)
+		if res.severity >= 0 {
+			return true, strings.Join(res.indicators, ", "), nil
+		}
+		return false, "", nil
+	}
 }
 
 // CanVerify reports whether VerifyFinding has an automated re-check for the
