@@ -893,6 +893,35 @@ func TestAutoBlock_SMTPBruteForceUsesStructuredSourceIP(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_FTPBruteforceIPv6UsesStructuredSourceIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	// The human message is ambiguous for an IPv6 address ending in "::";
+	// SourceIP must be the value that drives the autoblock path.
+	findings := []alert.Finding{{
+		Check:    "ftp_bruteforce",
+		Message:  "FTP brute force from 2001:db8::: 15 failed attempts",
+		SourceIP: "2001:db8::",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "2001:db8::" {
+		t.Errorf("expected BlockIP(2001:db8::) from SourceIP, got %v", blocker.blocked)
+	}
+}
+
 func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()

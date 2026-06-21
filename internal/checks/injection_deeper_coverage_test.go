@@ -132,7 +132,7 @@ func TestCheckFTPLoginsBruteForceThreshold(t *testing.T) {
 
 	hasBrute := false
 	for _, f := range findings {
-		if f.Check == "ftp_bruteforce" && strings.Contains(f.Message, "203.0.113.5") {
+		if f.Check == "ftp_bruteforce" && f.SourceIP == "203.0.113.5" && strings.Contains(f.Message, "203.0.113.5") {
 			hasBrute = true
 		}
 	}
@@ -167,7 +167,7 @@ func TestCheckFTPLoginsBruteForceIPv6(t *testing.T) {
 
 	hasBrute := false
 	for _, f := range findings {
-		if f.Check == "ftp_bruteforce" && strings.Contains(f.Message, "2001:db8::1") {
+		if f.Check == "ftp_bruteforce" && f.SourceIP == "2001:db8::1" && strings.Contains(f.Message, "2001:db8::1") {
 			hasBrute = true
 		}
 	}
@@ -236,7 +236,7 @@ func TestCheckFTPLoginsSuccessfulLogin(t *testing.T) {
 
 	hasLogin := false
 	for _, f := range findings {
-		if f.Check == "ftp_login" && strings.Contains(f.Message, "198.51.100.2") {
+		if f.Check == "ftp_login" && f.SourceIP == "198.51.100.2" && strings.Contains(f.Message, "198.51.100.2") {
 			hasLogin = true
 		}
 	}

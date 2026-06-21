@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // These tests cover helpers in engine.go that do not require a real nftables
@@ -46,6 +48,25 @@ func TestEngineResolveIPSetIPv6RequiresSet6(t *testing.T) {
 	_, _, err := e.resolveIPSet("2001:db8::1", nil, nil)
 	if err == nil {
 		t.Error("expected error when IPv6 passed but set6 is nil")
+	}
+}
+
+func TestEngineResolveIPSetIPv6Returns6Set(t *testing.T) {
+	e := &Engine{}
+	set6 := &nftables.Set{Name: "blocked_ips6"}
+
+	set, key, err := e.resolveIPSet("2001:db8::1", nil, set6)
+	if err != nil {
+		t.Fatalf("v6 resolve: %v", err)
+	}
+	if set != set6 {
+		t.Fatal("v6 resolve did not return the IPv6 set")
+	}
+	if len(key) != net.IPv6len {
+		t.Fatalf("v6 key len = %d, want %d", len(key), net.IPv6len)
+	}
+	if !net.IP(key).Equal(net.ParseIP("2001:db8::1")) {
+		t.Fatalf("v6 key = %s, want 2001:db8::1", net.IP(key))
 	}
 }
 

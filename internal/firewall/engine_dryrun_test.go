@@ -373,6 +373,23 @@ func TestBlockIPOutcome_DryRunReturnsDryRun(t *testing.T) {
 	}
 }
 
+func TestBlockIPOutcome_IPv6ReachesDryRunWhenSetExists(t *testing.T) {
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, IPv6: true},
+		statePath:     t.TempDir(),
+		setBlocked6:   &nftables.Set{Name: "blocked_ips6"},
+		dryRunEnabled: func() bool { return true },
+	}
+
+	outcome, err := e.BlockIPOutcome("2001:db8::1", "test", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome returned error: %v", err)
+	}
+	if outcome != BlockOutcomeDryRun {
+		t.Errorf("BlockIPOutcome IPv6 dry-run outcome = %q, want %q", outcome, BlockOutcomeDryRun)
+	}
+}
+
 func TestBlockIPOutcome_VerdictAllowReturnsAllowed(t *testing.T) {
 	called := 0
 	e := &Engine{

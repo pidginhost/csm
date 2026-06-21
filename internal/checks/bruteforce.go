@@ -432,8 +432,10 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	failedFTP := make(map[string]int)
 
 	for _, line := range lines {
+		fields := strings.Fields(line)
+
 		// pure-ftpd logs: "pure-ftpd: ... [WARNING] Authentication failed for user"
-		if !strings.Contains(line, "pure-ftpd") {
+		if !isPureFTPDLogFields(fields) {
 			continue
 		}
 
@@ -452,6 +454,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "ftp_login",
+					SourceIP: ip,
 					Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
 					Details:  truncate(line, 200),
 				})
@@ -464,6 +467,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "ftp_bruteforce",
+				SourceIP: ip,
 				Message:  fmt.Sprintf("FTP brute force from %s: %d failed attempts", ip, count),
 			})
 		}
@@ -580,15 +584,14 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 func extractIPFromLog(line string) string {
 	fields := strings.Fields(line)
 
-	// pure-ftpd logs the peer as a parenthesised "(user@ip)" token -- or
-	// "(?@ip)" when the username is unknown -- so the address (IPv4 or IPv6)
-	// is glued inside the parens, never a standalone field. Check this form
-	// first: it is unambiguous and covers every pure-ftpd auth line. Missing
-	// it silently returned "" for FTP brute force, disabling ftp_bruteforce
-	// detection and its autoblock.
-	for _, f := range fields {
-		if ip := ipFromParenPeer(f); ip != "" {
-			return ip
+	if isPureFTPDLogFields(fields) {
+		// pure-ftpd logs the peer as a parenthesised "(user@ip)" token -- or
+		// "(?@ip)" when the username is unknown -- so the address (IPv4 or
+		// IPv6) is glued inside the parens, never a standalone field.
+		for _, f := range fields {
+			if ip := ipFromParenPeer(f); ip != "" {
+				return ip
+			}
 		}
 	}
 
@@ -603,6 +606,75 @@ func extractIPFromLog(line string) string {
 		}
 	}
 	return ""
+}
+
+func isPureFTPDLogFields(fields []string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	if isPureFTPDProgramToken(fields[0]) {
+		return true
+	}
+	return len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isPureFTPDProgramToken(fields[4])
+}
+
+func isPureFTPDProgramToken(field string) bool {
+	if field == "pure-ftpd:" {
+		return true
+	}
+	if !strings.HasPrefix(field, "pure-ftpd[") || !strings.HasSuffix(field, "]:") {
+		return false
+	}
+	pid := field[len("pure-ftpd[") : len(field)-len("]:")]
+	if pid == "" {
+		return false
+	}
+	for _, r := range pid {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isSyslogTimestampPrefix(fields []string) bool {
+	return isSyslogMonth(fields[0]) && isSyslogDay(fields[1]) && isSyslogClock(fields[2])
+}
+
+func isSyslogMonth(s string) bool {
+	switch s {
+	case "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSyslogDay(s string) bool {
+	if len(s) < 1 || len(s) > 2 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isSyslogClock(s string) bool {
+	if len(s) != len("00:00:00") || s[2] != ':' || s[5] != ':' {
+		return false
+	}
+	for i, r := range s {
+		if i == 2 || i == 5 {
+			continue
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // ipFromParenPeer extracts an IP from pure-ftpd's "(user@ip)" / "(?@ip)" peer

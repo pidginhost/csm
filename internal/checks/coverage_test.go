@@ -1150,6 +1150,27 @@ func TestExtractIPFromLogStandard(t *testing.T) {
 	}
 }
 
+func TestExtractIPFromLogWebLineIgnoresParenPeerLookalike(t *testing.T) {
+	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234 "-" "Mozilla (user@198.51.100.9) curl"`
+	if got := extractIPFromLog(line); got != "203.0.113.5" {
+		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	}
+}
+
+func TestExtractIPFromLogWebLineIgnoresQueryParenPeerLookalike(t *testing.T) {
+	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "GET /?email=(user@198.51.100.9) HTTP/1.1" 200 1234 "-" "Mozilla/5.0"`
+	if got := extractIPFromLog(line); got != "203.0.113.5" {
+		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	}
+}
+
+func TestExtractIPFromLogWebLineIgnoresPureFTPDUserAgentPeer(t *testing.T) {
+	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234 "-" "pure-ftpd[1]: (user@198.51.100.9) curl"`
+	if got := extractIPFromLog(line); got != "203.0.113.5" {
+		t.Errorf("got %q, want leading client IP 203.0.113.5", got)
+	}
+}
+
 func TestExtractIPFromLogNoIP(t *testing.T) {
 	if got := extractIPFromLog("no ip here"); got != "" {
 		t.Errorf("got %q, want empty", got)
@@ -1204,6 +1225,21 @@ func TestCountBruteForceWPLogin(t *testing.T) {
 	}
 	if wpLogin["198.51.100.1"] != 0 {
 		t.Error("non-wp-login GET should not count")
+	}
+}
+
+func TestCountBruteForceWPLoginUsesLeadingClientIPWithParenToken(t *testing.T) {
+	lines := []string{
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10 "-" "Mozilla (user@198.51.100.9) curl"`,
+	}
+	wpLogin := map[string]int{}
+	countBruteForce(lines, nil, wpLogin, map[string]int{}, map[string]int{})
+
+	if wpLogin["203.0.113.5"] != 1 {
+		t.Errorf("wpLogin[203.0.113.5] = %d, want 1", wpLogin["203.0.113.5"])
+	}
+	if wpLogin["198.51.100.9"] != 0 {
+		t.Error("paren token in user-agent must not shadow the leading client IP")
 	}
 }
 
