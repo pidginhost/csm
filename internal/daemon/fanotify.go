@@ -1811,6 +1811,7 @@ func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message
 		ProcessInfo: processInfo,
 		Timestamp:   time.Now(),
 	}
+	checks.StampContentFingerprint(&finding)
 	select {
 	case fm.alertCh <- finding:
 	default:

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -89,4 +90,16 @@ func FileContentSHA256(path string) string {
 		return ""
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// StampContentFingerprint records the detection-time content fingerprint on a
+// content-reverifiable finding so the Re-check / sweep can later distinguish a
+// superseded-heuristic false positive from a file edited after detection. No-op
+// for non-content findings or findings without a file path.
+func StampContentFingerprint(f *alert.Finding) {
+	if f == nil || f.FilePath == "" || !IsContentReverifiable(f.Check) {
+		return
+	}
+	f.ContentSHA256 = FileContentSHA256(f.FilePath)
+	f.DetectLogic = ContentDetectionVersion()
 }
