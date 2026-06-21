@@ -1162,6 +1162,31 @@ func TestExtractIPFromLogStripsPunctuation(t *testing.T) {
 	}
 }
 
+// pure-ftpd logs the peer as "(user@ip)" -- or "(?@ip)" when the username is
+// unknown -- so the address is glued inside a parenthesised token, never a
+// standalone field. Missing this format is the regression that silently
+// disabled ftp_bruteforce autoblock in production.
+func TestExtractIPFromLogPureFTPDUnknownUser(t *testing.T) {
+	line := `Jun 20 21:16:26 host pure-ftpd[3390538]: (?@193.32.162.11) [WARNING] Authentication failed for user [iadelagat]`
+	if got := extractIPFromLog(line); got != "193.32.162.11" {
+		t.Errorf("got %q, want 193.32.162.11", got)
+	}
+}
+
+func TestExtractIPFromLogPureFTPDKnownUser(t *testing.T) {
+	line := `Jun 20 21:16:26 host pure-ftpd[1]: (alice@198.51.100.7) [INFO] alice is now logged in`
+	if got := extractIPFromLog(line); got != "198.51.100.7" {
+		t.Errorf("got %q, want 198.51.100.7", got)
+	}
+}
+
+func TestExtractIPFromLogPureFTPDIPv6(t *testing.T) {
+	line := `Jun 20 21:16:26 host pure-ftpd[2]: (?@2001:db8::1) [WARNING] Authentication failed for user [bob]`
+	if got := extractIPFromLog(line); got != "2001:db8::1" {
+		t.Errorf("got %q, want 2001:db8::1", got)
+	}
+}
+
 func TestCountBruteForceWPLogin(t *testing.T) {
 	lines := []string{
 		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,

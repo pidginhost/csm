@@ -106,11 +106,11 @@ func (f *fakeFileInfoMtime) Sys() interface{}   { return nil }
 
 func TestCheckFTPLoginsBruteForceThreshold(t *testing.T) {
 	// 15 failures from a single IP to exceed ftpFailThreshold (10).
-	// extractIPFromLog finds the first space-delimited field starting with a digit
-	// and containing exactly 3 dots, so the IP must appear as a standalone field.
+	// Real pure-ftpd syslog wraps the peer as "(?@ip)" for unknown users --
+	// the IP is glued inside the parenthesised token, not a standalone field.
 	var lines []string
 	for i := 0; i < 15; i++ {
-		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd: 203.0.113.5 [WARNING] Authentication failed for user alice`)
+		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]`)
 	}
 	logContent := strings.Join(lines, "\n") + "\n"
 
@@ -141,10 +141,45 @@ func TestCheckFTPLoginsBruteForceThreshold(t *testing.T) {
 	}
 }
 
+func TestCheckFTPLoginsBruteForceIPv6(t *testing.T) {
+	// pure-ftpd brute over IPv6 -- peer wrapped as "(?@<v6>)".
+	var lines []string
+	for i := 0; i < 15; i++ {
+		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd[1]: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]`)
+	}
+	logContent := strings.Join(lines, "\n") + "\n"
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			tmp := t.TempDir() + "/messages"
+			if err := os.WriteFile(tmp, []byte(logContent), 0644); err != nil {
+				t.Fatalf("write mock messages log: %v", err)
+			}
+			f, err := os.Open(tmp)
+			if err != nil {
+				t.Fatalf("open mock messages log: %v", err)
+			}
+			return f, nil
+		},
+	})
+
+	findings := CheckFTPLogins(context.Background(), &config.Config{}, nil)
+
+	hasBrute := false
+	for _, f := range findings {
+		if f.Check == "ftp_bruteforce" && strings.Contains(f.Message, "2001:db8::1") {
+			hasBrute = true
+		}
+	}
+	if !hasBrute {
+		t.Error("expected ftp_bruteforce finding for 2001:db8::1 after 15 failures")
+	}
+}
+
 func TestCheckFTPLoginsUsesConfiguredTailLines(t *testing.T) {
 	var lines []string
 	for i := 0; i < ftpFailThreshold; i++ {
-		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd: 203.0.113.44 [WARNING] Authentication failed for user alice`)
+		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.44) [WARNING] Authentication failed for user [alice]`)
 	}
 	for i := 0; i < syslogMessagesTailLinesDefault; i++ {
 		lines = append(lines, fmt.Sprintf("Apr 12 10:10:%02d server systemd[1]: noisy service line", i%60))
@@ -187,7 +222,7 @@ func TestCheckFTPLoginsUsesConfiguredTailLines(t *testing.T) {
 }
 
 func TestCheckFTPLoginsSuccessfulLogin(t *testing.T) {
-	logContent := `Apr 12 10:01:00 server pure-ftpd: 198.51.100.2 [INFO] alice is now logged in` + "\n"
+	logContent := `Apr 12 10:01:00 server pure-ftpd[1]: (alice@198.51.100.2) [INFO] alice is now logged in` + "\n"
 
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
@@ -211,7 +246,7 @@ func TestCheckFTPLoginsSuccessfulLogin(t *testing.T) {
 }
 
 func TestCheckFTPLoginsSkipsInfraIP(t *testing.T) {
-	logContent := `Apr 12 10:01:00 server pure-ftpd: 10.0.0.5 [INFO] alice is now logged in` + "\n"
+	logContent := `Apr 12 10:01:00 server pure-ftpd[1]: (alice@10.0.0.5) [INFO] alice is now logged in` + "\n"
 
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
@@ -253,7 +288,7 @@ func TestCheckFTPLoginsSubThreshold(t *testing.T) {
 	// 5 failures — below ftpFailThreshold (10)
 	var lines []string
 	for i := 0; i < 5; i++ {
-		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd: 203.0.113.5 [WARNING] Authentication failed for user [alice]`)
+		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]`)
 	}
 	logContent := strings.Join(lines, "\n") + "\n"
 
@@ -1207,13 +1242,14 @@ func TestCheckWPBruteForceFallbackAccessLog(t *testing.T) {
 // extractIPFromLog — additional edge cases
 // ---------------------------------------------------------------------------
 
-func TestExtractIPFromLogBracketedDoesNotMatch(t *testing.T) {
-	// extractIPFromLog only matches fields starting with a digit.
-	// Parenthesized formats like (user@IP) are NOT matched.
-	line := `pure-ftpd: (user@192.168.1.10) [WARNING] Authentication failed`
+func TestExtractIPFromLogParenPeerMatches(t *testing.T) {
+	// pure-ftpd's "(user@ip)" peer token must yield the IP. The previous
+	// inverted expectation here (asserting "") encoded the very bug that
+	// silently disabled FTP brute force detection and its autoblock.
+	line := `pure-ftpd: (user@198.51.100.10) [WARNING] Authentication failed`
 	got := extractIPFromLog(line)
-	if got != "" {
-		t.Errorf("expected empty for bracketed IP, got %q", got)
+	if got != "198.51.100.10" {
+		t.Errorf("expected 198.51.100.10 from pure-ftpd peer token, got %q", got)
 	}
 }
 

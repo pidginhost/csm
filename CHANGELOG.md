@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- FTP brute-force detection was silently disabled because the log parser could not read pure-ftpd's `(user@ip)` / `(?@ip)` peer format; it now parses that format (IPv4 and IPv6), restoring `ftp_bruteforce` findings and their autoblock.
+
 ## [3.19.0] - 2026-06-20
 
 ### Added

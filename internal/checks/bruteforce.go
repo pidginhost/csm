@@ -578,8 +578,22 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 
 // extractIPFromLog tries to extract an IP address from a log line.
 func extractIPFromLog(line string) string {
-	// Look for IP pattern in common positions
 	fields := strings.Fields(line)
+
+	// pure-ftpd logs the peer as a parenthesised "(user@ip)" token -- or
+	// "(?@ip)" when the username is unknown -- so the address (IPv4 or IPv6)
+	// is glued inside the parens, never a standalone field. Check this form
+	// first: it is unambiguous and covers every pure-ftpd auth line. Missing
+	// it silently returned "" for FTP brute force, disabling ftp_bruteforce
+	// detection and its autoblock.
+	for _, f := range fields {
+		if ip := ipFromParenPeer(f); ip != "" {
+			return ip
+		}
+	}
+
+	// Fallback: a bare space-delimited IPv4 field (web access logs,
+	// fail2ban-style "banned <ip>" lines).
 	for _, f := range fields {
 		// Simple IP detection: starts with digit, contains dots
 		if len(f) >= 7 && f[0] >= '0' && f[0] <= '9' && strings.Count(f, ".") == 3 {
@@ -589,4 +603,23 @@ func extractIPFromLog(line string) string {
 		}
 	}
 	return ""
+}
+
+// ipFromParenPeer extracts an IP from pure-ftpd's "(user@ip)" / "(?@ip)" peer
+// token, supporting both IPv4 and IPv6 addresses. Returns "" when f is not
+// such a token or the candidate after the last '@' does not parse as an IP.
+func ipFromParenPeer(f string) string {
+	if len(f) < 4 || f[0] != '(' || f[len(f)-1] != ')' {
+		return ""
+	}
+	inner := f[1 : len(f)-1]
+	at := strings.LastIndexByte(inner, '@')
+	if at < 0 || at+1 >= len(inner) {
+		return ""
+	}
+	cand := inner[at+1:]
+	if net.ParseIP(cand) == nil {
+		return ""
+	}
+	return cand
 }
