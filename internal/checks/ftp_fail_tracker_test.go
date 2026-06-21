@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func TestFTPAccumulatorSlowBruteCrossesThresholdOverWindow(t *testing.T) {
@@ -214,5 +216,59 @@ func TestReadNewSyslogLinesErrorReturnsOriginalState(t *testing.T) {
 	}
 	if len(lines) != 0 || skipped != 0 || next != st {
 		t.Fatalf("on error want no lines, no skip, original state; lines=%v skipped=%d next=%+v", lines, skipped, next)
+	}
+}
+
+func TestFTPTrackerPersistenceRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	tr := newFTPFailTracker()
+	tr.Follow = followState{Offset: 123, HeadLen: 8, HeadFP: "abc", AnchorLen: 8, AnchorFP: "def"}
+	tr.record("203.0.113.9", time.Unix(60_000, 0))
+	tr.save(st)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	st2, err := state.Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st2.Close()
+	got := loadFTPFailTracker(st2)
+	if got.Follow.Offset != 123 || got.Follow.HeadFP != "abc" || got.Follow.AnchorFP != "def" {
+		t.Fatalf("follow not restored: %+v", got.Follow)
+	}
+	if got.Buckets["203.0.113.9"][1000] != 1 { // 60000/60 = 1000
+		t.Fatalf("buckets not restored: %+v", got.Buckets)
+	}
+}
+
+func TestFTPTrackerLoadCorruptJSONYieldsZeroState(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	st.SetRaw(ftpTrackerKey, "{not valid json")
+	got := loadFTPFailTracker(st)
+	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {
+		t.Fatalf("corrupt JSON should yield zero state, got %+v", got)
+	}
+}
+
+func TestFTPTrackerLoadIncompleteFollowYieldsZeroState(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	st.SetRaw(ftpTrackerKey, `{"follow":{"offset":123},"buckets":{"203.0.113.9":{"1000":1}}}`)
+	got := loadFTPFailTracker(st)
+	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {
+		t.Fatalf("incomplete follow state should yield zero state, got %+v", got)
 	}
 }

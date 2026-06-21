@@ -2,12 +2,15 @@ package checks
 
 import (
 	"bytes"
+	"encoding/json"
 	"hash/fnv"
 	"io"
 	"os"
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 const (
@@ -280,4 +283,44 @@ func readNewSyslogLines(path string, st followState) ([]string, followState, int
 		return nil, st, 0, err
 	}
 	return lines, next, skipped, nil
+}
+
+// ftpTrackerKey is underscore-prefixed so state.Store.Update does not prune it
+// as a stale non-finding key after 24h.
+const ftpTrackerKey = "_ftp_fail_tracker"
+
+func loadFTPFailTracker(store *state.Store) *ftpFailTracker {
+	raw, ok := store.GetRaw(ftpTrackerKey)
+	if !ok || raw == "" {
+		return newFTPFailTracker()
+	}
+	var decoded ftpFailTracker
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return newFTPFailTracker()
+	}
+	if invalidFollowState(decoded.Follow) {
+		return newFTPFailTracker()
+	}
+	if decoded.Buckets == nil {
+		decoded.Buckets = map[string]map[int64]int{}
+	}
+	return &decoded
+}
+
+// invalidFollowState reports stored follow state that claims an offset but is
+// missing the head/anchor identity needed to verify it; such state is dropped
+// so the reader falls back to a bounded first-run catch-up.
+func invalidFollowState(st followState) bool {
+	if st.Offset <= 0 {
+		return false
+	}
+	return st.HeadLen <= 0 || st.HeadFP == "" || st.AnchorLen <= 0 || st.AnchorFP == ""
+}
+
+func (t *ftpFailTracker) save(store *state.Store) {
+	b, err := json.Marshal(t)
+	if err != nil {
+		return
+	}
+	store.SetRaw(ftpTrackerKey, string(b))
 }
