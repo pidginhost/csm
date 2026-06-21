@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2013,6 +2014,37 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		size = info.Size()
 	}
 	return analyzePHPContentReaderAt(path, f, size)
+}
+
+func analyzePHPContentWithFingerprint(path string) (phpAnalysisResult, string) {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return phpAnalysisResult{severity: -1}, ""
+	}
+	defer func() { _ = f.Close() }()
+
+	var size int64 = -1
+	info, statErr := f.Stat()
+	if statErr == nil {
+		size = info.Size()
+	}
+	if statErr == nil && info.Mode().IsRegular() && size <= contentFingerprintMaxBytes {
+		data, err := io.ReadAll(io.LimitReader(f, contentFingerprintMaxBytes+1))
+		if err != nil {
+			return phpAnalysisResult{severity: -1, readOK: false}, ""
+		}
+		after, err := f.Stat()
+		if err != nil || !sameCleanContentShape(after, info) || int64(len(data)) != size {
+			return phpAnalysisResult{severity: -1, readOK: false}, ""
+		}
+		result := analyzePHPContentReaderAt(path, bytes.NewReader(data), int64(len(data)))
+		if !result.readOK {
+			return result, ""
+		}
+		sum := sha256.Sum256(data)
+		return result, fmt.Sprintf("%x", sum)
+	}
+	return analyzePHPContentReaderAt(path, f, size), ""
 }
 
 func analyzePHPContentReaderAt(path string, f io.ReaderAt, size int64) phpAnalysisResult {

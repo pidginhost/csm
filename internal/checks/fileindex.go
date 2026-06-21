@@ -157,6 +157,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		severity := alert.Severity(-1)
 		check := ""
 		message := ""
+		contentSHA256 := ""
 
 		if strings.Contains(path, "/wp-content/uploads/") && phpPathExecutes(path, nameLower) {
 			// Content decides, never the path or name. A negative
@@ -164,10 +165,11 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			// WordPress "silence is golden" index.php, or BackWPup's
 			// "<?php //<json>" working files) and is suppressed; any
 			// real code surfaces, malicious or merely present.
-			if sev, ck, msg := classifyUploadPHP(path); sev >= 0 {
+			if sev, ck, msg, hash := classifyUploadPHPWithFingerprint(path); sev >= 0 {
 				severity = sev
 				check = ck
 				message = msg
+				contentSHA256 = hash
 			} else {
 				continue
 			}
@@ -176,10 +178,11 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		// PHP files in wp-content/languages and wp-content/upgrade: content-first.
 		// Path-only Critical buried real alerts under location noise (WPML
 		// translation queues, WP auto-update staging). See classifySensitiveDirPHP.
-		if sev, ck, msg := classifySensitiveDirPHP(path, name); sev >= 0 {
+		if sev, ck, msg, hash := classifySensitiveDirPHPWithFingerprint(path, name); sev >= 0 {
 			severity = sev
 			check = ck
 			message = msg
+			contentSHA256 = hash
 		}
 
 		if strings.Contains(path, "/.config/") {
@@ -214,7 +217,10 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 				Details:  details,
 				FilePath: path,
 			}
-			StampContentFingerprint(&f)
+			if IsContentReverifiable(f.Check) {
+				f.ContentSHA256 = contentSHA256
+				f.DetectLogic = ContentDetectionVersion()
+			}
 			findings = append(findings, f)
 		}
 	}
@@ -236,46 +242,51 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 // which is intentionally NOT in any of those maps -- a clean file is a
 // visibility signal, not an attack. Mirrors the realtime path at fanotify.go.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
+	sev, check, message, _ := classifySensitiveDirPHPWithFingerprint(path, name)
+	return sev, check, message
+}
+
+func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, string, string, string) {
 	nameLower := strings.ToLower(name)
 	if !phpPathExecutes(path, nameLower) {
-		return -1, "", ""
+		return -1, "", "", ""
 	}
 	isLanguages := strings.Contains(path, "/wp-content/languages/")
 	isUpgrade := strings.Contains(path, "/wp-content/upgrade/")
 	if !isLanguages && !isUpgrade {
-		return -1, "", ""
+		return -1, "", "", ""
 	}
 	locLabel := "wp-content/languages"
 	if isUpgrade {
 		locLabel = "wp-content/upgrade"
 	}
-	result := analyzePHPContent(path)
+	result, contentSHA256 := analyzePHPContentWithFingerprint(path)
 	if result.severity >= 0 {
-		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path)
+		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path), contentSHA256
 	}
 	// Fail closed: an unreadable body (attacker racing the scanner with rm or
 	// chmod 000) must not be demoted to a clean Warning. Mirrors classifyUploadPHP.
 	if !result.readOK {
 		return alert.High, "new_php_in_sensitive_dir",
-			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path)
+			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path), ""
 	}
 	if result.empty {
 		return alert.High, "new_php_in_sensitive_dir",
-			fmt.Sprintf("New empty PHP file in %s: %s", locLabel, path)
+			fmt.Sprintf("New empty PHP file in %s: %s", locLabel, path), ""
 	}
 	// Content-verified inert stub (e.g. the "silence is golden" index.php) is
 	// suppressed; any real code surfaces as a non-actionable visibility Warning.
 	if IsBenignPHPStub(path) {
-		return -1, "", ""
+		return -1, "", "", ""
 	}
 	// WordPress 6.5+ auto-generates *.l10n.php translation caches as pure data
 	// return arrays. Recognized by content structure (not filename), they carry
 	// no executable construct, so suppress rather than warn on every locale file.
 	if isWPTranslationCache(path) {
-		return -1, "", ""
+		return -1, "", "", ""
 	}
 	return alert.Warning, "new_php_in_sensitive_dir_clean",
-		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path)
+		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path), ""
 }
 
 // groupEntriesByUploadDir groups index entries by each ancestor directory.

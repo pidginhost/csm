@@ -2,6 +2,8 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +45,7 @@ func TestCheckFileIndexStampsContentFingerprint(t *testing.T) {
 	uploadsDir := t.TempDir()
 	phpContent := []byte("<?php eval(base64_decode($_POST['x'])); system($_GET['c']);")
 	// Use a name that is NOT in isWebshellName so the content-based classifier
-	// (classifyUploadPHP → obfuscated_php / suspicious_php_content) is not
+	// (classifyUploadPHP -> obfuscated_php / suspicious_php_content) is not
 	// overwritten by the name-based "new_webshell_file" check.
 	phpFile := filepath.Join(uploadsDir, "cache-loader.php")
 	if err := os.WriteFile(phpFile, phpContent, 0644); err != nil {
@@ -163,5 +165,96 @@ func TestCheckFileIndexStampsContentFingerprint(t *testing.T) {
 	}
 	if contentFinding.detectLogic == "" {
 		t.Errorf("content finding %q: DetectLogic is empty, want non-empty version token", contentFinding.check)
+	}
+}
+
+func TestCheckFileIndexFingerprintUsesClassifiedContent(t *testing.T) {
+	resetScanAccount(t)
+
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	if err := os.WriteFile(previousPath, []byte(""), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	uploadsDir := t.TempDir()
+	maliciousContent := []byte("<?php eval(base64_decode($_POST['x'])); system($_GET['c']);")
+	cleanContent := []byte("<?php echo 'clean';")
+	phpFile := filepath.Join(uploadsDir, "cache-loader.php")
+	if err := os.WriteFile(phpFile, maliciousContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	logicalUploads := "/home/alice/public_html/wp-content/uploads"
+	logicalPHPFile := logicalUploads + "/cache-loader.php"
+
+	now := time.Now()
+	alice := accountScanFakeInfo{name: "alice", isDir: true, mode: os.ModeDir | 0755, mtime: now}
+	swappedAfterClassification := false
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{realDirEntry{name: "alice", info: alice}}, nil
+			case "/home/alice":
+				return nil, nil
+			case logicalUploads:
+				return os.ReadDir(uploadsDir)
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case logicalUploads:
+				return accountScanFakeInfo{name: "uploads", isDir: true, mode: os.ModeDir | 0755, mtime: now}, nil
+			case logicalPHPFile:
+				if !swappedAfterClassification {
+					if err := os.WriteFile(phpFile, cleanContent, 0644); err != nil {
+						return nil, err
+					}
+					swappedAfterClassification = true
+				}
+				return os.Stat(phpFile)
+			case previousPath:
+				return os.Stat(previousPath)
+			}
+			if strings.HasPrefix(name, stateDir) {
+				return os.Stat(name)
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(name string) (*os.File, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.Open(name)
+			}
+			if name == logicalPHPFile {
+				return os.Open(phpFile)
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.ReadFile(name)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.StatePath = stateDir
+
+	findings := CheckFileIndex(context.Background(), cfg, nil)
+
+	var got string
+	for _, f := range findings {
+		if f.Check == "obfuscated_php" || f.Check == "suspicious_php_content" {
+			got = f.ContentSHA256
+			break
+		}
+	}
+	want := fmt.Sprintf("%x", sha256.Sum256(maliciousContent))
+	if got != want {
+		t.Fatalf("ContentSHA256 = %q, want classified content hash %q", got, want)
 	}
 }

@@ -23,18 +23,23 @@ import (
 // is intentionally absent from the correlation and auto-response maps -- a
 // clean file is visibility, not an attack.
 func classifyUploadPHP(path string) (alert.Severity, string, string) {
-	r := analyzePHPContent(path)
+	sev, check, message, _ := classifyUploadPHPWithFingerprint(path)
+	return sev, check, message
+}
+
+func classifyUploadPHPWithFingerprint(path string) (alert.Severity, string, string, string) {
+	r, contentSHA256 := analyzePHPContentWithFingerprint(path)
 	if r.severity >= 0 {
-		return r.severity, r.check, fmt.Sprintf("%s: %s", r.message, path)
+		return r.severity, r.check, fmt.Sprintf("%s: %s", r.message, path), contentSHA256
 	}
 	if !r.readOK {
-		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path)
+		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path), ""
 	}
 	if r.empty {
-		return alert.High, "new_php_in_uploads", fmt.Sprintf("New empty PHP file in uploads: %s", path)
+		return alert.High, "new_php_in_uploads", fmt.Sprintf("New empty PHP file in uploads: %s", path), ""
 	}
 	if IsBenignPHPStub(path) {
-		return -1, "", ""
+		return -1, "", "", ""
 	}
-	return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New PHP file in uploads (content clean): %s", path)
+	return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New PHP file in uploads (content clean): %s", path), ""
 }
