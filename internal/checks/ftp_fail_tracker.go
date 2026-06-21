@@ -8,8 +8,11 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -323,4 +326,31 @@ func (t *ftpFailTracker) save(store *state.Store) {
 		return
 	}
 	store.SetRaw(ftpTrackerKey, string(b))
+}
+
+const ftpSyslogPath = "/var/log/messages"
+
+// effectiveFTPFailWindowMin returns the operator-configured sliding-window
+// length in minutes, or the built-in default (30) when unset.
+func effectiveFTPFailWindowMin(cfg *config.Config) int {
+	if cfg == nil || cfg.Thresholds.FTPFailWindowMin <= 0 {
+		return 30
+	}
+	return cfg.Thresholds.FTPFailWindowMin
+}
+
+var (
+	ftpSkippedBytes     *metrics.Counter
+	ftpSkippedBytesOnce sync.Once
+)
+
+func observeFTPSkippedBytes(n int64) {
+	ftpSkippedBytesOnce.Do(func() {
+		ftpSkippedBytes = metrics.NewCounter(
+			"csm_checks_ftp_syslog_skipped_bytes_total",
+			"Bytes of /var/log/messages skipped by the FTP detector catch-up cap (8 MiB). Steady growth means the detector is falling behind the syslog write rate or the log has large bursts between cycles.",
+		)
+		metrics.MustRegister("csm_checks_ftp_syslog_skipped_bytes_total", ftpSkippedBytes)
+	})
+	ftpSkippedBytes.Add(float64(n))
 }

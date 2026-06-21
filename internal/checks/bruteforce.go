@@ -416,8 +416,68 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 // Operator override: cfg.Thresholds.SyslogMessagesTailLines.
 const syslogMessagesTailLinesDefault = 200
 
-// CheckFTPLogins parses /var/log/messages or pure-ftpd log for FTP brute force.
-func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+// CheckFTPLogins detects pure-ftpd brute force. With a state store it reads
+// /var/log/messages forward-only and accumulates per-IP failures over a sliding
+// window; without a store it falls back to the legacy per-cycle tail.
+func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if store == nil {
+		return checkFTPLoginsLegacy(cfg)
+	}
+	now := time.Now()
+	tracker := loadFTPFailTracker(store)
+
+	lines, next, skipped, err := readNewSyslogLines(ftpSyslogPath, tracker.Follow)
+	if err != nil {
+		return nil // leave stored state untouched
+	}
+	if skipped > 0 {
+		observeFTPSkippedBytes(skipped)
+	}
+
+	var findings []alert.Finding
+	for _, line := range lines {
+		if !isPureFTPDLogFields(strings.Fields(line)) {
+			continue
+		}
+		ip := extractIPFromLog(line)
+		if ip == "" || isInfraIP(ip, cfg.InfraIPs) {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "Authentication failed"), strings.Contains(line, "auth failed"):
+			tracker.record(ip, now)
+		case strings.Contains(line, "is now logged in"):
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "ftp_login",
+				SourceIP: ip,
+				Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
+				Details:  truncate(line, 200),
+			})
+		}
+	}
+
+	windowMin := effectiveFTPFailWindowMin(cfg)
+	tracker.evict(now, windowMin)
+	tracker.capIPs(maxTrackedIPs)
+	for _, off := range tracker.offenders(ftpFailThreshold) {
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "ftp_bruteforce",
+			SourceIP: off.IP,
+			Message:  fmt.Sprintf("FTP brute force from %s: %d failed attempts in %dm", off.IP, off.Count, windowMin),
+		})
+	}
+
+	tracker.Follow = next
+	tracker.save(store)
+	return findings
+}
+
+// checkFTPLoginsLegacy is the pre-store tail-based detector, used only when no
+// state store is available (direct callers / tests). The daemon always supplies
+// a store and uses the forward-only store-backed path above.
+func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
 	tailLines := syslogMessagesTailLinesDefault

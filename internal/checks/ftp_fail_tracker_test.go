@@ -83,7 +83,7 @@ func writeFollowFile(t *testing.T, content string) string {
 // followReal points osFS.Open at the real filesystem for these tests.
 func followReal(t *testing.T) {
 	t.Helper()
-	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(name) }})
+	withMockOS(t, &mockOS{open: os.Open})
 }
 
 func TestReadNewSyslogLinesAppendReturnsOnlyNew(t *testing.T) {
@@ -97,7 +97,7 @@ func TestReadNewSyslogLinesAppendReturnsOnlyNew(t *testing.T) {
 	if len(lines1) != 2 {
 		t.Fatalf("cycle1 want 2 lines, got %v", lines1)
 	}
-	if err := os.WriteFile(p, []byte("line one\nline two\nline three\n"), 0644); err != nil {
+	if err = os.WriteFile(p, []byte("line one\nline two\nline three\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	lines2, _, _, err := readNewSyslogLines(p, st1)
@@ -119,7 +119,7 @@ func TestReadNewSyslogLinesPartialLineHeldUntilComplete(t *testing.T) {
 	if len(lines1) != 1 || lines1[0] != "complete one" {
 		t.Fatalf("cycle1 want [complete one], got %v", lines1)
 	}
-	if err := os.WriteFile(p, []byte("complete one\npartial now done\n"), 0644); err != nil {
+	if err = os.WriteFile(p, []byte("complete one\npartial now done\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	lines2, _, _, err := readNewSyslogLines(p, st1)
@@ -229,7 +229,7 @@ func TestFTPTrackerPersistenceRoundTrip(t *testing.T) {
 	tr.Follow = followState{Offset: 123, HeadLen: 8, HeadFP: "abc", AnchorLen: 8, AnchorFP: "def"}
 	tr.record("203.0.113.9", time.Unix(60_000, 0))
 	tr.save(st)
-	if err := st.Close(); err != nil {
+	if err = st.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestFTPTrackerPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer st2.Close()
+	defer func() { _ = st2.Close() }()
 	got := loadFTPFailTracker(st2)
 	if got.Follow.Offset != 123 || got.Follow.HeadFP != "abc" || got.Follow.AnchorFP != "def" {
 		t.Fatalf("follow not restored: %+v", got.Follow)
@@ -252,7 +252,7 @@ func TestFTPTrackerLoadCorruptJSONYieldsZeroState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	st.SetRaw(ftpTrackerKey, "{not valid json")
 	got := loadFTPFailTracker(st)
 	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {
@@ -265,7 +265,7 @@ func TestFTPTrackerLoadIncompleteFollowYieldsZeroState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	st.SetRaw(ftpTrackerKey, `{"follow":{"offset":123},"buckets":{"203.0.113.9":{"1000":1}}}`)
 	got := loadFTPFailTracker(st)
 	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {

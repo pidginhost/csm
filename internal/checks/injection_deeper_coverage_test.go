@@ -308,6 +308,202 @@ func TestCheckFTPLoginsSubThreshold(t *testing.T) {
 	}
 }
 
+func TestCheckFTPLoginsStoreBackedSlowBruteAcrossCycles(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	msgPath := t.TempDir() + "/messages"
+	writeMsg := func(content string) {
+		if err := os.WriteFile(msgPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+
+	var b strings.Builder
+	add5 := func() {
+		for i := 0; i < 5; i++ {
+			b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]\n")
+		}
+	}
+	// Cycle 1: 5 failures -> below threshold, no finding.
+	add5()
+	writeMsg(b.String())
+	if f := CheckFTPLogins(context.Background(), &config.Config{}, st); hasFTPBrute(f, "203.0.113.5") {
+		t.Fatal("cycle1 (5 fails) should not alert")
+	}
+	// Cycle 2: 5 more -> 10 within window -> alert.
+	add5()
+	writeMsg(b.String())
+	if f := CheckFTPLogins(context.Background(), &config.Config{}, st); !hasFTPBrute(f, "203.0.113.5") {
+		t.Fatal("cycle2 (10 fails total) should alert ftp_bruteforce")
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedNoNewBytesNoDoubleCount(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	msgPath := t.TempDir() + "/messages"
+	var b strings.Builder
+	for i := 0; i < 9; i++ { // one below threshold
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@198.51.100.9) [WARNING] Authentication failed for user [bob]\n")
+	}
+	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+
+	CheckFTPLogins(context.Background(), &config.Config{}, st)
+	// Second cycle with no new bytes must not re-count the same 9 into >=10.
+	if f := CheckFTPLogins(context.Background(), &config.Config{}, st); hasFTPBrute(f, "198.51.100.9") {
+		t.Fatal("re-reading the same bytes must not double-count into an alert")
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedParserParity(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	msgPath := t.TempDir() + "/messages"
+	var b strings.Builder
+	for i := 0; i < 12; i++ {
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd: 203.0.113.99 [WARNING] auth failed for user [bob]\n")
+		b.WriteString("Apr 12 10:00:00 server not-pure-ftpd: 192.0.2.55 [WARNING] Authentication failed for user [mallory]\n")
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@10.0.0.10) [WARNING] Authentication failed for user [infra]\n")
+	}
+	b.WriteString("Apr 12 10:05:00 server pure-ftpd: 198.51.100.20 [INFO] bob is now logged in\n")
+	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.10"}}
+
+	findings := CheckFTPLogins(context.Background(), cfg, st)
+	if !hasFTPBrute(findings, "203.0.113.99") {
+		t.Fatal("store-backed lowercase auth failed variant should alert")
+	}
+	if !hasFTPLogin(findings, "198.51.100.20") {
+		t.Fatal("store-backed successful non-infra login should emit ftp_login")
+	}
+	if hasFindingForSourceIP(findings, "10.0.0.10") {
+		t.Fatal("store-backed path must skip infra IPs")
+	}
+	if hasFindingForSourceIP(findings, "192.0.2.55") {
+		t.Fatal("store-backed path must ignore non-pure-ftpd lines")
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedReadErrorDoesNotOverwriteTracker(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	st.SetRaw(ftpTrackerKey, `{"follow":{"offset":123,"head_len":3,"head_fp":"abc","anchor_len":3,"anchor_fp":"def"},"buckets":{}}`)
+	before, _ := st.GetRaw(ftpTrackerKey)
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		return nil, os.ErrNotExist
+	}})
+	if findings := CheckFTPLogins(context.Background(), &config.Config{}, st); len(findings) != 0 {
+		t.Fatalf("read error should return no findings, got %+v", findings)
+	}
+	after, _ := st.GetRaw(ftpTrackerKey)
+	if after != before {
+		t.Fatalf("read error must not overwrite tracker state: before=%q after=%q", before, after)
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedFirstRunCapSkipsOldBytesAndObservesMetric(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	msgPath := t.TempDir() + "/messages"
+	var b strings.Builder
+	for i := 0; i < ftpFailThreshold; i++ {
+		b.WriteString("Apr 12 09:00:00 server pure-ftpd[1]: (?@203.0.113.200) [WARNING] Authentication failed for user [old]\n")
+	}
+	b.WriteString(strings.Repeat("Apr 12 09:30:00 server noisy-service: filler\n", maxCatchUpBytes/32+1000))
+	for i := 0; i < ftpFailThreshold; i++ {
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.201) [WARNING] Authentication failed for user [new]\n")
+	}
+	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+	before := 0.0
+	if ftpSkippedBytes != nil {
+		before = ftpSkippedBytes.Value()
+	}
+
+	findings := CheckFTPLogins(context.Background(), &config.Config{}, st)
+	if hasFTPBrute(findings, "203.0.113.200") {
+		t.Fatal("failures before the first-run catch-up cap should be skipped")
+	}
+	if !hasFTPBrute(findings, "203.0.113.201") {
+		t.Fatal("failures inside the first-run catch-up cap should alert")
+	}
+	if ftpSkippedBytes == nil || ftpSkippedBytes.Value() <= before {
+		t.Fatal("first-run catch-up cap should increment skipped-bytes metric")
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedIPv6(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	msgPath := t.TempDir() + "/messages"
+	var b strings.Builder
+	for i := 0; i < 12; i++ {
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]\n")
+	}
+	if err := os.WriteFile(msgPath, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+	if f := CheckFTPLogins(context.Background(), &config.Config{}, st); !hasFTPBrute(f, "2001:db8::1") {
+		t.Fatal("store-backed IPv6 brute should alert with structured SourceIP")
+	}
+}
+
+func hasFTPBrute(findings []alert.Finding, ip string) bool {
+	for _, f := range findings {
+		if f.Check == "ftp_bruteforce" && f.SourceIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFTPLogin(findings []alert.Finding, ip string) bool {
+	for _, f := range findings {
+		if f.Check == "ftp_login" && f.SourceIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFindingForSourceIP(findings []alert.Finding, ip string) bool {
+	for _, f := range findings {
+		if f.SourceIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // CheckWebmailLogins — suppressed, threshold, infra-IP, non-login traffic
 // ---------------------------------------------------------------------------
