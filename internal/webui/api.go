@@ -91,10 +91,60 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"automation":             snap.Automation,
 		"status":                 snap.OverallStatus(),
 	}
+
+	// security_posture is the threat-aware badge signal, distinct from
+	// "status" (which stays operational: is the daemon alive and attached).
+	// A daemon can be operationally "ok" while sitting on open critical
+	// incidents, so the dashboard pill must fold in incident severity rather
+	// than report "Healthy" next to thousands of criticals.
+	openBySev := map[string]int{}
+	if s.incidentCorrelator != nil {
+		openBySev = s.incidentCorrelator.OpenCountsBySeverity()
+	}
+	resp["incidents_open_by_severity"] = openBySev
+	resp["security_posture"] = securityPosture(operationalProblems(s.sigCount, snap), openBySev["critical"], openBySev["high"])
+
 	if !snap.Update.CheckedAt.IsZero() {
 		resp["update"] = snap.Update
 	}
 	writeJSON(w, resp)
+}
+
+// operationalProblems counts daemon faults that should prevent a healthy
+// posture even when there are no active high-severity incidents.
+func operationalProblems(sigCount int, snap health.Snapshot) int {
+	problems := 0
+	if sigCount == 0 {
+		problems++
+	}
+	if !snap.StoreHealthy {
+		problems++
+	}
+	if !snap.AllWatchersAttached() {
+		problems++
+	}
+	return problems
+}
+
+// securityPosture collapses operational faults and active-incident severity
+// into the dashboard badge tier:
+//
+//   - "critical" if any active critical incident exists, or the daemon has
+//     multiple operational problems.
+//   - "warning" if any active high incident exists, or exactly one operational
+//     problem.
+//   - "healthy" otherwise.
+//
+// Incident severity takes precedence over operational faults so a fully
+// attached daemon still reads "critical" while critical incidents are active.
+func securityPosture(opProblems, openCritical, openHigh int) string {
+	if openCritical > 0 || opProblems >= 2 {
+		return "critical"
+	}
+	if openHigh > 0 || opProblems == 1 {
+		return "warning"
+	}
+	return "healthy"
 }
 
 func formatRFC3339OrEmpty(t time.Time) string {

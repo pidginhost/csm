@@ -152,22 +152,40 @@
             if (!health.log_watchers) problems.push('no log watchers active');
             if (!health.rules_loaded) problems.push('no YARA rules loaded');
 
+            // The pill tier comes from the server so active incident severity
+            // and daemon liveness stay in one posture decision.
             var label = 'Healthy';
             var cls = 'health-ok';
             var dotCls = 'bg-green';
-            if (problems.length >= 2) {
-                label = 'Degraded';
+            var posture = String(status.security_posture || '');
+            if (posture === 'critical') {
+                label = 'Critical';
                 cls = 'health-crit';
                 dotCls = 'bg-red';
-            } else if (problems.length === 1) {
+            } else if (posture === 'warning') {
                 label = 'Warning';
                 cls = 'health-warn';
                 dotCls = 'bg-yellow';
+            } else if (!posture) {
+                if (problems.length >= 2) {
+                    label = 'Degraded';
+                    cls = 'health-crit';
+                    dotCls = 'bg-red';
+                } else if (problems.length === 1) {
+                    label = 'Warning';
+                    cls = 'health-warn';
+                    dotCls = 'bg-yellow';
+                }
             }
+            var bySev = status.incidents_open_by_severity || {};
+            var openParts = [];
+            if (bySev.critical) openParts.push(bySev.critical + ' critical');
+            if (bySev.high) openParts.push(bySev.high + ' high');
             var title = 'Uptime: ' + (status.uptime || health.uptime || '?') +
                 '\nRules: ' + (health.rules_loaded || 0) +
                 '\nWatchers: ' + (health.log_watchers || 0) +
                 (status.scan_running ? '\nScan: in progress' : '') +
+                (openParts.length ? '\nActive incidents: ' + openParts.join(', ') : '') +
                 (problems.length ? '\nIssues: ' + problems.join(', ') : '');
             renderHealthPill(cls, dotCls, label, title);
         }).catch(function(err) {
@@ -1062,7 +1080,7 @@
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
 
-    // --- Priority queue: open incidents + top critical/high findings ----------
+    // --- Priority queue: active incidents + top critical/high findings --------
     var _statusClasses = { open: 'danger', contained: 'warning', resolved: 'success', dismissed: 'secondary' };
 
     function _queueItemHTML(item) {
@@ -1095,7 +1113,7 @@
             el.innerHTML = CSM.emptyStateBlock({
                 icon: 'circle-check',
                 title: 'No urgent items',
-                reason: 'No open incidents and no recent critical or high findings need action.'
+                reason: 'No active incidents and no recent critical or high findings need action.'
             });
             return;
         }
@@ -1133,18 +1151,18 @@
         return { sevClass: 'warning', sevLabel: 'WARNING' };
     }
 
-    function _updateSubtitle(openIncidents, critFindings, highFindings) {
+    function _updateSubtitle(activeIncidents, critFindings, highFindings) {
         var sub = document.getElementById('dashboard-summary');
         if (!sub) return;
         var parts = [];
-        parts.push(openIncidents + ' open incident' + (openIncidents === 1 ? '' : 's'));
+        parts.push(activeIncidents + ' active incident' + (activeIncidents === 1 ? '' : 's'));
         parts.push(critFindings + ' critical');
         parts.push(highFindings + ' high');
         sub.textContent = parts.join(' · ') + ' (24h)';
     }
 
     function loadPriorityQueue() {
-        var incidentReq = CSM.get('/api/v1/incidents?status=open&limit=5').catch(function() { return null; });
+        var incidentReq = CSM.get('/api/v1/incidents?status=active&limit=5').catch(function() { return null; });
         var findingsReq = CSM.get('/api/v1/findings/enriched?limit=20').catch(function() { return null; });
         var statsReq = CSM.get('/api/v1/stats').catch(function() { return null; });
         Promise.all([incidentReq, findingsReq, statsReq]).then(function(results) {
@@ -1154,6 +1172,12 @@
             var incidents = [];
             if (incData && Array.isArray(incData.items)) incidents = incData.items;
             else if (Array.isArray(incData)) incidents = incData;
+
+            // incidents is only the first page (limit=5) used to render the
+            // queue. The subtitle count must be the true active-incident total
+            // from the envelope, not the capped slice length, or the header
+            // reads "5 active incidents" while hundreds are open or contained.
+            var activeTotal = (incData && typeof incData.total === 'number') ? incData.total : incidents.length;
 
             var findings = [];
             if (findData && Array.isArray(findData.findings)) {
@@ -1213,7 +1237,7 @@
             }
 
             _renderPriorityQueue(items);
-            _updateSubtitle(incidents.length, crit24h, high24h);
+            _updateSubtitle(activeTotal, crit24h, high24h);
         });
     }
 

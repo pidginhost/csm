@@ -39,6 +39,10 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  automation rollout state, challenge pending count, rollback state.
                                  `started_at_token` changes after a daemon restart and is suitable
                                  for restart polling.
+                                 `security_posture` is `healthy`, `warning`, or `critical` after
+                                 combining daemon faults with active high/critical incidents.
+                                 `incidents_open_by_severity` breaks open and contained incidents
+                                 down by `critical`, `high`, and `warning`.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`

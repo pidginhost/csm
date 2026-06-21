@@ -464,6 +464,29 @@ func (c *Correlator) OpenCount() int {
 	return n
 }
 
+// OpenCountsBySeverity returns Open and Contained incidents keyed by
+// lowercase severity. Contained incidents still need operator attention,
+// so they remain part of the dashboard's active-incident posture.
+func (c *Correlator) OpenCountsBySeverity() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	counts := map[string]int{}
+	for _, inc := range c.incidents {
+		if inc.Status != StatusOpen && inc.Status != StatusContained {
+			continue
+		}
+		switch inc.Severity {
+		case alert.Critical:
+			counts["critical"]++
+		case alert.High:
+			counts["high"]++
+		default:
+			counts["warning"]++
+		}
+	}
+	return counts
+}
+
 // Get returns a snapshot of the incident by id.
 func (c *Correlator) Get(id string) (Incident, bool) {
 	c.mu.Lock()

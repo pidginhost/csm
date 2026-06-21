@@ -642,7 +642,7 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 		"function _startPriorityQueueInterval",
 		"renderFeatureFlags",
 		"loadComponents",
-		"/api/v1/incidents?status=open",
+		"/api/v1/incidents?status=active",
 		"href: '/incident#'",
 		"_incidentOwner",
 		"function loadChallengeSummary",
@@ -674,7 +674,7 @@ func TestDashboardSummaryUsesWindowedStatsCounts(t *testing.T) {
 		`if (statsData && statsData.last_24h) {`,
 		`statsData.last_24h.critical`,
 		`statsData.last_24h.high`,
-		`_updateSubtitle(incidents.length, crit24h, high24h);`,
+		`_updateSubtitle(activeTotal, crit24h, high24h);`,
 		`+ ' (24h)';`,
 	} {
 		if !strings.Contains(jsText, want) {
@@ -5364,5 +5364,42 @@ func TestDestructiveActionsConfirmAndOfferUndo(t *testing.T) {
 		if !strings.Contains(threatText, want) {
 			t.Errorf("threat.js bulk action must offer undo via the returned token: missing %q", want)
 		}
+	}
+}
+
+// The dashboard subtitle was reporting the requested page size ("5 active
+// incidents") rather than the true active-incident total returned by the API
+// envelope. The header must read the active filter total, and the health pill
+// must reflect the server-computed security posture rather than only daemon
+// liveness.
+func TestDashboardHealthAndIncidentCountUseServerTruth(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+
+	for _, want := range []string{
+		// Bug 1: active-incident count comes from the envelope total, not the
+		// length of the (capped) page slice.
+		"/api/v1/incidents?status=active&limit=5",
+		"typeof incData.total === 'number'",
+		"_updateSubtitle(activeTotal,",
+		// Bug 2: the pill tier is the server-computed posture, and the tooltip
+		// surfaces the active-incident severity breakdown.
+		"status.security_posture",
+		"incidents_open_by_severity",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("dashboard.js missing %q", want)
+		}
+	}
+
+	// The subtitle must no longer be fed the raw page-slice length.
+	if strings.Contains(jsText, "_updateSubtitle(incidents.length,") {
+		t.Error("dashboard.js still passes the capped page length to _updateSubtitle instead of the active-incident total")
+	}
+	if strings.Contains(jsText, "/api/v1/incidents?status=open&limit=5") {
+		t.Error("dashboard.js still excludes contained incidents from the active incident total")
 	}
 }

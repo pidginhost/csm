@@ -1289,3 +1289,37 @@ func TestIncrementCompactedTotalBumpsMetric(t *testing.T) {
 		t.Errorf("negative input must be ignored; got %d", got)
 	}
 }
+
+func TestCorrelatorOpenCountsBySeverity(t *testing.T) {
+	c := newTestCorrelator()
+	seed := func(tenant string, sev alert.Severity) string {
+		f := alert.Finding{Check: "wp_login_bruteforce", Severity: sev, TenantID: tenant, Timestamp: time.Unix(1_700_000_000, 0)}
+		id, created, err := c.OnFinding(f)
+		if err != nil || !created {
+			t.Fatalf("seed %s/%v: created=%v err=%v", tenant, sev, created, err)
+		}
+		return id
+	}
+
+	seed("alice", alert.Critical)
+	seed("bob", alert.Critical)
+	seed("carol", alert.High)
+	seed("dave", alert.Warning)
+
+	// A resolved critical incident must not inflate the open-by-severity counts.
+	resolved := seed("erin", alert.Critical)
+	if err := c.SetStatus(resolved, StatusResolved, "fixed"); err != nil {
+		t.Fatalf("SetStatus resolve: %v", err)
+	}
+
+	got := c.OpenCountsBySeverity()
+	if got["critical"] != 2 {
+		t.Errorf("critical: want 2, got %d", got["critical"])
+	}
+	if got["high"] != 1 {
+		t.Errorf("high: want 1, got %d", got["high"])
+	}
+	if got["warning"] != 1 {
+		t.Errorf("warning: want 1, got %d", got["warning"])
+	}
+}
