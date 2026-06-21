@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Re-check now also covers content findings (suspicious/obfuscated PHP, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
+- Stale content findings now clear automatically on daemon start after a detection-logic update (heuristic, signature, or YARA), when the flagged file is unchanged since detection and current logic no longer flags it, so operators no longer have to manually clear false positives left behind by improved detection.
 
 ### Fixed
 
