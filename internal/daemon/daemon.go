@@ -822,20 +822,9 @@ func (d *Daemon) Run() error {
 	// bytes have not changed since detection.
 	if db := store.Global(); db != nil && d.store != nil {
 		token := checks.ContentDetectionVersion()
-		if changed, err := db.EnsureContentLogicVersion(token); err != nil {
-			csmlog.Warn("content logic version check failed", "err", err)
-		} else if changed {
-			go func() {
-				dismissed := checks.ReverifyStaleContentFindings(d.store)
-				for _, dm := range dismissed {
-					csmlog.Info("stale content finding auto-cleared",
-						"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
-				}
-				if len(dismissed) > 0 {
-					csmlog.Info("content re-verification sweep complete", "cleared", len(dismissed))
-				}
-			}()
-		}
+		d.startContentReverifySweepIfChanged(db, token, func() []checks.ContentReverifyDismissal {
+			return checks.ReverifyStaleContentFindings(d.store)
+		})
 	}
 
 	// Live AF_ALG listener (Copy Fail / CVE-2026-31431) — only started
@@ -1079,6 +1068,36 @@ func (d *Daemon) Run() error {
 	csmlog.Info("daemon stopped", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon stopped\n", ts())
 	return nil
+}
+
+type contentLogicVersionStore interface {
+	EnsureContentLogicVersion(token string) (bool, error)
+}
+
+func (d *Daemon) startContentReverifySweepIfChanged(db contentLogicVersionStore, token string, run func() []checks.ContentReverifyDismissal) {
+	changed, err := db.EnsureContentLogicVersion(token)
+	if err != nil {
+		csmlog.Warn("content logic version check failed", "err", err)
+		return
+	}
+	if changed {
+		d.startContentReverifySweep(run)
+	}
+}
+
+func (d *Daemon) startContentReverifySweep(run func() []checks.ContentReverifyDismissal) {
+	d.wg.Add(1)
+	obs.Go("content-reverify-sweep", func() {
+		defer d.wg.Done()
+		dismissed := run()
+		for _, dm := range dismissed {
+			csmlog.Info("stale content finding auto-cleared",
+				"check", dm.Check, "path", dm.Path, "detail", dm.Detail)
+		}
+		if len(dismissed) > 0 {
+			csmlog.Info("content re-verification sweep complete", "cleared", len(dismissed))
+		}
+	})
 }
 
 // DroppedAlerts returns the total number of alerts dropped due to
