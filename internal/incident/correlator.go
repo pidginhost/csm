@@ -1331,6 +1331,9 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
 		return nil
 	}
+	if incidentAutoBlockExcludedOnly(inc) {
+		return nil
+	}
 	switch strings.ToLower(c.cfg.AutoBlock.BlockAtSeverity) {
 	case "high":
 		if inc.Severity < alert.High {
@@ -1344,6 +1347,28 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 		return nil
 	}
 	return c.triggerIncidentBlockLocked(inc, ip, now, why)
+}
+
+// incidentAutoBlockExcludedOnly keeps advisory incident signals visible without
+// letting them become firewall evidence unless another blockable finding joins.
+func incidentAutoBlockExcludedOnly(inc *Incident) bool {
+	seen := false
+	for _, ev := range inc.Timeline {
+		if ev.Kind == incidentTimelineTruncatedKind {
+			continue
+		}
+		if ev.Kind != "finding" || ev.Check == "" {
+			continue
+		}
+		seen = true
+		switch strings.ToLower(strings.TrimSpace(ev.Check)) {
+		case "ftp_login_after_bruteforce":
+			continue
+		default:
+			return false
+		}
+	}
+	return seen
 }
 
 func (c *Correlator) incidentBlockAllowed() bool {

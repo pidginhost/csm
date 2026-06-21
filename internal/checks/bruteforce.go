@@ -440,13 +440,16 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		observeFTPSkippedBytes(skipped)
 	}
 
+	windowMin := effectiveFTPFailWindowMin(cfg)
+	tracker.evict(now, windowMin)
+
 	var findings []alert.Finding
 	for _, line := range lines {
 		if !isPureFTPDLogFields(strings.Fields(line)) {
 			continue
 		}
 		ip := extractIPFromLog(line)
-		if ip == "" || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1" {
+		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
 		}
 		switch {
@@ -457,8 +460,6 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		}
 	}
 
-	windowMin := effectiveFTPFailWindowMin(cfg)
-	tracker.evict(now, windowMin)
 	tracker.capIPs(maxTrackedIPs)
 	for _, off := range tracker.offenders(ftpFailThreshold) {
 		findings = append(findings, alert.Finding{
@@ -500,7 +501,7 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 		}
 
 		ip := extractIPFromLog(line)
-		if ip == "" || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1" {
+		if ignoredFTPClientIP(ip, cfg.InfraIPs) {
 			continue
 		}
 
@@ -676,6 +677,14 @@ func parseFTPLoginAccount(line string) string {
 		return pre[j+1:]
 	}
 	return pre
+}
+
+func ignoredFTPClientIP(ip string, infraIPs []string) bool {
+	if ip == "" || isInfraIP(ip, infraIPs) {
+		return true
+	}
+	parsed := net.ParseIP(ip)
+	return parsed == nil || parsed.IsLoopback()
 }
 
 // extractIPFromLog tries to extract an IP address from a log line.

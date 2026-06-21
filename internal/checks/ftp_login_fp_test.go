@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -52,6 +53,33 @@ func TestCheckFTPLoginsSkipsIPv6Loopback(t *testing.T) {
 
 	if f := CheckFTPLogins(context.Background(), &config.Config{}, nil); len(f) != 0 {
 		t.Fatalf("IPv6 loopback service-auth must produce no findings, got %+v", f)
+	}
+}
+
+func TestCheckFTPLoginsSkipsLoopbackVariants(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"ipv4_127_8", "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@127.0.0.2) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
+		{"ipv4_mapped", "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@::ffff:127.0.0.1) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			serveSyslog(t, c.content)
+			if f := CheckFTPLogins(context.Background(), &config.Config{}, nil); len(f) != 0 {
+				t.Fatalf("legacy: loopback variant must produce no findings, got %+v", f)
+			}
+
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer func() { _ = st.Close() }()
+			if f := CheckFTPLogins(context.Background(), &config.Config{}, st); len(f) != 0 {
+				t.Fatalf("store: loopback variant must produce no findings, got %+v", f)
+			}
+		})
 	}
 }
 
@@ -125,6 +153,66 @@ func TestCheckFTPLoginsSuccessAfterBruteForceEscalates(t *testing.T) {
 	}
 	if hasFTPLogin(findings, "203.0.113.5") {
 		t.Fatalf("escalated success must not also emit a generic ftp_login finding")
+	}
+}
+
+func TestCheckFTPLoginsSameCycleKeepsBruteAndSuccessSignals(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	var b strings.Builder
+	for i := 0; i < ftpFailThreshold; i++ {
+		b.WriteString("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.5) [WARNING] Authentication failed for user [mallory]\n")
+	}
+	b.WriteString("Apr 12 10:05:00 server pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in\n")
+	serveSyslog(t, b.String())
+
+	findings := alert.Deduplicate(CheckFTPLogins(context.Background(), &config.Config{}, st))
+	var brute, success bool
+	for _, f := range findings {
+		if f.Check == "ftp_bruteforce" && f.SourceIP == "203.0.113.5" {
+			brute = true
+		}
+		if f.Check == "ftp_login_after_bruteforce" && f.SourceIP == "203.0.113.5" {
+			success = true
+		}
+	}
+	if !brute || !success {
+		t.Fatalf("same-cycle brute then success should keep both facts after dedup, got %+v", findings)
+	}
+}
+
+func TestCheckFTPLoginsSuccessIgnoresStaleFailures(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	path := t.TempDir() + "/messages"
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(path) }})
+	if err := os.WriteFile(path, []byte("Apr 12 10:05:00 server pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := newFTPFailTracker()
+	staleAt := time.Now().Add(-2 * time.Hour)
+	for i := 0; i < ftpFailThreshold; i++ {
+		tracker.record("203.0.113.5", staleAt)
+	}
+	tracker.save(st)
+
+	findings := CheckFTPLogins(context.Background(), &config.Config{}, st)
+	for _, f := range findings {
+		if f.Check == "ftp_login_after_bruteforce" || f.Check == "ftp_bruteforce" {
+			t.Fatalf("stale failures must not escalate or brute-force alert, got %+v", findings)
+		}
+	}
+	if !hasFTPLogin(findings, "203.0.113.5") {
+		t.Fatalf("fresh success should still emit generic ftp_login, got %+v", findings)
 	}
 }
 

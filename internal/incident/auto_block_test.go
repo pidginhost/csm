@@ -44,6 +44,103 @@ func TestAutoBlockFiresOnCriticalIncidentWithRemoteIP(t *testing.T) {
 	}
 }
 
+func TestAutoBlockSkipsFTPLoginAfterBruteforceOnly(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	f := alert.Finding{
+		Check:     "ftp_login_after_bruteforce",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.60",
+		Timestamp: now,
+	}
+	if _, _, err := c.OnFinding(f); err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired for FTP success-after-brute advisory: %d", got)
+	}
+}
+
+func TestAutoBlockSkipsFTPLoginAfterBruteforceOnlyAfterTimelineCap(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	base := time.Unix(1_700_000_000, 0)
+	for i := 0; i < maxIncidentTimeline*2; i++ {
+		now := base.Add(time.Duration(i) * time.Millisecond)
+		c.now = func() time.Time { return now }
+		f := alert.Finding{
+			Check:     "ftp_login_after_bruteforce",
+			Severity:  alert.Critical,
+			SourceIP:  "192.0.2.60",
+			Timestamp: now,
+		}
+		if _, _, err := c.OnFinding(f); err != nil {
+			t.Fatalf("OnFinding %d: %v", i, err)
+		}
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired for repeated FTP success-after-brute advisory: %d", got)
+	}
+}
+
+func TestAutoBlockFiresWhenBlockableFindingJoinsFTPAdvisory(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	advisory := alert.Finding{
+		Check:     "ftp_login_after_bruteforce",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.61",
+		Timestamp: now,
+	}
+	if _, _, err := c.OnFinding(advisory); err != nil {
+		t.Fatalf("OnFinding advisory: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired before blockable evidence joined: %d", got)
+	}
+
+	brute := alert.Finding{
+		Check:     "ftp_bruteforce",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.61",
+		Timestamp: now.Add(time.Minute),
+	}
+	c.now = func() time.Time { return brute.Timestamp }
+	if _, _, err := c.OnFinding(brute); err != nil {
+		t.Fatalf("OnFinding brute: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("incident auto-block calls = %d, want 1 after ftp_bruteforce joins", got)
+	}
+}
+
 func TestAutoBlockSkipsBelowSeverityGate(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{

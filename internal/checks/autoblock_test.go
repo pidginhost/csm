@@ -1368,6 +1368,33 @@ func TestAutoBlock_CpanelLoginRealtimeDoesNotBlockSingleLogin(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_FTPLoginAfterBruteforceDoesNotBlockDirectly(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:    "ftp_login_after_bruteforce",
+		Severity: alert.Critical,
+		Message:  "FTP login succeeded for account alice from brute-force source 203.0.113.7 after 10 failed attempts",
+		SourceIP: "203.0.113.7",
+	}}
+	actions := AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("ftp_login_after_bruteforce blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("ftp_login_after_bruteforce actions = %+v, want none", actions)
+	}
+}
+
 func TestAutoBlock_AccountSprayFindingsRemainVisibilityOnly(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
