@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- File-index content findings (obfuscated/suspicious PHP in uploads, languages, upgrade) now carry a content fingerprint at detection time, so Re-check and the stale-content sweep can auto-clear them when the file is unchanged and the classifier no longer flags it.
 - Startup stale-content cleanup now drains during daemon shutdown, so state is not closed while findings are still being cleared.
 - Content Re-check now uses the stored finding fingerprint, keeps realtime heuristic, location, or name-based malware findings active while the file remains present, and no longer clears a finding when the live file cannot be verified consistently.
 - The dashboard header now counts every active incident instead of the first page, so it no longer reports a handful when hundreds are open or contained.

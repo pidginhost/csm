@@ -207,13 +207,15 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			if info, err := osFS.Stat(path); err == nil {
 				details = fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
 			}
-			findings = append(findings, alert.Finding{
+			f := alert.Finding{
 				Severity: severity,
 				Check:    check,
 				Message:  message,
 				Details:  details,
 				FilePath: path,
-			})
+			}
+			StampContentFingerprint(&f)
+			findings = append(findings, f)
 		}
 	}
 
