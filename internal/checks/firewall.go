@@ -47,33 +47,9 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 	}
 
 	// Hash the rule structure, excluding dynamic set members which change on
-	// every block/unblock. Members live inside "elements = { ... }" blocks; skip
-	// the whole block. Members may be IPv4, IPv6, or interval entries beginning
-	// with any character (a-f IPv6 addresses included), so a leading-digit
-	// heuristic alone leaks hex-prefixed v6 members into the hash and makes a
-	// normal block/unblock self-report as an external modification.
-	var stableLines []byte
-	inElements := false
-	for _, line := range strings.Split(string(out), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if inElements {
-			if strings.Contains(trimmed, "}") {
-				inElements = false
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "elements") {
-			// A wrapped block stays open until a later line carries the closing
-			// brace; a single-line "elements = { ... }" closes on the same line.
-			if !strings.Contains(trimmed, "}") {
-				inElements = true
-			}
-			continue
-		}
-		stableLines = append(stableLines, line...)
-		stableLines = append(stableLines, '\n')
-	}
-	hash := hashBytes(stableLines)
+	// every block/unblock.
+	hash := nftRulesetStructureHash(out)
+
 	prev, exists := store.GetRaw("_nftables_rules_hash")
 	if exists && prev != hash {
 		findings = append(findings, alert.Finding{
@@ -89,6 +65,86 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 	findings = append(findings, checkDangerousPorts(cfg)...)
 
 	return findings
+}
+
+func nftRulesetStructureHash(out []byte) string {
+	var stableLines []byte
+	inElements := false
+	elementBraceDepth := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if inElements {
+			elementBraceDepth += nftBraceDelta(trimmed)
+			if elementBraceDepth <= 0 {
+				inElements = false
+				elementBraceDepth = 0
+			}
+			continue
+		}
+		if depth, ok := nftElementsBlockDepth(trimmed); ok {
+			if depth > 0 {
+				inElements = true
+				elementBraceDepth = depth
+			}
+			continue
+		}
+		stableLines = append(stableLines, line...)
+		stableLines = append(stableLines, '\n')
+	}
+
+	return hashBytes(stableLines)
+}
+
+func nftElementsBlockDepth(line string) (int, bool) {
+	const key = "elements"
+	if !strings.HasPrefix(line, key) {
+		return 0, false
+	}
+	rest := line[len(key):]
+	if rest != "" && rest[0] != '=' && rest[0] != ' ' && rest[0] != '\t' {
+		return 0, false
+	}
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "=") {
+		return 0, false
+	}
+	rest = strings.TrimSpace(rest[1:])
+	if !strings.HasPrefix(rest, "{") {
+		return 0, false
+	}
+	return nftBraceDelta(rest), true
+}
+
+func nftBraceDelta(line string) int {
+	depth := 0
+	inQuote := false
+	escaped := false
+	for _, r := range line {
+		if inQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch r {
+			case '\\':
+				escaped = true
+			case '"':
+				inQuote = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inQuote = true
+		case '#':
+			return depth
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+	}
+	return depth
 }
 
 func checkDangerousPorts(cfg *config.Config) []alert.Finding {
