@@ -46,17 +46,28 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 		}
 	}
 
-	// Hash the rule structure (excluding dynamic set elements which change on every block/unblock).
-	// Only detects if someone manually added/removed chains or rules.
+	// Hash the rule structure, excluding dynamic set members which change on
+	// every block/unblock. Members live inside "elements = { ... }" blocks; skip
+	// the whole block. Members may be IPv4, IPv6, or interval entries beginning
+	// with any character (a-f IPv6 addresses included), so a leading-digit
+	// heuristic alone leaks hex-prefixed v6 members into the hash and makes a
+	// normal block/unblock self-report as an external modification.
 	var stableLines []byte
+	inElements := false
 	for _, line := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(line)
-		// Skip set element lines (start with IPs or "elements = {" or "expires")
-		if strings.HasPrefix(trimmed, "elements") || strings.Contains(trimmed, "expires") {
+		if inElements {
+			if strings.Contains(trimmed, "}") {
+				inElements = false
+			}
 			continue
 		}
-		// Skip empty element continuation lines (just IPs)
-		if len(trimmed) > 0 && (trimmed[0] >= '0' && trimmed[0] <= '9') {
+		if strings.HasPrefix(trimmed, "elements") {
+			// A wrapped block stays open until a later line carries the closing
+			// brace; a single-line "elements = { ... }" closes on the same line.
+			if !strings.Contains(trimmed, "}") {
+				inElements = true
+			}
 			continue
 		}
 		stableLines = append(stableLines, line...)

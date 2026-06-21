@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - FTP login alerts no longer page on loopback (cPanel's own internal transfers) or on ordinary customer logins; routine logins are now recorded at audit level instead of high severity.
+- The firewall integrity check no longer falsely reports the ruleset as modified outside CSM when an IPv6 address is blocked or unblocked.
 - File-index content findings (obfuscated/suspicious PHP in uploads, languages, upgrade) now carry a content fingerprint at detection time, so Re-check and the stale-content sweep can auto-clear them when the file is unchanged and the classifier no longer flags it.
 - Startup stale-content cleanup now drains during daemon shutdown, so state is not closed while findings are still being cleared.
 - Content Re-check now uses the stored finding fingerprint, keeps realtime heuristic, location, or name-based malware findings active while the file remains present, and no longer clears a finding when the live file cannot be verified consistently.
