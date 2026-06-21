@@ -67,6 +67,18 @@ type Finding struct {
 	ProcessInfo string   `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
 	PID         int      `json:"pid,omitempty"`          // structured PID for auto-response
 
+	// Content fingerprint for re-verifiable content findings (PHP heuristics,
+	// signature, YARA). Set at emit time by content-family checks; empty for
+	// all other finding kinds and for findings emitted before this field
+	// existed. The re-verification re-check uses it to tell a superseded-
+	// heuristic false positive (identical bytes, current logic no longer
+	// flags) from a file edited after detection (never auto-cleared).
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+	// DetectLogic is the checks.ContentDetectionVersion() token in effect when
+	// this content finding was emitted. Optional; used for sweep gating and
+	// audit explainability.
+	DetectLogic string `json:"detect_logic,omitempty"`
+
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".
 	Path      string   `json:"path,omitempty"`       // path1 trigger label: "header" | "volume" | "volume_account" | "fanout" | "baseline" | "reputation"

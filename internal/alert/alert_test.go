@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -223,4 +224,32 @@ func TestFindingKeyFTPBruteforceDedupsBySourceIP(t *testing.T) {
 	if a.Key() != b.Key() {
 		t.Fatalf("same-IP ftp_bruteforce findings must share a key: %q vs %q", a.Key(), b.Key())
 	}
+}
+
+func TestFindingContentFingerprintRoundTrip(t *testing.T) {
+	f := Finding{Check: "suspicious_php_content", Message: "m", ContentSHA256: "abc123", DetectLogic: "php=1;sig=7;yara=42"}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Finding
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ContentSHA256 != "abc123" || got.DetectLogic != "php=1;sig=7;yara=42" {
+		t.Errorf("round trip lost fields: %+v", got)
+	}
+	// Empty fingerprint must be omitted from JSON (no diff for existing consumers).
+	if bytes.Contains(mustJSON(t, Finding{Check: "x", Message: "y"}), []byte("content_sha256")) {
+		t.Error("empty ContentSHA256 should be omitted")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
