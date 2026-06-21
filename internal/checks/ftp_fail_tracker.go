@@ -1,7 +1,12 @@
 package checks
 
 import (
+	"bytes"
+	"hash/fnv"
+	"io"
+	"os"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -110,4 +115,169 @@ func (t *ftpFailTracker) offenders(threshold int) []ftpOffender {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	return out
+}
+
+// fpAt returns the fnv64a fingerprint (hex) of n bytes at offset off.
+// n <= 0 returns "".
+func fpAt(f *os.File, off, n int64) (string, error) {
+	if n <= 0 {
+		return "", nil
+	}
+	buf := make([]byte, n)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return "", err
+	}
+	h := fnv.New64a()
+	_, _ = h.Write(buf)
+	return strconv.FormatUint(h.Sum64(), 16), nil
+}
+
+// nextNewline returns the byte offset just after the first '\n' at or after
+// from, or size if none is found before size.
+func nextNewline(f *os.File, from, size int64) (int64, error) {
+	buf := make([]byte, 1)
+	for pos := from; pos < size; pos++ {
+		if _, err := f.ReadAt(buf, pos); err != nil && err != io.EOF {
+			return 0, err
+		}
+		if buf[0] == '\n' {
+			return pos + 1, nil
+		}
+	}
+	return size, nil
+}
+
+// completeLines splits data into complete newline-terminated lines and returns
+// the number of bytes consumed (through the last '\n'). Trailing partial bytes
+// are not returned and not consumed.
+func completeLines(data []byte) ([]string, int64) {
+	lastNL := bytes.LastIndexByte(data, '\n')
+	if lastNL < 0 {
+		return nil, 0
+	}
+	var lines []string
+	for _, ln := range bytes.Split(data[:lastNL+1], []byte{'\n'}) {
+		if len(ln) == 0 {
+			continue
+		}
+		lines = append(lines, string(ln))
+	}
+	return lines, int64(lastNL + 1)
+}
+
+// chooseStart returns the byte offset to begin reading from, plus skipped bytes
+// for first-run catch-up. It restarts at 0 on truncate / rotate / anchor
+// mismatch, and follows from st.Offset on a verified append.
+func chooseStart(f *os.File, st followState, curSize int64) (int64, int64, error) {
+	zero := st.Offset == 0 && st.HeadLen == 0 && st.HeadFP == "" && st.AnchorLen == 0 && st.AnchorFP == ""
+	if zero {
+		start := curSize - maxCatchUpBytes
+		if start <= 0 {
+			return 0, 0, nil
+		}
+		aligned, err := nextNewline(f, start, curSize)
+		if err != nil {
+			return 0, 0, err
+		}
+		return aligned, aligned, nil // skipped == bytes before aligned
+	}
+	if curSize < st.Offset || curSize < int64(st.HeadLen) {
+		return 0, 0, nil // truncation / copytruncate
+	}
+	if st.HeadLen > 0 {
+		fp, err := fpAt(f, 0, int64(st.HeadLen))
+		if err != nil {
+			return 0, 0, err
+		}
+		if fp != st.HeadFP {
+			return 0, 0, nil // different-head rotate
+		}
+	}
+	if st.Offset > 0 && (st.AnchorLen == 0 || st.AnchorFP == "") {
+		return 0, 0, nil // incomplete stored anchor
+	}
+	if st.Offset > 0 {
+		fp, err := fpAt(f, st.Offset-int64(st.AnchorLen), int64(st.AnchorLen))
+		if err != nil {
+			return 0, 0, err
+		}
+		if fp != st.AnchorFP {
+			return 0, 0, nil // same-head replacement
+		}
+	}
+	return st.Offset, 0, nil
+}
+
+// fillIdentity sets next's head and anchor fingerprints from the file content.
+func fillIdentity(f *os.File, st *followState, curSize int64) error {
+	headLen := int64(fingerprintBytes)
+	if curSize < headLen {
+		headLen = curSize
+	}
+	hfp, err := fpAt(f, 0, headLen)
+	if err != nil {
+		return err
+	}
+	st.HeadLen = int(headLen)
+	st.HeadFP = hfp
+
+	anchorLen := int64(fingerprintBytes)
+	if st.Offset < anchorLen {
+		anchorLen = st.Offset
+	}
+	afp, err := fpAt(f, st.Offset-anchorLen, anchorLen)
+	if err != nil {
+		return err
+	}
+	st.AnchorLen = int(anchorLen)
+	st.AnchorFP = afp
+	return nil
+}
+
+// readNewSyslogLines reads complete lines appended to path since st, returning
+// the new lines, the next follow state, bytes skipped by the catch-up cap, and
+// any I/O error. On error, next == st so the caller leaves stored state intact.
+func readNewSyslogLines(path string, st followState) ([]string, followState, int64, error) {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return nil, st, 0, err
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, st, 0, err
+	}
+	curSize := info.Size()
+
+	start, skipped, err := chooseStart(f, st, curSize)
+	if err != nil {
+		return nil, st, 0, err
+	}
+
+	if curSize-start > maxCatchUpBytes {
+		capped := curSize - maxCatchUpBytes
+		aligned, aerr := nextNewline(f, capped, curSize)
+		if aerr != nil {
+			return nil, st, 0, aerr
+		}
+		skipped += aligned - start
+		start = aligned
+	}
+
+	var lines []string
+	var consumed int64
+	if curSize-start > 0 {
+		data := make([]byte, curSize-start)
+		if _, rerr := f.ReadAt(data, start); rerr != nil && rerr != io.EOF {
+			return nil, st, 0, rerr
+		}
+		lines, consumed = completeLines(data)
+	}
+
+	next := followState{Offset: start + consumed}
+	if err := fillIdentity(f, &next, curSize); err != nil {
+		return nil, st, 0, err
+	}
+	return lines, next, skipped, nil
 }
