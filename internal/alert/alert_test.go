@@ -216,3 +216,11 @@ func TestFindingKeyHTTPAbuseNewChecksUseStructuredSourceIP(t *testing.T) {
 		}
 	}
 }
+
+func TestFindingKeyFTPBruteforceDedupsBySourceIP(t *testing.T) {
+	a := Finding{Check: "ftp_bruteforce", SourceIP: "203.0.113.5", Message: "FTP brute force from 203.0.113.5: 10 failed attempts in 30m"}
+	b := Finding{Check: "ftp_bruteforce", SourceIP: "203.0.113.5", Message: "FTP brute force from 203.0.113.5: 55 failed attempts in 30m"}
+	if a.Key() != b.Key() {
+		t.Fatalf("same-IP ftp_bruteforce findings must share a key: %q vs %q", a.Key(), b.Key())
+	}
+}
