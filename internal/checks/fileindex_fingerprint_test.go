@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -257,4 +258,137 @@ func TestCheckFileIndexFingerprintUsesClassifiedContent(t *testing.T) {
 	if got != want {
 		t.Fatalf("ContentSHA256 = %q, want classified content hash %q", got, want)
 	}
+}
+
+func TestClassifyPHPWithFingerprintFailClosedWithoutHash(t *testing.T) {
+	cases := []struct {
+		name      string
+		classify  func() (alert.Severity, string, string, string)
+		wantCheck string
+	}{
+		{
+			name: "upload-unreadable",
+			classify: func() (alert.Severity, string, string, string) {
+				return classifyUploadPHPWithFingerprint("/nonexistent/wp-content/uploads/gone.php")
+			},
+			wantCheck: "new_php_in_uploads",
+		},
+		{
+			name: "sensitive-unreadable",
+			classify: func() (alert.Severity, string, string, string) {
+				return classifySensitiveDirPHPWithFingerprint("/nonexistent/wp-content/languages/gone.php", "gone.php")
+			},
+			wantCheck: "new_php_in_sensitive_dir",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sev, check, _, hash := tc.classify()
+			if sev != alert.High {
+				t.Fatalf("severity = %v, want High", sev)
+			}
+			if check != tc.wantCheck {
+				t.Fatalf("check = %q, want %q", check, tc.wantCheck)
+			}
+			if hash != "" {
+				t.Fatalf("hash = %q, want empty for fail-closed presence finding", hash)
+			}
+		})
+	}
+}
+
+func TestCheckFileIndexLeavesNonContentFindingsUnfingerprinted(t *testing.T) {
+	findings := checkFileIndexUploadFindings(t, map[string][]byte{
+		"cache-loader.php": []byte("<?php\nclass Cache_Widget { public function render() { return 'ok'; } }\n"),
+		"shell.php":        []byte("<?php system($_POST['cmd']);"),
+	})
+
+	wantChecks := map[string]bool{
+		"new_php_in_uploads_clean": false,
+		"new_webshell_file":        false,
+	}
+	for _, f := range findings {
+		if _, ok := wantChecks[f.Check]; !ok {
+			continue
+		}
+		wantChecks[f.Check] = true
+		if f.ContentSHA256 != "" || f.DetectLogic != "" {
+			t.Fatalf("%s fingerprint = (%q, %q), want empty", f.Check, f.ContentSHA256, f.DetectLogic)
+		}
+	}
+	for check, seen := range wantChecks {
+		if !seen {
+			t.Fatalf("missing finding %q in %#v", check, findings)
+		}
+	}
+}
+
+func checkFileIndexUploadFindings(t *testing.T, files map[string][]byte) []alert.Finding {
+	t.Helper()
+	resetScanAccount(t)
+
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	if err := os.WriteFile(previousPath, []byte(""), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	uploadsDir := t.TempDir()
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(uploadsDir, name), body, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logicalUploads := "/home/alice/public_html/wp-content/uploads"
+	now := time.Now()
+	alice := accountScanFakeInfo{name: "alice", isDir: true, mode: os.ModeDir | 0755, mtime: now}
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{realDirEntry{name: "alice", info: alice}}, nil
+			case "/home/alice":
+				return nil, nil
+			case logicalUploads:
+				return os.ReadDir(uploadsDir)
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case logicalUploads:
+				return accountScanFakeInfo{name: "uploads", isDir: true, mode: os.ModeDir | 0755, mtime: now}, nil
+			case previousPath:
+				return os.Stat(previousPath)
+			}
+			if strings.HasPrefix(name, logicalUploads+"/") {
+				return os.Stat(filepath.Join(uploadsDir, strings.TrimPrefix(name, logicalUploads+"/")))
+			}
+			if strings.HasPrefix(name, stateDir) {
+				return os.Stat(name)
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(name string) (*os.File, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.Open(name)
+			}
+			if strings.HasPrefix(name, logicalUploads+"/") {
+				return os.Open(filepath.Join(uploadsDir, strings.TrimPrefix(name, logicalUploads+"/")))
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.ReadFile(name)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{StatePath: stateDir}
+	return CheckFileIndex(context.Background(), cfg, nil)
 }
