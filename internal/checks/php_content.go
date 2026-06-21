@@ -1960,11 +1960,13 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 				details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
 			}
 			*findings = append(*findings, alert.Finding{
-				Severity: result.severity,
-				Check:    result.check,
-				Message:  fmt.Sprintf("%s: %s", result.message, fullPath),
-				Details:  details,
-				FilePath: fullPath,
+				Severity:      result.severity,
+				Check:         result.check,
+				Message:       fmt.Sprintf("%s: %s", result.message, fullPath),
+				Details:       details,
+				FilePath:      fullPath,
+				ContentSHA256: FileContentSHA256(fullPath),
+				DetectLogic:   ContentDetectionVersion(),
 			})
 			continue
 		}
