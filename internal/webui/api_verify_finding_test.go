@@ -120,6 +120,51 @@ func TestApiVerifyFindingCheckedUnresolvedKeeps(t *testing.T) {
 	}
 }
 
+func TestVerifyFindingInputUsesStoredFingerprint(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check:         "suspicious_php_content",
+		Message:       "Suspicious PHP content detected: /home/alice/public_html/shell.php",
+		Details:       "server details",
+		FilePath:      "/home/alice/public_html/shell.php",
+		ContentSHA256: "recordedhash",
+		DetectLogic:   "php=1;sig=2;yara=3",
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	in, key := s.verifyFindingInput(verifyFindingRequest{
+		Key:           f.Key(),
+		Check:         f.Check,
+		Message:       f.Message,
+		Details:       "client details",
+		FilePath:      "/home/alice/public_html/other.php",
+		ContentSHA256: "forged-current-hash",
+	})
+	if key != f.Key() {
+		t.Fatalf("key = %q, want %q", key, f.Key())
+	}
+	if in.ContentSHA256 != f.ContentSHA256 || in.DetectLogic != f.DetectLogic {
+		t.Fatalf("fingerprint = (%q, %q), want stored (%q, %q)", in.ContentSHA256, in.DetectLogic, f.ContentSHA256, f.DetectLogic)
+	}
+	if in.Path != f.FilePath || in.Details != f.Details {
+		t.Fatalf("input used client-controlled fields: %+v", in)
+	}
+}
+
+func TestVerifyFindingInputIgnoresClientFingerprintWithoutStoredFinding(t *testing.T) {
+	s := newTestServer(t, "tok")
+	in, _ := s.verifyFindingInput(verifyFindingRequest{
+		Check:         "suspicious_php_content",
+		Message:       "Suspicious PHP content detected: /home/alice/public_html/shell.php",
+		FilePath:      "/home/alice/public_html/shell.php",
+		ContentSHA256: "forged-current-hash",
+	})
+	if in.ContentSHA256 != "" || in.DetectLogic != "" {
+		t.Fatalf("client fingerprint was trusted: %+v", in)
+	}
+}
+
 type verifyFindingFakeOS struct {
 	path string
 }

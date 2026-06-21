@@ -97,18 +97,20 @@ system binaries (re-runs `rpm -V` / `debsums` / `dpkg --verify` for the
 package). It resolves a finding only on confirmed evidence (the
 file is gone, the bit is cleared, the directives are clean) -- never on an
 ambiguous or unreadable target. Package-manager errors or unparsed output leave
-the finding in place. For PHP-content, webshell/obfuscated/dropper, signature
-and YARA findings, Re-check re-runs the classifier on the file's current bytes
-rather than only checking presence: it clears a still-present file only when the
-bytes are byte-for-byte identical to detection time and the current detection
-logic no longer flags them -- a false positive left behind by an improved
-heuristic. A file modified since detection is never auto-cleared (the edit could
-be a partial clean or an evasion attempt) and stays active for manual review or
-a full rescan. The WordPress re-checks are heavier than the
-file checks: they re-run `wp-cli` for that one site (bounded timeout) so a
-just-applied update or cleanup is reflected immediately -- the plugin check runs
-as the site owner and resolves when no active plugin is outdated, the core check
-runs `wp core verify-checksums` and resolves only when the install is gone or
+the finding in place. For periodic PHP-content findings plus signature and YARA
+findings, Re-check re-runs the classifier on the file's current bytes rather
+than only checking presence: it clears a still-present file only when the bytes
+are byte-for-byte identical to detection time and the current detection logic no
+longer flags them -- a false positive left behind by an improved heuristic. That
+detection-time fingerprint is read from the stored finding, not from the browser
+request. Realtime PHP heuristic, location, and name-based malware findings stay
+active while the file remains present. A file modified since detection is never
+auto-cleared (the edit could be a partial clean or an evasion attempt) and stays
+active for manual review or a full rescan. The WordPress re-checks are heavier
+than the file checks: they re-run `wp-cli` for that one site (bounded timeout)
+so a just-applied update or cleanup is reflected immediately -- the plugin check
+runs as the site owner and resolves when no active plugin is outdated, the core
+check runs `wp core verify-checksums` and resolves only when the install is gone or
 the checksum verification is clean. Other `wp-cli` errors or checksum warnings
 keep the finding active for a full account scan. Database findings with a
 concrete current-state target are also re-checkable: injected WordPress

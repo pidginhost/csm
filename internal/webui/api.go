@@ -946,28 +946,15 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Check         string `json:"check"`
-		Message       string `json:"message"`
-		Details       string `json:"details"`
-		FilePath      string `json:"file_path"`
-		ContentSHA256 string `json:"content_sha256"`
-		Key           string `json:"key"`
-	}
+	var req verifyFindingRequest
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.Check == "" || req.Message == "" {
 		writeJSONError(w, "check and message are required", http.StatusBadRequest)
 		return
 	}
 
-	res := checks.VerifyFindingInput(checks.VerifyInput{
-		Check:         req.Check,
-		Message:       req.Message,
-		Details:       req.Details,
-		Path:          req.FilePath,
-		ContentSHA256: req.ContentSHA256,
-	})
+	in, key := s.verifyFindingInput(req)
+	res := checks.VerifyFindingInput(in)
 	if res.Checked && res.Resolved {
-		key := req.Key
 		if key == "" {
 			key = req.Check + ":" + req.Message
 		}
@@ -977,6 +964,54 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, res)
+}
+
+type verifyFindingRequest struct {
+	Check         string `json:"check"`
+	Message       string `json:"message"`
+	Details       string `json:"details"`
+	FilePath      string `json:"file_path"`
+	ContentSHA256 string `json:"content_sha256"`
+	Key           string `json:"key"`
+}
+
+func (s *Server) verifyFindingInput(req verifyFindingRequest) (checks.VerifyInput, string) {
+	in := checks.VerifyInput{
+		Check: req.Check, Message: req.Message, Details: req.Details,
+		Path: req.FilePath,
+	}
+	f, ok := s.latestFindingForVerify(req.Key, req.Check, req.Message)
+	if !ok {
+		return in, req.Key
+	}
+	in.Message = f.Message
+	in.Details = f.Details
+	in.Path = f.FilePath
+	in.ContentSHA256 = f.ContentSHA256
+	in.DetectLogic = f.DetectLogic
+	return in, f.Key()
+}
+
+func (s *Server) latestFindingForVerify(key, check, message string) (alert.Finding, bool) {
+	var matched alert.Finding
+	found := false
+	for _, f := range s.store.LatestFindings() {
+		if f.Check != check || f.Message != message {
+			continue
+		}
+		if key != "" {
+			if f.Key() == key {
+				return f, true
+			}
+			continue
+		}
+		if found {
+			return alert.Finding{}, false
+		}
+		matched = f
+		found = true
+	}
+	return matched, found
 }
 
 // apiBulkFix applies fixes to multiple findings at once.

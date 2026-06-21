@@ -1,10 +1,14 @@
 package checks
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/yara"
@@ -31,11 +35,16 @@ type VerifyInput struct {
 
 // presenceVerifiableChecks are findings whose remediation removes or
 // quarantines a single flagged file, so the honest, cheap re-check is "is the
-// flagged path still there?". Content-family checks (PHP heuristics, YARA,
-// signatures) are handled by reverifyContentFinding via contentReverifiableChecks
-// instead — they can resolve a still-present file when its bytes are unchanged
-// and the current classifier no longer flags them.
+// flagged path still there?". Content-family checks are handled by
+// reverifyContentFinding only when this package can re-run the same classifier
+// that produced them; realtime PHP heuristic findings stay presence-based.
 var presenceVerifiableChecks = []string{
+	"webshell", "webshell_realtime",
+	"webshell_content_realtime", "obfuscated_php_realtime",
+	"php_dropper_realtime",
+	"new_webshell_file", "new_suspicious_php",
+	"new_php_in_sensitive_dir", "new_php_in_uploads",
+	"php_in_sensitive_dir_realtime", "php_in_uploads_realtime",
 	"suspicious_file",
 	"nulled_plugin", "symlink_attack",
 	"backdoor_binary", "new_executable_in_config",
@@ -63,6 +72,11 @@ var htaccessVerifiableChecks = []string{
 // or a condition we cannot yet cheaply and safely confirm. CanVerify reports
 // membership so the Web UI shows the "Re-check" action only where it can act.
 var findingVerifiers = buildFindingVerifiers()
+
+var (
+	contentSignatureScanner = signatures.Global
+	contentYARAScanner      = yara.Active
+)
 
 func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 	m := map[string]func(VerifyInput) VerifyResult{}
@@ -153,8 +167,8 @@ func VerifyFinding(checkType, message, details string, filePath ...string) Verif
 	})
 }
 
-// VerifyFindingInput re-evaluates a finding from a full VerifyInput (used by
-// the Web UI Re-check, which forwards the finding's content fingerprint).
+// VerifyFindingInput re-evaluates a finding from a full VerifyInput. Callers
+// that verify content findings must provide the stored detection fingerprint.
 func VerifyFindingInput(in VerifyInput) VerifyResult {
 	if in.Path == "" {
 		in.Path = selectFindingPath(in.Message)
@@ -168,7 +182,7 @@ func VerifyFindingInput(in VerifyInput) VerifyResult {
 // reverifyContentFinding re-runs the content classifier that originally
 // produced the finding. It resolves only when the file is gone OR the file's
 // bytes are byte-for-byte identical to detection time AND the current
-// classifier no longer flags them — a superseded-heuristic false positive.
+// classifier no longer flags them -- a superseded-heuristic false positive.
 // A file modified since detection is never auto-cleared to prevent partial
 // cleans or evasion edits from being mistaken for a fix.
 func reverifyContentFinding(in VerifyInput) VerifyResult {
@@ -185,14 +199,13 @@ func reverifyContentFinding(in VerifyInput) VerifyResult {
 	if !info.Mode().IsRegular() {
 		return VerifyResult{Checked: false, Detail: "path is not a regular file; not auto-verifiable"}
 	}
-	matched, label, err := contentStillMatches(in.Check, clean, info)
+	matched, label, currentHash, err := contentStillMatches(in.Check, clean, info)
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: err.Error()}
 	}
 	if matched {
 		return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("still flagged by current detection logic: %s", label)}
 	}
-	currentHash := FileContentSHA256(clean)
 	switch {
 	case in.ContentSHA256 != "" && currentHash != "" && currentHash == in.ContentSHA256:
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf(
@@ -205,41 +218,127 @@ func reverifyContentFinding(in VerifyInput) VerifyResult {
 	}
 }
 
-// contentStillMatches re-runs the appropriate classifier for the check type
-// against the file's current bytes. Returns (true, label, nil) if the
-// classifier still flags the file, (false, "", nil) if it no longer does, or
-// (false, "", err) on read failure.
-func contentStillMatches(check, path string, info os.FileInfo) (bool, string, error) {
+// contentStillMatches re-runs the appropriate classifier for the check type.
+// For files small enough to fingerprint, the returned hash and classifier result
+// come from the same opened content snapshot.
+func contentStillMatches(check, path string, info os.FileInfo) (bool, string, string, error) {
 	switch check {
 	case "signature_match_realtime":
-		data, err := readFilePreservingIdentity(path, info)
+		s := contentSignatureScanner()
+		if s == nil || s.RuleCount() == 0 {
+			return false, "", "", fmt.Errorf("signature scanner unavailable")
+		}
+		snap, err := readContentSnapshotForReverify(path, info)
 		if err != nil {
-			return false, "", fmt.Errorf("cannot read file: %v", err)
+			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
-		if s := signatures.Global(); s != nil {
-			if hits := s.ScanContent(data, strings.ToLower(filepath.Ext(path))); len(hits) > 0 {
-				return true, fmt.Sprintf("%d signature match(es)", len(hits)), nil
-			}
+		if hits := s.ScanContent(snap.data, strings.ToLower(filepath.Ext(path))); len(hits) > 0 {
+			return true, fmt.Sprintf("%d signature match(es)", len(hits)), snap.sha256, nil
 		}
-		return false, "", nil
+		return false, "", snap.sha256, nil
 	case "yara_match_realtime":
-		data, err := readFilePreservingIdentity(path, info)
+		y := contentYARAScanner()
+		if y == nil || y.RuleCount() == 0 {
+			return false, "", "", fmt.Errorf("YARA scanner unavailable")
+		}
+		snap, err := readContentSnapshotForReverify(path, info)
 		if err != nil {
-			return false, "", fmt.Errorf("cannot read file: %v", err)
+			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
-		if y := yara.Active(); y != nil {
-			if hits := y.ScanBytes(data); len(hits) > 0 {
-				return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), nil
-			}
+		if hits := y.ScanBytes(snap.data); len(hits) > 0 {
+			return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), snap.sha256, nil
 		}
-		return false, "", nil
+		return false, "", snap.sha256, nil
 	default: // PHP heuristic content family
-		res := analyzePHPContent(path)
-		if res.severity >= 0 {
-			return true, strings.Join(res.indicators, ", "), nil
+		res, currentHash, err := analyzePHPContentForReverify(path, info)
+		if err != nil {
+			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
-		return false, "", nil
+		if res.severity >= 0 {
+			return true, strings.Join(res.indicators, ", "), currentHash, nil
+		}
+		return false, "", currentHash, nil
 	}
+}
+
+func analyzePHPContentForReverify(path string, expected os.FileInfo) (phpAnalysisResult, string, error) {
+	if expected != nil && expected.Size() <= contentFingerprintMaxBytes {
+		snap, err := readContentSnapshotForReverify(path, expected)
+		if err != nil {
+			return phpAnalysisResult{}, "", err
+		}
+		res := analyzePHPContentReaderAt(path, bytes.NewReader(snap.data), int64(len(snap.data)))
+		if !res.readOK {
+			return phpAnalysisResult{}, "", fmt.Errorf("content read failed")
+		}
+		return res, snap.sha256, nil
+	}
+
+	f, info, err := openReadOnlyPreservingIdentity(path, expected)
+	if err != nil {
+		return phpAnalysisResult{}, "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	res := analyzePHPContentReaderAt(path, f, info.Size())
+	if !res.readOK {
+		return phpAnalysisResult{}, "", fmt.Errorf("content read failed")
+	}
+	return res, "", nil
+}
+
+type reverifyContentSnapshot struct {
+	data   []byte
+	sha256 string
+}
+
+func readContentSnapshotForReverify(path string, expected os.FileInfo) (reverifyContentSnapshot, error) {
+	f, info, err := openReadOnlyPreservingIdentity(path, expected)
+	if err != nil {
+		return reverifyContentSnapshot{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return reverifyContentSnapshot{}, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		return reverifyContentSnapshot{}, err
+	}
+	if !sameFileIdentity(after, info) || !sameCleanContentShape(after, info) {
+		return reverifyContentSnapshot{}, fmt.Errorf("file changed during verification")
+	}
+	if int64(len(data)) != info.Size() {
+		return reverifyContentSnapshot{}, fmt.Errorf("file changed during verification")
+	}
+
+	var digest string
+	if info.Size() <= contentFingerprintMaxBytes {
+		sum := sha256.Sum256(data)
+		digest = fmt.Sprintf("%x", sum)
+	}
+	return reverifyContentSnapshot{data: data, sha256: digest}, nil
+}
+
+func openReadOnlyPreservingIdentity(path string, expected os.FileInfo) (*os.File, os.FileInfo, error) {
+	// #nosec G304 -- path was validated by readOnlyFixPath against remediation
+	// roots; O_NOFOLLOW plus sameFileIdentity fails closed on inode swap.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !sameFileIdentity(info, expected) || !sameCleanContentShape(info, expected) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("file changed during verification")
+	}
+	return f, info, nil
 }
 
 // CanVerify reports whether VerifyFinding has an automated re-check for the

@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Re-check now also covers content findings (suspicious/obfuscated PHP, webshells, droppers, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
+- Re-check now also covers content findings (suspicious/obfuscated PHP, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
 
 ### Fixed
 
+- Content Re-check now uses the stored finding fingerprint, keeps realtime heuristic, location, or name-based malware findings active while the file remains present, and no longer clears a finding when the live file cannot be verified consistently.
 - The dashboard header now counts every active incident instead of the first page, so it no longer reports a handful when hundreds are open or contained.
 - The dashboard health badge now reflects active critical and high incidents, not just whether the daemon is running, so it stops showing "Healthy" while critical incidents are open or contained.
 - The dashboard health badge now also follows degraded daemon state, so detached watchers or store failures no longer appear healthy.

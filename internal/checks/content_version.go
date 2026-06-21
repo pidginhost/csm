@@ -18,21 +18,16 @@ import (
 const ContentLogicVersion = 1
 
 // contentReverifiableChecks are content findings whose condition can be
-// re-evaluated by re-running the classifier that produced them on the file's
-// current bytes. Unlike presenceVerifiableChecks, a still-present file may be
-// resolved -- but ONLY when its bytes are byte-for-byte identical to detection
-// time (ContentSHA256 match) and the current classifier no longer flags them.
-// A file modified since detection is never auto-cleared (it could be a partial
-// clean or an evasion edit), preserving the guarantee behind the presence-only
-// design.
+// re-evaluated here by re-running the classifier that produced them on the
+// file's current bytes. Unlike presenceVerifiableChecks, a still-present file
+// may be resolved -- but ONLY when its bytes are byte-for-byte identical to
+// detection time (ContentSHA256 match) and the current classifier no longer
+// flags them. A file modified since detection is never auto-cleared (it could
+// be a partial clean or an evasion edit), preserving the guarantee behind the
+// presence-only design.
 var contentReverifiableChecks = []string{
 	"suspicious_php_content",
-	"obfuscated_php", "obfuscated_php_realtime",
-	"php_dropper_realtime",
-	"webshell", "webshell_realtime", "webshell_content_realtime",
-	"new_webshell_file", "new_suspicious_php",
-	"new_php_in_sensitive_dir", "new_php_in_uploads",
-	"php_in_sensitive_dir_realtime", "php_in_uploads_realtime",
+	"obfuscated_php",
 	"signature_match_realtime", "yara_match_realtime",
 }
 

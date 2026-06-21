@@ -42,4 +42,7 @@ func TestIsContentReverifiable(t *testing.T) {
 	if IsContentReverifiable("uid0_account") {
 		t.Error("uid0_account is not content-reverifiable")
 	}
+	if IsContentReverifiable("webshell_content_realtime") {
+		t.Error("webshell_content_realtime stays presence-verifiable")
+	}
 }

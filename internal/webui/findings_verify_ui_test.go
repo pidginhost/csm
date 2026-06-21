@@ -28,12 +28,20 @@ func TestFindingsJSWiresVerifyAction(t *testing.T) {
 		`' data-details="' + CSM.esc(f.details || '') + '"'`,
 		"details: row.getAttribute('data-details') || '',",
 		"details: i.details",
-		// content fingerprint wired through Re-check only (not dismiss/suppress/bulk)
-		"data-contentsha=",
-		"content_sha256: row.getAttribute('data-contentsha')",
+		// Content fingerprints stay server-owned; the browser sends identity
+		// and path context only.
+		"file_path: row.getAttribute('data-filepath') || ''",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("findings.js missing verify-action fragment %q", want)
+		}
+	}
+	for _, banned := range []string{
+		"data-contentsha=",
+		"content_sha256: row.getAttribute('data-contentsha')",
+	} {
+		if strings.Contains(js, banned) {
+			t.Errorf("findings.js still forwards client-controlled fingerprint %q", banned)
 		}
 	}
 }

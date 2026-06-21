@@ -2012,6 +2012,10 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	if info, statErr := f.Stat(); statErr == nil {
 		size = info.Size()
 	}
+	return analyzePHPContentReaderAt(path, f, size)
+}
+
+func analyzePHPContentReaderAt(path string, f io.ReaderAt, size int64) phpAnalysisResult {
 	head, tail, tailOffset, readOK := readPHPContentWindows(f, size)
 	if !readOK {
 		return phpAnalysisResult{severity: -1, readOK: false}
