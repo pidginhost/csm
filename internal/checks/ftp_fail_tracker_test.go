@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -70,6 +72,24 @@ func TestFTPAccumulatorCapIPsEvictsOldestActivity(t *testing.T) {
 	}
 }
 
+func TestFTPAccumulatorCapIPsKeepsHighCountCandidate(t *testing.T) {
+	tr := newFTPFailTracker()
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < ftpFailThreshold-1; i++ {
+		tr.record("203.0.113.250", base)
+	}
+	tr.record("203.0.113.1", base.Add(time.Minute))
+	tr.record("203.0.113.2", base.Add(2*time.Minute))
+
+	tr.capIPs(2)
+	if _, ok := tr.Buckets["203.0.113.250"]; !ok {
+		t.Fatalf("near-threshold IP should survive cap; buckets=%v", tr.Buckets)
+	}
+	if len(tr.Buckets) != 2 {
+		t.Fatalf("want 2 tracked IPs after cap, got %d", len(tr.Buckets))
+	}
+}
+
 // writeFollowFile writes content to a temp file and returns its path.
 func writeFollowFile(t *testing.T, content string) string {
 	t.Helper()
@@ -128,6 +148,43 @@ func TestReadNewSyslogLinesPartialLineHeldUntilComplete(t *testing.T) {
 	}
 	if len(lines2) != 1 || lines2[0] != "partial now done" {
 		t.Fatalf("cycle2 want [partial now done] once, got %v", lines2)
+	}
+}
+
+func TestReadNewSyslogLinesAllPartialRangeLeavesOffset(t *testing.T) {
+	followReal(t)
+	p := writeFollowFile(t, "complete one\n")
+	_, st1, _, err := readNewSyslogLines(p, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(p, []byte("complete one\npartial"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lines, st2, _, err := readNewSyslogLines(p, st1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("all-partial range should return no lines, got %v", lines)
+	}
+	if st2.Offset != st1.Offset {
+		t.Fatalf("all-partial range should leave offset at %d, got %d", st1.Offset, st2.Offset)
+	}
+}
+
+func TestReadNewSyslogLinesEmptyFileReturnsZeroState(t *testing.T) {
+	followReal(t)
+	p := writeFollowFile(t, "")
+	lines, st, skipped, err := readNewSyslogLines(p, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 || skipped != 0 {
+		t.Fatalf("empty file returned lines=%v skipped=%d", lines, skipped)
+	}
+	if st != (followState{}) {
+		t.Fatalf("empty file should return zero follow state, got %+v", st)
 	}
 }
 
@@ -219,6 +276,22 @@ func TestReadNewSyslogLinesErrorReturnsOriginalState(t *testing.T) {
 	}
 }
 
+func TestFollowerHelpersRejectShortRead(t *testing.T) {
+	p := writeFollowFile(t, "abc")
+	f, err := os.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := fpAt(f, 0, 4); !errors.Is(err, io.EOF) {
+		t.Fatalf("fpAt short read err = %v, want EOF", err)
+	}
+	if _, err := nextNewline(f, 0, 4); !errors.Is(err, io.EOF) {
+		t.Fatalf("nextNewline short read err = %v, want EOF", err)
+	}
+}
+
 func TestFTPTrackerPersistenceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Open(dir)
@@ -270,5 +343,18 @@ func TestFTPTrackerLoadIncompleteFollowYieldsZeroState(t *testing.T) {
 	got := loadFTPFailTracker(st)
 	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {
 		t.Fatalf("incomplete follow state should yield zero state, got %+v", got)
+	}
+}
+
+func TestFTPTrackerLoadImpossibleFollowYieldsZeroState(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	st.SetRaw(ftpTrackerKey, `{"follow":{"offset":4,"head_len":3,"head_fp":"abc","anchor_len":8,"anchor_fp":"def"},"buckets":{"203.0.113.9":{"1000":1}}}`)
+	got := loadFTPFailTracker(st)
+	if got == nil || got.Buckets == nil || len(got.Buckets) != 0 || got.Follow.Offset != 0 {
+		t.Fatalf("impossible follow state should yield zero state, got %+v", got)
 	}
 }

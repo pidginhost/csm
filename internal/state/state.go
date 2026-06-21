@@ -112,6 +112,8 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.dirty {
 		return nil
 	}
@@ -325,6 +327,23 @@ func (s *Store) GetRaw(key string) (string, bool) {
 func (s *Store) SetRaw(key, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.setRawLocked(key, value)
+}
+
+// SetRawAndSave stores a raw housekeeping value and immediately persists the
+// state file. Use it for cursors where a completed scan must survive restart
+// even when no finding is emitted later in the cycle.
+func (s *Store) SetRawAndSave(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := s.setRawLocked(key, value)
+	if !changed && !s.dirty {
+		return nil
+	}
+	return s.save()
+}
+
+func (s *Store) setRawLocked(key, value string) bool {
 	entry, exists := s.entries[key]
 	if !exists {
 		s.entries[key] = &Entry{
@@ -333,11 +352,15 @@ func (s *Store) SetRaw(key, value string) {
 			LastSeen:  time.Now(),
 		}
 		s.dirty = true
-	} else if entry.Hash != value {
+		return true
+	}
+	if entry.Hash != value {
 		entry.Hash = value
 		entry.LastSeen = time.Now()
 		s.dirty = true
+		return true
 	}
+	return false
 }
 
 // AppendHistory writes findings to the bbolt store (if available) or

@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"io"
 	"os"
@@ -23,7 +24,6 @@ const (
 )
 
 // followState is the persisted position+identity of the syslog follower.
-// Populated by readNewSyslogLines (Task 2).
 type followState struct {
 	Offset    int64  `json:"offset"`
 	HeadLen   int    `json:"head_len"`
@@ -70,34 +70,41 @@ func (t *ftpFailTracker) evict(now time.Time, windowMin int) {
 	}
 }
 
-// capIPs bounds the tracked-IP set, evicting the IPs whose most-recent activity
-// is oldest first (ties broken by IP string for deterministic tests).
+// capIPs bounds the tracked-IP set, evicting the weakest candidates first.
+// Count wins over recency so a flood of one-off sources cannot push an IP that
+// is close to the brute-force threshold out of the retained window.
 func (t *ftpFailTracker) capIPs(max int) {
 	if len(t.Buckets) <= max {
 		return
 	}
-	type ipAge struct {
+	type ipScore struct {
 		ip     string
 		recent int64
+		count  int
 	}
-	ages := make([]ipAge, 0, len(t.Buckets))
+	scores := make([]ipScore, 0, len(t.Buckets))
 	for ip, m := range t.Buckets {
 		var recent int64
+		var count int
 		for minute := range m {
 			if minute > recent {
 				recent = minute
 			}
+			count += m[minute]
 		}
-		ages = append(ages, ipAge{ip, recent})
+		scores = append(scores, ipScore{ip: ip, recent: recent, count: count})
 	}
-	sort.Slice(ages, func(i, j int) bool {
-		if ages[i].recent != ages[j].recent {
-			return ages[i].recent < ages[j].recent
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].count != scores[j].count {
+			return scores[i].count < scores[j].count
 		}
-		return ages[i].ip < ages[j].ip
+		if scores[i].recent != scores[j].recent {
+			return scores[i].recent < scores[j].recent
+		}
+		return scores[i].ip < scores[j].ip
 	})
-	for i := 0; i < len(ages)-max; i++ {
-		delete(t.Buckets, ages[i].ip)
+	for i := 0; i < len(scores)-max; i++ {
+		delete(t.Buckets, scores[i].ip)
 	}
 }
 
@@ -130,8 +137,12 @@ func fpAt(f *os.File, off, n int64) (string, error) {
 		return "", nil
 	}
 	buf := make([]byte, n)
-	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+	read, err := f.ReadAt(buf, off)
+	if err != nil {
 		return "", err
+	}
+	if read != len(buf) {
+		return "", io.ErrUnexpectedEOF
 	}
 	h := fnv.New64a()
 	_, _ = h.Write(buf)
@@ -143,8 +154,12 @@ func fpAt(f *os.File, off, n int64) (string, error) {
 func nextNewline(f *os.File, from, size int64) (int64, error) {
 	buf := make([]byte, 1)
 	for pos := from; pos < size; pos++ {
-		if _, err := f.ReadAt(buf, pos); err != nil && err != io.EOF {
+		read, err := f.ReadAt(buf, pos)
+		if err != nil {
 			return 0, err
+		}
+		if read != len(buf) {
+			return 0, io.ErrUnexpectedEOF
 		}
 		if buf[0] == '\n' {
 			return pos + 1, nil
@@ -275,8 +290,12 @@ func readNewSyslogLines(path string, st followState) ([]string, followState, int
 	var consumed int64
 	if curSize-start > 0 {
 		data := make([]byte, curSize-start)
-		if _, rerr := f.ReadAt(data, start); rerr != nil && rerr != io.EOF {
+		read, rerr := f.ReadAt(data, start)
+		if rerr != nil {
 			return nil, st, 0, rerr
+		}
+		if read != len(data) {
+			return nil, st, 0, io.ErrUnexpectedEOF
 		}
 		lines, consumed = completeLines(data)
 	}
@@ -310,10 +329,15 @@ func loadFTPFailTracker(store *state.Store) *ftpFailTracker {
 	return &decoded
 }
 
-// invalidFollowState reports stored follow state that claims an offset but is
-// missing the head/anchor identity needed to verify it; such state is dropped
-// so the reader falls back to a bounded first-run catch-up.
+// invalidFollowState reports stored follow state that is impossible or lacks
+// the identity needed to verify a claimed offset; such state is dropped so the
+// reader falls back to a bounded first-run catch-up.
 func invalidFollowState(st followState) bool {
+	if st.Offset < 0 || st.HeadLen < 0 || st.HeadLen > fingerprintBytes ||
+		st.AnchorLen < 0 || st.AnchorLen > fingerprintBytes ||
+		int64(st.AnchorLen) > st.Offset {
+		return true
+	}
 	if st.Offset <= 0 {
 		return false
 	}
@@ -325,7 +349,9 @@ func (t *ftpFailTracker) save(store *state.Store) {
 	if err != nil {
 		return
 	}
-	store.SetRaw(ftpTrackerKey, string(b))
+	if err := store.SetRawAndSave(ftpTrackerKey, string(b)); err != nil {
+		fmt.Fprintf(os.Stderr, "state: error saving FTP fail tracker: %v\n", err)
+	}
 }
 
 const ftpSyslogPath = "/var/log/messages"
@@ -340,6 +366,7 @@ func effectiveFTPFailWindowMin(cfg *config.Config) int {
 }
 
 var (
+	ftpTrackerMu        sync.Mutex
 	ftpSkippedBytes     *metrics.Counter
 	ftpSkippedBytesOnce sync.Once
 )

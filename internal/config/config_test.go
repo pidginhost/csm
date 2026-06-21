@@ -649,6 +649,7 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 		"http_ua_headless_enabled",
 		"http_ua_empty_enabled",
 		"crontab_base64_blob_max_bytes",
+		"ftp_fail_window_min",
 	} {
 		if _, ok := raw.Thresholds[key]; !ok {
 			t.Errorf("production reference config missing thresholds.%s", key)

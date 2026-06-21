@@ -411,8 +411,8 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 	}
 }
 
-// syslogMessagesTailLinesDefault is the built-in fallback for how many
-// trailing lines of /var/log/messages CheckFTPLogins tails per cycle.
+// syslogMessagesTailLinesDefault is the built-in fallback for the legacy
+// direct CheckFTPLogins path used when no state store is available.
 // Operator override: cfg.Thresholds.SyslogMessagesTailLines.
 const syslogMessagesTailLinesDefault = 200
 
@@ -420,9 +420,15 @@ const syslogMessagesTailLinesDefault = 200
 // /var/log/messages forward-only and accumulates per-IP failures over a sliding
 // window; without a store it falls back to the legacy per-cycle tail.
 func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	if store == nil {
 		return checkFTPLoginsLegacy(cfg)
 	}
+	ftpTrackerMu.Lock()
+	defer ftpTrackerMu.Unlock()
+
 	now := time.Now()
 	tracker := loadFTPFailTracker(store)
 

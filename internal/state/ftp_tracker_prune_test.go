@@ -1,6 +1,8 @@
 package state
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -10,7 +12,7 @@ func TestUnderscoreRawKeySurvivesUpdatePruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	st.SetRaw("_ftp_fail_tracker", "{}")
 	st.SetRaw("ftp_fail_tracker_control", "{}")
 
@@ -25,4 +27,31 @@ func TestUnderscoreRawKeySurvivesUpdatePruning(t *testing.T) {
 	if _, ok := st.GetRaw("ftp_fail_tracker_control"); ok {
 		t.Fatal("non-underscore control key should have been pruned")
 	}
+}
+
+func TestCloseSerializesWithSetRawAndSave(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := st.SetRawAndSave("_ftp_fail_tracker", fmt.Sprintf("%d", i)); err != nil {
+				t.Errorf("set raw: %v", err)
+			}
+		}(i)
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+	wg.Wait()
 }

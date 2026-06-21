@@ -129,6 +129,7 @@ thresholds:
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
+  ftp_fail_window_min: 30
   account_scan_max_files: 10000
   # crontab_base64_blob_max_bytes caps the encoded length of a single
   # base64 candidate before decoding inside the crontab deep-scan

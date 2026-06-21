@@ -199,11 +199,9 @@ type Config struct {
 		// across more than 500 lines per cycle.
 		MailLogTailLines int `yaml:"mail_log_tail_lines"`
 
-		// SyslogMessagesTailLines is how many trailing lines CheckFTPLogins
-		// reads from /var/log/messages per cycle. Default 200. Raise on
-		// hosts that share /var/log/messages with noisy services (e.g.
-		// systemd-resolved chatter) so pure-ftpd failure lines do not
-		// fall outside the window.
+		// SyslogMessagesTailLines is kept for direct CheckFTPLogins callers
+		// that do not pass a state store. The daemon's store-backed FTP detector
+		// follows /var/log/messages forward and ignores this setting.
 		SyslogMessagesTailLines int `yaml:"syslog_messages_tail_lines"`
 
 		// FTPFailWindowMin is the sliding-window length (minutes) over which the

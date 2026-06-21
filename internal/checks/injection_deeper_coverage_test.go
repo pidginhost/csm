@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -418,6 +420,82 @@ func TestCheckFTPLoginsStoreBackedReadErrorDoesNotOverwriteTracker(t *testing.T)
 	after, _ := st.GetRaw(ftpTrackerKey)
 	if after != before {
 		t.Fatalf("read error must not overwrite tracker state: before=%q after=%q", before, after)
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedPersistsTrackerBeforeClose(t *testing.T) {
+	stateDir := t.TempDir()
+	st, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	msgPath := t.TempDir() + "/messages"
+	if err = os.WriteFile(msgPath, []byte("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.44) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) { return os.Open(msgPath) }})
+
+	_ = CheckFTPLogins(context.Background(), &config.Config{}, st)
+
+	reopened, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	raw, ok := reopened.GetRaw(ftpTrackerKey)
+	if !ok || raw == "" {
+		t.Fatal("FTP tracker state must be persisted before Store.Close")
+	}
+	got := loadFTPFailTracker(reopened)
+	if got.Follow.Offset == 0 {
+		t.Fatalf("persisted tracker should carry a non-zero offset: %+v", got.Follow)
+	}
+}
+
+func TestCheckFTPLoginsStoreBackedSerializesTrackerState(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	msgPath := t.TempDir() + "/messages"
+	if err = os.WriteFile(msgPath, []byte("Apr 12 10:00:00 server pure-ftpd[1]: (?@203.0.113.45) [WARNING] Authentication failed for user [alice]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var active int32
+	var maxActive int32
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		cur := atomic.AddInt32(&active, 1)
+		for {
+			prev := atomic.LoadInt32(&maxActive)
+			if cur <= prev || atomic.CompareAndSwapInt32(&maxActive, prev, cur) {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+		atomic.AddInt32(&active, -1)
+		return os.Open(msgPath)
+	}})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = CheckFTPLogins(context.Background(), &config.Config{}, st)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxActive); got != 1 {
+		t.Fatalf("store-backed FTP tracker must not run concurrently, max active opens=%d", got)
 	}
 }
 
