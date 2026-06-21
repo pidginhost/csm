@@ -105,6 +105,7 @@ thresholds:
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
+  ftp_fail_window_min: 30
   # account_scan_max_files caps account and mail-domain paths scanned
   # per cycle (SSH authorized_keys, cPanel API tokens, Dovecot shadow,
   # CMS DB-content/object scans, forwarders, user crontabs, and account

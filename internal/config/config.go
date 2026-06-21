@@ -206,6 +206,12 @@ type Config struct {
 		// fall outside the window.
 		SyslogMessagesTailLines int `yaml:"syslog_messages_tail_lines"`
 
+		// FTPFailWindowMin is the sliding-window length (minutes) over which the
+		// store-backed FTP detector accumulates per-IP pure-ftpd auth failures
+		// before alerting at ftpFailThreshold. 0 means use the built-in default
+		// (30). Valid range 1..1440.
+		FTPFailWindowMin int `yaml:"ftp_fail_window_min"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -1349,6 +1355,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.SyslogMessagesTailLines == 0 {
 		cfg.Thresholds.SyslogMessagesTailLines = 200
+	}
+	if cfg.Thresholds.FTPFailWindowMin == 0 {
+		cfg.Thresholds.FTPFailWindowMin = 30
 	}
 	if cfg.Thresholds.CredStuffingDistinctAccounts == 0 {
 		cfg.Thresholds.CredStuffingDistinctAccounts = 5

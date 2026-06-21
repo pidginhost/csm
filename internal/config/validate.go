@@ -280,6 +280,12 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"warn", "email_protection.password_check_interval_min", "password_check_interval_min < 60 may cause high CPU from doveadm"})
 	}
 
+	if cfg.Thresholds.FTPFailWindowMin != 0 &&
+		(cfg.Thresholds.FTPFailWindowMin < 1 || cfg.Thresholds.FTPFailWindowMin > 1440) {
+		results = append(results, ValidationResult{"error", "thresholds.ftp_fail_window_min",
+			fmt.Sprintf("ftp_fail_window_min must be between 1 and 1440, got %d", cfg.Thresholds.FTPFailWindowMin)})
+	}
+
 	// --- EmailProtection.PHPRelay bounds ---
 	// Bounds checks fire only when the operator has supplied a value
 	// (zero means "use the applyDefaults value" or, for AccountVolumePerHour,

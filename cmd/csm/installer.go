@@ -270,6 +270,7 @@ thresholds:
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
+  ftp_fail_window_min: 30
   crontab_base64_blob_max_bytes: 16384
   # HTTP request flood detector. 0 disables. Sample local baseline
   # traffic before raising; CDN and carrier NAT traffic can concentrate

@@ -41,6 +41,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DomlogMaxFiles != 500 {
 		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
 	}
+	if cfg.Thresholds.FTPFailWindowMin != 30 {
+		t.Errorf("ftp_fail_window_min = %d, want 30", cfg.Thresholds.FTPFailWindowMin)
+	}
 	if cfg.Thresholds.AccountScanMaxFiles != 10000 {
 		t.Errorf("account_scan_max_files = %d, want 10000", cfg.Thresholds.AccountScanMaxFiles)
 	}

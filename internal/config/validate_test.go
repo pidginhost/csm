@@ -1612,3 +1612,19 @@ func TestValidateBPFEnforcementRejectsLegacyDirectSMTPBackend(t *testing.T) {
 		t.Fatalf("BPF enforcement with legacy direct SMTP backend must fail: %v", results)
 	}
 }
+
+func TestValidateFTPFailWindowMinRange(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.Thresholds.FTPFailWindowMin = 0 // means "use default" -> no error
+	if hasResult(Validate(cfg), "error", "thresholds.ftp_fail_window_min") {
+		t.Fatal("0 (use default) must not be a validation error")
+	}
+	cfg.Thresholds.FTPFailWindowMin = 1441 // out of range
+	if !hasResult(Validate(cfg), "error", "thresholds.ftp_fail_window_min") {
+		t.Fatal("1441 must be a validation error")
+	}
+	cfg.Thresholds.FTPFailWindowMin = 30 // valid
+	if hasResult(Validate(cfg), "error", "thresholds.ftp_fail_window_min") {
+		t.Fatal("30 must be valid")
+	}
+}
