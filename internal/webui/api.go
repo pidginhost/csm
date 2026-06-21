@@ -209,19 +209,20 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 
 // enrichedFinding is the JSON response type for the enriched findings endpoint.
 type enrichedFinding struct {
-	Key       string `json:"key"`
-	Severity  string `json:"severity"`
-	SevClass  string `json:"sev_class"`
-	Check     string `json:"check"`
-	Message   string `json:"message"`
-	Details   string `json:"details,omitempty"`
-	FilePath  string `json:"file_path,omitempty"`
-	Account   string `json:"account,omitempty"`
-	FirstSeen string `json:"first_seen"`
-	LastSeen  string `json:"last_seen"`
-	HasFix    bool   `json:"has_fix"`
-	HasVerify bool   `json:"has_verify"`
-	FixDesc   string `json:"fix_desc,omitempty"`
+	Key           string `json:"key"`
+	Severity      string `json:"severity"`
+	SevClass      string `json:"sev_class"`
+	Check         string `json:"check"`
+	Message       string `json:"message"`
+	Details       string `json:"details,omitempty"`
+	FilePath      string `json:"file_path,omitempty"`
+	Account       string `json:"account,omitempty"`
+	FirstSeen     string `json:"first_seen"`
+	LastSeen      string `json:"last_seen"`
+	HasFix        bool   `json:"has_fix"`
+	HasVerify     bool   `json:"has_verify"`
+	FixDesc       string `json:"fix_desc,omitempty"`
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 // dedupIPReputation groups ip_reputation findings by IP, merging sources and
@@ -295,19 +296,20 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			lastSeen = entry.LastSeen
 		}
 		items = append(items, enrichedFinding{
-			Key:       f.Key(),
-			Severity:  severityLabel(f.Severity),
-			SevClass:  severityClass(f.Severity),
-			Check:     f.Check,
-			Message:   f.Message,
-			Details:   f.Details,
-			FilePath:  f.FilePath,
-			Account:   extractAccountFromFinding(f),
-			FirstSeen: firstSeen.Format(time.RFC3339),
-			LastSeen:  lastSeen.Format(time.RFC3339),
-			HasFix:    checks.HasFix(f.Check),
-			HasVerify: checks.CanVerify(f.Check),
-			FixDesc:   checks.FixDescription(f.Check, f.Message, f.FilePath),
+			Key:           f.Key(),
+			Severity:      severityLabel(f.Severity),
+			SevClass:      severityClass(f.Severity),
+			Check:         f.Check,
+			Message:       f.Message,
+			Details:       f.Details,
+			FilePath:      f.FilePath,
+			Account:       extractAccountFromFinding(f),
+			FirstSeen:     firstSeen.Format(time.RFC3339),
+			LastSeen:      lastSeen.Format(time.RFC3339),
+			HasFix:        checks.HasFix(f.Check),
+			HasVerify:     checks.CanVerify(f.Check),
+			FixDesc:       checks.FixDescription(f.Check, f.Message, f.FilePath),
+			ContentSHA256: f.ContentSHA256,
 		})
 	}
 
@@ -945,18 +947,25 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Check    string `json:"check"`
-		Message  string `json:"message"`
-		Details  string `json:"details"`
-		FilePath string `json:"file_path"`
-		Key      string `json:"key"`
+		Check         string `json:"check"`
+		Message       string `json:"message"`
+		Details       string `json:"details"`
+		FilePath      string `json:"file_path"`
+		ContentSHA256 string `json:"content_sha256"`
+		Key           string `json:"key"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.Check == "" || req.Message == "" {
 		writeJSONError(w, "check and message are required", http.StatusBadRequest)
 		return
 	}
 
-	res := checks.VerifyFinding(req.Check, req.Message, req.Details, req.FilePath)
+	res := checks.VerifyFindingInput(checks.VerifyInput{
+		Check:         req.Check,
+		Message:       req.Message,
+		Details:       req.Details,
+		Path:          req.FilePath,
+		ContentSHA256: req.ContentSHA256,
+	})
 	if res.Checked && res.Resolved {
 		key := req.Key
 		if key == "" {

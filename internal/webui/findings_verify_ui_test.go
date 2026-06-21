@@ -28,6 +28,9 @@ func TestFindingsJSWiresVerifyAction(t *testing.T) {
 		`' data-details="' + CSM.esc(f.details || '') + '"'`,
 		"details: row.getAttribute('data-details') || '',",
 		"details: i.details",
+		// content fingerprint wired through Re-check only (not dismiss/suppress/bulk)
+		"data-contentsha=",
+		"content_sha256: row.getAttribute('data-contentsha')",
 	} {
 		if !strings.Contains(js, want) {
 			t.Errorf("findings.js missing verify-action fragment %q", want)

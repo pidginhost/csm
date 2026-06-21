@@ -135,6 +135,7 @@ function renderFindings(data) {
             ' data-message="' + CSM.esc(f.message) + '"' +
             ' data-details="' + CSM.esc(f.details || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
+            ' data-contentsha="' + CSM.esc(f.content_sha256 || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
             ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
@@ -446,7 +447,8 @@ function verifyOne(btn) {
         check: row.getAttribute('data-check'),
         message: row.getAttribute('data-message'),
         details: row.getAttribute('data-details') || '',
-        file_path: row.getAttribute('data-filepath') || ''
+        file_path: row.getAttribute('data-filepath') || '',
+        content_sha256: row.getAttribute('data-contentsha') || ''
     }).then(function(data) {
         if (data.resolved) {
             row.style.opacity = '0.3';
