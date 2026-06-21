@@ -9,11 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A successful FTP login from a source that just failed repeated login attempts is now flagged as a likely cracked credential, naming the affected account, so a guessed password pages loudly instead of hiding among routine login notices.
 - Re-check now also covers content findings (suspicious/obfuscated PHP, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
 - Stale content findings now clear automatically on daemon start after a detection-logic update (heuristic, signature, or YARA), when the flagged file is unchanged since detection and current logic no longer flags it, so operators no longer have to manually clear false positives left behind by improved detection.
 
 ### Fixed
 
+- FTP login alerts no longer page on loopback (cPanel's own internal transfers) or on ordinary customer logins; routine logins are now recorded at audit level instead of high severity.
 - File-index content findings (obfuscated/suspicious PHP in uploads, languages, upgrade) now carry a content fingerprint at detection time, so Re-check and the stale-content sweep can auto-clear them when the file is unchanged and the classifier no longer flags it.
 - Startup stale-content cleanup now drains during daemon shutdown, so state is not closed while findings are still being cleared.
 - Content Re-check now uses the stored finding fingerprint, keeps realtime heuristic, location, or name-based malware findings active while the file remains present, and no longer clears a finding when the live file cannot be verified consistently.

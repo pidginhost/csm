@@ -66,6 +66,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "ftp_auth_failure_realtime", Category: CategoryAuth},
 	{Name: "ftp_bruteforce", Category: CategoryAuth},
 	{Name: "ftp_login", Category: CategoryAuth},
+	{Name: "ftp_login_after_bruteforce", Category: CategoryAuth},
 	{Name: "ftp_login_realtime", Category: CategoryAuth},
 	{Name: "credential_stuffing", Category: CategoryAuth},
 	{Name: "pam_bruteforce", Category: CategoryAuth},

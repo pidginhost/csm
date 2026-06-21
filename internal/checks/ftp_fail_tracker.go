@@ -108,6 +108,15 @@ func (t *ftpFailTracker) capIPs(max int) {
 	}
 }
 
+// count returns the summed failure count for ip across the retained buckets.
+func (t *ftpFailTracker) count(ip string) int {
+	sum := 0
+	for _, c := range t.Buckets[ip] {
+		sum += c
+	}
+	return sum
+}
+
 type ftpOffender struct {
 	IP    string
 	Count int

@@ -26,6 +26,27 @@ func FuzzExtractIPAfterKeyword(f *testing.F) {
 	})
 }
 
+func FuzzParseFTPLoginAccount(f *testing.F) {
+	// The username is attacker-chosen and appears verbatim in pure-ftpd logs.
+	f.Add("Jun 21 20:00:25 host pure-ftpd[1]: (?@203.0.113.5) [INFO] backup is now logged in")
+	f.Add("host pure-ftpd[1]: (?@127.0.0.1) [INFO] __cpanel__service__auth__ftpd__X is now logged in")
+	f.Add("host pure-ftpd[1]: (u@1.2.3.4) [INFO] user@domain.tld is now logged in")
+	f.Add(" is now logged in")
+	f.Add("is now logged in")
+	f.Add("no marker")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		got := parseFTPLoginAccount(line)
+		// The account must be a substring of the input and never contain the marker.
+		if got != "" && !strings.Contains(line, got) {
+			t.Fatalf("account %q not present in input %q", got, line)
+		}
+		if strings.Contains(got, " is now logged in") {
+			t.Fatalf("account %q leaked the marker", got)
+		}
+	})
+}
+
 func FuzzExtractBracketedIP(f *testing.F) {
 	f.Add("H=client [203.0.113.50]:2222 auth failed")
 	f.Add("no bracket here")

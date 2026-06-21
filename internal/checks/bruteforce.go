@@ -446,20 +446,14 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			continue
 		}
 		ip := extractIPFromLog(line)
-		if ip == "" || isInfraIP(ip, cfg.InfraIPs) {
+		if ip == "" || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1" {
 			continue
 		}
 		switch {
 		case strings.Contains(line, "Authentication failed"), strings.Contains(line, "auth failed"):
 			tracker.record(ip, now)
 		case strings.Contains(line, "is now logged in"):
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "ftp_login",
-				SourceIP: ip,
-				Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-				Details:  truncate(line, 200),
-			})
+			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
 		}
 	}
 
@@ -505,26 +499,19 @@ func checkFTPLoginsLegacy(cfg *config.Config) []alert.Finding {
 			continue
 		}
 
-		if strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
-			// Extract IP
-			ip := extractIPFromLog(line)
-			if ip != "" && !isInfraIP(ip, cfg.InfraIPs) {
-				failedFTP[ip]++
-			}
+		ip := extractIPFromLog(line)
+		if ip == "" || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1" {
+			continue
 		}
 
-		// Successful FTP login from non-infra
-		if strings.Contains(line, "is now logged in") {
-			ip := extractIPFromLog(line)
-			if ip != "" && !isInfraIP(ip, cfg.InfraIPs) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "ftp_login",
-					SourceIP: ip,
-					Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-					Details:  truncate(line, 200),
-				})
-			}
+		switch {
+		case strings.Contains(line, "Authentication failed"), strings.Contains(line, "auth failed"):
+			failedFTP[ip]++
+		case strings.Contains(line, "is now logged in"):
+			// failedFTP holds failures seen earlier in this batch; pure-ftpd logs
+			// chronologically so a brute-then-success appears as fails before the
+			// "logged in" line, letting the shared builder escalate.
+			findings = append(findings, ftpLoginFinding(ip, line, failedFTP[ip]))
 		}
 	}
 
@@ -644,6 +631,51 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	}
 
 	return findings
+}
+
+// ftpLoginFinding builds the finding for a successful FTP login from a
+// non-infra, non-loopback IP. A login from a source that has already crossed
+// the brute-force threshold is a likely cracked credential and pages as
+// Critical; any other login is audit-level (Warning), matching the cPanel-login
+// detector ("logins are audit trail, not paging-level").
+func ftpLoginFinding(ip, line string, recentFails int) alert.Finding {
+	if recentFails >= ftpFailThreshold {
+		msg := fmt.Sprintf("FTP login succeeded from brute-force source %s after %d failed attempts", ip, recentFails)
+		if account := parseFTPLoginAccount(line); account != "" {
+			msg = fmt.Sprintf("FTP login succeeded for account %s from brute-force source %s after %d failed attempts", account, ip, recentFails)
+		}
+		return alert.Finding{
+			Severity: alert.Critical,
+			Check:    "ftp_login_after_bruteforce",
+			SourceIP: ip,
+			Message:  msg,
+			Details:  truncate(line, 200),
+		}
+	}
+	return alert.Finding{
+		Severity: alert.Warning,
+		Check:    "ftp_login",
+		SourceIP: ip,
+		Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
+		Details:  truncate(line, 200),
+	}
+}
+
+// parseFTPLoginAccount extracts the account name from a pure-ftpd
+// "<user> is now logged in" line. The username is attacker-influenced (the
+// login name appears verbatim in the log), so this only splits on delimiters
+// and never interprets the value.
+func parseFTPLoginAccount(line string) string {
+	const marker = " is now logged in"
+	i := strings.Index(line, marker)
+	if i < 0 {
+		return ""
+	}
+	pre := strings.TrimRight(line[:i], " ")
+	if j := strings.LastIndexByte(pre, ' '); j >= 0 {
+		return pre[j+1:]
+	}
+	return pre
 }
 
 // extractIPFromLog tries to extract an IP address from a log line.
