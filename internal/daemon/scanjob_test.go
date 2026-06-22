@@ -520,7 +520,7 @@ func TestAllScopeCancelMidIteration(t *testing.T) {
 		if target == "alice" {
 			// Cancel the job after alice's findings are returned; the receive
 			// blocks until the test has published the id.
-			cancelOnce.Do(func() { m.Cancel(<-idCh) })
+			cancelOnce.Do(func() { _ = m.Cancel(<-idCh) })
 		}
 		return []alert.Finding{{Check: "webshell", Message: "found in " + target}}
 	}
