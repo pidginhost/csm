@@ -39,9 +39,9 @@ func rollingCandidatesAfter(sorted []string, lastPath string, limit int) (select
 	}
 
 	// Cap to one full cycle so we never return duplicates.
-	cap := limit
-	if cap > len(sorted) {
-		cap = len(sorted)
+	maxCount := limit
+	if maxCount > len(sorted) {
+		maxCount = len(sorted)
 	}
 
 	// Find the first index strictly greater than lastPath.
@@ -52,41 +52,26 @@ func rollingCandidatesAfter(sorted []string, lastPath string, limit int) (select
 		start++
 	}
 
-	selected = make([]string, 0, cap)
+	selected = make([]string, 0, maxCount)
 
 	// Phase 1: collect from start to end of sorted.
 	i := start
-	for len(selected) < cap && i < len(sorted) {
+	for len(selected) < maxCount && i < len(sorted) {
 		selected = append(selected, sorted[i])
 		i++
 	}
 
-	// Phase 2: if we still need more and reached the end, wrap to beginning.
-	// Stop before the first item we picked in Phase 1 to avoid repeats.
-	if len(selected) < cap && i >= len(sorted) && start > 0 {
+	// Phase 2: if we still need more and reached the end, wrap to the beginning.
+	// Stop before `start` so we never revisit a Phase-1 item (no repeats). This
+	// also covers a cursor at/after the last element (start >= len(sorted) with
+	// start > 0, e.g. lastPath == max or a single-element list): Phase 1 collects
+	// nothing and the wrap re-covers from the head.
+	if len(selected) < maxCount && i >= len(sorted) && start > 0 {
 		wrapped = true
-		j := 0
-		// The guard is: j < start (don't revisit items selected in Phase 1)
-		// and j < len(selected_from_phase1_start) -- but start is already that
-		// boundary since Phase 1 began at `start`.
-		for len(selected) < cap && j < start {
+		for j := 0; len(selected) < maxCount && j < start; j++ {
 			selected = append(selected, sorted[j])
-			j++
-		}
-	} else if len(selected) == 0 && start >= len(sorted) {
-		// start was already past the end (e.g. lastPath >= all elements),
-		// so wrap unconditionally to the beginning.
-		wrapped = true
-		j := 0
-		for len(selected) < cap && j < len(sorted) {
-			selected = append(selected, sorted[j])
-			j++
 		}
 	}
-
-	// Special case: single-element list where lastPath equals the only element.
-	// start would be 1 (past end), Phase 2 branch above fires (start=1 >= len=1),
-	// so wrapped=true and we return [sorted[0]]. This is handled by the branch above.
 
 	if len(selected) == 0 {
 		return nil, lastPath, false

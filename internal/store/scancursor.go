@@ -14,9 +14,9 @@ const scanCursorBucket = "scan_cursor"
 type ScanCursorRecord struct {
 	Account         string    `json:"account"`
 	Check           string    `json:"check"`
-	LastPath        string    `json:"last_path"`                    // last path-sorted candidate scanned
-	WrappedAt       time.Time `json:"wrapped_at,omitempty"`         // when the cursor last wrapped to start
-	LastFullCycleTS time.Time `json:"last_full_cycle_ts,omitempty"` // when a full sweep last completed
+	LastPath        string    `json:"last_path"`          // last path-sorted candidate scanned
+	WrappedAt       time.Time `json:"wrapped_at"`         // when the cursor last wrapped to start
+	LastFullCycleTS time.Time `json:"last_full_cycle_ts"` // when a full sweep last completed
 }
 
 // scanCursorKey builds the bucket key for a (account, check) pair.
