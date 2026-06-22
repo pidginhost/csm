@@ -1,13 +1,16 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestIsWebshellName(t *testing.T) {
@@ -430,5 +433,86 @@ func TestClassifySensitiveDirPHP_EmptyFailsClosed(t *testing.T) {
 	sev, check, _ := classifySensitiveDirPHP(path, "empty.php")
 	if sev < alert.High || check != "new_php_in_sensitive_dir" {
 		t.Errorf("empty PHP must fail closed at High, got sev=%v check=%q", sev, check)
+	}
+}
+
+// --- file-index audit mode (ForceFileIndex=true) -------------------------
+
+// TestFileIndexAuditModeDoesNotWriteState verifies the basic invariant:
+// an audit run must not create any of the three live state files.
+func TestFileIndexAuditModeDoesNotWriteState(t *testing.T) {
+	stateDir := t.TempDir()
+	ctx := ContextWithScanOptions(ContextWithAccountScope(context.Background(), "acct"),
+		AccountScanOptions{ForceFileIndex: true})
+	_ = CheckFileIndex(ctx, &config.Config{StatePath: stateDir}, nil)
+	for _, f := range []string{"fileindex.current", "fileindex.previous", "dircache.json"} {
+		if _, err := os.Stat(filepath.Join(stateDir, f)); err == nil {
+			t.Errorf("audit mode must not write %s", f)
+		}
+	}
+}
+
+// TestFileIndexAuditModeFindsWithoutWritingState is the full behaviour test:
+// a planted webshell IS reported, AND none of the live state files exist after
+// the audit run.
+func TestFileIndexAuditModeFindsWithoutWritingState(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-24 * time.Hour)
+
+	logicalHome := "/home/acct"
+	logicalUploads := filepath.Join(logicalHome, "public_html", "wp-content", "uploads")
+	logicalShell := filepath.Join(logicalUploads, "c99.php")
+	physicalUploads := filepath.Join(tmp, "acct", "public_html", "wp-content", "uploads")
+	if err := os.MkdirAll(physicalUploads, 0755); err != nil {
+		t.Fatal(err)
+	}
+	physicalShell := filepath.Join(physicalUploads, "c99.php")
+	writePHPFixture(t, physicalShell, phpCacheMalicious, old)
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case logicalHome:
+				return nil, nil
+			case logicalUploads:
+				return []os.DirEntry{testDirEntry{name: "c99.php", isDir: false}}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case logicalHome:
+				return &fakeFileInfoMtime{name: "acct", dir: true, mode: 0755, mtime: old}, nil
+			case logicalUploads:
+				return &fakeFileInfoMtime{name: "uploads", dir: true, mode: 0755, mtime: old}, nil
+			case logicalShell:
+				return os.Stat(physicalShell)
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		open: func(name string) (*os.File, error) {
+			if name == logicalShell {
+				return os.Open(physicalShell)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	ctx := ContextWithScanOptions(ContextWithAccountScope(context.Background(), "acct"),
+		AccountScanOptions{ForceFileIndex: true})
+	findings := CheckFileIndex(ctx, &config.Config{StatePath: stateDir}, nil)
+	if !hasFindingPath(findings, "new_webshell_file", logicalShell) {
+		t.Fatalf("audit mode missed planted webshell: %+v", findings)
+	}
+	for _, f := range []string{"fileindex.current", "fileindex.previous", "dircache.json"} {
+		if _, err := os.Stat(filepath.Join(stateDir, f)); err == nil {
+			t.Fatalf("audit mode wrote live state file %s", f)
+		}
 	}
 }

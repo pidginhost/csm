@@ -72,10 +72,32 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 // reads, diffs against the previous index, and alerts on new files.
 // Uses directory mtime caching: unchanged dirs carry forward previous entries
 // without calling ReadDir, while changed dirs are re-scanned.
+//
+// When ctx carries AccountScanOptions with ForceFileIndex=true the function
+// runs in audit mode: it enumerates only the in-scope account, bypasses the
+// directory mtime cache entirely, and writes none of the live state files
+// (fileindex.current, fileindex.previous, dircache.json). The normal incremental
+// baseline is left byte-for-byte intact. All indexed files are treated as new
+// so the caller receives findings for the full current state of the account.
 func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
-	var findings []alert.Finding
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	// Audit mode: enumerate only the in-scope account, bypass all state I/O.
+	// CRITICAL: none of fileindex.current, fileindex.previous, or dircache.json
+	// may be written -- corrupting them would silently break future incremental
+	// scans by shifting their baseline.
+	if scanForceFileIndex(ctx) {
+		// Fresh empty cache so every directory is treated as changed.
+		auditCache := make(dirMtimeCache)
+		// Empty prevByDir so every indexed file is diff'd as new.
+		currentEntries := buildFileIndex(ctx, auditCache, nil, true)
+		if ctx.Err() != nil {
+			return nil
+		}
+		// All entries are "new" -- diff against empty previous set.
+		return checkFileIndexAnalyzeNewFiles(ctx, cfg, currentEntries)
 	}
 
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
@@ -138,7 +160,16 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		}
 	}
 
-	// Analyze new files - lazy stat only for alerting
+	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+	copyFile(currentPath, previousPath)
+	return findings
+}
+
+// checkFileIndexAnalyzeNewFiles classifies a list of newly-detected file paths
+// and returns alert.Finding values for those that match known threat patterns.
+// Called by both the normal incremental path and the audit (ForceFileIndex) path.
+func checkFileIndexAnalyzeNewFiles(ctx context.Context, cfg *config.Config, newFiles []string) []alert.Finding {
+	var findings []alert.Finding
 	for _, path := range newFiles {
 		name := filepath.Base(path)
 		nameLower := strings.ToLower(name)
@@ -227,8 +258,6 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			findings = append(findings, f)
 		}
 	}
-
-	copyFile(currentPath, previousPath)
 	return findings
 }
 

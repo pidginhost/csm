@@ -15,6 +15,16 @@ func scanForceContent(ctx context.Context) bool {
 	return ok && opts.ForceContent
 }
 
+// scanForceFileIndex reports whether the current scan is a file-index audit
+// run. True only when ctx carries AccountScanOptions with ForceFileIndex=true.
+// In audit mode CheckFileIndex enumerates only the in-scope account, bypasses
+// the directory mtime cache, and writes none of the three live state files
+// (fileindex.current, fileindex.previous, dircache.json).
+func scanForceFileIndex(ctx context.Context) bool {
+	opts, ok := ScanOptionsFromContext(ctx)
+	return ok && opts.ForceFileIndex
+}
+
 // scanRespectsIgnores reports whether the current scan should honour
 // cfg.Suppressions.IgnorePaths. When ctx carries AccountScanOptions with
 // RespectIgnores=false (i.e. an explicit full-scan / audit request), the caller
