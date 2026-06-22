@@ -75,7 +75,7 @@ func (c *ControlListener) handleScanStatus(argsRaw json.RawMessage) (any, error)
 		return control.ScanStatusResponse{Job: &rec}, nil
 	}
 
-	jobs, err := c.scanJobs.db.ListScanJobs()
+	jobs, err := c.scanJobs.ListJobs()
 	if err != nil {
 		return nil, fmt.Errorf("listing jobs: %w", err)
 	}
@@ -113,7 +113,7 @@ func (c *ControlListener) handleScanReport(argsRaw json.RawMessage) (any, error)
 		req.Offset = 0
 	}
 
-	findings, total, err := c.scanJobs.db.ListScanJobFindings(req.JobID, req.Offset, req.Limit)
+	findings, total, err := c.scanJobs.ListFindings(req.JobID, req.Offset, req.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing findings: %w", err)
 	}

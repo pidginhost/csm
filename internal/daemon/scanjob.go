@@ -221,6 +221,22 @@ func (m *ScanJobManager) Cancel(id string) error {
 	return nil
 }
 
+// ListJobs returns all scan job records ordered newest-first.
+// It is the encapsulated accessor for handleScanStatus and the WebUI Phase 2b
+// handler so neither needs to reach the manager's private db field.
+func (m *ScanJobManager) ListJobs() ([]store.ScanJobRecord, error) {
+	return m.db.ListScanJobs()
+}
+
+// ListFindings returns a paginated slice of findings for the given job ID plus
+// the total number of findings stored for that job. offset and limit follow the
+// usual page semantics (limit=0 returns all findings).
+// It is the encapsulated accessor for handleScanReport and the WebUI Phase 2b
+// handler so neither needs to reach the manager's private db field.
+func (m *ScanJobManager) ListFindings(id string, offset, limit int) ([]alert.Finding, int, error) {
+	return m.db.ListScanJobFindings(id, offset, limit)
+}
+
 // Progress returns the current record for the given job ID.
 // ok is false when the ID is not found in the store.
 func (m *ScanJobManager) Progress(id string) (store.ScanJobRecord, bool) {
