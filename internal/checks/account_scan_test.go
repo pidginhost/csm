@@ -269,8 +269,11 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 	}
 	fullFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", fullOpts)
 
-	// Accept obfuscated_php (Critical, 2 indicators) or suspicious_php_content
+	// Accept obfuscated_php (Critical, >=2 indicators) or suspicious_php_content
 	// (High, 1 indicator) -- both are content-based findings from classifyUploadPHP.
+	// This eval(base64_decode($x)) payload produces suspicious_php_content via the
+	// nested eval->decoder structural detector (a single indicator), not a filename
+	// match -- proving the full scan content-scans the dormant file.
 	foundContentBased := false
 	for _, f := range fullFindings {
 		if f.Check == "obfuscated_php" || f.Check == "suspicious_php_content" {
