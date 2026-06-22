@@ -107,10 +107,10 @@ func (e *mailIPEntry) establishedGoodCount(now time.Time, window time.Duration) 
 
 // establishedGoodConfined reports whether this IP looks like a misconfigured
 // legitimate client rather than a brute-forcer: every current failure is
-// attributed to a named mailbox, none of those mailboxes is one the IP is
-// concurrently and non-dominantly succeeding on (which would be a crack in
-// progress), and the count of distinct failing mailboxes does not exceed the
-// count of mailboxes the IP holds established good standing for. When true the
+// attributed to a named mailbox, none of those mailboxes shows a fresh
+// (non-established) guessing breakthrough (see isCrackInProgress), and the count
+// of distinct failing mailboxes does not exceed the count of mailboxes the IP
+// holds established good standing for. When true the
 // per-IP signal is downgraded to an advisory rather than a firewall block, so a
 // source running working mail profiles alongside one or more profiles with a
 // stale password (sibling mailboxes or a multi-tenant office) is not locked out.
@@ -129,10 +129,9 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 		return false
 	}
 	named := 0
-	cutoff := now.Add(-window)
 	for account, times := range e.failedAccounts {
 		named += len(times)
-		if e.hasCurrentNonDominantSuccess(account, cutoff) {
+		if e.isCrackInProgress(account, now, window) {
 			return false
 		}
 	}
@@ -168,7 +167,20 @@ func (e *mailIPEntry) accountSuccessDominant(account string) bool {
 	return failures > 0 && len(e.successAccounts[account]) >= failures
 }
 
-func (e *mailIPEntry) hasCurrentNonDominantSuccess(account string, cutoff time.Time) bool {
+// isCrackInProgress reports whether same-account successes mixed with failures
+// look like a guessing breakthrough rather than a flaky legitimate client.
+//
+// An account the IP holds established good standing for (it has owned the
+// mailbox longer than the window) is exempt: a mix of successes and failures
+// there is an intermittent or stale-on-one-device client, the same mistype
+// signal RecordSuccess uses to suppress compromise. Only a fresh, non-established
+// in-window success that does not dominate the failures is treated as a crack:
+// that is the attacker-just-guessed-it shape. Caller must hold t.mu.
+func (e *mailIPEntry) isCrackInProgress(account string, now time.Time, window time.Duration) bool {
+	if e.establishedGood(account, now, window) {
+		return false
+	}
+	cutoff := now.Add(-window)
 	for _, ts := range e.successAccounts[account] {
 		if ts.After(cutoff) {
 			return !e.accountSuccessDominant(account)

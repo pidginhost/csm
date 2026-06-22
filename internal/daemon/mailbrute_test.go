@@ -852,7 +852,73 @@ func TestMailAuthTracker_GoodSourceFreshSuccessBeforeFailureBurstStillBlocks(t *
 	}
 }
 
-func TestMailAuthTracker_EstablishedGoodCurrentSuccessFailureDominantStillBlocks(t *testing.T) {
+func TestMailAuthTracker_FreshSameAccountBreakthroughStillBlocks(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.20"
+	acct := "victim@example.ro"
+
+	tr.RecordSuccess(ip, acct)
+	clock.advance(time.Second)
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, acct) {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !block {
+		t.Fatalf("a fresh same-account success before a failure-dominant burst must still auto-block")
+	}
+	if suspected {
+		t.Fatalf("fresh same-account breakthrough emitted mail_bruteforce_suspected")
+	}
+}
+
+func TestMailAuthTracker_StaleGoodSourceFreshSuccessStillBlocks(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.21"
+	acct := "victim@example.ro"
+	establishGoodSource(tr, clock, ip, acct)
+	clock.advance(mailGoodSourceTTL + time.Second)
+
+	tr.RecordSuccess(ip, acct)
+	clock.advance(time.Second)
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, acct) {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !block {
+		t.Fatalf("a stale good-source record must not exempt a fresh same-account breakthrough")
+	}
+	if suspected {
+		t.Fatalf("stale good-source breakthrough emitted mail_bruteforce_suspected")
+	}
+}
+
+// You cannot brute-force an account you already hold established valid
+// credentials to: same-account successes mixed with failures on a long-held
+// mailbox are a flaky owner (intermittent/stale-on-one-device password), not a
+// guessing breakthrough. It must downgrade to the advisory, not auto-block.
+// (The fresh, non-established breakthrough still blocks - see
+// TestMailAuthTracker_GoodSourceCrackInProgressStillBlocks.)
+func TestMailAuthTracker_EstablishedGoodCurrentSuccessAmidFailuresIsAdvisory(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	ip := "203.0.113.18"
@@ -874,11 +940,35 @@ func TestMailAuthTracker_EstablishedGoodCurrentSuccessFailureDominantStillBlocks
 		}
 		clock.advance(30 * time.Second)
 	}
-	if !block {
-		t.Fatalf("current non-dominant success on an established failing mailbox must still auto-block")
+	if block {
+		t.Fatalf("flaky successes+failures on an established own mailbox must not auto-block")
 	}
-	if suspected {
-		t.Fatalf("current non-dominant success on an established failing mailbox emitted mail_bruteforce_suspected")
+	if !suspected {
+		t.Fatalf("flaky failures on an established own mailbox should surface mail_bruteforce_suspected")
+	}
+}
+
+func TestMailAuthTracker_EstablishedMailboxDistributedFailuresStillEmitAccountSpray(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	acct := "victim@example.ro"
+
+	for i := 0; i < 12; i++ {
+		ip := fmt.Sprintf("203.0.%d.30", 30+i)
+		establishGoodSource(tr, clock, ip, acct)
+	}
+
+	var accountSpray bool
+	for i := 0; i < 12; i++ {
+		ip := fmt.Sprintf("203.0.%d.30", 30+i)
+		for _, f := range tr.Record(ip, acct) {
+			if f.Check == "mail_account_spray" {
+				accountSpray = true
+			}
+		}
+	}
+	if !accountSpray {
+		t.Fatalf("distributed failures against an established mailbox must still emit mail_account_spray")
 	}
 }
 
@@ -1019,6 +1109,37 @@ func TestMailAuthTracker_SingleFootprintCannotExceedItsGoodCount(t *testing.T) {
 	}
 	if !block {
 		t.Fatalf("failing more distinct mailboxes than the established good footprint must auto-block")
+	}
+}
+
+// A flaky client on the owner's single long-held mailbox mixes a few successes
+// with a burst of failures on that same established mailbox (intermittent or
+// stale-on-one-device password). Because the mailbox is established good
+// standing, this is a misconfiguration, not a guessing breakthrough, and must
+// not auto-block even though successes and failures share the account in-window.
+func TestMailAuthTracker_EstablishedFlakyOwnMailboxAdvisory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.42"
+	establishGoodSource(tr, clock, ip, "office@example.ro")
+	tr.RecordSuccess(ip, "office@example.ro")
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, "office@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(20 * time.Second)
+	}
+	if block {
+		t.Fatalf("an established owner failing its own long-held mailbox (flaky client) must not auto-block")
+	}
+	if !suspected {
+		t.Fatalf("flaky failures on an established own mailbox should surface mail_bruteforce_suspected")
 	}
 }
 
