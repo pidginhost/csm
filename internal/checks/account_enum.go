@@ -63,9 +63,14 @@ func EnumerateScanAccounts(_ *config.Config) ([]string, error) {
 }
 
 // enumerateFromHome lists /home subdirectory names that pass name validation.
-// Used when the cPanel registry is absent.
+// Used when the cPanel registry is absent. Because /home is the sole source of
+// truth in this path, a hard read error (anything other than os.ErrNotExist) is
+// propagated so callers can distinguish a broken enumeration from an empty host.
 func enumerateFromHome() ([]string, error) {
-	homeEntries, _ := osFS.ReadDir("/home")
+	homeEntries, err := osFS.ReadDir("/home")
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 
 	seen := make(map[string]struct{}, len(homeEntries))
 	var accounts []string

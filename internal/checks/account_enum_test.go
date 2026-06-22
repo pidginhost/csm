@@ -191,6 +191,30 @@ func TestEnumerateScanAccounts_RegistryReadError(t *testing.T) {
 	}
 }
 
+// TestEnumerateScanAccounts_FallbackHomeReadError verifies that in the
+// registry-absent fallback path, a hard /home read error (not ErrNotExist) is
+// propagated -- /home is the sole source of truth there, so a broken read must
+// not masquerade as an empty host.
+func TestEnumerateScanAccounts_FallbackHomeReadError(t *testing.T) {
+	hardErr := errors.New("permission denied")
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/var/cpanel/users":
+				return nil, os.ErrNotExist // trigger fallback
+			case "/home":
+				return nil, hardErr
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	got, err := EnumerateScanAccounts(&config.Config{})
+	if err == nil {
+		t.Fatalf("expected error from fallback /home read, got %v", got)
+	}
+}
+
 // TestEnumerateScanAccounts_EmptyRegistry returns an empty (non-nil) slice
 // when /var/cpanel/users exists but is empty (no accounts at all).
 func TestEnumerateScanAccounts_EmptyRegistry(t *testing.T) {
