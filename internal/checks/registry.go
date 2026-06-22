@@ -286,6 +286,7 @@ var checkRegistry = []CheckInfo{
 	// --- System Integrity ------------------------------------------------
 	{Name: "af_alg_enforcement_corrected", Category: CategorySystem},
 	{Name: "af_alg_socket_use", Category: CategorySystem},
+	{Name: "account_scan_error", Category: CategorySystem},
 	{Name: "account_scan_truncated", Category: CategorySystem},
 	{Name: "bpf_unavailable", Category: CategorySystem},
 	{Name: "full_scan_file_too_large", Category: CategorySystem},
