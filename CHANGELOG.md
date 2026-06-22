@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Block digest live alerts now keep their de-dup state bounded and keep customer-risk evidence visible when the same IP has multiple block reasons in one window.
 - Block digest controls are now editable from Settings, reject disabled delivery paths, and keep the safe minimum when the value is left blank.
 - FTP login alerts no longer page on loopback (cPanel's own internal transfers) or on ordinary customer logins; routine logins are now recorded at audit level instead of high severity.
 - FTP success-after-brute alerts now use only failures still inside the configured window, ignore loopback variants, and do not trigger incident-level auto-blocks by themselves.

@@ -90,6 +90,51 @@ func TestLiveAlertDedupsPerIPWithinWindow(t *testing.T) {
 	}
 }
 
+func TestLiveAlertPrunesExpiredDedupEntries(t *testing.T) {
+	cap := &capture{}
+	now := time.Unix(0, 0)
+	c := New(Options{
+		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
+		Now:         func() time.Time { return now },
+		CountryOf:   func(string) string { return "RO" },
+		WebhookSink: cap.webhook,
+	})
+	c.Observe("203.0.113.5", "rule escalation: x", now)
+	now = now.Add(2 * time.Hour)
+	c.Observe("203.0.113.6", "rule escalation: y", now)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.lastLive["203.0.113.5"]; ok {
+		t.Fatalf("expired live dedup entry was not pruned: %+v", c.lastLive)
+	}
+	if _, ok := c.lastLive["203.0.113.6"]; !ok {
+		t.Fatalf("current live dedup entry missing: %+v", c.lastLive)
+	}
+}
+
+func TestLivePayloadCountriesCannotMutateCollectorOptions(t *testing.T) {
+	calls := 0
+	now := time.Unix(0, 0)
+	c := New(Options{
+		Countries: []string{"RO"}, SendOn: "any", Interval: time.Hour, MinBlock: 1, Live: true,
+		Now:       func() time.Time { return now },
+		CountryOf: func(string) string { return "RO" },
+		WebhookSink: func(p WebhookPayload) error {
+			calls++
+			p.CSM.Countries[0] = "US"
+			return nil
+		},
+	})
+	c.Observe("203.0.113.5", "rule escalation: x", now)
+	now = now.Add(time.Minute)
+	c.Observe("203.0.113.6", "rule escalation: y", now)
+
+	if calls != 2 {
+		t.Fatalf("live webhooks = %d, want 2 after mutating payload Countries", calls)
+	}
+}
+
 func TestLiveCustomerModeOnlyFiresOnCustomer(t *testing.T) {
 	cap := &capture{}
 	now := time.Unix(0, 0)
@@ -123,5 +168,27 @@ func TestRunDrainsFinalDigestOnStop(t *testing.T) {
 	<-done
 	if cap.emailCount() != 1 {
 		t.Errorf("shutdown drain emails = %d, want 1", cap.emailCount())
+	}
+}
+
+func TestRunDrainsAndExitsWhenTickChannelCloses(t *testing.T) {
+	cap := &capture{}
+	c := New(Options{SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" },
+		EmailSink: cap.email})
+	c.Observe("203.0.113.8", "rule escalation: x", time.Unix(0, 0))
+	stop := make(chan struct{})
+	tick := make(chan time.Time)
+	close(tick)
+	done := make(chan struct{})
+	go func() { c.Run(stop, tick); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not exit after tick channel closed")
+	}
+	if cap.emailCount() != 1 {
+		t.Errorf("closed tick drain emails = %d, want 1", cap.emailCount())
 	}
 }

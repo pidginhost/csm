@@ -59,9 +59,10 @@ type Options struct {
 type Collector struct {
 	opts Options
 
-	mu       sync.Mutex
-	records  []Record
-	lastLive map[string]time.Time
+	mu             sync.Mutex
+	records        []Record
+	lastLive       map[string]time.Time
+	lastLivePruned time.Time
 }
 
 const maxBuffered = 5000
@@ -70,16 +71,27 @@ func New(opts Options) *Collector {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.CountryOf == nil {
+		opts.CountryOf = func(string) string { return "" }
+	}
+	opts.Countries = append([]string(nil), opts.Countries...)
 	return &Collector{opts: opts, lastLive: make(map[string]time.Time)}
+}
+
+func (c *Collector) countriesSnapshot() []string {
+	return append([]string(nil), c.opts.Countries...)
 }
 
 // ResolveCountries returns the effective upper-cased watch set: configured
 // wins, else trusted_countries, else empty (meaning all countries).
 func ResolveCountries(configured, trusted []string) []string {
-	src := configured
-	if len(src) == 0 {
-		src = trusted
+	if out := normalizeCountries(configured); len(out) > 0 {
+		return out
 	}
+	return normalizeCountries(trusted)
+}
+
+func normalizeCountries(src []string) []string {
 	out := make([]string, 0, len(src))
 	for _, c := range src {
 		c = strings.ToUpper(strings.TrimSpace(c))
@@ -97,15 +109,39 @@ func classifyBucket(reason string) Bucket {
 	r := strings.ToLower(reason)
 	attacker := []string{
 		"rule escalation", "brute", "mail auth", "web_attack", "web attack",
-		"account compromise", "command-and-control", " c2", "c2 ", "outbound",
-		"user-agent spoof", "ua spoof", "bad asn", "credential",
+		"account compromise", "command-and-control", "user-agent spoof",
+		"ua spoof", "bad asn", "credential stuffing", "credential-stuffing",
+		"credential abuse", "credential-abuse", "credentials compromised",
 	}
 	for _, k := range attacker {
 		if strings.Contains(r, k) {
 			return BucketAttacker
 		}
 	}
+	if containsWord(r, "c2") {
+		return BucketAttacker
+	}
 	return BucketCustomer
+}
+
+func containsWord(s, word string) bool {
+	for start := 0; start < len(s); {
+		idx := strings.Index(s[start:], word)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		after := idx + len(word)
+		if (idx == 0 || !isWordByte(s[idx-1])) && (after == len(s) || !isWordByte(s[after])) {
+			return true
+		}
+		start = after
+	}
+	return false
+}
+
+func isWordByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_'
 }
 
 func (c *Collector) watched(country string) bool {
@@ -157,17 +193,27 @@ func (c *Collector) Drain() Digest {
 
 	d := Digest{
 		Window:    c.opts.Interval,
-		Countries: c.opts.Countries,
+		Countries: c.countriesSnapshot(),
 		ByCountry: map[string]int{},
 		ByReason:  map[string]int{},
 	}
-	seen := make(map[string]bool, len(recs))
-	var customer, attacker []Record
+	selected := make(map[string]Record, len(recs))
+	order := make([]string, 0, len(recs))
 	for _, r := range recs {
-		if seen[r.IP] {
+		existing, ok := selected[r.IP]
+		if !ok {
+			selected[r.IP] = r
+			order = append(order, r.IP)
 			continue
 		}
-		seen[r.IP] = true
+		if existing.Bucket != BucketCustomer && r.Bucket == BucketCustomer {
+			selected[r.IP] = r
+		}
+	}
+
+	var customer, attacker []Record
+	for _, ip := range order {
+		r := selected[ip]
 		d.Total++
 		d.ByCountry[r.Country]++
 		d.ByReason[reasonKey(r.Reason)]++
@@ -179,7 +225,9 @@ func (c *Collector) Drain() Digest {
 			attacker = append(attacker, r)
 		}
 	}
-	d.Records = append(customer, attacker...)
+	d.Records = make([]Record, 0, len(customer)+len(attacker))
+	d.Records = append(d.Records, customer...)
+	d.Records = append(d.Records, attacker...)
 	return d
 }
 
@@ -201,7 +249,8 @@ func (c *Collector) maybeLive(rec Record) {
 	}
 	now := c.opts.Now()
 	c.mu.Lock()
-	if last, ok := c.lastLive[rec.IP]; ok && now.Sub(last) < c.opts.Interval {
+	c.pruneLastLiveLocked(now)
+	if last, ok := c.lastLive[rec.IP]; ok && c.opts.Interval > 0 && now.Sub(last) < c.opts.Interval {
 		c.mu.Unlock()
 		return
 	}
@@ -209,7 +258,7 @@ func (c *Collector) maybeLive(rec Record) {
 	c.mu.Unlock()
 
 	d := Digest{
-		Window: c.opts.Interval, Countries: c.opts.Countries,
+		Window: c.opts.Interval, Countries: c.countriesSnapshot(),
 		Total: 1, ByCountry: map[string]int{rec.Country: 1},
 		ByReason: map[string]int{reasonKey(rec.Reason): 1},
 		Records:  []Record{rec},
@@ -220,6 +269,25 @@ func (c *Collector) maybeLive(rec Record) {
 		d.AttackerCount = 1
 	}
 	c.dispatch("block_live", d)
+}
+
+func (c *Collector) pruneLastLiveLocked(now time.Time) {
+	interval := c.opts.Interval
+	if interval <= 0 {
+		clear(c.lastLive)
+		c.lastLivePruned = now
+		return
+	}
+	if !c.lastLivePruned.IsZero() && now.Sub(c.lastLivePruned) < interval {
+		return
+	}
+	cutoff := now.Add(-interval)
+	for ip, last := range c.lastLive {
+		if !last.After(cutoff) {
+			delete(c.lastLive, ip)
+		}
+	}
+	c.lastLivePruned = now
 }
 
 // tick drains the window and sends a digest when gating allows.
@@ -241,7 +309,11 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 		case <-stop:
 			c.Flush()
 			return
-		case <-tick:
+		case _, ok := <-tick:
+			if !ok {
+				c.Flush()
+				return
+			}
 			c.tick()
 		}
 	}
