@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -366,7 +367,15 @@ func printScanReport(jobID string, asJSON bool) {
 }
 
 // printScanReportWith is the testable core of printScanReport.
+// It writes to os.Stdout; see printScanReportTo for the io.Writer variant.
 func printScanReportWith(jobID string, asJSON bool, send sendFn) {
+	printScanReportTo(jobID, asJSON, os.Stdout, send)
+}
+
+// printScanReportTo is the inner core: it writes the human-readable (or JSON)
+// report for jobID to w. Production callers pass os.Stdout; tests pass a
+// bytes.Buffer so they can assert on the output without capturing os.Stdout.
+func printScanReportTo(jobID string, asJSON bool, w io.Writer, send sendFn) {
 	req := control.ScanReportRequest{JobID: jobID}
 	raw, err := send(control.CmdScanReport, req)
 	if err != nil {
@@ -379,7 +388,8 @@ func printScanReportWith(jobID string, asJSON bool, send sendFn) {
 	}
 
 	if asJSON {
-		printJSON(raw)
+		// Pass through raw JSON to w — no coverage header, no decoration.
+		printJSONTo(w, raw)
 		return
 	}
 
@@ -389,26 +399,159 @@ func printScanReportWith(jobID string, asJSON bool, send sendFn) {
 		os.Exit(1)
 	}
 
-	printJobRecord(resp.Job)
+	printJobRecordTo(w, resp.Job)
+
+	// Coverage header for full-scan jobs (Options map present).
+	if resp.Job.Options != nil {
+		printCoverageHeader(w, resp.Job, resp.Findings)
+	}
+
 	if resp.Total == 0 {
-		fmt.Println("no findings")
+		fmt.Fprintln(w, "no findings")
 		return
 	}
-	fmt.Printf("%d finding(s):\n\n", resp.Total)
+	fmt.Fprintf(w, "%d finding(s):\n\n", resp.Total)
 
 	if resp.Job.Scope == "all" {
-		printFindingsGroupedByAccount(resp.Findings)
+		printFindingsGroupedByAccountTo(w, resp.Findings)
 	} else {
 		for _, finding := range resp.Findings {
-			fmt.Println(finding.String())
-			fmt.Println()
+			printFindingTo(w, finding)
 		}
 	}
 }
 
-// printFindingsGroupedByAccount groups findings by TenantID and prints a
-// header line per account followed by that account's findings.
-func printFindingsGroupedByAccount(findings []alert.Finding) {
+// printCoverageHeader writes the full-scan coverage block to w.
+// It derives counts from the findings slice already fetched; no additional
+// RPCs are made. Only lines whose datum is available/non-zero are printed.
+func printCoverageHeader(w io.Writer, job store.ScanJobRecord, findings []alert.Finding) {
+	// Build scope summary.
+	scope := job.Scope
+	if scope == "all" {
+		if job.AccountsTotal > 0 {
+			fmt.Fprintf(w, "coverage: all accounts (%d/%d done)\n", job.AccountsDone, job.AccountsTotal)
+		} else {
+			fmt.Fprintln(w, "coverage: all accounts")
+		}
+	} else {
+		target := job.Target
+		if target == "" {
+			target = "(unknown)"
+		}
+		fmt.Fprintf(w, "coverage: %s\n", target)
+	}
+
+	// mode: quarantine or report-only.
+	mode := "report-only"
+	if optBool(job.Options, "quarantine") {
+		mode = "quarantine"
+	}
+	fmt.Fprintf(w, "  mode: %s\n", mode)
+
+	// ignores: bypassed or respected. Only emit when the option was actually
+	// recorded, so an absent key does not render a misleading "bypassed".
+	if _, ok := job.Options["respect_ignores"]; ok {
+		if optBool(job.Options, "respect_ignores") {
+			fmt.Fprintln(w, "  ignores: respected")
+		} else {
+			fmt.Fprintln(w, "  ignores: bypassed")
+		}
+	}
+
+	// max file size: only when > 0.
+	if mb := optMB(job.Options, "max_file_bytes"); mb > 0 {
+		fmt.Fprintf(w, "  max file size: %d MB\n", mb)
+	}
+
+	// files scanned: only when > 0.
+	if job.FilesScanned > 0 {
+		fmt.Fprintf(w, "  files scanned: %d\n", job.FilesScanned)
+	}
+
+	// Derived counts from the findings page already in hand.
+	oversize := countCheck(findings, "full_scan_file_too_large")
+	if oversize > 0 {
+		fmt.Fprintf(w, "  oversize files skipped: %d\n", oversize)
+	}
+	truncated := countCheck(findings, "account_scan_truncated")
+	if truncated > 0 {
+		fmt.Fprintf(w, "  truncated path sets: %d\n", truncated)
+	}
+
+	fmt.Fprintln(w)
+}
+
+// optBool reads a bool from a map[string]any, tolerating missing keys and
+// float64 values (JSON generic unmarshal encodes JSON numbers as float64).
+func optBool(opts map[string]any, key string) bool {
+	v, ok := opts[key]
+	if !ok {
+		return false
+	}
+	switch b := v.(type) {
+	case bool:
+		return b
+	case float64:
+		return b != 0
+	}
+	return false
+}
+
+// optMB reads an integer megabyte value from a map[string]any key that holds
+// a byte count. Returns 0 if absent, zero, or not a number.
+func optMB(opts map[string]any, key string) int64 {
+	const oneMB = 1 << 20
+	v, ok := opts[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		if n <= 0 {
+			return 0
+		}
+		return int64(n) / oneMB
+	case int:
+		if n <= 0 {
+			return 0
+		}
+		return int64(n) / oneMB
+	case int64:
+		if n <= 0 {
+			return 0
+		}
+		return n / oneMB
+	}
+	return 0
+}
+
+// countCheck returns the number of findings whose Check field equals check.
+func countCheck(findings []alert.Finding, check string) int {
+	n := 0
+	for _, f := range findings {
+		if f.Check == check {
+			n++
+		}
+	}
+	return n
+}
+
+// printFindingTo writes one finding (plus remediation line if set) to w.
+func printFindingTo(w io.Writer, finding alert.Finding) {
+	fmt.Fprintln(w, finding.String())
+	if finding.RemediationStatus != "" {
+		if finding.RemediationDetail != "" {
+			fmt.Fprintf(w, "  remediation: %s — %s\n", finding.RemediationStatus, finding.RemediationDetail)
+		} else {
+			fmt.Fprintf(w, "  remediation: %s\n", finding.RemediationStatus)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+// printFindingsGroupedByAccountTo groups findings by TenantID and writes a
+// header line per account followed by that account's findings to w.
+func printFindingsGroupedByAccountTo(w io.Writer, findings []alert.Finding) {
 	// Collect the unique accounts, then sort alphabetically below for
 	// deterministic, predictable output on large server-wide reports.
 	seen := make(map[string]bool)
@@ -427,12 +570,28 @@ func printFindingsGroupedByAccount(findings []alert.Finding) {
 	}
 	sort.Strings(order)
 	for _, acct := range order {
-		fmt.Printf("=== account: %s ===\n\n", acct)
+		fmt.Fprintf(w, "=== account: %s ===\n\n", acct)
 		for _, finding := range byAccount[acct] {
-			fmt.Println(finding.String())
-			fmt.Println()
+			printFindingTo(w, finding)
 		}
 	}
+}
+
+// printJSONTo writes raw as pretty-printed JSON to w.
+// It mirrors the behaviour of printJSON (in incidents.go) but accepts a
+// caller-supplied writer so callers can direct output to any io.Writer.
+func printJSONTo(w io.Writer, raw json.RawMessage) {
+	var pretty interface{}
+	if err := json.Unmarshal(raw, &pretty); err != nil {
+		fmt.Fprintln(w, string(raw))
+		return
+	}
+	out, err := json.MarshalIndent(pretty, "", "  ")
+	if err != nil {
+		fmt.Fprintln(w, string(raw))
+		return
+	}
+	fmt.Fprintln(w, string(out))
 }
 
 // runScanLegacy is the original in-process `csm scan <user> [--alert]` path.
@@ -481,28 +640,33 @@ func runScanLegacy(f scanFlags) {
 
 // printJobRecord prints a single scan job record in human-readable form.
 func printJobRecord(j store.ScanJobRecord) {
-	fmt.Printf("id: %s  scope: %s  target: %s  state: %s\n",
+	printJobRecordTo(os.Stdout, j)
+}
+
+// printJobRecordTo writes a single scan job record in human-readable form to w.
+func printJobRecordTo(w io.Writer, j store.ScanJobRecord) {
+	fmt.Fprintf(w, "id: %s  scope: %s  target: %s  state: %s\n",
 		j.ID, j.Scope, j.Target, j.State)
 	if !j.Created.IsZero() {
-		fmt.Printf("  created: %s\n", j.Created.Format(time.RFC3339))
+		fmt.Fprintf(w, "  created: %s\n", j.Created.Format(time.RFC3339))
 	}
 	if !j.Started.IsZero() {
-		fmt.Printf("  started: %s\n", j.Started.Format(time.RFC3339))
+		fmt.Fprintf(w, "  started: %s\n", j.Started.Format(time.RFC3339))
 	}
 	if !j.Finished.IsZero() {
-		fmt.Printf("  finished: %s\n", j.Finished.Format(time.RFC3339))
+		fmt.Fprintf(w, "  finished: %s\n", j.Finished.Format(time.RFC3339))
 	}
 	if j.Scope == "all" && j.AccountsTotal > 0 {
-		fmt.Printf("  accounts: %d/%d", j.AccountsDone, j.AccountsTotal)
+		fmt.Fprintf(w, "  accounts: %d/%d", j.AccountsDone, j.AccountsTotal)
 		if j.CurrentAccount != "" {
-			fmt.Printf("  current: %s", j.CurrentAccount)
+			fmt.Fprintf(w, "  current: %s", j.CurrentAccount)
 		}
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 	if j.FindingCount > 0 || j.FilesScanned > 0 {
-		fmt.Printf("  findings: %d  files: %d\n", j.FindingCount, j.FilesScanned)
+		fmt.Fprintf(w, "  findings: %d  files: %d\n", j.FindingCount, j.FilesScanned)
 	}
 	if j.Error != "" {
-		fmt.Printf("  error: %s\n", j.Error)
+		fmt.Fprintf(w, "  error: %s\n", j.Error)
 	}
 }

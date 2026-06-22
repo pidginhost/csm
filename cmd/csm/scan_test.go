@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -691,5 +692,249 @@ func TestPrintScanReportWithAllScopeGroupsByAccount(t *testing.T) {
 	// then the 203-0-113-acct header, then finding-beta.
 	if idx3 >= idx2 {
 		t.Errorf("expected 203-0-113-acct header before finding-beta, got idx3=%d idx2=%d", idx3, idx2)
+	}
+}
+
+// makeScanReportSender returns a sendFn that always responds with the given
+// job and findings for CmdScanReport, and panics on any other command.
+func makeScanReportSender(job store.ScanJobRecord, findings []alert.Finding) sendFn {
+	return func(cmd string, args any) (json.RawMessage, error) {
+		resp, _ := json.Marshal(control.ScanReportResponse{
+			Job:      job,
+			Findings: findings,
+			Total:    len(findings),
+		})
+		return resp, nil
+	}
+}
+
+// TestReportCoverageQuarantineMode verifies that a quarantine full-scan job
+// report shows "mode: quarantine" in the coverage header and a per-finding
+// "remediation: quarantined" line for an eligible finding.
+func TestReportCoverageQuarantineMode(t *testing.T) {
+	job := store.ScanJobRecord{
+		ID:    "job-e2-1",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine":      true,
+			"respect_ignores": false,
+		},
+	}
+	findings := []alert.Finding{
+		{
+			Severity:          alert.Critical,
+			Check:             "malware_file",
+			Message:           "infected-sentinel",
+			RemediationStatus: "quarantined",
+			RemediationDetail: "/root/csm-quarantine/infected-sentinel",
+		},
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(job.ID, false, &buf, makeScanReportSender(job, findings))
+
+	out := buf.String()
+	if !strings.Contains(out, "mode: quarantine") {
+		t.Errorf("output missing 'mode: quarantine'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "remediation: quarantined") {
+		t.Errorf("output missing 'remediation: quarantined'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "/root/csm-quarantine/infected-sentinel") {
+		t.Errorf("output missing remediation detail; got:\n%s", out)
+	}
+}
+
+// TestReportCoverageReportOnlyMode verifies that a report-only full-scan job
+// shows "mode: report-only" and no remediation lines.
+func TestReportCoverageReportOnlyMode(t *testing.T) {
+	job := store.ScanJobRecord{
+		ID:    "job-e2-2",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine":      false,
+			"respect_ignores": true,
+		},
+	}
+	findings := []alert.Finding{
+		{
+			Severity: alert.Warning,
+			Check:    "malware_file",
+			Message:  "suspect-sentinel",
+			// No RemediationStatus: report-only job.
+		},
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(job.ID, false, &buf, makeScanReportSender(job, findings))
+
+	out := buf.String()
+	if !strings.Contains(out, "mode: report-only") {
+		t.Errorf("output missing 'mode: report-only'; got:\n%s", out)
+	}
+	if strings.Contains(out, "remediation:") {
+		t.Errorf("report-only output must not contain remediation lines; got:\n%s", out)
+	}
+}
+
+// TestReportAllScopeGroupedRemediation verifies that the grouped (all-scope)
+// listing also renders per-finding remediation status, not just the flat
+// account-scope listing.
+func TestReportAllScopeGroupedRemediation(t *testing.T) {
+	job := store.ScanJobRecord{
+		ID:           "job-e2-grouped",
+		Scope:        "all",
+		Target:       "all",
+		State:        "done",
+		FindingCount: 2,
+		AccountsDone: 2, AccountsTotal: 2,
+		Options: map[string]any{"quarantine": true, "respect_ignores": false},
+	}
+	findings := []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", Message: "shell-alpha",
+			TenantID: "198-51-100-acct", RemediationStatus: "quarantined",
+			RemediationDetail: "/root/csm-quarantine/shell-alpha"},
+		{Severity: alert.Warning, Check: "suspicious_crontab", Message: "cron-beta",
+			TenantID: "203-0-113-acct", RemediationStatus: "left_for_review"},
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(job.ID, false, &buf, makeScanReportSender(job, findings))
+	out := buf.String()
+
+	// Grouped account headers present.
+	if !strings.Contains(out, "198-51-100-acct") || !strings.Contains(out, "203-0-113-acct") {
+		t.Errorf("output missing grouped account headers; got:\n%s", out)
+	}
+	// Remediation status rendered in the grouped path for both findings.
+	if !strings.Contains(out, "remediation: quarantined") {
+		t.Errorf("grouped output missing 'remediation: quarantined'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "remediation: left_for_review") {
+		t.Errorf("grouped output missing 'remediation: left_for_review'; got:\n%s", out)
+	}
+}
+
+// TestReportCoverageIgnoresAndMaxSize verifies the ignores and max file size
+// lines in the coverage header.
+func TestReportCoverageIgnoresAndMaxSize(t *testing.T) {
+	const oneMB = 1 << 20
+	jobBypassed := store.ScanJobRecord{
+		ID:    "job-e2-3a",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine":      false,
+			"respect_ignores": false,
+			"max_file_bytes":  float64(5 * oneMB),
+		},
+	}
+	jobRespected := store.ScanJobRecord{
+		ID:    "job-e2-3b",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine":      false,
+			"respect_ignores": true,
+			"max_file_bytes":  float64(0),
+		},
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(jobBypassed.ID, false, &buf, makeScanReportSender(jobBypassed, nil))
+	outBypassed := buf.String()
+
+	buf.Reset()
+	printScanReportTo(jobRespected.ID, false, &buf, makeScanReportSender(jobRespected, nil))
+	outRespected := buf.String()
+
+	if !strings.Contains(outBypassed, "ignores: bypassed") {
+		t.Errorf("bypassed output missing 'ignores: bypassed'; got:\n%s", outBypassed)
+	}
+	if !strings.Contains(outBypassed, "max file size: 5 MB") {
+		t.Errorf("bypassed output missing 'max file size: 5 MB'; got:\n%s", outBypassed)
+	}
+	if !strings.Contains(outRespected, "ignores: respected") {
+		t.Errorf("respected output missing 'ignores: respected'; got:\n%s", outRespected)
+	}
+	// max_file_bytes=0 must be omitted.
+	if strings.Contains(outRespected, "max file size:") {
+		t.Errorf("max file size must be omitted when 0; got:\n%s", outRespected)
+	}
+}
+
+// TestReportCoverageDerivedCounts verifies that oversize-skipped and
+// truncated-path-sets counts are derived from sentinel findings in the page.
+func TestReportCoverageDerivedCounts(t *testing.T) {
+	job := store.ScanJobRecord{
+		ID:    "job-e2-4",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine":      false,
+			"respect_ignores": false,
+		},
+	}
+	findings := []alert.Finding{
+		{Check: "full_scan_file_too_large", Message: "file too large: /home/acct/big.iso"},
+		{Check: "account_scan_truncated", Message: "path set truncated"},
+		{Check: "malware_file", Message: "real-finding"},
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(job.ID, false, &buf, makeScanReportSender(job, findings))
+	out := buf.String()
+
+	if !strings.Contains(out, "oversize files skipped: 1") {
+		t.Errorf("output missing 'oversize files skipped: 1'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "truncated path sets: 1") {
+		t.Errorf("output missing 'truncated path sets: 1'; got:\n%s", out)
+	}
+}
+
+// TestReportJSONPassthrough verifies that JSON mode passes the raw daemon
+// response unchanged — no coverage header added.
+func TestReportJSONPassthrough(t *testing.T) {
+	job := store.ScanJobRecord{
+		ID:    "job-e2-5",
+		Scope: "account",
+		State: "done",
+		Options: map[string]any{
+			"quarantine": true,
+		},
+	}
+	findings := []alert.Finding{
+		{Check: "malware_file", Message: "json-sentinel", RemediationStatus: "quarantined"},
+	}
+
+	// The raw JSON returned by the sender must be passed through verbatim.
+	rawResp, _ := json.Marshal(control.ScanReportResponse{
+		Job:      job,
+		Findings: findings,
+		Total:    1,
+	})
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		return rawResp, nil
+	}
+
+	var buf bytes.Buffer
+	printScanReportTo(job.ID, true, &buf, sender)
+	out := buf.String()
+
+	// Must be valid JSON starting with '{'.
+	out = strings.TrimSpace(out)
+	if len(out) == 0 || out[0] != '{' {
+		t.Errorf("JSON output does not start with '{'; got: %q", out)
+	}
+	// Must not contain human-readable coverage header.
+	if strings.Contains(out, "coverage:") {
+		t.Errorf("JSON output must not contain coverage header; got:\n%s", out)
+	}
+	// Must not contain human-readable mode line.
+	if strings.Contains(out, "mode:") {
+		t.Errorf("JSON output must not contain mode line; got:\n%s", out)
 	}
 }
