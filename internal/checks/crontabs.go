@@ -85,7 +85,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		}
 		store.SetRaw(key, hash)
 	}
-	rankedCrontabs := rankPathsByMtimeDesc(ctx, accountCrontabs, effectiveAccountScanMaxFiles(cfg))
+	rankedCrontabs := rankPathsByMtimeDesc(ctx, accountCrontabs, accountScanMaxFiles(ctx, cfg))
 	if ctx.Err() != nil {
 		return findings
 	}

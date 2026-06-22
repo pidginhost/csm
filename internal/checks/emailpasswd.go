@@ -340,7 +340,7 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 		}
 	}
 
-	shadowFiles := discoverShadowFiles(ctx, effectiveAccountScanMaxFiles(cfg))
+	shadowFiles := discoverShadowFiles(ctx, accountScanMaxFiles(ctx, cfg))
 	if len(shadowFiles) == 0 {
 		return nil
 	}

@@ -125,7 +125,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store
 	// touched installs are processed first when the check timeout cuts
 	// iteration short.
 	m2Files, _ := osFS.Glob("/home/*/public_html/app/etc/env.php")
-	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, effectiveAccountScanMaxFiles(cfg)) {
+	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -140,7 +140,7 @@ func CheckMagentoContent(ctx context.Context, cfg *config.Config, _ *state.Store
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
 	m1Files, _ := osFS.Glob("/home/*/public_html/app/etc/local.xml")
-	for _, path := range rankPathsByMtimeDesc(ctx, m1Files, effectiveAccountScanMaxFiles(cfg)) {
+	for _, path := range rankPathsByMtimeDesc(ctx, m1Files, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}

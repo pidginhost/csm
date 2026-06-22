@@ -800,7 +800,7 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 		}
 	}
 
-	maxFiles := effectiveAccountScanMaxFiles(cfg)
+	maxFiles := accountScanMaxFiles(ctx, cfg)
 	baselineComplete = baselineComplete && scanCoversAllFiles(files, maxFiles)
 	ranked := rankPathsByMtimeDesc(ctx, files, maxFiles)
 	if ctx.Err() != nil {

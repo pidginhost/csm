@@ -53,7 +53,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 		}
 	}
-	rankedConfigCandidates := rankPathsByMtimeDesc(ctx, configCandidates, effectiveAccountScanMaxFiles(cfg))
+	rankedConfigCandidates := rankPathsByMtimeDesc(ctx, configCandidates, accountScanMaxFiles(ctx, cfg))
 	if ctx.Err() != nil {
 		return findings
 	}

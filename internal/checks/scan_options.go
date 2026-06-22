@@ -6,6 +6,18 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+// accountScanMaxFiles returns the effective file cap for the current scan. When
+// ctx carries AccountScanOptions (i.e. the caller is RunAccountScanWithOptions),
+// the options MaxFiles value wins so a full scan (MaxFiles=0) is uncapped.
+// Otherwise it falls back to the config-derived value so normal scheduled scans
+// are unaffected.
+func accountScanMaxFiles(ctx context.Context, cfg *config.Config) int {
+	if opts, ok := ScanOptionsFromContext(ctx); ok {
+		return opts.MaxFiles
+	}
+	return effectiveAccountScanMaxFiles(cfg)
+}
+
 // AccountScanOptions controls how RunAccountScanWithOptions enumerates and
 // content-scans an account. The zero value is NOT the default: MaxFiles 0 means
 // uncapped. Callers use DefaultAccountScanOptions for normal behaviour.

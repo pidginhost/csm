@@ -100,7 +100,7 @@ func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 
 	// Rank by mtime desc so recently touched Joomla installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, effectiveAccountScanMaxFiles(cfg)) {
+	for _, path := range rankPathsByMtimeDesc(ctx, configs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}

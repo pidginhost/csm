@@ -291,7 +291,7 @@ func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) [
 	// recently-touched accounts are processed first when the check timeout
 	// cuts iteration short.
 	homes, _ := osFS.Glob("/home/*/.ssh/authorized_keys")
-	for _, keyFile := range rankPathsByMtimeDesc(ctx, homes, effectiveAccountScanMaxFiles(cfg)) {
+	for _, keyFile := range rankPathsByMtimeDesc(ctx, homes, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			break
 		}
@@ -330,7 +330,7 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	// Rank account dirs by mtime desc so recently touched accounts are processed
 	// first when the check timeout cuts iteration short.
 	tokenDirs, _ := osFS.Glob("/home/*/.cpanel/api_tokens")
-	for _, tokenDir := range rankPathsByMtimeDesc(ctx, tokenDirs, effectiveAccountScanMaxFiles(cfg)) {
+	for _, tokenDir := range rankPathsByMtimeDesc(ctx, tokenDirs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			break
 		}

@@ -185,7 +185,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	if ctx.Err() != nil {
 		return findings
 	}
-	maxFiles := effectiveAccountScanMaxFiles(cfg)
+	maxFiles := accountScanMaxFiles(ctx, cfg)
 	baselineComplete := true
 	valiasFiles, err := osFS.Glob("/etc/valiases/*")
 	if err != nil {

@@ -45,3 +45,15 @@ func TestRunAccountScanWithDefaultOptionsEqualsLegacy(t *testing.T) {
 		t.Fatalf("default options diverge from legacy: %v vs %v", a, b)
 	}
 }
+
+func TestAccountScanMaxFilesPrefersContextOptions(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 10000
+	ctx := ContextWithScanOptions(context.Background(), AccountScanOptions{MaxFiles: 0})
+	if got := accountScanMaxFiles(ctx, cfg); got != 0 {
+		t.Errorf("with full-scan options MaxFiles should be 0 (uncapped), got %d", got)
+	}
+	if got := accountScanMaxFiles(context.Background(), cfg); got != 10000 {
+		t.Errorf("without options should fall back to cfg, got %d", got)
+	}
+}

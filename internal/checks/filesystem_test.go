@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -171,6 +172,73 @@ func TestCheckFilesystemCanceledDuringFinalHiddenRankDoesNotReadHome(t *testing.
 	_ = CheckFilesystem(ctx, nil, nil)
 	if homeRead {
 		t.Fatal("CheckFilesystem read /home after cancellation during hidden-file mtime ranking")
+	}
+}
+
+func TestFullScanFindsOldCapDroppedFilesystemCandidate(t *testing.T) {
+	tmp := t.TempDir()
+	account := "acct"
+	logicalHome := "/home/" + account
+	physicalHome := filepath.Join(tmp, "home", account)
+	if err := os.MkdirAll(physicalHome, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	logicalToPhysical := map[string]string{}
+	writeCandidate := func(rel string, when time.Time) string {
+		t.Helper()
+		logical := filepath.Join(logicalHome, rel)
+		physical := filepath.Join(physicalHome, rel)
+		if err := os.MkdirAll(filepath.Dir(physical), 0755); err != nil {
+			t.Fatal(err)
+		}
+		writePHPFixture(t, physical, phpCacheMalicious, when)
+		logicalToPhysical[logical] = physical
+		return logical
+	}
+
+	recentA := writeCandidate(filepath.Join(".config", "htop", "defunct"), now.Add(-1*time.Minute))
+	recentB := writeCandidate(filepath.Join(".config", "agent", "defunct.dat"), now.Add(-2*time.Minute))
+	old := writeCandidate(filepath.Join(".config", "agent", "gsocket"), now.Add(-365*24*time.Hour))
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join(logicalHome, ".config", "htop", "*"),
+				filepath.Join(logicalHome, ".config", "*", "*"):
+				return []string{recentA, recentB, old}, nil
+			default:
+				return nil, nil
+			}
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			if name == logicalHome {
+				return os.Stat(physicalHome)
+			}
+			if physical, ok := logicalToPhysical[name]; ok {
+				return os.Stat(physical)
+			}
+			return nil, os.ErrNotExist
+		},
+		readDir: func(name string) ([]os.DirEntry, error) {
+			if name == logicalHome {
+				return nil, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 2
+	defaultCtx := ContextWithAccountScope(context.Background(), account)
+	if findings := CheckFilesystem(defaultCtx, cfg, nil); hasFindingPath(findings, "backdoor_binary", old) {
+		t.Fatalf("default capped scan found old path beyond cap: %+v", findings)
+	}
+
+	fullCtx := ContextWithScanOptions(defaultCtx, AccountScanOptions{MaxFiles: 0, RespectIgnores: true})
+	if findings := CheckFilesystem(fullCtx, cfg, nil); !hasFindingPath(findings, "backdoor_binary", old) {
+		t.Fatalf("full scan missed old path beyond cap: %+v", findings)
 	}
 }
 

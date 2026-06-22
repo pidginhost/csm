@@ -80,7 +80,7 @@ func CheckOpenCartContent(ctx context.Context, cfg *config.Config, _ *state.Stor
 
 	// Rank by mtime desc so recently touched OpenCart installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, effectiveAccountScanMaxFiles(cfg)) {
+	for _, path := range rankPathsByMtimeDesc(ctx, configs, accountScanMaxFiles(ctx, cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
