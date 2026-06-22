@@ -72,6 +72,10 @@ type ScanJobManager struct {
 
 	// workerDone is closed when the worker goroutine exits.
 	workerDone chan struct{}
+
+	// stopOnce ensures Stop() is idempotent: a second call is a no-op rather
+	// than a panic on double-close of stopCh.
+	stopOnce sync.Once
 }
 
 // NewScanJobManager creates a ScanJobManager and reconciles any job left in
@@ -164,7 +168,8 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	}
 
 	// Build a per-job cancellable context. Cancel is called either by Cancel()
-	// or when Stop() closes the manager-level stopCh via the select in worker().
+	// or by Stop(), which cancels all live job contexts before waiting for the
+	// worker goroutine to exit.
 	jobCtx, jobCancel := context.WithCancel(context.Background())
 	m.cancelMu.Lock()
 	m.cancelFns[id] = jobCancel
@@ -222,17 +227,27 @@ func (m *ScanJobManager) Progress(id string) (store.ScanJobRecord, bool) {
 }
 
 // Stop cancels all in-flight or queued work and waits for the worker goroutine
-// to exit. After Stop returns the manager must not be used. Stop is idempotent
-// only in the sense that repeated calls to the underlying close are guarded by
-// a sync.Once; callers should not rely on that detail.
+// to exit. After Stop returns the manager must not be used. Stop is idempotent:
+// a sync.Once guards the close of stopCh so repeated calls are safe.
+// Canceling all live job contexts before blocking on workerDone ensures that
+// any scan currently executing inside runAccountScan returns promptly; the
+// runner honors ctx and the job lands in terminal state "canceled" with its
+// partial findings retained.
 func (m *ScanJobManager) Stop() {
-	close(m.stopCh)
+	m.stopOnce.Do(func() { close(m.stopCh) })
+	m.cancelMu.Lock()
+	for _, fn := range m.cancelFns {
+		fn()
+	}
+	m.cancelMu.Unlock()
 	<-m.workerDone
 }
 
 // worker is the single serialised goroutine that processes scan jobs.
 // It holds no references to closed resources after Stop() returns because:
-//  1. Stop() closes stopCh before blocking on workerDone.
+//  1. Stop() closes stopCh and cancels all live job contexts before blocking
+//     on workerDone; any in-flight scan honors ctx.Done() and returns promptly
+//     with partial findings, landing in terminal state "canceled".
 //  2. The select below exits as soon as stopCh fires, and all remaining
 //     queued jobs are drained as "canceled" -- none write to the store after
 //     Close() because the daemon closes the store only after Stop() returns.
