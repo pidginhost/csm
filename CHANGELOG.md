@@ -9,14 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added an optional per-country block digest: when CSM auto-blocks IPs it reports those from your customers' countries (split likely-customer vs attacker) on a schedule or as live alerts, so a false positive no longer silently cuts off visitors. Off by default; configure under alerts or in Settings.
 - A successful FTP login from a source that just failed repeated login attempts is now flagged as a likely cracked credential, naming the affected account, so a guessed password pages loudly instead of hiding among routine login notices.
 - Re-check now also covers content findings (suspicious/obfuscated PHP, signature and YARA matches) by re-running the classifier on the file's current bytes; it clears a still-present file only when its bytes are unchanged since detection and current logic no longer flags it, so a file edited after detection is never auto-cleared.
 - Stale content findings now clear automatically on daemon start after a detection-logic update (heuristic, signature, or YARA), when the flagged file is unchanged since detection and current logic no longer flags it, so operators no longer have to manually clear false positives left behind by improved detection.
 
 ### Fixed
 
-- Block digest live alerts now keep their de-dup state bounded and keep customer-risk evidence visible when the same IP has multiple block reasons in one window.
-- Block digest controls are now editable from Settings, reject disabled delivery paths, and keep the safe minimum when the value is left blank.
 - FTP login alerts no longer page on loopback (cPanel's own internal transfers) or on ordinary customer logins; routine logins are now recorded at audit level instead of high severity.
 - FTP success-after-brute alerts now use only failures still inside the configured window, ignore loopback variants, and do not trigger incident-level auto-blocks by themselves.
 - The firewall integrity check no longer falsely reports the ruleset as modified outside CSM when an IPv6 address is blocked or unblocked.
