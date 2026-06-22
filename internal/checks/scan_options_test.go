@@ -121,53 +121,35 @@ func TestFullScanForceContentRereadsCachedCleanFile(t *testing.T) {
 }
 
 func TestFullScanForceContentDoesNotWriteCache(t *testing.T) {
+	resetPHPContentScanCounts(t)
 	stateDir := t.TempDir()
 	cfg := &config.Config{StatePath: stateDir}
-	webDir := t.TempDir()
-	phpPath := filepath.Join(webDir, "x.php")
-	mtime := time.Unix(1_700_000_000, 0)
-
-	// Write a benign file and pre-seed the cache to mark it clean.
-	writePHPFixture(t, phpPath, phpCacheBenign, mtime)
-	stamp := phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(phpCacheBenign))}
-	preSeedCache := phpContentCache{phpPath: stamp}
-	savePHPContentCache(stateDir, preSeedCache)
-
-	// Record original cache bytes.
 	cachePath := filepath.Join(stateDir, "phpcontentcache.json")
-	origBytes, err := os.ReadFile(cachePath)
-	if err != nil {
-		t.Fatalf("read pre-seeded cache: %v", err)
-	}
 
-	// Now swap in malicious content with same mtime+size and run CheckPHPContent
-	// under a full-scan (ForceContent=true) account context. The save gate must
-	// block the write so the live cache bytes are unchanged afterward.
-	writePHPFixture(t, phpPath, phpCacheMalicious, mtime)
+	// Stub the filesystem so CheckPHPContent can complete without a real /home.
+	// /home has one account directory; all subdirectory reads return empty so no
+	// PHP files are visited. No readFile hook is set, so loadPHPContentCache
+	// sees ErrNotExist and starts with an empty prior cache.
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			if name == "/home" {
+				return []os.DirEntry{testDirEntry{name: "acct", isDir: true}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
 
-	// We need an account context so CheckPHPContent's account-scope guard also
-	// fires; the ForceContent guard is the new layer under test.
-	fullCtx := ContextWithScanOptions(
-		ContextWithAccountScope(context.Background(), "acct"),
-		AccountScanOptions{ForceContent: true},
-	)
-	// CheckPHPContent walks /home; stub it so it visits our temp dir instead.
-	// Use the lower-level save-gate assertion via a direct scan + conditional save,
-	// matching the production code path in CheckPHPContent.
-	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), scanForceContent(fullCtx))
-	var findings []alert.Finding
-	scan.scanDir(fullCtx, webDir, 4, phpHandlerOverlay{}, &findings)
-	// Replicate the save-gate condition from CheckPHPContent.
-	if fullCtx.Err() == nil && AccountFromContext(fullCtx) == "" && !scanForceContent(fullCtx) {
-		savePHPContentCache(cfg.StatePath, scan.next)
-	}
+	// Host-scope context (no ContextWithAccountScope, so AccountFromContext=="")
+	// with ForceContent=true. The save gate in CheckPHPContent is:
+	//   ctx.Err()==nil && AccountFromContext(ctx)==""  && !scanForceContent(ctx)
+	// The first two clauses are true; only !scanForceContent(ctx) blocks the
+	// write. If that clause is removed from production, savePHPContentCache is
+	// called and the file is created -- this test then fails as required.
+	fullCtx := ContextWithScanOptions(context.Background(), AccountScanOptions{ForceContent: true})
+	CheckPHPContent(fullCtx, cfg, nil)
 
-	afterBytes, err := os.ReadFile(cachePath)
-	if err != nil {
-		t.Fatalf("read cache after full scan: %v", err)
-	}
-	if string(afterBytes) != string(origBytes) {
-		t.Fatalf("full scan must not update phpcontentcache.json; before=%s after=%s", origBytes, afterBytes)
+	if _, err := os.Stat(cachePath); err == nil {
+		t.Fatal("CheckPHPContent with ForceContent=true must not write phpcontentcache.json")
 	}
 }
 
