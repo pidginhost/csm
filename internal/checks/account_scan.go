@@ -96,10 +96,17 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 // RunAccountScan runs all applicable checks scoped to a single cPanel account.
 // Returns findings for that account only. Does NOT trigger auto-response actions.
 //
+// This is a thin wrapper around RunAccountScanWithOptions using
+// DefaultAccountScanOptions so all existing callers retain their current behaviour.
+func RunAccountScan(cfg *config.Config, store *state.Store, account string) []alert.Finding {
+	return RunAccountScanWithOptions(context.Background(), cfg, store, account, DefaultAccountScanOptions(cfg))
+}
+
+// RunAccountScanWithOptions is the options-aware entry point for per-account scans.
 // Scope is propagated through ctx via ContextWithAccountScope, so parallel
 // scans of different accounts no longer block on a single process-wide
 // mutex and never bleed scope into each other.
-func RunAccountScan(cfg *config.Config, store *state.Store, account string) []alert.Finding {
+func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *state.Store, account string, opts AccountScanOptions) []alert.Finding {
 	// Verify account exists
 	homeDir := filepath.Join("/home", account)
 	if _, err := osFS.Stat(homeDir); os.IsNotExist(err) {
@@ -137,8 +144,9 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 	// Run with bounded parallelism - filesystem checks all walk the same
 	// directory tree, so too many concurrent checks starve each other on
 	// loaded servers with slow I/O.
-	scanCtx, truncations := withAccountScanTruncationCollector(context.Background())
+	scanCtx, truncations := withAccountScanTruncationCollector(ctx)
 	scanCtx = ContextWithAccountScope(scanCtx, account)
+	scanCtx = ContextWithScanOptions(scanCtx, opts)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
