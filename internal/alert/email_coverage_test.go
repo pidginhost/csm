@@ -1,9 +1,11 @@
 package alert
 
 import (
+	"io"
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -179,6 +181,42 @@ func TestSendEmailEmptyRecipients(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no email recipients") {
 		t.Errorf("error = %v, want 'no email recipients' message", err)
+	}
+}
+
+func TestSendEmailTimesOutWhenServerDoesNotGreet(t *testing.T) {
+	prev := emailSendTimeout
+	emailSendTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { emailSendTimeout = prev })
+
+	prevDial := smtpDial
+	smtpDial = func(time.Duration, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer func() { _ = server.Close() }()
+			_, _ = io.Copy(io.Discard, server)
+		}()
+		return client, nil
+	}
+	t.Cleanup(func() { smtpDial = prevDial })
+
+	cfg := &config.Config{}
+	cfg.Alerts.Email.To = []string{"a@b.test"}
+	cfg.Alerts.Email.From = "csm@example.com"
+	cfg.Alerts.Email.SMTP = "smtp.example.test:25"
+
+	start := time.Now()
+	err := SendEmail(cfg, "sub", "body")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("silent SMTP server should time out")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("SendEmail took %s, want bounded timeout", elapsed)
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "timeout") && !strings.Contains(msg, "deadline") {
+		t.Fatalf("error = %v, want timeout/deadline", err)
 	}
 }
 

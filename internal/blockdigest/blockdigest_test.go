@@ -1,6 +1,7 @@
 package blockdigest
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -83,6 +84,43 @@ func TestObserveFiltersByCountryAndDedups(t *testing.T) {
 	}
 }
 
+func TestObserveUsesDynamicCountries(t *testing.T) {
+	countries := []string{"RO"}
+	geo := map[string]string{
+		"5.13.0.1": "RO",
+		"8.8.8.8":  "US",
+	}
+	c := New(Options{
+		CountriesOf: func() []string { return countries },
+		SendOn:      "any",
+		Interval:    time.Hour,
+		MinBlock:    1,
+		Now:         func() time.Time { return time.Unix(1000, 0) },
+		CountryOf:   func(ip string) string { return geo[ip] },
+	})
+	now := time.Unix(1000, 0)
+	c.Observe("5.13.0.1", "ModSecurity escalation: x", now)
+	c.Observe("8.8.8.8", "rule escalation: y", now)
+	d := c.Drain()
+	if d.Total != 1 || d.ByCountry["RO"] != 1 {
+		t.Fatalf("RO watch digest = %+v, want only RO", d)
+	}
+	if !eq(d.Countries, []string{"RO"}) {
+		t.Fatalf("RO watch countries = %v, want RO", d.Countries)
+	}
+
+	countries = []string{"us"}
+	c.Observe("5.13.0.1", "ModSecurity escalation: x", now)
+	c.Observe("8.8.8.8", "rule escalation: y", now)
+	d = c.Drain()
+	if d.Total != 1 || d.ByCountry["US"] != 1 {
+		t.Fatalf("US watch digest = %+v, want only US", d)
+	}
+	if !eq(d.Countries, []string{"US"}) {
+		t.Fatalf("US watch countries = %v, want normalized US", d.Countries)
+	}
+}
+
 func TestObserveAllCountriesWhenSetEmpty(t *testing.T) {
 	c := New(Options{
 		Countries: nil, // all
@@ -148,6 +186,46 @@ func TestObserveWithoutCountryLookupDoesNotPanic(t *testing.T) {
 	c.Observe("203.0.113.7", "rule escalation: x", time.Unix(0, 0))
 	if d := c.Drain(); d.Total != 1 {
 		t.Fatalf("Total = %d, want 1", d.Total)
+	}
+}
+
+func TestDispatchReportsSinkErrors(t *testing.T) {
+	emailErr := errors.New("email down")
+	webhookErr := errors.New("webhook down")
+	var got []string
+	c := New(Options{
+		Host:    "host.example.test",
+		Version: "test",
+		EmailSink: func(string, string) error {
+			return emailErr
+		},
+		WebhookSink: func(WebhookPayload) error {
+			return webhookErr
+		},
+		OnError: func(channel string, err error) {
+			got = append(got, channel+":"+err.Error())
+		},
+	})
+
+	c.dispatch("block_digest", Digest{
+		Total: 1,
+		ByCountry: map[string]int{
+			"RO": 1,
+		},
+		ByReason: map[string]int{
+			"rule escalation": 1,
+		},
+		Records: []Record{{
+			IP:      "203.0.113.7",
+			Country: "RO",
+			Reason:  "rule escalation: x",
+			Bucket:  BucketAttacker,
+			TS:      time.Unix(0, 0),
+		}},
+	})
+
+	if !eq(got, []string{"email:email down", "webhook:webhook down"}) {
+		t.Fatalf("OnError calls = %v", got)
 	}
 }
 

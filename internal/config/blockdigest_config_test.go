@@ -85,6 +85,19 @@ func TestBlockDigestValidationRejectsBadValues(t *testing.T) {
 }
 
 func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
+	t.Run("default channel requires at least one enabled alert sink", func(t *testing.T) {
+		cfg := baseValidationConfig()
+		cfg.Alerts.Email.Enabled = false
+		cfg.Alerts.Webhook.Enabled = false
+		cfg.Alerts.BlockDigest.Enabled = true
+		cfg.Alerts.BlockDigest.Channel = ""
+
+		results := Validate(cfg)
+		if !hasResult(results, "error", "alerts.block_digest.channel") {
+			t.Fatalf("expected channel error when no alert sinks are enabled; results=%v", results)
+		}
+	})
+
 	t.Run("email channel requires email alerts", func(t *testing.T) {
 		cfg := baseValidationConfig()
 		cfg.Alerts.Email.Enabled = false

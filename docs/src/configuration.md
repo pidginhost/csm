@@ -104,7 +104,7 @@ alerts:
     interval: "1h"                      # digest cadence
     live: false                         # also send one alert per qualifying block
     send_on: "any"                      # any | customer
-    channel: ""                         # empty = enabled alert channels; or email | webhook
+    channel: ""                         # empty = enabled alert channels; requires email or webhook enabled
     min_block: 1                        # 0 sends empty heartbeat digests
   audit_log:                            # SIEM-friendly per-finding stream
     file:
@@ -806,6 +806,9 @@ mail auth backend probe at startup, so a reload that changes it emits
 `alerts` section. The collector and ticker are built at startup, so a
 reload that changes the digest settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
+When `countries` is empty, the fallback to `suppressions.trusted_countries`
+still follows safe reloads. Delivery uses the current email and webhook
+settings.
 
 The rest of the sub-keys in every safe-tagged section are read per-call
 (inside check functions, auto-response helpers, alert dispatchers) and

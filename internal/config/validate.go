@@ -142,6 +142,9 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	switch cfg.Alerts.BlockDigest.Channel {
 	case "":
+		if cfg.Alerts.BlockDigest.Enabled && !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
+			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "empty channel requires email or webhook alerts to be enabled"})
+		}
 	case "email":
 		if cfg.Alerts.BlockDigest.Enabled && !cfg.Alerts.Email.Enabled {
 			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", "channel email requires email alerts to be enabled"})

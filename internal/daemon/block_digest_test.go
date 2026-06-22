@@ -56,20 +56,72 @@ func TestBlockDigestSinksChannelSelection(t *testing.T) {
 		c.Alerts.BlockDigest.Channel = channel
 		return c
 	}
-	// default channel: follow whatever alerts has enabled
+	// Default channel follows the live alert channel state at delivery time.
 	e, w := d.blockDigestSinks(mk("", true, false))
-	if e == nil || w != nil {
-		t.Error("default channel with email enabled should give email sink only")
+	if e == nil || w == nil {
+		t.Error("default channel should build dynamic email and webhook sinks")
 	}
-	// explicit webhook overrides
+	// Explicit webhook overrides default channel following.
 	e, w = d.blockDigestSinks(mk("webhook", true, false))
 	if e != nil || w == nil {
 		t.Error("explicit webhook should give webhook sink only")
 	}
-	// default channel, both enabled -> both sinks
-	e, w = d.blockDigestSinks(mk("", true, true))
-	if e == nil || w == nil {
-		t.Error("default channel with both enabled should give both sinks")
+	// Explicit email overrides default channel following.
+	e, w = d.blockDigestSinks(mk("email", true, true))
+	if e == nil || w != nil {
+		t.Error("explicit email should give email sink only")
+	}
+}
+
+func TestBlockDigestSinksUseLiveAlertConfig(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+
+	prevEmail := blockDigestSendEmail
+	prevWebhook := blockDigestSendWebhookJSON
+	t.Cleanup(func() {
+		blockDigestSendEmail = prevEmail
+		blockDigestSendWebhookJSON = prevWebhook
+	})
+
+	var emailCalls int
+	var webhookURL string
+	blockDigestSendEmail = func(*config.Config, string, string) error {
+		emailCalls++
+		return nil
+	}
+	blockDigestSendWebhookJSON = func(cfg *config.Config, _ any) error {
+		webhookURL = cfg.Alerts.Webhook.URL
+		return nil
+	}
+
+	startup := &config.Config{}
+	startup.Alerts.BlockDigest.Channel = ""
+	startup.Alerts.Email.Enabled = true
+	startup.Alerts.Email.SMTP = "old-smtp.example.test:25"
+	d := &Daemon{cfg: startup}
+
+	emailSink, webhookSink := d.blockDigestSinks(startup)
+
+	live := &config.Config{}
+	live.Alerts.BlockDigest.Channel = ""
+	live.Alerts.Email.Enabled = false
+	live.Alerts.Webhook.Enabled = true
+	live.Alerts.Webhook.URL = "https://new.example.test/hook"
+	config.SetActive(live)
+
+	if err := emailSink("subject", "body"); err != nil {
+		t.Fatalf("disabled live email sink should be a no-op: %v", err)
+	}
+	if err := webhookSink(blockdigest.WebhookPayload{}); err != nil {
+		t.Fatalf("webhook sink: %v", err)
+	}
+	if emailCalls != 0 {
+		t.Fatalf("email sink used stale startup config; calls=%d", emailCalls)
+	}
+	if webhookURL != "https://new.example.test/hook" {
+		t.Fatalf("webhook URL = %q, want live config URL", webhookURL)
 	}
 }
 

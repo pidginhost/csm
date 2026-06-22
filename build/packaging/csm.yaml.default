@@ -28,7 +28,7 @@ alerts:
     interval: "1h"
     live: false            # also send an immediate alert per qualifying block
     send_on: "any"         # any | customer (customer = only likely-false-positive blocks)
-    channel: ""            # "" uses the enabled alerts channel(s); or email | webhook
+    channel: ""            # "" uses enabled alert channel(s); at least one of email/webhook must be enabled
     min_block: 1           # suppress digests below this count (0 = send empty heartbeat digests)
 
 webui:

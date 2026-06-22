@@ -49,10 +49,12 @@ type Options struct {
 	MinBlock    int
 	Host        string
 	Version     string
+	CountriesOf func() []string
 	CountryOf   func(ip string) string
 	Now         func() time.Time
 	EmailSink   func(subject, body string) error
 	WebhookSink func(p WebhookPayload) error
+	OnError     func(channel string, err error)
 }
 
 // Collector accumulates observations and drains them into digests.
@@ -79,6 +81,9 @@ func New(opts Options) *Collector {
 }
 
 func (c *Collector) countriesSnapshot() []string {
+	if c.opts.CountriesOf != nil {
+		return normalizeCountries(c.opts.CountriesOf())
+	}
 	return append([]string(nil), c.opts.Countries...)
 }
 
@@ -145,13 +150,14 @@ func isWordByte(b byte) bool {
 }
 
 func (c *Collector) watched(country string) bool {
-	if len(c.opts.Countries) == 0 {
+	countries := c.countriesSnapshot()
+	if len(countries) == 0 {
 		return true
 	}
 	if country == "" {
 		return false
 	}
-	for _, w := range c.opts.Countries {
+	for _, w := range countries {
 		if strings.EqualFold(country, w) {
 			return true
 		}
@@ -319,15 +325,24 @@ func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
 	}
 }
 
-// dispatch delivers a digest through whichever sinks are configured. Sink
-// errors are swallowed deliberately: alert delivery is best-effort and must
-// never block the collector or the auto-block path. A sink that needs to
-// surface failures logs inside its own closure on the daemon side.
+// dispatch delivers a digest through whichever sinks are configured. Alert
+// delivery is best-effort and must never block the collector or the auto-block
+// path beyond the sink's own timeout; failures are reported through OnError.
 func (c *Collector) dispatch(event string, d Digest) {
 	if c.opts.EmailSink != nil {
-		_ = c.opts.EmailSink(c.renderSubject(d), c.renderBody(d))
+		if err := c.opts.EmailSink(c.renderSubject(d), c.renderBody(d)); err != nil {
+			c.reportSinkError("email", err)
+		}
 	}
 	if c.opts.WebhookSink != nil {
-		_ = c.opts.WebhookSink(c.buildPayload(event, d))
+		if err := c.opts.WebhookSink(c.buildPayload(event, d)); err != nil {
+			c.reportSinkError("webhook", err)
+		}
+	}
+}
+
+func (c *Collector) reportSinkError(channel string, err error) {
+	if c.opts.OnError != nil {
+		c.opts.OnError(channel, err)
 	}
 }

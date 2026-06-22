@@ -42,11 +42,11 @@ type WebhookBlock struct {
 
 const maxAttackerListed = 10
 
-func (c *Collector) countriesLabel() string {
-	if len(c.opts.Countries) == 0 {
+func countriesLabel(countries []string) string {
+	if len(countries) == 0 {
 		return "all"
 	}
-	return strings.Join(c.opts.Countries, ",")
+	return strings.Join(countries, ",")
 }
 
 func (c *Collector) renderSubject(d Digest) string {
@@ -57,7 +57,7 @@ func (c *Collector) renderSubject(d Digest) string {
 func (c *Collector) renderBody(d Digest) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, c.renderSubject(d))
-	fmt.Fprintf(&b, "Countries: %s\n", c.countriesLabel())
+	fmt.Fprintf(&b, "Countries: %s\n", countriesLabel(d.Countries))
 	fmt.Fprintf(&b, "By country: %s\n", sortedCounts(d.ByCountry))
 	fmt.Fprintf(&b, "By reason: %s\n", sortedCounts(d.ByReason))
 	fmt.Fprintln(&b)
