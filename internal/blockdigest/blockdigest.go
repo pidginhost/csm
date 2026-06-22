@@ -187,8 +187,3 @@ func reasonKey(reason string) string {
 	}
 	return strings.TrimSpace(reason)
 }
-
-// WebhookPayload is the structured webhook body. Fleshed out in render.go.
-type WebhookPayload struct {
-	Text string `json:"text"`
-}
