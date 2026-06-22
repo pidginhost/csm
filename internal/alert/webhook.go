@@ -114,6 +114,30 @@ func SendWebhook(cfg *config.Config, subject, body string) error {
 	return nil
 }
 
+// SendWebhookJSON posts a pre-built JSON payload to the configured webhook
+// URL. Senders that need a structured body (not the slack/discord subject
+// envelope) use this. No-op when no URL is configured.
+func SendWebhookJSON(cfg *config.Config, payload any) error {
+	url := cfg.Alerts.Webhook.URL
+	if url == "" {
+		return nil
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling webhook payload: %w", err)
+	}
+	client := httpClient(10 * time.Second)
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("webhook POST: %w", err)
+	}
+	defer closeWebhookResponseBody(resp)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("webhook returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // SendPhpanelWebhookFinding posts a single finding to the configured phpanel
 // endpoint, signing the body with HMAC-SHA256 in X-CSM-Signature. Stateless;
 // caller is responsible for filtering / batching.
