@@ -19,18 +19,22 @@ const (
 
 // ScanJobRecord holds the metadata for a single full-scan job.
 type ScanJobRecord struct {
-	ID           string         `json:"id"`
-	Scope        string         `json:"scope"`
-	Target       string         `json:"target"`
-	State        string         `json:"state"`
-	Created      time.Time      `json:"created"`
-	Started      time.Time      `json:"started,omitempty"`
-	Finished     time.Time      `json:"finished,omitempty"`
-	FilesScanned int            `json:"files_scanned,omitempty"`
-	FilesEst     int            `json:"files_est,omitempty"`
-	FindingCount int            `json:"finding_count,omitempty"`
-	Options      map[string]any `json:"options,omitempty"`
-	Error        string         `json:"error,omitempty"`
+	ID           string    `json:"id"`
+	Scope        string    `json:"scope"`
+	Target       string    `json:"target"`
+	State        string    `json:"state"`
+	Created      time.Time `json:"created"`
+	Started      time.Time `json:"started,omitempty"`
+	Finished     time.Time `json:"finished,omitempty"`
+	FilesScanned int       `json:"files_scanned,omitempty"`
+	FilesEst     int       `json:"files_est,omitempty"`
+	FindingCount int       `json:"finding_count,omitempty"`
+	// Progress fields for scope="all" jobs. Zero/empty for account-scope jobs.
+	AccountsTotal  int            `json:"accounts_total,omitempty"`
+	AccountsDone   int            `json:"accounts_done,omitempty"`
+	CurrentAccount string         `json:"current_account,omitempty"`
+	Options        map[string]any `json:"options,omitempty"`
+	Error          string         `json:"error,omitempty"`
 }
 
 // PutScanJob creates or replaces a scan-job record.

@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,6 +353,270 @@ func TestScanJobCancelQueued(t *testing.T) {
 	rec := waitForState(t, m, id2, "canceled", 3*time.Second)
 	if rec.State != "canceled" {
 		t.Fatalf("queued job state = %q, want canceled", rec.State)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task B2: server-wide ("all") scope tests
+// ---------------------------------------------------------------------------
+
+// TestAllScopeAggregatesFindings verifies the happy path: 3 accounts each
+// return 1 finding → job done, FindingCount 3, AccountsTotal/Done 3, each
+// finding carries its account as TenantID, all retrievable via ListFindings.
+func TestAllScopeAggregatesFindings(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	accounts := []string{"alice", "bob", "charlie"}
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return accounts, nil
+	}
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{{Check: "webshell", Message: "found in " + target}}
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+
+	if rec.FindingCount != 3 {
+		t.Fatalf("FindingCount = %d, want 3", rec.FindingCount)
+	}
+	if rec.AccountsTotal != 3 {
+		t.Fatalf("AccountsTotal = %d, want 3", rec.AccountsTotal)
+	}
+	if rec.AccountsDone != 3 {
+		t.Fatalf("AccountsDone = %d, want 3", rec.AccountsDone)
+	}
+	if rec.CurrentAccount != "" {
+		t.Fatalf("CurrentAccount = %q after done, want empty", rec.CurrentAccount)
+	}
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil {
+		t.Fatalf("ListScanJobFindings: %v", err)
+	}
+	if total != 3 || len(findings) != 3 {
+		t.Fatalf("findings total=%d len=%d, want 3", total, len(findings))
+	}
+	tenants := make(map[string]bool)
+	for _, f := range findings {
+		tenants[f.TenantID] = true
+	}
+	for _, acct := range accounts {
+		if !tenants[acct] {
+			t.Fatalf("missing TenantID %q in findings", acct)
+		}
+	}
+	// total==3 (above) is the seq-uniqueness proof: a colliding seq key would
+	// overwrite a prior finding row and ListScanJobFindings would return <3.
+}
+
+// TestAllScopePanicIsolation verifies that a panic in the middle account's
+// runner does not abort the job: the other two accounts' findings are present,
+// an account_scan_error synthetic finding is recorded for the panicking account,
+// job is "done" (not "error"), and AccountsDone == 3.
+func TestAllScopePanicIsolation(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return []string{"alice", "bob", "charlie"}, nil
+	}
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		if target == "bob" {
+			panic("bob explodes")
+		}
+		return []alert.Finding{{Check: "webshell", Message: "found in " + target}}
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+
+	if rec.AccountsDone != 3 {
+		t.Fatalf("AccountsDone = %d, want 3", rec.AccountsDone)
+	}
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil {
+		t.Fatalf("ListScanJobFindings: %v", err)
+	}
+	// 2 real findings + 1 synthetic error finding
+	if total != 3 || len(findings) != 3 {
+		t.Fatalf("findings total=%d len=%d, want 3", total, len(findings))
+	}
+
+	var errorFindings []alert.Finding
+	for _, f := range findings {
+		if f.Check == "account_scan_error" {
+			errorFindings = append(errorFindings, f)
+		}
+	}
+	if len(errorFindings) != 1 {
+		t.Fatalf("account_scan_error findings = %d, want 1", len(errorFindings))
+	}
+	if errorFindings[0].TenantID != "bob" {
+		t.Fatalf("error finding TenantID = %q, want bob", errorFindings[0].TenantID)
+	}
+}
+
+// TestAllScopeEnumerateError verifies that an enumerator failure sets the job
+// to state "error" with the enumerator's message.
+func TestAllScopeEnumerateError(t *testing.T) {
+	st, _ := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return nil, errors.New("disk read failure")
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "error", 5*time.Second)
+	if rec.Error != "disk read failure" {
+		t.Fatalf("Error = %q, want %q", rec.Error, "disk read failure")
+	}
+}
+
+// TestAllScopeCancelMidIteration verifies that canceling mid-iteration stops
+// further scanning, retains partial findings, and sets state "canceled".
+func TestAllScopeCancelMidIteration(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return []string{"alice", "bob", "charlie"}, nil
+	}
+
+	// idCh hands the job id to the runner. The runner's alice branch receives
+	// on it, which happens-after the test's send below -- so there is no race
+	// on the id and no reach-in to the manager's internal cancel map.
+	idCh := make(chan string, 1)
+	var cancelOnce sync.Once
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		if target == "alice" {
+			// Cancel the job after alice's findings are returned; the receive
+			// blocks until the test has published the id.
+			cancelOnce.Do(func() { m.Cancel(<-idCh) })
+		}
+		return []alert.Finding{{Check: "webshell", Message: "found in " + target}}
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idCh <- id
+
+	rec := waitForState(t, m, id, "canceled", 5*time.Second)
+	if rec.State != "canceled" {
+		t.Fatalf("state = %q, want canceled", rec.State)
+	}
+
+	// Alice's finding must be persisted (partial findings retained).
+	_, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil {
+		t.Fatalf("ListScanJobFindings: %v", err)
+	}
+	if total == 0 {
+		t.Fatal("no partial findings retained after cancel")
+	}
+	// Must not have scanned all 3 accounts.
+	if rec.AccountsDone >= 3 {
+		t.Fatalf("AccountsDone = %d after cancel, expected < 3", rec.AccountsDone)
+	}
+}
+
+// TestAllScopeTenantIDNotClobbered verifies that a finding with TenantID
+// already set by the check is preserved as-is.
+func TestAllScopeTenantIDNotClobbered(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return []string{"alice"}, nil
+	}
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{{Check: "webshell", TenantID: "pre-set-tenant"}}
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+
+	findings, _, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil {
+		t.Fatalf("ListScanJobFindings: %v", err)
+	}
+	if len(findings) != 1 || findings[0].TenantID != "pre-set-tenant" {
+		t.Fatalf("TenantID = %q, want pre-set-tenant", findings[0].TenantID)
+	}
+}
+
+// TestAllScopeAccountScopeRegression verifies that an "account"-scope job
+// still behaves exactly as before: one runner call, findings persisted, no
+// AccountsTotal set.
+func TestAllScopeAccountScopeRegression(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	calls := 0
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		calls++
+		return []alert.Finding{{Check: "webshell"}}
+	}
+
+	id, err := m.Enqueue("account", "alice", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+
+	if calls != 1 {
+		t.Fatalf("runner called %d times, want 1", calls)
+	}
+	if rec.AccountsTotal != 0 {
+		t.Fatalf("AccountsTotal = %d, want 0 for account scope", rec.AccountsTotal)
+	}
+	findings, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil {
+		t.Fatalf("ListScanJobFindings: %v", err)
+	}
+	if total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d, want 1", total, len(findings))
 	}
 }
 

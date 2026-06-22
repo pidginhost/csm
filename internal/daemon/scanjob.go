@@ -40,6 +40,11 @@ func newScanJobID() string {
 // without any sleep races.
 type scanJobRunner func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding
 
+// accountEnumerator lists cPanel accounts for scope="all" jobs.
+// It is a field on ScanJobManager so tests can substitute a fake without
+// touching the filesystem.
+type accountEnumerator func(cfg *config.Config) ([]string, error)
+
 // scanJobRequest is what Enqueue pushes into the work channel.
 type scanJobRequest struct {
 	id        string
@@ -62,6 +67,9 @@ type ScanJobManager struct {
 	// runAccountScan is the runner called for each job. Tests replace this
 	// with a fixture to control blocking / return values without sleep races.
 	runAccountScan scanJobRunner
+
+	// enumerateAccounts lists accounts for scope="all" jobs. Tests replace it.
+	enumerateAccounts accountEnumerator
 
 	workCh chan scanJobRequest // bounded; Enqueue returns an error when full
 	stopCh chan struct{}       // closed by Stop()
@@ -91,14 +99,15 @@ func NewScanJobManager(st *state.Store, cfg *config.Config) (*ScanJobManager, er
 	}
 
 	m := &ScanJobManager{
-		st:             st,
-		cfg:            cfg,
-		db:             db,
-		runAccountScan: defaultScanRunner,
-		workCh:         make(chan scanJobRequest, scanJobQueueDepth),
-		stopCh:         make(chan struct{}),
-		cancelFns:      make(map[string]context.CancelFunc),
-		workerDone:     make(chan struct{}),
+		st:                st,
+		cfg:               cfg,
+		db:                db,
+		runAccountScan:    defaultScanRunner,
+		enumerateAccounts: checks.EnumerateScanAccounts,
+		workCh:            make(chan scanJobRequest, scanJobQueueDepth),
+		stopCh:            make(chan struct{}),
+		cancelFns:         make(map[string]context.CancelFunc),
+		workerDone:        make(chan struct{}),
 	}
 
 	if err := m.reconcileStaleRunning(); err != nil {
@@ -345,21 +354,29 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 		cfg = &config.Config{}
 	}
 
-	// Run the scan. The runner blocks until complete or ctx is canceled.
-	findings := m.runAccountScan(req.cancelCtx, cfg, m.st, rec.Target, req.opts)
+	// Branch on scope: "all" runs every account; anything else (default
+	// "account") runs the single target as before.
+	var findingCount int
+	var jobState string
+	if rec.Scope == "all" {
+		findingCount, jobState = m.runAllAccounts(req, rec, cfg)
+	} else {
+		// Run the scan. The runner blocks until complete or ctx is canceled.
+		findings := m.runAccountScan(req.cancelCtx, cfg, m.st, rec.Target, req.opts)
 
-	// Persist every finding the runner returned, even if canceled mid-scan.
-	// This preserves partial results for the "cancel keeps partial" guarantee.
-	for i, f := range findings {
-		if appendErr := m.db.AppendScanJobFinding(req.id, i, f); appendErr != nil {
-			csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", i, "err", appendErr)
+		// Persist every finding the runner returned, even if canceled mid-scan.
+		// This preserves partial results for the "cancel keeps partial" guarantee.
+		for i, f := range findings {
+			if appendErr := m.db.AppendScanJobFinding(req.id, i, f); appendErr != nil {
+				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", i, "err", appendErr)
+			}
 		}
-	}
 
-	// Determine terminal state.
-	jobState := "done"
-	if req.cancelCtx.Err() != nil {
-		jobState = "canceled"
+		findingCount = len(findings)
+		jobState = "done"
+		if req.cancelCtx.Err() != nil {
+			jobState = "canceled"
+		}
 	}
 
 	// Refresh the record before writing the terminal state so FilesScanned
@@ -372,7 +389,8 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	}
 	rec2.State = jobState
 	rec2.Finished = time.Now().UTC()
-	rec2.FindingCount = len(findings)
+	rec2.FindingCount = findingCount
+	rec2.CurrentAccount = "" // clear transient progress field on completion
 	if putErr := m.db.PutScanJob(rec2); putErr != nil {
 		csmlog.Warn("scan job terminal state failed", "job_id", req.id, "err", putErr)
 	}
@@ -385,6 +403,109 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	if _, pruneErr := m.db.PruneScanJobs(retention); pruneErr != nil {
 		csmlog.Warn("scan job prune failed", "err", pruneErr)
 	}
+}
+
+// runAllAccounts executes the scan body for a scope="all" job: enumerates
+// accounts, scans each with panic isolation, persists findings incrementally,
+// and returns (findingCount, terminalState). Terminal state is "error" if
+// enumeration fails, "canceled" if the context is done after the loop,
+// "done" otherwise.
+//
+// For cancel mid-iteration: the check at the top of the per-account loop
+// detects a canceled context before starting the next account, so partial
+// findings already persisted from completed accounts are retained.
+func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRecord, cfg *config.Config) (findingCount int, jobState string) {
+	accounts, err := m.enumerateAccounts(cfg)
+	if err != nil {
+		// Persist error state immediately so the outer runJob terminal write
+		// picks up the correct state (it will overwrite State/Finished again,
+		// but we set Error here via a direct PutScanJob call first).
+		recErr, ok2, getErr := m.db.GetScanJob(req.id)
+		if getErr == nil && ok2 {
+			recErr.State = "error"
+			recErr.Error = err.Error()
+			recErr.Finished = time.Now().UTC()
+			_ = m.db.PutScanJob(recErr)
+		}
+		return 0, "error"
+	}
+
+	// Set AccountsTotal and persist immediately so progress is visible.
+	rec.AccountsTotal = len(accounts)
+	if putErr := m.db.PutScanJob(rec); putErr != nil {
+		csmlog.Warn("scan job accounts_total persist failed", "job_id", req.id, "err", putErr)
+	}
+
+	seq := 0 // continuous across accounts for unique AppendScanJobFinding keys
+	findingCount = 0
+
+	for _, account := range accounts {
+		// Cancel check: stop before starting next account.
+		if req.cancelCtx.Err() != nil {
+			break
+		}
+
+		// Update progress: current account being scanned.
+		rec.CurrentAccount = account
+		if putErr := m.db.PutScanJob(rec); putErr != nil {
+			csmlog.Warn("scan job progress persist failed", "job_id", req.id, "err", putErr)
+		}
+
+		// Run the account scan with panic isolation so one bad account cannot
+		// abort the entire server-wide job.
+		findings := m.runAccountScanIsolated(req, cfg, account)
+
+		// Persist findings for this account; attribute each to the account if
+		// the check did not already set TenantID.
+		now := time.Now().UTC()
+		for i := range findings {
+			if findings[i].TenantID == "" {
+				findings[i].TenantID = account
+			}
+			if findings[i].Timestamp.IsZero() {
+				findings[i].Timestamp = now
+			}
+			if appendErr := m.db.AppendScanJobFinding(req.id, seq, findings[i]); appendErr != nil {
+				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", seq, "err", appendErr)
+			}
+			seq++
+			findingCount++
+		}
+
+		rec.AccountsDone++
+		rec.FindingCount = findingCount
+		if putErr := m.db.PutScanJob(rec); putErr != nil {
+			csmlog.Warn("scan job accounts_done persist failed", "job_id", req.id, "err", putErr)
+		}
+	}
+
+	// Clear the transient CurrentAccount field before terminal state is written.
+	rec.CurrentAccount = ""
+
+	jobState = "done"
+	if req.cancelCtx.Err() != nil {
+		jobState = "canceled"
+	}
+	return findingCount, jobState
+}
+
+// runAccountScanIsolated calls m.runAccountScan inside a recover() so a panic
+// in any account's scanner is converted to a synthetic account_scan_error
+// finding rather than crashing the worker goroutine and aborting the job.
+func (m *ScanJobManager) runAccountScanIsolated(req scanJobRequest, cfg *config.Config, account string) (findings []alert.Finding) {
+	defer func() {
+		if r := recover(); r != nil {
+			findings = []alert.Finding{{
+				Severity:  alert.High,
+				Check:     "account_scan_error",
+				Message:   fmt.Sprintf("scan failed for account %s", account),
+				Details:   fmt.Sprintf("%v", r),
+				TenantID:  account,
+				Timestamp: time.Now().UTC(),
+			}}
+		}
+	}()
+	return m.runAccountScan(req.cancelCtx, cfg, m.st, account, req.opts)
 }
 
 // setTerminal writes a terminal state for a job without running any scan.
