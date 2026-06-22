@@ -164,3 +164,128 @@ func TestAccountFromPath(t *testing.T) {
 		})
 	}
 }
+
+// TestFileIndexRunsOnFullScanButNotDefault is the integration test for the
+// gated append added to RunAccountScanWithOptions. It proves:
+//
+//  1. A full scan (ForceFileIndex=true) DOES run CheckFileIndex and returns a
+//     new_php_in_sensitive_dir finding for a PHP file planted in
+//     wp-content/languages -- a classifier surface that NO other account check
+//     covers (confirmed: grep new_php_in_sensitive_dir returns only fileindex.go).
+//
+//  2. A default scan (ForceFileIndex=false) does NOT return that finding,
+//     confirming CheckFileIndex is absent from the default path.
+//
+//  3. The full-scan run does NOT write any of the three live state files
+//     (fileindex.current, fileindex.previous, dircache.json), so the
+//     host-wide incremental baseline is left intact.
+func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// PHP file in wp-content/languages -- triggers new_php_in_sensitive_dir
+	// via classifySensitiveDirPHP. Unreadable body fails closed to High.
+	// We use a clean but non-stub body so classifySensitiveDirPHP returns
+	// new_php_in_sensitive_dir_clean (Warning), which is still unique to
+	// CheckFileIndex and proves the audit path executed.
+	logicalHome := "/home/acct"
+	logicalLang := filepath.Join(logicalHome, "public_html", "wp-content", "languages")
+	logicalPHP := filepath.Join(logicalLang, "evil.php")
+
+	physicalLang := filepath.Join(tmp, "acct", "public_html", "wp-content", "languages")
+	if err := os.MkdirAll(physicalLang, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Clean PHP that is not a benign stub -- surfaces as new_php_in_sensitive_dir_clean
+	// (Warning). No other account check produces either new_php_in_sensitive_dir variant.
+	physicalPHP := filepath.Join(physicalLang, "evil.php")
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.WriteFile(physicalPHP, []byte("<?php\n$x = 1;\nreturn $x;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(physicalPHP, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{testDirEntry{name: "acct", isDir: true}}, nil
+			case logicalHome:
+				return []os.DirEntry{testDirEntry{name: "public_html", isDir: true}}, nil
+			case logicalLang:
+				return []os.DirEntry{testDirEntry{name: "evil.php", isDir: false}}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case logicalHome:
+				return &fakeFileInfoMtime{name: "acct", dir: true, mode: 0755, mtime: old}, nil
+			case logicalLang:
+				return &fakeFileInfoMtime{name: "languages", dir: true, mode: 0755, mtime: old}, nil
+			case logicalPHP:
+				return os.Stat(physicalPHP)
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == logicalPHP {
+				return os.ReadFile(physicalPHP)
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(name string) (*os.File, error) {
+			if name == logicalPHP {
+				return os.Open(physicalPHP)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{StatePath: stateDir}
+
+	// --- Full scan: CheckFileIndex must run and report the sensitive-dir PHP ---
+	fullOpts := AccountScanOptions{
+		MaxFiles:       0,
+		ForceContent:   true,
+		ForceFileIndex: true,
+		RespectIgnores: false,
+		MaxFileBytes:   0,
+	}
+	fullFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", fullOpts)
+
+	foundSensitiveDir := false
+	for _, f := range fullFindings {
+		if f.Check == "new_php_in_sensitive_dir" || f.Check == "new_php_in_sensitive_dir_clean" {
+			foundSensitiveDir = true
+			break
+		}
+	}
+	if !foundSensitiveDir {
+		t.Errorf("full scan must find new_php_in_sensitive_dir* via CheckFileIndex, got: %+v", fullFindings)
+	}
+
+	// --- State-write invariant: audit must not corrupt the live baseline ---
+	for _, f := range []string{"fileindex.current", "fileindex.previous", "dircache.json"} {
+		if _, err := os.Stat(filepath.Join(stateDir, f)); err == nil {
+			t.Errorf("full-scan account scan must not write live state file %s", f)
+		}
+	}
+
+	// --- Default scan: CheckFileIndex must NOT run (ForceFileIndex=false) ---
+	// We wipe state dir between runs to ensure no leftover baseline influences.
+	defaultFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", DefaultAccountScanOptions(cfg))
+
+	for _, f := range defaultFindings {
+		if f.Check == "new_php_in_sensitive_dir" || f.Check == "new_php_in_sensitive_dir_clean" {
+			t.Errorf("default scan must not run CheckFileIndex, but got finding %+v", f)
+		}
+	}
+}

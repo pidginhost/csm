@@ -141,6 +141,16 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 		namedCheck{"backdoor_binaries", makeAccountBackdoorCheck(account)},
 	)
 
+	// File-index audit: only included for full scans (ForceFileIndex=true).
+	// In default scans CheckFileIndex writes live state (fileindex.current,
+	// fileindex.previous, dircache.json) that the host-wide incremental
+	// baseline relies on. Adding it unconditionally would corrupt that state
+	// once per triggered account scan. The audit branch (ForceFileIndex=true)
+	// is read-only and account-scoped so it is safe to include here.
+	if opts.ForceFileIndex {
+		accountChecks = append(accountChecks, namedCheck{"file_index", CheckFileIndex})
+	}
+
 	// Run with bounded parallelism - filesystem checks all walk the same
 	// directory tree, so too many concurrent checks starve each other on
 	// loaded servers with slow I/O.
