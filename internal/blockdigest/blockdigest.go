@@ -141,6 +141,10 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 		c.records = append(c.records[1:], rec)
 	}
 	c.mu.Unlock()
+
+	if c.opts.Live {
+		c.maybeLive(rec)
+	}
 }
 
 // Drain pulls the current window into a Digest (deduped by IP, customer first)
@@ -186,4 +190,72 @@ func reasonKey(reason string) string {
 		return strings.TrimSpace(reason[:i])
 	}
 	return strings.TrimSpace(reason)
+}
+
+// maybeLive fires an immediate single-record alert for a qualifying block.
+// It honors send_on (customer mode only alerts on customer-risk blocks) and
+// dedups per IP within one Interval so a re-blocked IP cannot spam.
+func (c *Collector) maybeLive(rec Record) {
+	if c.opts.SendOn == "customer" && rec.Bucket != BucketCustomer {
+		return
+	}
+	now := c.opts.Now()
+	c.mu.Lock()
+	if last, ok := c.lastLive[rec.IP]; ok && now.Sub(last) < c.opts.Interval {
+		c.mu.Unlock()
+		return
+	}
+	c.lastLive[rec.IP] = now
+	c.mu.Unlock()
+
+	d := Digest{
+		Window: c.opts.Interval, Countries: c.opts.Countries,
+		Total: 1, ByCountry: map[string]int{rec.Country: 1},
+		ByReason: map[string]int{reasonKey(rec.Reason): 1},
+		Records:  []Record{rec},
+	}
+	if rec.Bucket == BucketCustomer {
+		d.CustomerCount = 1
+	} else {
+		d.AttackerCount = 1
+	}
+	c.dispatch("block_live", d)
+}
+
+// tick drains the window and sends a digest when gating allows.
+func (c *Collector) tick() {
+	d := c.Drain()
+	if !c.shouldSend(d) {
+		return
+	}
+	c.dispatch("block_digest", d)
+}
+
+// Flush sends one final digest regardless of cadence (shutdown path).
+func (c *Collector) Flush() { c.tick() }
+
+// Run loops draining on each tick and drains a final digest on stop.
+func (c *Collector) Run(stop <-chan struct{}, tick <-chan time.Time) {
+	for {
+		select {
+		case <-stop:
+			c.Flush()
+			return
+		case <-tick:
+			c.tick()
+		}
+	}
+}
+
+// dispatch delivers a digest through whichever sinks are configured. Sink
+// errors are swallowed deliberately: alert delivery is best-effort and must
+// never block the collector or the auto-block path. A sink that needs to
+// surface failures logs inside its own closure on the daemon side.
+func (c *Collector) dispatch(event string, d Digest) {
+	if c.opts.EmailSink != nil {
+		_ = c.opts.EmailSink(c.renderSubject(d), c.renderBody(d))
+	}
+	if c.opts.WebhookSink != nil {
+		_ = c.opts.WebhookSink(c.buildPayload(event, d))
+	}
 }
