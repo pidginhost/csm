@@ -100,6 +100,10 @@ func parseScanFlags(args []string) (scanFlags, error) {
 		return scanFlags{}, errors.New("--quarantine requires --full")
 	}
 
+	if f.wait && !f.full {
+		return scanFlags{}, errors.New("--wait requires --full")
+	}
+
 	isQuery := f.statusGiven || f.reportID != "" || f.cancelID != ""
 
 	if isQuery && f.account != "" {
@@ -153,6 +157,15 @@ func printScanUsage() {
 // runScanFull handles `csm scan <user> --full [--wait]`.
 // Always routes through the daemon; there is no in-process fallback.
 func runScanFull(f scanFlags) {
+	runScanFullWith(f, sendControl)
+}
+
+// sendFn is the type of the send function injected for testing.
+type sendFn func(cmd string, args any) (json.RawMessage, error)
+
+// runScanFullWith is the testable core of runScanFull.
+// It accepts an injected sender so tests can drive it against a fake daemon.
+func runScanFullWith(f scanFlags, send sendFn) {
 	req := control.ScanEnqueueRequest{
 		Scope:          "account",
 		Target:         f.account,
@@ -160,7 +173,7 @@ func runScanFull(f scanFlags) {
 		Quarantine:     f.quarantine,
 	}
 
-	raw, err := sendControl(control.CmdScanEnqueue, req)
+	raw, err := send(control.CmdScanEnqueue, req)
 	if err != nil {
 		if errors.Is(err, errDaemonNotRunning) {
 			fmt.Fprintln(os.Stderr, "csm: daemon not running (start with: systemctl start csm)")
@@ -187,11 +200,12 @@ func runScanFull(f scanFlags) {
 	}
 
 	// --wait: poll until terminal, then print the report.
+	// Check immediately first (fast scans complete before the first interval),
+	// then sleep between subsequent polls.
 	jobID := enqResp.JobID
 	const pollInterval = 2 * time.Second
 	for {
-		time.Sleep(pollInterval)
-		statusRaw, err := sendControl(control.CmdScanStatus, control.ScanStatusRequest{JobID: jobID})
+		statusRaw, err := send(control.CmdScanStatus, control.ScanStatusRequest{JobID: jobID})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "csm: poll status: %v\n", err)
 			os.Exit(1)
@@ -207,10 +221,11 @@ func runScanFull(f scanFlags) {
 		}
 		switch statusResp.Job.State {
 		case "done", "canceled", "error":
-			printScanReport(jobID, f.jsonOutput)
+			printScanReportWith(jobID, f.jsonOutput, send)
 			return
 		}
-		// queued or running -- keep polling
+		// queued or running -- sleep then poll again
+		time.Sleep(pollInterval)
 	}
 }
 
@@ -268,8 +283,21 @@ func runScanCancel(f scanFlags) {
 
 // printScanReport fetches and prints the full report for jobID.
 func printScanReport(jobID string, asJSON bool) {
+	printScanReportWith(jobID, asJSON, sendControl)
+}
+
+// printScanReportWith is the testable core of printScanReport.
+func printScanReportWith(jobID string, asJSON bool, send sendFn) {
 	req := control.ScanReportRequest{JobID: jobID}
-	raw := requireDaemon(control.CmdScanReport, req)
+	raw, err := send(control.CmdScanReport, req)
+	if err != nil {
+		if errors.Is(err, errDaemonNotRunning) {
+			fmt.Fprintln(os.Stderr, "csm: daemon not running (start with: systemctl start csm)")
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
 
 	if asJSON {
 		printJSON(raw)

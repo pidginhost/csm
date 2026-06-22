@@ -3,9 +3,14 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- parseScanFlags unit tests ---
@@ -157,6 +162,13 @@ func TestScanFlagParseUnknownFlag(t *testing.T) {
 	}
 }
 
+func TestScanFlagParseRejectsWaitWithoutFull(t *testing.T) {
+	_, err := parseScanFlags([]string{"someuser", "--wait"})
+	if err == nil {
+		t.Error("expected error: --wait requires --full")
+	}
+}
+
 // --- socket-backed dispatch tests ---
 
 // TestScanEnqueueSendsCorrectCommand verifies that runScanFull sends
@@ -235,5 +247,178 @@ func TestScanEnqueueDaemonUnreachableReturnsError(t *testing.T) {
 	})
 	if !errors.Is(err, errDaemonNotRunning) {
 		t.Errorf("expected errDaemonNotRunning, got %v", err)
+	}
+}
+
+// captureStdout replaces os.Stdout with a pipe for the duration of fn,
+// returning everything written to it as a string.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	fn()
+	_ = w.Close()
+	os.Stdout = orig
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out)
+}
+
+// TestRunScanFullWithPollLoop exercises runScanFullWith against an injected
+// sender that mimics the daemon returning "running" on the first status
+// poll then "done" on the second, followed by a report with one finding.
+// It asserts:
+//   - command sequence: CmdScanEnqueue -> CmdScanStatus (x2) -> CmdScanReport
+//   - the enqueue request carries Scope="account", Target=<acct>,
+//     RespectIgnores=true, Quarantine=false
+//   - the printed output contains the finding message
+func TestRunScanFullWithPollLoop(t *testing.T) {
+	const jobID = "job-poll-1"
+	const account = "testacct"
+
+	// Track the sequence of commands the injected sender receives.
+	var cmdSeq []string
+	var capturedEnqReq control.ScanEnqueueRequest
+
+	statusCallCount := 0
+	testFinding := alert.Finding{
+		Severity: alert.Warning,
+		Check:    "test_check",
+		Message:  "unique-finding-sentinel-xyz",
+	}
+
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		cmdSeq = append(cmdSeq, cmd)
+		switch cmd {
+		case control.CmdScanEnqueue:
+			// Unmarshal through JSON to capture the request as sent.
+			raw, _ := json.Marshal(args)
+			if err := json.Unmarshal(raw, &capturedEnqReq); err != nil {
+				t.Errorf("unmarshal enqueue args: %v", err)
+			}
+			resp, _ := json.Marshal(control.ScanEnqueueResponse{JobID: jobID, State: "queued"})
+			return resp, nil
+
+		case control.CmdScanStatus:
+			statusCallCount++
+			var state string
+			if statusCallCount == 1 {
+				state = "running"
+			} else {
+				state = "done"
+			}
+			job := store.ScanJobRecord{ID: jobID, Scope: "account", Target: account, State: state}
+			resp, _ := json.Marshal(control.ScanStatusResponse{Job: &job})
+			return resp, nil
+
+		case control.CmdScanReport:
+			job := store.ScanJobRecord{ID: jobID, Scope: "account", Target: account, State: "done", FindingCount: 1}
+			resp, _ := json.Marshal(control.ScanReportResponse{
+				Job:      job,
+				Findings: []alert.Finding{testFinding},
+				Total:    1,
+			})
+			return resp, nil
+
+		default:
+			t.Errorf("unexpected command: %s", cmd)
+			return nil, errors.New("unexpected cmd")
+		}
+	}
+
+	f := scanFlags{
+		account:        account,
+		full:           true,
+		wait:           true,
+		respectIgnores: true,
+		quarantine:     false,
+	}
+
+	out := captureStdout(t, func() {
+		runScanFullWith(f, sender)
+	})
+
+	// Assert command sequence.
+	wantSeq := []string{
+		control.CmdScanEnqueue,
+		control.CmdScanStatus,
+		control.CmdScanStatus,
+		control.CmdScanReport,
+	}
+	if len(cmdSeq) != len(wantSeq) {
+		t.Errorf("command sequence = %v, want %v", cmdSeq, wantSeq)
+	} else {
+		for i, want := range wantSeq {
+			if cmdSeq[i] != want {
+				t.Errorf("cmdSeq[%d] = %q, want %q", i, cmdSeq[i], want)
+			}
+		}
+	}
+
+	// Assert enqueue request fields.
+	if capturedEnqReq.Scope != "account" {
+		t.Errorf("enqueue Scope = %q, want account", capturedEnqReq.Scope)
+	}
+	if capturedEnqReq.Target != account {
+		t.Errorf("enqueue Target = %q, want %s", capturedEnqReq.Target, account)
+	}
+	if !capturedEnqReq.RespectIgnores {
+		t.Error("enqueue RespectIgnores = false, want true")
+	}
+	if capturedEnqReq.Quarantine {
+		t.Error("enqueue Quarantine = true, want false")
+	}
+
+	// Assert finding appears in output.
+	if !strings.Contains(out, testFinding.Message) {
+		t.Errorf("output %q does not contain finding message %q", out, testFinding.Message)
+	}
+
+	// Assert status was polled more than once (running then done).
+	if statusCallCount < 2 {
+		t.Errorf("statusCallCount = %d, want >= 2 (poll ran until terminal)", statusCallCount)
+	}
+}
+
+// TestRunScanFullWithPollLoopNoRespectIgnores verifies that when
+// --respect-ignores is not set, the enqueue request carries RespectIgnores=false.
+func TestRunScanFullWithPollLoopNoRespectIgnores(t *testing.T) {
+	const jobID = "job-poll-2"
+	var capturedEnqReq control.ScanEnqueueRequest
+
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		raw, _ := json.Marshal(args)
+		switch cmd {
+		case control.CmdScanEnqueue:
+			_ = json.Unmarshal(raw, &capturedEnqReq)
+			resp, _ := json.Marshal(control.ScanEnqueueResponse{JobID: jobID, State: "queued"})
+			return resp, nil
+		default:
+			// No --wait: only enqueue is called.
+			t.Errorf("unexpected command after enqueue (no --wait): %s", cmd)
+			return nil, errors.New("unexpected cmd")
+		}
+	}
+
+	f := scanFlags{
+		account:        "acct2",
+		full:           true,
+		wait:           false,
+		respectIgnores: false,
+		quarantine:     false,
+	}
+
+	captureStdout(t, func() {
+		runScanFullWith(f, sender)
+	})
+
+	if capturedEnqReq.RespectIgnores {
+		t.Error("enqueue RespectIgnores = true, want false when --respect-ignores not given")
 	}
 }
