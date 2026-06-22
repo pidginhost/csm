@@ -145,17 +145,17 @@ func (db *DB) ListScanJobFindings(id string, offset, limit int) ([]alert.Finding
 			return fmt.Errorf("bucket %q missing", scanJobFindingsBucket)
 		}
 		c := b.Cursor()
-		idx := 0
+		pos := 0
 		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
 			total++
-			if idx >= offset && (limit == 0 || len(findings) < limit) {
+			if pos >= offset && (limit == 0 || len(findings) < limit) {
 				var f alert.Finding
 				if err := json.Unmarshal(v, &f); err != nil {
 					return err
 				}
 				findings = append(findings, f)
 			}
-			idx++
+			pos++
 		}
 		return nil
 	})
@@ -169,18 +169,11 @@ func (db *DB) ListScanJobFindings(id string, offset, limit int) ([]alert.Finding
 // all their finding rows. Returns the number of jobs pruned.
 // Jobs are ranked by Created descending; ID is the tiebreaker so the ordering
 // is deterministic when two jobs share the same timestamp.
+// The entire operation (read + sort + delete) runs inside a single bolt.Update
+// so no concurrent insert can make the pruning decision stale.
 func (db *DB) PruneScanJobs(keep int) (int, error) {
-	// Collect all job records in newest-first order.
-	jobs, err := db.ListScanJobs()
-	if err != nil {
-		return 0, err
-	}
-	if len(jobs) <= keep {
-		return 0, nil
-	}
-	toDelete := jobs[keep:] // oldest entries are at the tail
 	pruned := 0
-	err = db.bolt.Update(func(tx *bolt.Tx) error {
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		jb := tx.Bucket([]byte(scanJobsBucket))
 		if jb == nil {
 			return fmt.Errorf("bucket %q missing", scanJobsBucket)
@@ -189,12 +182,41 @@ func (db *DB) PruneScanJobs(keep int) (int, error) {
 		if fb == nil {
 			return fmt.Errorf("bucket %q missing", scanJobFindingsBucket)
 		}
+
+		// Collect all job records from the bucket (reads are allowed inside Update).
+		var jobs []ScanJobRecord
+		if err := jb.ForEach(func(_, v []byte) error {
+			var rec ScanJobRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return err
+			}
+			jobs = append(jobs, rec)
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		if len(jobs) <= keep {
+			return nil
+		}
+
+		// Sort newest-first: same ordering as ListScanJobs.
+		sort.Slice(jobs, func(i, j int) bool {
+			ci, cj := jobs[i].Created, jobs[j].Created
+			if ci.Equal(cj) {
+				return jobs[i].ID > jobs[j].ID
+			}
+			return ci.After(cj)
+		})
+
+		toDelete := jobs[keep:] // oldest entries are at the tail
 		var delErr error
 		for _, rec := range toDelete {
 			if delErr = jb.Delete([]byte(rec.ID)); delErr != nil {
 				return delErr
 			}
-			// Prefix-delete all findings for this job.
+			// Prefix-sweep all finding rows for this job.
+			// Collect keys first (cursor cannot be mutated during iteration).
 			prefix := findingPrefix(rec.ID)
 			c := fb.Cursor()
 			var stale [][]byte
