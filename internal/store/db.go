@@ -45,6 +45,7 @@ var bucketNames = []string{
 	prefsBucket,
 	"scan_jobs",
 	"scan_job_findings",
+	scanCursorBucket,
 }
 
 // DB wraps a bbolt database.
