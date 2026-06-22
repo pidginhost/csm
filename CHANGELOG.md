@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-06-22
+
 ### Added
 
 - Added an optional per-country block digest: when CSM auto-blocks IPs it reports those from your customers' countries (split likely-customer vs attacker) on a schedule or as live alerts, so a false positive no longer silently cuts off visitors. Off by default; configure under alerts or in Settings.
