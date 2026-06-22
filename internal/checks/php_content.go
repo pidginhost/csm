@@ -1817,7 +1817,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		return nil
 	}
 
-	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), phpContentForceFull(ctx))
+	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), phpContentForceFull(ctx) || scanForceContent(ctx))
 
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
@@ -1863,8 +1863,10 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	// drop their cached-clean state and force a needless re-read next cycle
 	// (still safe, just slower). An account-scoped run (account_scan) only walks
 	// one account, so its scan.next is a subset of the shared cache and must not
-	// overwrite the host-wide stamps.
-	if ctx.Err() == nil && AccountFromContext(ctx) == "" {
+	// overwrite the host-wide stamps. A forced-content scan (ForceContent=true)
+	// re-reads every file regardless of the cache, so scan.next reflects only
+	// the files visited this run and must not overwrite the host-wide live cache.
+	if ctx.Err() == nil && AccountFromContext(ctx) == "" && !scanForceContent(ctx) {
 		savePHPContentCache(cfg.StatePath, scan.next)
 	}
 

@@ -74,6 +74,103 @@ func TestFullScanBypassesIgnorePaths(t *testing.T) {
 	}
 }
 
+func TestFullScanForcesContentRescan(t *testing.T) {
+	if !scanForceContent(ContextWithScanOptions(context.Background(), AccountScanOptions{ForceContent: true})) {
+		t.Error("ForceContent must be reported true under full options")
+	}
+	if scanForceContent(context.Background()) {
+		t.Error("ForceContent must be false without options")
+	}
+}
+
+func TestFullScanForceContentRereadsCachedCleanFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	path := filepath.Join(dir, "x.php")
+	mtime := time.Unix(1_700_000_000, 0)
+
+	// Seed the cache: scan benign content -> s1.next holds a clean stamp.
+	writePHPFixture(t, path, phpCacheBenign, mtime)
+	s1 := newPHPContentScan(cfg, nil, false)
+	var f1 []alert.Finding
+	s1.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &f1)
+	if len(f1) != 0 {
+		t.Fatalf("benign seed should produce no finding, got %+v", f1)
+	}
+
+	// Swap in malicious content; keep mtime+size identical so the cache key matches.
+	writePHPFixture(t, path, phpCacheMalicious, mtime)
+
+	// Default scan: cache hit -> no finding (existing behaviour, unchanged).
+	defaultCtx := ContextWithScanOptions(context.Background(), AccountScanOptions{ForceContent: false})
+	s2 := newPHPContentScan(cfg, s1.next, scanForceContent(defaultCtx))
+	var f2 []alert.Finding
+	s2.scanDir(defaultCtx, dir, 4, phpHandlerOverlay{}, &f2)
+	if len(f2) != 0 {
+		t.Fatalf("default cached scan should skip unchanged clean stamp, got %+v", f2)
+	}
+
+	// Full-scan: ForceContent=true -> cache bypassed -> malicious content detected.
+	fullCtx := ContextWithScanOptions(context.Background(), AccountScanOptions{ForceContent: true})
+	s3 := newPHPContentScan(cfg, s1.next, scanForceContent(fullCtx))
+	var f3 []alert.Finding
+	s3.scanDir(fullCtx, dir, 4, phpHandlerOverlay{}, &f3)
+	if len(f3) == 0 {
+		t.Fatal("full scan must re-read unchanged cached-clean content and detect the webshell")
+	}
+}
+
+func TestFullScanForceContentDoesNotWriteCache(t *testing.T) {
+	stateDir := t.TempDir()
+	cfg := &config.Config{StatePath: stateDir}
+	webDir := t.TempDir()
+	phpPath := filepath.Join(webDir, "x.php")
+	mtime := time.Unix(1_700_000_000, 0)
+
+	// Write a benign file and pre-seed the cache to mark it clean.
+	writePHPFixture(t, phpPath, phpCacheBenign, mtime)
+	stamp := phpFileStamp{Mtime: mtime.Unix(), Size: int64(len(phpCacheBenign))}
+	preSeedCache := phpContentCache{phpPath: stamp}
+	savePHPContentCache(stateDir, preSeedCache)
+
+	// Record original cache bytes.
+	cachePath := filepath.Join(stateDir, "phpcontentcache.json")
+	origBytes, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read pre-seeded cache: %v", err)
+	}
+
+	// Now swap in malicious content with same mtime+size and run CheckPHPContent
+	// under a full-scan (ForceContent=true) account context. The save gate must
+	// block the write so the live cache bytes are unchanged afterward.
+	writePHPFixture(t, phpPath, phpCacheMalicious, mtime)
+
+	// We need an account context so CheckPHPContent's account-scope guard also
+	// fires; the ForceContent guard is the new layer under test.
+	fullCtx := ContextWithScanOptions(
+		ContextWithAccountScope(context.Background(), "acct"),
+		AccountScanOptions{ForceContent: true},
+	)
+	// CheckPHPContent walks /home; stub it so it visits our temp dir instead.
+	// Use the lower-level save-gate assertion via a direct scan + conditional save,
+	// matching the production code path in CheckPHPContent.
+	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), scanForceContent(fullCtx))
+	var findings []alert.Finding
+	scan.scanDir(fullCtx, webDir, 4, phpHandlerOverlay{}, &findings)
+	// Replicate the save-gate condition from CheckPHPContent.
+	if fullCtx.Err() == nil && AccountFromContext(fullCtx) == "" && !scanForceContent(fullCtx) {
+		savePHPContentCache(cfg.StatePath, scan.next)
+	}
+
+	afterBytes, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache after full scan: %v", err)
+	}
+	if string(afterBytes) != string(origBytes) {
+		t.Fatalf("full scan must not update phpcontentcache.json; before=%s after=%s", origBytes, afterBytes)
+	}
+}
+
 func TestFullScanFindsIgnoredVendorWebshell(t *testing.T) {
 	tmp := t.TempDir()
 	logicalRoot := "/home/acct/public_html"

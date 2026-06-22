@@ -6,6 +6,15 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+// scanForceContent reports whether the current scan should bypass the
+// clean-file content cache (phpcontentcache.json). True only when ctx carries
+// AccountScanOptions with ForceContent=true, i.e. an explicit full-scan audit.
+// Normal scheduled scans and any context without options return false.
+func scanForceContent(ctx context.Context) bool {
+	opts, ok := ScanOptionsFromContext(ctx)
+	return ok && opts.ForceContent
+}
+
 // scanRespectsIgnores reports whether the current scan should honour
 // cfg.Suppressions.IgnorePaths. When ctx carries AccountScanOptions with
 // RespectIgnores=false (i.e. an explicit full-scan / audit request), the caller
