@@ -1955,6 +1955,23 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 			}
 		}
 
+		// Full-scan file-size guard: when the caller sets a per-file byte cap
+		// (MaxFileBytes > 0), skip content analysis for oversized files and
+		// record a job-scoped warning instead. The warning is persisted in
+		// scan_job_findings by the scan-job manager and never dispatched to the
+		// live alert pipeline. Normal scheduled scans set MaxFileBytes=0 and
+		// reach this block unchanged.
+		if limit := scanMaxFileBytes(ctx); limit > 0 && info != nil && info.Size() > limit {
+			*findings = append(*findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "full_scan_file_too_large",
+				Message:  fmt.Sprintf("Full scan skipped oversized file: %s", fullPath),
+				Details:  fmt.Sprintf("Size: %d, Limit: %d", info.Size(), limit),
+				FilePath: fullPath,
+			})
+			continue
+		}
+
 		// Every .php file is content-analysed. No filename/path allowlist:
 		// clean files produce no finding, so there is no benefit to skipping
 		// them, and any skip is a place an attacker can hide a backdoor.

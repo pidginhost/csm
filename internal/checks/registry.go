@@ -288,6 +288,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "af_alg_socket_use", Category: CategorySystem},
 	{Name: "account_scan_truncated", Category: CategorySystem},
 	{Name: "bpf_unavailable", Category: CategorySystem},
+	{Name: "full_scan_file_too_large", Category: CategorySystem},
 	{Name: "crond_change", Category: CategorySystem},
 	{Name: "crontab_change", Category: CategorySystem},
 	{Name: "dpkg_integrity", Category: CategorySystem},

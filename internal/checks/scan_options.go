@@ -37,6 +37,18 @@ func scanRespectsIgnores(ctx context.Context, _ *config.Config) bool {
 	return true
 }
 
+// scanMaxFileBytes returns the per-file byte limit for a full-scan context.
+// When ctx carries AccountScanOptions, the options MaxFileBytes value is
+// returned so an oversized file can be skipped with a warning. Returns 0 for
+// all other contexts so normal scheduled scans are completely unaffected.
+func scanMaxFileBytes(ctx context.Context) int64 {
+	opts, ok := ScanOptionsFromContext(ctx)
+	if !ok {
+		return 0
+	}
+	return opts.MaxFileBytes
+}
+
 // accountScanMaxFiles returns the effective file cap for the current scan. When
 // ctx carries AccountScanOptions (i.e. the caller is RunAccountScanWithOptions),
 // the options MaxFiles value wins so a full scan (MaxFiles=0) is uncapped.

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -23,6 +24,12 @@ func TestDefaultAccountScanOptionsMatchesCurrentBehavior(t *testing.T) {
 	}
 	if !opts.RespectIgnores {
 		t.Error("RespectIgnores must default true")
+	}
+	if opts.MaxFileBytes != 0 {
+		t.Errorf("MaxFileBytes must default 0 (use per-check limits), got %d", opts.MaxFileBytes)
+	}
+	if got := scanMaxFileBytes(context.Background()); got != 0 {
+		t.Errorf("scanMaxFileBytes(Background()) = %d, want 0", got)
 	}
 }
 
@@ -201,5 +208,24 @@ func TestFullScanFindsIgnoredVendorWebshell(t *testing.T) {
 	scanForWebshells(fullCtx, logicalRoot, 4, names, nil, cfg, &fullFindings)
 	if !hasFindingPath(fullFindings, "webshell", logicalShell) {
 		t.Fatalf("full scan should bypass ignore_paths: %+v", fullFindings)
+	}
+}
+
+func TestFullScanOversizedPHPEmitsJobWarning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.php")
+	body := append([]byte("<?php "), bytes.Repeat([]byte("A"), 64)...)
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := ContextWithScanOptions(context.Background(), AccountScanOptions{
+		ForceContent: true,
+		MaxFileBytes: 8,
+	})
+	var findings []alert.Finding
+	newPHPContentScan(&config.Config{}, nil, true).scanDir(ctx, dir, 1, phpHandlerOverlay{}, &findings)
+	if !hasFindingPath(findings, "full_scan_file_too_large", path) {
+		t.Fatalf("oversized full-scan PHP file did not produce warning: %+v", findings)
 	}
 }
