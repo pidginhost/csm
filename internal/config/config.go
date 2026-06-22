@@ -335,6 +335,11 @@ type Config struct {
 		// ScanJobRetention is how many completed full-scan job records the
 		// job manager keeps before evicting the oldest. Default 20.
 		ScanJobRetention int `yaml:"scan_job_retention"`
+		// RollingCoverage enables Phase 3 rolling content-scan coverage: each
+		// periodic cycle also sweeps a bounded path-sorted slice of files past
+		// the mtime cap so dormant files are eventually content-scanned.
+		// Default true; set false to restore pure top-N-by-mtime behavior.
+		RollingCoverage bool `yaml:"rolling_coverage"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -1257,10 +1262,11 @@ func (c *Config) BotRangesAutoUpdate() bool {
 }
 
 type defaultPresence struct {
-	smtpProbeThreshold  bool
-	forwardGuard        forwardGuardPresence
-	phpRelay            phpRelayPresence
-	blockDigestMinBlock bool
+	smtpProbeThreshold        bool
+	forwardGuard              forwardGuardPresence
+	phpRelay                  phpRelayPresence
+	blockDigestMinBlock       bool
+	thresholdsRollingCoverage bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1673,6 +1679,11 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.ScanJobRetention == 0 {
 		cfg.Thresholds.ScanJobRetention = 20
 	}
+	// A literal rolling_coverage: false means "disable rolling coverage" and
+	// must survive; only an absent key falls back to the safe default of true.
+	if !presence.thresholdsRollingCoverage {
+		cfg.Thresholds.RollingCoverage = true
+	}
 
 	if cfg.Reputation.Rspamd.URL == "" {
 		cfg.Reputation.Rspamd.URL = "http://127.0.0.1:11334"
@@ -1790,6 +1801,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		return presence, err
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
+	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true

@@ -1636,4 +1636,70 @@ func TestFullScanDefaults(t *testing.T) {
 	if cfg.Thresholds.ScanJobRetention != 20 {
 		t.Errorf("ScanJobRetention = %d, want 20", cfg.Thresholds.ScanJobRetention)
 	}
+	// rolling_coverage defaults on when the key is absent.
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("RollingCoverage = false, want true (absent key must default to true)")
+	}
+}
+
+// TestRollingCoverageAbsent verifies the key defaults to true when omitted.
+func TestRollingCoverageAbsent(t *testing.T) {
+	cfg, err := LoadBytes([]byte("auto_response:\n  enabled: true\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("RollingCoverage = false, want true (absent key must default to true)")
+	}
+}
+
+// TestRollingCoverageExplicitFalse is load-bearing: an operator's explicit
+// rolling_coverage: false must survive — presence tracking must prevent the
+// default-true from overwriting it.
+func TestRollingCoverageExplicitFalse(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  rolling_coverage: false\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.RollingCoverage {
+		t.Error("RollingCoverage = true, want false (explicit false must survive presence gate)")
+	}
+}
+
+// TestRollingCoverageExplicitTrue verifies an explicit true also round-trips.
+func TestRollingCoverageExplicitTrue(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  rolling_coverage: true\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("RollingCoverage = false, want true (explicit true must be kept)")
+	}
+}
+
+// TestPackagedDefaultRollingCoverage is the drift test: the packaged default
+// must ship rolling_coverage: true so all three default sources are aligned.
+func TestPackagedDefaultRollingCoverage(t *testing.T) {
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Skipf("packaged default config not readable from this layout: %v", err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("packaged default thresholds.rolling_coverage must be true")
+	}
+	// Verify it is explicitly present (not just defaulted), so the three
+	// default-config sources cannot drift silently.
+	var raw struct {
+		Thresholds map[string]yaml.Node `yaml:"thresholds"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if _, ok := raw.Thresholds["rolling_coverage"]; !ok {
+		t.Error("packaged default must explicitly set thresholds.rolling_coverage (key absent — three-source drift)")
+	}
 }

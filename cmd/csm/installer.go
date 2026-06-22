@@ -303,6 +303,8 @@ thresholds:
   full_scan_max_file_mb: 16
   # Number of completed full-scan job records kept by the job manager before eviction.
   scan_job_retention: 20
+  # Rolling coverage sweeps path-sorted dormant files each cycle so they are eventually content-scanned.
+  rolling_coverage: true
 
 infra_ips:
   # Add your infrastructure IPs, CIDRs, or hostnames here.
