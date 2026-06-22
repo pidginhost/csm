@@ -258,3 +258,15 @@ func TestOpen_PHPRelayBuckets(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenCreatesMailGoodSourceBucket(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if !db.HasBucket(mailGoodSourceBucket) {
+		t.Fatalf("missing bucket %q", mailGoodSourceBucket)
+	}
+}

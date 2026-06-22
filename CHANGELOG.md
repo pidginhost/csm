@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - IP reputation no longer auto-blocks an address that is actively and successfully logging in to mail, so a customer on an ISP-recycled IP that turns up in a public threat feed is not locked out of webmail; unauthenticated threat IPs are still blocked.
 - Mail brute-force no longer auto-blocks an established good source that fails a confined set of mailboxes (typically a stale saved password on one device); it is reported in alerts and the email workbench instead, while password spraying and confirmed account compromise still block.
+- Mail brute-force good-source standing now persists across daemon restarts and loads before mail logs resume, so a restart or upgrade no longer briefly re-blocks established customers while their standing rebuilds.
 - Email alerts now use a bounded SMTP send with a hard timeout, so a stuck or slow mail server can no longer hang alert delivery or hold up daemon shutdown.
 - FTP login alerts no longer page on loopback (cPanel's own internal transfers) or on ordinary customer logins; routine logins are now recorded at audit level instead of high severity.
 - FTP success-after-brute alerts now use only failures still inside the configured window, ignore loopback variants, and do not trigger incident-level auto-blocks by themselves.

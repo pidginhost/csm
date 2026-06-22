@@ -25,6 +25,7 @@ var bucketNames = []string{
 	"fw:subnets",
 	"fw:port_allowed",
 	"reputation",
+	mailGoodSourceBucket,
 	"plugins",
 	"plugins:sites",
 	"meta",

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // staticClock already exists in smtpbrute_test.go — reuse it (same package).
@@ -1140,6 +1141,160 @@ func TestMailAuthTracker_EstablishedFlakyOwnMailboxAdvisory(t *testing.T) {
 	}
 	if !suspected {
 		t.Fatalf("flaky failures on an established own mailbox should surface mail_bruteforce_suspected")
+	}
+}
+
+// After a daemon restart the in-memory good-source state is gone; loading the
+// persisted snapshot must restore established standing immediately, so a
+// customer's stale-password profile is treated as an advisory from the first
+// failure burst instead of cold-start auto-blocking until standing rebuilds.
+func TestMailAuthTracker_ImportedGoodSourceSurvivesRestart(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	now := clock.Now()
+	snap := goodSourceSnapshot{
+		"198.51.100.50": {"office@example.ro": {First: now.Add(-2 * time.Hour), Last: now.Add(-1 * time.Minute)}},
+	}
+	tr.LoadGoodSource(snap, now)
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record("198.51.100.50", "office@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(20 * time.Second)
+	}
+	if block {
+		t.Fatalf("imported established good source must not cold-start block after restart")
+	}
+	if !suspected {
+		t.Fatalf("imported established source failing should surface mail_bruteforce_suspected")
+	}
+}
+
+func TestDaemonLoadMailGoodSourceSeedsFirstFailureBurst(t *testing.T) {
+	prev := store.Global()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		store.SetGlobal(prev)
+		_ = db.Close()
+	})
+
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	now := clock.Now()
+	ip := "198.51.100.54"
+	acct := "office@example.ro"
+	if err := db.SaveMailGoodSource(map[string]map[string]store.GoodSourcePair{
+		ip: {acct: {First: now.Add(-2 * time.Hour), Last: now.Add(-1 * time.Minute)}},
+	}); err != nil {
+		t.Fatalf("SaveMailGoodSource: %v", err)
+	}
+
+	d := &Daemon{mailAuthTracker: newTestMailTracker(t, clock)}
+	d.loadMailGoodSource()
+
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range d.mailAuthTracker.Record(ip, acct) {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(20 * time.Second)
+	}
+	if block {
+		t.Fatalf("loaded persisted good source must not block the first failure burst")
+	}
+	if !suspected {
+		t.Fatalf("loaded persisted good source should emit suspected advisory")
+	}
+}
+
+func TestMailAuthTracker_ExportImportGoodSourceRoundTrip(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	establishGoodSource(tr, clock, "198.51.100.51", "a@example.ro")
+	snap := tr.ExportGoodSource()
+	got, ok := snap["198.51.100.51"]["a@example.ro"]
+	if !ok {
+		t.Fatalf("export missing established good source")
+	}
+
+	tr2 := newTestMailTracker(t, clock)
+	tr2.LoadGoodSource(snap, clock.Now())
+	out, ok := tr2.ExportGoodSource()["198.51.100.51"]["a@example.ro"]
+	if !ok {
+		t.Fatalf("imported good source missing after round-trip")
+	}
+	if !out.First.Equal(got.First) || !out.Last.Equal(got.Last) {
+		t.Fatalf("round-trip mismatch: got %+v want %+v", out, got)
+	}
+}
+
+func TestMailAuthTracker_LoadGoodSourceDropsStale(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	now := clock.Now()
+	snap := goodSourceSnapshot{
+		"198.51.100.52": {"old@example.ro": {First: now.Add(-30 * time.Hour), Last: now.Add(-25 * time.Hour)}},
+	}
+	tr.LoadGoodSource(snap, now)
+	if len(tr.ExportGoodSource()["198.51.100.52"]) != 0 {
+		t.Fatalf("good source last-seen older than TTL must be dropped on load")
+	}
+}
+
+func TestMailAuthTracker_LoadGoodSourceDropsInvalidTimes(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	now := clock.Now()
+	snap := goodSourceSnapshot{
+		"198.51.100.53": {
+			"zero-first@example.ro": {Last: now.Add(-1 * time.Minute)},
+			"zero-last@example.ro":  {First: now.Add(-2 * time.Hour)},
+			"reversed@example.ro":   {First: now, Last: now.Add(-2 * time.Hour)},
+			"valid@example.ro":      {First: now.Add(-2 * time.Hour), Last: now.Add(-1 * time.Minute)},
+		},
+	}
+	tr.LoadGoodSource(snap, now)
+	got := tr.ExportGoodSource()["198.51.100.53"]
+	if len(got) != 1 {
+		t.Fatalf("loaded good-source records = %d, want 1: %#v", len(got), got)
+	}
+	if _, ok := got["valid@example.ro"]; !ok {
+		t.Fatalf("valid good-source record missing after load: %#v", got)
+	}
+}
+
+func TestMailAuthTracker_LoadGoodSourceKeepsExistingWhenSnapshotNotNewer(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	now := clock.Now()
+	ip := "198.51.100.55"
+	acct := "office@example.ro"
+	first := now.Add(-30 * time.Minute)
+	last := now.Add(-1 * time.Minute)
+	tr.LoadGoodSource(goodSourceSnapshot{
+		ip: {acct: {First: first, Last: last}},
+	}, now)
+	tr.LoadGoodSource(goodSourceSnapshot{
+		ip: {acct: {First: now.Add(-3 * time.Hour), Last: last}},
+	}, now)
+
+	got := tr.ExportGoodSource()[ip][acct]
+	if !got.First.Equal(first) || !got.Last.Equal(last) {
+		t.Fatalf("snapshot with same Last replaced existing record: got %+v", got)
 	}
 }
 

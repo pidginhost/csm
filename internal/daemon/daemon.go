@@ -1597,6 +1597,8 @@ func (d *Daemon) startPHPRelay() {
 }
 
 func (d *Daemon) startLogWatchers() {
+	d.loadMailGoodSource()
+
 	// Session log handler wrapper - feeds events to both the alert handler and hijack detector
 	sessionHandler := func(line string, cfg *config.Config) []alert.Finding {
 		// Feed to hijack detector (tracks password changes + correlates with logins)
@@ -1871,7 +1873,10 @@ func (d *Daemon) startLogWatchers() {
 		}
 	})
 
-	// Start background purge for mail (IMAP/POP3) brute-force tracker
+	// Start background purge for mail (IMAP/POP3) brute-force tracker. It also
+	// persists established good-source standing every minute and on shutdown, so
+	// a daemon restart does not re-open the brute-force false-positive
+	// cold-start window.
 	d.wg.Add(1)
 	obs.Go("mail-tracker-purge", func() {
 		defer d.wg.Done()
@@ -1880,10 +1885,12 @@ func (d *Daemon) startLogWatchers() {
 		for {
 			select {
 			case <-d.stopCh:
+				d.persistMailGoodSource()
 				return
 			case <-ticker.C:
 				if d.mailAuthTracker != nil {
 					d.mailAuthTracker.Purge()
+					d.persistMailGoodSource()
 				}
 			}
 		}

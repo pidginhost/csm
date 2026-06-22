@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // mailIPEntry tracks failed-auth timestamps, successful-login timestamps, the
@@ -187,6 +189,140 @@ func (e *mailIPEntry) isCrackInProgress(account string, now time.Time, window ti
 		}
 	}
 	return false
+}
+
+// goodSourceTimes is the persisted established-sender window for one mailbox:
+// the earliest and most recent successful auth from an IP.
+type goodSourceTimes struct {
+	First time.Time
+	Last  time.Time
+}
+
+// goodSourceSnapshot maps ip -> account -> goodSourceTimes. It is persisted
+// across daemon restarts so established good standing survives a restart and the
+// post-restart cold-start window does not re-open the brute-force false-positive
+// window (a customer's working profile would otherwise have to re-authenticate
+// and re-age past the failure window before its stale-password profile stops
+// being mistaken for an attacker).
+type goodSourceSnapshot map[string]map[string]goodSourceTimes
+
+// ExportGoodSource snapshots the established-sender records for persistence.
+// Only good-source state is exported; short-lived failure/success window state
+// is intentionally not persisted.
+func (t *mailAuthTracker) ExportGoodSource() goodSourceSnapshot {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	snap := make(goodSourceSnapshot)
+	for ip, e := range t.ips {
+		if len(e.goodLast) == 0 {
+			continue
+		}
+		accts := make(map[string]goodSourceTimes, len(e.goodLast))
+		for acct, last := range e.goodLast {
+			accts[acct] = goodSourceTimes{First: e.goodFirst[acct], Last: last}
+		}
+		snap[ip] = accts
+	}
+	return snap
+}
+
+// LoadGoodSource seeds established-sender records from a persisted snapshot,
+// dropping any whose most recent success is already older than the good-source
+// TTL. Intended for one-time startup seeding; a record newer than the snapshot
+// (a success already observed this run) is kept.
+func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cutoff := now.Add(-mailGoodSourceTTL)
+	for ip, accts := range snap {
+		for acct, ts := range accts {
+			if ip == "" || acct == "" || !validGoodSourceTimes(ts, cutoff) {
+				continue
+			}
+			e, ok := t.ips[ip]
+			if !ok {
+				e = &mailIPEntry{}
+				t.ips[ip] = e
+			}
+			if e.goodFirst == nil {
+				e.goodFirst = make(map[string]time.Time)
+				e.goodLast = make(map[string]time.Time)
+			}
+			if cur, ok := e.goodLast[acct]; ok && !cur.Before(ts.Last) {
+				continue
+			}
+			e.goodFirst[acct] = ts.First
+			e.goodLast[acct] = ts.Last
+			if ts.Last.After(e.lastSeen) {
+				e.lastSeen = ts.Last
+			}
+			if len(e.goodLast) > mailGoodSourceMaxAccountsPerIP {
+				e.evictOldestGoodSource()
+			}
+		}
+	}
+	t.enforceMaxTracked()
+}
+
+func validGoodSourceTimes(ts goodSourceTimes, cutoff time.Time) bool {
+	return !ts.First.IsZero() &&
+		!ts.Last.IsZero() &&
+		!ts.First.After(ts.Last) &&
+		!ts.Last.Before(cutoff)
+}
+
+// loadMailGoodSource seeds the tracker before log readers start, so first
+// post-startup auth failures see the persisted standing instead of cold state.
+func (d *Daemon) loadMailGoodSource() {
+	if d.mailAuthTracker == nil {
+		return
+	}
+	if sdb := store.Global(); sdb != nil {
+		snap, err := sdb.LoadMailGoodSource()
+		if err != nil {
+			csmlog.Warn("mail good-source load failed", "err", err)
+			return
+		}
+		d.mailAuthTracker.LoadGoodSource(storeToGoodSourceSnapshot(snap), d.mailAuthTracker.now())
+	}
+}
+
+// persistMailGoodSource writes the tracker's established good-source snapshot to
+// the store so it survives a restart. No-op when the store or tracker is absent.
+func (d *Daemon) persistMailGoodSource() {
+	if d.mailAuthTracker == nil {
+		return
+	}
+	if sdb := store.Global(); sdb != nil {
+		snap := goodSourceSnapshotToStore(d.mailAuthTracker.ExportGoodSource())
+		if err := sdb.SaveMailGoodSource(snap); err != nil {
+			csmlog.Warn("mail good-source persistence failed", "err", err)
+		}
+	}
+}
+
+func storeToGoodSourceSnapshot(in map[string]map[string]store.GoodSourcePair) goodSourceSnapshot {
+	out := make(goodSourceSnapshot, len(in))
+	for ip, accts := range in {
+		m := make(map[string]goodSourceTimes, len(accts))
+		for a, p := range accts {
+			m[a] = goodSourceTimes{First: p.First, Last: p.Last}
+		}
+		out[ip] = m
+	}
+	return out
+}
+
+func goodSourceSnapshotToStore(in goodSourceSnapshot) map[string]map[string]store.GoodSourcePair {
+	out := make(map[string]map[string]store.GoodSourcePair, len(in))
+	for ip, accts := range in {
+		m := make(map[string]store.GoodSourcePair, len(accts))
+		for a, ts := range accts {
+			m[a] = store.GoodSourcePair{First: ts.First, Last: ts.Last}
+		}
+		out[ip] = m
+	}
+	return out
 }
 
 // mailSubnetEntry tracks unique attacker IPs within a /24.
