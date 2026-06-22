@@ -46,6 +46,13 @@ func TestScanOptionsFromContextAbsent(t *testing.T) {
 	if _, ok := ScanOptionsFromContext(context.Background()); ok {
 		t.Error("expected ok=false when no options set")
 	}
+	if _, ok := ScanOptionsFromContext(nilContextForScanOptionsTest()); ok {
+		t.Error("nil context should behave like absent options")
+	}
+}
+
+func nilContextForScanOptionsTest() context.Context {
+	return nil
 }
 
 func TestRunAccountScanWithDefaultOptionsEqualsLegacy(t *testing.T) {
@@ -234,9 +241,16 @@ func TestFullScanMaxFileBytesDefault(t *testing.T) {
 	if got := FullScanMaxFileBytes(&config.Config{}); got != 16*1024*1024 {
 		t.Errorf("FullScanMaxFileBytes default = %d, want 16 MiB", got)
 	}
+	if got := FullScanMaxFileBytes(nil); got != 16*1024*1024 {
+		t.Errorf("FullScanMaxFileBytes nil cfg = %d, want 16 MiB", got)
+	}
 	cfg := &config.Config{}
 	cfg.Thresholds.FullScanMaxFileMB = 32
 	if got := FullScanMaxFileBytes(cfg); got != 32*1024*1024 {
 		t.Errorf("FullScanMaxFileBytes override = %d, want 32 MiB", got)
+	}
+	cfg.Thresholds.FullScanMaxFileMB = fullScanMaxFileMBMax + 1
+	if got := FullScanMaxFileBytes(cfg); got != fullScanMaxFileMBDefault*1024*1024 {
+		t.Errorf("FullScanMaxFileBytes over max = %d, want default", got)
 	}
 }

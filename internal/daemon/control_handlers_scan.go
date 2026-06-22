@@ -32,6 +32,9 @@ func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error
 	if req.Target == "" {
 		return nil, fmt.Errorf("target is required")
 	}
+	if !control.ValidScanAccountTarget(req.Target) {
+		return nil, fmt.Errorf("invalid account target %q", req.Target)
+	}
 
 	cfg := c.d.currentCfg()
 	opts := checks.AccountScanOptions{
@@ -146,7 +149,7 @@ func (c *ControlListener) handleScanCancel(argsRaw json.RawMessage) (any, error)
 	}
 
 	if err := c.scanJobs.Cancel(req.JobID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cancel: %w", err)
 	}
 
 	// Return the job's current state. The worker may not have transitioned it

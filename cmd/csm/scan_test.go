@@ -169,6 +169,68 @@ func TestScanFlagParseRejectsWaitWithoutFull(t *testing.T) {
 	}
 }
 
+func TestScanFlagParseRejectsFullOnlyFlagsOnLegacyScan(t *testing.T) {
+	tests := [][]string{
+		{"someuser", "--respect-ignores"},
+		{"someuser", "--json"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if _, err := parseScanFlags(args); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestScanFlagParseRejectsAlertWithFullScan(t *testing.T) {
+	_, err := parseScanFlags([]string{"someuser", "--full", "--alert"})
+	if err == nil {
+		t.Error("expected error: --alert cannot be used with --full")
+	}
+}
+
+func TestScanFlagParseRejectsQueryExecutionFlagMix(t *testing.T) {
+	tests := [][]string{
+		{"--status", "--full"},
+		{"--status", "--respect-ignores"},
+		{"--report", "sj-1", "--quarantine"},
+		{"--cancel", "sj-1", "--alert"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if _, err := parseScanFlags(args); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestScanFlagParseRejectsMultipleQueryModes(t *testing.T) {
+	tests := [][]string{
+		{"--status", "--report", "sj-1"},
+		{"--report", "sj-1", "--cancel", "sj-2"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if _, err := parseScanFlags(args); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestScanFlagParseRejectsPathLikeAccount(t *testing.T) {
+	tests := []string{"../etc", "/home/root", "bad/user", ".", "..", "bad user"}
+	for _, account := range tests {
+		t.Run(account, func(t *testing.T) {
+			if _, err := parseScanFlags([]string{account, "--full"}); err == nil {
+				t.Fatal("expected invalid account error")
+			}
+		})
+	}
+}
+
 // --- socket-backed dispatch tests ---
 
 // TestScanEnqueueSendsCorrectCommand verifies that runScanFull sends

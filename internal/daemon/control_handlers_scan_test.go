@@ -99,6 +99,22 @@ func TestDispatchScanEnqueueRejectsEmptyTarget(t *testing.T) {
 	}
 }
 
+func TestDispatchScanEnqueueRejectsPathLikeTarget(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	args, _ := json.Marshal(control.ScanEnqueueRequest{
+		Scope: "account", Target: "../etc",
+	})
+	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
+	resp := c.dispatch(line)
+	if resp.OK {
+		t.Fatal("path-like target must be rejected")
+	}
+	if !strings.Contains(resp.Error, "invalid account target") {
+		t.Errorf("expected invalid target error, got %q", resp.Error)
+	}
+}
+
 func TestDispatchScanEnqueueNilManager(t *testing.T) {
 	c := newListenerForTest(t)
 	// c.scanJobs is nil -- must produce a clean error, not a panic.
@@ -295,6 +311,19 @@ func TestDispatchScanCancelUnknownID(t *testing.T) {
 	resp := c.dispatch(cancelLine)
 	if resp.OK {
 		t.Fatal("canceling an unknown id must produce OK=false")
+	}
+}
+
+func TestHandleScanCancelWrapsManagerError(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	cancelArgs, _ := json.Marshal(control.ScanCancelRequest{JobID: "sj-doesnotexist"})
+	_, err := c.handleScanCancel(cancelArgs)
+	if err == nil {
+		t.Fatal("expected cancel error")
+	}
+	if !strings.Contains(err.Error(), "cancel:") {
+		t.Fatalf("cancel error was not wrapped: %v", err)
 	}
 }
 

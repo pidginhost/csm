@@ -1096,6 +1096,72 @@ func TestValidate_AccountScanMaxFilesRange(t *testing.T) {
 	}
 }
 
+func TestValidate_FullScanMaxFileMBRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 1, false},
+		{"default accepted", 16, false},
+		{"maximum accepted", 4096, false},
+		{"negative rejected", -1, true},
+		{"above maximum rejected", 4097, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.FullScanMaxFileMB = tc.value
+
+			results := Validate(cfg)
+			hasErr := hasResult(results, "error", "thresholds.full_scan_max_file_mb")
+			if hasErr != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v (results=%v)", hasErr, tc.wantErr, results)
+			}
+		})
+	}
+}
+
+func TestValidate_ScanJobRetentionRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 1, false},
+		{"default accepted", 20, false},
+		{"maximum accepted", 1000, false},
+		{"negative rejected", -1, true},
+		{"above maximum rejected", 1001, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.ScanJobRetention = tc.value
+
+			results := Validate(cfg)
+			hasErr := hasResult(results, "error", "thresholds.scan_job_retention")
+			if hasErr != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v (results=%v)", hasErr, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidate_MailLogTailLinesRange(t *testing.T) {
 	cases := []struct {
 		name    string

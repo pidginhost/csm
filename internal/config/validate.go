@@ -385,6 +385,12 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.AccountScanMaxFiles != 0 && (t.AccountScanMaxFiles < 1 || t.AccountScanMaxFiles > 100000) {
 		results = append(results, ValidationResult{"error", "thresholds.account_scan_max_files", "account_scan_max_files must be between 1 and 100000"})
 	}
+	if t.FullScanMaxFileMB != 0 && (t.FullScanMaxFileMB < 1 || t.FullScanMaxFileMB > 4096) {
+		results = append(results, ValidationResult{"error", "thresholds.full_scan_max_file_mb", "full_scan_max_file_mb must be between 1 and 4096"})
+	}
+	if t.ScanJobRetention != 0 && (t.ScanJobRetention < 1 || t.ScanJobRetention > 1000) {
+		results = append(results, ValidationResult{"error", "thresholds.scan_job_retention", "scan_job_retention must be between 1 and 1000"})
+	}
 	if t.CrontabBase64BlobMaxBytes != 0 {
 		if t.CrontabBase64BlobMaxBytes < 1024 || t.CrontabBase64BlobMaxBytes > 1048576 {
 			results = append(results, ValidationResult{"error", "thresholds.crontab_base64_blob_max_bytes", "crontab_base64_blob_max_bytes must be between 1024 and 1048576"})

@@ -75,6 +75,49 @@ func TestScanJobRunsAndPersists(t *testing.T) {
 	}
 }
 
+func TestScanJobNilConfigUsesDefaultRetention(t *testing.T) {
+	st, _ := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		if cfg == nil {
+			t.Error("runner received nil config")
+		}
+		return nil
+	}
+
+	id, err := m.Enqueue("account", "missing_acct", checks.AccountScanOptions{MaxFiles: 0, RespectIgnores: true}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+}
+
+func TestScanJobRejectsEnqueueAfterStop(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.Stop()
+
+	if _, enqueueErr := m.Enqueue("account", "late", checks.AccountScanOptions{}, false); enqueueErr == nil {
+		t.Fatal("expected enqueue after Stop to fail")
+	}
+	jobs, err := db.ListScanJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("enqueue after Stop persisted %d job(s), want 0", len(jobs))
+	}
+}
+
 // TestScanJobCancelKeepsPartial verifies that canceling a running job
 // sets state "canceled" while preserving findings returned after ctx.Done().
 // A hook blocks the runner until the context is canceled, avoiding any sleep race.

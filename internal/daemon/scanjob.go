@@ -63,11 +63,14 @@ type ScanJobManager struct {
 	// with a fixture to control blocking / return values without sleep races.
 	runAccountScan scanJobRunner
 
-	workCh chan scanJobRequest // bounded; Enqueue blocks if full (returns err)
+	workCh chan scanJobRequest // bounded; Enqueue returns an error when full
 	stopCh chan struct{}       // closed by Stop()
 
-	// cancelMu guards the cancelFns map. Only Enqueue and Cancel touch it.
+	// cancelMu guards stopped and cancelFns across enqueue, cancel, run,
+	// drain, and stop. Enqueue holds it until the work item is buffered so
+	// Stop cannot close the worker before seeing the new job context.
 	cancelMu  sync.Mutex
+	stopped   bool
 	cancelFns map[string]context.CancelFunc
 
 	// workerDone is closed when the worker goroutine exits.
@@ -143,6 +146,12 @@ func (m *ScanJobManager) reconcileStaleRunning() error {
 // A quarantine flag is recorded on the job record for use by a later phase;
 // no live auto-response is wired in Phase 1.
 func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOptions, quarantine bool) (string, error) {
+	m.cancelMu.Lock()
+	defer m.cancelMu.Unlock()
+	if m.stopped {
+		return "", errors.New("scan-job manager stopped")
+	}
+
 	id := newScanJobID()
 
 	// Options map for storage (human-readable; not used by the worker).
@@ -171,9 +180,7 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	// or by Stop(), which cancels all live job contexts before waiting for the
 	// worker goroutine to exit.
 	jobCtx, jobCancel := context.WithCancel(context.Background())
-	m.cancelMu.Lock()
 	m.cancelFns[id] = jobCancel
-	m.cancelMu.Unlock()
 
 	req := scanJobRequest{
 		id:        id,
@@ -188,9 +195,7 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	default:
 		// Queue full -- remove the persisted record and cancel the context.
 		jobCancel()
-		m.cancelMu.Lock()
 		delete(m.cancelFns, id)
-		m.cancelMu.Unlock()
 		// Mark the just-persisted record as error so it does not look queued.
 		rec.State = "error"
 		rec.Error = "queue_full"
@@ -234,12 +239,15 @@ func (m *ScanJobManager) Progress(id string) (store.ScanJobRecord, bool) {
 // runner honors ctx and the job lands in terminal state "canceled" with its
 // partial findings retained.
 func (m *ScanJobManager) Stop() {
-	m.stopOnce.Do(func() { close(m.stopCh) })
-	m.cancelMu.Lock()
-	for _, fn := range m.cancelFns {
-		fn()
-	}
-	m.cancelMu.Unlock()
+	m.stopOnce.Do(func() {
+		m.cancelMu.Lock()
+		m.stopped = true
+		close(m.stopCh)
+		for _, fn := range m.cancelFns {
+			fn()
+		}
+		m.cancelMu.Unlock()
+	})
 	<-m.workerDone
 }
 
@@ -354,7 +362,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	}
 
 	// Prune oldest jobs to keep the store within the configured retention.
-	retention := m.cfg.Thresholds.ScanJobRetention
+	retention := cfg.Thresholds.ScanJobRetention
 	if retention <= 0 {
 		retention = 20
 	}

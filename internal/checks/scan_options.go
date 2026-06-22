@@ -6,6 +6,11 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+const (
+	fullScanMaxFileMBDefault = 16
+	fullScanMaxFileMBMax     = 4096
+)
+
 // scanForceContent reports whether the current scan should bypass the
 // clean-file content cache (phpcontentcache.json). True only when ctx carries
 // AccountScanOptions with ForceContent=true, i.e. an explicit full-scan audit.
@@ -91,6 +96,9 @@ type scanOptionsKey struct{}
 // scan can read the active options without threading a parameter through every
 // call site. Use ScanOptionsFromContext to retrieve them.
 func ContextWithScanOptions(ctx context.Context, opts AccountScanOptions) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, scanOptionsKey{}, opts)
 }
 
@@ -98,18 +106,21 @@ func ContextWithScanOptions(ctx context.Context, opts AccountScanOptions) contex
 // ContextWithScanOptions. ok is false when the context carries no options,
 // which callers should treat as "use defaults".
 func ScanOptionsFromContext(ctx context.Context) (AccountScanOptions, bool) {
+	if ctx == nil {
+		return AccountScanOptions{}, false
+	}
 	opts, ok := ctx.Value(scanOptionsKey{}).(AccountScanOptions)
 	return opts, ok
 }
 
 // FullScanMaxFileBytes converts cfg.Thresholds.FullScanMaxFileMB to a byte
 // limit for per-file content reads during a full-scan job. A configured value
-// of 0 or negative falls back to 16 MiB so the caller never gets an
-// unconstrained limit from an unset field.
+// of 0, negative, or above the validated maximum falls back to 16 MiB so the
+// caller never gets an unconstrained or overflowed limit from a bad field.
 func FullScanMaxFileBytes(cfg *config.Config) int64 {
-	mb := cfg.Thresholds.FullScanMaxFileMB
-	if mb <= 0 {
-		mb = 16
+	mb := fullScanMaxFileMBDefault
+	if cfg != nil && cfg.Thresholds.FullScanMaxFileMB > 0 && cfg.Thresholds.FullScanMaxFileMB <= fullScanMaxFileMBMax {
+		mb = cfg.Thresholds.FullScanMaxFileMB
 	}
 	return int64(mb) * 1024 * 1024
 }

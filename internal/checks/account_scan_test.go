@@ -280,7 +280,6 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 	}
 
 	// --- Default scan: CheckFileIndex must NOT run (ForceFileIndex=false) ---
-	// We wipe state dir between runs to ensure no leftover baseline influences.
 	defaultFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", DefaultAccountScanOptions(cfg))
 
 	for _, f := range defaultFindings {

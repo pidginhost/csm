@@ -446,6 +446,26 @@ type ScanEnqueueRequest struct {
 	Quarantine     bool   `json:"quarantine"`
 }
 
+// ValidScanAccountTarget reports whether target is a single account name, not
+// a path. Full-scan handlers join this value under /home, so slashes, dot-only
+// names, spaces, and control bytes must be rejected at the protocol boundary.
+func ValidScanAccountTarget(target string) bool {
+	if target == "" || target == "." || target == ".." {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		b := target[i]
+		if b >= 'a' && b <= 'z' ||
+			b >= 'A' && b <= 'Z' ||
+			b >= '0' && b <= '9' ||
+			b == '_' || b == '-' || b == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // ScanEnqueueResponse carries the job ID and initial state ("queued").
 type ScanEnqueueResponse struct {
 	JobID string `json:"job_id"`

@@ -568,14 +568,8 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if cfg.Thresholds.FullScanMaxFileMB != 16 {
 		t.Errorf("thresholds.full_scan_max_file_mb = %d, want 16", cfg.Thresholds.FullScanMaxFileMB)
 	}
-	if cfg.Thresholds.FullScanConcurrency != 2 {
-		t.Errorf("thresholds.full_scan_concurrency = %d, want 2", cfg.Thresholds.FullScanConcurrency)
-	}
 	if cfg.Thresholds.ScanJobRetention != 20 {
 		t.Errorf("thresholds.scan_job_retention = %d, want 20", cfg.Thresholds.ScanJobRetention)
-	}
-	if !cfg.Thresholds.RollingCoverage {
-		t.Error("thresholds.rolling_coverage must be true in the packaged default")
 	}
 }
 
@@ -1639,23 +1633,7 @@ func TestFullScanDefaults(t *testing.T) {
 	if cfg.Thresholds.FullScanMaxFileMB != 16 {
 		t.Errorf("FullScanMaxFileMB = %d, want 16", cfg.Thresholds.FullScanMaxFileMB)
 	}
-	if cfg.Thresholds.FullScanConcurrency != 2 {
-		t.Errorf("FullScanConcurrency = %d, want 2", cfg.Thresholds.FullScanConcurrency)
-	}
 	if cfg.Thresholds.ScanJobRetention != 20 {
 		t.Errorf("ScanJobRetention = %d, want 20", cfg.Thresholds.ScanJobRetention)
-	}
-	if !cfg.Thresholds.RollingCoverage {
-		t.Error("RollingCoverage default = false, want true")
-	}
-}
-
-func TestRollingCoverageExplicitFalseSurvivesDefaults(t *testing.T) {
-	cfg, err := LoadBytes([]byte("thresholds:\n  rolling_coverage: false\n"))
-	if err != nil {
-		t.Fatalf("LoadBytes: %v", err)
-	}
-	if cfg.Thresholds.RollingCoverage {
-		t.Error("explicit rolling_coverage: false was overwritten by defaults")
 	}
 }

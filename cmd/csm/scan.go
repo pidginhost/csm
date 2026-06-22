@@ -42,7 +42,8 @@ type scanFlags struct {
 //
 // Supported forms:
 //
-//	csm scan <user> [--full] [--wait] [--json] [--respect-ignores] [--quarantine] [--alert]
+//	csm scan <user> [--alert]
+//	csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]
 //	csm scan --status [id]
 //	csm scan --report <id>
 //	csm scan --cancel <id>
@@ -96,22 +97,51 @@ func parseScanFlags(args []string) (scanFlags, error) {
 		i++
 	}
 
-	if f.quarantine && !f.full {
-		return scanFlags{}, errors.New("--quarantine requires --full")
+	queryCount := 0
+	if f.statusGiven {
+		queryCount++
+	}
+	if f.reportID != "" {
+		queryCount++
+	}
+	if f.cancelID != "" {
+		queryCount++
+	}
+	if queryCount > 1 {
+		return scanFlags{}, errors.New("use only one of --status, --report, or --cancel")
 	}
 
-	if f.wait && !f.full {
-		return scanFlags{}, errors.New("--wait requires --full")
-	}
-
-	isQuery := f.statusGiven || f.reportID != "" || f.cancelID != ""
-
+	isQuery := queryCount == 1
 	if isQuery && f.account != "" {
 		return scanFlags{}, errors.New("account username is not allowed with --status/--report/--cancel")
 	}
+	if isQuery {
+		if f.full || f.wait || f.quarantine || f.respectIgnores || f.sendAlert {
+			return scanFlags{}, errors.New("scan query flags cannot be combined with scan execution flags")
+		}
+		return f, nil
+	}
 
-	if !isQuery && f.account == "" {
+	if f.account == "" {
 		return scanFlags{}, errors.New("account username required")
+	}
+	if !control.ValidScanAccountTarget(f.account) {
+		return scanFlags{}, fmt.Errorf("invalid account username: %q", f.account)
+	}
+	if f.quarantine && !f.full {
+		return scanFlags{}, errors.New("--quarantine requires --full")
+	}
+	if f.wait && !f.full {
+		return scanFlags{}, errors.New("--wait requires --full")
+	}
+	if f.respectIgnores && !f.full {
+		return scanFlags{}, errors.New("--respect-ignores requires --full")
+	}
+	if f.jsonOutput && !f.full {
+		return scanFlags{}, errors.New("--json requires --full or a scan query")
+	}
+	if f.sendAlert && f.full {
+		return scanFlags{}, errors.New("--alert cannot be used with --full")
 	}
 
 	return f, nil
