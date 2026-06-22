@@ -116,6 +116,20 @@ type Config struct {
 				TLSCAFile string `yaml:"tls_ca"`   // optional CA cert for tls
 			} `yaml:"syslog"`
 		} `yaml:"audit_log"`
+
+		// BlockDigest emits a per-country roll-up of auto-blocked IPs so
+		// operators see when their customers' countries get blocked. The
+		// hotreload:"restart" tag overrides the safe Alerts parent: the
+		// collector and its ticker are built once at startup.
+		BlockDigest struct {
+			Enabled   bool     `yaml:"enabled"`
+			Countries []string `yaml:"countries"`
+			Interval  string   `yaml:"interval"`
+			Live      bool     `yaml:"live"`
+			SendOn    string   `yaml:"send_on"`
+			Channel   string   `yaml:"channel"`
+			MinBlock  int      `yaml:"min_block"`
+		} `yaml:"block_digest" hotreload:"restart"`
 	} `yaml:"alerts" hotreload:"safe"`
 
 	Integrity struct {
@@ -1063,6 +1077,19 @@ func (c *Config) UpdatesInterval() time.Duration {
 	return d
 }
 
+// BlockDigestInterval is the digest cadence. Empty, invalid, or non-positive
+// values fall back to one hour.
+func (c *Config) BlockDigestInterval() time.Duration {
+	if c.Alerts.BlockDigest.Interval == "" {
+		return time.Hour
+	}
+	d, err := time.ParseDuration(c.Alerts.BlockDigest.Interval)
+	if err != nil || d <= 0 {
+		return time.Hour
+	}
+	return d
+}
+
 // UpdatesPackageName returns the apt/dnf package name to query.
 // Defaults to "csm".
 func (c *Config) UpdatesPackageName() string {
@@ -1220,9 +1247,10 @@ func (c *Config) BotRangesAutoUpdate() bool {
 }
 
 type defaultPresence struct {
-	smtpProbeThreshold bool
-	forwardGuard       forwardGuardPresence
-	phpRelay           phpRelayPresence
+	smtpProbeThreshold  bool
+	forwardGuard        forwardGuardPresence
+	phpRelay            phpRelayPresence
+	blockDigestMinBlock bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1283,6 +1311,20 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Alerts.Webhook.HMACSecretEnv != "" {
 		if v := os.Getenv(cfg.Alerts.Webhook.HMACSecretEnv); v != "" {
 			cfg.Alerts.Webhook.HMACSecret = v
+		}
+	}
+	{
+		bd := &cfg.Alerts.BlockDigest
+		if bd.Interval == "" {
+			bd.Interval = "1h"
+		}
+		if bd.SendOn == "" {
+			bd.SendOn = "any"
+		}
+		// A literal min_block: 0 means "send empty heartbeat digests" and must
+		// survive; only an absent key falls back to 1.
+		if bd.MinBlock == 0 && !presence.blockDigestMinBlock {
+			bd.MinBlock = 1
 		}
 	}
 
@@ -1724,12 +1766,16 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			ForwardGuard map[string]yaml.Node `yaml:"forward_guard"`
 			PHPRelay     map[string]yaml.Node `yaml:"php_relay"`
 		} `yaml:"email_protection"`
+		Alerts struct {
+			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
+		} `yaml:"alerts"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
+	_, presence.blockDigestMinBlock = raw.Alerts.BlockDigest["min_block"]
 
 	fg := raw.EmailProtection.ForwardGuard
 	_, presence.forwardGuard.dryRun = fg["dry_run"]

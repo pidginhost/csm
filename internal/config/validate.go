@@ -134,6 +134,35 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	// --- Block digest ---
+	if cfg.Alerts.BlockDigest.Enabled {
+		switch cfg.Alerts.BlockDigest.SendOn {
+		case "", "any", "customer":
+		default:
+			results = append(results, ValidationResult{"error", "alerts.block_digest.send_on", fmt.Sprintf("unknown send_on %q (want any|customer)", cfg.Alerts.BlockDigest.SendOn)})
+		}
+		switch cfg.Alerts.BlockDigest.Channel {
+		case "", "email", "webhook":
+		default:
+			results = append(results, ValidationResult{"error", "alerts.block_digest.channel", fmt.Sprintf("unknown channel %q (want email|webhook)", cfg.Alerts.BlockDigest.Channel)})
+		}
+		if cfg.Alerts.BlockDigest.Interval != "" {
+			if d, err := time.ParseDuration(cfg.Alerts.BlockDigest.Interval); err != nil {
+				results = append(results, ValidationResult{"error", "alerts.block_digest.interval", fmt.Sprintf("unparseable duration: %s", cfg.Alerts.BlockDigest.Interval)})
+			} else if d <= 0 {
+				results = append(results, ValidationResult{"error", "alerts.block_digest.interval", "interval must be > 0"})
+			}
+		}
+		for _, cc := range cfg.Alerts.BlockDigest.Countries {
+			if len(cc) != 2 {
+				results = append(results, ValidationResult{"error", "alerts.block_digest.countries", fmt.Sprintf("invalid country code: %q (expected 2-letter ISO code)", cc)})
+			}
+		}
+		if cfg.Alerts.BlockDigest.MinBlock < 0 {
+			results = append(results, ValidationResult{"error", "alerts.block_digest.min_block", "min_block must be >= 0"})
+		}
+	}
+
 	// --- Duration fields (only check if non-empty) ---
 	if cfg.AutoResponse.BlockExpiry != "" {
 		if _, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry); err != nil {

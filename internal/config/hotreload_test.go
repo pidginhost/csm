@@ -114,6 +114,19 @@ func TestDiffMailAuthRecoveryRequiresRestart(t *testing.T) {
 	}
 }
 
+// TestBlockDigestChangeRequiresRestart pins the field-level override: the
+// block_digest sub-struct is restart-required even though its Alerts parent
+// is safe, because the collector and its ticker are built once at startup.
+func TestBlockDigestChangeRequiresRestart(t *testing.T) {
+	oldCfg := &Config{}
+	newCfg := &Config{}
+	newCfg.Alerts.BlockDigest.Enabled = true
+	changes := Diff(oldCfg, newCfg)
+	if !RestartRequired(changes) {
+		t.Fatalf("block_digest change must require restart; changes=%+v", changes)
+	}
+}
+
 // TestDiffAllSafeFieldsClassifiedSafe nails down which top-level
 // fields are hot-reloadable today. If a future refactor accidentally
 // drops a `hotreload:"safe"` tag, this test fails immediately rather

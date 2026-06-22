@@ -19,6 +19,17 @@ alerts:
     enabled: false
     url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
   max_per_hour: 10
+  # block_digest emails/posts a per-country roll-up of auto-blocked IPs so you
+  # learn when visitors from your customers' countries get blocked. Off by
+  # default. Changing this block needs a daemon restart.
+  block_digest:
+    enabled: false
+    countries: []          # ISO 3166-1 alpha-2; empty falls back to suppressions.trusted_countries, then all
+    interval: "1h"
+    live: false            # also send an immediate alert per qualifying block
+    send_on: "any"         # any | customer (customer = only likely-false-positive blocks)
+    channel: ""            # "" uses the enabled alerts channel(s); or email | webhook
+    min_block: 1           # suppress digests below this count (0 = send empty heartbeat digests)
 
 webui:
   enabled: true
