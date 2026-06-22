@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
+	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
@@ -75,6 +76,7 @@ type Daemon struct {
 	geoipDB          *geoip.DB
 	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
 	version          string
+	blockDigest      *blockdigest.Collector
 	alertCh          chan alert.Finding
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
@@ -672,6 +674,20 @@ func (d *Daemon) Run() error {
 	// across old detection policy and new response policy.
 	initialCfg := d.currentCfg()
 
+	// Build the block-digest collector before the baseline auto-response so
+	// startup blocks are captured too. GeoIP is already initialised above.
+	d.blockDigest = d.buildBlockDigest(initialCfg)
+	if d.blockDigest != nil {
+		bdInterval := initialCfg.BlockDigestInterval()
+		d.wg.Add(1)
+		obs.Go("block-digest", func() {
+			defer d.wg.Done()
+			t := time.NewTicker(bdInterval)
+			defer t.Stop()
+			d.blockDigest.Run(d.stopCh, t.C)
+		})
+	}
+
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
 	initialFindings, initialPurge := checks.RunTierWithContext(d.scanContext(), initialCfg, d.store, checks.TierCritical)
@@ -708,6 +724,7 @@ func (d *Daemon) Run() error {
 		killActions := checks.AutoKillProcesses(initialCfg, newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
 		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
+		d.observeBlocks(blockActions)
 		newFindings = append(newFindings, killActions...)
 		newFindings = append(newFindings, quarantineActions...)
 		newFindings = append(newFindings, permActions...)
@@ -1214,6 +1231,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
 	// One ordered helper guarantees that ordering on every auto-response path.
 	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, autoResponseFindings)
+	d.observeBlocks(blockActions)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
 
 	// Mark auto-blocked IPs in attack database
