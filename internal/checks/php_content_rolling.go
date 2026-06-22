@@ -86,6 +86,11 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 		if ctx.Err() != nil {
 			break
 		}
+		// Opening FIFOs or device nodes can block the scan; rolling only needs
+		// regular PHP files (including symlinks that resolve to regular files).
+		if !rollingRegularCandidate(file) {
+			continue
+		}
 		dir := filepath.Dir(file)
 		overlay, ok := overlayCache[dir]
 		if !ok {
@@ -104,12 +109,21 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	cur.Account = account
 	cur.Check = rollingScanCheck
 	cur.LastPath = newLast
-	if wrapped {
+	if wrapped || len(selected) == len(files) {
 		now := time.Now().UTC()
-		cur.WrappedAt = now
 		cur.LastFullCycleTS = now
+		if wrapped {
+			cur.WrappedAt = now
+		}
 	}
-	_ = db.PutScanCursor(cur)
+	if err := db.PutScanCursor(cur); err != nil {
+		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
+	}
+}
+
+func rollingRegularCandidate(file string) bool {
+	info, err := osFS.Stat(file)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // rollingDocRootFor returns the docRoot that contains file. file always sits
@@ -128,7 +142,7 @@ func rollingDocRootFor(file string, docRoots []string) string {
 	return best
 }
 
-// enumeratePHPFiles recursively collects, under each docRoot, regular files
+// enumeratePHPFiles recursively collects, under each docRoot, candidate paths
 // whose name a stock PHP handler executes (empty-overlay executability). The
 // walk is bounded to rollingWalkMaxDepth, honours ctx cancellation, and
 // respects suppressions.ignore_paths exactly like scanDir when the scan is not

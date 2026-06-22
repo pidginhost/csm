@@ -336,6 +336,98 @@ func TestRollingContentWrapSetsTimestamps(t *testing.T) {
 	}
 }
 
+func TestRollingContentSingleSliceSetsLastFullCycle(t *testing.T) {
+	resetPHPContentScanCounts(t)
+	fx := newRollingFixture(t)
+	withMockOS(t, rollingRootOS{root: fx.root})
+	db := useRollingStore(t)
+
+	cfg := rollingCfg(100)
+	_ = CheckPHPContent(context.Background(), cfg, nil)
+
+	cur, ok, _ := db.GetScanCursor(fx.account, "php_content")
+	if !ok {
+		t.Fatal("cursor missing after rolling scan")
+	}
+	if cur.LastFullCycleTS.IsZero() {
+		t.Fatal("single-slice rolling scan must mark the account's full cycle complete")
+	}
+	if !cur.WrappedAt.IsZero() {
+		t.Fatal("single-slice rolling scan must not claim a cursor wrap")
+	}
+}
+
+func TestRollingContentReportsCursorWriteError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.php"), rollingBenignPHP)
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	cfg := rollingCfg(1)
+	scan := newPHPContentScan(cfg, nil, false)
+	var findings []alert.Finding
+	stderr := captureStderr(t, func() {
+		rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, &findings)
+	})
+	if !strings.Contains(stderr, "php_content rolling: cursor write for acct:") {
+		t.Fatalf("cursor write error was not reported; stderr=%q", stderr)
+	}
+}
+
+func TestRollingContentSkipsNonRegularCandidates(t *testing.T) {
+	db := useRollingStore(t)
+
+	dir := "/home/acct/public_html"
+	pipePath := filepath.Join(dir, "pipe.php")
+	opened := false
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			if name == dir {
+				return []os.DirEntry{testDirEntry{name: "pipe.php"}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			if name == pipePath {
+				return fakeFileInfoWithMode{name: "pipe.php", mode: os.ModeNamedPipe}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(string) (*os.File, error) {
+			opened = true
+			return nil, os.ErrPermission
+		},
+	})
+
+	cfg := rollingCfg(1)
+	scan := newPHPContentScan(cfg, nil, false)
+	var findings []alert.Finding
+	rollingContentCoverage(context.Background(), cfg, scan, "acct", []string{dir}, &findings)
+
+	if opened {
+		t.Fatal("rolling content must not open non-regular PHP candidates")
+	}
+	if len(findings) != 0 {
+		t.Fatalf("non-regular candidate produced findings: %+v", findings)
+	}
+	cur, ok, err := db.GetScanCursor("acct", "php_content")
+	if err != nil {
+		t.Fatalf("GetScanCursor: %v", err)
+	}
+	if !ok || cur.LastPath != pipePath {
+		t.Fatalf("cursor must advance past non-regular candidates, got ok=%v last=%q", ok, cur.LastPath)
+	}
+}
+
 // Case 7: nil store -> rolling is a no-op (no panic), normal suspicious-dir scan
 // still runs.
 func TestRollingContentNilStoreIsNoOp(t *testing.T) {
