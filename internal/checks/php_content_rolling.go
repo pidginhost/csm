@@ -2,6 +2,8 @@ package checks
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -64,7 +66,13 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	}
 
 	limit := accountScanMaxFiles(ctx, cfg)
-	cur, _, _ := db.GetScanCursor(account, rollingScanCheck)
+	cur, _, curErr := db.GetScanCursor(account, rollingScanCheck)
+	if curErr != nil {
+		// A persistent read error would re-scan from the start every cycle and
+		// never reach dormant files past the cap. Surface it; cur is the zero
+		// record so this cycle still scans the head of the list.
+		fmt.Fprintf(os.Stderr, "php_content rolling: cursor read for %s: %v\n", account, curErr)
+	}
 	selected, newLast, wrapped := rollingCandidatesAfter(files, cur.LastPath, limit)
 	if len(selected) == 0 {
 		return
