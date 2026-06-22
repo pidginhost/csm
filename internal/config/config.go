@@ -325,6 +325,27 @@ type Config struct {
 		// HTTPUAEmptyEnabled opts in to flagging requests with an empty or
 		// dash User-Agent. Off by default: some CDN health checks omit UA.
 		HTTPUAEmptyEnabled bool `yaml:"http_ua_empty_enabled"`
+
+		// FullScanMaxFileMB caps how large a single file may be (in MiB)
+		// before a full-scan job skips it and emits a full_scan_file_too_large
+		// warning. 0 falls back to the default (16 MiB). Raise only when a
+		// known-large legitimate file must be scanned; the cap exists to
+		// bound memory use during content decoding.
+		FullScanMaxFileMB int `yaml:"full_scan_max_file_mb"`
+		// FullScanConcurrency is the maximum number of accounts a full-scan
+		// job scans in parallel. Default 2. Raise on high-core hosts where
+		// scan latency matters more than I/O pressure; lower on constrained
+		// shared-hosting nodes.
+		FullScanConcurrency int `yaml:"full_scan_concurrency"`
+		// ScanJobRetention is how many completed full-scan job records the
+		// job manager keeps before evicting the oldest. Default 20.
+		ScanJobRetention int `yaml:"scan_job_retention"`
+		// RollingCoverage, when true (default), makes the full-scan job
+		// manager schedule accounts in mtime order so stale accounts are
+		// covered across successive runs rather than always restarting from
+		// the most-recently-modified account. Set false to always scan all
+		// accounts from scratch each run.
+		RollingCoverage bool `yaml:"rolling_coverage"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -1251,6 +1272,7 @@ type defaultPresence struct {
 	forwardGuard        forwardGuardPresence
 	phpRelay            phpRelayPresence
 	blockDigestMinBlock bool
+	rollingCoverage     bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1657,6 +1679,18 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.MailBruteAccountKey == "" {
 		cfg.Thresholds.MailBruteAccountKey = "builtin:dovecot-user"
 	}
+	if cfg.Thresholds.FullScanMaxFileMB == 0 {
+		cfg.Thresholds.FullScanMaxFileMB = 16
+	}
+	if cfg.Thresholds.FullScanConcurrency == 0 {
+		cfg.Thresholds.FullScanConcurrency = 2
+	}
+	if cfg.Thresholds.ScanJobRetention == 0 {
+		cfg.Thresholds.ScanJobRetention = 20
+	}
+	if !presence.rollingCoverage {
+		cfg.Thresholds.RollingCoverage = true
+	}
 
 	if cfg.Reputation.Rspamd.URL == "" {
 		cfg.Reputation.Rspamd.URL = "http://127.0.0.1:11334"
@@ -1774,6 +1808,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		return presence, err
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
+	_, presence.rollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true

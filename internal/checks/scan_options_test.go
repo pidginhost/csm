@@ -229,3 +229,14 @@ func TestFullScanOversizedPHPEmitsJobWarning(t *testing.T) {
 		t.Fatalf("oversized full-scan PHP file did not produce warning: %+v", findings)
 	}
 }
+
+func TestFullScanMaxFileBytesDefault(t *testing.T) {
+	if got := FullScanMaxFileBytes(&config.Config{}); got != 16*1024*1024 {
+		t.Errorf("FullScanMaxFileBytes default = %d, want 16 MiB", got)
+	}
+	cfg := &config.Config{}
+	cfg.Thresholds.FullScanMaxFileMB = 32
+	if got := FullScanMaxFileBytes(cfg); got != 32*1024*1024 {
+		t.Errorf("FullScanMaxFileBytes override = %d, want 32 MiB", got)
+	}
+}

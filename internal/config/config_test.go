@@ -562,6 +562,21 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if cfg.Performance.WPCronFix.IntervalMinutes != 15 {
 		t.Errorf("performance.wp_cron_fix.interval_minutes = %d, want 15", cfg.Performance.WPCronFix.IntervalMinutes)
 	}
+
+	// Full-scan defaults must appear in the packaged config so operators
+	// can tune them without guessing magic values.
+	if cfg.Thresholds.FullScanMaxFileMB != 16 {
+		t.Errorf("thresholds.full_scan_max_file_mb = %d, want 16", cfg.Thresholds.FullScanMaxFileMB)
+	}
+	if cfg.Thresholds.FullScanConcurrency != 2 {
+		t.Errorf("thresholds.full_scan_concurrency = %d, want 2", cfg.Thresholds.FullScanConcurrency)
+	}
+	if cfg.Thresholds.ScanJobRetention != 20 {
+		t.Errorf("thresholds.scan_job_retention = %d, want 20", cfg.Thresholds.ScanJobRetention)
+	}
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("thresholds.rolling_coverage must be true in the packaged default")
+	}
 }
 
 func TestWPCronFixIntervalDefaultsTo15(t *testing.T) {
@@ -1613,5 +1628,34 @@ func assertRawBotRangesAutoUpdate(t *testing.T, data []byte, source string) {
 	}
 	if interval != "24h" {
 		t.Fatalf("%s reputation.bot_ranges.update_interval = %q, want 24h", source, interval)
+	}
+}
+
+func TestFullScanDefaults(t *testing.T) {
+	cfg, err := LoadBytes(nil)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.FullScanMaxFileMB != 16 {
+		t.Errorf("FullScanMaxFileMB = %d, want 16", cfg.Thresholds.FullScanMaxFileMB)
+	}
+	if cfg.Thresholds.FullScanConcurrency != 2 {
+		t.Errorf("FullScanConcurrency = %d, want 2", cfg.Thresholds.FullScanConcurrency)
+	}
+	if cfg.Thresholds.ScanJobRetention != 20 {
+		t.Errorf("ScanJobRetention = %d, want 20", cfg.Thresholds.ScanJobRetention)
+	}
+	if !cfg.Thresholds.RollingCoverage {
+		t.Error("RollingCoverage default = false, want true")
+	}
+}
+
+func TestRollingCoverageExplicitFalseSurvivesDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  rolling_coverage: false\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.RollingCoverage {
+		t.Error("explicit rolling_coverage: false was overwritten by defaults")
 	}
 }

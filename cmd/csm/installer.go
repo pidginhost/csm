@@ -299,6 +299,15 @@ thresholds:
   http_ua_scripting_enabled: false
   http_ua_headless_enabled: false
   http_ua_empty_enabled: false
+  # Full-scan per-file size cap in MiB; 0 uses the default (16 MiB).
+  full_scan_max_file_mb: 16
+  # Maximum accounts scanned in parallel by a full-scan job. Lower on I/O-constrained nodes.
+  full_scan_concurrency: 2
+  # Number of completed full-scan job records kept by the job manager before eviction.
+  scan_job_retention: 20
+  # When true, successive full-scan runs cover accounts in mtime order so all
+  # accounts get coverage over time rather than always starting from scratch.
+  rolling_coverage: true
 
 infra_ips:
   # Add your infrastructure IPs, CIDRs, or hostnames here.

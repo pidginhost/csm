@@ -101,3 +101,15 @@ func ScanOptionsFromContext(ctx context.Context) (AccountScanOptions, bool) {
 	opts, ok := ctx.Value(scanOptionsKey{}).(AccountScanOptions)
 	return opts, ok
 }
+
+// FullScanMaxFileBytes converts cfg.Thresholds.FullScanMaxFileMB to a byte
+// limit for per-file content reads during a full-scan job. A configured value
+// of 0 or negative falls back to 16 MiB so the caller never gets an
+// unconstrained limit from an unset field.
+func FullScanMaxFileBytes(cfg *config.Config) int64 {
+	mb := cfg.Thresholds.FullScanMaxFileMB
+	if mb <= 0 {
+		mb = 16
+	}
+	return int64(mb) * 1024 * 1024
+}
