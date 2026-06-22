@@ -110,6 +110,12 @@ type Finding struct {
 	Process *processctx.ProcessContext `json:"process,omitempty"`
 
 	Timestamp time.Time `json:"timestamp"`
+
+	// Full-scan quarantine outcome (Phase 2). Set ONLY on findings produced by a
+	// `--full --quarantine` job; empty for all report-only findings so existing
+	// consumers see no JSON diff.
+	RemediationStatus string `json:"remediation_status,omitempty"` // "quarantined" | "left_for_review" | "failed"
+	RemediationDetail string `json:"remediation_detail,omitempty"` // action description or error
 }
 
 // RelayScriptHit is one script's contribution to a PHP-relay finding.

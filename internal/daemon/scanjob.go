@@ -47,10 +47,11 @@ type accountEnumerator func(cfg *config.Config) ([]string, error)
 
 // scanJobRequest is what Enqueue pushes into the work channel.
 type scanJobRequest struct {
-	id        string
-	opts      checks.AccountScanOptions
-	cancelCtx context.Context    // per-job cancellable context
-	cancelFn  context.CancelFunc // allows Cancel() to stop the runner
+	id         string
+	opts       checks.AccountScanOptions
+	quarantine bool               // when true, annotateQuarantine runs on each finding
+	cancelCtx  context.Context    // per-job cancellable context
+	cancelFn   context.CancelFunc // allows Cancel() to stop the runner
 }
 
 // ScanJobManager runs full-scan jobs as background work in the daemon.
@@ -70,6 +71,11 @@ type ScanJobManager struct {
 
 	// enumerateAccounts lists accounts for scope="all" jobs. Tests replace it.
 	enumerateAccounts accountEnumerator
+
+	// quarantineFile performs the pure file quarantine for a single finding.
+	// Defaults to checks.QuarantineFindingFile; tests replace it to operate on
+	// a temp dir without touching real /home or /opt/csm.
+	quarantineFile func(f alert.Finding) (checks.RemediationResult, bool)
 
 	workCh chan scanJobRequest // bounded; Enqueue returns an error when full
 	stopCh chan struct{}       // closed by Stop()
@@ -104,6 +110,7 @@ func NewScanJobManager(st *state.Store, cfg *config.Config) (*ScanJobManager, er
 		db:                db,
 		runAccountScan:    defaultScanRunner,
 		enumerateAccounts: checks.EnumerateScanAccounts,
+		quarantineFile:    checks.QuarantineFindingFile,
 		workCh:            make(chan scanJobRequest, scanJobQueueDepth),
 		stopCh:            make(chan struct{}),
 		cancelFns:         make(map[string]context.CancelFunc),
@@ -192,10 +199,11 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	m.cancelFns[id] = jobCancel
 
 	req := scanJobRequest{
-		id:        id,
-		opts:      opts,
-		cancelCtx: jobCtx,
-		cancelFn:  jobCancel,
+		id:         id,
+		opts:       opts,
+		quarantine: quarantine,
+		cancelCtx:  jobCtx,
+		cancelFn:   jobCancel,
 	}
 
 	select {
@@ -367,6 +375,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 		// Persist every finding the runner returned, even if canceled mid-scan.
 		// This preserves partial results for the "cancel keeps partial" guarantee.
 		for i, f := range findings {
+			f = m.annotateQuarantine(req, f)
 			if appendErr := m.db.AppendScanJobFinding(req.id, i, f); appendErr != nil {
 				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", i, "err", appendErr)
 			}
@@ -465,6 +474,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 			if findings[i].Timestamp.IsZero() {
 				findings[i].Timestamp = now
 			}
+			findings[i] = m.annotateQuarantine(req, findings[i])
 			if appendErr := m.db.AppendScanJobFinding(req.id, seq, findings[i]); appendErr != nil {
 				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", seq, "err", appendErr)
 			}
@@ -519,6 +529,35 @@ func (m *ScanJobManager) setTerminal(id, jobState, errMsg string) {
 	rec.Error = errMsg
 	rec.Finished = time.Now().UTC()
 	_ = m.db.PutScanJob(rec)
+}
+
+// annotateQuarantine runs a pure file quarantine on f when the job's quarantine
+// flag is set, and stamps the finding's RemediationStatus / RemediationDetail
+// fields with the outcome. When the flag is false (report-only) f is returned
+// unchanged so existing consumers see no JSON diff.
+//
+// Only findings that QuarantineFindingFile considers eligible (pure
+// malware/webshell file moves) are quarantined. Ineligible findings — process
+// kill, DB cleanup, htaccess edits, etc. — are marked "left_for_review".
+// This method never calls alert.Dispatch, state.AppendHistory, or
+// StoreLatestScanFindings; quarantine is a filesystem move, not an alert.
+func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding) alert.Finding {
+	if !req.quarantine {
+		return f
+	}
+	result, eligible := m.quarantineFile(f)
+	if !eligible {
+		f.RemediationStatus = "left_for_review"
+		return f
+	}
+	if result.Success {
+		f.RemediationStatus = "quarantined"
+		f.RemediationDetail = result.Action
+	} else {
+		f.RemediationStatus = "failed"
+		f.RemediationDetail = result.Error
+	}
+	return f
 }
 
 // startScanJobManager initialises the ScanJobManager and wires it into the

@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -651,5 +653,217 @@ func TestScanJobDoesNotCallAlertDispatch(t *testing.T) {
 	}
 	if total != 1 || len(findings) != 1 {
 		t.Fatalf("findings count = %d total=%d, want 1", len(findings), total)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task E1: full-scan --quarantine wiring tests
+// ---------------------------------------------------------------------------
+
+// fakeQuarantineFile returns a quarantine func that moves the file to qdir,
+// allowing daemon tests to operate on a temp dir without touching real paths.
+// It mirrors the minimal behaviour of checks.QuarantineFindingFile:
+//   - eligible set: the pure file-quarantine checks (webshell, obfuscated_php, …)
+//   - ineligible: everything else (backdoor_binary, suspicious_crontab, …)
+//   - moves the file to qdir and reports Success when eligible + file exists
+//
+// Source of truth for the eligible set is eligibleFullScanChecks in
+// internal/checks/fullscan_quarantine.go; keep this list in sync if it changes.
+func fakeQuarantineFile(qdir string) func(f alert.Finding) (checks.RemediationResult, bool) {
+	eligible := map[string]bool{
+		"webshell": true, "new_webshell_file": true, "obfuscated_php": true,
+		"php_dropper": true, "suspicious_php_content": true,
+		"new_php_in_languages": true, "new_php_in_upgrade": true,
+		"phishing_page": true, "phishing_directory": true,
+	}
+	return func(f alert.Finding) (checks.RemediationResult, bool) {
+		if !eligible[f.Check] || f.FilePath == "" {
+			return checks.RemediationResult{}, false
+		}
+		dst := filepath.Join(qdir, filepath.Base(f.FilePath))
+		if err := os.Rename(f.FilePath, dst); err != nil {
+			return checks.RemediationResult{Error: err.Error()}, true
+		}
+		return checks.RemediationResult{
+			Success: true,
+			Action:  "quarantined " + f.FilePath + " → " + dst,
+		}, true
+	}
+}
+
+// TestScanJobQuarantine_EligibleFindingQuarantined: account-scope job with
+// quarantine=true and a webshell finding whose FilePath is a real temp file →
+// stored finding has RemediationStatus="quarantined", file moved.
+func TestScanJobQuarantine_EligibleFindingQuarantined(t *testing.T) {
+	root := t.TempDir()
+	qdir := t.TempDir()
+
+	// Create file before NewScanJobManager to avoid shadowing `err`.
+	// RFC-5737 prefix in account name; PHP content is a test payload only.
+	src := filepath.Join(root, "shell.php")
+	// #nosec G306 -- test payload; simulates a malicious PHP file in a temp dir
+	if writeErr := os.WriteFile(src, []byte("<?php system($_GET['c']); ?>"), 0644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.quarantineFile = fakeQuarantineFile(qdir)
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{{
+			Check:    "webshell",
+			FilePath: src,
+		}}
+	}
+
+	id, err := m.Enqueue("account", "192-0-2-1", checks.AccountScanOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 10)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].RemediationStatus != "quarantined" {
+		t.Fatalf("RemediationStatus = %q, want quarantined", findings[0].RemediationStatus)
+	}
+	if findings[0].RemediationDetail == "" {
+		t.Fatal("RemediationDetail must be non-empty on success")
+	}
+	// File must have been moved.
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatal("source file must be removed after quarantine")
+	}
+}
+
+// TestScanJobQuarantine_IneligibleFindingLeftForReview: account-scope job with
+// quarantine=true and a non-eligible finding (suspicious_crontab maps to a
+// crontab truncate, not a pure file move) →
+// stored finding has RemediationStatus="left_for_review".
+func TestScanJobQuarantine_IneligibleFindingLeftForReview(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.quarantineFile = fakeQuarantineFile(t.TempDir())
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{{
+			Check:   "suspicious_crontab", // not a pure file quarantine — ineligible
+			Message: "crontab with curl|bash detected",
+		}}
+	}
+
+	id, err := m.Enqueue("account", "198-51-100-1", checks.AccountScanOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 10)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].RemediationStatus != "left_for_review" {
+		t.Fatalf("RemediationStatus = %q, want left_for_review", findings[0].RemediationStatus)
+	}
+}
+
+// TestScanJobQuarantine_ReportOnlyJobNoRemediation: report-only job
+// (quarantine=false) → stored finding has empty RemediationStatus, no file moved.
+func TestScanJobQuarantine_ReportOnlyJobNoRemediation(t *testing.T) {
+	root := t.TempDir()
+	qdir := t.TempDir()
+
+	// Create file before NewScanJobManager to avoid shadowing `err`.
+	src := filepath.Join(root, "shell2.php")
+	// #nosec G306 -- test payload; simulates a malicious PHP file in a temp dir
+	if writeErr := os.WriteFile(src, []byte("<?php passthru($_GET['c']); ?>"), 0644); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.quarantineFile = fakeQuarantineFile(qdir)
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{{
+			Check:    "webshell",
+			FilePath: src,
+		}}
+	}
+
+	id, err := m.Enqueue("account", "203-0-113-1", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 10)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].RemediationStatus != "" {
+		t.Fatalf("RemediationStatus = %q, want empty for report-only job", findings[0].RemediationStatus)
+	}
+	// File must NOT have been moved.
+	if _, statErr := os.Stat(src); statErr != nil {
+		t.Fatalf("source file must remain for report-only job: %v", statErr)
+	}
+}
+
+// TestScanJobQuarantine_EligibleButFailed: an eligible finding whose file cannot
+// be moved (source absent → rename fails) is stamped RemediationStatus="failed"
+// with the error in the detail. Exercises the eligible-but-unsuccessful branch
+// of annotateQuarantine that the other tests do not cover.
+func TestScanJobQuarantine_EligibleButFailed(t *testing.T) {
+	root := t.TempDir()
+	qdir := t.TempDir()
+
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	m.quarantineFile = fakeQuarantineFile(qdir)
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		// Eligible check + a path that does not exist → fake's os.Rename fails,
+		// returning (Error, eligible=true).
+		return []alert.Finding{{
+			Check:    "obfuscated_php",
+			FilePath: filepath.Join(root, "gone.php"),
+		}}
+	}
+
+	id, err := m.Enqueue("account", "192-0-2-2", checks.AccountScanOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForState(t, m, id, "done", 5*time.Second)
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 10)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].RemediationStatus != "failed" {
+		t.Fatalf("RemediationStatus = %q, want failed", findings[0].RemediationStatus)
+	}
+	if findings[0].RemediationDetail == "" {
+		t.Fatal("RemediationDetail must carry the error on a failed quarantine")
 	}
 }
