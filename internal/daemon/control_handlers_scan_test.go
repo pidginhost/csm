@@ -67,19 +67,68 @@ func TestDispatchScanEnqueueReturnsJobID(t *testing.T) {
 	}
 }
 
-func TestDispatchScanEnqueueRejectsBadScope(t *testing.T) {
+func TestDispatchScanEnqueueRejectsUnknownScope(t *testing.T) {
 	c, _ := newScanJobControlListener(t)
 
 	args, _ := json.Marshal(control.ScanEnqueueRequest{
-		Scope: "all", Target: "someuser",
+		Scope: "server", Target: "someuser",
 	})
 	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
 	resp := c.dispatch(line)
 	if resp.OK {
-		t.Fatal("scope=all must be rejected in Phase 1")
+		t.Fatal("unknown scope must be rejected")
 	}
 	if !strings.Contains(resp.Error, "scope") {
 		t.Errorf("expected scope error, got %q", resp.Error)
+	}
+}
+
+func TestDispatchScanEnqueueAllScopeEmptyTarget(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	args, _ := json.Marshal(control.ScanEnqueueRequest{
+		Scope: "all", Target: "",
+	})
+	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
+	resp := c.dispatch(line)
+	if !resp.OK {
+		t.Fatalf("scope=all with empty target must be accepted: %s", resp.Error)
+	}
+	var out control.ScanEnqueueResponse
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.JobID == "" {
+		t.Error("expected a non-empty job id")
+	}
+}
+
+func TestDispatchScanEnqueueAllScopeLiteralAllTarget(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	args, _ := json.Marshal(control.ScanEnqueueRequest{
+		Scope: "all", Target: "all",
+	})
+	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
+	resp := c.dispatch(line)
+	if !resp.OK {
+		t.Fatalf("scope=all with target=\"all\" must be accepted: %s", resp.Error)
+	}
+}
+
+func TestDispatchScanEnqueueAllScopeRejectsJunkTarget(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	args, _ := json.Marshal(control.ScanEnqueueRequest{
+		Scope: "all", Target: "../etc",
+	})
+	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
+	resp := c.dispatch(line)
+	if resp.OK {
+		t.Fatal("scope=all with junk target must be rejected")
+	}
+	if !strings.Contains(resp.Error, "target") {
+		t.Errorf("expected target error, got %q", resp.Error)
 	}
 }
 

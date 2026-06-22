@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type scanFlags struct {
 	sendAlert bool
 
 	// Full-scan mode.
+	all            bool
 	full           bool
 	wait           bool
 	jsonOutput     bool
@@ -65,7 +67,7 @@ func parseScanFlags(args []string) (scanFlags, error) {
 		case "--alert":
 			f.sendAlert = true
 		case "--all":
-			return scanFlags{}, errors.New("--all (server-wide full scan) is Phase 2 and not yet supported")
+			f.all = true
 		case "--status":
 			f.statusGiven = true
 			// Optional argument: the next token if it does not start with '--'.
@@ -116,8 +118,19 @@ func parseScanFlags(args []string) (scanFlags, error) {
 		return scanFlags{}, errors.New("account username is not allowed with --status/--report/--cancel")
 	}
 	if isQuery {
-		if f.full || f.wait || f.quarantine || f.respectIgnores || f.sendAlert {
+		if f.all || f.full || f.wait || f.quarantine || f.respectIgnores || f.sendAlert {
 			return scanFlags{}, errors.New("scan query flags cannot be combined with scan execution flags")
+		}
+		return f, nil
+	}
+
+	// --all validation.
+	if f.all {
+		if !f.full {
+			return scanFlags{}, errors.New("--all requires --full")
+		}
+		if f.account != "" {
+			return scanFlags{}, errors.New("cannot combine --all with an account username")
 		}
 		return f, nil
 	}
@@ -179,6 +192,7 @@ func printScanUsage() {
 	fmt.Fprintf(os.Stderr, "Usage:\n")
 	fmt.Fprintf(os.Stderr, "  csm scan <user> [--alert]\n")
 	fmt.Fprintf(os.Stderr, "  csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]\n")
+	fmt.Fprintf(os.Stderr, "  csm scan --all --full [--wait] [--json] [--respect-ignores]\n")
 	fmt.Fprintf(os.Stderr, "  csm scan --status [id]\n")
 	fmt.Fprintf(os.Stderr, "  csm scan --report <id>\n")
 	fmt.Fprintf(os.Stderr, "  csm scan --cancel <id>\n")
@@ -205,10 +219,15 @@ func runScanFullWith(f scanFlags, send sendFn) {
 // interval is the sleep between status polls when --wait is set.
 func runScanFullWithInterval(f scanFlags, send sendFn, interval time.Duration) {
 	req := control.ScanEnqueueRequest{
-		Scope:          "account",
-		Target:         f.account,
 		RespectIgnores: f.respectIgnores,
 		Quarantine:     f.quarantine,
+	}
+	if f.all {
+		req.Scope = "all"
+		req.Target = ""
+	} else {
+		req.Scope = "account"
+		req.Target = f.account
 	}
 
 	raw, err := send(control.CmdScanEnqueue, req)
@@ -370,9 +389,42 @@ func printScanReportWith(jobID string, asJSON bool, send sendFn) {
 		return
 	}
 	fmt.Printf("%d finding(s):\n\n", resp.Total)
-	for _, finding := range resp.Findings {
-		fmt.Println(finding.String())
-		fmt.Println()
+
+	if resp.Job.Scope == "all" {
+		printFindingsGroupedByAccount(resp.Findings)
+	} else {
+		for _, finding := range resp.Findings {
+			fmt.Println(finding.String())
+			fmt.Println()
+		}
+	}
+}
+
+// printFindingsGroupedByAccount groups findings by TenantID and prints a
+// header line per account followed by that account's findings.
+func printFindingsGroupedByAccount(findings []alert.Finding) {
+	// Collect ordered unique accounts, preserving first-seen order.
+	seen := make(map[string]bool)
+	var order []string
+	byAccount := make(map[string][]alert.Finding)
+	for _, f := range findings {
+		acct := f.TenantID
+		if acct == "" {
+			acct = "(unknown)"
+		}
+		if !seen[acct] {
+			seen[acct] = true
+			order = append(order, acct)
+		}
+		byAccount[acct] = append(byAccount[acct], f)
+	}
+	sort.Strings(order)
+	for _, acct := range order {
+		fmt.Printf("=== account: %s ===\n\n", acct)
+		for _, finding := range byAccount[acct] {
+			fmt.Println(finding.String())
+			fmt.Println()
+		}
 	}
 }
 
@@ -432,6 +484,13 @@ func printJobRecord(j store.ScanJobRecord) {
 	}
 	if !j.Finished.IsZero() {
 		fmt.Printf("  finished: %s\n", j.Finished.Format(time.RFC3339))
+	}
+	if j.Scope == "all" && j.AccountsTotal > 0 {
+		fmt.Printf("  accounts: %d/%d", j.AccountsDone, j.AccountsTotal)
+		if j.CurrentAccount != "" {
+			fmt.Printf("  current: %s", j.CurrentAccount)
+		}
+		fmt.Println()
 	}
 	if j.FindingCount > 0 || j.FilesScanned > 0 {
 		fmt.Printf("  findings: %d  files: %d\n", j.FindingCount, j.FilesScanned)

@@ -43,10 +43,48 @@ func TestScanFlagParseRequiresAccount(t *testing.T) {
 	}
 }
 
-func TestScanFlagParseRejectsAllFlag(t *testing.T) {
-	_, err := parseScanFlags([]string{"someuser", "--all"})
+func TestScanFlagParseAllRequiresFull(t *testing.T) {
+	_, err := parseScanFlags([]string{"--all"})
 	if err == nil {
-		t.Error("expected error: --all is Phase 2")
+		t.Error("expected error: --all requires --full")
+	}
+}
+
+func TestScanFlagParseAllWithFullAccepted(t *testing.T) {
+	f, err := parseScanFlags([]string{"--all", "--full"})
+	if err != nil {
+		t.Fatalf("--all --full must be accepted: %v", err)
+	}
+	if !f.all {
+		t.Error("all flag not set")
+	}
+	if !f.full {
+		t.Error("full flag not set")
+	}
+	if f.account != "" {
+		t.Errorf("account = %q, want empty for --all", f.account)
+	}
+}
+
+func TestScanFlagParseAllWithAccountErrors(t *testing.T) {
+	_, err := parseScanFlags([]string{"someuser", "--all", "--full"})
+	if err == nil {
+		t.Error("expected error: cannot combine --all with an account username")
+	}
+}
+
+func TestScanFlagParseAllWithQueryFlagErrors(t *testing.T) {
+	tests := [][]string{
+		{"--all", "--full", "--status"},
+		{"--all", "--full", "--report", "sj-1"},
+		{"--all", "--full", "--cancel", "sj-1"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if _, err := parseScanFlags(args); err == nil {
+				t.Fatal("expected error combining --all with query flag")
+			}
+		})
 	}
 }
 
@@ -529,5 +567,120 @@ func TestRunScanCancelWith(t *testing.T) {
 	}
 	if !strings.Contains(out, wantState) {
 		t.Errorf("output %q does not contain state %q", out, wantState)
+	}
+}
+
+// TestRunScanFullWithAllScope verifies that when f.all is set, runScanFullWith
+// sends an enqueue request with Scope="all" and Target="".
+func TestRunScanFullWithAllScope(t *testing.T) {
+	const jobID = "job-all-1"
+	var capturedEnqReq control.ScanEnqueueRequest
+
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		raw, _ := json.Marshal(args)
+		switch cmd {
+		case control.CmdScanEnqueue:
+			_ = json.Unmarshal(raw, &capturedEnqReq)
+			resp, _ := json.Marshal(control.ScanEnqueueResponse{JobID: jobID, State: "queued"})
+			return resp, nil
+		default:
+			t.Errorf("unexpected command (no --wait): %s", cmd)
+			return nil, errors.New("unexpected cmd")
+		}
+	}
+
+	f := scanFlags{
+		all:  true,
+		full: true,
+		wait: false,
+	}
+
+	captureStdout(t, func() {
+		runScanFullWith(f, sender)
+	})
+
+	if capturedEnqReq.Scope != "all" {
+		t.Errorf("enqueue Scope = %q, want all", capturedEnqReq.Scope)
+	}
+	if capturedEnqReq.Target != "" {
+		t.Errorf("enqueue Target = %q, want empty", capturedEnqReq.Target)
+	}
+}
+
+// TestPrintJobRecordAllScopeProgress verifies that printJobRecord prints
+// per-account progress fields when Scope=="all" and progress fields are set.
+func TestPrintJobRecordAllScopeProgress(t *testing.T) {
+	j := store.ScanJobRecord{
+		ID:             "job-all-2",
+		Scope:          "all",
+		Target:         "all",
+		State:          "running",
+		AccountsTotal:  5,
+		AccountsDone:   2,
+		CurrentAccount: "192-0-2-acct",
+	}
+
+	out := captureStdout(t, func() {
+		printJobRecord(j)
+	})
+
+	if !strings.Contains(out, "2/5") {
+		t.Errorf("output %q does not contain accounts progress 2/5", out)
+	}
+	if !strings.Contains(out, "192-0-2-acct") {
+		t.Errorf("output %q does not contain current account", out)
+	}
+}
+
+// TestPrintScanReportWithAllScopeGroupsByAccount verifies that
+// printScanReportWith groups findings by TenantID when job scope is "all".
+func TestPrintScanReportWithAllScopeGroupsByAccount(t *testing.T) {
+	const jobID = "job-all-3"
+
+	findings := []alert.Finding{
+		{Severity: alert.Warning, Check: "check_a", Message: "finding-alpha", TenantID: "198-51-100-acct"},
+		{Severity: alert.Warning, Check: "check_b", Message: "finding-beta", TenantID: "203-0-113-acct"},
+		{Severity: alert.Critical, Check: "check_c", Message: "finding-gamma", TenantID: "198-51-100-acct"},
+	}
+
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		job := store.ScanJobRecord{ID: jobID, Scope: "all", Target: "all", State: "done", FindingCount: 3}
+		resp, _ := json.Marshal(control.ScanReportResponse{
+			Job:      job,
+			Findings: findings,
+			Total:    3,
+		})
+		return resp, nil
+	}
+
+	out := captureStdout(t, func() {
+		printScanReportWith(jobID, false, sender)
+	})
+
+	// Both account headers must appear.
+	if !strings.Contains(out, "198-51-100-acct") {
+		t.Errorf("output %q missing account header 198-51-100-acct", out)
+	}
+	if !strings.Contains(out, "203-0-113-acct") {
+		t.Errorf("output %q missing account header 203-0-113-acct", out)
+	}
+	// All three finding messages must appear.
+	for _, f := range findings {
+		if !strings.Contains(out, f.Message) {
+			t.Errorf("output %q missing finding %q", out, f.Message)
+		}
+	}
+	// The account header for 198-51-100-acct must appear before 203-0-113-acct
+	// findings (findings are grouped, not interleaved).
+	idx1 := strings.Index(out, "198-51-100-acct")
+	idx2 := strings.Index(out, "finding-beta")
+	idx3 := strings.Index(out, "203-0-113-acct")
+	if idx1 < 0 || idx2 < 0 || idx3 < 0 {
+		t.Fatal("missing expected content in output")
+	}
+	// The 198-51-100-acct header should appear, followed by its findings,
+	// then the 203-0-113-acct header, then finding-beta.
+	if idx3 >= idx2 {
+		t.Errorf("expected 203-0-113-acct header before finding-beta, got idx3=%d idx2=%d", idx3, idx2)
 	}
 }

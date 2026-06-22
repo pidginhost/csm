@@ -11,9 +11,10 @@ import (
 )
 
 // handleScanEnqueue validates the request and submits a new full-scan job to
-// the ScanJobManager. Phase 1 accepts only Scope="account". The control
-// payload is translated into checks.AccountScanOptions with the full-scan
-// option set (MaxFiles=0, ForceContent=true, ForceFileIndex=true).
+// the ScanJobManager. Scope="account" scans a single account; Scope="all"
+// enqueues a server-wide scan. The control payload is translated into
+// checks.AccountScanOptions with the full-scan option set (MaxFiles=0,
+// ForceContent=true, ForceFileIndex=true).
 func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error) {
 	if c.scanJobs == nil {
 		return nil, fmt.Errorf("scan job manager not available")
@@ -26,16 +27,6 @@ func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error
 		}
 	}
 
-	if req.Scope != "account" {
-		return nil, fmt.Errorf("unsupported scope %q: Phase 1 accepts only \"account\"", req.Scope)
-	}
-	if req.Target == "" {
-		return nil, fmt.Errorf("target is required")
-	}
-	if !control.ValidScanAccountTarget(req.Target) {
-		return nil, fmt.Errorf("invalid account target %q", req.Target)
-	}
-
 	cfg := c.d.currentCfg()
 	opts := checks.AccountScanOptions{
 		MaxFiles:       0,
@@ -45,12 +36,35 @@ func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error
 		MaxFileBytes:   checks.FullScanMaxFileBytes(cfg),
 	}
 
-	id, err := c.scanJobs.Enqueue("account", req.Target, opts, req.Quarantine)
-	if err != nil {
-		return nil, fmt.Errorf("enqueue: %w", err)
-	}
+	switch req.Scope {
+	case "account":
+		if req.Target == "" {
+			return nil, fmt.Errorf("target is required")
+		}
+		if !control.ValidScanAccountTarget(req.Target) {
+			return nil, fmt.Errorf("invalid account target %q", req.Target)
+		}
+		id, err := c.scanJobs.Enqueue("account", req.Target, opts, req.Quarantine)
+		if err != nil {
+			return nil, fmt.Errorf("enqueue: %w", err)
+		}
+		return control.ScanEnqueueResponse{JobID: id, State: "queued"}, nil
 
-	return control.ScanEnqueueResponse{JobID: id, State: "queued"}, nil
+	case "all":
+		// Target must be empty or the literal "all"; it must not look like an
+		// account name or path component — the daemon normalises it to "all".
+		if req.Target != "" && req.Target != "all" {
+			return nil, fmt.Errorf("invalid target %q for scope \"all\": must be empty or \"all\"", req.Target)
+		}
+		id, err := c.scanJobs.Enqueue("all", "all", opts, req.Quarantine)
+		if err != nil {
+			return nil, fmt.Errorf("enqueue: %w", err)
+		}
+		return control.ScanEnqueueResponse{JobID: id, State: "queued"}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported scope %q: must be \"account\" or \"all\"", req.Scope)
+	}
 }
 
 // handleScanStatus returns the status of one job (when JobID is set) or the

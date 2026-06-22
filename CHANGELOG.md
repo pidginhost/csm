@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Operators can run an uncapped, report-only full scan of a single account (`csm scan <user> --full`) that checks every file, including ones the normal scan skips for speed, and review the results later with `--status` and `--report`.
+- `csm scan --all --full` runs an uncapped report-only scan across every cPanel account under one job, with per-account progress and error isolation.
 
 ## [3.20.0] - 2026-06-22
 
