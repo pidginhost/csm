@@ -43,6 +43,8 @@ var bucketNames = []string{
 	adminEmailsBucket,
 	"botverify",
 	prefsBucket,
+	"scan_jobs",
+	"scan_job_findings",
 }
 
 // DB wraps a bbolt database.
