@@ -198,6 +198,7 @@ func TestFullScanFindsOldCapDroppedFilesystemCandidate(t *testing.T) {
 		return logical
 	}
 
+	// recentA/B fill the mtime-desc ranking ahead of old, pushing it past the cap.
 	recentA := writeCandidate(filepath.Join(".config", "htop", "defunct"), now.Add(-1*time.Minute))
 	recentB := writeCandidate(filepath.Join(".config", "agent", "defunct.dat"), now.Add(-2*time.Minute))
 	old := writeCandidate(filepath.Join(".config", "agent", "gsocket"), now.Add(-365*24*time.Hour))

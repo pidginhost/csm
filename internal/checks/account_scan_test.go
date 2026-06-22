@@ -169,12 +169,17 @@ func TestAccountFromPath(t *testing.T) {
 // gated append added to RunAccountScanWithOptions. It proves:
 //
 //  1. A full scan (ForceFileIndex=true) DOES run CheckFileIndex and returns a
-//     new_php_in_sensitive_dir finding for a PHP file planted in
-//     wp-content/languages -- a classifier surface that NO other account check
-//     covers (confirmed: grep new_php_in_sensitive_dir returns only fileindex.go).
+//     content-based finding (obfuscated_php / suspicious_php_content) for a
+//     FOPO-style PHP file planted in wp-content/uploads/ with an innocuous name
+//     (footer.php). The detection is content-driven via classifyUploadPHP, not
+//     filename-based, confirming that --full CONTENT-scans dormant files past
+//     the cap. No other account check scans wp-content/uploads for PHP content,
+//     so any upload-content finding is unique to CheckFileIndex.
 //
 //  2. A default scan (ForceFileIndex=false) does NOT return that finding,
-//     confirming CheckFileIndex is absent from the default path.
+//     confirming CheckFileIndex is absent from the default path. CheckPHPContent
+//     does not scan wp-content/uploads (only languages/upgrade/mu-plugins/
+//     plugins/themes), so the content finding is exclusive to the full-scan path.
 //
 //  3. The full-scan run does NOT write any of the three live state files
 //     (fileindex.current, fileindex.previous, dircache.json), so the
@@ -186,24 +191,25 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// PHP file in wp-content/languages -- triggers new_php_in_sensitive_dir
-	// via classifySensitiveDirPHP. Unreadable body fails closed to High.
-	// We use a clean but non-stub body so classifySensitiveDirPHP returns
-	// new_php_in_sensitive_dir_clean (Warning), which is still unique to
-	// CheckFileIndex and proves the audit path executed.
+	// FOPO-style PHP in wp-content/uploads/ under an innocuous filename.
+	// classifyUploadPHP calls analyzePHPContentWithFingerprint; eval(base64_decode)
+	// produces two indicators → obfuscated_php (Critical). The filename footer.php
+	// is not in any webshell-name map, so only content-based logic can fire.
+	// CheckPHPContent does not scan wp-content/uploads, so this finding is
+	// exclusive to CheckFileIndex (ForceFileIndex=true path).
 	logicalHome := "/home/acct"
-	logicalLang := filepath.Join(logicalHome, "public_html", "wp-content", "languages")
-	logicalPHP := filepath.Join(logicalLang, "evil.php")
+	logicalUploads := filepath.Join(logicalHome, "public_html", "wp-content", "uploads")
+	logicalPHP := filepath.Join(logicalUploads, "footer.php")
 
-	physicalLang := filepath.Join(tmp, "acct", "public_html", "wp-content", "languages")
-	if err := os.MkdirAll(physicalLang, 0755); err != nil {
+	physicalUploads := filepath.Join(tmp, "acct", "public_html", "wp-content", "uploads")
+	if err := os.MkdirAll(physicalUploads, 0755); err != nil {
 		t.Fatal(err)
 	}
-	// Clean PHP that is not a benign stub -- surfaces as new_php_in_sensitive_dir_clean
-	// (Warning). No other account check produces either new_php_in_sensitive_dir variant.
-	physicalPHP := filepath.Join(physicalLang, "evil.php")
+	// FOPO eval payload: two indicators (eval + base64_decode nesting) → obfuscated_php.
+	fopoContent := []byte("<?php $x = $_POST['x']; eval(base64_decode($x)); ?>")
+	physicalPHP := filepath.Join(physicalUploads, "footer.php")
 	old := time.Now().Add(-24 * time.Hour)
-	if err := os.WriteFile(physicalPHP, []byte("<?php\n$x = 1;\nreturn $x;\n"), 0644); err != nil {
+	if err := os.WriteFile(physicalPHP, fopoContent, 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(physicalPHP, old, old); err != nil {
@@ -216,9 +222,11 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 			case "/home":
 				return []os.DirEntry{testDirEntry{name: "acct", isDir: true}}, nil
 			case logicalHome:
+				// Return only public_html so CheckFileIndex/CheckPHPContent both
+				// see the same home structure. No addon domains.
 				return []os.DirEntry{testDirEntry{name: "public_html", isDir: true}}, nil
-			case logicalLang:
-				return []os.DirEntry{testDirEntry{name: "evil.php", isDir: false}}, nil
+			case logicalUploads:
+				return []os.DirEntry{testDirEntry{name: "footer.php", isDir: false}}, nil
 			default:
 				return nil, os.ErrNotExist
 			}
@@ -227,8 +235,8 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 			switch name {
 			case logicalHome:
 				return &fakeFileInfoMtime{name: "acct", dir: true, mode: 0755, mtime: old}, nil
-			case logicalLang:
-				return &fakeFileInfoMtime{name: "languages", dir: true, mode: 0755, mtime: old}, nil
+			case logicalUploads:
+				return &fakeFileInfoMtime{name: "uploads", dir: true, mode: 0755, mtime: old}, nil
 			case logicalPHP:
 				return os.Stat(physicalPHP)
 			default:
@@ -251,7 +259,7 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 
 	cfg := &config.Config{StatePath: stateDir}
 
-	// --- Full scan: CheckFileIndex must run and report the sensitive-dir PHP ---
+	// --- Full scan: CheckFileIndex must run and detect the FOPO PHP by content ---
 	fullOpts := AccountScanOptions{
 		MaxFiles:       0,
 		ForceContent:   true,
@@ -261,15 +269,17 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 	}
 	fullFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", fullOpts)
 
-	foundSensitiveDir := false
+	// Accept obfuscated_php (Critical, 2 indicators) or suspicious_php_content
+	// (High, 1 indicator) -- both are content-based findings from classifyUploadPHP.
+	foundContentBased := false
 	for _, f := range fullFindings {
-		if f.Check == "new_php_in_sensitive_dir" || f.Check == "new_php_in_sensitive_dir_clean" {
-			foundSensitiveDir = true
+		if f.Check == "obfuscated_php" || f.Check == "suspicious_php_content" {
+			foundContentBased = true
 			break
 		}
 	}
-	if !foundSensitiveDir {
-		t.Errorf("full scan must find new_php_in_sensitive_dir* via CheckFileIndex, got: %+v", fullFindings)
+	if !foundContentBased {
+		t.Errorf("full scan must find obfuscated_php or suspicious_php_content via CheckFileIndex content analysis, got: %+v", fullFindings)
 	}
 
 	// --- State-write invariant: audit must not corrupt the live baseline ---
@@ -280,11 +290,13 @@ func TestFileIndexRunsOnFullScanButNotDefault(t *testing.T) {
 	}
 
 	// --- Default scan: CheckFileIndex must NOT run (ForceFileIndex=false) ---
+	// CheckPHPContent does not scan wp-content/uploads, so neither content-based
+	// finding appears on the default path.
 	defaultFindings := RunAccountScanWithOptions(context.Background(), cfg, nil, "acct", DefaultAccountScanOptions(cfg))
 
 	for _, f := range defaultFindings {
-		if f.Check == "new_php_in_sensitive_dir" || f.Check == "new_php_in_sensitive_dir_clean" {
-			t.Errorf("default scan must not run CheckFileIndex, but got finding %+v", f)
+		if f.Check == "obfuscated_php" || f.Check == "suspicious_php_content" {
+			t.Errorf("default scan must not run CheckFileIndex, but got content finding %+v", f)
 		}
 	}
 }

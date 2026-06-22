@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/control"
@@ -403,7 +404,8 @@ func TestRunScanFullWithPollLoop(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		runScanFullWith(f, sender)
+		// Use a sub-millisecond interval so the test does not sleep 2 s.
+		runScanFullWithInterval(f, sender, time.Microsecond)
 	})
 
 	// Assert command sequence.
@@ -482,5 +484,50 @@ func TestRunScanFullWithPollLoopNoRespectIgnores(t *testing.T) {
 
 	if capturedEnqReq.RespectIgnores {
 		t.Error("enqueue RespectIgnores = true, want false when --respect-ignores not given")
+	}
+}
+
+// TestRunScanCancelWith exercises runScanCancelWith against an injected sender.
+// It asserts:
+//   - exactly one command is issued: CmdScanCancel
+//   - the cancel request carries the correct JobID
+//   - the printed output contains the job ID and the returned state
+func TestRunScanCancelWith(t *testing.T) {
+	const jobID = "job-cancel-1"
+	const wantState = "canceling"
+
+	var capturedCmd string
+	var capturedReq control.ScanCancelRequest
+
+	sender := func(cmd string, args any) (json.RawMessage, error) {
+		capturedCmd = cmd
+		raw, _ := json.Marshal(args)
+		if err := json.Unmarshal(raw, &capturedReq); err != nil {
+			t.Errorf("unmarshal cancel args: %v", err)
+		}
+		resp, _ := json.Marshal(control.ScanCancelResponse{JobID: jobID, State: wantState})
+		return resp, nil
+	}
+
+	f := scanFlags{
+		cancelID:   jobID,
+		jsonOutput: false,
+	}
+
+	out := captureStdout(t, func() {
+		runScanCancelWith(f, sender)
+	})
+
+	if capturedCmd != control.CmdScanCancel {
+		t.Errorf("command = %q, want %q", capturedCmd, control.CmdScanCancel)
+	}
+	if capturedReq.JobID != jobID {
+		t.Errorf("cancel request JobID = %q, want %q", capturedReq.JobID, jobID)
+	}
+	if !strings.Contains(out, jobID) {
+		t.Errorf("output %q does not contain job ID %q", out, jobID)
+	}
+	if !strings.Contains(out, wantState) {
+		t.Errorf("output %q does not contain state %q", out, wantState)
 	}
 }

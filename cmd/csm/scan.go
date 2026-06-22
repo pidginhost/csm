@@ -195,7 +195,15 @@ type sendFn func(cmd string, args any) (json.RawMessage, error)
 
 // runScanFullWith is the testable core of runScanFull.
 // It accepts an injected sender so tests can drive it against a fake daemon.
+// The production poll interval (2 s) is injected so tests can use a
+// sub-millisecond interval without sleeping.
 func runScanFullWith(f scanFlags, send sendFn) {
+	runScanFullWithInterval(f, send, 2*time.Second)
+}
+
+// runScanFullWithInterval is the inner core used by runScanFullWith and tests.
+// interval is the sleep between status polls when --wait is set.
+func runScanFullWithInterval(f scanFlags, send sendFn, interval time.Duration) {
 	req := control.ScanEnqueueRequest{
 		Scope:          "account",
 		Target:         f.account,
@@ -233,7 +241,6 @@ func runScanFullWith(f scanFlags, send sendFn) {
 	// Check immediately first (fast scans complete before the first interval),
 	// then sleep between subsequent polls.
 	jobID := enqResp.JobID
-	const pollInterval = 2 * time.Second
 	for {
 		statusRaw, err := send(control.CmdScanStatus, control.ScanStatusRequest{JobID: jobID})
 		if err != nil {
@@ -255,7 +262,7 @@ func runScanFullWith(f scanFlags, send sendFn) {
 			return
 		}
 		// queued or running -- sleep then poll again
-		time.Sleep(pollInterval)
+		time.Sleep(interval)
 	}
 }
 
@@ -294,9 +301,26 @@ func runScanReport(f scanFlags) {
 }
 
 // runScanCancel handles `csm scan --cancel <id>`.
+// requireDaemon handles the "not running" / transport error and may os.Exit;
+// that exit path is preserved here in the production wrapper, not in the core.
 func runScanCancel(f scanFlags) {
+	runScanCancelWith(f, sendControl)
+}
+
+// runScanCancelWith is the testable core of runScanCancel.
+// It accepts an injected sender so tests can drive it without hitting
+// requireDaemon / sendControl.
+func runScanCancelWith(f scanFlags, send sendFn) {
 	req := control.ScanCancelRequest{JobID: f.cancelID}
-	raw := requireDaemon(control.CmdScanCancel, req)
+	raw, err := send(control.CmdScanCancel, req)
+	if err != nil {
+		if errors.Is(err, errDaemonNotRunning) {
+			fmt.Fprintln(os.Stderr, "csm: daemon not running (start with: systemctl start csm)")
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
 
 	if f.jsonOutput {
 		printJSON(raw)
