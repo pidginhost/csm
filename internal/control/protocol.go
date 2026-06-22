@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // DefaultSocketPath is the Unix socket the daemon binds and the client
@@ -77,6 +78,12 @@ const (
 	CmdIncidentsShow       = "incidents.show"
 	CmdIncidentsStatus     = "incidents.status"
 	CmdIncidentsBulkStatus = "incidents.bulk_status"
+
+	// Full-scan job commands (uncapped-full-scan feature).
+	CmdScanEnqueue = "scan.enqueue"
+	CmdScanStatus  = "scan.status"
+	CmdScanReport  = "scan.report"
+	CmdScanCancel  = "scan.cancel"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -425,4 +432,61 @@ type IncidentBulkStatusResult struct {
 	OlderThanSeconds int64                     `json:"older_than_seconds,omitempty"`
 	LastSeenBefore   time.Time                 `json:"last_seen_before,omitempty"`
 	Items            []incident.BulkStatusItem `json:"items"`
+}
+
+// ScanEnqueueRequest carries parameters for CmdScanEnqueue.
+// Phase 1 accepts only Scope="account". Target is the cPanel username to scan.
+// RespectIgnores gates whether cfg.Suppressions.IgnorePaths apply during the scan.
+// Quarantine records the quarantine intent for use by a later phase; no live
+// auto-response is wired in Phase 1.
+type ScanEnqueueRequest struct {
+	Scope          string `json:"scope"`
+	Target         string `json:"target"`
+	RespectIgnores bool   `json:"respect_ignores"`
+	Quarantine     bool   `json:"quarantine"`
+}
+
+// ScanEnqueueResponse carries the job ID and initial state ("queued").
+type ScanEnqueueResponse struct {
+	JobID string `json:"job_id"`
+	State string `json:"state"`
+}
+
+// ScanStatusRequest carries an optional job ID for CmdScanStatus.
+// An empty JobID requests the full job list; a concrete ID returns that job only.
+type ScanStatusRequest struct {
+	JobID string `json:"job_id,omitempty"`
+}
+
+// ScanStatusResponse carries a single job or the full list depending on the request.
+type ScanStatusResponse struct {
+	Job  *store.ScanJobRecord  `json:"job,omitempty"`
+	Jobs []store.ScanJobRecord `json:"jobs,omitempty"`
+}
+
+// ScanReportRequest carries parameters for CmdScanReport.
+// Offset and Limit follow the usual slice semantics; Limit=0 returns all findings.
+type ScanReportRequest struct {
+	JobID  string `json:"job_id"`
+	Offset int    `json:"offset,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// ScanReportResponse carries the job record, the requested page of findings, and
+// the total finding count for the job (before paging).
+type ScanReportResponse struct {
+	Job      store.ScanJobRecord `json:"job"`
+	Findings []alert.Finding     `json:"findings"`
+	Total    int                 `json:"total"`
+}
+
+// ScanCancelRequest carries the job ID for CmdScanCancel.
+type ScanCancelRequest struct {
+	JobID string `json:"job_id"`
+}
+
+// ScanCancelResponse reports the job ID and its state after cancellation.
+type ScanCancelResponse struct {
+	JobID string `json:"job_id"`
+	State string `json:"state"`
 }

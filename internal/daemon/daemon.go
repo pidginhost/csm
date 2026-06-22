@@ -2139,6 +2139,7 @@ func (d *Daemon) startControlListener() {
 		csmlog.Error("control listener not available", "err", err)
 		return
 	}
+	cl.scanJobs = d.scanJobs
 	d.controlListener = cl
 	d.wg.Add(1)
 	obs.Go("control-listener", func() {

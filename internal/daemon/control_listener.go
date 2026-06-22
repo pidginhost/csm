@@ -33,6 +33,7 @@ type ControlListener struct {
 	d        *Daemon
 	listener net.Listener
 	phprelay *PHPRelayController // wired by Phase O2; may be nil in tests / pre-wiring
+	scanJobs *ScanJobManager     // wired after startScanJobManager(); nil until then
 }
 
 // NewControlListener creates the socket, enforces 0600 perms, and
