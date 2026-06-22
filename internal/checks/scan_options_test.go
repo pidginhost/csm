@@ -2,8 +2,12 @@ package checks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -55,5 +59,68 @@ func TestAccountScanMaxFilesPrefersContextOptions(t *testing.T) {
 	}
 	if got := accountScanMaxFiles(context.Background(), cfg); got != 10000 {
 		t.Errorf("without options should fall back to cfg, got %d", got)
+	}
+}
+
+func TestFullScanBypassesIgnorePaths(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Suppressions.IgnorePaths = []string{"*/vendor/*"}
+	full := ContextWithScanOptions(context.Background(), AccountScanOptions{RespectIgnores: false})
+	if scanRespectsIgnores(full, cfg) {
+		t.Error("full scan with RespectIgnores=false must not respect ignore_paths")
+	}
+	if !scanRespectsIgnores(context.Background(), cfg) {
+		t.Error("normal scan must respect ignore_paths")
+	}
+}
+
+func TestFullScanFindsIgnoredVendorWebshell(t *testing.T) {
+	tmp := t.TempDir()
+	logicalRoot := "/home/acct/public_html"
+	physicalRoot := filepath.Join(tmp, "home", "acct", "public_html")
+	vendorDir := filepath.Join(physicalRoot, "vendor")
+	if err := os.MkdirAll(vendorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	physicalShell := filepath.Join(vendorDir, "c99.php")
+	old := time.Now().Add(-365 * 24 * time.Hour)
+	writePHPFixture(t, physicalShell, phpCacheMalicious, old)
+
+	logicalShell := filepath.Join(logicalRoot, "vendor", "c99.php")
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case logicalRoot:
+				return []os.DirEntry{testDirEntry{name: "vendor", isDir: true}}, nil
+			case filepath.Join(logicalRoot, "vendor"):
+				return []os.DirEntry{testDirEntry{name: "c99.php", isDir: false}}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			if name == logicalShell {
+				return os.Stat(physicalShell)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Suppressions.IgnorePaths = []string{"*/vendor/*"}
+	names := map[string]bool{"c99.php": true}
+
+	var defaultFindings []alert.Finding
+	scanForWebshells(context.Background(), logicalRoot, 4, names, nil, cfg, &defaultFindings)
+	if hasFindingPath(defaultFindings, "webshell", logicalShell) {
+		t.Fatalf("default scan should respect ignore_paths: %+v", defaultFindings)
+	}
+
+	fullCtx := ContextWithScanOptions(context.Background(), AccountScanOptions{RespectIgnores: false})
+	var fullFindings []alert.Finding
+	scanForWebshells(fullCtx, logicalRoot, 4, names, nil, cfg, &fullFindings)
+	if !hasFindingPath(fullFindings, "webshell", logicalShell) {
+		t.Fatalf("full scan should bypass ignore_paths: %+v", fullFindings)
 	}
 }

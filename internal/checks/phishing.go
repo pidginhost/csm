@@ -246,11 +246,14 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
+		// Bypassed for explicit full-scan / audit requests.
 		suppressed := false
-		for _, ignore := range cfg.Suppressions.IgnorePaths {
-			if matchGlob(fullPath, ignore) {
-				suppressed = true
-				break
+		if scanRespectsIgnores(ctx, cfg) {
+			for _, ignore := range cfg.Suppressions.IgnorePaths {
+				if matchGlob(fullPath, ignore) {
+					suppressed = true
+					break
+				}
 			}
 		}
 		if suppressed {

@@ -6,6 +6,18 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+// scanRespectsIgnores reports whether the current scan should honour
+// cfg.Suppressions.IgnorePaths. When ctx carries AccountScanOptions with
+// RespectIgnores=false (i.e. an explicit full-scan / audit request), the caller
+// wants full coverage and ignore_paths is bypassed. Normal scheduled scans and
+// any call without options carry RespectIgnores=true (the safe default).
+func scanRespectsIgnores(ctx context.Context, _ *config.Config) bool {
+	if opts, ok := ScanOptionsFromContext(ctx); ok {
+		return opts.RespectIgnores
+	}
+	return true
+}
+
 // accountScanMaxFiles returns the effective file cap for the current scan. When
 // ctx carries AccountScanOptions (i.e. the caller is RunAccountScanWithOptions),
 // the options MaxFiles value wins so a full scan (MaxFiles=0) is uncapped.

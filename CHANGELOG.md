@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Full scans (MaxFiles=0) are now uncapped: all per-check file ranking calls respect the scan-options cap from context, so dormant old-mtime files beyond the default 10 000-file limit are found during a manual or scheduled full scan.
+- Full scans now cover paths normally excluded by suppressions.ignore_paths (vendor/, cache/, etc.), so an audit does not skip directories where malware can hide. Default scheduled scans still honour ignore_paths exactly as before.
 
 ## [3.20.0] - 2026-06-22
 

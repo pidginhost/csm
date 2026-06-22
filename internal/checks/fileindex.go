@@ -143,11 +143,14 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		name := filepath.Base(path)
 		nameLower := strings.ToLower(name)
 
+		// Bypassed for explicit full-scan / audit requests.
 		suppressed := false
-		for _, ignore := range cfg.Suppressions.IgnorePaths {
-			if matchGlob(path, ignore) {
-				suppressed = true
-				break
+		if scanRespectsIgnores(ctx, cfg) {
+			for _, ignore := range cfg.Suppressions.IgnorePaths {
+				if matchGlob(path, ignore) {
+					suppressed = true
+					break
+				}
 			}
 		}
 		if suppressed {

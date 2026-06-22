@@ -127,12 +127,14 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 			continue
 		}
 
-		// Skip suppressed paths
+		// Skip suppressed paths (bypassed for explicit full-scan / audit requests).
 		suppressed := false
-		for _, ignore := range cfg.Suppressions.IgnorePaths {
-			if matchGlob(fullPath, ignore) {
-				suppressed = true
-				break
+		if scanRespectsIgnores(ctx, cfg) {
+			for _, ignore := range cfg.Suppressions.IgnorePaths {
+				if matchGlob(fullPath, ignore) {
+					suppressed = true
+					break
+				}
 			}
 		}
 		if suppressed {

@@ -264,12 +264,14 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
-		// Check suppressed paths
+		// Check suppressed paths (bypassed for explicit full-scan / audit requests).
 		suppressed := false
-		for _, ignore := range cfg.Suppressions.IgnorePaths {
-			if matchGlob(fullPath, ignore) {
-				suppressed = true
-				break
+		if scanRespectsIgnores(ctx, cfg) {
+			for _, ignore := range cfg.Suppressions.IgnorePaths {
+				if matchGlob(fullPath, ignore) {
+					suppressed = true
+					break
+				}
 			}
 		}
 		if suppressed {

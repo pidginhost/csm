@@ -1910,12 +1910,14 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
-		// Check suppressed paths
+		// Check suppressed paths (bypassed for explicit full-scan / audit requests).
 		suppressed := false
-		for _, ignore := range s.cfg.Suppressions.IgnorePaths {
-			if matchGlob(fullPath, ignore) {
-				suppressed = true
-				break
+		if scanRespectsIgnores(ctx, s.cfg) {
+			for _, ignore := range s.cfg.Suppressions.IgnorePaths {
+				if matchGlob(fullPath, ignore) {
+					suppressed = true
+					break
+				}
 			}
 		}
 		if suppressed {
