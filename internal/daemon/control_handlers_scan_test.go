@@ -116,6 +116,19 @@ func TestDispatchScanEnqueueAllScopeLiteralAllTarget(t *testing.T) {
 	}
 }
 
+func TestDispatchScanEnqueueAllScopeRejectsQuarantine(t *testing.T) {
+	c, _ := newScanJobControlListener(t)
+
+	args, _ := json.Marshal(control.ScanEnqueueRequest{
+		Scope: "all", Target: "", Quarantine: true,
+	})
+	line, _ := json.Marshal(control.Request{Cmd: control.CmdScanEnqueue, Args: args})
+	resp := c.dispatch(line)
+	if resp.OK {
+		t.Fatal("scope=all with quarantine must be rejected (server-wide remediation)")
+	}
+}
+
 func TestDispatchScanEnqueueAllScopeRejectsJunkTarget(t *testing.T) {
 	c, _ := newScanJobControlListener(t)
 

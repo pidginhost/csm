@@ -73,6 +73,15 @@ func TestScanFlagParseAllWithAccountErrors(t *testing.T) {
 	}
 }
 
+func TestScanFlagParseAllWithQuarantineErrors(t *testing.T) {
+	// Server-wide quarantine must be refused: an operator quarantines per
+	// account after reviewing the --all report, not across every account blind.
+	_, err := parseScanFlags([]string{"--all", "--full", "--quarantine"})
+	if err == nil {
+		t.Error("expected error: --quarantine is not supported with --all")
+	}
+}
+
 func TestScanFlagParseAllWithQueryFlagErrors(t *testing.T) {
 	tests := [][]string{
 		{"--all", "--full", "--status"},

@@ -56,6 +56,12 @@ func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error
 		if req.Target != "" && req.Target != "all" {
 			return nil, fmt.Errorf("invalid target %q for scope \"all\": must be empty or \"all\"", req.Target)
 		}
+		// Defense-in-depth (the CLI also rejects this): server-wide quarantine
+		// would remediate across every account from one audit pass. Refuse it;
+		// quarantine is a per-account post-review action.
+		if req.Quarantine {
+			return nil, fmt.Errorf("quarantine is not supported with scope \"all\"")
+		}
 		id, err := c.scanJobs.Enqueue("all", "all", opts, req.Quarantine)
 		if err != nil {
 			return nil, fmt.Errorf("enqueue: %w", err)

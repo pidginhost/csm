@@ -132,6 +132,12 @@ func parseScanFlags(args []string) (scanFlags, error) {
 		if f.account != "" {
 			return scanFlags{}, errors.New("cannot combine --all with an account username")
 		}
+		// Server-wide quarantine would remediate across every account from a
+		// single report-only audit pass; too dangerous to trigger blind. An
+		// operator quarantines per-account after reviewing the --all report.
+		if f.quarantine {
+			return scanFlags{}, errors.New("--quarantine is not supported with --all; quarantine per account after review")
+		}
 		return f, nil
 	}
 
@@ -403,7 +409,8 @@ func printScanReportWith(jobID string, asJSON bool, send sendFn) {
 // printFindingsGroupedByAccount groups findings by TenantID and prints a
 // header line per account followed by that account's findings.
 func printFindingsGroupedByAccount(findings []alert.Finding) {
-	// Collect ordered unique accounts, preserving first-seen order.
+	// Collect the unique accounts, then sort alphabetically below for
+	// deterministic, predictable output on large server-wide reports.
 	seen := make(map[string]bool)
 	var order []string
 	byAccount := make(map[string][]alert.Finding)
