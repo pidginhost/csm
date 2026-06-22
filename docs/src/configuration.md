@@ -98,6 +98,14 @@ alerts:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
   max_per_hour: 10                      # default: 10
+  block_digest:
+    enabled: false                      # send per-country rollups for auto-blocked IPs
+    countries: []                       # empty = trusted countries, then all countries
+    interval: "1h"                      # digest cadence
+    live: false                         # also send one alert per qualifying block
+    send_on: "any"                      # any | customer
+    channel: ""                         # empty = enabled alert channels; or email | webhook
+    min_block: 1                        # 0 sends empty heartbeat digests
   audit_log:                            # SIEM-friendly per-finding stream
     file:
       enabled: false
@@ -792,6 +800,11 @@ running process to use the new value:
 `auto_response.mail_auth_recovery` is a restart-required sub-key under
 the otherwise safe `auto_response` section. It is captured by the cPanel
 mail auth backend probe at startup, so a reload that changes it emits
+`config_reload_restart_required` and leaves the live config unchanged.
+
+`alerts.block_digest` is restart-required under the otherwise safe
+`alerts` section. The collector and ticker are built at startup, so a
+reload that changes the digest settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
 
 The rest of the sub-keys in every safe-tagged section are read per-call

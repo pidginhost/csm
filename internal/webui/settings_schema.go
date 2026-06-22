@@ -96,6 +96,7 @@ const (
 
 	FieldGroupAbuseReporting = "Abuse reporting"
 	FieldGroupCentralDB      = "Central database"
+	FieldGroupBlockDigest    = "Block digest"
 )
 
 func int64p(v int64) *int64 { return &v }
@@ -123,6 +124,13 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "heartbeat.enabled", Type: "bool", Label: "Heartbeat enabled"},
 			{YAMLPath: "heartbeat.url", Type: "string", Label: "Heartbeat URL"},
 			{YAMLPath: "max_per_hour", Type: "int", Label: "Max alerts per hour", Min: int64p(0), Max: int64p(10000)},
+			{YAMLPath: "block_digest.enabled", Type: "bool", Label: "Block digest enabled", FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.countries", Type: "[]string", Label: "Block digest countries", Help: "Two-letter country codes, one per line. Empty falls back to trusted countries, then all countries.", FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.interval", Type: "string", Label: "Block digest interval", Placeholder: "1h", FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.live", Type: "bool", Label: "Send live block digest alerts", FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.send_on", Type: "enum", Label: "Block digest send policy", Options: []string{"any", "customer"}, FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.channel", Type: "enum", Label: "Block digest channel", Options: []string{"", "email", "webhook"}, FieldGroup: FieldGroupBlockDigest},
+			{YAMLPath: "block_digest.min_block", Type: "int", Label: "Block digest minimum blocks", Min: int64p(0), Max: int64p(100000), FieldGroup: FieldGroupBlockDigest},
 		},
 	},
 	{

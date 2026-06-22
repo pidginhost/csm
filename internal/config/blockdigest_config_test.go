@@ -35,6 +35,13 @@ func TestBlockDigestExplicitZeroMinBlockSurvives(t *testing.T) {
 	}
 }
 
+func TestBlockDigestBlankMinBlockUsesDefault(t *testing.T) {
+	cfg := loadBD(t, "alerts:\n  block_digest:\n    enabled: true\n    min_block:\n")
+	if cfg.Alerts.BlockDigest.MinBlock != 1 {
+		t.Errorf("blank min_block = %d, want default 1", cfg.Alerts.BlockDigest.MinBlock)
+	}
+}
+
 func TestBlockDigestIntervalAccessor(t *testing.T) {
 	cfg := loadBD(t, "alerts:\n  block_digest:\n    enabled: true\n    interval: \"30m\"\n")
 	if got := cfg.BlockDigestInterval(); got != 30*time.Minute {
@@ -50,9 +57,10 @@ func TestBlockDigestValidationRejectsBadValues(t *testing.T) {
 	cfg := &Config{}
 	cfg.Alerts.BlockDigest.Enabled = true
 	cfg.Alerts.BlockDigest.SendOn = "sometimes"
-	cfg.Alerts.BlockDigest.Channel = "carrierpigeon"
+	cfg.Alerts.BlockDigest.Channel = "pager"
 	cfg.Alerts.BlockDigest.Interval = "soon"
 	cfg.Alerts.BlockDigest.Countries = []string{"ROM"}
+	cfg.Alerts.BlockDigest.MinBlock = -1
 	cfg.Alerts.MaxPerHour = 10
 	results := Validate(cfg)
 	wantFields := map[string]bool{
@@ -60,6 +68,7 @@ func TestBlockDigestValidationRejectsBadValues(t *testing.T) {
 		"alerts.block_digest.channel":   false,
 		"alerts.block_digest.interval":  false,
 		"alerts.block_digest.countries": false,
+		"alerts.block_digest.min_block": false,
 	}
 	for _, r := range results {
 		if r.Level == "error" {
@@ -73,4 +82,31 @@ func TestBlockDigestValidationRejectsBadValues(t *testing.T) {
 			t.Errorf("expected validation error for %s, none found", f)
 		}
 	}
+}
+
+func TestBlockDigestValidationRejectsDisabledDeliveryChannel(t *testing.T) {
+	t.Run("email channel requires email alerts", func(t *testing.T) {
+		cfg := baseValidationConfig()
+		cfg.Alerts.Email.Enabled = false
+		cfg.Alerts.Webhook.Enabled = true
+		cfg.Alerts.Webhook.URL = "https://alerts.example.test/hook"
+		cfg.Alerts.BlockDigest.Enabled = true
+		cfg.Alerts.BlockDigest.Channel = "email"
+
+		results := Validate(cfg)
+		if !hasResult(results, "error", "alerts.block_digest.channel") {
+			t.Fatalf("expected channel error for disabled email alerts; results=%v", results)
+		}
+	})
+
+	t.Run("webhook channel requires webhook alerts", func(t *testing.T) {
+		cfg := baseValidationConfig()
+		cfg.Alerts.BlockDigest.Enabled = true
+		cfg.Alerts.BlockDigest.Channel = "webhook"
+
+		results := Validate(cfg)
+		if !hasResult(results, "error", "alerts.block_digest.channel") {
+			t.Fatalf("expected channel error for disabled webhook alerts; results=%v", results)
+		}
+	})
 }

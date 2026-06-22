@@ -210,6 +210,40 @@ func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
 	t.Fatalf("webhook.type options = %v, want phpanel", f.Options)
 }
 
+func TestAlertsSchemaIncludesBlockDigest(t *testing.T) {
+	s, _ := LookupSettingsSection("alerts")
+	for _, name := range []string{
+		"block_digest.enabled",
+		"block_digest.countries",
+		"block_digest.interval",
+		"block_digest.live",
+		"block_digest.send_on",
+		"block_digest.channel",
+		"block_digest.min_block",
+	} {
+		if findSchemaField(s, name) == nil {
+			t.Fatalf("%s field missing", name)
+		}
+	}
+
+	sendOn := findSchemaField(s, "block_digest.send_on")
+	for _, want := range []string{"any", "customer"} {
+		if !hasOption(sendOn.Options, want) {
+			t.Fatalf("block_digest.send_on options = %v, missing %q", sendOn.Options, want)
+		}
+	}
+	channel := findSchemaField(s, "block_digest.channel")
+	for _, want := range []string{"", "email", "webhook"} {
+		if !hasOption(channel.Options, want) {
+			t.Fatalf("block_digest.channel options = %v, missing %q", channel.Options, want)
+		}
+	}
+	minBlock := findSchemaField(s, "block_digest.min_block")
+	if minBlock.Min == nil || *minBlock.Min != 0 {
+		t.Fatalf("block_digest.min_block min = %v, want 0", minBlock.Min)
+	}
+}
+
 func TestMailLogsSchemaUsesEnumSource(t *testing.T) {
 	s, _ := LookupSettingsSection("mail_logs")
 	if !s.Restart {

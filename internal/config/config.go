@@ -1775,7 +1775,9 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
-	_, presence.blockDigestMinBlock = raw.Alerts.BlockDigest["min_block"]
+	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
+		presence.blockDigestMinBlock = true
+	}
 
 	fg := raw.EmailProtection.ForwardGuard
 	_, presence.forwardGuard.dryRun = fg["dry_run"]

@@ -1311,6 +1311,41 @@ func TestBuildChangeSetAcceptsKnownEnumValues(t *testing.T) {
 	}
 }
 
+func TestBuildChangeSetAcceptsBlockDigestFields(t *testing.T) {
+	section, ok := LookupSettingsSection("alerts")
+	if !ok {
+		t.Fatal("alerts section missing")
+	}
+	clone := &config.Config{}
+	changes := map[string]json.RawMessage{
+		"block_digest.enabled":   json.RawMessage(`true`),
+		"block_digest.countries": json.RawMessage(`["RO","DE"]`),
+		"block_digest.interval":  json.RawMessage(`"30m"`),
+		"block_digest.live":      json.RawMessage(`true`),
+		"block_digest.send_on":   json.RawMessage(`"customer"`),
+		"block_digest.channel":   json.RawMessage(`"email"`),
+		"block_digest.min_block": json.RawMessage(`0`),
+	}
+
+	yamlChanges, errs := buildChangeSet(section, clone, changes)
+	if len(errs) > 0 {
+		t.Fatalf("buildChangeSet errors = %+v, want none", errs)
+	}
+	if len(yamlChanges) != len(changes) {
+		t.Fatalf("YAML changes = %+v, want %d changes", yamlChanges, len(changes))
+	}
+	bd := clone.Alerts.BlockDigest
+	if !bd.Enabled || !bd.Live || bd.Interval != "30m" || bd.SendOn != "customer" || bd.Channel != "email" || bd.MinBlock != 0 {
+		t.Fatalf("BlockDigest not applied to clone: %+v", bd)
+	}
+	if got := bd.Countries; !reflect.DeepEqual(got, []string{"RO", "DE"}) {
+		t.Fatalf("BlockDigest.Countries = %v, want [RO DE]", got)
+	}
+	if !config.RestartRequired(config.Diff(&config.Config{}, clone)) {
+		t.Fatal("block_digest settings change should require restart")
+	}
+}
+
 // End-to-end companion to TestBuildChangeSetAcceptsKnownEnumValues: a known
 // enum value must survive the full POST path (CSRF + ETag + validate + persist)
 // and reload from disk, not just the buildChangeSet unit step.
