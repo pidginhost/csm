@@ -154,6 +154,10 @@ type Daemon struct {
 	// or before Run starts; UpdateInfo() handles that.
 	updateChecker *updatecheck.Checker
 
+	// scanJobs is the full-scan job manager. Wired in Run() after the global
+	// bbolt store is open. Nil when the store is unavailable at startup.
+	scanJobs *ScanJobManager
+
 	// lastAutomationActionCache memoises the newest automation-emitted
 	// finding so /api/v1/status does not run a 100-row history cursor on
 	// every poll. Invalidated after lastAutomationActionTTL elapses.
@@ -611,6 +615,18 @@ func (d *Daemon) Run() error {
 	// Start PAM listener for real-time brute-force detection
 	d.startPAMListener()
 
+	// Wire the full-scan job manager. Must run after the global bbolt store is
+	// open so NewScanJobManager can resolve store.Global(). Failure here is
+	// non-fatal for the rest of the daemon: periodic scans and the webui
+	// continue; only explicit full-scan commands are unavailable.
+	if db := store.Global(); db != nil {
+		if sjm, err := d.startScanJobManager(); err != nil {
+			csmlog.Warn("scan job manager unavailable", "err", err)
+		} else {
+			d.scanJobs = sjm
+		}
+	}
+
 	// Start control socket listener for the thin-client CLI. The
 	// daemon is the sole bbolt owner; CLI commands that previously
 	// raced for the lock now route through this socket.
@@ -1054,6 +1070,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.controlListener != nil {
 		d.controlListener.Stop()
+	}
+	if d.scanJobs != nil {
+		d.scanJobs.Stop()
 	}
 	d.stopYaraBackend()
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
