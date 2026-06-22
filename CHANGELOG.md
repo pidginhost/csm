@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WebUI exposes read-only `/api/v1/scan-jobs` endpoints (list, detail, paginated findings) for full-scan job reports.
 - Operators can run an uncapped, report-only full scan of a single account (`csm scan <user> --full`) that checks every file, including ones the normal scan skips for speed, and review the results later with `--status` and `--report`.
 - `csm scan --all --full` runs an uncapped report-only scan across every cPanel account under one job, with per-account progress and error isolation.
 - `csm scan <user> --full --quarantine` now quarantines eligible malware/webshell file findings (report-only by default), recording per-finding remediation status; process-kill, DB, and firewall actions are never triggered.

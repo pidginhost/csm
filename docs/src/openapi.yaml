@@ -1569,6 +1569,36 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/scan-jobs":
+    get:
+      operationId: get_scan_jobs
+      summary: "get /api/v1/scan-jobs (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of full-scan jobs, newest first.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/scan-jobs/":
+    get:
+      operationId: get_scan_jobs_router
+      summary: "get /api/v1/scan-jobs/ (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Scan-job detail or paginated findings for a job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/suppressions":
     post:
       operationId: post_suppressions

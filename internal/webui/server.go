@@ -235,6 +235,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/events", s.requireRead(http.HandlerFunc(s.apiEvents)))
 	mux.Handle("/api/v1/status", s.requireRead(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/challenge/stats", s.requireRead(http.HandlerFunc(s.apiChallengeStats)))
+	mux.Handle("/api/v1/scan-jobs", s.requireRead(http.HandlerFunc(s.apiScanJobsList)))
+	mux.Handle("/api/v1/scan-jobs/", s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)))
 	mux.Handle("/api/v1/findings", s.requireRead(http.HandlerFunc(s.apiFindings)))
 	mux.Handle("/api/v1/findings/enriched", s.requireRead(http.HandlerFunc(s.apiFindingsEnriched)))
 	mux.Handle("/api/v1/history", s.requireRead(http.HandlerFunc(s.apiHistory)))
