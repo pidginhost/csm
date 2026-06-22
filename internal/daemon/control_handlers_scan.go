@@ -28,13 +28,7 @@ func (c *ControlListener) handleScanEnqueue(argsRaw json.RawMessage) (any, error
 	}
 
 	cfg := c.d.currentCfg()
-	opts := checks.AccountScanOptions{
-		MaxFiles:       0,
-		ForceContent:   true,
-		ForceFileIndex: true,
-		RespectIgnores: req.RespectIgnores,
-		MaxFileBytes:   checks.FullScanMaxFileBytes(cfg),
-	}
+	opts := checks.FullScanOptions(cfg, req.RespectIgnores)
 
 	switch req.Scope {
 	case "account":

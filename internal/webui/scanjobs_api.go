@@ -146,13 +146,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	opts := checks.AccountScanOptions{
-		MaxFiles:       0,
-		ForceContent:   true,
-		ForceFileIndex: true,
-		RespectIgnores: body.RespectIgnores,
-		MaxFileBytes:   checks.FullScanMaxFileBytes(s.cfg),
-	}
+	opts := checks.FullScanOptions(s.cfg, body.RespectIgnores)
 
 	switch body.Scope {
 	case "account":

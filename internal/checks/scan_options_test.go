@@ -254,3 +254,27 @@ func TestFullScanMaxFileBytesDefault(t *testing.T) {
 		t.Errorf("FullScanMaxFileBytes over max = %d, want default", got)
 	}
 }
+
+func TestFullScanOptions(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.FullScanMaxFileMB = 32
+
+	opts := FullScanOptions(cfg, true)
+	if opts.MaxFiles != 0 {
+		t.Errorf("MaxFiles = %d, want 0 (uncapped)", opts.MaxFiles)
+	}
+	if !opts.ForceContent || !opts.ForceFileIndex {
+		t.Errorf("ForceContent=%v ForceFileIndex=%v, both must be true", opts.ForceContent, opts.ForceFileIndex)
+	}
+	if !opts.RespectIgnores {
+		t.Error("RespectIgnores must reflect the caller's choice (true)")
+	}
+	if opts.MaxFileBytes != 32*1024*1024 {
+		t.Errorf("MaxFileBytes = %d, want 32 MiB", opts.MaxFileBytes)
+	}
+
+	// respectIgnores=false is the audit-coverage path.
+	if FullScanOptions(cfg, false).RespectIgnores {
+		t.Error("RespectIgnores must be false when caller passes false")
+	}
+}

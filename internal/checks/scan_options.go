@@ -113,6 +113,21 @@ func ScanOptionsFromContext(ctx context.Context) (AccountScanOptions, bool) {
 	return opts, ok
 }
 
+// FullScanOptions builds the canonical option set for an uncapped full-scan
+// audit job: no file cap, force content + file-index (bypass the clean-file and
+// directory-mtime caches), and the configured per-file byte ceiling.
+// respectIgnores is the only caller-chosen knob. Centralised here so the control
+// handler and the WebUI enqueue path cannot drift on this security-relevant set.
+func FullScanOptions(cfg *config.Config, respectIgnores bool) AccountScanOptions {
+	return AccountScanOptions{
+		MaxFiles:       0,
+		ForceContent:   true,
+		ForceFileIndex: true,
+		RespectIgnores: respectIgnores,
+		MaxFileBytes:   FullScanMaxFileBytes(cfg),
+	}
+}
+
 // FullScanMaxFileBytes converts cfg.Thresholds.FullScanMaxFileMB to a byte
 // limit for per-file content reads during a full-scan job. A configured value
 // of 0, negative, or above the validated maximum falls back to 16 MiB so the
