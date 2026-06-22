@@ -134,6 +134,10 @@ type Server struct {
 	// verifiedBotsReloader pushes a saved verified_bots list into the live
 	// bot registry + verifier without a restart. Set by the Daemon; nil in tests.
 	verifiedBotsReloader func() error
+
+	// scanJobs is the full-scan job manager injected by the Daemon via
+	// SetScanJobs. Nil until wired; POST scan-job handlers return 503 when nil.
+	scanJobs ScanJobController
 }
 
 // New creates a new web UI server.
@@ -237,6 +241,12 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/challenge/stats", s.requireRead(http.HandlerFunc(s.apiChallengeStats)))
 	mux.Handle("/api/v1/scan-jobs", s.requireRead(http.HandlerFunc(s.apiScanJobsList)))
 	mux.Handle("/api/v1/scan-jobs/", s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)))
+	// POST /api/v1/scan-jobs — enqueue a new full-scan job (admin + CSRF).
+	// Go 1.22 method-qualified patterns take precedence over the unqualified
+	// prefix above, so GET /api/v1/scan-jobs still goes to the read handler.
+	mux.Handle("POST /api/v1/scan-jobs", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiScanJobsEnqueue))))
+	// POST /api/v1/scan-jobs/{id}/cancel — cancel a queued or running job.
+	mux.Handle("POST /api/v1/scan-jobs/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiScanJobsCancel))))
 	mux.Handle("/api/v1/findings", s.requireRead(http.HandlerFunc(s.apiFindings)))
 	mux.Handle("/api/v1/findings/enriched", s.requireRead(http.HandlerFunc(s.apiFindingsEnriched)))
 	mux.Handle("/api/v1/history", s.requireRead(http.HandlerFunc(s.apiHistory)))
@@ -632,6 +642,14 @@ func (s *Server) SetFindingBus(bus *broadcast.Bus) {
 // startup; treated as immutable after first set.
 func (s *Server) SetIncidentCorrelator(c *incident.Correlator) {
 	s.incidentCorrelator = c
+}
+
+// SetScanJobs wires the full-scan job manager so POST /api/v1/scan-jobs and
+// POST /api/v1/scan-jobs/{id}/cancel can enqueue and cancel jobs through the
+// daemon's single-job queue. Must be called before the server starts
+// accepting requests; POST handlers return 503 when nil.
+func (s *Server) SetScanJobs(c ScanJobController) {
+	s.scanJobs = c
 }
 
 // csmConfigJSON returns a JSON string of feature flags for the frontend.

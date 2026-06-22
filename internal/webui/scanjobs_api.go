@@ -1,13 +1,24 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// ScanJobController is the subset of the daemon's ScanJobManager the WebUI
+// needs to enqueue and cancel full-scan jobs. The daemon injects a concrete
+// *ScanJobManager via SetScanJobs; nil until wired (POST endpoints → 503).
+type ScanJobController interface {
+	Enqueue(scope, target string, opts checks.AccountScanOptions, quarantine bool) (string, error)
+	Cancel(id string) error
+}
 
 // apiScanJobsList handles GET /api/v1/scan-jobs.
 // Returns all scan-job records, newest-first.
@@ -111,6 +122,110 @@ func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *
 		"offset":   offset,
 		"limit":    limit,
 	})
+}
+
+// scanJobEnqueueBody is the JSON request body for POST /api/v1/scan-jobs.
+type scanJobEnqueueBody struct {
+	Scope          string `json:"scope"`
+	Target         string `json:"target"`
+	RespectIgnores bool   `json:"respect_ignores"`
+	Quarantine     bool   `json:"quarantine"`
+}
+
+// apiScanJobsEnqueue handles POST /api/v1/scan-jobs.
+// Requires admin auth + CSRF (enforced by the mux registration).
+func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
+	if s.scanJobs == nil {
+		writeJSONError(w, "scan job manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body scanJobEnqueueBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	opts := checks.AccountScanOptions{
+		MaxFiles:       0,
+		ForceContent:   true,
+		ForceFileIndex: true,
+		RespectIgnores: body.RespectIgnores,
+		MaxFileBytes:   checks.FullScanMaxFileBytes(s.cfg),
+	}
+
+	switch body.Scope {
+	case "account":
+		if body.Target == "" || !control.ValidScanAccountTarget(body.Target) {
+			writeJSONError(w, "invalid or missing account target", http.StatusBadRequest)
+			return
+		}
+		id, err := s.scanJobs.Enqueue("account", body.Target, opts, body.Quarantine)
+		if err != nil {
+			msg := "enqueue failed: " + err.Error()
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "queue is full") {
+				status = http.StatusConflict
+			}
+			writeJSONError(w, msg, status)
+			return
+		}
+		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+
+	case "all":
+		if body.Quarantine {
+			writeJSONError(w, "quarantine is not supported with scope \"all\"", http.StatusBadRequest)
+			return
+		}
+		id, err := s.scanJobs.Enqueue("all", "all", opts, false)
+		if err != nil {
+			msg := "enqueue failed: " + err.Error()
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "queue is full") {
+				status = http.StatusConflict
+			}
+			writeJSONError(w, msg, status)
+			return
+		}
+		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+
+	default:
+		writeJSONError(w, "unsupported scope: must be \"account\" or \"all\"", http.StatusBadRequest)
+	}
+}
+
+// apiScanJobsCancel handles POST /api/v1/scan-jobs/{id}/cancel.
+// The path arriving here is everything after /api/v1/scan-jobs/, e.g.
+// "sj-abc123/cancel". The tail must end exactly in "/<id>/cancel".
+// Requires admin auth + CSRF (enforced by the mux registration).
+func (s *Server) apiScanJobsCancel(w http.ResponseWriter, r *http.Request) {
+	if s.scanJobs == nil {
+		writeJSONError(w, "scan job manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Path: /api/v1/scan-jobs/{id}/cancel
+	tail := strings.TrimPrefix(r.URL.Path, "/api/v1/scan-jobs/")
+	if !strings.HasSuffix(tail, "/cancel") {
+		writeJSONError(w, "not found", http.StatusNotFound)
+		return
+	}
+	id := strings.TrimSuffix(tail, "/cancel")
+	if id == "" {
+		writeJSONError(w, "scan job id required", http.StatusNotFound)
+		return
+	}
+
+	if err := s.scanJobs.Cancel(id); err != nil {
+		msg := err.Error()
+		status := http.StatusConflict
+		if strings.Contains(msg, "not found") {
+			status = http.StatusNotFound
+		}
+		writeJSONError(w, "cancel failed: "+msg, status)
+		return
+	}
+	writeJSON(w, map[string]any{"job_id": id, "state": "canceling"})
 }
 
 // parseQueryInt parses a query parameter as int. Returns def on missing or

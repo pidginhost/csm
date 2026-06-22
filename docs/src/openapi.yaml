@@ -1584,6 +1584,45 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: post_scan_jobs_enqueue
+      summary: "post /api/v1/scan-jobs (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope:
+                  type: string
+                  enum: [account, all]
+                target:
+                  type: string
+                  description: Required when scope is "account"; ignored for "all".
+                respect_ignores:
+                  type: boolean
+                quarantine:
+                  type: boolean
+                  description: Forbidden when scope is "all".
+      responses:
+        "200":
+          description: Job enqueued; returns job_id and state="queued".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400":
+          description: Invalid scope, target, or quarantine flag.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Job queue is full.
+        "503":
+          description: Scan job manager not available.
   "/api/v1/scan-jobs/":
     get:
       operationId: get_scan_jobs_router
@@ -1599,6 +1638,32 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: post_scan_jobs_cancel
+      summary: "post /api/v1/scan-jobs/ (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Cancel accepted; returns job_id and state="canceling".
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: Malformed cancel path (missing /cancel suffix or empty job id).
+        "409":
+          description: Job is unknown or already in a terminal state (cannot cancel).
+        "503":
+          description: Scan job manager not available.
   "/api/v1/suppressions":
     post:
       operationId: post_suppressions

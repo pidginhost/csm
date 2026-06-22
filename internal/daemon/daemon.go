@@ -2092,6 +2092,9 @@ func (d *Daemon) startWebUI() {
 	d.webServer = srv
 	srv.SetHealthProvider(d)
 	srv.SetFindingBus(d.findingBus)
+	if d.scanJobs != nil {
+		srv.SetScanJobs(d.scanJobs)
+	}
 	srv.SetIncidentCorrelator(IncidentCorrelator())
 	// Push web-UI verified_bots edits into the live registry + verifier so they
 	// take effect without a restart, the same path SIGHUP uses.

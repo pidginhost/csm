@@ -86,22 +86,46 @@ func registeredAPIRoutes(t *testing.T) map[string]apiRouteContract {
 			if !ok || !isMuxHandleCall(call) || len(call.Args) < 2 {
 				return true
 			}
-			path, ok := stringLiteral(call.Args[0])
-			if !ok || !strings.HasPrefix(path, "/api/v1/") {
+			raw, ok := stringLiteral(call.Args[0])
+			if !ok {
 				return true
 			}
+
+			// Go 1.22+ supports method-qualified patterns: "POST /api/v1/..."
+			// Split off an optional leading HTTP method word.
+			path := raw
+			methodOverride := ""
+			if i := strings.IndexByte(raw, ' '); i > 0 {
+				word := raw[:i]
+				rest := raw[i+1:]
+				if isHTTPMethod(word) {
+					path = rest
+					methodOverride = strings.ToLower(word)
+				}
+			}
+
+			if !strings.HasPrefix(path, "/api/v1/") {
+				return true
+			}
+
+			source := fset.Position(call.Pos()).String()
 			route := apiRouteContract{
 				Path:   path,
 				Method: "get",
 				Scope:  "admin",
-				Source: fset.Position(call.Pos()).String(),
+				Source: source,
 			}
-			if exprContainsCall(call.Args[1], "requireCSRF") {
+
+			// Method: explicit override beats CSRF-derived inference.
+			if methodOverride != "" {
+				route.Method = methodOverride
+			} else if exprContainsCall(call.Args[1], "requireCSRF") {
 				route.Method = "post"
 			}
-			if method, ok := openAPIPrimaryMethodOverrides[path]; ok {
-				route.Method = method
+			if m, ok := openAPIPrimaryMethodOverrides[path]; ok {
+				route.Method = m
 			}
+
 			switch {
 			case exprContainsCall(call.Args[1], "requireRead"):
 				route.Scope = "read"
@@ -110,15 +134,34 @@ func registeredAPIRoutes(t *testing.T) map[string]apiRouteContract {
 			default:
 				t.Errorf("%s has no requireRead/requireAuth wrapper", route.Source)
 			}
-			if prev, exists := routes[path]; exists {
-				t.Errorf("%s duplicates %s registered at %s", route.Source, path, prev.Source)
+
+			// Method-qualified patterns for the same path are allowed to
+			// co-exist with an unqualified registration (e.g. GET reads and
+			// POST writes sharing a path prefix). Use "METHOD:path" as the
+			// dedup key so both are tracked independently.
+			key := path
+			if methodOverride != "" {
+				key = methodOverride + ":" + path
+			}
+			if prev, exists := routes[key]; exists {
+				t.Errorf("%s duplicates %s registered at %s", source, key, prev.Source)
 				return true
 			}
-			routes[path] = route
+			routes[key] = route
 			return true
 		})
 	}
 	return routes
+}
+
+// isHTTPMethod reports whether word is one of the standard HTTP methods
+// that Go 1.22's ServeMux accepts as a pattern prefix.
+func isHTTPMethod(word string) bool {
+	switch word {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT":
+		return true
+	}
+	return false
 }
 
 func isMuxHandleCall(call *ast.CallExpr) bool {
@@ -178,6 +221,13 @@ func loadOpenAPIDocument(t *testing.T) openAPIDocument {
 
 // documentedAPIRoutes parses the committed OpenAPI spec structurally so YAML
 // formatting changes cannot hide path, method, or scope drift.
+//
+// The key scheme matches registeredAPIRoutes:
+//   - Single-method paths use the plain path as the key (regardless of
+//     method), so unqualified mux.Handle registrations match them.
+//   - Multi-method paths (e.g. GET + POST on the same path, arising from
+//     Go 1.22 method-qualified registrations) emit one entry per method
+//     keyed as "method:path" for non-GET methods and plain path for GET.
 func documentedAPIRoutes(t *testing.T) map[string]apiRouteContract {
 	t.Helper()
 	doc := loadOpenAPIDocument(t)
@@ -192,20 +242,27 @@ func documentedAPIRoutes(t *testing.T) map[string]apiRouteContract {
 			t.Errorf("%s has no HTTP operation", path)
 			continue
 		}
-		if len(methods) > 1 {
-			t.Errorf("%s documents multiple primary methods: %v", path, methods)
-			continue
-		}
-		method := methods[0]
-		op := item[method]
-		if op.Scope != "read" && op.Scope != "admin" {
-			t.Errorf("%s %s has x-csm-scope = %q, want read or admin", method, path, op.Scope)
-		}
-		routes[path] = apiRouteContract{
-			Path:   path,
-			Method: method,
-			Scope:  op.Scope,
-			Source: "docs/src/openapi.yaml",
+		multiMethod := len(methods) > 1
+		for _, method := range methods {
+			op := item[method]
+			if op.Scope != "read" && op.Scope != "admin" {
+				t.Errorf("%s %s has x-csm-scope = %q, want read or admin", method, path, op.Scope)
+			}
+			// Multi-method paths have both a plain-path GET entry and a
+			// "method:path" key for non-GET so they match the method-qualified
+			// mux registrations ("POST /api/v1/...") detected by the scanner.
+			// Single-method paths always use the plain path regardless of method
+			// to match unqualified mux.Handle registrations.
+			key := path
+			if multiMethod && method != "get" {
+				key = method + ":" + path
+			}
+			routes[key] = apiRouteContract{
+				Path:   path,
+				Method: method,
+				Scope:  op.Scope,
+				Source: "docs/src/openapi.yaml",
+			}
 		}
 	}
 	return routes
@@ -238,23 +295,23 @@ func TestOpenAPISpecCoversAllRoutes(t *testing.T) {
 	var missing []string
 	var methodMismatches []string
 	var scopeMismatches []string
-	for path, route := range registered {
-		doc, ok := documented[path]
+	for key, route := range registered {
+		doc, ok := documented[key]
 		if !ok {
-			missing = append(missing, path)
+			missing = append(missing, key)
 			continue
 		}
 		if route.Method != doc.Method {
-			methodMismatches = append(methodMismatches, fmt.Sprintf("%s: registered %s at %s, documented %s", path, route.Method, route.Source, doc.Method))
+			methodMismatches = append(methodMismatches, fmt.Sprintf("%s: registered %s at %s, documented %s", key, route.Method, route.Source, doc.Method))
 		}
 		if route.Scope != doc.Scope {
-			scopeMismatches = append(scopeMismatches, fmt.Sprintf("%s: registered %s at %s, documented %s", path, route.Scope, route.Source, doc.Scope))
+			scopeMismatches = append(scopeMismatches, fmt.Sprintf("%s: registered %s at %s, documented %s", key, route.Scope, route.Source, doc.Scope))
 		}
 	}
 	var extra []string
-	for path := range documented {
-		if _, ok := registered[path]; !ok {
-			extra = append(extra, path)
+	for key := range documented {
+		if _, ok := registered[key]; !ok {
+			extra = append(extra, key)
 		}
 	}
 	sort.Strings(missing)
@@ -289,10 +346,10 @@ func TestOpenAPISpecSecuritySchemeMatchesWebUIAuth(t *testing.T) {
 	}
 
 	documented := documentedAPIRoutes(t)
-	for path, route := range documented {
-		op := doc.Paths[path][route.Method]
+	for _, route := range documented {
+		op := doc.Paths[route.Path][route.Method]
 		if !securityIncludesBearer(op.Security) {
-			t.Errorf("%s %s must require bearerAuth", route.Method, path)
+			t.Errorf("%s %s must require bearerAuth", route.Method, route.Path)
 		}
 	}
 }
