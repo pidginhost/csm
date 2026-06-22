@@ -139,6 +139,9 @@ Distributed HTTP flood rollups do not trigger a direct IP block because
 they describe one targeted vhost, not one source IP. The per-IP findings
 that feed the rollup still drive normal block decisions.
 
+`mail_bruteforce_suspected` is also visibility only and does not feed either
+auto-block path.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services
@@ -161,7 +164,7 @@ Beyond standard malware patterns, CSM detects advanced evasion techniques:
 - **WordPress brute force**: real-time access log monitoring for wp-login.php and xmlrpc.php floods (blocks within seconds, not the 10-minute periodic scan)
 - **Admin-panel brute force**: same access-log path, tracks POSTs to `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`, and Joomla `/administrator/index.php`. Emits `admin_panel_bruteforce` and auto-blocks the IP. Path matcher is intentionally tight to avoid false positives on shared hosting; Drupal and Tomcat Manager use different attack shapes and need separate detectors.
 - **SMTP brute force and probes**: tails `/var/log/exim_mainlog` on cPanel and non-cPanel Exim hosts where the file exists. Emits `smtp_probe_abuse` and `smtp_bruteforce` (per-IP, auto-blocks), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only).
-- **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_subnet_spray`, `mail_account_spray`, `mail_account_compromised`, and `mail_auth_backend_degraded`. Recent successful logins for the same mailbox are weighed before single-IP mail auth blocks, so a shared office address is not blocked because one client has a stale saved password. When the auth backend is degraded, `mail_bruteforce` and `mail_subnet_spray` auto-blocking pause until backend errors age out.
+- **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_bruteforce_suspected`, `mail_subnet_spray`, `mail_account_spray`, `mail_account_compromised`, and `mail_auth_backend_degraded`. Established good sources with a confined stale-password pattern emit the suspected advisory without auto-blocking; wider spraying and confirmed compromise still block. When the auth backend is degraded, `mail_bruteforce` and `mail_subnet_spray` auto-blocking pause until backend errors age out.
 - **Mail auth backend probe (cPanel)**: independently of the log signals above, CSM opens the `cpdoveauthd` socket on a short interval. dovecot keeps answering its IMAP/POP3 ports during a cpdoveauthd outage, so cPanel's own service checks do not notice, yet every login fails regardless of password. When the probe finds the socket unreachable CSM raises `mail_auth_backend_degraded` and pauses both mail and SMTP brute-force auto-block. With `auto_response.mail_auth_recovery.restart_enabled`, CSM restarts the mail service once the backend has been continuously down past `down_grace` (default 10m, rate-limited), so a brief blip during maintenance never triggers a needless restart. Changes to mail auth recovery settings require a daemon restart.
 
 ## Dry-run precedence (Phase 4)

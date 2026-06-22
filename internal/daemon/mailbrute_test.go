@@ -664,17 +664,23 @@ func TestMailAuthTracker_NoBruteForceFromEstablishedGoodSource(t *testing.T) {
 	ip := "203.0.113.11"
 	acct := "comenzi@example.ro"
 	establishGoodSource(tr, clock, ip, acct)
-	var fired bool
+	var fired, suspected bool
 	for i := 0; i < 6; i++ {
 		for _, f := range tr.Record(ip, acct) {
-			if f.Check == "mail_bruteforce" {
+			switch f.Check {
+			case "mail_bruteforce":
 				fired = true
+			case "mail_bruteforce_suspected":
+				suspected = true
 			}
 		}
 		clock.advance(30 * time.Second)
 	}
 	if fired {
 		t.Fatalf("established good source must not trigger mail_bruteforce for its own mailbox")
+	}
+	if !suspected {
+		t.Fatalf("established good source failure should surface mail_bruteforce_suspected")
 	}
 }
 
@@ -720,6 +726,58 @@ func TestMailAuthTracker_GoodSourceWindowBoundary(t *testing.T) {
 	})
 }
 
+func TestMailAuthTracker_FreshGoodSourceDoesNotDowngradeSiblingFailure(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.16"
+
+	tr.RecordSuccess(ip, "owner@example.ro")
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "manager@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+	}
+	if !block {
+		t.Fatalf("fresh same-window success must not downgrade sibling mailbox failures")
+	}
+	if suspected {
+		t.Fatalf("fresh same-window success emitted mail_bruteforce_suspected")
+	}
+}
+
+func TestMailAuthTracker_StaleGoodSourceDoesNotDowngradeSiblingFailure(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.19"
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+	clock.advance(mailGoodSourceTTL + time.Second)
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "manager@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+	}
+	if !block {
+		t.Fatalf("stale good-source history must not downgrade sibling mailbox failures")
+	}
+	if suspected {
+		t.Fatalf("stale good-source history emitted mail_bruteforce_suspected")
+	}
+}
+
 func TestMailAuthTracker_BruteForceFiresWhenEstablishedGoodSourceHasAccountlessFailures(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -741,17 +799,19 @@ func TestMailAuthTracker_BruteForceFiresWhenEstablishedGoodSourceHasAccountlessF
 	}
 }
 
-func TestMailAuthTracker_BruteForceFiresWhenGoodSourceAlsoFailsOtherMailbox(t *testing.T) {
+func TestMailAuthTracker_GoodSourceCrackInProgressStillBlocks(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	ip := "203.0.113.12"
-	good := "owner@example.ro"
-	establishGoodSource(tr, clock, ip, good)
-	// Same IP guesses a different mailbox it has no standing for: brute-force
-	// must still fire. Good standing is per-mailbox, not a blanket IP pass.
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+	// The IP slips in a single success on a second mailbox, then keeps failing it.
+	// Established standing on owner@ must not downgrade a mailbox the IP is itself
+	// succeeding-then-failing on: that is a crack in progress, so brute-force must
+	// still auto-block rather than drop to the advisory.
+	tr.RecordSuccess(ip, "victim@example.ro")
 	var fired bool
 	for i := 0; i < 6; i++ {
-		for _, f := range tr.Record(ip, "stranger@example.ro") {
+		for _, f := range tr.Record(ip, "victim@example.ro") {
 			if f.Check == "mail_bruteforce" {
 				fired = true
 			}
@@ -759,7 +819,206 @@ func TestMailAuthTracker_BruteForceFiresWhenGoodSourceAlsoFailsOtherMailbox(t *t
 		clock.advance(30 * time.Second)
 	}
 	if !fired {
-		t.Fatalf("good standing for one mailbox must not suppress brute-force against another, got no finding")
+		t.Fatalf("a good source failing a mailbox it also non-dominantly succeeds on is a crack in progress and must still auto-block")
+	}
+}
+
+func TestMailAuthTracker_GoodSourceFreshSuccessBeforeFailureBurstStillBlocks(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.17"
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+
+	tr.RecordSuccess(ip, "victim@example.ro")
+	clock.advance(time.Second)
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "victim@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !block {
+		t.Fatalf("fresh success on the failing mailbox before a failure-dominant burst must still auto-block")
+	}
+	if suspected {
+		t.Fatalf("fresh success on the failing mailbox emitted mail_bruteforce_suspected")
+	}
+}
+
+func TestMailAuthTracker_EstablishedGoodCurrentSuccessFailureDominantStillBlocks(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.18"
+	acct := "owner@example.ro"
+	establishGoodSource(tr, clock, ip, acct)
+
+	tr.RecordSuccess(ip, acct)
+	clock.advance(time.Second)
+
+	var block, suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, acct) {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !block {
+		t.Fatalf("current non-dominant success on an established failing mailbox must still auto-block")
+	}
+	if suspected {
+		t.Fatalf("current non-dominant success on an established failing mailbox emitted mail_bruteforce_suspected")
+	}
+}
+
+// A real office/household IP that authenticates a working mailbox for hours, then
+// has a second profile with a stale password fail against a confined set of its
+// own mailboxes, is a misconfiguration, not a brute-force. It surfaces as
+// mail_bruteforce_suspected (visibility) but must not 24h-block the customer.
+func TestMailAuthTracker_EstablishedGoodSourceConfinedSiblingFailureAlertsOnly(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.20"
+	establishGoodSource(tr, clock, ip, "olesia@example.ro")
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, "manager@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if block {
+		t.Fatalf("established good source failing one confined sibling mailbox must not auto-block")
+	}
+	if !suspected {
+		t.Fatalf("a confined failure from an established good source should surface mail_bruteforce_suspected")
+	}
+}
+
+func TestMailAuthTracker_SuspectedSuppressionDoesNotBlockEscalation(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.22"
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+
+	var suspected bool
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "manager@example.ro") {
+			if f.Check == "mail_bruteforce_suspected" {
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !suspected {
+		t.Fatalf("confined failure did not emit mail_bruteforce_suspected")
+	}
+
+	// Escalating to a second distinct mailbox exceeds the single-mailbox good
+	// footprint; the suspected-advisory suppression clock must not stop that from
+	// reaching the block path.
+	var block bool
+	for _, f := range tr.Record(ip, "sales@example.ro") {
+		if f.Check == "mail_bruteforce" {
+			block = true
+		}
+	}
+	if !block {
+		t.Fatalf("suspected advisory suppression must not block escalation to mail_bruteforce")
+	}
+}
+
+// The downgrade is bounded: an established good source that sprays more distinct
+// mailboxes than the confined limit is a foothold spraying, not a stale profile,
+// and must still auto-block.
+func TestMailAuthTracker_EstablishedGoodSourceSprayingManyMailboxesStillBlocks(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.21"
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+	var block bool
+	for _, acct := range []string{"a@example.ro", "b@example.ro", "c@example.ro", "a@example.ro", "b@example.ro"} {
+		for _, f := range tr.Record(ip, acct) {
+			if f.Check == "mail_bruteforce" {
+				block = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if !block {
+		t.Fatalf("an established good source spraying more than the confined mailbox limit must still auto-block")
+	}
+}
+
+// A multi-tenant office/agency IP runs working profiles for several client
+// mailboxes; a stale saved password then fails a set of those mailboxes no
+// larger than its established good footprint. That is a misconfiguration, not a
+// brute-force, even though it touches more than a couple of mailboxes, so it
+// must surface as an advisory rather than locking the whole office out.
+func TestMailAuthTracker_EstablishedMultiTenantConfinedFailuresAdvisory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.40"
+	mboxes := []string{"a@t1.ro", "b@t1.ro", "c@t2.ro", "d@t2.ro", "e@t3.ro"}
+	for _, m := range mboxes {
+		establishGoodSource(tr, clock, ip, m)
+	}
+	var block, suspected bool
+	for _, m := range mboxes {
+		for _, f := range tr.Record(ip, m) {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(20 * time.Second)
+	}
+	if block {
+		t.Fatalf("an established multi-mailbox source failing within its own good footprint must not auto-block")
+	}
+	if !suspected {
+		t.Fatalf("confined failures across an established footprint should surface mail_bruteforce_suspected")
+	}
+}
+
+// The footprint bound is real: a source established-good for a single mailbox
+// must not get to fail more distinct mailboxes than that. One foothold buys at
+// most one confined miss before the block path re-engages.
+func TestMailAuthTracker_SingleFootprintCannotExceedItsGoodCount(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.41"
+	establishGoodSource(tr, clock, ip, "owner@example.ro")
+	for i := 0; i < 5; i++ {
+		tr.Record(ip, "first@example.ro")
+		clock.advance(20 * time.Second)
+	}
+	var block bool
+	for _, f := range tr.Record(ip, "second@example.ro") {
+		if f.Check == "mail_bruteforce" {
+			block = true
+		}
+	}
+	if !block {
+		t.Fatalf("failing more distinct mailboxes than the established good footprint must auto-block")
 	}
 }
 

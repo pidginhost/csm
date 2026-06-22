@@ -96,6 +96,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "mail_account_compromised", Category: CategoryBruteForce},
 	{Name: "mail_account_spray", Category: CategoryBruteForce},
 	{Name: "mail_bruteforce", Category: CategoryBruteForce},
+	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce},
 	{Name: "mail_subnet_spray", Category: CategoryBruteForce},
 	{Name: "smtp_account_spray", Category: CategoryBruteForce},
 	{Name: "smtp_bruteforce", Category: CategoryBruteForce},

@@ -69,6 +69,7 @@ func emailKindForCheck(check string) string {
 	case "email_auth_failure_realtime",
 		"email_suspicious_geo",
 		"mail_bruteforce",
+		"mail_bruteforce_suspected",
 		"mail_subnet_spray",
 		"mail_account_spray",
 		"smtp_bruteforce",

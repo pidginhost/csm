@@ -72,16 +72,17 @@ The finding is `email_cloud_relay_abuse`. Auto-response actions follow the globa
 
 Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.
 
-Four attack patterns:
+Five attack patterns:
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
 | `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window without matching successful mailbox activity | IP blocked via nftables |
+| `mail_bruteforce_suspected` | An established good source hits the per-IP failed-auth threshold with a confined stale-password pattern | Visibility finding only. No auto-block |
 | `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 | `mail_account_compromised` | A successful login comes from an IP that repeatedly failed auth against the same mailbox | IP blocked immediately. Rotate the password and revoke sessions |
 
-Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Recent successful logins for the same mailbox can suppress single-IP mail auth blocks, which avoids blocking a shared office address when one client has a stale saved password.
+Tunable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`. Independent from the SMTP tracker so the Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked. Established good sources with a confined stale-password pattern emit `mail_bruteforce_suspected` instead of an IP block, while wider spraying and confirmed compromise still block.
 
 When the mail authentication backend itself fails (for example dovecot cannot reach `cpdoveauthd`), every login fails regardless of password. CSM detects a burst of these backend errors, pauses `mail_bruteforce` and `mail_subnet_spray` auto-blocking, and raises a `mail_auth_backend_degraded` warning so the outage is visible instead of mass-blocking legitimate users. Detection resumes automatically once the backend recovers.
 

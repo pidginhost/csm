@@ -75,6 +75,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		return nil
 	}
 
+	authenticated := collectAuthenticatedIPs(cfg)
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
@@ -108,6 +109,17 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	var pendingQueries []pendingQuery
 
 	for ip, source := range ips {
+		// A source that authenticated successfully holds valid credentials and is
+		// a real customer on a recycled dynamic/CGNAT address, not a drive-by
+		// scanner. Reputation auto-block keys on mere passive access, so without
+		// this skip a legitimate customer whose ISP-recycled IP appears in a
+		// public feed gets a 24h block the instant they open webmail. Genuine
+		// attacks from the same IP are still caught by the brute-force,
+		// compromise, and takeover detectors, which do not honour this exemption.
+		if authenticated[ip] {
+			continue
+		}
+
 		// Tier 1: Skip if already blocked
 		if alreadyBlocked[ip] {
 			continue
@@ -435,6 +447,43 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 	}
 
 	return ips
+}
+
+// collectAuthenticatedIPs returns IPs that successfully authenticated to a
+// mailbox in the recent log window. A source that holds valid mail credentials
+// is a real customer, not a drive-by scanner: a threat-feed match on such an IP
+// is almost always a recycled dynamic/CGNAT address rather than the attacker the
+// feed once listed. Romanian and other residential ISPs rotate these pools
+// aggressively, so an IP an attacker used last week routinely lands on a paying
+// customer this week. Webmail authenticates through dovecot, so this also covers
+// Horde/Roundcube users.
+//
+// Successful SSH logins are deliberately excluded: a clean SSH auth from a
+// feed-listed IP is itself a red flag (a cracked or attacker-controlled host),
+// and collectRecentIPs already surfaces those IPs precisely so their reputation
+// is checked. Authenticated mail attackers (compromised accounts) remain covered
+// by the brute-force, compromise, and account-takeover detectors, which do not
+// honour this exemption. The mail window is wider than collectRecentIPs uses so
+// a customer's success is not pushed out of view by a burst of attacker failures
+// occupying the tail.
+func collectAuthenticatedIPs(cfg *config.Config) map[string]bool {
+	authed := make(map[string]bool)
+	info := platform.Detect()
+
+	mailLog := reputationMailLogPath(cfg, info)
+	if mailLog == "" {
+		return authed
+	}
+	for _, line := range tailFile(mailLog, 200) {
+		if !strings.Contains(line, "-login: Logged in") {
+			continue
+		}
+		if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+			authed[ip] = true
+		}
+	}
+
+	return authed
 }
 
 func reputationMailLogPath(cfg *config.Config, info platform.Info) string {

@@ -180,6 +180,7 @@ func TestEmailGroupsIncludesCurrentEmailDetectorChecks(t *testing.T) {
 		{check: "email_av_parse_error", kind: "malware"},
 		{check: "email_av_quarantine_error", kind: "malware"},
 		{check: "mail_bruteforce", kind: "auth_failure"},
+		{check: "mail_bruteforce_suspected", kind: "auth_failure"},
 		{check: "smtp_bruteforce", kind: "auth_failure"},
 		{check: "smtp_probe_abuse", kind: "auth_failure"},
 		{check: "mail_account_compromised", kind: "compromised_account"},

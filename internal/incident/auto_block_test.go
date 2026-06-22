@@ -141,6 +141,79 @@ func TestAutoBlockFiresWhenBlockableFindingJoinsFTPAdvisory(t *testing.T) {
 	}
 }
 
+func TestAutoBlockSkipsMailBruteforceSuspectedOnly(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "high",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	// High severity at a high gate would block any non-excluded finding; the
+	// advisory must stay visibility-only so a misconfigured customer is not
+	// locked out.
+	f := alert.Finding{
+		Check:     "mail_bruteforce_suspected",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.70",
+		Timestamp: now,
+	}
+	if _, _, err := c.OnFinding(f); err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired for mail_bruteforce_suspected advisory at high gate: %d", got)
+	}
+}
+
+func TestAutoBlockFiresWhenBlockableFindingJoinsMailSuspected(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "high",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	advisory := alert.Finding{
+		Check:     "mail_bruteforce_suspected",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.71",
+		Timestamp: now,
+	}
+	if _, _, err := c.OnFinding(advisory); err != nil {
+		t.Fatalf("OnFinding advisory: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired before blockable evidence joined: %d", got)
+	}
+
+	// A real brute-force from the same source joins the incident: the exclusion
+	// no longer holds and the block fires.
+	brute := alert.Finding{
+		Check:     "mail_bruteforce",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.71",
+		Timestamp: now.Add(time.Minute),
+	}
+	c.now = func() time.Time { return brute.Timestamp }
+	if _, _, err := c.OnFinding(brute); err != nil {
+		t.Fatalf("OnFinding brute: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("incident auto-block calls = %d, want 1 after mail_bruteforce joins", got)
+	}
+}
+
 func TestAutoBlockSkipsBelowSeverityGate(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{

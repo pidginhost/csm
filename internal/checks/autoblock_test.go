@@ -1257,6 +1257,32 @@ func TestAutoBlock_EmailAuthFailureRealtimeDoesNotBlockSingleFailure(t *testing.
 	}
 }
 
+func TestAutoBlock_MailBruteforceSuspectedDoesNotBlock(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:    "mail_bruteforce_suspected",
+		Message:  "Suspected mail misconfiguration from 203.0.113.8: 5 failed auths in 10m0s from an established good source (not auto-blocked)",
+		SourceIP: "203.0.113.8",
+	}}
+	actions := AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("mail_bruteforce_suspected blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("mail_bruteforce_suspected actions = %+v, want none", actions)
+	}
+}
+
 func TestAutoBlock_AccountOnlyMailFindingsDoNotBlock(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true

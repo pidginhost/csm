@@ -26,7 +26,12 @@ type mailIPEntry struct {
 	goodFirst  map[string]time.Time
 	goodLast   map[string]time.Time
 	suppressed time.Time
-	lastSeen   time.Time
+	// suspectedSuppressed rate-limits the advisory mail_bruteforce_suspected
+	// finding independently of the auto-block clock, so a misconfigured client
+	// is surfaced once per window without firing repeatedly, yet a later
+	// escalation to a real spray can still reach the auto-block path.
+	suspectedSuppressed time.Time
+	lastSeen            time.Time
 }
 
 // recordGoodAuth notes a successful auth for account at now, maintaining the
@@ -86,24 +91,57 @@ func (e *mailIPEntry) establishedGood(account string, now time.Time, window time
 	return now.Sub(e.goodFirst[account]) >= window
 }
 
-// establishedGoodFailing reports whether every mailbox this IP is currently
-// failing against is one it has established good standing for, with no
-// account-less failures mixed in. Used to suppress per-IP brute-force
-// auto-block for a misconfigured legitimate client without blinding the
-// detector when the same IP also probes mailboxes it does not own. Caller must
-// hold t.mu and must have pruned e.times and e.failedAccounts to the window.
-func (e *mailIPEntry) establishedGoodFailing(now time.Time, window time.Duration) bool {
-	if len(e.failedAccounts) == 0 {
+// establishedGoodCount returns how many distinct mailboxes this IP holds
+// established good standing for: each first succeeded longer ago than the
+// failure window and is still live within the good-source TTL. Caller must hold
+// t.mu.
+func (e *mailIPEntry) establishedGoodCount(now time.Time, window time.Duration) int {
+	n := 0
+	for account := range e.goodLast {
+		if e.establishedGood(account, now, window) {
+			n++
+		}
+	}
+	return n
+}
+
+// establishedGoodConfined reports whether this IP looks like a misconfigured
+// legitimate client rather than a brute-forcer: every current failure is
+// attributed to a named mailbox, none of those mailboxes is one the IP is
+// concurrently and non-dominantly succeeding on (which would be a crack in
+// progress), and the count of distinct failing mailboxes does not exceed the
+// count of mailboxes the IP holds established good standing for. When true the
+// per-IP signal is downgraded to an advisory rather than a firewall block, so a
+// source running working mail profiles alongside one or more profiles with a
+// stale password (sibling mailboxes or a multi-tenant office) is not locked out.
+//
+// Bounding the failing set by the established-good footprint, rather than a fixed
+// cap, is what keeps the bypass proportional to proven legitimacy: an attacker
+// would need an equal number of established (hours-old, regularly-used,
+// non-padding) valid credentials to earn the same slack, while a real agency's
+// footprint scales with the mailboxes it actually runs. A fresh same-window
+// "success" is not established, so padding earns no downgrade, and the
+// compromise and spray detectors stay fully armed. Caller must hold t.mu and
+// must have pruned e.times/e.failedAccounts/e.successAccounts to the window.
+func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duration) bool {
+	failing := len(e.failedAccounts)
+	if failing == 0 {
 		return false
 	}
 	named := 0
+	cutoff := now.Add(-window)
 	for account, times := range e.failedAccounts {
 		named += len(times)
-		if !e.establishedGood(account, now, window) {
+		if e.hasCurrentNonDominantSuccess(account, cutoff) {
 			return false
 		}
 	}
-	return named == len(e.times)
+	// Accountless failures (no user= in the log line) could target anything; a
+	// good source's standing must not hide them.
+	if named != len(e.times) {
+		return false
+	}
+	return failing <= e.establishedGoodCount(now, window)
 }
 
 // successDominant reports whether this IP behaves like a legit busy client
@@ -128,6 +166,15 @@ func (e *mailIPEntry) successDominant() bool {
 func (e *mailIPEntry) accountSuccessDominant(account string) bool {
 	failures := len(e.failedAccounts[account])
 	return failures > 0 && len(e.successAccounts[account]) >= failures
+}
+
+func (e *mailIPEntry) hasCurrentNonDominantSuccess(account string, cutoff time.Time) bool {
+	for _, ts := range e.successAccounts[account] {
+		if ts.After(cutoff) {
+			return !e.accountSuccessDominant(account)
+		}
+	}
+	return false
 }
 
 // mailSubnetEntry tracks unique attacker IPs within a /24.
@@ -293,20 +340,43 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
 
-	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
+	if len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
-		if !e.successDominant() && !degraded && !e.establishedGoodFailing(now, t.window) {
-			e.suppressed = now.Add(t.suppression)
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "mail_bruteforce",
-				Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths in %v",
-					ip, len(e.times), t.window),
-				Details:   "Real-time detection of dovecot imap/pop3/managesieve auth failures",
-				Timestamp: now,
-				SourceIP:  ip,
-			})
+		if !e.successDominant() && !degraded {
+			switch {
+			case e.establishedGoodConfined(now, t.window):
+				// Established good source fat-fingering a confined set of its own
+				// mailboxes: surface for visibility but do not auto-block, so a
+				// stale saved password does not lock out a real customer. A real
+				// attack from the same source still blocks via the compromise and
+				// spray detectors. Rate-limited on its own clock so escalation to a
+				// wider spray can still reach the block path below.
+				if now.Before(e.suspectedSuppressed) {
+					break
+				}
+				e.suspectedSuppressed = now.Add(t.suppression)
+				findings = append(findings, alert.Finding{
+					Severity: alert.High,
+					Check:    "mail_bruteforce_suspected",
+					Message: fmt.Sprintf("Suspected mail misconfiguration from %s: %d failed auths in %v from an established good source (not auto-blocked)",
+						ip, len(e.times), t.window),
+					Details:   "Failures are confined to a few named mailboxes from a source with established successful mail auth history; likely a stale saved password, not a brute-force. Visibility only - no auto-block. Compromise and spray detectors remain active.",
+					Timestamp: now,
+					SourceIP:  ip,
+				})
+			case !now.Before(e.suppressed):
+				e.suppressed = now.Add(t.suppression)
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "mail_bruteforce",
+					Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths in %v",
+						ip, len(e.times), t.window),
+					Details:   "Real-time detection of dovecot imap/pop3/managesieve auth failures",
+					Timestamp: now,
+					SourceIP:  ip,
+				})
+			}
 		}
 	}
 

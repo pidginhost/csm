@@ -131,6 +131,7 @@ func isMailAuthAttackCheck(check string) bool {
 	case "email_auth_failure_realtime",
 		"mail_account_spray",
 		"mail_bruteforce",
+		"mail_bruteforce_suspected",
 		"mail_subnet_spray",
 		"smtp_account_spray",
 		"smtp_bruteforce",
