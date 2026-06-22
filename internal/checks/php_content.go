@@ -1817,7 +1817,8 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		return nil
 	}
 
-	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), phpContentForceFull(ctx) || scanForceContent(ctx))
+	forcedFull := phpContentForceFull(ctx) || scanForceContent(ctx)
+	scan := newPHPContentScan(cfg, loadPHPContentCache(cfg.StatePath), forcedFull)
 
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
@@ -1854,6 +1855,13 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 				if ctx.Err() != nil {
 					return findings
 				}
+			}
+		}
+
+		if rollingContentEnabled(ctx, cfg, forcedFull) {
+			rollingContentCoverage(ctx, cfg, scan, homeEntry.Name(), docRoots, &findings)
+			if ctx.Err() != nil {
+				return findings
 			}
 		}
 	}
@@ -1931,74 +1939,84 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 			continue
 		}
 
-		nameLower := strings.ToLower(name)
-		if !overlay.executes(nameLower) {
-			continue
-		}
+		s.scanFile(ctx, fullPath, overlay, findings)
+	}
+}
 
-		info, statErr := osFS.Stat(fullPath)
-		var stamp phpFileStamp
-		canCache := statErr == nil
-		if canCache {
-			stamp = phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
-			// Cache hit: file was clean last cycle and has not changed. Skip
-			// the read+parse and carry the stamp forward only if the file is
-			// still readable. chmod does not update mtime or size, so a stale
-			// clean cache entry must not mask a file we can no longer inspect.
-			if !s.forceFull {
-				if prev, ok := s.prev[fullPath]; ok && prev == stamp {
-					if phpContentReadable(fullPath) {
-						s.next[fullPath] = stamp
-						continue
-					}
+// scanFile content-analyses one PHP file using the same cache, size-guard, and
+// finding logic as scanDir's per-entry loop. It re-stats fullPath (it no longer
+// has the DirEntry) and decides executability under overlay. Files that produce
+// a finding are never cached, so they re-surface each cycle for the alert
+// pipeline. scanDir calls this for every non-directory entry; the rolling
+// driver calls it for each path in its bounded slice.
+func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) {
+	nameLower := strings.ToLower(filepath.Base(fullPath))
+	if !overlay.executes(nameLower) {
+		return
+	}
+
+	info, statErr := osFS.Stat(fullPath)
+	var stamp phpFileStamp
+	canCache := statErr == nil
+	if canCache {
+		stamp = phpFileStamp{Mtime: info.ModTime().Unix(), Size: info.Size()}
+		// Cache hit: file was clean last cycle and has not changed. Skip
+		// the read+parse and carry the stamp forward only if the file is
+		// still readable. chmod does not update mtime or size, so a stale
+		// clean cache entry must not mask a file we can no longer inspect.
+		if !s.forceFull {
+			if prev, ok := s.prev[fullPath]; ok && prev == stamp {
+				if phpContentReadable(fullPath) {
+					s.next[fullPath] = stamp
+					return
 				}
 			}
 		}
+	}
 
-		// Full-scan file-size guard: when the caller sets a per-file byte cap
-		// (MaxFileBytes > 0), skip content analysis for oversized files and
-		// record a job-scoped warning instead. The warning is persisted in
-		// scan_job_findings by the scan-job manager and never dispatched to the
-		// live alert pipeline. Normal scheduled scans set MaxFileBytes=0 and
-		// reach this block unchanged.
-		if limit := scanMaxFileBytes(ctx); limit > 0 && info != nil && info.Size() > limit {
-			*findings = append(*findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "full_scan_file_too_large",
-				Message:  fmt.Sprintf("Full scan skipped oversized file: %s", fullPath),
-				Details:  fmt.Sprintf("Size: %d, Limit: %d", info.Size(), limit),
-				FilePath: fullPath,
-			})
-			continue
-		}
+	// Full-scan file-size guard: when the caller sets a per-file byte cap
+	// (MaxFileBytes > 0), skip content analysis for oversized files and
+	// record a job-scoped warning instead. The warning is persisted in
+	// scan_job_findings by the scan-job manager and never dispatched to the
+	// live alert pipeline. Normal scheduled scans set MaxFileBytes=0 and
+	// reach this block unchanged.
+	if limit := scanMaxFileBytes(ctx); limit > 0 && info != nil && info.Size() > limit {
+		*findings = append(*findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    "full_scan_file_too_large",
+			Message:  fmt.Sprintf("Full scan skipped oversized file: %s", fullPath),
+			Details:  fmt.Sprintf("Size: %d, Limit: %d", info.Size(), limit),
+			FilePath: fullPath,
+		})
+		return
+	}
 
-		// Every .php file is content-analysed. No filename/path allowlist:
-		// clean files produce no finding, so there is no benefit to skipping
-		// them, and any skip is a place an attacker can hide a backdoor.
-		result := analyzePHPContent(fullPath)
-		if result.severity >= 0 {
-			details := result.details
-			if info != nil {
-				details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
-			}
-			*findings = append(*findings, alert.Finding{
-				Severity:      result.severity,
-				Check:         result.check,
-				Message:       fmt.Sprintf("%s: %s", result.message, fullPath),
-				Details:       details,
-				FilePath:      fullPath,
-				ContentSHA256: FileContentSHA256(fullPath),
-				DetectLogic:   ContentDetectionVersion(),
-			})
-			continue
+	// Every .php file is content-analysed. No filename/path allowlist:
+	// clean files produce no finding, so there is no benefit to skipping
+	// them, and any skip is a place an attacker can hide a backdoor.
+	result := analyzePHPContent(fullPath)
+	if result.severity >= 0 {
+		details := result.details
+		if info != nil {
+			details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
 		}
+		*findings = append(*findings, alert.Finding{
+			Severity:      result.severity,
+			Check:         result.check,
+			Message:       fmt.Sprintf("%s: %s", result.message, fullPath),
+			Details:       details,
+			FilePath:      fullPath,
+			ContentSHA256: FileContentSHA256(fullPath),
+			DetectLogic:   ContentDetectionVersion(),
+		})
+		return
+	}
 
-		// Cache only files we read successfully and confirmed clean. An
-		// unreadable file might become readable later, so it must not be
-		// recorded as clean.
-		if canCache && result.readOK {
-			s.next[fullPath] = stamp
-		}
+	// Cache only files we read successfully and confirmed clean. An
+	// unreadable file might become readable later, so it must not be
+	// recorded as clean.
+	if canCache && result.readOK {
+		s.next[fullPath] = stamp
 	}
 }
 
