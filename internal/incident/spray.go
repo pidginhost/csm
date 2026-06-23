@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -142,21 +143,8 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 		return sprayDecisionNone, 0
 	}
 
-	// Identity dimension for the distinct-set: prefer mailbox; fall back
-	// to tenant id (per-account brute force); fall back to cPanel user
-	// (php-relay attribution); fall back to message text so two findings
-	// without any structured identity still count as distinct attempts.
-	target, _ := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
-	if target == "" {
-		target = f.TenantID
-	}
-	if target == "" {
-		target = f.CPUser
-	}
-	if target == "" {
-		target = f.Message
-	}
-	if target == "" {
+	targets := sprayTargets(f)
+	if len(targets) == 0 {
 		return sprayDecisionNone, 0
 	}
 
@@ -187,7 +175,9 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 		}
 		d.perIP[f.SourceIP] = state
 	}
-	state.mailboxes[target] = struct{}{}
+	for _, target := range targets {
+		state.mailboxes[target] = struct{}{}
+	}
 	state.lastSeen = now
 	hitCount = len(state.mailboxes)
 
@@ -210,6 +200,49 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 		return sprayDecisionNone, hitCount
 	}
 	return sprayDecisionOpen, hitCount
+}
+
+// sprayTargets returns the identity dimension used for the distinct-target set:
+// mailbox, tenant id, cPanel user, aggregate auth targets, then message text.
+func sprayTargets(f alert.Finding) []string {
+	target, _ := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
+	if target != "" {
+		return []string{target}
+	}
+	if f.TenantID != "" {
+		return []string{f.TenantID}
+	}
+	if f.CPUser != "" {
+		return []string{f.CPUser}
+	}
+	if targets := cleanSprayTargets(f.SprayTargets); len(targets) > 0 {
+		return targets
+	}
+	message := strings.TrimSpace(f.Message)
+	if message != "" {
+		return []string{message}
+	}
+	return nil
+}
+
+func cleanSprayTargets(targets []string) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(targets))
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		out = append(out, target)
+	}
+	return out
 }
 
 // BindIncident records the spray incident id the correlator just

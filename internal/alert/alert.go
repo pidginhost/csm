@@ -102,6 +102,10 @@ type Finding struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	Domain   string `json:"domain,omitempty"`
 	Mailbox  string `json:"mailbox,omitempty"`
+	// SprayTargets carries the per-account targets for aggregate auth
+	// findings. It is internal-only so API payloads keep the public Finding
+	// contract while the incident correlator can count distinct targets.
+	SprayTargets []string `json:"-"`
 
 	// Process context (Phase 1 process-ancestry enrichment). Optional.
 	// Populated by exec/connection live monitors when cache or enricher

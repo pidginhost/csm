@@ -100,7 +100,7 @@ Metrics: `csm_incidents_auto_closed_total` and
 Failed mailbox logins already collapse onto the attacker IP as a single
 `mailbox_bruteforce` incident (see "Classification"). Spray suppression
 extends that across protocols: it tracks the distinct-mailbox/account set
-per source IP for the configured `per_check` detectors (mail, PAM, SSH)
+per source IP for the configured `per_check` detectors (mail and PAM)
 across the merge window and, once an IP exceeds `distinct_mailboxes`,
 opens a single `credential_spray` super-incident keyed on the IP with
 breadth-based severity escalation. Subsequent findings from that IP
@@ -117,8 +117,8 @@ incidents:
     severity_escalate_at: 50 # bump severity to CRITICAL at this many
     per_check:
       - email_auth_failure_realtime
-      - pam_auth_failure
-      - ssh_bruteforce
+      - pam_bruteforce
+      - credential_stuffing
     max_tracked_ips: 10000
     block_at_severity: ""    # "" detection-only, "high" block on open,
                              # "critical" block on escalation

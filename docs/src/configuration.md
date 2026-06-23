@@ -687,7 +687,7 @@ incidents:
     dry_run: true
     distinct_mailboxes: 10
     severity_escalate_at: 50
-    per_check: [email_auth_failure_realtime, pam_auth_failure, ssh_bruteforce]
+    per_check: [email_auth_failure_realtime, pam_bruteforce, credential_stuffing]
     max_tracked_ips: 10000
     block_at_severity: ""              # "" | high | critical
   auto_block:

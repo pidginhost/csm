@@ -269,6 +269,62 @@ func TestSprayDoesNotAffectNonAuthFailureChecks(t *testing.T) {
 	}
 }
 
+func TestSprayCountsPAMAggregateTargets(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check string
+	}{
+		{
+			name:  "pam_bruteforce",
+			check: "pam_bruteforce",
+		},
+		{
+			name:  "credential_stuffing",
+			check: "credential_stuffing",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := sprayTestConfig(true, false)
+			cfg.PerCheck = map[string]bool{tc.check: true}
+			c := NewCorrelator(CorrelatorConfig{SpraySuppression: cfg})
+			now := time.Unix(1_700_000_000, 0)
+			c.now = func() time.Time { return now }
+			if c.spray != nil {
+				c.spray.now = c.now
+			}
+
+			id, created, err := c.OnFinding(alert.Finding{
+				Check:     tc.check,
+				Severity:  alert.High,
+				SourceIP:  "192.0.2.50",
+				Message:   "PAM auth failures from 192.0.2.50",
+				Timestamp: now,
+				SprayTargets: []string{
+					"alice",
+					"bob",
+					"carol",
+				},
+			})
+			if err != nil {
+				t.Fatalf("OnFinding: %v", err)
+			}
+			if !created {
+				t.Fatalf("PAM aggregate finding did not open spray incident; id=%q", id)
+			}
+			if got := c.counters.sprayOpenedTotal.Load(); got != 1 {
+				t.Fatalf("sprayOpenedTotal = %d, want 1", got)
+			}
+			inc, ok := c.Get(id)
+			if !ok {
+				t.Fatalf("spray incident %q not found", id)
+			}
+			if inc.Kind != KindCredentialSpray {
+				t.Fatalf("kind = %s, want %s", inc.Kind, KindCredentialSpray)
+			}
+		})
+	}
+}
+
 func TestSpraySeverityEscalatesAtConfiguredThreshold(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	// Tighten the escalate threshold so the test does not need many hits.

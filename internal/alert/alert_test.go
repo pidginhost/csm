@@ -68,6 +68,20 @@ func TestFindingOmitsRelayFieldsWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestFindingOmitsSprayTargetsFromJSON(t *testing.T) {
+	b, err := json.Marshal(Finding{
+		Check:        "pam_bruteforce",
+		Message:      "PAM brute-force detected",
+		SprayTargets: []string{"alice", "bob"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte("spray")) || bytes.Contains(b, []byte("alice")) || bytes.Contains(b, []byte("bob")) {
+		t.Fatalf("SprayTargets leaked into public JSON: %s", b)
+	}
+}
+
 func TestFindingKey(t *testing.T) {
 	f := Finding{Check: "test", Message: "hello"}
 	if f.Key() != "test:hello" {

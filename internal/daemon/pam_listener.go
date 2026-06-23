@@ -298,8 +298,9 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 			Message:  fmt.Sprintf("Credential stuffing: %s failed logins against %d distinct accounts", ip, len(accounts)),
 			Details: fmt.Sprintf("Accounts targeted: %s\nService(s): %s",
 				strings.Join(accounts, ", "), strings.Join(sortedBoolKeys(tracker.services), ", ")),
-			Timestamp: now,
-			SourceIP:  ip,
+			Timestamp:    now,
+			SourceIP:     ip,
+			SprayTargets: append([]string(nil), accounts...),
 		})
 	}
 
@@ -317,14 +318,8 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 	if tracker.count >= threshold && !tracker.blocked {
 		tracker.blocked = true
 
-		// Build user/service lists for details
-		var users, services []string
-		for u := range tracker.users {
-			users = append(users, u)
-		}
-		for s := range tracker.services {
-			services = append(services, s)
-		}
+		users := sortedBoolKeys(tracker.users)
+		services := sortedBoolKeys(tracker.services)
 
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
@@ -332,8 +327,9 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 			Message:  fmt.Sprintf("PAM brute-force detected: %s (%d failures in %ds)", ip, tracker.count, int(now.Sub(tracker.firstSeen).Seconds())),
 			Details: fmt.Sprintf("Users targeted: %s\nServices: %s",
 				strings.Join(users, ", "), strings.Join(services, ", ")),
-			Timestamp: now,
-			SourceIP:  ip,
+			Timestamp:    now,
+			SourceIP:     ip,
+			SprayTargets: users,
 		})
 	}
 

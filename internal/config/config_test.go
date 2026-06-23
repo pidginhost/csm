@@ -1713,6 +1713,40 @@ func TestPackagedDefaultRollingCoverage(t *testing.T) {
 // credential_stuffing (daemon/pam_listener.go).
 func TestSpraySuppressionDefaultPerCheckUsesEmittedCheckNames(t *testing.T) {
 	cfg := &Config{}
+	assertSpraySuppressionPerCheckUsesEmittedCheckNames(t, cfg, "runtime default")
+}
+
+func TestSpraySuppressionPackagedPerCheckUsesEmittedCheckNames(t *testing.T) {
+	for _, tc := range []struct {
+		label string
+		path  string
+	}{
+		{
+			label: "packaged default",
+			path:  "../../build/packaging/csm.yaml.default",
+		},
+		{
+			label: "production reference",
+			path:  "../../configs/csm.yaml.production.example",
+		},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			data, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Skipf("%s config not readable from this layout: %v", tc.label, err)
+			}
+			cfg, err := LoadBytes(data)
+			if err != nil {
+				t.Fatalf("LoadBytes %s: %v", tc.label, err)
+			}
+			assertSpraySuppressionPerCheckUsesEmittedCheckNames(t, cfg, tc.label)
+		})
+	}
+}
+
+func assertSpraySuppressionPerCheckUsesEmittedCheckNames(t *testing.T, cfg *Config, label string) {
+	t.Helper()
+
 	got := cfg.IncidentsSpraySuppressionPerCheck()
 
 	want := map[string]bool{
@@ -1721,14 +1755,14 @@ func TestSpraySuppressionDefaultPerCheckUsesEmittedCheckNames(t *testing.T) {
 		"credential_stuffing":         true,
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("default spray per_check = %v, want %v", got, want)
+		t.Errorf("%s spray per_check = %v, want %v", label, got, want)
 	}
 
 	// Names that were shipped as defaults but match no emitted finding. Their
 	// presence is the bug this test exists to prevent recurring.
 	for _, dead := range []string{"pam_auth_failure", "ssh_bruteforce"} {
 		if got[dead] {
-			t.Errorf("default spray per_check contains %q, which no producer emits", dead)
+			t.Errorf("%s spray per_check contains %q, which no producer emits", label, dead)
 		}
 	}
 }

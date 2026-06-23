@@ -431,8 +431,8 @@ incidents:
     severity_escalate_at: 20
     per_check:
       - email_auth_failure_realtime
-      - pam_auth_failure
-      - ssh_bruteforce
+      - pam_bruteforce
+      - credential_stuffing
     max_tracked_ips: 20000
     block_at_severity: "high"
 

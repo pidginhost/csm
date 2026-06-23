@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -52,6 +53,59 @@ func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
 	}
 	if got.Severity != alert.High {
 		t.Fatalf("Severity = %v, want High", got.Severity)
+	}
+	if got.Details != "Accounts targeted: alice, bob, carol\nService(s): dovecot, sshd" {
+		t.Fatalf("Details = %q, want targeted account list", got.Details)
+	}
+	if !slices.Equal(got.SprayTargets, []string{"alice", "bob", "carol"}) {
+		t.Fatalf("SprayTargets = %v, want [alice bob carol]", got.SprayTargets)
+	}
+}
+
+func TestSpraySuppressionDefaultChecksAreEmittedByProductionParsers(t *testing.T) {
+	defaults := (&config.Config{}).IncidentsSpraySuppressionPerCheck()
+	emitted := make(map[string]bool)
+	pamTargets := make(map[string]bool)
+
+	for _, f := range parseEximLogLine(`2026-04-11 12:00:00 dovecot_login authenticator failed for H=(mail.example.com) [198.51.100.40]:54321: 535 Incorrect authentication data (set_id=user@example.com)`, &config.Config{}) {
+		emitted[f.Check] = true
+	}
+
+	alertCh := make(chan alert.Finding, 8)
+	cfg := &config.Config{}
+	cfg.Thresholds.MultiIPLoginThreshold = 2
+	cfg.Thresholds.CredStuffingDistinctAccounts = 3
+	p := &PAMListener{
+		cfg:      cfg,
+		alertCh:  alertCh,
+		failures: make(map[string]*pamFailureTracker),
+		stuffing: newCredentialStuffingDetector(3, 10*time.Minute, nil),
+	}
+
+	p.processEvent("FAIL ip=203.0.113.24 user=alice service=sshd")
+	p.processEvent("FAIL ip=203.0.113.24 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.24 user=carol service=sshd")
+
+	for {
+		select {
+		case f := <-alertCh:
+			emitted[f.Check] = true
+			if len(f.SprayTargets) > 0 {
+				pamTargets[f.Check] = true
+			}
+		default:
+			for check := range defaults {
+				if !emitted[check] {
+					t.Fatalf("default spray per_check %q was not emitted by production parser/listener paths; emitted=%v", check, emitted)
+				}
+			}
+			for _, check := range []string{"pam_bruteforce", "credential_stuffing"} {
+				if !pamTargets[check] {
+					t.Fatalf("%s finding did not carry spray targets", check)
+				}
+			}
+			return
+		}
 	}
 }
 
@@ -167,6 +221,9 @@ func TestPAMListenerOKClearsFailures(t *testing.T) {
 	case finding := <-alertCh:
 		if finding.Check != "pam_bruteforce" {
 			t.Fatalf("expected pam_bruteforce, got %+v", finding)
+		}
+		if !slices.Equal(finding.SprayTargets, []string{"root"}) {
+			t.Fatalf("SprayTargets = %v, want [root]", finding.SprayTargets)
 		}
 	default:
 		t.Fatal("expected pam_bruteforce finding after second post-reset failure")

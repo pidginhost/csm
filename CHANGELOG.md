@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration CI now fails early if built amd64 packages are missing or duplicated, instead of silently picking an arbitrary artifact.
 - Block digest now counts ModSecurity escalations and high-volume WAF blocks as attacker traffic instead of flagging them as customer-risk false positives.
 - Mail brute-force auto-blocks are now flagged as a possible false positive when the same source has recent successful mail logins for other mailboxes, so a stale saved password is easier to tell apart from a real attack.
-- Credential-spray incident grouping now also collapses PAM and SSH login-failure sprays from a single source. Two of the three built-in defaults named detections that are never emitted, so previously only mail auth-failure sprays were grouped (affects operators who enabled spray suppression without a custom list).
+- Credential-spray grouping now includes PAM login-failure sprays from one source and counts the targeted accounts reported by the PAM listener. Operators who enabled spray suppression without a custom detector list now get the intended PAM coverage.
 - Docs: corrected reference drift across the CLI, API, configuration, and detection pages so they match shipped behaviour, and fixed non-ASCII style violations in the docs.
 
 ## [3.20.0] - 2026-06-22
