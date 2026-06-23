@@ -24,11 +24,11 @@
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
 | `csm scan <user> [--alert]` | Scan a single cPanel account (capped quick scan). `--alert` sends alerts for the findings. |
-| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped report-only deep scan of one account, routed through the daemon (bypasses the per-account file cap). `--wait` polls to completion and prints the report; `--quarantine` remediates flagged files; `--respect-ignores` honors `ignore_paths`. |
+| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped deep scan of one account, routed through the daemon (bypasses the per-account file cap). It is report-only by default; `--quarantine` remediates flagged files; `--wait` polls to completion and prints the report; `--respect-ignores` honors `ignore_paths`. |
 | `csm scan --all --full [--wait] [--json] [--respect-ignores]` | Server-wide uncapped full scan across every account. Quarantine per account after review (`--quarantine` is rejected with `--all`). |
-| `csm scan --status [id]` | List full-scan jobs, or show one job by id. |
-| `csm scan --report <id>` | Print the stored report for a completed full-scan job. |
-| `csm scan --cancel <id>` | Cancel a running full-scan job. |
+| `csm scan --status [id] [--json]` | List full-scan jobs, or show one job by id. |
+| `csm scan --report <id> [--json]` | Print the stored report for a completed full-scan job. |
+| `csm scan --cancel <id> [--json]` | Cancel a running full-scan job. |
 
 ## Management
 

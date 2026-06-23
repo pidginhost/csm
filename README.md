@@ -119,6 +119,8 @@ YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
 
 ## CLI
 
+Common entrypoints:
+
 ```
 csm daemon            run the daemon
 csm check             one-shot scan, no auto-response

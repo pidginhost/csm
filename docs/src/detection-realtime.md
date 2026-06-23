@@ -27,7 +27,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 **Features:**
 - Per-path alert deduplication (30s cooldown)
 - Process info enrichment (PID, command, UID)
-- Auto-quarantine on high-confidence matches (category + entropy validation)
+- Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
 
 ## inotify Log Watchers (~2 seconds)
 

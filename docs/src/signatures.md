@@ -27,7 +27,8 @@ rules:
 - `severity` - critical, high, or warning
 - `category` - webshell, backdoor, phishing, dropper, exploit
 - `file_types` - file extensions to match (or `["*"]` for all)
-- `patterns` - literal strings or regex patterns
+- `patterns` - literal strings
+- `regexes` - regex patterns
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum patterns that must match
@@ -131,7 +132,7 @@ After editing, send SIGHUP or restart the daemon to apply.
 
 Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
 
-**Auto-quarantine** adds a safety gate: a file needs Shannon entropy >= 5.5, or hex density > 20% combined with an obfuscated-execution signal, before automatic quarantine. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
+**Realtime signature auto-quarantine** adds a safety gate: only `webshell` and `dropper` matches are eligible, and the file must be at least 512 bytes and either have Shannon entropy >= 5.5 or hex density > 20% plus an obfuscated-execution signal. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
 
 ## Alert Rate Limiting
 

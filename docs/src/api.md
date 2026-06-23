@@ -26,10 +26,10 @@ webui:
       scope: admin       # full read+write
     - name: "panel-readonly"
       token: "..."
-      scope: read        # status, findings, history, stats, challenge stats, blocked IPs, health, components, capabilities, SSE
+      scope: read        # status, findings, history, stats, challenge stats, blocked IPs, scan jobs, health, components, capabilities, SSE
 ```
 
-The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
+The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Status & Data
 
@@ -75,12 +75,12 @@ GET  /api/v1/account             Per-account findings, quarantine, history (?nam
 GET  /api/v1/audit               UI audit log
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
-GET  /api/v1/performance         Performance metrics snapshot
-POST /api/v1/perf/fix-error-log  Truncate a fixed-row error_log finding
+GET  /api/v1/performance         Performance metrics snapshot (admin scope)
+POST /api/v1/perf/fix-error-log  Truncate a fixed-row error_log finding (admin scope, CSRF)
 POST /api/v1/perf/fix-display-errors
-                                  Disable display_errors for a fixed-row config finding
+                                  Disable display_errors for a fixed-row config finding (admin scope, CSRF)
 POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a perf_wp_cron finding (admin scope, CSRF)
-GET  /api/v1/hardening           Last stored hardening audit report
+GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
 
 ## GeoIP
@@ -172,17 +172,19 @@ POST /api/v1/email/quarantine/   Release or delete quarantined email
 ## Hardening
 
 ```
-GET  /api/v1/hardening           Load last hardening audit report
-POST /api/v1/hardening/run       Run hardening audit and save report
+GET  /api/v1/hardening           Load last hardening audit report (admin scope)
+POST /api/v1/hardening/run       Run hardening audit and save report (admin scope, CSRF)
 ```
 
 ## Scan Jobs
 
-`csm scan --full` enqueues report-only full scans that run inside the daemon and persist to the store. The Web UI scan controls drive these endpoints.
+`csm scan --full` enqueues full-scan jobs that run inside the daemon and persist to the store. Jobs are report-only unless an account-scope request sets `quarantine: true`; server-wide jobs reject quarantine.
 
 ```
 GET  /api/v1/scan-jobs              List full-scan jobs (read scope)
 GET  /api/v1/scan-jobs/{id}         Job status and stored report (read scope)
+GET  /api/v1/scan-jobs/{id}/findings
+                                      Paginated findings for one job (?offset=&limit=) (read scope)
 POST /api/v1/scan-jobs              Enqueue a full-scan job (admin scope, CSRF)
 POST /api/v1/scan-jobs/{id}/cancel  Cancel a queued or running job (admin scope, CSRF)
 ```
