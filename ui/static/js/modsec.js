@@ -30,6 +30,17 @@
         return (document.getElementById(id) || {}).value || '';
     }
 
+    function modsecWindowShortLabel() {
+        switch ((document.getElementById('modsec-window-filter') || {}).value || '24h') {
+        case '1h':
+            return '1h';
+        case '6h':
+            return '6h';
+        default:
+            return '24h';
+        }
+    }
+
     // populateCountryFilter refreshes a country <select> with the distinct
     // countries present in items, preserving the current selection when it is
     // still available.
@@ -80,8 +91,8 @@
         el.replaceChildren();
         if (_strip.stats) {
             var s = _strip.stats;
-            el.appendChild(chip({ icon: 'ti-shield-x', value: String(s.total || 0), label: 'blocks 24h',
-                title: 'Total ModSecurity blocks in the last 24h' }));
+            el.appendChild(chip({ icon: 'ti-shield-x', value: String(s.total || 0), label: 'blocks ' + modsecWindowShortLabel(),
+                title: 'Total ModSecurity blocks matching the current filters' }));
             el.appendChild(chip({ icon: 'ti-network', value: String(s.unique_ips || 0), label: 'unique IPs' }));
             if ((s.escalated || 0) > 0) {
                 el.appendChild(chip({ icon: 'ti-firewall', value: String(s.escalated), label: 'escalated',
@@ -235,7 +246,7 @@
         var top = blocks.slice().sort(function(a, b) { return b.hits - a.hits; }).slice(0, 10);
         el.replaceChildren();
         if (top.length === 0) {
-            el.appendChild(buildEmpty('shield-check', 'No active WAF pressure', 'No ModSecurity blocks observed in the last 24 hours.'));
+            el.appendChild(buildEmpty('shield-check', 'No active WAF pressure', 'No ModSecurity blocks match the current filters.'));
             var c = document.getElementById('modsec-pressure-count');
             if (c) c.textContent = '';
             return;
@@ -424,10 +435,11 @@
             var selectableRuleID = modsecRuleID(b.rule_id);
             var selectableRuleText = selectableRuleID === null ? '' : String(selectableRuleID);
             var disabledAttrs = selectableRuleID === null ? ' disabled title="Only CSM custom rules can be disabled here"' : '';
+            var countryHTML = b.country ? CSM.countryFlag(b.country) + ' ' + CSM.esc(b.country) : '<span class="text-muted">--</span>';
             h += '<tr data-csm-modsec-ip="' + CSM.attr(b.ip) + '" data-csm-modsec-rule="' + CSM.attr(b.rule_id || '') + '">';
             h += '<td><input type="checkbox" class="form-check-input modsec-block-cb" data-rule="' + CSM.attr(selectableRuleText) + '" aria-label="Select CSM rule"' + disabledAttrs + '></td>';
             h += '<td data-label="IP"><code>' + CSM.esc(b.ip) + '</code></td>';
-            h += '<td data-label="Location" class="geo-cell" data-ip="' + CSM.attr(b.ip) + '"><span class="text-muted">--</span></td>';
+            h += '<td data-label="Location" class="geo-cell" data-ip="' + CSM.attr(b.ip) + '">' + countryHTML + '</td>';
             h += '<td data-label="Rule"><code>' + CSM.esc(b.rule_id || '') + '</code></td>';
             h += '<td data-label="Description">' + CSM.esc(b.description || '') + '</td>';
             h += '<td data-label="Domains">' + CSM.esc(domains) + '</td>';
@@ -615,8 +627,9 @@
                 var matched = byIP[ip];
                 if (!matched) continue;
                 var g = results[ip];
+                if (!g || !g.country) continue;
                 var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
-                if (g.org) html += '<br><small class="text-muted">' + CSM.esc(g.org) + '</small>';
+                if (g.as_org) html += '<br><small class="text-muted">' + CSM.esc(g.as_org) + '</small>';
                 for (var k = 0; k < matched.length; k++) matched[k].innerHTML = html;
             }
         }
@@ -660,12 +673,24 @@
         });
     }
 
+    function modsecEventsPaneActive() {
+        var pane = document.getElementById('modsec-pane-events');
+        return !!(pane && pane.classList.contains('active'));
+    }
+
+    function resetEventsForServerFilters() {
+        eventsLoaded = false;
+        _modsecEvents = [];
+        _strip.latest = '';
+        refreshStatusStrip();
+    }
+
     // window/severity are server-side: refetch every surface and re-arm the poll.
     function applyServerFilters() {
         loadStats();
         loadBlocked();
-        eventsLoaded = false;
-        if (document.getElementById('modsec-pane-events').classList.contains('active')) loadEvents();
+        resetEventsForServerFilters();
+        if (modsecEventsPaneActive()) loadEvents();
         startStatsPoll();
     }
     var windowFilter = document.getElementById('modsec-window-filter');
@@ -678,8 +703,8 @@
         refreshBtn.addEventListener('click', function() {
             loadStats();
             loadBlocked();
-            eventsLoaded = false;
-            if (document.getElementById('modsec-pane-events').classList.contains('active')) loadEvents();
+            resetEventsForServerFilters();
+            if (modsecEventsPaneActive()) loadEvents();
         });
     }
 

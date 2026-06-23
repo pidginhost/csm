@@ -5432,12 +5432,25 @@ func TestModSecPageHasFilterControls(t *testing.T) {
 	for _, want := range []string{
 		`window=`,   // time-range param threaded into the API query
 		`severity=`, // severity param threaded into the API query
+		`label: 'blocks ' + modsecWindowShortLabel()`,
+		`function resetEventsForServerFilters() {`,
+		`_strip.latest = '';`,
+		`function modsecEventsPaneActive() {`,
 		`modsec-country-filter`,
 		`events-country-filter`,
+		`var countryHTML = b.country ?`,
+		`if (!g || !g.country) continue;`,
+		`g.as_org`,
 		`e.country`, // events table renders a country column
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("modsec.js missing filter wiring %q", want)
 		}
+	}
+	if strings.Contains(jsText, `label: 'blocks 24h'`) {
+		t.Error("modsec.js still hard-codes the status-strip block window")
+	}
+	if strings.Contains(jsText, `No ModSecurity blocks observed in the last 24 hours.`) {
+		t.Error("modsec.js still hard-codes the empty-state block window")
 	}
 }

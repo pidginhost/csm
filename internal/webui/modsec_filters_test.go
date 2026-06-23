@@ -104,6 +104,35 @@ func TestAPIModSecBlocksSeverityFilter(t *testing.T) {
 	}
 }
 
+func TestAPIModSecStatsWindowAndSeverityFilters(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	sdb := store.Global()
+	now := time.Now()
+	if err := sdb.AppendHistory([]alert.Finding{
+		modsecBlockSev("203.0.113.31", "a.example.com", "900113", alert.Warning, now.Add(-10*time.Minute)),
+		modsecBlockSev("203.0.113.32", "b.example.com", "900116", alert.Critical, now.Add(-5*time.Minute)),
+		modsecBlockSev("203.0.113.33", "c.example.com", "900117", alert.Critical, now.Add(-2*time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiModSecStats(w, httptest.NewRequest("GET", "/?window=1h&severity=critical", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var resp struct {
+		Total     int    `json:"total"`
+		UniqueIPs int    `json:"unique_ips"`
+		TopRule   string `json:"top_rule"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total != 1 || resp.UniqueIPs != 1 || resp.TopRule != "900116" {
+		t.Fatalf("filtered stats = %+v, want one recent critical 900116 block", resp)
+	}
+}
+
 func TestAPIModSecBlocksIncludesCountryField(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	sdb := store.Global()
