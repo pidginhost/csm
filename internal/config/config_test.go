@@ -1703,3 +1703,32 @@ func TestPackagedDefaultRollingCoverage(t *testing.T) {
 		t.Error("packaged default must explicitly set thresholds.rolling_coverage (key absent — three-source drift)")
 	}
 }
+
+// TestSpraySuppressionDefaultPerCheckUsesEmittedCheckNames guards the
+// credential-spray default per_check list against drift. The detector gates
+// eligibility on Finding.Check equality (incident.sprayDetector.Decide), so a
+// default name that no producer ever emits silently removes that source from
+// spray collapse. Every default must be a Check name emitted in production
+// code: email_auth_failure_realtime (daemon/watcher.go), pam_bruteforce and
+// credential_stuffing (daemon/pam_listener.go).
+func TestSpraySuppressionDefaultPerCheckUsesEmittedCheckNames(t *testing.T) {
+	cfg := &Config{}
+	got := cfg.IncidentsSpraySuppressionPerCheck()
+
+	want := map[string]bool{
+		"email_auth_failure_realtime": true,
+		"pam_bruteforce":              true,
+		"credential_stuffing":         true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("default spray per_check = %v, want %v", got, want)
+	}
+
+	// Names that were shipped as defaults but match no emitted finding. Their
+	// presence is the bug this test exists to prevent recurring.
+	for _, dead := range []string{"pam_auth_failure", "ssh_bruteforce"} {
+		if got[dead] {
+			t.Errorf("default spray per_check contains %q, which no producer emits", dead)
+		}
+	}
+}

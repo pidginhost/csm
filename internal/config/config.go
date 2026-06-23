@@ -1182,10 +1182,15 @@ func (cfg *Config) IncidentsAutoBlockKinds() map[string]bool {
 func (cfg *Config) IncidentsSpraySuppressionPerCheck() map[string]bool {
 	src := cfg.Incidents.SpraySuppression.PerCheck
 	if len(src) == 0 {
+		// Each name must be a Finding.Check emitted in production code;
+		// the spray detector gates on Check equality, so an unmatched name
+		// silently drops that source from spray collapse. email_auth_failure_realtime
+		// is emitted by daemon/watcher.go; pam_bruteforce and credential_stuffing
+		// by daemon/pam_listener.go (the latter is the one-IP-many-accounts signal).
 		src = []string{
 			"email_auth_failure_realtime",
-			"pam_auth_failure",
-			"ssh_bruteforce",
+			"pam_bruteforce",
+			"credential_stuffing",
 		}
 	}
 	out := make(map[string]bool, len(src))
