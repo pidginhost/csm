@@ -1,6 +1,6 @@
 # Real-Time Detection
 
-CSM detects threats in under 2 seconds using three kernel-level watchers running inside the daemon.
+CSM detects threats in under 2 seconds using kernel and log watchers running inside the daemon: a fanotify file monitor, inotify tailers on auth/access/mail/FTP logs and the Exim spool, and a PAM brute-force listener.
 
 ## fanotify File Monitor (< 1 second)
 

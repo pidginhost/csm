@@ -115,12 +115,16 @@ The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` 
 
 ## Post-install (all methods)
 
+All installation methods produce the same installed state. RPM/DEB packages auto-detect hostname and email and generate the auth token; you still set the infrastructure IPs and confirm the alert address.
+
 ```bash
 sudo vi /etc/csm/csm.yaml              # Set hostname, alert email, infra IPs
-sudo csm validate                      # Check config syntax (validates merged conf.d too)
+sudo csm validate                      # Check config syntax (--deep adds connectivity probes; validates merged conf.d too)
 sudo systemctl enable --now csm.service
-sudo csm baseline                      # Record current state as known-good via the daemon
+sudo csm baseline                      # Record current state as known-good via the daemon (must be running)
 ```
+
+Then open the Web UI at `https://<server>:9443/login`. The baseline is detailed under [Baseline Scan](#baseline-scan).
 
 ## Rollback to an older version
 
@@ -195,16 +199,6 @@ csm validate
 systemctl enable --now csm.service
 csm baseline
 ```
-
-## Post-Install
-
-1. Edit `/etc/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
-2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
-3. Start the daemon: `systemctl enable --now csm.service`
-4. Run `csm baseline` to record current state for change tracking (see below)
-5. Open the Web UI: `https://<server>:9443/login`
-
-All installation methods produce the same installed state. RPM/DEB packages auto-detect hostname and email, and generate the auth token.
 
 ## Baseline Scan
 

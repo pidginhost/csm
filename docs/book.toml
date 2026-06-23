@@ -1,5 +1,5 @@
 [book]
-title = "CSM — Continuous Security Monitor"
+title = "CSM (Continuous Security Monitor)"
 authors = ["PidginHost"]
 language = "en"
 src = "src"

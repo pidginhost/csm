@@ -97,7 +97,7 @@ alerts:
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
-  max_per_hour: 10                      # default: 10
+  max_per_hour: 10                      # alert emails/hour; CRITICAL always bypasses. Code default 30; the shipped csm.yaml template sets 10
   block_digest:
     enabled: false                      # send per-country rollups for auto-blocked IPs
     countries: []                       # empty = trusted countries, then all countries
@@ -147,6 +147,11 @@ thresholds:
   account_scan_max_files: 10000         # account and mail-domain paths per scanner cycle (default: 10000)
   # If this cap clips /home/<account>/ paths, account_scan_truncated names the affected account.
   crontab_base64_blob_max_bytes: 16384  # encoded bytes per crontab base64 candidate before decoded-content matching; must be a multiple of 4 (default: 16384)
+
+  # Full-scan subsystem (`csm scan --full`) and rolling content coverage.
+  full_scan_max_file_mb: 16            # cap on a single file scanned by a full scan, in MiB (default: 16)
+  scan_job_retention: 20               # completed full-scan job records kept in the store (default: 20)
+  rolling_coverage: true               # tri-state; default on. Each cycle content-scans a slice of dormant files past the mtime cap so old planted files get covered over time. Set false to disable
 
   # HTTP request flood, User-Agent spoof, and distributed HTTP detection.
   # These detectors scan the same per-vhost access-log stream as the WP
@@ -271,6 +276,8 @@ auto_response:
   block_expiry: "24h"                   # duration for temp blocks (e.g. "24h", "12h")
   max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
+  fix_wp_cron: false                    # on perf_wp_cron findings, auto-disable WP-Cron and install a per-user system cron
+  http_scanner_action: "challenge"      # response for http_scanner_profile: "challenge" (default) routes to the PoW page, "block" bans the IP
   block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
   netblock: false                       # auto-block IPv4 /24 or IPv6 /64 subnets
   netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block
@@ -330,6 +337,10 @@ detection:
     backend: "auto"                     # auto | bpf | legacy | none
     dry_run: true                       # safe default for detector-scoped action
     ports: [25, 465, 587]               # destination ports to inspect
+  bad_asn_outbound:
+    enabled: false                      # off by default; third leg of the host_takeover chain. Needs the GeoLite2-ASN database and operator-supplied ASN lists
+    blocked_asns: []                    # ASNs always treated as bad (e.g. known bulletproof hosters)
+    allowed_asns: []                    # non-empty switches to allowlist mode: any destination ASN outside this set is treated as bad
 
 # --- BPF Enforcement ---
 bpf_enforcement:
@@ -474,6 +485,7 @@ email_av:
   max_extraction_size: 104857600        # max total extraction size in bytes (100MB)
   quarantine_infected: true             # quarantine emails with infected attachments
   scan_concurrency: 4                   # parallel scan workers
+  fail_mode: "open"                     # behavior when a scan cannot complete: "open" (default) delivers; "tempfail" defers so Exim retries
 
 # --- Email Protection ---
 email_protection:
@@ -639,6 +651,9 @@ performance:
   wp_memory_limit_max_mb: 512           # WordPress memory_limit warning threshold (default: 512)
   wp_transient_warn_mb: 1               # WordPress transient data warning in MB (default: 1)
   wp_transient_critical_mb: 10          # WordPress transient data critical in MB (default: 10)
+  wp_cron_fix:                          # tuning for the WP-Cron remediation (manual fix from the Web UI or auto_response.fix_wp_cron)
+    interval_minutes: 15                # system cron frequency; default 15, clamped to [1, 60]
+    php_bin: ""                         # php interpreter for the cron line; empty = auto-detect
 
 # --- Cloudflare ---
 cloudflare:

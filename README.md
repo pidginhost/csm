@@ -120,29 +120,19 @@ YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
 ## CLI
 
 ```
-csm daemon                    run the daemon
-csm check                     one-shot scan, no auto-response
-csm status [--json]           current state, findings, automation rollout state
-csm doctor [--json]           config + daemon + watchers + store sanity check
-csm doctor challenge [--json] challenge setup, snippets, and gate endpoint check
-csm baseline                  mark current state as known-good via the daemon
-csm scan <user>               scan a single cPanel account
-csm firewall ...              IP/subnet bans, port allows, GeoIP
-csm clean <path>              clean an infected PHP file
-csm db-clean ...              remove WordPress DB injections
-csm harden ...                operator-driven hardening (see csm harden --help)
-csm phprelay status           PHP-relay detector state (cPanel only)
-csm backup <path>             tar.gz of csm.yaml + conf.d + state
-csm restore <archive>         extract a backup archive
-csm store compact             reclaim bbolt free pages
-csm store export <path>       backup daemon state to tar.zst
-csm store reset-bot-verify    clear bot PTR verification cache
-csm export --since <when>     SIEM backfill in JSONL
-csm config schema --json      JSON Schema reflected from the Config struct
-csm validate                  dry-run config
+csm daemon            run the daemon
+csm check             one-shot scan, no auto-response
+csm status [--json]   current state, findings, automation rollout state
+csm doctor [--json]   config + daemon + watchers + store sanity check
+csm baseline          mark current state as known-good via the daemon
+csm scan <user>       scan a cPanel account (--full for an uncapped report)
+csm firewall ...      IP/subnet bans, port allows, GeoIP
+csm clean <path>      clean an infected PHP file
+csm harden ...        operator-driven hardening
+csm validate          dry-run config
 ```
 
-Full reference: [CLI docs](docs/src/cli.md).
+Full command reference: [CLI docs](docs/src/cli.md).
 
 ## Hardening / CVE mitigations
 

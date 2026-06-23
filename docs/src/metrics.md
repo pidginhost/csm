@@ -22,7 +22,7 @@ webui:
 ```
 
 `metrics_token` is optional. When set, a Bearer header containing
-this exact value unlocks `/metrics`. The UI `auth_token` or a valid
+this exact value grants access to `/metrics`. The UI `auth_token` or a valid
 UI session cookie is also accepted so the dashboard can self-scrape,
 but keeping the two tokens separate is recommended: rotating
 `auth_token` does not then break Prometheus scraping, and giving
@@ -147,8 +147,9 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   encoded cron content is larger than the scanner currently inspects;
   review affected crontabs and tune the scanner before redeploying.
 - `csm_check_duration_seconds{name,tier}` (histogram): wall-clock
-  time each check takes to complete. Label `name` is one of the 62
-  checks (`fake_kernel_threads`, `webshells`, ...); label `tier` is
+  time each check takes to complete. Label `name` is one of the
+  periodic check-runner names (`fake_kernel_threads`, `webshells`, ...);
+  label `tier` is
   `critical`, `deep`, or `all`. Buckets: 0.01 s .. 900 s. Most checks
   keep the 300 s timeout ceiling; heavy filesystem checks can run up to
   900 s. Useful aggregations:
@@ -268,7 +269,7 @@ All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_
 - `csm_php_relay_msgid_index_size{layer}` (gauge): msgID dedup index size by storage layer. Labels: `layer` is `memory` (in-process map) or `bbolt` (persisted batch writer). Memory ceiling is 200k entries; bbolt grows freely until the 25 h Flow E sweep prunes it.
 - `csm_php_relay_msgindex_persist_dropped_total` (counter): bbolt persist queue overflow drops (the 4096-deep buffered channel was full when the watcher tried to enqueue). Should be zero in steady state; a non-zero value means the bbolt writer is blocked on disk and the in-memory dedup is the only thing protecting against double-fire on a queue-runner re-write.
 - `csm_php_relay_msgindex_persist_errors_total` (counter): bbolt commit failures from the async batch writer. Each bump also emits a Critical `email_php_relay_msgindex_persist_failed` finding. Disk-full or permissions issue on `/var/lib/csm/state/csm.db`.
-- `csm_php_relay_inotify_overflows_total` (counter): kernel `IN_Q_OVERFLOW` events on the spool watcher. Each one triggers a bounded recovery scan (default cap 1000 files); if the cap fires, also emits `email_php_relay_overflow_scan_truncated` Critical. Sustained growth means the spool is churning faster than inotify can keep up — usually a backup restore or a real attack.
+- `csm_php_relay_inotify_overflows_total` (counter): kernel `IN_Q_OVERFLOW` events on the spool watcher. Each one triggers a bounded recovery scan (default cap 1000 files); if the cap fires, also emits `email_php_relay_overflow_scan_truncated` Critical. Sustained growth means the spool is churning faster than inotify can keep up -- usually a backup restore or a real attack.
 - `csm_php_relay_spool_read_errors_total` (counter): `emailspool.ParseHeaders` errors on `-H` files the watcher tried to consume. Usually transient (file disappeared between inotify event and open) and self-correcting; sustained growth points at a permissions or filesystem problem.
 - `csm_php_relay_userdata_errors_total` (counter): `cpanelUserDomains` resolver errors reading `/var/cpanel/userdata/`. Used by the Path 1 `From` mismatch check; errors here mean Path 1 is potentially undercounting until the read recovers.
 

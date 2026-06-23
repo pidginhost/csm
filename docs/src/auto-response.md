@@ -101,7 +101,7 @@ skips nftables), or attach metadata (`tenant_id`, `note`). The callback
 runs after local validation and infra-IP safety checks, and before the
 dry-run gate, so panels can observe dry-run decisions too.
 
-CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [`docs/verdict-callback-contract.md`](https://github.com/pidginhost/csm/blob/main/docs/verdict-callback-contract.md).
 
 ### Infrastructure IP DNS guard
 
@@ -131,6 +131,7 @@ When `auto_response.block_ips: true` and the firewall is enabled, the source IP 
 | `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
 | `local_threat_score` | IP crosses the aggregated internal attack-history threshold |
 | `modsec_block_escalation` | ModSecurity deny escalation |
+| `modsec_csm_block_escalation` | CSM-internal ModSecurity deny escalation |
 | `waf_attack_blocked` | WAF high-volume attacker |
 | `email_compromised_account` | Email account compromise indicator |
 | `email_cloud_relay_abuse` | Cloud relay abuse |
@@ -148,7 +149,7 @@ auto-block path.
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
-- Auto-quarantine requires high confidence: category match (webshell/backdoor/dropper) + entropy >= 4.8 or hex density > 20%. This prevents legitimate WordPress plugins from being quarantined.
+- Auto-quarantine requires high confidence: category match (webshell/backdoor/dropper) plus entropy >= 5.5, or hex density > 20% combined with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts always bypass the email rate limit (default 30/hour)
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations

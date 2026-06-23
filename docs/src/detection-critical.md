@@ -2,6 +2,8 @@
 
 Critical checks run every 10 minutes. Typical wall-clock cost on a busy shared host is a few seconds; the runner enforces the 10-minute cadence even when a tick takes longer.
 
+The tables below name the finding identifiers CSM emits, grouped by area. Most are standalone scheduled checks; a few (for example the `http_*` traffic findings and `bad_asn_outbound`) are produced by a parent scheduled check -- the access-log brute-force scan and the periodic connection scan respectively -- rather than being independently scheduled.
+
 ## Process & System
 
 | Check | Description |

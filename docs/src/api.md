@@ -29,7 +29,7 @@ webui:
       scope: read        # status, findings, history, stats, challenge stats, blocked IPs, health, components, capabilities, SSE
 ```
 
-The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, ModSecurity, account detail, exports, incident timelines, and audit history. `metrics_token:` is a separate, read-only credential for `/metrics` only.
+The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Status & Data
 
@@ -79,6 +79,7 @@ GET  /api/v1/performance         Performance metrics snapshot
 POST /api/v1/perf/fix-error-log  Truncate a fixed-row error_log finding
 POST /api/v1/perf/fix-display-errors
                                   Disable display_errors for a fixed-row config finding
+POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a perf_wp_cron finding (admin scope, CSRF)
 GET  /api/v1/hardening           Last stored hardening audit report
 ```
 
@@ -175,6 +176,24 @@ GET  /api/v1/hardening           Load last hardening audit report
 POST /api/v1/hardening/run       Run hardening audit and save report
 ```
 
+## Scan Jobs
+
+`csm scan --full` enqueues report-only full scans that run inside the daemon and persist to the store. The Web UI scan controls drive these endpoints.
+
+```
+GET  /api/v1/scan-jobs              List full-scan jobs (read scope)
+GET  /api/v1/scan-jobs/{id}         Job status and stored report (read scope)
+POST /api/v1/scan-jobs              Enqueue a full-scan job (admin scope, CSRF)
+POST /api/v1/scan-jobs/{id}/cancel  Cancel a queued or running job (admin scope, CSRF)
+```
+
+## Verified Bots
+
+```
+GET  /api/v1/verified-bots        Configured verified-crawler allowlist plus live verification state (admin scope)
+POST /api/v1/verified-bots/apply  Validate, apply, and reload an edited verified-bots list (admin scope, CSRF)
+```
+
 ## Actions
 
 ```
@@ -182,6 +201,7 @@ POST /api/v1/fix                      Apply fix for a finding
 POST /api/v1/fix-bulk                 Bulk fix multiple findings
 POST /api/v1/dismiss                  Dismiss a finding
 POST /api/v1/scan-account             On-demand account scan
+POST /api/v1/verify-finding           Re-check a single finding on demand (admin scope, CSRF)
 POST /api/v1/quarantine-restore       Restore quarantined file
 POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files
 POST /api/v1/db-object-backup-restore Restore a dropped MySQL object from its db_object_backups record

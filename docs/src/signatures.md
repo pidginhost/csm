@@ -18,7 +18,7 @@ rules:
     category: phishing
     file_types: [".html", ".php"]
     patterns: ["password.*submit", "credit.*card.*number"]
-    exclude: ["legitimate_form_handler"]
+    exclude_patterns: ["legitimate_form_handler"]
     min_match: 2
 ```
 
@@ -28,7 +28,8 @@ rules:
 - `category` - webshell, backdoor, phishing, dropper, exploit
 - `file_types` - file extensions to match (or `["*"]` for all)
 - `patterns` - literal strings or regex patterns
-- `exclude` - patterns that prevent a match (false positive reduction)
+- `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
+- `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum patterns that must match
 
 ## YARA-X Rules (Optional)
@@ -130,7 +131,7 @@ After editing, send SIGHUP or restart the daemon to apply.
 
 Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
 
-**Auto-quarantine** adds a safety gate: files need Shannon entropy >= 4.8 or hex density > 20% before automatic quarantine. Legitimate plugin code (~4.2 entropy) passes through; obfuscated malware (~5.5+) is caught.
+**Auto-quarantine** adds a safety gate: a file needs Shannon entropy >= 5.5, or hex density > 20% combined with an obfuscated-execution signal, before automatic quarantine. Legitimate plugin code (well below 5.5 entropy) passes through; obfuscated malware (5.8+) is caught.
 
 ## Alert Rate Limiting
 

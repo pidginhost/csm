@@ -127,7 +127,7 @@ Auto-block calls require `firewall.enabled: true` because they go through the fi
    unsigned callback replies by default. The panel can downgrade to
    `allow` (audit-only), attach `tenant_id` for downstream correlation,
    or add a note. CSM fails open on hook errors. Wire contract:
-   [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+   [`docs/verdict-callback-contract.md`](https://github.com/pidginhost/csm/blob/main/docs/verdict-callback-contract.md).
 
 2. **`auto_response.dry_run`** - when true (or absent; safety default), `BlockIP()` records the intended block to bbolt and returns success without touching nftables. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes; "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
 

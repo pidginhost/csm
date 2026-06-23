@@ -23,7 +23,12 @@
 | `csm check` | Run all checks via the daemon, print findings to stdout, no alerts / auto-response |
 | `csm check-critical` | Test critical checks only (dry-run via daemon) |
 | `csm check-deep` | Test deep checks only (dry-run via daemon) |
-| `csm scan <user>` | Scan single cPanel account |
+| `csm scan <user> [--alert]` | Scan a single cPanel account (capped quick scan). `--alert` sends alerts for the findings. |
+| `csm scan <user> --full [--wait] [--json] [--respect-ignores] [--quarantine]` | Uncapped report-only deep scan of one account, routed through the daemon (bypasses the per-account file cap). `--wait` polls to completion and prints the report; `--quarantine` remediates flagged files; `--respect-ignores` honors `ignore_paths`. |
+| `csm scan --all --full [--wait] [--json] [--respect-ignores]` | Server-wide uncapped full scan across every account. Quarantine per account after review (`--quarantine` is rejected with `--all`). |
+| `csm scan --status [id]` | List full-scan jobs, or show one job by id. |
+| `csm scan --report <id>` | Print the stored report for a completed full-scan job. |
+| `csm scan --cancel <id>` | Cancel a running full-scan job. |
 
 ## Management
 
@@ -36,10 +41,15 @@
 | `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
 | `csm doctor` | Config + daemon + watchers + store sanity check. `csm doctor challenge` checks challenge public URL, TLS, port gate, webserver snippets, configtest, and the live `/challenge/gate` endpoint. Add `--json` for machine-readable output. |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
-| `csm config show` | Display config with secrets redacted |
-| `csm config schema --json` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
+| `csm config show [--no-redact] [--json]` | Display config. Secrets are redacted unless `--no-redact`; `--json` emits JSON instead of YAML. |
+| `csm config schema` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
+| `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
+| `csm forensic-snapshot <account> --out <archive.tar.gz>` | Evidence archive for incident handoff (triggers, admins, sessions, file mtimes). |
+| `csm webserver-integration <install\|upgrade\|status\|validate\|remove>` | Install, upgrade, or remove the challenge reverse-proxy snippets for the detected web server. |
+| `csm pam <install\|uninstall\|status>` | Install or remove the `pam_csm.so` PAM hook (`csm pam --help`). |
+| `csm report enroll` | Generate an abuse-reporting node key pair. |
 
 ## Backup & restore
 
@@ -89,6 +99,7 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 |---------|-------------|
 | `csm update-rules` | Download latest signature rules |
 | `csm update-geoip` | Update MaxMind GeoLite2 databases |
+| `csm update-bot-ranges` | Refresh built-in AI-crawler IP ranges from vendor feeds |
 
 ## PHP-relay (mail abuse, cPanel only)
 

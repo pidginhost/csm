@@ -162,7 +162,7 @@ CSM runs YARA-X in a supervised child process by default (since the
 crash inside yara_x_capi (the 2026-04-16 production incident) stays
 contained to the child and the daemon keeps its fanotify watchers,
 log watchers, and firewall engine alive. See `ROADMAP.md` (Related
-work already landed → "YARA-X process isolation") for the decision
+work already landed -> "YARA-X process isolation") for the decision
 record.
 
 The knob is a tri-state `*bool`: omit it (or set `true`) for the
@@ -172,7 +172,7 @@ scanner.
 ```yaml
 signatures:
   # yara_worker_enabled: true    # default; omit for default-on
-  # yara_worker_enabled: false   # explicit opt-out → in-process
+  # yara_worker_enabled: false   # explicit opt-out -> in-process
 ```
 
 When on, daemon startup:
