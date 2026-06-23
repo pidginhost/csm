@@ -145,9 +145,7 @@ func categoryOf(reason string) string {
 		return "modsec"
 	case strings.Contains(r, "xml-rpc"):
 		return "xmlrpc"
-	case strings.Contains(r, "wordpress login brute"),
-		strings.Contains(r, "wordpress brute"),
-		strings.Contains(r, "wp brute"):
+	case strings.Contains(r, "wordpress login brute"):
 		return "wp-bruteforce"
 	case strings.Contains(r, "admin panel brute"):
 		return "admin-bruteforce"

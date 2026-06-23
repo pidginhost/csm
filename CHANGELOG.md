@@ -20,9 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Integration CI now fails early if built amd64 packages are missing or duplicated, instead of silently picking an arbitrary artifact.
-- Block digest now counts ModSecurity escalations as attacker traffic instead of flagging them as customer-risk false positives.
-- Block digest now groups WAF high-volume blocks with ModSecurity attacker traffic instead of customer-risk traffic.
-- Block digest category totals now classify common web, mail, and threat-intel auto-block reasons instead of grouping them as generic traffic.
+- Block digest now counts ModSecurity escalations and high-volume WAF blocks as attacker traffic instead of flagging them as customer-risk false positives.
 
 ## [3.20.0] - 2026-06-22
 

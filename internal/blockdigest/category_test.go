@@ -17,8 +17,6 @@ func TestCategoryOf(t *testing.T) {
 		{"WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)", "modsec"},
 		{"XML-RPC abuse from 1.2.3.4: 70 requests", "xmlrpc"},
 		{"WordPress login brute force from 1.2.3.4: 40 attempts", "wp-bruteforce"},
-		{"WordPress brute force from 1.2.3.4: 40 attempts", "wp-bruteforce"},
-		{"WP brute from 1.2.3.4", "wp-bruteforce"},
 		{"Admin panel brute force from 1.2.3.4: 10 POSTs in 5m0s (real-time)", "admin-bruteforce"},
 		{"Mail auth brute force from 1.2.3.4: 5 failed auths in 10m0s", "mail-bruteforce"},
 		{"SMTP brute force from 1.2.3.4: 5 failed auths in 10m0s", "mail-bruteforce"},
