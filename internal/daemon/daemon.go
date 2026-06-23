@@ -1250,7 +1250,6 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
 	// One ordered helper guarantees that ordering on every auto-response path.
 	challengeActions, blockActions := checks.ChallengeThenBlock(cfg, autoResponseFindings)
-	d.observeBlocks(blockActions)
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
 
 	// Mark auto-blocked IPs in attack database
@@ -1299,6 +1298,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	// Log to history
 	d.store.AppendHistory(newFindings)
+	d.observeBlocks(blockActions)
 
 	// Kill, quarantine, and DB cleanup only run on NEW findings
 	killActions := checks.AutoKillProcesses(cfg, newFindings)

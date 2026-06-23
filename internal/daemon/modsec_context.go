@@ -24,10 +24,15 @@ const (
 // It reuses already-parsed modsec findings from the history store, so the
 // digest can name targeted domains and request paths without re-reading the
 // (multi-hundred-MB) audit log. The lookback matches the escalation window
-// that produced the block.
+// that produced the block. The lookup reads the live threshold so safe reloads
+// of the ModSecurity escalation window also change the digest lookback.
 func (d *Daemon) modsecEnricher(cfg *config.Config) func(ip string) (domains, uris []string) {
-	_, win := modsecEscalationParams(cfg)
 	return func(ip string) ([]string, []string) {
+		live := d.currentCfg()
+		if live == nil {
+			live = cfg
+		}
+		_, win := modsecEscalationParams(live)
 		return aggregateModSecContext(ip, time.Now().Add(-win))
 	}
 }

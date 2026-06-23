@@ -74,6 +74,10 @@ func TestAggregateModSecContextNilStore(t *testing.T) {
 }
 
 func TestModSecEnricherUsesEscalationWindow(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+
 	db, ip := seedModSecHistory(t)
 	defer func() { _ = db.Close() }()
 	prev := store.Global()
@@ -91,5 +95,48 @@ func TestModSecEnricherUsesEscalationWindow(t *testing.T) {
 	}
 	if len(uris) != 2 {
 		t.Errorf("enricher uris = %v", uris)
+	}
+}
+
+func TestModSecEnricherUsesLiveEscalationWindow(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	prev := store.Global()
+	store.SetGlobal(db)
+	defer store.SetGlobal(prev)
+
+	ip := "203.0.113.88"
+	if err := db.AppendHistory([]alert.Finding{{
+		Check:     "modsec_block_realtime",
+		SourceIP:  ip,
+		Domain:    "old-window.example.ro",
+		Details:   "Rule: 900116\nMessage: scanner\nHostname: old-window.example.ro\nURI: /late-hit\nRaw: x",
+		Timestamp: time.Now().Add(-30 * time.Minute),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	startup := &config.Config{}
+	startup.Thresholds.ModSecEscalationWindowMin = 10
+	live := &config.Config{}
+	live.Thresholds.ModSecEscalationWindowMin = 60
+
+	d := &Daemon{cfg: startup}
+	enrich := d.modsecEnricher(startup)
+	config.SetActive(live)
+
+	domains, uris := enrich(ip)
+	if len(domains) != 1 || domains[0] != "old-window.example.ro" {
+		t.Errorf("domains = %v, want live-config window to include old-window.example.ro", domains)
+	}
+	if len(uris) != 1 || uris[0] != "/late-hit" {
+		t.Errorf("uris = %v, want [/late-hit]", uris)
 	}
 }

@@ -94,8 +94,11 @@ func TestRenderBodyShowsModSecTargets(t *testing.T) {
 	if !strings.Contains(b, "/cgi-bin/.%2e/bin/sh") {
 		t.Errorf("body missing second IP's URI:\n%s", b)
 	}
-	if !strings.Contains(b, "no customer domain") {
-		t.Errorf("body missing IP-scan hint for domain-less record:\n%s", b)
+	if !strings.Contains(b, "no customer domain recorded") {
+		t.Errorf("body missing domainless context note:\n%s", b)
+	}
+	if strings.Contains(b, "IP-direct scan") {
+		t.Errorf("body should not infer IP-direct scan when domain context is absent:\n%s", b)
 	}
 }
 

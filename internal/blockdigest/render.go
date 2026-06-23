@@ -108,7 +108,7 @@ func (c *Collector) renderBody(d Digest) string {
 		if len(r.Domains) > 0 {
 			fmt.Fprintf(&b, "      targets: %s\n", strings.Join(r.Domains, ", "))
 		} else {
-			fmt.Fprintln(&b, "      targets: no customer domain (IP-direct scan)")
+			fmt.Fprintln(&b, "      targets: no customer domain recorded")
 		}
 		if len(r.URIs) > 0 {
 			fmt.Fprintf(&b, "      top URIs: %s\n", strings.Join(r.URIs, " | "))

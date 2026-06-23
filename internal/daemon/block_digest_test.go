@@ -6,8 +6,29 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
+
+type blockDigestTestBlocker struct {
+	blocked map[string]bool
+}
+
+func (b *blockDigestTestBlocker) BlockIP(ip string, _ string, _ time.Duration) error {
+	b.blocked[ip] = true
+	return nil
+}
+
+func (b *blockDigestTestBlocker) UnblockIP(ip string) error {
+	delete(b.blocked, ip)
+	return nil
+}
+
+func (b *blockDigestTestBlocker) IsBlocked(ip string) bool {
+	return b.blocked[ip]
+}
 
 func TestObserveBlocksFeedsCollector(t *testing.T) {
 	d := &Daemon{}
@@ -158,5 +179,81 @@ func TestBuildBlockDigestDisabledReturnsNil(t *testing.T) {
 	cfg.Alerts.BlockDigest.Enabled = false
 	if c := d.buildBlockDigest(cfg); c != nil {
 		t.Error("disabled block_digest should build no collector")
+	}
+}
+
+func TestDispatchBatchEnrichesBlockDigestAfterHistoryAppend(t *testing.T) {
+	prevActive := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prevActive) })
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	sdb, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevStore := store.Global()
+	store.SetGlobal(sdb)
+	t.Cleanup(func() {
+		store.SetGlobal(prevStore)
+		_ = sdb.Close()
+	})
+
+	blocker := &blockDigestTestBlocker{blocked: map[string]bool{}}
+	checks.SetIPBlocker(blocker)
+	t.Cleanup(func() { checks.SetIPBlocker(nil) })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "24h"
+	cfg.AutoResponse.MaxBlocksPerHour = 100
+	cfg.Thresholds.ModSecEscalationWindowMin = 10
+
+	d := New(cfg, st, nil, "")
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		SendOn:       "any",
+		Interval:     time.Hour,
+		MinBlock:     1,
+		CountryOf:    func(string) string { return "RO" },
+		EnrichModSec: d.modsecEnricher(cfg),
+	})
+
+	now := time.Now()
+	ip := "203.0.113.80"
+	d.dispatchBatch([]alert.Finding{
+		{
+			Severity:  alert.High,
+			Check:     "modsec_block_realtime",
+			Message:   "ModSecurity blocked request: rule 900116 from 203.0.113.80 on shop.example.ro uri=/checkout",
+			Details:   "Rule: 900116\nMessage: scanner\nHostname: shop.example.ro\nURI: /checkout\nRaw: x",
+			SourceIP:  ip,
+			Domain:    "shop.example.ro",
+			Timestamp: now.Add(-time.Second),
+		},
+		{
+			Severity:  alert.Critical,
+			Check:     "modsec_csm_block_escalation",
+			Message:   "CSM rule escalation: 3+ denies from 203.0.113.80 within 10m0s",
+			SourceIP:  ip,
+			Timestamp: now,
+		},
+	})
+
+	dg := d.blockDigest.Drain()
+	if dg.Total != 1 {
+		t.Fatalf("digest total = %d, want 1", dg.Total)
+	}
+	rec := dg.Records[0]
+	if len(rec.Domains) != 1 || rec.Domains[0] != "shop.example.ro" {
+		t.Fatalf("digest domains = %v, want [shop.example.ro]", rec.Domains)
+	}
+	if len(rec.URIs) != 1 || rec.URIs[0] != "/checkout" {
+		t.Fatalf("digest uris = %v, want [/checkout]", rec.URIs)
 	}
 }
