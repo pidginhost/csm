@@ -7,6 +7,17 @@
         <div class="csm-page-header__subtitle" id="modsec-subtitle">Loading WAF surface...</div>
     </div>
     <div class="csm-page-header__actions">
+        <select id="modsec-window-filter" class="form-select form-select-sm csm-auto-width" aria-label="Time range" title="Time range">
+            <option value="24h">Last 24h</option>
+            <option value="6h">Last 6h</option>
+            <option value="1h">Last 1h</option>
+        </select>
+        <select id="modsec-severity-filter" class="form-select form-select-sm csm-auto-width" aria-label="Minimum severity" title="Minimum severity">
+            <option value="">All severities</option>
+            <option value="critical">Critical</option>
+            <option value="high">High and up</option>
+            <option value="warning">Warning and up</option>
+        </select>
         <button type="button" class="btn btn-ghost-secondary btn-sm" id="modsec-refresh" title="Refresh ModSecurity surface" aria-label="Refresh ModSecurity surface">
             <i class="ti ti-refresh"></i>
         </button>
@@ -92,6 +103,9 @@
                     <option value="escalated">Firewall blocked</option>
                     <option value="waf">WAF deny only</option>
                 </select>
+                <select id="modsec-country-filter" class="form-select form-select-sm csm-auto-width" aria-label="Country filter">
+                    <option value="">All countries</option>
+                </select>
                 <span class="csm-toolbar__spacer"></span>
                 <button type="button" class="btn btn-warning btn-sm d-none" id="modsec-bulk-disable" title="Disable the selected rules so they no longer block">
                     <i class="ti ti-circle-off"></i>&nbsp;Disable Selected
@@ -109,6 +123,9 @@
         <div class="tab-pane fade" id="modsec-pane-events" role="tabpanel" aria-labelledby="modsec-tab-events" tabindex="0">
             <div class="csm-toolbar">
                 <input type="text" id="events-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search events..." aria-label="Search events">
+                <select id="events-country-filter" class="form-select form-select-sm csm-auto-width" aria-label="Country filter">
+                    <option value="">All countries</option>
+                </select>
                 <span class="csm-toolbar__spacer"></span>
                 <span class="csm-toolbar__count" id="modsec-events-count"></span>
             </div>

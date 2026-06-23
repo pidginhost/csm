@@ -5403,3 +5403,41 @@ func TestDashboardHealthAndIncidentCountUseServerTruth(t *testing.T) {
 		t.Error("dashboard.js still excludes contained incidents from the active incident total")
 	}
 }
+
+// TestModSecPageHasFilterControls asserts the modsec workbench exposes the
+// time-range, severity, and country filters and that modsec.js wires them into
+// the API queries and a country column.
+func TestModSecPageHasFilterControls(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/modsec.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	for _, want := range []string{
+		`id="modsec-window-filter"`,
+		`id="modsec-severity-filter"`,
+		`id="modsec-country-filter"`,
+		`id="events-country-filter"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("modsec.html missing filter control %q", want)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/modsec.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`window=`,   // time-range param threaded into the API query
+		`severity=`, // severity param threaded into the API query
+		`modsec-country-filter`,
+		`events-country-filter`,
+		`e.country`, // events table renders a country column
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("modsec.js missing filter wiring %q", want)
+		}
+	}
+}

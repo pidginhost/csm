@@ -24,6 +24,8 @@ func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
 // field names keep their JSON keys.
 type modsecBlockView struct {
 	IP           string              `json:"ip"`
+	Country      string              `json:"country"`
+	CountryName  string              `json:"country_name"`
 	RuleID       string              `json:"rule_id"`
 	Description  string              `json:"description"`
 	Domains      string              `json:"domains"`
@@ -56,6 +58,7 @@ type modsecEventView struct {
 	Time     string `json:"time"`
 	TimeISO  string `json:"time_iso"`
 	IP       string `json:"ip"`
+	Country  string `json:"country"`
 	RuleID   string `json:"rule_id"`
 	Hostname string `json:"hostname"`
 	URI      string `json:"uri"`
@@ -63,8 +66,8 @@ type modsecEventView struct {
 }
 
 // apiModSecStats returns 24h summary stats for ModSecurity blocks.
-func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
-	findings := deduplicateModSecFindings(s.modsecFindings24h())
+func (s *Server) apiModSecStats(w http.ResponseWriter, r *http.Request) {
+	findings := deduplicateModSecFindings(s.modsecFindings(r))
 
 	uniqueIPs := make(map[string]bool)
 	ruleCounts := make(map[string]int)
@@ -119,8 +122,8 @@ const (
 )
 
 // apiModSecBlocks returns aggregated blocks per IP+rule for the last 24h.
-func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
-	findings, truncated := s.modsecFindings24hWithTruncation()
+func (s *Server) apiModSecBlocks(w http.ResponseWriter, r *http.Request) {
+	findings, truncated := s.modsecFindingsWithTruncation(r)
 	findings = deduplicateModSecFindings(findings)
 
 	type blockAgg struct {
@@ -263,9 +266,12 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 			firstSeenISO = agg.firstSeen.UTC().Format(time.RFC3339)
 		}
 		topURIs := topKeysByCount(agg.uriCounts, 5)
+		country, countryName := s.modsecCountryOf(agg.ip)
 
 		result = append(result, modsecBlockView{
 			IP:           agg.ip,
+			Country:      country,
+			CountryName:  countryName,
 			RuleID:       agg.ruleID,
 			Description:  agg.description,
 			Domains:      domains,
@@ -312,7 +318,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	findings := deduplicateModSecFindings(s.modsecFindings24h())
+	findings := deduplicateModSecFindings(s.modsecFindings(r))
 
 	result := make([]modsecEventView, 0, limit)
 	for _, f := range findings {
@@ -322,10 +328,13 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		if len(result) >= limit {
 			break
 		}
+		ip := extractModSecIP(f)
+		country, _ := s.modsecCountryOf(ip)
 		result = append(result, modsecEventView{
 			Time:     f.Timestamp.Format("15:04:05"),
 			TimeISO:  f.Timestamp.UTC().Format(time.RFC3339),
-			IP:       extractModSecIP(f),
+			IP:       ip,
+			Country:  country,
 			RuleID:   extractModSecRule(f),
 			Hostname: extractModSecHostname(f),
 			URI:      extractModSecURI(f),
@@ -371,21 +380,74 @@ func isModSecEscalation(check string) bool {
 	return check == "modsec_block_escalation" || check == "modsec_csm_block_escalation"
 }
 
-// modsecFindings24h returns all modsec findings from the last 24 hours.
-func (s *Server) modsecFindings24h() []alert.Finding {
-	findings, _ := s.modsecFindings24hWithTruncation()
+// modsecWindow maps the optional window query param to a lookback duration.
+// Missing or unrecognized values fall back to 24h, which also bounds the read
+// since history retention and the scan cap assume roughly a day.
+func modsecWindow(r *http.Request) time.Duration {
+	switch r.URL.Query().Get("window") {
+	case "1h":
+		return time.Hour
+	case "6h":
+		return 6 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
+}
+
+// modsecSeverityFilter maps the optional severity query param to a minimum
+// severity. ok is false when no (or an unrecognized) filter is requested, in
+// which case all severities pass.
+func modsecSeverityFilter(r *http.Request) (alert.Severity, bool) {
+	switch strings.ToLower(r.URL.Query().Get("severity")) {
+	case "warning":
+		return alert.Warning, true
+	case "high":
+		return alert.High, true
+	case "critical":
+		return alert.Critical, true
+	default:
+		return 0, false
+	}
+}
+
+// modsecCountryOf resolves an IP to its ISO country code and full name via the
+// loaded GeoIP database. Returns empty strings when the IP is empty or no
+// GeoIP database is loaded.
+func (s *Server) modsecCountryOf(ip string) (string, string) {
+	if ip == "" {
+		return "", ""
+	}
+	db := s.geoIPDB.Load()
+	if db == nil {
+		return "", ""
+	}
+	info := db.Lookup(ip)
+	return info.Country, info.CountryName
+}
+
+// modsecFindings returns modsec findings for the request window and severity
+// filter.
+func (s *Server) modsecFindings(r *http.Request) []alert.Finding {
+	findings, _ := s.modsecFindingsWithTruncation(r)
 	return findings
 }
 
-func (s *Server) modsecFindings24hWithTruncation() ([]alert.Finding, bool) {
+func (s *Server) modsecFindingsWithTruncation(r *http.Request) ([]alert.Finding, bool) {
 	db := store.Global()
 	if db == nil {
 		return nil, false
 	}
 
-	cutoff := time.Now().Add(-24 * time.Hour)
+	cutoff := time.Now().Add(-modsecWindow(r))
+	minSev, hasSev := modsecSeverityFilter(r)
 	findings := db.SearchHistorySince(cutoff, modsecFindingsScanCap+1, func(f alert.Finding) bool {
-		return strings.HasPrefix(f.Check, "modsec_")
+		if !strings.HasPrefix(f.Check, "modsec_") {
+			return false
+		}
+		if hasSev && f.Severity < minSev {
+			return false
+		}
+		return true
 	})
 	if len(findings) > modsecFindingsScanCap {
 		return findings[:modsecFindingsScanCap], true

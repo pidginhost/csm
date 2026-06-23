@@ -4,6 +4,7 @@
     'use strict';
 
     var _modsecBlocks = [];
+    var _modsecEvents = [];
     var _modsecPoller = null;
     var _modsecBulk = null;
     var eventsLoaded = false;
@@ -11,6 +12,45 @@
     window.addEventListener('beforeunload', function() {
         if (_modsecPoller) { _modsecPoller.stop(); _modsecPoller = null; }
     });
+
+    // ---------- Filters (time-range / severity / country) ----------
+
+    // modsecQuery builds the shared server-side query string from the global
+    // time-range and severity selects. Country is filtered client-side from the
+    // resolved country field, so it is not part of this query.
+    function modsecQuery() {
+        var w = (document.getElementById('modsec-window-filter') || {}).value || '24h';
+        var sev = (document.getElementById('modsec-severity-filter') || {}).value || '';
+        var q = '?window=' + encodeURIComponent(w);
+        if (sev) q += '&severity=' + encodeURIComponent(sev);
+        return q;
+    }
+
+    function countryFilterValue(id) {
+        return (document.getElementById(id) || {}).value || '';
+    }
+
+    // populateCountryFilter refreshes a country <select> with the distinct
+    // countries present in items, preserving the current selection when it is
+    // still available.
+    function populateCountryFilter(id, items) {
+        var sel = document.getElementById(id);
+        if (!sel) return;
+        var current = sel.value;
+        var seen = Object.create(null);
+        var codes = [];
+        for (var i = 0; i < items.length; i++) {
+            var c = items[i].country;
+            if (c && !seen[c]) { seen[c] = true; codes.push(c); }
+        }
+        codes.sort();
+        var html = '<option value="">All countries</option>';
+        for (var k = 0; k < codes.length; k++) {
+            html += '<option value="' + CSM.attr(codes[k]) + '">' + CSM.esc(codes[k]) + '</option>';
+        }
+        sel.innerHTML = html;
+        if (current && seen[current]) sel.value = current;
+    }
 
     // ---------- Status strip ----------
 
@@ -59,12 +99,21 @@
     // ---------- Stats ----------
 
     function loadStats() {
-        CSM.get('/api/v1/modsec/stats', { silent: true })
+        CSM.get('/api/v1/modsec/stats' + modsecQuery(), { silent: true })
             .then(function(d) {
                 _strip.stats = d;
                 refreshStatusStrip();
             })
             .catch(function() { /* non-fatal */ });
+    }
+
+    function startStatsPoll() {
+        if (_modsecPoller) { _modsecPoller.stop(); _modsecPoller = null; }
+        _modsecPoller = CSM.poll('/api/v1/modsec/stats' + modsecQuery(), 30000, function(err, d) {
+            if (err) return;
+            _strip.stats = d;
+            refreshStatusStrip();
+        });
     }
 
     // ---------- Active WAF pressure (csm-summary-list) + side summaries ----------
@@ -329,9 +378,10 @@
     // ---------- Blocked IPs tab (full table) ----------
 
     function loadBlocked() {
-        CSM.get('/api/v1/modsec/blocks')
+        CSM.get('/api/v1/modsec/blocks' + modsecQuery())
             .then(function(blocks) {
                 _modsecBlocks = blocks || [];
+                populateCountryFilter('modsec-country-filter', _modsecBlocks);
                 renderActiveWAFPressure(_modsecBlocks);
                 renderSideSummaries(_modsecBlocks);
                 renderBlockedTable(_modsecBlocks);
@@ -351,9 +401,10 @@
         var container = document.getElementById('modsec-content');
         if (!container) return;
         var statusFilter = (document.getElementById('modsec-status-filter') || {}).value || '';
-        var filtered = statusFilter
-            ? blocks.filter(function(b) { return statusFor(b) === statusFilter; })
-            : blocks;
+        var countryFilter = countryFilterValue('modsec-country-filter');
+        var filtered = blocks;
+        if (statusFilter) filtered = filtered.filter(function(b) { return statusFor(b) === statusFilter; });
+        if (countryFilter) filtered = filtered.filter(function(b) { return b.country === countryFilter; });
 
         if (!filtered || filtered.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-3">No ModSecurity blocks match the current filter.</div>';
@@ -477,11 +528,13 @@
     function loadEvents() {
         if (eventsLoaded) return;
         eventsLoaded = true;
-        CSM.get('/api/v1/modsec/events?limit=100')
+        CSM.get('/api/v1/modsec/events' + modsecQuery() + '&limit=100')
             .then(function(events) {
-                _strip.latest = events && events.length > 0 ? events[0].time : '';
+                _modsecEvents = events || [];
+                populateCountryFilter('events-country-filter', _modsecEvents);
+                _strip.latest = _modsecEvents.length > 0 ? _modsecEvents[0].time : '';
                 refreshStatusStrip();
-                renderEvents(events || []);
+                renderEvents(_modsecEvents);
             })
             .catch(function() {
                 var el = document.getElementById('modsec-events');
@@ -493,6 +546,10 @@
     function renderEvents(events) {
         var el = document.getElementById('modsec-events');
         if (!el) return;
+        var countryFilter = countryFilterValue('events-country-filter');
+        if (countryFilter) {
+            events = events.filter(function(e) { return e.country === countryFilter; });
+        }
         if (events.length === 0) {
             el.innerHTML = '<div class="card-body text-center text-muted py-3">No recent events</div>';
             var c = document.getElementById('modsec-events-count');
@@ -501,7 +558,7 @@
         }
         var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-sticky" id="events-table">';
         h += '<thead><tr>';
-        h += '<th>Time</th><th>IP</th><th>Rule</th><th>Domain</th><th>URI</th><th>Severity</th>';
+        h += '<th>Time</th><th>IP</th><th>Location</th><th>Rule</th><th>Domain</th><th>URI</th><th>Severity</th>';
         h += '</tr></thead><tbody>';
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
@@ -509,6 +566,7 @@
             h += '<tr>';
             h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';
+            h += '<td data-label="Location">' + (e.country ? CSM.countryFlag(e.country) + ' ' + CSM.esc(e.country) : '<span class="text-muted">--</span>') + '</td>';
             h += '<td><code>' + CSM.esc(e.rule_id) + '</code></td>';
             h += '<td>' + CSM.esc(e.hostname) + '</td>';
             h += '<td class="font-monospace small csm-truncate-middle" data-csm-truncate-middle="60">' + CSM.esc(e.uri) + '</td>';
@@ -588,6 +646,33 @@
         });
     }
 
+    var blockedCountryFilter = document.getElementById('modsec-country-filter');
+    if (blockedCountryFilter) {
+        blockedCountryFilter.addEventListener('change', function() {
+            renderBlockedTable(_modsecBlocks);
+        });
+    }
+
+    var eventsCountryFilter = document.getElementById('events-country-filter');
+    if (eventsCountryFilter) {
+        eventsCountryFilter.addEventListener('change', function() {
+            renderEvents(_modsecEvents);
+        });
+    }
+
+    // window/severity are server-side: refetch every surface and re-arm the poll.
+    function applyServerFilters() {
+        loadStats();
+        loadBlocked();
+        eventsLoaded = false;
+        if (document.getElementById('modsec-pane-events').classList.contains('active')) loadEvents();
+        startStatsPoll();
+    }
+    var windowFilter = document.getElementById('modsec-window-filter');
+    if (windowFilter) windowFilter.addEventListener('change', applyServerFilters);
+    var severityFilter = document.getElementById('modsec-severity-filter');
+    if (severityFilter) severityFilter.addEventListener('change', applyServerFilters);
+
     var refreshBtn = document.getElementById('modsec-refresh');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', function() {
@@ -602,12 +687,7 @@
 
     loadStats();
     loadBlocked();
-
-    _modsecPoller = CSM.poll('/api/v1/modsec/stats', 30000, function(err, d) {
-        if (err) return;
-        _strip.stats = d;
-        refreshStatusStrip();
-    });
+    startStatsPoll();
 
     var subtitle = document.getElementById('modsec-subtitle');
     if (subtitle) subtitle.textContent = 'Active WAF pressure, top rules and domains, with raw events behind tabs.';

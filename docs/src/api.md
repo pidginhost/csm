@@ -131,9 +131,9 @@ POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 GET  /api/v1/incidents/groups          Roll up open/contained incidents by (kind, source) so credential spray collapses into one row per attacker IP. Read scope. Accepts ?status=active|all|open|contained|resolved|dismissed, ?kind=, ?limit=.
 
-GET  /api/v1/modsec/stats              WAF statistics (read scope)
-GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP (read scope)
-GET  /api/v1/modsec/events             WAF event details (read scope)
+GET  /api/v1/modsec/stats              WAF statistics (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
+GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP, with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
+GET  /api/v1/modsec/events             WAF event details with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/rules              Loaded rules list
 POST /api/v1/modsec/rules/apply        Apply custom rules
 POST /api/v1/modsec/rules/escalation   Change rule severity/action

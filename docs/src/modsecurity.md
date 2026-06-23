@@ -44,7 +44,7 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 
 ## Web UI Pages
 
-**ModSecurity** (`/modsec`) - WAF status overview, event log, active block list
+**ModSecurity** (`/modsec`) - WAF status overview, event log, active block list, filterable by time range, minimum severity, and source country
 
 **ModSec Rules** (`/modsec/rules`) - per-rule management:
 - View loaded rules with descriptions
