@@ -145,6 +145,52 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	return failing <= e.establishedGoodCount(now, window)
 }
 
+// recentGoodCount returns how many distinct mailboxes this IP succeeded on
+// recently enough to still be on record (last success within
+// mailGoodSourceTTL), regardless of whether that standing has aged past the
+// failure window. Unlike establishedGoodCount it does not require the
+// relationship to predate the burst, so it recognizes a legitimate sender whose
+// standing is only seconds old -- a cold-started daemon before persisted
+// standing re-ages, or a customer returning after the snapshot expired. Caller
+// must hold t.mu.
+func (e *mailIPEntry) recentGoodCount(now time.Time) int {
+	n := 0
+	for _, last := range e.goodLast {
+		if now.Sub(last) <= mailGoodSourceTTL {
+			n++
+		}
+	}
+	return n
+}
+
+// looksLikeFreshGoodSourceFP reports the cold-start/misconfiguration
+// false-positive shape: the same confined, named, non-cracking failure set that
+// establishedGoodConfined downgrades, but bounded by the IP's recent-success
+// footprint instead of its established (aged) one. It is true exactly when the
+// only reason the burst was not downgraded to an advisory is that the source's
+// good standing is too fresh to have aged past the window. The auto-block still
+// fires -- a fresh success cannot be trusted to grant a brute-force bypass, or a
+// padding login would buy an attacker slack -- but the finding is annotated so
+// an operator can spot a likely false positive without reconstructing the mail
+// log by hand. Caller must hold t.mu and must have pruned the window state.
+func (e *mailIPEntry) looksLikeFreshGoodSourceFP(now time.Time, window time.Duration) bool {
+	failing := len(e.failedAccounts)
+	if failing == 0 {
+		return false
+	}
+	named := 0
+	for account, times := range e.failedAccounts {
+		named += len(times)
+		if e.isCrackInProgress(account, now, window) {
+			return false
+		}
+	}
+	if named != len(e.times) {
+		return false
+	}
+	return failing <= e.recentGoodCount(now)
+}
+
 // successDominant reports whether this IP behaves like a legit busy client
 // rather than a brute-forcer: it has successful logins in the window, at least
 // as many successes as failures, and the successful mailboxes explain the failed
@@ -515,12 +561,16 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 				})
 			case !now.Before(e.suppressed):
 				e.suppressed = now.Add(t.suppression)
+				details := "Real-time detection of dovecot imap/pop3/managesieve auth failures"
+				if e.looksLikeFreshGoodSourceFP(now, t.window) {
+					details += " Note: this source has recent successful mail auth for one or more other mailboxes, so the failures may be a misconfigured client with a stale saved password rather than an attack. Verify before treating it as a confirmed brute-force."
+				}
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "mail_bruteforce",
 					Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths in %v",
 						ip, len(e.times), t.window),
-					Details:   "Real-time detection of dovecot imap/pop3/managesieve auth failures",
+					Details:   details,
 					Timestamp: now,
 					SourceIP:  ip,
 				})

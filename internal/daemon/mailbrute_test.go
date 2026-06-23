@@ -1827,3 +1827,93 @@ func TestIsMailAuthLine_Variants(t *testing.T) {
 		}
 	}
 }
+
+const possibleFPNote = "recent successful mail auth"
+
+// A cold-started daemon (no persisted standing yet, or a customer returning
+// after the snapshot aged out) sees a legit agency IP succeed on sibling
+// mailboxes only seconds ago, so the standing has not yet aged past the failure
+// window. A third sibling with a stale saved password then fails. The block
+// must still fire -- a fresh success cannot be trusted to grant a brute-force
+// bypass -- but the finding must be annotated as a possible false positive so an
+// operator can triage it without reconstructing the mail log by hand.
+func TestMailAuthTracker_ColdStartSiblingFailureBlockAnnotatedPossibleFP(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.30"
+	tr.RecordSuccess(ip, "victoria@example.ro")
+	tr.RecordSuccess(ip, "zhukov@example.ro")
+	clock.advance(time.Second)
+
+	var block *alert.Finding
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "valeria@example.ro") {
+			if f.Check == "mail_bruteforce" {
+				cp := f
+				block = &cp
+			}
+		}
+		clock.advance(time.Second)
+	}
+	if block == nil {
+		t.Fatalf("fresh sibling success must not suppress the auto-block")
+	}
+	if !strings.Contains(block.Details, possibleFPNote) {
+		t.Fatalf("cold-start sibling block must be annotated as a possible false positive; details=%q", block.Details)
+	}
+}
+
+// An attacker IP with no successful history is a real brute-force, not a
+// misconfiguration: the block finding must stay a clean Critical with no
+// false-positive annotation, so the advisory note keeps signal.
+func TestMailAuthTracker_RealBruteForceBlockNotAnnotated(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.31"
+
+	var block *alert.Finding
+	for i := 0; i < 5; i++ {
+		for _, f := range tr.Record(ip, "office@example.ro") {
+			if f.Check == "mail_bruteforce" {
+				cp := f
+				block = &cp
+			}
+		}
+	}
+	if block == nil {
+		t.Fatalf("expected mail_bruteforce block")
+	}
+	if strings.Contains(block.Details, possibleFPNote) {
+		t.Fatalf("a source with no successful history must not be annotated as a possible false positive; details=%q", block.Details)
+	}
+}
+
+// Accountless failures (no user= in the log line) could target anything; recent
+// sibling successes must not annotate them as a likely false positive, mirroring
+// the same guard the confined downgrade uses.
+func TestMailAuthTracker_ColdStartAnnotationSkippedWhenFailuresAccountless(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.32"
+	tr.RecordSuccess(ip, "victoria@example.ro")
+	tr.RecordSuccess(ip, "zhukov@example.ro")
+	clock.advance(time.Second)
+
+	for i := 0; i < 4; i++ {
+		tr.Record(ip, "valeria@example.ro")
+		clock.advance(time.Second)
+	}
+	var block *alert.Finding
+	for _, f := range tr.Record(ip, "") {
+		if f.Check == "mail_bruteforce" {
+			cp := f
+			block = &cp
+		}
+	}
+	if block == nil {
+		t.Fatalf("expected block at threshold")
+	}
+	if strings.Contains(block.Details, possibleFPNote) {
+		t.Fatalf("accountless failures must not be annotated as a possible false positive; details=%q", block.Details)
+	}
+}

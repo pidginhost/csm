@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Integration CI now fails early if built amd64 packages are missing or duplicated, instead of silently picking an arbitrary artifact.
 - Block digest now counts ModSecurity escalations and high-volume WAF blocks as attacker traffic instead of flagging them as customer-risk false positives.
+- Mail brute-force auto-blocks are now flagged as a possible false positive when the same source has recent successful mail logins for other mailboxes, so a stale saved password is easier to tell apart from a real attack.
 
 ## [3.20.0] - 2026-06-22
 
