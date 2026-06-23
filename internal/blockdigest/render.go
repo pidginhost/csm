@@ -25,19 +25,21 @@ type WebhookCSM struct {
 }
 
 type WebhookCounts struct {
-	Total     int            `json:"total"`
-	Customer  int            `json:"customer"`
-	Attacker  int            `json:"attacker"`
-	ByCountry map[string]int `json:"by_country"`
-	ByReason  map[string]int `json:"by_reason"`
+	Total      int            `json:"total"`
+	Customer   int            `json:"customer"`
+	Attacker   int            `json:"attacker"`
+	ByCountry  map[string]int `json:"by_country"`
+	ByReason   map[string]int `json:"by_reason"`
+	ByCategory map[string]int `json:"by_category"`
 }
 
 type WebhookBlock struct {
-	IP      string `json:"ip"`
-	Country string `json:"country"`
-	Reason  string `json:"reason"`
-	Bucket  string `json:"bucket"`
-	TS      string `json:"ts"`
+	IP       string `json:"ip"`
+	Country  string `json:"country"`
+	Reason   string `json:"reason"`
+	Bucket   string `json:"bucket"`
+	Category string `json:"category"`
+	TS       string `json:"ts"`
 }
 
 const maxAttackerListed = 10
@@ -59,6 +61,7 @@ func (c *Collector) renderBody(d Digest) string {
 	fmt.Fprintln(&b, c.renderSubject(d))
 	fmt.Fprintf(&b, "Countries: %s\n", countriesLabel(d.Countries))
 	fmt.Fprintf(&b, "By country: %s\n", sortedCounts(d.ByCountry))
+	fmt.Fprintf(&b, "By category: %s\n", sortedCounts(d.ByCategory))
 	fmt.Fprintf(&b, "By reason: %s\n", sortedCounts(d.ByReason))
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "LIKELY CUSTOMER (false-positive risk -- review/unblock with: csm firewall remove <ip>):")
@@ -82,6 +85,21 @@ func (c *Collector) renderBody(d Digest) string {
 		}
 		if listed >= maxAttackerListed {
 			fmt.Fprintf(&b, "  ... and %d more\n", d.AttackerCount-listed)
+			break
+		}
+		fmt.Fprintf(&b, "  %s | %s | %s\n", r.IP, r.Country, r.Reason)
+		listed++
+	}
+	fmt.Fprintln(&b)
+	modsec := d.ByCategory["modsec"]
+	fmt.Fprintf(&b, "ModSecurity blocks (WAF escalations): %d\n", modsec)
+	listed = 0
+	for _, r := range d.Records {
+		if r.Category != "modsec" {
+			continue
+		}
+		if listed >= maxAttackerListed {
+			fmt.Fprintf(&b, "  ... and %d more\n", modsec-listed)
 			break
 		}
 		fmt.Fprintf(&b, "  %s | %s | %s\n", r.IP, r.Country, r.Reason)
@@ -113,7 +131,8 @@ func (c *Collector) buildPayload(event string, d Digest) WebhookPayload {
 	for _, r := range d.Records {
 		blocks = append(blocks, WebhookBlock{
 			IP: r.IP, Country: r.Country, Reason: r.Reason,
-			Bucket: string(r.Bucket), TS: r.TS.UTC().Format(time.RFC3339),
+			Bucket: string(r.Bucket), Category: r.Category,
+			TS: r.TS.UTC().Format(time.RFC3339),
 		})
 	}
 	return WebhookPayload{
@@ -123,7 +142,7 @@ func (c *Collector) buildPayload(event string, d Digest) WebhookPayload {
 			Window: d.Window.String(), Countries: d.Countries,
 			Counts: WebhookCounts{
 				Total: d.Total, Customer: d.CustomerCount, Attacker: d.AttackerCount,
-				ByCountry: d.ByCountry, ByReason: d.ByReason,
+				ByCountry: d.ByCountry, ByReason: d.ByReason, ByCategory: d.ByCategory,
 			},
 			Blocks: blocks,
 		},

@@ -20,11 +20,12 @@ const (
 
 // Record is one deduplicated auto-block observation in the current window.
 type Record struct {
-	TS      time.Time
-	IP      string
-	Country string
-	Reason  string
-	Bucket  Bucket
+	TS       time.Time
+	IP       string
+	Country  string
+	Reason   string
+	Bucket   Bucket
+	Category string
 }
 
 // Digest is the rolled-up view drained at each interval.
@@ -36,6 +37,7 @@ type Digest struct {
 	AttackerCount int
 	ByCountry     map[string]int
 	ByReason      map[string]int
+	ByCategory    map[string]int
 	Records       []Record
 }
 
@@ -113,10 +115,11 @@ func normalizeCountries(src []string) []string {
 func classifyBucket(reason string) Bucket {
 	r := strings.ToLower(reason)
 	attacker := []string{
-		"rule escalation", "brute", "mail auth", "web_attack", "web attack",
-		"account compromise", "command-and-control", "user-agent spoof",
-		"ua spoof", "bad asn", "credential stuffing", "credential-stuffing",
-		"credential abuse", "credential-abuse", "credentials compromised",
+		"rule escalation", "modsecurity", "brute", "mail auth", "web_attack",
+		"web attack", "account compromise", "command-and-control",
+		"user-agent spoof", "ua spoof", "bad asn", "credential stuffing",
+		"credential-stuffing", "credential abuse", "credential-abuse",
+		"credentials compromised",
 	}
 	for _, k := range attacker {
 		if strings.Contains(r, k) {
@@ -127,6 +130,30 @@ func classifyBucket(reason string) Bucket {
 		return BucketAttacker
 	}
 	return BucketCustomer
+}
+
+// categoryOf groups an auto-block reason into a stable signal class so the
+// digest can break blocks down by what tripped them and call out WAF pressure.
+// CSM custom rules (900xxx) and OWASP/Comodo CRS escalations collapse to one
+// "modsec" class. Reason strings are CSM-internal and stable.
+func categoryOf(reason string) string {
+	r := strings.ToLower(reason)
+	switch {
+	case strings.Contains(r, "modsecurity escalation"), strings.Contains(r, "rule escalation"):
+		return "modsec"
+	case strings.Contains(r, "xml-rpc"):
+		return "xmlrpc"
+	case strings.Contains(r, "wordpress login brute"):
+		return "wp-bruteforce"
+	case strings.Contains(r, "mail auth"):
+		return "mail-bruteforce"
+	case strings.Contains(r, "ftp brute"):
+		return "ftp-bruteforce"
+	case strings.Contains(r, "user-agent spoof"), strings.Contains(r, "ua spoof"):
+		return "ua-spoof"
+	default:
+		return "other"
+	}
 }
 
 func containsWord(s, word string) bool {
@@ -173,7 +200,7 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 		return
 	}
 	bucket := classifyBucket(reason)
-	rec := Record{TS: ts, IP: ip, Country: country, Reason: reason, Bucket: bucket}
+	rec := Record{TS: ts, IP: ip, Country: country, Reason: reason, Bucket: bucket, Category: categoryOf(reason)}
 
 	c.mu.Lock()
 	if len(c.records) < maxBuffered {
@@ -198,10 +225,11 @@ func (c *Collector) Drain() Digest {
 	c.mu.Unlock()
 
 	d := Digest{
-		Window:    c.opts.Interval,
-		Countries: c.countriesSnapshot(),
-		ByCountry: map[string]int{},
-		ByReason:  map[string]int{},
+		Window:     c.opts.Interval,
+		Countries:  c.countriesSnapshot(),
+		ByCountry:  map[string]int{},
+		ByReason:   map[string]int{},
+		ByCategory: map[string]int{},
 	}
 	selected := make(map[string]Record, len(recs))
 	order := make([]string, 0, len(recs))
@@ -223,6 +251,7 @@ func (c *Collector) Drain() Digest {
 		d.Total++
 		d.ByCountry[r.Country]++
 		d.ByReason[reasonKey(r.Reason)]++
+		d.ByCategory[r.Category]++
 		if r.Bucket == BucketCustomer {
 			d.CustomerCount++
 			customer = append(customer, r)
@@ -266,8 +295,9 @@ func (c *Collector) maybeLive(rec Record) {
 	d := Digest{
 		Window: c.opts.Interval, Countries: c.countriesSnapshot(),
 		Total: 1, ByCountry: map[string]int{rec.Country: 1},
-		ByReason: map[string]int{reasonKey(rec.Reason): 1},
-		Records:  []Record{rec},
+		ByReason:   map[string]int{reasonKey(rec.Reason): 1},
+		ByCategory: map[string]int{rec.Category: 1},
+		Records:    []Record{rec},
 	}
 	if rec.Bucket == BucketCustomer {
 		d.CustomerCount = 1

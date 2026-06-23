@@ -148,7 +148,7 @@ func TestLiveCustomerModeOnlyFiresOnCustomer(t *testing.T) {
 	if cap.webhookCount() != 0 {
 		t.Fatalf("attacker fired live in customer mode")
 	}
-	c.Observe("203.0.113.6", "ModSecurity escalation: y", now) // customer -> live
+	c.Observe("203.0.113.6", "unrecognized customer block", now) // customer -> live
 	if cap.webhookCount() != 1 {
 		t.Errorf("customer live webhooks = %d, want 1", cap.webhookCount())
 	}

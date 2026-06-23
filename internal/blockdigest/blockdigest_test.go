@@ -23,7 +23,6 @@ func TestResolveCountriesFallback(t *testing.T) {
 
 func TestClassifyBucket(t *testing.T) {
 	cust := []string{
-		"ModSecurity escalation: 5+ denies from 1.2.3.4 within 4h0m0s",
 		"XML-RPC abuse from 1.2.3.4: 70 requests",
 		"something totally unrecognized",
 		"Outbound mail governor tripped but no outbound spam volume observed",
@@ -37,6 +36,8 @@ func TestClassifyBucket(t *testing.T) {
 	}
 	atk := []string{
 		"rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s",
+		"ModSecurity escalation: 5+ denies from 1.2.3.4 within 4h0m0s",
+		"CSM rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s",
 		"Mail auth brute force from 1.2.3.4: 5 failed auths in 10m0s",
 		"incident web_attack CRITICAL (incident opened)",
 		"Mail account compromise: successful login for x",
@@ -76,8 +77,8 @@ func TestObserveFiltersByCountryAndDedups(t *testing.T) {
 	if d.Total != 1 {
 		t.Fatalf("Total = %d, want 1 (RO deduped)", d.Total)
 	}
-	if d.CustomerCount != 1 || d.AttackerCount != 0 {
-		t.Errorf("customer=%d attacker=%d, want 1/0", d.CustomerCount, d.AttackerCount)
+	if d.CustomerCount != 0 || d.AttackerCount != 1 {
+		t.Errorf("customer=%d attacker=%d, want 0/1", d.CustomerCount, d.AttackerCount)
 	}
 	if d.ByCountry["RO"] != 1 {
 		t.Errorf("ByCountry[RO] = %d", d.ByCountry["RO"])
@@ -151,7 +152,7 @@ func TestDrainDedupPrefersCustomerRiskRecord(t *testing.T) {
 		Now: func() time.Time { return time.Unix(0, 0) }, CountryOf: func(string) string { return "RO" }})
 	ts := time.Unix(0, 0)
 	c.Observe("203.0.113.9", "rule escalation: x", ts)
-	c.Observe("203.0.113.9", "ModSecurity escalation: y", ts.Add(time.Second))
+	c.Observe("203.0.113.9", "something totally unrecognized", ts.Add(time.Second))
 
 	d := c.Drain()
 	if d.Total != 1 {
@@ -160,8 +161,8 @@ func TestDrainDedupPrefersCustomerRiskRecord(t *testing.T) {
 	if d.CustomerCount != 1 || d.AttackerCount != 0 {
 		t.Fatalf("customer=%d attacker=%d, want 1/0", d.CustomerCount, d.AttackerCount)
 	}
-	if got := d.ByReason["ModSecurity escalation"]; got != 1 {
-		t.Fatalf("ByReason[ModSecurity escalation] = %d, want 1", got)
+	if got := d.ByReason["something totally unrecognized"]; got != 1 {
+		t.Fatalf("ByReason[something totally unrecognized] = %d, want 1", got)
 	}
 	if len(d.Records) != 1 || d.Records[0].Bucket != BucketCustomer {
 		t.Fatalf("Records = %+v, want one customer record", d.Records)

@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm scan --all --full` runs an uncapped report-only scan across every cPanel account under one job, with per-account progress and error isolation.
 - `csm scan <user> --full --quarantine` now quarantines eligible malware/webshell file findings (report-only by default), recording per-finding remediation status; process-kill, DB, and firewall actions are never triggered.
 - Periodic content scans now also sweep a small rolling slice of each account's full web tree every cycle (on by default), so dormant files the fast scan skips for speed are eventually content-scanned without a manual full scan.
+- Block digest email and webhook now break blocks down by category and call out ModSecurity (WAF) blocks in a dedicated section.
 
 ### Fixed
 
 - Integration CI now fails early if built amd64 packages are missing or duplicated, instead of silently picking an arbitrary artifact.
+- Block digest now counts ModSecurity escalations as attacker traffic instead of flagging them as customer-risk false positives.
 
 ## [3.20.0] - 2026-06-22
 
