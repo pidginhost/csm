@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm scan <user> --full --quarantine` now quarantines eligible malware/webshell file findings (report-only by default), recording per-finding remediation status; process-kill, DB, and firewall actions are never triggered.
 - Periodic content scans now also sweep a small rolling slice of each account's full web tree every cycle (on by default), so dormant files the fast scan skips for speed are eventually content-scanned without a manual full scan.
 
+### Fixed
+
+- Integration CI now fails early if built amd64 packages are missing or duplicated, instead of silently picking an arbitrary artifact.
+
 ## [3.20.0] - 2026-06-22
 
 ### Added

@@ -78,8 +78,8 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 | **test** | `go test -v -race -timeout=300s -covermode=atomic -coverprofile -coverpkg=./internal/... ./...` |
 | **build-image** | Build CSM builder Docker image with YARA-X (manual trigger) |
 | **build** | Two architectures: amd64 with YARA-X CGO, arm64 pure Go |
-| **integration** | Spin up AlmaLinux + Ubuntu cloud servers via phctl, install CSM from the public mirror, run the integration test binary on both hosts, collect coverage. Only runs on `main` |
 | **package** | RPM + DEB via nFPM |
+| **integration** | Spin up AlmaLinux + Ubuntu cloud servers via phctl, install the pipeline-built amd64 packages, run the integration test binary on both hosts, collect coverage. Manual on `main`; automatic on release tags |
 | **sign** | Detached signatures on release artifacts |
 | **publish** | Internal GitLab Generic Package Registry (versioned + `latest`) |
 | **repo** | Publish RPM/DEB to the public `mirrors.pidginhost.com` apt/dnf repos |
