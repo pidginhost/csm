@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.0] - 2026-06-23
+
 ### Added
 
 - WebUI admins can enqueue and cancel full-scan jobs via `POST /api/v1/scan-jobs` and `POST /api/v1/scan-jobs/{id}/cancel` (admin auth + CSRF), sharing the daemon's single-job queue.
