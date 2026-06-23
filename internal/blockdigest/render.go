@@ -34,12 +34,14 @@ type WebhookCounts struct {
 }
 
 type WebhookBlock struct {
-	IP       string `json:"ip"`
-	Country  string `json:"country"`
-	Reason   string `json:"reason"`
-	Bucket   string `json:"bucket"`
-	Category string `json:"category"`
-	TS       string `json:"ts"`
+	IP       string   `json:"ip"`
+	Country  string   `json:"country"`
+	Reason   string   `json:"reason"`
+	Bucket   string   `json:"bucket"`
+	Category string   `json:"category"`
+	Domains  []string `json:"domains,omitempty"`
+	URIs     []string `json:"uris,omitempty"`
+	TS       string   `json:"ts"`
 }
 
 const maxAttackerListed = 10
@@ -103,6 +105,14 @@ func (c *Collector) renderBody(d Digest) string {
 			break
 		}
 		fmt.Fprintf(&b, "  %s | %s | %s\n", r.IP, r.Country, r.Reason)
+		if len(r.Domains) > 0 {
+			fmt.Fprintf(&b, "      targets: %s\n", strings.Join(r.Domains, ", "))
+		} else {
+			fmt.Fprintln(&b, "      targets: no customer domain (IP-direct scan)")
+		}
+		if len(r.URIs) > 0 {
+			fmt.Fprintf(&b, "      top URIs: %s\n", strings.Join(r.URIs, " | "))
+		}
 		listed++
 	}
 	fmt.Fprintln(&b)
@@ -132,6 +142,7 @@ func (c *Collector) buildPayload(event string, d Digest) WebhookPayload {
 		blocks = append(blocks, WebhookBlock{
 			IP: r.IP, Country: r.Country, Reason: r.Reason,
 			Bucket: string(r.Bucket), Category: r.Category,
+			Domains: r.Domains, URIs: r.URIs,
 			TS: r.TS.UTC().Format(time.RFC3339),
 		})
 	}

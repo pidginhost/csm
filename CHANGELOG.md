@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm scan <user> --full --quarantine` now quarantines eligible malware/webshell file findings (report-only by default), recording per-finding remediation status; process-kill, DB, and firewall actions are never triggered.
 - Periodic content scans now also sweep a small rolling slice of each account's full web tree every cycle (on by default), so dormant files the fast scan skips for speed are eventually content-scanned without a manual full scan.
 - Block digest email and webhook now break blocks down by category and call out ModSecurity (WAF) blocks in a dedicated section.
+- The block digest's ModSecurity section now names the customer domains and request paths each blocked IP was hitting, drawn from events already on record so no extra log scanning runs.
 - The ModSecurity dashboard can now filter blocks and events by time range, minimum severity, and source country, and shows the source country of each event.
 
 ### Fixed

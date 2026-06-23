@@ -40,17 +40,18 @@ func (d *Daemon) buildBlockDigest(cfg *config.Config) *blockdigest.Collector {
 	}
 	email, webhook := d.blockDigestSinks(cfg)
 	return blockdigest.New(blockdigest.Options{
-		Countries:   countries,
-		SendOn:      cfg.Alerts.BlockDigest.SendOn,
-		Interval:    cfg.BlockDigestInterval(),
-		Live:        cfg.Alerts.BlockDigest.Live,
-		MinBlock:    cfg.Alerts.BlockDigest.MinBlock,
-		Host:        cfg.Hostname,
-		Version:     d.version,
-		CountriesOf: countriesOf,
-		CountryOf:   d.countryOf,
-		EmailSink:   email,
-		WebhookSink: webhook,
+		Countries:    countries,
+		SendOn:       cfg.Alerts.BlockDigest.SendOn,
+		Interval:     cfg.BlockDigestInterval(),
+		Live:         cfg.Alerts.BlockDigest.Live,
+		MinBlock:     cfg.Alerts.BlockDigest.MinBlock,
+		Host:         cfg.Hostname,
+		Version:      d.version,
+		CountriesOf:  countriesOf,
+		CountryOf:    d.countryOf,
+		EnrichModSec: d.modsecEnricher(cfg),
+		EmailSink:    email,
+		WebhookSink:  webhook,
 		OnError: func(channel string, err error) {
 			csmlog.Warn("block_digest delivery failed", "channel", channel, "err", err)
 		},

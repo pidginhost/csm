@@ -19,6 +19,9 @@ const (
 )
 
 // Record is one deduplicated auto-block observation in the current window.
+// Domains and URIs are populated only for modsec-category records, from the
+// daemon-injected EnrichModSec lookup, so the digest can name which customer
+// sites and request paths the blocked IP was hitting.
 type Record struct {
 	TS       time.Time
 	IP       string
@@ -26,6 +29,8 @@ type Record struct {
 	Reason   string
 	Bucket   Bucket
 	Category string
+	Domains  []string
+	URIs     []string
 }
 
 // Digest is the rolled-up view drained at each interval.
@@ -53,10 +58,14 @@ type Options struct {
 	Version     string
 	CountriesOf func() []string
 	CountryOf   func(ip string) string
-	Now         func() time.Time
-	EmailSink   func(subject, body string) error
-	WebhookSink func(p WebhookPayload) error
-	OnError     func(channel string, err error)
+	// EnrichModSec, when set, returns the customer domains and top request
+	// URIs a modsec-category blocked IP was hitting. The daemon injects a
+	// lookup over already-parsed findings so the package stays store-free.
+	EnrichModSec func(ip string) (domains, uris []string)
+	Now          func() time.Time
+	EmailSink    func(subject, body string) error
+	WebhookSink  func(p WebhookPayload) error
+	OnError      func(channel string, err error)
 }
 
 // Collector accumulates observations and drains them into digests.
@@ -226,6 +235,9 @@ func (c *Collector) Observe(ip, reason string, ts time.Time) {
 	}
 	bucket := classifyBucket(reason)
 	rec := Record{TS: ts, IP: ip, Country: country, Reason: reason, Bucket: bucket, Category: categoryOf(reason)}
+	if rec.Category == "modsec" && c.opts.EnrichModSec != nil {
+		rec.Domains, rec.URIs = c.opts.EnrichModSec(ip)
+	}
 
 	c.mu.Lock()
 	if len(c.records) < maxBuffered {
