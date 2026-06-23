@@ -42,6 +42,7 @@ func TestClassifyBucket(t *testing.T) {
 		"incident web_attack CRITICAL (incident opened)",
 		"Mail account compromise: successful login for x",
 		"User-Agent spoof from 1.2.3.4: claimed bot failed rDNS",
+		"WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)",
 		"known command-and-control server",
 		"Connection to known C2 IP: 198.51.100.7:443",
 		"Credential stuffing: 203.0.113.5 failed logins against 12 accounts",

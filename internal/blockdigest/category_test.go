@@ -7,20 +7,39 @@ import (
 )
 
 func TestCategoryOf(t *testing.T) {
-	cases := map[string]string{
-		"ModSecurity escalation: 5+ denies from 1.2.3.4 within 4h0m0s": "modsec",
-		"CSM rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s":    "modsec",
-		"rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s":        "modsec",
-		"XML-RPC abuse from 1.2.3.4: 70 requests":                      "xmlrpc",
-		"WordPress login brute force from 1.2.3.4: 40 attempts":        "wp-bruteforce",
-		"Mail auth brute force from 1.2.3.4: 5 failed auths in 10m0s":  "mail-bruteforce",
-		"FTP brute force from 1.2.3.4: 12 failed attempts in 5m":       "ftp-bruteforce",
-		"User-Agent spoof from 1.2.3.4: claimed bot failed rDNS":       "ua-spoof",
-		"something totally unrecognized":                               "other",
+	cases := []struct {
+		reason string
+		want   string
+	}{
+		{"ModSecurity escalation: 5+ denies from 1.2.3.4 within 4h0m0s", "modsec"},
+		{"CSM rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s", "modsec"},
+		{"rule escalation: 5+ denies from 1.2.3.4 within 4h0m0s", "modsec"},
+		{"WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)", "modsec"},
+		{"XML-RPC abuse from 1.2.3.4: 70 requests", "xmlrpc"},
+		{"WordPress login brute force from 1.2.3.4: 40 attempts", "wp-bruteforce"},
+		{"WordPress brute force from 1.2.3.4: 40 attempts", "wp-bruteforce"},
+		{"WP brute from 1.2.3.4", "wp-bruteforce"},
+		{"Admin panel brute force from 1.2.3.4: 10 POSTs in 5m0s (real-time)", "admin-bruteforce"},
+		{"Mail auth brute force from 1.2.3.4: 5 failed auths in 10m0s", "mail-bruteforce"},
+		{"SMTP brute force from 1.2.3.4: 5 failed auths in 10m0s", "mail-bruteforce"},
+		{"SMTP probe abuse from 1.2.3.4: 50 connections in 10m0s", "smtp-probe"},
+		{"Mail account compromise: successful login for x", "mail-compromise"},
+		{"Compromised email account user@example.com authenticated from bulk mail service sendblaster.", "mail-compromise"},
+		{"Email account user@example.com sent from cloud IPs - credentials compromised", "mail-compromise"},
+		{"FTP brute force from 1.2.3.4: 12 failed attempts in 5m", "ftp-bruteforce"},
+		{"URL scanner profile from 1.2.3.4: 50 of 50 requests", "http-scanner"},
+		{"HTTP request flood from 1.2.3.4: 250 requests", "http-flood"},
+		{"Unverified claimed bot from 1.2.3.4: request flood", "ua-spoof"},
+		{"User-Agent spoof from 1.2.3.4: claimed bot failed rDNS", "ua-spoof"},
+		{"High local threat score: 1.2.3.4 (score 80/100, 10 attacks)", "local-threat"},
+		{"Known malicious IP accessing server: 1.2.3.4 (Abuseipdb score: 90/100)", "threat-intel"},
+		{"known command-and-control server", "threat-intel"},
+		{"Connection to known C2 IP: 1.2.3.4:443", "threat-intel"},
+		{"something totally unrecognized", "other"},
 	}
-	for reason, want := range cases {
-		if got := categoryOf(reason); got != want {
-			t.Errorf("categoryOf(%q) = %q, want %q", reason, got, want)
+	for _, tc := range cases {
+		if got := categoryOf(tc.reason); got != tc.want {
+			t.Errorf("categoryOf(%q) = %q, want %q", tc.reason, got, tc.want)
 		}
 	}
 }
@@ -35,16 +54,26 @@ func TestDrainByCategory(t *testing.T) {
 	c.Observe("203.0.113.10", "ModSecurity escalation: x", ts)
 	c.Observe("203.0.113.11", "XML-RPC abuse from 203.0.113.11: 70 requests", ts)
 	c.Observe("203.0.113.12", "Mail auth brute force from 203.0.113.12: 5 failed auths in 10m0s", ts)
+	c.Observe("203.0.113.13", "WAF blocking high-volume attacker: 203.0.113.13 (42 blocked requests)", ts)
+	c.Observe("203.0.113.14", "SMTP brute force from 203.0.113.14: 5 failed auths in 10m0s", ts)
+	c.Observe("203.0.113.15", "HTTP request flood from 203.0.113.15: 250 requests", ts)
+	c.Observe("203.0.113.16", "URL scanner profile from 203.0.113.16: 50 of 50 requests", ts)
 
 	d := c.Drain()
-	if d.ByCategory["modsec"] != 1 {
-		t.Errorf("ByCategory[modsec] = %d, want 1", d.ByCategory["modsec"])
+	if d.ByCategory["modsec"] != 2 {
+		t.Errorf("ByCategory[modsec] = %d, want 2", d.ByCategory["modsec"])
 	}
 	if d.ByCategory["xmlrpc"] != 1 {
 		t.Errorf("ByCategory[xmlrpc] = %d, want 1", d.ByCategory["xmlrpc"])
 	}
-	if d.ByCategory["mail-bruteforce"] != 1 {
-		t.Errorf("ByCategory[mail-bruteforce] = %d, want 1", d.ByCategory["mail-bruteforce"])
+	if d.ByCategory["mail-bruteforce"] != 2 {
+		t.Errorf("ByCategory[mail-bruteforce] = %d, want 2", d.ByCategory["mail-bruteforce"])
+	}
+	if d.ByCategory["http-flood"] != 1 {
+		t.Errorf("ByCategory[http-flood] = %d, want 1", d.ByCategory["http-flood"])
+	}
+	if d.ByCategory["http-scanner"] != 1 {
+		t.Errorf("ByCategory[http-scanner] = %d, want 1", d.ByCategory["http-scanner"])
 	}
 	for _, r := range d.Records {
 		if r.Category == "" {

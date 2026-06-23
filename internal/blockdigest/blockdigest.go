@@ -119,7 +119,7 @@ func classifyBucket(reason string) Bucket {
 		"web attack", "account compromise", "command-and-control",
 		"user-agent spoof", "ua spoof", "bad asn", "credential stuffing",
 		"credential-stuffing", "credential abuse", "credential-abuse",
-		"credentials compromised",
+		"credentials compromised", "waf blocking high-volume attacker",
 	}
 	for _, k := range attacker {
 		if strings.Contains(r, k) {
@@ -139,18 +139,45 @@ func classifyBucket(reason string) Bucket {
 func categoryOf(reason string) string {
 	r := strings.ToLower(reason)
 	switch {
-	case strings.Contains(r, "modsecurity escalation"), strings.Contains(r, "rule escalation"):
+	case strings.Contains(r, "modsecurity escalation"),
+		strings.Contains(r, "rule escalation"),
+		strings.Contains(r, "waf blocking high-volume attacker"):
 		return "modsec"
 	case strings.Contains(r, "xml-rpc"):
 		return "xmlrpc"
-	case strings.Contains(r, "wordpress login brute"):
+	case strings.Contains(r, "wordpress login brute"),
+		strings.Contains(r, "wordpress brute"),
+		strings.Contains(r, "wp brute"):
 		return "wp-bruteforce"
-	case strings.Contains(r, "mail auth"):
+	case strings.Contains(r, "admin panel brute"):
+		return "admin-bruteforce"
+	case strings.Contains(r, "mail account compromise"),
+		strings.Contains(r, "compromised email account"),
+		strings.Contains(r, "credentials compromised"),
+		strings.Contains(r, "outgoing mail hold"):
+		return "mail-compromise"
+	case strings.Contains(r, "mail auth"), strings.Contains(r, "smtp brute"):
 		return "mail-bruteforce"
+	case strings.Contains(r, "smtp probe"):
+		return "smtp-probe"
 	case strings.Contains(r, "ftp brute"):
 		return "ftp-bruteforce"
-	case strings.Contains(r, "user-agent spoof"), strings.Contains(r, "ua spoof"):
+	case strings.Contains(r, "url scanner profile"):
+		return "http-scanner"
+	case strings.Contains(r, "http request flood"):
+		return "http-flood"
+	case strings.Contains(r, "user-agent spoof"),
+		strings.Contains(r, "ua spoof"),
+		strings.Contains(r, "unverified claimed bot"):
 		return "ua-spoof"
+	case strings.Contains(r, "high local threat score"):
+		return "local-threat"
+	case strings.Contains(r, "known malicious ip"),
+		strings.Contains(r, "threat intelligence"),
+		strings.Contains(r, "command-and-control"),
+		strings.Contains(r, "bad asn"),
+		containsWord(r, "c2"):
+		return "threat-intel"
 	default:
 		return "other"
 	}

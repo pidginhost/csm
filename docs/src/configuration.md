@@ -808,7 +808,9 @@ reload that changes the digest settings emits
 `config_reload_restart_required` and leaves the live config unchanged.
 When `countries` is empty, the fallback to `suppressions.trusted_countries`
 still follows safe reloads. Delivery uses the current email and webhook
-settings.
+settings. Digest output includes by-country, by-category, and by-reason
+counts; WAF categories group ModSecurity escalations and high-volume WAF
+attacker blocks together.
 
 The rest of the sub-keys in every safe-tagged section are read per-call
 (inside check functions, auto-response helpers, alert dispatchers) and

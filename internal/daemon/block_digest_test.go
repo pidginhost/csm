@@ -40,6 +40,33 @@ func TestObserveBlocksFeedsCollector(t *testing.T) {
 	}
 }
 
+func TestObserveBlocksCategorizesWAFAttackerBlock(t *testing.T) {
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now:       func() time.Time { return time.Unix(0, 0) },
+		CountryOf: func(string) string { return "RO" },
+	})
+	d.observeBlocks([]alert.Finding{{
+		Check:     "auto_block",
+		Severity:  alert.Critical,
+		Message:   "AUTO-BLOCK: 203.0.113.55 blocked (expires in 24h)",
+		Details:   "Reason: WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)",
+		Timestamp: time.Unix(0, 0),
+	}})
+
+	dg := d.blockDigest.Drain()
+	if dg.Total != 1 || dg.CustomerCount != 0 || dg.AttackerCount != 1 {
+		t.Fatalf("digest counts = total:%d customer:%d attacker:%d, want 1/0/1", dg.Total, dg.CustomerCount, dg.AttackerCount)
+	}
+	if dg.ByCategory["modsec"] != 1 {
+		t.Fatalf("ByCategory[modsec] = %d, want 1", dg.ByCategory["modsec"])
+	}
+	if len(dg.Records) != 1 || dg.Records[0].Bucket != blockdigest.BucketAttacker || dg.Records[0].Category != "modsec" {
+		t.Fatalf("record = %+v, want attacker modsec", dg.Records)
+	}
+}
+
 func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
 	d := &Daemon{} // blockDigest nil (feature disabled)
 	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical,
