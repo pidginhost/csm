@@ -191,6 +191,68 @@ func (e *mailIPEntry) looksLikeFreshGoodSourceFP(now time.Time, window time.Dura
 	return failing <= e.recentGoodCount(now)
 }
 
+// mailFailTarget is one mailbox this IP's in-window failures hit, with the
+// failure count for that mailbox.
+type mailFailTarget struct {
+	Account string
+	Count   int
+}
+
+// failTargets summarizes which mailboxes this IP's in-window failures targeted.
+// It returns the per-mailbox counts sorted by count (desc) then account name
+// (asc) for deterministic output, plus how many failures carried no mailbox
+// (dovecot lines with no user=). Caller must hold t.mu and must have pruned
+// e.times and e.failedAccounts to the window.
+func (e *mailIPEntry) failTargets() ([]mailFailTarget, int) {
+	named := 0
+	targets := make([]mailFailTarget, 0, len(e.failedAccounts))
+	for account, times := range e.failedAccounts {
+		named += len(times)
+		targets = append(targets, mailFailTarget{Account: account, Count: len(times)})
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Count != targets[j].Count {
+			return targets[i].Count > targets[j].Count
+		}
+		return targets[i].Account < targets[j].Account
+	})
+	return targets, len(e.times) - named
+}
+
+// formatMailFailTargets renders the target summary for a mail brute-force
+// finding: the mailboxes hit with their failure counts (at most max named, the
+// rest collapsed into "(+N more)") and a count of failures that named no
+// mailbox. Returns "" when there is nothing to report.
+func formatMailFailTargets(targets []mailFailTarget, accountless, max int) string {
+	if len(targets) == 0 && accountless <= 0 {
+		return ""
+	}
+	listed := targets
+	remainder := 0
+	if max > 0 && len(targets) > max {
+		listed = targets[:max]
+		remainder = len(targets) - max
+	}
+	var b strings.Builder
+	b.WriteString("Targets: ")
+	for i, tg := range listed {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s (%d)", tg.Account, tg.Count)
+	}
+	if remainder > 0 {
+		fmt.Fprintf(&b, " (+%d more)", remainder)
+	}
+	if accountless > 0 {
+		if len(listed) > 0 {
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(&b, "%d with no mailbox", accountless)
+	}
+	return b.String()
+}
+
 // successDominant reports whether this IP behaves like a legit busy client
 // rather than a brute-forcer: it has successful logins in the window, at least
 // as many successes as failures, and the successful mailboxes explain the failed
@@ -409,6 +471,11 @@ const mailGoodSourceTTL = 24 * time.Hour
 // least-recently-successful first).
 const mailGoodSourceMaxAccountsPerIP = 256
 
+// maxMailTargetsListed caps how many mailboxes a brute-force finding names
+// before collapsing the rest into a "(+N more)" suffix, so a wide spray does
+// not dump dozens of names into one alert.
+const maxMailTargetsListed = 5
+
 // mailAuthTracker aggregates dovecot IMAP/POP3/ManageSieve auth events into
 // four detection signals: per-IP brute force, per-/24 password spray,
 // per-mailbox account spray, and per-account compromise (success after
@@ -538,6 +605,8 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
 		if !e.successDominant() && !degraded {
+			targets, accountless := e.failTargets()
+			targetSummary := formatMailFailTargets(targets, accountless, maxMailTargetsListed)
 			switch {
 			case e.establishedGoodConfined(now, t.window):
 				// Established good source fat-fingering a confined set of its own
@@ -550,20 +619,27 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 					break
 				}
 				e.suspectedSuppressed = now.Add(t.suppression)
+				details := "Failures are confined to a few named mailboxes from a source with established successful mail auth history; likely a stale saved password, not a brute-force. Visibility only - no auto-block. Compromise and spray detectors remain active."
+				if targetSummary != "" {
+					details += " " + targetSummary + "."
+				}
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "mail_bruteforce_suspected",
 					Message: fmt.Sprintf("Suspected mail misconfiguration from %s: %d failed auths in %v from an established good source (not auto-blocked)",
 						ip, len(e.times), t.window),
-					Details:   "Failures are confined to a few named mailboxes from a source with established successful mail auth history; likely a stale saved password, not a brute-force. Visibility only - no auto-block. Compromise and spray detectors remain active.",
+					Details:   details,
 					Timestamp: now,
 					SourceIP:  ip,
 				})
 			case !now.Before(e.suppressed):
 				e.suppressed = now.Add(t.suppression)
-				details := "Real-time detection of dovecot imap/pop3/managesieve auth failures"
+				details := "Real-time detection of dovecot imap/pop3/managesieve auth failures."
 				if e.looksLikeFreshGoodSourceFP(now, t.window) {
 					details += " Note: this source has recent successful mail auth for one or more other mailboxes, so the failures may be a misconfigured client with a stale saved password rather than an attack. Verify before treating it as a confirmed brute-force."
+				}
+				if targetSummary != "" {
+					details += " " + targetSummary + "."
 				}
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
