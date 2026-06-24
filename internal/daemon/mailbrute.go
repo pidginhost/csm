@@ -219,6 +219,56 @@ func (e *mailIPEntry) failTargets() ([]mailFailTarget, int) {
 	return targets, len(e.times) - named
 }
 
+// Unsafe account bytes are hex-escaped so a crafted user= value cannot add
+// fake target separators, new alert lines, or path-looking tokens.
+func formatMailFailTargetAccount(account string) string {
+	truncated := false
+	if len(account) > maxMailTargetAccountDisplayBytes {
+		account = account[:maxMailTargetAccountDisplayBytes]
+		truncated = true
+	}
+	if isPlainMailFailTargetAccount(account) {
+		if truncated {
+			return account + "..."
+		}
+		return account
+	}
+	var b strings.Builder
+	b.WriteString(`account="`)
+	for i := 0; i < len(account); i++ {
+		c := account[i]
+		if isPlainMailFailTargetAccountByte(c) {
+			b.WriteByte(c)
+			continue
+		}
+		fmt.Fprintf(&b, `\x%02x`, c)
+	}
+	if truncated {
+		b.WriteString("...")
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func isPlainMailFailTargetAccount(account string) bool {
+	if account == "" {
+		return false
+	}
+	for i := 0; i < len(account); i++ {
+		if !isPlainMailFailTargetAccountByte(account[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPlainMailFailTargetAccountByte(c byte) bool {
+	return c >= 'a' && c <= 'z' ||
+		c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9' ||
+		strings.ContainsRune("@._+-=%*", rune(c))
+}
+
 // formatMailFailTargets renders the target summary for a mail brute-force
 // finding: the mailboxes hit with their failure counts (at most max named, the
 // rest collapsed into "(+N more)") and a count of failures that named no
@@ -239,7 +289,7 @@ func formatMailFailTargets(targets []mailFailTarget, accountless, max int) strin
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s (%d)", tg.Account, tg.Count)
+		fmt.Fprintf(&b, "%s (%d)", formatMailFailTargetAccount(tg.Account), tg.Count)
 	}
 	if remainder > 0 {
 		fmt.Fprintf(&b, " (+%d more)", remainder)
@@ -476,6 +526,10 @@ const mailGoodSourceMaxAccountsPerIP = 256
 // not dump dozens of names into one alert.
 const maxMailTargetsListed = 5
 
+// maxMailTargetAccountDisplayBytes bounds attacker-controlled account text in
+// brute-force Details while keeping normal mailbox names intact.
+const maxMailTargetAccountDisplayBytes = 128
+
 // mailAuthTracker aggregates dovecot IMAP/POP3/ManageSieve auth events into
 // four detection signals: per-IP brute force, per-/24 password spray,
 // per-mailbox account spray, and per-account compromise (success after
@@ -605,8 +659,6 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
 		if !e.successDominant() && !degraded {
-			targets, accountless := e.failTargets()
-			targetSummary := formatMailFailTargets(targets, accountless, maxMailTargetsListed)
 			switch {
 			case e.establishedGoodConfined(now, t.window):
 				// Established good source fat-fingering a confined set of its own
@@ -620,7 +672,8 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 				}
 				e.suspectedSuppressed = now.Add(t.suppression)
 				details := "Failures are confined to a few named mailboxes from a source with established successful mail auth history; likely a stale saved password, not a brute-force. Visibility only - no auto-block. Compromise and spray detectors remain active."
-				if targetSummary != "" {
+				targets, accountless := e.failTargets()
+				if targetSummary := formatMailFailTargets(targets, accountless, maxMailTargetsListed); targetSummary != "" {
 					details += " " + targetSummary + "."
 				}
 				findings = append(findings, alert.Finding{
@@ -638,7 +691,8 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 				if e.looksLikeFreshGoodSourceFP(now, t.window) {
 					details += " Note: this source has recent successful mail auth for one or more other mailboxes, so the failures may be a misconfigured client with a stale saved password rather than an attack. Verify before treating it as a confirmed brute-force."
 				}
-				if targetSummary != "" {
+				targets, accountless := e.failTargets()
+				if targetSummary := formatMailFailTargets(targets, accountless, maxMailTargetsListed); targetSummary != "" {
 					details += " " + targetSummary + "."
 				}
 				findings = append(findings, alert.Finding{

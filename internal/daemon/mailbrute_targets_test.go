@@ -97,6 +97,32 @@ func TestFormatMailFailTargets_CapsListWithRemainder(t *testing.T) {
 	}
 }
 
+func TestFormatMailFailTargets_EscapesUnsafeAccountNames(t *testing.T) {
+	account := "evil@example.com, boss@example.com (99)\nInjected: /home/alice/public_html"
+	got := formatMailFailTargets([]mailFailTarget{{account, 2}}, 0, maxMailTargetsListed)
+	if strings.ContainsAny(got, "\r\n\t") {
+		t.Fatalf("target summary must not contain raw control characters: %q", got)
+	}
+	if strings.Contains(got, ", boss@example.com") {
+		t.Fatalf("target summary must not allow delimiter spoofing: %q", got)
+	}
+	if strings.Contains(got, "/home/alice") {
+		t.Fatalf("target summary must not expose attacker text as a path token: %q", got)
+	}
+	if !strings.Contains(got, `account="evil@example.com\x2c\x20boss@example.com\x20\x2899\x29\x0aInjected\x3a\x20\x2fhome\x2falice\x2fpublic_html" (2)`) {
+		t.Fatalf("target summary did not escape the unsafe account name: %q", got)
+	}
+}
+
+func TestFormatMailFailTargets_TruncatesLongAccountNames(t *testing.T) {
+	account := strings.Repeat("a", maxMailTargetAccountDisplayBytes+20) + "@example.com"
+	got := formatMailFailTargets([]mailFailTarget{{account, 1}}, 0, maxMailTargetsListed)
+	want := "Targets: " + strings.Repeat("a", maxMailTargetAccountDisplayBytes) + "... (1)"
+	if got != want {
+		t.Fatalf("formatMailFailTargets() = %q, want %q", got, want)
+	}
+}
+
 func TestMailAuthTracker_BruteForceFindingNamesTargets(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 24, 1, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
@@ -129,6 +155,40 @@ func TestMailAuthTracker_BruteForceFindingNamesTargets(t *testing.T) {
 	if !strings.Contains(f.Details, "1 with no mailbox") {
 		t.Errorf("Details must report accountless failures: %q", f.Details)
 	}
+	if f.Mailbox != "" || f.Domain != "" || len(f.SprayTargets) != 0 {
+		t.Fatalf("mail_bruteforce must stay source-IP keyed, got Mailbox=%q Domain=%q SprayTargets=%v", f.Mailbox, f.Domain, f.SprayTargets)
+	}
+}
+
+func TestMailAuthTracker_BruteForceFindingEscapesUnsafeTargetNames(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 24, 1, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.10"
+	account := "evil@example.com, boss@example.com (99)\nInjected: /home/alice/public_html"
+
+	var last []alert.Finding
+	for i := 0; i < 5; i++ {
+		last = tr.Record(ip, account)
+	}
+	var f *alert.Finding
+	for i := range last {
+		if last[i].Check == "mail_bruteforce" {
+			f = &last[i]
+			break
+		}
+	}
+	if f == nil {
+		t.Fatalf("no mail_bruteforce finding in %v", last)
+	}
+	if strings.ContainsAny(f.Details, "\r\n\t") {
+		t.Fatalf("Details must not contain raw control characters: %q", f.Details)
+	}
+	if strings.Contains(f.Details, ", boss@example.com") {
+		t.Fatalf("Details must not allow delimiter spoofing: %q", f.Details)
+	}
+	if strings.Contains(f.Details, "/home/alice") {
+		t.Fatalf("Details must not expose attacker text as a path token: %q", f.Details)
+	}
 }
 
 func TestMailAuthTracker_SuspectedFindingNamesTargets(t *testing.T) {
@@ -153,5 +213,8 @@ func TestMailAuthTracker_SuspectedFindingNamesTargets(t *testing.T) {
 	}
 	if !strings.Contains(suspected.Details, acct) {
 		t.Errorf("suspected advisory Details must name the fat-fingered mailbox %q: %q", acct, suspected.Details)
+	}
+	if suspected.Mailbox != "" || suspected.Domain != "" || len(suspected.SprayTargets) != 0 {
+		t.Fatalf("mail_bruteforce_suspected must stay source-IP keyed, got Mailbox=%q Domain=%q SprayTargets=%v", suspected.Mailbox, suspected.Domain, suspected.SprayTargets)
 	}
 }
