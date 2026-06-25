@@ -60,12 +60,13 @@ func httpASNCrawlAmplified(uri string) bool {
 	if q < 0 {
 		return false
 	}
-	vals, err := url.ParseQuery(uri[q+1:])
-	if err != nil {
-		return false
-	}
-	for k := range vals {
-		lk := strings.ToLower(k)
+	for raw := range strings.SplitSeq(uri[q+1:], "&") {
+		key, _, _ := strings.Cut(raw, "=")
+		key, err := url.QueryUnescape(key)
+		if err != nil {
+			continue
+		}
+		lk := strings.ToLower(key)
 		if strings.HasPrefix(lk, "filter_") || strings.HasPrefix(lk, "query_type_") {
 			return true
 		}
@@ -216,7 +217,8 @@ func asnCrawlGroupCIDR(ip string) string {
 }
 
 // asnCrawlWithinWindow gates a record to the detector's own lookback window
-// (thresholds.http_asn_crawl_window_min). A zero/absent timestamp is excluded.
+// (thresholds.http_asn_crawl_window_min). A zero/absent timestamp is excluded,
+// and future timestamps beyond a small clock-skew allowance are ignored.
 func asnCrawlWithinWindow(ts time.Time, cfg *config.Config, now time.Time) bool {
 	if ts.IsZero() || cfg == nil {
 		return false
@@ -225,7 +227,8 @@ func asnCrawlWithinWindow(ts time.Time, cfg *config.Config, now time.Time) bool 
 	if win <= 0 {
 		win = config.DefaultHTTPASNCrawlWindowMin
 	}
-	return !ts.Before(now.Add(-time.Duration(win) * time.Minute))
+	cutoff := now.Add(-time.Duration(win) * time.Minute)
+	return !ts.Before(cutoff) && !ts.After(now.Add(time.Minute))
 }
 
 // phpWorkersByUserFn is a seam for testing; production code uses phpWorkersByUser.

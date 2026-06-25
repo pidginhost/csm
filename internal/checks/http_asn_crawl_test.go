@@ -133,11 +133,12 @@ func TestHTTPASNCrawlAmplified(t *testing.T) {
 		{"/?add-to-cart=42", true},
 		{"/c/?paged=3", true},
 		{"/c/?product-page=2", true},
-		{"/c/?color=red", false},    // value not key
-		{"/c/?ORDERBY=price", true}, // case-insensitive key
-		{"/c/?x=orderby", false},    // orderby only as value
-		{"/c/", false},              // no query
-		{"/c/?%zz", false},          // malformed query, no match
+		{"/c/?color=red", false},               // value not key
+		{"/c/?ORDERBY=price", true},            // case-insensitive key
+		{"/c/?x=orderby", false},               // orderby only as value
+		{"/c/", false},                         // no query
+		{"/c/?%zz", false},                     // malformed query, no match
+		{"/c/?filter_color=red&bad=%zz", true}, // malformed value cannot hide a valid key
 	}
 	for _, c := range cases {
 		t.Run(c.uri, func(t *testing.T) {
@@ -376,6 +377,18 @@ func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 	s.scan(recOld, cfg, nopBotClassifier{})
 	if got := s.asnCrawl["radiusro"].byASN[45102].expensive; got != 30 {
 		t.Fatalf("90-min-old record must not accumulate; expensive=%d want 30", got)
+	}
+
+	// A record more than one minute in the future is outside the rolling
+	// window and must not accumulate.
+	future := scanTime.Add(2 * time.Minute)
+	recFuture := accessLogRecord{
+		RemoteIP: "198.51.100.8", Method: "GET", URI: "/c/?filter_z=3", Status: 200,
+		Time: future, Domain: "radius.ro", Account: "radiusro",
+	}
+	s.scan(recFuture, cfg, nopBotClassifier{})
+	if got := s.asnCrawl["radiusro"].byASN[45102].expensive; got != 30 {
+		t.Fatalf("future record must not accumulate; expensive=%d want 30", got)
 	}
 }
 

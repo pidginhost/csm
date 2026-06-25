@@ -15,6 +15,7 @@ func TestDomainAccountOwnerParsesUserdomains(t *testing.T) {
 	}}
 	t.Cleanup(func() { osFS = oldOS })
 	resetDomainOwnerCache()
+	t.Cleanup(resetDomainOwnerCache)
 
 	if got := domainAccountOwner("radius.ro"); got != "radiusro" {
 		t.Fatalf("radius.ro owner = %q want radiusro", got)

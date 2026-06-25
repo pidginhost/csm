@@ -783,8 +783,8 @@ func isAutoResponseActive(cfg *config.Config) bool {
 }
 
 // cidrIntersectsInfra reports whether the CIDR contains an operator infra
-// IP (or loopback), so the subnet tempban never blackholes protected
-// addresses. An unparseable CIDR fails safe (treated as intersecting →
+// IP/range (or loopback), so the subnet tempban never blackholes protected
+// addresses. An unparseable CIDR fails safe (treated as intersecting and
 // skipped). The firewall engine's dynamic per-IP allowlist is not
 // enumerable across a subnet, so infra_ips is the operator's mechanism to
 // exempt a specific address from subnet tempban.
@@ -793,9 +793,20 @@ func cidrIntersectsInfra(cfg *config.Config, cidr string) bool {
 	if err != nil {
 		return true
 	}
+	if ipnet.IP.IsLoopback() {
+		return true
+	}
 	candidates := append([]string{"127.0.0.1", "::1"}, cfg.InfraIPs...)
-	for _, ip := range candidates {
-		if p := net.ParseIP(ip); p != nil && ipnet.Contains(p) {
+	for _, raw := range candidates {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if p := net.ParseIP(raw); p != nil && ipnet.Contains(p) {
+			return true
+		}
+		if _, infraNet, err := net.ParseCIDR(raw); err == nil &&
+			(ipnet.Contains(infraNet.IP) || infraNet.Contains(ipnet.IP)) {
 			return true
 		}
 	}

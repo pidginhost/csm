@@ -82,8 +82,8 @@ const (
 )
 
 // httpASNCrawlReverseProxySeed is the built-in safety list of reverse-proxy
-// CDN ASNs (Cloudflare, Fastly, Akamai). Edge IPs from these are resolved to
-// the real client via XFF or dropped; they never form a finding or tempban.
+// CDN ASNs (Cloudflare, Fastly, Akamai). Edge IPs from these never form a
+// finding or tempban; real-client attribution requires web_server.trusted_proxies.
 var httpASNCrawlReverseProxySeed = []uint{13335, 54113, 20940}
 
 // MailLogsConfig controls how postfix/dovecot logs are read.
@@ -417,7 +417,7 @@ type Config struct {
 		// the detector. Ships empty; operator-supplied list only.
 		HTTPASNCrawlAllowlistASNs []uint `yaml:"http_asn_crawl_allowlist_asns"`
 		// HTTPASNCrawlReverseProxyASNs lists CDN/reverse-proxy ASNs whose edge
-		// IPs are resolved via XFF before detection and never directly flagged.
+		// IPs are never directly flagged by this detector.
 		// Ships with Cloudflare (13335), Fastly (54113), and Akamai (20940).
 		// Set to [] to clear the seed; absent key retains the built-in list.
 		HTTPASNCrawlReverseProxyASNs []uint `yaml:"http_asn_crawl_reverse_proxy_asns"`
@@ -2281,6 +2281,9 @@ func validateHTTPASNCrawl(cfg *Config) error {
 		if c.val < 1 || c.val > 100 {
 			return fmt.Errorf("%s must be in 1..100 (got %d)", c.name, c.val)
 		}
+	}
+	if th.HTTPASNCrawlMinIPs > 0 && th.HTTPASNCrawlMaxTrackedIPs < th.HTTPASNCrawlMinIPs {
+		return fmt.Errorf("thresholds.http_asn_crawl_max_tracked_ips must be >= thresholds.http_asn_crawl_min_ips when http_asn_crawl is enabled")
 	}
 
 	// Every ASN in both lists must be in 1..4294967295.

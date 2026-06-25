@@ -113,3 +113,10 @@ func TestHTTPASNCrawlValidationRejectsOutOfRangePercent(t *testing.T) {
 		t.Fatal("expected error for min_share_pct=101 (out of 1..100 range)")
 	}
 }
+
+func TestHTTPASNCrawlValidationRejectsUnreachableIPThreshold(t *testing.T) {
+	_, err := LoadBytes([]byte("thresholds:\n  http_asn_crawl_min_ips: 25\n  http_asn_crawl_max_tracked_ips: 10\n"))
+	if err == nil {
+		t.Fatal("expected error when max_tracked_ips is below min_ips")
+	}
+}
