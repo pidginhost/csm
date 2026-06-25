@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New `http_asn_crawl` detector flags a single-ASN distributed crawl of uncacheable URLs that saturates an account's PHP worker pool, and surgically tempbans the offending subnets only when saturation is confirmed (reverse-proxy/CDN safe).
+
 ## [3.21.0] - 2026-06-23
 
 ### Added

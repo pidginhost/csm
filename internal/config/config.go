@@ -567,17 +567,17 @@ type Config struct {
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
-		Enabled            bool   `yaml:"enabled"`
-		KillProcesses      bool   `yaml:"kill_processes"`
-		QuarantineFiles    bool   `yaml:"quarantine_files"`
-		BlockIPs           bool   `yaml:"block_ips"`
-		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
+		Enabled         bool   `yaml:"enabled"`
+		KillProcesses   bool   `yaml:"kill_processes"`
+		QuarantineFiles bool   `yaml:"quarantine_files"`
+		BlockIPs        bool   `yaml:"block_ips"`
+		BlockExpiry     string `yaml:"block_expiry"` // e.g. "24h", "12h"
 		// HTTPASNCrawlTempban is the ban duration for http_asn_crawl findings
 		// when auto-response is enabled. Default "24h".
 		HTTPASNCrawlTempban string `yaml:"http_asn_crawl_tempban"`
-		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
-		FixWPCron          bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
-		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
+		EnforcePermissions  bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
+		FixWPCron           bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
+		BlockCpanelLogins   bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
 		// HTTPScannerAction selects the response for http_scanner_profile
 		// findings. "challenge" (default) routes the IP to the PoW
 		// challenge when the challenge subsystem is enabled and falls

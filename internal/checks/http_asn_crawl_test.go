@@ -133,11 +133,11 @@ func TestHTTPASNCrawlAmplified(t *testing.T) {
 		{"/?add-to-cart=42", true},
 		{"/c/?paged=3", true},
 		{"/c/?product-page=2", true},
-		{"/c/?color=red", false},       // value not key
-		{"/c/?ORDERBY=price", true},    // case-insensitive key
-		{"/c/?x=orderby", false},       // orderby only as value
-		{"/c/", false},                 // no query
-		{"/c/?%zz", false},             // malformed query, no match
+		{"/c/?color=red", false},    // value not key
+		{"/c/?ORDERBY=price", true}, // case-insensitive key
+		{"/c/?x=orderby", false},    // orderby only as value
+		{"/c/", false},              // no query
+		{"/c/?%zz", false},          // malformed query, no match
 	}
 	for _, c := range cases {
 		t.Run(c.uri, func(t *testing.T) {
@@ -188,7 +188,7 @@ func asnCrawlStatsWith(t *testing.T, cfg *config.Config, account string, asn uin
 func TestEmitASNCrawlStage1Fires(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba",
-		/*distinctIPs*/ 30, /*expensive*/ 600, /*amplified*/ 600, /*scopeExpensive*/ 600)
+		/*distinctIPs*/ 30 /*expensive*/, 600 /*amplified*/, 600 /*scopeExpensive*/, 600)
 
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 {
