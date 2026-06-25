@@ -4,9 +4,13 @@
 package checks
 
 import (
+	"net"
 	"net/url"
 	"path"
 	"strings"
+	"time"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // httpASNCrawlStaticExts are path extensions whose responses are cacheable
@@ -67,4 +71,139 @@ func httpASNCrawlAmplified(uri string) bool {
 		}
 	}
 	return false
+}
+
+// asnCrawlASN accumulates one ASN's footprint within one scope.
+type asnCrawlASN struct {
+	org       string
+	expensive int
+	total     int
+	amplified int
+	domains   map[string]struct{}
+	samples   []string            // up to 5 distinct expensive URIs (<=200 bytes)
+	ips       map[string]struct{} // distinct source IPs, capped
+	ipsCapped bool
+	cidr24    map[string]int // observed /24 (v4) or /64 (v6) -> count
+}
+
+func (a *asnCrawlASN) distinctIPs() int {
+	// saturated at cap; callers may render as ">=cap" at emit
+	return len(a.ips)
+}
+
+// asnCrawlScope is one account-or-domain scope's per-ASN map plus the
+// scope-wide expensive denominator (excludes reverse-proxy traffic).
+type asnCrawlScope struct {
+	byASN          map[uint]*asnCrawlASN
+	scopeExpensive int
+}
+
+func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *config.Config) {
+	if cfg == nil || cfg.Thresholds.HTTPASNCrawlMinIPs <= 0 {
+		return // detector disabled
+	}
+	if !httpASNCrawlExpensive(rec) {
+		return
+	}
+	lookup := CurrentASNLookup()
+	if lookup == nil {
+		return
+	}
+	asn, org := lookup(ip)
+	if asn == 0 {
+		// Unknown ASN: still counts in the scope denominator so known-ASN
+		// share is not inflated, but cannot form its own fingerprint.
+		s.asnCrawlScopeFor(rec).scopeExpensive++
+		return
+	}
+	if uintInSlice(asn, cfg.Thresholds.HTTPASNCrawlReverseProxyASNs) {
+		return // reverse-proxy: dropped from numerator AND denominator
+	}
+	scope := s.asnCrawlScopeFor(rec)
+	scope.scopeExpensive++
+	a := scope.byASN[asn]
+	if a == nil {
+		a = &asnCrawlASN{
+			org:     org,
+			domains: map[string]struct{}{},
+			ips:     map[string]struct{}{},
+			cidr24:  map[string]int{},
+		}
+		scope.byASN[asn] = a
+	}
+	a.total++
+	a.expensive++
+	if httpASNCrawlAmplified(rec.URI) {
+		a.amplified++
+	}
+	if rec.Domain != "" {
+		a.domains[rec.Domain] = struct{}{}
+	}
+	if len(a.samples) < 5 {
+		a.samples = append(a.samples, truncate(rec.URI, 200))
+	}
+	if _, ok := a.ips[ip]; !ok {
+		maxIPs := cfg.Thresholds.HTTPASNCrawlMaxTrackedIPs
+		if maxIPs <= 0 {
+			maxIPs = config.DefaultHTTPASNCrawlMaxTrackedIPs
+		}
+		if len(a.ips) < maxIPs {
+			a.ips[ip] = struct{}{}
+			if g := asnCrawlGroupCIDR(ip); g != "" {
+				a.cidr24[g]++
+			}
+		} else {
+			a.ipsCapped = true
+		}
+	}
+}
+
+func (s *domlogStats) asnCrawlScopeFor(rec accessLogRecord) *asnCrawlScope {
+	if s.asnCrawl == nil {
+		s.asnCrawl = map[string]*asnCrawlScope{}
+	}
+	key := rec.Account
+	if key == "" {
+		key = "domain:" + rec.Domain
+	}
+	sc := s.asnCrawl[key]
+	if sc == nil {
+		sc = &asnCrawlScope{byASN: map[uint]*asnCrawlASN{}}
+		s.asnCrawl[key] = sc
+	}
+	return sc
+}
+
+func uintInSlice(v uint, list []uint) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// asnCrawlGroupCIDR returns the /24 (IPv4) or /64 (IPv6) the ip belongs to.
+func asnCrawlGroupCIDR(ip string) string {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return ""
+	}
+	if v4 := p.To4(); v4 != nil {
+		return net.IP(v4.Mask(net.CIDRMask(24, 32))).String() + "/24"
+	}
+	return p.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// asnCrawlWithinWindow gates a record to the detector's own lookback window
+// (thresholds.http_asn_crawl_window_min). A zero/absent timestamp is excluded.
+func asnCrawlWithinWindow(ts time.Time, cfg *config.Config, now time.Time) bool {
+	if ts.IsZero() || cfg == nil {
+		return false
+	}
+	win := cfg.Thresholds.HTTPASNCrawlWindowMin
+	if win <= 0 {
+		win = config.DefaultHTTPASNCrawlWindowMin
+	}
+	return !ts.Before(now.Add(-time.Duration(win) * time.Minute))
 }

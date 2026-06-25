@@ -138,6 +138,10 @@ type domlogStats struct {
 	scannerDomainErr  map[string]map[string]int
 	scanTime          time.Time
 
+	// asnCrawl accumulates per-(scope, ASN) crawl fingerprints. Populated by
+	// observeASNCrawl from scan(); read by emitASNCrawl. Lazily allocated.
+	asnCrawl map[string]*asnCrawlScope
+
 	// Scanner thresholds are derived from cfg once per scan -- cfg is stable
 	// across a single domlogStats lifetime -- instead of on every parsed record.
 	scannerThreshComputed bool
@@ -234,6 +238,10 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 			s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 		}
 		s.httpReqs[ip]++
+
+		if asnCrawlWithinWindow(rec.Time, cfg, s.scanTime) {
+			s.observeASNCrawl(ip, rec, cfg)
+		}
 
 		_, _, _, scannerEnabled := s.scannerThresholds(cfg)
 		// Static display assets (images, styles, scripts, fonts, media)
