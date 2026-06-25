@@ -4,12 +4,15 @@
 package checks
 
 import (
+	"fmt"
 	"net"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -206,4 +209,111 @@ func asnCrawlWithinWindow(ts time.Time, cfg *config.Config, now time.Time) bool 
 		win = config.DefaultHTTPASNCrawlWindowMin
 	}
 	return !ts.Before(now.Add(-time.Duration(win) * time.Minute))
+}
+
+// emitASNCrawl produces Warning/High findings for each (scope, ASN) pair that
+// passes all stage-1 gates. Critical escalation is handled by Task 8.
+func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
+	if cfg == nil || cfg.Thresholds.HTTPASNCrawlMinIPs <= 0 || s.asnCrawl == nil {
+		return nil
+	}
+	th := cfg.Thresholds
+	minIPs := th.HTTPASNCrawlMinIPs
+	minExpensive := th.HTTPASNCrawlMinExpensive
+	if minExpensive <= 0 {
+		minExpensive = config.DefaultHTTPASNCrawlMinExpensive
+	}
+	minSharePct := th.HTTPASNCrawlMinSharePct
+	if minSharePct <= 0 {
+		minSharePct = config.DefaultHTTPASNCrawlMinSharePct
+	}
+	highAmpPct := th.HTTPASNCrawlHighAmpPct
+	if highAmpPct <= 0 {
+		highAmpPct = config.DefaultHTTPASNCrawlHighAmpPct
+	}
+	highVolMult := th.HTTPASNCrawlHighVolumeMult
+	if highVolMult <= 0 {
+		highVolMult = config.DefaultHTTPASNCrawlHighVolMult
+	}
+
+	var out []alert.Finding
+	for scopeKey, scope := range s.asnCrawl {
+		for asn, a := range scope.byASN {
+			if uintInSlice(asn, th.HTTPASNCrawlAllowlistASNs) ||
+				uintInSlice(asn, th.HTTPASNCrawlReverseProxyASNs) {
+				continue
+			}
+			if a.distinctIPs() < minIPs {
+				continue
+			}
+			if a.expensive < minExpensive {
+				continue
+			}
+			if scope.scopeExpensive == 0 ||
+				a.expensive*100 < minSharePct*scope.scopeExpensive {
+				continue
+			}
+			sev := alert.Warning
+			ampHigh := a.expensive > 0 && a.amplified*100 >= highAmpPct*a.expensive
+			volHigh := a.expensive >= highVolMult*minExpensive
+			if ampHigh || volHigh {
+				sev = alert.High
+			}
+			account, domain := asnCrawlScopeParts(scopeKey, a)
+			out = append(out, alert.Finding{
+				Severity:  sev,
+				Check:     "http_asn_crawl",
+				TenantID:  account,
+				Domain:    domain,
+				Message:   fmt.Sprintf("Distributed crawl from AS%d (%s) against %s", asn, a.org, asnCrawlScopeLabel(scopeKey)),
+				Details:   asnCrawlDetails(asn, a, scope, cfg),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Message < out[j].Message })
+	return out
+}
+
+// asnCrawlScopeParts returns (account, domain) for a finding. account is the
+// scope key unless it is a domain-scoped fallback ("domain:<d>"); domain is set
+// only when exactly one domain was observed.
+func asnCrawlScopeParts(scopeKey string, a *asnCrawlASN) (account, domain string) {
+	if !strings.HasPrefix(scopeKey, "domain:") {
+		account = scopeKey
+	}
+	if len(a.domains) == 1 {
+		for d := range a.domains {
+			domain = d
+		}
+	}
+	return account, domain
+}
+
+func asnCrawlScopeLabel(scopeKey string) string {
+	return strings.TrimPrefix(scopeKey, "domain:")
+}
+
+func asnCrawlDetails(asn uint, a *asnCrawlASN, scope *asnCrawlScope, cfg *config.Config) string {
+	maxTracked := cfg.Thresholds.HTTPASNCrawlMaxTrackedIPs
+	if maxTracked <= 0 {
+		maxTracked = config.DefaultHTTPASNCrawlMaxTrackedIPs
+	}
+	ipCount := fmt.Sprintf("%d", a.distinctIPs())
+	if a.ipsCapped {
+		ipCount = fmt.Sprintf(">=%d", maxTracked)
+	}
+	share := 0
+	if scope.scopeExpensive > 0 {
+		share = a.expensive * 100 / scope.scopeExpensive
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "ASN: AS%d (%s)\n", asn, a.org)
+	fmt.Fprintf(&b, "Distinct source IPs: %s\n", ipCount)
+	fmt.Fprintf(&b, "Expensive/total reqs: %d/%d (%d%% of scope expensive)\n", a.expensive, a.total, share)
+	fmt.Fprintf(&b, "Amplified (layered-nav/search) reqs: %d\n", a.amplified)
+	if len(a.samples) > 0 {
+		fmt.Fprintf(&b, "Sample URIs: %s\n", strings.Join(a.samples, " | "))
+	}
+	return b.String()
 }

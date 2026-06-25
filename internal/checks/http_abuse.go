@@ -477,6 +477,7 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	// that crossed an abuse threshold count -- a popular site's normal
 	// visitor spread never trips it.
 	out = append(out, s.emitDistributedFlood(cfg, out)...)
+	out = append(out, s.emitASNCrawl(cfg)...)
 	return out
 }
 

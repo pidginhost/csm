@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -143,5 +144,88 @@ func TestHTTPASNCrawlAmplified(t *testing.T) {
 				t.Fatalf("httpASNCrawlAmplified(%q)=%v want %v", c.uri, got, c.want)
 			}
 		})
+	}
+}
+
+// asnCrawlStatsWith builds a *domlogStats with one scope/ASN pre-populated
+// for emitASNCrawl unit tests. IPs are synthesised from RFC 5737/3849 ranges.
+func asnCrawlStatsWith(t *testing.T, cfg *config.Config, account string, asn uint, org string,
+	distinctIPs, expensive, amplified, scopeExpensive int) *domlogStats {
+	t.Helper()
+	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
+	a := &asnCrawlASN{
+		org:       org,
+		expensive: expensive,
+		total:     expensive,
+		amplified: amplified,
+		domains:   map[string]struct{}{},
+		ips:       map[string]struct{}{},
+		cidr24:    map[string]int{},
+	}
+	// Populate distinct IPs from RFC 5737 (203.0.113.x) and RFC 3849 (198.51.100.x).
+	for i := 0; i < distinctIPs; i++ {
+		var ip string
+		if i < 256 {
+			ip = fmt.Sprintf("203.0.113.%d", i%256)
+		} else {
+			ip = fmt.Sprintf("198.51.100.%d", (i-256)%256)
+		}
+		a.ips[ip] = struct{}{}
+		if g := asnCrawlGroupCIDR(ip); g != "" {
+			a.cidr24[g]++
+		}
+	}
+	s.asnCrawl = map[string]*asnCrawlScope{
+		account: {
+			byASN:          map[uint]*asnCrawlASN{asn: a},
+			scopeExpensive: scopeExpensive,
+		},
+	}
+	return s
+}
+
+func TestEmitASNCrawlStage1Fires(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba",
+		/*distinctIPs*/ 30, /*expensive*/ 600, /*amplified*/ 600, /*scopeExpensive*/ 600)
+
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(out))
+	}
+	f := out[0]
+	if f.Check != "http_asn_crawl" || f.Severity != alert.High || f.TenantID != "radiusro" || f.SourceIP != "" {
+		t.Fatalf("unexpected finding: %+v", f)
+	}
+}
+
+func TestEmitASNCrawlStage1Gates(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	// Below min_ips (25): no finding.
+	s1 := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 10, 600, 600, 600)
+	if len(s1.emitASNCrawl(cfg)) != 0 {
+		t.Fatal("min_ips gate failed")
+	}
+	// Below share (ASN 600 of 2000 scope = 30% < 50%): no finding.
+	s2 := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 2000)
+	if len(s2.emitASNCrawl(cfg)) != 0 {
+		t.Fatal("share gate failed")
+	}
+	// Allowlisted ASN: no finding.
+	cfgAllow := configWithASNCrawlDefaults(t)
+	cfgAllow.Thresholds.HTTPASNCrawlAllowlistASNs = []uint{45102}
+	s3 := asnCrawlStatsWith(t, cfgAllow, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	if len(s3.emitASNCrawl(cfgAllow)) != 0 {
+		t.Fatal("allowlist gate failed")
+	}
+}
+
+func TestEmitASNCrawlSeverityWarningWhenLowAmp(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	// Meets min_expensive (250) but not high-volume (4x=1000) and amp 0%.
+	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 300, 0, 300)
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 || out[0].Severity != alert.Warning {
+		t.Fatalf("want one Warning, got %+v", out)
 	}
 }
