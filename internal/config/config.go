@@ -48,6 +48,44 @@ func DefaultHTTPScannerStatusCodes() []int {
 	return []int{404, 403}
 }
 
+const (
+	// DefaultHTTPASNCrawlMinIPs is the minimum distinct source IPs from one
+	// ASN inside the window before http_asn_crawl fires. 0 disables the detector.
+	DefaultHTTPASNCrawlMinIPs = 25
+	// DefaultHTTPASNCrawlMinExpensive is the minimum uncacheable requests from
+	// the ASN inside the window before http_asn_crawl fires.
+	DefaultHTTPASNCrawlMinExpensive = 250
+	// DefaultHTTPASNCrawlMinSharePct is the minimum percentage of a single
+	// account's total uncacheable requests that must come from one ASN.
+	DefaultHTTPASNCrawlMinSharePct = 50
+	// DefaultHTTPASNCrawlHighAmpPct is the percentage threshold above which the
+	// ASN's share triggers a High-severity finding instead of Warning.
+	DefaultHTTPASNCrawlHighAmpPct = 50
+	// DefaultHTTPASNCrawlHighVolMult is the multiplier applied to MinExpensive
+	// for the High-severity volume threshold.
+	DefaultHTTPASNCrawlHighVolMult = 4
+	// DefaultHTTPASNCrawlMaxPrefix is the maximum number of distinct /24
+	// prefixes (IPv4) or /48 prefixes (IPv6) within the ASN before the finding
+	// is promoted to Critical (distributed saturation pattern).
+	DefaultHTTPASNCrawlMaxPrefix = 8
+	// DefaultHTTPASNCrawl16PrefPct is the percentage of IPs that must share a
+	// /16 prefix for the condensed-prefix heuristic to apply.
+	DefaultHTTPASNCrawl16PrefPct = 60
+	// DefaultHTTPASNCrawlMaxTrackedIPs caps how many source IPs per ASN the
+	// rolling window keeps in memory.
+	DefaultHTTPASNCrawlMaxTrackedIPs = 20000
+	// DefaultHTTPASNCrawlWindowMin is the rolling window length in minutes.
+	DefaultHTTPASNCrawlWindowMin = 60
+	// DefaultHTTPASNCrawlTempban is the ban duration applied when the detector
+	// fires and auto-response is enabled.
+	DefaultHTTPASNCrawlTempban = "24h"
+)
+
+// httpASNCrawlReverseProxySeed is the built-in safety list of reverse-proxy
+// CDN ASNs (Cloudflare, Fastly, Akamai). Edge IPs from these are resolved to
+// the real client via XFF or dropped; they never form a finding or tempban.
+var httpASNCrawlReverseProxySeed = []uint{13335, 54113, 20940}
+
 // MailLogsConfig controls how postfix/dovecot logs are read.
 //
 //	source: auto    - try file first; fall back to journal if file absent.
@@ -340,6 +378,49 @@ type Config struct {
 		// the mtime cap so dormant files are eventually content-scanned.
 		// Default true; set false to restore pure top-N-by-mtime behavior.
 		RollingCoverage bool `yaml:"rolling_coverage"`
+
+		// HTTPASNCrawlWindowMin is the rolling window in minutes for the
+		// single-ASN distributed crawl detector. Default 60.
+		HTTPASNCrawlWindowMin int `yaml:"http_asn_crawl_window_min"`
+		// HTTPASNCrawlMinIPs is the minimum distinct source IPs from one ASN
+		// inside the window before http_asn_crawl fires. 0 disables the
+		// detector; an absent key defaults to 25.
+		HTTPASNCrawlMinIPs int `yaml:"http_asn_crawl_min_ips"`
+		// HTTPASNCrawlMinExpensive is the minimum uncacheable requests from the
+		// ASN inside the window. Default 250.
+		HTTPASNCrawlMinExpensive int `yaml:"http_asn_crawl_min_expensive"`
+		// HTTPASNCrawlMinSharePct is the minimum percentage of one account's
+		// total uncacheable requests that must originate from the ASN. 1..100.
+		// Default 50.
+		HTTPASNCrawlMinSharePct int `yaml:"http_asn_crawl_min_share_pct"`
+		// HTTPASNCrawlHighAmpPct is the share percentage above which the finding
+		// is promoted to High severity. 1..100. Default 50.
+		HTTPASNCrawlHighAmpPct int `yaml:"http_asn_crawl_high_amp_pct"`
+		// HTTPASNCrawlHighVolumeMult multiplies MinExpensive to obtain the
+		// High-severity volume threshold. Default 4.
+		HTTPASNCrawlHighVolumeMult int `yaml:"http_asn_crawl_high_volume_mult"`
+		// HTTPASNCrawlSaturation is the lsphp process saturation count that
+		// triggers a Critical finding. 0 means use
+		// performance.php_process_warn_per_user.
+		HTTPASNCrawlSaturation int `yaml:"http_asn_crawl_saturation"`
+		// HTTPASNCrawlMaxPrefix is the maximum number of distinct /24 (IPv4) or
+		// /48 (IPv6) prefixes within the ASN before the finding is promoted to
+		// Critical (distributed saturation). Default 8.
+		HTTPASNCrawlMaxPrefix int `yaml:"http_asn_crawl_max_prefix"`
+		// HTTPASNCrawl16PrefPct is the percentage of IPs that must share a /16
+		// prefix for the condensed-prefix heuristic to apply. 1..100. Default 60.
+		HTTPASNCrawl16PrefPct int `yaml:"http_asn_crawl_16_pref_pct"`
+		// HTTPASNCrawlMaxTrackedIPs caps how many source IPs per ASN are kept in
+		// the rolling window. Default 20000.
+		HTTPASNCrawlMaxTrackedIPs int `yaml:"http_asn_crawl_max_tracked_ips"`
+		// HTTPASNCrawlAllowlistASNs is a list of ASNs that are never flagged by
+		// the detector. Ships empty; operator-supplied list only.
+		HTTPASNCrawlAllowlistASNs []uint `yaml:"http_asn_crawl_allowlist_asns"`
+		// HTTPASNCrawlReverseProxyASNs lists CDN/reverse-proxy ASNs whose edge
+		// IPs are resolved via XFF before detection and never directly flagged.
+		// Ships with Cloudflare (13335), Fastly (54113), and Akamai (20940).
+		// Set to [] to clear the seed; absent key retains the built-in list.
+		HTTPASNCrawlReverseProxyASNs []uint `yaml:"http_asn_crawl_reverse_proxy_asns"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -491,6 +572,9 @@ type Config struct {
 		QuarantineFiles    bool   `yaml:"quarantine_files"`
 		BlockIPs           bool   `yaml:"block_ips"`
 		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
+		// HTTPASNCrawlTempban is the ban duration for http_asn_crawl findings
+		// when auto-response is enabled. Default "24h".
+		HTTPASNCrawlTempban string `yaml:"http_asn_crawl_tempban"`
 		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
 		FixWPCron          bool   `yaml:"fix_wp_cron"`         // auto-disable WP-Cron + install per-user system cron on perf_wp_cron findings (default false)
 		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
@@ -1272,6 +1356,8 @@ type defaultPresence struct {
 	phpRelay                  phpRelayPresence
 	blockDigestMinBlock       bool
 	thresholdsRollingCoverage bool
+	httpASNCrawlMinIPs        bool
+	httpASNCrawlReverseProxy  bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1690,6 +1776,44 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.Thresholds.RollingCoverage = true
 	}
 
+	// http_asn_crawl: min_ips uses presence so an explicit 0 disables the
+	// detector; an absent key defaults to 25.
+	if !presence.httpASNCrawlMinIPs && cfg.Thresholds.HTTPASNCrawlMinIPs == 0 {
+		cfg.Thresholds.HTTPASNCrawlMinIPs = DefaultHTTPASNCrawlMinIPs
+	}
+	if cfg.Thresholds.HTTPASNCrawlMinExpensive == 0 {
+		cfg.Thresholds.HTTPASNCrawlMinExpensive = DefaultHTTPASNCrawlMinExpensive
+	}
+	if cfg.Thresholds.HTTPASNCrawlMinSharePct == 0 {
+		cfg.Thresholds.HTTPASNCrawlMinSharePct = DefaultHTTPASNCrawlMinSharePct
+	}
+	if cfg.Thresholds.HTTPASNCrawlHighAmpPct == 0 {
+		cfg.Thresholds.HTTPASNCrawlHighAmpPct = DefaultHTTPASNCrawlHighAmpPct
+	}
+	if cfg.Thresholds.HTTPASNCrawlHighVolumeMult == 0 {
+		cfg.Thresholds.HTTPASNCrawlHighVolumeMult = DefaultHTTPASNCrawlHighVolMult
+	}
+	if cfg.Thresholds.HTTPASNCrawlMaxPrefix == 0 {
+		cfg.Thresholds.HTTPASNCrawlMaxPrefix = DefaultHTTPASNCrawlMaxPrefix
+	}
+	if cfg.Thresholds.HTTPASNCrawl16PrefPct == 0 {
+		cfg.Thresholds.HTTPASNCrawl16PrefPct = DefaultHTTPASNCrawl16PrefPct
+	}
+	if cfg.Thresholds.HTTPASNCrawlMaxTrackedIPs == 0 {
+		cfg.Thresholds.HTTPASNCrawlMaxTrackedIPs = DefaultHTTPASNCrawlMaxTrackedIPs
+	}
+	if cfg.Thresholds.HTTPASNCrawlWindowMin == 0 {
+		cfg.Thresholds.HTTPASNCrawlWindowMin = DefaultHTTPASNCrawlWindowMin
+	}
+	// Reverse-proxy seed: absent key keeps the safety seed; an explicit empty
+	// list is honored as an operator override.
+	if !presence.httpASNCrawlReverseProxy && len(cfg.Thresholds.HTTPASNCrawlReverseProxyASNs) == 0 {
+		cfg.Thresholds.HTTPASNCrawlReverseProxyASNs = append([]uint(nil), httpASNCrawlReverseProxySeed...)
+	}
+	if cfg.AutoResponse.HTTPASNCrawlTempban == "" {
+		cfg.AutoResponse.HTTPASNCrawlTempban = DefaultHTTPASNCrawlTempban
+	}
+
 	if cfg.Reputation.Rspamd.URL == "" {
 		cfg.Reputation.Rspamd.URL = "http://127.0.0.1:11334"
 	}
@@ -1783,6 +1907,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateForwardGuard(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateHTTPASNCrawl(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -1807,6 +1934,8 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
+	_, presence.httpASNCrawlMinIPs = raw.Thresholds["http_asn_crawl_min_ips"]
+	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true
@@ -2110,6 +2239,78 @@ func validateMailBruteAccountKeyField(cfg *Config) (string, error) {
 func validateMailBruteAccountKey(cfg *Config) error {
 	_, err := validateMailBruteAccountKeyField(cfg)
 	return err
+}
+
+// validateHTTPASNCrawl checks http_asn_crawl thresholds and auto-response for
+// values that would make the detector mis-behave at runtime. Called from
+// LoadBytes after defaults are applied, so percent fields are already 1..100
+// unless the operator explicitly set them to out-of-range values.
+func validateHTTPASNCrawl(cfg *Config) error {
+	th := cfg.Thresholds
+
+	// Integer fields that must not be negative.
+	negChecks := []struct {
+		name string
+		val  int
+	}{
+		{"thresholds.http_asn_crawl_window_min", th.HTTPASNCrawlWindowMin},
+		{"thresholds.http_asn_crawl_min_ips", th.HTTPASNCrawlMinIPs},
+		{"thresholds.http_asn_crawl_min_expensive", th.HTTPASNCrawlMinExpensive},
+		{"thresholds.http_asn_crawl_high_volume_mult", th.HTTPASNCrawlHighVolumeMult},
+		{"thresholds.http_asn_crawl_saturation", th.HTTPASNCrawlSaturation},
+		{"thresholds.http_asn_crawl_max_prefix", th.HTTPASNCrawlMaxPrefix},
+		{"thresholds.http_asn_crawl_max_tracked_ips", th.HTTPASNCrawlMaxTrackedIPs},
+	}
+	for _, c := range negChecks {
+		if c.val < 0 {
+			return fmt.Errorf("%s must not be negative (got %d)", c.name, c.val)
+		}
+	}
+
+	// Percent fields: after defaults are applied these are always >= 1.
+	// An operator-supplied value outside 1..100 is rejected.
+	pctChecks := []struct {
+		name string
+		val  int
+	}{
+		{"thresholds.http_asn_crawl_min_share_pct", th.HTTPASNCrawlMinSharePct},
+		{"thresholds.http_asn_crawl_high_amp_pct", th.HTTPASNCrawlHighAmpPct},
+		{"thresholds.http_asn_crawl_16_pref_pct", th.HTTPASNCrawl16PrefPct},
+	}
+	for _, c := range pctChecks {
+		if c.val < 1 || c.val > 100 {
+			return fmt.Errorf("%s must be in 1..100 (got %d)", c.name, c.val)
+		}
+	}
+
+	// Every ASN in both lists must be in 1..4294967295.
+	asnLists := []struct {
+		name string
+		list []uint
+	}{
+		{"thresholds.http_asn_crawl_allowlist_asns", th.HTTPASNCrawlAllowlistASNs},
+		{"thresholds.http_asn_crawl_reverse_proxy_asns", th.HTTPASNCrawlReverseProxyASNs},
+	}
+	for _, al := range asnLists {
+		for _, asn := range al.list {
+			if asn < 1 || asn > 4294967295 {
+				return fmt.Errorf("%s contains invalid ASN %d (must be 1..4294967295)", al.name, asn)
+			}
+		}
+	}
+
+	// Tempban must be a positive duration.
+	if tb := cfg.AutoResponse.HTTPASNCrawlTempban; tb != "" {
+		d, err := time.ParseDuration(tb)
+		if err != nil {
+			return fmt.Errorf("auto_response.http_asn_crawl_tempban: unparseable duration %q: %w", tb, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("auto_response.http_asn_crawl_tempban: duration must be positive (got %q)", tb)
+		}
+	}
+
+	return nil
 }
 
 func Load(path string) (*Config, error) {
