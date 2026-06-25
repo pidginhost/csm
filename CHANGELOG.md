@@ -11,10 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - New `http_asn_crawl` detector flags a single-ASN distributed crawl of uncacheable URLs that saturates an account's PHP worker pool, and surgically tempbans the offending subnets only when saturation is confirmed (reverse-proxy/CDN safe).
 
-### Fixed
-
-- Hardened `http_asn_crawl` guardrails so protected ranges, invalid access-log timing, and impossible thresholds cannot drive bad decisions.
-
 ### Notes
 
 - Behind a reverse proxy/CDN, set `web_server.trusted_proxies` so `http_asn_crawl` attributes the real client; without it CDN-fronted traffic is treated as the proxy and not flagged.
