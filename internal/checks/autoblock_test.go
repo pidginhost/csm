@@ -1591,3 +1591,156 @@ func TestAutoBlock_HTTPUASpoof(t *testing.T) {
 		t.Fatalf("blocked=%v want [203.0.113.200]", rb.blocked)
 	}
 }
+
+// asnCrawlCfg returns a cfg ready for http_asn_crawl subnet tempban tests:
+// Enabled+BlockIPs true, DryRun=false, valid StatePath.
+func asnCrawlCfg(t *testing.T) *config.Config {
+	t.Helper()
+	dryRun := false
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.DryRun = &dryRun
+	cfg.AutoResponse.HTTPASNCrawlTempban = "24h"
+	return cfg
+}
+
+func TestAutoBlockHTTPASNCrawlTempbansCIDRs(t *testing.T) {
+	blocker := &recordingIPBlocker{}
+	prev := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+
+	cfg := asnCrawlCfg(t)
+	f := alert.Finding{
+		Check:    "http_asn_crawl",
+		Severity: alert.Critical,
+		Message:  "Distributed crawl from AS45102 (Alibaba) against radiusro",
+		CIDRs:    []string{"203.0.113.0/24", "198.51.100.0/24"},
+	}
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{f})
+
+	if len(blocker.blockedSubnet) != 2 {
+		t.Fatalf("expected 2 subnets blocked, got %v", blocker.blockedSubnet)
+	}
+	found203, found198 := false, false
+	for _, s := range blocker.blockedSubnet {
+		if s == "203.0.113.0/24" {
+			found203 = true
+		}
+		if s == "198.51.100.0/24" {
+			found198 = true
+		}
+	}
+	if !found203 || !found198 {
+		t.Fatalf("expected both CIDRs tempbanned, got %+v", blocker.blockedSubnet)
+	}
+
+	for _, sc := range blocker.subnetCalls {
+		if sc.cidr == "203.0.113.0/24" && sc.timeout != 24*time.Hour {
+			t.Fatalf("tempban duration for 203.0.113.0/24 = %v, want 24h", sc.timeout)
+		}
+	}
+
+	var hasAutoBlockSubnet bool
+	for _, a := range actions {
+		if strings.Contains(a.Message, "AUTO-BLOCK-SUBNET") {
+			hasAutoBlockSubnet = true
+			break
+		}
+	}
+	if !hasAutoBlockSubnet {
+		t.Fatal("expected auto_block action findings with AUTO-BLOCK-SUBNET, got none")
+	}
+}
+
+func TestAutoBlockHTTPASNCrawlGuards(t *testing.T) {
+	// Sub-case 1: dry-run must not block.
+	t.Run("dry-run", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		dryRun := true
+		cfg := &config.Config{}
+		cfg.StatePath = t.TempDir()
+		cfg.AutoResponse.Enabled = true
+		cfg.AutoResponse.BlockIPs = true
+		cfg.AutoResponse.DryRun = &dryRun
+		cfg.AutoResponse.HTTPASNCrawlTempban = "24h"
+
+		f := alert.Finding{Check: "http_asn_crawl", Severity: alert.Critical, CIDRs: []string{"203.0.113.0/24"}}
+		AutoBlockIPs(cfg, []alert.Finding{f})
+		if len(blocker.blockedSubnet) != 0 {
+			t.Fatalf("dry-run must not block subnets, got %v", blocker.blockedSubnet)
+		}
+	})
+
+	// Sub-case 2: non-Critical must not block.
+	t.Run("non-critical", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := asnCrawlCfg(t)
+		f := alert.Finding{Check: "http_asn_crawl", Severity: alert.High, CIDRs: []string{"203.0.113.0/24"}}
+		AutoBlockIPs(cfg, []alert.Finding{f})
+		if len(blocker.blockedSubnet) != 0 {
+			t.Fatalf("non-Critical must not block subnets, got %v", blocker.blockedSubnet)
+		}
+	})
+
+	// Sub-case 3: CIDR containing an infra IP must be skipped.
+	t.Run("infra-intersect", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := asnCrawlCfg(t)
+		cfg.InfraIPs = []string{"203.0.113.7"}
+
+		f := alert.Finding{Check: "http_asn_crawl", Severity: alert.Critical, CIDRs: []string{"203.0.113.0/24"}}
+		AutoBlockIPs(cfg, []alert.Finding{f})
+		if len(blocker.blockedSubnet) != 0 {
+			t.Fatalf("CIDR intersecting an infra IP must be skipped, got %v", blocker.blockedSubnet)
+		}
+	})
+
+	// Sub-case 4: CIDR intersecting an infra CIDR range must be skipped.
+	t.Run("infra-cidr-intersect", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := asnCrawlCfg(t)
+		cfg.InfraIPs = []string{" 203.0.113.0/25 "}
+
+		f := alert.Finding{Check: "http_asn_crawl", Severity: alert.Critical, CIDRs: []string{"203.0.113.0/24"}}
+		AutoBlockIPs(cfg, []alert.Finding{f})
+		if len(blocker.blockedSubnet) != 0 {
+			t.Fatalf("CIDR intersecting an infra range must be skipped, got %v", blocker.blockedSubnet)
+		}
+	})
+
+	// Sub-case 5: loopback CIDRs must be skipped even outside 127.0.0.0/24.
+	t.Run("loopback-cidr", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := asnCrawlCfg(t)
+
+		f := alert.Finding{Check: "http_asn_crawl", Severity: alert.Critical, CIDRs: []string{"127.1.2.0/24"}}
+		AutoBlockIPs(cfg, []alert.Finding{f})
+		if len(blocker.blockedSubnet) != 0 {
+			t.Fatalf("loopback CIDR must be skipped, got %v", blocker.blockedSubnet)
+		}
+	})
+}

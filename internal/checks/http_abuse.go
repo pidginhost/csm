@@ -36,6 +36,7 @@ type accessLogRecord struct {
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
+	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -136,6 +137,10 @@ type domlogStats struct {
 	scannerDomainReqs map[string]int
 	scannerDomainErr  map[string]map[string]int
 	scanTime          time.Time
+
+	// asnCrawl accumulates per-(scope, ASN) crawl fingerprints. Populated by
+	// observeASNCrawl from scan(); read by emitASNCrawl. Lazily allocated.
+	asnCrawl map[string]*asnCrawlScope
 
 	// Scanner thresholds are derived from cfg once per scan -- cfg is stable
 	// across a single domlogStats lifetime -- instead of on every parsed record.
@@ -295,6 +300,15 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		if rec.Domain != "" && kind != uaKindBrowser && kind != uaKindClaimedBotPending {
 			s.recordAbuseDomain("http_ua_spoof", ip, rec.Domain)
 		}
+	}
+
+	// http_asn_crawl uses its OWN lookback window (default 60 min), which is
+	// wider than the flood window (default 5 min), so it must gate on its own
+	// window OUTSIDE the flood block; nesting it would cap the detector at the
+	// flood window and defeat spec section 4.1. ip is already infra/verified-bot
+	// filtered and proxy-resolved above, so it is valid here.
+	if asnCrawlWithinWindow(rec.Time, cfg, s.scanTime) {
+		s.observeASNCrawl(ip, rec, cfg)
 	}
 }
 
@@ -468,6 +482,7 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	// that crossed an abuse threshold count -- a popular site's normal
 	// visitor spread never trips it.
 	out = append(out, s.emitDistributedFlood(cfg, out)...)
+	out = append(out, s.emitASNCrawl(cfg)...)
 	return out
 }
 

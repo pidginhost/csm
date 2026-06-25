@@ -64,6 +64,15 @@ type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
 
+// allowChecker is satisfied by engines that can report whether an IP is
+// firewall-allowed (whitelisted). http_asn_crawl uses it at emit time to drop
+// any candidate subnet that contains an observed source IP which is already
+// allowed, so a surgical subnet tempban can never include a whitelisted host.
+// Optional: blockers that do not implement it leave all candidate CIDRs intact.
+type allowChecker interface {
+	IsAllowed(ip string) bool
+}
+
 // permanentPromoter is satisfied by engines that can upgrade an existing
 // temporary block to a permanent one. PermBlock escalation runs in the same
 // scan cycle as the temp block that triggered it, so the ordinary block path
@@ -315,6 +324,40 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if maxPerHour <= 0 {
 		maxPerHour = config.DefaultMaxBlocksPerHour
 	}
+	// http_asn_crawl: surgical subnet tempban for confirmed Critical findings.
+	// Each CIDR consumes one MaxBlocksPerHour slot. Independent of the per-IP
+	// list but shares its hourly budget. Skips dry-run, infra intersections,
+	// and already-blocked subnets.
+	if sb, ok := blocker.(subnetBlocker); ok && isAutoResponseActive(cfg) {
+		tempban := parseExpiry(cfg.AutoResponse.HTTPASNCrawlTempban)
+		for _, f := range findings {
+			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
+				continue
+			}
+			for _, cidr := range f.CIDRs {
+				if state.BlocksThisHour >= maxPerHour {
+					break
+				}
+				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
+					continue
+				}
+				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
+				if err := sb.BlockSubnet(cidr, reason, tempban); err != nil {
+					fmt.Fprintf(os.Stderr, "auto-block: asn-crawl subnet %s: %v\n", cidr, err)
+					continue
+				}
+				state.BlocksThisHour++
+				actions = append(actions, alert.Finding{
+					Severity:  alert.Critical,
+					Check:     "auto_block",
+					Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET: %s blocked (asn-crawl)", cidr),
+					Details:   fmt.Sprintf("Reason: %s", f.Message),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
 	rateLimited := false
 	droppedPending := 0
 	for ip, reason := range ipsToBlock {
@@ -729,6 +772,45 @@ func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	if err := atomicio.AtomicWriteJSON(path, 0o600, tracker); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
 	}
+}
+
+// isAutoResponseActive reports whether real blocking should happen now:
+// auto-response enabled, IP blocking on, and not in dry-run.
+// DryRun defaults to true (safe) when nil — operators must explicitly set
+// dry_run: false to enable live nftables blocking.
+func isAutoResponseActive(cfg *config.Config) bool {
+	return cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs && !cfg.AutoResponseDryRunEnabled()
+}
+
+// cidrIntersectsInfra reports whether the CIDR contains an operator infra
+// IP/range (or loopback), so the subnet tempban never blackholes protected
+// addresses. An unparseable CIDR fails safe (treated as intersecting and
+// skipped). The firewall engine's dynamic per-IP allowlist is not
+// enumerable across a subnet, so infra_ips is the operator's mechanism to
+// exempt a specific address from subnet tempban.
+func cidrIntersectsInfra(cfg *config.Config, cidr string) bool {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return true
+	}
+	if ipnet.IP.IsLoopback() {
+		return true
+	}
+	candidates := append([]string{"127.0.0.1", "::1"}, cfg.InfraIPs...)
+	for _, raw := range candidates {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if p := net.ParseIP(raw); p != nil && ipnet.Contains(p) {
+			return true
+		}
+		if _, infraNet, err := net.ParseCIDR(raw); err == nil &&
+			(ipnet.Contains(infraNet.IP) || infraNet.Contains(ipnet.IP)) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractCIDRFromFinding returns the CIDR appearing in the message after

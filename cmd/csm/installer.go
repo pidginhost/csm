@@ -305,6 +305,20 @@ thresholds:
   scan_job_retention: 20
   # Rolling coverage sweeps path-sorted dormant files each cycle so they are eventually content-scanned.
   rolling_coverage: true
+  # http_asn_crawl: single-ASN distributed crawl of uncacheable URLs that
+  # saturates one account's PHP pool. Set http_asn_crawl_min_ips: 0 to disable.
+  http_asn_crawl_window_min: 60
+  http_asn_crawl_min_ips: 25
+  http_asn_crawl_min_expensive: 250
+  http_asn_crawl_min_share_pct: 50
+  http_asn_crawl_high_amp_pct: 50
+  http_asn_crawl_high_volume_mult: 4
+  http_asn_crawl_saturation: 0          # 0 = use performance.php_process_warn_per_user
+  http_asn_crawl_max_prefix: 8
+  http_asn_crawl_16_pref_pct: 60
+  http_asn_crawl_max_tracked_ips: 20000
+  http_asn_crawl_allowlist_asns: []
+  http_asn_crawl_reverse_proxy_asns: [13335, 54113, 20940]  # Cloudflare, Fastly, Akamai
 
 infra_ips:
   # Add your infrastructure IPs, CIDRs, or hostnames here.
@@ -339,6 +353,7 @@ auto_response:
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
   block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
+  http_asn_crawl_tempban: "24h"  # ban duration for http_asn_crawl findings
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
   http_scanner_action: "challenge"  # http_scanner_profile response: challenge (PoW; falls back to block) or block

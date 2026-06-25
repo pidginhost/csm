@@ -58,6 +58,25 @@ func TestSetGeoIPDB(t *testing.T) {
 	}
 }
 
+// TestCheckNameHTTPASNCrawlHasFriendlyLabel asserts that the csmConfig
+// checkNames map contains a friendly display label for the http_asn_crawl
+// detector so that the UI never shows the raw check key to operators.
+func TestCheckNameHTTPASNCrawlHasFriendlyLabel(t *testing.T) {
+	s := newTestServer(t, "tok")
+	cfg := s.csmConfig()
+	names, ok := cfg["checkNames"].(map[string]string)
+	if !ok {
+		t.Fatal("csmConfig checkNames is not map[string]string")
+	}
+	label, found := names["http_asn_crawl"]
+	if !found || label == "" {
+		t.Error("http_asn_crawl has no entry in checkNames; UI will show raw key")
+	}
+	if label == "http_asn_crawl" {
+		t.Errorf("http_asn_crawl resolves to raw key, want friendly label")
+	}
+}
+
 // GeoIP lookup tests (missing/invalid/no-DB) are in coverage_test.go.
 
 func TestAPIGeoIPBatchGetIsRejected(t *testing.T) {

@@ -724,6 +724,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"admin_panel_bruteforce":         "Admin Panel Brute Force",
 			"mail_account_spray":             "Mail Account Spray",
 			"mail_account_compromised":       "Mail Account Compromised",
+			"http_asn_crawl":                 "Distributed ASN Crawl",
 			"http_request_flood":             "HTTP Request Flood",
 			"http_scanner_profile":           "HTTP Scanner Profile",
 			"http_claimed_bot_unverified":    "Unverified Claimed Bot",

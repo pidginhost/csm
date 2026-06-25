@@ -236,22 +236,12 @@ func CheckLoadAverage(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	return nil
 }
 
-// CheckPHPProcessLoad scans /proc for lsphp processes, groups them by user,
-// and fires Critical if total exceeds cores*multiplier, High per user if
-// individual count exceeds threshold.
-func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
-	if !perfEnabled(cfg) {
-		return nil
-	}
-
-	cores := getCPUCores()
-
+// phpWorkersByUser walks /proc and returns, per username, the cmdline samples
+// of that user's live lsphp processes. Instantaneous snapshot; callers that
+// need a count use len(result[user]).
+func phpWorkersByUser() map[string][]string {
 	cmdlinePaths, _ := osFS.Glob("/proc/[0-9]*/cmdline")
-
-	// user → list of cmdline samples
 	userProcs := make(map[string][]string)
-	total := 0
-
 	for _, cmdPath := range cmdlinePaths {
 		pid := filepath.Base(filepath.Dir(cmdPath))
 
@@ -284,7 +274,24 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 
 		username := uidStringToUser(uid)
 		userProcs[username] = append(userProcs[username], cmdStr)
-		total++
+	}
+	return userProcs
+}
+
+// CheckPHPProcessLoad scans /proc for lsphp processes, groups them by user,
+// and fires Critical if total exceeds cores*multiplier, High per user if
+// individual count exceeds threshold.
+func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+
+	cores := getCPUCores()
+
+	userProcs := phpWorkersByUser()
+	total := 0
+	for _, procs := range userProcs {
+		total += len(procs)
 	}
 
 	if total == 0 {
