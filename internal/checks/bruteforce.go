@@ -281,12 +281,14 @@ func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, st
 			}
 		}
 		domain := domainFromDomlogPath(p)
+		account := domainAccountOwner(domain)
 		for _, line := range tailFile(p, tailLines) {
 			rec, ok := parseAccessLogRecord(line)
 			if !ok {
 				continue
 			}
 			rec.Domain = domain
+			rec.Account = account
 			stats.scan(rec, cfg, classifier)
 		}
 		scanned++

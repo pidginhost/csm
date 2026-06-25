@@ -36,6 +36,7 @@ type accessLogRecord struct {
 	UserAgent string
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
+	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
