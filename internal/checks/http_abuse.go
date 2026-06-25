@@ -239,10 +239,6 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		}
 		s.httpReqs[ip]++
 
-		if asnCrawlWithinWindow(rec.Time, cfg, s.scanTime) {
-			s.observeASNCrawl(ip, rec, cfg)
-		}
-
 		_, _, _, scannerEnabled := s.scannerThresholds(cfg)
 		// Static display assets (images, styles, scripts, fonts, media)
 		// are excluded from the scanner profile entirely: a 404 on a
@@ -304,6 +300,15 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		if rec.Domain != "" && kind != uaKindBrowser && kind != uaKindClaimedBotPending {
 			s.recordAbuseDomain("http_ua_spoof", ip, rec.Domain)
 		}
+	}
+
+	// http_asn_crawl uses its OWN lookback window (default 60 min), which is
+	// wider than the flood window (default 5 min), so it must gate on its own
+	// window OUTSIDE the flood block; nesting it would cap the detector at the
+	// flood window and defeat spec section 4.1. ip is already infra/verified-bot
+	// filtered and proxy-resolved above, so it is valid here.
+	if asnCrawlWithinWindow(rec.Time, cfg, s.scanTime) {
+		s.observeASNCrawl(ip, rec, cfg)
 	}
 }
 

@@ -64,6 +64,15 @@ type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
 
+// allowChecker is satisfied by engines that can report whether an IP is
+// firewall-allowed (whitelisted). http_asn_crawl uses it at emit time to drop
+// any candidate subnet that contains an observed source IP which is already
+// allowed, so a surgical subnet tempban can never include a whitelisted host.
+// Optional: blockers that do not implement it leave all candidate CIDRs intact.
+type allowChecker interface {
+	IsAllowed(ip string) bool
+}
+
 // permanentPromoter is satisfied by engines that can upgrade an existing
 // temporary block to a permanent one. PermBlock escalation runs in the same
 // scan cycle as the temp block that triggered it, so the ordinary block path

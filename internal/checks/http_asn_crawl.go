@@ -105,6 +105,14 @@ func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *confi
 	if cfg == nil || cfg.Thresholds.HTTPASNCrawlMinIPs <= 0 {
 		return // detector disabled
 	}
+	if rec.Domain == "" {
+		// Central access logs (and malformed paths) carry no domain/account,
+		// so they cannot be PHP-pool correlated and must not feed this
+		// detector (spec section 4). Per-domain domlogs always set Domain;
+		// without this guard they key a degenerate catch-all "domain:" scope
+		// and double-count the share denominator.
+		return
+	}
 	if !httpASNCrawlExpensive(rec) {
 		return
 	}
@@ -122,6 +130,15 @@ func (s *domlogStats) observeASNCrawl(ip string, rec accessLogRecord, cfg *confi
 	if uintInSlice(asn, cfg.Thresholds.HTTPASNCrawlReverseProxyASNs) {
 		return // reverse-proxy: dropped from numerator AND denominator
 	}
+	// v1 limitation (spec section 4.3): real-client attribution behind a
+	// reverse proxy/CDN depends on clientIPForRecord restoring the client from
+	// XFF, which only happens when web_server.trusted_proxies is configured.
+	// Operators fronting hosts with a CDN MUST set trusted_proxies so the real
+	// client IP (and its ASN) is attributed here; without it a CDN-fronted
+	// distributed crawl is seen as proxy-ASN traffic and not flagged (a false
+	// negative). The catastrophic false positive is still prevented because the
+	// proxy ASN is never emitted or tempbanned. A general CDN-aware fix spans
+	// all http-abuse detectors and is out of scope for this detector.
 	scope := s.asnCrawlScopeFor(rec)
 	scope.scopeExpensive++
 	a := scope.byASN[asn]
@@ -292,7 +309,7 @@ func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 					sev = alert.Critical
 				}
 			}
-			cidrs := collapseASNCrawlCIDRs(a, cfg)
+			cidrs := dropFirewallAllowedCIDRs(collapseASNCrawlCIDRs(a, cfg), a)
 			out = append(out, alert.Finding{
 				Severity:  sev,
 				Check:     "http_asn_crawl",
@@ -424,4 +441,52 @@ func collapseASNCrawlCIDRs(a *asnCrawlASN, cfg *config.Config) []string {
 		out = out[:maxPrefix]
 	}
 	return out
+}
+
+// dropFirewallAllowedCIDRs removes any candidate CIDR that contains an observed
+// source IP already firewall-allowed (whitelisted), per spec section 6.2. This
+// only ever REMOVES subnets, so it is strictly more conservative and can never
+// cause over-blocking. When no blocker is wired, or it does not implement
+// allowChecker, all CIDRs are kept. Each allowed observed IP is tested against
+// the (<=8) collapsed CIDRs only.
+func dropFirewallAllowedCIDRs(cidrs []string, a *asnCrawlASN) []string {
+	if len(cidrs) == 0 {
+		return cidrs
+	}
+	ac, ok := getIPBlocker().(allowChecker)
+	if !ok {
+		return cidrs
+	}
+	drop := map[string]struct{}{}
+	for ipStr := range a.ips {
+		if !ac.IsAllowed(ipStr) {
+			continue
+		}
+		parsed := net.ParseIP(ipStr)
+		if parsed == nil {
+			continue
+		}
+		for _, cidr := range cidrs {
+			if _, dropped := drop[cidr]; dropped {
+				continue
+			}
+			_, ipnet, err := net.ParseCIDR(cidr)
+			if err != nil {
+				continue
+			}
+			if ipnet.Contains(parsed) {
+				drop[cidr] = struct{}{}
+			}
+		}
+	}
+	if len(drop) == 0 {
+		return cidrs
+	}
+	kept := make([]string, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, dropped := drop[cidr]; !dropped {
+			kept = append(kept, cidr)
+		}
+	}
+	return kept
 }

@@ -163,7 +163,7 @@ func asnCrawlStatsWith(t *testing.T, cfg *config.Config, account string, asn uin
 		ips:       map[string]struct{}{},
 		cidr24:    map[string]int{},
 	}
-	// Populate distinct IPs from RFC 5737 (203.0.113.x) and RFC 3849 (198.51.100.x).
+	// Populate distinct IPs from RFC 5737 ranges (203.0.113.x and 198.51.100.x).
 	for i := 0; i < distinctIPs; i++ {
 		var ip string
 		if i < 256 {
@@ -334,5 +334,148 @@ func TestCollapseASNCrawlCIDRs(t *testing.T) {
 	cfgCap.Thresholds.HTTPASNCrawlMaxPrefix = 1
 	if got := collapseASNCrawlCIDRs(a, cfgCap); len(got) != 1 {
 		t.Fatalf("max_prefix cap not applied: %v", got)
+	}
+}
+
+// TestScanFeedsASNCrawlOutsideFloodWindow drives records through scan() and
+// asserts the detector's own 60-min window governs accumulation, not the
+// 5-min flood window. Records 30 min old (inside asn window, outside flood)
+// must accumulate; a 90-min-old record must not. See spec section 4.1.
+func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
+	SetASNLookup(func(ip string) (uint, string) { return 45102, "Alibaba" })
+	t.Cleanup(func() { SetASNLookup(nil) })
+	cfg := configWithASNCrawlDefaults(t)
+	scanTime := mustTime("2026-06-24T12:30:00Z")
+	s := newDomlogStatsAt(scanTime)
+
+	// 30 expensive records 30 min old: inside the 60-min asn window but
+	// well outside the default 5-min flood window.
+	inWindow := scanTime.Add(-30 * time.Minute)
+	for i := 1; i <= 30; i++ {
+		rec := accessLogRecord{
+			RemoteIP: fmt.Sprintf("203.0.113.%d", i), Method: "GET",
+			URI: "/categorie/coliere/?filter_x=1", Status: 200,
+			Time: inWindow, Domain: "radius.ro", Account: "radiusro",
+		}
+		s.scan(rec, cfg, nopBotClassifier{})
+	}
+	sc := s.asnCrawl["radiusro"]
+	if sc == nil || sc.byASN[45102] == nil {
+		t.Fatal("scan() must accumulate asn-crawl records 30 min old (inside 60-min window)")
+	}
+	if got := sc.byASN[45102].expensive; got != 30 {
+		t.Fatalf("expensive=%d want 30 (records inside asn window dropped by flood gate?)", got)
+	}
+
+	// A 90-min-old record is outside the 60-min window and must not accumulate.
+	old := scanTime.Add(-90 * time.Minute)
+	recOld := accessLogRecord{
+		RemoteIP: "198.51.100.7", Method: "GET", URI: "/c/?filter_y=2", Status: 200,
+		Time: old, Domain: "radius.ro", Account: "radiusro",
+	}
+	s.scan(recOld, cfg, nopBotClassifier{})
+	if got := s.asnCrawl["radiusro"].byASN[45102].expensive; got != 30 {
+		t.Fatalf("90-min-old record must not accumulate; expensive=%d want 30", got)
+	}
+}
+
+// TestObserveASNCrawlSkipsEmptyDomain asserts central-log records (empty
+// Domain) feed no scope or accumulation. See spec section 4.
+func TestObserveASNCrawlSkipsEmptyDomain(t *testing.T) {
+	SetASNLookup(func(ip string) (uint, string) { return 45102, "Alibaba" })
+	t.Cleanup(func() { SetASNLookup(nil) })
+	cfg := configWithASNCrawlDefaults(t)
+	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
+	rec := accessLogRecord{
+		RemoteIP: "203.0.113.9", Method: "GET", URI: "/c/?filter_x=1", Status: 200,
+		Time: mustTime("2026-06-24T12:29:00Z"), Domain: "", Account: "",
+	}
+	s.observeASNCrawl("203.0.113.9", rec, cfg)
+	if len(s.asnCrawl) != 0 {
+		t.Fatalf("empty-Domain record must not create any scope, got %v", s.asnCrawl)
+	}
+}
+
+// allowFake implements both IPBlocker and allowChecker so emitASNCrawl can
+// drop candidate CIDRs containing a firewall-allowed observed IP. It is a
+// SEPARATE type from recordingIPBlocker so existing autoblock tests, which
+// rely on recordingIPBlocker NOT implementing allowChecker, are unaffected.
+type allowFake struct {
+	allowed map[string]bool
+}
+
+func (f *allowFake) BlockIP(string, string, time.Duration) error { return nil }
+func (f *allowFake) UnblockIP(string) error                      { return nil }
+func (f *allowFake) IsBlocked(string) bool                       { return false }
+func (f *allowFake) IsAllowed(ip string) bool                    { return f.allowed[ip] }
+
+// TestEmitASNCrawlDropsFirewallAllowedCIDR asserts a candidate /24 containing a
+// firewall-allowed observed IP is removed from the emitted finding's CIDRs,
+// while a clean /24 remains. See spec section 6.2.
+func TestEmitASNCrawlDropsFirewallAllowedCIDR(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
+	a := &asnCrawlASN{
+		org:       "Alibaba",
+		expensive: 600,
+		total:     600,
+		amplified: 600,
+		domains:   map[string]struct{}{"radius.ro": {}},
+		ips:       map[string]struct{}{},
+		cidr24:    map[string]int{},
+	}
+	// 20 IPs in 203.0.113.0/24 (allowed) and 20 in 198.51.100.0/24 (clean).
+	for i := 1; i <= 20; i++ {
+		for _, ip := range []string{fmt.Sprintf("203.0.113.%d", i), fmt.Sprintf("198.51.100.%d", i)} {
+			a.ips[ip] = struct{}{}
+			if g := asnCrawlGroupCIDR(ip); g != "" {
+				a.cidr24[g]++
+			}
+		}
+	}
+	s.asnCrawl = map[string]*asnCrawlScope{
+		"radiusro": {byASN: map[uint]*asnCrawlASN{45102: a}, scopeExpensive: 600},
+	}
+
+	prev := getIPBlocker()
+	SetIPBlocker(&allowFake{allowed: map[string]bool{"203.0.113.5": true}})
+	t.Cleanup(func() { SetIPBlocker(prev) })
+
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(out))
+	}
+	for _, c := range out[0].CIDRs {
+		if c == "203.0.113.0/24" {
+			t.Fatalf("firewall-allowed /24 must be dropped, got CIDRs %v", out[0].CIDRs)
+		}
+	}
+	found := false
+	for _, c := range out[0].CIDRs {
+		if c == "198.51.100.0/24" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("clean /24 must remain, got CIDRs %v", out[0].CIDRs)
+	}
+	// Details "Suggested subnets" must reflect the filtered list too.
+	if strings.Contains(out[0].Details, "203.0.113.0/24") {
+		t.Fatalf("Details must not list the dropped /24: %q", out[0].Details)
+	}
+}
+
+// TestEmitASNCrawlStage2UsesSaturationConfig asserts the primary
+// http_asn_crawl_saturation threshold (not only the PHPProcessWarnPerUser
+// fallback) drives Stage-2 escalation. See spec section 5.2.
+func TestEmitASNCrawlStage2UsesSaturationConfig(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	cfg.Thresholds.HTTPASNCrawlSaturation = 50
+	cfg.Performance.PHPProcessWarnPerUser = 999 // would block escalation if used
+	withPHPWorkers(t, map[string]int{"radiusro": 50})
+	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 || out[0].Severity != alert.Critical {
+		t.Fatalf("saturation config must drive Critical escalation, got %+v", out)
 	}
 }
