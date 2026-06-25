@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Mail brute-force alerts now name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so operators can tell a real attack on a live mailbox from dictionary noise without opening the mail log.
+
+### Fixed
+
+- Mail brute-force target summaries now escape unusual mailbox text and cap each name, so crafted login names cannot distort alert details.
+
 ## [3.21.0] - 2026-06-23
 
 ### Added
