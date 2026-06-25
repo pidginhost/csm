@@ -211,8 +211,29 @@ func asnCrawlWithinWindow(ts time.Time, cfg *config.Config, now time.Time) bool 
 	return !ts.Before(now.Add(-time.Duration(win) * time.Minute))
 }
 
+// phpWorkersByUserFn is a seam for testing; production code uses phpWorkersByUser.
+var phpWorkersByUserFn = phpWorkersByUser
+
+// asnCrawlSaturated reports whether account's live lsphp worker count meets or
+// exceeds the saturation threshold. Returns false for empty account (domain-scoped
+// findings never escalate) or when no positive threshold is configured.
+func asnCrawlSaturated(account string, workers map[string][]string, cfg *config.Config) bool {
+	if account == "" {
+		return false
+	}
+	threshold := cfg.Thresholds.HTTPASNCrawlSaturation
+	if threshold <= 0 {
+		threshold = cfg.Performance.PHPProcessWarnPerUser
+	}
+	if threshold <= 0 {
+		return false
+	}
+	return len(workers[account]) >= threshold
+}
+
 // emitASNCrawl produces Warning/High findings for each (scope, ASN) pair that
-// passes all stage-1 gates. Critical escalation is handled by Task 8.
+// passes all stage-1 gates. When an accounted scope is PHP-pool saturated the
+// severity is escalated to Critical (stage 2).
 func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 	if cfg == nil || cfg.Thresholds.HTTPASNCrawlMinIPs <= 0 || s.asnCrawl == nil {
 		return nil
@@ -237,6 +258,8 @@ func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 	}
 
 	var out []alert.Finding
+	var workers map[string][]string
+	workersLoaded := false
 	for scopeKey, scope := range s.asnCrawl {
 		for asn, a := range scope.byASN {
 			if uintInSlice(asn, th.HTTPASNCrawlAllowlistASNs) ||
@@ -260,6 +283,15 @@ func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 				sev = alert.High
 			}
 			account, domain := asnCrawlScopeParts(scopeKey, a)
+			if account != "" {
+				if !workersLoaded {
+					workers = phpWorkersByUserFn()
+					workersLoaded = true
+				}
+				if asnCrawlSaturated(account, workers, cfg) {
+					sev = alert.Critical
+				}
+			}
 			cidrs := collapseASNCrawlCIDRs(a, cfg)
 			out = append(out, alert.Finding{
 				Severity:  sev,

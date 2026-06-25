@@ -257,6 +257,56 @@ func newAggWithIPs(t *testing.T, ips []string) *asnCrawlASN {
 	return a
 }
 
+// withPHPWorkers swaps phpWorkersByUserFn with a stub that returns worker slices
+// of the given lengths and restores the original on cleanup.
+func withPHPWorkers(t *testing.T, counts map[string]int) {
+	t.Helper()
+	orig := phpWorkersByUserFn
+	phpWorkersByUserFn = func() map[string][]string {
+		m := make(map[string][]string, len(counts))
+		for user, n := range counts {
+			m[user] = make([]string, n)
+		}
+		return m
+	}
+	t.Cleanup(func() { phpWorkersByUserFn = orig })
+}
+
+func TestEmitASNCrawlStage2Escalates(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	cfg.Performance.PHPProcessWarnPerUser = 40
+	// account "radiusro" saturated at 50 lsphp.
+	withPHPWorkers(t, map[string]int{"radiusro": 50})
+
+	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 || out[0].Severity != alert.Critical || len(out[0].CIDRs) == 0 {
+		t.Fatalf("want one Critical with CIDRs, got %+v", out)
+	}
+}
+
+func TestEmitASNCrawlStage2NoEscalationWhenNotSaturated(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	cfg.Performance.PHPProcessWarnPerUser = 40
+	withPHPWorkers(t, map[string]int{"radiusro": 5})
+	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 || out[0].Severity == alert.Critical {
+		t.Fatalf("must stay High/Warning, got %+v", out)
+	}
+}
+
+func TestEmitASNCrawlStage2NoEscalationWhenAccountless(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+	withPHPWorkers(t, map[string]int{"radiusro": 50})
+	// domain-scoped (no account): cannot escalate.
+	s := asnCrawlStatsWith(t, cfg, "domain:radius.ro", 45102, "Alibaba", 30, 600, 600, 600)
+	out := s.emitASNCrawl(cfg)
+	if len(out) != 1 || out[0].Severity == alert.Critical {
+		t.Fatalf("accountless must not escalate, got %+v", out)
+	}
+}
+
 func TestCollapseASNCrawlCIDRs(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 
