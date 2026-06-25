@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +228,61 @@ func TestEmitASNCrawlSeverityWarningWhenLowAmp(t *testing.T) {
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity != alert.Warning {
 		t.Fatalf("want one Warning, got %+v", out)
+	}
+}
+
+// ipsIn returns a slice of IP strings "prefix+i" for i in [lo, hi].
+func ipsIn(prefix string, lo, hi int) []string {
+	out := make([]string, 0, hi-lo+1)
+	for i := lo; i <= hi; i++ {
+		out = append(out, prefix+strconv.Itoa(i))
+	}
+	return out
+}
+
+// newAggWithIPs builds an *asnCrawlASN whose ips set and cidr24 map reflect
+// the given IPs (via asnCrawlGroupCIDR).
+func newAggWithIPs(t *testing.T, ips []string) *asnCrawlASN {
+	t.Helper()
+	a := &asnCrawlASN{
+		ips:    map[string]struct{}{},
+		cidr24: map[string]int{},
+	}
+	for _, ip := range ips {
+		a.ips[ip] = struct{}{}
+		if g := asnCrawlGroupCIDR(ip); g != "" {
+			a.cidr24[g]++
+		}
+	}
+	return a
+}
+
+func TestCollapseASNCrawlCIDRs(t *testing.T) {
+	cfg := configWithASNCrawlDefaults(t)
+
+	// Spread across two /24s, neither dominating a /16: expect two /24s.
+	a := newAggWithIPs(t, append(ipsIn("203.0.113.", 1, 20), ipsIn("198.51.100.", 1, 20)...))
+	got := collapseASNCrawlCIDRs(a, cfg)
+	wantTwo := map[string]bool{"203.0.113.0/24": true, "198.51.100.0/24": true}
+	if len(got) != 2 || !wantTwo[got[0]] || !wantTwo[got[1]] {
+		t.Fatalf("two-/24 collapse = %v", got)
+	}
+
+	// All within one /16 across >=4 /24s, >=60%: expect the /16.
+	var many []string
+	for blk := 0; blk < 5; blk++ {
+		many = append(many, ipsIn(fmt.Sprintf("203.0.%d.", blk), 1, 10)...)
+	}
+	a16 := newAggWithIPs(t, many)
+	got16 := collapseASNCrawlCIDRs(a16, cfg)
+	if len(got16) != 1 || got16[0] != "203.0.0.0/16" {
+		t.Fatalf("/16 collapse = %v want [203.0.0.0/16]", got16)
+	}
+
+	// max_prefix cap.
+	cfgCap := configWithASNCrawlDefaults(t)
+	cfgCap.Thresholds.HTTPASNCrawlMaxPrefix = 1
+	if got := collapseASNCrawlCIDRs(a, cfgCap); len(got) != 1 {
+		t.Fatalf("max_prefix cap not applied: %v", got)
 	}
 }

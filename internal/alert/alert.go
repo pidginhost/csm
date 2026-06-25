@@ -106,6 +106,11 @@ type Finding struct {
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.
 	SprayTargets []string `json:"-"`
+	// CIDRs carries the collapsed offending subnets for subnet-scoped
+	// findings (http_asn_crawl). Internal-only so the public Finding/webhook
+	// contract is unchanged; the subnet auto-response reads this, never the
+	// Message/Details text.
+	CIDRs []string `json:"-"`
 
 	// Process context (Phase 1 process-ancestry enrichment). Optional.
 	// Populated by exec/connection live monitors when cache or enricher

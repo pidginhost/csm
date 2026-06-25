@@ -260,13 +260,15 @@ func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 				sev = alert.High
 			}
 			account, domain := asnCrawlScopeParts(scopeKey, a)
+			cidrs := collapseASNCrawlCIDRs(a, cfg)
 			out = append(out, alert.Finding{
 				Severity:  sev,
 				Check:     "http_asn_crawl",
 				TenantID:  account,
 				Domain:    domain,
 				Message:   fmt.Sprintf("Distributed crawl from AS%d (%s) against %s", asn, a.org, asnCrawlScopeLabel(scopeKey)),
-				Details:   asnCrawlDetails(asn, a, scope, cfg),
+				Details:   asnCrawlDetails(asn, a, scope, cfg, cidrs),
+				CIDRs:     cidrs,
 				Timestamp: time.Now(),
 			})
 		}
@@ -294,7 +296,7 @@ func asnCrawlScopeLabel(scopeKey string) string {
 	return strings.TrimPrefix(scopeKey, "domain:")
 }
 
-func asnCrawlDetails(asn uint, a *asnCrawlASN, scope *asnCrawlScope, cfg *config.Config) string {
+func asnCrawlDetails(asn uint, a *asnCrawlASN, scope *asnCrawlScope, cfg *config.Config, cidrs []string) string {
 	maxTracked := cfg.Thresholds.HTTPASNCrawlMaxTrackedIPs
 	if maxTracked <= 0 {
 		maxTracked = config.DefaultHTTPASNCrawlMaxTrackedIPs
@@ -315,5 +317,79 @@ func asnCrawlDetails(asn uint, a *asnCrawlASN, scope *asnCrawlScope, cfg *config
 	if len(a.samples) > 0 {
 		fmt.Fprintf(&b, "Sample URIs: %s\n", strings.Join(a.samples, " | "))
 	}
+	if len(cidrs) > 0 {
+		fmt.Fprintf(&b, "Suggested subnets: %s\n", strings.Join(cidrs, ", "))
+	}
 	return b.String()
+}
+
+// collapseASNCrawlCIDRs reduces an ASN's observed IPs to a sorted, capped set
+// of /24 (IPv4) / /64 (IPv6) subnets. When a single /16 covers >=
+// http_asn_crawl_16_pref_pct of the IPv4 IPs across >= 4 distinct /24s, that
+// /16 replaces its member /24s. Remaining /24s and any /64s are kept as-is.
+// The result is sorted and capped to http_asn_crawl_max_prefix entries.
+func collapseASNCrawlCIDRs(a *asnCrawlASN, cfg *config.Config) []string {
+	if len(a.cidr24) == 0 {
+		return nil
+	}
+	th := cfg.Thresholds
+	pct16 := th.HTTPASNCrawl16PrefPct
+	if pct16 <= 0 {
+		pct16 = config.DefaultHTTPASNCrawl16PrefPct
+	}
+
+	// Count total IPv4 IPs and group /24s by their /16 parent.
+	totalV4 := 0
+	bySixteen := map[string][]string{} // "x.y.0.0/16" -> member /24 CIDRs
+	for cidr, n := range a.cidr24 {
+		if strings.HasSuffix(cidr, "/24") {
+			totalV4 += n
+			sl := strings.SplitN(cidr, ".", 4)
+			s16 := sl[0] + "." + sl[1] + ".0.0/16"
+			bySixteen[s16] = append(bySixteen[s16], cidr)
+		}
+	}
+
+	chosen := map[string]struct{}{}
+	covered := map[string]struct{}{} // /24s replaced by their /16
+
+	// Promote a /16 when >= 4 member /24s cover >= pct16% of all IPv4 IPs.
+	for s16, members := range bySixteen {
+		if len(members) < 4 {
+			continue
+		}
+		count := 0
+		for _, m := range members {
+			count += a.cidr24[m]
+		}
+		if totalV4 > 0 && count*100 >= pct16*totalV4 {
+			chosen[s16] = struct{}{}
+			for _, m := range members {
+				covered[m] = struct{}{}
+			}
+		}
+	}
+
+	// Add uncovered /24s and all /64s.
+	for cidr := range a.cidr24 {
+		if _, done := covered[cidr]; done {
+			continue
+		}
+		chosen[cidr] = struct{}{}
+	}
+
+	out := make([]string, 0, len(chosen))
+	for c := range chosen {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+
+	maxPrefix := th.HTTPASNCrawlMaxPrefix
+	if maxPrefix <= 0 {
+		maxPrefix = config.DefaultHTTPASNCrawlMaxPrefix
+	}
+	if len(out) > maxPrefix {
+		out = out[:maxPrefix]
+	}
+	return out
 }
