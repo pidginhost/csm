@@ -193,3 +193,48 @@ func TestCheckPHPProcessLoadWithData(t *testing.T) {
 	findings := CheckPHPProcessLoad(context.Background(), &config.Config{}, nil)
 	_ = findings
 }
+
+// --- phpWorkersByUser --------------------------------------------------
+
+func TestPHPWorkersByUser(t *testing.T) {
+	passwd := t.TempDir() + "/passwd"
+	if err := os.WriteFile(passwd, []byte("radiusro:x:1001:1001::/home/radiusro:/bin/bash\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(swapDefaultUIDCacheForTest(passwd))
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			return []string{
+				"/proc/100/cmdline",
+				"/proc/101/cmdline",
+				"/proc/102/cmdline",
+			}, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/proc/100/cmdline":
+				return []byte("lsphp\x00"), nil
+			case "/proc/100/status":
+				return []byte("Name:\tlsphp\nUid:\t1001\t1001\t1001\t1001\n"), nil
+			case "/proc/101/cmdline":
+				return []byte("lsphp\x00"), nil
+			case "/proc/101/status":
+				return []byte("Name:\tlsphp\nUid:\t1001\t1001\t1001\t1001\n"), nil
+			case "/proc/102/cmdline":
+				return []byte("/usr/sbin/httpd\x00"), nil
+			case "/proc/102/status":
+				return []byte("Name:\thttpd\nUid:\t0\t0\t0\t0\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	got := phpWorkersByUser()
+	if len(got["radiusro"]) != 2 {
+		t.Fatalf("radiusro lsphp = %d want 2 (%+v)", len(got["radiusro"]), got)
+	}
+	if _, ok := got["root"]; ok {
+		t.Fatalf("httpd must not be counted as lsphp worker")
+	}
+}
