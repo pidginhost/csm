@@ -77,6 +77,17 @@ type Engine struct {
 	setCFWhitelist  *nftables.Set // IPv4
 	setCFWhitelist6 *nftables.Set // IPv6
 
+	// DoS-exempt ranges (interval sets for CIDR matching).
+	// Sources in these sets bypass per-IP rate-limit / conn-limit / port-flood
+	// rules. setDOSExempt6 is nil when IPv6 is disabled.
+	setDOSExempt  *nftables.Set
+	setDOSExempt6 *nftables.Set
+
+	// dosExemptProviderNets holds the mail-provider overlay pushed by the
+	// daemon. Written by SetDOSExemptProviderNets and RefreshDOSExemptSets;
+	// read by createSets() and RefreshDOSExemptSets. Always guarded by mu.
+	dosExemptProviderNets []*net.IPNet
+
 	// IPv6 sets (nil if IPv6 disabled)
 	setBlocked6    *nftables.Set
 	setBlockedNet6 *nftables.Set
@@ -291,6 +302,11 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		return nil, fmt.Errorf("infra_ips set not found: %w", err)
 	}
 
+	setDOSExempt, err := conn.GetSetByName(table, "dos_exempt_nets")
+	if err != nil {
+		return nil, fmt.Errorf("dos_exempt_nets set not found: %w", err)
+	}
+
 	e := &Engine{
 		conn:          conn,
 		cfg:           cfg,
@@ -299,6 +315,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		setBlockedNet: setBlockedNet,
 		setAllowed:    setAllowed,
 		setInfra:      setInfra,
+		setDOSExempt:  setDOSExempt,
 		statePath:     filepath.Join(statePath, "firewall"),
 	}
 
@@ -322,6 +339,9 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	}
 	if s, err := conn.GetSetByName(table, "infra_ips6"); err == nil {
 		e.setInfra6 = s
+	}
+	if s, err := conn.GetSetByName(table, "dos_exempt_nets6"); err == nil {
+		e.setDOSExempt6 = s
 	}
 
 	return e, nil
@@ -413,6 +433,90 @@ func (e *Engine) verdictContext() context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// SetDOSExemptProviderNets stores the mail-provider IP ranges used by the
+// dos_exempt_nets set. The daemon calls this before Apply() and on each
+// provider refresh. Nil is valid when the daemon has no provider data yet;
+// createSets() will produce an empty set in that case.
+func (e *Engine) SetDOSExemptProviderNets(nets []*net.IPNet) {
+	e.mu.Lock()
+	// Copy the slice header so a caller that later reuses or mutates its own
+	// slice cannot corrupt the stored overlay. Elements already arrive
+	// deep-copied from the provider source, so a header copy is enough.
+	e.dosExemptProviderNets = append([]*net.IPNet(nil), nets...)
+	e.mu.Unlock()
+}
+
+// dosExemptIntervalElems builds nftables interval set elements from nets.
+// Each net produces two elements (start key + exclusive interval-end key).
+// Saturated ranges whose end has no successor (e.g. 0.0.0.0/0) are skipped.
+// Callers must pass nets from a single IP family (all IPv4 or all IPv6).
+func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
+	if len(nets) == 0 {
+		return nil
+	}
+	var elems []nftables.SetElement
+	for _, n := range nets {
+		if n == nil {
+			continue
+		}
+		var start net.IP
+		if n.IP.To4() != nil {
+			start = n.IP.To4()
+		} else {
+			start = n.IP.To16()
+		}
+		end := lastIPInRange(n)
+		if start == nil || end == nil {
+			continue
+		}
+		elems = appendIntervalSetElements(elems, start, end)
+	}
+	return elems
+}
+
+// RefreshDOSExemptSets repopulates the dos_exempt_nets[6] interval sets with
+// a new provider overlay in a single batched kernel transaction. If the kernel
+// batch fails the previous set contents remain active and dosExemptProviderNets
+// is not updated, preserving the last-known good state.
+func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.setDOSExempt == nil {
+		return fmt.Errorf("dos_exempt_nets set not initialized")
+	}
+
+	v4, v6 := EffectiveDOSExemptNets(e.cfg, providerNets)
+
+	// Queue flush + repopulate for IPv4. Nothing is sent to the kernel yet.
+	e.conn.FlushSet(e.setDOSExempt)
+	if elems4 := dosExemptIntervalElems(v4); len(elems4) > 0 {
+		if err := e.conn.SetAddElements(e.setDOSExempt, elems4); err != nil {
+			return fmt.Errorf("queuing dos_exempt_nets elements: %w", err)
+		}
+	}
+
+	// Queue flush + repopulate for IPv6 when the set exists.
+	if e.setDOSExempt6 != nil {
+		e.conn.FlushSet(e.setDOSExempt6)
+		if elems6 := dosExemptIntervalElems(v6); len(elems6) > 0 {
+			if err := e.conn.SetAddElements(e.setDOSExempt6, elems6); err != nil {
+				return fmt.Errorf("queuing dos_exempt_nets6 elements: %w", err)
+			}
+		}
+	}
+
+	// Atomic commit. On failure the kernel keeps the previous elements.
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("refreshing dos_exempt sets: %w", err)
+	}
+
+	// Update overlay only after the kernel confirmed the transaction. Copy the
+	// slice header so caller slice reuse cannot corrupt the stored overlay.
+	e.dosExemptProviderNets = append([]*net.IPNet(nil), providerNets...)
+	return nil
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -655,6 +759,31 @@ func (e *Engine) createSets() error {
 				fmt.Fprintf(os.Stderr, "firewall: loaded %d IPv6 country block ranges for %v\n",
 					len(country6Elements)/2, e.cfg.CountryBlock)
 			}
+		}
+	}
+
+	// DoS-exempt sets: sources here bypass per-IP rate-limit / conn-limit /
+	// port-flood rules. Populated from operator dos_exempt_ranges + provider
+	// overlay (pushed by the daemon before Apply).
+	v4Exempt, v6Exempt := EffectiveDOSExemptNets(e.cfg, e.dosExemptProviderNets)
+	e.setDOSExempt = &nftables.Set{
+		Table:    e.table,
+		Name:     "dos_exempt_nets",
+		KeyType:  nftables.TypeIPAddr,
+		Interval: true,
+	}
+	if err := e.conn.AddSet(e.setDOSExempt, dosExemptIntervalElems(v4Exempt)); err != nil {
+		return fmt.Errorf("dos_exempt_nets set: %w", err)
+	}
+	if e.cfg.IPv6 {
+		e.setDOSExempt6 = &nftables.Set{
+			Table:    e.table,
+			Name:     "dos_exempt_nets6",
+			KeyType:  nftables.TypeIP6Addr,
+			Interval: true,
+		}
+		if err := e.conn.AddSet(e.setDOSExempt6, dosExemptIntervalElems(v6Exempt)); err != nil {
+			return fmt.Errorf("dos_exempt_nets6 set: %w", err)
 		}
 	}
 
