@@ -92,6 +92,7 @@ func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error     { return
 func (e *Engine) CleanExpiredAllows() int                               { return 0 }
 func (e *Engine) CleanExpiredSubnets() int                              { return 0 }
 func (e *Engine) FlushBlocked() error                                   { return nil }
+func (e *Engine) BlockedSubnets() []SubnetEntry                         { return nil }
 func (e *Engine) Status() map[string]interface{}                        { return nil }
 
 func (e *Engine) UpdateCloudflareSet(_, _ []string) error        { return nil }

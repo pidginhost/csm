@@ -3254,6 +3254,19 @@ func (e *Engine) RuleCounts() RuleCounts {
 	return countRuleEntries(s, e.cfg != nil && e.cfg.IPv6)
 }
 
+// BlockedSubnets returns a snapshot of the active persisted subnet blocks.
+// The returned slice is a fresh copy: loadStateFile reuses the warm shared
+// state cache, so the slice it returns can alias internal engine state. Copy
+// it here so a caller mutating the result cannot corrupt the cache. SubnetEntry
+// is a value type (strings + time.Time, no reference fields), so a slice copy
+// is a sufficient deep copy.
+func (e *Engine) BlockedSubnets() []SubnetEntry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s := e.loadStateFile()
+	return append([]SubnetEntry(nil), s.BlockedNet...)
+}
+
 // Status returns current firewall statistics.
 //
 // Takes e.mu so the cached state can be read coherently. Before the

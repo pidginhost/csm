@@ -87,6 +87,15 @@ type subnetBlockStatus interface {
 	IsSubnetBlocked(cidr string) bool
 }
 
+// subnetManager is satisfied by firewall engines that expose their blocked
+// subnet state and support targeted unblock calls. Used by
+// PruneExemptAutoSubnets to enumerate and remove stale subnet blocks whose
+// CIDR has become DoS-exempt.
+type subnetManager interface {
+	BlockedSubnets() []firewall.SubnetEntry
+	UnblockSubnet(cidr string) error
+}
+
 // fwBlockerSlot wraps an IPBlocker so atomic.Pointer can store it. The
 // extra struct layer is required because atomic.Pointer needs a
 // concrete type and interfaces cannot be stored directly.
@@ -187,6 +196,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		stillBlocked = append(stillBlocked, b)
 	}
 	state.IPs = stillBlocked
+
+	// Prune auto-response subnet blocks that now intersect the DoS-exempt set
+	// before making new subnet decisions this cycle.
+	if blocker != nil {
+		PruneExemptAutoSubnets(cfg, blocker)
+	}
 
 	// Check rate limit
 	currentHour := autoBlockNow().Format("2006-01-02T15")
@@ -875,6 +890,34 @@ func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]str
 		fmt.Fprintf(os.Stderr, "auto-block: skipping subnet %s (dos_exempt_range)\n", cidr)
 	}
 	return true
+}
+
+// PruneExemptAutoSubnets removes auto-response subnet blocks whose CIDR now
+// intersects the DoS-exempt set (operator ranges or mail-provider overlay).
+// Only entries with Source == firewall.SourceAutoResponse are touched; manual,
+// CLI, web-UI, challenge, whitelist, dyndns, system, and unknown-source blocks
+// are left untouched. If b does not implement subnetManager, returns 0.
+// UnblockSubnet errors are logged and the entry is not counted as pruned.
+func PruneExemptAutoSubnets(cfg *config.Config, b IPBlocker) int {
+	sm, ok := b.(subnetManager)
+	if !ok {
+		return 0
+	}
+	pruned := 0
+	for _, entry := range sm.BlockedSubnets() {
+		if entry.Source != firewall.SourceAutoResponse {
+			continue
+		}
+		if !cidrIntersectsDOSExempt(cfg, entry.CIDR) {
+			continue
+		}
+		if err := sm.UnblockSubnet(entry.CIDR); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: prune exempt subnet %s: %v\n", entry.CIDR, err)
+			continue
+		}
+		pruned++
+	}
+	return pruned
 }
 
 // extractCIDRFromFinding returns the CIDR appearing in the message after

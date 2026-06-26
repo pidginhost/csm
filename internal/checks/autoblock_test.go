@@ -2096,3 +2096,154 @@ func TestCidrIntersectsDOSExempt(t *testing.T) {
 		t.Fatal("non-overlapping IPv6 /64: expected false")
 	}
 }
+
+// subnetManagerBlocker is a test double that satisfies both IPBlocker and the
+// subnetManager interface expected by PruneExemptAutoSubnets.
+type subnetManagerBlocker struct {
+	subnets    []firewall.SubnetEntry
+	unblocked  []string
+	unblockErr error
+	// callCount counts every UnblockSubnet invocation, success or error, so a
+	// test can prove the prune loop continued past a failing entry.
+	callCount int
+}
+
+func (b *subnetManagerBlocker) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
+func (b *subnetManagerBlocker) UnblockIP(_ string) error                          { return nil }
+func (b *subnetManagerBlocker) IsBlocked(_ string) bool                           { return false }
+func (b *subnetManagerBlocker) BlockSubnet(_ string, _ string, _ time.Duration) error {
+	return nil
+}
+func (b *subnetManagerBlocker) IsSubnetBlocked(_ string) bool { return false }
+func (b *subnetManagerBlocker) BlockedSubnets() []firewall.SubnetEntry {
+	out := make([]firewall.SubnetEntry, len(b.subnets))
+	copy(out, b.subnets)
+	return out
+}
+func (b *subnetManagerBlocker) UnblockSubnet(cidr string) error {
+	b.callCount++
+	if b.unblockErr != nil {
+		return b.unblockErr
+	}
+	b.unblocked = append(b.unblocked, cidr)
+	return nil
+}
+
+// TestPruneExemptAutoSubnets verifies that PruneExemptAutoSubnets:
+//   - calls UnblockSubnet only for auto_response entries whose CIDR intersects
+//     the DoS-exempt set
+//   - leaves every other provenance source untouched even when it intersects
+//     the exempt range (web_ui, cli, challenge, whitelist, dyndns, system,
+//     unknown, and an empty/zero source)
+//   - leaves auto_response entries outside the exempt range untouched
+//   - returns the correct pruned count
+//   - returns 0 when the blocker does not implement subnetManager
+func TestPruneExemptAutoSubnets(t *testing.T) {
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+
+	// Every non-auto_response provenance source, each intersecting the exempt
+	// range, must survive. Sources are the real constants from
+	// internal/firewall/provenance.go plus an explicit empty source.
+	survivorSources := []string{
+		firewall.SourceWebUI,
+		firewall.SourceCLI,
+		firewall.SourceChallenge,
+		firewall.SourceWhitelist,
+		firewall.SourceDynDNS,
+		firewall.SourceSystem,
+		firewall.SourceUnknown,
+		"", // empty/zero source must also be left alone
+	}
+
+	subnets := []firewall.SubnetEntry{
+		// Should be pruned: auto_response + intersects exempt range.
+		{CIDR: "203.0.113.0/24", Source: firewall.SourceAutoResponse, Reason: "http_asn_crawl"},
+		// Should be pruned: auto_response + subnet of exempt range.
+		{CIDR: "203.0.113.128/25", Source: firewall.SourceAutoResponse, Reason: "netblock"},
+		// Should NOT be pruned: auto_response but outside exempt range.
+		{CIDR: "198.51.100.0/24", Source: firewall.SourceAutoResponse, Reason: "http_asn_crawl"},
+	}
+	// One intersecting entry per non-auto_response source. Distinct /28s inside
+	// the exempt /24 so each is a separately addressable survivor.
+	for i, src := range survivorSources {
+		subnets = append(subnets, firewall.SubnetEntry{
+			CIDR:   fmt.Sprintf("203.0.113.%d/28", i*16),
+			Source: src,
+			Reason: "operator",
+		})
+	}
+
+	sm := &subnetManagerBlocker{subnets: subnets}
+
+	pruned := PruneExemptAutoSubnets(cfg, sm)
+
+	if pruned != 2 {
+		t.Errorf("want 2 pruned, got %d", pruned)
+	}
+	if len(sm.unblocked) != 2 {
+		t.Fatalf("want 2 UnblockSubnet calls, got %d: %v", len(sm.unblocked), sm.unblocked)
+	}
+	// Only the two intersecting auto_response CIDRs may be unblocked.
+	wantUnblocked := map[string]bool{
+		"203.0.113.0/24":   true,
+		"203.0.113.128/25": true,
+	}
+	for _, cidr := range sm.unblocked {
+		if !wantUnblocked[cidr] {
+			t.Errorf("unexpected unblock of %s", cidr)
+		}
+	}
+	// The non-exempt auto_response entry and every survivor source must NOT have
+	// been unblocked.
+	unblockedSet := make(map[string]bool, len(sm.unblocked))
+	for _, cidr := range sm.unblocked {
+		unblockedSet[cidr] = true
+	}
+	if unblockedSet["198.51.100.0/24"] {
+		t.Errorf("non-exempt auto_response subnet 198.51.100.0/24 must not be unblocked")
+	}
+	for i := range survivorSources {
+		cidr := fmt.Sprintf("203.0.113.%d/28", i*16)
+		if unblockedSet[cidr] {
+			t.Errorf("source %q survivor %s was unblocked but must be left alone",
+				survivorSources[i], cidr)
+		}
+	}
+
+	// Blocker that does not implement subnetManager must return 0.
+	plain := &recordingIPBlocker{}
+	if n := PruneExemptAutoSubnets(cfg, plain); n != 0 {
+		t.Errorf("plain IPBlocker: want 0, got %d", n)
+	}
+}
+
+// TestPruneExemptAutoSubnetsUnblockError verifies that an UnblockSubnet error
+// is logged (we check stderr is not crashed) and the failing entry is not
+// counted as pruned, but processing continues for subsequent entries.
+func TestPruneExemptAutoSubnetsUnblockError(t *testing.T) {
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+
+	sm := &subnetManagerBlocker{
+		subnets: []firewall.SubnetEntry{
+			{CIDR: "203.0.113.0/28", Source: firewall.SourceAutoResponse, Reason: "x"},
+			{CIDR: "203.0.113.16/28", Source: firewall.SourceAutoResponse, Reason: "x"},
+		},
+		unblockErr: fmt.Errorf("nftables: permission denied"),
+	}
+
+	pruned := PruneExemptAutoSubnets(cfg, sm)
+
+	// Both entries matched but both failed to unblock → 0 pruned.
+	if pruned != 0 {
+		t.Errorf("want 0 pruned on unblock errors, got %d", pruned)
+	}
+	// The loop must have CONTINUED past the first failing entry and attempted
+	// the second too: two UnblockSubnet calls, both errored.
+	if sm.callCount != 2 {
+		t.Errorf("want 2 UnblockSubnet attempts (loop continued past error), got %d", sm.callCount)
+	}
+	// No entry recorded as successfully unblocked.
+	if len(sm.unblocked) != 0 {
+		t.Errorf("unblockErr set but unblocked list non-empty: %v", sm.unblocked)
+	}
+}

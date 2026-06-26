@@ -2717,6 +2717,10 @@ func (d *Daemon) startFirewall() {
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
+	// Prune auto-response subnet blocks that now intersect the DoS-exempt set.
+	// The mail-provider cache is loaded (initMailRanges ran before startFirewall)
+	// and Apply has completed, so the exempt set is current.
+	checks.PruneExemptAutoSubnets(d.cfg, engine)
 	// Wire the incident firewall hand-off through BlockIPOutcome so the
 	// correlator can distinguish live nftables mutation from dry-run,
 	// verdict-allow, and other no-op outcomes.
