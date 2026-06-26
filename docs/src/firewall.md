@@ -158,3 +158,33 @@ range (built-in or `reputation.verified_bots`). Precedence:
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.
+
+## DoS-exempt ranges
+
+Operators can declare IP ranges that bypass the per-IP DoS meters, preventing false-positive throttling and subnet auto-blocks for carrier CGNAT pools or mail-provider egress. Configure under `firewall.dos_exempt_ranges` (your own CIDRs) and `firewall.dos_exempt_known_mail_providers` (adds Google and Microsoft mail ranges, on by default). See [Configuration - firewall.dos_exempt_ranges](configuration.md#firewalldos_exempt_ranges).
+
+### What exempt sources bypass
+
+Sources in the exempt set skip three categories of per-IP metering:
+
+- **Connection rate-limit** - the per-IP new-connection rate meter (configured via `conn_rate_limit`) does not apply.
+- **Concurrent connection-limit** - the per-IP concurrent connection cap (`conn_limit`) does not apply.
+- **Mail-port flood meters** - the `port_flood` rules on TCP 25, 465, and 587 do not apply.
+
+Subnet auto-block (spray, ASN-crawl, and netblock escalation) also skips any subnet block whose CIDR intersects an exempt range, and exempt IPs are excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit. Auto-response subnet blocks whose range falls inside an exempt range are removed automatically at daemon startup and at the start of each auto-block cycle. Manually created IP and subnet blocks are never pruned, even if they fall inside an exempt range.
+
+### What exempt sources do not bypass
+
+The following protections remain in force regardless of exempt status:
+
+- **Manual blocks** - `csm firewall deny <ip>` and `csm firewall deny-subnet <cidr>` go through `BlockIPForce`, which bypasses the exempt check. An IP or range that is both exempt and manually blocked is still dropped.
+- **SYN flood protection** - the kernel-level SYN flood guard is applied before per-IP metering and is not affected by the exempt set.
+- **UDP flood protection** - the per-interface UDP rate limit is independent of the exempt set.
+- **Country blocking** - country CIDR blocks apply unconditionally.
+- **Port policy** - `tcp_in`, `tcp_out`, and `restricted_tcp` port rules are not modified.
+
+The rule ordering that makes this work: the nftables input chain evaluates `blocked_ips` (and subnet blocks) before the DoS-meter rules. So a manual block inside an exempt range still drops the traffic -- the block is hit before the meter that exempt sources bypass.
+
+### Dynamic mail-provider ranges
+
+When `dos_exempt_known_mail_providers` is true (the default), the daemon resolves Google and Microsoft outbound mail ranges at startup and pushes them into the firewall exempt sets before the first rule application. The ranges are discovered from the providers' published SPF records (the Google and Microsoft mail SPF roots), so they track provider changes without a CSM update. They are cached on disk so the previous set is available immediately on subsequent starts. A built-in snapshot is used if the cache is missing or the first live refresh has not completed. The cache is refreshed every 12 hours; if a refresh fails or the nftables reapply fails, the previous overlay is preserved unchanged.

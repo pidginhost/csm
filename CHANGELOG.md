@@ -11,12 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Mail brute-force alerts now name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so operators can tell a real attack on a live mailbox from dictionary noise without opening the mail log.
 - New `http_asn_crawl` detector flags a single-ASN distributed crawl of uncacheable URLs that saturates an account's PHP worker pool, and surgically tempbans the offending subnets only when saturation is confirmed (reverse-proxy/CDN safe).
-- `firewall.dos_exempt_ranges` entries are now validated at config load; invalid CIDRs, bare hostnames, /0 default routes, and empty entries are rejected before the daemon starts.
-- The firewall ruleset now maintains `dos_exempt_nets` and `dos_exempt_nets6` interval sets, populated from `dos_exempt_ranges` and the mail-provider overlay, which later rules will use to exempt carrier CGNAT and mail-provider egress from per-IP DoS heuristics.
-- Sources in `dos_exempt_nets` now bypass the per-IP new-connection rate-limit and concurrent connection-limit rules, so mail-provider CGNAT ranges are not metered even when many shared users hit the server simultaneously.
-- DoS-exempt sources also bypass the per-port flood meters on TCP 25, 465, and 587, consistent with how they bypass the connection rate and limit meters.
-- Daemon now loads the mail-provider IP range cache on startup and pushes it into the firewall DoS-exempt sets before the first rule application; the cache is refreshed every 12 hours and the previous overlay is restored automatically if the nftables reapply fails.
-- Auto-block now skips subnet blocks (spray, ASN-crawl, and netblock escalation) whose CIDR intersects a `dos_exempt_ranges` entry; exempt-range IPs are also excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit.
+- Operators can now declare DoS-exempt ranges that bypass per-IP connection rate and concurrent limit meters plus mail-port flood meters, and are skipped when auto-blocking subnets; known Google and Microsoft mail-provider ranges are exempt by default, so carrier CGNAT pools and shared mail-provider IPs no longer trigger false-positive throttling or subnet blocks. Individual manual blocks and SYN/UDP flood protection stay in force.
 
 ### Fixed
 
