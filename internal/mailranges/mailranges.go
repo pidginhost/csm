@@ -8,6 +8,7 @@ package mailranges
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -125,22 +126,27 @@ func LoadCache(path string) error {
 }
 
 // parseCacheData decodes the shared cacheFile JSON format into a provider map.
-// Unparseable CIDR strings are silently dropped so a single bad entry cannot
-// poison the whole set. Returns the provider map and the refreshed_at timestamp.
+// Malformed entries make the whole cache unusable so LoadCache can fall back to
+// the embedded snapshot instead of publishing a narrowed partial set.
 func parseCacheData(data []byte) (map[string][]*net.IPNet, int64, error) {
 	var c cacheFile
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, 0, err
 	}
 	m := make(map[string][]*net.IPNet, len(c.Providers))
+	total := 0
 	for provider, strs := range c.Providers {
 		for _, s := range strs {
 			_, n, err := net.ParseCIDR(strings.TrimSpace(s))
 			if err != nil {
-				continue
+				return nil, 0, err
 			}
 			m[provider] = append(m[provider], n)
+			total++
 		}
+	}
+	if total == 0 {
+		return nil, 0, errors.New("mailranges: cache has no usable provider prefixes")
 	}
 	return m, c.RefreshedAt, nil
 }

@@ -603,6 +603,7 @@ func TestAutoBlockIPs_SubnetBlockingTriggered(t *testing.T) {
 	cfg.AutoResponse.BlockExpiry = "1h"
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 2
+	setAutoResponseLive(cfg)
 	findings := []alert.Finding{
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.10"},
 		{Check: "wp_login_bruteforce", Severity: alert.Critical, Message: "Brute force from 198.51.100.20"},

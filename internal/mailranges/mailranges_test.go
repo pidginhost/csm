@@ -66,6 +66,62 @@ func TestLoadCache_FallsBackToEmbedded(t *testing.T) {
 	}
 }
 
+func TestLoadCache_ZeroUsableCacheFallsBackToEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mailranges.json")
+
+	seed := cacheFile{
+		RefreshedAt: 1700000001,
+		Providers: map[string][]string{
+			"google":    {"not-a-cidr"},
+			"microsoft": {},
+		},
+	}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+
+	if err := LoadCache(path); err != nil {
+		t.Fatalf("LoadCache should fall back to embedded snapshot: %v", err)
+	}
+	if nets := ProviderNets(); len(nets) == 0 {
+		t.Fatal("expected embedded snapshot fallback when cache has no usable prefixes")
+	}
+}
+
+func TestLoadCache_MalformedCacheEntryFallsBackToEmbedded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mailranges.json")
+
+	const sentinel = "9.9.9.0/24"
+	seed := cacheFile{
+		RefreshedAt: 1700000001,
+		Providers: map[string][]string{
+			"google": {sentinel, "not-a-cidr"},
+		},
+	}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+
+	if err := LoadCache(path); err != nil {
+		t.Fatalf("LoadCache should fall back to embedded snapshot: %v", err)
+	}
+	for _, n := range ProviderNets() {
+		if n.String() == sentinel {
+			t.Fatalf("malformed cache published partial sentinel prefix %s", sentinel)
+		}
+	}
+}
+
 // TestProviderNetsReturnsCopy verifies that mutating the slice or net.IP bytes
 // returned by ProviderNets does not affect the atomic store. A subsequent call
 // must still return the original CIDR strings.

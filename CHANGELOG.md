@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-response dry-run now also suppresses subnet blocks from the spray and netblock-escalation paths, matching how it already suppresses individual IP blocks.
 - Mail brute-force target summaries now escape unusual mailbox text and cap each name, so crafted login names cannot distort alert details.
 
 ### Notes

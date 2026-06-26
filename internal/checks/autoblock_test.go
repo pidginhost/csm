@@ -28,6 +28,11 @@ func setAutoBlockNow(t *testing.T, now time.Time) {
 	t.Cleanup(func() { autoBlockNow = previous })
 }
 
+func setAutoResponseLive(cfg *config.Config) {
+	dryRun := false
+	cfg.AutoResponse.DryRun = &dryRun
+}
+
 type recordingIPBlocker struct {
 	blocked       []string
 	calls         []blockCall
@@ -303,6 +308,7 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 2
+	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{blockedSubnet: []string{"198.51.100.0/24"}}
 	oldBlocker := getIPBlocker()
@@ -344,6 +350,7 @@ func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 2
+	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{}
 	oldBlocker := getIPBlocker()
@@ -379,6 +386,7 @@ func TestAutoBlockIPs_NetBlockUsesConfiguredExpiry(t *testing.T) {
 	cfg.AutoResponse.BlockExpiry = "2h"
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 2
+	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{}
 	oldBlocker := getIPBlocker()
@@ -409,11 +417,43 @@ func TestAutoBlockIPs_NetBlockUsesConfiguredExpiry(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_NetBlockDryRunSkipsBlockSubnet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 2
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 198.51.100.20"},
+	})
+
+	if len(blocker.subnetCalls) != 0 {
+		t.Fatalf("dry-run must not netblock subnets, got %+v", blocker.subnetCalls)
+	}
+}
+
 func TestAutoBlockIPs_SubnetStatusUsesScanSnapshot(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
+	setAutoResponseLive(cfg)
 
 	replacement := &recordingIPBlocker{blockedSubnet: []string{"203.0.113.0/24"}}
 	blocker := &swapOnLiveSubnetBlocker{
@@ -1089,6 +1129,7 @@ func TestAutoBlock_SMTPSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.StatePath = t.TempDir()
+	setAutoResponseLive(cfg)
 
 	fake := &recordingIPBlocker{}
 	prev := getIPBlocker()
@@ -1106,6 +1147,32 @@ func TestAutoBlock_SMTPSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	}
 	if len(fake.blocked) != 0 {
 		t.Errorf("expected no BlockIP calls; got %v", fake.blocked)
+	}
+}
+
+func TestAutoBlock_SubnetSprayDryRunSkipsBlockSubnet(t *testing.T) {
+	cases := []string{"smtp_subnet_spray", "mail_subnet_spray"}
+	for _, check := range cases {
+		t.Run(check, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.BlockIPs = true
+			cfg.StatePath = t.TempDir()
+
+			blocker := &recordingIPBlocker{}
+			oldBlocker := getIPBlocker()
+			SetIPBlocker(blocker)
+			t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+			AutoBlockIPs(cfg, []alert.Finding{{
+				Check:   check,
+				Message: "Mail password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+			}})
+
+			if len(blocker.blockedSubnet) != 0 {
+				t.Fatalf("dry-run must not block subnets, got %v", blocker.blockedSubnet)
+			}
+		})
 	}
 }
 
@@ -1158,6 +1225,7 @@ func TestAutoBlock_MailSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.StatePath = t.TempDir()
+	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{}
 	oldBlocker := getIPBlocker()
@@ -1205,6 +1273,7 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.StatePath = t.TempDir()
+	setAutoResponseLive(cfg)
 
 	fake := &recordingIPBlocker{}
 	prev := getIPBlocker()
@@ -1791,6 +1860,7 @@ func TestNetblock_SkipsExemptSubnet(t *testing.T) {
 		cfg.AutoResponse.BlockIPs = true
 		cfg.AutoResponse.NetBlock = true
 		cfg.AutoResponse.NetBlockThreshold = 3
+		setAutoResponseLive(cfg)
 		cfg.Firewall = &firewall.FirewallConfig{
 			DOSExemptRanges:             []string{"203.0.113.0/24"},
 			DOSExemptKnownMailProviders: &f,
@@ -1828,6 +1898,7 @@ func TestNetblock_SkipsExemptSubnet(t *testing.T) {
 		cfg.AutoResponse.BlockIPs = true
 		cfg.AutoResponse.NetBlock = true
 		cfg.AutoResponse.NetBlockThreshold = 3
+		setAutoResponseLive(cfg)
 		cfg.Firewall = &firewall.FirewallConfig{
 			DOSExemptRanges:             nil,
 			DOSExemptKnownMailProviders: &f,
@@ -1879,6 +1950,7 @@ func TestNetblock_ExemptIPsNotCounted(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 3
+	setAutoResponseLive(cfg)
 	cfg.Firewall = &firewall.FirewallConfig{
 		DOSExemptRanges:             []string{"203.0.113.0/24"},
 		DOSExemptKnownMailProviders: &f,
@@ -1919,6 +1991,7 @@ func TestIPv6Netblock_SkipsExemptSubnet(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.NetBlock = true
 	cfg.AutoResponse.NetBlockThreshold = 2
+	setAutoResponseLive(cfg)
 	cfg.Firewall = &firewall.FirewallConfig{
 		DOSExemptRanges:             []string{"2001:db8:1::/64"},
 		DOSExemptKnownMailProviders: &f,
@@ -1949,6 +2022,7 @@ func TestSprayASNCrawl_SkipExemptSubnet(t *testing.T) {
 		cfg.StatePath = t.TempDir()
 		cfg.AutoResponse.Enabled = true
 		cfg.AutoResponse.BlockIPs = true
+		setAutoResponseLive(cfg)
 		cfg.Firewall = &firewall.FirewallConfig{
 			DOSExemptRanges:             []string{"203.0.113.0/24"},
 			DOSExemptKnownMailProviders: &f,

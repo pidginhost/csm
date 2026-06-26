@@ -23,6 +23,8 @@ func FuzzParseSPFRecord(f *testing.F) {
 	f.Add("v=spf1 ip6:2001:4860:4860::/48 -all")
 	// Seed: mixed mechanisms
 	f.Add("v=spf1 ip4:8.8.8.0/24 ip6:2001:4860:4860::/48 include:a.example.com redirect=b.example.com")
+	// Seed: valid bare IP mechanisms and explicit pass qualifiers
+	f.Add("v=spf1 +ip4:8.8.8.8 +ip6:2001:4860:4860::8888 +include:a.example.com -all")
 	// Seed: malformed - not a v=spf1 record
 	f.Add("not a spf record at all")
 	// Seed: malformed prefix

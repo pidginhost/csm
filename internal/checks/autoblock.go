@@ -279,6 +279,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if cidr == "" {
 			continue
 		}
+		if !isAutoResponseActive(cfg) {
+			continue
+		}
 		if blocker == nil {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping subnet %s\n", cidr)
 			continue
@@ -510,7 +513,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Subnet auto-blocking: detect per-family subnet patterns.
-	if cfg.AutoResponse.NetBlock && blocker != nil {
+	if cfg.AutoResponse.NetBlock && blocker != nil && isAutoResponseActive(cfg) {
 		threshold := cfg.AutoResponse.NetBlockThreshold
 		if threshold < 2 {
 			threshold = 3

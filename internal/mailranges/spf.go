@@ -19,6 +19,10 @@ type Resolver interface {
 // or an attempt to exhaust resolver resources.
 const maxSPFDepth = 10
 
+// maxSPFLookups bounds total DNS TXT lookups during one ResolveSPF call.
+// Depth alone does not bound a record that fans out to many unique includes.
+const maxSPFLookups = 64
+
 // nonPublicCIDRs lists finite (non-/0) reserved ranges that must never appear
 // in a mail-provider SPF record. Default routes (0.0.0.0/0, ::/0) are handled
 // separately because they contain every address and would incorrectly reject all
@@ -95,38 +99,15 @@ type spfRecord struct {
 // silently omitting them.
 func parseSPFRecord(txt string) (spfRecord, error) {
 	fields := strings.Fields(txt)
-	if len(fields) == 0 || fields[0] != "v=spf1" {
+	if len(fields) == 0 || !strings.EqualFold(fields[0], "v=spf1") {
 		return spfRecord{}, fmt.Errorf("spf: not a v=spf1 record")
 	}
 
 	var rec spfRecord
 	var hasRedirect bool
 	for _, tok := range fields[1:] {
-		lower := strings.ToLower(tok)
-		switch {
-		case strings.HasPrefix(lower, "ip4:"):
-			cidr := tok[4:]
-			_, n, err := net.ParseCIDR(cidr)
-			if err != nil {
-				return spfRecord{}, fmt.Errorf("spf: bad ip4 prefix %q: %w", cidr, err)
-			}
-			rec.nets = append(rec.nets, n)
-
-		case strings.HasPrefix(lower, "ip6:"):
-			cidr := tok[4:]
-			_, n, err := net.ParseCIDR(cidr)
-			if err != nil {
-				return spfRecord{}, fmt.Errorf("spf: bad ip6 prefix %q: %w", cidr, err)
-			}
-			rec.nets = append(rec.nets, n)
-
-		case strings.HasPrefix(lower, "include:"):
-			domain := tok[8:]
-			if domain != "" {
-				rec.includes = append(rec.includes, domain)
-			}
-
-		case strings.HasPrefix(lower, "redirect="):
+		rawLower := strings.ToLower(tok)
+		if strings.HasPrefix(rawLower, "redirect=") {
 			// Track presence with a separate flag: an empty first redirect=
 			// value must not let a second redirect= slip past the guard.
 			if hasRedirect {
@@ -134,10 +115,126 @@ func parseSPFRecord(txt string) (spfRecord, error) {
 			}
 			hasRedirect = true
 			rec.redirect = tok[9:]
+			if rec.redirect == "" {
+				return spfRecord{}, fmt.Errorf("spf: empty redirect= directive")
+			}
+			continue
+		}
+
+		mech, pass, hadQualifier := spfMechanismToken(tok)
+		lower := strings.ToLower(mech)
+		if hadQualifier && strings.HasPrefix(lower, "redirect=") {
+			return spfRecord{}, fmt.Errorf("spf: redirect= directive cannot carry a qualifier")
+		}
+		if !pass {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(lower, "ip4:"):
+			cidr := mech[4:]
+			n, err := parseSPFIPNet("ip4", cidr)
+			if err != nil {
+				return spfRecord{}, fmt.Errorf("spf: bad ip4 prefix %q: %w", cidr, err)
+			}
+			rec.nets = append(rec.nets, n)
+
+		case strings.HasPrefix(lower, "ip6:"):
+			cidr := mech[4:]
+			n, err := parseSPFIPNet("ip6", cidr)
+			if err != nil {
+				return spfRecord{}, fmt.Errorf("spf: bad ip6 prefix %q: %w", cidr, err)
+			}
+			rec.nets = append(rec.nets, n)
+
+		case strings.HasPrefix(lower, "include:"):
+			domain := mech[8:]
+			if domain == "" {
+				return spfRecord{}, fmt.Errorf("spf: empty include directive")
+			}
+			rec.includes = append(rec.includes, domain)
 		}
 		// All other tokens (all, a, mx, ptr, exists, qualifiers) are ignored.
 	}
 	return rec, nil
+}
+
+// spfMechanismToken returns the mechanism token after SPF qualifier handling.
+// Only pass mechanisms (no qualifier or explicit '+') can contribute ranges.
+func spfMechanismToken(tok string) (mech string, pass bool, hadQualifier bool) {
+	if tok == "" {
+		return "", false, false
+	}
+	switch tok[0] {
+	case '+':
+		return tok[1:], true, true
+	case '-', '~', '?':
+		return tok[1:], false, true
+	default:
+		return tok, true, false
+	}
+}
+
+func parseSPFIPNet(family, value string) (*net.IPNet, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, fmt.Errorf("empty prefix")
+	}
+	if strings.Contains(value, "/") {
+		_, n, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil, err
+		}
+		return normalizeSPFIPNetFamily(family, n)
+	}
+
+	ip := net.ParseIP(value)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address")
+	}
+	switch family {
+	case "ip4":
+		ip4 := ip.To4()
+		if ip4 == nil {
+			return nil, fmt.Errorf("not an IPv4 prefix")
+		}
+		return &net.IPNet{IP: ip4, Mask: net.CIDRMask(32, 32)}, nil
+	case "ip6":
+		if ip.To4() != nil {
+			return nil, fmt.Errorf("not an IPv6 prefix")
+		}
+		ip16 := ip.To16()
+		if ip16 == nil {
+			return nil, fmt.Errorf("not an IPv6 prefix")
+		}
+		return &net.IPNet{IP: ip16, Mask: net.CIDRMask(128, 128)}, nil
+	default:
+		return nil, fmt.Errorf("unknown SPF IP family %q", family)
+	}
+}
+
+func normalizeSPFIPNetFamily(family string, n *net.IPNet) (*net.IPNet, error) {
+	_, bits := n.Mask.Size()
+	switch family {
+	case "ip4":
+		ip4 := n.IP.To4()
+		if ip4 == nil || bits != 32 {
+			return nil, fmt.Errorf("not an IPv4 prefix")
+		}
+		n.IP = ip4
+		return n, nil
+	case "ip6":
+		if n.IP.To4() != nil || bits != 128 {
+			return nil, fmt.Errorf("not an IPv6 prefix")
+		}
+		ip16 := n.IP.To16()
+		if ip16 == nil {
+			return nil, fmt.Errorf("not an IPv6 prefix")
+		}
+		n.IP = ip16
+		return n, nil
+	default:
+		return nil, fmt.Errorf("unknown SPF IP family %q", family)
+	}
 }
 
 // ResolveSPF resolves the SPF record for root, following include: and redirect=
@@ -166,8 +263,9 @@ func ResolveSPF(ctx context.Context, r Resolver, root string) ([]*net.IPNet, err
 // (the same sub-domain reached via two different include branches) resolves once
 // and is reused instead of being mistaken for a loop.
 type spfResolveState struct {
-	onPath map[string]bool
-	memo   map[string][]*net.IPNet
+	onPath  map[string]bool
+	memo    map[string][]*net.IPNet
+	lookups int
 }
 
 // resolveSPFRec is the internal recursive worker for ResolveSPF. It returns the
@@ -187,6 +285,10 @@ func resolveSPFRec(ctx context.Context, r Resolver, domain string, st *spfResolv
 	if depth >= maxSPFDepth {
 		return nil, fmt.Errorf("spf: depth limit (%d) exceeded at %q", maxSPFDepth, domain)
 	}
+	if st.lookups >= maxSPFLookups {
+		return nil, fmt.Errorf("spf: DNS lookup limit (%d) exceeded at %q", maxSPFLookups, domain)
+	}
+	st.lookups++
 
 	// Check context before every network call so callers can abort the chain.
 	select {
@@ -200,14 +302,16 @@ func resolveSPFRec(ctx context.Context, r Resolver, domain string, st *spfResolv
 		return nil, fmt.Errorf("spf: lookup %q: %w", domain, err)
 	}
 
-	// Find the first SPF record. Match only an exact "v=spf1" or a "v=spf1 "
-	// prefix so a malformed "v=spf1foo..." string is not selected over a real
-	// later record.
+	// Select exactly one SPF record. Match only an exact "v=spf1" or a
+	// "v=spf1 " prefix so a malformed "v=spf1foo..." string is not selected
+	// over a real later record.
 	var spfTxt string
 	for _, t := range txts {
-		if t == "v=spf1" || strings.HasPrefix(t, "v=spf1 ") {
+		if isSPFTXT(t) {
+			if spfTxt != "" {
+				return nil, fmt.Errorf("spf: multiple v=spf1 records for %q", domain)
+			}
 			spfTxt = t
-			break
 		}
 	}
 	if spfTxt == "" {
@@ -254,6 +358,11 @@ func resolveSPFRec(ctx context.Context, r Resolver, domain string, st *spfResolv
 	// Cache only on full success so a partially-resolved domain is never reused.
 	st.memo[domain] = collected
 	return collected, nil
+}
+
+func isSPFTXT(txt string) bool {
+	lower := strings.ToLower(txt)
+	return lower == "v=spf1" || strings.HasPrefix(lower, "v=spf1 ")
 }
 
 // dedupNets returns nets with duplicate prefixes (by CIDR string) removed.

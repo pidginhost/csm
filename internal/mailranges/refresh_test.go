@@ -153,6 +153,41 @@ func TestRefresh_AllFailuresKeepsOverlayAndReturnsError(t *testing.T) {
 	}
 }
 
+func TestRefresh_ZeroPrefixProviderKeepsLastGood(t *testing.T) {
+	resetRefreshState(t)
+
+	seedSnapshot(t, map[string]string{
+		"google":    "8.8.8.0/24",
+		"microsoft": "1.1.1.0/24",
+	})
+
+	r := mapResolver{
+		"_spf.google.com":            {"v=spf1 -all"},
+		"spf.protection.outlook.com": {"v=spf1 -all"},
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "mailranges.json")
+	total, err := Refresh(context.Background(), r, cachePath)
+
+	if err == nil {
+		t.Fatal("expected error when providers resolve no usable public prefixes")
+	}
+	if total != 0 {
+		t.Fatalf("total = %d, want 0 when every provider has zero usable prefixes", total)
+	}
+
+	snap := ProviderSnapshot()
+	if len(snap["google"]) != 1 || snap["google"][0].String() != "8.8.8.0/24" {
+		t.Fatalf("google overlay changed after zero-prefix refresh: %v", snap["google"])
+	}
+	if len(snap["microsoft"]) != 1 || snap["microsoft"][0].String() != "1.1.1.0/24" {
+		t.Fatalf("microsoft overlay changed after zero-prefix refresh: %v", snap["microsoft"])
+	}
+	if _, statErr := os.Stat(cachePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("cache file must not be written on zero-prefix refresh, stat err=%v", statErr)
+	}
+}
+
 // TestRefresh_CacheWriteFailureKeepsPreviousOverlay ensures that when the
 // SPF resolver succeeds but the cache cannot be written (parent dir absent),
 // the active snapshot is not updated and an error is returned.

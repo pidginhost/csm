@@ -95,6 +95,13 @@ func Refresh(ctx context.Context, r Resolver, cachePath string) (int, error) {
 			errs = append(errs, fmt.Errorf("provider %q: %w", name, err))
 			continue
 		}
+		if len(nets) == 0 {
+			err := fmt.Errorf("spf: no usable public prefixes")
+			csmlog.Warn("mailranges: provider SPF resolve failed",
+				"provider", name, "root", root, "err", err)
+			errs = append(errs, fmt.Errorf("provider %q: %w", name, err))
+			continue
+		}
 		merged[name] = nets
 		successCount++
 	}

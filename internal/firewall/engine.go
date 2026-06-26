@@ -441,11 +441,26 @@ func (e *Engine) verdictContext() context.Context {
 // createSets() will produce an empty set in that case.
 func (e *Engine) SetDOSExemptProviderNets(nets []*net.IPNet) {
 	e.mu.Lock()
-	// Copy the slice header so a caller that later reuses or mutates its own
-	// slice cannot corrupt the stored overlay. Elements already arrive
-	// deep-copied from the provider source, so a header copy is enough.
-	e.dosExemptProviderNets = append([]*net.IPNet(nil), nets...)
+	e.dosExemptProviderNets = cloneIPNetSlice(nets)
 	e.mu.Unlock()
+}
+
+func cloneIPNetSlice(nets []*net.IPNet) []*net.IPNet {
+	if len(nets) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, len(nets))
+	for i, n := range nets {
+		if n == nil {
+			continue
+		}
+		ip := make(net.IP, len(n.IP))
+		copy(ip, n.IP)
+		mask := make(net.IPMask, len(n.Mask))
+		copy(mask, n.Mask)
+		out[i] = &net.IPNet{IP: ip, Mask: mask}
+	}
+	return out
 }
 
 // dosExemptIntervalElems builds nftables interval set elements from nets.
@@ -513,9 +528,8 @@ func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
 		return fmt.Errorf("refreshing dos_exempt sets: %w", err)
 	}
 
-	// Update overlay only after the kernel confirmed the transaction. Copy the
-	// slice header so caller slice reuse cannot corrupt the stored overlay.
-	e.dosExemptProviderNets = append([]*net.IPNet(nil), providerNets...)
+	// Update overlay only after the kernel confirmed the transaction.
+	e.dosExemptProviderNets = cloneIPNetSlice(providerNets)
 	return nil
 }
 

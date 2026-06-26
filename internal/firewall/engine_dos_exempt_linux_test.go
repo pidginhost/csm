@@ -144,12 +144,18 @@ func TestSetDOSExemptProviderNetsStores(t *testing.T) {
 	nets := []*net.IPNet{n4, n6}
 
 	e.SetDOSExemptProviderNets(nets)
+	nets[0] = nil
+	n4.IP[0] = 198
+	n4.Mask[0] = 0
 
 	e.mu.Lock()
 	got := e.dosExemptProviderNets
 	e.mu.Unlock()
-	if len(got) != len(nets) {
-		t.Fatalf("provider nets len = %d, want %d", len(got), len(nets))
+	if len(got) != 2 {
+		t.Fatalf("provider nets len = %d, want 2", len(got))
+	}
+	if got[0].String() != "203.0.113.0/24" {
+		t.Fatalf("provider net mutated through caller-owned pointer: %v", got[0])
 	}
 }
 
@@ -251,7 +257,8 @@ func TestDOSExemptRefreshUpdatesOverlayOnSuccess(t *testing.T) {
 	if len(got) != len(newNets) {
 		t.Fatalf("provider nets len = %d, want %d (new nets after success)", len(got), len(newNets))
 	}
-	if !got[0].IP.Equal(newNets[0].IP) {
-		t.Errorf("provider nets[0] = %v, want %v", got[0], newNets[0])
+	newNets[0].IP[0] = 203
+	if got[0].String() != "198.51.100.0/24" {
+		t.Errorf("provider nets[0] = %v, want stable clone of 198.51.100.0/24", got[0])
 	}
 }

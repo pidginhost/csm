@@ -3,6 +3,7 @@ package mailranges
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,26 @@ func TestResolveSPF(t *testing.T) {
 		}
 	})
 
+	t.Run("lookup_fanout_cap", func(t *testing.T) {
+		const includes = 70
+		var root strings.Builder
+		root.WriteString("v=spf1")
+		r := make(mapResolver, includes+1)
+		for i := 0; i < includes; i++ {
+			name := fmt.Sprintf("fanout%d", i)
+			root.WriteString(" include:")
+			root.WriteString(name)
+			r[name] = []string{"v=spf1 ip4:8.8.8.8 -all"}
+		}
+		root.WriteString(" -all")
+		r["fanout-root"] = []string{root.String()}
+
+		_, err := ResolveSPF(context.Background(), r, "fanout-root")
+		if err == nil {
+			t.Fatal("lookup fan-out above the cap must return an error")
+		}
+	})
+
 	t.Run("malformed_txt", func(t *testing.T) {
 		r := mapResolver{"bad": {"not an spf record at all"}}
 		_, err := ResolveSPF(context.Background(), r, "bad")
@@ -120,6 +141,78 @@ func TestResolveSPF(t *testing.T) {
 		_, err := ResolveSPF(context.Background(), r, "malform")
 		if err == nil {
 			t.Fatal("malformed CIDR must return an error")
+		}
+	})
+
+	t.Run("bare_ip_mechanisms", func(t *testing.T) {
+		r := mapResolver{"bare": {"v=spf1 ip4:8.8.8.8 ip6:2001:4860:4860::8888 -all"}}
+		nets, err := ResolveSPF(context.Background(), r, "bare")
+		if err != nil {
+			t.Fatalf("bare SPF IP mechanisms must resolve, got error: %v", err)
+		}
+		want := map[string]bool{
+			"8.8.8.8/32":               true,
+			"2001:4860:4860::8888/128": true,
+		}
+		for _, n := range nets {
+			if !want[n.String()] {
+				t.Errorf("unexpected net %s", n)
+			}
+			delete(want, n.String())
+		}
+		for s := range want {
+			t.Errorf("missing net %s", s)
+		}
+	})
+
+	t.Run("explicit_pass_qualifier", func(t *testing.T) {
+		r := mapResolver{
+			"plus":  {"V=SPF1 +IP4:8.8.8.0/24 +include:child -all"},
+			"child": {"v=spf1 +ip6:2001:4860:4860::/48 -all"},
+		}
+		nets, err := ResolveSPF(context.Background(), r, "plus")
+		if err != nil {
+			t.Fatalf("explicit pass qualifiers must resolve, got error: %v", err)
+		}
+		want := map[string]bool{
+			"8.8.8.0/24":          true,
+			"2001:4860:4860::/48": true,
+		}
+		for _, n := range nets {
+			if !want[n.String()] {
+				t.Errorf("unexpected net %s", n)
+			}
+			delete(want, n.String())
+		}
+		for s := range want {
+			t.Errorf("missing net %s", s)
+		}
+	})
+
+	t.Run("non_pass_qualifier_ignored", func(t *testing.T) {
+		r := mapResolver{"negative": {"v=spf1 -ip4:8.8.8.0/24 ~include:child ?ip6:2001:4860:4860::/48 -all"}}
+		nets, err := ResolveSPF(context.Background(), r, "negative")
+		if err != nil {
+			t.Fatalf("non-pass qualified mechanisms should be ignored, got error: %v", err)
+		}
+		if len(nets) != 0 {
+			t.Fatalf("non-pass qualified mechanisms yielded nets: %v", nets)
+		}
+	})
+
+	t.Run("wrong_ip_family", func(t *testing.T) {
+		cases := map[string]string{
+			"ip4v6": "v=spf1 ip4:2001:4860:4860::/48 -all",
+			"ip6v4": "v=spf1 ip6:8.8.8.0/24 -all",
+		}
+		for name, txt := range cases {
+			t.Run(name, func(t *testing.T) {
+				r := mapResolver{name: {txt}}
+				_, err := ResolveSPF(context.Background(), r, name)
+				if err == nil {
+					t.Fatal("wrong-family SPF mechanism must return an error")
+				}
+			})
 		}
 	})
 
@@ -201,6 +294,33 @@ func TestResolveSPF(t *testing.T) {
 		_, err := ResolveSPF(context.Background(), r, "mr")
 		if err == nil {
 			t.Fatal("multiple redirect= (first empty) must return an error")
+		}
+	})
+
+	t.Run("empty_include_or_redirect", func(t *testing.T) {
+		cases := map[string]string{
+			"empty_include":  "v=spf1 ip4:8.8.8.0/24 include: -all",
+			"empty_redirect": "v=spf1 ip4:8.8.8.0/24 redirect= -all",
+		}
+		for name, txt := range cases {
+			t.Run(name, func(t *testing.T) {
+				r := mapResolver{name: {txt}}
+				_, err := ResolveSPF(context.Background(), r, name)
+				if err == nil {
+					t.Fatal("empty include/redirect must return an error")
+				}
+			})
+		}
+	})
+
+	t.Run("multiple_spf_records", func(t *testing.T) {
+		r := mapResolver{"multi": {
+			"v=spf1 ip4:8.8.8.0/24 -all",
+			"v=spf1 ip4:1.1.1.0/24 -all",
+		}}
+		_, err := ResolveSPF(context.Background(), r, "multi")
+		if err == nil {
+			t.Fatal("multiple v=spf1 records must return an error")
 		}
 	})
 
