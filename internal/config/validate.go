@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -243,15 +244,20 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 
 	// --- Firewall ---
-	if cfg.Firewall != nil && cfg.Firewall.Enabled {
-		if cfg.Firewall.ConnRateLimit <= 0 {
-			results = append(results, ValidationResult{"error", "firewall.conn_rate_limit", "conn_rate_limit must be > 0 when firewall enabled"})
+	if cfg.Firewall != nil {
+		for _, e := range validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges) {
+			results = append(results, ValidationResult{"error", "firewall.dos_exempt_ranges", e})
 		}
-		if cfg.Firewall.ConnLimit < 0 {
-			results = append(results, ValidationResult{"error", "firewall.conn_limit", "conn_limit must be >= 0 when firewall enabled (0 = disabled)"})
-		}
-		if cfg.Firewall.ConnRateLimit > 0 && cfg.Firewall.ConnLimit >= 0 {
-			results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%d, conn_limit=%d", cfg.Firewall.ConnRateLimit, cfg.Firewall.ConnLimit)})
+		if cfg.Firewall.Enabled {
+			if cfg.Firewall.ConnRateLimit <= 0 {
+				results = append(results, ValidationResult{"error", "firewall.conn_rate_limit", "conn_rate_limit must be > 0 when firewall enabled"})
+			}
+			if cfg.Firewall.ConnLimit < 0 {
+				results = append(results, ValidationResult{"error", "firewall.conn_limit", "conn_limit must be >= 0 when firewall enabled (0 = disabled)"})
+			}
+			if cfg.Firewall.ConnRateLimit > 0 && cfg.Firewall.ConnLimit >= 0 {
+				results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%d, conn_limit=%d", cfg.Firewall.ConnRateLimit, cfg.Firewall.ConnLimit)})
+			}
 		}
 	}
 
@@ -828,4 +834,46 @@ func probeGeoIPDBs(statePath string, editions []string) []ValidationResult {
 		results = append(results, ValidationResult{"ok", "geoip", fmt.Sprintf("all %d edition databases present", len(editions))})
 	}
 	return results
+}
+
+// validateDOSExemptRanges checks each entry in the dos_exempt_ranges list.
+// Per entry: whitespace is trimmed; empty entries are rejected; CIDR notation
+// is parsed via net.ParseCIDR and default routes (/0) are rejected; bare IP
+// addresses are accepted as /32 or /128 equivalents; anything else is an error.
+// Each error string is prefixed with "firewall.dos_exempt_ranges[<i>]:".
+func validateDOSExemptRanges(entries []string) []string {
+	var errs []string
+	for i, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			errs = append(errs, fmt.Sprintf("firewall.dos_exempt_ranges[%d]: empty entry", i))
+			continue
+		}
+		if _, ipnet, err := net.ParseCIDR(entry); err == nil {
+			ones, _ := ipnet.Mask.Size()
+			if ones == 0 {
+				errs = append(errs, fmt.Sprintf("firewall.dos_exempt_ranges[%d]: %s is a default route and cannot be used as an exempt range", i, entry))
+			}
+			continue
+		}
+		if net.ParseIP(entry) != nil {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("firewall.dos_exempt_ranges[%d]: %q is not a valid CIDR or IP address", i, entry))
+	}
+	return errs
+}
+
+// validateFirewallConfig validates firewall fields that are checked at load
+// time to prevent invalid configuration from reaching the daemon. It returns
+// the first multi-error joined string so LoadBytes can return a single error.
+func validateFirewallConfig(cfg *Config) error {
+	if cfg.Firewall == nil {
+		return nil
+	}
+	errs := validateDOSExemptRanges(cfg.Firewall.DOSExemptRanges)
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(errs, "; "))
 }

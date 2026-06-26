@@ -1694,3 +1694,59 @@ func TestValidateFTPFailWindowMinRange(t *testing.T) {
 		t.Fatal("30 must be valid")
 	}
 }
+
+func TestValidateDOSExemptRanges(t *testing.T) {
+	ok := []string{"203.0.113.0/24", "2001:db8::/32", "198.51.100.7", "2001:db8::1"}
+	if errs := validateDOSExemptRanges(ok); len(errs) != 0 {
+		t.Fatalf("valid entries rejected: %v", errs)
+	}
+	bad := map[string]string{
+		"example.com": "hostname", "": "empty", "192.0.2.0/33": "mask",
+		"not-an-ip": "malformed", "0.0.0.0/0": "default route", "::/0": "default route",
+	}
+	for entry := range bad {
+		if errs := validateDOSExemptRanges([]string{entry}); len(errs) == 0 {
+			t.Errorf("expected rejection for %q", entry)
+		}
+	}
+}
+
+func TestTrustedRangesRejected(t *testing.T) {
+	_, err := LoadBytes([]byte("firewall:\n  trusted_ranges:\n    - 192.0.2.0/24\n"))
+	if err == nil {
+		t.Fatal("trusted_ranges must be rejected by strict unmarshal")
+	}
+}
+
+func TestDOSExemptKnownMailProvidersFalseFromMain(t *testing.T) {
+	cfg, err := LoadBytes([]byte("firewall:\n  dos_exempt_known_mail_providers: false\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Firewall == nil {
+		t.Fatal("firewall config must not be nil")
+	}
+	if cfg.Firewall.ExemptKnownMailProviders() {
+		t.Fatal("ExemptKnownMailProviders() must return false when explicitly set to false")
+	}
+}
+
+func TestDOSExemptKnownMailProvidersFalseSurvivesConfD(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("firewall:\n  dos_exempt_known_mail_providers: true\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "50-override.yaml"), []byte("firewall:\n  dos_exempt_known_mail_providers: false\n"), 0o600))
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Firewall == nil {
+		t.Fatal("firewall config must not be nil")
+	}
+	if cfg.Firewall.ExemptKnownMailProviders() {
+		t.Fatal("ExemptKnownMailProviders() must return false after conf.d override")
+	}
+}
