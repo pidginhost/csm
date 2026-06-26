@@ -519,6 +519,30 @@ func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
 	return nil
 }
 
+// dosExemptV4Lookup returns a two-expression sequence that loads the IPv4
+// source address (network-header offset 12, 4 bytes) into reg and performs an
+// inverted set lookup against dos_exempt_nets. Prepend the result to a meter
+// rule's Exprs to make the rule skip exempt sources. The Ct and Payload exprs
+// that follow in the meter rule reload reg independently, so register reuse is
+// safe: the lookup writes saddr, the Ct/Bitwise/Cmp block overwrites reg with
+// conntrack state, and the saddr Payload inside the Dynset overwrites it again.
+func (e *Engine) dosExemptV4Lookup(reg uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Lookup{SourceRegister: reg, SetName: e.setDOSExempt.Name, SetID: e.setDOSExempt.ID, Invert: true},
+	}
+}
+
+// dosExemptV6Lookup is the IPv6 analogue of dosExemptV4Lookup, loading the
+// IPv6 source address (network-header offset 8, 16 bytes) against
+// dos_exempt_nets6. Use only in rules that carry IPv6 traffic.
+func (e *Engine) dosExemptV6Lookup(reg uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+		&expr.Lookup{SourceRegister: reg, SetName: e.setDOSExempt6.Name, SetID: e.setDOSExempt6.ID, Invert: true},
+	}
+}
+
 // Apply builds and atomically applies the complete nftables ruleset.
 // All operations (delete old table + create new table/rules +
 // populate persisted block/allow entries) are batched into a single
@@ -1033,25 +1057,7 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
-				&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
-				// Load source IP for per-IP metering
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterSYN.Name,
-					SetID:     e.meterSYN.ID,
-					Operation: 1, // NFT_DYNSET_OP_UPDATE
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.synFloodRuleExprs(),
 		})
 	}
 
@@ -1066,56 +1072,17 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{
-					SourceRegister: 1, DestRegister: 1, Len: 4,
-					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-					Xor:  binaryutil.NativeEndian.PutUint32(0),
-				},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				// Load source IP for per-IP metering
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterConn.Name,
-					SetID:     e.meterConn.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.ConnRateLimit), Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.connMeterRuleExprs(uint64(e.cfg.ConnRateLimit), burst),
 		})
 	}
 
 	// Per-IP concurrent connection limit (CONNLIMIT)
 	if e.cfg.ConnLimit > 0 && e.meterConnlim != nil {
+		// #nosec G115 -- ConnLimit is operator-configured non-negative int; fits in uint32.
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{
-					SourceRegister: 1, DestRegister: 1, Len: 4,
-					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-					Xor:  binaryutil.NativeEndian.PutUint32(0),
-				},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterConnlim.Name,
-					SetID:     e.meterConnlim.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						// #nosec G115 -- ConnLimit is operator-configured non-negative int; fits in uint32.
-						&expr.Connlimit{Count: uint32(e.cfg.ConnLimit), Flags: 1}, // 1 = over
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.connlimitRuleExprs(uint32(e.cfg.ConnLimit)),
 		})
 	}
 
@@ -1166,21 +1133,7 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterUDP.Name,
-					SetID:     e.meterUDP.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.UDPFloodRate), Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.udpFloodRuleExprs(uint64(e.cfg.UDPFloodRate), burst),
 		})
 	}
 
@@ -1590,6 +1543,118 @@ func buildSetMatchRuleExprs(set *nftables.Set, verdict expr.VerdictKind, nfproto
 		&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
 		&expr.Verdict{Kind: verdict},
 	}
+}
+
+// synFloodRuleExprs builds the expression list for the per-IP SYN flood
+// rate-limit rule. The rule is intentionally NOT exempt-aware: SYN flood
+// protection targets TCP half-open storms and is applied without a dos_exempt
+// guard (unlike connection meters).
+func (e *Engine) synFloodRuleExprs() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
+		// Load source IP for per-IP metering
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterSYN.Name,
+			SetID:     e.meterSYN.ID,
+			Operation: 1, // NFT_DYNSET_OP_UPDATE
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+}
+
+// udpFloodRuleExprs builds the expression list for the per-IP UDP flood
+// rate-limit rule. Like synFloodRuleExprs, this rule carries no dos_exempt
+// guard.
+func (e *Engine) udpFloodRuleExprs(rate uint64, burst uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterUDP.Name,
+			SetID:     e.meterUDP.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+}
+
+// connMeterRuleExprs builds the expression list for the per-IP new-connection
+// rate-limit rule. When setDOSExempt is non-nil, an inverted source-set lookup
+// is prepended so sources in dos_exempt_nets bypass the rule entirely.
+//
+// Register-reuse safety: dosExemptV4Lookup writes saddr into reg 1. The
+// following Ct and Payload exprs reload reg 1 with ct-state and saddr
+// respectively, so the exempt check can never interfere with the meter logic.
+func (e *Engine) connMeterRuleExprs(rate uint64, burst uint32) []expr.Any {
+	exprs := []expr.Any{
+		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+			Xor:  binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		// Load source IP for per-IP metering
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterConn.Name,
+			SetID:     e.meterConn.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+	if e.setDOSExempt != nil {
+		exprs = append(e.dosExemptV4Lookup(1), exprs...)
+	}
+	return exprs
+}
+
+// connlimitRuleExprs builds the expression list for the per-IP concurrent
+// connection limit rule. When setDOSExempt is non-nil, an inverted source-set
+// lookup is prepended so sources in dos_exempt_nets bypass the rule.
+func (e *Engine) connlimitRuleExprs(limit uint32) []expr.Any {
+	exprs := []expr.Any{
+		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+			Xor:  binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterConnlim.Name,
+			SetID:     e.meterConnlim.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Connlimit{Count: limit, Flags: 1}, // 1 = over
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+	if e.setDOSExempt != nil {
+		exprs = append(e.dosExemptV4Lookup(1), exprs...)
+	}
+	return exprs
 }
 
 // addCFWhitelistRule adds an accept rule for Cloudflare IPs on TCP ports 80 and 443.
