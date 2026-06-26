@@ -1744,3 +1744,52 @@ func TestAutoBlockHTTPASNCrawlGuards(t *testing.T) {
 		}
 	})
 }
+
+// cfgWithExempt returns a config with the given CIDR ranges as DoS-exempt
+// operator ranges. Known mail-provider ranges are disabled so tests are
+// deterministic regardless of the embedded snapshot.
+func cfgWithExempt(t *testing.T, ranges ...string) *config.Config {
+	t.Helper()
+	f := false
+	cfg := &config.Config{}
+	cfg.Firewall = &firewall.FirewallConfig{
+		DOSExemptRanges:             ranges,
+		DOSExemptKnownMailProviders: &f,
+	}
+	return cfg
+}
+
+func TestCidrIntersectsDOSExempt(t *testing.T) {
+	// Exact IPv4 overlap.
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+	if !cidrIntersectsDOSExempt(cfg, "203.0.113.0/24") {
+		t.Fatal("exact overlap: expected true")
+	}
+	// Non-overlapping IPv4.
+	if cidrIntersectsDOSExempt(cfg, "198.51.100.0/24") {
+		t.Fatal("no overlap: expected false")
+	}
+	// Malformed CIDR must fail safe (return true).
+	if !cidrIntersectsDOSExempt(cfg, "garbage") {
+		t.Fatal("malformed must fail safe to true")
+	}
+	// Candidate is a supernet of the exempt range (two-way Contains: candidate
+	// bigger than exempt -> ipnet.Contains(exempt.IP) arm).
+	if !cidrIntersectsDOSExempt(cfg, "203.0.112.0/23") {
+		t.Fatal("candidate supernet of exempt: expected true")
+	}
+	// Candidate is a host inside the exempt range (two-way Contains: exempt
+	// bigger than candidate -> exempt.Contains(ipnet.IP) arm in isolation).
+	if !cidrIntersectsDOSExempt(cfg, "203.0.113.5/32") {
+		t.Fatal("host inside exempt /24 must intersect")
+	}
+	// IPv6 exempt range - exact overlap.
+	cfgV6 := cfgWithExempt(t, "2001:db8::/64")
+	if !cidrIntersectsDOSExempt(cfgV6, "2001:db8::/64") {
+		t.Fatal("exact IPv6 /64 overlap: expected true")
+	}
+	// IPv6 non-overlapping range.
+	if cidrIntersectsDOSExempt(cfgV6, "2001:db8:1::/64") {
+		t.Fatal("non-overlapping IPv6 /64: expected false")
+	}
+}

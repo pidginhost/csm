@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/mailranges"
 )
 
 const (
@@ -807,6 +808,36 @@ func cidrIntersectsInfra(cfg *config.Config, cidr string) bool {
 		}
 		if _, infraNet, err := net.ParseCIDR(raw); err == nil &&
 			(ipnet.Contains(infraNet.IP) || infraNet.Contains(ipnet.IP)) {
+			return true
+		}
+	}
+	return false
+}
+
+// dosExemptNets returns the effective DoS-exempt networks (operator ranges
+// union-ed with the current mail-provider overlay) split into IPv4 and IPv6
+// slices. Delegates to firewall.EffectiveDOSExemptNets so the same logic
+// governs both nftables sets and auto-block guards.
+func dosExemptNets(cfg *config.Config) (v4, v6 []*net.IPNet) {
+	var fc *firewall.FirewallConfig
+	if cfg != nil {
+		fc = cfg.Firewall
+	}
+	return firewall.EffectiveDOSExemptNets(fc, mailranges.ProviderNets())
+}
+
+// cidrIntersectsDOSExempt reports whether the CIDR overlaps any DoS-exempt
+// network, so the subnet tempban never blocks exempt sources (e.g., operator-
+// designated ranges or known mail-provider egress). An unparseable CIDR fails
+// safe (treated as intersecting, block skipped).
+func cidrIntersectsDOSExempt(cfg *config.Config, cidr string) bool {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return true // fail-safe: skip block when CIDR is unreadable
+	}
+	v4, v6 := dosExemptNets(cfg)
+	for _, exempt := range append(v4, v6...) { //nolint:gocritic // intentional inline join
+		if ipnet.Contains(exempt.IP) || exempt.Contains(ipnet.IP) {
 			return true
 		}
 	}
