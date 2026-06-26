@@ -15,9 +15,9 @@ import (
 // spySubnetManager satisfies checks.IPBlocker and the unexported subnetManager
 // interface so PruneExemptAutoSubnets can exercise the full prune loop.
 type spySubnetManager struct {
-	subnets         []firewall.SubnetEntry
-	blockedSubnets  bool
-	unblocked       []string
+	subnets        []firewall.SubnetEntry
+	blockedSubnets bool
+	unblocked      []string
 }
 
 func (s *spySubnetManager) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
