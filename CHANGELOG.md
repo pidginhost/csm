@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sources in `dos_exempt_nets` now bypass the per-IP new-connection rate-limit and concurrent connection-limit rules, so mail-provider CGNAT ranges are not metered even when many shared users hit the server simultaneously.
 - DoS-exempt sources also bypass the per-port flood meters on TCP 25, 465, and 587, consistent with how they bypass the connection rate and limit meters.
 - Daemon now loads the mail-provider IP range cache on startup and pushes it into the firewall DoS-exempt sets before the first rule application; the cache is refreshed every 12 hours and the previous overlay is restored automatically if the nftables reapply fails.
+- Auto-block now skips subnet blocks (spray, ASN-crawl, and netblock escalation) whose CIDR intersects a `dos_exempt_ranges` entry; exempt-range IPs are also excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit.
 
 ### Fixed
 

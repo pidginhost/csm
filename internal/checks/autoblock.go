@@ -159,6 +159,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// global also tripped the race detector.
 	blocker := getIPBlocker()
 
+	// exemptLogged deduplicates per-cycle log lines for DoS-exempt CIDR skips
+	// so each suppressed subnet is logged once per AutoBlockIPs call, not once
+	// per finding or per IP in the netblock counting sweep.
+	exemptLogged := make(map[string]struct{})
+
 	var actions []alert.Finding
 
 	// Load block state
@@ -271,6 +276,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
+		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+			continue
+		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
 		if err := sb.BlockSubnet(cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry)); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
@@ -340,6 +348,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					break
 				}
 				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
+					continue
+				}
+				if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 					continue
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
@@ -495,7 +506,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
-			if cidr != "" {
+			// Exempt IPs do not contribute toward the netblock threshold so that
+			// a cluster of blocked addresses inside an operator-declared DoS-exempt
+			// range cannot inadvertently auto-block that range as a subnet.
+			if cidr != "" && !cidrIntersectsDOSExempt(cfg, cidr) {
 				subnetCounts[cidr]++
 			}
 		}
@@ -503,6 +517,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			if count >= threshold && !subnetBlocked[cidr] {
 				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(blocker, cidr) {
+						continue
+					}
+					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
@@ -842,6 +859,22 @@ func cidrIntersectsDOSExempt(cfg *config.Config, cidr string) bool {
 		}
 	}
 	return false
+}
+
+// shouldSkipAutoSubnet reports whether the auto-block path must suppress a
+// BlockSubnet call for cidr because it intersects a DoS-exempt operator range.
+// Logs once per CIDR per cycle (via the logged dedupe map) at stderr info level
+// with reason dos_exempt_range. Returns true when the block must be suppressed.
+// Manual operator subnet denies bypass this function entirely.
+func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]struct{}) bool {
+	if !cidrIntersectsDOSExempt(cfg, cidr) {
+		return false
+	}
+	if _, already := logged[cidr]; !already {
+		logged[cidr] = struct{}{}
+		fmt.Fprintf(os.Stderr, "auto-block: skipping subnet %s (dos_exempt_range)\n", cidr)
+	}
+	return true
 }
 
 // extractCIDRFromFinding returns the CIDR appearing in the message after
