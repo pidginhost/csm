@@ -7,12 +7,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mailranges"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 // fakeMailResolver is a fake mailranges.Resolver that returns canned TXT records
@@ -194,5 +196,30 @@ func TestMailRangesRefreshLoopStops(t *testing.T) {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
 		t.Fatal("mailRangesRefreshLoop did not stop within 2 s after stopCh closed")
+	}
+}
+
+// TestRegisterMailrangesMetricsExposesNames verifies that the startup metrics
+// registration exposes the three mailranges metric names. A fresh registry is
+// used so the test does not collide with the process-wide default registry
+// (RegisterCounterFunc/RegisterGaugeFunc panic on duplicate names), mirroring
+// the BPF-enforcement metrics test.
+func TestRegisterMailrangesMetricsExposesNames(t *testing.T) {
+	reg := metrics.NewRegistry()
+	mailranges.RegisterMailrangesMetrics(reg)
+
+	var sb strings.Builder
+	if err := reg.WriteOpenMetrics(&sb); err != nil {
+		t.Fatalf("WriteOpenMetrics: %v", err)
+	}
+	out := sb.String()
+	for _, want := range []string{
+		"csm_mailranges_refresh_total",
+		"csm_mailranges_prefixes",
+		"csm_mailranges_last_success_timestamp_seconds",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
 	}
 }
