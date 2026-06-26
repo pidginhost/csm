@@ -233,3 +233,44 @@ func assertInstallerRawBotRangesAutoUpdate(t *testing.T, data []byte) {
 		t.Fatalf("installer default reputation.bot_ranges.update_interval = %q, want 24h", interval)
 	}
 }
+
+// TestDeployDefaultConfigDOSExemptFirewallDefaults guards that the installer
+// template ships firewall.dos_exempt_ranges and the provider-toggle with
+// effective values consistent with the runtime defaults.  Provider ranges are
+// NOT tested here -- they are sourced from SPF at runtime, never in YAML.
+func TestDeployDefaultConfigDOSExemptFirewallDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if err := deployDefaultConfig(path); err != nil {
+		t.Fatalf("deployDefaultConfig: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	if len(cfg.Firewall.DOSExemptRanges) != 0 {
+		t.Errorf("installer default dos_exempt_ranges = %v, want empty", cfg.Firewall.DOSExemptRanges)
+	}
+	if !cfg.Firewall.ExemptKnownMailProviders() {
+		t.Error("installer default dos_exempt_known_mail_providers effective = false, want true")
+	}
+
+	// The toggle must be explicitly present so operators can discover and
+	// disable it; omitting it causes silent three-source drift.
+	var raw struct {
+		Firewall map[string]yaml.Node `yaml:"firewall"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("yaml.Unmarshal for firewall raw check: %v", err)
+	}
+	if _, ok := raw.Firewall["dos_exempt_known_mail_providers"]; !ok {
+		t.Error("installer default must explicitly document firewall.dos_exempt_known_mail_providers")
+	}
+	if _, ok := raw.Firewall["dos_exempt_ranges"]; !ok {
+		t.Error("installer default must explicitly document firewall.dos_exempt_ranges")
+	}
+}
