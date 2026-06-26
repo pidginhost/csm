@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `firewall.dos_exempt_ranges` entries are now validated at config load; invalid CIDRs, bare hostnames, /0 default routes, and empty entries are rejected before the daemon starts.
 - The firewall ruleset now maintains `dos_exempt_nets` and `dos_exempt_nets6` interval sets, populated from `dos_exempt_ranges` and the mail-provider overlay, which later rules will use to exempt carrier CGNAT and mail-provider egress from per-IP DoS heuristics.
 - Sources in `dos_exempt_nets` now bypass the per-IP new-connection rate-limit and concurrent connection-limit rules, so mail-provider CGNAT ranges are not metered even when many shared users hit the server simultaneously.
+- DoS-exempt sources also bypass the per-port flood meters on TCP 25, 465, and 587, consistent with how they bypass the connection rate and limit meters.
 
 ### Fixed
 

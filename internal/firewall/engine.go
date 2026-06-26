@@ -1115,6 +1115,19 @@ func (e *Engine) createInputChain() error {
 			if exprs == nil {
 				continue
 			}
+			// Mail TCP ports (25/465/587) get an inverted exempt-set lookup
+			// prepended so sources in dos_exempt_nets/dos_exempt_nets6 bypass
+			// rate limiting. Register-reuse safety: dosExemptV*Lookup writes
+			// saddr into reg 1; the MetaKeyNFPROTO load that immediately follows
+			// in the port-flood exprs overwrites reg 1 independently.
+			if isMailTCP(pf) {
+				switch {
+				case item.family == portFloodIPv4 && e.setDOSExempt != nil:
+					exprs = append(e.dosExemptV4Lookup(1), exprs...)
+				case item.family == portFloodIPv6 && e.setDOSExempt6 != nil:
+					exprs = append(e.dosExemptV6Lookup(1), exprs...)
+				}
+			}
 			e.conn.AddRule(&nftables.Rule{
 				Table: e.table,
 				Chain: e.chainIn,
