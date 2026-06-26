@@ -95,7 +95,7 @@ func (e *Engine) FlushBlocked() error                                   { return
 func (e *Engine) BlockedSubnets() []SubnetEntry                         { return nil }
 func (e *Engine) Status() map[string]interface{}                        { return nil }
 
-func (e *Engine) UpdateCloudflareSet(_, _ []string) error        { return nil }
-func (e *Engine) CloudflareIPs() ([]string, []string)            { return nil, nil }
-func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet)        {}
-func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error      { return nil }
+func (e *Engine) UpdateCloudflareSet(_, _ []string) error   { return nil }
+func (e *Engine) CloudflareIPs() ([]string, []string)       { return nil, nil }
+func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet)   {}
+func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error { return nil }
