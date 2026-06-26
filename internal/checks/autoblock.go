@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/mailranges"
 )
 
 const (
@@ -84,6 +85,15 @@ type permanentPromoter interface {
 
 type subnetBlockStatus interface {
 	IsSubnetBlocked(cidr string) bool
+}
+
+// subnetManager is satisfied by firewall engines that expose their blocked
+// subnet state and support targeted unblock calls. Used by
+// PruneExemptAutoSubnets to enumerate and remove stale subnet blocks whose
+// CIDR has become DoS-exempt.
+type subnetManager interface {
+	BlockedSubnets() []firewall.SubnetEntry
+	UnblockSubnet(cidr string) error
 }
 
 // fwBlockerSlot wraps an IPBlocker so atomic.Pointer can store it. The
@@ -158,6 +168,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// global also tripped the race detector.
 	blocker := getIPBlocker()
 
+	// exemptLogged deduplicates per-cycle log lines for DoS-exempt CIDR skips
+	// so each suppressed subnet is logged once per AutoBlockIPs call, not once
+	// per finding or per IP in the netblock counting sweep.
+	exemptLogged := make(map[string]struct{})
+
 	var actions []alert.Finding
 
 	// Load block state
@@ -181,6 +196,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		stillBlocked = append(stillBlocked, b)
 	}
 	state.IPs = stillBlocked
+
+	// Prune auto-response subnet blocks that now intersect the DoS-exempt set
+	// before making new subnet decisions this cycle.
+	if blocker != nil {
+		PruneExemptAutoSubnets(cfg, blocker)
+	}
 
 	// Check rate limit
 	currentHour := autoBlockNow().Format("2006-01-02T15")
@@ -270,6 +291,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
+		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+			continue
+		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
 		if err := sb.BlockSubnet(cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry)); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
@@ -339,6 +363,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					break
 				}
 				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
+					continue
+				}
+				if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 					continue
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
@@ -494,7 +521,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
 			cidr := subnetEscalationCIDR(b.IP)
-			if cidr != "" {
+			// Exempt IPs do not contribute toward the netblock threshold so that
+			// a cluster of blocked addresses inside an operator-declared DoS-exempt
+			// range cannot inadvertently auto-block that range as a subnet.
+			if cidr != "" && !cidrIntersectsDOSExempt(cfg, cidr) {
 				subnetCounts[cidr]++
 			}
 		}
@@ -502,6 +532,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			if count >= threshold && !subnetBlocked[cidr] {
 				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(blocker, cidr) {
+						continue
+					}
+					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
@@ -811,6 +844,80 @@ func cidrIntersectsInfra(cfg *config.Config, cidr string) bool {
 		}
 	}
 	return false
+}
+
+// dosExemptNets returns the effective DoS-exempt networks (operator ranges
+// union-ed with the current mail-provider overlay) split into IPv4 and IPv6
+// slices. Delegates to firewall.EffectiveDOSExemptNets so the same logic
+// governs both nftables sets and auto-block guards.
+func dosExemptNets(cfg *config.Config) (v4, v6 []*net.IPNet) {
+	var fc *firewall.FirewallConfig
+	if cfg != nil {
+		fc = cfg.Firewall
+	}
+	return firewall.EffectiveDOSExemptNets(fc, mailranges.ProviderNets())
+}
+
+// cidrIntersectsDOSExempt reports whether the CIDR overlaps any DoS-exempt
+// network, so the subnet tempban never blocks exempt sources (e.g., operator-
+// designated ranges or known mail-provider egress). An unparseable CIDR fails
+// safe (treated as intersecting, block skipped).
+func cidrIntersectsDOSExempt(cfg *config.Config, cidr string) bool {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return true // fail-safe: skip block when CIDR is unreadable
+	}
+	v4, v6 := dosExemptNets(cfg)
+	for _, exempt := range append(v4, v6...) { //nolint:gocritic // intentional inline join
+		if ipnet.Contains(exempt.IP) || exempt.Contains(ipnet.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldSkipAutoSubnet reports whether the auto-block path must suppress a
+// BlockSubnet call for cidr because it intersects a DoS-exempt operator range.
+// Logs once per CIDR per cycle (via the logged dedupe map) at stderr info level
+// with reason dos_exempt_range. Returns true when the block must be suppressed.
+// Manual operator subnet denies bypass this function entirely.
+func shouldSkipAutoSubnet(cfg *config.Config, cidr string, logged map[string]struct{}) bool {
+	if !cidrIntersectsDOSExempt(cfg, cidr) {
+		return false
+	}
+	if _, already := logged[cidr]; !already {
+		logged[cidr] = struct{}{}
+		fmt.Fprintf(os.Stderr, "auto-block: skipping subnet %s (dos_exempt_range)\n", cidr)
+	}
+	return true
+}
+
+// PruneExemptAutoSubnets removes auto-response subnet blocks whose CIDR now
+// intersects the DoS-exempt set (operator ranges or mail-provider overlay).
+// Only entries with Source == firewall.SourceAutoResponse are touched; manual,
+// CLI, web-UI, challenge, whitelist, dyndns, system, and unknown-source blocks
+// are left untouched. If b does not implement subnetManager, returns 0.
+// UnblockSubnet errors are logged and the entry is not counted as pruned.
+func PruneExemptAutoSubnets(cfg *config.Config, b IPBlocker) int {
+	sm, ok := b.(subnetManager)
+	if !ok {
+		return 0
+	}
+	pruned := 0
+	for _, entry := range sm.BlockedSubnets() {
+		if entry.Source != firewall.SourceAutoResponse {
+			continue
+		}
+		if !cidrIntersectsDOSExempt(cfg, entry.CIDR) {
+			continue
+		}
+		if err := sm.UnblockSubnet(entry.CIDR); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: prune exempt subnet %s: %v\n", entry.CIDR, err)
+			continue
+		}
+		pruned++
+	}
+	return pruned
 }
 
 // extractCIDRFromFinding returns the CIDR appearing in the message after

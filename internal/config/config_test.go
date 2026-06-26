@@ -480,6 +480,31 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 			t.Errorf("packaged port_flood[%d] = %+v, want %+v", i, cfg.Firewall.PortFlood[i], want.PortFlood[i])
 		}
 	}
+
+	// DoS-exempt defaults: effective values must match the runtime defaults.
+	// Provider ranges are NOT compared here -- they are sourced from SPF at
+	// runtime, never stored in YAML.
+	if len(cfg.Firewall.DOSExemptRanges) != len(want.DOSExemptRanges) {
+		t.Errorf("packaged dos_exempt_ranges len = %d, want runtime default %d", len(cfg.Firewall.DOSExemptRanges), len(want.DOSExemptRanges))
+	}
+	if cfg.Firewall.ExemptKnownMailProviders() != want.ExemptKnownMailProviders() {
+		t.Errorf("packaged dos_exempt_known_mail_providers effective = %v, want runtime default %v", cfg.Firewall.ExemptKnownMailProviders(), want.ExemptKnownMailProviders())
+	}
+
+	// The toggle must be explicitly documented in the packaged YAML so operators
+	// can discover and disable it; absence causes silent three-source drift.
+	var rawFW struct {
+		Firewall map[string]yaml.Node `yaml:"firewall"`
+	}
+	if err := yaml.Unmarshal(data, &rawFW); err != nil {
+		t.Fatalf("yaml.Unmarshal for firewall raw check: %v", err)
+	}
+	if _, ok := rawFW.Firewall["dos_exempt_known_mail_providers"]; !ok {
+		t.Error("packaged default must explicitly document firewall.dos_exempt_known_mail_providers (three-source drift)")
+	}
+	if _, ok := rawFW.Firewall["dos_exempt_ranges"]; !ok {
+		t.Error("packaged default must explicitly document firewall.dos_exempt_ranges (three-source drift)")
+	}
 }
 
 // The packaged default config must ship bot_ranges with the same auto-update

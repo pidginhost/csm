@@ -1910,6 +1910,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateHTTPASNCrawl(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateFirewallConfig(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 

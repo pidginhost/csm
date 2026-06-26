@@ -77,6 +77,17 @@ type Engine struct {
 	setCFWhitelist  *nftables.Set // IPv4
 	setCFWhitelist6 *nftables.Set // IPv6
 
+	// DoS-exempt ranges (interval sets for CIDR matching).
+	// Sources in these sets bypass per-IP rate-limit / conn-limit / port-flood
+	// rules. setDOSExempt6 is nil when IPv6 is disabled.
+	setDOSExempt  *nftables.Set
+	setDOSExempt6 *nftables.Set
+
+	// dosExemptProviderNets holds the mail-provider overlay pushed by the
+	// daemon. Written by SetDOSExemptProviderNets and RefreshDOSExemptSets;
+	// read by createSets() and RefreshDOSExemptSets. Always guarded by mu.
+	dosExemptProviderNets []*net.IPNet
+
 	// IPv6 sets (nil if IPv6 disabled)
 	setBlocked6    *nftables.Set
 	setBlockedNet6 *nftables.Set
@@ -291,6 +302,11 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		return nil, fmt.Errorf("infra_ips set not found: %w", err)
 	}
 
+	setDOSExempt, err := conn.GetSetByName(table, "dos_exempt_nets")
+	if err != nil {
+		return nil, fmt.Errorf("dos_exempt_nets set not found: %w", err)
+	}
+
 	e := &Engine{
 		conn:          conn,
 		cfg:           cfg,
@@ -299,6 +315,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		setBlockedNet: setBlockedNet,
 		setAllowed:    setAllowed,
 		setInfra:      setInfra,
+		setDOSExempt:  setDOSExempt,
 		statePath:     filepath.Join(statePath, "firewall"),
 	}
 
@@ -322,6 +339,9 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	}
 	if s, err := conn.GetSetByName(table, "infra_ips6"); err == nil {
 		e.setInfra6 = s
+	}
+	if s, err := conn.GetSetByName(table, "dos_exempt_nets6"); err == nil {
+		e.setDOSExempt6 = s
 	}
 
 	return e, nil
@@ -413,6 +433,114 @@ func (e *Engine) verdictContext() context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// SetDOSExemptProviderNets stores the mail-provider IP ranges used by the
+// dos_exempt_nets set. The daemon calls this before Apply() and on each
+// provider refresh. Nil is valid when the daemon has no provider data yet;
+// createSets() will produce an empty set in that case.
+func (e *Engine) SetDOSExemptProviderNets(nets []*net.IPNet) {
+	e.mu.Lock()
+	// Copy the slice header so a caller that later reuses or mutates its own
+	// slice cannot corrupt the stored overlay. Elements already arrive
+	// deep-copied from the provider source, so a header copy is enough.
+	e.dosExemptProviderNets = append([]*net.IPNet(nil), nets...)
+	e.mu.Unlock()
+}
+
+// dosExemptIntervalElems builds nftables interval set elements from nets.
+// Each net produces two elements (start key + exclusive interval-end key).
+// Saturated ranges whose end has no successor (e.g. 0.0.0.0/0) are skipped.
+// Callers must pass nets from a single IP family (all IPv4 or all IPv6).
+func dosExemptIntervalElems(nets []*net.IPNet) []nftables.SetElement {
+	if len(nets) == 0 {
+		return nil
+	}
+	var elems []nftables.SetElement
+	for _, n := range nets {
+		if n == nil {
+			continue
+		}
+		var start net.IP
+		if n.IP.To4() != nil {
+			start = n.IP.To4()
+		} else {
+			start = n.IP.To16()
+		}
+		end := lastIPInRange(n)
+		if start == nil || end == nil {
+			continue
+		}
+		elems = appendIntervalSetElements(elems, start, end)
+	}
+	return elems
+}
+
+// RefreshDOSExemptSets repopulates the dos_exempt_nets[6] interval sets with
+// a new provider overlay in a single batched kernel transaction. If the kernel
+// batch fails the previous set contents remain active and dosExemptProviderNets
+// is not updated, preserving the last-known good state.
+func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.setDOSExempt == nil {
+		return fmt.Errorf("dos_exempt_nets set not initialized")
+	}
+
+	v4, v6 := EffectiveDOSExemptNets(e.cfg, providerNets)
+
+	// Queue flush + repopulate for IPv4. Nothing is sent to the kernel yet.
+	e.conn.FlushSet(e.setDOSExempt)
+	if elems4 := dosExemptIntervalElems(v4); len(elems4) > 0 {
+		if err := e.conn.SetAddElements(e.setDOSExempt, elems4); err != nil {
+			return fmt.Errorf("queuing dos_exempt_nets elements: %w", err)
+		}
+	}
+
+	// Queue flush + repopulate for IPv6 when the set exists.
+	if e.setDOSExempt6 != nil {
+		e.conn.FlushSet(e.setDOSExempt6)
+		if elems6 := dosExemptIntervalElems(v6); len(elems6) > 0 {
+			if err := e.conn.SetAddElements(e.setDOSExempt6, elems6); err != nil {
+				return fmt.Errorf("queuing dos_exempt_nets6 elements: %w", err)
+			}
+		}
+	}
+
+	// Atomic commit. On failure the kernel keeps the previous elements.
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("refreshing dos_exempt sets: %w", err)
+	}
+
+	// Update overlay only after the kernel confirmed the transaction. Copy the
+	// slice header so caller slice reuse cannot corrupt the stored overlay.
+	e.dosExemptProviderNets = append([]*net.IPNet(nil), providerNets...)
+	return nil
+}
+
+// dosExemptV4Lookup returns a two-expression sequence that loads the IPv4
+// source address (network-header offset 12, 4 bytes) into reg and performs an
+// inverted set lookup against dos_exempt_nets. Prepend the result to a meter
+// rule's Exprs to make the rule skip exempt sources. The Ct and Payload exprs
+// that follow in the meter rule reload reg independently, so register reuse is
+// safe: the lookup writes saddr, the Ct/Bitwise/Cmp block overwrites reg with
+// conntrack state, and the saddr Payload inside the Dynset overwrites it again.
+func (e *Engine) dosExemptV4Lookup(reg uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Lookup{SourceRegister: reg, SetName: e.setDOSExempt.Name, SetID: e.setDOSExempt.ID, Invert: true},
+	}
+}
+
+// dosExemptV6Lookup is the IPv6 analogue of dosExemptV4Lookup, loading the
+// IPv6 source address (network-header offset 8, 16 bytes) against
+// dos_exempt_nets6. Use only in rules that carry IPv6 traffic.
+func (e *Engine) dosExemptV6Lookup(reg uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+		&expr.Lookup{SourceRegister: reg, SetName: e.setDOSExempt6.Name, SetID: e.setDOSExempt6.ID, Invert: true},
+	}
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -655,6 +783,31 @@ func (e *Engine) createSets() error {
 				fmt.Fprintf(os.Stderr, "firewall: loaded %d IPv6 country block ranges for %v\n",
 					len(country6Elements)/2, e.cfg.CountryBlock)
 			}
+		}
+	}
+
+	// DoS-exempt sets: sources here bypass per-IP rate-limit / conn-limit /
+	// port-flood rules. Populated from operator dos_exempt_ranges + provider
+	// overlay (pushed by the daemon before Apply).
+	v4Exempt, v6Exempt := EffectiveDOSExemptNets(e.cfg, e.dosExemptProviderNets)
+	e.setDOSExempt = &nftables.Set{
+		Table:    e.table,
+		Name:     "dos_exempt_nets",
+		KeyType:  nftables.TypeIPAddr,
+		Interval: true,
+	}
+	if err := e.conn.AddSet(e.setDOSExempt, dosExemptIntervalElems(v4Exempt)); err != nil {
+		return fmt.Errorf("dos_exempt_nets set: %w", err)
+	}
+	if e.cfg.IPv6 {
+		e.setDOSExempt6 = &nftables.Set{
+			Table:    e.table,
+			Name:     "dos_exempt_nets6",
+			KeyType:  nftables.TypeIP6Addr,
+			Interval: true,
+		}
+		if err := e.conn.AddSet(e.setDOSExempt6, dosExemptIntervalElems(v6Exempt)); err != nil {
+			return fmt.Errorf("dos_exempt_nets6 set: %w", err)
 		}
 	}
 
@@ -904,25 +1057,7 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
-				&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
-				// Load source IP for per-IP metering
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterSYN.Name,
-					SetID:     e.meterSYN.ID,
-					Operation: 1, // NFT_DYNSET_OP_UPDATE
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.synFloodRuleExprs(),
 		})
 	}
 
@@ -937,56 +1072,17 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{
-					SourceRegister: 1, DestRegister: 1, Len: 4,
-					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-					Xor:  binaryutil.NativeEndian.PutUint32(0),
-				},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				// Load source IP for per-IP metering
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterConn.Name,
-					SetID:     e.meterConn.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.ConnRateLimit), Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.connMeterRuleExprs(uint64(e.cfg.ConnRateLimit), burst),
 		})
 	}
 
 	// Per-IP concurrent connection limit (CONNLIMIT)
 	if e.cfg.ConnLimit > 0 && e.meterConnlim != nil {
+		// #nosec G115 -- ConnLimit is operator-configured non-negative int; fits in uint32.
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{
-					SourceRegister: 1, DestRegister: 1, Len: 4,
-					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-					Xor:  binaryutil.NativeEndian.PutUint32(0),
-				},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterConnlim.Name,
-					SetID:     e.meterConnlim.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						// #nosec G115 -- ConnLimit is operator-configured non-negative int; fits in uint32.
-						&expr.Connlimit{Count: uint32(e.cfg.ConnLimit), Flags: 1}, // 1 = over
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.connlimitRuleExprs(uint32(e.cfg.ConnLimit)),
 		})
 	}
 
@@ -1019,6 +1115,19 @@ func (e *Engine) createInputChain() error {
 			if exprs == nil {
 				continue
 			}
+			// Mail TCP ports (25/465/587) get an inverted exempt-set lookup
+			// prepended so sources in dos_exempt_nets/dos_exempt_nets6 bypass
+			// rate limiting. Register-reuse safety: dosExemptV*Lookup writes
+			// saddr into reg 1; the MetaKeyNFPROTO load that immediately follows
+			// in the port-flood exprs overwrites reg 1 independently.
+			if isMailTCP(pf) {
+				switch {
+				case item.family == portFloodIPv4 && e.setDOSExempt != nil:
+					exprs = append(e.dosExemptV4Lookup(1), exprs...)
+				case item.family == portFloodIPv6 && e.setDOSExempt6 != nil:
+					exprs = append(e.dosExemptV6Lookup(1), exprs...)
+				}
+			}
 			e.conn.AddRule(&nftables.Rule{
 				Table: e.table,
 				Chain: e.chainIn,
@@ -1037,21 +1146,7 @@ func (e *Engine) createInputChain() error {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-				&expr.Dynset{
-					SrcRegKey: 1,
-					SetName:   e.meterUDP.Name,
-					SetID:     e.meterUDP.ID,
-					Operation: 1,
-					Exprs: []expr.Any{
-						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.UDPFloodRate), Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
-					},
-				},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: e.udpFloodRuleExprs(uint64(e.cfg.UDPFloodRate), burst),
 		})
 	}
 
@@ -1461,6 +1556,118 @@ func buildSetMatchRuleExprs(set *nftables.Set, verdict expr.VerdictKind, nfproto
 		&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
 		&expr.Verdict{Kind: verdict},
 	}
+}
+
+// synFloodRuleExprs builds the expression list for the per-IP SYN flood
+// rate-limit rule. The rule is intentionally NOT exempt-aware: SYN flood
+// protection targets TCP half-open storms and is applied without a dos_exempt
+// guard (unlike connection meters).
+func (e *Engine) synFloodRuleExprs() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
+		// Load source IP for per-IP metering
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterSYN.Name,
+			SetID:     e.meterSYN.ID,
+			Operation: 1, // NFT_DYNSET_OP_UPDATE
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+}
+
+// udpFloodRuleExprs builds the expression list for the per-IP UDP flood
+// rate-limit rule. Like synFloodRuleExprs, this rule carries no dos_exempt
+// guard.
+func (e *Engine) udpFloodRuleExprs(rate uint64, burst uint32) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterUDP.Name,
+			SetID:     e.meterUDP.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+}
+
+// connMeterRuleExprs builds the expression list for the per-IP new-connection
+// rate-limit rule. When setDOSExempt is non-nil, an inverted source-set lookup
+// is prepended so sources in dos_exempt_nets bypass the rule entirely.
+//
+// Register-reuse safety: dosExemptV4Lookup writes saddr into reg 1. The
+// following Ct and Payload exprs reload reg 1 with ct-state and saddr
+// respectively, so the exempt check can never interfere with the meter logic.
+func (e *Engine) connMeterRuleExprs(rate uint64, burst uint32) []expr.Any {
+	exprs := []expr.Any{
+		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+			Xor:  binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		// Load source IP for per-IP metering
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterConn.Name,
+			SetID:     e.meterConn.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+	if e.setDOSExempt != nil {
+		exprs = append(e.dosExemptV4Lookup(1), exprs...)
+	}
+	return exprs
+}
+
+// connlimitRuleExprs builds the expression list for the per-IP concurrent
+// connection limit rule. When setDOSExempt is non-nil, an inverted source-set
+// lookup is prepended so sources in dos_exempt_nets bypass the rule.
+func (e *Engine) connlimitRuleExprs(limit uint32) []expr.Any {
+	exprs := []expr.Any{
+		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+			Xor:  binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		&expr.Dynset{
+			SrcRegKey: 1,
+			SetName:   e.meterConnlim.Name,
+			SetID:     e.meterConnlim.ID,
+			Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Connlimit{Count: limit, Flags: 1}, // 1 = over
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	}
+	if e.setDOSExempt != nil {
+		exprs = append(e.dosExemptV4Lookup(1), exprs...)
+	}
+	return exprs
 }
 
 // addCFWhitelistRule adds an accept rule for Cloudflare IPs on TCP ports 80 and 443.
@@ -3045,6 +3252,19 @@ func (e *Engine) RuleCounts() RuleCounts {
 	defer e.mu.Unlock()
 	s := e.loadStateFile()
 	return countRuleEntries(s, e.cfg != nil && e.cfg.IPv6)
+}
+
+// BlockedSubnets returns a snapshot of the active persisted subnet blocks.
+// The returned slice is a fresh copy: loadStateFile reuses the warm shared
+// state cache, so the slice it returns can alias internal engine state. Copy
+// it here so a caller mutating the result cannot corrupt the cache. SubnetEntry
+// is a value type (strings + time.Time, no reference fields), so a slice copy
+// is a sufficient deep copy.
+func (e *Engine) BlockedSubnets() []SubnetEntry {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s := e.loadStateFile()
+	return append([]SubnetEntry(nil), s.BlockedNet...)
 }
 
 // Status returns current firewall statistics.

@@ -1744,3 +1744,506 @@ func TestAutoBlockHTTPASNCrawlGuards(t *testing.T) {
 		}
 	})
 }
+
+// cfgWithExempt returns a config with the given CIDR ranges as DoS-exempt
+// operator ranges. Known mail-provider ranges are disabled so tests are
+// deterministic regardless of the embedded snapshot.
+func cfgWithExempt(t *testing.T, ranges ...string) *config.Config {
+	t.Helper()
+	f := false
+	cfg := &config.Config{}
+	cfg.Firewall = &firewall.FirewallConfig{
+		DOSExemptRanges:             ranges,
+		DOSExemptKnownMailProviders: &f,
+	}
+	return cfg
+}
+
+// preBlockedIPBlocker wraps recordingIPBlocker to report specific IPs as
+// already blocked so the AutoBlockIPs reconciliation loop does not prune
+// them from block state during the initial "engine expired" sweep.
+type preBlockedIPBlocker struct {
+	*recordingIPBlocker
+	live map[string]bool
+}
+
+func (b *preBlockedIPBlocker) IsBlocked(ip string) bool { return b.live[ip] }
+
+// TestNetblock_SkipsExemptSubnet verifies that IPs individually blocked from
+// a DoS-exempt range never trigger a subnet block even when their count meets
+// the netblock threshold.
+func TestNetblock_SkipsExemptSubnet(t *testing.T) {
+	// Case 1: 3 IPs in exempt 203.0.113.0/24 -- BlockSubnet must NOT be called.
+	t.Run("exempt-suppresses-netblock", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		oldCL := GetChallengeIPList()
+		SetChallengeIPList(nil)
+		t.Cleanup(func() { SetChallengeIPList(oldCL) })
+
+		f := false
+		cfg := &config.Config{}
+		cfg.StatePath = t.TempDir()
+		cfg.AutoResponse.Enabled = true
+		cfg.AutoResponse.BlockIPs = true
+		cfg.AutoResponse.NetBlock = true
+		cfg.AutoResponse.NetBlockThreshold = 3
+		cfg.Firewall = &firewall.FirewallConfig{
+			DOSExemptRanges:             []string{"203.0.113.0/24"},
+			DOSExemptKnownMailProviders: &f,
+		}
+
+		findings := []alert.Finding{
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.1", Message: "brute from 203.0.113.1"},
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.2", Message: "brute from 203.0.113.2"},
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.3", Message: "brute from 203.0.113.3"},
+		}
+		AutoBlockIPs(cfg, findings)
+
+		for _, sc := range blocker.subnetCalls {
+			if sc.cidr == "203.0.113.0/24" {
+				t.Fatalf("exempt subnet 203.0.113.0/24 must not be blocked; subnetCalls=%+v", blocker.subnetCalls)
+			}
+		}
+	})
+
+	// Case 2: same 3 IPs in non-exempt 203.0.113.0/24 -- BlockSubnet MUST be called.
+	t.Run("non-exempt-triggers-netblock", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		oldCL := GetChallengeIPList()
+		SetChallengeIPList(nil)
+		t.Cleanup(func() { SetChallengeIPList(oldCL) })
+
+		f := false
+		cfg := &config.Config{}
+		cfg.StatePath = t.TempDir()
+		cfg.AutoResponse.Enabled = true
+		cfg.AutoResponse.BlockIPs = true
+		cfg.AutoResponse.NetBlock = true
+		cfg.AutoResponse.NetBlockThreshold = 3
+		cfg.Firewall = &firewall.FirewallConfig{
+			DOSExemptRanges:             nil,
+			DOSExemptKnownMailProviders: &f,
+		}
+
+		findings := []alert.Finding{
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.1", Message: "brute from 203.0.113.1"},
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.2", Message: "brute from 203.0.113.2"},
+			{Check: "wp_login_bruteforce", SourceIP: "203.0.113.3", Message: "brute from 203.0.113.3"},
+		}
+		AutoBlockIPs(cfg, findings)
+
+		var saw bool
+		for _, sc := range blocker.subnetCalls {
+			if sc.cidr == "203.0.113.0/24" {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Fatalf("non-exempt /24 must be blocked; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	})
+}
+
+// TestNetblock_ExemptIPsNotCounted verifies that pre-blocked IPs inside
+// an exempt range are excluded from the per-subnet threshold count, so they
+// cannot push a subnet over the netblock threshold.
+func TestNetblock_ExemptIPsNotCounted(t *testing.T) {
+	blocker := &preBlockedIPBlocker{
+		recordingIPBlocker: &recordingIPBlocker{},
+		live: map[string]bool{
+			"203.0.113.1": true,
+			"203.0.113.2": true,
+			"203.0.113.3": true,
+		},
+	}
+	prev := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+
+	oldCL := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldCL) })
+
+	f := false
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 3
+	cfg.Firewall = &firewall.FirewallConfig{
+		DOSExemptRanges:             []string{"203.0.113.0/24"},
+		DOSExemptKnownMailProviders: &f,
+	}
+
+	now := time.Now()
+	saveBlockState(cfg.StatePath, &blockState{
+		IPs: []blockedIP{
+			{IP: "203.0.113.1", Reason: "test", BlockedAt: now, ExpiresAt: now.Add(time.Hour)},
+			{IP: "203.0.113.2", Reason: "test", BlockedAt: now, ExpiresAt: now.Add(time.Hour)},
+			{IP: "203.0.113.3", Reason: "test", BlockedAt: now, ExpiresAt: now.Add(time.Hour)},
+		},
+	})
+
+	AutoBlockIPs(cfg, nil)
+
+	if len(blocker.subnetCalls) != 0 {
+		t.Fatalf("exempt IPs must not contribute to threshold count; subnetCalls=%+v", blocker.subnetCalls)
+	}
+}
+
+// TestIPv6Netblock_SkipsExemptSubnet verifies that IPv6 addresses from an
+// exempt /64 do not trigger a /64 subnet block.
+func TestIPv6Netblock_SkipsExemptSubnet(t *testing.T) {
+	blocker := &recordingIPBlocker{}
+	prev := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+
+	oldCL := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldCL) })
+
+	f := false
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 2
+	cfg.Firewall = &firewall.FirewallConfig{
+		DOSExemptRanges:             []string{"2001:db8:1::/64"},
+		DOSExemptKnownMailProviders: &f,
+	}
+
+	findings := []alert.Finding{
+		{Check: "wp_login_bruteforce", SourceIP: "2001:db8:1::10", Message: "brute from 2001:db8:1::10"},
+		{Check: "wp_login_bruteforce", SourceIP: "2001:db8:1::20", Message: "brute from 2001:db8:1::20"},
+	}
+	AutoBlockIPs(cfg, findings)
+
+	for _, sc := range blocker.subnetCalls {
+		if sc.cidr == "2001:db8:1::/64" {
+			t.Fatalf("exempt IPv6 /64 must not be blocked; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	}
+}
+
+// TestSprayASNCrawl_SkipExemptSubnet verifies that the direct subnet paths
+// (smtp_subnet_spray, mail_subnet_spray, http_asn_crawl) skip CIDRs that
+// intersect a DoS-exempt range.
+func TestSprayASNCrawl_SkipExemptSubnet(t *testing.T) {
+	f := false
+
+	newCfg := func(t *testing.T) *config.Config {
+		t.Helper()
+		cfg := &config.Config{}
+		cfg.StatePath = t.TempDir()
+		cfg.AutoResponse.Enabled = true
+		cfg.AutoResponse.BlockIPs = true
+		cfg.Firewall = &firewall.FirewallConfig{
+			DOSExemptRanges:             []string{"203.0.113.0/24"},
+			DOSExemptKnownMailProviders: &f,
+		}
+		return cfg
+	}
+
+	t.Run("smtp-spray", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := newCfg(t)
+		AutoBlockIPs(cfg, []alert.Finding{{
+			Check:   "smtp_subnet_spray",
+			Message: "SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+		}})
+		if len(blocker.subnetCalls) != 0 {
+			t.Fatalf("smtp_subnet_spray: exempt CIDR must be skipped; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	})
+
+	t.Run("mail-spray", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		cfg := newCfg(t)
+		AutoBlockIPs(cfg, []alert.Finding{{
+			Check:   "mail_subnet_spray",
+			Message: "Mail password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+		}})
+		if len(blocker.subnetCalls) != 0 {
+			t.Fatalf("mail_subnet_spray: exempt CIDR must be skipped; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	})
+
+	t.Run("asn-crawl", func(t *testing.T) {
+		blocker := &recordingIPBlocker{}
+		prev := getIPBlocker()
+		SetIPBlocker(blocker)
+		t.Cleanup(func() { SetIPBlocker(prev) })
+
+		dryRun := false
+		cfg := newCfg(t)
+		cfg.AutoResponse.DryRun = &dryRun
+		cfg.AutoResponse.HTTPASNCrawlTempban = "24h"
+		AutoBlockIPs(cfg, []alert.Finding{{
+			Check:    "http_asn_crawl",
+			Severity: alert.Critical,
+			Message:  "Distributed crawl",
+			CIDRs:    []string{"203.0.113.0/24"},
+		}})
+		if len(blocker.subnetCalls) != 0 {
+			t.Fatalf("http_asn_crawl: exempt CIDR must be skipped; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	})
+}
+
+// TestExemptSubnetSkipDoesNotConsumeHourlyBudget verifies that skipping an
+// exempt CIDR in the http_asn_crawl path does not consume a MaxBlocksPerHour
+// slot, so a subsequent non-exempt subnet can still be blocked in the same cycle.
+func TestExemptSubnetSkipDoesNotConsumeHourlyBudget(t *testing.T) {
+	blocker := &recordingIPBlocker{}
+	prev := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+
+	f := false
+	dryRun := false
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.DryRun = &dryRun
+	cfg.AutoResponse.HTTPASNCrawlTempban = "24h"
+	cfg.AutoResponse.MaxBlocksPerHour = 1
+	cfg.Firewall = &firewall.FirewallConfig{
+		DOSExemptRanges:             []string{"203.0.113.0/24"},
+		DOSExemptKnownMailProviders: &f,
+	}
+
+	AutoBlockIPs(cfg, []alert.Finding{{
+		Check:    "http_asn_crawl",
+		Severity: alert.Critical,
+		Message:  "Distributed crawl",
+		CIDRs:    []string{"203.0.113.0/24", "198.51.100.0/24"},
+	}})
+
+	for _, sc := range blocker.subnetCalls {
+		if sc.cidr == "203.0.113.0/24" {
+			t.Fatalf("exempt CIDR must not be blocked; subnetCalls=%+v", blocker.subnetCalls)
+		}
+	}
+
+	var saw198 bool
+	for _, sc := range blocker.subnetCalls {
+		if sc.cidr == "198.51.100.0/24" {
+			saw198 = true
+		}
+	}
+	if !saw198 {
+		t.Fatalf("non-exempt CIDR must be blocked after exempt skip (budget must not be consumed); subnetCalls=%+v", blocker.subnetCalls)
+	}
+
+	state := loadBlockState(cfg.StatePath)
+	if state.BlocksThisHour != 1 {
+		t.Fatalf("BlocksThisHour = %d, want 1 (only non-exempt block counted)", state.BlocksThisHour)
+	}
+}
+
+func TestCidrIntersectsDOSExempt(t *testing.T) {
+	// Exact IPv4 overlap.
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+	if !cidrIntersectsDOSExempt(cfg, "203.0.113.0/24") {
+		t.Fatal("exact overlap: expected true")
+	}
+	// Non-overlapping IPv4.
+	if cidrIntersectsDOSExempt(cfg, "198.51.100.0/24") {
+		t.Fatal("no overlap: expected false")
+	}
+	// Malformed CIDR must fail safe (return true).
+	if !cidrIntersectsDOSExempt(cfg, "garbage") {
+		t.Fatal("malformed must fail safe to true")
+	}
+	// Candidate is a supernet of the exempt range (two-way Contains: candidate
+	// bigger than exempt -> ipnet.Contains(exempt.IP) arm).
+	if !cidrIntersectsDOSExempt(cfg, "203.0.112.0/23") {
+		t.Fatal("candidate supernet of exempt: expected true")
+	}
+	// Candidate is a host inside the exempt range (two-way Contains: exempt
+	// bigger than candidate -> exempt.Contains(ipnet.IP) arm in isolation).
+	if !cidrIntersectsDOSExempt(cfg, "203.0.113.5/32") {
+		t.Fatal("host inside exempt /24 must intersect")
+	}
+	// IPv6 exempt range - exact overlap.
+	cfgV6 := cfgWithExempt(t, "2001:db8::/64")
+	if !cidrIntersectsDOSExempt(cfgV6, "2001:db8::/64") {
+		t.Fatal("exact IPv6 /64 overlap: expected true")
+	}
+	// IPv6 non-overlapping range.
+	if cidrIntersectsDOSExempt(cfgV6, "2001:db8:1::/64") {
+		t.Fatal("non-overlapping IPv6 /64: expected false")
+	}
+}
+
+// subnetManagerBlocker is a test double that satisfies both IPBlocker and the
+// subnetManager interface expected by PruneExemptAutoSubnets.
+type subnetManagerBlocker struct {
+	subnets    []firewall.SubnetEntry
+	unblocked  []string
+	unblockErr error
+	// callCount counts every UnblockSubnet invocation, success or error, so a
+	// test can prove the prune loop continued past a failing entry.
+	callCount int
+}
+
+func (b *subnetManagerBlocker) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
+func (b *subnetManagerBlocker) UnblockIP(_ string) error                          { return nil }
+func (b *subnetManagerBlocker) IsBlocked(_ string) bool                           { return false }
+func (b *subnetManagerBlocker) BlockSubnet(_ string, _ string, _ time.Duration) error {
+	return nil
+}
+func (b *subnetManagerBlocker) IsSubnetBlocked(_ string) bool { return false }
+func (b *subnetManagerBlocker) BlockedSubnets() []firewall.SubnetEntry {
+	out := make([]firewall.SubnetEntry, len(b.subnets))
+	copy(out, b.subnets)
+	return out
+}
+func (b *subnetManagerBlocker) UnblockSubnet(cidr string) error {
+	b.callCount++
+	if b.unblockErr != nil {
+		return b.unblockErr
+	}
+	b.unblocked = append(b.unblocked, cidr)
+	return nil
+}
+
+// TestPruneExemptAutoSubnets verifies that PruneExemptAutoSubnets:
+//   - calls UnblockSubnet only for auto_response entries whose CIDR intersects
+//     the DoS-exempt set
+//   - leaves every other provenance source untouched even when it intersects
+//     the exempt range (web_ui, cli, challenge, whitelist, dyndns, system,
+//     unknown, and an empty/zero source)
+//   - leaves auto_response entries outside the exempt range untouched
+//   - returns the correct pruned count
+//   - returns 0 when the blocker does not implement subnetManager
+func TestPruneExemptAutoSubnets(t *testing.T) {
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+
+	// Every non-auto_response provenance source, each intersecting the exempt
+	// range, must survive. Sources are the real constants from
+	// internal/firewall/provenance.go plus an explicit empty source.
+	survivorSources := []string{
+		firewall.SourceWebUI,
+		firewall.SourceCLI,
+		firewall.SourceChallenge,
+		firewall.SourceWhitelist,
+		firewall.SourceDynDNS,
+		firewall.SourceSystem,
+		firewall.SourceUnknown,
+		"", // empty/zero source must also be left alone
+	}
+
+	subnets := []firewall.SubnetEntry{
+		// Should be pruned: auto_response + intersects exempt range.
+		{CIDR: "203.0.113.0/24", Source: firewall.SourceAutoResponse, Reason: "http_asn_crawl"},
+		// Should be pruned: auto_response + subnet of exempt range.
+		{CIDR: "203.0.113.128/25", Source: firewall.SourceAutoResponse, Reason: "netblock"},
+		// Should NOT be pruned: auto_response but outside exempt range.
+		{CIDR: "198.51.100.0/24", Source: firewall.SourceAutoResponse, Reason: "http_asn_crawl"},
+	}
+	// One intersecting entry per non-auto_response source. Distinct /28s inside
+	// the exempt /24 so each is a separately addressable survivor.
+	for i, src := range survivorSources {
+		subnets = append(subnets, firewall.SubnetEntry{
+			CIDR:   fmt.Sprintf("203.0.113.%d/28", i*16),
+			Source: src,
+			Reason: "operator",
+		})
+	}
+
+	sm := &subnetManagerBlocker{subnets: subnets}
+
+	pruned := PruneExemptAutoSubnets(cfg, sm)
+
+	if pruned != 2 {
+		t.Errorf("want 2 pruned, got %d", pruned)
+	}
+	if len(sm.unblocked) != 2 {
+		t.Fatalf("want 2 UnblockSubnet calls, got %d: %v", len(sm.unblocked), sm.unblocked)
+	}
+	// Only the two intersecting auto_response CIDRs may be unblocked.
+	wantUnblocked := map[string]bool{
+		"203.0.113.0/24":   true,
+		"203.0.113.128/25": true,
+	}
+	for _, cidr := range sm.unblocked {
+		if !wantUnblocked[cidr] {
+			t.Errorf("unexpected unblock of %s", cidr)
+		}
+	}
+	// The non-exempt auto_response entry and every survivor source must NOT have
+	// been unblocked.
+	unblockedSet := make(map[string]bool, len(sm.unblocked))
+	for _, cidr := range sm.unblocked {
+		unblockedSet[cidr] = true
+	}
+	if unblockedSet["198.51.100.0/24"] {
+		t.Errorf("non-exempt auto_response subnet 198.51.100.0/24 must not be unblocked")
+	}
+	for i := range survivorSources {
+		cidr := fmt.Sprintf("203.0.113.%d/28", i*16)
+		if unblockedSet[cidr] {
+			t.Errorf("source %q survivor %s was unblocked but must be left alone",
+				survivorSources[i], cidr)
+		}
+	}
+
+	// Blocker that does not implement subnetManager must return 0.
+	plain := &recordingIPBlocker{}
+	if n := PruneExemptAutoSubnets(cfg, plain); n != 0 {
+		t.Errorf("plain IPBlocker: want 0, got %d", n)
+	}
+}
+
+// TestPruneExemptAutoSubnetsUnblockError verifies that an UnblockSubnet error
+// is logged (we check stderr is not crashed) and the failing entry is not
+// counted as pruned, but processing continues for subsequent entries.
+func TestPruneExemptAutoSubnetsUnblockError(t *testing.T) {
+	cfg := cfgWithExempt(t, "203.0.113.0/24")
+
+	sm := &subnetManagerBlocker{
+		subnets: []firewall.SubnetEntry{
+			{CIDR: "203.0.113.0/28", Source: firewall.SourceAutoResponse, Reason: "x"},
+			{CIDR: "203.0.113.16/28", Source: firewall.SourceAutoResponse, Reason: "x"},
+		},
+		unblockErr: fmt.Errorf("nftables: permission denied"),
+	}
+
+	pruned := PruneExemptAutoSubnets(cfg, sm)
+
+	// Both entries matched but both failed to unblock → 0 pruned.
+	if pruned != 0 {
+		t.Errorf("want 0 pruned on unblock errors, got %d", pruned)
+	}
+	// The loop must have CONTINUED past the first failing entry and attempted
+	// the second too: two UnblockSubnet calls, both errored.
+	if sm.callCount != 2 {
+		t.Errorf("want 2 UnblockSubnet attempts (loop continued past error), got %d", sm.callCount)
+	}
+	// No entry recorded as successfully unblocked.
+	if len(sm.unblocked) != 0 {
+		t.Errorf("unblockErr set but unblocked list non-empty: %v", sm.unblocked)
+	}
+}

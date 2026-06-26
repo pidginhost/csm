@@ -483,3 +483,67 @@ func TestResolveSubnetSetMalformedIPReturnsNil(t *testing.T) {
 		t.Errorf("malformed net.IPNet should yield (nil, nil, nil), got (%v, %v, %v)", set, start, end)
 	}
 }
+
+// TestEngineBlockedSubnets verifies that BlockedSubnets returns a copy of the
+// persisted subnet entries without exposing internal state. The mutation is
+// proved against a WARM state cache: the first call populates the shared cache
+// (ensureStateCacheLocked), the caller mutates the returned slice, and a second
+// call must still read the original data. An aliasing implementation would let
+// the mutation corrupt the cache and surface on the warm read.
+func TestEngineBlockedSubnets(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{statePath: dir}
+
+	// Persist two subnet entries with different sources.
+	autoEntry := SubnetEntry{
+		CIDR:      "198.51.100.0/24",
+		Reason:    "http_asn_crawl",
+		Source:    SourceAutoResponse,
+		BlockedAt: time.Now().Truncate(time.Second),
+	}
+	webuiEntry := SubnetEntry{
+		CIDR:      "203.0.113.0/24",
+		Reason:    "operator block",
+		Source:    SourceWebUI,
+		BlockedAt: time.Now().Truncate(time.Second),
+	}
+	e.saveSubnetEntry(autoEntry)
+	e.saveSubnetEntry(webuiEntry)
+
+	// First call warms the shared state cache and returns a snapshot.
+	first := e.BlockedSubnets()
+	if len(first) != 2 {
+		t.Fatalf("BlockedSubnets: want 2 entries, got %d", len(first))
+	}
+
+	// Mutate every element of the returned slice. With a warm cache, an aliasing
+	// implementation would let this corrupt the cached engine state.
+	for i := range first {
+		first[i].CIDR = "mutated"
+		first[i].Source = "mutated"
+	}
+
+	// Second call hits the WARM cache. If BlockedSubnets aliased internal state,
+	// these reads would now return "mutated".
+	second := e.BlockedSubnets()
+	if len(second) != 2 {
+		t.Fatalf("BlockedSubnets (warm): want 2 entries, got %d", len(second))
+	}
+	for _, entry := range second {
+		if entry.CIDR == "mutated" || entry.Source == "mutated" {
+			t.Fatalf("BlockedSubnets: warm-cache read returned mutated state %+v — slice is not a copy", entry)
+		}
+	}
+
+	// Source field must be preserved across the warm read.
+	sources := make(map[string]int)
+	for _, entry := range second {
+		sources[entry.Source]++
+	}
+	if sources[SourceAutoResponse] != 1 {
+		t.Errorf("want 1 auto_response entry, got %d", sources[SourceAutoResponse])
+	}
+	if sources[SourceWebUI] != 1 {
+		t.Errorf("want 1 web_ui entry, got %d", sources[SourceWebUI])
+	}
+}

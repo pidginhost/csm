@@ -32,6 +32,7 @@ import (
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
+	"github.com/pidginhost/csm/internal/mailranges"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -564,6 +565,7 @@ func (d *Daemon) Run() error {
 	d.registerFirewallMetrics()
 	checks.RegisterDirectSMTPEgressMetrics(metrics.Default())
 	RegisterBPFEnforcementMetrics(metrics.Default())
+	mailranges.RegisterMailrangesMetrics(metrics.Default())
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
@@ -587,6 +589,12 @@ func (d *Daemon) Run() error {
 	// soft-allow gate consults this registry from its first block decision.
 	startupBotEntries := verifiedBotEntries(d.cfg)
 	threatintel.SetOperatorBots(startupBotEntries)
+
+	// Load the mail-provider IP range cache synchronously before startFirewall()
+	// so engine.SetDOSExemptProviderNets receives a full provider set and the
+	// first Apply() builds dos_exempt_nets with current data. The background
+	// refresh goroutine is registered here as well.
+	d.initMailRanges()
 
 	// Start firewall engine if enabled
 	d.startFirewall()
@@ -2685,6 +2693,12 @@ func (d *Daemon) startFirewall() {
 		return parsed != nil && threatintel.IPInAnyVerifiedBotRange(parsed)
 	})
 
+	// Push the mail-provider ranges loaded by initMailRanges() into the engine
+	// before Apply() so the dos_exempt_nets interval sets are populated in the
+	// first nftables transaction. initMailRanges() runs before startFirewall()
+	// so ProviderNets() always returns the cached or embedded snapshot here.
+	engine.SetDOSExemptProviderNets(mailranges.ProviderNets())
+
 	if err := engine.Apply(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
 		return
@@ -2704,6 +2718,10 @@ func (d *Daemon) startFirewall() {
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
+	// Prune auto-response subnet blocks that now intersect the DoS-exempt set.
+	// The mail-provider cache is loaded (initMailRanges ran before startFirewall)
+	// and Apply has completed, so the exempt set is current.
+	checks.PruneExemptAutoSubnets(d.cfg, engine)
 	// Wire the incident firewall hand-off through BlockIPOutcome so the
 	// correlator can distinguish live nftables mutation from dry-run,
 	// verdict-allow, and other no-op outcomes.

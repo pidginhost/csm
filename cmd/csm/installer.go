@@ -497,6 +497,8 @@ firewall:
   #   - "myhost.dyndns.org"
   log_dropped: true
   log_rate: 5                   # dropped packet log entries per minute
+  dos_exempt_ranges: []            # operator CIDR/IP exemptions from per-IP DoS heuristics (rate-limit, conn-limit, port-flood)
+  dos_exempt_known_mail_providers: true  # include bundled Google/Microsoft outbound-mail ranges in the exempt set; set false to disable
 
 c2_blocklist:
   # Add any locally maintained blocklist IPs here.

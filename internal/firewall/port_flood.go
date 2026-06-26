@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -92,4 +93,19 @@ func portFloodProto(pf PortFloodRule) string {
 		return "udp"
 	}
 	return "tcp"
+}
+
+// isMailTCP reports whether pf is a TCP rule for a standard mail relay or
+// submission port (25, 465, 587). Only these ports receive the DoS-exempt
+// inverted-lookup guard; all other TCP ports and UDP rules are left unchanged.
+func isMailTCP(pf PortFloodRule) bool {
+	if !strings.EqualFold(pf.Proto, "tcp") {
+		return false
+	}
+	switch pf.Port {
+	case 25, 465, 587:
+		return true
+	default:
+		return false
+	}
 }

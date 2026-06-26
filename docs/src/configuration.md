@@ -590,6 +590,11 @@ firewall:
       hits: 600
       seconds: 300
 
+  # DoS-exempt ranges: bypass per-IP DoS meters and subnet auto-blocks.
+  # See firewall.dos_exempt_ranges below for full details.
+  dos_exempt_ranges: []                 # CIDRs or single IPs exempt from rate/conn/flood meters and subnet auto-blocks; /0 and bare hostnames rejected at load
+  dos_exempt_known_mail_providers: true # also exempt Google and Microsoft mail-provider egress ranges; dynamic, cached, updated every 12h (default: true)
+
   # UDP flood protection
   udp_flood: true
   udp_flood_rate: 100                   # packets per second
@@ -915,3 +920,13 @@ Phase 3 detector. `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 Phase 4 enforcement. Requires a BPF-capable connection tracker at
 runtime; `auto` falls back to legacy detection on older servers. See
 [BPF enforcement](bpf-enforcement.md).
+
+## firewall.dos_exempt_ranges
+
+`dos_exempt_ranges` is a list of CIDRs or single IPs (/32 for IPv4, /128 for IPv6) declared by the operator. Entries are validated at startup; /0 default routes, bare hostnames, and malformed CIDRs are rejected before the daemon starts. Default: empty (no declared ranges).
+
+`dos_exempt_known_mail_providers` (bool, default true) adds Google and Microsoft outbound mail IP ranges to the effective exempt set automatically. The ranges are sourced dynamically and cached on disk; a built-in snapshot covers startup before the first live refresh. The cache is refreshed every 12 hours.
+
+Sources in the effective exempt set bypass the per-IP new-connection rate-limit, the concurrent connection-limit, and the TCP port 25/465/587 flood meters. Subnet auto-block (spray, ASN-crawl, and netblock escalation) skips CIDRs that intersect an exempt range, and exempt IPs do not count toward the netblock threshold.
+
+Exempt sources do not bypass: manual blocks (`csm firewall deny` or `csm firewall deny-subnet`), SYN flood protection, UDP flood protection, country blocking, and port policy. A manual block placed inside an exempt range still takes effect because blocked sets are evaluated before the DoS meters. See [Firewall - DoS-exempt ranges](firewall.md#dos-exempt-ranges).
