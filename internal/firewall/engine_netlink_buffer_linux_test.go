@@ -27,9 +27,10 @@ func TestNFTSocketBufferEnlarged(t *testing.T) {
 	}
 	defer func() { _ = nc.Close() }()
 
-	if err := applyNFTSocketBuffer(nc); err != nil {
-		t.Fatalf("applyNFTSocketBuffer: %v", err)
-	}
+	// applyNFTSocketBuffer is best-effort and always returns nil (a resize
+	// failure is swallowed so it never breaks the connection); call it for its
+	// side effect and verify the resulting buffer below.
+	_ = applyNFTSocketBuffer(nc)
 
 	sc, err := nc.SyscallConn()
 	if err != nil {

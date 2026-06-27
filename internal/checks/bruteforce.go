@@ -45,7 +45,7 @@ const (
 	// nil config (tests). The live default comes from config
 	// (thresholds.xmlrpc_threshold, default DefaultXMLRPCThreshold); keep this in
 	// sync with that default.
-	xmlrpcThreshold = 100
+	xmlrpcThreshold  = 100
 	ftpFailThreshold = 10
 	webmailThreshold = 10
 	apiFailThreshold = 10
