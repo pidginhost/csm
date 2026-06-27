@@ -165,10 +165,19 @@ thresholds:
   http_flood_window_min: 5             # rate window in minutes (default: 5)
 
   # http_ua_spoof_threshold: per-IP per-window count for non-browser UA
-  # kinds before http_ua_spoof fires. Claimed search-engine bots (Googlebot,
-  # Bingbot, Applebot) that fail reverse-DNS confirmation fire regardless of
-  # this threshold once the rDNS cache confirms the IP is not the real bot.
+  # kinds (including claimed search-engine bots such as Googlebot/Bingbot/
+  # Applebot that fail reverse-DNS confirmation) before http_ua_spoof fires.
+  # A single bot-like request from a residential or mobile client no longer
+  # hard-blocks it; sustained activity is required. Raise this for visitor
+  # pools that legitimately send unusual User-Agents.
   http_ua_spoof_threshold: 30          # default: 30
+
+  # xmlrpc_threshold: per-IP POST /xmlrpc.php count within the domlog window
+  # before xmlrpc_abuse fires (a hard auto-block). WordPress sites using
+  # Jetpack, the mobile app, or WooCommerce make many legitimate xmlrpc.php
+  # calls, so this defaults higher than the legacy value. Set 0 to disable the
+  # check entirely; an absent key uses the built-in default.
+  xmlrpc_threshold: 100                # default: 100; 0 = disabled
 
   # http_distributed_min_ips: distinct already-abusive source IPs that hit
   # the same vhost in one scan window before a per-vhost distributed flood
