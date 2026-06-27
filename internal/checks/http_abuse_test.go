@@ -60,7 +60,9 @@ func TestRefactorParity(t *testing.T) {
 		stats.scan(rec, nil, nopBotClassifier{})
 	}
 
-	got := stats.emitLegacy(nil)
+	cfg := &config.Config{}
+	cfg.Thresholds.XMLRPCThreshold = 30 // match the 32-request fixture above
+	got := stats.emitLegacy(cfg)
 	sort.Slice(got, func(i, j int) bool { return got[i].Check < got[j].Check })
 
 	want := []struct {
@@ -370,6 +372,7 @@ func TestHTTPDistributedFlood_FiresOnManyAbusiveIPsOneVhost(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold // seeded IPs each cross it
 
 	stats := newDomlogStatsAt(now)
 	seedAbusiveIPsToDomain(t, stats, "victim.example", 12, now)
@@ -424,6 +427,7 @@ func TestHTTPDistributedFlood_AbusiveIPContributesToEachAbusedVhost(t *testing.T
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 2
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold // seeded IPs each cross it
 
 	stats := newDomlogStatsAt(now)
 	for _, ip := range []string{"203.0.113.10", "203.0.113.11"} {

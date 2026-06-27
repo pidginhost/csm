@@ -41,7 +41,11 @@ func observeDomlogDrop(reason string) {
 
 const (
 	wpLoginThreshold = 20 // attempts per IP across all logs
-	xmlrpcThreshold  = 30
+	// xmlrpcThreshold is the fallback used only when emitLegacy is called with a
+	// nil config (tests). The live default comes from config
+	// (thresholds.xmlrpc_threshold, default DefaultXMLRPCThreshold); keep this in
+	// sync with that default.
+	xmlrpcThreshold = 100
 	ftpFailThreshold = 10
 	webmailThreshold = 10
 	apiFailThreshold = 10

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Firewall apply no longer fails on hosts with large blocklists: the engine now requests a larger netlink socket buffer, so applying a full ruleset does not overflow the kernel buffer and leave the firewall unmanaged.
+- XML-RPC abuse blocking is now tunable via `thresholds.xmlrpc_threshold` (set 0 to disable) and its default was raised, so busy WordPress sites using Jetpack, the mobile app, or WooCommerce are no longer auto-blocked for legitimate xmlrpc.php traffic.
 - Auto-response dry-run now also suppresses subnet blocks from the spray and netblock-escalation paths, matching how it already suppresses individual IP blocks.
 - Mail brute-force target summaries now escape unusual mailbox text and cap each name, so crafted login names cannot distort alert details.
 
