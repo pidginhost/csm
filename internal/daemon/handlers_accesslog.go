@@ -27,10 +27,9 @@ const (
 	// Sliding window for counting requests per IP.
 	accessLogWindow = 5 * time.Minute
 
-	// Thresholds within the window. Lower than periodic checks because
+	// Threshold within the window. Lower than periodic checks because
 	// we're watching in real-time and want fast response.
 	accessLogWPLoginThreshold = 10
-	accessLogXMLRPCThreshold  = 15
 
 	// Eviction: how often to prune expired trackers.
 	accessLogEvictInterval = 5 * time.Minute
@@ -124,6 +123,10 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	isWPLogin := strings.Contains(path, "wp-login.php")
 	isXMLRPC := strings.Contains(path, "xmlrpc.php")
 	isAdminPanel := isAdminPanelPath(path)
+	xmlrpcThreshold := effectiveAccessLogXMLRPCThreshold(cfg)
+	if isXMLRPC && xmlrpcThreshold <= 0 {
+		isXMLRPC = false
+	}
 
 	if !isWPLogin && !isXMLRPC && !isAdminPanel {
 		return nil
@@ -170,7 +173,7 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	if isXMLRPC && !tracker.xmlrpcAlerted {
 		tracker.xmlrpcTimes = pruneAndAppend(tracker.xmlrpcTimes, cutoff, now)
 
-		if len(tracker.xmlrpcTimes) >= accessLogXMLRPCThreshold {
+		if len(tracker.xmlrpcTimes) >= xmlrpcThreshold {
 			tracker.xmlrpcAlerted = true
 			results = append(results, alert.Finding{
 				Severity:  alert.Critical,
@@ -199,6 +202,13 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	return results
+}
+
+func effectiveAccessLogXMLRPCThreshold(cfg *config.Config) int {
+	if cfg == nil {
+		return config.DefaultXMLRPCThreshold
+	}
+	return cfg.Thresholds.XMLRPCThreshold
 }
 
 func loadAccessLogTracker(ip string, now time.Time) *accessLogTracker {

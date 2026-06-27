@@ -400,6 +400,7 @@ func TestHTTPDistributedFlood_DoesNotUseNormalCurrentHitsForStaleAbuse(t *testin
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 
 	stats := newDomlogStatsAt(now)
 	seedAbusiveIPsToDomain(t, stats, "attacked.example", 12, now.Add(-2*time.Hour))
@@ -483,6 +484,7 @@ func TestHTTPDistributedFlood_BelowThresholdAndDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 	for _, f := range stats.emit(cfg) {
 		if f.Check == "http_distributed_flood" {
 			t.Fatalf("6 IPs must not trip a min-10 distributed flood: %+v", f)
@@ -495,6 +497,7 @@ func TestHTTPDistributedFlood_BelowThresholdAndDisabled(t *testing.T) {
 	cfg0 := &config.Config{}
 	cfg0.Thresholds.HTTPFloodWindowMin = 60
 	cfg0.Thresholds.HTTPDistributedMinIPs = 0
+	cfg0.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 	for _, f := range stats2.emit(cfg0) {
 		if f.Check == "http_distributed_flood" {
 			t.Fatalf("threshold 0 must disable distributed flood: %+v", f)

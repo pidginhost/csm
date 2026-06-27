@@ -52,10 +52,11 @@ const (
 	// DefaultHTTPASNCrawlMinIPs is the minimum distinct source IPs from one
 	// ASN inside the window before http_asn_crawl fires. 0 disables the detector.
 	DefaultHTTPASNCrawlMinIPs = 25
-	// DefaultXMLRPCThreshold is the per-IP POST /xmlrpc.php count within the
-	// domlog window that trips xmlrpc_abuse. 0 disables the check; an absent key
-	// defaults to this. Raised from the legacy 30 so Jetpack/WooCommerce sites,
-	// which legitimately make many xmlrpc.php calls, are not hard-blocked.
+	// DefaultXMLRPCThreshold is the per-IP POST /xmlrpc.php count that trips
+	// xmlrpc_abuse in access-log based detectors. 0 disables the check; an
+	// absent key defaults to this. Raised from the legacy 30 so
+	// Jetpack/WooCommerce sites, which legitimately make many xmlrpc.php calls,
+	// are not hard-blocked.
 	DefaultXMLRPCThreshold = 100
 	// DefaultHTTPASNCrawlMinExpensive is the minimum uncacheable requests from
 	// the ASN inside the window before http_asn_crawl fires.
@@ -319,10 +320,9 @@ type Config struct {
 		HTTPFloodWindowMin int `yaml:"http_flood_window_min"`
 
 		// HTTPUASpoofThreshold is the minimum per-IP per-window count
-		// of WPSpoofPingback, ScriptingLang, Headless, or Empty UA
-		// requests that emits http_ua_spoof. KnownScanner and
-		// cache-confirmed negative ClaimedBot emit on count=1.
-		// Default 30.
+		// of WPSpoofPingback, cache-confirmed negative ClaimedBot,
+		// ScriptingLang, Headless, or Empty UA requests that emits
+		// http_ua_spoof. KnownScanner still emits on count=1. Default 30.
 		HTTPUASpoofThreshold int `yaml:"http_ua_spoof_threshold"`
 
 		// HTTPDistributedMinIPs is the number of distinct source IPs that
@@ -387,9 +387,9 @@ type Config struct {
 		// HTTPASNCrawlWindowMin is the rolling window in minutes for the
 		// single-ASN distributed crawl detector. Default 60.
 		HTTPASNCrawlWindowMin int `yaml:"http_asn_crawl_window_min"`
-		// XMLRPCThreshold is the per-IP POST /xmlrpc.php count within the domlog
-		// window that trips xmlrpc_abuse (a hard auto-block). 0 disables the
-		// check; an absent key defaults to 100.
+		// XMLRPCThreshold is the per-IP POST /xmlrpc.php count that trips
+		// xmlrpc_abuse in access-log based detectors (a hard auto-block). 0
+		// disables the check; an absent key defaults to 100.
 		XMLRPCThreshold int `yaml:"xmlrpc_threshold"`
 		// HTTPASNCrawlMinIPs is the minimum distinct source IPs from one ASN
 		// inside the window before http_asn_crawl fires. 0 disables the

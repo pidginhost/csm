@@ -55,8 +55,9 @@ If an IP doesn't solve the PoW challenge within 30 minutes, it is
 automatically escalated to a hard firewall block. The pending claimed-bot path
 (`http_claimed_bot_unverified`) is the exception: it expires without timeout
 escalation because the reverse-DNS verifier decides the next action. A confirmed
-spoof is hard-blocked by the later `http_ua_spoof` finding, while a real crawler
-is removed from the challenge list once verification succeeds.
+spoof is hard-blocked by the later `http_ua_spoof` finding after it reaches the
+UA threshold, while a real crawler is removed from the challenge list once
+verification succeeds.
 
 ### Bind address
 

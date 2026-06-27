@@ -46,7 +46,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `wp_bruteforce` | WordPress login brute force (wp-login.php, xmlrpc.php) |
 | `http_scanner_profile` | Source IPs whose traffic is mostly probe-error responses across many distinct paths in one scheduled scan window |
 | `http_claimed_bot_unverified` | High-volume claimed crawler traffic while reverse-DNS verification is still pending; challenge-routed when the challenge subsystem is enabled |
-| `http_ua_spoof` | IP claiming a search-engine bot UA (Googlebot, Bingbot, Applebot) that fails reverse-DNS verification, or exceeding the per-IP spoof threshold for scripting/headless/empty UAs when those opt-in flags are enabled |
+| `http_ua_spoof` | IP hitting the per-IP spoof threshold with a search-engine bot UA that fails reverse-DNS verification, or with scripting/headless/empty UAs when those opt-in flags are enabled |
 | `http_distributed_flood` | Many already-abusive HTTP source IPs hitting the same vhost in one scheduled scan window |
 | `ftp_logins` | FTP access patterns and failed auth |
 | `webmail_logins` | Roundcube/Horde access anomalies |

@@ -172,8 +172,8 @@ thresholds:
   # pools that legitimately send unusual User-Agents.
   http_ua_spoof_threshold: 30          # default: 30
 
-  # xmlrpc_threshold: per-IP POST /xmlrpc.php count within the domlog window
-  # before xmlrpc_abuse fires (a hard auto-block). WordPress sites using
+  # xmlrpc_threshold: per-IP POST /xmlrpc.php count before xmlrpc_abuse fires
+  # in access-log based detectors (a hard auto-block). WordPress sites using
   # Jetpack, the mobile app, or WooCommerce make many legitimate xmlrpc.php
   # calls, so this defaults higher than the legacy value. Set 0 to disable the
   # check entirely; an absent key uses the built-in default.

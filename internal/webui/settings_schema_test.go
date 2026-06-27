@@ -350,6 +350,26 @@ func TestThresholdsSchemaIncludesHTTPDistributedMinIPs(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesXMLRPCThreshold(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "xmlrpc_threshold")
+	if f == nil {
+		t.Fatal("xmlrpc_threshold field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("xmlrpc_threshold type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 0 {
+		t.Fatalf("xmlrpc_threshold min = %v, want 0", f.Min)
+	}
+	if f.FieldGroup != FieldGroupWebBruteForce {
+		t.Fatalf("xmlrpc_threshold group = %q, want %q", f.FieldGroup, FieldGroupWebBruteForce)
+	}
+	if !strings.Contains(f.Help, "0 disables") {
+		t.Fatalf("xmlrpc_threshold help = %q, want disable guidance", f.Help)
+	}
+}
+
 func TestThresholdsSchemaIncludesHTTPScannerProfileFields(t *testing.T) {
 	s, _ := LookupSettingsSection("thresholds")
 	cases := []struct {

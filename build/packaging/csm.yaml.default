@@ -139,10 +139,12 @@ thresholds:
   http_flood_threshold: 0
   http_flood_window_min: 5
   # User-Agent spoof: per-IP per-window count for non-browser UA kinds
-  # (scripting, headless, empty) that emits http_ua_spoof. Default 30.
-  # Unverified claimed bots (e.g. Googlebot from a non-Google IP) fire
-  # after rDNS confirmation regardless of this threshold.
+  # (including claimed bots that fail rDNS confirmation) that emits
+  # http_ua_spoof. Known scanner UAs still fire on first hit. Default 30.
   http_ua_spoof_threshold: 30
+  # XML-RPC abuse: per-IP POST /xmlrpc.php count before xmlrpc_abuse
+  # fires in access-log based detectors. Set 0 to disable.
+  xmlrpc_threshold: 100
   # Distributed HTTP attack: distinct abusive source IPs hitting one vhost
   # in a scan window before a single http_distributed_flood finding fires.
   # Only IPs already flagged for HTTP abuse count, so normal visitor spread
