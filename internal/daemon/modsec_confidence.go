@@ -59,11 +59,15 @@ var modsecKnownLowConfRules = map[int]bool{
 // a specific attack/probe class. Presence means high-confidence.
 var modsecAttackMsgKeywords = []string{
 	"sql injection", "sqli", "remote command", "command injection",
-	"code injection", "file inclusion", "lfi", "rfi", "cross-site scripting",
+	"os command", "remote code execution", "code execution", "code injection",
+	"file inclusion", "lfi", "rfi", "cross-site scripting",
 	"xss", "path traversal", "directory traversal", "url encoding abuse",
 	"web shell", "webshell", "backdoor", "shellshock", "ssrf",
 	"server-side request forgery", "session fixation", "remote file",
-	"scanner", "exploit", "injection attack", "deserializ",
+	"request smuggling", "response splitting", "crlf injection",
+	"object injection", "template injection", "xxe", "xml external entity",
+	"ldap injection", "nosql injection", "scanner", "exploit",
+	"injection attack", "deserializ",
 }
 
 // modsecAttackTagKeywords are lowercase substrings of the ModSecurity rule tag

@@ -520,6 +520,40 @@ func TestAutoBlockIPs_BlocksGenericModSecEscalation(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_DoesNotBlockModSecAdvisories(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:    "modsec_low_confidence_burst",
+			Message:  "ModSecurity low-confidence burst from 203.0.113.201",
+			SourceIP: "203.0.113.201",
+		},
+		{
+			Check:    "modsec_classifier_gap",
+			Message:  "ModSecurity classifier gap from 203.0.113.202",
+			SourceIP: "203.0.113.202",
+		},
+	})
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("blocked IPs = %v, want none for ModSec advisory findings", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("actions = %+v, want none for ModSec advisory findings", actions)
+	}
+}
+
 // WAF high-volume attacker findings are already-confirmed attack signals;
 // they must reach the auto-block firewall path just like modsec escalation
 // or brute-force findings, instead of staying advisory.

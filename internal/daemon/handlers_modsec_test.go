@@ -23,8 +23,8 @@ func TestParseModSecLogLine_ApacheDeny(t *testing.T) {
 	if f.Check != "modsec_block_realtime" {
 		t.Errorf("check = %q, want modsec_block_realtime", f.Check)
 	}
-	if f.Severity != alert.High {
-		t.Errorf("severity = %v, want High", f.Severity)
+	if f.Severity != alert.Warning {
+		t.Errorf("severity = %v, want Warning for low-confidence policy rule", f.Severity)
 	}
 	if !strings.Contains(f.Message, "198.51.100.164") {
 		t.Errorf("message should contain IP, got %q", f.Message)
@@ -55,6 +55,20 @@ func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
 	}
 }
 
+func TestParseModSecLogLine_HighConfidenceCRSRule(t *testing.T) {
+	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.165] ModSecurity: Access denied with code 403, [id "942100"] [msg "SQL Injection Attack Detected via libinjection"] [tag "attack-sqli"] [severity "CRITICAL"] [hostname "www.example.com"] [uri "/search"]`
+	cfg := &config.Config{}
+
+	findings := parseModSecLogLine(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != alert.High {
+		t.Errorf("severity = %v, want High for high-confidence attack rule", f.Severity)
+	}
+}
+
 func TestParseModSecLogLine_LiteSpeedTriggered(t *testing.T) {
 	// 920170 (OWASP CRS REQUEST-920-PROTOCOL-ENFORCEMENT) is a deny rule;
 	// install a populated registry so classification reflects the rule's
@@ -73,8 +87,8 @@ func TestParseModSecLogLine_LiteSpeedTriggered(t *testing.T) {
 	if f.Check != "modsec_block_realtime" {
 		t.Errorf("check = %q, want modsec_block_realtime", f.Check)
 	}
-	if f.Severity != alert.High {
-		t.Errorf("severity = %v, want High (OWASP CRS)", f.Severity)
+	if f.Severity != alert.Warning {
+		t.Errorf("severity = %v, want Warning without attack metadata", f.Severity)
 	}
 	if !strings.Contains(f.Message, "122.9.114.57") {
 		t.Errorf("message should contain IP, got %q", f.Message)

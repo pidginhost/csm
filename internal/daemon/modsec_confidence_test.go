@@ -41,6 +41,18 @@ func TestClassifyModSecConfidence(t *testing.T) {
 			want:    modsecConfHigh,
 		},
 		{
+			name:    "request smuggling attack wording is high",
+			ruleNum: 210381,
+			msg:     "COMODO WAF: HTTP Request Smuggling Attack",
+			want:    modsecConfHigh,
+		},
+		{
+			name:    "remote code execution wording is high",
+			ruleNum: 932100,
+			msg:     "Remote Code Execution: Unix Command Injection",
+			want:    modsecConfHigh,
+		},
+		{
 			name:    "csm custom 900115 is high",
 			ruleNum: 900115,
 			msg:     "CSM custom probe rule",
@@ -93,6 +105,33 @@ func TestClassifyModSecConfidence(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("classifyModSecConfidence(%d, %q, %q) = %v, want %v",
 					tt.ruleNum, tt.msg, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyModSecKnownLowRules(t *testing.T) {
+	tests := []struct {
+		ruleNum int
+		msg     string
+	}{
+		{210710, "COMODO WAF: Request content type is not allowed by policy"},
+		{214930, "COMODO WAF: Inbound Points Exceeded|Total Incoming Points: 5"},
+		{211170, "COMODO WAF: Outbound Points Exceeded|Total Outgoing Points: 5"},
+		{211220, "COMODO WAF: Outbound Points Exceeded|Total Outgoing Points: 5"},
+		{920420, "Request content type is not allowed by policy"},
+		{920430, "HTTP protocol version is not allowed by policy"},
+		{949110, "Inbound Anomaly Score Exceeded (Total Score: 5)"},
+		{959100, "Outbound Anomaly Score Exceeded (Total Score: 5)"},
+		{980130, "Inbound Anomaly Score Exceeded (Total Score: 5)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.msg, func(t *testing.T) {
+			got := classifyModSecConfidence(tt.ruleNum, tt.msg, "")
+			if got != modsecConfLow {
+				t.Fatalf("classifyModSecConfidence(%d, %q, \"\") = %v, want %v",
+					tt.ruleNum, tt.msg, got, modsecConfLow)
 			}
 		})
 	}

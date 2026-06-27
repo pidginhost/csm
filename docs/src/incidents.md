@@ -229,8 +229,9 @@ rules such as COMODO content-type `210710` or anomaly-points `214930`,
 and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
 firewall ban at the normal hit count only when it contains a
 high-confidence deny or an unknown deny; a low-confidence-only burst
-emits a non-actioned `modsec_low_confidence_burst` finding for
-visibility instead of banning. This stops false bans of legitimate
+emits one non-actioned `modsec_low_confidence_burst` finding for
+visibility instead of banning, then stays quiet until that active
+low-confidence window drains. This stops false bans of legitimate
 traffic (e.g. an unusual checkout that only trips content-type/anomaly
 rules) without blinding CSM to real attacks, which trip the
 high-confidence rules. A determined source that floods only

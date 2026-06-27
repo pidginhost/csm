@@ -1347,6 +1347,25 @@ func TestExtractModSecDescriptionCSMRuleFallback(t *testing.T) {
 	}
 }
 
+func TestExtractModSecDescriptionComodoFallbacks(t *testing.T) {
+	tests := []struct {
+		rule string
+		want string
+	}{
+		{"210710", "Comodo WAF: Request content type is not allowed by policy"},
+		{"210381", "Comodo WAF: URL encoding abuse attack attempt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.rule, func(t *testing.T) {
+			f := alert.Finding{Details: `Rule: ` + tt.rule}
+			if got := extractModSecDescription(f); got != tt.want {
+				t.Fatalf("extractModSecDescription(%s) = %q, want %q", tt.rule, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractModSecHostnameStructured(t *testing.T) {
 	f := alert.Finding{Details: "Hostname: example.com\nURI: /login"}
 	if got := extractModSecHostname(f); got != "example.com" {

@@ -202,3 +202,31 @@ func TestLiteSpeedDenyActionStillEscalates(t *testing.T) {
 		t.Fatal("unknown deny-action rule did not escalate after threshold hits")
 	}
 }
+
+func TestLiteSpeedUnknownPassActionSuppliesEvidenceToLowDenyBurst(t *testing.T) {
+	resetModSecState()
+	installModSecRegistryForTest(t, map[int]string{211999: "pass", 949110: "deny"})
+
+	cfg := &config.Config{}
+	seen := map[string]bool{}
+	lines := []string{
+		liteSpeedTriggerLineUnknownDeny,
+		liteSpeedTriggerLine949110,
+		liteSpeedTriggerLine949110,
+		liteSpeedTriggerLine949110,
+	}
+	for _, line := range lines {
+		for _, f := range parseModSecLogLineDeduped(line, cfg) {
+			seen[f.Check] = true
+		}
+	}
+	if !seen["modsec_classifier_gap"] {
+		t.Fatal("unknown pass-action rule without msg/tag must raise classifier gap")
+	}
+	if !seen["modsec_block_escalation"] {
+		t.Fatal("unknown pass-action evidence plus low-confidence denies must escalate")
+	}
+	if seen["modsec_low_confidence_burst"] {
+		t.Fatal("unknown evidence must keep the burst out of the low-confidence-only path")
+	}
+}

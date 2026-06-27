@@ -1362,7 +1362,10 @@ func incidentAutoBlockExcludedOnly(inc *Incident) bool {
 		}
 		seen = true
 		switch strings.ToLower(strings.TrimSpace(ev.Check)) {
-		case "ftp_login_after_bruteforce", "mail_bruteforce_suspected":
+		case "ftp_login_after_bruteforce",
+			"mail_bruteforce_suspected",
+			"modsec_classifier_gap",
+			"modsec_low_confidence_burst":
 			continue
 		default:
 			return false

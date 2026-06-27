@@ -304,7 +304,9 @@ var checkRegistry = []CheckInfo{
 	// --- WAF & ModSecurity ----------------------------------------------
 	{Name: "modsec_block_escalation", Category: CategoryWAF},
 	{Name: "modsec_block_realtime", Category: CategoryWAF},
+	{Name: "modsec_classifier_gap", Category: CategoryWAF},
 	{Name: "modsec_csm_block_escalation", Category: CategoryWAF},
+	{Name: "modsec_low_confidence_burst", Category: CategoryWAF},
 	{Name: "modsec_warning_realtime", Category: CategoryWAF},
 	{Name: "waf_attack_blocked", Category: CategoryWAF},
 	{Name: "waf_bypass", Category: CategoryWAF},

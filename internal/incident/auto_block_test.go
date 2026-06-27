@@ -171,6 +171,37 @@ func TestAutoBlockSkipsMailBruteforceSuspectedOnly(t *testing.T) {
 	}
 }
 
+func TestAutoBlockSkipsModSecAdvisoryOnly(t *testing.T) {
+	for _, check := range []string{"modsec_low_confidence_burst", "modsec_classifier_gap"} {
+		t.Run(check, func(t *testing.T) {
+			var cap blockCapture
+			c := NewCorrelator(CorrelatorConfig{
+				OpenThreshold: 1,
+				AutoBlock: IncidentAutoBlockConfig{
+					Enabled:         true,
+					BlockAtSeverity: "high",
+				},
+				OnIncidentBlock: cap.recordOK,
+			})
+			now := time.Unix(1_700_000_000, 0)
+			c.now = func() time.Time { return now }
+
+			f := alert.Finding{
+				Check:     check,
+				Severity:  alert.High,
+				SourceIP:  "192.0.2.72",
+				Timestamp: now,
+			}
+			if _, _, err := c.OnFinding(f); err != nil {
+				t.Fatalf("OnFinding: %v", err)
+			}
+			if got := cap.len(); got != 0 {
+				t.Fatalf("incident auto-block fired for advisory %s: %d", check, got)
+			}
+		})
+	}
+}
+
 func TestAutoBlockFiresWhenBlockableFindingJoinsMailSuspected(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{

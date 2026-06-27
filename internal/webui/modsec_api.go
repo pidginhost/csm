@@ -504,10 +504,11 @@ func extractModSecRule(f alert.Finding) string {
 	return extractBetween(f.Details, `[id "`, `"]`)
 }
 
-// csmRuleDescriptions provides fallback descriptions for CSM custom rules.
+// csmRuleDescriptions provides fallback descriptions for known ModSecurity
+// rules.
 // LiteSpeed error logs omit the [msg "..."] field, so the log-extracted
 // description is often empty. This map ensures the UI always shows a
-// meaningful description for rules we define ourselves.
+// meaningful description for rules we define ourselves and common vendor rules.
 var csmRuleDescriptions = map[string]string{
 	"900001": "Blocked LEVIATHAN CGI extension access",
 	"900002": "Blocked LEVIATHAN directory access",
@@ -538,8 +539,8 @@ var csmRuleDescriptions = map[string]string{
 	// from the Comodo vendor ruleset (e.g. /etc/apache2/conf.d/
 	// modsec_vendor_configs/comodo_litespeed/), NOT from OWASP CRS.
 	// They were previously mislabeled as "OWASP:" here.
-	"210710": "Comodo WAF: HTTP Request Smuggling",
-	"210381": "Comodo WAF: HTTP Request Smuggling",
+	"210710": "Comodo WAF: Request content type is not allowed by policy",
+	"210381": "Comodo WAF: URL encoding abuse attack attempt",
 	"214930": "Comodo WAF: Inbound anomaly score threshold exceeded",
 	"214940": "Comodo WAF: Outbound anomaly score threshold exceeded",
 	"218420": "Comodo WAF: Request content type restriction",
