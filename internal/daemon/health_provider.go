@@ -195,9 +195,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	// (alongside FirewallEnabled) lets monitoring detect "enabled but not
 	// managed" -- the engine-failed-to-apply condition that previously left the
 	// firewall silently unmanaged.
-	if d.fwEngine != nil {
+	if engine := d.fwEngine; engine != nil {
 		out.FirewallManaged = true
-		rc := d.fwEngine.RuleCounts()
+		rc := engine.RuleCounts()
 		out.FirewallBlockedIPs = rc.Blocked
 		out.FirewallBlockedSubnets = rc.Subnets
 	}

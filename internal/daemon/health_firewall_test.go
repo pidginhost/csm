@@ -14,8 +14,9 @@ import (
 // machine-readable indication.
 func TestAutomationStatusFirewallEnabledNotManaged(t *testing.T) {
 	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}}
+	prev := config.Active()
 	config.SetActive(cfg)
-	t.Cleanup(func() { config.SetActive(nil) })
+	t.Cleanup(func() { config.SetActive(prev) })
 
 	d := &Daemon{cfg: cfg}
 	got := d.AutomationStatus()
@@ -31,8 +32,9 @@ func TestAutomationStatusFirewallEnabledNotManaged(t *testing.T) {
 // neither enabled nor managed (no false alert).
 func TestAutomationStatusFirewallDisabled(t *testing.T) {
 	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: false}}
+	prev := config.Active()
 	config.SetActive(cfg)
-	t.Cleanup(func() { config.SetActive(nil) })
+	t.Cleanup(func() { config.SetActive(prev) })
 
 	got := (&Daemon{cfg: cfg}).AutomationStatus()
 	if got.FirewallEnabled {
@@ -40,5 +42,33 @@ func TestAutomationStatusFirewallDisabled(t *testing.T) {
 	}
 	if got.FirewallManaged {
 		t.Error("FirewallManaged should be false when no engine is wired")
+	}
+}
+
+func TestAutomationStatusFirewallNilConfigSafe(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	tests := []struct {
+		name string
+		d    *Daemon
+	}{
+		{name: "nil config", d: &Daemon{}},
+		{name: "nil firewall config", d: &Daemon{cfg: &config.Config{}}},
+	}
+
+	for _, tt := range tests {
+		got := tt.d.AutomationStatus()
+		if got.FirewallEnabled {
+			t.Errorf("%s: FirewallEnabled should be false", tt.name)
+		}
+		if got.FirewallManaged {
+			t.Errorf("%s: FirewallManaged should be false", tt.name)
+		}
+		if got.FirewallBlockedIPs != 0 || got.FirewallBlockedSubnets != 0 {
+			t.Errorf("%s: block counts should be zero, got ips=%d subnets=%d",
+				tt.name, got.FirewallBlockedIPs, got.FirewallBlockedSubnets)
+		}
 	}
 }
