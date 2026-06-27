@@ -188,6 +188,19 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	}
 	out.ChallengeEscalated = challengeEscalatedCount()
 	out.ChallengePortGateActive = d.challengeGate != nil
+	if cfg != nil && cfg.Firewall != nil {
+		out.FirewallEnabled = cfg.Firewall.Enabled
+	}
+	// FirewallManaged is true only when a live engine is wired. Reporting it
+	// (alongside FirewallEnabled) lets monitoring detect "enabled but not
+	// managed" -- the engine-failed-to-apply condition that previously left the
+	// firewall silently unmanaged.
+	if d.fwEngine != nil {
+		out.FirewallManaged = true
+		rc := d.fwEngine.RuleCounts()
+		out.FirewallBlockedIPs = rc.Blocked
+		out.FirewallBlockedSubnets = rc.Subnets
+	}
 	if mgr := rollback.Global(); mgr != nil {
 		st := mgr.Status()
 		out.FirewallRollbackPending = st.Pending

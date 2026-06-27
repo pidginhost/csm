@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mail brute-force alerts now name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so operators can tell a real attack on a live mailbox from dictionary noise without opening the mail log.
 - New `http_asn_crawl` detector flags a single-ASN distributed crawl of uncacheable URLs that saturates an account's PHP worker pool, and surgically tempbans the offending subnets only when saturation is confirmed (reverse-proxy/CDN safe).
 - Operators can now declare DoS-exempt ranges that bypass per-IP connection rate and concurrent limit meters plus mail-port flood meters, and are skipped when auto-blocking subnets; known Google and Microsoft mail-provider ranges are exempt by default, so carrier CGNAT pools and shared mail-provider IPs no longer trigger false-positive throttling or subnet blocks. Individual manual blocks and SYN/UDP flood protection stay in force.
+- The status snapshot now reports firewall enabled/managed state and live block counts, so monitoring can detect when the firewall is configured on but the daemon is not actually managing it.
 
 ### Fixed
 

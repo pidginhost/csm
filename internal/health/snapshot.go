@@ -47,15 +47,24 @@ type Snapshot struct {
 // observe-only, actively mutating the firewall, or waiting for operator
 // confirmation after a tentative firewall apply.
 type AutomationStatus struct {
-	AutoResponseEnabled           bool              `json:"auto_response_enabled"`
-	AutoResponseBlockIPs          bool              `json:"auto_response_block_ips"`
-	AutoResponseDryRun            bool              `json:"auto_response_dry_run"`
-	DryRunBlocks                  int               `json:"dry_run_blocks"`
-	ChallengeEnabled              bool              `json:"challenge_enabled"`
-	ChallengePortGateEnabled      bool              `json:"challenge_port_gate_enabled"`
-	ChallengePortGateActive       bool              `json:"challenge_port_gate_active"`
-	ChallengePending              int               `json:"challenge_pending"`
-	ChallengeEscalated            int               `json:"challenge_escalated"`
+	AutoResponseEnabled      bool `json:"auto_response_enabled"`
+	AutoResponseBlockIPs     bool `json:"auto_response_block_ips"`
+	AutoResponseDryRun       bool `json:"auto_response_dry_run"`
+	DryRunBlocks             int  `json:"dry_run_blocks"`
+	ChallengeEnabled         bool `json:"challenge_enabled"`
+	ChallengePortGateEnabled bool `json:"challenge_port_gate_enabled"`
+	ChallengePortGateActive  bool `json:"challenge_port_gate_active"`
+	ChallengePending         int  `json:"challenge_pending"`
+	ChallengeEscalated       int  `json:"challenge_escalated"`
+	// FirewallEnabled reflects firewall.enabled in config. FirewallManaged is
+	// true only when the daemon has a live nftables engine wired. The
+	// combination FirewallEnabled && !FirewallManaged means the firewall is
+	// configured on but the daemon is NOT managing it (e.g. the engine failed
+	// to apply at startup) -- a condition monitoring should alert on.
+	FirewallEnabled               bool              `json:"firewall_enabled"`
+	FirewallManaged               bool              `json:"firewall_managed"`
+	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
+	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
 	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_seconds_remaining,omitempty"`
 	LastAction                    *AutomationAction `json:"last_action,omitempty"`

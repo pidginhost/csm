@@ -44,7 +44,8 @@ func Capabilities() []string {
 		"mail.forward_guard.v1",          // opt-in MTA-native forward-guard (hold spam/backscatter forward copies)
 		"detect.http_scanner_profile.v1", // URL scanner-profile detector + challenge/block action
 		"challenge.stats.v1",
-		"verified_bots.editor.v1", // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor
+		"verified_bots.editor.v1",   // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor
+		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")
