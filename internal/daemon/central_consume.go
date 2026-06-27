@@ -190,10 +190,17 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) {
 	case reporting.DecisionBlock:
 		if d.fwEngine != nil {
 			if err := d.fwEngine.BlockIP(a.ip, "central-intel (locally corroborated)", centralBlockTTL); err != nil {
-				log.Printf("central-intel: block %s failed: %v", a.ip, err)
+				logCentralBlockFailure(a.ip, err)
 			}
 		}
 	}
+}
+
+func logCentralBlockFailure(ip string, err error) {
+	if isProtectedIPRefusal(err) {
+		return
+	}
+	log.Printf("central-intel: block %s failed: %v", ip, err)
 }
 
 // centralFirebreak returns a predicate that reports whether an IP must never be

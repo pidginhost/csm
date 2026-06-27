@@ -2454,7 +2454,11 @@ func (d *Daemon) challengeEscalator() {
 				reason := fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100))
 				outcome, err := d.fwEngine.BlockIPOutcome(e.IP, reason, expiry)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
+					// Own-interface / infra IPs are never blockable; an expected
+					// no-op, not a failure worth logging.
+					if !isProtectedIPRefusal(err) {
+						fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
+					}
 					continue
 				}
 				observeChallengeEscalated(outcome)

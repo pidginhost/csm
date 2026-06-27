@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
@@ -277,6 +278,116 @@ func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestIncidentCorrelatorSprayBlockerSuppressesProtectedIPError(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Incidents.SpraySuppression.Enabled = true
+	cfg.Incidents.SpraySuppression.DryRun = false
+	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	var calls int
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+		calls++
+		return false, firewall.ErrIPProtected
+	})
+	finishLog := captureCSMLog(t)
+	t.Cleanup(func() { _ = finishLog() })
+
+	c := IncidentCorrelator()
+	feedSpray(t, c, "45.76.1.90", 3)
+
+	if calls != 1 {
+		t.Fatalf("spray blocker calls = %d, want 1", calls)
+	}
+	out := finishLog()
+	if strings.Contains(out, "credential_spray block failed") {
+		t.Fatalf("protected-IP spray refusal logged as block failure: %q", out)
+	}
+	if !snapshotHasIncidentKind(c.Snapshot(), incident.KindCredentialSpray) {
+		t.Fatal("protected-IP spray refusal dropped the credential-spray incident")
+	}
+	for _, inc := range c.Snapshot() {
+		if incidentHasAction(inc, "credential_spray_block_requested") {
+			t.Fatalf("protected-IP spray refusal recorded live block action: %+v", inc.Actions)
+		}
+	}
+}
+
+func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "15m"
+	cfg.Incidents.AutoBlock.Enabled = true
+	cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	var calls int
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration) (bool, error) {
+		calls++
+		return false, firewall.ErrIPProtected
+	})
+	finishLog := captureCSMLog(t)
+	t.Cleanup(func() { _ = finishLog() })
+
+	c := IncidentCorrelator()
+	if _, created, err := c.OnFinding(alert.Finding{
+		Check:     "modsec_csm_block_escalation",
+		Severity:  alert.Critical,
+		SourceIP:  "45.76.1.91",
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	} else if !created {
+		t.Fatal("Critical finding did not open incident")
+	}
+
+	if calls != 1 {
+		t.Fatalf("incident blocker calls = %d, want 1", calls)
+	}
+	out := finishLog()
+	if strings.Contains(out, "incident auto-block failed") {
+		t.Fatalf("protected-IP incident refusal logged as block failure: %q", out)
+	}
+	if !snapshotHasIncidentKind(c.Snapshot(), incident.KindWebAttack) {
+		t.Fatal("protected-IP refusal dropped the triggering incident")
+	}
+	for _, inc := range c.Snapshot() {
+		if incidentHasAction(inc, "incident_block_requested") {
+			t.Fatalf("protected-IP incident refusal recorded live block action: %+v", inc.Actions)
+		}
+	}
+}
+
+func snapshotHasIncidentKind(snapshot []incident.Incident, kind incident.Kind) bool {
+	for _, inc := range snapshot {
+		if inc.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func incidentHasAction(inc incident.Incident, action string) bool {
+	for _, a := range inc.Actions {
+		if a.Action == action {
+			return true
+		}
+	}
+	return false
 }
 
 func feedSpray(t *testing.T, c *incident.Correlator, ip string, count int) {

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -411,7 +412,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 		outcome, err := callBlockIP(blocker, ip, blockReason, expiry)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
+			// Protected IPs (the server's own interface or infra_ips) are
+			// intentionally never blocked -- an expected no-op, not a failure.
+			// The triggering finding still stands, so suspicious activity from a
+			// protected address is still surfaced.
+			if !errors.Is(err, firewall.ErrIPProtected) {
+				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
+			}
 			continue
 		}
 

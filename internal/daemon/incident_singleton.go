@@ -133,7 +133,9 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 					live, err := blocker(ip, "CSM credential_spray: "+reason, timeout)
 					if err != nil {
-						csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
+						if !isProtectedIPRefusal(err) {
+							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
+						}
 						return false
 					}
 					return live
@@ -165,7 +167,14 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 					live, err := blocker(ip, "CSM incident: "+reason, timeout)
 					if err != nil {
-						csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
+						// Own-interface / infra IPs are intentionally never
+						// blockable; the incident still opened, so the operator is
+						// alerted to activity attributed to a protected address
+						// (e.g. a compromised site pivoting through the server IP)
+						// without the noise of a failed-block warning.
+						if !isProtectedIPRefusal(err) {
+							csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
+						}
 						return false
 					}
 					return live

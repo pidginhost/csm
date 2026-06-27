@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -267,5 +268,28 @@ func TestApplyCentralIgnoresUnlistedIP(t *testing.T) {
 	d.applyCentral(store, reporting.ActionChallenge, 80, fb, alert.Finding{Check: "pam_bruteforce", SourceIP: "8.8.8.8"})
 	if d.ipList.Contains("8.8.8.8") {
 		t.Fatal("unlisted IP was challenged")
+	}
+}
+
+func TestLogCentralBlockFailureSuppressesProtectedIPError(t *testing.T) {
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+
+	logCentralBlockFailure("45.76.1.92", firewall.ErrIPProtected)
+	if buf.Len() != 0 {
+		t.Fatalf("protected-IP central refusal logged as block failure: %q", buf.String())
+	}
+
+	logCentralBlockFailure("45.76.1.92", errors.New("nft failed"))
+	if !strings.Contains(buf.String(), "central-intel: block 45.76.1.92 failed: nft failed") {
+		t.Fatalf("non-protected central failure was not logged: %q", buf.String())
 	}
 }

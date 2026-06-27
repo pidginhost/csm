@@ -2140,12 +2140,12 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
 			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
-				return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s", ip)
+				return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s", ip)
 			}
 			continue
 		}
 		if network.Contains(parsed) {
-			return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+			return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (in %s)", ip, cidr)
 		}
 	}
 	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
@@ -2154,14 +2154,14 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	// pinned the IP, so a moving panel IP would silently drop out of
 	// the lockout guard.
 	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
-		return nil, nil, false, "", fmt.Errorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
+		return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
 	}
 	// Daemon's own interface addresses are always off-limits. Without
 	// this guard a stray request from the host to itself (cron, panel
 	// callback, internal probe) could trigger an auto-block that
 	// firewalls every customer hosted on the same IP.
 	if e.isLocalAddrLocked(ip) {
-		return nil, nil, false, "", fmt.Errorf("refusing to block local host IP: %s (own interface address)", ip)
+		return nil, nil, false, "", ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
 	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)

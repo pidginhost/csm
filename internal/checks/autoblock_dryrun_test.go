@@ -2,6 +2,7 @@ package checks
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,42 @@ func TestAutoBlockIPs_AllowlistedOutcome_DoesNotMutateState(t *testing.T) {
 		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") {
 			t.Errorf("allowlisted path must not emit AUTO-BLOCK finding: %q", a.Message)
 		}
+	}
+}
+
+func TestAutoBlockIPs_ProtectedIPErrorDoesNotMutateStateOrLog(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+	blocker := &outcomeIPBlocker{
+		outcome:  firewall.BlockOutcomeNoop,
+		blockErr: fmt.Errorf("refusing to block local host IP: 192.0.2.90 (own interface address): %w", firewall.ErrIPProtected),
+	}
+	swapBlocker(t, blocker)
+
+	var actions []alert.Finding
+	stderr := captureStderr(t, func() {
+		actions = AutoBlockIPs(cfg, []alert.Finding{{
+			Check:     "wp_login_bruteforce",
+			SourceIP:  "192.0.2.90",
+			Message:   "WordPress brute force from 192.0.2.90",
+			Timestamp: time.Now(),
+		}})
+	})
+
+	if blocker.outcomeHits != 1 {
+		t.Fatalf("BlockIPOutcome calls = %d, want 1", blocker.outcomeHits)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 0 {
+		t.Errorf("state.IPs grew on protected-IP refusal: %+v", state.IPs)
+	}
+	if state.BlocksThisHour != 0 {
+		t.Errorf("state.BlocksThisHour = %d on protected-IP refusal, want 0", state.BlocksThisHour)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("protected-IP refusal emitted auto-block actions: %+v", actions)
+	}
+	if stderr != "" {
+		t.Fatalf("protected-IP refusal logged to stderr: %q", stderr)
 	}
 }
 
