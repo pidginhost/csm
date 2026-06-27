@@ -60,7 +60,9 @@ func TestRefactorParity(t *testing.T) {
 		stats.scan(rec, nil, nopBotClassifier{})
 	}
 
-	got := stats.emitLegacy(nil)
+	cfg := &config.Config{}
+	cfg.Thresholds.XMLRPCThreshold = 30 // match the 32-request fixture above
+	got := stats.emitLegacy(cfg)
 	sort.Slice(got, func(i, j int) bool { return got[i].Check < got[j].Check })
 
 	want := []struct {
@@ -370,6 +372,7 @@ func TestHTTPDistributedFlood_FiresOnManyAbusiveIPsOneVhost(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold // seeded IPs each cross it
 
 	stats := newDomlogStatsAt(now)
 	seedAbusiveIPsToDomain(t, stats, "victim.example", 12, now)
@@ -397,6 +400,7 @@ func TestHTTPDistributedFlood_DoesNotUseNormalCurrentHitsForStaleAbuse(t *testin
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 
 	stats := newDomlogStatsAt(now)
 	seedAbusiveIPsToDomain(t, stats, "attacked.example", 12, now.Add(-2*time.Hour))
@@ -424,6 +428,7 @@ func TestHTTPDistributedFlood_AbusiveIPContributesToEachAbusedVhost(t *testing.T
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 2
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold // seeded IPs each cross it
 
 	stats := newDomlogStatsAt(now)
 	for _, ip := range []string{"203.0.113.10", "203.0.113.11"} {
@@ -479,6 +484,7 @@ func TestHTTPDistributedFlood_BelowThresholdAndDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodWindowMin = 60
 	cfg.Thresholds.HTTPDistributedMinIPs = 10
+	cfg.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 	for _, f := range stats.emit(cfg) {
 		if f.Check == "http_distributed_flood" {
 			t.Fatalf("6 IPs must not trip a min-10 distributed flood: %+v", f)
@@ -491,6 +497,7 @@ func TestHTTPDistributedFlood_BelowThresholdAndDisabled(t *testing.T) {
 	cfg0 := &config.Config{}
 	cfg0.Thresholds.HTTPFloodWindowMin = 60
 	cfg0.Thresholds.HTTPDistributedMinIPs = 0
+	cfg0.Thresholds.XMLRPCThreshold = xmlrpcThreshold
 	for _, f := range stats2.emit(cfg0) {
 		if f.Check == "http_distributed_flood" {
 			t.Fatalf("threshold 0 must disable distributed flood: %+v", f)
@@ -769,7 +776,7 @@ func (negativeVerifyClassifier) ConfirmedNegative(string, string) bool { return 
 func TestClaimedBot_ConfirmedNegativeEmitsUASpoof(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodThreshold = 0
-	cfg.Thresholds.HTTPUASpoofThreshold = 30
+	cfg.Thresholds.HTTPUASpoofThreshold = 1 // one confirmed-negative hit suffices at threshold 1
 
 	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
 	line := `203.0.113.100 - - [20/May/2026:18:05:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`

@@ -63,8 +63,9 @@ trips a flood or scanner-profile threshold is routed to the proof-of-work
 challenge rather than hard-blocked: a real crawler ignores the challenge
 but is recognized on the next pass once verification resolves, while a host
 merely spoofing a crawler User-Agent cannot solve it. Once verification
-fails outright, the spoofer is hard-blocked. When the challenge subsystem
-is disabled, the claimed bot is hard-blocked during the window instead.
+fails outright, the spoofer is hard-blocked only after it reaches
+`http_ua_spoof_threshold`. When the challenge subsystem is disabled, the
+claimed bot is hard-blocked during the pending-verification window instead.
 
 GPTBot, ChatGPT-User, OAI-SearchBot, PerplexityBot and ClaudeBot are recognized
 out of the box: their published IP ranges ship as an embedded snapshot and are

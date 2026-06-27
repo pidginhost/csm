@@ -360,8 +360,14 @@ func (s *domlogStats) recordScannerDomainError(ip, domain string) {
 // emitLegacy returns the three pre-existing finding kinds. Kept
 // separate from the new emit() (Tasks 3/4) so the parity test can
 // assert "no new findings yet".
-func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
+func (s *domlogStats) emitLegacy(cfg *config.Config) []alert.Finding {
 	var out []alert.Finding
+	// xmlrpc_threshold is operator-tunable; <= 0 disables the check entirely.
+	// Fall back to the package default only when called without a config (tests).
+	xmlrpcThr := xmlrpcThreshold
+	if cfg != nil {
+		xmlrpcThr = cfg.Thresholds.XMLRPCThreshold
+	}
 	for ip, count := range s.wpLogin {
 		if count >= wpLoginThreshold {
 			out = append(out, alert.Finding{
@@ -374,7 +380,7 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 		}
 	}
 	for ip, count := range s.xmlrpc {
-		if count >= xmlrpcThreshold {
+		if xmlrpcThr > 0 && count >= xmlrpcThr {
 			out = append(out, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "xmlrpc_abuse",
@@ -432,7 +438,12 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			threshold = 30
 		}
 		for ip, byKind := range s.uaCat {
-			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits > 0 {
+			// Require sustained spoofing before a hard block. A single
+			// rDNS-failed bot-UA request is too often a legitimate residential
+			// or mobile client that happens to send a bot-like User-Agent;
+			// gating on the same threshold as the other spoof kinds keeps real
+			// spoof-crawlers (which make many requests) blocked.
+			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits >= threshold {
 				out = append(out, s.makeUASpoofFinding(ip,
 					"claimed search-engine bot failed rDNS verification",
 					s.samples[ip], hits))

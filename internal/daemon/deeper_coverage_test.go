@@ -1350,10 +1350,11 @@ func TestParseAccessLogBruteForce_XMLRPCThreshold(t *testing.T) {
 	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
-	for i := 0; i < accessLogXMLRPCThreshold; i++ {
+	cfg.Thresholds.XMLRPCThreshold = 3
+	for i := 0; i < cfg.Thresholds.XMLRPCThreshold; i++ {
 		line := `198.51.100.99 - - [12/Apr/2026:10:00:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 500`
 		findings := parseAccessLogBruteForce(line, cfg)
-		if i < accessLogXMLRPCThreshold-1 {
+		if i < cfg.Thresholds.XMLRPCThreshold-1 {
 			if len(findings) != 0 {
 				t.Fatalf("hit %d: below threshold should not alert, got %v", i, findings)
 			}
@@ -1365,6 +1366,23 @@ func TestParseAccessLogBruteForce_XMLRPCThreshold(t *testing.T) {
 				t.Errorf("check = %q, want xmlrpc_abuse", findings[0].Check)
 			}
 		}
+	}
+}
+
+func TestParseAccessLogBruteForce_XMLRPCThresholdZeroDisables(t *testing.T) {
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
+
+	cfg := &config.Config{}
+	cfg.Thresholds.XMLRPCThreshold = 0
+	line := `198.51.100.99 - - [12/Apr/2026:10:00:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 500`
+	for i := 0; i < config.DefaultXMLRPCThreshold+1; i++ {
+		if findings := parseAccessLogBruteForce(line, cfg); len(findings) != 0 {
+			t.Fatalf("hit %d: disabled xmlrpc threshold should not alert, got %v", i, findings)
+		}
+	}
+	if _, ok := accessLogTrackers.Load("198.51.100.99"); ok {
+		t.Fatal("disabled xmlrpc threshold should not allocate a tracker")
 	}
 }
 

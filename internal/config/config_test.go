@@ -596,6 +596,18 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	if cfg.Thresholds.ScanJobRetention != 20 {
 		t.Errorf("thresholds.scan_job_retention = %d, want 20", cfg.Thresholds.ScanJobRetention)
 	}
+	if cfg.Thresholds.XMLRPCThreshold != DefaultXMLRPCThreshold {
+		t.Errorf("thresholds.xmlrpc_threshold = %d, want %d", cfg.Thresholds.XMLRPCThreshold, DefaultXMLRPCThreshold)
+	}
+	var raw struct {
+		Thresholds map[string]yaml.Node `yaml:"thresholds"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if _, ok := raw.Thresholds["xmlrpc_threshold"]; !ok {
+		t.Error("packaged default config missing thresholds.xmlrpc_threshold")
+	}
 }
 
 func TestWPCronFixIntervalDefaultsTo15(t *testing.T) {
@@ -626,6 +638,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	}
 	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
 		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
+	}
+	if cfg.Thresholds.XMLRPCThreshold != DefaultXMLRPCThreshold {
+		t.Errorf("xmlrpc_threshold = %d, want %d", cfg.Thresholds.XMLRPCThreshold, DefaultXMLRPCThreshold)
 	}
 	if cfg.Thresholds.HTTPDistributedMinIPs != 10 {
 		t.Errorf("http_distributed_min_ips = %d, want 10", cfg.Thresholds.HTTPDistributedMinIPs)
@@ -674,6 +689,7 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 		"http_flood_threshold",
 		"http_flood_window_min",
 		"http_ua_spoof_threshold",
+		"xmlrpc_threshold",
 		"http_distributed_min_ips",
 		"http_scanner_min_requests",
 		"http_scanner_error_pct",

@@ -1427,7 +1427,9 @@ func TestCheckWPBruteForceGeneratesAllFindingTypes(t *testing.T) {
 		},
 	})
 
-	findings := CheckWPBruteForce(context.Background(), &config.Config{}, nil)
+	cfg := &config.Config{}
+	cfg.Thresholds.XMLRPCThreshold = 30 // fixture posts 35 xmlrpc requests
+	findings := CheckWPBruteForce(context.Background(), cfg, nil)
 
 	var hasWPLogin, hasXMLRPC, hasUserEnum bool
 	for _, f := range findings {

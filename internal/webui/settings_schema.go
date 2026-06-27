@@ -164,6 +164,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "http_flood_threshold", Type: "int", Label: "HTTP flood threshold", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Per-IP requests per window that emits http_request_flood. 0 disables. Sample baseline first."},
 			{YAMLPath: "http_flood_window_min", Type: "int", Label: "HTTP flood window (min)", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "http_ua_spoof_threshold", Type: "int", Label: "UA spoof threshold", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "xmlrpc_threshold", Type: "int", Label: "XML-RPC threshold", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Per-IP POST /xmlrpc.php count before access-log xmlrpc_abuse. 0 disables."},
 			{YAMLPath: "http_distributed_min_ips", Type: "int", Label: "Distributed HTTP min IPs", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Distinct already-abusive source IPs per vhost before the distributed HTTP flood rollup fires. 0 disables."},
 			{YAMLPath: "http_scanner_min_requests", Type: "int", Label: "URL scanner min requests", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Per-IP request volume before http_scanner_profile evaluates. 0 disables."},
 			{YAMLPath: "http_scanner_error_pct", Type: "int", Label: "URL scanner error percent", Min: int64p(1), Max: int64p(100), FieldGroup: FieldGroupWebBruteForce, Help: "Minimum percentage of requests that must return a probe-error status. Default 90."},
