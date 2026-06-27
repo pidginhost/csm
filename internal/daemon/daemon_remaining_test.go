@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -856,20 +857,76 @@ func TestRunPeriodicChecks_HashMismatch(t *testing.T) {
 // startLogWatchers — exercises with PHPShield enabled
 // ---------------------------------------------------------------------------
 
-func TestStartLogWatchers_PHPShieldEnabled(t *testing.T) {
+func TestStartLogWatchers_PHPShieldEnabledMissingScriptMarksWatcherDown(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelNone
+	webServer := platform.WSNone
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel, WebServer: &webServer}) {
+		t.Fatal("platform override must install before Detect")
+	}
+
+	oldStat := phpShieldStat
+	phpShieldStat = func(path string) (os.FileInfo, error) {
+		if path != phpShieldScriptPath {
+			t.Fatalf("phpShieldInstalled checked %q, want %q", path, phpShieldScriptPath)
+		}
+		return nil, os.ErrNotExist
+	}
+	t.Cleanup(func() { phpShieldStat = oldStat })
+
 	cfg := &config.Config{}
 	cfg.PHPShield.Enabled = true
 	d := New(cfg, nil, nil, "")
 	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	d.startLogWatchers()
-	// On macOS, no log files exist. Clean up.
-	close(d.stopCh)
-	d.logWatchersMu.Lock()
-	watchers := d.logWatchers
-	d.logWatchersMu.Unlock()
-	for _, w := range watchers {
-		w.Stop()
+
+	statuses := d.WatcherStatuses()
+	if attached, ok := statuses["php_shield"]; !ok || attached {
+		t.Fatalf("php_shield watcher status = %v (present=%v), want present and detached", attached, ok)
 	}
+
+	close(d.stopCh)
+	d.wg.Wait()
+}
+
+func TestStartLogWatchers_PHPShieldInstalledWatchesEventLog(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	panel := platform.PanelNone
+	webServer := platform.WSNone
+	if !platform.SetOverrides(platform.Overrides{Panel: &panel, WebServer: &webServer}) {
+		t.Fatal("platform override must install before Detect")
+	}
+
+	path := filepath.Join(t.TempDir(), "events.log")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath := phpEventsLogPath
+	oldStat := phpShieldStat
+	phpEventsLogPath = path
+	phpShieldStat = func(string) (os.FileInfo, error) {
+		return os.Stat(path)
+	}
+	t.Cleanup(func() {
+		phpEventsLogPath = oldPath
+		phpShieldStat = oldStat
+	})
+
+	cfg := &config.Config{}
+	cfg.PHPShield.Enabled = true
+	d := New(cfg, nil, nil, "")
+	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
+	d.startLogWatchers()
+
+	statuses := d.WatcherStatuses()
+	if attached, ok := statuses["php_shield"]; !ok || !attached {
+		t.Fatalf("php_shield watcher status = %v (present=%v), want attached", attached, ok)
+	}
+
+	close(d.stopCh)
 	d.wg.Wait()
 }
 

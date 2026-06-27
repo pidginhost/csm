@@ -169,6 +169,8 @@ type Daemon struct {
 
 const lastAutomationActionTTL = 5 * time.Second
 
+var logWatcherRetryInterval = 60 * time.Second
+
 // New creates a new daemon instance.
 func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPath string) *Daemon {
 	d := &Daemon{
@@ -1795,7 +1797,7 @@ func (d *Daemon) startLogWatchers() {
 	if watch, warnNotInstalled := phpShieldWatchDecision(d.cfg.PHPShield.Enabled, phpShieldInstalled()); watch {
 		logFiles = append(logFiles, logFile{"php_shield", phpEventsLogPath, parsePHPShieldLogLine})
 	} else if warnNotInstalled {
-		csmlog.Warn("php_shield is enabled but not installed; run `csm php-shield install` or set php_shield.enabled: false",
+		csmlog.Warn("php_shield is enabled but not installed; protection is inactive until reinstalled; run `csm php-shield install` and restart csm, or set php_shield.enabled: false",
 			"shield", phpShieldScriptPath)
 		d.MarkWatcher("php_shield", false)
 	}
@@ -1811,7 +1813,7 @@ func (d *Daemon) startLogWatchers() {
 		d.wg.Add(1)
 		obs.Go("logwatch-modsec-retry", func() {
 			defer d.wg.Done()
-			ticker := time.NewTicker(60 * time.Second)
+			ticker := time.NewTicker(logWatcherRetryInterval)
 			defer ticker.Stop()
 			for {
 				select {
@@ -2058,7 +2060,7 @@ func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileIn
 func (d *Daemon) retryLogWatcherNamed(path string, handler LogLineHandler, name string) {
 	defer d.wg.Done()
 	csmlog.Warn("log not found, will retry every 60s", "path", path)
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(logWatcherRetryInterval)
 	defer ticker.Stop()
 
 	for {

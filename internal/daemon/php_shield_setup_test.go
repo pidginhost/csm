@@ -1,6 +1,13 @@
 package daemon
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/config"
+)
 
 func TestPHPShieldWatchDecision(t *testing.T) {
 	tests := []struct {
@@ -26,10 +33,6 @@ func TestPHPShieldWatchDecision(t *testing.T) {
 			wantWatch: true, wantWarn: false,
 		},
 		{
-			// The cluster6 case: an upgrade wiped /opt/csm so the shield script
-			// is gone, but php_shield.enabled stayed true in csm.yaml. We must
-			// warn once (actionable) rather than spin the missing-file log
-			// watcher retry forever.
 			name:    "enabled but not installed: warn, do not watch",
 			enabled: true, scriptExists: false,
 			wantWatch: false, wantWarn: true,
@@ -45,4 +48,41 @@ func TestPHPShieldWatchDecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRetryLogWatcherNamedMarksPHPShieldAttachedAfterEventLogAppears(t *testing.T) {
+	oldInterval := logWatcherRetryInterval
+	logWatcherRetryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { logWatcherRetryInterval = oldInterval })
+
+	path := filepath.Join(t.TempDir(), "events.log")
+	d := New(&config.Config{}, nil, nil, "")
+	d.MarkWatcher("php_shield", false)
+
+	d.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		d.retryLogWatcherNamed(path, parsePHPShieldLogLine, "php_shield")
+		close(done)
+	}()
+
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		close(d.stopCh)
+		d.wg.Wait()
+		t.Fatal("named retry did not attach after PHP Shield event log appeared")
+	}
+
+	statuses := d.WatcherStatuses()
+	if attached, ok := statuses["php_shield"]; !ok || !attached {
+		t.Fatalf("php_shield watcher status = %v (present=%v), want attached", attached, ok)
+	}
+
+	close(d.stopCh)
+	d.wg.Wait()
 }

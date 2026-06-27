@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/phpshield"
 )
 
 type Installer struct {
@@ -684,14 +685,14 @@ func (inst *Installer) DeployChallengeConfig() {
 	}
 }
 
-const phpShieldPath = "/opt/csm/php_shield.php"
-const phpShieldConfPath = "/opt/csm/shield.conf.php"
+const phpShieldPath = phpshield.ScriptPath
+const phpShieldConfPath = phpshield.ConfPath
 
 var (
 	phpShieldEventDirMode = os.FileMode(0733) | os.ModeSticky
 	phpShieldEventLogMode = os.FileMode(0622)
-	phpShieldEventDir     = "/var/log/csm-php-shield"
-	phpShieldEventLogPath = filepath.Join(phpShieldEventDir, "events.log")
+	phpShieldEventDir     = phpshield.EventDir
+	phpShieldEventLogPath = phpshield.EventLogPath
 	phpShieldIniDirGlobs  = []string{
 		"/opt/cpanel/ea-php*/root/etc/php.d",
 		"/opt/alt/php*/etc/php.d",

@@ -1,16 +1,18 @@
 package daemon
 
-import "os"
+import (
+	"os"
 
-// phpShieldScriptPath is where the installer deploys the PHP auto_prepend
-// shield. It must match cmd/csm/installer.go phpShieldPath; the daemon uses it
-// only to detect whether the shield is actually installed before tailing its
-// event log.
-const phpShieldScriptPath = "/opt/csm/php_shield.php"
+	"github.com/pidginhost/csm/internal/phpshield"
+)
+
+const phpShieldScriptPath = phpshield.ScriptPath
+
+var phpShieldStat = os.Stat
 
 // phpShieldInstalled reports whether the PHP shield script is deployed on disk.
 func phpShieldInstalled() bool {
-	_, err := os.Stat(phpShieldScriptPath)
+	_, err := phpShieldStat(phpShieldScriptPath)
 	return err == nil
 }
 

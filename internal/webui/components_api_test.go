@@ -116,6 +116,9 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 		{check: "email_malware", watcher: "email_av_spool"},
 		{check: "credential_stuffing", watcher: "pamlistener"},
 		{check: "pam_login", watcher: "pamlistener"},
+		{check: "php_shield_block", watcher: "php_shield"},
+		{check: "php_shield_eval", watcher: "php_shield"},
+		{check: "php_shield_webshell", watcher: "php_shield"},
 	}
 
 	for _, tc := range cases {
@@ -135,6 +138,9 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 			}
 			if rows[0].Name != tc.watcher {
 				t.Fatalf("row name = %q, want %q", rows[0].Name, tc.watcher)
+			}
+			if rows[0].Label == tc.watcher {
+				t.Errorf("watcher %q should resolve to a friendly label", tc.watcher)
 			}
 			if rows[0].Status != "ok" {
 				t.Errorf("expected ok status when finding present, got %s", rows[0].Status)

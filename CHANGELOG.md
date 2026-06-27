@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The daemon no longer spins an endless "events.log missing, retrying" warning when PHP Shield is enabled in config but not actually installed (e.g. after an upgrade replaced `/opt/csm`); it now warns once with a remediation hint and skips the dead event-log watcher.
+- PHP Shield now reports an inactive protection gap when it is enabled but not installed, marks component health unhealthy, and stops retrying a dead event log forever.
 - ModSecurity advisory-only confidence findings no longer feed any firewall path, low-confidence burst notices do not repeat until the active window drains, and sustained ModSecurity attackers can refresh a temporary ban after the block window expires.
 - ModSecurity escalation to a firewall ban is now confidence-gated: a burst of low-confidence policy/anomaly denies (e.g. COMODO content-type or anomaly-score rules from an unusual but legitimate checkout) no longer auto-bans the customer's IP, while real attacks (which trip specific attack rules) still escalate; a deliberate low-confidence-only flood is still banned at the `thresholds.modsec_low_confidence_escalation_hits` backstop (default 30).
 - Firewall apply no longer fails on hosts with large blocklists: the engine now requests a larger netlink socket buffer, so applying a full ruleset does not overflow the kernel buffer and leave the firewall unmanaged.
