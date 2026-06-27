@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operators can now declare DoS-exempt ranges that bypass per-IP connection rate and concurrent limit meters plus mail-port flood meters, and are skipped when auto-blocking subnets; known Google and Microsoft mail-provider ranges are exempt by default, so carrier CGNAT pools and shared mail-provider IPs no longer trigger false-positive throttling or subnet blocks. Individual manual blocks and SYN/UDP flood protection stay in force.
 - The status snapshot now reports firewall enabled/managed state and live block counts, so monitoring can detect when the firewall is configured on but the daemon is not actually managing it.
 
+### Changed
+
+- Upgraded the bundled YARA-X malware-scanning engine from 1.17 to 1.19.
+
 ### Fixed
 
 - Firewall apply no longer fails on hosts with large blocklists: the engine now requests a larger netlink socket buffer, so applying a full ruleset does not overflow the kernel buffer and leave the firewall unmanaged.
