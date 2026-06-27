@@ -1788,9 +1788,16 @@ func (d *Daemon) startLogWatchers() {
 		}
 	}
 
-	// Only watch PHP Shield events if enabled in config
-	if d.cfg.PHPShield.Enabled {
-		logFiles = append(logFiles, logFile{"", phpEventsLogPath, parsePHPShieldLogLine})
+	// Only watch PHP Shield events if enabled AND actually installed. A stale
+	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
+	// otherwise spin the missing-file log-watcher retry forever; warn once with
+	// a remediation hint instead.
+	if watch, warnNotInstalled := phpShieldWatchDecision(d.cfg.PHPShield.Enabled, phpShieldInstalled()); watch {
+		logFiles = append(logFiles, logFile{"php_shield", phpEventsLogPath, parsePHPShieldLogLine})
+	} else if warnNotInstalled {
+		csmlog.Warn("php_shield is enabled but not installed; run `csm php-shield install` or set php_shield.enabled: false",
+			"shield", phpShieldScriptPath)
+		d.MarkWatcher("php_shield", false)
 	}
 
 	// ModSecurity error log - auto-discover path based on detected web server.
