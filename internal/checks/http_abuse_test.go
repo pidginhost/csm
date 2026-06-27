@@ -773,7 +773,7 @@ func (negativeVerifyClassifier) ConfirmedNegative(string, string) bool { return 
 func TestClaimedBot_ConfirmedNegativeEmitsUASpoof(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Thresholds.HTTPFloodThreshold = 0
-	cfg.Thresholds.HTTPUASpoofThreshold = 30
+	cfg.Thresholds.HTTPUASpoofThreshold = 1 // one confirmed-negative hit suffices at threshold 1
 
 	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
 	line := `203.0.113.100 - - [20/May/2026:18:05:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`

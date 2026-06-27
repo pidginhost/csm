@@ -438,7 +438,12 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			threshold = 30
 		}
 		for ip, byKind := range s.uaCat {
-			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits > 0 {
+			// Require sustained spoofing before a hard block. A single
+			// rDNS-failed bot-UA request is too often a legitimate residential
+			// or mobile client that happens to send a bot-like User-Agent;
+			// gating on the same threshold as the other spoof kinds keeps real
+			// spoof-crawlers (which make many requests) blocked.
+			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits >= threshold {
 				out = append(out, s.makeUASpoofFinding(ip,
 					"claimed search-engine bot failed rDNS verification",
 					s.samples[ip], hits))
