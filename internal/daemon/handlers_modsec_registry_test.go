@@ -173,16 +173,25 @@ func TestLiteSpeedTriggered_RedirectActionClassifiedAsBlock(t *testing.T) {
 	}
 }
 
+// liteSpeedTriggerLineUnknownDeny is a LiteSpeed "triggered!" line for a rule
+// ID that is neither a CSM custom rule nor a known policy/anomaly rule, so the
+// confidence classifier returns "unknown" (escalation-eligible at the normal
+// bar). LiteSpeed lines carry only the rule ID and file path, no msg/tag.
+const liteSpeedTriggerLineUnknownDeny = `2026-05-09 09:07:53.866619 [NOTICE] [1800848] [T4] [203.0.113.62:62060-H3:1FDA31C803B1F23A-44#APVH_test.example.com:443] [MODSEC] mod_security rule [id "211999"] at [/etc/apache2/conf.d/modsec_vendor_configs/comodo/rules.conf:80] triggered!`
+
 // TestLiteSpeedDenyActionStillEscalates ensures registry-aware classification
-// did not regress the legitimate deny-rule escalation path.
+// did not regress the legitimate deny-rule escalation path. The rule is
+// "unknown" confidence, which remains escalation-eligible at the normal bar
+// (a known policy/anomaly rule such as 949110 instead takes the low-confidence
+// path; see TestParseModSec_CRSAnomalyIsLowNotHigh).
 func TestLiteSpeedDenyActionStillEscalates(t *testing.T) {
 	resetModSecState()
-	installModSecRegistryForTest(t, map[int]string{949110: "deny"})
+	installModSecRegistryForTest(t, map[int]string{211999: "deny"})
 
 	cfg := &config.Config{}
 	escalated := false
 	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
-		findings := parseModSecLogLineDeduped(liteSpeedTriggerLine949110, cfg)
+		findings := parseModSecLogLineDeduped(liteSpeedTriggerLineUnknownDeny, cfg)
 		for _, f := range findings {
 			if f.Check == "modsec_block_escalation" {
 				escalated = true
@@ -190,6 +199,6 @@ func TestLiteSpeedDenyActionStillEscalates(t *testing.T) {
 		}
 	}
 	if !escalated {
-		t.Fatal("deny-action rule did not escalate after threshold hits")
+		t.Fatal("unknown deny-action rule did not escalate after threshold hits")
 	}
 }

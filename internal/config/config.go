@@ -309,6 +309,15 @@ type Config struct {
 		// paced attackers that spread denies across hours without
 		// changing the trip count.
 		ModSecEscalationWindowMin int `yaml:"modsec_escalation_window_min"`
+		// ModSecLowConfidenceEscalationHits is the low-confidence-only
+		// backstop: how many low-confidence policy/anomaly denies (e.g.
+		// COMODO content-type/anomaly rules) from one IP within the
+		// escalation window force a firewall escalation even when the
+		// burst carries no attack signature. It closes the "only trip
+		// anomaly rules" bypass without banning a single customer's
+		// checkout retry. Default 30. Raise it on hosts with high-volume
+		// legitimate apps that bulk-trip policy rules.
+		ModSecLowConfidenceEscalationHits int `yaml:"modsec_low_confidence_escalation_hits"`
 
 		// HTTPFloodThreshold is the minimum requests per http_flood_window_min
 		// from one source IP that emits http_request_flood. 0 (default) disables
@@ -1524,6 +1533,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.ModSecEscalationWindowMin == 0 {
 		cfg.Thresholds.ModSecEscalationWindowMin = 10
+	}
+	if cfg.Thresholds.ModSecLowConfidenceEscalationHits == 0 {
+		cfg.Thresholds.ModSecLowConfidenceEscalationHits = 30
 	}
 	if cfg.Thresholds.HTTPFloodWindowMin <= 0 {
 		cfg.Thresholds.HTTPFloodWindowMin = 5

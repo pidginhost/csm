@@ -243,8 +243,17 @@ func TestTruncateDaemon_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// recordModSecDeny
+// recordModSecDeny (legacy normal-bar escalation, now via recordModSecEvent)
 // ---------------------------------------------------------------------------
+
+// recordModSecHighDeny exercises the confidence-gated recorder with the legacy
+// "every deny is a high-confidence block" semantics, so the original escalation
+// tests keep covering the normal-bar path after the recordModSecEvent rework.
+// lowConfHits=0 disables the low-confidence backstop, which is irrelevant to
+// the high-confidence path.
+func recordModSecHighDeny(ip string, now time.Time, hits int, win time.Duration) bool {
+	return recordModSecEvent(ip, now, 0, modsecConfHigh, true, hits, 0, win).escalate
+}
 
 func TestRecordModSecDeny_BelowThreshold(t *testing.T) {
 	modsecBlockCount = sync.Map{}
@@ -252,10 +261,10 @@ func TestRecordModSecDeny_BelowThreshold(t *testing.T) {
 
 	now := time.Now()
 	// First two hits should not escalate (threshold is 3).
-	if recordModSecDeny("1.2.3.4", now, 3, 10*time.Minute) {
+	if recordModSecHighDeny("1.2.3.4", now, 3, 10*time.Minute) {
 		t.Error("first hit should not escalate")
 	}
-	if recordModSecDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute) {
+	if recordModSecHighDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute) {
 		t.Error("second hit should not escalate")
 	}
 }
@@ -265,9 +274,9 @@ func TestRecordModSecDeny_AtThreshold(t *testing.T) {
 	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordModSecDeny("1.2.3.4", now, 3, 10*time.Minute)
-	recordModSecDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute)
-	if !recordModSecDeny("1.2.3.4", now.Add(2*time.Second), 3, 10*time.Minute) {
+	recordModSecHighDeny("1.2.3.4", now, 3, 10*time.Minute)
+	recordModSecHighDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute)
+	if !recordModSecHighDeny("1.2.3.4", now.Add(2*time.Second), 3, 10*time.Minute) {
 		t.Error("third hit should trigger escalation")
 	}
 }
@@ -277,12 +286,12 @@ func TestRecordModSecDeny_OnlyEscalatesOnce(t *testing.T) {
 	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordModSecDeny("1.2.3.4", now, 3, 10*time.Minute)
-	recordModSecDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute)
-	recordModSecDeny("1.2.3.4", now.Add(2*time.Second), 3, 10*time.Minute) // escalates
+	recordModSecHighDeny("1.2.3.4", now, 3, 10*time.Minute)
+	recordModSecHighDeny("1.2.3.4", now.Add(time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("1.2.3.4", now.Add(2*time.Second), 3, 10*time.Minute) // escalates
 
 	// Fourth hit should NOT re-escalate.
-	if recordModSecDeny("1.2.3.4", now.Add(3*time.Second), 3, 10*time.Minute) {
+	if recordModSecHighDeny("1.2.3.4", now.Add(3*time.Second), 3, 10*time.Minute) {
 		t.Error("should not re-escalate after first escalation")
 	}
 }
@@ -292,14 +301,14 @@ func TestRecordModSecDeny_SeparateIPs(t *testing.T) {
 	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordModSecDeny("1.1.1.1", now, 3, 10*time.Minute)
-	recordModSecDeny("2.2.2.2", now, 3, 10*time.Minute)
+	recordModSecHighDeny("1.1.1.1", now, 3, 10*time.Minute)
+	recordModSecHighDeny("2.2.2.2", now, 3, 10*time.Minute)
 
 	// Each IP has only 1 hit - neither should escalate at 2.
-	if recordModSecDeny("1.1.1.1", now.Add(time.Second), 3, 10*time.Minute) {
+	if recordModSecHighDeny("1.1.1.1", now.Add(time.Second), 3, 10*time.Minute) {
 		t.Error("1.1.1.1 should not escalate with only 2 hits")
 	}
-	if recordModSecDeny("2.2.2.2", now.Add(time.Second), 3, 10*time.Minute) {
+	if recordModSecHighDeny("2.2.2.2", now.Add(time.Second), 3, 10*time.Minute) {
 		t.Error("2.2.2.2 should not escalate with only 2 hits")
 	}
 }
@@ -333,10 +342,10 @@ func TestRecordModSecDenyHonorsTunableHits(t *testing.T) {
 	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	if recordModSecDeny("203.0.113.5", now, 2, 10*time.Minute) {
+	if recordModSecHighDeny("203.0.113.5", now, 2, 10*time.Minute) {
 		t.Error("first hit must not escalate at hits=2")
 	}
-	if !recordModSecDeny("203.0.113.5", now.Add(time.Second), 2, 10*time.Minute) {
+	if !recordModSecHighDeny("203.0.113.5", now.Add(time.Second), 2, 10*time.Minute) {
 		t.Error("second hit must escalate at hits=2")
 	}
 }
@@ -349,9 +358,9 @@ func TestRecordModSecDenyHonorsTunableWindow(t *testing.T) {
 	// 1h window keeps hits spaced 30min apart alive long enough to
 	// reach the threshold, where the 10m default would prune the first.
 	win := time.Hour
-	recordModSecDeny("203.0.113.6", now, 3, win)
-	recordModSecDeny("203.0.113.6", now.Add(30*time.Minute), 3, win)
-	if !recordModSecDeny("203.0.113.6", now.Add(55*time.Minute), 3, win) {
+	recordModSecHighDeny("203.0.113.6", now, 3, win)
+	recordModSecHighDeny("203.0.113.6", now.Add(30*time.Minute), 3, win)
+	if !recordModSecHighDeny("203.0.113.6", now.Add(55*time.Minute), 3, win) {
 		t.Error("third hit inside the 1h window must escalate")
 	}
 }
@@ -362,12 +371,12 @@ func TestRecordModSecDeny_PrunesOldEntries(t *testing.T) {
 
 	// Two hits happened long ago (outside the escalation window).
 	old := time.Now().Add(-10*time.Minute - time.Minute)
-	recordModSecDeny("1.2.3.4", old, 3, 10*time.Minute)
-	recordModSecDeny("1.2.3.4", old.Add(time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("1.2.3.4", old, 3, 10*time.Minute)
+	recordModSecHighDeny("1.2.3.4", old.Add(time.Second), 3, 10*time.Minute)
 
 	// A third hit now should NOT escalate because old hits were pruned.
 	now := time.Now()
-	if recordModSecDeny("1.2.3.4", now, 3, 10*time.Minute) {
+	if recordModSecHighDeny("1.2.3.4", now, 3, 10*time.Minute) {
 		t.Error("old entries should be pruned, so only 1 recent hit exists")
 	}
 }
@@ -387,9 +396,9 @@ func TestEvictModSecState_ResetsEscalation(t *testing.T) {
 	now := time.Now()
 
 	// Create a counter that has escalated.
-	recordModSecDeny("5.5.5.5", now, 3, 10*time.Minute)
-	recordModSecDeny("5.5.5.5", now.Add(time.Second), 3, 10*time.Minute)
-	recordModSecDeny("5.5.5.5", now.Add(2*time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("5.5.5.5", now, 3, 10*time.Minute)
+	recordModSecHighDeny("5.5.5.5", now.Add(time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("5.5.5.5", now.Add(2*time.Second), 3, 10*time.Minute)
 
 	// Run eviction far in the future so all timestamps expire.
 	evictModSecState(now.Add(10*time.Minute+time.Hour), 3, 10*time.Minute)
@@ -405,7 +414,7 @@ func TestEvictModSecState_KeepsRecentCounters(t *testing.T) {
 	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordModSecDeny("6.6.6.6", now, 3, 10*time.Minute)
+	recordModSecHighDeny("6.6.6.6", now, 3, 10*time.Minute)
 
 	evictModSecState(now, 3, 10*time.Minute)
 
@@ -421,9 +430,9 @@ func TestEvictModSecState_ResetsEscalatedFlagBelowThreshold(t *testing.T) {
 	now := time.Now()
 
 	// Trigger escalation (3 hits).
-	recordModSecDeny("7.7.7.7", now, 3, 10*time.Minute)
-	recordModSecDeny("7.7.7.7", now.Add(time.Second), 3, 10*time.Minute)
-	recordModSecDeny("7.7.7.7", now.Add(2*time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("7.7.7.7", now, 3, 10*time.Minute)
+	recordModSecHighDeny("7.7.7.7", now.Add(time.Second), 3, 10*time.Minute)
+	recordModSecHighDeny("7.7.7.7", now.Add(2*time.Second), 3, 10*time.Minute)
 
 	// Evict at a time when 2 of the 3 timestamps are still valid but not all 3.
 	// We need the first one to expire and the other two to remain.

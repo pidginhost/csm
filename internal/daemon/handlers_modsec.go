@@ -17,11 +17,32 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// modsecIPCounter tracks deny timestamps for a single IP.
+// modsecDenyEvent is one ModSecurity event recorded in an IP's sliding window.
+// Warnings (isBlock=false) are recorded only when high-confidence, to supply
+// attack evidence to a later low-confidence anomaly-threshold deny in the same
+// burst (anomaly-scoring WAFs log the specific attack rule as a warning, then
+// deny on the points-threshold rule).
+type modsecDenyEvent struct {
+	t       time.Time
+	rule    int
+	conf    modsecConfidence
+	isBlock bool
+}
+
+// modsecIPCounter tracks recent ModSecurity events for a single IP.
 type modsecIPCounter struct {
-	mu        sync.Mutex
-	times     []time.Time
-	escalated bool // set once escalation fires - prevents repeated findings per window
+	mu              sync.Mutex
+	events          []modsecDenyEvent
+	escalated       bool         // latched once escalation fires; reset when the window drains
+	lowBurstEmitted bool         // latched once the low-confidence burst finding fires
+	gapEmitted      map[int]bool // rule IDs that already raised a classifier-gap this window
+}
+
+// modsecEscalationOutcome reports what a single recorded event should produce.
+type modsecEscalationOutcome struct {
+	escalate      bool // fire the Critical auto-block escalation finding
+	lowConfBurst  bool // fire the non-actioned low-confidence-burst visibility finding
+	classifierGap bool // fire the non-actioned classifier-gap finding (new unknown rule)
 }
 
 var (
@@ -53,6 +74,27 @@ func modsecEscalationParams(cfg *config.Config) (int, time.Duration) {
 		win = time.Duration(cfg.Thresholds.ModSecEscalationWindowMin) * time.Minute
 	}
 	return hits, win
+}
+
+// modsecDefaultLowConfEscalationHits is the shipped low-confidence-only backstop:
+// how many low-confidence policy/anomaly denies from one IP within the
+// escalation window force a firewall escalation even with no attack signature.
+// It closes the deliberate "only trip anomaly/content-type rules" bypass while
+// staying far above any single legitimate checkout-retry pattern.
+const modsecDefaultLowConfEscalationHits = 30
+
+// modsecLowConfEscalationHits returns the operator-tuned backstop count,
+// falling back to the shipped default when unset or non-positive. Raise it on
+// hosts with high-volume legitimate apps that trip policy/anomaly rules in
+// bulk; it is not meant to be disabled (that would reopen the bypass).
+func modsecLowConfEscalationHits(cfg *config.Config) int {
+	if cfg == nil {
+		return modsecDefaultLowConfEscalationHits
+	}
+	if cfg.Thresholds.ModSecLowConfidenceEscalationHits > 0 {
+		return cfg.Thresholds.ModSecLowConfidenceEscalationHits
+	}
+	return modsecDefaultLowConfEscalationHits
 }
 
 // parseModSecLogLine parses a ModSecurity log line from Apache or LiteSpeed
@@ -236,6 +278,27 @@ func extractModSecField(line, start, end string) string {
 	return rest[:endIdx]
 }
 
+// extractAllModSecFields returns every value delimited by start/end, joined by
+// a space. ModSecurity lines carry repeated [tag "..."] fields; the confidence
+// classifier needs all of them, not just the first.
+func extractAllModSecFields(line, start, end string) string {
+	var vals []string
+	for {
+		idx := strings.Index(line, start)
+		if idx < 0 {
+			break
+		}
+		rest := line[idx+len(start):]
+		endIdx := strings.Index(rest, end)
+		if endIdx < 0 {
+			break
+		}
+		vals = append(vals, rest[:endIdx])
+		line = rest[endIdx+len(end):]
+	}
+	return strings.Join(vals, " ")
+}
+
 // extractLiteSpeedIP extracts the client IP from a LiteSpeed log line.
 // Format: [IP:PORT-CONN#VHOST] e.g. [122.9.114.57:41920-13#APVH_*_server.example.com]
 func extractLiteSpeedIP(line string) string {
@@ -315,16 +378,30 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 		}
 	}
 
-	// Check if this rule is excluded from auto-block escalation.
-	// Configurable via the Rules page in the web UI.
+	// Classify the rule's attack confidence from its ID, message, tags, and
+	// severity. This decides whether a deny may auto-escalate to a firewall ban
+	// (high/unknown) or only feeds the low-confidence visibility/backstop path
+	// (low). See docs/superpowers/specs/2026-06-27-modsec-escalation-fp-options.md.
+	msg := extractModSecField(line, `[msg "`, `"]`)
+	tags := extractAllModSecFields(line, `[tag "`, `"]`)
+	conf := classifyModSecConfidence(ruleNum, msg, tags)
+
+	// Operator override (Rules page): exclude a rule ID from escalation. Coarse
+	// and dual-use-unsafe on its own; the classifier is the primary control.
 	noEscalate := false
 	if db := store.Global(); db != nil {
 		noEscalate = db.GetModSecNoEscalateRules()[ruleNum]
 	}
 
-	if isBlock && ip != "" && ruleID != "" && !noEscalate {
+	// Feed the per-IP window with every blocking deny, plus high-confidence
+	// warnings, which supply attack evidence to a later anomaly-threshold deny
+	// in the same burst. Operator-excluded rules are not recorded at all.
+	if ip != "" && ruleID != "" && !noEscalate && (isBlock || conf == modsecConfHigh) {
 		hits, win := modsecEscalationParams(cfg)
-		if recordModSecDeny(ip, now, hits, win) {
+		lowConfHits := modsecLowConfEscalationHits(cfg)
+		outcome := recordModSecEvent(ip, now, ruleNum, conf, isBlock, hits, lowConfHits, win)
+		switch {
+		case outcome.escalate:
 			check := "modsec_block_escalation"
 			label := "ModSecurity"
 			if isCSM {
@@ -337,6 +414,28 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, hits, ip, win),
 				Details:  truncateDaemon(line, 400),
 				SourceIP: ip,
+				Domain:   f.Domain,
+			})
+		case outcome.lowConfBurst:
+			results = append(results, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "modsec_low_confidence_burst",
+				Message: fmt.Sprintf("ModSecurity low-confidence burst: %d+ policy/anomaly denies from %s within %v (no attack signature; not auto-blocked)",
+					hits, ip, win),
+				Details:  truncateDaemon(line, 400),
+				SourceIP: ip,
+				Domain:   f.Domain,
+			})
+		}
+		if outcome.classifierGap {
+			results = append(results, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "modsec_classifier_gap",
+				Message: fmt.Sprintf("ModSecurity rule %s from %s is an unclassified blocking rule (escalation-eligible; add it to the confidence table if it is a known policy/anomaly rule)",
+					ruleID, ip),
+				Details:  truncateDaemon(line, 400),
+				SourceIP: ip,
+				Domain:   f.Domain,
 			})
 		}
 	}
@@ -358,34 +457,106 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	return results
 }
 
-// recordModSecDeny records a deny event for the given IP and returns true
-// if the escalation threshold has been reached (>= hits within window).
-// hits and window are operator-configurable knobs; recordModSecDeny does
-// no defaulting -- callers pull defaults via modsecEscalationParams so
-// every code path uses the same fallback rule.
-func recordModSecDeny(ip string, now time.Time, hits int, window time.Duration) bool {
+// recordModSecEvent records one ModSecurity event for an IP's sliding window
+// and decides what it should produce. Confidence-gated:
+//
+//   - escalate (Critical auto-block) fires when total blocking denies reach
+//     hits AND the window has high-confidence evidence or an unknown blocking
+//     deny; OR when low-confidence-only denies reach the lowConfHits backstop.
+//   - lowConfBurst (non-actioned visibility) fires when the hit count is reached
+//     with only low-confidence evidence and the backstop is not yet met.
+//   - classifierGap (non-actioned visibility) fires once per unknown rule ID per
+//     window so new vendor packs are noticed instead of silently escalating.
+//
+// Repeating one high-confidence rule still escalates: diversity is never
+// required when high-confidence evidence is present. hits/lowConfHits/window are
+// operator knobs; callers pull defaults via modsecEscalationParams.
+func recordModSecEvent(ip string, now time.Time, rule int, conf modsecConfidence, isBlock bool, hits, lowConfHits int, window time.Duration) modsecEscalationOutcome {
 	val, _ := modsecBlockCount.LoadOrStore(ip, &modsecIPCounter{})
 	ctr := val.(*modsecIPCounter)
 
 	ctr.mu.Lock()
 	defer ctr.mu.Unlock()
 
-	// Prune entries older than the escalation window.
+	// Prune entries older than the escalation window. If the window fully
+	// drained, clear the per-window latches so a fresh burst can re-evaluate.
 	cutoff := now.Add(-window)
-	recent := ctr.times[:0]
-	for _, t := range ctr.times {
-		if !t.Before(cutoff) {
-			recent = append(recent, t)
+	kept := ctr.events[:0]
+	for _, e := range ctr.events {
+		if !e.t.Before(cutoff) {
+			kept = append(kept, e)
 		}
 	}
-	recent = append(recent, now)
-	ctr.times = recent
-
-	if len(recent) >= hits && !ctr.escalated {
-		ctr.escalated = true
-		return true
+	ctr.events = kept
+	if len(ctr.events) == 0 {
+		ctr.escalated = false
+		ctr.lowBurstEmitted = false
+		ctr.gapEmitted = nil
 	}
-	return false
+	ctr.events = append(ctr.events, modsecDenyEvent{t: now, rule: rule, conf: conf, isBlock: isBlock})
+
+	// Aggregate the current window.
+	var totalBlock, lowConfBlock int
+	highEvidence := false
+	unknownBlock := false
+	for _, e := range ctr.events {
+		if e.conf == modsecConfHigh {
+			highEvidence = true
+		}
+		if !e.isBlock {
+			continue
+		}
+		totalBlock++
+		switch e.conf {
+		case modsecConfLow:
+			lowConfBlock++
+		case modsecConfUnknown:
+			unknownBlock = true
+		}
+	}
+
+	var out modsecEscalationOutcome
+
+	// Classifier gap: a new unknown blocking rule, reported once per window.
+	if isBlock && conf == modsecConfUnknown {
+		if ctr.gapEmitted == nil {
+			ctr.gapEmitted = make(map[int]bool)
+		}
+		if !ctr.gapEmitted[rule] {
+			ctr.gapEmitted[rule] = true
+			out.classifierGap = true
+		}
+	}
+
+	normalFire := totalBlock >= hits && (highEvidence || unknownBlock)
+	backstopFire := !highEvidence && !unknownBlock && lowConfHits > 0 && lowConfBlock >= lowConfHits
+
+	// Re-arm latches once the IP drops below the trigger that set them, so a
+	// renewed burst escalates again (and refreshes the firewall ban). Without
+	// this a low-and-slow source that keeps its window barely alive would
+	// escalate only once, then never re-ban after the first 24h block expires.
+	if !normalFire && !backstopFire {
+		ctr.escalated = false
+	}
+	if totalBlock < hits {
+		ctr.lowBurstEmitted = false
+	}
+
+	if ctr.escalated {
+		return out
+	}
+	if normalFire || backstopFire {
+		ctr.escalated = true
+		out.escalate = true
+		return out
+	}
+
+	// Low-confidence-only burst at the normal bar: visibility, never a ban.
+	if totalBlock >= hits && !highEvidence && !unknownBlock && !ctr.lowBurstEmitted {
+		ctr.lowBurstEmitted = true
+		out.lowConfBurst = true
+	}
+	return out
 }
 
 // StartModSecEviction starts a background goroutine that prunes expired dedup
@@ -435,7 +606,7 @@ func firstExistingPath(candidates []string) string {
 
 // evictModSecState prunes expired entries from modsecDedup and modsecBlockCount.
 // hits and window mirror the live thresholds so the cooldown reset matches
-// what recordModSecDeny would compute on the next event.
+// what recordModSecEvent would compute on the next event.
 func evictModSecState(now time.Time, hits int, window time.Duration) {
 	// Prune dedup entries older than modsecDedupTTL.
 	modsecDedup.Range(func(key, value any) bool {
@@ -450,16 +621,28 @@ func evictModSecState(now time.Time, hits int, window time.Duration) {
 	modsecBlockCount.Range(func(key, value any) bool {
 		ctr := value.(*modsecIPCounter)
 		ctr.mu.Lock()
-		recent := ctr.times[:0]
-		for _, t := range ctr.times {
-			if !t.Before(cutoff) {
-				recent = append(recent, t)
+		kept := ctr.events[:0]
+		for _, e := range ctr.events {
+			if !e.t.Before(cutoff) {
+				kept = append(kept, e)
 			}
 		}
-		ctr.times = recent
-		empty := len(recent) == 0
-		if len(recent) < hits {
-			ctr.escalated = false // reset cooldown when counter drops below threshold
+		ctr.events = kept
+		empty := len(kept) == 0
+		blockCount := 0
+		for _, e := range kept {
+			if e.isBlock {
+				blockCount++
+			}
+		}
+		if blockCount < hits {
+			// Below the normal hit count: re-arm so a renewed burst can
+			// escalate (and refresh the firewall ban) again.
+			ctr.escalated = false
+			ctr.lowBurstEmitted = false
+		}
+		if empty {
+			ctr.gapEmitted = nil
 		}
 		ctr.mu.Unlock()
 

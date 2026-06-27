@@ -175,6 +175,12 @@ thresholds:
   # without lowering the hit floor.
   modsec_escalation_hits: 3
   modsec_escalation_window_min: 10
+  # Low-confidence-only backstop: how many low-confidence policy/anomaly denies
+  # (e.g. COMODO content-type/anomaly rules) from one IP within the window force
+  # an escalation even with no attack signature. Closes the "only trip anomaly
+  # rules" bypass without banning a single customer's checkout retry. Raise it
+  # for high-volume legit apps that bulk-trip policy rules.
+  modsec_low_confidence_escalation_hits: 30
   # Full-scan per-file size cap in MiB; 0 uses the default (16 MiB).
   full_scan_max_file_mb: 16
   # Number of completed full-scan job records kept by the job manager before eviction.

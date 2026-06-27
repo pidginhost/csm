@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ModSecurity escalation to a firewall ban is now confidence-gated: a burst of low-confidence policy/anomaly denies (e.g. COMODO content-type or anomaly-score rules from an unusual but legitimate checkout) no longer auto-bans the customer's IP, while real attacks (which trip specific attack rules) still escalate; a deliberate low-confidence-only flood is still banned at the `thresholds.modsec_low_confidence_escalation_hits` backstop (default 30).
 - Firewall apply no longer fails on hosts with large blocklists: the engine now requests a larger netlink socket buffer, so applying a full ruleset does not overflow the kernel buffer and leave the firewall unmanaged.
 - Automated firewall actions no longer log repeated failed-block warnings when they decline to block the server's own interface addresses or operator infra IPs; those are treated as expected no-ops. The triggering finding is still recorded, so suspicious activity attributed to a protected address (such as a compromised site pivoting through the server IP) is still surfaced.
 - XML-RPC abuse blocking is now tunable via config and Settings (`thresholds.xmlrpc_threshold`, set 0 to disable) and its default was raised, so busy WordPress sites using Jetpack, the mobile app, or WooCommerce are no longer auto-blocked for legitimate xmlrpc.php traffic.

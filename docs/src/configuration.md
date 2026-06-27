@@ -237,6 +237,7 @@ thresholds:
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
   modsec_escalation_hits: 3          # denies from one IP before ModSecurity escalation (default: 3)
   modsec_escalation_window_min: 10   # ModSecurity escalation window in minutes (default: 10)
+  modsec_low_confidence_escalation_hits: 30 # low-confidence-only backstop (default: 30)
 
 # --- Web server overrides ---
 # Leave these empty to use auto-detected paths for the running platform.

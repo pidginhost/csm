@@ -222,6 +222,24 @@ the shipped default of 10 minutes to e.g. 4 hours lets the modsec
 detector promote paced scanners to a Critical escalation finding,
 which then trips the generic auto_block gate.
 
+ModSecurity escalation is confidence-gated. Each deny is classified as
+high-confidence (a specific attack/probe rule -- SQLi, RCE, traversal,
+URL-encoding abuse, CSM custom), low-confidence (policy/anomaly scoring
+rules such as COMODO content-type `210710` or anomaly-points `214930`,
+and OWASP CRS anomaly-score rules), or unknown. A burst escalates to a
+firewall ban at the normal hit count only when it contains a
+high-confidence deny or an unknown deny; a low-confidence-only burst
+emits a non-actioned `modsec_low_confidence_burst` finding for
+visibility instead of banning. This stops false bans of legitimate
+traffic (e.g. an unusual checkout that only trips content-type/anomaly
+rules) without blinding CSM to real attacks, which trip the
+high-confidence rules. A determined source that floods only
+low-confidence rules is still banned once it reaches the
+`thresholds.modsec_low_confidence_escalation_hits` backstop (default
+30). Unknown blocking rules are escalation-eligible (fail-secure) and
+raise a one-time `modsec_classifier_gap` finding so a new vendor rule
+pack is noticed rather than silently given a no-ban path.
+
 ## Kinds
 
 - `web_account_compromise` -- findings attributable to a hosted account
