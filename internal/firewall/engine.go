@@ -19,6 +19,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
+	"github.com/mdlayher/netlink"
 
 	"github.com/pidginhost/csm/internal/atomicio"
 )
@@ -243,9 +244,35 @@ func portU16(p int) uint16 {
 	return uint16(p)
 }
 
+// nftSocketBufferBytes is the netlink socket read/write buffer CSM requests for
+// its nftables connections. The default OS netlink buffer
+// (net.core.rmem_default, typically ~208 KiB) cannot hold the kernel ack stream
+// for a full ruleset Apply on a host with a large blocklist; the apply then
+// fails with ENOBUFS ("netlink receive: recvmsg: no buffer space available")
+// and the firewall is left unmanaged. SetReadBuffer uses SO_RCVBUFFORCE under
+// CAP_NET_ADMIN, so the larger size holds regardless of net.core.rmem_max.
+const nftSocketBufferBytes = 8 << 20 // 8 MiB
+
+// applyNFTSocketBuffer enlarges a netlink connection's receive and send
+// buffers. It is best-effort: a resize failure is ignored so the connection
+// still works with the default buffer (sufficient for small rulesets), and it
+// returns nil so it never aborts the dial inside WithSockOptions.
+func applyNFTSocketBuffer(nc *netlink.Conn) error {
+	_ = nc.SetReadBuffer(nftSocketBufferBytes)
+	_ = nc.SetWriteBuffer(nftSocketBufferBytes)
+	return nil
+}
+
+// newNFTConn opens an nftables netlink connection with enlarged socket buffers.
+// WithSockOptions runs on every (re)dial, including the transient per-Flush
+// sockets of a non-lasting connection, so each Apply uses the larger buffer.
+func newNFTConn() (*nftables.Conn, error) {
+	return nftables.New(nftables.WithSockOptions(applyNFTSocketBuffer))
+}
+
 // NewEngine creates a new nftables firewall engine.
 func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
-	conn, err := nftables.New()
+	conn, err := newNFTConn()
 	if err != nil {
 		return nil, fmt.Errorf("nftables connection: %w", err)
 	}
@@ -263,7 +290,7 @@ func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
 // ConnectExisting connects to an already-running CSM firewall.
 // Used by CLI commands to modify the live ruleset without reapplying all rules.
 func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
-	conn, err := nftables.New()
+	conn, err := newNFTConn()
 	if err != nil {
 		return nil, fmt.Errorf("nftables connection: %w", err)
 	}
