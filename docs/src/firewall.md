@@ -6,7 +6,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 
 - **Atomic ruleset** - single netlink transaction, no partial application
 - **Named IP sets** with per-element timeouts (blocked, allowed, infra, country)
-- **Rate limiting** - SYN flood, UDP flood, per-IP connection rate, per-port flood
+- **Rate limiting** - SYN flood, UDP flood, per-IP connection rate and concurrent limit (IPv4 sources only), per-port flood (dual-stack)
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
 - **Subnet/CIDR blocking** with auto-escalation from individual IPs and safety guards for infra, local, and allowed addresses

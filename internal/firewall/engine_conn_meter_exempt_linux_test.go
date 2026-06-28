@@ -234,11 +234,12 @@ func TestUDPMeterHasNoExemptLookup(t *testing.T) {
 
 // ---- lookup position and register-reuse correctness -----------------------
 
-// TestConnMeterExemptLookupPrecedesCtExprs verifies that the exempt Payload+Lookup
-// pair is at the FRONT of connMeterRuleExprs, before the Ct state check. This
-// ordering ensures the rule short-circuits for exempt sources without evaluating
-// conntrack state. The Ct and Payload exprs that follow reload register 1
-// independently, so the register reuse is safe.
+// TestConnMeterExemptLookupPrecedesCtExprs verifies the expression order of
+// connMeterRuleExprs: the NFPROTO==IPV4 guard pair first, then the exempt
+// Payload+Lookup, then the Ct state check. The exempt lookup short-circuits the
+// rule for exempt sources before conntrack is evaluated; the guard ensures the
+// exempt lookup's IPv4 saddr load only runs on IPv4 packets. Each following expr
+// reloads register 1 independently, so the register reuse is safe.
 func TestConnMeterExemptLookupPrecedesCtExprs(t *testing.T) {
 	exemptSet := &nftables.Set{Name: "dos_exempt_nets", ID: 42}
 	meterConn := &nftables.Set{Name: "meter_conn", ID: 1}
@@ -251,25 +252,27 @@ func TestConnMeterExemptLookupPrecedesCtExprs(t *testing.T) {
 
 	exprs := e.connMeterRuleExprs(50, 25)
 
-	// exprs[0] must be the exempt Payload (saddr into reg 1)
-	p, ok := exprs[0].(*expr.Payload)
+	assertIPv4NFProtoGuardPrefix(t, exprs)
+
+	// exprs[2] must be the exempt Payload (saddr into reg 1)
+	p, ok := exprs[2].(*expr.Payload)
 	if !ok {
-		t.Fatalf("exprs[0] = %T, want *expr.Payload (exempt saddr load)", exprs[0])
+		t.Fatalf("exprs[2] = %T, want *expr.Payload (exempt saddr load)", exprs[2])
 	}
 	if p.Base != expr.PayloadBaseNetworkHeader || p.Offset != 12 || p.Len != 4 {
-		t.Errorf("exprs[0] Payload base/offset/len = %v/%d/%d, want NetworkHeader/12/4",
+		t.Errorf("exprs[2] Payload base/offset/len = %v/%d/%d, want NetworkHeader/12/4",
 			p.Base, p.Offset, p.Len)
 	}
 
-	// exprs[1] must be the inverted Lookup
-	lk, ok := exprs[1].(*expr.Lookup)
+	// exprs[3] must be the inverted Lookup
+	lk, ok := exprs[3].(*expr.Lookup)
 	if !ok || !lk.Invert {
-		t.Fatalf("exprs[1] = %T Invert=%v, want inverted *expr.Lookup", exprs[1], ok)
+		t.Fatalf("exprs[3] = %T Invert=%v, want inverted *expr.Lookup", exprs[3], ok)
 	}
 
-	// exprs[2] must be Ct (the original first expression, now displaced to pos 2)
-	if _, ok := exprs[2].(*expr.Ct); !ok {
-		t.Errorf("exprs[2] = %T, want *expr.Ct (ct state check)", exprs[2])
+	// exprs[4] must be Ct (the ct state check, after guard + exempt pair)
+	if _, ok := exprs[4].(*expr.Ct); !ok {
+		t.Errorf("exprs[4] = %T, want *expr.Ct (ct state check)", exprs[4])
 	}
 
 	// The rule must still end with VerdictDrop
@@ -291,15 +294,17 @@ func TestConnlimitExemptLookupPrecedesCtExprs(t *testing.T) {
 
 	exprs := e.connlimitRuleExprs(10)
 
-	if _, ok := exprs[0].(*expr.Payload); !ok {
-		t.Fatalf("exprs[0] = %T, want *expr.Payload (exempt saddr load)", exprs[0])
+	assertIPv4NFProtoGuardPrefix(t, exprs)
+
+	if _, ok := exprs[2].(*expr.Payload); !ok {
+		t.Fatalf("exprs[2] = %T, want *expr.Payload (exempt saddr load)", exprs[2])
 	}
-	lk, ok := exprs[1].(*expr.Lookup)
+	lk, ok := exprs[3].(*expr.Lookup)
 	if !ok || !lk.Invert {
-		t.Fatalf("exprs[1] = %T Invert=%v, want inverted *expr.Lookup", exprs[1], ok)
+		t.Fatalf("exprs[3] = %T Invert=%v, want inverted *expr.Lookup", exprs[3], ok)
 	}
-	if _, ok := exprs[2].(*expr.Ct); !ok {
-		t.Errorf("exprs[2] = %T, want *expr.Ct", exprs[2])
+	if _, ok := exprs[4].(*expr.Ct); !ok {
+		t.Errorf("exprs[4] = %T, want *expr.Ct", exprs[4])
 	}
 	if !endsWithDrop(exprs) {
 		t.Error("connlimitRuleExprs must end with VerdictDrop")

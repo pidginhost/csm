@@ -1599,12 +1599,26 @@ func buildSetMatchRuleExprs(set *nftables.Set, verdict expr.VerdictKind, nfproto
 	}
 }
 
+// ipv4NFProtoGuard returns the NFPROTO==IPV4 family guard prepended to every
+// per-IP meter rule. The meters live in the dual-stack inet table and key on a
+// raw IPv4 network-header source load (offset 12, len 4); on an IPv6 packet that
+// offset reads bytes 4..7 of the 16-byte IPv6 source and writes a fake IPv4 key
+// into the IPv4-typed meter set. The guard makes the meter rules run on IPv4
+// only. Register 1 is reloaded by the expression that follows, so the guard does
+// not disturb later register use.
+func ipv4NFProtoGuard() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{2}}, // NFPROTO_IPV4
+	}
+}
+
 // synFloodRuleExprs builds the expression list for the per-IP SYN flood
 // rate-limit rule. The rule is intentionally NOT exempt-aware: SYN flood
 // protection targets TCP half-open storms and is applied without a dos_exempt
 // guard (unlike connection meters).
 func (e *Engine) synFloodRuleExprs() []expr.Any {
-	return []expr.Any{
+	return append(ipv4NFProtoGuard(), []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
@@ -1622,14 +1636,14 @@ func (e *Engine) synFloodRuleExprs() []expr.Any {
 			},
 		},
 		&expr.Verdict{Kind: expr.VerdictDrop},
-	}
+	}...)
 }
 
 // udpFloodRuleExprs builds the expression list for the per-IP UDP flood
 // rate-limit rule. Like synFloodRuleExprs, this rule carries no dos_exempt
 // guard.
 func (e *Engine) udpFloodRuleExprs(rate uint64, burst uint32) []expr.Any {
-	return []expr.Any{
+	return append(ipv4NFProtoGuard(), []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
@@ -1643,7 +1657,7 @@ func (e *Engine) udpFloodRuleExprs(rate uint64, burst uint32) []expr.Any {
 			},
 		},
 		&expr.Verdict{Kind: expr.VerdictDrop},
-	}
+	}...)
 }
 
 // connMeterRuleExprs builds the expression list for the per-IP new-connection
@@ -1678,7 +1692,9 @@ func (e *Engine) connMeterRuleExprs(rate uint64, burst uint32) []expr.Any {
 	if e.setDOSExempt != nil {
 		exprs = append(e.dosExemptV4Lookup(1), exprs...)
 	}
-	return exprs
+	// The IPv4 family guard must precede the exempt lookup, which also loads an
+	// IPv4 network-header source and would otherwise misread IPv6 packets.
+	return append(ipv4NFProtoGuard(), exprs...)
 }
 
 // connlimitRuleExprs builds the expression list for the per-IP concurrent
@@ -1708,7 +1724,9 @@ func (e *Engine) connlimitRuleExprs(limit uint32) []expr.Any {
 	if e.setDOSExempt != nil {
 		exprs = append(e.dosExemptV4Lookup(1), exprs...)
 	}
-	return exprs
+	// The IPv4 family guard must precede the exempt lookup, which also loads an
+	// IPv4 network-header source and would otherwise misread IPv6 packets.
+	return append(ipv4NFProtoGuard(), exprs...)
 }
 
 // addCFWhitelistRule adds an accept rule for Cloudflare IPs on TCP ports 80 and 443.
