@@ -103,6 +103,43 @@ func findSchemaField(section SettingsSection, yamlName string) *SettingsField {
 	return nil
 }
 
+func TestFirewallRateLimitSchemaDocumentsIPv4OnlyMeters(t *testing.T) {
+	section, ok := LookupSettingsSection("firewall")
+	if !ok {
+		t.Fatal("firewall settings section missing")
+	}
+	tests := []struct {
+		field     string
+		label     string
+		helpToken string
+		group     string
+	}{
+		{"conn_rate_limit", "Conn rate limit (IPv4/min)", "IPv4 source meter", FieldGroupRateLimits},
+		{"conn_limit", "Concurrent connections per IPv4", "IPv4 source meter", FieldGroupRateLimits},
+		{"syn_flood_protection", "SYN flood protection", "IPv4 sources only", FieldGroupFloodProtection},
+		{"udp_flood", "UDP flood protection", "IPv4 sources only", FieldGroupFloodProtection},
+		{"udp_flood_rate", "UDP packets/sec", "per IPv4 source", FieldGroupFloodProtection},
+		{"udp_flood_burst", "UDP burst allowance", "per IPv4 source", FieldGroupFloodProtection},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			f := findSchemaField(section, tt.field)
+			if f == nil {
+				t.Fatalf("%s field missing", tt.field)
+			}
+			if f.Label != tt.label {
+				t.Fatalf("%s label = %q, want %q", tt.field, f.Label, tt.label)
+			}
+			if !strings.Contains(f.Help, tt.helpToken) {
+				t.Fatalf("%s help = %q, want %q", tt.field, f.Help, tt.helpToken)
+			}
+			if f.FieldGroup != tt.group {
+				t.Fatalf("%s group = %q, want %q", tt.field, f.FieldGroup, tt.group)
+			}
+		})
+	}
+}
+
 func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 	known := []struct{ section, field string }{
 		{"alerts", "webhook.hmac_secret"},

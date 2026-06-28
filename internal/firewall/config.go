@@ -63,8 +63,8 @@ type FirewallConfig struct {
 	LogDropped bool `yaml:"log_dropped"`
 	LogRate    int  `yaml:"log_rate"` // log entries per minute
 
-	// DoS-exempt ranges - source CIDRs excluded from per-IP DoS heuristics
-	// (rate-limit, conn-limit, port-flood). Intended for shared-source ranges
+	// DoS-exempt ranges - source CIDRs excluded from connection/mail-port
+	// meters and auto-subnet escalation. Intended for shared-source ranges
 	// such as carrier CGNAT blocks and well-known mail-provider egress.
 	DOSExemptRanges             []string `yaml:"dos_exempt_ranges"`
 	DOSExemptKnownMailProviders *bool    `yaml:"dos_exempt_known_mail_providers"`

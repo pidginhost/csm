@@ -827,8 +827,8 @@ func (e *Engine) createSets() error {
 		}
 	}
 
-	// DoS-exempt sets: sources here bypass per-IP rate-limit / conn-limit /
-	// port-flood rules. Populated from operator dos_exempt_ranges + provider
+	// DoS-exempt sets: sources here bypass connection meters and mail-port
+	// flood rules. Populated from operator dos_exempt_ranges + provider
 	// overlay (pushed by the daemon before Apply).
 	v4Exempt, v6Exempt := EffectiveDOSExemptNets(e.cfg, e.dosExemptProviderNets)
 	e.setDOSExempt = &nftables.Set{

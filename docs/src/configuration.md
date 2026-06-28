@@ -602,7 +602,7 @@ firewall:
 
   # DoS-exempt ranges: bypass configured DoS meters and subnet auto-blocks.
   # See firewall.dos_exempt_ranges below for full details.
-  dos_exempt_ranges: []                 # CIDRs or single IPs exempt from rate/conn/flood meters and subnet auto-blocks; /0 and bare hostnames rejected at load
+  dos_exempt_ranges: []                 # CIDRs or single IPs exempt from connection/mail-port meters and subnet auto-blocks; /0 and bare hostnames rejected at load
   dos_exempt_known_mail_providers: true # also exempt Google and Microsoft mail-provider egress ranges; dynamic, cached, updated every 12h (default: true)
 
   # UDP flood protection (IPv4-source meter)
