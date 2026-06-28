@@ -235,12 +235,12 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Retention.ReputationDays < 0 {
 			results = append(results, ValidationResult{"error", "retention.reputation_days", fmt.Sprintf("reputation_days must be >= 0, got %d", cfg.Retention.ReputationDays)})
 		}
-		if cfg.Retention.CompactMinSizeMB < 0 {
-			results = append(results, ValidationResult{"error", "retention.compact_min_size_mb", fmt.Sprintf("compact_min_size_mb must be >= 0, got %d", cfg.Retention.CompactMinSizeMB)})
-		}
-		if cfg.Retention.CompactFillRatio <= 0 || cfg.Retention.CompactFillRatio > 1 {
-			results = append(results, ValidationResult{"error", "retention.compact_fill_ratio", fmt.Sprintf("compact_fill_ratio must be in (0, 1], got %v", cfg.Retention.CompactFillRatio)})
-		}
+	}
+	if cfg.Retention.CompactMinSizeMB < 0 {
+		results = append(results, ValidationResult{"error", "retention.compact_min_size_mb", fmt.Sprintf("compact_min_size_mb must be >= 0, got %d", cfg.Retention.CompactMinSizeMB)})
+	}
+	if cfg.Retention.CompactFillRatio < 0 || cfg.Retention.CompactFillRatio > 1 || (cfg.Retention.Enabled && cfg.Retention.CompactFillRatio == 0) {
+		results = append(results, ValidationResult{"error", "retention.compact_fill_ratio", fmt.Sprintf("compact_fill_ratio must be in (0, 1], got %v", cfg.Retention.CompactFillRatio)})
 	}
 
 	// --- Firewall ---

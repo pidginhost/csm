@@ -1053,19 +1053,23 @@ type Config struct {
 	// runs the check and emits findings to other sinks.
 	DisabledChecks []string `yaml:"disabled_checks" hotreload:"safe"`
 
-	// Retention bounds bbolt growth. When enabled, a daily sweep prunes
-	// per-bucket entries older than the configured TTL and an online
-	// compaction pass shrinks the on-disk file once the fill ratio drops
-	// below CompactFillRatio (and the file exceeds CompactMinSizeMB).
-	// All fields are hot-reload:"restart" because the retention goroutine
-	// captures these on daemon start.
+	// Retention bounds bbolt growth in two independent ways:
+	//   - Sweeps (opt-in via Enabled): a daily pass prunes per-bucket entries
+	//     older than the configured TTL. Destructive, so off by default.
+	//   - Compaction (automatic): the daemon reclaims freelist slack at startup
+	//     when the file exceeds CompactMinSizeMB and is less than
+	//     CompactFillRatio full. Non-destructive (it only rewrites the file to
+	//     drop free pages), so it runs regardless of Enabled; set
+	//     CompactMinSizeMB to 0 to disable it.
+	// All fields are hot-reload:"restart" because the retention goroutine and
+	// the startup compaction capture these on daemon start.
 	Retention struct {
-		Enabled          bool    `yaml:"enabled"`             // opt-in
+		Enabled          bool    `yaml:"enabled"`             // opt-in (sweeps only)
 		FindingsDays     int     `yaml:"findings_days"`       // default 90
 		HistoryDays      int     `yaml:"history_days"`        // default 30
 		ReputationDays   int     `yaml:"reputation_days"`     // default 180
 		SweepInterval    string  `yaml:"sweep_interval"`      // default "24h"
-		CompactMinSizeMB int     `yaml:"compact_min_size_mb"` // default 128
+		CompactMinSizeMB int     `yaml:"compact_min_size_mb"` // default 128; 0 disables auto-compaction
 		CompactFillRatio float64 `yaml:"compact_fill_ratio"`  // default 0.5
 	} `yaml:"retention" hotreload:"restart"`
 
@@ -1372,6 +1376,7 @@ type defaultPresence struct {
 	smtpProbeThreshold        bool
 	forwardGuard              forwardGuardPresence
 	phpRelay                  phpRelayPresence
+	retention                 retentionPresence
 	blockDigestMinBlock       bool
 	thresholdsRollingCoverage bool
 	httpASNCrawlMinIPs        bool
@@ -1395,6 +1400,12 @@ type forwardGuardPresence struct {
 // meaning and must not be overwritten by defaults.
 type phpRelayPresence struct {
 	fanoutDistinctRecipients bool
+}
+
+// retentionPresence records fields where a literal zero has runtime meaning and
+// must not be overwritten by defaults.
+type retentionPresence struct {
+	compactMinSizeMB bool
 }
 
 // ForwardGuardConfig configures the email forward-guard. Enabled is the master
@@ -1762,7 +1773,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Retention.SweepInterval == "" {
 		cfg.Retention.SweepInterval = "24h"
 	}
-	if cfg.Retention.CompactMinSizeMB == 0 {
+	if cfg.Retention.CompactMinSizeMB == 0 && !presence.retention.compactMinSizeMB {
 		cfg.Retention.CompactMinSizeMB = 128
 	}
 	if cfg.Retention.CompactFillRatio == 0 {
@@ -1958,6 +1969,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Alerts struct {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
 		} `yaml:"alerts"`
+		Retention map[string]yaml.Node `yaml:"retention"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
@@ -1970,6 +1982,9 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.phpRelay.fanoutDistinctRecipients = raw.EmailProtection.PHPRelay["fanout_distinct_recipients"]
 	if node, ok := raw.Alerts.BlockDigest["min_block"]; ok && node.Tag != "!!null" {
 		presence.blockDigestMinBlock = true
+	}
+	if node, ok := raw.Retention["compact_min_size_mb"]; ok && node.Tag != "!!null" {
+		presence.retention.compactMinSizeMB = true
 	}
 
 	fg := raw.EmailProtection.ForwardGuard

@@ -7,6 +7,8 @@ import (
 	"syscall"
 )
 
+const lockFileName = "csm.lock"
+
 // LockFile provides file-based locking to prevent concurrent CSM runs.
 type LockFile struct {
 	path string
@@ -15,7 +17,7 @@ type LockFile struct {
 
 // AcquireLock creates an exclusive lock. Returns error if already locked.
 func AcquireLock(stateDir string) (*LockFile, error) {
-	lockPath := filepath.Join(stateDir, "csm.lock")
+	lockPath := filepath.Join(stateDir, lockFileName)
 	// #nosec G304 -- filepath.Join under operator-configured stateDir.
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

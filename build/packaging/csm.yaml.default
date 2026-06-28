@@ -204,6 +204,22 @@ thresholds:
 
 state_path: "/var/lib/csm/state"
 
+# Retention bounds the bbolt state database in two ways:
+#   - Sweeps (enabled: false by default) prune per-bucket entries older than the
+#     TTLs below. Destructive, so opt-in.
+#   - Compaction is automatic: at startup the daemon reclaims freelist slack when
+#     the file exceeds compact_min_size_mb and is less than compact_fill_ratio
+#     full. Non-destructive, runs regardless of `enabled`. Set
+#     compact_min_size_mb: 0 to turn auto-compaction off.
+retention:
+  enabled: false
+  history_days: 30
+  findings_days: 90
+  reputation_days: 180
+  sweep_interval: "24h"
+  compact_min_size_mb: 128
+  compact_fill_ratio: 0.5
+
 # Mail log source. Controls where the postfix/dovecot brute-force scanner
 # reads its lines from. Most cPanel hosts keep the default file at
 # /var/log/maillog. Debian-family hosts get /var/log/mail.log. journald-only

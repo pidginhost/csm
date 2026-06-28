@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,52 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestFreeBytesReflectsFreedPages(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Fill a bucket with enough data to span many pages, then drop it. bbolt
+	// moves the emptied pages onto the freelist (it never shrinks the file),
+	// so FreeBytes must grow to reflect the reclaimable slack.
+	val := make([]byte, 4096)
+	err = db.bolt.Update(func(tx *bolt.Tx) error {
+		b, berr := tx.CreateBucketIfNotExists([]byte("freebytes_probe"))
+		if berr != nil {
+			return berr
+		}
+		for i := 0; i < 3000; i++ {
+			if perr := b.Put([]byte(fmt.Sprintf("k%06d", i)), val); perr != nil {
+				return perr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	err = db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.DeleteBucket([]byte("freebytes_probe"))
+	})
+	if err != nil {
+		t.Fatalf("delete bucket: %v", err)
+	}
+	// A trailing write tx lets pending freelist pages settle to free.
+	if err = db.bolt.Update(func(tx *bolt.Tx) error { return nil }); err != nil {
+		t.Fatalf("settle tx: %v", err)
+	}
+
+	free, err := db.FreeBytes()
+	if err != nil {
+		t.Fatalf("FreeBytes: %v", err)
+	}
+	if free <= 0 {
+		t.Fatalf("FreeBytes after dropping a large bucket = %d, want > 0", free)
+	}
+}
 
 func TestSweepHistoryOlderThan_EmptyBucketIsNoop(t *testing.T) {
 	db, err := Open(t.TempDir())

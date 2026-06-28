@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-func TestPrepareDaemonStateMigratesBeforeOpeningStore(t *testing.T) {
+func TestPrepareDaemonStateLocksBeforeMigration(t *testing.T) {
 	root := t.TempDir()
 	legacy := filepath.Join(root, "legacy")
 	statePath := filepath.Join(root, "state")
@@ -19,27 +19,19 @@ func TestPrepareDaemonStateMigratesBeforeOpeningStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	opened := false
-	openStore := func(cfg *config.Config) error {
-		opened = true
-		if cfg.StatePath != statePath {
-			t.Fatalf("StatePath = %q, want %q", cfg.StatePath, statePath)
-		}
-		if _, err := os.Stat(filepath.Join(statePath, "state.json")); err != nil {
-			t.Fatalf("legacy state was not copied before store open: %v", err)
-		}
-		return os.WriteFile(filepath.Join(statePath, "csm.db"), []byte("opened"), 0o600)
-	}
-
-	migrated, err := prepareDaemonState(&config.Config{StatePath: statePath}, legacy, openStore)
+	migrated, lock, err := prepareDaemonState(&config.Config{StatePath: statePath}, legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer lock.Release()
 	if !migrated {
 		t.Fatal("migrated = false, want true")
 	}
-	if !opened {
-		t.Fatal("openStore was not called")
+	if _, err := os.Stat(filepath.Join(statePath, "state.json")); err != nil {
+		t.Fatalf("legacy state was not copied while startup lock was held: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(statePath, "csm.lock")); err != nil {
+		t.Fatalf("startup lock was not created after migration: %v", err)
 	}
 }
 

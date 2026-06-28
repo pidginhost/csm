@@ -112,6 +112,22 @@ func (db *DB) Size() (int64, error) {
 	return info.Size(), nil
 }
 
+// FreeBytes returns the number of bytes held by free and pending pages in the
+// bbolt freelist -- the space a compaction would reclaim. bbolt never shrinks
+// the file on delete, so a large FreeBytes relative to Size means the on-disk
+// file is mostly slack and is worth compacting.
+func (db *DB) FreeBytes() (int64, error) {
+	st := db.bolt.Stats()
+	pageSize := 0
+	if info := db.bolt.Info(); info != nil {
+		pageSize = info.PageSize
+	}
+	if pageSize <= 0 {
+		pageSize = os.Getpagesize()
+	}
+	return int64(st.FreePageN+st.PendingPageN) * int64(pageSize), nil
+}
+
 // CompactInto snapshots the live DB into a fresh bbolt file at dstPath
 // using bolt.Compact. Returns the source size and the compacted size
 // (both in bytes).

@@ -38,7 +38,7 @@ func MigrateStateDir(oldPath, newPath string) (bool, error) {
 		return false, nil
 	}
 
-	if newEntries, err := os.ReadDir(newPath); err == nil && len(newEntries) > 0 {
+	if newEntries, err := os.ReadDir(newPath); err == nil && hasStateContent(newEntries) {
 		return false, nil // new dir non-empty: no migration
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, fmt.Errorf("reading %s: %w", newPath, err)
@@ -48,14 +48,28 @@ func MigrateStateDir(oldPath, newPath string) (bool, error) {
 		return false, fmt.Errorf("mkdir %s: %w", newPath, err)
 	}
 
+	copied := false
 	for _, e := range oldEntries {
+		if e.Name() == lockFileName {
+			continue
+		}
 		src := filepath.Join(oldPath, e.Name())
 		dst := filepath.Join(newPath, e.Name())
 		if err := copyEntry(src, dst); err != nil {
 			return false, fmt.Errorf("copying %s: %w", src, err)
 		}
+		copied = true
 	}
-	return true, nil
+	return copied, nil
+}
+
+func hasStateContent(entries []os.DirEntry) bool {
+	for _, entry := range entries {
+		if entry.Name() != lockFileName {
+			return true
+		}
+	}
+	return false
 }
 
 func copyEntry(src, dst string) error {

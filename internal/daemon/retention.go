@@ -168,15 +168,16 @@ func (d *Daemon) runRetentionTick() {
 		csmlog.Warn("retention sweep bucket error", "err", err)
 	}
 
-	// Size check: surface a human-readable hint when the file has grown
-	// past the configured floor so operators can plan a maintenance
-	// window. Actual compaction is operator-driven via `csm store compact`.
-	if cfg != nil && cfg.Retention.Enabled && cfg.Retention.CompactMinSizeMB > 0 && db != nil {
+	// Size check: surface a human-readable hint when the file has grown past
+	// the configured floor. The daemon auto-compacts at the next startup
+	// (maybeCompactStateAtStartup), so a restart reclaims the space; `csm store
+	// compact` does it immediately with the daemon stopped.
+	if cfg != nil && cfg.Retention.CompactMinSizeMB > 0 && db != nil {
 		size, err := db.Size()
 		if err == nil {
 			minBytes := int64(cfg.Retention.CompactMinSizeMB) * 1024 * 1024
 			if size >= minBytes {
-				csmlog.Info("retention: compaction recommended; run `csm store compact` during a maintenance window",
+				csmlog.Info("retention: state db is large; it will be auto-compacted on the next restart (or run `csm store compact` now with the daemon stopped)",
 					"size_bytes", size,
 					"min_bytes", minBytes,
 				)

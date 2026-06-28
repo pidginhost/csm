@@ -50,6 +50,51 @@ func TestMigrateStateDir_NoopWhenNewHasContent(t *testing.T) {
 	}
 }
 
+func TestMigrateStateDir_IgnoresActiveLockFile(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "old")
+	new_ := filepath.Join(root, "new")
+	mustMk(t, old)
+	mustMk(t, new_)
+	must(t, os.WriteFile(filepath.Join(old, "csm.db"), []byte("db-bytes"), 0o600))
+	must(t, os.WriteFile(filepath.Join(old, lockFileName), []byte("stale lock"), 0o600))
+	must(t, os.WriteFile(filepath.Join(new_, lockFileName), []byte("active lock"), 0o600))
+
+	migrated, err := MigrateStateDir(old, new_)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !migrated {
+		t.Fatal("expected migrated=true when new dir contains only the active lock")
+	}
+	if got, err := os.ReadFile(filepath.Join(new_, lockFileName)); err != nil {
+		t.Fatal(err)
+	} else if string(got) != "active lock" {
+		t.Fatalf("active lock file was overwritten with %q", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(new_, "csm.db")); err != nil {
+		t.Fatal(err)
+	} else if string(got) != "db-bytes" {
+		t.Fatalf("migrated db = %q", got)
+	}
+}
+
+func TestMigrateStateDir_OldOnlyLockFileIsNoop(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "old")
+	new_ := filepath.Join(root, "new")
+	mustMk(t, old)
+	must(t, os.WriteFile(filepath.Join(old, lockFileName), []byte("stale lock"), 0o600))
+
+	migrated, err := MigrateStateDir(old, new_)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated {
+		t.Fatal("expected migrated=false when old dir only contains a stale lock")
+	}
+}
+
 func TestMigrateStateDir_NoopWhenOldMissing(t *testing.T) {
 	root := t.TempDir()
 	old := filepath.Join(root, "old-absent")

@@ -2,15 +2,64 @@ package main
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	bolt "go.etcd.io/bbolt"
 )
+
+func TestShouldCompactState(t *testing.T) {
+	const mb = 1024 * 1024
+	tests := []struct {
+		name      string
+		size      int64
+		free      int64
+		minSizeMB int
+		fillRatio float64
+		want      bool
+	}{
+		{"below min size", 50 * mb, 40 * mb, 128, 0.5, false},
+		{"large and mostly free", 400 * mb, 380 * mb, 128, 0.5, true},
+		{"large but mostly used", 400 * mb, 20 * mb, 128, 0.5, false},
+		{"large, fill just under ratio", 200 * mb, 110 * mb, 128, 0.5, true}, // fill 0.45 < 0.5
+		{"large, fill just over ratio", 200 * mb, 90 * mb, 128, 0.5, false},  // fill 0.55 >= 0.5
+		{"min size disabled", 400 * mb, 380 * mb, 0, 0.5, false},
+		{"fill ratio disabled", 400 * mb, 380 * mb, 128, 0, false},
+		{"zero size", 0, 0, 128, 0.5, false},
+		{"free exceeds size (clamped)", 200 * mb, 300 * mb, 128, 0.5, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldCompactState(tt.size, tt.free, tt.minSizeMB, tt.fillRatio); got != tt.want {
+				t.Fatalf("shouldCompactState(%d,%d,%d,%g) = %v, want %v",
+					tt.size, tt.free, tt.minSizeMB, tt.fillRatio, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMaybeCompactStateAtStartupMissingDBDoesNotCreateStateDir(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state")
+	res, err := maybeCompactStateAtStartup(&config.Config{
+		StatePath: statePath,
+	})
+	if err != nil {
+		t.Fatalf("maybeCompactStateAtStartup: %v", err)
+	}
+	if res != nil {
+		t.Fatalf("result = %#v, want nil for missing csm.db", res)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("maybeCompactStateAtStartup created state dir, stat err = %v", err)
+	}
+}
 
 // populateStore fills a fresh bbolt file with padded history rows so a
 // subsequent compact has something meaningful to reclaim.
@@ -79,6 +128,13 @@ func TestRunStoreCompact_ShrinksFile(t *testing.T) {
 	if got != res.DstSize {
 		t.Errorf("post-compact size = %d, want %d", got, res.DstSize)
 	}
+	free, err := db.FreeBytes()
+	if err != nil {
+		t.Fatalf("FreeBytes after compact: %v", err)
+	}
+	if shouldCompactState(got, free, 1, 0.5) {
+		t.Fatalf("compacted DB would compact again immediately: size=%d free=%d", got, free)
+	}
 }
 
 func TestRunStoreCompact_PreviewDoesNotModify(t *testing.T) {
@@ -125,6 +181,25 @@ func TestRunStoreCompact_RefusesWhenStoreLocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "daemon") && !strings.Contains(err.Error(), "locked") && !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("error should mention the daemon or lock; got: %v", err)
+	}
+}
+
+func TestRunStoreCompact_RefusesWhenStateLockHeld(t *testing.T) {
+	statePath := t.TempDir()
+	populateStore(t, statePath)
+
+	lock, err := state.AcquireLock(statePath)
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	defer lock.Release()
+
+	_, err = runStoreCompact(statePath, StoreCompactOptions{})
+	if err == nil {
+		t.Fatal("runStoreCompact should fail when the daemon state lock is held")
+	}
+	if !strings.Contains(err.Error(), "state lock") {
+		t.Fatalf("error = %v, want state lock context", err)
 	}
 }
 

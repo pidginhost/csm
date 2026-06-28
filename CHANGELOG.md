@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daemon now automatically compacts its bbolt state database at startup when the file has grown large and is mostly free pages, reclaiming on-disk slack that bbolt never frees on its own, so the state file no longer balloons over time without a manual `csm store compact`. Compaction is non-destructive and on by default (disable with `retention.compact_min_size_mb: 0`); the separate, destructive retention sweeps remain opt-in.
+- Startup compaction now waits for the daemon instance guard and honors the documented disable setting from main and drop-in configs.
 - The hardened systemd unit now supports legacy state paths and cPanel forward-guard rebuilds without leaving the daemon stuck on read-only system paths.
 - PHP Shield now reports an inactive protection gap when it is enabled but not installed, marks component health unhealthy, and stops retrying a dead event log forever.
 - ModSecurity advisory-only confidence findings no longer feed any firewall path, low-confidence burst notices do not repeat until the active window drains, and sustained ModSecurity attackers can refresh a temporary ban after the block window expires.

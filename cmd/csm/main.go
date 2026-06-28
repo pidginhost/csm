@@ -261,15 +261,20 @@ func tryLoadConfigLite() (*config.Config, error) {
 	return config.LoadWithDir(cfgPath, confDir)
 }
 
-func prepareDaemonState(cfg *config.Config, legacyStateDir string, openStore func(*config.Config) error) (bool, error) {
+func prepareDaemonState(cfg *config.Config, legacyStateDir string) (bool, *state.LockFile, error) {
+	if mkdirErr := os.MkdirAll(cfg.StatePath, 0700); mkdirErr != nil {
+		return false, nil, fmt.Errorf("creating state dir: %w", mkdirErr)
+	}
+	lock, err := state.AcquireLock(cfg.StatePath)
+	if err != nil {
+		return false, nil, err
+	}
 	migrated, err := state.MigrateStateDir(legacyStateDir, cfg.StatePath)
 	if err != nil {
-		return false, err
+		lock.Release()
+		return false, nil, err
 	}
-	if err := openStore(cfg); err != nil {
-		return migrated, err
-	}
-	return migrated, nil
+	return migrated, lock, nil
 }
 
 func runDaemon() {
@@ -314,15 +319,26 @@ func runDaemon() {
 	// One-shot migration of legacy /opt/csm/state to /var/lib/csm/state for upgrades.
 	// Safe noop on fresh installs and after the first upgrade.
 	const legacyStateDir = "/opt/csm/state"
-	if migrated, err := prepareDaemonState(cfg, legacyStateDir, ensureGlobalStore); err != nil {
+	migrated, lock, err := prepareDaemonState(cfg, legacyStateDir)
+	if err != nil {
 		fatal(1, "state setup: %v\n", err)
 	} else if migrated {
 		fmt.Fprintf(os.Stderr, "state: migrated legacy %s to %s\n", legacyStateDir, cfg.StatePath)
 	}
 
-	lock, err := state.AcquireLock(cfg.StatePath)
-	if err != nil {
-		fatal(1, "Cannot start daemon: %v\n", err)
+	// Reclaim bbolt slack before opening the db for the daemon. The daemon
+	// process lock is already held, but no daemon bbolt handle is open yet.
+	// Non-fatal: on any error the daemon continues with the un-compacted db.
+	if res, cerr := maybeCompactStateAtStartup(cfg); cerr != nil {
+		fmt.Fprintf(os.Stderr, "state: startup compaction skipped: %v\n", cerr)
+	} else if res != nil && res.Replaced {
+		fmt.Fprintf(os.Stderr, "state: compacted bbolt db %d -> %d bytes (%d reclaimed)\n",
+			res.SrcSize, res.DstSize, res.Reclaim)
+	}
+
+	if storeErr := ensureGlobalStore(cfg); storeErr != nil {
+		lock.Release()
+		fatal(1, "store: %v\n", storeErr)
 	}
 
 	store, err := state.Open(cfg.StatePath)

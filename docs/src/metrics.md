@@ -93,10 +93,10 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
 ### State
 
 - `csm_store_size_bytes` (gauge): on-disk size of the bbolt state
-  database (`/var/lib/csm/state/csm.db` by default). Enable the
-  `retention:` block to bound logical growth and run `csm store
-  compact` during maintenance to reclaim freelisted pages; without
-  either, this gauge only climbs.
+  database (`/var/lib/csm/state/csm.db` by default). Retention sweeps
+  bound logical growth. Startup compaction reclaims freelisted pages
+  automatically when the file is large and mostly slack; `csm store
+  compact` does the same immediately with the daemon stopped.
 
 ### Fanotify realtime monitor
 
@@ -252,7 +252,7 @@ Registered when `reputation.upstream.enabled: true`.
   deleted across the `history`, `attacks:events`, and `reputation`
   buckets. Spikes on the first sweep after enabling retention
   (initial backlog), then settles to the steady-state churn. Useful
-  for estimating when the file might benefit from a
+  for estimating when the file might benefit from a restart or a
   `csm store compact` maintenance window.
 
 ### PHP-relay (email abuse, cPanel only)

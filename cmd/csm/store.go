@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -34,8 +37,8 @@ type StoreCompactResult struct {
 // temp file next to the live DB, and (when opts.Preview is false) renames
 // the temp file over the live DB. The operation is designed to run with
 // the daemon stopped: bbolt's file-lock will reject the Open call with a
-// timeout if another process already holds it, and the error wraps that
-// with a hint about stopping the daemon.
+// timeout if another process already holds it, while the daemon state lock
+// serializes against startup compaction and another daemon start.
 //
 // The function is deliberately single-purpose and does not touch any
 // global state; it can be called from tests without needing to spin up
@@ -50,6 +53,11 @@ func runStoreCompact(statePath string, opts StoreCompactOptions) (*StoreCompactR
 	if err := os.MkdirAll(statePath, 0700); err != nil {
 		return nil, fmt.Errorf("state dir %q: %w", statePath, err)
 	}
+	stateLock, err := state.AcquireLock(statePath)
+	if err != nil {
+		return nil, fmt.Errorf("state lock: %w", err)
+	}
+	defer stateLock.Release()
 
 	db, err := store.Open(statePath)
 	if err != nil {
@@ -62,10 +70,17 @@ func runStoreCompact(statePath string, opts StoreCompactOptions) (*StoreCompactR
 		return nil, fmt.Errorf("opening state DB: %w", err)
 	}
 
+	return compactOpenStore(db, opts)
+}
+
+func compactOpenStore(db *store.DB, opts StoreCompactOptions) (*StoreCompactResult, error) {
+	if db == nil {
+		return nil, errors.New("state DB is nil")
+	}
 	livePath := db.Path()
 	tmpPath := livePath + ".compact.tmp"
-	// Stale temp file from an aborted previous run: remove before
-	// CompactInto so bolt.Open on dst sees a fresh file.
+	// Stale temp file from an aborted previous run: remove before CompactInto
+	// so bolt.Open on dst sees a fresh file.
 	_ = os.Remove(tmpPath)
 
 	srcSize, dstSize, err := db.CompactInto(tmpPath, 0)
@@ -73,12 +88,6 @@ func runStoreCompact(statePath string, opts StoreCompactOptions) (*StoreCompactR
 		_ = db.Close()
 		return nil, fmt.Errorf("compacting: %w", err)
 	}
-	// Close the source so we can rename over it on non-preview runs.
-	if err := db.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return nil, fmt.Errorf("closing source DB: %w", err)
-	}
-
 	result := &StoreCompactResult{
 		SrcSize: srcSize,
 		DstSize: dstSize,
@@ -90,19 +99,103 @@ func runStoreCompact(statePath string, opts StoreCompactOptions) (*StoreCompactR
 	if opts.Preview {
 		// Leave the temp snapshot in place for the operator to inspect;
 		// runStoreCompactCLI will print its path.
+		if err := db.Close(); err != nil {
+			_ = os.Remove(tmpPath)
+			return nil, fmt.Errorf("closing source DB: %w", err)
+		}
 		return result, nil
 	}
 
-	// Atomic swap: rename temp over live. On Linux this is atomic as
-	// long as src and dst are on the same filesystem (guaranteed here —
-	// we wrote the temp next to the live file).
+	// Atomic swap: rename temp over live while the source DB lock is still
+	// held. Callers that promote the snapshot also hold the daemon state lock,
+	// so there is no close-before-rename window for another CSM process.
 	if err := os.Rename(tmpPath, livePath); err != nil {
 		_ = os.Remove(tmpPath)
+		_ = db.Close()
 		return nil, fmt.Errorf("renaming compacted file into place: %w", err)
 	}
 	result.Replaced = true
 	result.DstPath = livePath
+	if err := db.Close(); err != nil {
+		return nil, fmt.Errorf("closing source DB after replace: %w", err)
+	}
 	return result, nil
+}
+
+// shouldCompactState reports whether the bbolt state db is worth compacting at
+// startup: large enough that the slack matters AND fragmented enough that a
+// compaction would reclaim a meaningful fraction. minSizeMB and fillRatio come
+// from Retention config; non-positive values disable the check. freeBytes
+// above sizeBytes is clamped (used=0) rather than producing a negative fill.
+func shouldCompactState(sizeBytes, freeBytes int64, minSizeMB int, fillRatio float64) bool {
+	if minSizeMB <= 0 || fillRatio <= 0 || sizeBytes <= 0 {
+		return false
+	}
+	if sizeBytes < int64(minSizeMB)*1024*1024 {
+		return false
+	}
+	used := sizeBytes - freeBytes
+	if used < 0 {
+		used = 0
+	}
+	fill := float64(used) / float64(sizeBytes)
+	return fill < fillRatio
+}
+
+func openStateDBForCompaction(statePath string) (*store.DB, bool, error) {
+	if statePath == "" {
+		return nil, false, errors.New("state path is empty")
+	}
+	dbPath := filepath.Join(statePath, "csm.db")
+	if info, err := os.Stat(dbPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	} else if info.IsDir() {
+		return nil, false, fmt.Errorf("state DB path %q is a directory", dbPath)
+	}
+	db, err := store.Open(statePath)
+	if err != nil {
+		return nil, true, err
+	}
+	return db, true, nil
+}
+
+// maybeCompactStateAtStartup compacts the bbolt state db before the daemon
+// opens it, when the file is both large and mostly free pages. Compaction is
+// non-destructive (it only reclaims freelist slack, never deletes data), so it
+// runs independently of the opt-in retention sweeps -- operators disable it by
+// setting retention.compact_min_size_mb to 0. runDaemon calls this after the
+// daemon process lock is held and before any daemon bbolt handle is open, and
+// compactOpenStore keeps the source bbolt lock through the rename.
+// Returns the compaction result when one ran, or nil when skipped.
+func maybeCompactStateAtStartup(cfg *config.Config) (*StoreCompactResult, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	db, exists, err := openStateDBForCompaction(cfg.StatePath)
+	if err != nil || !exists {
+		return nil, err
+	}
+	size, err := db.Size()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	free, err := db.FreeBytes()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if !shouldCompactState(size, free, cfg.Retention.CompactMinSizeMB, cfg.Retention.CompactFillRatio) {
+		if err := db.Close(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	fmt.Fprintf(os.Stderr, "state: auto-compacting bbolt db (size=%d bytes, free=%d bytes) before startup\n", size, free)
+	return compactOpenStore(db, StoreCompactOptions{})
 }
 
 // runStoreCompactCLI is the thin argv→options wrapper invoked from

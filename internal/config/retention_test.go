@@ -114,6 +114,52 @@ func TestRetentionCustomValuesPreserved(t *testing.T) {
 	}
 }
 
+func TestRetentionCompactMinSizeZeroDisablesAutoCompaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	body := "" +
+		"hostname: test\n" +
+		"retention:\n" +
+		"  compact_min_size_mb: 0\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Retention.CompactMinSizeMB != 0 {
+		t.Errorf("compact_min_size_mb = %d, want 0", cfg.Retention.CompactMinSizeMB)
+	}
+	if cfg.Retention.CompactFillRatio != 0.5 {
+		t.Errorf("compact_fill_ratio = %v, want 0.5 default", cfg.Retention.CompactFillRatio)
+	}
+}
+
+func TestRetentionCompactMinSizeZeroSurvivesConfDirOverride(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(main, []byte("hostname: test\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fragment := []byte("retention:\n  compact_min_size_mb: 0\n")
+	if err := os.WriteFile(filepath.Join(confd, "10-retention.yaml"), fragment, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if cfg.Retention.CompactMinSizeMB != 0 {
+		t.Errorf("compact_min_size_mb = %d, want 0 from conf.d", cfg.Retention.CompactMinSizeMB)
+	}
+}
+
 func TestValidateRetentionSweepIntervalBad(t *testing.T) {
 	cfg := baseRetentionCfg()
 	cfg.Retention.Enabled = true
@@ -128,6 +174,27 @@ func TestValidateRetentionSweepIntervalEmptyWhileDisabled(t *testing.T) {
 	// Retention disabled; sweep_interval unvalidated even if empty.
 	if hasResult(Validate(cfg), "error", "retention.sweep_interval") {
 		t.Error("should not error on retention.sweep_interval when retention is disabled")
+	}
+}
+
+func TestValidateRetentionCompactionKnobsWhenSweepsDisabled(t *testing.T) {
+	cfg := baseRetentionCfg()
+	cfg.Retention.CompactMinSizeMB = -1
+	cfg.Retention.CompactFillRatio = 0.5
+	if !hasResult(Validate(cfg), "error", "retention.compact_min_size_mb") {
+		t.Error("expected error for negative compact_min_size_mb with retention.enabled false")
+	}
+
+	cfg = baseRetentionCfg()
+	cfg.Retention.CompactFillRatio = -0.1
+	if !hasResult(Validate(cfg), "error", "retention.compact_fill_ratio") {
+		t.Error("expected error for negative compact_fill_ratio with retention.enabled false")
+	}
+
+	cfg = baseRetentionCfg()
+	cfg.Retention.CompactFillRatio = 1.01
+	if !hasResult(Validate(cfg), "error", "retention.compact_fill_ratio") {
+		t.Error("expected error for compact_fill_ratio > 1 with retention.enabled false")
 	}
 }
 

@@ -721,12 +721,12 @@ disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detec
 
 # --- Retention (bbolt growth control) ---
 retention:
-  enabled: false                        # opt-in; when true, a daily sweep prunes old entries and compacts bbolt
+  enabled: false                        # opt-in; when true, a daily sweep prunes old entries
   findings_days: 90                     # keep active findings this long (0 disables the findings sweep)
   history_days: 30                      # keep findings-history entries this long
   reputation_days: 180                  # keep IP reputation/attack entries this long
   sweep_interval: "24h"                 # how often the retention goroutine runs
-  compact_min_size_mb: 128              # don't consider compaction below this file size
+  compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction
   compact_fill_ratio: 0.5               # compact when used_bytes / file_size drops below this
 
 # --- Sentry (error reporting) ---
