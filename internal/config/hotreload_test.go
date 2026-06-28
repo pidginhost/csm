@@ -215,6 +215,7 @@ func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
 		"backdoor_ports",
 		"retention",
 		"sentry",
+		"debug",
 		"mail_logs",
 		"updates",
 		"incidents",

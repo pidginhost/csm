@@ -441,6 +441,14 @@ func (d *Daemon) Run() error {
 
 	csmlog.Info("CSM daemon starting")
 
+	// Expose Go runtime memory/scheduler stats on /metrics (heap growth is
+	// observable for leak triage), and start the loopback pprof listener when
+	// the operator opts in via debug.pprof_listen.
+	metrics.RegisterRuntimeMetrics()
+	if d.cfg != nil && d.cfg.Debug.PprofListen != "" {
+		d.startPprofListener(d.cfg.Debug.PprofListen)
+	}
+
 	// Periodic scans use this context so shutdown can abort an in-flight tier
 	// instead of blocking the worker drain for the full check budget.
 	scanCtx, scanCancel := context.WithCancel(context.Background())

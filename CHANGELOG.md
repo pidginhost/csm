@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The /metrics endpoint now exposes Go runtime memory and goroutine stats (heap in use, idle, released, GC target, goroutine count) so operators can watch the daemon's memory over time and tell live growth from GC headroom. A new opt-in loopback-only pprof endpoint (`debug.pprof_listen`) lets an operator capture heap and goroutine profiles over an SSH tunnel for leak diagnosis.
 - Mail brute-force alerts now name the mailboxes the source was hitting, with per-mailbox failure counts and a count of attempts that named no mailbox, so operators can tell a real attack on a live mailbox from dictionary noise without opening the mail log.
 - New `http_asn_crawl` detector flags a single-ASN distributed crawl of uncacheable URLs that saturates an account's PHP worker pool, and surgically tempbans the offending subnets only when saturation is confirmed (reverse-proxy/CDN safe).
 - Operators can now declare DoS-exempt ranges that bypass per-IP connection rate and concurrent limit meters plus mail-port flood meters, and are skipped when auto-blocking subnets; known Google and Microsoft mail-provider ranges are exempt by default, so carrier CGNAT pools and shared mail-provider IPs no longer trigger false-positive throttling or subnet blocks. Individual manual blocks and SYN/UDP flood protection stay in force.
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The opt-in pprof listener now handles failed diagnostic binds without leaving background shutdown work behind.
 - The daemon now automatically compacts its bbolt state database at startup when the file has grown large and is mostly free pages, reclaiming on-disk slack that bbolt never frees on its own, so the state file no longer balloons over time without a manual `csm store compact`. Compaction is non-destructive and on by default (disable with `retention.compact_min_size_mb: 0`); the separate, destructive retention sweeps remain opt-in.
 - Startup compaction now waits for the daemon instance guard and honors the documented disable setting from main and drop-in configs.
 - The hardened systemd unit now supports legacy state paths and cPanel forward-guard rebuilds without leaving the daemon stuck on read-only system paths.

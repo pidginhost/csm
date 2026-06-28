@@ -220,6 +220,13 @@ retention:
   compact_min_size_mb: 128
   compact_fill_ratio: 0.5
 
+# Diagnostics. pprof_listen binds a net/http/pprof server (heap/goroutine/CPU
+# profiles) for debugging. MUST be a loopback host:port; reach it over an SSH
+# tunnel. Empty (default) disables it. Go runtime stats (go_memstats_*) are
+# always exposed on the /metrics endpoint.
+debug:
+  pprof_listen: ""
+
 # Mail log source. Controls where the postfix/dovecot brute-force scanner
 # reads its lines from. Most cPanel hosts keep the default file at
 # /var/log/maillog. Debian-family hosts get /var/log/mail.log. journald-only

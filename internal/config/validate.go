@@ -530,6 +530,20 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", field, err.Error()})
 	}
 
+	// --- Debug / pprof ---
+	if addr := strings.TrimSpace(cfg.Debug.PprofListen); addr != "" {
+		host, _, err := net.SplitHostPort(addr)
+		host = strings.TrimSpace(host)
+		loopback := err == nil && host != "" &&
+			(strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()))
+		if loopback {
+			results = append(results, ValidationResult{"ok", "debug.pprof_listen", addr})
+		} else {
+			results = append(results, ValidationResult{"error", "debug.pprof_listen",
+				fmt.Sprintf("must be a loopback host:port (127.0.0.1/::1/localhost); %q would expose pprof off-box and is ignored at runtime", addr)})
+		}
+	}
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 

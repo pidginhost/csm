@@ -729,6 +729,11 @@ retention:
   compact_min_size_mb: 128              # startup compaction floor; 0 disables auto-compaction
   compact_fill_ratio: 0.5               # compact when used_bytes / file_size drops below this
 
+# --- Debug / diagnostics ---
+debug:
+  pprof_listen: ""                      # e.g. "127.0.0.1:6060"; MUST be loopback. Empty disables.
+                                        # Reach it over SSH: go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+
 # --- Sentry (error reporting) ---
 sentry:
   enabled: false                        # ship panics and selected errors to a Sentry server

@@ -1085,6 +1085,16 @@ type Config struct {
 		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
 	} `yaml:"sentry" hotreload:"restart"`
 
+	// Debug exposes diagnostic endpoints. PprofListen, when set, binds a
+	// net/http/pprof server (heap/goroutine/CPU profiles) to the given
+	// host:port. It MUST be a loopback address (127.0.0.1 / ::1 / localhost):
+	// pprof leaks process internals and lets a caller trigger CPU/heap dumps,
+	// so it is never exposed off-box. Empty (default) disables it; reach it
+	// over an SSH tunnel. Restart-required because the listener starts once.
+	Debug struct {
+		PprofListen string `yaml:"pprof_listen"`
+	} `yaml:"debug" hotreload:"restart"`
+
 	// MailLogs selects the log source for the postfix/dovecot brute-force
 	// and relay detectors. Changing the source (file vs. journal) requires
 	// the daemon to re-attach its reader, so the field is tagged restart.

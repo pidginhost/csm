@@ -68,6 +68,22 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   Scrape once to discover the running version. Join on it in
   queries via `group_left(version)`.
 
+### Go runtime
+
+Always exposed. Use these to watch daemon memory over time and tell live
+growth from GC headroom (rising `heap_alloc` = real growth; large
+`heap_idle` = retained-but-freed memory).
+
+- `go_memstats_heap_alloc_bytes` (gauge): heap bytes allocated and still in use (live).
+- `go_memstats_heap_inuse_bytes` / `go_memstats_heap_idle_bytes` / `go_memstats_heap_released_bytes` (gauges): in-use spans, idle spans, and bytes returned to the OS.
+- `go_memstats_heap_sys_bytes` / `go_memstats_sys_bytes` (gauges): heap and total bytes obtained from the OS.
+- `go_memstats_next_gc_bytes` (gauge): heap-size target for the next GC.
+- `go_memstats_gc_cpu_fraction` (gauge): fraction of CPU time spent in GC since start.
+- `go_goroutines` (gauge): live goroutine count.
+
+For a deeper leak hunt, enable the loopback pprof endpoint (`debug.pprof_listen`)
+and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tunnel.
+
 ### YARA-X worker (default-on; off only if `signatures.yara_worker_enabled: false`)
 
 - `csm_yara_worker_restarts_total` (counter): cumulative number of
