@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.1] - 2026-06-28
+
 ### Changed
 
 - Updated dependencies to current releases: go-redis 9.20.0 to 9.21.0, bbolt 1.4.3 to 1.5.0, and the CI actions/checkout (v6 to v7) and actions/setup-go (v6.4.0 to v6.5.0) GitHub Actions.
