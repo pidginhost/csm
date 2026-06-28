@@ -67,9 +67,33 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/var/spool/cron",
 		"-/var/spool/exim/input",
 		"-/var/spool/exim4/input",
+		"-/var/log/exim_mainlog",
+		"-/var/log/exim_paniclog",
+		"-/var/log/exim_rejectlog",
+		"-/var/log/exim4",
 	} {
 		if !rwPaths[want] {
 			t.Errorf("ReadWritePaths missing %s", want)
+		}
+	}
+
+	allowedVarLogWritePaths := map[string]bool{
+		"/var/log/csm":             true,
+		"-/var/log/exim_mainlog":   true,
+		"-/var/log/exim_paniclog":  true,
+		"-/var/log/exim_rejectlog": true,
+		"-/var/log/exim4":          true,
+	}
+	for path := range rwPaths {
+		cleanPath := strings.TrimPrefix(path, "-")
+		if cleanPath != "/var/log" && !strings.HasPrefix(cleanPath, "/var/log/") {
+			continue
+		}
+		if !allowedVarLogWritePaths[path] {
+			t.Errorf("ReadWritePaths grants unexpected /var/log path %s", path)
+		}
+		if strings.Contains(cleanPath, "*") {
+			t.Errorf("ReadWritePaths must not rely on unsupported glob %s", path)
 		}
 	}
 

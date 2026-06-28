@@ -43,6 +43,15 @@ ReadWritePaths=/opt/csm/rules -/opt/csm/deploy.sh -/home /tmp /var/tmp -/dev/shm
 ReadWritePaths=/etc -/usr/local/apache/conf
 ReadWritePaths=-/usr/local/cpanel/whostmgr/docroot/cgi -/var/cpanel
 ReadWritePaths=-/var/spool/cron -/var/spool/exim/input -/var/spool/exim4/input
+# CSM spawns "exim -bpc" to count the mail queue (mail_queue spam-outbreak
+# check, WebUI). Exim opens its main/panic logs on startup and aborts even for
+# a read-only query, so the queue probe needs these writable under
+# ProtectSystem=strict. Keep the cPanel/RHEL grants file-scoped: when the
+# current log exists at service start, systemd pins a writable inode across
+# rename-based rotation. That is enough for the queue probe without granting
+# all of /var/log. All "-" (tolerate-absent): cPanel/RHEL use the flat
+# /var/log/exim_* files, Debian/Ubuntu use the /var/log/exim4 directory.
+ReadWritePaths=-/var/log/exim_mainlog -/var/log/exim_paniclog -/var/log/exim_rejectlog -/var/log/exim4
 # CSM inspects the host's real /dev/shm; a private /dev would hide it.
 PrivateDevices=no
 ProtectKernelTunables=yes
