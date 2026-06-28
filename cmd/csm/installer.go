@@ -9,8 +9,10 @@ import (
 
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/phpshield"
+	"gopkg.in/yaml.v3"
 )
 
 type Installer struct {
@@ -865,8 +867,10 @@ func (inst *Installer) InstallPHPShield() error {
 		fmt.Println("  Restart PHP: systemctl restart lsws || apachectl graceful")
 	}
 
-	// Patch config to enable PHP Shield monitoring in daemon
-	inst.patchConfigPHPShield(true)
+	// Patch config to enable PHP Shield monitoring in daemon.
+	if err := inst.patchConfigPHPShield(true); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -913,7 +917,9 @@ func (inst *Installer) EnablePHPShield() error {
 	}
 	deployed := writePHPShieldIniFiles()
 
-	inst.patchConfigPHPShield(true)
+	if err := inst.patchConfigPHPShield(true); err != nil {
+		return err
+	}
 
 	fmt.Printf("PHP Shield enabled for %d PHP versions\n", deployed)
 	fmt.Println("Restart PHP: systemctl restart lsws || apachectl graceful")
@@ -931,22 +937,75 @@ func (inst *Installer) DisablePHPShield() error {
 		os.Remove(p)
 	}
 
-	inst.patchConfigPHPShield(false)
+	if err := inst.patchConfigPHPShield(false); err != nil {
+		return err
+	}
 
 	fmt.Println("PHP Shield disabled (ini files removed, shield PHP file preserved)")
 	fmt.Println("Restart PHP: systemctl restart lsws || apachectl graceful")
 	return nil
 }
 
-// patchConfigPHPShield sets php_shield.enabled in csm.yaml using config.Load/Save
-// to avoid fragile string-based YAML manipulation.
-func (inst *Installer) patchConfigPHPShield(enabled bool) {
-	cfg, err := config.Load(inst.ConfigPath)
+// patchConfigPHPShield sets php_shield.enabled in csm.yaml while preserving the
+// operator's formatting and re-signing the config integrity hash.
+func (inst *Installer) patchConfigPHPShield(enabled bool) error {
+	confDir, err := resolveConfDirFromArgs(os.Args)
 	if err != nil {
-		return
+		return fmt.Errorf("resolving conf.d: %w", err)
 	}
-	cfg.PHPShield.Enabled = enabled
-	_ = config.Save(cfg)
+
+	// #nosec G304 -- installer operates on the operator-selected CSM config.
+	data, err := os.ReadFile(inst.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	edited, err := editPHPShieldEnabledYAML(data, enabled)
+	if err != nil {
+		return fmt.Errorf("editing config: %w", err)
+	}
+	clone, err := config.LoadBytes(edited)
+	if err != nil {
+		return fmt.Errorf("loading edited config: %w", err)
+	}
+	clone.ConfigFile = inst.ConfigPath
+	clone.ConfigDir = confDir
+	if err := integrity.SignAndSavePreserving(inst.ConfigPath, confDir, edited, clone, clone.Integrity.BinaryHash); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+	return nil
+}
+
+func editPHPShieldEnabledYAML(data []byte, enabled bool) ([]byte, error) {
+	if hasPHPShield, err := yamlHasTopLevelKey(data, "php_shield"); err != nil {
+		return nil, err
+	} else if !hasPHPShield {
+		return config.YAMLEdit(data, []config.YAMLChange{
+			{Path: []string{"php_shield"}, Value: map[string]bool{"enabled": enabled}},
+		})
+	}
+	return config.YAMLEdit(data, []config.YAMLChange{
+		{Path: []string{"php_shield", "enabled"}, Value: enabled},
+	})
+}
+
+func yamlHasTopLevelKey(data []byte, key string) (bool, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false, err
+	}
+	if len(root.Content) == 0 {
+		return false, fmt.Errorf("empty YAML document")
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return false, fmt.Errorf("YAML document root must be a mapping")
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i].Value == key {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // deployShieldConfig generates /opt/csm/shield.conf.php with allowed IPs from main config.

@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -69,6 +71,88 @@ func TestEnsurePHPShieldEventLogCreatesReachableWriteOnlyPath(t *testing.T) {
 	}
 	if got := logInfo.Mode().Perm(); got != 0622 {
 		t.Fatalf("event log permissions = %v, want 0622", got)
+	}
+}
+
+func TestPatchConfigPHPShieldReSignsIntegrity(t *testing.T) {
+	confDir := t.TempDir()
+	t.Setenv("CSM_CONFIG_DIR", confDir)
+
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	data := []byte(`# keep operator comments
+hostname: example.com
+php_shield:
+  enabled: false
+integrity:
+  binary_hash: "sha256:existing"
+  config_hash: "sha256:stale"
+  confd_hash: ""
+`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Installer{ConfigPath: path}
+	if err := inst.patchConfigPHPShield(true); err != nil {
+		t.Fatalf("patchConfigPHPShield: %v", err)
+	}
+
+	final, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(final), "# keep operator comments") {
+		t.Fatalf("operator comment was not preserved:\n%s", final)
+	}
+	if !strings.Contains(string(final), "enabled: true") {
+		t.Fatalf("php_shield.enabled was not enabled:\n%s", final)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PHPShield.Enabled {
+		t.Fatal("php_shield.enabled = false, want true")
+	}
+	if cfg.Integrity.BinaryHash != "sha256:existing" {
+		t.Fatalf("binary_hash = %q, want preserved value", cfg.Integrity.BinaryHash)
+	}
+	stable, err := integrity.HashConfigStable(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Integrity.ConfigHash != stable {
+		t.Fatalf("config_hash = %q, want %q", cfg.Integrity.ConfigHash, stable)
+	}
+}
+
+func TestPatchConfigPHPShieldAddsMissingSection(t *testing.T) {
+	confDir := t.TempDir()
+	t.Setenv("CSM_CONFIG_DIR", confDir)
+
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	data := []byte(`hostname: example.com
+integrity:
+  binary_hash: ""
+  config_hash: ""
+  confd_hash: ""
+`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Installer{ConfigPath: path}
+	if err := inst.patchConfigPHPShield(true); err != nil {
+		t.Fatalf("patchConfigPHPShield: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PHPShield.Enabled {
+		t.Fatal("php_shield.enabled = false, want true")
 	}
 }
 

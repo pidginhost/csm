@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,21 @@ func TestPHPShieldWatchDecision(t *testing.T) {
 					tt.enabled, tt.scriptExists, watch, warn, tt.wantWatch, tt.wantWarn)
 			}
 		})
+	}
+}
+
+func TestPHPShieldMissingScriptWarningUsesSupportedCommand(t *testing.T) {
+	for _, want := range []string{
+		"csm enable --php-shield",
+		"systemctl restart lsws || apachectl graceful",
+		"restart csm",
+	} {
+		if !strings.Contains(phpShieldMissingScriptWarning, want) {
+			t.Fatalf("php shield warning missing %q: %s", want, phpShieldMissingScriptWarning)
+		}
+	}
+	if strings.Contains(phpShieldMissingScriptWarning, "csm php-shield install") {
+		t.Fatalf("php shield warning still names unsupported command: %s", phpShieldMissingScriptWarning)
 	}
 }
 

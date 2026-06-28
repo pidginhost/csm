@@ -1797,8 +1797,7 @@ func (d *Daemon) startLogWatchers() {
 	if watch, warnNotInstalled := phpShieldWatchDecision(d.cfg.PHPShield.Enabled, phpShieldInstalled()); watch {
 		logFiles = append(logFiles, logFile{"php_shield", phpEventsLogPath, parsePHPShieldLogLine})
 	} else if warnNotInstalled {
-		csmlog.Warn("php_shield is enabled but not installed; protection is inactive until reinstalled; run `csm enable --php-shield`, restart the web server (e.g. systemctl restart lsws), then restart csm; or set php_shield.enabled: false",
-			"shield", phpShieldScriptPath)
+		csmlog.Warn(phpShieldMissingScriptWarning, "shield", phpShieldScriptPath)
 		d.MarkWatcher("php_shield", false)
 	}
 

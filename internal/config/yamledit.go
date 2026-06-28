@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -440,15 +441,13 @@ func buildInsertEdit(data []byte, li lineIndex, parentMap *yaml.Node, key string
 	}
 
 	var rendered string
-	// Determine if value needs block style.
-	switch value.(type) {
-	case []string, []interface{}:
+	if valueNeedsBlockInsert(value) {
 		block, err := renderValueBlock(value, siblingCol+2)
 		if err != nil {
 			return edit{}, fmt.Errorf("path %v: %w", key, err)
 		}
 		rendered = prefix + renderedKey + ":\n" + block
-	default:
+	} else {
 		inline, err := renderValueInline(value)
 		if err != nil {
 			return edit{}, fmt.Errorf("path %v: %w", key, err)
@@ -460,4 +459,19 @@ func buildInsertEdit(data []byte, li lineIndex, parentMap *yaml.Node, key string
 	}
 
 	return edit{start: insertOff, end: insertOff, replacement: []byte(rendered)}, nil
+}
+
+func valueNeedsBlockInsert(value interface{}) bool {
+	if value == nil {
+		return false
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Struct:
+		return true
+	case reflect.Slice:
+		return v.Type().Elem().Kind() != reflect.Uint8
+	default:
+		return false
+	}
 }

@@ -146,6 +146,30 @@ func TestYAMLEditRoundTripsNewKey(t *testing.T) {
 	}
 }
 
+func TestYAMLEditRoundTripsNewMapKey(t *testing.T) {
+	in := []byte("hostname: example.com\n")
+	out, err := YAMLEdit(in, []YAMLChange{
+		{Path: []string{"php_shield"}, Value: map[string]interface{}{"enabled": true}},
+	})
+	if err != nil {
+		t.Fatalf("YAMLEdit: %v", err)
+	}
+	var decoded struct {
+		PHPShield struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"php_shield"`
+	}
+	if err := yaml.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("output does not decode: %v\n%s", err, out)
+	}
+	if !decoded.PHPShield.Enabled {
+		t.Fatalf("php_shield.enabled = false, want true; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "php_shield:\n  enabled: true") {
+		t.Fatalf("new map key was not rendered as a block:\n%s", out)
+	}
+}
+
 func TestYAMLEditDecodesBackToIntendedConfig(t *testing.T) {
 	in := readFixture(t)
 	out, err := YAMLEdit(in, []YAMLChange{

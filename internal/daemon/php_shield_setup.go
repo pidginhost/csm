@@ -7,6 +7,9 @@ import (
 )
 
 const phpShieldScriptPath = phpshield.ScriptPath
+const phpShieldMissingScriptWarning = "php_shield is enabled but not installed; protection is inactive until reinstalled; " +
+	"run `csm enable --php-shield`, restart PHP or the web server (e.g. systemctl restart lsws || apachectl graceful), " +
+	"then restart csm; or set php_shield.enabled: false"
 
 var phpShieldStat = os.Stat
 
