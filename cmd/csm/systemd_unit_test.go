@@ -23,7 +23,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	for _, want := range []string{
 		"NoNewPrivileges=yes",
 		"ProtectSystem=strict",
-		"ProtectHome=read-only",
+		"ProtectHome=no",
 		"PrivateDevices=no",
 		"ProtectKernelLogs=no",
 		"PrivateTmp=no",
@@ -40,6 +40,10 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"ProtectKernelLogs=yes",
 		"AF_PACKET",
 		"~@debug",
+		// The read-only home mode is not overridable by the writable /home
+		// grant. It breaks quarantine and error-log truncation, so the
+		// generated unit must not set that mode.
+		"ProtectHome=read-only",
 	} {
 		if strings.Contains(unit, bad) {
 			t.Errorf("systemd unit still contains %q", bad)
@@ -74,6 +78,15 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	} {
 		if !rwPaths[want] {
 			t.Errorf("ReadWritePaths missing %s", want)
+		}
+	}
+	for path := range rwPaths {
+		cleanPath := strings.TrimPrefix(path, "-")
+		if cleanPath == "/root" || strings.HasPrefix(cleanPath, "/root/") {
+			t.Errorf("ReadWritePaths must not make root home writable: %s", path)
+		}
+		if cleanPath == "/run/user" || strings.HasPrefix(cleanPath, "/run/user/") {
+			t.Errorf("ReadWritePaths must not make user runtime homes writable: %s", path)
 		}
 	}
 

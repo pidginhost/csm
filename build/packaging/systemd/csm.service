@@ -27,7 +27,13 @@ LogsDirectoryMode=0750
 # the legitimate workload needs.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
+# Home isolation remains disabled: the daemon must write under /home to
+# quarantine malware and truncate bloated account error_logs (Performance >
+# Empty log file). The read-only home mode is enforced after writable path
+# grants, so it would still leave /home read-only. ProtectSystem=strict keeps
+# paths outside explicit writable grants read-only; only the explicit -/home
+# grant below reopens account home directories.
+ProtectHome=no
 # /opt/csm/state covers installs that still pin the legacy state_path
 # (state_path: /opt/csm/state) instead of the FHS default /var/lib/csm/state;
 # without it the bbolt state db is read-only under ProtectSystem=strict and the

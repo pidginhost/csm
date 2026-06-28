@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Clearing a bloated account error log from the Performance page works again, and malware quarantine can write under user home directories again; the hardened service unit had inadvertently made /home read-only for the daemon.
+
 ## [3.22.0] - 2026-06-28
 
 ### Added
