@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,82 @@ import (
 
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
 )
+
+func TestBuildEximConfArgv(t *testing.T) {
+	name, args := buildEximConfArgv("/usr/bin/systemd-run")
+	if name != "/usr/bin/systemd-run" {
+		t.Fatalf("name = %q, want /usr/bin/systemd-run", name)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--quiet", "--collect", "--wait", "--property=" + buildEximConfRuntimeMaxSec} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %s: %v", want, args)
+		}
+	}
+	if strings.Contains(joined, "--scope") {
+		t.Errorf("args must not use --scope because it inherits csm.service's sandbox: %v", args)
+	}
+	if len(args) == 0 || args[len(args)-1] != buildEximConfScript {
+		t.Errorf("argv must end with %q, got %v", buildEximConfScript, args)
+	}
+
+	// Without systemd-run (non-systemd host), invoke buildeximconf directly.
+	name, args = buildEximConfArgv("")
+	if name != buildEximConfScript {
+		t.Errorf("name = %q, want %q", name, buildEximConfScript)
+	}
+	if len(args) != 0 {
+		t.Errorf("direct invocation must have no args, got %v", args)
+	}
+}
+
+func TestRunBuildEximConfCommandFallsBackWhenSystemdBusUnavailable(t *testing.T) {
+	var calls []string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		switch name {
+		case "/usr/bin/systemd-run":
+			return []byte("System has not been booted with systemd as init system (PID 1). Can't operate.\nFailed to connect to bus: Host is down"), errors.New("exit status 1")
+		case buildEximConfScript:
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command %q", name)
+			return nil, nil
+		}
+	}
+
+	if err := runBuildEximConfCommand(context.Background(), "/usr/bin/systemd-run", run); err != nil {
+		t.Fatalf("runBuildEximConfCommand returned error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want systemd-run then direct buildeximconf", calls)
+	}
+	if !strings.HasPrefix(calls[0], "/usr/bin/systemd-run ") {
+		t.Fatalf("first call = %q, want systemd-run", calls[0])
+	}
+	if calls[1] != buildEximConfScript {
+		t.Fatalf("second call = %q, want %q", calls[1], buildEximConfScript)
+	}
+}
+
+func TestRunBuildEximConfCommandDoesNotFallbackWhenTransientServiceFails(t *testing.T) {
+	var calls int
+	run := func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		calls++
+		if name != "/usr/bin/systemd-run" {
+			t.Fatalf("unexpected fallback to %q", name)
+		}
+		return []byte("Job for run-csm.service failed because the control process exited with error code."), errors.New("exit status 1")
+	}
+
+	err := runBuildEximConfCommand(context.Background(), "/usr/bin/systemd-run", run)
+	if err == nil {
+		t.Fatal("expected transient service failure to be returned")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
 
 func bothSignals() policy.Config {
 	return policy.Config{

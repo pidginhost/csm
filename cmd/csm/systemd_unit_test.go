@@ -49,6 +49,8 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
 	for _, want := range []string{
 		"/var/lib/csm",
+		"/opt/csm/state",
+		"/etc",
 		"/var/log/csm",
 		"/etc/csm",
 		"/opt/csm/quarantine",
@@ -59,8 +61,6 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"/tmp",
 		"/var/tmp",
 		"-/dev/shm",
-		"-/etc/audit/rules.d",
-		"-/etc/apache2/conf.d/modsec",
 		"-/usr/local/apache/conf",
 		"-/usr/local/cpanel/whostmgr/docroot/cgi",
 		"-/var/cpanel",
