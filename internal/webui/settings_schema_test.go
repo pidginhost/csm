@@ -103,23 +103,25 @@ func findSchemaField(section SettingsSection, yamlName string) *SettingsField {
 	return nil
 }
 
-func TestFirewallRateLimitSchemaDocumentsIPv4OnlyMeters(t *testing.T) {
+func TestFirewallRateLimitSchemaDocumentsMeterAddressFamilies(t *testing.T) {
 	section, ok := LookupSettingsSection("firewall")
 	if !ok {
 		t.Fatal("firewall settings section missing")
 	}
+	// SYN/conn-rate/UDP meters are dual-stack (IPv6 keyed per /64); the
+	// concurrent connection limit stays IPv4-only (no v6 connlimit).
 	tests := []struct {
 		field     string
 		label     string
 		helpToken string
 		group     string
 	}{
-		{"conn_rate_limit", "Conn rate limit (IPv4/min)", "IPv4 source meter", FieldGroupRateLimits},
-		{"conn_limit", "Concurrent connections per IPv4", "IPv4 source meter", FieldGroupRateLimits},
-		{"syn_flood_protection", "SYN flood protection", "IPv4 sources only", FieldGroupFloodProtection},
-		{"udp_flood", "UDP flood protection", "IPv4 sources only", FieldGroupFloodProtection},
-		{"udp_flood_rate", "UDP packets/sec", "per IPv4 source", FieldGroupFloodProtection},
-		{"udp_flood_burst", "UDP burst allowance", "per IPv4 source", FieldGroupFloodProtection},
+		{"conn_rate_limit", "Conn rate limit (per IP/min)", "IPv6 metered per /64", FieldGroupRateLimits},
+		{"conn_limit", "Concurrent connections per IPv4", "IPv4 only", FieldGroupRateLimits},
+		{"syn_flood_protection", "SYN flood protection", "IPv6 metered per /64", FieldGroupFloodProtection},
+		{"udp_flood", "UDP flood protection", "IPv6 metered per /64", FieldGroupFloodProtection},
+		{"udp_flood_rate", "UDP packets/sec", "IPv6 metered per /64", FieldGroupFloodProtection},
+		{"udp_flood_burst", "UDP burst allowance", "IPv6 metered per /64", FieldGroupFloodProtection},
 	}
 	for _, tt := range tests {
 		t.Run(tt.field, func(t *testing.T) {

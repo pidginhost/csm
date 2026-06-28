@@ -97,10 +97,17 @@ type Engine struct {
 	setCountry6    *nftables.Set
 
 	// Meters for per-IP rate limiting
-	meterSYN        *nftables.Set
-	meterConn       *nftables.Set
-	meterUDP        *nftables.Set
-	meterConnlim    *nftables.Set
+	meterSYN     *nftables.Set
+	meterConn    *nftables.Set
+	meterUDP     *nftables.Set
+	meterConnlim *nftables.Set
+	// IPv6 siblings of the rate meters (keyed on the /64 prefix). There is
+	// deliberately no v6 connlimit: per-source ct count uses nf_conncount,
+	// whose GC has a kernel use-after-free on the el8 kernel, so concurrent
+	// connection limiting stays IPv4-only.
+	meterSYN6       *nftables.Set
+	meterConn6      *nftables.Set
+	meterUDP6       *nftables.Set
 	meterPortFlood4 map[string]*nftables.Set
 	meterPortFlood6 map[string]*nftables.Set
 
@@ -852,13 +859,17 @@ func (e *Engine) createSets() error {
 		}
 	}
 
-	// Meter sets for per-IP rate limiting (dynamic sets)
+	// Meter sets for per-IP rate limiting (dynamic sets). The IPv6 siblings key
+	// on the /64 prefix; see ipv6MeterSet.
 	if e.cfg.SYNFloodProtection {
 		e.meterSYN = &nftables.Set{
 			Table: e.table, Name: "meter_syn", KeyType: nftables.TypeIPAddr,
 			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
 		}
 		_ = e.conn.AddSet(e.meterSYN, nil)
+		if e.cfg.IPv6 {
+			e.meterSYN6 = e.ipv6MeterSet("meter_syn6")
+		}
 	}
 	if e.cfg.ConnRateLimit > 0 {
 		e.meterConn = &nftables.Set{
@@ -866,6 +877,9 @@ func (e *Engine) createSets() error {
 			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
 		}
 		_ = e.conn.AddSet(e.meterConn, nil)
+		if e.cfg.IPv6 {
+			e.meterConn6 = e.ipv6MeterSet("meter_conn6")
+		}
 	}
 	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 {
 		e.meterUDP = &nftables.Set{
@@ -873,6 +887,9 @@ func (e *Engine) createSets() error {
 			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
 		}
 		_ = e.conn.AddSet(e.meterUDP, nil)
+		if e.cfg.IPv6 {
+			e.meterUDP6 = e.ipv6MeterSet("meter_udp6")
+		}
 	}
 	if e.cfg.ConnLimit > 0 {
 		e.meterConnlim = &nftables.Set{
@@ -1100,6 +1117,13 @@ func (e *Engine) createInputChain() error {
 			Chain: e.chainIn,
 			Exprs: e.synFloodRuleExprs(),
 		})
+		if e.meterSYN6 != nil {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: e.synFloodRuleExprs6(),
+			})
+		}
 	}
 
 	// Per-IP new connection rate limit via meter
@@ -1115,6 +1139,13 @@ func (e *Engine) createInputChain() error {
 			Chain: e.chainIn,
 			Exprs: e.connMeterRuleExprs(uint64(e.cfg.ConnRateLimit), burst),
 		})
+		if e.meterConn6 != nil {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: e.connMeterRuleExprs6(uint64(e.cfg.ConnRateLimit), burst),
+			})
+		}
 	}
 
 	// Per-IP concurrent connection limit (CONNLIMIT)
@@ -1189,6 +1220,13 @@ func (e *Engine) createInputChain() error {
 			Chain: e.chainIn,
 			Exprs: e.udpFloodRuleExprs(uint64(e.cfg.UDPFloodRate), burst),
 		})
+		if e.meterUDP6 != nil {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: e.udpFloodRuleExprs6(uint64(e.cfg.UDPFloodRate), burst),
+			})
+		}
 	}
 
 	// Build restricted port set - these are only reachable via infra IPs (rule 4)
@@ -1611,6 +1649,113 @@ func ipv4NFProtoGuard() []expr.Any {
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{2}}, // NFPROTO_IPV4
 	}
+}
+
+// ipv6NFProtoGuard is the NFPROTO==IPV6 sibling of ipv4NFProtoGuard, prepended
+// to the IPv6 meter rules so they only run on IPv6 packets.
+func ipv6NFProtoGuard() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
+	}
+}
+
+// ipv6Saddr64Key loads the IPv6 source address into register 1 and masks it to
+// its /64 prefix. IPv6 hosts routinely own a whole /64 and rotate addresses
+// within it for free, so the flood meters key on the /64 rather than the full
+// /128, which a rotating source would trivially evade.
+func ipv6Saddr64Key() []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 16,
+			Mask: []byte{
+				0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+			Xor: make([]byte, 16),
+		},
+	}
+}
+
+// ipv6MeterSet builds a dynamic IPv6 meter set keyed on the /64 prefix, with the
+// same one-minute element timeout as the v4 meters.
+func (e *Engine) ipv6MeterSet(name string) *nftables.Set {
+	set := &nftables.Set{
+		Table: e.table, Name: name, KeyType: nftables.TypeIP6Addr,
+		Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+	}
+	_ = e.conn.AddSet(set, nil)
+	return set
+}
+
+// synFloodRuleExprs6 is the IPv6 sibling of synFloodRuleExprs: same TCP-SYN
+// match, keyed on the /64 source prefix into the v6 meter.
+func (e *Engine) synFloodRuleExprs6() []expr.Any {
+	exprs := append(ipv6NFProtoGuard(), []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
+	}...)
+	exprs = append(exprs, ipv6Saddr64Key()...)
+	return append(exprs,
+		&expr.Dynset{
+			SrcRegKey: 1, SetName: e.meterSYN6.Name, SetID: e.meterSYN6.ID, Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	)
+}
+
+// udpFloodRuleExprs6 is the IPv6 sibling of udpFloodRuleExprs.
+func (e *Engine) udpFloodRuleExprs6(rate uint64, burst uint32) []expr.Any {
+	exprs := append(ipv6NFProtoGuard(), []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
+	}...)
+	exprs = append(exprs, ipv6Saddr64Key()...)
+	return append(exprs,
+		&expr.Dynset{
+			SrcRegKey: 1, SetName: e.meterUDP6.Name, SetID: e.meterUDP6.ID, Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	)
+}
+
+// connMeterRuleExprs6 is the IPv6 sibling of connMeterRuleExprs. The exempt
+// lookup matches the full v6 source (exempt ranges are CIDRs); the meter keys on
+// the /64 prefix.
+func (e *Engine) connMeterRuleExprs6(rate uint64, burst uint32) []expr.Any {
+	core := []expr.Any{
+		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+		&expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: 4,
+			Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+			Xor:  binaryutil.NativeEndian.PutUint32(0),
+		},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+	}
+	core = append(core, ipv6Saddr64Key()...)
+	core = append(core,
+		&expr.Dynset{
+			SrcRegKey: 1, SetName: e.meterConn6.Name, SetID: e.meterConn6.ID, Operation: 1,
+			Exprs: []expr.Any{
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: rate, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
+			},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
+	)
+	if e.setDOSExempt6 != nil {
+		core = append(e.dosExemptV6Lookup(1), core...)
+	}
+	return append(ipv6NFProtoGuard(), core...)
 }
 
 // synFloodRuleExprs builds the expression list for the per-IP SYN flood
