@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-06-28
+
 ### Added
 
 - The /metrics endpoint now exposes Go runtime memory and goroutine stats (heap in use, idle, released, GC target, goroutine count) so operators can watch the daemon's memory over time and tell live growth from GC headroom. A new opt-in loopback-only pprof endpoint (`debug.pprof_listen`) lets an operator capture heap and goroutine profiles over an SSH tunnel for leak diagnosis.
