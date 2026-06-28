@@ -146,3 +146,40 @@ func TestIPListNoGateIsNoOp(t *testing.T) {
 	l.Add("203.0.113.7", "noop", 1*time.Minute)
 	l.Remove("203.0.113.7")
 }
+
+// TestIPListRemoveSkipsRevokeWhenNotListed locks the fix for the port-gate
+// ENOENT log storm: a verified crawler bypasses the gate and calls Remove on
+// every request for an IP that was never Added, so no gate element exists. The
+// gate element lifecycle is tied to list membership (Add -> Allow), so Remove
+// must not Revoke an IP that was not on the list.
+func TestIPListRemoveSkipsRevokeWhenNotListed(t *testing.T) {
+	dir := t.TempDir()
+	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	g := &fakeGate{}
+	l.SetPortGate(g)
+
+	l.Remove("66.249.70.108") // never Added
+
+	if _, revokes, _ := g.snapshot(); len(revokes) != 0 {
+		t.Fatalf("revokes = %v, want none for an IP that was never listed", revokes)
+	}
+}
+
+// TestIPListRemoveRevokesOncePerListing ensures a repeated Remove (e.g. a
+// crawler hammering the verify endpoint after it was already cleared) revokes
+// exactly once -- on the call that actually removed the listed entry -- not on
+// every subsequent call.
+func TestIPListRemoveRevokesOncePerListing(t *testing.T) {
+	dir := t.TempDir()
+	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	g := &fakeGate{}
+	l.SetPortGate(g)
+
+	l.Add("203.0.113.5", "x", time.Minute)
+	l.Remove("203.0.113.5") // listed -> revoke
+	l.Remove("203.0.113.5") // already gone -> no second revoke
+
+	if _, revokes, _ := g.snapshot(); len(revokes) != 1 || revokes[0] != "203.0.113.5" {
+		t.Fatalf("revokes = %v, want exactly [203.0.113.5]", revokes)
+	}
+}

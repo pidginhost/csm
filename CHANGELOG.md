@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The opt-in pprof listener now handles failed diagnostic binds without leaving background shutdown work behind.
+- The challenge port-gate no longer floods the log with revoke errors: it stops trying to revoke gate access for IPs that were never gated (such as verified crawlers that bypass the gate), and treats an already-expired gate entry as already removed.
 - The daemon now automatically compacts its bbolt state database at startup when the file has grown large and is mostly free pages, reclaiming on-disk slack that bbolt never frees on its own, so the state file no longer balloons over time without a manual `csm store compact`. Compaction is non-destructive and on by default (disable with `retention.compact_min_size_mb: 0`); the separate, destructive retention sweeps remain opt-in.
 - Startup compaction now waits for the daemon instance guard and honors the documented disable setting from main and drop-in configs.
 - The hardened systemd unit now supports legacy state paths and cPanel forward-guard rebuilds without leaving the daemon stuck on read-only system paths.

@@ -3,9 +3,11 @@
 package challenge
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/nftables"
@@ -227,15 +229,26 @@ func (g *linuxPortGate) Revoke(ip string) error {
 		if err := g.conn.SetDeleteElements(g.setChalIPs, []nftables.SetElement{{Key: ip4}}); err != nil {
 			return fmt.Errorf("port-gate: del v4 %s: %w", ip, err)
 		}
-		return g.conn.Flush()
+		return ignoreNftNotFound(g.conn.Flush())
 	}
 	if g.setChalIPs6 != nil {
 		if err := g.conn.SetDeleteElements(g.setChalIPs6, []nftables.SetElement{{Key: parsed.To16()}}); err != nil {
 			return fmt.Errorf("port-gate: del v6 %s: %w", ip, err)
 		}
-		return g.conn.Flush()
+		return ignoreNftNotFound(g.conn.Flush())
 	}
 	return nil
+}
+
+// ignoreNftNotFound treats a "no such file or directory" netlink error from a
+// set-element delete as success. Gate elements carry a TTL, so the kernel may
+// have already expired the element by the time Revoke runs; deleting an absent
+// element is a benign no-op, not a failure worth surfacing.
+func ignoreNftNotFound(err error) error {
+	if errors.Is(err, syscall.ENOENT) {
+		return nil
+	}
+	return err
 }
 
 func (g *linuxPortGate) Close() error {
