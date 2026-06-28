@@ -6,7 +6,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 
 - **Atomic ruleset** - single netlink transaction, no partial application
 - **Named IP sets** with per-element timeouts (blocked, allowed, infra, country)
-- **Rate limiting** - SYN flood, UDP flood, per-IP connection rate and concurrent limit (IPv4 sources only), per-port flood (dual-stack)
+- **Rate limiting** - SYN flood, UDP flood, per-IP connection rate, and concurrent connection meters are IPv4-only; per-port flood meters are dual-stack
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
 - **Subnet/CIDR blocking** with auto-escalation from individual IPs and safety guards for infra, local, and allowed addresses
@@ -106,9 +106,9 @@ otherwise it rearms the timer for the remaining window.
 firewall:
   enabled: true
   ipv6: false
-  conn_rate_limit: 200         # new connections per minute per IP (CGNAT-tolerant)
-  syn_flood_protection: true
-  conn_limit: 400              # max concurrent connections per IP (0 = disabled)
+  conn_rate_limit: 200         # new connections per minute per IPv4 source (CGNAT-tolerant)
+  syn_flood_protection: true   # IPv4-source SYN flood meter
+  conn_limit: 400              # max concurrent connections per IPv4 source (0 = disabled)
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
   dyndns_hosts:                # resolved every 5 min and whitelisted
@@ -161,15 +161,15 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 ## DoS-exempt ranges
 
-Operators can declare IP ranges that bypass the per-IP DoS meters, preventing false-positive throttling and subnet auto-blocks for carrier CGNAT pools or mail-provider egress. Configure under `firewall.dos_exempt_ranges` (your own CIDRs) and `firewall.dos_exempt_known_mail_providers` (adds Google and Microsoft mail ranges, on by default). See [Configuration - firewall.dos_exempt_ranges](configuration.md#firewalldos_exempt_ranges).
+Operators can declare IP ranges that bypass the IPv4 connection DoS meters and mail-port flood meters, preventing false-positive throttling and subnet auto-blocks for carrier CGNAT pools or mail-provider egress. Configure under `firewall.dos_exempt_ranges` (your own CIDRs) and `firewall.dos_exempt_known_mail_providers` (adds Google and Microsoft mail ranges, on by default). See [Configuration - firewall.dos_exempt_ranges](configuration.md#firewalldos_exempt_ranges).
 
 ### What exempt sources bypass
 
-Sources in the exempt set skip three categories of per-IP metering:
+Sources in the exempt set skip three categories of metering:
 
-- **Connection rate-limit** - the per-IP new-connection rate meter (configured via `conn_rate_limit`) does not apply.
-- **Concurrent connection-limit** - the per-IP concurrent connection cap (`conn_limit`) does not apply.
-- **Mail-port flood meters** - the `port_flood` rules on TCP 25, 465, and 587 do not apply.
+- **Connection rate-limit** - the IPv4 new-connection rate meter (configured via `conn_rate_limit`) does not apply.
+- **Concurrent connection-limit** - the IPv4 concurrent connection cap (`conn_limit`) does not apply.
+- **Mail-port flood meters** - the `port_flood` rules on TCP 25, 465, and 587 do not apply for the source's IP family.
 
 Subnet auto-block (spray, ASN-crawl, and netblock escalation) also skips any subnet block whose CIDR intersects an exempt range, and exempt IPs are excluded from the per-subnet threshold count so they cannot push a subnet over the netblock limit. Auto-response subnet blocks whose range falls inside an exempt range are removed automatically at daemon startup and at the start of each auto-block cycle. Manually created IP and subnet blocks are never pruned, even if they fall inside an exempt range.
 
@@ -178,8 +178,8 @@ Subnet auto-block (spray, ASN-crawl, and netblock escalation) also skips any sub
 The following protections remain in force regardless of exempt status:
 
 - **Manual blocks** - `csm firewall deny <ip>` and `csm firewall deny-subnet <cidr>` go through `BlockIPForce`, which bypasses the exempt check. An IP or range that is both exempt and manually blocked is still dropped.
-- **SYN flood protection** - the kernel-level SYN flood guard is applied before per-IP metering and is not affected by the exempt set.
-- **UDP flood protection** - the per-interface UDP rate limit is independent of the exempt set.
+- **SYN flood protection** - the IPv4 SYN flood meter is not affected by the exempt set.
+- **UDP flood protection** - the IPv4 UDP flood meter is independent of the exempt set.
 - **Country blocking** - country CIDR blocks apply unconditionally.
 - **Port policy** - `tcp_in`, `tcp_out`, and `restricted_tcp` port rules are not modified.
 

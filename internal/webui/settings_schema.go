@@ -492,12 +492,12 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "passive_ftp_end", Type: "int", Label: "Passive FTP range end", Min: int64p(1024), Max: int64p(65535), FieldGroup: FieldGroupAccessPorts},
 			{YAMLPath: "drop_nolog", Type: "[]int", Label: "Silent-drop ports", Help: "Dropped without logging to keep scanner noise out of the log.", FieldGroup: FieldGroupLogging},
 
-			{YAMLPath: "conn_rate_limit", Type: "int", Label: "Conn rate limit (per IP/min)", Min: int64p(0), Max: int64p(100000), Help: "0 disables. 200 tolerates shared CGNAT egress.", FieldGroup: FieldGroupRateLimits},
-			{YAMLPath: "conn_limit", Type: "int", Label: "Concurrent connections per IP", Min: int64p(0), Max: int64p(100000), Help: "0 disables.", FieldGroup: FieldGroupRateLimits},
-			{YAMLPath: "syn_flood_protection", Type: "bool", Label: "SYN flood protection", FieldGroup: FieldGroupFloodProtection},
-			{YAMLPath: "udp_flood", Type: "bool", Label: "UDP flood protection", FieldGroup: FieldGroupFloodProtection},
-			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupFloodProtection},
-			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000), FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "conn_rate_limit", Type: "int", Label: "Conn rate limit (IPv4/min)", Min: int64p(0), Max: int64p(100000), Help: "0 disables the IPv4 source meter. 200 tolerates shared CGNAT egress.", FieldGroup: FieldGroupRateLimits},
+			{YAMLPath: "conn_limit", Type: "int", Label: "Concurrent connections per IPv4", Min: int64p(0), Max: int64p(100000), Help: "0 disables the IPv4 source meter.", FieldGroup: FieldGroupRateLimits},
+			{YAMLPath: "syn_flood_protection", Type: "bool", Label: "SYN flood protection", Help: "Applies to IPv4 sources only.", FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood", Type: "bool", Label: "UDP flood protection", Help: "Applies to IPv4 sources only.", FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000), Help: "Applied per IPv4 source.", FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000), Help: "Applied per IPv4 source.", FieldGroup: FieldGroupFloodProtection},
 
 			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: "0 = unlimited.", FieldGroup: FieldGroupLimits},
 			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), FieldGroup: FieldGroupLimits},

@@ -577,10 +577,10 @@ firewall:
   # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
 
-  # Rate limiting
-  conn_rate_limit: 200                  # new connections/min per IP (CGNAT-tolerant)
-  syn_flood_protection: true
-  conn_limit: 400                       # max concurrent connections per IP (0 = disabled)
+  # Rate limiting (IPv4-only except for dual-stack port_flood meters)
+  conn_rate_limit: 200                  # new connections/min per IPv4 source (CGNAT-tolerant)
+  syn_flood_protection: true            # IPv4-source SYN flood meter
+  conn_limit: 400                       # max concurrent connections per IPv4 source (0 = disabled)
 
   # Per-port flood protection: rate-limit new connections per source IP and IP family.
   # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,
@@ -600,12 +600,12 @@ firewall:
       hits: 600
       seconds: 300
 
-  # DoS-exempt ranges: bypass per-IP DoS meters and subnet auto-blocks.
+  # DoS-exempt ranges: bypass configured DoS meters and subnet auto-blocks.
   # See firewall.dos_exempt_ranges below for full details.
   dos_exempt_ranges: []                 # CIDRs or single IPs exempt from rate/conn/flood meters and subnet auto-blocks; /0 and bare hostnames rejected at load
   dos_exempt_known_mail_providers: true # also exempt Google and Microsoft mail-provider egress ranges; dynamic, cached, updated every 12h (default: true)
 
-  # UDP flood protection
+  # UDP flood protection (IPv4-source meter)
   udp_flood: true
   udp_flood_rate: 100                   # packets per second
   udp_flood_burst: 500                  # burst allowance
@@ -937,6 +937,6 @@ runtime; `auto` falls back to legacy detection on older servers. See
 
 `dos_exempt_known_mail_providers` (bool, default true) adds Google and Microsoft outbound mail IP ranges to the effective exempt set automatically. The ranges are sourced dynamically and cached on disk; a built-in snapshot covers startup before the first live refresh. The cache is refreshed every 12 hours.
 
-Sources in the effective exempt set bypass the per-IP new-connection rate-limit, the concurrent connection-limit, and the TCP port 25/465/587 flood meters. Subnet auto-block (spray, ASN-crawl, and netblock escalation) skips CIDRs that intersect an exempt range, and exempt IPs do not count toward the netblock threshold.
+Sources in the effective exempt set bypass the IPv4 new-connection rate-limit, the IPv4 concurrent connection-limit, and the TCP port 25/465/587 flood meters for their IP family. Subnet auto-block (spray, ASN-crawl, and netblock escalation) skips CIDRs that intersect an exempt range, and exempt IPs do not count toward the netblock threshold.
 
-Exempt sources do not bypass: manual blocks (`csm firewall deny` or `csm firewall deny-subnet`), SYN flood protection, UDP flood protection, country blocking, and port policy. A manual block placed inside an exempt range still takes effect because blocked sets are evaluated before the DoS meters. See [Firewall - DoS-exempt ranges](firewall.md#dos-exempt-ranges).
+Exempt sources do not bypass: manual blocks (`csm firewall deny` or `csm firewall deny-subnet`), IPv4 SYN flood protection, IPv4 UDP flood protection, country blocking, and port policy. A manual block placed inside an exempt range still takes effect because blocked sets are evaluated before the DoS meters. See [Firewall - DoS-exempt ranges](firewall.md#dos-exempt-ranges).

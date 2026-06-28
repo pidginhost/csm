@@ -27,15 +27,15 @@ type FirewallConfig struct {
 	// Infra IPs (CIDR notation)
 	InfraIPs []string `yaml:"infra_ips"`
 
-	// Rate limiting (per-source-IP via nftables meters)
-	ConnRateLimit      int  `yaml:"conn_rate_limit"` // new connections per minute per IP
+	// Rate limiting (per-source nftables meters; IPv4-only except PortFlood)
+	ConnRateLimit      int  `yaml:"conn_rate_limit"` // new connections per minute per IPv4 source
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
-	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IP (0 = disabled)
+	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IPv4 source (0 = disabled)
 
 	// Per-port flood protection - per-source rate limit per port and IP family.
 	PortFlood []PortFloodRule `yaml:"port_flood"`
 
-	// UDP flood protection - per-source rate limit on UDP packets
+	// UDP flood protection - per-IPv4-source rate limit on UDP packets
 	UDPFlood      bool `yaml:"udp_flood"`
 	UDPFloodRate  int  `yaml:"udp_flood_rate"`  // packets per second
 	UDPFloodBurst int  `yaml:"udp_flood_burst"` // burst allowance
@@ -113,13 +113,13 @@ func DefaultConfig() *FirewallConfig {
 		RestrictedTCP:   []int{2086, 2087, 2325, 9443},
 		PassiveFTPStart: 49152,
 		PassiveFTPEnd:   65534,
-		// 200 new connections per minute per source IP. Sized to tolerate
+		// 200 new connections per minute per IPv4 source. Sized to tolerate
 		// shared CGNAT egress (residential ISPs / mobile carriers) where
 		// hundreds of subscribers share a single public address; the
 		// original 30/min default produced spurious drops on such ranges.
 		ConnRateLimit:      200,
 		SYNFloodProtection: true,
-		// 400 concurrent connections per source IP. Sized for power users
+		// 400 concurrent connections per IPv4 source. Sized for power users
 		// (multi-tab webmail + IMAP IDLE on multiple devices + Thunderbird
 		// parallel send + HTTPS browsing) plus headroom for shared CGNAT
 		// egress IPs. Operators with very heavy IDLE-style workloads can
