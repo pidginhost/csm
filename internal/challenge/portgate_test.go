@@ -183,3 +183,36 @@ func TestIPListRemoveRevokesOncePerListing(t *testing.T) {
 		t.Fatalf("revokes = %v, want exactly [203.0.113.5]", revokes)
 	}
 }
+
+// TestIPListRemoveRevokesAfterUnlock keeps the present-check/revoke ordering
+// honest: Remove may inspect and mutate l.ips while holding l.mu, but the gate
+// call can hit netlink and must happen after that lock has been released.
+func TestIPListRemoveRevokesAfterUnlock(t *testing.T) {
+	dir := t.TempDir()
+	l := NewIPListWithMapPath(dir, dir+"/challenge_ips.txt")
+	g := &lockCheckingGate{t: t, list: l}
+	l.SetPortGate(g)
+
+	l.Add("203.0.113.5", "x", time.Minute)
+	l.Remove("203.0.113.5")
+
+	if !g.checked {
+		t.Fatal("Revoke was not called")
+	}
+}
+
+type lockCheckingGate struct {
+	fakeGate
+	t       *testing.T
+	list    *IPList
+	checked bool
+}
+
+func (g *lockCheckingGate) Revoke(ip string) error {
+	g.checked = true
+	if !g.list.mu.TryLock() {
+		g.t.Fatal("IPList.Remove called PortGate.Revoke while holding l.mu")
+	}
+	g.list.mu.Unlock()
+	return g.fakeGate.Revoke(ip)
+}

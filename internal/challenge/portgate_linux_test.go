@@ -3,6 +3,7 @@
 package challenge
 
 import (
+	"strings"
 	"syscall"
 	"testing"
 
@@ -50,5 +51,21 @@ func TestRevokeSurfacesRealErrors(t *testing.T) {
 	g := newTestPortGate(nftConnErr(t, syscall.EPERM))
 	if err := g.Revoke("203.0.113.5"); err == nil {
 		t.Fatal("Revoke must surface non-ENOENT netlink errors")
+	}
+}
+
+// TestRevokeSurfacesSetDeleteErrorsBeforeFlush ensures the ENOENT swallow only
+// applies to Flush errors from the kernel. Local SetDeleteElements failures
+// happen before Flush and must still be returned.
+func TestRevokeSurfacesSetDeleteErrorsBeforeFlush(t *testing.T) {
+	g := newTestPortGate(nftConnErr(t, syscall.ENOENT))
+	g.setChalIPs.Anonymous = true
+
+	err := g.Revoke("203.0.113.5")
+	if err == nil {
+		t.Fatal("Revoke must surface SetDeleteElements errors")
+	}
+	if !strings.Contains(err.Error(), "anonymous sets cannot be updated") {
+		t.Fatalf("Revoke error = %q, want SetDeleteElements failure", err)
 	}
 }

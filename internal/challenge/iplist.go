@@ -119,7 +119,10 @@ func (l *IPList) add(ip string, reason string, duration time.Duration, nonEscala
 // Remove stops challenging an IP (passed or manually removed).
 func (l *IPList) Remove(ip string) {
 	l.mu.Lock()
-	_, listed := l.ips[ip]
+	if _, listed := l.ips[ip]; !listed {
+		l.mu.Unlock()
+		return
+	}
 	delete(l.ips, ip)
 	changed := l.flush()
 	gate := l.gate
@@ -131,7 +134,7 @@ func (l *IPList) Remove(ip string) {
 	// was never listed has no element to delete. Without this guard, verified
 	// crawlers -- which bypass the gate and call Remove on every request -- make
 	// the gate delete a nonexistent element and log an ENOENT error each time.
-	if gate != nil && listed {
+	if gate != nil {
 		if err := gate.Revoke(ip); err != nil {
 			fmt.Fprintf(os.Stderr, "challenge: port-gate revoke %s: %v\n", ip, err)
 		}
