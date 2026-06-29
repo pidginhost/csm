@@ -577,7 +577,12 @@ func runWPCLIStdout(ctx context.Context, user, command string) ([]byte, error) {
 	if !validWPCLIUser(user) {
 		return nil, fmt.Errorf("invalid WordPress site owner: %q", user)
 	}
-	return cmdExec.RunContextStdout(ctx, "su", "-l", "-s", "/bin/bash", "-c", command, "--", user)
+	// runuser, not su: under the hardened systemd unit /var/log is read-only, and
+	// su's PAM stack runs pam_lastlog on every call (floods the journal with
+	// "/var/log/lastlog: Read-only file system" and would record CSM's internal
+	// scans as user logins). runuser's PAM session has no pam_lastlog. Same
+	// login-shell semantics otherwise.
+	return cmdExec.RunContextStdout(ctx, "runuser", "-l", "-s", "/bin/bash", "-c", command, "--", user)
 }
 
 // pluginOutdatedSeverity classifies one plugin entry. It returns ok=false for

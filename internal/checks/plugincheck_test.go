@@ -239,3 +239,46 @@ func keysOf(m map[string]store.SitePlugins) []string {
 	}
 	return out
 }
+
+// TestRunWPCLIUsesRunuserNotSu pins that WP-CLI is launched via runuser, not su.
+// Under the hardened systemd unit (/var/log is read-only), `su -l` triggers
+// pam_lastlog on every invocation, which floods the journal with
+// "unable to open /var/log/lastlog: Read-only file system" and would pollute
+// users' lastlog/wtmp with CSM's internal scans. runuser's PAM session stack
+// has no pam_lastlog, so it avoids both.
+func TestRunWPCLIUsesRunuserNotSu(t *testing.T) {
+	var gotName string
+	var gotArgs []string
+	withMockCmd(t, &mockCmd{
+		runContextStdout: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			gotName = name
+			gotArgs = args
+			return []byte("ok"), nil
+		},
+	})
+
+	if _, err := runWPCLIStdout(context.Background(), "alice", "plugin list --format=json"); err != nil {
+		t.Fatalf("runWPCLIStdout: %v", err)
+	}
+
+	if gotName != "runuser" {
+		t.Errorf("WP-CLI must launch via runuser (no pam_lastlog), got %q", gotName)
+	}
+	hasArg := func(want string) bool {
+		for _, a := range gotArgs {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasArg("alice") {
+		t.Errorf("must target the site owner, args=%v", gotArgs)
+	}
+	if !hasArg("-l") {
+		t.Errorf("must use a login-shell environment, args=%v", gotArgs)
+	}
+	if !strings.Contains(strings.Join(gotArgs, " "), "plugin list --format=json") {
+		t.Errorf("must pass the wp command through, args=%v", gotArgs)
+	}
+}
