@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -262,23 +263,10 @@ func TestRunWPCLIUsesRunuserNotSu(t *testing.T) {
 	}
 
 	if gotName != "runuser" {
-		t.Errorf("WP-CLI must launch via runuser (no pam_lastlog), got %q", gotName)
+		t.Fatalf("WP-CLI must launch via runuser (no pam_lastlog), got %q", gotName)
 	}
-	hasArg := func(want string) bool {
-		for _, a := range gotArgs {
-			if a == want {
-				return true
-			}
-		}
-		return false
-	}
-	if !hasArg("alice") {
-		t.Errorf("must target the site owner, args=%v", gotArgs)
-	}
-	if !hasArg("-l") {
-		t.Errorf("must use a login-shell environment, args=%v", gotArgs)
-	}
-	if !strings.Contains(strings.Join(gotArgs, " "), "plugin list --format=json") {
-		t.Errorf("must pass the wp command through, args=%v", gotArgs)
+	wantArgs := []string{"-l", "-s", "/bin/bash", "-c", "plugin list --format=json", "--", "alice"}
+	if !slices.Equal(gotArgs, wantArgs) {
+		t.Fatalf("runuser args = %#v, want %#v", gotArgs, wantArgs)
 	}
 }

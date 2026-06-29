@@ -228,7 +228,7 @@ func TestVerifyOutdatedPluginsRejectsInjectedAccountBeforeCommand(t *testing.T) 
 
 	res := VerifyFinding("outdated_plugins", "msg", "Path: "+dir)
 	if res.Checked || res.Resolved {
-		t.Fatalf("account name that can be parsed as a su option should be rejected, got %+v", res)
+		t.Fatalf("account name that can be parsed as a runuser option should be rejected, got %+v", res)
 	}
 	if calls != 0 {
 		t.Fatalf("wp-cli should not run with an injected account name, got %d calls", calls)
@@ -445,7 +445,7 @@ func TestVerifyWPCoreNoPathNotVerifiable(t *testing.T) {
 	}
 }
 
-func TestInventoryWPSitePassesUserAfterSuOptionBoundary(t *testing.T) {
+func TestInventoryWPSitePassesUserAfterRunuserOptionBoundary(t *testing.T) {
 	tmp := t.TempDir()
 	wpConfig := filepath.Join(tmp, "home", "alice", "public_html", "wp-config.php")
 	if err := os.MkdirAll(filepath.Dir(wpConfig), 0755); err != nil {
@@ -480,18 +480,18 @@ func TestInventoryWPSitePassesUserAfterSuOptionBoundary(t *testing.T) {
 	}
 	wantPrefix := []string{"-l", "-s", "/bin/bash", "-c"}
 	if len(pluginArgs) != 7 {
-		t.Fatalf("su args length = %d, want 7: %#v", len(pluginArgs), pluginArgs)
+		t.Fatalf("runuser args length = %d, want 7: %#v", len(pluginArgs), pluginArgs)
 	}
 	for i, want := range wantPrefix {
 		if pluginArgs[i] != want {
-			t.Fatalf("su arg %d = %q, want %q in args %#v", i, pluginArgs[i], want, pluginArgs)
+			t.Fatalf("runuser arg %d = %q, want %q in args %#v", i, pluginArgs[i], want, pluginArgs)
 		}
 	}
 	if !strings.Contains(pluginArgs[4], "plugin list") {
-		t.Fatalf("su command arg should run plugin list, got args %#v", pluginArgs)
+		t.Fatalf("runuser command arg should run plugin list, got args %#v", pluginArgs)
 	}
 	if pluginArgs[5] != "--" || pluginArgs[6] != "alice" {
-		t.Fatalf("su option boundary should be followed by user alice, got args %#v", pluginArgs)
+		t.Fatalf("runuser option boundary should be followed by user alice, got args %#v", pluginArgs)
 	}
 }
 
@@ -516,7 +516,7 @@ func TestInventoryWPSiteShellQuotesWPPath(t *testing.T) {
 			}
 			if strings.Contains(joined, "plugin list") {
 				if len(args) < 5 {
-					t.Fatalf("su args too short: %#v", args)
+					t.Fatalf("runuser args too short: %#v", args)
 				}
 				pluginCommand = args[4]
 				return []byte(`[]`), nil
