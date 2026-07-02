@@ -59,6 +59,17 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		return findings
 	}
 
+	// Canonicalize blocked-IP keys via net.ParseIP so equality survives
+	// notation differences (2001:db8::1 vs 2001:db8:0:0:0:0:0:1,
+	// IPv4-mapped IPv6). Keys that do not parse as an IP cannot
+	// exact-match a finding's IP and are dropped.
+	canonicalBlocked := make(map[string]bool, len(blockedIPs))
+	for ip := range blockedIPs {
+		if parsed := net.ParseIP(ip); parsed != nil {
+			canonicalBlocked[parsed.String()] = true
+		}
+	}
+
 	// Filter out alerts for IPs that are handled automatically.
 	// When suppress_blocked_alerts is on, the operator doesn't want to be
 	// notified about IPs that are already dealt with - they only want alerts
@@ -71,24 +82,24 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
 				continue
 			}
-			// Check if the IP is already blocked by exact IP match.
+			// Check if the finding's IP is already blocked. The IP token
+			// is parsed out of the message and compared canonically:
+			// substring matching used to let a blocked 1.2.3.4 suppress a
+			// finding about the unrelated 1.2.3.45. A message with no
+			// parseable IP is never suppressed (fail open to alerting).
 			isBlocked := false
-			for ip := range blockedIPs {
-				if strings.Contains(f.Message, ip) {
-					isBlocked = true
-					break
-				}
+			msgIP := extractIPFromFindingMessage(f.Message)
+			if msgIP != nil && canonicalBlocked[msgIP.String()] {
+				isBlocked = true
 			}
 			// Also suppress if the IP falls within a freshly-blocked subnet.
 			// AUTO-BLOCK-SUBNET: findings from the same batch must silence
 			// per-IP reputation alerts for addresses inside that /24.
-			if !isBlocked && len(blockedSubnets) > 0 {
-				if parsed := extractIPFromFindingMessage(f.Message); parsed != nil {
-					for _, subnet := range blockedSubnets {
-						if subnet.Contains(parsed) {
-							isBlocked = true
-							break
-						}
+			if !isBlocked && msgIP != nil {
+				for _, subnet := range blockedSubnets {
+					if subnet.Contains(msgIP) {
+						isBlocked = true
+						break
 					}
 				}
 			}
@@ -107,13 +118,21 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 
 // extractIPFromFindingMessage scans a finding message for the first token
 // that parses as a valid IP address and returns it. Returns nil if no IP
-// is found. Used to match reputation findings against blocked-subnet CIDRs.
+// is found. Used to match reputation findings against blocked IPs and
+// blocked-subnet CIDRs.
 func extractIPFromFindingMessage(msg string) net.IP {
 	for _, field := range strings.Fields(msg) {
 		// Strip common punctuation that may trail an IP in a message.
 		candidate := strings.TrimRight(field, ",:;)([]")
 		if ip := net.ParseIP(candidate); ip != nil {
 			return ip
+		}
+		// Accept key=value tokens such as "ip=5.5.5.5". IP literals never
+		// contain '=', so taking the value side cannot mangle a real IP.
+		if idx := strings.LastIndexByte(candidate, '='); idx >= 0 {
+			if ip := net.ParseIP(candidate[idx+1:]); ip != nil {
+				return ip
+			}
 		}
 	}
 	return nil

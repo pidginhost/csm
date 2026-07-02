@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Blocked-IP alert suppression matched IPs by substring, so a blocked address could silently swallow reputation alerts for unrelated look-alike IPs (1.2.3.4 vs 1.2.3.45). Matching is now exact and notation-canonical, and messages without a parseable IP are never suppressed.
 - WordPress plugin checks now launch wp-cli with runuser instead of su, so under the hardened service unit they no longer flood the journal with read-only lastlog errors and no longer record CSM's internal scans as user logins.
 
 ## [3.22.1] - 2026-06-28

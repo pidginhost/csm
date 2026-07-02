@@ -1213,6 +1213,84 @@ func TestFilter_SubnetBlockSuppressesReputationInSameBatch(t *testing.T) {
 	}
 }
 
+func TestFilterBlockedAlertsExactIPMatchOnly(t *testing.T) {
+	// Blocked 1.2.3.4 must not suppress a finding about the unrelated
+	// 1.2.3.45; substring matching used to swallow such alerts.
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{"1.2.3.4": true}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.45 (source: abuseipdb)"},
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 1.2.3.4 (source: abuseipdb)"},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1 (only the 1.2.3.45 alert): %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "1.2.3.45") {
+		t.Errorf("kept the wrong finding: %+v", got[0])
+	}
+}
+
+func TestFilterBlockedAlertsNoParseableIPFailsOpen(t *testing.T) {
+	// A reputation finding whose message has no parseable IP must never
+	// be suppressed: fail open to alerting.
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{"1.2.3.4": true}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{Check: "ip_reputation", Message: "reputation source degraded, no address available"},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 1 {
+		t.Fatalf("finding without parseable IP must be kept, got %+v", got)
+	}
+}
+
+func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
+	// IPv6 comparison must be canonical: a long-form blocked entry
+	// suppresses the short-form finding, while a distinct address that
+	// merely shares a textual prefix (2001:db8::12 vs 2001:db8::1) is kept.
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{
+			"2001:db8:0:0:0:0:0:1": true,
+			"2001:db8::1":          true,
+		}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::1 (source: abuseipdb)"},
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8::12 (source: abuseipdb)"},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1 (only the 2001:db8::12 alert): %+v", len(got), got)
+	}
+	if !strings.Contains(got[0].Message, "2001:db8::12") {
+		t.Errorf("kept the wrong finding: %+v", got[0])
+	}
+}
+
 func captureAlertLogs(t *testing.T, fn func()) string {
 	t.Helper()
 
