@@ -75,6 +75,19 @@ func SetGlobal(db *DB) {
 	globalMu.Unlock()
 }
 
+// WriteTxID returns the id of the most recently committed write
+// transaction. bbolt bumps the id once per committed write transaction,
+// so two readings bracket a code path and their difference counts its
+// write commits.
+func (db *DB) WriteTxID() int {
+	var id int
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		id = tx.ID()
+		return nil
+	})
+	return id
+}
+
 // EnsureOpen opens the store if not already open. Safe to call from any CLI path.
 // First call opens the DB; subsequent calls return immediately.
 func EnsureOpen(statePath string) error {

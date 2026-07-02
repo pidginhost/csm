@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the IP reputation cache rewriting every cached entry to the state database each scan cycle, which undid expiry cleanup and grew the database without bound. Saves now persist only changed entries in a single write.
 - The rspamd threat-intel score no longer counts delivered or greylisted mail as abuse, which could auto-block legitimate mail servers that simply sent regularly. The score now reflects the recency-weighted share of actual spam verdicts, so benign senders stay near zero.
 - CSM's ModSecurity virtual patches are now kept in a marker-delimited section of the shared user rules file, and deploys rewrite only exact CSM marker blocks while preserving operator content and the override include. Previously a redeploy could overwrite the whole file and silently destroy operator-maintained rules.
 - A check that hits its per-scan timeout no longer purges the findings it reported in earlier cycles, and throttled checks keep their retry timing without losing stamps across clean shutdowns. Concurrent scans also no longer start the same throttled check before the first run finishes.

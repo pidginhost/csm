@@ -185,6 +185,49 @@ func TestReserveAbuseQuerySlotsCapsAtMax(t *testing.T) {
 	}
 }
 
+func TestSetReputationBatchSingleTransaction(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	now := time.Now().Truncate(time.Second)
+	entries := map[string]ReputationEntry{
+		"192.0.2.1": {Score: 90, Category: "botnet", CheckedAt: now},
+		"192.0.2.2": {Score: 40, Category: "scanner", CheckedAt: now},
+		"192.0.2.3": {Score: 5, Category: "ISP", CheckedAt: now},
+	}
+
+	before := db.WriteTxID()
+	if err := db.SetReputationBatch(entries); err != nil {
+		t.Fatalf("SetReputationBatch: %v", err)
+	}
+	if got := db.WriteTxID(); got != before+1 {
+		t.Fatalf("batch of %d entries committed %d write txs, want exactly 1", len(entries), got-before)
+	}
+
+	all := db.AllReputation()
+	for ip, want := range entries {
+		got, ok := all[ip]
+		if !ok {
+			t.Fatalf("entry %s missing after batch write", ip)
+		}
+		if got.Score != want.Score || got.Category != want.Category || !got.CheckedAt.Equal(want.CheckedAt) {
+			t.Fatalf("entry %s = %+v, want %+v", ip, got, want)
+		}
+	}
+
+	// Empty batch must not open a write transaction at all.
+	before = db.WriteTxID()
+	if err := db.SetReputationBatch(nil); err != nil {
+		t.Fatalf("SetReputationBatch(nil): %v", err)
+	}
+	if got := db.WriteTxID(); got != before {
+		t.Fatalf("empty batch committed %d write txs, want 0", got-before)
+	}
+}
+
 func TestReputationMaxCap(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

@@ -52,12 +52,56 @@ var abuseIPDBClient = &http.Client{Timeout: 10 * time.Second}
 
 type reputationCache struct {
 	Entries map[string]*reputationEntry `json:"entries"`
+
+	// dirty tracks entries touched since load. nil means the cache was
+	// assembled directly rather than hydrated by loadReputationCache, in
+	// which case a save persists every entry.
+	dirty map[string]bool
 }
 
 type reputationEntry struct {
 	Score     int       `json:"score"`
 	Category  string    `json:"category"`
 	CheckedAt time.Time `json:"checked_at"`
+}
+
+// set records an entry and marks it changed so a bbolt-backed save can
+// persist just this cycle's writes instead of the whole map.
+func (c *reputationCache) set(ip string, e *reputationEntry) {
+	c.Entries[ip] = e
+	if c.dirty != nil {
+		c.dirty[ip] = true
+	}
+}
+
+// remove evicts an entry. Dropping any pending dirty mark keeps a later
+// save from writing what eviction just removed.
+func (c *reputationCache) remove(ip string) {
+	delete(c.Entries, ip)
+	delete(c.dirty, ip)
+}
+
+// changedEntries returns what a bbolt-backed save must persist. Without
+// change tracking every entry counts as changed. With tracking, only
+// entries touched since load and still present are returned: re-putting
+// the full map here used to resurrect every entry the TTL/cap prune had
+// just deleted, so the bucket grew without bound.
+func (c *reputationCache) changedEntries() map[string]store.ReputationEntry {
+	out := make(map[string]store.ReputationEntry)
+	if c.dirty == nil {
+		for ip, e := range c.Entries {
+			out[ip] = store.ReputationEntry{Score: e.Score, Category: e.Category, CheckedAt: e.CheckedAt}
+		}
+		return out
+	}
+	for ip := range c.dirty {
+		e, ok := c.Entries[ip]
+		if !ok {
+			continue
+		}
+		out[ip] = store.ReputationEntry{Score: e.Score, Category: e.Category, CheckedAt: e.CheckedAt}
+	}
+	return out
 }
 
 // CheckIPReputation looks up non-infra IPs against threat intelligence.
@@ -243,7 +287,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				}
 				continue
 			}
-			cache.Entries[q.ip] = &reputationEntry{
+			cache.set(q.ip, &reputationEntry{
 				Score:    -1,
 				Category: fmt.Sprintf("error: %v", res.err),
 				// CheckedAt is shifted into the past so time.Since returns
@@ -251,18 +295,18 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				// freshness check then flips false after a further
 				// errorCacheExpiry, giving a real ~1h TTL on error entries.
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
-			}
+			})
 			if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
 				appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 			}
 			continue
 		}
 
-		cache.Entries[q.ip] = &reputationEntry{
+		cache.set(q.ip, &reputationEntry{
 			Score:     res.score,
 			Category:  res.category,
 			CheckedAt: time.Now(),
-		}
+		})
 
 		score := res.score
 		category := res.category
@@ -698,20 +742,25 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 
 // cleanCache removes expired entries and caps at maxCacheEntries.
 func cleanCache(cache *reputationCache) {
-	// When using bbolt store, delegate cleanup to store methods.
+	// When using bbolt store, delegate cleanup to store methods, then
+	// mirror the prune on the in-memory view: entries deleted only in
+	// bbolt would linger in the map and could be pushed back by a save.
 	if sdb := store.Global(); sdb != nil {
 		sdb.CleanExpiredReputation(cacheExpiry)
 		sdb.EnforceReputationCap(maxCacheEntries)
-		return
 	}
+	pruneCacheEntries(cache)
+}
 
-	// Fallback: in-memory cache cleanup.
+// pruneCacheEntries drops expired entries from the in-memory map and
+// enforces the size cap, evicting oldest first.
+func pruneCacheEntries(cache *reputationCache) {
 	now := time.Now()
 
 	// Remove expired entries - use same expiry as cache freshness check
 	for ip, entry := range cache.Entries {
 		if now.Sub(entry.CheckedAt) > cacheExpiry {
-			delete(cache.Entries, ip)
+			cache.remove(ip)
 		}
 	}
 
@@ -731,13 +780,16 @@ func cleanCache(cache *reputationCache) {
 		})
 		// Remove oldest until under limit
 		for i := 0; i < len(entries)-maxCacheEntries; i++ {
-			delete(cache.Entries, entries[i].ip)
+			cache.remove(entries[i].ip)
 		}
 	}
 }
 
 func loadReputationCache(statePath string) *reputationCache {
-	cache := &reputationCache{Entries: make(map[string]*reputationEntry)}
+	cache := &reputationCache{
+		Entries: make(map[string]*reputationEntry),
+		dirty:   make(map[string]bool),
+	}
 
 	// Try bbolt store first - after migration the flat file is renamed to .bak.
 	if sdb := store.Global(); sdb != nil {
@@ -764,13 +816,15 @@ func loadReputationCache(statePath string) *reputationCache {
 
 func saveReputationCache(statePath string, cache *reputationCache) {
 	if sdb := store.Global(); sdb != nil {
-		for ip, entry := range cache.Entries {
-			_ = sdb.SetReputation(ip, store.ReputationEntry{
-				Score:     entry.Score,
-				Category:  entry.Category,
-				CheckedAt: entry.CheckedAt,
-			})
+		changed := cache.changedEntries()
+		if len(changed) == 0 {
+			return
 		}
+		if err := sdb.SetReputationBatch(changed); err != nil {
+			// Keep the dirty marks so a later save can retry the flush.
+			return
+		}
+		clear(cache.dirty)
 		return
 	}
 
