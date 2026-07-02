@@ -48,11 +48,12 @@ func recordFindings(findings []alert.Finding) {
 }
 
 type Store struct {
-	mu        sync.RWMutex
-	path      string
-	entries   map[string]*Entry
-	dirty     bool   // true if state changed since last save
-	savedHash string // hash of last saved state
+	mu                   sync.RWMutex
+	path                 string
+	entries              map[string]*Entry
+	dirty                bool   // true if state changed since last save
+	savedHash            string // hash of last saved state
+	throttleReservations map[string]struct{}
 
 	// LatestFindings holds the full output of the most recent scan cycle.
 	// This is what the Findings page shows - "what's wrong right now" -
@@ -76,8 +77,9 @@ func Open(path string) (*Store, error) {
 	}
 
 	s := &Store{
-		path:    path,
-		entries: make(map[string]*Entry),
+		path:                 path,
+		entries:              make(map[string]*Entry),
+		throttleReservations: make(map[string]struct{}),
 	}
 
 	stateFile := filepath.Join(path, "state.json")
@@ -336,18 +338,58 @@ func (s *Store) ThrottleAllows(checkName string, intervalMin int) bool {
 	return time.Since(entry.LastSeen) >= time.Duration(intervalMin)*time.Minute
 }
 
+// ReserveThrottle reports whether the throttle window allows checkName to
+// start now and reserves the slot for this process until the caller either
+// marks the run complete or releases the reservation. The reservation keeps
+// concurrent scans from launching the same expensive check before the first
+// one has had a chance to stamp its successful run.
+func (s *Store) ReserveThrottle(checkName string, intervalMin int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := throttleKey(checkName)
+	s.ensureThrottleReservationsLocked()
+	if _, running := s.throttleReservations[key]; running {
+		return false
+	}
+	entry, exists := s.entries[key]
+	if exists && time.Since(entry.LastSeen) < time.Duration(intervalMin)*time.Minute {
+		return false
+	}
+	s.throttleReservations[key] = struct{}{}
+	return true
+}
+
 // MarkThrottledRan stamps the throttle slot for checkName. Call only after
 // the throttled work actually completed, never at scheduling time.
 func (s *Store) MarkThrottledRan(checkName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := throttleKey(checkName)
+	if s.throttleReservations != nil {
+		delete(s.throttleReservations, key)
+	}
 	if entry, exists := s.entries[key]; exists {
 		entry.LastSeen = time.Now()
 	} else {
 		s.entries[key] = &Entry{LastSeen: time.Now()}
 	}
 	s.dirty = true
+}
+
+// ReleaseThrottle clears an in-process throttle reservation without stamping
+// a successful run. Use when the reserved work times out or is interrupted.
+func (s *Store) ReleaseThrottle(checkName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.throttleReservations != nil {
+		delete(s.throttleReservations, throttleKey(checkName))
+	}
+}
+
+func (s *Store) ensureThrottleReservationsLocked() {
+	if s.throttleReservations == nil {
+		s.throttleReservations = make(map[string]struct{})
+	}
 }
 
 func throttleKey(checkName string) string {

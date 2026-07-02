@@ -419,6 +419,34 @@ func TestMarkThrottledRanSetsDirty(t *testing.T) {
 	}
 }
 
+func TestReserveThrottleBlocksConcurrentRunWithoutStamping(t *testing.T) {
+	s := openTestStore(t)
+	if !s.ReserveThrottle("checkU", 60) {
+		t.Fatal("first reservation should be allowed")
+	}
+	if s.ReserveThrottle("checkU", 60) {
+		t.Fatal("second reservation should be blocked while the first run is active")
+	}
+	if !s.ThrottleAllows("checkU", 60) {
+		t.Fatal("in-process reservation must not stamp the persisted throttle window")
+	}
+	s.ReleaseThrottle("checkU")
+	if !s.ReserveThrottle("checkU", 60) {
+		t.Fatal("reservation should be allowed again after release")
+	}
+}
+
+func TestMarkThrottledRanClearsReservationAndStampsSlot(t *testing.T) {
+	s := openTestStore(t)
+	if !s.ReserveThrottle("checkV", 60) {
+		t.Fatal("reservation should be allowed")
+	}
+	s.MarkThrottledRan("checkV")
+	if s.ReserveThrottle("checkV", 60) {
+		t.Fatal("completed run should suppress a new reservation within the interval")
+	}
+}
+
 // --- GetRaw / SetRaw ---------------------------------------------------
 
 func TestSetRawThenGetRaw(t *testing.T) {

@@ -423,16 +423,15 @@ func PerfCheckNamesForTier(tier Tier) []string {
 }
 
 // checkThrottleMin maps a check name to its minimum interval in minutes
-// between executions. The runner probes this BEFORE invoking the check
-// function (read-only, via ThrottleAllows) and stamps the slot only AFTER
-// the check completes (MarkThrottledRan), so a timed-out check keeps its
-// slot and retries next cycle. Throttled checks that get skipped in a
-// given cycle are NOT added to the per-scan purge list, so their
-// previously-emitted findings stay in the latest set instead of being
-// wiped every cycle. Without this gating in the runner, a deep scan that
-// ran while the throttle window was still open would purge stale findings
-// and merge nothing, hiding real issues until the next non-throttled
-// cycle (or daemon restart).
+// between executions. The runner reserves this before invoking the check
+// function and stamps the slot only after the whole scan completes, so a
+// timed-out or interrupted check keeps its slot and retries next cycle.
+// Throttled checks that get skipped in a given cycle are NOT added to the
+// per-scan purge list, so their previously-emitted findings stay in the
+// latest set instead of being wiped every cycle. Without this gating in the
+// runner, a deep scan that ran while the throttle window was still open
+// would purge stale findings and merge nothing, hiding real issues until
+// the next non-throttled cycle (or daemon restart).
 var checkThrottleMin = map[string]int{
 	"perf_php_handler":   60,
 	"perf_mysql_config":  60,
@@ -644,28 +643,18 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
-	ranChecks := make([]namedCheck, 0, len(enabledChecks))
-	for _, nc := range enabledChecks {
-		// Read-only probe: the slot is stamped after the check completes
-		// (below), so a throttled check that times out keeps its slot and
-		// retries next cycle instead of forfeiting the whole window.
-		if min, ok := checkThrottleMin[nc.name]; ok && store != nil && !store.ThrottleAllows(nc.name, min) {
-			continue
-		}
-		ranChecks = append(ranChecks, nc)
-	}
-
 	// completedChecks collects the checks whose function returned within
 	// budget (guarded by mu; workers run concurrently). Only completed
 	// checks join the purge list: a timed-out check produced no results,
 	// so purging its names would wipe every finding from earlier cycles
 	// while merging nothing back.
-	completedChecks := make([]namedCheck, 0, len(ranChecks))
+	completedChecks := make([]namedCheck, 0, len(enabledChecks))
+	completedThrottled := make([]string, 0)
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
 
-	for _, nc := range ranChecks {
+	for _, nc := range enabledChecks {
 		wg.Add(1)
 		c := nc
 		// Check functions run against user filesystem content (unparsed
@@ -686,6 +675,19 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				return
 			}
 
+			throttleReserved := false
+			if min, ok := checkThrottleMin[c.name]; ok && store != nil {
+				// Reserve atomically right before execution. The success
+				// stamp still happens only after the scan completes, so
+				// timeouts and interrupted scans can retry without allowing
+				// concurrent scans to start the same expensive check in the
+				// meantime.
+				if !store.ReserveThrottle(c.name, min) {
+					return
+				}
+				throttleReserved = true
+			}
+
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
 			ctx, cancel := context.WithTimeout(scanCtx, budget)
@@ -697,6 +699,25 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 
 			select {
 			case results := <-done:
+				if ctx.Err() != nil {
+					cancel()
+					if throttleReserved {
+						store.ReleaseThrottle(c.name)
+					}
+					observeCheckDuration(c.name, tier, time.Since(start))
+					if scanCtx.Err() != nil {
+						return
+					}
+					mu.Lock()
+					findings = append(findings, alert.Finding{
+						Severity:  alert.Warning,
+						Check:     "check_timeout",
+						Message:   fmt.Sprintf("Check '%s' timed out after %s", c.name, budget),
+						Timestamp: time.Now(),
+					})
+					mu.Unlock()
+					return
+				}
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
@@ -704,14 +725,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				if len(results) > 0 {
 					findings = append(findings, results...)
 				}
-				mu.Unlock()
-				// Stamp the throttle only now that the check completed, so
-				// timed-out runs (handled below) keep their slot.
-				if _, ok := checkThrottleMin[c.name]; ok && store != nil {
-					store.MarkThrottledRan(c.name)
+				if throttleReserved {
+					completedThrottled = append(completedThrottled, c.name)
 				}
+				mu.Unlock()
 			case <-ctx.Done():
 				cancel()
+				if throttleReserved {
+					store.ReleaseThrottle(c.name)
+				}
 				observeCheckDuration(c.name, tier, time.Since(start))
 				// Distinguish a real per-check timeout from a daemon shutdown.
 				// On shutdown the parent scan context is cancelled, so abort
@@ -735,9 +757,16 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	wg.Wait()
 
 	if scanCtx.Err() != nil {
+		for _, name := range completedThrottled {
+			store.ReleaseThrottle(name)
+		}
 		// The scan did not complete, so keep the caller from replacing the
 		// last completed scan state with partial findings or an empty purge.
 		return nil, nil
+	}
+
+	for _, name := range completedThrottled {
+		store.MarkThrottledRan(name)
 	}
 
 	purgeChecks := make([]namedCheck, 0, len(disabledChecks)+len(completedChecks))

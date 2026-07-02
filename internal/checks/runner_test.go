@@ -630,6 +630,149 @@ func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
 	}
 }
 
+func TestRunParallelThrottledCheckReservationBlocksConcurrentRun(t *testing.T) {
+	const name = "test_throttled_concurrent"
+	prev, had := checkThrottleMin[name]
+	checkThrottleMin[name] = 60
+	t.Cleanup(func() {
+		if had {
+			checkThrottleMin[name] = prev
+		} else {
+			delete(checkThrottleMin, name)
+		}
+	})
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var ran atomic.Int32
+	checks := []namedCheck{
+		{name, func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			if ran.Add(1) == 1 {
+				close(started)
+				<-release
+				return []alert.Finding{{Check: name, Severity: alert.Warning, Message: "fired"}}
+			}
+			return nil
+		}},
+	}
+	cfg := &config.Config{}
+
+	firstDone := make(chan []string, 1)
+	go func() {
+		_, purge := runParallel(cfg, st, checks, "test", false)
+		firstDone <- purge
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first throttled run did not start")
+	}
+
+	_, secondPurge := runParallel(cfg, st, checks, "test", false)
+	if got := ran.Load(); got != 1 {
+		t.Fatalf("concurrent throttled run executed %d time(s), want 1", got)
+	}
+	if slices.Contains(secondPurge, name) {
+		t.Fatalf("concurrent skipped run must stay out of purge list: %v", secondPurge)
+	}
+
+	close(release)
+	select {
+	case firstPurge := <-firstDone:
+		if !slices.Contains(firstPurge, name) {
+			t.Fatalf("completed first run missing from purge list: %v", firstPurge)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first throttled run did not finish")
+	}
+}
+
+func TestRunParallelCancelledScanReleasesCompletedThrottleReservation(t *testing.T) {
+	const name = "test_throttled_cancelled_scan"
+	prev, had := checkThrottleMin[name]
+	checkThrottleMin[name] = 60
+	t.Cleanup(func() {
+		if had {
+			checkThrottleMin[name] = prev
+		} else {
+			delete(checkThrottleMin, name)
+		}
+	})
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	prevTimeout := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = prevTimeout })
+	timeoutForFunc = func(string) time.Duration { return time.Second }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	throttledDone := make(chan struct{})
+	blockerStarted := make(chan struct{})
+	checks := []namedCheck{
+		{name, func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			close(throttledDone)
+			return []alert.Finding{{Check: name, Severity: alert.Warning, Message: "fired"}}
+		}},
+		{"blocking_check", func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			close(blockerStarted)
+			<-ctx.Done()
+			return nil
+		}},
+	}
+
+	type runResult struct {
+		findings []alert.Finding
+		purge    []string
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		findings, purge := runParallelWithContext(ctx, &config.Config{}, st, checks, "test", false)
+		done <- runResult{findings: findings, purge: purge}
+	}()
+
+	select {
+	case <-throttledDone:
+	case <-time.After(time.Second):
+		t.Fatal("throttled check did not complete")
+	}
+	select {
+	case <-blockerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocking check did not start")
+	}
+
+	cancel()
+	var result runResult
+	select {
+	case result = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled scan did not return")
+	}
+	if result.findings != nil || result.purge != nil {
+		t.Fatalf("cancelled scan returned partial state: findings=%+v purge=%v", result.findings, result.purge)
+	}
+	if !st.ThrottleAllows(name, 60) {
+		t.Fatal("cancelled scan stamped the completed throttled check")
+	}
+	if !st.ReserveThrottle(name, 60) {
+		t.Fatal("cancelled scan left the completed throttled check reserved")
+	}
+	st.ReleaseThrottle(name)
+}
+
 // --- Timed-out checks keep prior findings -----------------------------
 
 // A check that blows its per-check budget must stay OUT of the per-scan
@@ -750,9 +893,53 @@ func TestRunParallelThrottledCheckTimeoutKeepsThrottleSlot(t *testing.T) {
 	}
 }
 
-// A throttled check that completes stamps its throttle slot, so it does
-// not rerun within the window. Pins the stamp to check COMPLETION (not
-// scheduling) together with the timeout test above.
+func TestRunParallelThrottledCheckReturningAfterDeadlineDoesNotStamp(t *testing.T) {
+	const name = "test_throttled_deadline_return"
+	prev, had := checkThrottleMin[name]
+	checkThrottleMin[name] = 60
+	t.Cleanup(func() {
+		if had {
+			checkThrottleMin[name] = prev
+		} else {
+			delete(checkThrottleMin, name)
+		}
+	})
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	prevTimeout := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = prevTimeout })
+	timeoutForFunc = func(string) time.Duration { return time.Nanosecond }
+
+	checks := []namedCheck{
+		{name, func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			<-ctx.Done()
+			return []alert.Finding{{Check: name, Severity: alert.Warning, Message: "late result"}}
+		}},
+	}
+
+	findings, purge := runParallel(&config.Config{}, st, checks, "test", false)
+	if slices.Contains(purge, name) {
+		t.Fatalf("deadline-expired result must stay out of purge list: %v", purge)
+	}
+	if containsFindingCheck(findings, name) {
+		t.Fatalf("deadline-expired result was merged as a successful check: %+v", findings)
+	}
+	if !containsFindingCheck(findings, "check_timeout") {
+		t.Fatalf("deadline-expired result did not emit check_timeout: %+v", findings)
+	}
+	if !st.ThrottleAllows(name, 60) {
+		t.Fatal("deadline-expired result stamped the throttle slot")
+	}
+}
+
+// A throttled check that completes in a completed scan stamps its throttle
+// slot, so it does not rerun within the window. Pins the stamp to scan
+// completion (not scheduling) together with the timeout tests above.
 func TestRunParallelThrottledCheckCompletionStampsThrottle(t *testing.T) {
 	const name = "test_throttled_complete"
 	prev, had := checkThrottleMin[name]
