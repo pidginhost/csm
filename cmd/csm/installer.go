@@ -667,6 +667,7 @@ func (inst *Installer) DeployModSecRules() {
 		if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
 			continue
 		}
+		// #nosec G304 -- dest iterates the literal modsecUserConfDests list.
 		existing, err := os.ReadFile(dest)
 		if err != nil && !os.IsNotExist(err) {
 			// Present but unreadable: rewriting blind could destroy

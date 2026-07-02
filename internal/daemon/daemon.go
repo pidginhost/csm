@@ -3147,6 +3147,7 @@ func deployConfigs() {
 		"/usr/local/apache/conf/modsec2.user.conf",
 	} {
 		if _, err := os.Stat(filepath.Dir(dst)); err == nil {
+			// #nosec G304 -- dst iterates the literal ModSecurity config paths above.
 			existing, readErr := os.ReadFile(dst)
 			if readErr != nil && !os.IsNotExist(readErr) {
 				// Present but unreadable: rewriting blind could destroy
