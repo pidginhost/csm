@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // A live daemon holds state/csm.db open and mmap'd; bbolt's flock is
@@ -121,6 +123,79 @@ func TestRestoreArchiveGuarded_ProceedsWhenDaemonDown(t *testing.T) {
 	}
 	if _, err := os.Stat(dst + "/csm.yaml"); err != nil {
 		t.Fatalf("config not restored: %v", err)
+	}
+}
+
+// A daemon takes the state lock before it opens bbolt or binds the
+// control socket, so there is a window where the socket check reports
+// "down" while the daemon is very much alive. Restoring then would
+// corrupt the db it is about to open. The guard must also refuse when
+// the state lock cannot be acquired.
+func TestRestoreArchiveGuarded_RefusesWhenStateLockHeld(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	for _, p := range []string{src + "/conf.d", src + "/state", dst + "/state"} {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := WriteBackupArchive(archive, BackupSources{
+		ConfigPath: src + "/csm.yaml", ConfDir: src + "/conf.d", StateDir: src + "/state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for the running-but-not-yet-listening daemon by holding
+	// the state lock ourselves; the second acquire inside the guard must
+	// fail (flock conflicts across open file descriptions).
+	held, err := state.AcquireLock(dst + "/state")
+	if err != nil {
+		t.Fatalf("acquiring state lock: %v", err)
+	}
+	defer held.Release()
+
+	saved := controlSocketPath
+	controlSocketPath = shortSockPath(t) // no listener: socket check says "down"
+	defer func() { controlSocketPath = saved }()
+
+	err = restoreBackupArchiveGuarded(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	})
+	if err == nil {
+		t.Fatal("expected refusal while the state lock is held, got nil")
+	}
+	if _, statErr := os.Stat(dst + "/csm.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("config written despite refusal: %v", statErr)
+	}
+}
+
+// A backup captured while the daemon ran can contain the runtime lock
+// file. Restoring it verbatim would plant a stale lock that blocks the
+// next start, so the restore path must skip it.
+func TestRestoreArchive_SkipsStateLockFile(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := writeArchiveEntry(archive, "state/"+daemonStateLockFileName, 4, []byte("123\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, statErr := os.Stat(dst + "/state/" + daemonStateLockFileName); !os.IsNotExist(statErr) {
+		t.Fatal("restore planted the runtime lock file instead of skipping it")
 	}
 }
 

@@ -221,6 +221,92 @@ func rewriteArchiveDroppingBbolt(t *testing.T, src, dst string) {
 	})
 }
 
+func archiveEntryNames(t *testing.T, src string) map[string]bool {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+
+	names := map[string]bool{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[hdr.Name] = true
+	}
+	return names
+}
+
+func rewriteArchiveAppendingFile(t *testing.T, src, dst, name string, data []byte) {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	zr, err := zstd.NewReader(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+
+	out, err := os.Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	zw, err := zstd.NewWriter(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func rewriteArchive(t *testing.T, src, dst string, edit func(name string, data []byte) ([]byte, bool)) {
 	t.Helper()
 	in, err := os.Open(src)
@@ -278,6 +364,56 @@ func rewriteArchive(t *testing.T, src, dst string, edit func(name string, data [
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestArchiveExportSkipsStateLockFile(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if err := os.WriteFile(filepath.Join(statePath, stateLockFileName), []byte("12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	names := archiveEntryNames(t, archivePath)
+	if names[stateEntryPrefix+stateLockFileName] {
+		t.Fatalf("archive included runtime lock file %q", stateEntryPrefix+stateLockFileName)
+	}
+}
+
+func TestArchiveImportSkipsStateLockFileFromOldArchive(t *testing.T) {
+	statePath, rulesPath, archivePath, db, _, _, _ := mustExportSetup(t)
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   archivePath,
+		Manifest:  defaultManifest(),
+	}); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	_ = db.Close()
+
+	withLock := filepath.Join(t.TempDir(), "with-lock.csmbak")
+	rewriteArchiveAppendingFile(t, archivePath, withLock, stateEntryPrefix+stateLockFileName, []byte("stale\n"))
+
+	targetState := t.TempDir()
+	if _, err := Import(ImportOptions{
+		SrcPath:         withLock,
+		StatePath:       targetState,
+		RulesPath:       t.TempDir(),
+		Only:            "baseline",
+		CurrentPlatform: defaultPlatform(),
+	}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetState, stateLockFileName)); !os.IsNotExist(err) {
+		t.Fatalf("import restored runtime lock file: %v", err)
 	}
 }
 

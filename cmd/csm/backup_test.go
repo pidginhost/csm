@@ -80,6 +80,33 @@ func TestBackupArchive_DoesNotIncludeOutputInsideStateDir(t *testing.T) {
 	}
 }
 
+func TestBackupArchive_SkipsStateLockFile(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "csm.db"), []byte("fake-db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, daemonStateLockFileName), []byte("12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "backup.tar.gz")
+	if err := WriteBackupArchive(out, BackupSources{StateDir: state}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tarNames(t, out)
+	if got["state/"+daemonStateLockFileName] {
+		t.Fatalf("backup archive included runtime lock file: %v", got)
+	}
+	if !got["state/csm.db"] {
+		t.Fatalf("expected state/csm.db in archive, got %v", got)
+	}
+}
+
 func TestBackupArchive_RefusesToOverwriteConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "csm.yaml")

@@ -437,15 +437,31 @@ func runStoreImportCLI() {
 		}
 	}
 
-	// Refuse with a live daemon. Connecting to the socket is the
-	// authoritative check: if it accepts our connection, the daemon is
-	// up regardless of pid files.
+	// Refuse live daemons before config work, then hold the state lock
+	// across import so a daemon cannot start mid-restore.
 	if isDaemonLive() {
 		fmt.Fprintln(os.Stderr, "csm store import: daemon is running; stop it first (systemctl stop csm)")
 		os.Exit(1)
 	}
 
 	cfg := loadConfigLite()
+	stateLock, err := acquireStoppedDaemonStateLock(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm store import: %v\n", err)
+		os.Exit(1)
+	}
+	releaseStateLock := func() {
+		if stateLock != nil {
+			stateLock.Release()
+			stateLock = nil
+		}
+	}
+	if isDaemonLive() {
+		releaseStateLock()
+		fmt.Fprintln(os.Stderr, "csm store import: daemon is running; stop it first (systemctl stop csm)")
+		os.Exit(1)
+	}
+
 	pi := platform.Detect()
 	currentPlatform := map[string]string{
 		"os":         string(pi.OS),
@@ -463,9 +479,11 @@ func runStoreImportCLI() {
 		CurrentPlatform:       currentPlatform,
 	})
 	if err != nil {
+		releaseStateLock()
 		fmt.Fprintf(os.Stderr, "csm store import: %v\n", err)
 		os.Exit(1)
 	}
+	releaseStateLock()
 	fmt.Printf("import: archive from %s (csm %s on %s)\n",
 		res.Manifest.SourceHostname, res.Manifest.CSMVersion, res.Manifest.SourcePlatform["os"])
 	fmt.Printf("  buckets restored: %d\n", len(res.BucketsRestored))

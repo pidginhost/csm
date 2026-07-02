@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/state"
 	"golang.org/x/sys/unix"
 )
 
@@ -63,6 +64,9 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 			return fmt.Errorf("rejecting archive entry with unsafe path: %q", hdr.Name)
 		}
 		clean := path.Clean(rawName)
+		if clean == "state/"+daemonStateLockFileName {
+			continue
+		}
 
 		var target, anchor string
 		switch {
@@ -192,12 +196,39 @@ func unsafeArchiveName(name string) bool {
 var errRestoreDaemonLive = errors.New("daemon is running; stop it first (systemctl stop csm)")
 
 // restoreBackupArchiveGuarded refuses while the daemon is live -- before
-// the archive touches any destination file -- then extracts.
+// archive extraction touches any restored payload -- then extracts.
 func restoreBackupArchiveGuarded(archive string, dst BackupSources) error {
 	if isDaemonLive() {
 		return errRestoreDaemonLive
 	}
+	stateLock, err := acquireStoppedDaemonStateLock(dst.StateDir)
+	if err != nil {
+		return err
+	}
+	if stateLock != nil {
+		defer stateLock.Release()
+	}
+	if isDaemonLive() {
+		return errRestoreDaemonLive
+	}
 	return RestoreBackupArchive(archive, dst)
+}
+
+// acquireStoppedDaemonStateLock closes the daemon-starting race that a
+// socket-only check misses: the daemon takes this lock before it opens bbolt
+// or binds the control socket.
+func acquireStoppedDaemonStateLock(stateDir string) (*state.LockFile, error) {
+	if stateDir == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("state dir %q: %w", stateDir, err)
+	}
+	stateLock, err := state.AcquireLock(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("%w: state lock: %v", errRestoreDaemonLive, err)
+	}
+	return stateLock, nil
 }
 
 func runRestore() {

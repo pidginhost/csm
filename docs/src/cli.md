@@ -55,8 +55,8 @@
 
 | Command | Description |
 |---------|-------------|
-| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Use for clean DR snapshots. Daemon may be running. |
-| `csm restore <archive>` | Extract a backup archive into the live `csm.yaml` + `conf.d` + state directory. Rejects path-traversal entries and pre-existing symlinks under restore targets. Stop the daemon first. |
+| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Runtime lock files are omitted. Daemon may be running. |
+| `csm restore <archive>` | Extract a backup archive into the live `csm.yaml` + `conf.d` + state directory. Rejects path-traversal entries, pre-existing symlinks under restore targets, and live or starting daemons. Stop the daemon first. |
 
 `csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
 

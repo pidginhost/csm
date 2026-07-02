@@ -29,6 +29,7 @@ const (
 	bboltSnapshotEntry = "bbolt.snapshot"
 	stateEntryPrefix   = "state/"
 	rulesEntryPrefix   = "rules/"
+	stateLockFileName  = "csm.lock"
 )
 
 // Sentinel errors so callers can branch on the failure mode instead of
@@ -183,8 +184,8 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 		return nil, err
 	}
 
-	// 3. state files (skip the bbolt file itself, which is captured in step 2).
-	if _, err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, []string{"csm.db"}, man.ExportTS); err != nil {
+	// 3. state files (skip runtime-owned files captured separately or not at all).
+	if _, err = walkDirIntoTar(tw, opts.StatePath, stateEntryPrefix, []string{"csm.db", stateLockFileName}, man.ExportTS); err != nil {
 		return nil, err
 	}
 
@@ -322,6 +323,9 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		rel, relErr := filepath.Rel(stage, dst)
 		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			return nil, fmt.Errorf("%w: unsafe entry name %q", ErrCorruptArchive, nextHdr.Name)
+		}
+		if clean == stateEntryPrefix+stateLockFileName {
+			continue
 		}
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
 			return nil, fmt.Errorf("staging dir: %w", mkErr)

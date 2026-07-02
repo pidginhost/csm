@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const daemonStateLockFileName = "csm.lock"
+
 // BackupSources lists the on-disk inputs csm backup includes.
 type BackupSources struct {
 	ConfigPath string // main csm.yaml path
@@ -70,7 +72,7 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}
 	if src.StateDir != "" {
-		if err := addDir(tw, src.StateDir, "state", outAbs); err != nil && !os.IsNotExist(err) {
+		if err := addDir(tw, src.StateDir, "state", outAbs, daemonStateLockFileName); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -117,7 +119,11 @@ func addBytes(tw *tar.Writer, name string, data []byte) error {
 	return err
 }
 
-func addDir(tw *tar.Writer, dir, prefix, excludeAbs string) error {
+func addDir(tw *tar.Writer, dir, prefix, excludeAbs string, skipRelPaths ...string) error {
+	skip := map[string]bool{}
+	for _, name := range skipRelPaths {
+		skip[name] = true
+	}
 	return filepath.Walk(dir, func(filePath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -141,7 +147,11 @@ func addDir(tw *tar.Writer, dir, prefix, excludeAbs string) error {
 		if err != nil {
 			return err
 		}
-		return addFile(tw, filePath, path.Join(prefix, filepath.ToSlash(rel)))
+		rel = filepath.ToSlash(rel)
+		if skip[rel] {
+			return nil
+		}
+		return addFile(tw, filePath, path.Join(prefix, rel))
 	})
 }
 
