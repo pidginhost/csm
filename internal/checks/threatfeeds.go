@@ -23,7 +23,8 @@ import (
 type ThreatDB struct {
 	mu            sync.RWMutex
 	badIPs        map[string]string          // ip -> source/reason
-	badNets       []*net.IPNet               // CIDR ranges from feeds
+	badNets       []*net.IPNet               // flat CIDR list for Lookup, rebuilt from feedNets
+	feedNets      map[string][]*net.IPNet    // feed name -> CIDRs, so a failed feed keeps coverage
 	whitelist     map[string]bool            // IPs to never flag
 	whitelistMeta map[string]*whitelistEntry // expiry metadata
 	lastUpdate    time.Time
@@ -433,7 +434,12 @@ func (db *ThreatDB) FeedsStale() bool {
 }
 
 // UpdateFeeds downloads fresh threat intelligence feeds.
-// Downloads outside the lock, then swaps data under lock to avoid blocking lookups.
+// Downloads outside the lock, then swaps data under lock to avoid blocking
+// lookups. Each feed is swapped independently: a feed that fails to download
+// (or fails validation) keeps its previously loaded IPs and CIDRs, so a
+// transient outage never wipes that feed's coverage. lastUpdate only advances
+// when at least one feed succeeded, otherwise the next cycle would skip the
+// retry and serve zero feed data for the whole 20h window.
 func (db *ThreatDB) UpdateFeeds() error {
 	db.mu.RLock()
 	lastUpdate := db.lastUpdate
@@ -447,16 +453,17 @@ func (db *ThreatDB) UpdateFeeds() error {
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	// Download all feeds OUTSIDE the lock
-	newIPs := make(map[string]string)
-	var newNets []*net.IPNet
-	totalIPs := 0
-	totalNets := 0
+	type feedResult struct {
+		ips  []string
+		nets []*net.IPNet
+	}
+	fresh := make(map[string]feedResult)
 
 	for _, feed := range threatFeeds {
 		ips, nets, err := downloadFeed(client, feed.url, feed.name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "threatdb: error downloading %s: %v\n", feed.name, err)
-			continue
+			continue // keep previous data for this feed
 		}
 
 		// Validate feed - reject partial downloads to avoid losing good data
@@ -467,53 +474,77 @@ func (db *ThreatDB) UpdateFeeds() error {
 			continue // keep previous cached data for this feed
 		}
 
-		for _, ip := range ips {
-			newIPs[ip] = feed.name
-		}
-		newNets = append(newNets, nets...)
-		totalIPs += len(ips)
-		totalNets += len(nets)
+		fresh[feed.name] = feedResult{ips: ips, nets: nets}
 
-		// Cache to disk
-		cachePath := filepath.Join(db.dbPath, feed.name+".txt")
-		saveLines(cachePath, ips)
+		// Cache to disk. IPs and CIDRs share one file: CIDR lines are
+		// distinguishable by "/", so the nets survive a daemon restart
+		// and legacy IP-only cache files keep loading unchanged.
+		lines := make([]string, 0, len(ips)+len(nets))
+		lines = append(lines, ips...)
+		for _, n := range nets {
+			lines = append(lines, n.String())
+		}
+		saveLines(filepath.Join(db.dbPath, feed.name+".txt"), lines)
+	}
+
+	if len(fresh) == 0 {
+		// Leave lastUpdate untouched so the next cycle retries instead of
+		// sitting on stale (or empty) data until the skip window expires.
+		return fmt.Errorf("threatdb: all %d feeds failed, keeping previous data", len(threatFeeds))
+	}
+
+	feedNames := make(map[string]bool, len(threatFeeds))
+	for _, feed := range threatFeeds {
+		feedNames[feed.name] = true
 	}
 
 	// Swap data UNDER the lock - fast operation
 	db.mu.Lock()
-	// Clear old feed data but keep permanent entries
-	for ip, source := range db.badIPs {
-		if source == "permanent-blocklist" {
-			continue
+	if db.feedNets == nil {
+		db.feedNets = make(map[string][]*net.IPNet)
+	}
+	for name, result := range fresh {
+		// Replace only this feed's previous entries; entries owned by
+		// failed feeds (and permanent/manual entries) stay untouched.
+		for ip, source := range db.badIPs {
+			if source == name {
+				delete(db.badIPs, ip)
+			}
 		}
-		// Check if it's a feed entry (not permanent)
-		isPermanent := source == "permanent-blocklist"
-		if !isPermanent {
-			delete(db.badIPs, ip)
+		for _, ip := range result.ips {
+			if _, exists := db.badIPs[ip]; !exists {
+				db.badIPs[ip] = name
+			}
+		}
+		db.feedNets[name] = result.nets
+	}
+	// Rebuild the flat lookup slice from per-feed data in stable feed order.
+	var nets []*net.IPNet
+	for _, feed := range threatFeeds {
+		nets = append(nets, db.feedNets[feed.name]...)
+	}
+	db.badNets = nets
+
+	totalIPs := 0
+	for _, source := range db.badIPs {
+		if feedNames[source] {
+			totalIPs++
 		}
 	}
-	// Add new feed data
-	for ip, source := range newIPs {
-		if _, isPermanent := db.badIPs[ip]; !isPermanent {
-			db.badIPs[ip] = source
-		}
-	}
-	// Replace CIDR ranges entirely (fixes accumulation bug)
-	db.badNets = newNets
 	now := time.Now()
 	db.lastUpdate = now
 	db.FeedIPCount = totalIPs
-	db.FeedNetCount = totalNets
+	db.FeedNetCount = len(nets)
 	db.LastFeedUpdate = now
 	db.LastUpdated = now
 	db.mu.Unlock()
 
 	// Save timestamp
 	_ = os.WriteFile(filepath.Join(db.dbPath, "last_update"),
-		[]byte(db.lastUpdate.Format(time.RFC3339)), 0600)
+		[]byte(now.Format(time.RFC3339)), 0600)
 
-	fmt.Fprintf(os.Stderr, "threatdb: updated %d IPs + %d CIDR ranges from %d feeds\n",
-		totalIPs, totalNets, len(threatFeeds))
+	fmt.Fprintf(os.Stderr, "threatdb: updated %d IPs + %d CIDR ranges (%d/%d feeds succeeded)\n",
+		totalIPs, len(nets), len(fresh), len(threatFeeds))
 
 	return nil
 }
@@ -604,17 +635,29 @@ func (db *ThreatDB) loadFeedCache() {
 		}
 	}
 
+	if db.feedNets == nil {
+		db.feedNets = make(map[string][]*net.IPNet)
+	}
 	for _, feed := range threatFeeds {
 		cachePath := filepath.Join(db.dbPath, feed.name+".txt")
-		lines := loadLines(cachePath)
-		for _, ip := range lines {
-			db.badIPs[ip] = feed.name
+		for _, line := range loadLines(cachePath) {
+			// Cache files mix plain IPs and CIDR lines ("/" marks a
+			// CIDR); legacy IP-only files parse the same way.
+			if strings.Contains(line, "/") {
+				if _, cidr, err := net.ParseCIDR(line); err == nil {
+					db.feedNets[feed.name] = append(db.feedNets[feed.name], cidr)
+					db.badNets = append(db.badNets, cidr)
+					db.FeedNetCount++
+				}
+				continue
+			}
+			db.badIPs[line] = feed.name
+			db.FeedIPCount++
 		}
-		db.FeedIPCount += len(lines)
 	}
 
 	// Warn on startup if feeds are stale
-	if db.LastUpdated.IsZero() && db.FeedIPCount == 0 {
+	if db.LastUpdated.IsZero() && db.FeedIPCount == 0 && db.FeedNetCount == 0 {
 		fmt.Fprintf(os.Stderr, "threatdb: WARNING no threat feed data loaded, feeds have never been fetched\n")
 	} else if !db.LastUpdated.IsZero() && time.Since(db.LastUpdated) > 7*24*time.Hour {
 		fmt.Fprintf(os.Stderr, "threatdb: WARNING threat feeds are stale (last updated %s, %d days ago)\n",

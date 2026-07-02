@@ -735,3 +735,216 @@ func TestThreatDBLoadFeedCacheEmptyDir(t *testing.T) {
 		t.Errorf("FeedIPCount = %d, want 0", db.FeedIPCount)
 	}
 }
+
+// --- UpdateFeeds failure resilience + cache persistence ----------------
+
+// fakeFeedHandler serves per-path feed bodies. Paths without a body return
+// HTTP 500 so tests can simulate individual feed outages between update
+// rounds by deleting map entries.
+type fakeFeedHandler struct {
+	body map[string]string
+}
+
+func (h *fakeFeedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, ok := h.body[r.URL.Path]
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write([]byte(body))
+}
+
+// setTestThreatFeeds swaps the package feed list for two local test feeds.
+// Neither has a feedMinEntries threshold, so any entry count validates.
+func setTestThreatFeeds(t *testing.T) {
+	t.Helper()
+	old := threatFeeds
+	threatFeeds = []struct {
+		name string
+		url  string
+	}{
+		{"feed-a", "http://feeds.csm.test/a"},
+		{"feed-b", "http://feeds.csm.test/b"},
+	}
+	t.Cleanup(func() { threatFeeds = old })
+}
+
+// rewindFeedUpdateWindow backdates lastUpdate past the 20h skip window so a
+// test can run UpdateFeeds again immediately.
+func rewindFeedUpdateWindow(db *ThreatDB) time.Time {
+	rewound := time.Now().Add(-21 * time.Hour)
+	db.mu.Lock()
+	db.lastUpdate = rewound
+	db.mu.Unlock()
+	return rewound
+}
+
+func TestUpdateFeedsFailedFeedKeepsPreviousData(t *testing.T) {
+	setTestThreatFeeds(t)
+	handler := &fakeFeedHandler{body: map[string]string{
+		"/a": "203.0.113.10\n198.51.100.0/24\n",
+		"/b": "203.0.113.20\n192.0.2.0/26\n",
+	}}
+	withDefaultHTTPTransport(t, handler)
+
+	db := newTestThreatDB(t)
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 1 UpdateFeeds: %v", err)
+	}
+	if _, ok := db.Lookup("203.0.113.10"); !ok {
+		t.Fatal("round 1: feed-a IP not loaded")
+	}
+
+	// Round 2: feed-a is down, feed-b serves fresh data.
+	rewindFeedUpdateWindow(db)
+	delete(handler.body, "/a")
+	handler.body["/b"] = "203.0.113.21\n192.0.2.64/26\n"
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 2 UpdateFeeds: %v", err)
+	}
+
+	// feed-a coverage must survive its outage.
+	if src, ok := db.Lookup("203.0.113.10"); !ok || src != "feed-a" {
+		t.Errorf("failed feed's IP lost: (%q, %v), want (feed-a, true)", src, ok)
+	}
+	if _, ok := db.Lookup("198.51.100.42"); !ok {
+		t.Error("failed feed's CIDR lost")
+	}
+	// feed-b must be fully replaced by its fresh download.
+	if _, ok := db.Lookup("203.0.113.20"); ok {
+		t.Error("successful feed's stale IP not replaced")
+	}
+	if src, ok := db.Lookup("203.0.113.21"); !ok || src != "feed-b" {
+		t.Errorf("successful feed's fresh IP missing: (%q, %v)", src, ok)
+	}
+	if _, ok := db.Lookup("192.0.2.1"); ok {
+		t.Error("successful feed's stale CIDR not replaced")
+	}
+	if _, ok := db.Lookup("192.0.2.70"); !ok {
+		t.Error("successful feed's fresh CIDR missing")
+	}
+}
+
+func TestUpdateFeedsAllFailedRetainsDataAndRetries(t *testing.T) {
+	setTestThreatFeeds(t)
+	handler := &fakeFeedHandler{body: map[string]string{
+		"/a": "203.0.113.10\n198.51.100.0/24\n",
+		"/b": "203.0.113.20\n",
+	}}
+	withDefaultHTTPTransport(t, handler)
+
+	db := newTestThreatDB(t)
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 1 UpdateFeeds: %v", err)
+	}
+	tsBefore, _ := os.ReadFile(filepath.Join(db.dbPath, "last_update"))
+
+	// Round 2: total outage.
+	rewound := rewindFeedUpdateWindow(db)
+	delete(handler.body, "/a")
+	delete(handler.body, "/b")
+	if err := db.UpdateFeeds(); err == nil {
+		t.Error("expected error when every feed fails")
+	}
+
+	// Previous data fully intact.
+	if _, ok := db.Lookup("203.0.113.10"); !ok {
+		t.Error("feed-a IP lost after total feed outage")
+	}
+	if _, ok := db.Lookup("198.51.100.42"); !ok {
+		t.Error("feed-a CIDR lost after total feed outage")
+	}
+	if _, ok := db.Lookup("203.0.113.20"); !ok {
+		t.Error("feed-b IP lost after total feed outage")
+	}
+
+	// lastUpdate must not advance: the next cycle has to retry.
+	db.mu.RLock()
+	after := db.lastUpdate
+	db.mu.RUnlock()
+	if !after.Equal(rewound) {
+		t.Errorf("lastUpdate advanced on total failure: %v -> %v", rewound, after)
+	}
+	tsAfter, _ := os.ReadFile(filepath.Join(db.dbPath, "last_update"))
+	if string(tsBefore) != string(tsAfter) {
+		t.Errorf("last_update file rewritten on total failure: %q -> %q", tsBefore, tsAfter)
+	}
+
+	// Round 3: feeds recover; the retry must not sit in the 20h skip window.
+	handler.body["/a"] = "203.0.113.11\n"
+	handler.body["/b"] = "203.0.113.21\n"
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 3 UpdateFeeds: %v", err)
+	}
+	if _, ok := db.Lookup("203.0.113.11"); !ok {
+		t.Error("retry after outage did not refresh feed data (update was skipped)")
+	}
+}
+
+func TestFeedCacheNetsSurviveRestart(t *testing.T) {
+	setTestThreatFeeds(t)
+	handler := &fakeFeedHandler{body: map[string]string{
+		"/a": "203.0.113.10\n198.51.100.0/24\n2001:db8:bad::/48\n",
+		"/b": "203.0.113.20\n",
+	}}
+	withDefaultHTTPTransport(t, handler)
+
+	dir := t.TempDir()
+	db := &ThreatDB{badIPs: make(map[string]string), whitelist: make(map[string]bool), dbPath: dir}
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("UpdateFeeds: %v", err)
+	}
+
+	// Simulate a daemon restart: fresh DB loading the same cache directory.
+	db2 := &ThreatDB{badIPs: make(map[string]string), whitelist: make(map[string]bool), dbPath: dir}
+	db2.loadFeedCache()
+
+	if src, ok := db2.Lookup("203.0.113.10"); !ok || src != "feed-a" {
+		t.Errorf("cached IP not reloaded: (%q, %v)", src, ok)
+	}
+	if _, ok := db2.Lookup("198.51.100.42"); !ok {
+		t.Error("cached IPv4 CIDR not reloaded after restart")
+	}
+	if _, ok := db2.Lookup("2001:db8:bad::1"); !ok {
+		t.Error("cached IPv6 CIDR not reloaded after restart")
+	}
+	if db2.FeedNetCount != 2 {
+		t.Errorf("FeedNetCount = %d, want 2", db2.FeedNetCount)
+	}
+	if db2.FeedIPCount != 2 {
+		t.Errorf("FeedIPCount = %d, want 2", db2.FeedIPCount)
+	}
+	if _, ok := db2.badIPs["198.51.100.0/24"]; ok {
+		t.Error("CIDR line leaked into badIPs as literal key")
+	}
+
+	// A feed outage after restart must still retain the cache-loaded nets.
+	rewindFeedUpdateWindow(db2)
+	delete(handler.body, "/a")
+	if err := db2.UpdateFeeds(); err != nil {
+		t.Fatalf("post-restart UpdateFeeds: %v", err)
+	}
+	if _, ok := db2.Lookup("198.51.100.42"); !ok {
+		t.Error("cache-loaded CIDR lost when its feed failed post-restart")
+	}
+}
+
+func TestLoadFeedCacheLegacyIPOnlyFile(t *testing.T) {
+	setTestThreatFeeds(t)
+	dir := t.TempDir()
+	// Old-format cache: plain IP lines only, no CIDR entries.
+	saveLines(filepath.Join(dir, "feed-a.txt"), []string{"203.0.113.50", "203.0.113.51"})
+
+	db := &ThreatDB{badIPs: make(map[string]string), dbPath: dir}
+	db.loadFeedCache()
+
+	if src, ok := db.Lookup("203.0.113.50"); !ok || src != "feed-a" {
+		t.Errorf("legacy cached IP not loaded: (%q, %v)", src, ok)
+	}
+	if db.FeedIPCount != 2 {
+		t.Errorf("FeedIPCount = %d, want 2", db.FeedIPCount)
+	}
+	if db.FeedNetCount != 0 || len(db.badNets) != 0 {
+		t.Errorf("legacy cache should produce no nets, got count=%d nets=%v", db.FeedNetCount, db.badNets)
+	}
+}

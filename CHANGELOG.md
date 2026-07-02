@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed threat-feed download no longer wipes that feed's previously loaded IPs and CIDR ranges, and a cycle where every feed fails now retries next cycle instead of serving no feed data for up to 20 hours. Feed CIDR ranges are also cached to disk now, so they survive a daemon restart.
 - csm restore now refuses to run while the daemon is up, matching csm store import. Restoring over the live state database corrupted both the running daemon's state and the restored copy.
 - Blocked-IP alert suppression matched IPs by substring, so a blocked address could silently swallow reputation alerts for unrelated look-alike IPs (1.2.3.4 vs 1.2.3.45). Matching is now exact and notation-canonical, and messages without a parseable IP are never suppressed.
 - WordPress plugin checks now launch wp-cli with runuser instead of su, so under the hardened service unit they no longer flood the journal with read-only lastlog errors and no longer record CSM's internal scans as user logins.
