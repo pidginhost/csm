@@ -125,10 +125,13 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 	// evidence: honouring them here is what turned every temporary
 	// auto-block into a forever re-flag loop. The leftover row is
 	// removed by the periodic prune; until then, fall through to the
-	// CIDR ranges.
+	// feed data and CIDR ranges.
 	if source, ok := db.badIPs[ip]; ok {
 		if exp, hasExp := db.badIPExpiry[ip]; !hasExp || time.Now().Before(exp) {
 			return source, true
+		}
+		if feed, ok := db.feedSourceLocked(ip); ok {
+			return feed, true
 		}
 	}
 

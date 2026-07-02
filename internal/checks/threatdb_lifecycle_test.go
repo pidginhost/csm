@@ -27,6 +27,20 @@ func TestThreatDBLookupIgnoresLapsedTempEntry(t *testing.T) {
 	}
 }
 
+func TestThreatDBLookupFallsBackToFeedWhenTempEntryLapses(t *testing.T) {
+	db := newTestThreatDB(t)
+	db.badIPs["192.0.2.41"] = "CSM auto-block: web attack"
+	db.badIPExpiry["192.0.2.41"] = time.Now().Add(-time.Minute)
+	db.feedIPs = map[string]map[string]struct{}{
+		"cins-army": {"192.0.2.41": {}},
+	}
+
+	src, ok := db.Lookup("192.0.2.41")
+	if !ok || src != "cins-army" {
+		t.Fatalf("Lookup with lapsed temp plus feed = (%q, %v), want (cins-army, true)", src, ok)
+	}
+}
+
 func TestThreatDBAddTemporaryPersistsExpiringEntry(t *testing.T) {
 	withTestThreatStore(t)
 	db := newTestThreatDB(t)
