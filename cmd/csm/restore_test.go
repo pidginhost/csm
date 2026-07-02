@@ -3,11 +3,126 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// A live daemon holds state/csm.db open and mmap'd; bbolt's flock is
+// advisory, so an O_TRUNC extraction would corrupt both the live and
+// the restored state. The guarded entry point used by `csm restore`
+// must refuse before touching any destination file, mirroring
+// `csm store import`.
+func TestRestoreArchiveGuarded_RefusesWhenDaemonLive(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	for _, p := range []string{src + "/conf.d", src + "/state", dst + "/state"} {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Sentinel standing in for the daemon's open database file.
+	if err := os.WriteFile(dst+"/state/csm.db", []byte("LIVE-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := WriteBackupArchive(archive, BackupSources{
+		ConfigPath: src + "/csm.yaml", ConfDir: src + "/conf.d", StateDir: src + "/state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fake live daemon: isDaemonLive dials controlSocketPath, so a bare
+	// listener is all "live" means for the refusal check.
+	sock := shortSockPath(t)
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listening on %s: %v", sock, err)
+	}
+	defer l.Close()
+	saved := controlSocketPath
+	controlSocketPath = sock
+	defer func() { controlSocketPath = saved }()
+
+	err = restoreBackupArchiveGuarded(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	})
+	if err == nil {
+		t.Fatal("expected refusal while daemon is live, got nil")
+	}
+	if !strings.Contains(err.Error(), "daemon is running") {
+		t.Fatalf("refusal error should say the daemon is running, got %v", err)
+	}
+
+	got, readErr := os.ReadFile(dst + "/state/csm.db")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "LIVE-DB" {
+		t.Fatalf("live db was touched despite refusal, got %q", got)
+	}
+	if _, statErr := os.Stat(dst + "/csm.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("config written despite refusal: %v", statErr)
+	}
+	if _, statErr := os.Stat(dst + "/conf.d"); !os.IsNotExist(statErr) {
+		t.Fatalf("conf.d created despite refusal: %v", statErr)
+	}
+}
+
+func TestRestoreArchiveGuarded_ProceedsWhenDaemonDown(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	for _, p := range []string{src + "/conf.d", src + "/state"} {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(src+"/csm.yaml", []byte("h: from-archive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src+"/state/csm.db", []byte("ARCHIVE-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := WriteBackupArchive(archive, BackupSources{
+		ConfigPath: src + "/csm.yaml", ConfDir: src + "/conf.d", StateDir: src + "/state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	saved := controlSocketPath
+	controlSocketPath = shortSockPath(t) // path exists only as a string; no listener
+	defer func() { controlSocketPath = saved }()
+
+	if err := restoreBackupArchiveGuarded(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	}); err != nil {
+		t.Fatalf("restore with stopped daemon should proceed: %v", err)
+	}
+
+	got, err := os.ReadFile(dst + "/state/csm.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ARCHIVE-DB" {
+		t.Fatalf("state not restored, got %q", got)
+	}
+	if _, err := os.Stat(dst + "/csm.yaml"); err != nil {
+		t.Fatalf("config not restored: %v", err)
+	}
+}
 
 func TestRestoreArchive_RoundTrip(t *testing.T) {
 	src := t.TempDir()

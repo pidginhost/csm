@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -185,6 +186,20 @@ func unsafeArchiveName(name string) bool {
 	return false
 }
 
+// errRestoreDaemonLive mirrors `csm store import`'s refusal: bbolt's
+// flock is advisory, so O_TRUNC-extracting state/csm.db under a live
+// daemon corrupts both the mmap'd live state and the restored copy.
+var errRestoreDaemonLive = errors.New("daemon is running; stop it first (systemctl stop csm)")
+
+// restoreBackupArchiveGuarded refuses while the daemon is live -- before
+// the archive touches any destination file -- then extracts.
+func restoreBackupArchiveGuarded(archive string, dst BackupSources) error {
+	if isDaemonLive() {
+		return errRestoreDaemonLive
+	}
+	return RestoreBackupArchive(archive, dst)
+}
+
 func runRestore() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "Usage: csm restore <archive.tar.gz>")
@@ -224,9 +239,14 @@ func runRestore() {
 		ConfDir:    cfg.ConfigDir,
 		StateDir:   cfg.StatePath,
 	}
-	if err := RestoreBackupArchive(archive, dst); err != nil {
-		fmt.Fprintf(os.Stderr, "restore failed: %v\n", err)
+	if err := restoreBackupArchiveGuarded(archive, dst); err != nil {
+		// Keep the refusal wording aligned with `csm store import`.
+		if errors.Is(err, errRestoreDaemonLive) {
+			fmt.Fprintf(os.Stderr, "csm restore: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "restore failed: %v\n", err)
+		}
 		os.Exit(1)
 	}
-	fmt.Printf("restored from %s - restart daemon: systemctl restart csm.service\n", archive)
+	fmt.Printf("restored from %s - start daemon: systemctl start csm.service\n", archive)
 }
