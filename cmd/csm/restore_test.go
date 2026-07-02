@@ -51,7 +51,7 @@ func TestRestoreArchiveGuarded_RefusesWhenDaemonLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listening on %s: %v", sock, err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	saved := controlSocketPath
 	controlSocketPath = sock
 	defer func() { controlSocketPath = saved }()

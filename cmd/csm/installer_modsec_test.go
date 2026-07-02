@@ -105,7 +105,7 @@ func TestDeployModSecRulesUpToDateDoesNotRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(dest, past, past); err != nil {
+	if err = os.Chtimes(dest, past, past); err != nil {
 		t.Fatal(err)
 	}
 
