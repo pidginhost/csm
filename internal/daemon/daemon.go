@@ -1592,9 +1592,10 @@ func (d *Daemon) heartbeat() {
 				d.fwEngine.CleanExpiredAllows()
 				d.fwEngine.CleanExpiredSubnets()
 			}
-			// Clean expired temporary whitelist entries
+			// Clean expired temporary whitelist and threat entries
 			if tdb := checks.GetThreatDB(); tdb != nil {
 				tdb.PruneExpiredWhitelist()
+				tdb.PruneExpiredThreats()
 			}
 		}
 	}

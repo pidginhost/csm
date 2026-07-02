@@ -215,6 +215,7 @@ func newTestThreatDB(t *testing.T) *ThreatDB {
 	dir := t.TempDir()
 	return &ThreatDB{
 		badIPs:        make(map[string]string),
+		badIPExpiry:   make(map[string]time.Time),
 		whitelist:     make(map[string]bool),
 		whitelistMeta: make(map[string]*whitelistEntry),
 		dbPath:        dir,

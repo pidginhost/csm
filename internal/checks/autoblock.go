@@ -461,9 +461,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		state.BlocksThisHour++
 
-		// Add to permanent local threat database
+		// Record in the local threat DB with the same lifetime as the
+		// firewall block. A permanent record here re-flags the IP via
+		// ip_reputation on every access after the temp block lapses and
+		// re-blocks it forever (permablock loop).
 		if db := GetThreatDB(); db != nil {
-			db.AddPermanent(ip, reason)
+			db.AddTemporary(ip, reason, expiry)
 		}
 
 		state.IPs = append(state.IPs, blockedIP{

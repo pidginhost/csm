@@ -163,7 +163,15 @@ func (db *DB) migrateThreatDB(statePath string) error {
 				reason = strings.TrimSpace(parts[1])
 			}
 			if ip != "" {
-				if err := db.AddPermanentBlock(ip, reason); err != nil {
+				// Migrated rows keep an empty Source so Expired can still
+				// classify them by reason text: the flat file mixes operator
+				// adds with old temp auto-block writes, and stamping them all
+				// as operator would make the auto-block ones permanent.
+				if err := db.putThreatEntry(PermanentBlockEntry{
+					IP:        ip,
+					Reason:    reason,
+					BlockedAt: time.Now(),
+				}); err != nil {
 					return err
 				}
 				count++

@@ -2,16 +2,60 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
-// PermanentBlockEntry represents an IP permanently blocked by the threat system.
+// Threat entry sources. Rows written before source tagging existed carry
+// an empty Source; Expired classifies those by their reason text.
+const (
+	ThreatSourceOperator  = "operator"
+	ThreatSourceAutoBlock = "autoblock"
+)
+
+// legacyOperatorReasonPrefixes identifies pre-source-tagging rows added by a
+// human. The Web UI manual/bulk block handlers are the only operator-facing
+// writers this bucket ever had and they always used these exact reason
+// strings; flat-file migration appended a "[YYYY-MM-DD]" suffix, hence the
+// prefix match. Every other legacy row came from the temporary auto-block
+// path, which historically wrote no-expiry rows that re-flagged the IP on
+// every access after the block lapsed (permablock loop).
+var legacyOperatorReasonPrefixes = []string{
+	"Manually blocked via CSM Web UI",
+	"Bulk blocked via CSM Web UI",
+}
+
+// PermanentBlockEntry represents an IP blocked by the threat system.
+// A zero ExpiresAt with a non-empty Source means the row never expires.
 type PermanentBlockEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
+	Source    string    `json:"source,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// Expired reports whether the entry should no longer count as a live
+// threat. Legacy rows (no source, no expiry) that do not match a known
+// operator reason are treated as expired: they were written by the old
+// temporary auto-block path and keeping them alive re-creates the
+// permablock loop on upgraded hosts.
+func (e PermanentBlockEntry) Expired(now time.Time) bool {
+	if !e.ExpiresAt.IsZero() {
+		return !e.ExpiresAt.After(now)
+	}
+	if e.Source != "" {
+		return false
+	}
+	for _, prefix := range legacyOperatorReasonPrefixes {
+		if strings.HasPrefix(e.Reason, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 // WhitelistEntry represents an IP that should bypass threat checks.
@@ -21,24 +65,80 @@ type WhitelistEntry struct {
 	Permanent bool      `json:"permanent"`
 }
 
-// AddPermanentBlock adds an IP to the permanent block list.
-// Only increments threats:count if the key is new.
+// AddPermanentBlock adds an IP to the block list as a never-expiring
+// operator entry. Only increments threats:count if the key is new.
+// Overwrites any temp entry for the same IP: an explicit operator block
+// upgrades it to permanent.
 func (db *DB) AddPermanentBlock(ip, reason string) error {
+	return db.putThreatEntry(PermanentBlockEntry{
+		IP:        ip,
+		Reason:    reason,
+		BlockedAt: time.Now(),
+		Source:    ThreatSourceOperator,
+	})
+}
+
+// AddTempBlock records an auto-blocked IP with an expiry matching the
+// firewall block, so the entry lapses together with the block instead of
+// flagging the IP forever. A zero expiresAt mirrors a never-expiring block.
+// Never downgrades an existing permanent row, and never shortens a longer
+// temp expiry already on file. Only increments threats:count if the key is
+// new.
+func (db *DB) AddTempBlock(ip, reason string, expiresAt time.Time) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))
-
-		isNew := b.Get([]byte(ip)) == nil
 
 		entry := PermanentBlockEntry{
 			IP:        ip,
 			Reason:    reason,
 			BlockedAt: time.Now(),
+			Source:    ThreatSourceAutoBlock,
+			ExpiresAt: expiresAt,
 		}
+
+		existing := b.Get([]byte(ip))
+		if existing != nil {
+			var cur PermanentBlockEntry
+			if json.Unmarshal(existing, &cur) == nil && !cur.Expired(time.Now()) {
+				if cur.ExpiresAt.IsZero() {
+					return nil
+				}
+				if !expiresAt.IsZero() && cur.ExpiresAt.After(expiresAt) {
+					return nil
+				}
+			}
+		}
+
 		val, err := json.Marshal(entry)
 		if err != nil {
 			return err
 		}
 		if err := b.Put([]byte(ip), val); err != nil {
+			return err
+		}
+		if existing == nil {
+			return incrCounter(tx, "threats:count", 1)
+		}
+		return nil
+	})
+}
+
+// putThreatEntry writes an entry as-is. Only increments threats:count if
+// the key is new. Migration uses it directly so flat-file rows keep their
+// empty Source and stay subject to legacy classification in Expired;
+// routing them through AddPermanentBlock would stamp them as operator rows
+// and bless historical auto-block poison as permanent.
+func (db *DB) putThreatEntry(entry PermanentBlockEntry) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("threats"))
+
+		isNew := b.Get([]byte(entry.IP)) == nil
+
+		val, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(entry.IP), val); err != nil {
 			return err
 		}
 
@@ -47,6 +147,58 @@ func (db *DB) AddPermanentBlock(ip, reason string) error {
 		}
 		return nil
 	})
+}
+
+// PruneExpiredThreats deletes threat entries whose lifetime has lapsed,
+// including legacy no-source auto-block rows (see Expired). Returns the
+// count removed. Collect-then-delete because bbolt forbids mutation during
+// ForEach iteration.
+func (db *DB) PruneExpiredThreats() int {
+	var removed int
+	now := time.Now()
+
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("threats"))
+
+		var toDelete [][]byte
+		_ = b.ForEach(func(k, v []byte) error {
+			var entry PermanentBlockEntry
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
+			}
+			if entry.Expired(now) {
+				keyCopy := make([]byte, len(k))
+				copy(keyCopy, k)
+				toDelete = append(toDelete, keyCopy)
+			}
+			return nil
+		})
+
+		for _, k := range toDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+			removed++
+		}
+
+		if removed == 0 {
+			return nil
+		}
+		// Clamp instead of blind decrement: a bulk prune of legacy rows
+		// surfaces any historical counter drift at scale, and the counter
+		// must never go negative.
+		current := 0
+		if v := tx.Bucket([]byte("meta")).Get([]byte("threats:count")); v != nil {
+			_, _ = fmt.Sscanf(string(v), "%d", &current)
+		}
+		newCount := current - removed
+		if newCount < 0 {
+			newCount = 0
+		}
+		return setCounter(tx, "threats:count", newCount)
+	})
+
+	return removed
 }
 
 // RemovePermanentBlock removes an IP from the permanent block list and decrements the count.
@@ -85,7 +237,8 @@ func (db *DB) GetPermanentBlock(ip string) (PermanentBlockEntry, bool) {
 	return entry, found
 }
 
-// AllPermanentBlocks returns all entries in the permanent block list.
+// AllPermanentBlocks returns all entries in the permanent block list
+// (including expired ones - callers filter via Expired).
 func (db *DB) AllPermanentBlocks() []PermanentBlockEntry {
 	var entries []PermanentBlockEntry
 

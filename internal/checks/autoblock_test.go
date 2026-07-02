@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func countRateLimitWarnings(actions []alert.Finding) int {
@@ -109,6 +110,56 @@ func (l *staticChallengeIPList) Remove(ip string) {
 
 func (l *staticChallengeIPList) Contains(ip string) bool {
 	return l.ips[ip]
+}
+
+// TestAutoBlockIPs_ThreatEntryExpiresWithBlock is the structural regression
+// test for the production permablock loop: the local threat DB record for a
+// temporary auto-block must lapse with the firewall block instead of marking
+// the IP permanently malicious (which re-flags it on every later access and
+// re-blocks it forever).
+func TestAutoBlockIPs_ThreatEntryExpiresWithBlock(t *testing.T) {
+	withTestThreatStore(t)
+	restore := SetGlobalThreatDBForTest(t.TempDir())
+	t.Cleanup(restore)
+
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "1h"
+	setAutoResponseLive(cfg)
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	before := time.Now()
+	AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:     "wp_login_bruteforce",
+			Message:   "WordPress brute force from 192.0.2.55",
+			Timestamp: time.Now(),
+		},
+	})
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "192.0.2.55" {
+		t.Fatalf("blocked IPs = %v, want [192.0.2.55]", blocker.blocked)
+	}
+
+	entry, found := store.Global().GetPermanentBlock("192.0.2.55")
+	if !found {
+		t.Fatal("threat DB entry missing after auto-block")
+	}
+	if entry.Source != store.ThreatSourceAutoBlock {
+		t.Fatalf("Source = %q, want %q", entry.Source, store.ThreatSourceAutoBlock)
+	}
+	if entry.ExpiresAt.Before(before.Add(50*time.Minute)) || entry.ExpiresAt.After(before.Add(70*time.Minute)) {
+		t.Fatalf("ExpiresAt = %v, want ~1h after %v (must match block expiry)", entry.ExpiresAt, before)
+	}
+	if entry.Expired(before) {
+		t.Fatal("fresh temp entry reported expired")
+	}
 }
 
 func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {

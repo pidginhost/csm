@@ -23,6 +23,7 @@ import (
 type ThreatDB struct {
 	mu            sync.RWMutex
 	badIPs        map[string]string              // ip -> source/reason
+	badIPExpiry   map[string]time.Time           // ip -> temp-entry expiry; absent = permanent
 	badNets       []*net.IPNet                   // flat CIDR list for Lookup, rebuilt from feedNets
 	feedIPs       map[string]map[string]struct{} // feed name -> IPs, so overlapping feeds retain ownership
 	feedNets      map[string][]*net.IPNet        // feed name -> CIDRs, so a failed feed keeps coverage
@@ -72,9 +73,10 @@ func InitThreatDB(statePath string, whitelistIPs []string) *ThreatDB {
 		}
 
 		db := &ThreatDB{
-			badIPs:    make(map[string]string),
-			whitelist: wl,
-			dbPath:    filepath.Join(statePath, "threat_db"),
+			badIPs:      make(map[string]string),
+			badIPExpiry: make(map[string]time.Time),
+			whitelist:   wl,
+			dbPath:      filepath.Join(statePath, "threat_db"),
 		}
 		_ = os.MkdirAll(db.dbPath, 0700)
 		db.loadPermanentBlocklist()
@@ -97,9 +99,10 @@ func GetThreatDB() *ThreatDB {
 func SetGlobalThreatDBForTest(statePath string) func() {
 	prev := globalThreatDB
 	db := &ThreatDB{
-		badIPs:    make(map[string]string),
-		whitelist: make(map[string]bool),
-		dbPath:    filepath.Join(statePath, "threat_db"),
+		badIPs:      make(map[string]string),
+		badIPExpiry: make(map[string]time.Time),
+		whitelist:   make(map[string]bool),
+		dbPath:      filepath.Join(statePath, "threat_db"),
 	}
 	_ = os.MkdirAll(db.dbPath, 0700)
 	globalThreatDB = db
@@ -118,9 +121,15 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 		return "", false
 	}
 
-	// Check exact IP match
+	// Check exact IP match. Lapsed temp entries no longer count as
+	// evidence: honouring them here is what turned every temporary
+	// auto-block into a forever re-flag loop. The leftover row is
+	// removed by the periodic prune; until then, fall through to the
+	// CIDR ranges.
 	if source, ok := db.badIPs[ip]; ok {
-		return source, true
+		if exp, hasExp := db.badIPExpiry[ip]; !hasExp || time.Now().Before(exp) {
+			return source, true
+		}
 	}
 
 	// Check CIDR ranges (supports both IPv4 and IPv6)
@@ -137,15 +146,19 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 }
 
 // AddPermanent adds an IP to the permanent local blocklist.
-// Called when CSM auto-blocks an IP - persists across restarts.
+// Called for deliberate operator blocks - persists across restarts and
+// never expires. Upgrades an existing temp entry to permanent.
 func (db *ThreatDB) AddPermanent(ip, reason string) {
 	db.mu.Lock()
 	_, exists := db.badIPs[ip]
+	_, wasTemp := db.badIPExpiry[ip]
 	db.badIPs[ip] = reason
+	delete(db.badIPExpiry, ip)
 	db.mu.Unlock()
 
-	// Only persist if this is a new IP (dedup)
-	if exists {
+	// Only persist if this is a new IP (dedup). A temp entry upgrading to
+	// permanent must still persist, or the stored row would keep its expiry.
+	if exists && !wasTemp {
 		return
 	}
 
@@ -163,10 +176,54 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 	fmt.Fprintf(f, "%s # %s [%s]\n", ip, reason, time.Now().Format("2006-01-02"))
 }
 
+// AddTemporary records an auto-blocked IP for the lifetime of its firewall
+// block. Unlike AddPermanent the entry lapses with the block: a permanent
+// record turned every temporary auto-block into a forever "known malicious
+// IP" that re-flagged (and re-blocked) the address on each later access.
+// ttl <= 0 mirrors a never-expiring block.
+func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
+	var expiresAt time.Time
+	if ttl > 0 {
+		expiresAt = time.Now().Add(ttl)
+	}
+
+	db.mu.Lock()
+	if _, exists := db.badIPs[ip]; exists {
+		cur, isTemp := db.badIPExpiry[ip]
+		if !isTemp {
+			// Permanent or feed evidence outlives any temp block; a temp
+			// write must not attach an expiry that later hides it.
+			db.mu.Unlock()
+			return
+		}
+		if time.Now().Before(cur) && !expiresAt.IsZero() && cur.After(expiresAt) {
+			// Keep the longer live window; re-blocks extend, never truncate.
+			db.mu.Unlock()
+			return
+		}
+	}
+	db.badIPs[ip] = reason
+	if expiresAt.IsZero() {
+		delete(db.badIPExpiry, ip)
+	} else {
+		db.badIPExpiry[ip] = expiresAt
+	}
+	db.mu.Unlock()
+
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.AddTempBlock(ip, reason, expiresAt)
+	}
+	// Flat-file fallback (pre-migration) deliberately does not persist:
+	// permanent.txt has no expiry column, so a line there would recreate
+	// the forever-row this method exists to avoid. The firewall keeps the
+	// block itself across restarts.
+}
+
 // RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
 func (db *ThreatDB) RemovePermanent(ip string) {
 	db.mu.Lock()
 	delete(db.badIPs, ip)
+	delete(db.badIPExpiry, ip)
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {
@@ -221,6 +278,7 @@ func (db *ThreatDB) addWhitelistEntry(ip string, expiresAt time.Time) {
 	}
 	db.whitelistMeta[ip] = &whitelistEntry{ExpiresAt: expiresAt}
 	delete(db.badIPs, ip)
+	delete(db.badIPExpiry, ip)
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {
@@ -272,6 +330,56 @@ func (db *ThreatDB) PruneExpiredWhitelist() int {
 			time.Now().Format("2006-01-02 15:04:05"), pruned)
 	}
 	return pruned
+}
+
+// PruneExpiredThreats removes threat entries whose temp lifetime has
+// lapsed, in memory and in the persistent store (which also drops legacy
+// no-source auto-block rows written before expiry tagging existed).
+// Called periodically from the daemon heartbeat; this is by-design
+// lifecycle cleanup, not data retention, so it does not sit behind the
+// opt-in retention sweeps.
+func (db *ThreatDB) PruneExpiredThreats() int {
+	now := time.Now()
+	pruned := 0
+	db.mu.Lock()
+	for ip, exp := range db.badIPExpiry {
+		if now.Before(exp) {
+			continue
+		}
+		delete(db.badIPExpiry, ip)
+		// A feed may list the IP independently; hand the entry back to
+		// the feed instead of dropping it until the next feed rebuild.
+		if feed, ok := db.feedSourceLocked(ip); ok {
+			db.badIPs[ip] = feed
+		} else {
+			delete(db.badIPs, ip)
+		}
+		pruned++
+	}
+	db.mu.Unlock()
+
+	removed := pruned
+	if sdb := store.Global(); sdb != nil {
+		// The store count is authoritative: it also covers rows never
+		// loaded into memory (expired rows skipped at startup and legacy
+		// auto-block rows).
+		removed = sdb.PruneExpiredThreats()
+	}
+	if removed > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] Pruned %d expired threat entries\n",
+			time.Now().Format("2006-01-02 15:04:05"), removed)
+	}
+	return removed
+}
+
+// feedSourceLocked reports which feed lists ip, if any. Caller holds db.mu.
+func (db *ThreatDB) feedSourceLocked(ip string) (string, bool) {
+	for _, feed := range threatFeeds {
+		if _, ok := db.feedIPs[feed.name][ip]; ok {
+			return feed.name, true
+		}
+	}
+	return "", false
 }
 
 // WhitelistInfo returns all whitelisted IPs with their expiry info.
@@ -551,10 +659,23 @@ func (db *ThreatDB) UpdateFeeds() error {
 func (db *ThreatDB) loadPermanentBlocklist() {
 	if sdb := store.Global(); sdb != nil {
 		blocks := sdb.AllPermanentBlocks()
+		now := time.Now()
+		live := 0
 		for _, b := range blocks {
+			// Expired rows stay out of memory, including legacy no-source
+			// auto-block rows (store classifies them in Expired): loading
+			// them would resume the permablock loop on upgraded hosts. The
+			// periodic prune deletes them from disk.
+			if b.Expired(now) {
+				continue
+			}
 			db.badIPs[b.IP] = "permanent-blocklist"
+			if !b.ExpiresAt.IsZero() {
+				db.badIPExpiry[b.IP] = b.ExpiresAt
+			}
+			live++
 		}
-		db.PermanentCount = len(blocks)
+		db.PermanentCount = live
 		return
 	}
 
