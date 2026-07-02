@@ -505,9 +505,10 @@ func checkPerAccountBypass() []string {
 // comment of the rules file itself, which is all that pre-delimiter CSM
 // versions wrote; it locates those deployments for upgrade.
 const (
-	vpBeginMarker  = "# BEGIN CSM Custom ModSecurity Rules (managed by CSM - do not edit inside this block)"
-	vpEndMarker    = "# END CSM Custom ModSecurity Rules"
-	vpLegacyMarker = "CSM Custom ModSecurity Rules"
+	vpBeginMarker            = "# BEGIN CSM Custom ModSecurity Rules (managed by CSM - do not edit inside this block)"
+	vpEndMarker              = "# END CSM Custom ModSecurity Rules"
+	vpLegacyMarker           = "# CSM Custom ModSecurity Rules"
+	vpOverridesIncludeMarker = "# CSM overrides - managed by CSM rule management"
 )
 
 // deployVirtualPatches ensures CSM's custom ModSec rules are installed.
@@ -600,7 +601,7 @@ func mergeVPSection(existing, section []byte) (merged []byte, upToDate bool) {
 		return section, false
 	}
 
-	if begin := markerLineStart(existing, vpBeginMarker); begin >= 0 {
+	if begin, _, ok := markerLineBounds(existing, vpBeginMarker); ok {
 		if end := vpSectionEnd(existing[begin:]); end >= 0 {
 			if bytes.Equal(existing[begin:begin+end], section) {
 				return nil, true
@@ -610,17 +611,26 @@ func mergeVPSection(existing, section []byte) (merged []byte, upToDate bool) {
 			merged = append(merged, existing[begin+end:]...)
 			return merged, false
 		}
+
+		// A begin marker without an end marker is a malformed CSM block.
+		// Replace from the exact begin line so the next cycle is delimited
+		// again instead of falling through to the legacy header inside it.
+		blockEnd := vpBlockEndBeforePreservedTail(existing, begin)
+		merged = append(merged, existing[:begin]...)
+		merged = append(merged, section...)
+		merged = append(merged, existing[blockEnd:]...)
+		return merged, false
 	}
 
-	if legacy := markerLineStart(existing, vpLegacyMarker); legacy >= 0 {
+	if legacy, _, ok := markerLineBounds(existing, vpLegacyMarker); ok {
 		// Pre-delimiter CSM versions appended the raw rules file, so the
-		// CSM content starts at this header line and runs to EOF.
-		// Replacing from here to EOF upgrades the deployment to the
-		// delimited format while keeping the operator rules that precede
-		// the block; earlier versions overwrote the whole file here,
-		// destroying operator content.
+		// CSM content starts at this exact header line. Installer and
+		// daemon deploys appended the overrides Include after the raw
+		// rules, so preserve that tail when it is present.
+		legacyEnd := vpBlockEndBeforePreservedTail(existing, legacy)
 		merged = append(merged, existing[:legacy]...)
 		merged = append(merged, section...)
+		merged = append(merged, existing[legacyEnd:]...)
 		return merged, false
 	}
 
@@ -635,31 +645,51 @@ func mergeVPSection(existing, section []byte) (merged []byte, upToDate bool) {
 	return merged, false
 }
 
-// markerLineStart returns the offset of the first byte of the line
-// containing marker, or -1 when the marker is absent.
-func markerLineStart(data []byte, marker string) int {
-	idx := bytes.Index(data, []byte(marker))
-	if idx < 0 {
-		return -1
+func vpBlockEndBeforePreservedTail(existing []byte, blockStart int) int {
+	blockEnd := len(existing)
+	if tail, _, ok := markerLineBounds(existing[blockStart:], vpOverridesIncludeMarker); ok && tail > 0 {
+		blockEnd = blockStart + tail
+		if existing[blockEnd-1] == '\n' {
+			blockEnd--
+		}
 	}
-	if nl := bytes.LastIndexByte(data[:idx], '\n'); nl >= 0 {
-		return nl + 1
+	return blockEnd
+}
+
+// markerLineBounds returns the start offset and end offset (including the
+// trailing newline when present) for an exact marker line. Matching the
+// whole line keeps operator comments that merely mention marker text from
+// being treated as CSM-owned content.
+func markerLineBounds(data []byte, marker string) (start, end int, ok bool) {
+	markerBytes := []byte(marker)
+	for start < len(data) {
+		lineEnd := bytes.IndexByte(data[start:], '\n')
+		end = len(data)
+		next := len(data)
+		if lineEnd >= 0 {
+			end = start + lineEnd
+			next = end + 1
+		}
+		line := data[start:end]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		if bytes.Equal(line, markerBytes) {
+			return start, next, true
+		}
+		start = next
 	}
-	return 0
+	return 0, 0, false
 }
 
 // vpSectionEnd returns the offset just past the end-marker line (its
 // trailing newline included when present), or -1 when there is no end
 // marker. data must start at the section's begin line.
 func vpSectionEnd(data []byte) int {
-	idx := bytes.Index(data, []byte(vpEndMarker))
-	if idx < 0 {
-		return -1
+	if _, end, ok := markerLineBounds(data, vpEndMarker); ok {
+		return end
 	}
-	if nl := bytes.IndexByte(data[idx:], '\n'); nl >= 0 {
-		return idx + nl + 1
-	}
-	return len(data)
+	return -1
 }
 
 // autoUpdateWAFRules triggers ModSecurity vendor rule updates via whmapi1.

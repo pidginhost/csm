@@ -208,6 +208,55 @@ func TestMergeModSecUserConfSection_MigratesLegacyAppend(t *testing.T) {
 	}
 }
 
+func TestMergeModSecUserConfSection_PreservesOverridesIncludeOnLegacyMigration(t *testing.T) {
+	after := "\n# CSM overrides - managed by CSM rule management\n" +
+		"Include /etc/apache2/conf.d/modsec/modsec2.csm-overrides.conf\n"
+	existing := []byte(vpTestOperator + "\n\n" + vpTestSrcV1 + after)
+
+	merged, changed := MergeModSecUserConfSection(existing, []byte(vpTestSrcV2))
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := vpTestOperator + "\n\n" + vpTestSection(vpTestSrcV2) + after
+	if string(merged) != want {
+		t.Errorf("merged = %q, want %q", merged, want)
+	}
+}
+
+func TestMergeModSecUserConfSection_RepairsMalformedDelimitedBlockFromBegin(t *testing.T) {
+	after := "\n# CSM overrides - managed by CSM rule management\n" +
+		"Include /etc/apache2/conf.d/modsec/modsec2.csm-overrides.conf\n"
+	existing := []byte(vpTestOperator + "\n" + vpTestBegin + "\n" + vpTestSrcV1 + after)
+
+	merged, changed := MergeModSecUserConfSection(existing, []byte(vpTestSrcV2))
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := vpTestOperator + "\n" + vpTestSection(vpTestSrcV2) + after
+	if string(merged) != want {
+		t.Errorf("merged = %q, want %q", merged, want)
+	}
+	if strings.Count(string(merged), vpTestBegin) != 1 {
+		t.Errorf("begin markers = %d, want 1; merged:\n%s", strings.Count(string(merged), vpTestBegin), merged)
+	}
+}
+
+func TestMergeModSecUserConfSection_IgnoresMarkerTextInsideOperatorLine(t *testing.T) {
+	existing := []byte("# Operator note mentions " + vpTestBegin + "\n" + vpTestOperator)
+
+	merged, changed := MergeModSecUserConfSection(existing, []byte(vpTestSrcV2))
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := string(existing) + "\n" + vpTestSection(vpTestSrcV2)
+	if string(merged) != want {
+		t.Errorf("merged = %q, want %q", merged, want)
+	}
+}
+
 // When the source rules change, only the bytes between the markers move;
 // operator content both before and after the section is preserved exactly.
 func TestDeployVirtualPatches_ReplacesDelimitedSectionInPlace(t *testing.T) {
