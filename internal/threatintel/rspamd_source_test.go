@@ -71,10 +71,10 @@ func repeatRspamdRows(n int, ip, action string, score float64, unixTime float64)
 }
 
 // TestRspamdSource_ScoresOnlySpamVerdicts pins the scoring contract:
-// only definitive spam verdicts (reject, add header, rewrite subject)
-// contribute, weighted by recency and diluted by delivered ham, so a
-// benign correspondent MTA can never accumulate its way over the
-// auto-block threshold (50) just by sending mail regularly.
+// only definitive spam verdicts contribute, weighted by recency and
+// diluted by delivered ham, so a benign correspondent MTA can never
+// accumulate its way over the auto-block threshold (50) just by
+// sending mail regularly.
 func TestRspamdSource_ScoresOnlySpamVerdicts(t *testing.T) {
 	const (
 		mtaIP   = "192.0.2.10"
@@ -117,6 +117,14 @@ func TestRspamdSource_ScoresOnlySpamVerdicts(t *testing.T) {
 			want: 0,
 		},
 		{
+			name: "tempfails do not dilute definitive spam",
+			rows: append(
+				repeatRspamdRows(50, mtaIP, "greylist", 5.0, 0),
+				repeatRspamdRows(2, mtaIP, "reject", 22.0, 0)...,
+			),
+			want: blockThreshold,
+		},
+		{
 			name: "single reject stays below block threshold",
 			rows: repeatRspamdRows(1, mtaIP, "reject", 15.2, 0),
 			want: 33,
@@ -156,6 +164,21 @@ func TestRspamdSource_ScoresOnlySpamVerdicts(t *testing.T) {
 			name: "rewrite subject same tier as add header",
 			rows: repeatRspamdRows(2, mtaIP, "rewrite subject", 8.0, 0),
 			want: 35,
+		},
+		{
+			name: "quarantine counts as definitive spam",
+			rows: repeatRspamdRows(2, mtaIP, "quarantine", 20.0, 0),
+			want: blockThreshold,
+		},
+		{
+			name: "discard counts as definitive spam",
+			rows: repeatRspamdRows(2, mtaIP, "discard", 20.0, 0),
+			want: blockThreshold,
+		},
+		{
+			name: "legacy spam action counts as definitive spam",
+			rows: repeatRspamdRows(2, mtaIP, "spam", 20.0, 0),
+			want: blockThreshold,
 		},
 		{
 			name: "year-old rejects decay to zero",
@@ -205,6 +228,54 @@ func TestRspamdSource_ScoresOnlySpamVerdicts(t *testing.T) {
 				t.Fatalf("score = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestScoreRspamdHistory_TreatsTempfailRowsAsNeutral(t *testing.T) {
+	const ip = "192.0.2.44"
+	now := time.Unix(1_700_000_000, 0)
+	rows := []rspamdHistoryRow{
+		{IP: ip, Action: "greylist"},
+		{IP: ip, Action: "soft reject"},
+		{IP: ip, Action: "soft reject"},
+		{IP: ip, Action: "reject"},
+		{IP: ip, Action: "reject"},
+	}
+
+	got := scoreRspamdHistory(rows, ip, now)
+	if got != 50 {
+		t.Fatalf("score = %d, want 50", got)
+	}
+}
+
+func TestScoreRspamdHistory_CountsStandardSpamActions(t *testing.T) {
+	const ip = "192.0.2.45"
+	now := time.Unix(1_700_000_000, 0)
+	for _, action := range []string{"discard", "quarantine", "spam"} {
+		t.Run(action, func(t *testing.T) {
+			got := scoreRspamdHistory([]rspamdHistoryRow{
+				{IP: ip, Action: action},
+				{IP: ip, Action: action},
+			}, ip, now)
+			if got != 50 {
+				t.Fatalf("score = %d, want 50", got)
+			}
+		})
+	}
+}
+
+func TestScoreRspamdHistory_CleanRowsDiluteSpam(t *testing.T) {
+	const ip = "192.0.2.46"
+	now := time.Unix(1_700_000_000, 0)
+	rows := []rspamdHistoryRow{
+		{IP: ip, Action: "clean"},
+		{IP: ip, Action: "no action"},
+		{IP: ip, Action: "reject"},
+	}
+
+	got := scoreRspamdHistory(rows, ip, now)
+	if got != 20 {
+		t.Fatalf("score = %d, want 20", got)
 	}
 }
 

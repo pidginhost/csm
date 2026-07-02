@@ -187,12 +187,12 @@ func decodeRspamdHistory(r io.Reader) ([]rspamdHistoryRow, error) {
 
 // scoreRspamdHistory converts an IP's history rows into a 0..100
 // confidence that the IP is a spam source. The score is the recency-
-// weighted proportion of definitive spam verdicts among all mail from
-// the IP, smoothed by rspamdPriorMass. Delivered ham therefore dilutes
-// the score toward 0 instead of accumulating it: a correspondent MTA
-// that sends mostly legitimate mail stays near 0 no matter how much it
-// sends, while an IP whose recent traffic is predominantly rejected
-// climbs toward 100.
+// weighted proportion of definitive spam verdicts among classifiable
+// delivered/spam verdicts, smoothed by rspamdPriorMass. Delivered ham
+// therefore dilutes the score toward 0 instead of accumulating it: a
+// correspondent MTA that sends mostly legitimate mail stays near 0 no
+// matter how much it sends, while an IP whose recent traffic is
+// predominantly rejected climbs toward 100.
 func scoreRspamdHistory(rows []rspamdHistoryRow, ip string, now time.Time) int {
 	want := normalizeIP(ip)
 	var spamMass, totalMass float64
@@ -200,34 +200,39 @@ func scoreRspamdHistory(rows []rspamdHistoryRow, ip string, now time.Time) int {
 		if normalizeIP(row.IP) != want {
 			continue
 		}
+		spamWeight, counts := rspamdActionSignal(row.Action)
+		if !counts {
+			continue
+		}
 		recency := rspamdRecencyFactor(row.UnixTime, now)
-		spamMass += rspamdActionWeight(row.Action) * recency
+		spamMass += spamWeight * recency
 		totalMass += recency
 	}
-	if spamMass == 0 {
+	if spamMass == 0 || totalMass == 0 {
 		return 0
 	}
 	return int(math.Round(100 * spamMass / (totalMass + rspamdPriorMass)))
 }
 
-// rspamdActionWeight maps an rspamd action onto per-message spam mass
-// in [0,1]. Only definitive spam verdicts count. "no action" is
-// delivered ham; greylist and soft reject are tempfail flow control
-// that fires on first contact from every unknown sender and on rate
-// limits, so counting them (or the raw per-message rspamd score, which
-// is positive even for delivered ham) let benign MTAs accumulate past
-// the auto-block threshold. Genuinely spammy retries earn reject or
-// add-header rows, which do count. The numeric rspamd score is ignored
-// on purpose: the action already is rspamd's calibrated thresholding
-// of that score.
-func rspamdActionWeight(action string) float64 {
+// rspamdActionSignal maps an rspamd action onto per-message spam mass
+// in [0,1] and reports whether the row is classifiable as ham or spam.
+// "no action" is delivered ham; greylist and soft reject are tempfail
+// flow control that fires on first contact from every unknown sender
+// and on rate limits, so they are neutral instead of ham. Genuinely
+// spammy retries earn reject, quarantine, discard, add-header, or
+// rewrite-subject rows, which do count. The numeric rspamd score is
+// ignored on purpose: the action already is rspamd's calibrated
+// thresholding of that score.
+func rspamdActionSignal(action string) (float64, bool) {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "reject":
-		return 1.0
-	case "add header", "rewrite subject":
-		return 0.7
+	case "reject", "discard", "quarantine", "spam":
+		return 1.0, true
+	case "add header", "rewrite subject", "probable spam":
+		return 0.7, true
+	case "no action", "clean":
+		return 0, true
 	default:
-		return 0
+		return 0, false
 	}
 }
 
