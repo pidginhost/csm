@@ -16,6 +16,18 @@ import (
 
 const rspamdMaxHistoryBytes = 2 << 20
 
+const (
+	// rspamdPriorMass is Laplace-style smoothing added to the history
+	// mass so small samples cannot saturate the score: one reject alone
+	// scores 33 and it takes two fresh rejects with zero delivered ham
+	// to reach the 50 auto-block threshold used by the reputation check.
+	rspamdPriorMass = 2.0
+	// rspamdDecayHalfLife halves a row's influence per week so the score
+	// tracks recent behaviour instead of lifetime accumulation; rspamd's
+	// rolling history can span months on quiet servers.
+	rspamdDecayHalfLife = 7 * 24 * time.Hour
+)
+
 // RspamdSource queries rspamd's rolling history and returns a score
 // 0..100 derived only from rows matching the requested IP.
 //
@@ -66,9 +78,10 @@ func (r rspamdHistoryResp) entries() []rspamdHistoryRow {
 }
 
 type rspamdHistoryRow struct {
-	IP     string
-	Action string
-	Score  float64
+	IP       string
+	Action   string
+	Score    float64
+	UnixTime float64
 }
 
 func (r *rspamdHistoryRow) UnmarshalJSON(data []byte) error {
@@ -79,6 +92,7 @@ func (r *rspamdHistoryRow) UnmarshalJSON(data []byte) error {
 	r.IP = firstJSONString(raw, "ip", "sender_ip", "client_ip")
 	r.Action = firstJSONString(raw, "action", "metric_action")
 	r.Score = firstJSONFloat(raw, "score")
+	r.UnixTime = firstJSONFloat(raw, "unix_time")
 	return nil
 }
 
@@ -135,7 +149,7 @@ func (s *RspamdSource) Score(ctx context.Context, ip string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("rspamd decode: %w", err)
 	}
-	return scoreRspamdHistory(rows, ip), nil
+	return scoreRspamdHistory(rows, ip, time.Now()), nil
 }
 
 func (s *RspamdSource) historyEndpoint() (string, error) {
@@ -171,35 +185,65 @@ func decodeRspamdHistory(r io.Reader) ([]rspamdHistoryRow, error) {
 	return history.entries(), nil
 }
 
-func scoreRspamdHistory(rows []rspamdHistoryRow, ip string) int {
+// scoreRspamdHistory converts an IP's history rows into a 0..100
+// confidence that the IP is a spam source. The score is the recency-
+// weighted proportion of definitive spam verdicts among all mail from
+// the IP, smoothed by rspamdPriorMass. Delivered ham therefore dilutes
+// the score toward 0 instead of accumulating it: a correspondent MTA
+// that sends mostly legitimate mail stays near 0 no matter how much it
+// sends, while an IP whose recent traffic is predominantly rejected
+// climbs toward 100.
+func scoreRspamdHistory(rows []rspamdHistoryRow, ip string, now time.Time) int {
 	want := normalizeIP(ip)
-	score := 0
+	var spamMass, totalMass float64
 	for _, row := range rows {
 		if normalizeIP(row.IP) != want {
 			continue
 		}
-		score += rspamdActionScore(row.Action)
-		if row.Score > 0 {
-			score += int(math.Ceil(row.Score * 4))
-		}
-		if score >= 100 {
-			return 100
-		}
+		recency := rspamdRecencyFactor(row.UnixTime, now)
+		spamMass += rspamdActionWeight(row.Action) * recency
+		totalMass += recency
 	}
-	return score
+	if spamMass == 0 {
+		return 0
+	}
+	return int(math.Round(100 * spamMass / (totalMass + rspamdPriorMass)))
 }
 
-func rspamdActionScore(action string) int {
+// rspamdActionWeight maps an rspamd action onto per-message spam mass
+// in [0,1]. Only definitive spam verdicts count. "no action" is
+// delivered ham; greylist and soft reject are tempfail flow control
+// that fires on first contact from every unknown sender and on rate
+// limits, so counting them (or the raw per-message rspamd score, which
+// is positive even for delivered ham) let benign MTAs accumulate past
+// the auto-block threshold. Genuinely spammy retries earn reject or
+// add-header rows, which do count. The numeric rspamd score is ignored
+// on purpose: the action already is rspamd's calibrated thresholding
+// of that score.
+func rspamdActionWeight(action string) float64 {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case "reject":
-		return 50
-	case "soft reject":
-		return 35
-	case "greylist", "add header", "rewrite subject":
-		return 20
+		return 1.0
+	case "add header", "rewrite subject":
+		return 0.7
 	default:
 		return 0
 	}
+}
+
+// rspamdRecencyFactor halves a row's weight per rspamdDecayHalfLife.
+// Rows without a parseable unix_time count at full weight rather than
+// being dropped: rspamd's rolling history is bounded, so undated rows
+// are treated as current.
+func rspamdRecencyFactor(unixTime float64, now time.Time) float64 {
+	if unixTime <= 0 {
+		return 1
+	}
+	age := now.Sub(time.Unix(int64(unixTime), 0))
+	if age <= 0 {
+		return 1
+	}
+	return math.Exp2(-age.Hours() / rspamdDecayHalfLife.Hours())
 }
 
 func normalizeIP(ip string) string {

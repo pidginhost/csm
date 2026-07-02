@@ -186,7 +186,15 @@ func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 		if r.URL.Path != "/history" {
 			t.Fatalf("expected /history request, got %s", r.URL.Path)
 		}
-		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.77","action":"reject","score":8}]}`)
+		// Persistent rejects with no delivered ham: scores well above
+		// the 50 auto-block threshold. A single reject would not (and
+		// must not) cross it.
+		_, _ = fmt.Fprintln(w, `{"rows":[
+			{"ip":"198.51.100.77","action":"reject","score":25},
+			{"ip":"198.51.100.77","action":"reject","score":31},
+			{"ip":"198.51.100.77","action":"reject","score":22},
+			{"ip":"198.51.100.77","action":"reject","score":27},
+			{"ip":"198.51.100.77","action":"reject","score":29}]}`)
 	}))
 
 	statePath := t.TempDir()
@@ -264,7 +272,14 @@ func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 		_, _ = fmt.Fprintln(w, `{"errors":[{"detail":"temporary failure"}]}`)
 	})
 	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.88","action":"reject","score":8}]}`)
+		// Persistent rejects so the rspamd score clears the 50
+		// auto-block threshold on its own.
+		_, _ = fmt.Fprintln(w, `{"rows":[
+			{"ip":"198.51.100.88","action":"reject","score":25},
+			{"ip":"198.51.100.88","action":"reject","score":31},
+			{"ip":"198.51.100.88","action":"reject","score":22},
+			{"ip":"198.51.100.88","action":"reject","score":27},
+			{"ip":"198.51.100.88","action":"reject","score":29}]}`)
 	}))
 
 	statePath := t.TempDir()

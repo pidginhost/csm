@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The rspamd threat-intel score no longer counts delivered or greylisted mail as abuse, which could auto-block legitimate mail servers that simply sent regularly. The score now reflects the recency-weighted share of actual spam verdicts, so benign senders stay near zero.
 - CSM's ModSecurity virtual patches are now kept in a marker-delimited section of the shared user rules file, and deploys rewrite only exact CSM marker blocks while preserving operator content and the override include. Previously a redeploy could overwrite the whole file and silently destroy operator-maintained rules.
 - A check that hits its per-scan timeout no longer purges the findings it reported in earlier cycles, and throttled checks keep their retry timing without losing stamps across clean shutdowns. Concurrent scans also no longer start the same throttled check before the first run finishes.
 - A failed threat-feed download no longer wipes that feed's previously loaded IPs and CIDR ranges, and a cycle where every feed fails now retries next cycle instead of serving no feed data for up to 20 hours. Feed CIDR ranges are also cached to disk now, so they survive a daemon restart.
