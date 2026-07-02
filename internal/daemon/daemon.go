@@ -609,6 +609,12 @@ func (d *Daemon) Run() error {
 	// Start firewall engine if enabled
 	d.startFirewall()
 
+	// Settle any apply-confirmed window the restart interrupted. Must run
+	// after startFirewall (an expired-window restore has to land on top of
+	// the candidate ruleset the startup Apply just re-applied) and before
+	// startControlListener (so confirm/cancel cannot race the recovery).
+	d.recoverFirewallApplyConfirmed()
+
 	// Construct the incident correlator after the firewall starts so the
 	// credential_spray block hand-off is installed before the singleton
 	// captures its config. This still happens before any finding is

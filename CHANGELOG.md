@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the firewall apply-confirmed safety window not surviving a daemon restart: an unconfirmed ruleset whose deadline passed while the daemon was down is now rolled back at startup, and a still-open window is re-armed for the remaining time. The confirm deadline is also recorded before the ruleset is applied, so a crash between the two can no longer leave an unconfirmed ruleset in place.
 - Fixed a gap where crafted IPv6 traffic could bypass blocks, country blocking, and rate limits on the web ports by colliding with the Cloudflare IPv4 allow list.
 - Fixed permanent firewall blocks silently expiring from the kernel after 24 hours while still shown as blocked. Temporary blocks keep their configured expiry, and existing installs converge on the next daemon restart.
 - Fixed the IP reputation cache rewriting every cached entry to the state database each scan cycle, which undid expiry cleanup and grew the database without bound. Saves now persist only changed entries in a single write.

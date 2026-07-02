@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
@@ -70,7 +72,7 @@ func TestRestoreFirewallRollbackKeepsMarkersWhenNftFails(t *testing.T) {
 	writeTestFile(t, confirmFile, "pending")
 	writeTestFile(t, rollbackFile, "flush ruleset\n")
 
-	err := restoreFirewallRollback(confirmFile, rollbackFile)
+	err := restoreFirewallRollback(confirmFile, rollbackFile, []byte("pending"))
 	if err == nil {
 		t.Fatal("restoreFirewallRollback succeeded, want nft failure")
 	}
@@ -94,7 +96,7 @@ func TestRestoreFirewallRollbackRemovesMarkersAfterNftSuccess(t *testing.T) {
 	writeTestFile(t, rollbackFile, "flush ruleset\n")
 	writeTestFile(t, legacyRollbackFile, "#!/bin/sh\n")
 
-	if err := restoreFirewallRollback(confirmFile, rollbackFile); err != nil {
+	if err := restoreFirewallRollback(confirmFile, rollbackFile, []byte("pending")); err != nil {
 		t.Fatalf("restoreFirewallRollback: %v", err)
 	}
 	requirePathMissing(t, confirmFile)
@@ -138,6 +140,187 @@ func TestHandleFirewallConfirmRemovesLegacyRollbackScript(t *testing.T) {
 	requirePathMissing(t, confirmFile)
 	requirePathMissing(t, rollbackFile)
 	requirePathMissing(t, legacyRollbackFile)
+}
+
+// setupFirewallDeadmanState creates the firewall state dir and returns the
+// marker paths plus a Daemon wired to it and the fake-nft "seen" path.
+func setupFirewallDeadmanState(t *testing.T) (d *Daemon, confirmFile, rollbackFile, legacyRollbackFile, seenFile string) {
+	t.Helper()
+	installFakeNft(t)
+	statePath := t.TempDir()
+	confirmFile, rollbackFile, legacyRollbackFile = firewallRollbackFiles(statePath)
+	if err := os.MkdirAll(filepath.Dir(confirmFile), 0700); err != nil {
+		t.Fatalf("mkdir firewall dir: %v", err)
+	}
+	seenFile = filepath.Join(t.TempDir(), "seen")
+	t.Setenv("NFT_RESTORE_SEEN", seenFile)
+	return &Daemon{cfg: &config.Config{StatePath: statePath}}, confirmFile, rollbackFile, legacyRollbackFile, seenFile
+}
+
+func TestRecoverFirewallApplyConfirmedExpiredRestoresPreviousRuleset(t *testing.T) {
+	d, confirmFile, rollbackFile, legacyRollbackFile, seenFile := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+	writeTestFile(t, legacyRollbackFile, "#!/bin/sh\n")
+
+	d.recoverFirewallApplyConfirmed()
+
+	got, err := os.ReadFile(seenFile)
+	if err != nil {
+		t.Fatalf("expired window was not rolled back: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != rollbackFile {
+		t.Fatalf("nft restored %q, want %q", strings.TrimSpace(string(got)), rollbackFile)
+	}
+	requirePathMissing(t, confirmFile)
+	requirePathMissing(t, rollbackFile)
+	requirePathMissing(t, legacyRollbackFile)
+}
+
+func TestRecoverFirewallApplyConfirmedFutureKeepsWindowFiles(t *testing.T) {
+	d, confirmFile, rollbackFile, _, seenFile := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+
+	d.recoverFirewallApplyConfirmed()
+
+	requirePathMissing(t, seenFile)
+	requirePathExists(t, confirmFile)
+	requirePathExists(t, rollbackFile)
+}
+
+func TestRecoverFirewallApplyConfirmedFutureRestoresAtDeadline(t *testing.T) {
+	d, confirmFile, rollbackFile, _, _ := setupFirewallDeadmanState(t)
+	// Sub-second deadline so the re-armed timer fires inside the test.
+	// time.Parse accepts fractional seconds even with the RFC3339 layout.
+	writeTestFile(t, confirmFile, time.Now().Add(300*time.Millisecond).UTC().Format(time.RFC3339Nano))
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+
+	d.recoverFirewallApplyConfirmed()
+
+	waitUntil := time.Now().Add(5 * time.Second)
+	for {
+		_, confirmErr := os.Stat(confirmFile)
+		_, rollbackErr := os.Stat(rollbackFile)
+		if os.IsNotExist(confirmErr) && os.IsNotExist(rollbackErr) {
+			return
+		}
+		if time.Now().After(waitUntil) {
+			t.Fatal("re-armed deadman did not restore by the persisted deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRecoverFirewallApplyConfirmedCorruptMarkerFailsSafe(t *testing.T) {
+	d, confirmFile, rollbackFile, _, seenFile := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, "not-a-deadline")
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+
+	d.recoverFirewallApplyConfirmed()
+
+	requirePathExists(t, seenFile)
+	requirePathMissing(t, confirmFile)
+	requirePathMissing(t, rollbackFile)
+}
+
+func TestRecoverFirewallApplyConfirmedRemovesOrphanSnapshot(t *testing.T) {
+	d, confirmFile, rollbackFile, legacyRollbackFile, seenFile := setupFirewallDeadmanState(t)
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+	writeTestFile(t, legacyRollbackFile, "#!/bin/sh\n")
+
+	d.recoverFirewallApplyConfirmed()
+
+	requirePathMissing(t, seenFile)
+	requirePathMissing(t, confirmFile)
+	requirePathMissing(t, rollbackFile)
+	requirePathMissing(t, legacyRollbackFile)
+}
+
+func TestApplyFirewallDeadmanWritesMarkerBeforeApply(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+
+	var markerAtApply string
+	apply := func() error {
+		raw, err := os.ReadFile(confirmFile)
+		if err != nil {
+			t.Errorf("confirm marker missing at apply time: %v", err)
+			return nil
+		}
+		markerAtApply = string(raw)
+		return nil
+	}
+	if err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, 3*time.Minute, apply); err != nil {
+		t.Fatalf("applyFirewallDeadman: %v", err)
+	}
+
+	deadline, err := time.Parse(time.RFC3339, markerAtApply)
+	if err != nil {
+		t.Fatalf("marker at apply time = %q, want RFC3339 deadline: %v", markerAtApply, err)
+	}
+	if !deadline.After(time.Now()) {
+		t.Fatalf("marker deadline %v is not in the future", deadline)
+	}
+	requirePathExists(t, confirmFile)
+	requirePathExists(t, rollbackFile)
+}
+
+func TestApplyFirewallDeadmanApplyFailureRestoresPreviousRuleset(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, seenFile := setupFirewallDeadmanState(t)
+
+	apply := func() error { return errors.New("nft transaction rejected") }
+	err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, 3*time.Minute, apply)
+	if err == nil {
+		t.Fatal("applyFirewallDeadman succeeded, want apply failure")
+	}
+	if !strings.Contains(err.Error(), "previous ruleset restored") {
+		t.Fatalf("error = %q, want restore notice", err.Error())
+	}
+	got, readErr := os.ReadFile(seenFile)
+	if readErr != nil {
+		t.Fatalf("failed apply was not rolled back: %v", readErr)
+	}
+	if strings.TrimSpace(string(got)) != rollbackFile {
+		t.Fatalf("nft restored %q, want %q", strings.TrimSpace(string(got)), rollbackFile)
+	}
+	requirePathMissing(t, confirmFile)
+	requirePathMissing(t, rollbackFile)
+}
+
+func TestApplyFirewallDeadmanApplyAndRestoreFailureKeepsWindowFiles(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+	t.Setenv("NFT_RESTORE_FAIL", "1")
+
+	apply := func() error { return errors.New("nft transaction rejected") }
+	err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, time.Minute, apply)
+	if err == nil {
+		t.Fatal("applyFirewallDeadman succeeded, want apply+restore failure")
+	}
+	if !strings.Contains(err.Error(), "rollback restore failed") {
+		t.Fatalf("error = %q, want restore-failure notice", err.Error())
+	}
+	// Window files must survive so the still-armed deadman (and startup
+	// recovery after a crash) can retry the restore at the deadline.
+	requirePathExists(t, confirmFile)
+	requirePathExists(t, rollbackFile)
+}
+
+func TestRestoreFirewallRollbackSkipsSupersededMarker(t *testing.T) {
+	installFakeNft(t)
+	dir := t.TempDir()
+	confirmFile := filepath.Join(dir, "confirm_pending")
+	rollbackFile := filepath.Join(dir, "rollback.nft")
+	seenFile := filepath.Join(dir, "seen")
+	t.Setenv("NFT_RESTORE_SEEN", seenFile)
+	writeTestFile(t, confirmFile, "newer-window-deadline")
+	writeTestFile(t, rollbackFile, "flush ruleset\n")
+
+	if err := restoreFirewallRollback(confirmFile, rollbackFile, []byte("older-window-deadline")); err != nil {
+		t.Fatalf("restoreFirewallRollback: %v", err)
+	}
+	requirePathMissing(t, seenFile)
+	requirePathExists(t, confirmFile)
+	requirePathExists(t, rollbackFile)
 }
 
 func installFakeNft(t *testing.T) {
