@@ -30,6 +30,7 @@ func TestCFWhitelistV4RuleHasIPv4Guard(t *testing.T) {
 		if !ok || lk.SetName != "cf_whitelist" || lk.Invert {
 			t.Fatalf("port %d: exprs[3] = %#v, want non-inverted cf_whitelist lookup", port, exprs[3])
 		}
+		assertCFWhitelistTCPDPort(t, exprs, port)
 		v, ok := exprs[len(exprs)-1].(*expr.Verdict)
 		if !ok || v.Kind != expr.VerdictAccept {
 			t.Fatalf("port %d: last expr = %#v, want accept verdict", port, exprs[len(exprs)-1])
@@ -60,9 +61,34 @@ func TestCFWhitelistV6RuleHasIPv6Guard(t *testing.T) {
 		if !ok || lk.SetName != "cf_whitelist6" || lk.Invert {
 			t.Fatalf("port %d: exprs[3] = %#v, want non-inverted cf_whitelist6 lookup", port, exprs[3])
 		}
+		assertCFWhitelistTCPDPort(t, exprs, port)
 		v, ok := exprs[len(exprs)-1].(*expr.Verdict)
 		if !ok || v.Kind != expr.VerdictAccept {
 			t.Fatalf("port %d: last expr = %#v, want accept verdict", port, exprs[len(exprs)-1])
 		}
+	}
+}
+
+func assertCFWhitelistTCPDPort(t *testing.T, exprs []expr.Any, port uint16) {
+	t.Helper()
+	if len(exprs) < 8 {
+		t.Fatalf("port %d: expr list len = %d, want >= 8", port, len(exprs))
+	}
+	m, ok := exprs[4].(*expr.Meta)
+	if !ok || m.Key != expr.MetaKeyL4PROTO || m.Register != 1 {
+		t.Fatalf("port %d: exprs[4] = %#v, want L4PROTO meta load", port, exprs[4])
+	}
+	c, ok := exprs[5].(*expr.Cmp)
+	if !ok || c.Op != expr.CmpOpEq || c.Register != 1 || len(c.Data) != 1 || c.Data[0] != 6 {
+		t.Fatalf("port %d: exprs[5] = %#v, want TCP cmp", port, exprs[5])
+	}
+	p, ok := exprs[6].(*expr.Payload)
+	if !ok || p.Base != expr.PayloadBaseTransportHeader || p.Offset != 2 || p.Len != 2 {
+		t.Fatalf("port %d: exprs[6] = %#v, want transport dport load", port, exprs[6])
+	}
+	c, ok = exprs[7].(*expr.Cmp)
+	wantPort := []byte{byte(port >> 8), byte(port)}
+	if !ok || c.Op != expr.CmpOpEq || c.Register != 1 || len(c.Data) != 2 || c.Data[0] != wantPort[0] || c.Data[1] != wantPort[1] {
+		t.Fatalf("port %d: exprs[7] = %#v, want dport cmp %v", port, exprs[7], wantPort)
 	}
 }
