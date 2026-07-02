@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -112,8 +113,16 @@ func TestReputationCacheEntryUpdatedThenEvictedNotPersisted(t *testing.T) {
 	sdb := withGlobalStore(t)
 	statePath := t.TempDir()
 
+	if err := sdb.SetReputation("203.0.113.30", store.ReputationEntry{
+		Score:     20,
+		Category:  "ISP",
+		CheckedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SetReputation: %v", err)
+	}
+
 	// Touched this cycle but already past TTL when eviction runs; eviction
-	// must win over the pending write.
+	// must win over the pending write and delete any older stored value.
 	cache := loadReputationCache(statePath)
 	cache.set("203.0.113.30", &reputationEntry{
 		Score:     80,
@@ -129,5 +138,44 @@ func TestReputationCacheEntryUpdatedThenEvictedNotPersisted(t *testing.T) {
 	}
 	if _, found := sdb.GetReputation("203.0.113.30"); found {
 		t.Error("evicted entry persisted to store by the save")
+	}
+}
+
+func TestReputationCacheCapIncludesDirtyEntriesBeforeSave(t *testing.T) {
+	sdb := withGlobalStore(t)
+	statePath := t.TempDir()
+	base := time.Now().Add(-2 * time.Hour)
+	entries := make(map[string]store.ReputationEntry, maxCacheEntries)
+	for i := 0; i < maxCacheEntries; i++ {
+		ip := fmt.Sprintf("198.51.%d.%d", i/256, i%256)
+		entries[ip] = store.ReputationEntry{
+			Score:     10,
+			Category:  "ISP",
+			CheckedAt: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	if err := sdb.SetReputationBatch(entries); err != nil {
+		t.Fatalf("SetReputationBatch: %v", err)
+	}
+
+	cache := loadReputationCache(statePath)
+	cache.set("203.0.113.250", &reputationEntry{
+		Score:     90,
+		Category:  "botnet",
+		CheckedAt: time.Now(),
+	})
+
+	cleanCache(cache)
+	saveReputationCache(statePath, cache)
+
+	all := sdb.AllReputation()
+	if got := len(all); got != maxCacheEntries {
+		t.Fatalf("store reputation entries = %d, want %d", got, maxCacheEntries)
+	}
+	if _, found := all["203.0.113.250"]; !found {
+		t.Fatal("dirty fresh entry missing after capped save")
+	}
+	if _, found := all["198.51.0.0"]; found {
+		t.Fatal("oldest loaded entry survived cap after dirty save")
 	}
 }

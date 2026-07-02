@@ -58,6 +58,32 @@ func (db *DB) SetReputationBatch(entries map[string]ReputationEntry) error {
 	})
 }
 
+// ApplyReputationChanges stores and deletes reputation entries in one write
+// transaction.
+func (db *DB) ApplyReputationChanges(upserts map[string]ReputationEntry, deletes map[string]bool) error {
+	if len(upserts) == 0 && len(deletes) == 0 {
+		return nil
+	}
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("reputation"))
+		for ip := range deletes {
+			if err := b.Delete([]byte(ip)); err != nil {
+				return err
+			}
+		}
+		for ip, entry := range upserts {
+			val, err := json.Marshal(entry)
+			if err != nil {
+				return err
+			}
+			if err := b.Put([]byte(ip), val); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // GetReputation retrieves a reputation entry for the given IP.
 // Returns the entry and true if found, or a zero value and false if not.
 func (db *DB) GetReputation(ip string) (ReputationEntry, bool) {

@@ -228,6 +228,63 @@ func TestSetReputationBatchSingleTransaction(t *testing.T) {
 	}
 }
 
+func TestApplyReputationChangesSingleTransaction(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	now := time.Now().Truncate(time.Second)
+	if err := db.SetReputation("192.0.2.10", ReputationEntry{
+		Score:     15,
+		Category:  "ISP",
+		CheckedAt: now,
+	}); err != nil {
+		t.Fatalf("SetReputation delete target: %v", err)
+	}
+	if err := db.SetReputation("192.0.2.11", ReputationEntry{
+		Score:     20,
+		Category:  "ISP",
+		CheckedAt: now,
+	}); err != nil {
+		t.Fatalf("SetReputation survivor: %v", err)
+	}
+
+	before := db.WriteTxID()
+	if err := db.ApplyReputationChanges(
+		map[string]ReputationEntry{
+			"192.0.2.12": {Score: 95, Category: "botnet", CheckedAt: now},
+		},
+		map[string]bool{"192.0.2.10": true},
+	); err != nil {
+		t.Fatalf("ApplyReputationChanges: %v", err)
+	}
+	if got := db.WriteTxID(); got != before+1 {
+		t.Fatalf("apply committed %d write txs, want exactly 1", got-before)
+	}
+
+	if _, found := db.GetReputation("192.0.2.10"); found {
+		t.Fatal("deleted entry still present")
+	}
+	if _, found := db.GetReputation("192.0.2.11"); !found {
+		t.Fatal("untouched entry missing")
+	}
+	if got, found := db.GetReputation("192.0.2.12"); !found {
+		t.Fatal("upserted entry missing")
+	} else if got.Score != 95 || got.Category != "botnet" || !got.CheckedAt.Equal(now) {
+		t.Fatalf("upserted entry = %+v", got)
+	}
+
+	before = db.WriteTxID()
+	if err := db.ApplyReputationChanges(nil, nil); err != nil {
+		t.Fatalf("ApplyReputationChanges nil: %v", err)
+	}
+	if got := db.WriteTxID(); got != before {
+		t.Fatalf("empty apply committed %d write txs, want 0", got-before)
+	}
+}
+
 func TestReputationMaxCap(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

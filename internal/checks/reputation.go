@@ -57,6 +57,10 @@ type reputationCache struct {
 	// assembled directly rather than hydrated by loadReputationCache, in
 	// which case a save persists every entry.
 	dirty map[string]bool
+
+	// removed tracks evictions since load so bbolt saves can delete entries
+	// pruned from the in-memory view.
+	removed map[string]bool
 }
 
 type reputationEntry struct {
@@ -71,14 +75,21 @@ func (c *reputationCache) set(ip string, e *reputationEntry) {
 	c.Entries[ip] = e
 	if c.dirty != nil {
 		c.dirty[ip] = true
+		delete(c.removed, ip)
 	}
 }
 
-// remove evicts an entry. Dropping any pending dirty mark keeps a later
-// save from writing what eviction just removed.
+// remove evicts an entry. Deleting any pending dirty mark keeps a later
+// save from writing what eviction just removed; recording the removal lets
+// bbolt delete a prior stored value for the same IP.
 func (c *reputationCache) remove(ip string) {
 	delete(c.Entries, ip)
-	delete(c.dirty, ip)
+	if c.dirty != nil {
+		delete(c.dirty, ip)
+		if c.removed != nil {
+			c.removed[ip] = true
+		}
+	}
 }
 
 // changedEntries returns what a bbolt-backed save must persist. Without
@@ -789,6 +800,7 @@ func loadReputationCache(statePath string) *reputationCache {
 	cache := &reputationCache{
 		Entries: make(map[string]*reputationEntry),
 		dirty:   make(map[string]bool),
+		removed: make(map[string]bool),
 	}
 
 	// Try bbolt store first - after migration the flat file is renamed to .bak.
@@ -817,14 +829,15 @@ func loadReputationCache(statePath string) *reputationCache {
 func saveReputationCache(statePath string, cache *reputationCache) {
 	if sdb := store.Global(); sdb != nil {
 		changed := cache.changedEntries()
-		if len(changed) == 0 {
+		if len(changed) == 0 && len(cache.removed) == 0 {
 			return
 		}
-		if err := sdb.SetReputationBatch(changed); err != nil {
-			// Keep the dirty marks so a later save can retry the flush.
+		if err := sdb.ApplyReputationChanges(changed, cache.removed); err != nil {
+			// Keep the pending marks so a later save can retry the flush.
 			return
 		}
 		clear(cache.dirty)
+		clear(cache.removed)
 		return
 	}
 
