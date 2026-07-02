@@ -659,13 +659,16 @@ func (e *Engine) Apply() error {
 
 // createSets creates the nftables named sets for IP management.
 func (e *Engine) createSets() error {
-	// Blocked IPs set (with per-element timeout)
+	// Blocked IPs set. HasTimeout enables per-element timeouts for temporary
+	// blocks; there must be NO set-level default timeout: the kernel assigns
+	// the default to every element added without its own timeout (the netlink
+	// library omits zero element timeouts), so a default would silently expire
+	// permanent blocks (deny, promote) while state.json still says blocked.
 	e.setBlocked = &nftables.Set{
 		Table:      e.table,
 		Name:       "blocked_ips",
 		KeyType:    nftables.TypeIPAddr,
 		HasTimeout: true,
-		Timeout:    24 * time.Hour,
 	}
 	if err := e.conn.AddSet(e.setBlocked, nil); err != nil {
 		return fmt.Errorf("blocked set: %w", err)
@@ -781,9 +784,10 @@ func (e *Engine) createSets() error {
 
 	// IPv6 sets
 	if e.cfg.IPv6 {
+		// No set-level default timeout; see the blocked_ips comment above.
 		e.setBlocked6 = &nftables.Set{
 			Table: e.table, Name: "blocked_ips6",
-			KeyType: nftables.TypeIP6Addr, HasTimeout: true, Timeout: 24 * time.Hour,
+			KeyType: nftables.TypeIP6Addr, HasTimeout: true,
 		}
 		if err := e.conn.AddSet(e.setBlocked6, nil); err != nil {
 			return fmt.Errorf("blocked6 set: %w", err)
