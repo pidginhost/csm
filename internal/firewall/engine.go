@@ -1885,32 +1885,38 @@ func (e *Engine) addCFWhitelistRule(set *nftables.Set, ipv6 bool) {
 		return
 	}
 	for _, port := range []uint16{80, 443} {
-		var exprs []expr.Any
-		if ipv6 {
-			exprs = append(exprs,
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-			)
-		} else {
-			exprs = append(exprs,
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-			)
-		}
-		exprs = append(exprs,
-			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		)
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: exprs,
+			Exprs: cfWhitelistRuleExprs(set, ipv6, port),
 		})
 	}
+}
+
+// cfWhitelistRuleExprs builds the expression list for one Cloudflare whitelist
+// accept rule: <family> saddr @set tcp dport <port> accept. The NFPROTO guard
+// must precede the raw network-header source load: without it the v4 load also
+// runs on IPv6 packets, where offset 12 reads bytes 4..7 of the IPv6 source,
+// so a colliding IPv6 address would be accepted ahead of the block rules.
+func cfWhitelistRuleExprs(set *nftables.Set, ipv6 bool, port uint16) []expr.Any {
+	var exprs []expr.Any
+	if ipv6 {
+		exprs = append(ipv6NFProtoGuard(),
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+		)
+	} else {
+		exprs = append(ipv4NFProtoGuard(),
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		)
+	}
+	return append(exprs,
+		&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	)
 }
 
 func (e *Engine) addPortAcceptRule(port int, tcp bool) {
