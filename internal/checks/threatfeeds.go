@@ -22,11 +22,12 @@ import (
 // 3. AbuseIPDB as fallback for unknown IPs
 type ThreatDB struct {
 	mu            sync.RWMutex
-	badIPs        map[string]string          // ip -> source/reason
-	badNets       []*net.IPNet               // flat CIDR list for Lookup, rebuilt from feedNets
-	feedNets      map[string][]*net.IPNet    // feed name -> CIDRs, so a failed feed keeps coverage
-	whitelist     map[string]bool            // IPs to never flag
-	whitelistMeta map[string]*whitelistEntry // expiry metadata
+	badIPs        map[string]string              // ip -> source/reason
+	badNets       []*net.IPNet                   // flat CIDR list for Lookup, rebuilt from feedNets
+	feedIPs       map[string]map[string]struct{} // feed name -> IPs, so overlapping feeds retain ownership
+	feedNets      map[string][]*net.IPNet        // feed name -> CIDRs, so a failed feed keeps coverage
+	whitelist     map[string]bool                // IPs to never flag
+	whitelistMeta map[string]*whitelistEntry     // expiry metadata
 	lastUpdate    time.Time
 	dbPath        string
 
@@ -454,7 +455,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 
 	// Download all feeds OUTSIDE the lock
 	type feedResult struct {
-		ips  []string
+		ips  map[string]struct{}
 		nets []*net.IPNet
 	}
 	fresh := make(map[string]feedResult)
@@ -474,13 +475,19 @@ func (db *ThreatDB) UpdateFeeds() error {
 			continue // keep previous cached data for this feed
 		}
 
-		fresh[feed.name] = feedResult{ips: ips, nets: nets}
+		ipSet := make(map[string]struct{}, len(ips))
+		for _, ip := range ips {
+			ipSet[ip] = struct{}{}
+		}
+		fresh[feed.name] = feedResult{ips: ipSet, nets: nets}
 
 		// Cache to disk. IPs and CIDRs share one file: CIDR lines are
 		// distinguishable by "/", so the nets survive a daemon restart
 		// and legacy IP-only cache files keep loading unchanged.
-		lines := make([]string, 0, len(ips)+len(nets))
-		lines = append(lines, ips...)
+		lines := make([]string, 0, len(ipSet)+len(nets))
+		for ip := range ipSet {
+			lines = append(lines, ip)
+		}
 		for _, n := range nets {
 			lines = append(lines, n.String())
 		}
@@ -500,41 +507,31 @@ func (db *ThreatDB) UpdateFeeds() error {
 
 	// Swap data UNDER the lock - fast operation
 	db.mu.Lock()
+	if db.feedIPs == nil {
+		db.feedIPs = make(map[string]map[string]struct{})
+		for ip, source := range db.badIPs {
+			if feedNames[source] {
+				if db.feedIPs[source] == nil {
+					db.feedIPs[source] = make(map[string]struct{})
+				}
+				db.feedIPs[source][ip] = struct{}{}
+			}
+		}
+	}
 	if db.feedNets == nil {
 		db.feedNets = make(map[string][]*net.IPNet)
 	}
 	for name, result := range fresh {
-		// Replace only this feed's previous entries; entries owned by
-		// failed feeds (and permanent/manual entries) stay untouched.
-		for ip, source := range db.badIPs {
-			if source == name {
-				delete(db.badIPs, ip)
-			}
-		}
-		for _, ip := range result.ips {
-			if _, exists := db.badIPs[ip]; !exists {
-				db.badIPs[ip] = name
-			}
-		}
+		// Replace only this feed's previous entries; failed feeds keep
+		// their per-feed ownership and are merged back into badIPs below.
+		db.feedIPs[name] = result.ips
 		db.feedNets[name] = result.nets
 	}
-	// Rebuild the flat lookup slice from per-feed data in stable feed order.
-	var nets []*net.IPNet
-	for _, feed := range threatFeeds {
-		nets = append(nets, db.feedNets[feed.name]...)
-	}
-	db.badNets = nets
-
-	totalIPs := 0
-	for _, source := range db.badIPs {
-		if feedNames[source] {
-			totalIPs++
-		}
-	}
+	totalIPs, totalNets := db.rebuildFeedLookup(feedNames)
 	now := time.Now()
 	db.lastUpdate = now
 	db.FeedIPCount = totalIPs
-	db.FeedNetCount = len(nets)
+	db.FeedNetCount = totalNets
 	db.LastFeedUpdate = now
 	db.LastUpdated = now
 	db.mu.Unlock()
@@ -544,7 +541,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 		[]byte(now.Format(time.RFC3339)), 0600)
 
 	fmt.Fprintf(os.Stderr, "threatdb: updated %d IPs + %d CIDR ranges (%d/%d feeds succeeded)\n",
-		totalIPs, len(nets), len(fresh), len(threatFeeds))
+		totalIPs, totalNets, len(fresh), len(threatFeeds))
 
 	return nil
 }
@@ -638,7 +635,15 @@ func (db *ThreatDB) loadFeedCache() {
 	if db.feedNets == nil {
 		db.feedNets = make(map[string][]*net.IPNet)
 	}
+	if db.feedIPs == nil {
+		db.feedIPs = make(map[string]map[string]struct{})
+	}
+	feedNames := make(map[string]bool, len(threatFeeds))
 	for _, feed := range threatFeeds {
+		feedNames[feed.name] = true
+		db.feedIPs[feed.name] = make(map[string]struct{})
+		db.feedNets[feed.name] = nil
+
 		cachePath := filepath.Join(db.dbPath, feed.name+".txt")
 		for _, line := range loadLines(cachePath) {
 			// Cache files mix plain IPs and CIDR lines ("/" marks a
@@ -646,15 +651,13 @@ func (db *ThreatDB) loadFeedCache() {
 			if strings.Contains(line, "/") {
 				if _, cidr, err := net.ParseCIDR(line); err == nil {
 					db.feedNets[feed.name] = append(db.feedNets[feed.name], cidr)
-					db.badNets = append(db.badNets, cidr)
-					db.FeedNetCount++
 				}
 				continue
 			}
-			db.badIPs[line] = feed.name
-			db.FeedIPCount++
+			db.feedIPs[feed.name][line] = struct{}{}
 		}
 	}
+	db.FeedIPCount, db.FeedNetCount = db.rebuildFeedLookup(feedNames)
 
 	// Warn on startup if feeds are stale
 	if db.LastUpdated.IsZero() && db.FeedIPCount == 0 && db.FeedNetCount == 0 {
@@ -663,6 +666,36 @@ func (db *ThreatDB) loadFeedCache() {
 		fmt.Fprintf(os.Stderr, "threatdb: WARNING threat feeds are stale (last updated %s, %d days ago)\n",
 			db.LastUpdated.Format("2006-01-02"), int(time.Since(db.LastUpdated).Hours()/24))
 	}
+}
+
+// rebuildFeedLookup rebuilds the flat lookup maps from per-feed data. The
+// caller must hold db.mu, or be in the startup load path before publication.
+func (db *ThreatDB) rebuildFeedLookup(feedNames map[string]bool) (int, int) {
+	preserved := make(map[string]string, len(db.badIPs))
+	for ip, source := range db.badIPs {
+		if feedNames[source] {
+			continue
+		}
+		preserved[ip] = source
+	}
+	db.badIPs = preserved
+
+	totalIPs := 0
+	for _, feed := range threatFeeds {
+		for ip := range db.feedIPs[feed.name] {
+			totalIPs++
+			if _, exists := db.badIPs[ip]; !exists {
+				db.badIPs[ip] = feed.name
+			}
+		}
+	}
+
+	var nets []*net.IPNet
+	for _, feed := range threatFeeds {
+		nets = append(nets, db.feedNets[feed.name]...)
+	}
+	db.badNets = nets
+	return totalIPs, len(nets)
 }
 
 func downloadFeed(client *http.Client, url, name string) ([]string, []*net.IPNet, error) {

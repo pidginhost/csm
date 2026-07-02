@@ -881,6 +881,43 @@ func TestUpdateFeedsAllFailedRetainsDataAndRetries(t *testing.T) {
 	}
 }
 
+func TestUpdateFeedsOverlappingIPSurvivesLaterFeedDrop(t *testing.T) {
+	setTestThreatFeeds(t)
+	handler := &fakeFeedHandler{body: map[string]string{
+		"/a": "203.0.113.10\n",
+		"/b": "203.0.113.99\n",
+	}}
+	withDefaultHTTPTransport(t, handler)
+
+	db := newTestThreatDB(t)
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 1 UpdateFeeds: %v", err)
+	}
+
+	// Round 2: feed-b is down while feed-a starts carrying feed-b's IP.
+	rewindFeedUpdateWindow(db)
+	handler.body["/a"] = "203.0.113.10\n203.0.113.99\n"
+	delete(handler.body, "/b")
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 2 UpdateFeeds: %v", err)
+	}
+	if _, ok := db.Lookup("203.0.113.99"); !ok {
+		t.Fatal("overlapping IP missing after feed-a picked it up")
+	}
+
+	// Round 3: feed-b recovers without that IP while feed-a is down. The
+	// address must stay blocked from feed-a's last successful refresh.
+	rewindFeedUpdateWindow(db)
+	delete(handler.body, "/a")
+	handler.body["/b"] = "203.0.113.20\n"
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("round 3 UpdateFeeds: %v", err)
+	}
+	if src, ok := db.Lookup("203.0.113.99"); !ok || src != "feed-a" {
+		t.Errorf("overlapping IP lost after feed-b dropped it: (%q, %v)", src, ok)
+	}
+}
+
 func TestFeedCacheNetsSurviveRestart(t *testing.T) {
 	setTestThreatFeeds(t)
 	handler := &fakeFeedHandler{body: map[string]string{
