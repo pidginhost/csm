@@ -82,22 +82,23 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
 				continue
 			}
-			// Check if the finding's IP is already blocked. The IP token
-			// is parsed out of the message and compared canonically:
+			// Check if the finding's IP is already blocked. Structured
+			// SourceIP wins when present; older findings fall back to the
+			// message token. The address is compared canonically:
 			// substring matching used to let a blocked 1.2.3.4 suppress a
-			// finding about the unrelated 1.2.3.45. A message with no
+			// finding about the unrelated 1.2.3.45. A finding with no
 			// parseable IP is never suppressed (fail open to alerting).
 			isBlocked := false
-			msgIP := extractIPFromFindingMessage(f.Message)
-			if msgIP != nil && canonicalBlocked[msgIP.String()] {
+			findingIP := suppressionIPFromFinding(f)
+			if findingIP != nil && canonicalBlocked[findingIP.String()] {
 				isBlocked = true
 			}
 			// Also suppress if the IP falls within a freshly-blocked subnet.
 			// AUTO-BLOCK-SUBNET: findings from the same batch must silence
 			// per-IP reputation alerts for addresses inside that /24.
-			if !isBlocked && msgIP != nil {
+			if !isBlocked && findingIP != nil {
 				for _, subnet := range blockedSubnets {
-					if subnet.Contains(msgIP) {
+					if subnet.Contains(findingIP) {
 						isBlocked = true
 						break
 					}
@@ -116,24 +117,82 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	return filtered
 }
 
+func suppressionIPFromFinding(f Finding) net.IP {
+	if strings.TrimSpace(f.SourceIP) != "" {
+		if normalized := normalizeFindingIP(f.SourceIP); normalized != "" {
+			return net.ParseIP(normalized)
+		}
+		return nil
+	}
+	return extractIPFromFindingMessage(f.Message)
+}
+
 // extractIPFromFindingMessage scans a finding message for the first token
 // that parses as a valid IP address and returns it. Returns nil if no IP
 // is found. Used to match reputation findings against blocked IPs and
 // blocked-subnet CIDRs.
 func extractIPFromFindingMessage(msg string) net.IP {
 	for _, field := range strings.Fields(msg) {
-		// Strip common punctuation that may trail an IP in a message.
-		candidate := strings.TrimRight(field, ",:;)([]")
-		if ip := net.ParseIP(candidate); ip != nil {
+		if ip := parseIPMessageField(field); ip != nil {
 			return ip
 		}
-		// Accept key=value tokens such as "ip=5.5.5.5". IP literals never
-		// contain '=', so taking the value side cannot mangle a real IP.
-		if idx := strings.LastIndexByte(candidate, '='); idx >= 0 {
-			if ip := net.ParseIP(candidate[idx+1:]); ip != nil {
-				return ip
-			}
+	}
+	return nil
+}
+
+func parseIPMessageField(field string) net.IP {
+	if ip := parseIPMessageToken(field); ip != nil {
+		return ip
+	}
+	// Accept key=value tokens such as "ip=5.5.5.5". IP literals never
+	// contain '=', so taking the value side cannot mangle a real IP.
+	if idx := strings.LastIndexByte(field, '='); idx >= 0 {
+		return parseIPMessageToken(field[idx+1:])
+	}
+	return nil
+}
+
+func parseIPMessageToken(token string) net.IP {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+
+	if ip := parseNormalizedIP(token); ip != nil {
+		return ip
+	}
+
+	unquoted := strings.Trim(token, "\"'`")
+	if ip := parseNormalizedIP(unquoted); ip != nil {
+		return ip
+	}
+
+	withoutTrailing := strings.TrimRight(unquoted, ",;")
+	if ip := parseNormalizedIP(withoutTrailing); ip != nil {
+		return ip
+	}
+
+	unwrapped := strings.Trim(withoutTrailing, "()[]{}<>")
+	if ip := parseNormalizedIP(unwrapped); ip != nil {
+		return ip
+	}
+
+	if strings.HasSuffix(unwrapped, ":") {
+		withoutColon := strings.TrimSuffix(unwrapped, ":")
+		if ip := parseNormalizedIP(withoutColon); ip != nil {
+			return ip
 		}
+		if ip := parseNormalizedIP(strings.Trim(withoutColon, "()[]{}<>")); ip != nil {
+			return ip
+		}
+	}
+
+	return nil
+}
+
+func parseNormalizedIP(raw string) net.IP {
+	if normalized := normalizeFindingIP(raw); normalized != "" {
+		return net.ParseIP(normalized)
 	}
 	return nil
 }

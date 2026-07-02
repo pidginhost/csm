@@ -1261,6 +1261,54 @@ func TestFilterBlockedAlertsNoParseableIPFailsOpen(t *testing.T) {
 	}
 }
 
+func TestFilterBlockedAlertsUsesStructuredSourceIP(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{"2001:db8::": true}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{
+			Check:    "ip_reputation",
+			Message:  "Known malicious source detected by threat feed",
+			SourceIP: "2001:db8::",
+		},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 0 {
+		t.Fatalf("structured SourceIP should suppress blocked source, got %+v", got)
+	}
+}
+
+func TestFilterBlockedAlertsStructuredSourceIPIsAuthoritative(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{"198.51.100.1": true}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{
+			Check:    "ip_reputation",
+			Message:  "Known malicious IP accessing server: 198.51.100.1 (via proxy)",
+			SourceIP: "203.0.113.8",
+		},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 1 {
+		t.Fatalf("unblocked structured SourceIP must keep finding visible, got %+v", got)
+	}
+}
+
 func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
 	// IPv6 comparison must be canonical: a long-form blocked entry
 	// suppresses the short-form finding, while a distinct address that
@@ -1269,7 +1317,6 @@ func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
 	BlockedIPsFunc = func() map[string]bool {
 		return map[string]bool{
 			"2001:db8:0:0:0:0:0:1": true,
-			"2001:db8::1":          true,
 		}
 	}
 	t.Cleanup(func() { BlockedIPsFunc = orig })
@@ -1288,6 +1335,26 @@ func TestFilterBlockedAlertsIPv6CanonicalMatch(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Message, "2001:db8::12") {
 		t.Errorf("kept the wrong finding: %+v", got[0])
+	}
+}
+
+func TestFilterBlockedAlertsIPv6TrailingCompression(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = func() map[string]bool {
+		return map[string]bool{"2001:db8::": true}
+	}
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 2001:db8:: (source: abuseipdb)"},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	if len(got) != 0 {
+		t.Fatalf("IPv6 address ending in :: should parse and suppress, got %+v", got)
 	}
 }
 
