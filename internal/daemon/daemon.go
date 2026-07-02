@@ -3137,15 +3137,25 @@ func deployConfigs() {
 	// upgrade path; needs to be executable, not private.
 	_ = os.WriteFile("/opt/csm/deploy.sh", embeddedDeployScript, 0755)
 
-	// ModSecurity virtual patches
+	// ModSecurity virtual patches. modsec2.user.conf is shared with
+	// operator-maintained rules, so the embedded rules go through
+	// checks.MergeModSecUserConfSection: this startup deploy only ever
+	// creates or rewrites CSM's marker-delimited section and every byte
+	// outside it is preserved verbatim.
 	for _, dst := range []string{
 		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
 		"/usr/local/apache/conf/modsec2.user.conf",
 	} {
 		if _, err := os.Stat(filepath.Dir(dst)); err == nil {
-			// #nosec G306 -- Apache reads this ModSecurity config; webserver
-			// runs as a different user.
-			_ = os.WriteFile(dst, embeddedModSec, 0644)
+			existing, readErr := os.ReadFile(dst)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				// Present but unreadable: rewriting blind could destroy
+				// operator rules, so leave the file alone.
+			} else if merged, changed := checks.MergeModSecUserConfSection(existing, embeddedModSec); changed {
+				// #nosec G306 -- Apache reads this ModSecurity config; webserver
+				// runs as a different user.
+				_ = os.WriteFile(dst, merged, 0644)
+			}
 			overridesFile := filepath.Join(filepath.Dir(dst), "modsec2.csm-overrides.conf")
 			modsec.EnsureOverridesInclude(dst, overridesFile)
 			break

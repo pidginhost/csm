@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -497,8 +498,24 @@ func checkPerAccountBypass() []string {
 	return bypassed
 }
 
+// Markers delimiting the CSM-managed section inside modsec2.user.conf.
+// That file is shared with operator-maintained rules (Host-scoped
+// ctl:ruleRemoveById exclusions and the like), so CSM may only ever
+// rewrite the bytes between these two lines. vpLegacyMarker is the header
+// comment of the rules file itself, which is all that pre-delimiter CSM
+// versions wrote; it locates those deployments for upgrade.
+const (
+	vpBeginMarker  = "# BEGIN CSM Custom ModSecurity Rules (managed by CSM - do not edit inside this block)"
+	vpEndMarker    = "# END CSM Custom ModSecurity Rules"
+	vpLegacyMarker = "CSM Custom ModSecurity Rules"
+)
+
 // deployVirtualPatches ensures CSM's custom ModSec rules are installed.
 // These provide virtual patches for known WordPress CVEs.
+//
+// The destination is shared with operator rules, so CSM only ever creates
+// or rewrites its own marker-delimited section; every byte outside the
+// section is preserved verbatim.
 func deployVirtualPatches() {
 	// Possible modsec user config paths
 	destPaths := []string{
@@ -511,6 +528,7 @@ func deployVirtualPatches() {
 	if err != nil {
 		return // no custom rules to deploy
 	}
+	section := buildVPSection(srcData)
 
 	for _, dest := range destPaths {
 		dir := filepath.Dir(dest)
@@ -518,36 +536,130 @@ func deployVirtualPatches() {
 			continue
 		}
 
-		// Check if CSM rules are already included
 		existing, err := osFS.ReadFile(dest)
-		if err == nil && strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
-			// Already deployed - check if rules need updating
-			if string(existing) == string(srcData) {
-				return // up to date
-			}
+		if err != nil && !os.IsNotExist(err) {
+			// Present but unreadable: rewriting blind could destroy
+			// operator rules, so leave this candidate alone.
+			continue
 		}
 
-		// Deploy: if file exists and has non-CSM content, append. Otherwise write.
-		if err == nil && len(existing) > 0 && !strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
-			// Append to existing user config
-			// #nosec G302 G304 -- WAF rule file read by Apache/nginx as a different user; dest is fixed list above.
-			f, err := os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
-			if err != nil {
-				continue
-			}
-			_, _ = f.Write([]byte("\n\n"))
-			_, _ = f.Write(srcData)
-			_ = f.Close()
-		} else {
-			// Write or overwrite
-			// #nosec G306 -- same reason: webserver-readable WAF rule file.
-			_ = os.WriteFile(dest, srcData, 0644)
+		merged, upToDate := mergeVPSection(existing, section)
+		if upToDate {
+			return
+		}
+
+		// #nosec G306 -- WAF rule file read by Apache/nginx as a different user.
+		if err := osFS.WriteFile(dest, merged, 0644); err != nil {
+			continue
 		}
 
 		fmt.Fprintf(os.Stderr, "[%s] Virtual patches deployed to %s\n",
 			time.Now().Format("2006-01-02 15:04:05"), dest)
 		return
 	}
+}
+
+// MergeModSecUserConfSection merges CSM's ModSecurity rules payload into
+// the current contents of a modsec2.user.conf, confining CSM to its
+// marker-delimited section so operator-maintained rules outside the
+// section survive every deploy. It is exported because three call sites
+// write this file (the WAF check cycle here, `csm install`, and the
+// daemon startup config deploy); routing them all through one merge
+// guarantees no caller ever whole-file-overwrites operator rules.
+//
+// existing is the current file contents (nil for a missing file). merged
+// is only meaningful when changed is true; changed=false means the file
+// already carries the wanted section and must not be rewritten.
+func MergeModSecUserConfSection(existing, srcData []byte) (merged []byte, changed bool) {
+	merged, upToDate := mergeVPSection(existing, buildVPSection(srcData))
+	return merged, !upToDate
+}
+
+// buildVPSection wraps the rules payload in the begin/end marker lines.
+// The result is deterministic for a given payload so later cycles can
+// recognize an up-to-date section by byte comparison.
+func buildVPSection(srcData []byte) []byte {
+	section := make([]byte, 0, len(vpBeginMarker)+len(srcData)+len(vpEndMarker)+3)
+	section = append(section, vpBeginMarker...)
+	section = append(section, '\n')
+	section = append(section, srcData...)
+	if len(srcData) > 0 && srcData[len(srcData)-1] != '\n' {
+		section = append(section, '\n')
+	}
+	section = append(section, vpEndMarker...)
+	section = append(section, '\n')
+	return section
+}
+
+// mergeVPSection computes the new content for a modsec user conf so that
+// it carries exactly one copy of the CSM section while every byte outside
+// the section stays untouched. upToDate reports that the file already
+// holds the wanted section and no write is needed.
+func mergeVPSection(existing, section []byte) (merged []byte, upToDate bool) {
+	if len(existing) == 0 {
+		return section, false
+	}
+
+	if begin := markerLineStart(existing, vpBeginMarker); begin >= 0 {
+		if end := vpSectionEnd(existing[begin:]); end >= 0 {
+			if bytes.Equal(existing[begin:begin+end], section) {
+				return nil, true
+			}
+			merged = append(merged, existing[:begin]...)
+			merged = append(merged, section...)
+			merged = append(merged, existing[begin+end:]...)
+			return merged, false
+		}
+	}
+
+	if legacy := markerLineStart(existing, vpLegacyMarker); legacy >= 0 {
+		// Pre-delimiter CSM versions appended the raw rules file, so the
+		// CSM content starts at this header line and runs to EOF.
+		// Replacing from here to EOF upgrades the deployment to the
+		// delimited format while keeping the operator rules that precede
+		// the block; earlier versions overwrote the whole file here,
+		// destroying operator content.
+		merged = append(merged, existing[:legacy]...)
+		merged = append(merged, section...)
+		return merged, false
+	}
+
+	// Operator-only file: append the section, separated by one blank
+	// line, keeping the existing bytes exactly as they are.
+	merged = append(merged, existing...)
+	if existing[len(existing)-1] != '\n' {
+		merged = append(merged, '\n')
+	}
+	merged = append(merged, '\n')
+	merged = append(merged, section...)
+	return merged, false
+}
+
+// markerLineStart returns the offset of the first byte of the line
+// containing marker, or -1 when the marker is absent.
+func markerLineStart(data []byte, marker string) int {
+	idx := bytes.Index(data, []byte(marker))
+	if idx < 0 {
+		return -1
+	}
+	if nl := bytes.LastIndexByte(data[:idx], '\n'); nl >= 0 {
+		return nl + 1
+	}
+	return 0
+}
+
+// vpSectionEnd returns the offset just past the end-marker line (its
+// trailing newline included when present), or -1 when there is no end
+// marker. data must start at the section's begin line.
+func vpSectionEnd(data []byte) int {
+	idx := bytes.Index(data, []byte(vpEndMarker))
+	if idx < 0 {
+		return -1
+	}
+	if nl := bytes.IndexByte(data[idx:], '\n'); nl >= 0 {
+		return idx + nl + 1
+	}
+	return len(data)
 }
 
 // autoUpdateWAFRules triggers ModSecurity vendor rule updates via whmapi1.

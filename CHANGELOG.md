@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CSM's ModSecurity virtual patches are now kept in a marker-delimited section of the shared user rules file, and every deploy path (install, daemon startup, periodic check) rewrites only that section. Previously a redeploy could overwrite the whole file and silently destroy operator-maintained rules.
 - A check that hits its per-scan timeout no longer purges the findings it reported in earlier cycles, and a throttled check that times out keeps its throttle slot so it can retry next cycle instead of waiting out the full window. Throttle stamps are also persisted across clean shutdowns now.
 - A failed threat-feed download no longer wipes that feed's previously loaded IPs and CIDR ranges, and a cycle where every feed fails now retries next cycle instead of serving no feed data for up to 20 hours. Feed CIDR ranges are also cached to disk now, so they survive a daemon restart.
 - csm restore now refuses to run while the daemon is up, matching csm store import. Restoring over the live state database corrupted both the running daemon's state and the restored copy.

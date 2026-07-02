@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/pidginhost/csm/internal/auditd"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/modsec"
@@ -640,30 +641,49 @@ acls=all
 	return nil
 }
 
-// DeployModSecRules copies CSM's ModSecurity virtual patches.
-func (inst *Installer) DeployModSecRules() {
-	src := "/opt/csm/configs/csm_modsec_custom.conf"
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return
-	}
-
-	dests := []string{
+// ModSec rule deploy paths. Package-level so tests can point them at a
+// temp tree, same as the phpShield path variables above.
+var (
+	modsecRulesSrcPath  = "/opt/csm/configs/csm_modsec_custom.conf"
+	modsecUserConfDests = []string{
 		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
 		"/usr/local/apache/conf/modsec2.user.conf",
 	}
-	for _, dest := range dests {
+)
+
+// DeployModSecRules installs CSM's ModSecurity virtual patches.
+//
+// modsec2.user.conf is shared with operator-maintained rules, so the
+// rules go through checks.MergeModSecUserConfSection: CSM only ever
+// creates or rewrites its marker-delimited section and every byte
+// outside it is preserved verbatim.
+func (inst *Installer) DeployModSecRules() {
+	srcData, err := os.ReadFile(modsecRulesSrcPath)
+	if err != nil {
+		return
+	}
+
+	for _, dest := range modsecUserConfDests {
 		if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
 			continue
 		}
-		data, _ := os.ReadFile(src)
-		// #nosec G306 G703 -- Apache reads ModSecurity configs; webserver
-		// runs as a different user. `dest` iterates a literal path slice.
-		if err := os.WriteFile(dest, data, 0644); err == nil {
-			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
-			overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
-			modsec.EnsureOverridesInclude(dest, overridesFile)
-			return
+		existing, err := os.ReadFile(dest)
+		if err != nil && !os.IsNotExist(err) {
+			// Present but unreadable: rewriting blind could destroy
+			// operator rules, so leave this candidate alone.
+			continue
 		}
+		if merged, changed := checks.MergeModSecUserConfSection(existing, srcData); changed {
+			// #nosec G306 G703 -- Apache reads ModSecurity configs; webserver
+			// runs as a different user. `dest` iterates a literal path slice.
+			if err := os.WriteFile(dest, merged, 0644); err != nil {
+				continue
+			}
+			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
+		}
+		overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
+		modsec.EnsureOverridesInclude(dest, overridesFile)
+		return
 	}
 }
 
