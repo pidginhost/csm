@@ -9,12 +9,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
+)
+
+var (
+	firewallDeadmanMu  sync.Mutex
+	firewallDeadmanSeq atomic.Uint64
 )
 
 // Subnet / batch / meta firewall handlers: operations that either span
@@ -201,6 +208,9 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 }
 
 func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+
 	cfg := c.d.currentCfg()
 	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(cfg.StatePath)
 
@@ -231,10 +241,18 @@ func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) 
 // whereas the reverse order would leave the candidate applied with no
 // record that it was never confirmed (a permanent lockout).
 func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, window time.Duration, apply func() error) error {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+
 	if err := os.MkdirAll(filepath.Dir(rollbackFile), 0700); err != nil {
 		return fmt.Errorf("creating firewall rollback dir: %w", err)
 	}
-	if err := removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFile); err != nil {
+	if _, err := os.Stat(confirmFile); err == nil {
+		return fmt.Errorf("firewall confirmation already pending; run `csm firewall confirm` or wait for rollback before applying another confirmed ruleset")
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking confirm marker: %w", err)
+	}
+	if err := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); err != nil {
 		return err
 	}
 	if err := writeFirewallRollbackFile(rollbackFile); err != nil {
@@ -242,7 +260,7 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 	}
 
 	deadline := time.Now().Add(window)
-	marker := []byte(deadline.Format(time.RFC3339))
+	marker := newFirewallConfirmMarker(deadline)
 	if err := os.WriteFile(confirmFile, marker, 0600); err != nil {
 		_ = removeFirewallRollbackFiles(confirmFile, rollbackFile)
 		return fmt.Errorf("writing confirm marker: %w", err)
@@ -264,7 +282,7 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 		return fmt.Errorf("applying ruleset: %w; previous ruleset restored", err)
 	}
 
-	armFirewallDeadman(confirmFile, rollbackFile, marker, window)
+	armFirewallDeadman(confirmFile, rollbackFile, marker, time.Until(deadline))
 	return nil
 }
 
@@ -275,6 +293,8 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 func armFirewallDeadman(confirmFile, rollbackFile string, marker []byte, wait time.Duration) {
 	obs.SafeGo("fw-apply-confirmed-rollback", func() {
 		time.Sleep(wait)
+		firewallDeadmanMu.Lock()
+		defer firewallDeadmanMu.Unlock()
 		if err := restoreFirewallRollback(confirmFile, rollbackFile, marker); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] Firewall rollback failed: %v\n", ts(), err)
 		}
@@ -289,6 +309,9 @@ func armFirewallDeadman(confirmFile, rollbackFile string, marker []byte, wait ti
 // candidate ruleset the startup Apply just re-applied, and before the
 // control listener starts so confirm/cancel cannot race the recovery.
 func (d *Daemon) recoverFirewallApplyConfirmed() {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+
 	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(d.cfg.StatePath)
 
 	marker, err := os.ReadFile(confirmFile) // #nosec G304 -- CSM-owned marker under the state dir.
@@ -306,7 +329,7 @@ func (d *Daemon) recoverFirewallApplyConfirmed() {
 		return
 	}
 
-	deadline, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(string(marker)))
+	deadline, parseErr := parseFirewallConfirmDeadline(marker)
 	if parseErr != nil {
 		// Fail safe: an unconfirmed ruleset must never outlive its
 		// deadline, and a corrupt marker gives no deadline to honour.
@@ -334,6 +357,19 @@ func (d *Daemon) recoverFirewallApplyConfirmed() {
 	}
 	csmlog.Warn("firewall apply-confirmed window expired during restart; previous ruleset restored",
 		"deadline", deadline.Format(time.RFC3339))
+}
+
+func newFirewallConfirmMarker(deadline time.Time) []byte {
+	seq := firewallDeadmanSeq.Add(1)
+	return []byte(fmt.Sprintf("%s\n%d", deadline.UTC().Format(time.RFC3339Nano), seq))
+}
+
+func parseFirewallConfirmDeadline(marker []byte) (time.Time, error) {
+	text := strings.TrimSpace(string(marker))
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	return time.Parse(time.RFC3339Nano, text)
 }
 
 func firewallRollbackFiles(statePath string) (confirmFile, rollbackFile, legacyRollbackFile string) {

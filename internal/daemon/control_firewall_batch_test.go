@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -142,6 +143,24 @@ func TestHandleFirewallConfirmRemovesLegacyRollbackScript(t *testing.T) {
 	requirePathMissing(t, legacyRollbackFile)
 }
 
+func TestFirewallConfirmMarkerKeepsSameDeadlineWindowsDistinct(t *testing.T) {
+	deadline := time.Date(2026, 7, 3, 10, 11, 12, 123456789, time.UTC)
+
+	first := newFirewallConfirmMarker(deadline)
+	second := newFirewallConfirmMarker(deadline)
+	if bytes.Equal(first, second) {
+		t.Fatalf("markers for separate windows are identical: %q", first)
+	}
+
+	got, err := parseFirewallConfirmDeadline(first)
+	if err != nil {
+		t.Fatalf("parse marker deadline: %v", err)
+	}
+	if !got.Equal(deadline) {
+		t.Fatalf("parsed deadline = %v, want %v", got, deadline)
+	}
+}
+
 // setupFirewallDeadmanState creates the firewall state dir and returns the
 // marker paths plus a Daemon wired to it and the fake-nft "seen" path.
 func setupFirewallDeadmanState(t *testing.T) (d *Daemon, confirmFile, rollbackFile, legacyRollbackFile, seenFile string) {
@@ -192,7 +211,6 @@ func TestRecoverFirewallApplyConfirmedFutureKeepsWindowFiles(t *testing.T) {
 func TestRecoverFirewallApplyConfirmedFutureRestoresAtDeadline(t *testing.T) {
 	d, confirmFile, rollbackFile, _, _ := setupFirewallDeadmanState(t)
 	// Sub-second deadline so the re-armed timer fires inside the test.
-	// time.Parse accepts fractional seconds even with the RFC3339 layout.
 	writeTestFile(t, confirmFile, time.Now().Add(300*time.Millisecond).UTC().Format(time.RFC3339Nano))
 	writeTestFile(t, rollbackFile, "flush ruleset\n")
 
@@ -254,7 +272,7 @@ func TestApplyFirewallDeadmanWritesMarkerBeforeApply(t *testing.T) {
 		t.Fatalf("applyFirewallDeadman: %v", err)
 	}
 
-	deadline, err := time.Parse(time.RFC3339, markerAtApply)
+	deadline, err := parseFirewallConfirmDeadline([]byte(markerAtApply))
 	if err != nil {
 		t.Fatalf("marker at apply time = %q, want RFC3339 deadline: %v", markerAtApply, err)
 	}
@@ -263,6 +281,104 @@ func TestApplyFirewallDeadmanWritesMarkerBeforeApply(t *testing.T) {
 	}
 	requirePathExists(t, confirmFile)
 	requirePathExists(t, rollbackFile)
+}
+
+func TestApplyFirewallDeadmanRejectsPendingWindowWithoutRemovingFiles(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+	writeTestFile(t, confirmFile, "existing-window")
+	writeTestFile(t, rollbackFile, "old snapshot")
+	writeTestFile(t, legacyRollbackFile, "old legacy")
+	applyCalled := false
+
+	err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, time.Minute, func() error {
+		applyCalled = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("applyFirewallDeadman succeeded with a pending window")
+	}
+	if !strings.Contains(err.Error(), "confirmation already pending") {
+		t.Fatalf("error = %q, want pending-window error", err.Error())
+	}
+	if applyCalled {
+		t.Fatal("apply callback ran despite a pending window")
+	}
+	requireFileContent(t, confirmFile, "existing-window")
+	requireFileContent(t, rollbackFile, "old snapshot")
+	requireFileContent(t, legacyRollbackFile, "old legacy")
+}
+
+func TestApplyFirewallDeadmanHonorsPersistedDeadlineAfterSlowApply(t *testing.T) {
+	_, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+
+	if err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, time.Millisecond, func() error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}); err != nil {
+		t.Fatalf("applyFirewallDeadman: %v", err)
+	}
+
+	waitUntil := time.Now().Add(5 * time.Second)
+	for {
+		_, confirmErr := os.Stat(confirmFile)
+		_, rollbackErr := os.Stat(rollbackFile)
+		if os.IsNotExist(confirmErr) && os.IsNotExist(rollbackErr) {
+			return
+		}
+		if time.Now().After(waitUntil) {
+			t.Fatal("deadman did not restore after the persisted deadline passed during apply")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestHandleFirewallConfirmWaitsForApplyConfirmedProtocol(t *testing.T) {
+	d, confirmFile, rollbackFile, legacyRollbackFile, _ := setupFirewallDeadmanState(t)
+	c := &ControlListener{d: d}
+	markerWritten := make(chan struct{})
+	releaseApply := make(chan struct{})
+	applyDone := make(chan error, 1)
+
+	go func() {
+		applyDone <- applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile, time.Minute, func() error {
+			close(markerWritten)
+			<-releaseApply
+			return nil
+		})
+	}()
+
+	select {
+	case <-markerWritten:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply-confirmed did not reach apply phase")
+	}
+
+	confirmDone := make(chan error, 1)
+	go func() {
+		_, err := c.handleFirewallConfirm(nil)
+		confirmDone <- err
+	}()
+
+	select {
+	case err := <-confirmDone:
+		t.Fatalf("confirm returned while apply-confirmed protocol was in progress: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseApply)
+	if err := <-applyDone; err != nil {
+		t.Fatalf("applyFirewallDeadman: %v", err)
+	}
+	select {
+	case err := <-confirmDone:
+		if err != nil {
+			t.Fatalf("handleFirewallConfirm: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("confirm did not finish after apply-confirmed completed")
+	}
+	requirePathMissing(t, confirmFile)
+	requirePathMissing(t, rollbackFile)
 }
 
 func TestApplyFirewallDeadmanApplyFailureRestoresPreviousRuleset(t *testing.T) {
@@ -364,6 +480,17 @@ func requirePathExists(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("%s should exist: %v", filepath.Base(path), err)
+	}
+}
+
+func requireFileContent(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", filepath.Base(path), err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", filepath.Base(path), got, want)
 	}
 }
 
