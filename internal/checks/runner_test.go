@@ -630,6 +630,170 @@ func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
 	}
 }
 
+// --- Timed-out checks keep prior findings -----------------------------
+
+// A check that blows its per-check budget must stay OUT of the per-scan
+// purge list. The downstream purge+merge would otherwise wipe every
+// finding the check emitted in earlier cycles while merging nothing
+// back (the timed-out run returned no results) - e.g. a webshells check
+// exceeding its budget on a loaded host made all active webshell
+// findings vanish exactly when the box was busiest. Completed siblings
+// and disabled checks keep normal purge semantics.
+func TestRunParallelTimedOutCheckExcludedFromPurge(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "slow_check", Severity: alert.Critical, Message: "old slow finding"},
+		{Check: "fast_check", Severity: alert.Warning, Message: "old fast finding"},
+		{Check: "disabled_check", Severity: alert.Warning, Message: "old disabled finding"},
+	})
+
+	prevTimeout := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = prevTimeout })
+	timeoutForFunc = func(string) time.Duration { return 25 * time.Millisecond }
+
+	checks := []namedCheck{
+		{"slow_check", func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			<-ctx.Done()
+			return nil
+		}},
+		{"fast_check", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return []alert.Finding{{Check: "fast_check", Severity: alert.Warning, Message: "new fast finding"}}
+		}},
+		{"disabled_check", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return nil
+		}},
+	}
+
+	cfg := &config.Config{DisabledChecks: []string{"disabled_check"}}
+	findings, purge := runParallel(cfg, st, checks, "test", false)
+
+	if slices.Contains(purge, "slow_check") {
+		t.Fatalf("timed-out slow_check must stay out of the purge list: %v", purge)
+	}
+	if !slices.Contains(purge, "fast_check") {
+		t.Fatalf("completed fast_check missing from purge list: %v", purge)
+	}
+	if !slices.Contains(purge, "disabled_check") {
+		t.Fatalf("disabled_check missing from purge list: %v", purge)
+	}
+	if !containsFindingCheck(findings, "check_timeout") {
+		t.Fatalf("timed-out check did not emit check_timeout warning: %+v", findings)
+	}
+
+	StoreLatestScanFindings(st, purge, findings)
+	got := st.LatestFindings()
+	if !containsFindingCheck(got, "slow_check") {
+		t.Fatalf("timed-out check's previous finding was purged: %+v", got)
+	}
+	var fastMsgs []string
+	for _, f := range got {
+		if f.Check == "fast_check" {
+			fastMsgs = append(fastMsgs, f.Message)
+		}
+	}
+	if len(fastMsgs) != 1 || fastMsgs[0] != "new fast finding" {
+		t.Fatalf("completed check not purged+merged, fast_check messages = %v", fastMsgs)
+	}
+	if containsFindingCheck(got, "disabled_check") {
+		t.Fatalf("disabled check's stale finding survived purge: %+v", got)
+	}
+}
+
+// A throttled check that times out must not consume its throttle slot:
+// the next scheduling window must still allow a retry instead of the
+// check forfeiting the whole interval with zero results stored.
+func TestRunParallelThrottledCheckTimeoutKeepsThrottleSlot(t *testing.T) {
+	const name = "test_throttled_timeout"
+	prev, had := checkThrottleMin[name]
+	checkThrottleMin[name] = 60
+	t.Cleanup(func() {
+		if had {
+			checkThrottleMin[name] = prev
+		} else {
+			delete(checkThrottleMin, name)
+		}
+	})
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	prevTimeout := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = prevTimeout })
+	timeoutForFunc = func(string) time.Duration { return 25 * time.Millisecond }
+
+	var ran atomic.Int32
+	checks := []namedCheck{
+		{name, func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			ran.Add(1)
+			<-ctx.Done()
+			return nil
+		}},
+	}
+	cfg := &config.Config{}
+
+	_, _ = runParallel(cfg, st, checks, "test", false)
+	if got := ran.Load(); got != 1 {
+		t.Fatalf("first cycle: check ran %d time(s), want 1", got)
+	}
+
+	_, _ = runParallel(cfg, st, checks, "test", false)
+	if got := ran.Load(); got != 2 {
+		t.Fatalf("second cycle after timeout: check ran %d time(s), want 2 (timeout must not stamp the throttle)", got)
+	}
+}
+
+// A throttled check that completes stamps its throttle slot, so it does
+// not rerun within the window. Pins the stamp to check COMPLETION (not
+// scheduling) together with the timeout test above.
+func TestRunParallelThrottledCheckCompletionStampsThrottle(t *testing.T) {
+	const name = "test_throttled_complete"
+	prev, had := checkThrottleMin[name]
+	checkThrottleMin[name] = 60
+	t.Cleanup(func() {
+		if had {
+			checkThrottleMin[name] = prev
+		} else {
+			delete(checkThrottleMin, name)
+		}
+	})
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	var ran atomic.Int32
+	checks := []namedCheck{
+		{name, func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			ran.Add(1)
+			return []alert.Finding{{Check: name, Severity: alert.Warning, Message: "fired"}}
+		}},
+	}
+	cfg := &config.Config{}
+
+	_, purge1 := runParallel(cfg, st, checks, "test", false)
+	if got := ran.Load(); got != 1 {
+		t.Fatalf("first cycle: check ran %d time(s), want 1", got)
+	}
+	if !slices.Contains(purge1, name) {
+		t.Fatalf("first cycle: completed throttled check missing from purge list: %v", purge1)
+	}
+
+	_, _ = runParallel(cfg, st, checks, "test", false)
+	if got := ran.Load(); got != 1 {
+		t.Fatalf("second cycle within window: check ran %d time(s), want 1 (completion must stamp the throttle)", got)
+	}
+}
+
 // --- Per-check timeout budgets ---------------------------------------
 
 // TestTimeoutForHeavyChecksGetExpandedBudget pins the heavy-filesystem

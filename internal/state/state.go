@@ -298,20 +298,60 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 	}
 }
 
+// ShouldRunThrottled reports whether the throttle window for checkName has
+// elapsed, consuming the slot when it allows. Use only when the throttled
+// work cannot fail or time out after scheduling; otherwise pair the
+// read-only ThrottleAllows probe with MarkThrottledRan on completion so a
+// failed run does not forfeit its slot.
 func (s *Store) ShouldRunThrottled(checkName string, intervalMin int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("_throttle:%s", checkName)
+	key := throttleKey(checkName)
 	entry, exists := s.entries[key]
 	if !exists {
 		s.entries[key] = &Entry{LastSeen: time.Now()}
+		s.dirty = true
 		return true
 	}
 	if time.Since(entry.LastSeen) >= time.Duration(intervalMin)*time.Minute {
 		entry.LastSeen = time.Now()
+		s.dirty = true
 		return true
 	}
 	return false
+}
+
+// ThrottleAllows reports whether the throttle window for checkName has
+// elapsed WITHOUT consuming the slot. Callers stamp the slot with
+// MarkThrottledRan only after the work completes, so a check that times
+// out keeps its slot and may retry on the next cycle instead of waiting
+// out the full window with nothing stored.
+func (s *Store) ThrottleAllows(checkName string, intervalMin int) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, exists := s.entries[throttleKey(checkName)]
+	if !exists {
+		return true
+	}
+	return time.Since(entry.LastSeen) >= time.Duration(intervalMin)*time.Minute
+}
+
+// MarkThrottledRan stamps the throttle slot for checkName. Call only after
+// the throttled work actually completed, never at scheduling time.
+func (s *Store) MarkThrottledRan(checkName string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := throttleKey(checkName)
+	if entry, exists := s.entries[key]; exists {
+		entry.LastSeen = time.Now()
+	} else {
+		s.entries[key] = &Entry{LastSeen: time.Now()}
+	}
+	s.dirty = true
+}
+
+func throttleKey(checkName string) string {
+	return "_throttle:" + checkName
 }
 
 func (s *Store) GetRaw(key string) (string, bool) {

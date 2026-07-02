@@ -337,6 +337,88 @@ func TestShouldRunThrottledAllowsAfterInterval(t *testing.T) {
 	}
 }
 
+// STO-14: a throttle stamp is a state mutation; without the dirty flag
+// the stamp is lost on shutdown unless some other mutation happens to
+// flush it, letting throttled work rerun early after every restart.
+func TestShouldRunThrottledSetsDirtyOnStamp(t *testing.T) {
+	s := openTestStore(t)
+	s.ShouldRunThrottled("checkDirty", 60)
+	s.mu.RLock()
+	dirty := s.dirty
+	s.mu.RUnlock()
+	if !dirty {
+		t.Error("ShouldRunThrottled must set the dirty flag when it stamps the slot")
+	}
+}
+
+// --- ThrottleAllows / MarkThrottledRan ----------------------------------
+
+// ThrottleAllows is the read-only scheduling probe: it must not consume
+// the slot, so a check that later fails or times out can retry next cycle.
+func TestThrottleAllowsIsReadOnly(t *testing.T) {
+	s := openTestStore(t)
+	if !s.ThrottleAllows("checkP", 60) {
+		t.Fatal("first probe should be allowed")
+	}
+	if !s.ThrottleAllows("checkP", 60) {
+		t.Error("read-only probe consumed the throttle slot")
+	}
+	s.mu.RLock()
+	dirty := s.dirty
+	s.mu.RUnlock()
+	if dirty {
+		t.Error("ThrottleAllows must not mutate state")
+	}
+}
+
+func TestThrottleAllowsRespectsExistingStamp(t *testing.T) {
+	s := openTestStore(t)
+	s.mu.Lock()
+	s.entries["_throttle:checkQ"] = &Entry{LastSeen: time.Now()}
+	s.mu.Unlock()
+	if s.ThrottleAllows("checkQ", 60) {
+		t.Error("fresh stamp within interval should suppress")
+	}
+
+	s.mu.Lock()
+	s.entries["_throttle:checkQ"] = &Entry{LastSeen: time.Now().Add(-120 * time.Minute)}
+	s.mu.Unlock()
+	if !s.ThrottleAllows("checkQ", 60) {
+		t.Error("expired stamp should allow")
+	}
+}
+
+func TestMarkThrottledRanStampsSlot(t *testing.T) {
+	s := openTestStore(t)
+	s.MarkThrottledRan("checkR")
+	if s.ThrottleAllows("checkR", 60) {
+		t.Error("slot should be consumed after MarkThrottledRan")
+	}
+}
+
+func TestMarkThrottledRanRefreshesExistingSlot(t *testing.T) {
+	s := openTestStore(t)
+	s.mu.Lock()
+	s.entries["_throttle:checkS"] = &Entry{LastSeen: time.Now().Add(-120 * time.Minute)}
+	s.mu.Unlock()
+
+	s.MarkThrottledRan("checkS")
+	if s.ThrottleAllows("checkS", 60) {
+		t.Error("refreshed slot should suppress within the interval")
+	}
+}
+
+func TestMarkThrottledRanSetsDirty(t *testing.T) {
+	s := openTestStore(t)
+	s.MarkThrottledRan("checkT")
+	s.mu.RLock()
+	dirty := s.dirty
+	s.mu.RUnlock()
+	if !dirty {
+		t.Error("MarkThrottledRan must set the dirty flag so the stamp persists")
+	}
+}
+
 // --- GetRaw / SetRaw ---------------------------------------------------
 
 func TestSetRawThenGetRaw(t *testing.T) {
