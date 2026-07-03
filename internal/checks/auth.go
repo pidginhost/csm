@@ -76,8 +76,11 @@ func CheckShadowChanges(ctx context.Context, cfg *config.Config, store *state.St
 				}
 
 				// Suppress alerts for password changes made by infra IPs
-				// (admin-initiated password resets via WHM/xml-api)
-				if isInfraShadowChange(cfg) {
+				// (admin-initiated password resets via WHM/xml-api), but only
+				// when the explaining log event is newer than the shadow file's
+				// last-seen mtime. A stale infra event from a prior change must
+				// not mask a fresh, unexplained /etc/shadow edit.
+				if isInfraShadowChange(cfg, lastMtime) {
 					// Still update state, but don't alert
 					goto storeState
 				}
@@ -762,21 +765,52 @@ var shadowMutatingWHMEndpoints = []string{
 // both sources came from an infra IP (or loopback / "internal"). Any
 // successful external API call or unparseable source short-circuits to false
 // so a stolen token or compromised neighbour does not get a free suppression.
-func isInfraShadowChange(cfg *config.Config) bool {
-	sessFound, sessAllInfra := scanSessionLogShadow(cfg)
-	tokFound, tokAllInfra := scanAPITokensLogShadow(cfg)
+// since is the shadow file's previously recorded mtime. Only log events newer
+// than since can explain the modification under investigation; stale tail lines
+// (a legit infra password change from days ago) must not suppress a fresh,
+// unrelated /etc/shadow edit.
+func isInfraShadowChange(cfg *config.Config, since time.Time) bool {
+	sessFound, sessAllInfra := scanSessionLogShadow(cfg, since)
+	tokFound, tokAllInfra := scanAPITokensLogShadow(cfg, since)
 	return (sessFound || tokFound) && sessAllInfra && tokAllInfra
+}
+
+// parseCPanelLogTime reads the leading "[<timestamp>]" of a cPanel session_log
+// or api_tokens_log line. Both the timezone-qualified form
+// ("2006-01-02 15:04:05 -0700") and the older bare form ("2006-01-02 15:04:05",
+// interpreted in the host's local zone) are accepted. Returns ok=false when no
+// bracketed timestamp is present or it does not parse.
+func parseCPanelLogTime(line string) (time.Time, bool) {
+	open := strings.IndexByte(line, '[')
+	if open < 0 {
+		return time.Time{}, false
+	}
+	end := strings.IndexByte(line[open:], ']')
+	if end < 0 {
+		return time.Time{}, false
+	}
+	stamp := strings.TrimSpace(line[open+1 : open+end])
+	for _, layout := range []string{"2006-01-02 15:04:05 -0700", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, stamp, time.Local); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // scanSessionLogShadow walks the cPanel session log for PURGE password_change
 // events and reports whether any were seen and whether every non-loopback,
 // non-"internal" source IP belonged to the infra allowlist.
-func scanSessionLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
+func scanSessionLogShadow(cfg *config.Config, since time.Time) (foundAny, allInfra bool) {
 	allInfra = true
 	lines := tailFile("/usr/local/cpanel/logs/session_log", 100)
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
 		if !strings.Contains(line, "PURGE") || !strings.Contains(line, "password_change") {
+			continue
+		}
+		if ts, ok := parseCPanelLogTime(line); !ok || !ts.After(since) {
+			// Stale (or untimed) line cannot explain this modification.
 			continue
 		}
 		foundAny = true
@@ -807,7 +841,7 @@ func scanSessionLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
 // scanAPITokensLogShadow walks the WHM api_tokens_log for recent calls to
 // JSON-API endpoints that rewrite /etc/shadow. Returns (foundAny, allInfra)
 // with the same semantics as scanSessionLogShadow.
-func scanAPITokensLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
+func scanAPITokensLogShadow(cfg *config.Config, since time.Time) (foundAny, allInfra bool) {
 	allInfra = true
 	lines := tailFile("/usr/local/cpanel/logs/api_tokens_log", 200)
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -816,6 +850,10 @@ func scanAPITokensLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
 			continue
 		}
 		if !apiTokensHTTPStatusOK(line) {
+			continue
+		}
+		if ts, ok := parseCPanelLogTime(line); !ok || !ts.After(since) {
+			// Stale (or untimed) line cannot explain this modification.
 			continue
 		}
 		foundAny = true

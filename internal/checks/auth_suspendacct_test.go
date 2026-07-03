@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -41,7 +42,7 @@ func TestIsInfraShadowChange_SuspendAcctFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: suspendacct from infra IP must suppress shadow_change alert")
 	}
 }
@@ -51,7 +52,7 @@ func TestIsInfraShadowChange_SuspendAcctFromExternalIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: suspendacct from external IP must NOT suppress (possible attack)")
 	}
 }
@@ -61,7 +62,7 @@ func TestIsInfraShadowChange_UnsuspendAcctFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: unsuspendacct from infra IP must suppress")
 	}
 }
@@ -71,7 +72,7 @@ func TestIsInfraShadowChange_PasswdEndpointFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: WHM passwd endpoint from infra IP must suppress")
 	}
 }
@@ -81,7 +82,7 @@ func TestIsInfraShadowChange_CreateAcctFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: createacct from infra IP must suppress (adds shadow entry)")
 	}
 }
@@ -91,7 +92,7 @@ func TestIsInfraShadowChange_RemoveAcctFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: removeacct from infra IP must suppress (removes shadow entry)")
 	}
 }
@@ -101,7 +102,7 @@ func TestIsInfraShadowChange_KillAcctFromInfraIP(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: killacct from infra IP must suppress (removes shadow entry)")
 	}
 }
@@ -112,7 +113,7 @@ func TestIsInfraShadowChange_MixedInfraSessionExternalToken(t *testing.T) {
 	mockShadowLogs(t, sessionLog, apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: external suspendacct present alongside infra password_change must NOT suppress")
 	}
 }
@@ -122,7 +123,7 @@ func TestIsInfraShadowChange_MalformedSessionSourceDoesNotSuppress(t *testing.T)
 	mockShadowLogs(t, sessionLog, "")
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: session password_change without a source IP must not suppress")
 	}
 }
@@ -135,7 +136,7 @@ func TestIsInfraShadowChange_NonShadowEndpointIgnored(t *testing.T) {
 	// listaccts does not touch /etc/shadow, so api_tokens_log contributes
 	// neither foundAny nor allInfra=false. With no session_log events either,
 	// foundAny stays false -> return false (no suppression signal).
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: non-shadow endpoints must not produce suppression signal")
 	}
 }
@@ -145,7 +146,7 @@ func TestIsInfraShadowChange_SuspendAcctLoopback(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: suspendacct over loopback must suppress")
 	}
 }
@@ -155,7 +156,7 @@ func TestIsInfraShadowChange_SuspendAcctIPv6Loopback(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: suspendacct over IPv6 loopback must suppress")
 	}
 }
@@ -165,7 +166,7 @@ func TestIsInfraShadowChange_FailedSuspendAcctDoesNotSuppress(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: failed suspendacct must not suppress an unrelated shadow_change")
 	}
 }
@@ -175,7 +176,7 @@ func TestIsInfraShadowChange_MissingAPITokenHostDoesNotSuppress(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: successful API token line without host must not suppress")
 	}
 }
@@ -185,7 +186,7 @@ func TestIsInfraShadowChange_EndpointMustMatchRequestPath(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: endpoint substring matches must not suppress")
 	}
 }
@@ -197,7 +198,7 @@ func TestIsInfraShadowChange_MultipleSuspendsAllInfra(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected true: multiple suspends all from infra must suppress")
 	}
 }
@@ -209,7 +210,7 @@ func TestIsInfraShadowChange_OneInfraOneExternalSuspend(t *testing.T) {
 	mockShadowLogs(t, "", apiTokens)
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Fatal("expected false: any external suspendacct must defeat suppression")
 	}
 }

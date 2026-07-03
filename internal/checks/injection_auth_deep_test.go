@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -83,7 +84,7 @@ func TestIsInfraShadowChange_InfraIP(t *testing.T) {
 	})
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Error("expected true for infra IP")
 	}
 }
@@ -102,7 +103,7 @@ func TestIsInfraShadowChange_ExternalIP(t *testing.T) {
 	})
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Error("expected false for external IP")
 	}
 }
@@ -121,7 +122,7 @@ func TestIsInfraShadowChange_NoPurge(t *testing.T) {
 	})
 
 	cfg := &config.Config{}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Error("expected false when no PURGE events")
 	}
 }
@@ -132,7 +133,7 @@ func TestIsInfraShadowChange_NoFile(t *testing.T) {
 	})
 
 	cfg := &config.Config{}
-	if isInfraShadowChange(cfg) {
+	if isInfraShadowChange(cfg, time.Time{}) {
 		t.Error("expected false when no session_log")
 	}
 }
@@ -154,7 +155,7 @@ func TestIsInfraShadowChange_InternalEvent(t *testing.T) {
 	// "internal" events are counted as found (foundAny=true) and are not
 	// checked against isInfraIP (continue before the check), so allInfra
 	// stays true. Result: foundAny && allInfra == true.
-	if !isInfraShadowChange(cfg) {
+	if !isInfraShadowChange(cfg, time.Time{}) {
 		t.Error("expected true when only internal events (they are safe)")
 	}
 }

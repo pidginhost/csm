@@ -364,6 +364,6 @@ func TestIsInfraShadowChangeExercise(t *testing.T) {
 	})
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.1"}}
-	result := isInfraShadowChange(cfg)
+	result := isInfraShadowChange(cfg, time.Time{})
 	_ = result
 }
