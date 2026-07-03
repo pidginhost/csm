@@ -798,6 +798,17 @@ func parseCPanelLogTime(line string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func cpanelShadowLogAfterSince(ts, since time.Time) bool {
+	if since.IsZero() {
+		return true
+	}
+	// cPanel logs only whole seconds, while shadow mtimes can carry
+	// subsecond precision. Treat the stored mtime's logged second as
+	// in-window so an infra event at 10:00:00.900 is not rejected just
+	// because the prior mtime was 10:00:00.500.
+	return !ts.Before(since.Truncate(time.Second))
+}
+
 // scanSessionLogShadow walks the cPanel session log for PURGE password_change
 // events and reports whether any were seen and whether every non-loopback,
 // non-"internal" source IP belonged to the infra allowlist.
@@ -809,8 +820,16 @@ func scanSessionLogShadow(cfg *config.Config, since time.Time) (foundAny, allInf
 		if !strings.Contains(line, "PURGE") || !strings.Contains(line, "password_change") {
 			continue
 		}
-		if ts, ok := parseCPanelLogTime(line); !ok || !ts.After(since) {
-			// Stale (or untimed) line cannot explain this modification.
+		ts, ok := parseCPanelLogTime(line)
+		if !ok {
+			// A shadow-mutating line without a usable timestamp cannot prove
+			// it is stale. Fail toward alerting instead of suppressing.
+			foundAny = true
+			allInfra = false
+			return
+		}
+		if !cpanelShadowLogAfterSince(ts, since) {
+			// Stale line cannot explain this modification.
 			continue
 		}
 		foundAny = true
@@ -852,8 +871,16 @@ func scanAPITokensLogShadow(cfg *config.Config, since time.Time) (foundAny, allI
 		if !apiTokensHTTPStatusOK(line) {
 			continue
 		}
-		if ts, ok := parseCPanelLogTime(line); !ok || !ts.After(since) {
-			// Stale (or untimed) line cannot explain this modification.
+		ts, ok := parseCPanelLogTime(line)
+		if !ok {
+			// A shadow-mutating line without a usable timestamp cannot prove
+			// it is stale. Fail toward alerting instead of suppressing.
+			foundAny = true
+			allInfra = false
+			return
+		}
+		if !cpanelShadowLogAfterSince(ts, since) {
+			// Stale line cannot explain this modification.
 			continue
 		}
 		foundAny = true
