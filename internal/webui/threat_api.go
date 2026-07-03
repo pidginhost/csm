@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/threat"
 )
 
@@ -459,6 +460,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 
 	count := 0
 	succeeded := make([]string, 0, len(req.IPs))
+	var removedThreats []undoThreatRow
 	for _, ipStr := range req.IPs {
 		if _, err := parseAndValidateIP(ipStr); err != nil {
 			continue
@@ -482,6 +484,19 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			count++
 
 		case "whitelist":
+			// Capture the live threat row before dropping it so an undo can
+			// restore it exactly, preserving source/expiry, instead of
+			// leaving a whitelisted attacker with no threat record.
+			if sdb := store.Global(); sdb != nil {
+				if e, ok := sdb.GetPermanentBlock(ipStr); ok && !e.Expired(time.Now()) {
+					removedThreats = append(removedThreats, undoThreatRow{
+						IP:        e.IP,
+						Reason:    e.Reason,
+						Source:    e.Source,
+						ExpiresAt: e.ExpiresAt,
+					})
+				}
+			}
 			// Mirror apiThreatWhitelistIP flow
 			if s.blocker != nil {
 				_ = s.blocker.UnblockIP(ipStr)
@@ -516,7 +531,8 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			summary = fmt.Sprintf("Whitelisted %d IPs", count)
 			action = "threat_bulk_whitelist"
 		}
-		undoToken = s.recordUndoEntry(r, action, inverse, summary, undoPayloadIPs{IPs: succeeded})
+		undoToken = s.recordUndoEntry(r, action, inverse, summary,
+			undoPayloadIPs{IPs: succeeded, RestoreThreats: removedThreats})
 	}
 
 	writeJSON(w, map[string]interface{}{

@@ -28,6 +28,20 @@ type undoPayloadIPs struct {
 	IPs     []string `json:"ips"`
 	Reason  string   `json:"reason,omitempty"`
 	Timeout string   `json:"timeout,omitempty"` // ParseDuration-compatible
+	// RestoreThreats carries the threat-DB rows a bulk whitelist removed so
+	// the matching undo can put them back exactly. Only the whitelist path
+	// sets it.
+	RestoreThreats []undoThreatRow `json:"restore_threats,omitempty"`
+}
+
+// undoThreatRow captures a removed threat-DB row's identity so undo can
+// restore it with the same source and expiry, instead of resurrecting an
+// auto-block row as a never-expiring operator block (or vice versa).
+type undoThreatRow struct {
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // recordUndoEntry persists an undo entry for the operator who issued r and
@@ -209,7 +223,7 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		}
 		resp.Count = count
 	case undoInverseThreatWhitelist:
-		resp.Count = s.undoBulkWhitelist(payload.IPs)
+		resp.Count = s.undoBulkWhitelist(payload)
 	case undoInverseThreatUnwhitelist:
 		resp.Count = s.undoBulkUnwhitelist(payload.IPs)
 	case undoInverseFirewallUnblock:
@@ -267,16 +281,46 @@ func (s *Server) undoBulkReblock(ips []string, reason string, timeout time.Durat
 	return count, nil
 }
 
-func (s *Server) undoBulkWhitelist(ips []string) int {
+func (s *Server) undoBulkWhitelist(payload undoPayloadIPs) int {
 	count := 0
-	for _, ip := range ips {
+	for _, ip := range payload.IPs {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
 		if tdb := checks.GetThreatDB(); tdb != nil {
 			tdb.RemoveWhitelist(ip)
 		}
+		// The bulk whitelist added a firewall allow rule; leaving it lets a
+		// mis-whitelisted attacker bypass every future block indefinitely.
+		if s.blocker != nil {
+			if remover, ok := s.blocker.(interface{ RemoveAllowIP(string) error }); ok {
+				_ = remover.RemoveAllowIP(ip)
+			}
+		}
 		count++
+	}
+	// Restore the threat rows the whitelist removed. RemoveWhitelist ran for
+	// every IP above, so the whitelist no longer suppresses these adds.
+	for _, row := range payload.RestoreThreats {
+		if _, err := parseAndValidateIP(row.IP); err != nil {
+			continue
+		}
+		tdb := checks.GetThreatDB()
+		if tdb == nil {
+			continue
+		}
+		if row.Source == store.ThreatSourceAutoBlock {
+			var ttl time.Duration
+			if !row.ExpiresAt.IsZero() {
+				ttl = time.Until(row.ExpiresAt)
+				if ttl <= 0 {
+					continue // already lapsed; nothing worth restoring
+				}
+			}
+			tdb.AddTemporary(row.IP, row.Reason, ttl)
+		} else {
+			tdb.AddPermanent(row.IP, row.Reason)
+		}
 	}
 	return count
 }
