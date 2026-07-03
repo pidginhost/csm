@@ -93,11 +93,17 @@ func (t *smtpProbeTracker) Size() int {
 // non-loopback, and non-infra. Callers enforce this before invoking Record.
 // Returns zero or one finding (no per-call multiplication).
 func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
-	if ip == "" || t.threshold <= 0 {
+	if ip == "" {
 		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// threshold is read under the lock: it is mutable via SetThresholds on a
+	// SIGHUP reload, so a lockless fast-path read here would race the swap.
+	if t.threshold <= 0 {
+		return nil
+	}
 
 	now := t.now()
 	cutoff := now.Add(-t.window)

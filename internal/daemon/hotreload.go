@@ -156,6 +156,10 @@ func (d *Daemon) reloadConfig() {
 	// reputation.verified_bots is a safe field too; push the new list into the
 	// live verifier and re-stamp the PTR cache so changes take effect at once.
 	d.reconcileVerifiedBots()
+
+	// thresholds is a safe block; push the new SMTP/mail brute-force thresholds
+	// into the live trackers so a SIGHUP takes effect without a restart.
+	d.reconcileBruteThresholds()
 }
 
 // activeOrStartupCfg returns the current live config, falling back

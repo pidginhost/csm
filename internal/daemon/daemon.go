@@ -231,6 +231,85 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 	return d
 }
 
+// reconcileBruteThresholds pushes the live config's SMTP/mail brute-force
+// thresholds into the running trackers. The `thresholds` block is tagged
+// hotreload:"safe", so a SIGHUP that only changes those fields reports success;
+// without this push the trackers would keep their startup values until a full
+// restart. Called from the reload success path, mirroring reconcileVerifiedBots.
+func (d *Daemon) reconcileBruteThresholds() {
+	cfg := d.activeOrStartupCfg()
+	if cfg == nil {
+		return
+	}
+	th := cfg.Thresholds
+	if d.smtpAuthTracker != nil {
+		d.smtpAuthTracker.SetThresholds(
+			th.SMTPBruteForceThreshold,
+			th.SMTPBruteForceSubnetThresh,
+			th.SMTPAccountSprayThreshold,
+			time.Duration(th.SMTPBruteForceWindowMin)*time.Minute,
+			time.Duration(th.SMTPBruteForceSuppressMin)*time.Minute,
+			th.SMTPBruteForceMaxTracked,
+		)
+	}
+	if d.smtpProbeTracker != nil {
+		d.smtpProbeTracker.SetThresholds(
+			th.SMTPProbeThreshold,
+			time.Duration(th.SMTPProbeWindowMin)*time.Minute,
+			time.Duration(th.SMTPProbeSuppressMin)*time.Minute,
+			th.SMTPProbeMaxTracked,
+		)
+	}
+	if d.mailAuthTracker != nil {
+		d.mailAuthTracker.SetThresholds(
+			th.MailBruteForceThreshold,
+			th.MailBruteForceSubnetThresh,
+			th.MailAccountSprayThreshold,
+			time.Duration(th.MailBruteForceWindowMin)*time.Minute,
+			time.Duration(th.MailBruteForceSuppressMin)*time.Minute,
+			th.MailBruteForceMaxTracked,
+		)
+	}
+}
+
+// SetThresholds swaps the SMTP auth-brute detector thresholds under the
+// tracker mutex so a SIGHUP reload of the safe `thresholds` block reaches this
+// live tracker. Co-located with reconcileBruteThresholds, its only caller.
+func (t *smtpAuthTracker) SetThresholds(perIP, subnet, accountSpray int, window, suppression time.Duration, maxTracked int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.perIPThreshold = perIP
+	t.subnetThreshold = subnet
+	t.accountSprayThreshold = accountSpray
+	t.window = window
+	t.suppression = suppression
+	t.maxTracked = maxTracked
+}
+
+// SetThresholds swaps the mail auth-brute detector thresholds under the tracker
+// mutex for a live SIGHUP reload.
+func (t *mailAuthTracker) SetThresholds(perIP, subnet, accountSpray int, window, suppression time.Duration, maxTracked int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.perIPThreshold = perIP
+	t.subnetThreshold = subnet
+	t.accountSprayThreshold = accountSpray
+	t.window = window
+	t.suppression = suppression
+	t.maxTracked = maxTracked
+}
+
+// SetThresholds swaps the SMTP connect-probe detector thresholds under the
+// tracker mutex for a live SIGHUP reload.
+func (t *smtpProbeTracker) SetThresholds(threshold int, window, suppression time.Duration, maxTracked int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.threshold = threshold
+	t.window = window
+	t.suppression = suppression
+	t.maxTracked = maxTracked
+}
+
 // SetVersion sets the application version for display in the web UI.
 func (d *Daemon) SetVersion(v string) {
 	d.version = v
