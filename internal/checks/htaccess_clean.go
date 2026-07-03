@@ -101,7 +101,13 @@ var htaccessTrackingHeaders = []string{
 }
 
 var (
-	rePHPHandlerMap = regexp.MustCompile(`(?im)^\s*(AddHandler|SetHandler|ForceType)\s+\S*php\S*\s+([^\n]+)$`)
+	// SetHandler / ForceType take effect with a single argument: they map
+	// EVERY file in the directory to the PHP interpreter, so an uploaded
+	// image runs as PHP. That directory-wide form is the worst case and has
+	// no extension list, so the second argument is optional for them.
+	// AddHandler is inert without an extension list, so it still requires the
+	// trailing token to be a genuine remap.
+	rePHPHandlerMap = regexp.MustCompile(`(?im)^\s*(?:(?:SetHandler|ForceType)\s+\S*php\S*(?:\s+\S[^\n]*)?|AddHandler\s+\S*php\S*\s+\S[^\n]*)\s*$`)
 	// Match both forms because mod_php and some LSAPI builds honor either
 	// directive in .htaccess.
 	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+(\S+)`)
@@ -613,12 +619,55 @@ func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 		if uaCloakPairedRuleIsDefensive(content, idx[1]) {
 			continue
 		}
+		// Removal must take the whole cloak unit: the full contiguous
+		// RewriteCond chain plus the RewriteRule it feeds. Removing only the
+		// cond would leave the rule unconditional, turning a crawler-only
+		// cloak into a redirect of every visitor to the attacker URL.
+		block := uaCloakBlockRange(content, idx[0], idx[1])
 		out = append(out, htaccessMatch{
-			Range:   lineRange(content, idx[0], idx[1]),
-			Excerpt: trimExcerpt(content, idx[0], idx[1]),
+			Range:   block,
+			Excerpt: trimExcerpt(content, block.Start, block.End),
 		})
 	}
 	return out
+}
+
+// uaCloakBlockRange returns the byte range covering the entire cloak unit for
+// the UA cond at [condStart, condEnd): the full contiguous RewriteCond chain it
+// belongs to (Apache applies a run of conds to the first following
+// RewriteRule) plus that paired RewriteRule. Falls back to the cond's own line
+// when no paired rule follows - a dead cond redirects nobody, so there is
+// nothing extra to strip.
+func uaCloakBlockRange(content []byte, condStart, condEnd int) htaccessByteRange {
+	chainStart := uaCondChainStart(content, condStart)
+	rest := content[condEnd:]
+	idx := reUARewriteRuleAfter.FindIndex(rest)
+	if idx == nil {
+		return lineRange(content, chainStart, condEnd)
+	}
+	ruleEnd := condEnd + idx[1]
+	return lineRange(content, chainStart, ruleEnd)
+}
+
+// uaCondChainStart walks backward from the start of a RewriteCond line over any
+// immediately preceding contiguous RewriteCond lines and returns the byte
+// offset where the chain begins. A blank line or a non-RewriteCond directive
+// terminates the walk, mirroring how Apache groups a run of conds onto the next
+// RewriteRule.
+func uaCondChainStart(content []byte, condStart int) int {
+	start := condStart
+	for start > 0 && content[start-1] == '\n' {
+		prevEnd := start - 1
+		prevStart := prevEnd
+		for prevStart > 0 && content[prevStart-1] != '\n' {
+			prevStart--
+		}
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(content[prevStart:prevEnd]))), "rewritecond") {
+			break
+		}
+		start = prevStart
+	}
+	return start
 }
 
 // uaCloakChainSizes returns, for each UA cond match, the number of
