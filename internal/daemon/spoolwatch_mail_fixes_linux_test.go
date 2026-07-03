@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,7 @@ func TestSpoolWatcherDispatchEventSelfPIDAllowsWithoutScanning(t *testing.T) {
 
 	// dispatchEvent owns and closes evtFd on the self path.
 	sw.dispatchEvent(int32(evtFd), int32(selfPID))
+	assertFDClosed(t, evtFd, "self-generated event")
 
 	// Must NOT be enqueued for scanning.
 	select {
@@ -78,6 +80,16 @@ func TestSpoolWatcherDispatchEventSelfPIDAllowsWithoutScanning(t *testing.T) {
 	}
 	if got.Fd != int32(evtFd) {
 		t.Errorf("response Fd = %d, want %d", got.Fd, evtFd)
+	}
+}
+
+func assertFDClosed(t *testing.T, fd int, label string) {
+	t.Helper()
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		t.Fatalf("%s fd %d should be closed, F_GETFD err=%v", label, fd, err)
 	}
 }
 
@@ -184,6 +196,80 @@ func TestSpoolWatcherHandleSpoolEventReceptionRaceAllowsSilently(t *testing.T) {
 			select {
 			case f := <-ch:
 				t.Errorf("reception race must not emit a finding, got %+v", f)
+			default:
+			}
+		})
+	}
+}
+
+func TestSpoolWatcherHandleSpoolEventDeletedBodyAllowsAndClosesFD(t *testing.T) {
+	for _, failMode := range []string{"open", "tempfail"} {
+		t.Run(failMode, func(t *testing.T) {
+			dir := t.TempDir()
+			msgID := "1gone0-0000000ABCd-4Q"
+			headerPath := filepath.Join(dir, msgID+"-H")
+			bodyPath := filepath.Join(dir, msgID+"-D")
+
+			header := eximPreamble(msgID) +
+				eximHdrLine('F', "From: sender@example.com") +
+				eximHdrLine('T', "To: recipient@example.com") +
+				eximHdrLine(' ', "Subject: deleted body") +
+				eximHdrLine(' ', "Content-Type: text/plain; charset=us-ascii")
+			if err := os.WriteFile(headerPath, []byte(header), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(bodyPath, []byte(msgID+"-D\nbody bytes\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			evtFd, err := unix.Open(bodyPath, unix.O_RDONLY, 0)
+			if err != nil {
+				t.Skipf("open body: %v", err)
+			}
+			if err := os.Remove(bodyPath); err != nil {
+				_ = unix.Close(evtFd)
+				t.Fatal(err)
+			}
+
+			var respPipe [2]int
+			if perr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); perr != nil {
+				_ = unix.Close(evtFd)
+				t.Skipf("pipe2: %v", perr)
+			}
+			defer func() { _ = unix.Close(respPipe[0]) }()
+
+			cfg := &config.Config{}
+			cfg.EmailAV.MaxAttachmentSize = 1024 * 1024
+			cfg.EmailAV.FailMode = failMode
+
+			ch := make(chan alert.Finding, 4)
+			sw := &SpoolWatcher{
+				cfg:     cfg,
+				alertCh: ch,
+				fd:      respPipe[1],
+				stopCh:  make(chan struct{}),
+			}
+			defer sw.closeFd()
+
+			evt := spoolEvent{path: bodyPath, fd: evtFd, needResp: true}
+			sw.handleSpoolEvent(evt)
+
+			buf := make([]byte, responseSize)
+			n, rerr := unix.Read(respPipe[0], buf)
+			if rerr != nil {
+				t.Fatalf("read response: %v", rerr)
+			}
+			if n != responseSize {
+				t.Fatalf("read %d bytes, want %d", n, responseSize)
+			}
+			got := *(*fanotifyResponse)(unsafe.Pointer(&buf[0]))
+			if got.Response != FAN_ALLOW {
+				t.Errorf("response = %d, want FAN_ALLOW for deleted spool body", got.Response)
+			}
+			assertFDClosed(t, evtFd, "deleted body event")
+
+			select {
+			case f := <-ch:
+				t.Errorf("deleted spool body must not emit a finding, got %+v", f)
 			default:
 			}
 		})
