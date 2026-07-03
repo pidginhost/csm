@@ -88,6 +88,41 @@ func TestAnalyzeHTMLForPhishingGenericKitStillFlagged(t *testing.T) {
 	}
 }
 
+const realBrandLowFloorHTML = `<!DOCTYPE html>
+<html>
+<head>
+<title>Dropbox Sign In</title>
+</head>
+<body>
+<form action="/login" method="post">
+<input type="email" name="email">
+<input type="password" name="password">
+<button>Sign in</button>
+</form>
+<script>
+window.location.href = '/done';
+</script>
+</body>
+</html>`
+
+func TestAnalyzeHTMLForPhishingRealBrandKeepsNormalFloor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dropbox.html")
+	if err := os.WriteFile(path, []byte(realBrandLowFloorHTML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	res := analyzeHTMLForPhishing(path)
+	if res == nil {
+		t.Fatal("real brand at score 4 must keep the normal brand floor")
+	}
+	if res.brand != "Dropbox" {
+		t.Errorf("brand = %q, want Dropbox", res.brand)
+	}
+	if res.score != 4 {
+		t.Errorf("score = %d, want exact normal-floor score 4", res.score)
+	}
+}
+
 // A customer's own login.php that posts to itself: reads $_POST credentials
 // (normal for a login), generic "Sign In" title, no brand impersonation, no
 // exfil. It must NOT flag.

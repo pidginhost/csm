@@ -44,6 +44,16 @@ func TestDetectorPHPInUploadsFlagsSingleArgProxyFPMSetHandler(t *testing.T) {
 	}
 }
 
+func TestDetectorPHPInUploadsIgnoresSingleArgSetHandlerOutsideNonScriptDirs(t *testing.T) {
+	dir := t.TempDir()
+	path := writeHtaccess(t, dir, "public_html", "SetHandler application/x-httpd-php\n")
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_php_in_uploads") != 0 {
+		t.Errorf("legitimate PHP directory SetHandler should not flag (got %d)",
+			countByCheck(findings, "htaccess_php_in_uploads"))
+	}
+}
+
 // The single-arg SetHandler is worst-case: cleaning must remove the directive
 // so no file in the directory keeps executing as PHP.
 func TestDetectorPHPInUploadsSingleArgRemovable(t *testing.T) {

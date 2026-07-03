@@ -476,12 +476,18 @@ func autoPrependTargetSuspicious(target string) bool {
 	return false
 }
 
-// reUARewriteRuleAfter captures the substitution and flag list of a
-// RewriteRule directive. Used to inspect the rule paired with a
-// preceding UA cond so the detector can distinguish defensive blocks
-// (forbid / no-op / sinkhole) from cloaks (rewrite to a different
-// file or external URL).
-var reUARewriteRuleAfter = regexp.MustCompile(`(?im)^\s*RewriteRule\s+\S+\s+(\S+)(?:\s+\[([^\]]+)\])?\s*$`)
+// reUARewriteRuleLine captures the substitution and flag list of a single
+// RewriteRule directive. Pairing is handled by uaCloakPairedRule so a later
+// unrelated rule is not mistaken for the rule fed by a RewriteCond chain.
+var reUARewriteRuleLine = regexp.MustCompile(`(?i)^\s*RewriteRule\s+\S+\s+(\S+)(?:\s+\[([^\]]+)\])?\s*$`)
+
+type uaRewriteRulePair struct {
+	start        int
+	end          int
+	substitution string
+	flags        string
+	parsed       bool
+}
 
 // uaCloakDefensiveFlags lists RewriteRule flags that, when set on the
 // rule paired with a UA cond, indicate defensive blocking rather than
@@ -538,30 +544,113 @@ func uaCloakAlternationCount(pattern string) int {
 // non-RewriteCond directive, or end-of-file means there is no paired
 // rule - the cond is dead text and not actively cloaking anything.
 func uaCloakPairedRuleIsDefensive(content []byte, condEnd int) bool {
-	rest := content[condEnd:]
-	// Find the next RewriteRule line.
-	idx := reUARewriteRuleAfter.FindSubmatchIndex(rest)
-	if idx == nil {
+	rule, ok := uaCloakPairedRule(content, condEnd)
+	if !ok {
 		return true
 	}
-	substitution := string(rest[idx[2]:idx[3]])
-	var flags string
-	if idx[4] != -1 {
-		flags = strings.ToLower(string(rest[idx[4]:idx[5]]))
+	if !rule.parsed {
+		return false
 	}
-	if substitution == "-" {
+	if rule.substitution == "-" {
 		return true
 	}
 	for _, f := range uaCloakDefensiveFlags {
 		// Match flag as a comma-bounded token: "F" matches "[F]",
 		// "[F,L]", "[L,F]"; does NOT match "[NC]" or "[QSA]".
-		for _, token := range strings.Split(flags, ",") {
+		for _, token := range strings.Split(rule.flags, ",") {
 			if strings.TrimSpace(token) == f {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// uaCloakPairedRule returns the first RewriteRule in the contiguous
+// RewriteCond chain that starts after condEnd. Blank lines and comments are
+// ignored by Apache, so they do not break the chain; any other directive does.
+// Otherwise a stale UA condition can be paired with an unrelated later
+// RewriteRule and cleaning would remove too much.
+func uaCloakPairedRule(content []byte, condEnd int) (uaRewriteRulePair, bool) {
+	pos := condEnd
+	for {
+		lineStart, lineEnd, rawEnd, ok := htaccessLineAfter(content, pos)
+		if !ok {
+			return uaRewriteRulePair{}, false
+		}
+		trimmed := strings.TrimSpace(string(content[lineStart:lineEnd]))
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			pos = rawEnd
+			continue
+		}
+		switch htaccessDirectiveName(trimmed) {
+		case "rewritecond":
+			pos = rawEnd
+			continue
+		case "rewriterule":
+			rule := uaRewriteRulePair{start: lineStart, end: lineEnd}
+			if idx := reUARewriteRuleLine.FindStringSubmatchIndex(string(content[lineStart:lineEnd])); idx != nil {
+				line := string(content[lineStart:lineEnd])
+				rule.substitution = line[idx[2]:idx[3]]
+				if idx[4] != -1 {
+					rule.flags = strings.ToLower(line[idx[4]:idx[5]])
+				}
+				rule.parsed = true
+			}
+			return rule, true
+		default:
+			return uaRewriteRulePair{}, false
+		}
+	}
+}
+
+func htaccessLineAfter(content []byte, pos int) (start, lineEnd, rawEnd int, ok bool) {
+	for pos < len(content) && content[pos] != '\n' {
+		pos++
+	}
+	if pos >= len(content) {
+		return 0, 0, 0, false
+	}
+	pos++
+	if pos >= len(content) {
+		return 0, 0, 0, false
+	}
+	start = pos
+	rawEnd = pos
+	for rawEnd < len(content) && content[rawEnd] != '\n' {
+		rawEnd++
+	}
+	lineEnd = rawEnd
+	if lineEnd > start && content[lineEnd-1] == '\r' {
+		lineEnd--
+	}
+	return start, lineEnd, rawEnd, true
+}
+
+func htaccessLineBefore(content []byte, pos int) (start, lineEnd int, ok bool) {
+	if pos <= 0 {
+		return 0, 0, false
+	}
+	lineEnd = pos
+	for lineEnd > 0 && (content[lineEnd-1] == '\n' || content[lineEnd-1] == '\r') {
+		lineEnd--
+	}
+	if lineEnd <= 0 {
+		return 0, 0, false
+	}
+	start = lineEnd
+	for start > 0 && content[start-1] != '\n' {
+		start--
+	}
+	return start, lineEnd, true
+}
+
+func htaccessDirectiveName(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToLower(fields[0])
 }
 
 // detectUserAgentCloak flags RewriteCond %{HTTP_USER_AGENT}
@@ -640,42 +729,44 @@ func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 // nothing extra to strip.
 func uaCloakBlockRange(content []byte, condStart, condEnd int) htaccessByteRange {
 	chainStart := uaCondChainStart(content, condStart)
-	rest := content[condEnd:]
-	idx := reUARewriteRuleAfter.FindIndex(rest)
-	if idx == nil {
+	rule, ok := uaCloakPairedRule(content, condEnd)
+	if !ok {
 		return lineRange(content, chainStart, condEnd)
 	}
-	ruleEnd := condEnd + idx[1]
-	return lineRange(content, chainStart, ruleEnd)
+	return lineRange(content, chainStart, rule.end)
 }
 
-// uaCondChainStart walks backward from the start of a RewriteCond line over any
-// immediately preceding contiguous RewriteCond lines and returns the byte
-// offset where the chain begins. A blank line or a non-RewriteCond directive
-// terminates the walk, mirroring how Apache groups a run of conds onto the next
-// RewriteRule.
+// uaCondChainStart walks backward from the start of a RewriteCond line over
+// immediately preceding RewriteCond lines and returns the byte offset where the
+// chain begins. Comments and blank lines between conds do not break Apache's
+// chain, but they also are not swallowed when they merely precede the first
+// cond. A non-RewriteCond directive terminates the walk.
 func uaCondChainStart(content []byte, condStart int) int {
 	start := condStart
-	for start > 0 && content[start-1] == '\n' {
-		prevEnd := start - 1
-		prevStart := prevEnd
-		for prevStart > 0 && content[prevStart-1] != '\n' {
-			prevStart--
+	scan := condStart
+	for {
+		prevStart, prevEnd, ok := htaccessLineBefore(content, scan)
+		if !ok {
+			return start
 		}
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(string(content[prevStart:prevEnd]))), "rewritecond") {
-			break
+		trimmed := strings.TrimSpace(string(content[prevStart:prevEnd]))
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			scan = prevStart
+			continue
+		}
+		if htaccessDirectiveName(trimmed) != "rewritecond" {
+			return start
 		}
 		start = prevStart
+		scan = prevStart
 	}
-	return start
 }
 
 // uaCloakChainSizes returns, for each UA cond match, the number of
-// UA conds in its chain. Two UA conds belong to the same chain iff
-// they sit on adjacent lines with nothing but optional indentation
-// between them. A blank line, a RewriteRule, or any other directive
-// breaks the chain - that mirrors how Apache groups conds onto the
-// next RewriteRule.
+// UA conds in its chain. Two UA conds belong to the same chain when
+// only whitespace, comments, or blank lines sit between them; any
+// other directive breaks the chain. That mirrors how Apache groups
+// conds onto the next RewriteRule.
 func uaCloakChainSizes(content []byte, idxs [][]int) []int {
 	sizes := make([]int, len(idxs))
 	if len(idxs) == 0 {
@@ -699,27 +790,27 @@ func uaCloakChainSizes(content []byte, idxs [][]int) []int {
 	return sizes
 }
 
-// uaCondsAreAdjacent reports whether the gap between two UA cond
-// matches is a single line break plus optional indentation. Any
-// non-whitespace byte (a different directive sneaking in), or a
-// second newline (blank line), means the chain ends.
+// uaCondsAreAdjacent reports whether the gap between two UA cond matches
+// contains only line breaks, whitespace, blank lines, or comments.
 func uaCondsAreAdjacent(content []byte, prevEnd, nextStart int) bool {
 	if prevEnd > nextStart || nextStart > len(content) {
 		return false
 	}
 	seenNewline := false
-	for _, b := range content[prevEnd:nextStart] {
-		switch b {
-		case '\n':
-			if seenNewline {
-				return false
-			}
-			seenNewline = true
-		case ' ', '\t', '\r':
-			// allowed
-		default:
+	for pos := prevEnd; pos < nextStart; {
+		lineEnd := pos
+		for lineEnd < nextStart && content[lineEnd] != '\n' {
+			lineEnd++
+		}
+		trimmed := strings.TrimSpace(string(content[pos:lineEnd]))
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			return false
 		}
+		if lineEnd < nextStart {
+			seenNewline = true
+			lineEnd++
+		}
+		pos = lineEnd
 	}
 	return seenNewline
 }

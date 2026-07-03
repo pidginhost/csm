@@ -66,6 +66,31 @@ func TestScanForPhishingRecursesWellKnown(t *testing.T) {
 	}
 }
 
+func TestScanForPhishingIgnoresPlainACMEChallengeTokens(t *testing.T) {
+	root := t.TempDir()
+	challengeDir := filepath.Join(root, ".well-known", "acme-challenge")
+	if err := os.MkdirAll(challengeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{
+		"qSs8W5zQ0TCAx4b4YqY3tD6bZ1K_xb5mTS8eqM3u1x8",
+		"7YQFZB2D5mFPlTAPj5h0Oqk6r9V2pnj9R1p9o6Yh8dA",
+	} {
+		if err := os.WriteFile(filepath.Join(challengeDir, token),
+			[]byte(token+".thumbprint\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{}
+	var findings []alert.Finding
+	scanForPhishing(context.Background(), root, phishingScanMaxDepth, "alice", cfg, &findings)
+
+	if len(findings) != 0 {
+		t.Fatalf("plain ACME challenge tokens must not flag, got %d findings: %+v", len(findings), findings)
+	}
+}
+
 // Cost guard: the heavy / transient dirs stay excluded so the scan does not
 // walk node_modules or WP core.
 func TestScanForPhishingStillSkipsHeavyDirs(t *testing.T) {
