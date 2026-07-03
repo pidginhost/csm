@@ -1029,23 +1029,18 @@ func recentOutgoingMailHold(domain string) bool {
 	return stored != "" && !isDedupExpired(stored, recentOutgoingMailHoldWindow)
 }
 
-// extractBracketedIP extracts an IP from [IP]:port or [IP] format in exim logs.
+// extractBracketedIP returns the connecting client's IP from an exim log line.
+// It prefers the `[IP]:port` token inside the H= field (the connecting client,
+// not the hostname) and validates every candidate with net.ParseIP, so a HELO
+// string or a message Subject that contains square brackets -- e.g.
+// T="Order [20260701-123]" -- can no longer be mistaken for the source IP.
 func extractBracketedIP(line string) string {
-	// Find the LAST [IP] in the line (the client IP, not the hostname)
-	lastBracket := strings.LastIndex(line, "[")
-	if lastBracket < 0 {
-		return ""
+	if h := strings.Index(line, " H="); h >= 0 {
+		if ip := firstBracketedIP(line[h:]); ip != "" {
+			return ip
+		}
 	}
-	rest := line[lastBracket+1:]
-	end := strings.IndexByte(rest, ']')
-	if end < 0 {
-		return ""
-	}
-	ip := rest[:end]
-	if len(ip) >= 7 && (ip[0] >= '0' && ip[0] <= '9' || ip[0] == ':') {
-		return ip
-	}
-	return ""
+	return firstBracketedIP(line)
 }
 
 // extractSetID extracts the account from "(set_id=user@domain)" or "(set_id=user)" in exim logs.

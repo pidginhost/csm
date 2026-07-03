@@ -712,10 +712,12 @@ func TestExtractBracketedIP_IPv6Full(t *testing.T) {
 }
 
 func TestExtractBracketedIP_IPv6Loopback(t *testing.T) {
-	// "::1" is only 3 chars, below the 7-char minimum; returns empty.
+	// "::1" is a valid IP: net.ParseIP accepts it, so it is returned. Any
+	// loopback/private filtering is the caller's job (isPrivateOrLoopback),
+	// not the bracket extractor's.
 	line := "H=hostname [::1]:25"
-	if got := extractBracketedIP(line); got != "" {
-		t.Errorf("short IPv6 loopback should return empty (len < 7), got %q", got)
+	if got := extractBracketedIP(line); got != "::1" {
+		t.Errorf("valid IPv6 loopback should be returned, got %q", got)
 	}
 }
 
@@ -732,11 +734,13 @@ func TestExtractBracketedIP_ShortContent(t *testing.T) {
 	}
 }
 
-func TestExtractBracketedIP_MultipleSelectsLast(t *testing.T) {
-	line := "H=hostname [10.0.0.1] connected from [203.0.113.5]:1234"
+func TestExtractBracketedIP_PrefersHFieldClient(t *testing.T) {
+	// The connecting client sits in the H= field. A later bracketed IP (here a
+	// contrived trailing token) must not win over the H= client.
+	line := "x <= s@example.com H=hostname [203.0.113.5]:1234 for r@example.net T=[10.0.0.1]"
 	got := extractBracketedIP(line)
 	if got != "203.0.113.5" {
-		t.Errorf("should select last bracketed IP, got %q", got)
+		t.Errorf("should select the H= client IP, got %q", got)
 	}
 }
 

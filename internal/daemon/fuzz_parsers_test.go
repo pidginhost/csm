@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net"
 	"testing"
 )
 
@@ -38,9 +39,16 @@ func FuzzExtractBracketedIP(f *testing.F) {
 	f.Add("no bracket")
 	f.Add("[unclosed")
 	f.Add("[][]")
+	f.Add(` H=mail (helo) [203.0.113.5]:25 T="Order [20260701-123]"`)
+	f.Add(" H=[2001:db8::1]:25")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, line string) {
-		_ = extractBracketedIP(line)
+		got := extractBracketedIP(line)
+		// The extractor must only ever return "" or a syntactically valid IP;
+		// never a Subject/HELO token that merely sat inside square brackets.
+		if got != "" && net.ParseIP(got) == nil {
+			t.Fatalf("extractBracketedIP(%q) = %q, not a valid IP", line, got)
+		}
 	})
 }
 

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -136,6 +137,29 @@ func extractEximHostname(line string) string {
 		}
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// firstBracketedIP returns the contents of the first `[...]` token in s that
+// parse as an IP address, or "" if none. Exim writes the connecting client as
+// `[IP]:port`; validating each candidate with net.ParseIP skips bracketed
+// non-IP tokens such as a HELO string or a message Subject that happens to
+// contain square brackets (e.g. T="Order [20260701-123]").
+func firstBracketedIP(s string) string {
+	for {
+		open := strings.IndexByte(s, '[')
+		if open < 0 {
+			return ""
+		}
+		s = s[open+1:]
+		end := strings.IndexByte(s, ']')
+		if end < 0 {
+			return ""
+		}
+		if candidate := s[:end]; net.ParseIP(candidate) != nil {
+			return candidate
+		}
+		s = s[end+1:]
+	}
 }
 
 // cloudRelayWindow tracks authenticated sends from cloud IPs for one user.
