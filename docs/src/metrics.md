@@ -126,6 +126,16 @@ and run `go tool pprof http://127.0.0.1:<port>/debug/pprof/heap` over an SSH tun
   events do not disappear from detection -- they arrive delayed.
   Alert target: `rate(csm_fanotify_events_dropped_total[5m]) > 0`
   paired with a short for-clause.
+- `csm_fanotify_kernel_queue_overflow_total` (counter): kernel-side
+  fanotify queue overflows (FAN_Q_OVERFLOW). Unlike analyzer-queue
+  drops, the kernel gives no file descriptor for lost events, so
+  only directories with concurrent analyzer drops can be reconciled;
+  the rest are covered by the next scheduled deep scan. Any nonzero
+  rate during a write storm means realtime coverage had a gap.
+- `csm_spool_fanotify_queue_overflow_total` (counter): kernel queue
+  overflows on the mail spool watcher. In permission mode an
+  overflowed event means the message was delivered without being
+  scanned; a Warning finding is raised when this happens.
 - `csm_fanotify_reconcile_latency_seconds` (histogram): how long
   the post-overflow reconcile pass takes to walk drop-affected
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.

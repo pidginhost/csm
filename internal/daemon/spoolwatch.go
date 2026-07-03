@@ -19,9 +19,28 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/metrics"
 	emime "github.com/pidginhost/csm/internal/mime"
 	"github.com/pidginhost/csm/internal/obs"
 )
+
+// spoolQueueOverflowTotal counts FAN_Q_OVERFLOW records on the spool watcher.
+// Registered once per process; hand-built test watchers that skip
+// registerSpoolMetrics leave it nil, so callers must nil-check.
+var (
+	spoolQueueOverflowTotal *metrics.Counter
+	spoolMetricsOnce        sync.Once
+)
+
+func registerSpoolMetrics() {
+	spoolMetricsOnce.Do(func() {
+		spoolQueueOverflowTotal = metrics.NewCounter(
+			"csm_spool_fanotify_queue_overflow_total",
+			"FAN_Q_OVERFLOW events on the Exim spool watcher: the kernel queue filled and dropped spool open events. In permission mode the kernel allows the overflowing opens, so mail may be delivered without an AV scan. Any sustained growth needs investigation.",
+		)
+		metrics.MustRegister("csm_spool_fanotify_queue_overflow_total", spoolQueueOverflowTotal)
+	})
+}
 
 // fanotify constants for permission events (not in Go stdlib).
 const (
@@ -77,6 +96,14 @@ type SpoolWatcher struct {
 	runActive      int32 // atomic - Run owns scanCh shutdown while set
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
+
+	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
+	// queue overflow means opens were let through without a scan verdict, so
+	// mail may have been delivered unscanned. overflowMu rate-limits the
+	// operator finding so a storm does not flood the alert channel.
+	queueOverflows int64 // atomic
+	overflowMu     sync.Mutex
+	lastOverflowAt time.Time
 }
 
 type spoolEvent struct {
@@ -94,6 +121,7 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 	if err != nil {
 		return nil, err
 	}
+	registerSpoolMetrics()
 	sw := &SpoolWatcher{
 		cfg:            cfg,
 		alertCh:        alertCh,
@@ -246,18 +274,48 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 		if err != nil || n < metadataSize {
 			return
 		}
-
-		offset := 0
-		for offset+metadataSize <= n {
-			// #nosec G103 -- fanotify delivers a packed binary stream;
-			// reinterpretation is required and bounded by metadataSize above.
-			meta := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
-			if meta.Fd >= 0 {
-				sw.dispatchEvent(meta.Fd, meta.Pid)
-			}
-			offset += int(meta.EventLen)
-		}
+		sw.parseEvents(buf[:n])
 	}
+}
+
+// parseEvents walks a raw fanotify buffer and dispatches each record. A
+// FAN_Q_OVERFLOW record (Fd == FAN_NOFD, FAN_Q_OVERFLOW bit set) is handled
+// explicitly so a kernel queue overflow is not silently swallowed.
+func (sw *SpoolWatcher) parseEvents(buf []byte) {
+	offset := 0
+	for offset+metadataSize <= len(buf) {
+		// #nosec G103 -- fanotify delivers a packed binary stream;
+		// reinterpretation is required and bounded by metadataSize above.
+		meta := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
+		if meta.Mask&unix.FAN_Q_OVERFLOW != 0 {
+			sw.handleQueueOverflow()
+		} else if meta.Fd >= 0 {
+			sw.dispatchEvent(meta.Fd, meta.Pid)
+		}
+		offset += int(meta.EventLen)
+	}
+}
+
+// handleQueueOverflow reacts to a FAN_Q_OVERFLOW record on the spool watcher.
+// In permission mode the kernel resolves opens it cannot queue by allowing
+// them, so an overflow means some inbound messages were delivered without an
+// AV scan. Count it and emit a rate-limited Warning that says so.
+func (sw *SpoolWatcher) handleQueueOverflow() {
+	atomic.AddInt64(&sw.queueOverflows, 1)
+	if spoolQueueOverflowTotal != nil {
+		spoolQueueOverflowTotal.Inc()
+	}
+
+	sw.overflowMu.Lock()
+	if !sw.lastOverflowAt.IsZero() && time.Since(sw.lastOverflowAt) < time.Minute {
+		sw.overflowMu.Unlock()
+		return
+	}
+	sw.lastOverflowAt = time.Now()
+	sw.overflowMu.Unlock()
+
+	sw.emitFinding("email_av_queue_overflow", alert.Warning,
+		"Spool fanotify queue overflowed: the kernel dropped spool open events. In permission mode overflowing opens are allowed through, so one or more messages may have been delivered unscanned during the storm. Investigate the mail spike and consider a manual rescan of recent messages.")
 }
 
 // dispatchEvent decides what to do with a single fanotify event: allow our own

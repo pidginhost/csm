@@ -89,6 +89,18 @@ type FileMonitor struct {
 	droppedEvents int64
 	droppedAlerts int64
 
+	// queueOverflows counts FAN_Q_OVERFLOW events: the kernel notification
+	// queue filled and events were dropped before userspace ever saw them.
+	// Distinct from droppedEvents (analyzer-queue backpressure in userspace)
+	// because a kernel overflow carries no fd, so the affected files are
+	// unknown and cannot be reconciled by path.
+	queueOverflows int64
+
+	// overflowReportMu rate-limits the operator-facing kernel-overflow finding
+	// so a sustained storm does not flood the alert channel.
+	overflowReportMu   sync.Mutex
+	lastOverflowReport time.Time
+
 	// C4 - pipe for epoll stop signaling
 	pipeFds    [2]int // [0]=read, [1]=write
 	pipeClosed int32  // atomic flag: 1 = pipe fds closed by drainAndClose
@@ -160,9 +172,10 @@ const (
 // Package-level Prometheus metrics for fanotify. Instantiated once per
 // process; one FileMonitor per daemon instance reuses them.
 var (
-	fanotifyDroppedTotal *metrics.Counter
-	fanotifyReconcileDur *metrics.Histogram
-	contentScanTruncated *metrics.CounterVec
+	fanotifyDroppedTotal        *metrics.Counter
+	fanotifyKernelOverflowTotal *metrics.Counter
+	fanotifyReconcileDur        *metrics.Histogram
+	contentScanTruncated        *metrics.CounterVec
 )
 
 // registerFanotifyMetrics is called once per FileMonitor via
@@ -178,6 +191,12 @@ func (fm *FileMonitor) registerMetrics() {
 				"Fanotify events dropped because the analyzer queue was full. Sustained growth indicates an event storm (bulk unzip, backup restore) or an attack producing more file activity than the scanner can analyse; the reconcile pass still rescans affected directories, so dropped events do not vanish from detection, they arrive delayed.",
 			)
 			metrics.MustRegister("csm_fanotify_events_dropped_total", fanotifyDroppedTotal)
+
+			fanotifyKernelOverflowTotal = metrics.NewCounter(
+				"csm_fanotify_kernel_queue_overflow_total",
+				"FAN_Q_OVERFLOW events: the kernel fanotify notification queue filled and dropped events before userspace read them. Unlike analyzer-queue drops these carry no fd, so the affected files are unknown; the next scheduled deep scan is the backstop. Sustained growth means a storm (bulk unzip, backup restore) or an attack producing more file activity than the reader can drain.",
+			)
+			metrics.MustRegister("csm_fanotify_kernel_queue_overflow_total", fanotifyKernelOverflowTotal)
 
 			fanotifyReconcileDur = metrics.NewHistogram(
 				"csm_fanotify_reconcile_latency_seconds",
@@ -480,12 +499,47 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 			break
 		}
 
-		if event.Fd >= 0 {
+		if event.Mask&unix.FAN_Q_OVERFLOW != 0 {
+			fm.handleQueueOverflow()
+		} else if event.Fd >= 0 {
 			fm.handleEvent(int(event.Fd), event.Pid)
 		}
 
 		offset += int(event.EventLen)
 	}
+}
+
+// handleQueueOverflow reacts to a FAN_Q_OVERFLOW record. The kernel dropped
+// events we will never see and gave us no fd, so we cannot reconcile the exact
+// files. Count it, emit a rate-limited Warning so operators learn coverage was
+// lost, and nudge the reconcile pass to rescan directories that also saw
+// analyzer-queue drops during the same storm.
+func (fm *FileMonitor) handleQueueOverflow() {
+	atomic.AddInt64(&fm.queueOverflows, 1)
+	if fanotifyKernelOverflowTotal != nil {
+		fanotifyKernelOverflowTotal.Inc()
+	}
+	fm.reportQueueOverflow()
+	if fm.reconcileSig != nil {
+		select {
+		case fm.reconcileSig <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// reportQueueOverflow emits the kernel-overflow finding at most once per minute.
+func (fm *FileMonitor) reportQueueOverflow() {
+	fm.overflowReportMu.Lock()
+	if !fm.lastOverflowReport.IsZero() && time.Since(fm.lastOverflowReport) < time.Minute {
+		fm.overflowReportMu.Unlock()
+		return
+	}
+	fm.lastOverflowReport = time.Now()
+	fm.overflowReportMu.Unlock()
+	fm.sendAlert(alert.Warning, "fanotify_kernel_overflow",
+		"fanotify kernel event queue overflowed; file events were dropped by the kernel and cannot be recovered by path",
+		"The kernel notification queue filled during a storm (bulk unzip, backup restore, or high-volume attack) and dropped events before the reader could drain them. Files touched during the overflow that are not written again are only covered by the next scheduled deep scan. A reconcile of directories that also saw analyzer-queue drops has been triggered.")
 }
 
 // drainAndClose drains the analyzerCh and waits for workers to finish.
