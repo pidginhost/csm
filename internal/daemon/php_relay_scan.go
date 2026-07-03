@@ -83,7 +83,16 @@ func phpRelayScanContextDone(ctx context.Context) bool {
 func emitPHPRelayHistoryLine(line []byte, eng *evaluator, now time.Time, emit func(alert.Finding)) {
 	line = bytes.TrimSuffix(line, []byte("\n"))
 	line = bytes.TrimSuffix(line, []byte("\r"))
-	for _, ev := range eng.parsePHPRelayAccountVolume(string(line), now) {
+	s := string(line)
+	// Replay only lines inside the account detection window, stamped with their
+	// real exim timestamp. Without this every historical line was stamped `now`,
+	// so a whole day of sends collapsed into one hour and fired a false
+	// "account sent >= N in the last hour" Critical on every daemon start.
+	ts, ok := parseEximTimestamp(s)
+	if !ok || ts.Before(now.Add(-phpRelayAccountWindowDur)) {
+		return
+	}
+	for _, ev := range eng.parsePHPRelayAccountVolumeAt(s, ts, now) {
 		emit(ev)
 	}
 }

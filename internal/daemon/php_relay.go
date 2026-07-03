@@ -689,6 +689,7 @@ type evaluator struct {
 	cfg                   *config.Config
 	metrics               *phpRelayMetrics // optional; nil in unit tests
 	policies              *emailspool.Policies
+	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
 }
 
@@ -698,6 +699,20 @@ func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *
 
 // SetPolicies is called by daemon wiring once the policies file has loaded.
 func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
+
+// maxDetectionWindow returns the widest window any php_relay path evaluates
+// over. The startup spool walker skips -H files older than this: such mail can
+// no longer contribute to any current detection and only costs parse time.
+func (e *evaluator) maxDetectionWindow() time.Duration {
+	maxMin := 60 // Path 2 absolute-volume window is hardcoded at 60 min
+	if v := e.cfg.EmailProtection.PHPRelay.RateWindowMin; v > maxMin {
+		maxMin = v
+	}
+	if v := e.cfg.EmailProtection.PHPRelay.FanoutWindowMin; v > maxMin {
+		maxMin = v
+	}
+	return time.Duration(maxMin) * time.Minute
+}
 
 // evaluatePaths inspects the script's window state (and IP window) and
 // returns the set of findings that fire at this moment. Cooldowns prevent
@@ -974,9 +989,71 @@ func (e *evaluator) SetEffectiveAccountLimit(n int) {
 	e.effectiveAccountLimit = n
 }
 
-// parsePHPRelayAccountVolume processes one outbound `<= ` exim_mainlog line.
-// Returns zero or one finding (per cooldown).
+// SetMsgIndex wires the msgID->script index so exim queue-completion log lines
+// can reap the corresponding activeMsgs entry.
+func (e *evaluator) SetMsgIndex(idx *msgIDIndex) { e.msgIndex = idx }
+
+// reapCompletedMsg drops an activeMsgs entry when exim logs that its message
+// completed delivery and left the queue, so a delivered message is not later
+// frozen as if still queued nor counted against the freeze rate-limit budget.
+func (e *evaluator) reapCompletedMsg(line string) {
+	if e.msgIndex == nil || e.scripts == nil {
+		return
+	}
+	msgID, ok := eximCompletedMsgID(line)
+	if !ok {
+		return
+	}
+	entry, found := e.msgIndex.Get(msgID)
+	if !found {
+		return
+	}
+	if v, loaded := e.scripts.states.Load(scriptKey(entry.ScriptKey)); loaded {
+		v.(*scriptState).removeActive(msgID)
+	}
+}
+
+// eximCompletedMsgID returns the message id from an exim queue-completion line
+// ("YYYY-MM-DD HH:MM:SS <msgid> Completed[ ...]") and true, or ("", false) for
+// any other line. Requiring the "Completed" verb to immediately follow the id
+// keeps an attacker-controlled Subject that merely contains the word from
+// reaping a live message.
+func eximCompletedMsgID(line string) (string, bool) {
+	const tsLen = 19 // "2006-01-02 15:04:05"
+	if len(line) < tsLen+2 {
+		return "", false
+	}
+	rest := line[tsLen+1:] // skip timestamp and the following space
+	end := strings.IndexByte(rest, ' ')
+	if end < 0 {
+		return "", false
+	}
+	id := rest[:end]
+	if !msgIDPattern.MatchString(id) {
+		return "", false
+	}
+	verb := rest[end+1:]
+	if verb != "Completed" && !strings.HasPrefix(verb, "Completed ") {
+		return "", false
+	}
+	return id, true
+}
+
+// parsePHPRelayAccountVolume processes one outbound `<= ` exim_mainlog line
+// seen live. Returns zero or one finding (per cooldown).
 func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []alert.Finding {
+	// Reap on the live path only: queue-completion lines free the msgID from
+	// activeMsgs. The retro history replay never sees the live index.
+	e.reapCompletedMsg(line)
+	return e.parsePHPRelayAccountVolumeAt(line, now, now)
+}
+
+// parsePHPRelayAccountVolumeAt records the account event at eventTime and
+// evaluates the volume window relative to now. The live watcher passes
+// eventTime == now; the startup history replay passes the line's real exim
+// timestamp so days-old log entries are not all stamped "now" and miscounted as
+// a single last-hour burst (a false Path 2b Critical on every restart).
+func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now time.Time) []alert.Finding {
 	if e.effectiveAccountLimit <= 0 || e.accounts == nil {
 		return nil
 	}
@@ -990,7 +1067,7 @@ func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []ale
 	if user == "" {
 		return nil
 	}
-	e.accounts.append(user, now)
+	e.accounts.append(user, eventTime)
 	volume := e.accounts.volumeSince(user, now.Add(-phpRelayAccountWindowDur))
 	if volume < e.effectiveAccountLimit {
 		return nil

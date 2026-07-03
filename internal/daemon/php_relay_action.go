@@ -49,8 +49,11 @@ func newActionRateLimiter(maxPerMin int) *actionRateLimiter {
 	}
 }
 
-// consumeN returns true if n tokens were available and consumed.
-func (rl *actionRateLimiter) consumeN(n int) bool {
+// consumeUpTo grants up to n tokens and returns how many were available and
+// consumed (0..n). Partial grants let a real outbreak freeze as many messages
+// as the per-minute budget allows instead of freezing none the moment the batch
+// size exceeds the cap.
+func (rl *actionRateLimiter) consumeUpTo(n int) int {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	now := rl.now()
@@ -58,11 +61,15 @@ func (rl *actionRateLimiter) consumeN(n int) bool {
 		rl.bucket = rl.maxPerMin
 		rl.refilledAt = now
 	}
-	if rl.bucket < n {
-		return false
+	if n <= 0 {
+		return 0
 	}
-	rl.bucket -= n
-	return true
+	grant := n
+	if grant > rl.bucket {
+		grant = rl.bucket
+	}
+	rl.bucket -= grant
+	return grant
 }
 
 // freezeErrIsAlreadyGone matches the Exim stderr fragments emitted when
@@ -279,17 +286,22 @@ func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 			})
 			continue
 		}
-		if !a.rateLim.consumeN(len(ids)) {
+		requested := len(ids)
+		grant := a.rateLim.consumeUpTo(requested)
+		if grant < requested {
 			emitted = append(emitted, alert.Finding{
 				Severity:  alert.Warning,
 				Check:     "email_php_relay_rate_limit_hit",
 				Path:      f.Path,
-				Message:   fmt.Sprintf("AutoFreeze rate limit prevented %d freezes for %s", len(ids), f.ScriptKey),
+				Message:   fmt.Sprintf("AutoFreeze rate limit deferred %d of %d freezes for %s", requested-grant, requested, f.ScriptKey),
 				ScriptKey: f.ScriptKey,
 				Timestamp: time.Now(),
 			})
+		}
+		if grant == 0 {
 			continue
 		}
+		ids = ids[:grant]
 		var failed []string
 		for _, id := range ids {
 			if !msgIDPattern.MatchString(id) {

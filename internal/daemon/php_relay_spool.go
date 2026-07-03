@@ -209,8 +209,17 @@ func newSpoolPipeline(eng *evaluator, domains *userDomainsResolver, pol *emailsp
 // rebuild pass. When true: state is updated, findings are NOT emitted.
 func (p *spoolPipeline) SetRebuilding(v bool) { p.rebuilding.Store(v) }
 
-// OnFile is the inotify callback. Parses, signals, updates state, evaluates.
+// OnFile is the inotify callback for live spool events: it stamps the message
+// at the current time.
 func (p *spoolPipeline) OnFile(path string) {
+	p.onFileAt(path, time.Now())
+}
+
+// onFileAt parses, signals, updates state, and evaluates a single -H file,
+// attributing the message to event time `at`. Live callers pass time.Now(); the
+// startup walker passes the -H file's ModTime so already-queued mail keeps its
+// real age instead of being compressed into one instant.
+func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	h, err := emailspool.ParseHeaders(path)
 	if err != nil {
 		if p.eng != nil && p.eng.metrics != nil {
@@ -238,7 +247,7 @@ func (p *spoolPipeline) OnFile(path string) {
 		return
 	}
 
-	now := time.Now()
+	now := at
 	if p.msgIndex != nil {
 		p.msgIndex.Put(msgID, indexEntry{
 			ScriptKey: string(sig.ScriptKey),
@@ -333,37 +342,68 @@ func runRecoveryScan(spoolRoot string, maxFiles int, onFile func(string)) (int, 
 	return len(entries), truncated
 }
 
-// runStartupSpoolWalker walks every currently-queued -H file through the
-// pipeline in REBUILD mode, then performs one re-evaluation pass over the
-// reconstructed scriptStates. Findings are emitted ONLY in the re-evaluation
-// pass, so the rebuild itself never produces duplicate findings for the
-// same in-queue mail.
+// phpRelayStartupWalkMax bounds how many recent -H files the startup walker
+// replays so a stuffed queue cannot stall daemon startup. The live watcher and
+// the Path 2b history scan backstop anything beyond the cap.
+const phpRelayStartupWalkMax = 20000
+
+// runStartupSpoolWalker walks the currently-queued -H files through the pipeline
+// in REBUILD mode, then performs one re-evaluation pass over the reconstructed
+// scriptStates. Findings are emitted ONLY in the re-evaluation pass, so the
+// rebuild itself never produces duplicate findings for the same in-queue mail.
+//
+// Each message is attributed to its -H file ModTime, so mail queued over days is
+// not compressed into one instant (which used to fabricate Path 1/2/4 bursts and
+// mass-freeze the legit queue). Files older than the widest detection window are
+// skipped, and the walk is bounded to the newest phpRelayStartupWalkMax files so
+// a stuffed queue cannot stall startup.
 func runStartupSpoolWalker(spoolRoot string, p *spoolPipeline) {
 	p.SetRebuilding(true)
-	subs, err := os.ReadDir(spoolRoot)
-	if err == nil {
+
+	now := time.Now()
+	cutoff := now.Add(-p.eng.maxDetectionWindow())
+	type walkEntry struct {
+		path string
+		mod  time.Time
+	}
+	var entries []walkEntry
+	if subs, err := os.ReadDir(spoolRoot); err == nil {
 		for _, sub := range subs {
 			if !sub.IsDir() {
 				continue
 			}
 			subPath := filepath.Join(spoolRoot, sub.Name())
-			files, err := os.ReadDir(subPath)
-			if err != nil {
+			files, ferr := os.ReadDir(subPath)
+			if ferr != nil {
 				continue
 			}
 			for _, f := range files {
 				if !strings.HasSuffix(f.Name(), "-H") {
 					continue
 				}
-				p.OnFile(filepath.Join(subPath, f.Name()))
+				full := filepath.Join(subPath, f.Name())
+				fi, serr := os.Stat(full)
+				if serr != nil || fi.ModTime().Before(cutoff) {
+					continue // skip mail older than any detection window
+				}
+				entries = append(entries, walkEntry{path: full, mod: fi.ModTime()})
 			}
 		}
 	}
+	// Newest first, then cap: keep the most recent (most relevant) messages and
+	// bound startup work on a stuffed queue.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mod.After(entries[j].mod) })
+	if len(entries) > phpRelayStartupWalkMax {
+		entries = entries[:phpRelayStartupWalkMax]
+	}
+	for _, e := range entries {
+		p.onFileAt(e.path, e.mod)
+	}
+
 	p.SetRebuilding(false)
 
 	// Re-evaluation pass.
 	snap := p.eng.scripts.Snapshot()
-	now := time.Now()
 	for k, s := range snap {
 		// We don't have per-script source IP in the snapshot; pass empty
 		// sourceIP. Path 4 (HTTP-IP fanout) is keyed off perIPWindow which

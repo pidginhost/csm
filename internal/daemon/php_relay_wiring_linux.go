@@ -80,6 +80,9 @@ func startPHPRelayLinux(d *Daemon) {
 	persister.Start()
 	d.phpRelayShutdown = append(d.phpRelayShutdown, persister.Stop)
 	idx := newMsgIDIndex(persister, 200_000)
+	// Let queue-completion log lines reap activeMsgs so delivered mail is not
+	// re-frozen nor charged against the freeze rate-limit budget.
+	eng.SetMsgIndex(idx)
 
 	// 6. ignoreList with bbolt-backed restore.
 	ignores := newIgnoreList()

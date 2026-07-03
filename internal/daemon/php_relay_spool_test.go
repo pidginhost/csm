@@ -182,6 +182,92 @@ func TestStartupSpoolWalker_DefersFindings(t *testing.T) {
 	}
 }
 
+// REL-02: mail queued longer ago than any detection window must not be replayed
+// at startup. The old walker stamped every queued -H file time.Now(), so a
+// days-old legit queue collapsed into one instant and fabricated a burst.
+func TestStartupSpoolWalker_SkipsStaleQueuedMail(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 1
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pacct := newPerAccountWindow(5000)
+	eng := newEvaluator(psw, pip, pacct, cfg, nil)
+
+	udir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(udir, "u"), 0o755)
+	_ = os.WriteFile(filepath.Join(udir, "u", "main"), []byte("main_domain: example.com\n"), 0o644)
+	domains := newUserDomainsResolverWithRoot(udir, time.Minute)
+	pol := newTestPolicies(t)
+
+	var findings []alert.Finding
+	var fmu sync.Mutex
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, nil, func(f alert.Finding) {
+		fmu.Lock()
+		findings = append(findings, f)
+		fmu.Unlock()
+	})
+
+	body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: bad.example.com/x.php for 192.0.2.10\n048F From: <attacker@spoofed.example>\n031R Reply-To: attacker@gmail.example\n067  X-Mailer: PHPMailer 7.0.0\n"
+	f := filepath.Join(sub, "1zzz-H")
+	_ = os.WriteFile(f, []byte(body), 0o644)
+	// Age the queued message well past any detection window.
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(f, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	runStartupSpoolWalker(spoolRoot, pipeline)
+
+	fmu.Lock()
+	defer fmu.Unlock()
+	if len(findings) != 0 {
+		t.Fatalf("stale queued mail (mtime 2h ago) must not fire startup findings, got %+v", findings)
+	}
+}
+
+// REL-02 (unit): a message is attributed to its -H ModTime, not time.Now().
+func TestOnFileAt_UsesModTimeAsEventTime(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pacct := newPerAccountWindow(5000)
+	eng := newEvaluator(psw, pip, pacct, cfg, nil)
+
+	udir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(udir, "u"), 0o755)
+	_ = os.WriteFile(filepath.Join(udir, "u", "main"), []byte("main_domain: example.com\n"), 0o644)
+	domains := newUserDomainsResolverWithRoot(udir, time.Minute)
+	pol := newTestPolicies(t)
+
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, nil, func(alert.Finding) {})
+	pipeline.SetRebuilding(true) // update state only, don't emit
+
+	body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: bad.example.com/x.php for 192.0.2.10\n"
+	f := filepath.Join(sub, "1yyy-H")
+	_ = os.WriteFile(f, []byte(body), 0o644)
+
+	eventTime := time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)
+	pipeline.onFileAt(f, eventTime)
+
+	s := psw.getOrCreate(scriptKey("bad.example.com:/x.php"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) != 1 {
+		t.Fatalf("expected 1 recorded event, got %d", len(s.events))
+	}
+	if !s.events[0].At.Equal(eventTime) {
+		t.Errorf("event stamped at %v, want mtime %v", s.events[0].At, eventTime)
+	}
+}
+
 func TestRecoveryScan_BoundedAndDedupes(t *testing.T) {
 	spoolRoot := t.TempDir()
 	sub := filepath.Join(spoolRoot, "k")
