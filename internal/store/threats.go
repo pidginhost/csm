@@ -215,6 +215,38 @@ func (db *DB) RemovePermanentBlock(ip string) error {
 	})
 }
 
+// RemoveAutoBlock deletes the threat row for ip only when it was written by
+// the temporary auto-block path (Source == autoblock). Operator rows and
+// legacy no-source rows are left untouched, so a firewall-only unblock never
+// silently clears an operator's deliberate permanent block. Under
+// block_expiry:0 an auto-block row has no expiry and would otherwise outlive
+// the firewall block and keep re-flagging the IP via ip_reputation. Returns
+// whether a row was removed. The read and delete run in one transaction so a
+// concurrent upgrade to an operator row cannot be clobbered.
+func (db *DB) RemoveAutoBlock(ip string) (bool, error) {
+	removed := false
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("threats"))
+		v := b.Get([]byte(ip))
+		if v == nil {
+			return nil
+		}
+		var entry PermanentBlockEntry
+		if json.Unmarshal(v, &entry) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
+		}
+		if entry.Source != ThreatSourceAutoBlock {
+			return nil
+		}
+		if err := b.Delete([]byte(ip)); err != nil {
+			return err
+		}
+		removed = true
+		return incrCounter(tx, "threats:count", -1)
+	})
+	return removed, err
+}
+
 // GetPermanentBlock looks up a permanent block entry by IP.
 // Returns the entry and true if found, or a zero value and false if not.
 func (db *DB) GetPermanentBlock(ip string) (PermanentBlockEntry, bool) {
