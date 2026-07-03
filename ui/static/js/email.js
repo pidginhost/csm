@@ -564,21 +564,28 @@
                 }
             })
             .catch(function() {
+                resetEmailFindingsTable();
                 var tbody = document.getElementById('email-tbody');
                 if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">Failed to load findings</td></tr>';
             });
     }
 
+    function resetEmailFindingsTable() {
+        if (!emailTable) return;
+        emailTable.destroy();
+        emailTable = null;
+    }
+
     function renderFindingsTable(findings) {
         var tbody = document.getElementById('email-tbody');
-        if (!tbody) return;
+        if (!tbody) { resetEmailFindingsTable(); return; }
 
         // Drop the previous instance first: it still holds listeners on the
         // shared search box and sort headers, and its allRows point at the
         // detached <tr>s this render replaces. Without destroy, a search would
         // re-insert those stale rows and every sort would fire once per leaked
         // instance.
-        if (emailTable) { emailTable.destroy(); emailTable = null; }
+        resetEmailFindingsTable();
 
         _emailExportData = findings.map(function(f) {
             return {
