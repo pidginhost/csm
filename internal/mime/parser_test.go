@@ -191,9 +191,61 @@ func TestParseSinglePartAttachment(t *testing.T) {
 		t.Error("Size should be > 0 for decoded base64 content")
 	}
 
+	// MAIL-04: the -D message-id marker line must be stripped before decode,
+	// otherwise the base64 payload is prefixed with "singlepart-D\n" and either
+	// fails to decode or produces garbage. Assert the exact decoded bytes.
+	data, err := os.ReadFile(result.Parts[0].TempPath)
+	if err != nil {
+		t.Fatalf("reading staged part: %v", err)
+	}
+	const wantPDF = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+	if string(data) != wantPDF {
+		t.Errorf("decoded single-part content = %q, want %q", data, wantPDF)
+	}
+
 	// Cleanup
 	for _, p := range result.Parts {
 		os.Remove(p.TempPath)
+	}
+}
+
+// MAIL-01: real Exim -H files prefix every RFC header with a decimal byte
+// count and a flag character (e.g. "048F From: ..."). A parser that only
+// recognizes bare "From:"/"Content-Type:" lines never enters its header
+// section, returns empty headers, and reports zero attachments -- the email-AV
+// pipeline goes inert against real mail. This asserts the length+flag prefix is
+// understood using the real-format golden fixtures.
+func TestParseEximRealHeaderFormatDetected(t *testing.T) {
+	result, err := ParseSpoolMessage(
+		filepath.Join("testdata", "multipart-H"),
+		filepath.Join("testdata", "multipart-D"),
+		DefaultLimits(),
+	)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage failed: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			os.Remove(p.TempPath)
+		}
+	}()
+
+	if result.From != "sender@external.com" {
+		t.Errorf("From = %q, want sender@external.com (length+flag prefix not parsed)", result.From)
+	}
+	if result.Subject != "Document attached" {
+		t.Errorf("Subject = %q, want 'Document attached'", result.Subject)
+	}
+	if len(result.To) != 1 || result.To[0] != "user@domain.com" {
+		t.Errorf("To = %v, want [user@domain.com]", result.To)
+	}
+	if result.Direction != "inbound" {
+		t.Errorf("Direction = %q, want inbound (Received header not parsed)", result.Direction)
+	}
+	// Content-Type must be parsed from the prefixed header so the multipart
+	// attachment is extracted.
+	if len(result.Parts) != 1 || result.Parts[0].Filename != "test.exe" {
+		t.Fatalf("Parts = %+v, want one test.exe attachment", result.Parts)
 	}
 }
 
@@ -239,9 +291,9 @@ func TestParseSpoolMessageCapsLargeBodyRead(t *testing.T) {
 	hPath := filepath.Join(dir, "large-H")
 	dPath := filepath.Join(dir, "large-D")
 
-	header := "malware\ntest@example.com\nuser@example.com\n0\n0\n" +
-		"Content-Type: application/octet-stream; name=\"huge.bin\"\n" +
-		"Content-Transfer-Encoding: base64\n\n"
+	header := "large-H\ncpuser 1000 1000\n<test@example.com>\n0 0\n-local\n1\nuser@example.com\n\n" +
+		eximHdr(' ', `Content-Type: application/octet-stream; name="huge.bin"`) +
+		eximHdr(' ', "Content-Transfer-Encoding: base64")
 	if err := os.WriteFile(hPath, []byte(header), 0600); err != nil {
 		t.Fatal(err)
 	}

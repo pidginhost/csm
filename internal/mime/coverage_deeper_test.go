@@ -777,14 +777,17 @@ func TestParseSinglePartAttachmentOverSizeLimit(t *testing.T) {
 	}
 	encoded := base64.StdEncoding.EncodeToString(bigPayload)
 
-	header := "Exim message header file\nmsgid-Y\n" +
-		"From: x@y.com\nTo: a@b.com\nSubject: big\nMIME-Version: 1.0\n" +
-		"Content-Type: application/pdf; name=\"big.pdf\"\n" +
-		"Content-Transfer-Encoding: base64\n\n"
+	header := "msg-H\ncpuser 1000 1000\n<x@y.com>\n0 0\n-local\n1\na@b.com\n\n" +
+		eximHdr('F', "From: x@y.com") +
+		eximHdr('T', "To: a@b.com") +
+		eximHdr(' ', "Subject: big") +
+		eximHdr(' ', "MIME-Version: 1.0") +
+		eximHdr(' ', `Content-Type: application/pdf; name="big.pdf"`) +
+		eximHdr(' ', "Content-Transfer-Encoding: base64")
 	if err := os.WriteFile(hPath, []byte(header), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dPath, []byte(encoded), 0644); err != nil {
+	if err := os.WriteFile(dPath, []byte(filepath.Base(dPath)+"\n"+encoded), 0644); err != nil {
 		t.Fatal(err)
 	}
 

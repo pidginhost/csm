@@ -1,9 +1,15 @@
-Exim message header file
-3kLQGn-000def-2Y
-Received: from [203.0.113.50] (helo=mail.attacker.com) by csm.example.com with esmtp (Exim 4.96) id 3kLQGn-000def-2Y for user@domain.com; Mon, 30 Mar 2026 12:00:00 +0000
-From: sender@external.com
-To: user@domain.com
-Subject: Document attached
-MIME-Version: 1.0
-Content-Type: multipart/mixed; boundary="BOUNDARY123"
+multipart-H
+sender 1000 1000
+<sender@external.com>
+1777409000 0
+-received_protocol esmtp
+-body_linecount 6
+1
+user@domain.com
 
+174P Received: from [203.0.113.50] (helo=mail.attacker.example) by csm.example.com with esmtp (Exim 4.96) id 3kLQGn-000def-2Y for user@domain.com; Mon, 30 Mar 2026 12:00:00 +0000
+26F From: sender@external.com
+20T To: user@domain.com
+27  Subject: Document attached
+18  MIME-Version: 1.0
+54  Content-Type: multipart/mixed; boundary="BOUNDARY123"

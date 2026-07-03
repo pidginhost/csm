@@ -12,7 +12,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
-	"net/mail"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -93,6 +92,11 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		result.PartialReason = "message body exceeds parser memory budget"
 		return result, nil
 	}
+
+	// Exim -D files open with a "<message-id>-D" marker line; strip it before
+	// any body decode so single-part base64/QP payloads are not corrupted by
+	// the marker bytes.
+	bodyData = stripSpoolBodyMarker(bodyData, bodyPath)
 
 	ct := hdrs.Get("Content-Type")
 	if ct == "" {
@@ -248,79 +252,152 @@ type envelope struct {
 }
 
 // parseEximHeader reads an Exim -H file and extracts envelope info and headers.
-// Exim -H files have a specific format: the first lines are Exim internal metadata,
-// followed by RFC 2822 headers.
 func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
 	}
+	env, hdrs := parseEximHeaderData(data)
+	return env, hdrs, nil
+}
 
+// parseEximHeaderData parses the bytes of an Exim -H spool file into the
+// envelope fields and the RFC 5322 header set. The -H format is:
+//
+//	line 1:  <message-id>-H
+//	line 2:  <envelope-user> <uid> <gid>
+//	         <envelope metadata / options / recipient block>
+//	         <blank line>
+//	         <RFC headers, each prefixed "<byte-count><flag> ">
+//
+// Each header line carries a decimal byte count and a single flag character
+// ('F' From, 'T' To, 'P' Received, 'R' Reply-To, '*' deleted, space for the
+// rest); folded continuations start with whitespace. Real cPanel-Exim writes
+// this format, so parsing bare "From:" lines (as an earlier version did) never
+// matched and left every field empty. Parsing is fail-open: unparseable input
+// yields empty headers, never an error.
+func parseEximHeaderData(data []byte) (*envelope, textproto.MIMEHeader) {
 	env := &envelope{}
+	hdrs := make(textproto.MIMEHeader)
 
-	// Parse as mail message to extract headers - find the header block
-	// Exim -H files contain envelope info then headers separated by a blank line pattern.
-	// We look for standard RFC headers.
-	reader := bufio.NewReader(bytes.NewReader(data))
-
-	// Collect the raw header text by finding lines that look like RFC 822 headers
-	var headerBuf bytes.Buffer
-	inHeaders := false
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && line == "" {
-			break
-		}
-		trimmed := strings.TrimRight(line, "\r\n")
-
-		// Detect start of RFC headers (lines like "From:", "To:", "Subject:", etc.)
-		if !inHeaders {
-			if len(trimmed) > 0 && strings.Contains(trimmed, ":") {
-				lower := strings.ToLower(trimmed)
-				if strings.HasPrefix(lower, "from:") ||
-					strings.HasPrefix(lower, "to:") ||
-					strings.HasPrefix(lower, "subject:") ||
-					strings.HasPrefix(lower, "date:") ||
-					strings.HasPrefix(lower, "mime-version:") ||
-					strings.HasPrefix(lower, "content-type:") ||
-					strings.HasPrefix(lower, "received:") ||
-					strings.HasPrefix(lower, "message-id:") {
-					inHeaders = true
-				}
-			}
-		}
-
-		if inHeaders {
-			headerBuf.WriteString(line)
-			if trimmed == "" {
-				break // end of headers
-			}
-		}
+	reconstructed := reconstructEximHeaderBytes(data)
+	tp := textproto.NewReader(bufio.NewReader(bytes.NewReader(reconstructed)))
+	// A malformed trailing line makes ReadMIMEHeader return an error alongside
+	// the headers it parsed before the fault; keep those and fail open.
+	parsed, _ := tp.ReadMIMEHeader()
+	if len(parsed) == 0 {
+		return env, hdrs // fail-open: no recognizable headers
 	}
 
-	// Parse the collected headers
-	msg, msgErr := mail.ReadMessage(&headerBuf)
-	if msgErr != nil {
-		// Try to extract what we can from the raw data
-		return env, make(textproto.MIMEHeader), nil //nolint:nilerr // fail-open: return empty headers
-	}
-
-	env.from = msg.Header.Get("From")
-	env.subject = msg.Header.Get("Subject")
-	if to := msg.Header.Get("To"); to != "" {
+	hdrs = parsed
+	env.from = hdrs.Get("From")
+	env.subject = hdrs.Get("Subject")
+	if to := hdrs.Get("To"); to != "" {
 		for _, addr := range strings.Split(to, ",") {
 			env.to = append(env.to, strings.TrimSpace(addr))
 		}
 	}
+	return env, hdrs
+}
 
-	// Convert mail.Header to textproto.MIMEHeader
-	hdrs := make(textproto.MIMEHeader)
-	for k, v := range msg.Header {
-		hdrs[k] = v
+// reconstructEximHeaderBytes rebuilds a plain RFC 5322 header block from an
+// Exim -H file by dropping the two leading metadata lines and the envelope
+// preamble, then stripping the "<byte-count><flag> " prefix from each header
+// line. Deleted headers (flag '*') and their folds are omitted; folded
+// continuation lines are preserved verbatim so textproto can rejoin them.
+func reconstructEximHeaderBytes(data []byte) []byte {
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	// A single header line (DKIM/ARC signatures, long base64) can be large but
+	// is bounded by the -H file already in memory.
+	sc.Buffer(make([]byte, 0, 8192), len(data)+64)
+
+	var out bytes.Buffer
+	lineNum := 0
+	inHeaders := false
+	skippingDeleted := false
+	for sc.Scan() {
+		line := sc.Text()
+		lineNum++
+		if lineNum <= 2 {
+			continue // message-id marker, then envelope-user line
+		}
+		if !inHeaders {
+			if line == "" {
+				inHeaders = true
+			}
+			continue // envelope metadata / recipient block
+		}
+		// Folded continuation: RFC 5322 lines starting with WSP belong to the
+		// preceding header.
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			if !skippingDeleted {
+				out.WriteString(line)
+				out.WriteString("\r\n")
+			}
+			continue
+		}
+		rest, flag, ok := stripEximPrefix(line)
+		if !ok || !strings.Contains(rest, ":") {
+			skippingDeleted = false
+			continue // not a recognizable header start
+		}
+		if flag == '*' {
+			skippingDeleted = true // deleted header: skip it and its folds
+			continue
+		}
+		skippingDeleted = false
+		out.WriteString(rest)
+		out.WriteString("\r\n")
 	}
+	out.WriteString("\r\n") // terminate the header block for ReadMIMEHeader
+	return out.Bytes()
+}
 
-	return env, hdrs, nil
+// stripEximPrefix removes the leading "<byte-count><flag> " from an Exim -H
+// header line and returns the remaining "Name: value" text plus the flag byte.
+// ok is false when the line does not carry a valid prefix.
+func stripEximPrefix(line string) (rest string, flag byte, ok bool) {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i+1 >= len(line) {
+		return "", 0, false
+	}
+	flag = line[i]
+	if !isEximFlagByte(flag) || line[i+1] != ' ' {
+		return "", 0, false
+	}
+	return line[i+2:], flag, true
+}
+
+func isEximFlagByte(b byte) bool {
+	return b == ' ' || b == '*' ||
+		(b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
+}
+
+// stripSpoolBodyMarker removes the first line of an Exim -D body file when it
+// is the "<message-id>-D" marker Exim always writes there. The marker equals
+// the -D file's base name, so matching on that is exact: bodies that lack a
+// marker (or callers that pass a raw body) are left untouched. Without this,
+// single-part base64/QP payloads decode the marker bytes as content and fail.
+func stripSpoolBodyMarker(bodyData []byte, bodyPath string) []byte {
+	marker := filepath.Base(bodyPath)
+	nl := bytes.IndexByte(bodyData, '\n')
+	var first []byte
+	if nl < 0 {
+		first = bodyData
+	} else {
+		first = bodyData[:nl]
+	}
+	if string(bytes.TrimRight(first, "\r")) != marker {
+		return bodyData
+	}
+	if nl < 0 {
+		return nil
+	}
+	return bodyData[nl+1:]
 }
 
 // detectDirection guesses inbound vs outbound from Received headers.

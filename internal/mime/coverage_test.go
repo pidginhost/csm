@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,27 +174,44 @@ func TestDecodeSinglePartBase64Oversized(t *testing.T) {
 
 // --- extractZIP via ParseSpoolMessage ---------------------------------
 
-// buildEximSpool writes a mock Exim -H / -D file pair for ParseSpoolMessage.
+// eximHdr formats one Exim -H header line: "<count><flag> <header>\n". The
+// count is the byte length of the header text including its terminating
+// newline, matching real cPanel-Exim spool output. flag is 'F'/'T'/'P'/'R'
+// for From/To/Received/Reply-To and a space for unflagged headers.
+func eximHdr(flag byte, header string) string {
+	return fmt.Sprintf("%d%c %s\n", len(header)+1, flag, header)
+}
+
+// buildEximSpool writes a real-format Exim -H / -D file pair for
+// ParseSpoolMessage: the -H holds the envelope preamble, a blank separator,
+// and length+flag-prefixed RFC headers; the -D opens with the message-id
+// marker line (Exim always writes "<msgid>-D" as the first body line).
 func buildEximSpool(t *testing.T, contentType, body string) (hPath, dPath string) {
 	t.Helper()
 	dir := t.TempDir()
-	hPath = filepath.Join(dir, "msg-H")
-	dPath = filepath.Join(dir, "msg-D")
+	msgID := "1EximT-0000000ABCd-1X2Y"
+	hPath = filepath.Join(dir, msgID+"-H")
+	dPath = filepath.Join(dir, msgID+"-D")
 
-	// Minimal Exim -H structure: metadata lines then RFC headers.
-	header := "Exim message header file\n" +
-		"msgid-1Z\n" +
-		"Received: from [10.0.0.1] by test with esmtp for user@domain.com; Mon, 01 Jan 2026 00:00:00 +0000\n" +
-		"From: attacker@external.com\n" +
-		"To: user@domain.com\n" +
-		"Subject: archive test\n" +
-		"MIME-Version: 1.0\n" +
-		"Content-Type: " + contentType + "\n" +
-		"\n"
+	header := msgID + "-H\n" +
+		"cpuser 1000 1000\n" +
+		"<attacker@external.com>\n" +
+		"1777409000 0\n" +
+		"-received_protocol esmtp\n" +
+		"-body_linecount 1\n" +
+		"1\n" +
+		"user@domain.com\n" +
+		"\n" +
+		eximHdr('P', "Received: from [203.0.113.50] by test with esmtp for user@domain.com; Mon, 01 Jan 2026 00:00:00 +0000") +
+		eximHdr('F', "From: attacker@external.com") +
+		eximHdr('T', "To: user@domain.com") +
+		eximHdr(' ', "Subject: archive test") +
+		eximHdr(' ', "MIME-Version: 1.0") +
+		eximHdr(' ', "Content-Type: "+contentType)
 	if err := os.WriteFile(hPath, []byte(header), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dPath, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(dPath, []byte(msgID+"-D\n"+body), 0644); err != nil {
 		t.Fatal(err)
 	}
 	return hPath, dPath
@@ -512,7 +530,12 @@ func TestParseSpoolMessageMissingHeaderFile(t *testing.T) {
 
 func TestParseSpoolMessageMissingBodyFile(t *testing.T) {
 	hPath := filepath.Join(t.TempDir(), "msg-H")
-	hdr := "Exim message header file\nmsgid-X\nFrom: x@y\nTo: a@b\nSubject: s\nMIME-Version: 1.0\nContent-Type: text/plain\n\n"
+	hdr := "msg-H\ncpuser 1000 1000\n<x@y>\n0 0\n-local\n1\na@b\n\n" +
+		eximHdr('F', "From: x@y") +
+		eximHdr('T', "To: a@b") +
+		eximHdr(' ', "Subject: s") +
+		eximHdr(' ', "MIME-Version: 1.0") +
+		eximHdr(' ', "Content-Type: text/plain")
 	if err := os.WriteFile(hPath, []byte(hdr), 0644); err != nil {
 		t.Fatal(err)
 	}
