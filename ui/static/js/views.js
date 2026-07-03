@@ -69,6 +69,12 @@ CSM.savedViews = (function() {
     function applyParams(params) {
         if (typeof CSM === 'undefined' || !CSM.urlState) return;
         CSM.urlState.replace(params || {});
+        // replace() uses history.replaceState, which the browser never pairs
+        // with a popstate event, so the bind()/subscribe() consumers that own
+        // each page's filter inputs would not see the new URL. Fire popstate
+        // ourselves to run the same re-apply path a back/forward navigation
+        // would, resetting inputs and triggering the page's data refresh.
+        window.dispatchEvent(new Event('popstate'));
     }
 
     function buildDropdown(host, page, views) {
