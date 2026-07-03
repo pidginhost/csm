@@ -53,3 +53,24 @@ func TestAPIFirewallUnbanDropsAutoBlockThreatRow(t *testing.T) {
 		t.Fatalf("operator threat row not intact: found=%v entry=%+v", found, entry)
 	}
 }
+
+func TestDropAutoBlockThreatRowWithoutStoreClearsTemporaryOnly(t *testing.T) {
+	prevStore := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prevStore) })
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+
+	tdb := checks.GetThreatDB()
+	tdb.AddTemporary("203.0.113.9", "web_attack", time.Hour)
+	tdb.AddPermanent("203.0.113.10", "operator block")
+
+	dropAutoBlockThreatRow("203.0.113.9")
+	if src, ok := tdb.Lookup("203.0.113.9"); ok {
+		t.Fatalf("temporary threat survived storeless unblock: source=%q", src)
+	}
+
+	dropAutoBlockThreatRow("203.0.113.10")
+	if _, ok := tdb.Lookup("203.0.113.10"); !ok {
+		t.Fatal("operator threat was removed by storeless unblock")
+	}
+}

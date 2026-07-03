@@ -239,11 +239,56 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		if err != nil {
 			return undoRunResponse{}, err
 		}
+		restoreUndoThreatRows(payload.RestoreThreats)
 		resp.Count = count
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}
 	return resp, nil
+}
+
+func captureUndoThreatRow(ip string, autoBlockOnly bool) (undoThreatRow, bool) {
+	sdb := store.Global()
+	if sdb == nil {
+		return undoThreatRow{}, false
+	}
+	entry, ok := sdb.GetPermanentBlock(ip)
+	if !ok || entry.Expired(time.Now()) {
+		return undoThreatRow{}, false
+	}
+	if autoBlockOnly && entry.Source != store.ThreatSourceAutoBlock {
+		return undoThreatRow{}, false
+	}
+	return undoThreatRow{
+		IP:        entry.IP,
+		Reason:    entry.Reason,
+		Source:    entry.Source,
+		ExpiresAt: entry.ExpiresAt,
+	}, true
+}
+
+func restoreUndoThreatRows(rows []undoThreatRow) {
+	tdb := checks.GetThreatDB()
+	if tdb == nil {
+		return
+	}
+	for _, row := range rows {
+		if _, err := parseAndValidateIP(row.IP); err != nil {
+			continue
+		}
+		if row.Source == store.ThreatSourceAutoBlock {
+			if row.ExpiresAt.IsZero() {
+				continue
+			}
+			ttl := time.Until(row.ExpiresAt)
+			if ttl <= 0 {
+				continue // already lapsed; nothing worth restoring
+			}
+			tdb.AddTemporary(row.IP, row.Reason, ttl)
+		} else {
+			tdb.AddPermanent(row.IP, row.Reason)
+		}
+	}
 }
 
 func (s *Server) undoBulkBlock(ips []string) int {
@@ -301,27 +346,7 @@ func (s *Server) undoBulkWhitelist(payload undoPayloadIPs) int {
 	}
 	// Restore the threat rows the whitelist removed. RemoveWhitelist ran for
 	// every IP above, so the whitelist no longer suppresses these adds.
-	for _, row := range payload.RestoreThreats {
-		if _, err := parseAndValidateIP(row.IP); err != nil {
-			continue
-		}
-		tdb := checks.GetThreatDB()
-		if tdb == nil {
-			continue
-		}
-		if row.Source == store.ThreatSourceAutoBlock {
-			if row.ExpiresAt.IsZero() {
-				continue
-			}
-			ttl := time.Until(row.ExpiresAt)
-			if ttl <= 0 {
-				continue // already lapsed; nothing worth restoring
-			}
-			tdb.AddTemporary(row.IP, row.Reason, ttl)
-		} else {
-			tdb.AddPermanent(row.IP, row.Reason)
-		}
-	}
+	restoreUndoThreatRows(payload.RestoreThreats)
 	return count
 }
 

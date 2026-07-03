@@ -99,6 +99,34 @@ func TestAddTempBlockRejectsNoExpiryAutoBlockRows(t *testing.T) {
 	}
 }
 
+func TestRemoveAutoBlockLeavesOperatorUpgrade(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ip := "192.0.2.21"
+	if err := db.AddTempBlock(ip, "web_attack", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("AddTempBlock: %v", err)
+	}
+	if err := db.AddPermanentBlock(ip, "operator block"); err != nil {
+		t.Fatalf("AddPermanentBlock: %v", err)
+	}
+
+	removed, err := db.RemoveAutoBlock(ip)
+	if err != nil || removed {
+		t.Fatalf("RemoveAutoBlock(upgraded operator) = (%v, %v), want (false, nil)", removed, err)
+	}
+	entry, found := db.GetPermanentBlock(ip)
+	if !found || entry.Source != ThreatSourceOperator || !entry.ExpiresAt.IsZero() {
+		t.Fatalf("operator upgrade not intact: found=%v entry=%+v", found, entry)
+	}
+	if count := db.getCounter("threats:count"); count != 1 {
+		t.Fatalf("threats:count = %d, want 1", count)
+	}
+}
+
 func seedRawAutoBlockThreatRow(db *DB, ip, reason string, expiresAt time.Time) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))

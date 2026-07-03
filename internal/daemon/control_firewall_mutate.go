@@ -16,15 +16,10 @@ import (
 // firewall-only unblock must not silently clear a deliberate block. Under
 // older builds a stale auto-block row could outlive the firewall block and
 // ip_reputation would re-flag the IP into a new block loop. Clearing the
-// persisted row and the in-memory temp copy stops that.
+// persisted row when present and the in-memory temp copy stops that.
 func dropAutoBlockThreatRow(ip string) {
-	sdb := store.Global()
-	if sdb == nil {
-		return
-	}
-	removed, err := sdb.RemoveAutoBlock(ip)
-	if err != nil || !removed {
-		return
+	if sdb := store.Global(); sdb != nil {
+		_, _ = sdb.RemoveAutoBlock(ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)

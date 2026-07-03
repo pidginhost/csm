@@ -53,3 +53,24 @@ func TestDropAutoBlockThreatRowClearsAutoBlockOnly(t *testing.T) {
 		t.Fatalf("operator threat row not intact: found=%v entry=%+v", found, entry)
 	}
 }
+
+func TestDropAutoBlockThreatRowWithoutStoreClearsTemporaryOnly(t *testing.T) {
+	prevStore := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prevStore) })
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+
+	tdb := checks.GetThreatDB()
+	tdb.AddTemporary("192.0.2.20", "web_attack", time.Hour)
+	tdb.AddPermanent("192.0.2.21", "operator block")
+
+	dropAutoBlockThreatRow("192.0.2.20")
+	if src, ok := tdb.Lookup("192.0.2.20"); ok {
+		t.Fatalf("temporary threat survived storeless unblock: source=%q", src)
+	}
+
+	dropAutoBlockThreatRow("192.0.2.21")
+	if _, ok := tdb.Lookup("192.0.2.21"); !ok {
+		t.Fatal("operator threat was removed by storeless unblock")
+	}
+}

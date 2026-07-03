@@ -1211,12 +1211,16 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 	succeeded := 0
 	unblocked := make([]string, 0, len(req.IPs))
+	removedThreats := make([]undoThreatRow, 0, len(req.IPs))
 	for _, ip := range req.IPs {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
 		if err := s.blocker.UnblockIP(ip); err != nil {
 			continue
+		}
+		if row, ok := captureUndoThreatRow(ip, true); ok {
+			removedThreats = append(removedThreats, row)
 		}
 		dropAutoBlockThreatRow(ip)
 		flushCphulk(ip)
@@ -1229,7 +1233,12 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 	if succeeded > 0 {
 		undoToken = s.recordUndoEntry(r, "firewall_bulk_unblock", undoInverseFirewallUnblock,
 			fmt.Sprintf("Unblocked %d IPs", succeeded),
-			undoPayloadIPs{IPs: unblocked, Reason: "Undo: re-block via CSM Web UI", Timeout: "24h"})
+			undoPayloadIPs{
+				IPs:            unblocked,
+				Reason:         "Undo: re-block via CSM Web UI",
+				Timeout:        "24h",
+				RestoreThreats: removedThreats,
+			})
 	}
 
 	writeJSON(w, map[string]interface{}{

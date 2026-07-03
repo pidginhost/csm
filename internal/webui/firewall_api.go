@@ -23,13 +23,8 @@ import (
 // older builds a stale auto-block row could outlive the firewall block and
 // ip_reputation would re-flag the IP into a new block loop.
 func dropAutoBlockThreatRow(ip string) {
-	sdb := store.Global()
-	if sdb == nil {
-		return
-	}
-	removed, err := sdb.RemoveAutoBlock(ip)
-	if err != nil || !removed {
-		return
+	if sdb := store.Global(); sdb != nil {
+		_, _ = sdb.RemoveAutoBlock(ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)

@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,5 +73,60 @@ func TestAPIUnblockBulkDropsAutoBlockThreatRows(t *testing.T) {
 		if _, found := store.Global().GetPermanentBlock(ip); found {
 			t.Fatalf("auto-block threat row for %s survived bulk unblock", ip)
 		}
+	}
+}
+
+func TestAPIUnblockBulkUndoRestoresAutoBlockThreatRows(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	blocker := newFullBlocker()
+	s.blocker = blocker
+
+	ip := "203.0.113.32"
+	tdb := checks.GetThreatDB()
+	tdb.AddTemporary(ip, "web_attack", time.Hour)
+	blocker.blocked[ip] = "web_attack"
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"ips": []string{ip},
+	})
+	w := httptest.NewRecorder()
+	s.apiUnblockBulk(w, bearerRequest("POST", "/api/v1/unblock-bulk", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("bulk unblock status = %d; body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		UndoToken string `json:"undo_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
+	}
+	if resp.UndoToken == "" {
+		t.Fatalf("bulk unblock returned no undo token; body=%s", w.Body.String())
+	}
+	if _, ok := tdb.Lookup(ip); ok {
+		t.Fatal("auto-block IP still flagged after bulk unblock")
+	}
+	if _, found := store.Global().GetPermanentBlock(ip); found {
+		t.Fatal("auto-block threat row survived bulk unblock")
+	}
+
+	runUndo(t, s, resp.UndoToken)
+
+	if _, ok := blocker.blocked[ip]; !ok {
+		t.Fatal("undo did not re-block the IP in the firewall")
+	}
+	if _, ok := tdb.Lookup(ip); !ok {
+		t.Fatal("undo did not restore the auto-block threat row")
+	}
+	entry, found := store.Global().GetPermanentBlock(ip)
+	if !found {
+		t.Fatal("auto-block row missing from store after undo")
+	}
+	if entry.Source != store.ThreatSourceAutoBlock {
+		t.Fatalf("restored source = %q, want autoblock", entry.Source)
+	}
+	if entry.ExpiresAt.IsZero() {
+		t.Fatal("restored auto-block row lost its expiry")
 	}
 }

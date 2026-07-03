@@ -8,7 +8,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
-	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/threat"
 )
 
@@ -487,15 +486,8 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			// Capture the live threat row before dropping it so an undo can
 			// restore it exactly, preserving source/expiry, instead of
 			// leaving a whitelisted attacker with no threat record.
-			if sdb := store.Global(); sdb != nil {
-				if e, ok := sdb.GetPermanentBlock(ipStr); ok && !e.Expired(time.Now()) {
-					removedThreats = append(removedThreats, undoThreatRow{
-						IP:        e.IP,
-						Reason:    e.Reason,
-						Source:    e.Source,
-						ExpiresAt: e.ExpiresAt,
-					})
-				}
+			if row, ok := captureUndoThreatRow(ipStr, false); ok {
+				removedThreats = append(removedThreats, row)
 			}
 			// Mirror apiThreatWhitelistIP flow
 			if s.blocker != nil {
