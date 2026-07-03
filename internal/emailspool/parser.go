@@ -162,6 +162,8 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 	// are preceded by a numeric count line.
 	inHeaders := false
 	var preamble []string
+	lastHeader := ""
+	skippingDeleted := false
 	for sc.Scan() {
 		line := sc.Text()
 		if !inHeaders {
@@ -173,25 +175,28 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 			continue
 		}
 		// RFC 5322 header section. Each header line in Exim's -H format
-		// starts with "<count><flag> <name>: <value>" where count is 3-4
-		// digits and flag is a single ASCII letter ('T', 'F', 'R', etc.).
-		// Folded continuations start with whitespace.
-		name, value := parseEximHeaderLine(line)
-		switch name {
-		case "From":
-			h.From = value
-		case "Reply-To":
-			h.ReplyTo = value
-		case "Subject":
-			h.Subject = value
-		case "X-PHP-Script":
-			h.XPHPScript = value
-		case "X-Mailer":
-			h.XMailer = value
-		case "User-Agent":
-			h.UserAgent = value
-		case "Message-ID":
-			h.MessageID = value
+		// starts with "<count><flag> <name>: <value>" where count is a
+		// variable-width decimal byte count for the full stored header
+		// (including folded continuation lines) and flag is a single Exim
+		// marker ('T', 'F', 'R', '*', space, etc.).
+		if isFoldedHeaderLine(line) {
+			if !skippingDeleted && lastHeader != "" {
+				appendEximHeaderContinuation(&h, lastHeader, line)
+			}
+			continue
+		}
+		lastHeader = ""
+		skippingDeleted = false
+		name, value, deleted, ok := parseEximHeaderLine(line)
+		if deleted {
+			skippingDeleted = true
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if canonical, handled := setEximHeaderValue(&h, name, value); handled {
+			lastHeader = canonical
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -275,39 +280,106 @@ func firstField(s string) string {
 	return s
 }
 
-// parseEximHeaderLine returns (header-name, header-value) for an Exim -H
-// header line of the form "NNNF Header-Name: value", or ("", "") if the
-// line cannot be parsed (folded continuations, garbage). The prefix is a
-// variable-width decimal length (Exim writes the byte count of the header
-// line, so a header of 1000+ bytes carries a 4-or-more-digit prefix),
-// followed by a flag byte (a single ASCII letter such as 'T', 'F', 'R', or
-// a space when the header has no flag) and a space separator; the whole
-// prefix is stripped before splitting on the colon.
-func parseEximHeaderLine(line string) (string, string) {
+// parseEximHeaderLine returns the header name, value, deletion marker, and
+// prefix-valid marker for an Exim -H header line of the form
+// "NNNF Header-Name: value". The prefix is a variable-width decimal length
+// (Exim writes the byte count of the full stored header, including folded
+// continuation lines), followed by a flag byte ('T', 'F', 'R', '*', space,
+// etc.) and a space separator; the whole prefix is stripped before splitting
+// on the colon.
+func parseEximHeaderLine(line string) (name string, value string, deleted bool, ok bool) {
 	i := 0
 	for i < len(line) && isDigit(line[i]) {
 		i++
 	}
 	if i == 0 || i+1 >= len(line) {
-		return "", ""
+		return "", "", false, false
 	}
 	// After the digit run: a flag byte (letter, or space for unflagged
 	// headers such as X-PHP-Script in real cPanel-Exim spool output) then a
 	// single space separator.
-	if !isLetter(line[i]) && line[i] != ' ' || line[i+1] != ' ' {
-		return "", ""
+	if !isEximHeaderFlag(line[i]) || line[i+1] != ' ' {
+		return "", "", false, false
+	}
+	if line[i] == '*' {
+		return "", "", true, true
 	}
 	rest := line[i+2:]
 	colon := indexByte(rest, ':')
 	if colon < 0 {
-		return "", ""
+		return "", "", false, true
 	}
-	name := rest[:colon]
-	value := ""
+	name = rest[:colon]
 	if colon+1 < len(rest) {
 		value = trimLeadingSpace(rest[colon+1:])
 	}
-	return name, value
+	return name, value, false, true
+}
+
+func isFoldedHeaderLine(line string) bool {
+	return len(line) > 0 && (line[0] == ' ' || line[0] == '\t')
+}
+
+func isEximHeaderFlag(b byte) bool {
+	return b == ' ' || b == '*' || isLetter(b)
+}
+
+func setEximHeaderValue(h *Headers, name, value string) (string, bool) {
+	switch strings.ToLower(name) {
+	case "from":
+		h.From = value
+		return "from", true
+	case "reply-to":
+		h.ReplyTo = value
+		return "reply-to", true
+	case "subject":
+		h.Subject = value
+		return "subject", true
+	case "x-php-script":
+		h.XPHPScript = value
+		return "x-php-script", true
+	case "x-mailer":
+		h.XMailer = value
+		return "x-mailer", true
+	case "user-agent":
+		h.UserAgent = value
+		return "user-agent", true
+	case "message-id":
+		h.MessageID = value
+		return "message-id", true
+	default:
+		return "", false
+	}
+}
+
+func appendEximHeaderContinuation(h *Headers, name, line string) {
+	value := trimLeadingSpace(line)
+	switch name {
+	case "from":
+		h.From = appendFoldedHeaderValue(h.From, value)
+	case "reply-to":
+		h.ReplyTo = appendFoldedHeaderValue(h.ReplyTo, value)
+	case "subject":
+		h.Subject = appendFoldedHeaderValue(h.Subject, value)
+	case "x-php-script":
+		h.XPHPScript = appendFoldedHeaderValue(h.XPHPScript, value)
+	case "x-mailer":
+		h.XMailer = appendFoldedHeaderValue(h.XMailer, value)
+	case "user-agent":
+		h.UserAgent = appendFoldedHeaderValue(h.UserAgent, value)
+	case "message-id":
+		h.MessageID = appendFoldedHeaderValue(h.MessageID, value)
+	}
+}
+
+func appendFoldedHeaderValue(current, continuation string) string {
+	if current == "" {
+		return continuation
+	}
+	if continuation == "" {
+		return current
+	}
+	return current + " " + continuation
 }
 
 func isDigit(b byte) bool  { return b >= '0' && b <= '9' }

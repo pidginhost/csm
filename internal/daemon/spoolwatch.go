@@ -74,6 +74,7 @@ type SpoolWatcher struct {
 
 	pipeClosed     int32 // atomic
 	fdClosed       int32 // atomic - guards sw.fd against double-close
+	runActive      int32 // atomic - Run owns scanCh shutdown while set
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
 }
@@ -189,6 +190,8 @@ func (sw *SpoolWatcher) Run() {
 	}
 
 	// Start scanner workers
+	atomic.StoreInt32(&sw.runActive, 1)
+	defer atomic.StoreInt32(&sw.runActive, 0)
 	concurrency := sw.cfg.EmailAV.ScanConcurrency
 	if concurrency < 1 {
 		concurrency = 4
@@ -321,15 +324,34 @@ func (sw *SpoolWatcher) dispatchEvent(fd int32, pid int32) {
 func (sw *SpoolWatcher) scanWorker() {
 	defer sw.wg.Done()
 
+	// drainAndClose closes scanCh after shutdown. Keep draining queued events
+	// until then: dispatchEvent may enqueue a permission fd while Stop is racing,
+	// and the worker owns the response/close path for every enqueued fd.
 	for {
 		select {
-		case <-sw.stopCh:
-			return
 		case evt, ok := <-sw.scanCh:
 			if !ok {
 				return
 			}
 			sw.handleSpoolEvent(evt)
+		case <-sw.stopCh:
+			if atomic.LoadInt32(&sw.runActive) != 0 {
+				for evt := range sw.scanCh {
+					sw.handleSpoolEvent(evt)
+				}
+				return
+			}
+			for {
+				select {
+				case evt, ok := <-sw.scanCh:
+					if !ok {
+						return
+					}
+					sw.handleSpoolEvent(evt)
+				default:
+					return
+				}
+			}
 		}
 	}
 }

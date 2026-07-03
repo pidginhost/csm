@@ -168,6 +168,64 @@ func TestParseHeaders_LongSubjectUsesVariableLengthPrefix(t *testing.T) {
 	}
 }
 
+func TestParseHeaders_UnfoldsInterestingHeaders(t *testing.T) {
+	fromStored := "From: Long Name\n\t<sender@example.com>\n"
+	subjectStored := "Subject: first line\n\tsecond: still subject\n"
+	content := "id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" +
+		eximHeaderRecord('F', fromStored) +
+		eximHeaderRecord(' ', subjectStored)
+
+	h, err := ParseHeadersReader(strings.NewReader(content))
+	if err != nil {
+		t.Fatalf("ParseHeadersReader error: %v", err)
+	}
+	if h.From != "Long Name <sender@example.com>" {
+		t.Errorf("From = %q, want unfolded address", h.From)
+	}
+	if h.Subject != "first line second: still subject" {
+		t.Errorf("Subject = %q, want folded continuation with colon preserved", h.Subject)
+	}
+}
+
+func TestParseHeaders_UnfoldsMultiDigitPrefixHeader(t *testing.T) {
+	longLine := strings.Repeat("x", 1000)
+	subjectStored := "Subject: " + longLine + "\n\ttrail: still subject\n"
+	record := eximHeaderRecord(' ', subjectStored)
+	if len(subjectStored) < 1000 || !strings.HasPrefix(record, fmt.Sprintf("%d", len(subjectStored))) {
+		t.Fatalf("test setup: expected multi-digit prefix, got %q", record[:8])
+	}
+	content := "id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" + record
+
+	h, err := ParseHeadersReader(strings.NewReader(content))
+	if err != nil {
+		t.Fatalf("ParseHeadersReader error: %v", err)
+	}
+	want := longLine + " trail: still subject"
+	if h.Subject != want {
+		t.Errorf("Subject length = %d, want %d after unfolding multi-digit prefix", len(h.Subject), len(want))
+	}
+}
+
+func TestParseHeaders_DeletedHeadersAndFoldsAreIgnored(t *testing.T) {
+	deletedStored := "Subject: deleted\n\tbad: still deleted\n"
+	liveStored := "Subject: live\n"
+	content := "id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" +
+		eximHeaderRecord('*', deletedStored) +
+		eximHeaderRecord(' ', liveStored)
+
+	h, err := ParseHeadersReader(strings.NewReader(content))
+	if err != nil {
+		t.Fatalf("ParseHeadersReader error: %v", err)
+	}
+	if h.Subject != "live" {
+		t.Errorf("Subject = %q, want deleted header and continuation ignored", h.Subject)
+	}
+}
+
+func eximHeaderRecord(flag byte, storedHeader string) string {
+	return fmt.Sprintf("%d%c %s", len(storedHeader), flag, storedHeader)
+}
+
 func TestParseHeaders_CapturesUserAgent(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/ua.H"

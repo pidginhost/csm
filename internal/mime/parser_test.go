@@ -2,6 +2,7 @@ package mime
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +248,51 @@ func TestParseEximRealHeaderFormatDetected(t *testing.T) {
 	if len(result.Parts) != 1 || result.Parts[0].Filename != "test.exe" {
 		t.Fatalf("Parts = %+v, want one test.exe attachment", result.Parts)
 	}
+}
+
+func TestParseEximHeaderDataReconstructsFoldedAndDeletedHeaders(t *testing.T) {
+	data := []byte("id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" +
+		eximStoredHeader('F', "From: Long Name\n\t<sender@example.com>\n") +
+		eximStoredHeader('*', "Content-Type: text/plain;\n\tbad: deleted\n") +
+		eximStoredHeader(' ', "Content-Type: multipart/mixed;\n\tboundary=\"B:1\"\n") +
+		eximStoredHeader(' ', "Subject: first line\n\tsecond: still subject\n"))
+
+	env, hdrs := parseEximHeaderData(data)
+	if env.from != "Long Name <sender@example.com>" {
+		t.Errorf("From = %q, want folded sender address", env.from)
+	}
+	if env.subject != "first line second: still subject" {
+		t.Errorf("Subject = %q, want folded continuation with colon preserved", env.subject)
+	}
+	if got := hdrs.Get("Content-Type"); got != `multipart/mixed; boundary="B:1"` {
+		t.Errorf("Content-Type = %q, want live folded header with colon in continuation", got)
+	}
+	if strings.Contains(hdrs.Get("Content-Type"), "deleted") {
+		t.Fatalf("deleted Content-Type leaked into reconstructed headers: %q", hdrs.Get("Content-Type"))
+	}
+}
+
+func TestParseEximHeaderDataReconstructsMultiDigitFoldedHeader(t *testing.T) {
+	longLine := strings.Repeat("x", 1000)
+	subjectStored := "Subject: " + longLine + "\n\ttrail: still subject\n"
+	record := eximStoredHeader(' ', subjectStored)
+	if len(subjectStored) < 1000 || !strings.HasPrefix(record, fmt.Sprintf("%d", len(subjectStored))) {
+		t.Fatalf("test setup: expected multi-digit prefix, got %q", record[:8])
+	}
+	data := []byte("id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" + record)
+
+	env, hdrs := parseEximHeaderData(data)
+	want := longLine + " trail: still subject"
+	if env.subject != want {
+		t.Errorf("Subject length = %d, want %d after unfolding multi-digit prefix", len(env.subject), len(want))
+	}
+	if hdrs.Get("Subject") != want {
+		t.Errorf("MIME Subject length = %d, want %d", len(hdrs.Get("Subject")), len(want))
+	}
+}
+
+func eximStoredHeader(flag byte, storedHeader string) string {
+	return fmt.Sprintf("%d%c %s", len(storedHeader), flag, storedHeader)
 }
 
 func TestParseSinglePartTempDirFailureMarksPartial(t *testing.T) {

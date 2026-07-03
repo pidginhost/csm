@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,5 +186,72 @@ func TestSpoolWatcherHandleSpoolEventReceptionRaceAllowsSilently(t *testing.T) {
 			default:
 			}
 		})
+	}
+}
+
+func TestSpoolWatcherScanWorkerDrainsQueuedEventsAfterStop(t *testing.T) {
+	dir := t.TempDir()
+
+	var respPipe [2]int
+	if err := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); err != nil {
+		t.Skipf("pipe2: %v", err)
+	}
+	defer func() { _ = unix.Close(respPipe[0]) }()
+	if err := unix.SetNonblock(respPipe[0], true); err != nil {
+		t.Skipf("set nonblock: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.EmailAV.MaxAttachmentSize = 1024 * 1024
+	cfg.EmailAV.FailMode = "tempfail"
+
+	const events = 32
+	sw := &SpoolWatcher{
+		cfg:     cfg,
+		alertCh: make(chan alert.Finding, events),
+		fd:      respPipe[1],
+		scanCh:  make(chan spoolEvent, events),
+		stopCh:  make(chan struct{}),
+	}
+	defer sw.closeFd()
+
+	for i := 0; i < events; i++ {
+		evtFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+		if err != nil {
+			t.Skipf("open dir: %v", err)
+		}
+		sw.scanCh <- spoolEvent{
+			path:     filepath.Join(dir, fmt.Sprintf("queued-%02d-D", i)),
+			fd:       evtFd,
+			needResp: true,
+		}
+	}
+
+	close(sw.stopCh)
+	close(sw.scanCh)
+	sw.wg.Add(1)
+	sw.scanWorker()
+
+	gotAllows := 0
+	buf := make([]byte, responseSize)
+	for {
+		n, err := unix.Read(respPipe[0], buf)
+		if err == unix.EAGAIN || err == unix.EWOULDBLOCK {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read response: %v", err)
+		}
+		if n != responseSize {
+			t.Fatalf("read %d bytes, want %d", n, responseSize)
+		}
+		got := *(*fanotifyResponse)(unsafe.Pointer(&buf[0]))
+		if got.Response != FAN_ALLOW {
+			t.Fatalf("response = %d, want FAN_ALLOW", got.Response)
+		}
+		gotAllows++
+	}
+	if gotAllows != events {
+		t.Fatalf("drained responses = %d, want %d queued events", gotAllows, events)
 	}
 }
