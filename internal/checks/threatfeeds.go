@@ -155,18 +155,20 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 	db.mu.Lock()
 	_, exists := db.badIPs[ip]
 	_, wasTemp := db.badIPExpiry[ip]
+	_, wasFeed := db.feedSourceLocked(ip)
 	db.badIPs[ip] = reason
 	delete(db.badIPExpiry, ip)
 	db.mu.Unlock()
 
-	// Only persist if this is a new IP (dedup). A temp entry upgrading to
-	// permanent must still persist, or the stored row would keep its expiry.
-	if exists && !wasTemp {
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.AddPermanentBlock(ip, reason)
 		return
 	}
 
-	if sdb := store.Global(); sdb != nil {
-		_ = sdb.AddPermanentBlock(ip, reason)
+	// Only append to the flat-file fallback if this is a new local IP. A temp
+	// entry or feed-owned entry upgrading to operator evidence must still
+	// append, or the operator block would disappear after restart.
+	if exists && !wasTemp && !wasFeed {
 		return
 	}
 

@@ -166,6 +166,35 @@ func TestThreatDBRemovePermanentFallsBackToFeedEvidence(t *testing.T) {
 	}
 }
 
+func TestThreatDBAddPermanentPersistsOverFeedEvidence(t *testing.T) {
+	withTestThreatStore(t)
+	db := newTestThreatDB(t)
+	ip := "192.0.2.55"
+	db.badIPs[ip] = "cins-army"
+	db.feedIPs = map[string]map[string]struct{}{
+		"cins-army": {ip: {}},
+	}
+
+	db.AddPermanent(ip, "operator block")
+
+	if src, ok := db.Lookup(ip); !ok || src != "operator block" {
+		t.Fatalf("operator evidence not live over feed: (%q, %v)", src, ok)
+	}
+	entry, found := store.Global().GetPermanentBlock(ip)
+	if !found {
+		t.Fatal("operator row over feed evidence was not persisted")
+	}
+	if entry.Source != store.ThreatSourceOperator || !entry.ExpiresAt.IsZero() || entry.Reason != "operator block" {
+		t.Fatalf("operator row not persisted faithfully: %+v", entry)
+	}
+
+	db.RemovePermanent(ip)
+
+	if src, ok := db.Lookup(ip); !ok || src != "cins-army" {
+		t.Fatalf("feed evidence hidden after persisted operator removal: (%q, %v)", src, ok)
+	}
+}
+
 func TestLoadPermanentBlocklistSkipsExpiredRows(t *testing.T) {
 	withTestThreatStore(t)
 	now := time.Now()

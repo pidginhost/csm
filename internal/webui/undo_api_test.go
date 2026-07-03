@@ -301,6 +301,40 @@ func TestUndoBulkWhitelistSkipsExpiredRestoreThreat(t *testing.T) {
 	}
 }
 
+func TestUndoBulkWhitelistRestoresLegacyExpiringThreatAsTemporary(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+
+	ip := "203.0.113.62"
+	id := s.recordUndoEntry(bearerRequest("POST", "/api/v1/undo/run", nil),
+		"threat_bulk_whitelist", undoInverseThreatWhitelist,
+		"Whitelisted 1 IP", undoPayloadIPs{
+			IPs: []string{ip},
+			RestoreThreats: []undoThreatRow{{
+				IP:        ip,
+				Reason:    "legacy expiring auto-block",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}},
+		})
+
+	body, _ := json.Marshal(undoRunRequest{ID: id})
+	rec := httptest.NewRecorder()
+	s.apiUndoRun(rec, bearerRequest("POST", "/api/v1/undo/run", body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	entry, found := store.Global().GetPermanentBlock(ip)
+	if !found {
+		t.Fatal("legacy expiring threat was not restored")
+	}
+	if entry.Source != store.ThreatSourceAutoBlock {
+		t.Fatalf("restored source = %q, want autoblock", entry.Source)
+	}
+	if entry.ExpiresAt.IsZero() {
+		t.Fatal("legacy expiring threat became a never-expiring row")
+	}
+}
+
 // expireUndoEntry backdates the named entry's recorded_at past the TTL
 // window so handlers treat it as expired, without forcing a real-time sleep.
 func expireUndoEntry(t *testing.T, sdb *store.DB, id string) {

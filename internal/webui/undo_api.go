@@ -272,23 +272,35 @@ func restoreUndoThreatRows(rows []undoThreatRow) {
 	if tdb == nil {
 		return
 	}
+	now := time.Now()
 	for _, row := range rows {
 		if _, err := parseAndValidateIP(row.IP); err != nil {
 			continue
 		}
-		if row.Source == store.ThreatSourceAutoBlock {
-			if row.ExpiresAt.IsZero() {
-				continue
-			}
-			ttl := time.Until(row.ExpiresAt)
-			if ttl <= 0 {
-				continue // already lapsed; nothing worth restoring
-			}
-			tdb.AddTemporary(row.IP, row.Reason, ttl)
-		} else {
+		if shouldRestoreUndoThreatAsPermanent(row, now) {
 			tdb.AddPermanent(row.IP, row.Reason)
+			continue
 		}
+		if row.ExpiresAt.IsZero() {
+			continue
+		}
+		ttl := row.ExpiresAt.Sub(now)
+		if ttl <= 0 {
+			continue // already lapsed; nothing worth restoring
+		}
+		tdb.AddTemporary(row.IP, row.Reason, ttl)
 	}
+}
+
+func shouldRestoreUndoThreatAsPermanent(row undoThreatRow, now time.Time) bool {
+	if row.Source == store.ThreatSourceOperator {
+		return row.ExpiresAt.IsZero()
+	}
+	if row.Source != "" || !row.ExpiresAt.IsZero() {
+		return false
+	}
+	legacy := store.PermanentBlockEntry{Reason: row.Reason}
+	return !legacy.Expired(now)
 }
 
 func (s *Server) undoBulkBlock(ips []string) int {

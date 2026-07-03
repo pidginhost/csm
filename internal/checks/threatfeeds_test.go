@@ -325,6 +325,31 @@ func TestThreatDBAddPermanentDedupesExisting(t *testing.T) {
 	}
 }
 
+func TestThreatDBAddPermanentFileFallbackPersistsOverFeedEvidence(t *testing.T) {
+	db := newTestThreatDB(t)
+	ip := "203.0.113.55"
+	db.badIPs[ip] = "cins-army"
+	db.feedIPs = map[string]map[string]struct{}{
+		"cins-army": {ip: {}},
+	}
+
+	db.AddPermanent(ip, "operator block")
+
+	data, err := os.ReadFile(filepath.Join(db.dbPath, "permanent.txt"))
+	if err != nil {
+		t.Fatalf("permanent.txt not written: %v", err)
+	}
+	if !strings.Contains(string(data), ip) || !strings.Contains(string(data), "operator block") {
+		t.Fatalf("permanent.txt missing operator override: %q", data)
+	}
+
+	db.RemovePermanent(ip)
+
+	if src, ok := db.Lookup(ip); !ok || src != "cins-army" {
+		t.Fatalf("feed evidence hidden after operator removal: (%q, %v)", src, ok)
+	}
+}
+
 func TestThreatDBRemovePermanentFileFallback(t *testing.T) {
 	db := newTestThreatDB(t)
 	db.AddPermanent("203.0.113.5", "r1")
