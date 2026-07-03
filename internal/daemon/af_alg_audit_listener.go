@@ -45,7 +45,33 @@ type AFAlgAuditListener struct {
 	leftover        []byte // partial line accumulator across reads
 	droppedOversize bool   // mid-drop of a line that overflowed the cap
 
+	// Re-open retry state. A rotation (or a broken inotify fd) sets
+	// reopenPending; each tick retries open() once its backoff has elapsed,
+	// so one failed re-open no longer blinds the listener forever.
+	reopenPending   bool
+	reopenBackoff   time.Duration
+	reopenNotBefore time.Time
+
 	eventCount atomic.Uint64 // observed by tests / metrics
+}
+
+// Re-open backoff bounds. Start small so a normal logrotate race (the
+// replacement file lands a beat after the move) recovers within a tick or two,
+// then grow to a cap so a genuinely absent audit log does not spin.
+const (
+	afAlgReopenBackoffInitial = 1 * time.Second
+	afAlgReopenBackoffMax     = 30 * time.Second
+)
+
+func nextAFAlgReopenBackoff(cur time.Duration) time.Duration {
+	if cur <= 0 {
+		return afAlgReopenBackoffInitial
+	}
+	next := cur * 2
+	if next > afAlgReopenBackoffMax {
+		return afAlgReopenBackoffMax
+	}
+	return next
 }
 
 // afAlgMaxLeftoverBytes caps the partial-line accumulator. A real auditd
@@ -124,7 +150,33 @@ func (l *AFAlgAuditListener) open() error {
 	l.inotifyFd = fd
 	l.leftover = nil
 	l.droppedOversize = false
+	l.reopenPending = false
+	l.reopenBackoff = 0
+	l.reopenNotBefore = time.Time{}
 	return nil
+}
+
+// reopenIfDue services a pending re-open. It returns true when the listener is
+// ready to tail this tick: either no re-open was pending, or a due re-open
+// succeeded. On a failed re-open it keeps reopenPending set and schedules the
+// next attempt with exponential backoff, returning false so the caller skips
+// tailing a file that is not yet in place. A re-open still gated by its backoff
+// window also returns false without touching the filesystem.
+func (l *AFAlgAuditListener) reopenIfDue(now time.Time) bool {
+	if !l.reopenPending {
+		return true
+	}
+	if now.Before(l.reopenNotBefore) {
+		return false
+	}
+	if err := l.open(); err != nil {
+		l.reopenBackoff = nextAFAlgReopenBackoff(l.reopenBackoff)
+		l.reopenNotBefore = now.Add(l.reopenBackoff)
+		csmlog.Warn("af_alg audit listener: re-open failed; will retry",
+			"err", err, "retry_in", l.reopenBackoff)
+		return false
+	}
+	return true
 }
 
 // Run drains inotify events and tails the audit log until ctx is done.
@@ -132,10 +184,13 @@ func (l *AFAlgAuditListener) open() error {
 // approach — no epoll, easier to reason about).
 //
 // On rotation (IN_MOVE_SELF / IN_DELETE_SELF) the listener re-opens the
-// new audit.log and continues from its end. There is a brief window
-// during rotation where events written between the move and the re-open
-// can be missed; the periodic critical-tier check covers that gap via
-// its persistent cursor.
+// new audit.log and continues from its end. If the replacement file is not
+// on disk yet the re-open is retried with backoff on subsequent ticks
+// instead of giving up (one failed re-open used to blind the listener until
+// the next successful rotation). A broken inotify fd is recovered the same
+// way. There is still a brief window during rotation where events written
+// between the move and the re-open can be missed; the periodic critical-tier
+// check covers that gap via its persistent cursor.
 func (l *AFAlgAuditListener) Run(ctx context.Context) {
 	defer func() {
 		if l.inotifyFd != 0 {
@@ -167,14 +222,14 @@ func (l *AFAlgAuditListener) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			rotated, ok := l.drainInotify(inotifyBuf)
-			if !ok {
-				continue
+			// A rotation needs a re-open; a broken inotify fd (ok=false) needs
+			// one too, so a persistently unhealthy watch is rebuilt instead of
+			// leaving us blind. This is the "safety net" the retry loop provides.
+			if rotated || !ok {
+				l.reopenPending = true
 			}
-			if rotated {
-				if err := l.open(); err != nil {
-					csmlog.Warn("af_alg audit listener: re-open failed", "err", err)
-					continue
-				}
+			if !l.reopenIfDue(time.Now()) {
+				continue
 			}
 			l.tail(readBuf)
 		}
@@ -199,10 +254,9 @@ func (l *AFAlgAuditListener) drainInotify(buf []byte) (rotated, ok bool) {
 				return rotated, true
 			}
 			// Anything else (EBADF after a stray Close, EIO, EFAULT)
-			// signals the inotify fd is no longer healthy. Surface it
-			// so the operator notices, and tell the caller to skip the
-			// tail() this tick — we'll re-evaluate next tick when the
-			// 5s safety-net runs.
+			// signals the inotify fd is no longer healthy. Surface it so
+			// the operator notices, and return ok=false: the caller marks a
+			// re-open pending and the backoff retry rebuilds the watch.
 			csmlog.Warn("af_alg audit listener: inotify read error", "err", err)
 			return rotated, false
 		}
@@ -227,6 +281,16 @@ func (l *AFAlgAuditListener) drainInotify(buf []byte) (rotated, ok bool) {
 // each complete line to handleLine. Partial trailing bytes (no newline
 // yet) are buffered in l.leftover for the next tick.
 func (l *AFAlgAuditListener) tail(buf []byte) {
+	// Detect in-place truncation (copytruncate logrotate, or a manual
+	// truncate). When the file shrinks below our read cursor, seeking forward
+	// would skip the content rewritten from offset 0 and the listener would go
+	// blind. Reset to the start and drop any partial-line state from the old
+	// content so the fresh file is tailed cleanly.
+	if fi, err := l.file.Stat(); err == nil && fi.Size() < l.pos {
+		l.pos = 0
+		l.leftover = nil
+		l.droppedOversize = false
+	}
 	if _, err := l.file.Seek(l.pos, 0); err != nil {
 		csmlog.Warn("af_alg audit listener: seek failed", "err", err)
 		return
