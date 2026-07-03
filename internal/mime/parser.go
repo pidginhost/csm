@@ -316,6 +316,7 @@ func reconstructEximHeaderBytes(data []byte) []byte {
 	lineNum := 0
 	inHeaders := false
 	skippingDeleted := false
+	haveLiveHeader := false
 	for sc.Scan() {
 		line := sc.Text()
 		lineNum++
@@ -331,22 +332,30 @@ func reconstructEximHeaderBytes(data []byte) []byte {
 		// Folded continuation: RFC 5322 lines starting with WSP belong to the
 		// preceding header.
 		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
-			if !skippingDeleted {
+			if !skippingDeleted && haveLiveHeader {
 				out.WriteString(line)
 				out.WriteString("\r\n")
 			}
 			continue
 		}
 		rest, flag, ok := stripEximPrefix(line)
-		if !ok || !strings.Contains(rest, ":") {
+		if !ok {
 			skippingDeleted = false
+			haveLiveHeader = false
 			continue // not a recognizable header start
 		}
 		if flag == '*' {
 			skippingDeleted = true // deleted header: skip it and its folds
+			haveLiveHeader = false
+			continue
+		}
+		if !strings.Contains(rest, ":") {
+			skippingDeleted = false
+			haveLiveHeader = false
 			continue
 		}
 		skippingDeleted = false
+		haveLiveHeader = true
 		out.WriteString(rest)
 		out.WriteString("\r\n")
 	}

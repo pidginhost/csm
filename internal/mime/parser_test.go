@@ -272,6 +272,29 @@ func TestParseEximHeaderDataReconstructsFoldedAndDeletedHeaders(t *testing.T) {
 	}
 }
 
+func TestParseEximHeaderDataSkipsOrphanContinuations(t *testing.T) {
+	data := []byte("id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" +
+		eximStoredHeader(' ', "Malformed without colon\n\tpoison: continuation\n") +
+		eximStoredHeader('*', "Deleted without colon\n\tdeleted: continuation\n") +
+		eximStoredHeader(' ', "Content-Type: multipart/mixed;\n\tboundary=\"B:1\"\n") +
+		eximStoredHeader(' ', "Subject: live\n"))
+
+	env, hdrs := parseEximHeaderData(data)
+	if got := hdrs.Get("Content-Type"); got != `multipart/mixed; boundary="B:1"` {
+		t.Errorf("Content-Type = %q, want live folded header after malformed records", got)
+	}
+	if env.subject != "live" {
+		t.Errorf("Subject = %q, want live", env.subject)
+	}
+	for _, values := range hdrs {
+		for _, value := range values {
+			if strings.Contains(value, "poison") || strings.Contains(value, "deleted") {
+				t.Fatalf("orphan continuation leaked into parsed headers: %q", value)
+			}
+		}
+	}
+}
+
 func TestParseEximHeaderDataReconstructsMultiDigitFoldedHeader(t *testing.T) {
 	longLine := strings.Repeat("x", 1000)
 	subjectStored := "Subject: " + longLine + "\n\ttrail: still subject\n"
