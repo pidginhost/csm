@@ -277,24 +277,27 @@ func firstField(s string) string {
 
 // parseEximHeaderLine returns (header-name, header-value) for an Exim -H
 // header line of the form "NNNF Header-Name: value", or ("", "") if the
-// line cannot be parsed (folded continuations, garbage). The 4-byte prefix
-// is 3 digits + flag byte (a single ASCII letter such as 'T', 'F', 'R', or
-// a space when the header has no flag) followed by a space separator; it
-// is stripped before splitting on the colon.
+// line cannot be parsed (folded continuations, garbage). The prefix is a
+// variable-width decimal length (Exim writes the byte count of the header
+// line, so a header of 1000+ bytes carries a 4-or-more-digit prefix),
+// followed by a flag byte (a single ASCII letter such as 'T', 'F', 'R', or
+// a space when the header has no flag) and a space separator; the whole
+// prefix is stripped before splitting on the colon.
 func parseEximHeaderLine(line string) (string, string) {
-	if len(line) < 5 {
+	i := 0
+	for i < len(line) && isDigit(line[i]) {
+		i++
+	}
+	if i == 0 || i+1 >= len(line) {
 		return "", ""
 	}
-	// Position 3 is space for unflagged Exim headers (e.g. X-PHP-Script
-	// in real cPanel-Exim spool output) and a flag letter (T/F/R/I/...)
-	// for flagged headers. Both shapes appear; the parser captures both.
-	if !isDigit(line[0]) || !isDigit(line[1]) || !isDigit(line[2]) {
+	// After the digit run: a flag byte (letter, or space for unflagged
+	// headers such as X-PHP-Script in real cPanel-Exim spool output) then a
+	// single space separator.
+	if !isLetter(line[i]) && line[i] != ' ' || line[i+1] != ' ' {
 		return "", ""
 	}
-	if !isLetter(line[3]) && line[3] != ' ' || line[4] != ' ' {
-		return "", ""
-	}
-	rest := line[5:]
+	rest := line[i+2:]
 	colon := indexByte(rest, ':')
 	if colon < 0 {
 		return "", ""

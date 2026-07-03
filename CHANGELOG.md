@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed spool header parsing dropping headers of 1000 bytes or more, whose length prefix is wider than three digits.
 - Fixed database auto-response block findings that never actually blocked: attacker session IPs found on compromised WordPress sites now go through the real auto-block path, and reputation alerts for those IPs are no longer wrongly suppressed by a block that never happened.
 - Fixed the WordPress option auto-clean corrupting values that contain newlines or serialized data: text read from the database is now unescaped before the backup copy and the cleaned value are written back.
 - Fixed stale admin password-change log entries suppressing alerts for fresh unexplained shadow file edits: only events newer than the file's last recorded change can explain a modification now.

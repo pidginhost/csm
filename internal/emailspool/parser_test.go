@@ -3,6 +3,7 @@ package emailspool
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -133,6 +134,37 @@ func TestParseHeaders_NoXPHPScript(t *testing.T) {
 	}
 	if h.EnvelopeUser != "user" {
 		t.Errorf("EnvelopeUser = %q", h.EnvelopeUser)
+	}
+}
+
+// Exim writes the header-line length prefix as a variable-width decimal, so a
+// header whose stored text is >= 1000 bytes carries a 4-digit prefix. A parser
+// that only accepts exactly-3-digit prefixes silently drops such headers -- a
+// long spam Subject would come back empty. The prefix here is the real Exim
+// byte count (header text plus its terminating newline), so this fixture mirrors
+// what a genuine spool file holds for an oversized Subject.
+func TestParseHeaders_LongSubjectUsesVariableLengthPrefix(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/long-subject.H"
+
+	subject := strings.Repeat("x", 1000)
+	headerText := "Subject: " + subject
+	// Unflagged header: <count><flag=space><separator space><header>. The count
+	// is the byte length of the header text including its terminating newline.
+	line := fmt.Sprintf("%d  %s\n", len(headerText)+1, headerText)
+	if !strings.HasPrefix(line, "1010") {
+		t.Fatalf("test setup: expected a 4-digit length prefix, got %q", line[:8])
+	}
+	content := "id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n" + line
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := ParseHeaders(path)
+	if err != nil {
+		t.Fatalf("ParseHeaders error: %v", err)
+	}
+	if h.Subject != subject {
+		t.Errorf("Subject length = %d, want %d (4-digit length prefix must parse)", len(h.Subject), len(subject))
 	}
 }
 
