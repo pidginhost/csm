@@ -56,7 +56,14 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, fmt.Errorf("reading file: %w", err)
 	}
-	matches := s.backend.ScanBytes(data)
+	matches, err := yara.ScanBytesChecked(s.backend, data)
+	if err != nil {
+		// Fail closed: a scan that could not complete (worker down, the
+		// attachment too large for one IPC frame, a transport error) must
+		// not be reported as a clean file. The orchestrator records this as
+		// an errored engine, not a clean verdict.
+		return Verdict{}, fmt.Errorf("yara scan failed: %w", err)
+	}
 	if len(matches) == 0 {
 		// Defence against silent fail-open: a healthy backend with zero
 		// matches looks identical from outside to a backend whose

@@ -16,6 +16,28 @@ type Backend interface {
 	Reload() error
 }
 
+// CheckedScanner is an optional capability on a Backend. ScanBytesChecked
+// reports a scan failure (worker down, payload too large for the IPC frame, a
+// transport error) distinctly from "no matches". Plain ScanBytes cannot: it
+// returns nil for both a clean file and a failed scan, so a caller with a
+// fail-closed policy -- email AV, finding re-check -- would auto-clear a file
+// it never actually scanned. Both production backends implement it; the
+// in-process stub returns a nil error because it cannot fail this way.
+type CheckedScanner interface {
+	ScanBytesChecked(data []byte) ([]Match, error)
+}
+
+// ScanBytesChecked scans data via b, surfacing a scan error when b supports
+// the CheckedScanner capability. Backends without it fall back to the
+// error-free ScanBytes. Callers that must fail closed on an unscannable
+// payload should use this instead of Backend.ScanBytes.
+func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
+	if cs, ok := b.(CheckedScanner); ok {
+		return cs.ScanBytesChecked(data)
+	}
+	return b.ScanBytes(data), nil
+}
+
 var activeBackend atomic.Pointer[backendHolder]
 
 type backendHolder struct{ b Backend }

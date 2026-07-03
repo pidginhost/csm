@@ -245,7 +245,14 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		if err != nil {
 			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
-		if hits := y.ScanBytes(snap.data); len(hits) > 0 {
+		hits, err := yara.ScanBytesChecked(y, snap.data)
+		if err != nil {
+			// Fail closed: a scan that could not complete (worker down or an
+			// oversize payload the IPC frame cannot carry) must not auto-clear
+			// a still-infected finding as a superseded false positive.
+			return false, "", "", fmt.Errorf("YARA scan error: %v", err)
+		}
+		if len(hits) > 0 {
 			return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), snap.sha256, nil
 		}
 		return false, "", snap.sha256, nil

@@ -10,6 +10,8 @@
 package yaraworker
 
 import (
+	"sync"
+
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraipc"
 )
@@ -27,33 +29,81 @@ type Scanner interface {
 // NewHandler returns a yaraipc.Handler backed by s. A nil scanner is
 // permitted: the handler reports Alive=true with zero matches, which is
 // the expected behaviour on builds compiled without the yara tag and on
-// hosts where no rules directory has been provisioned yet.
+// hosts where no rules directory has been provisioned yet. This constructor
+// has no recovery factory, so a nil scanner stays nil (used by tests and the
+// no-engine path).
 func NewHandler(s Scanner) yaraipc.Handler {
 	return &handler{scanner: s}
 }
 
+// newRecoverableHandler adds a rebuild factory and a startup compile error, so
+// a worker that came up with a failed rule compile (scanner == nil,
+// compileErr != "") can recover on a later Reload instead of no-op'ing
+// forever. rebuild returns a fresh scanner from the current rules on disk, an
+// error if they still do not compile, or (nil, nil) when there is no engine to
+// build (plain build).
+func newRecoverableHandler(s Scanner, rebuild func() (Scanner, error), compileErr string) yaraipc.Handler {
+	return &handler{scanner: s, rebuild: rebuild, compileErr: compileErr}
+}
+
 type handler struct {
-	scanner Scanner
+	// mu guards scanner and compileErr: the wire contract allows more than
+	// one connection, and a Reload that swaps the scanner in must not race a
+	// concurrent Ping/Scan reading it.
+	mu         sync.Mutex
+	scanner    Scanner
+	rebuild    func() (Scanner, error)
+	compileErr string
+}
+
+func (h *handler) currentScanner() Scanner {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.scanner
 }
 
 func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
-	if h.scanner == nil {
+	sc := h.currentScanner()
+	if sc == nil {
 		return yaraipc.ScanResult{}, nil
 	}
-	return yaraipc.ScanResult{Matches: convertMatches(h.scanner.ScanFile(a.Path, a.MaxBytes))}, nil
+	return yaraipc.ScanResult{Matches: convertMatches(sc.ScanFile(a.Path, a.MaxBytes))}, nil
 }
 
 func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {
-	if h.scanner == nil {
+	sc := h.currentScanner()
+	if sc == nil {
 		return yaraipc.ScanResult{}, nil
 	}
-	return yaraipc.ScanResult{Matches: convertMatches(h.scanner.ScanBytes(a.Data))}, nil
+	return yaraipc.ScanResult{Matches: convertMatches(sc.ScanBytes(a.Data))}, nil
 }
 
 func (h *handler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	if h.scanner == nil {
-		return yaraipc.ReloadResult{}, nil
+		// No live scanner. Either there is no engine (no rebuild factory ->
+		// no-op, matching the pre-recovery behaviour) or the startup compile
+		// failed and we now retry it.
+		if h.rebuild == nil {
+			return yaraipc.ReloadResult{}, nil
+		}
+		newSc, err := h.rebuild()
+		if err != nil {
+			h.compileErr = err.Error()
+			return yaraipc.ReloadResult{CompileError: h.compileErr}, err
+		}
+		if newSc == nil {
+			// No engine to build (plain build): stay a no-op, not an error.
+			h.compileErr = ""
+			return yaraipc.ReloadResult{}, nil
+		}
+		h.scanner = newSc
+		h.compileErr = ""
+		return yaraipc.ReloadResult{RuleCount: newSc.RuleCount()}, nil
 	}
+
 	if err := h.scanner.Reload(); err != nil {
 		return yaraipc.ReloadResult{}, err
 	}
@@ -61,8 +111,10 @@ func (h *handler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
 }
 
 func (h *handler) Ping() (yaraipc.PingResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if h.scanner == nil {
-		return yaraipc.PingResult{Alive: true}, nil
+		return yaraipc.PingResult{Alive: true, CompileError: h.compileErr}, nil
 	}
 	return yaraipc.PingResult{Alive: true, RuleCount: h.scanner.RuleCount()}, nil
 }

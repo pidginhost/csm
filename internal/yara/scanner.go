@@ -119,19 +119,29 @@ type Match struct {
 	Meta     map[string]string
 }
 
-// ScanBytes scans raw bytes against compiled YARA rules.
+// ScanBytes scans raw bytes against compiled YARA rules. A scan engine error
+// is flattened to "no matches"; callers that must distinguish a failed scan
+// from a clean file should use ScanBytesChecked.
 func (s *Scanner) ScanBytes(data []byte) []Match {
+	m, _ := s.ScanBytesChecked(data)
+	return m
+}
+
+// ScanBytesChecked scans raw bytes and returns a non-nil error when the YARA
+// engine itself failed, so a caller can tell a real clean result from a scan
+// that could not complete.
+func (s *Scanner) ScanBytesChecked(data []byte) ([]Match, error) {
 	s.mu.RLock()
 	rules := s.rules
 	s.mu.RUnlock()
 
 	if rules == nil {
-		return nil
+		return nil, nil
 	}
 
 	results, err := rules.Scan(data)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("yara scan: %w", err)
 	}
 
 	var matches []Match
@@ -141,7 +151,7 @@ func (s *Scanner) ScanBytes(data []byte) []Match {
 			Meta:     extractStringMeta(r.Metadata()),
 		})
 	}
-	return matches
+	return matches, nil
 }
 
 // extractStringMeta projects YARA-X metadata entries whose Value() is a

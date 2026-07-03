@@ -56,22 +56,42 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	scanner, compileErr := yara.NewScanner(cfg.RulesDir)
-	if compileErr != nil && cfg.ErrorLog != nil {
-		cfg.ErrorLog(fmt.Errorf("yaraworker: scanner init: %w", compileErr))
+	compileErrStr := ""
+	if compileErr != nil {
+		compileErrStr = compileErr.Error()
+		if cfg.ErrorLog != nil {
+			cfg.ErrorLog(fmt.Errorf("yaraworker: scanner init: %w", compileErr))
+		}
 	}
 
-	h := newHandlerNormalised(scanner)
+	// A failed startup compile is not permanent: give the handler a factory so
+	// a later OpReload (forge update, SIGHUP) can rebuild from the fixed rules
+	// on disk instead of the worker staying silently dead until it crashes.
+	rulesDir := cfg.RulesDir
+	rebuild := func() (Scanner, error) {
+		s, err := yara.NewScanner(rulesDir)
+		if err != nil {
+			return nil, err
+		}
+		if s == nil {
+			// !yara build: no engine to build.
+			return nil, nil
+		}
+		return s, nil
+	}
+
+	h := newRecoverableHandler(asScanner(scanner), rebuild, compileErrStr)
 	return yaraipc.Serve(ctx, ln, h, yaraipc.ServeOptions{ErrorLog: cfg.ErrorLog})
 }
 
-// newHandlerNormalised exists because `*yara.Scanner` may be nil in two
-// distinct cases: (1) !yara builds always return (nil, nil), and (2)
-// yara-build NewScanner returned (nil, err). In both cases we want the
-// handler's untyped-nil fast path, not a typed-nil-inside-interface
-// that would blow up when the handler calls a method.
-func newHandlerNormalised(s *yara.Scanner) yaraipc.Handler {
+// asScanner converts a possibly-nil *yara.Scanner into the Scanner interface
+// without producing a typed-nil-inside-interface. `*yara.Scanner` is nil in
+// two cases: (1) !yara builds always return (nil, nil), and (2) yara-build
+// NewScanner returned (nil, err). In both we want an untyped-nil interface so
+// the handler's nil fast path fires instead of a method call on a nil pointer.
+func asScanner(s *yara.Scanner) Scanner {
 	if s == nil {
-		return NewHandler(nil)
+		return nil
 	}
-	return NewHandler(s)
+	return s
 }

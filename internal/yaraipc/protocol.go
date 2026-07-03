@@ -21,6 +21,18 @@ import (
 // ceiling, with headroom for JSON base64 expansion.
 const MaxFrameBytes = 16 << 20
 
+// MaxScanBytes is the largest raw payload OpScanBytes can carry in one frame.
+// A []byte is base64-encoded in JSON (4/3 expansion) plus a small envelope, so
+// the raw ceiling sits well below MaxFrameBytes. Callers reject an oversize
+// buffer up front with ErrPayloadTooLarge instead of marshalling a multi-MiB
+// frame only to have WriteFrame fail -- and, crucially, an oversize payload
+// must surface as an error, never be silently treated as a clean scan.
+const MaxScanBytes = (MaxFrameBytes - 256) * 3 / 4
+
+// ErrPayloadTooLarge is returned by the client when an inline OpScanBytes
+// payload would not fit in a single protocol frame.
+var ErrPayloadTooLarge = errors.New("yaraipc: scan payload exceeds max inline size")
+
 // Op selects the handler on the worker side. Strings (not iota ints) so
 // adding a new op is additive and mismatched client/worker versions fail
 // with a recognisable "unknown op" error instead of silently dispatching
@@ -84,17 +96,27 @@ type ScanResult struct {
 	Matches []Match `json:"matches,omitempty"`
 }
 
-// ReloadResult is returned for OpReload.
+// ReloadResult is returned for OpReload. CompileError is non-empty when the
+// worker is up but its rules failed to compile, so the daemon can tell a
+// successful reload (RuleCount>0) from a still-broken rule set instead of
+// treating a silent no-op as success.
 type ReloadResult struct {
-	RuleCount int `json:"rule_count"`
+	RuleCount    int    `json:"rule_count"`
+	CompileError string `json:"compile_error,omitempty"`
 }
 
 // PingResult is returned for OpPing. Used by the supervisor's liveness
 // check and as the first frame after a reconnect to confirm the worker is
 // past its rule-compile step before real scan traffic begins.
+//
+// CompileError is non-empty when the worker process is alive but its rule
+// compile failed at startup and has not yet been recovered by a reload. It
+// disambiguates "0 rules because the compile broke" (needs an operator alert)
+// from "0 rules because there is no engine / empty rules dir".
 type PingResult struct {
-	Alive     bool `json:"alive"`
-	RuleCount int  `json:"rule_count"`
+	Alive        bool   `json:"alive"`
+	RuleCount    int    `json:"rule_count"`
+	CompileError string `json:"compile_error,omitempty"`
 }
 
 // WriteFrame writes a 4-byte big-endian length prefix followed by the

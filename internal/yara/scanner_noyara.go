@@ -24,6 +24,9 @@ func (s *Scanner) Reload() error { return nil }
 // ScanBytes returns nil without YARA-X.
 func (s *Scanner) ScanBytes(_ []byte) []Match { return nil }
 
+// ScanBytesChecked returns nil without YARA-X; there is no engine to fail.
+func (s *Scanner) ScanBytesChecked(_ []byte) ([]Match, error) { return nil, nil }
+
 // ScanFile returns nil without YARA-X.
 func (s *Scanner) ScanFile(_ string, _ int) []Match { return nil }
 

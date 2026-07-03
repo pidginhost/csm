@@ -139,6 +139,12 @@ func (c *Client) ScanFile(args ScanFileArgs) (ScanResult, error) {
 
 // ScanBytes is the daemon-side shim for OpScanBytes.
 func (c *Client) ScanBytes(args ScanBytesArgs) (ScanResult, error) {
+	// Reject up front so an oversize buffer becomes a legible, typed error
+	// rather than a generic WriteFrame failure after a wasteful multi-MiB
+	// marshal. Callers must treat this as "could not scan", never as clean.
+	if len(args.Data) > MaxScanBytes {
+		return ScanResult{}, fmt.Errorf("%w (%d > %d bytes)", ErrPayloadTooLarge, len(args.Data), MaxScanBytes)
+	}
 	req, err := EncodePayload(OpScanBytes, args)
 	if err != nil {
 		return ScanResult{}, err

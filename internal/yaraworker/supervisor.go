@@ -205,23 +205,35 @@ func (s *Supervisor) ScanFile(path string, maxBytes int) []yara.Match {
 	return toYaraMatches(res.Matches)
 }
 
-// ScanBytes is the daemon-facing entrypoint for already-in-memory data.
+// ScanBytes is the daemon-facing entrypoint for already-in-memory data. A
+// worker error surfaces as zero matches; callers that must fail closed on an
+// unscannable payload should use ScanBytesChecked instead.
 func (s *Supervisor) ScanBytes(data []byte) []yara.Match {
+	m, _ := s.ScanBytesChecked(data)
+	return m
+}
+
+// ScanBytesChecked is the fail-closed entrypoint: unlike ScanBytes it returns
+// a non-nil error when the worker is down or the request could not be
+// delivered (e.g. the payload exceeds the IPC frame budget, or the worker
+// crashed mid-request), so a caller does not mistake an unscanned payload for
+// a clean one.
+func (s *Supervisor) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	if !s.running.Load() {
-		return nil
+		return nil, errors.New("yaraworker: supervisor not running")
 	}
 	s.mu.Lock()
 	client := s.client
 	s.mu.Unlock()
 	if client == nil {
-		return nil
+		return nil, errors.New("yaraworker: no client")
 	}
 	res, err := client.ScanBytes(yaraipc.ScanBytesArgs{Data: data})
 	if err != nil {
 		s.logf("scan_bytes: %v", err)
-		return nil
+		return nil, fmt.Errorf("yaraworker scan_bytes: %w", err)
 	}
-	return toYaraMatches(res.Matches)
+	return toYaraMatches(res.Matches), nil
 }
 
 // Reload asks the worker to recompile its rules directory.
@@ -237,6 +249,28 @@ func (s *Supervisor) Reload() error {
 	}
 	_, err := client.Reload(yaraipc.ReloadArgs{})
 	return err
+}
+
+// CompileError returns the worker's current rule-compile error, or "" when
+// rules compiled cleanly (or the worker is unreachable). A non-empty value
+// means the worker process is alive but has no usable rules until a reload
+// fixes them -- the daemon surfaces this as a finding so a silent-dead YARA
+// backend is visible instead of masquerading as "0 rules, all fine".
+func (s *Supervisor) CompileError() string {
+	if !s.running.Load() {
+		return ""
+	}
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return ""
+	}
+	res, err := client.Ping()
+	if err != nil {
+		return ""
+	}
+	return res.CompileError
 }
 
 // RuleCount queries the worker. Zero on any error, matching the scanner

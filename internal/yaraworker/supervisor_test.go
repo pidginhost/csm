@@ -92,6 +92,7 @@ func helperRunNormal(sock string, exitAfterPing int) {
 			ruleCount = n
 		}
 	}
+	compileErr := os.Getenv("YARAWORKER_COMPILE_ERR")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -99,7 +100,7 @@ func helperRunNormal(sock string, exitAfterPing int) {
 		cancel()
 	}()
 
-	h := &scriptedHandler{ruleCount: ruleCount, exitAfterPing: exitAfterPing}
+	h := &scriptedHandler{ruleCount: ruleCount, exitAfterPing: exitAfterPing, compileErr: compileErr}
 	_ = yaraipc.Serve(ctx, ln, h, yaraipc.ServeOptions{})
 }
 
@@ -134,6 +135,7 @@ type scriptedHandler struct {
 	pings           int
 	exitAfterPing   int
 	signalAfterPing syscall.Signal
+	compileErr      string
 }
 
 func (s *scriptedHandler) ScanFile(_ yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
@@ -143,7 +145,7 @@ func (s *scriptedHandler) ScanBytes(_ yaraipc.ScanBytesArgs) (yaraipc.ScanResult
 	return yaraipc.ScanResult{}, nil
 }
 func (s *scriptedHandler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
-	return yaraipc.ReloadResult{RuleCount: s.ruleCount}, nil
+	return yaraipc.ReloadResult{RuleCount: s.ruleCount, CompileError: s.compileErr}, nil
 }
 func (s *scriptedHandler) Ping() (yaraipc.PingResult, error) {
 	s.mu.Lock()
@@ -165,7 +167,7 @@ func (s *scriptedHandler) Ping() (yaraipc.PingResult, error) {
 			os.Exit(code)
 		}
 	}
-	return yaraipc.PingResult{Alive: true, RuleCount: s.ruleCount}, nil
+	return yaraipc.PingResult{Alive: true, RuleCount: s.ruleCount, CompileError: s.compileErr}, nil
 }
 
 // helperEnv prepares an env slice that selects the helper mode. Extra

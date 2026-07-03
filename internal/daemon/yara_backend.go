@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
@@ -76,9 +77,24 @@ func (d *Daemon) initYaraBackend() error {
 		return fmt.Errorf("creating yara-worker supervisor: %w", err)
 	}
 	if err := sup.Start(context.Background()); err != nil {
-		return fmt.Errorf("starting yara-worker: %w", err)
+		// A boot-time start failure must not disable YARA for the daemon's
+		// whole lifetime. Retry in the background with backoff and raise a
+		// finding once the failure looks persistent, mirroring the
+		// post-start crash path (onYaraWorkerRestart). The daemon keeps
+		// running; scanning comes online once the worker starts.
+		obs.Go("yara-init-retry", func() { d.retryYaraStart(sup) })
+		return fmt.Errorf("starting yara-worker (retrying in background): %w", err)
 	}
 
+	d.activateYaraBackend(sup)
+	return nil
+}
+
+// activateYaraBackend installs a started supervisor as the active YARA
+// backend, wires its restart metric, and surfaces a still-broken rule compile
+// as a finding so a worker that is up but scanning nothing is visible instead
+// of masquerading as a healthy zero-rule host.
+func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 	d.yaraSup = sup
 	yara.SetActive(sup)
 
@@ -97,7 +113,72 @@ func (d *Daemon) initYaraBackend() error {
 	fmt.Fprintf(os.Stderr,
 		"[%s] YARA-X worker active: %d rule(s) compiled in child process (pid=%d)\n",
 		ts(), sup.RuleCount(), sup.ChildPID())
-	return nil
+
+	d.reportYaraCompileStatus(sup.CompileError())
+}
+
+// retryYaraStart re-attempts a failed worker start with capped exponential
+// backoff until it succeeds or the daemon stops, raising one finding once the
+// failure is persistent so the outage is visible.
+func (d *Daemon) retryYaraStart(sup *yaraworker.Supervisor) {
+	ok := retryStart(
+		func() error { return sup.Start(context.Background()) },
+		d.stopCh,
+		time.Second, 60*time.Second, 3,
+		func(attempt int, err error) {
+			d.emitYaraFinding(alert.Critical, "yara_backend_unavailable",
+				fmt.Sprintf("YARA-X worker has failed to start %d times (%v); real-time malware scanning is disabled while the supervisor keeps retrying.", attempt, err))
+		},
+	)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] yara-worker started after retrying a failed boot\n", ts())
+	d.activateYaraBackend(sup)
+}
+
+// retryStart calls start with capped exponential backoff until it returns nil,
+// stop is signalled, or forever. onPersistent, if set, fires exactly once
+// after alertAfter consecutive failures so a persistent outage raises a single
+// finding. Returns true if start eventually succeeded.
+func retryStart(start func() error, stop <-chan struct{}, minBackoff, maxBackoff time.Duration, alertAfter int, onPersistent func(attempt int, err error)) bool {
+	backoff := minBackoff
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-time.After(backoff):
+		case <-stop:
+			return false
+		}
+		if err := start(); err == nil {
+			return true
+		} else if attempt == alertAfter && onPersistent != nil {
+			onPersistent(attempt, err)
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+// reportYaraCompileStatus raises a finding when the worker is alive but its
+// rules failed to compile. A clean compile ("") is silent.
+func (d *Daemon) reportYaraCompileStatus(compileErr string) {
+	if compileErr == "" {
+		return
+	}
+	d.emitYaraFinding(alert.Critical, "yara_worker_compile_failed",
+		fmt.Sprintf("YARA-X worker is up but its rules failed to compile: %s. Real-time malware scanning is disabled until the rules are fixed and reloaded.", compileErr))
+}
+
+// emitYaraFinding pushes a finding without blocking; a saturated alert channel
+// is accounted for by the daemon's general drop counter.
+func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) {
+	finding := alert.Finding{Severity: sev, Check: check, Message: msg}
+	select {
+	case d.alertCh <- finding:
+	default:
+	}
 }
 
 // stopYaraBackend is called during daemon shutdown. Safe to call when
