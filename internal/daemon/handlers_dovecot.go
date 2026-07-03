@@ -21,8 +21,11 @@ const (
 // parseDovecotLogLine handles Dovecot login lines from /var/log/maillog.
 // It tracks per-mailbox login countries and alerts on new-country logins.
 func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
-	// Only process successful login lines
-	if !strings.Contains(line, "Login: user=<") {
+	// Only process successful login lines. dovecotLoginSucceeded accepts both
+	// the classic "Login: user=<" and the production "Logged in: user=<"
+	// formats so this detector is not silently dead on whichever one the host
+	// emits.
+	if !dovecotLoginSucceeded(line) {
 		return nil
 	}
 	if !strings.Contains(line, "dovecot:") {

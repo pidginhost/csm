@@ -1148,6 +1148,21 @@ func isMailAuthLine(line string) bool {
 		strings.HasPrefix(msg, "managesieve-login:")
 }
 
+// dovecotLoginSucceeded reports whether a dovecot imap/pop3/managesieve line
+// records a successful login. Dovecot emits two success formats depending on
+// version and configuration:
+//
+//	"<proto>-login: Logged in: user=<...>"   (observed on production cPanel)
+//	"<proto>-login: Login: user=<...>"        (classic dovecot)
+//
+// Both the mailbrute compromise detector and the geo new-country detector must
+// accept BOTH; keying each consumer off a different single marker left one of
+// them silently dead on whichever format the deployment happened to use.
+func dovecotLoginSucceeded(line string) bool {
+	return strings.Contains(line, "-login: Logged in") ||
+		strings.Contains(line, "-login: Login: user=<")
+}
+
 // extractMailLoginEvent parses a dovecot login line and returns
 // (ip, account, success). Returns empty strings and false on parse failure.
 //
@@ -1156,15 +1171,15 @@ func isMailAuthLine(line string) bool {
 //	Success: "imap-login: Logged in: user=<alice@x.ro>, method=PLAIN, rip=..."
 //	Failure: "imap-login: Login aborted: ... (auth failed, N attempts ...): user=<...>, method=..., rip=..."
 //
-// The success marker is "Logged in" (NOT "Login:" — an earlier version of
-// this parser used the wrong marker and silently skipped every successful
-// login, which in turn broke RecordSuccess-based compromise detection).
+// Success is matched via dovecotLoginSucceeded so both dovecot success formats
+// count (an earlier version keyed only off "Logged in" and silently skipped
+// every classic-format login, which broke RecordSuccess compromise detection).
 // The failure marker is "(auth failed" with the opening paren, which
 // distinguishes real auth failures from Login-aborted reasons like
 // "no auth attempts" or TLS handshake errors.
 func extractMailLoginEvent(line string) (ip, account string, success bool) {
 	switch {
-	case strings.Contains(line, "-login: Logged in"):
+	case dovecotLoginSucceeded(line):
 		success = true
 	case strings.Contains(line, "(auth failed"):
 		success = false
