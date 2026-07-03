@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed four broken WebUI interactions: history detail rows that never expanded, saved views whose Apply changed nothing, the email findings table re-inserting stale rows after refreshes, and the dashboard last-critical chip being wiped by the time-ago updater.
 - Fixed the suspicious-login country detector never firing on the production dovecot log format: both known login-success line formats are now recognized by every mail detector.
 - An IP with good login history no longer gets brute-force leniency against mailboxes it never legitimately used: good standing now only vouches for the mailboxes where it was earned. Note this can auto-block an office IP that repeatedly fails a mailbox it has never authenticated to.
 - Fixed the mail relay monitor parsing bracketed text in message subjects as client IP addresses, which could hold outgoing mail and flag credential compromise for legitimate senders. The client address now comes from the connection field and must be a valid IP.

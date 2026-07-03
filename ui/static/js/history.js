@@ -263,8 +263,10 @@
                 if (row) {
                     var next = row.nextElementSibling;
                     if (next && next.classList.contains('details-row')) {
-                        var showing = next.style.display === 'none';
-                        next.style.display = showing ? '' : 'none';
+                        // The row is hidden by `.details-row { display:none }`; an
+                        // inline display toggle can never beat that rule. Toggle the
+                        // `.details-row.show` class the stylesheet already defines.
+                        var showing = next.classList.toggle('show');
                         expandBtn.classList.toggle('expanded', showing);
                     }
                 }
