@@ -1171,7 +1171,9 @@ func TestScanEximMessageReplyToMismatch(t *testing.T) {
 				return []byte(headers), nil
 			}
 			if strings.HasSuffix(name, "-D") {
-				return []byte("Normal email body content."), nil
+				// A phishing URL supplies the second independent indicator; a
+				// lone Reply-To mismatch is no longer enough to alert.
+				return []byte("body https://bit.ly/x"), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -1179,7 +1181,7 @@ func TestScanEximMessageReplyToMismatch(t *testing.T) {
 
 	result := scanEximMessage("ABC123", "alice@example.com", &config.Config{})
 	if result == nil {
-		t.Fatal("expected finding for Reply-To mismatch")
+		t.Fatal("expected finding for Reply-To mismatch plus phishing URL")
 	}
 	if !strings.Contains(result.Details, "Reply-To mismatch") {
 		t.Errorf("expected Reply-To mismatch indicator, got: %s", result.Details)
@@ -1187,9 +1189,11 @@ func TestScanEximMessageReplyToMismatch(t *testing.T) {
 }
 
 func TestScanEximMessageSuspiciousMailer(t *testing.T) {
+	// "Leaf PHPMailer" is a known webshell mailer and stays on the list;
+	// plain "PHPMailer" (default WordPress transport) no longer counts.
 	headers := eximSpool(
 		"049F From: sender@example.com",
-		"030  X-Mailer: PHPMailer 6.0",
+		"030  X-Mailer: Leaf PHPMailer",
 	)
 
 	withMockOS(t, &mockOS{
@@ -1204,7 +1208,8 @@ func TestScanEximMessageSuspiciousMailer(t *testing.T) {
 				return []byte(headers), nil
 			}
 			if strings.HasSuffix(name, "-D") {
-				return []byte("Normal body"), nil
+				// Phishing URL supplies the second independent indicator.
+				return []byte("body https://bit.ly/x"), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -1219,13 +1224,12 @@ func TestScanEximMessageSuspiciousMailer(t *testing.T) {
 	}
 }
 
-// TestScanEximMessageUserAgentFallback confirms emailscan reads User-Agent
-// through emailspool.Headers when X-Mailer is absent. Mirrors
-// TestScanEximMessageSuspiciousMailer with X-Mailer replaced by User-Agent.
-func TestScanEximMessageUserAgentFallback(t *testing.T) {
+func TestScanEximMessagePlainPHPMailerNotFlagged(t *testing.T) {
+	// Regression: plain PHPMailer is ubiquitous legitimate WordPress mail and
+	// must not, on its own, produce a finding.
 	headers := eximSpool(
 		"049F From: sender@example.com",
-		"030  User-Agent: PHPMailer 6.0",
+		"030  X-Mailer: PHPMailer 6.9.1",
 	)
 
 	withMockOS(t, &mockOS{
@@ -1240,7 +1244,40 @@ func TestScanEximMessageUserAgentFallback(t *testing.T) {
 				return []byte(headers), nil
 			}
 			if strings.HasSuffix(name, "-D") {
-				return []byte("Normal body"), nil
+				return []byte("your order has shipped"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	if result := scanEximMessage("ABC123", "sender@example.com", &config.Config{}); result != nil {
+		t.Fatalf("plain PHPMailer must not be flagged, got: %s", result.Details)
+	}
+}
+
+// TestScanEximMessageUserAgentFallback confirms emailscan reads User-Agent
+// through emailspool.Headers when X-Mailer is absent. Mirrors
+// TestScanEximMessageSuspiciousMailer with X-Mailer replaced by User-Agent.
+func TestScanEximMessageUserAgentFallback(t *testing.T) {
+	headers := eximSpool(
+		"049F From: sender@example.com",
+		"030  User-Agent: Leaf PHPMailer",
+	)
+
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if strings.HasSuffix(name, "-H") {
+				return fakeFileInfo{name: "msg-H"}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasSuffix(name, "-H") {
+				return []byte(headers), nil
+			}
+			if strings.HasSuffix(name, "-D") {
+				// Phishing URL supplies the second independent indicator.
+				return []byte("body https://bit.ly/x"), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -1258,6 +1295,7 @@ func TestScanEximMessageUserAgentFallback(t *testing.T) {
 func TestScanEximMessageSpoofedBrand(t *testing.T) {
 	headers := eximSpool(
 		"055F From: PayPal Security <noreply@randomsite.com>",
+		"039R Reply-To: collect@other.example.net",
 	)
 
 	withMockOS(t, &mockOS{
@@ -1278,6 +1316,8 @@ func TestScanEximMessageSpoofedBrand(t *testing.T) {
 		},
 	})
 
+	// Brand spoof (paypal, sender randomsite.com) plus a Reply-To mismatch =
+	// two independent indicators.
 	result := scanEximMessage("ABC123", "noreply@randomsite.com", &config.Config{})
 	if result == nil {
 		t.Fatal("expected finding for spoofed brand")
@@ -1326,6 +1366,9 @@ func TestScanEximMessagePhishingURLsAndLanguage(t *testing.T) {
 }
 
 func TestScanEximMessageBase64HTML(t *testing.T) {
+	// base64 Content-Transfer-Encoding is standard MIME. On its own -- with a
+	// benign decoded body -- it must not produce a finding. The decoded bytes
+	// "PGh0bWw+" are "<html>", which carries no indicator.
 	headers := eximSpool(
 		"049F From: sender@example.com",
 		"048  Content-Transfer-Encoding: base64",
@@ -1350,12 +1393,8 @@ func TestScanEximMessageBase64HTML(t *testing.T) {
 		},
 	})
 
-	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
-	if result == nil {
-		t.Fatal("expected finding for base64 HTML")
-	}
-	if !strings.Contains(result.Details, "base64-encoded HTML") {
-		t.Errorf("expected base64 HTML indicator, got: %s", result.Details)
+	if result := scanEximMessage("ABC123", "sender@example.com", &config.Config{}); result != nil {
+		t.Fatalf("base64 encoding alone must not produce a finding, got: %s", result.Details)
 	}
 }
 

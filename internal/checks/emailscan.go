@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -16,10 +17,13 @@ import (
 
 const emailBodySampleSize = 4096 // Read first 4KB of email body
 
-// Suspicious mailer headers that indicate mass mailing scripts.
+// Suspicious mailer headers that indicate mass mailing scripts. PHPMailer is
+// deliberately absent: it is the default WordPress transport and appears on
+// essentially all legitimate WordPress mail, so it carries no signal. The
+// "phpmail" substring is excluded for the same reason (it matches PHPMailer).
 var suspiciousMailers = []string{
-	"phpmailer", "swiftmailer", "mass mailer", "bulk mailer",
-	"leaf phpmailer", "phpmail", "mail.php",
+	"swiftmailer", "mass mailer", "bulk mailer",
+	"leaf phpmailer", "mail.php",
 }
 
 // Known safe mailers that should not be flagged.
@@ -199,36 +203,26 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		bodyData = bodyData[:emailBodySampleSize]
 	}
 	if len(bodyData) > 0 {
-		bodyLower := strings.ToLower(string(bodyData))
+		indicators = append(indicators, bodyContentIndicators(strings.ToLower(string(bodyData)))...)
 
-		// Check 4: Phishing URLs in body
-		for _, pattern := range emailPhishPatterns {
-			if strings.Contains(bodyLower, pattern) {
-				indicators = append(indicators, fmt.Sprintf("phishing URL pattern: %s", pattern))
-				break
-			}
-		}
-
-		// Check 5: Credential harvesting language
-		harvestCount := 0
-		for _, phrase := range emailPhishLanguage {
-			if strings.Contains(bodyLower, phrase) {
-				harvestCount++
-			}
-		}
-		if harvestCount >= 2 {
-			indicators = append(indicators, fmt.Sprintf("credential harvesting language (%d phrases)", harvestCount))
-		}
-
-		// Check 6: Base64-encoded HTML body (used to bypass filters)
+		// A base64 Content-Transfer-Encoding is standard MIME framing, not an
+		// indicator by itself. Decode the body and run the same content checks
+		// on the plaintext so a payload hidden behind base64 is caught -- the
+		// raw base64 blob would otherwise sail past every text pattern.
 		if strings.Contains(headersLower, "content-transfer-encoding: base64") &&
 			strings.Contains(headersLower, "text/html") {
-			// Check if decoded content has phishing patterns
-			indicators = append(indicators, "base64-encoded HTML body (potential filter bypass)")
+			if decoded := decodeBase64Body(bodyData); decoded != "" {
+				indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
+			}
 		}
 	}
 
-	if len(indicators) == 0 {
+	indicators = uniqueStrings(indicators)
+
+	// Require at least two independent indicators before alerting. A lone weak
+	// signal (Reply-To mismatch, one brand word, one suspicious header) fires
+	// on ordinary legitimate mail, so a single indicator is not enough.
+	if len(indicators) < 2 {
 		return nil
 	}
 
@@ -246,4 +240,76 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		Domain:   senderDomain,
 		Mailbox:  sender,
 	}
+}
+
+// bodyContentIndicators runs the phishing-URL and credential-harvesting content
+// checks over an already-lowercased body text. Shared by the raw-body pass and
+// the decoded-base64 pass so both apply identical logic.
+func bodyContentIndicators(bodyLower string) []string {
+	var indicators []string
+
+	for _, pattern := range emailPhishPatterns {
+		if strings.Contains(bodyLower, pattern) {
+			indicators = append(indicators, fmt.Sprintf("phishing URL pattern: %s", pattern))
+			break
+		}
+	}
+
+	harvestCount := 0
+	for _, phrase := range emailPhishLanguage {
+		if strings.Contains(bodyLower, phrase) {
+			harvestCount++
+		}
+	}
+	if harvestCount >= 2 {
+		indicators = append(indicators, fmt.Sprintf("credential harvesting language (%d phrases)", harvestCount))
+	}
+
+	return indicators
+}
+
+// base64BodyLineRe matches a single line that is entirely standard-base64 (with
+// optional trailing padding). MIME wraps base64 bodies at 76 columns, so the
+// payload spans many such lines; envelope preamble, MIME boundary markers, and
+// the "<msgID>-D" spool marker contain characters outside this set and are
+// skipped.
+var base64BodyLineRe = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)
+
+// decodeBase64Body extracts the longest run of consecutive base64 lines from a
+// spool body sample and decodes it. Returns "" when no base64 region is present
+// or it does not decode. The 4KB sample may clip the payload mid-blob, so the
+// trailing partial group is dropped to keep the remaining prefix decodable.
+func decodeBase64Body(raw []byte) string {
+	var best, cur []string
+	flush := func() {
+		if len(cur) > len(best) {
+			best = cur
+		}
+		cur = nil
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && base64BodyLineRe.MatchString(line) {
+			cur = append(cur, line)
+			continue
+		}
+		flush()
+	}
+	flush()
+	if len(best) == 0 {
+		return ""
+	}
+
+	blob := strings.Join(best, "")
+	if rem := len(blob) % 4; rem != 0 {
+		blob = blob[:len(blob)-rem]
+	}
+	if blob == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(blob)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
 }
