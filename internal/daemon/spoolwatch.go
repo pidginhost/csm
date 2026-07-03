@@ -287,6 +287,9 @@ func (sw *SpoolWatcher) parseEvents(buf []byte) {
 		// #nosec G103 -- fanotify delivers a packed binary stream;
 		// reinterpretation is required and bounded by metadataSize above.
 		meta := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
+		if meta.EventLen < uint32(metadataSize) || int(meta.EventLen) > len(buf)-offset {
+			break
+		}
 		if meta.Mask&unix.FAN_Q_OVERFLOW != 0 {
 			sw.handleQueueOverflow()
 		} else if meta.Fd >= 0 {

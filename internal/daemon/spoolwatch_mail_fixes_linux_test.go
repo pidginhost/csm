@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -253,5 +254,39 @@ func TestSpoolWatcherScanWorkerDrainsQueuedEventsAfterStop(t *testing.T) {
 	}
 	if gotAllows != events {
 		t.Fatalf("drained responses = %d, want %d queued events", gotAllows, events)
+	}
+}
+
+func TestSpoolWatcherParseEventsStopsOnMalformedEventLength(t *testing.T) {
+	tests := []struct {
+		name     string
+		eventLen uint32
+	}{
+		{
+			name:     "short",
+			eventLen: uint32(metadataSize - 1),
+		},
+		{
+			name:     "overrun",
+			eventLen: uint32(metadataSize + 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, metadataSize)
+			meta := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[0]))
+			meta.EventLen = tt.eventLen
+			meta.Mask = unix.FAN_Q_OVERFLOW
+			meta.Fd = -1
+
+			sw := &SpoolWatcher{
+				alertCh: make(chan alert.Finding, 1),
+			}
+
+			sw.parseEvents(buf)
+			if got := atomic.LoadInt64(&sw.queueOverflows); got != 0 {
+				t.Fatalf("queueOverflows = %d, want 0 for malformed event", got)
+			}
+		})
 	}
 }
