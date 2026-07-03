@@ -349,7 +349,7 @@ func reconstructEximHeaderBytes(data []byte) []byte {
 			haveLiveHeader = false
 			continue
 		}
-		if !strings.Contains(rest, ":") {
+		if !isMIMEHeaderStart(rest) {
 			skippingDeleted = false
 			haveLiveHeader = false
 			continue
@@ -379,6 +379,29 @@ func stripEximPrefix(line string) (rest string, flag byte, ok bool) {
 		return "", 0, false
 	}
 	return line[i+2:], flag, true
+}
+
+func isMIMEHeaderStart(line string) bool {
+	colon := strings.IndexByte(line, ':')
+	if colon <= 0 {
+		return false
+	}
+	for i := 0; i < colon; i++ {
+		if !isMIMEHeaderFieldNameByte(line[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isMIMEHeaderFieldNameByte(b byte) bool {
+	return (b >= '0' && b <= '9') ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		b == '!' || b == '#' || b == '$' || b == '%' ||
+		b == '&' || b == '\'' || b == '*' || b == '+' ||
+		b == '-' || b == '.' || b == '^' || b == '_' ||
+		b == '`' || b == '|' || b == '~'
 }
 
 func isEximFlagByte(b byte) bool {
