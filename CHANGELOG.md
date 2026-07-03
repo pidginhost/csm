@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed the suspicious-login country detector never firing on the production dovecot log format: both known login-success line formats are now recognized by every mail detector.
+- An IP with good login history no longer gets brute-force leniency against mailboxes it never legitimately used: good standing now only vouches for the mailboxes where it was earned. Note this can auto-block an office IP that repeatedly fails a mailbox it has never authenticated to.
 - Fixed the store migration renaming the firewall's state file after copying it into unused buckets, which silently dropped all pre-upgrade blocks and allows from enforcement on the first boot after upgrading.
 - Reduced state database churn from busy incidents: bookkeeping-only updates now coalesce to at most one write every few seconds per incident, while open, escalate, and close transitions still persist immediately. The credential-spray path also no longer writes each escalating finding twice.
 - Scan job findings now persist in batches instead of one write per finding, are capped per job with truncation surfaced in the job record, and retention bounds the total stored finding volume rather than only the job count.

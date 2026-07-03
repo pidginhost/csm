@@ -93,38 +93,25 @@ func (e *mailIPEntry) establishedGood(account string, now time.Time, window time
 	return now.Sub(e.goodFirst[account]) >= window
 }
 
-// establishedGoodCount returns how many distinct mailboxes this IP holds
-// established good standing for: each first succeeded longer ago than the
-// failure window and is still live within the good-source TTL. Caller must hold
-// t.mu.
-func (e *mailIPEntry) establishedGoodCount(now time.Time, window time.Duration) int {
-	n := 0
-	for account := range e.goodLast {
-		if e.establishedGood(account, now, window) {
-			n++
-		}
-	}
-	return n
-}
-
 // establishedGoodConfined reports whether this IP looks like a misconfigured
 // legitimate client rather than a brute-forcer: every current failure is
-// attributed to a named mailbox, none of those mailboxes shows a fresh
-// (non-established) guessing breakthrough (see isCrackInProgress), and the count
-// of distinct failing mailboxes does not exceed the count of mailboxes the IP
-// holds established good standing for. When true the
-// per-IP signal is downgraded to an advisory rather than a firewall block, so a
-// source running working mail profiles alongside one or more profiles with a
-// stale password (sibling mailboxes or a multi-tenant office) is not locked out.
+// attributed to a named mailbox, and every one of those failing mailboxes is a
+// mailbox this IP holds ESTABLISHED good standing for (it authenticated
+// successfully to that same mailbox longer ago than the failure window and
+// recently enough to still be live). When true the per-IP signal is downgraded
+// to an advisory rather than a firewall block, so a source whose own working
+// mailbox now fails on a stale saved password (e.g. POP3 succeeds while IMAP
+// fails on the same box) is not locked out.
 //
-// Bounding the failing set by the established-good footprint, rather than a fixed
-// cap, is what keeps the bypass proportional to proven legitimacy: an attacker
-// would need an equal number of established (hours-old, regularly-used,
-// non-padding) valid credentials to earn the same slack, while a real agency's
-// footprint scales with the mailboxes it actually runs. A fresh same-window
-// "success" is not established, so padding earns no downgrade, and the
-// compromise and spray detectors stay fully armed. Caller must hold t.mu and
-// must have pruned e.times/e.failedAccounts/e.successAccounts to the window.
+// Good standing is scoped to the (IP, mailbox) identity that earned it: standing
+// on mailbox A does NOT vouch for failures on a different mailbox B the IP has
+// never signed into. The earlier count-only bound (failing count <= good count)
+// was identity-blind and let a source with good standing on N of its own
+// mailboxes brute-force N unrelated victim mailboxes indefinitely without ever
+// auto-blocking. A fresh same-window "success" is not established, so padding
+// earns no downgrade, and the compromise and spray detectors stay fully armed.
+// Caller must hold t.mu and must have pruned
+// e.times/e.failedAccounts/e.successAccounts to the window.
 func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duration) bool {
 	failing := len(e.failedAccounts)
 	if failing == 0 {
@@ -133,22 +120,19 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	named := 0
 	for account, times := range e.failedAccounts {
 		named += len(times)
-		if e.isCrackInProgress(account, now, window) {
+		if !e.establishedGood(account, now, window) {
 			return false
 		}
 	}
 	// Accountless failures (no user= in the log line) could target anything; a
 	// good source's standing must not hide them.
-	if named != len(e.times) {
-		return false
-	}
-	return failing <= e.establishedGoodCount(now, window)
+	return named == len(e.times)
 }
 
 // recentGoodCount returns how many distinct mailboxes this IP succeeded on
 // recently enough to still be on record (last success within
 // mailGoodSourceTTL), regardless of whether that standing has aged past the
-// failure window. Unlike establishedGoodCount it does not require the
+// failure window. Unlike establishedGood it does not require the
 // relationship to predate the burst, so it recognizes a legitimate sender whose
 // standing is only seconds old -- a cold-started daemon before persisted
 // standing re-ages, or a customer returning after the snapshot expired. Caller
