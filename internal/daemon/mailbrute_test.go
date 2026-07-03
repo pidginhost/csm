@@ -1205,6 +1205,39 @@ func TestMailAuthTracker_ImportedGoodSourceSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_LoadGoodSourceMergesNormalizedStanding(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	now := clock.Now()
+	ip := "198.51.100.51"
+
+	tr.LoadGoodSource(goodSourceSnapshot{
+		ip: {"office@example.ro": {First: now.Add(-1 * time.Minute), Last: now.Add(-1 * time.Minute)}},
+	}, now)
+	tr.LoadGoodSource(goodSourceSnapshot{
+		ip: {"office@Example.RO": {First: now.Add(-2 * time.Hour), Last: now.Add(-30 * time.Minute)}},
+	}, now)
+
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, "office@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(20 * time.Second)
+	}
+	if block {
+		t.Fatalf("normalized imported standing must merge earliest first-success and avoid auto-blocking the same mailbox")
+	}
+	if !suspected {
+		t.Fatalf("merged imported standing should surface mail_bruteforce_suspected")
+	}
+}
+
 func TestDaemonLoadMailGoodSourceSeedsFirstFailureBurst(t *testing.T) {
 	prev := store.Global()
 	db, err := store.Open(t.TempDir())
@@ -1306,7 +1339,7 @@ func TestMailAuthTracker_LoadGoodSourceDropsInvalidTimes(t *testing.T) {
 	}
 }
 
-func TestMailAuthTracker_LoadGoodSourceKeepsExistingWhenSnapshotNotNewer(t *testing.T) {
+func TestMailAuthTracker_LoadGoodSourceMergesExistingWhenSnapshotNotNewer(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	now := clock.Now()
@@ -1314,16 +1347,17 @@ func TestMailAuthTracker_LoadGoodSourceKeepsExistingWhenSnapshotNotNewer(t *test
 	acct := "office@example.ro"
 	first := now.Add(-30 * time.Minute)
 	last := now.Add(-1 * time.Minute)
+	olderFirst := now.Add(-3 * time.Hour)
 	tr.LoadGoodSource(goodSourceSnapshot{
 		ip: {acct: {First: first, Last: last}},
 	}, now)
 	tr.LoadGoodSource(goodSourceSnapshot{
-		ip: {acct: {First: now.Add(-3 * time.Hour), Last: last}},
+		ip: {acct: {First: olderFirst, Last: last}},
 	}, now)
 
 	got := tr.ExportGoodSource()[ip][acct]
-	if !got.First.Equal(first) || !got.Last.Equal(last) {
-		t.Fatalf("snapshot with same Last replaced existing record: got %+v", got)
+	if !got.First.Equal(olderFirst) || !got.Last.Equal(last) {
+		t.Fatalf("snapshot with same Last should merge earliest First and keep Last: got %+v", got)
 	}
 }
 

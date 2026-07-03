@@ -379,7 +379,8 @@ func (t *mailAuthTracker) ExportGoodSource() goodSourceSnapshot {
 // LoadGoodSource seeds established-sender records from a persisted snapshot,
 // dropping any whose most recent success is already older than the good-source
 // TTL. Intended for one-time startup seeding; a record newer than the snapshot
-// (a success already observed this run) is kept.
+// (a success already observed this run) keeps its Last time, while colliding
+// normalized mailbox records keep the earliest First time.
 func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -399,13 +400,14 @@ func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time)
 				e.goodFirst = make(map[string]time.Time)
 				e.goodLast = make(map[string]time.Time)
 			}
-			if cur, ok := e.goodLast[acct]; ok && !cur.Before(ts.Last) {
-				continue
+			if cur, ok := e.goodFirst[acct]; !ok || ts.First.Before(cur) {
+				e.goodFirst[acct] = ts.First
 			}
-			e.goodFirst[acct] = ts.First
-			e.goodLast[acct] = ts.Last
-			if ts.Last.After(e.lastSeen) {
-				e.lastSeen = ts.Last
+			if cur, ok := e.goodLast[acct]; !ok || ts.Last.After(cur) {
+				e.goodLast[acct] = ts.Last
+			}
+			if e.goodLast[acct].After(e.lastSeen) {
+				e.lastSeen = e.goodLast[acct]
 			}
 			if len(e.goodLast) > mailGoodSourceMaxAccountsPerIP {
 				e.evictOldestGoodSource()
