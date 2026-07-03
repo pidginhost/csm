@@ -21,6 +21,40 @@ import (
 // to catch writes that don't update parent directory mtime (e.g. hard links).
 var fileIndexScanCount int32
 
+// fileIndexShrinkSkips counts consecutive scans whose current index shrank far
+// enough to trip the mass-deletion guard. It self-heals the guard: after
+// fileIndexShrinkPromoteThreshold consecutive shrinking scans the smaller index
+// is promoted as the new baseline, so new-file detection resumes instead of
+// forever diffing against a stale, permanently-larger previous index.
+var fileIndexShrinkSkips int32
+
+// fileIndexShrinkPromoteThreshold is how many consecutive shrinking scans must
+// occur before the smaller index becomes the baseline. Three deep cycles is
+// long enough to rule out a one-off read glitch or a transient mass rename,
+// while still healing the wedge automatically within a few scan intervals so no
+// operator has to delete fileindex.previous by hand.
+const fileIndexShrinkPromoteThreshold = 3
+
+// evaluateFileIndexShrink classifies the current-vs-previous index sizes and
+// advances the consecutive-shrink counter. isShrink reports whether this scan
+// tripped the mass-deletion guard (an empty current against a populated
+// previous, or a current below half the previous). promote reports whether the
+// shrink has now persisted for fileIndexShrinkPromoteThreshold consecutive
+// scans, in which case the caller must adopt the smaller index as the baseline.
+// A non-shrink scan resets the streak so only *consecutive* shrinks promote.
+func evaluateFileIndexShrink(prevLen, curLen int) (isShrink, promote bool) {
+	isShrink = (prevLen > 10 && curLen == 0) || (prevLen > 0 && curLen < prevLen/2)
+	if !isShrink {
+		atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+		return false, false
+	}
+	if atomic.AddInt32(&fileIndexShrinkSkips, 1) >= fileIndexShrinkPromoteThreshold {
+		atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+		return true, true
+	}
+	return true, false
+}
+
 // suspiciousExtensions are file extensions that should never appear in web roots.
 var suspiciousExtensions = map[string]bool{
 	".phtml": true, ".pht": true, ".php5": true,
@@ -66,6 +100,30 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 		return true // first time seeing this dir
 	}
 	return mtime != prev
+}
+
+// subtreeHasChangedDir reports whether any directory beneath dir that a prior
+// scan already cached now has a different mtime, or has become unreadable. It
+// only reads -- the cache is left untouched so the follow-up rescan still
+// observes each change through dirChanged.
+//
+// A file written deep in the tree bumps only its immediate parent's mtime, not
+// the mtimes of the directories above it. Without this check a scan that finds
+// the top directory unchanged would carry the whole subtree forward from the
+// previous index and never notice the new file until the periodic forced full
+// scan. Checking every cached descendant closes that window.
+func subtreeHasChangedDir(dir string, cache dirMtimeCache) bool {
+	prefix := dir + string(filepath.Separator)
+	for cached, mtime := range cache {
+		if cached == dir || !strings.HasPrefix(cached, prefix) {
+			continue
+		}
+		info, err := osFS.Stat(cached)
+		if err != nil || info.ModTime().Unix() != mtime {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckFileIndex builds an index of suspicious files using pure Go directory
@@ -137,13 +195,22 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		return nil
 	}
 
-	// Validate index
-	if len(previousEntries) > 10 && len(currentEntries) == 0 {
-		fmt.Fprintf(os.Stderr, "file_index: current index empty but previous had %d entries, skipping diff\n", len(previousEntries))
-		return nil
-	}
-	if len(previousEntries) > 0 && len(currentEntries) < len(previousEntries)/2 {
-		fmt.Fprintf(os.Stderr, "file_index: current index (%d) < half of previous (%d), skipping diff\n", len(currentEntries), len(previousEntries))
+	// A large shrink (mass deletion, a WP install removed, or a transient read
+	// failure) must not instantly flush the baseline: promoting an empty or
+	// much-smaller index would make every surviving file look "new" next cycle
+	// and flood alerts. But the guard must also self-heal -- once the shrink has
+	// persisted across enough scans to be the steady state, adopt the smaller
+	// index as the baseline so new-file detection resumes instead of diffing
+	// against a stale, permanently-larger previous index forever.
+	if isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries)); isShrink {
+		if promote {
+			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
+				fileIndexShrinkPromoteThreshold, len(currentEntries), len(previousEntries))
+			copyFile(currentPath, previousPath)
+		} else {
+			fmt.Fprintf(os.Stderr, "file_index: current index (%d) shrank vs previous (%d); skipping diff this cycle\n",
+				len(currentEntries), len(previousEntries))
+		}
 		return nil
 	}
 
@@ -459,11 +526,16 @@ func scanDirForPHPContext(ctx context.Context, dir string, maxDepth int, cache d
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed {
-		// Carry forward previous entries for this directory
+	if !changed && !subtreeHasChangedDir(dir, cache) {
+		// dir's mtime is unchanged and no cached subdirectory changed, so the
+		// whole subtree is stable: carry the previous entries forward without
+		// re-reading disk.
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
+	// Either dir changed, or a file was dropped deep in the subtree (bumping
+	// only a subdirectory's mtime). Walk it so the new file is indexed now
+	// instead of hiding until the periodic forced full scan.
 
 	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
@@ -508,7 +580,7 @@ func scanDirForExecutablesContext(ctx context.Context, dir string, maxDepth int,
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed {
+	if !changed && !subtreeHasChangedDir(dir, cache) {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
@@ -550,7 +622,7 @@ func scanDirForSuspiciousExtContext(ctx context.Context, dir string, maxDepth in
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed {
+	if !changed && !subtreeHasChangedDir(dir, cache) {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}

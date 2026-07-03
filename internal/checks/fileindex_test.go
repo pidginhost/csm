@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -514,5 +515,334 @@ func TestFileIndexAuditModeFindsWithoutWritingState(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(stateDir, f)); err == nil {
 			t.Fatalf("audit mode wrote live state file %s", f)
 		}
+	}
+}
+
+// --- CHK-R02: shrink-guard wedge self-heals ------------------------------
+
+// stateAwareFileIndexMock builds a mockOS that virtualizes the /home tree for
+// one account's uploads dir while passing every state-file operation under
+// stateDir through to the real filesystem. Directory stats return an
+// ever-advancing mtime so dirChanged always re-reads (the shrink test needs the
+// current index to reflect the mutated on-disk file set, not carried-forward
+// cache entries).
+func stateAwareFileIndexMock(stateDir, uploadsPath string, files *[]os.DirEntry, mtime *int64) *mockOS {
+	return &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return []os.DirEntry{testDirEntry{name: "alice", isDir: true}}, nil
+			case "/home/alice":
+				return []os.DirEntry{testDirEntry{name: "public_html", isDir: true}}, nil
+			case uploadsPath:
+				return *files, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.Stat(name)
+			}
+			*mtime++
+			return &fakeFileInfoMtime{name: filepath.Base(name), dir: true, mode: 0755, mtime: time.Unix(*mtime, 0)}, nil
+		},
+		open: func(name string) (*os.File, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.Open(name)
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasPrefix(name, stateDir) {
+				return os.ReadFile(name)
+			}
+			return nil, os.ErrNotExist
+		},
+	}
+}
+
+func phpDirEntries(names ...string) []os.DirEntry {
+	out := make([]os.DirEntry, 0, len(names))
+	for _, n := range names {
+		out = append(out, testDirEntry{name: n, isDir: false})
+	}
+	return out
+}
+
+func countIndexLines(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read index %s: %v", path, err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// A legitimate >50% shrink (a WP install genuinely removed) must NOT instantly
+// flush the baseline, but it also must NOT wedge forever. After
+// fileIndexShrinkPromoteThreshold consecutive shrinking scans the smaller index
+// is promoted as the new baseline, so new-file detection resumes on its own.
+func TestCheckFileIndexShrinkWedgeSelfHeals(t *testing.T) {
+	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	uploadsPath := "/home/alice/public_html/wp-content/uploads"
+
+	var big []string
+	for i := 0; i < 12; i++ {
+		big = append(big, fmt.Sprintf("f%02d.php", i))
+	}
+	files := phpDirEntries(big...)
+	var mtime int64
+	withMockOS(t, stateAwareFileIndexMock(stateDir, uploadsPath, &files, &mtime))
+
+	cfg := &config.Config{StatePath: stateDir}
+
+	// Cycle 1: baseline of 12 entries.
+	if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+		t.Fatalf("baseline scan must not emit findings, got %+v", got)
+	}
+	if n := countIndexLines(t, previousPath); n != 12 {
+		t.Fatalf("baseline previous index = %d entries, want 12", n)
+	}
+
+	// Cycles 2..threshold-1: index shrinks hard. Baseline must stay intact
+	// (the guard's safety purpose: a mass deletion does not instantly flush).
+	files = phpDirEntries("keepone.php", "keeptwo.php")
+	for cycle := 2; cycle < fileIndexShrinkPromoteThreshold+1; cycle++ {
+		if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+			t.Fatalf("shrink cycle %d must skip diff (no findings), got %+v", cycle, got)
+		}
+		if n := countIndexLines(t, previousPath); n != 12 {
+			t.Fatalf("shrink cycle %d prematurely changed baseline to %d entries, want 12", cycle, n)
+		}
+	}
+
+	// The promoting cycle: shrink persisted long enough; baseline advances to
+	// the smaller reality and no diff is emitted this cycle.
+	if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+		t.Fatalf("promoting cycle must not emit findings, got %+v", got)
+	}
+	if n := countIndexLines(t, previousPath); n != 2 {
+		t.Fatalf("baseline was not promoted to the smaller index: got %d entries, want 2", n)
+	}
+
+	// Detection has resumed: a new webshell against the new baseline surfaces.
+	files = phpDirEntries("keepone.php", "keeptwo.php", "shell.php")
+	got := CheckFileIndex(context.Background(), cfg, nil)
+	newShell := filepath.Join(uploadsPath, "shell.php")
+	if !hasFindingPath(got, "new_webshell_file", newShell) {
+		t.Fatalf("after self-heal, new webshell must be detected: %+v", got)
+	}
+}
+
+// --- CHK-R02: evaluateFileIndexShrink threshold logic --------------------
+
+func TestEvaluateFileIndexShrinkNonShrinkResetsCounter(t *testing.T) {
+	atomic.StoreInt32(&fileIndexShrinkSkips, 2) // pretend two shrinks happened
+	isShrink, promote := evaluateFileIndexShrink(100, 100)
+	if isShrink || promote {
+		t.Fatalf("equal sizes are not a shrink: isShrink=%v promote=%v", isShrink, promote)
+	}
+	if got := atomic.LoadInt32(&fileIndexShrinkSkips); got != 0 {
+		t.Fatalf("a non-shrink cycle must reset the counter, got %d", got)
+	}
+}
+
+func TestEvaluateFileIndexShrinkPromotesAfterThreshold(t *testing.T) {
+	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	for i := 1; i < fileIndexShrinkPromoteThreshold; i++ {
+		isShrink, promote := evaluateFileIndexShrink(100, 2)
+		if !isShrink || promote {
+			t.Fatalf("shrink %d before threshold: isShrink=%v promote=%v", i, isShrink, promote)
+		}
+	}
+	isShrink, promote := evaluateFileIndexShrink(100, 2)
+	if !isShrink || !promote {
+		t.Fatalf("shrink at threshold must promote: isShrink=%v promote=%v", isShrink, promote)
+	}
+	if got := atomic.LoadInt32(&fileIndexShrinkSkips); got != 0 {
+		t.Fatalf("counter must reset after a promotion, got %d", got)
+	}
+}
+
+// A recovered cycle between shrinks resets the streak, so two shrinks, a normal
+// scan, then two more shrinks does not promote -- only *consecutive* shrinks do.
+func TestEvaluateFileIndexShrinkStreakResetsOnRecovery(t *testing.T) {
+	if fileIndexShrinkPromoteThreshold < 3 {
+		t.Skipf("test assumes threshold >= 3, got %d", fileIndexShrinkPromoteThreshold)
+	}
+	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	evaluateFileIndexShrink(100, 2) // streak 1
+	evaluateFileIndexShrink(100, 2) // streak 2
+	evaluateFileIndexShrink(100, 100)
+	if got := atomic.LoadInt32(&fileIndexShrinkSkips); got != 0 {
+		t.Fatalf("recovery must reset streak, got %d", got)
+	}
+	for i := 1; i < fileIndexShrinkPromoteThreshold; i++ {
+		if _, promote := evaluateFileIndexShrink(100, 2); promote {
+			t.Fatalf("streak restarted, must not promote at shrink %d", i)
+		}
+	}
+}
+
+// The empty-index guard (previous had many entries, current is zero) is the
+// extreme shrink case and self-heals through the same counter.
+func TestEvaluateFileIndexShrinkEmptyCurrentIsShrink(t *testing.T) {
+	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	isShrink, _ := evaluateFileIndexShrink(50, 0)
+	if !isShrink {
+		t.Fatal("empty current against a large previous must count as a shrink")
+	}
+}
+
+// --- CHK-R03: new file deep in an unchanged parent subtree ---------------
+
+// A webshell dropped into uploads/2026/07 bumps only 07's mtime, not the mtime
+// of uploads or 2026. A scan that finds the top directory unchanged must still
+// descend to 07 and index the new file, instead of carrying the whole subtree
+// forward from the cache and missing it until the periodic forced full scan.
+func TestScanDirForPHPDetectsNewFileInUnchangedParentDir(t *testing.T) {
+	root := t.TempDir()
+	mid := filepath.Join(root, "2026")
+	leaf := filepath.Join(mid, "07")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := filepath.Join(leaf, "old.php")
+	if err := os.WriteFile(existing, []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Freeze the whole tree to a known instant and cache it, as a completed
+	// prior scan would have.
+	base := time.Now().Add(-time.Hour)
+	for _, d := range []string{root, mid, leaf} {
+		if err := os.Chtimes(d, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache := dirMtimeCache{root: base.Unix(), mid: base.Unix(), leaf: base.Unix()}
+	prev := groupEntriesByUploadDir([]string{existing})
+
+	// Attacker drops a webshell deep in the tree; only the leaf's mtime moves.
+	shell := filepath.Join(leaf, "shell.php")
+	if err := os.WriteFile(shell, []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newer := base.Add(30 * time.Minute)
+	if err := os.Chtimes(leaf, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the ancestors frozen so pruning at the unchanged top is what the
+	// test exercises.
+	for _, d := range []string{root, mid} {
+		if err := os.Chtimes(d, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var entries []string
+	scanDirForPHP(root, 6, cache, prev, false, phpHandlerOverlay{}, &entries)
+
+	got := map[string]bool{}
+	for _, e := range entries {
+		got[e] = true
+	}
+	if !got[shell] {
+		t.Fatalf("new webshell in unchanged parent subtree was not indexed: %v", entries)
+	}
+	if !got[existing] {
+		t.Fatalf("pre-existing file dropped from index: %v", entries)
+	}
+}
+
+// Same nested-mtime hazard for the .config executable scanner: the shared
+// subtree check must let a new executable in a deep, cached subdir surface even
+// when the top directory looks unchanged.
+func TestScanDirForExecutablesDetectsNewFileInUnchangedParentDir(t *testing.T) {
+	root := t.TempDir()
+	leaf := filepath.Join(root, "autostart")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Add(-time.Hour)
+	for _, d := range []string{root, leaf} {
+		if err := os.Chtimes(d, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache := dirMtimeCache{root: base.Unix(), leaf: base.Unix()}
+	prev := groupEntriesByUploadDir(nil)
+
+	miner := filepath.Join(leaf, "miner")
+	if err := os.WriteFile(miner, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newer := base.Add(30 * time.Minute)
+	if err := os.Chtimes(leaf, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(root, base, base); err != nil {
+		t.Fatal(err)
+	}
+
+	var entries []string
+	scanDirForExecutables(root, 3, cache, prev, false, &entries)
+
+	found := false
+	for _, e := range entries {
+		if e == miner {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("new executable in unchanged parent subtree was not indexed: %v", entries)
+	}
+}
+
+// A fully stable subtree (nothing changed anywhere) still takes the cache
+// shortcut: entries come straight from the previous index with no ReadDir.
+// This pins that the CHK-R03 descent does not defeat the mtime optimization.
+func TestScanDirForPHPStableSubtreeUsesCacheShortcut(t *testing.T) {
+	root := t.TempDir()
+	mid := filepath.Join(root, "2026")
+	leaf := filepath.Join(mid, "07")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Add(-time.Hour)
+	for _, d := range []string{root, mid, leaf} {
+		if err := os.Chtimes(d, base, base); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache := dirMtimeCache{root: base.Unix(), mid: base.Unix(), leaf: base.Unix()}
+
+	// The cached file does not exist on disk: if the scan honoured the cache
+	// shortcut it is carried forward; if it wrongly re-read disk it would
+	// vanish (the leaf is empty on disk).
+	cachedOnly := filepath.Join(leaf, "carried.php")
+	prev := groupEntriesByUploadDir([]string{cachedOnly})
+
+	var entries []string
+	scanDirForPHP(root, 6, cache, prev, false, phpHandlerOverlay{}, &entries)
+
+	found := false
+	for _, e := range entries {
+		if e == cachedOnly {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stable subtree must carry cached entry forward, got %v", entries)
 	}
 }
