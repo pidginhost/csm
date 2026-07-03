@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func TestMigrateHistoryJSONL(t *testing.T) {
@@ -126,41 +127,59 @@ func TestMigrateAttackDBRecordsAndEvents(t *testing.T) {
 	}
 }
 
-func TestMigrateFirewallState(t *testing.T) {
+// TestMigrationPreservesFirewallStateFile is a regression test for the
+// migration bug where the store copied firewall/state.json into fw:* buckets
+// that nothing reads for enforcement, then renamed the file to .bak. The
+// firewall engine loads state.json directly (firewall.LoadState), so the
+// rename silently dropped every pre-upgrade block/allow from enforcement on
+// the first post-migration boot. Migration must leave state.json untouched.
+func TestMigrationPreservesFirewallStateFile(t *testing.T) {
 	dir := t.TempDir()
 	fwDir := filepath.Join(dir, "firewall")
-	_ = os.MkdirAll(fwDir, 0700)
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(fwDir, "state.json")
 
-	state := map[string]interface{}{
-		"blocked": []map[string]interface{}{
-			{"ip": "203.0.113.5", "reason": "brute", "blocked_at": time.Now().Format(time.RFC3339),
-				"expires_at": time.Now().Add(1 * time.Hour).Format(time.RFC3339)},
+	seed := firewall.FirewallState{
+		Blocked: []firewall.BlockedEntry{
+			{IP: "203.0.113.5", Reason: "brute", BlockedAt: time.Now()}, // permanent (zero ExpiresAt)
 		},
-		"allowed": []map[string]interface{}{
-			{"ip": "10.0.0.1", "reason": "infra"},
-		},
-		"blocked_nets": []map[string]interface{}{
-			{"cidr": "192.168.0.0/16", "reason": "test", "blocked_at": time.Now().Format(time.RFC3339)},
-		},
-		"port_allowed": []map[string]interface{}{
-			{"ip": "10.0.0.2", "port": 3306, "proto": "tcp", "reason": "mysql"},
+		Allowed: []firewall.AllowedEntry{
+			{IP: "10.0.0.1", Reason: "infra"},
 		},
 	}
-	data, _ := json.Marshal(state)
-	_ = os.WriteFile(filepath.Join(fwDir, "state.json"), data, 0600)
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if werr := os.WriteFile(statePath, data, 0600); werr != nil {
+		t.Fatal(werr)
+	}
 
-	db, err := Open(dir)
+	db, err := Open(dir) // runs migration on the fresh db
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
 
-	fwState := db.LoadFirewallState()
-	if len(fwState.Blocked) != 1 {
-		t.Errorf("blocked: got %d, want 1", len(fwState.Blocked))
+	if _, serr := os.Stat(statePath); serr != nil {
+		t.Fatalf("firewall/state.json must survive migration, stat err: %v", serr)
 	}
-	if len(fwState.Allowed) != 1 {
-		t.Errorf("allowed: got %d, want 1", len(fwState.Allowed))
+	if _, serr := os.Stat(statePath + ".bak"); serr == nil {
+		t.Fatal("migration renamed firewall/state.json to .bak, dropping blocks from enforcement")
+	}
+
+	// The engine's own loader must still read the pre-upgrade blocks/allows.
+	loaded, err := firewall.LoadState(dir)
+	if err != nil {
+		t.Fatalf("engine loader failed to read preserved state: %v", err)
+	}
+	if len(loaded.Blocked) != 1 || loaded.Blocked[0].IP != "203.0.113.5" {
+		t.Errorf("blocked entries lost: %+v", loaded.Blocked)
+	}
+	if len(loaded.Allowed) != 1 || loaded.Allowed[0].IP != "10.0.0.1" {
+		t.Errorf("allowed entries lost: %+v", loaded.Allowed)
 	}
 }
 

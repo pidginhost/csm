@@ -62,9 +62,10 @@ func TestRunMigrationMalformedReputationReturnsError(t *testing.T) {
 	}
 }
 
-// TestRunMigrationMalformedFirewallReturnsError triggers the firewall
-// migration error branch via an invalid state.json.
-func TestRunMigrationMalformedFirewallReturnsError(t *testing.T) {
+// TestRunMigrationIgnoresFirewallStateFile confirms migration never parses or
+// touches firewall/state.json: the firewall engine owns that file. Even a
+// malformed state.json must not fail migration or be renamed away.
+func TestRunMigrationIgnoresFirewallStateFile(t *testing.T) {
 	dir := t.TempDir()
 	db, err := Open(dir)
 	if err != nil {
@@ -79,15 +80,18 @@ func TestRunMigrationMalformedFirewallReturnsError(t *testing.T) {
 	if err := os.MkdirAll(fwDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("{bad"), 0600); err != nil {
+	statePath := filepath.Join(fwDir, "state.json")
+	if err := os.WriteFile(statePath, []byte("{bad"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	rerr := db.runMigration(dir)
-	if rerr == nil {
-		t.Fatal("runMigration should surface firewall migration error")
+	if rerr := db.runMigration(dir); rerr != nil {
+		t.Fatalf("migration must ignore firewall/state.json, got error: %v", rerr)
 	}
-	if !strings.Contains(rerr.Error(), "firewall") {
-		t.Errorf("error should mention firewall, got: %v", rerr)
+	if _, serr := os.Stat(statePath); serr != nil {
+		t.Fatalf("firewall/state.json must be left intact, stat err: %v", serr)
+	}
+	if _, serr := os.Stat(statePath + ".bak"); serr == nil {
+		t.Fatal("migration must not rename firewall/state.json to .bak")
 	}
 }
 
@@ -138,12 +142,12 @@ func TestRunMigrationMultipleErrorsCombined(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "reputation_cache.json"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Malformed firewall file.
-	fwDir := filepath.Join(dir, "firewall")
-	if err := os.MkdirAll(fwDir, 0700); err != nil {
+	// Malformed attack-db records file.
+	atkDir := filepath.Join(dir, "attack_db")
+	if err := os.MkdirAll(atkDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("y"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(atkDir, "records.json"), []byte("y"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	rerr := db.runMigration(dir)
@@ -151,7 +155,7 @@ func TestRunMigrationMultipleErrorsCombined(t *testing.T) {
 		t.Fatal("expected combined migration error")
 	}
 	// Both subsystems should be named in the combined error message.
-	if !strings.Contains(rerr.Error(), "reputation") || !strings.Contains(rerr.Error(), "firewall") {
+	if !strings.Contains(rerr.Error(), "reputation") || !strings.Contains(rerr.Error(), "attackdb") {
 		t.Errorf("combined error should mention both failures, got: %v", rerr)
 	}
 }

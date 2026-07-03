@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed the store migration renaming the firewall's state file after copying it into unused buckets, which silently dropped all pre-upgrade blocks and allows from enforcement on the first boot after upgrading.
 - Fixed a YARA worker that failed to compile rules at startup staying silently dead until it happened to crash: reloads now rebuild the scanner, the failure raises a critical finding, and a failed reload no longer records the rule update as applied.
 - Fixed oversized payloads (around 12MB and up) silently scanning as clean in worker mode: scan transport errors are now distinct from clean results, mail scanning fails closed, and finding re-checks no longer auto-resolve on a failed scan.
 - Fixed a YARA worker that fails to start at boot leaving the daemon without YARA for its whole lifetime: startup now retries with backoff and raises a critical finding while the worker stays down.
