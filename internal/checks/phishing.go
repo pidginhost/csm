@@ -940,7 +940,7 @@ func looksLikeBusinessName(name string) bool {
 // stubs. Phishing kits add at least one of:
 //   - a form action that posts to an external host (exfiltration target),
 //   - a fully self-contained inline-styled HTML body (kits ship one file),
-//   - brand impersonation in the title or visible body (Office/PayPal/etc).
+//   - real brand impersonation in the title or visible body (Office/PayPal/etc).
 //
 // Requiring credential intake plus one of those signals keeps real
 // phishing kits in scope while letting tutorials and trivial forms drop
@@ -973,6 +973,9 @@ func quickPhishingCheck(path string) bool {
 
 	titleContent := extractTitle(contentLower)
 	for _, brand := range phishingBrands {
+		if brand.generic {
+			continue
+		}
 		for _, tp := range brand.titlePatterns {
 			if titleContent != "" && strings.Contains(titleContent, tp) {
 				return true

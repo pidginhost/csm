@@ -52,6 +52,47 @@ func TestAnalyzeHTMLForPhishingGenericLoginNotFlagged(t *testing.T) {
 	}
 }
 
+const plainCustomerLoginGenericTitleOnlyHTML = `<!DOCTYPE html>
+<html>
+<head>
+<title>Sign In - Acme Portal</title>
+</head>
+<body>
+<h1>Sign in</h1>
+<form action="/session" method="post">
+<input type="email" name="email">
+<input type="password" name="password">
+<button type="submit">Sign in</button>
+</form>
+</body>
+</html>`
+
+func TestQuickPhishingCheckGenericLoginTitleOnlyNotSignal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "login.html")
+	if err := os.WriteFile(path, []byte(plainCustomerLoginGenericTitleOnlyHTML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if quickPhishingCheck(path) {
+		t.Fatal("generic Sign In title alone must not satisfy directory-anomaly phishing content")
+	}
+}
+
+func TestAnalyzeDirectoryStructureGenericLoginTitleOnlyNotFlagged(t *testing.T) {
+	dir := t.TempDir()
+	dropDir := filepath.Join(dir, "AcmePortal")
+	if err := os.MkdirAll(dropDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dropDir, "login.html"),
+		[]byte(plainCustomerLoginGenericTitleOnlyHTML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if res := analyzeDirectoryStructure(dropDir, "alice"); res != nil {
+		t.Fatalf("generic login title bypassed the higher floor via directory anomaly: %+v", res)
+	}
+}
+
 // A real generic-login phishing kit: same generic title, but it exfiltrates to
 // an external host, shows a fake trust badge, and pressures with urgency. That
 // is multiple independent strong signals and must still flag.
