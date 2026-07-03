@@ -241,19 +241,38 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 		keptFindings := 0
 		var delErr error
 		for _, rec := range jobs {
-			jobFindings := countFindingRows(fb, rec.ID)
 			overJobCount := keepJobs > 0 && kept >= keepJobs
-			overVolume := maxTotalFindings > 0 && kept >= 1 &&
-				keptFindings+jobFindings > maxTotalFindings
-			if !overJobCount && !overVolume {
-				kept++
-				keptFindings += jobFindings
+			if overJobCount {
+				if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
+					return delErr
+				}
+				pruned++
 				continue
 			}
-			if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
-				return delErr
+
+			jobFindings := 0
+			if maxTotalFindings > 0 {
+				// Count only far enough to decide whether this job fits. For
+				// the newest job, which is always kept, a saturated count is
+				// enough to force later non-empty jobs over the volume cap.
+				remaining := maxTotalFindings - keptFindings
+				if kept == 0 {
+					remaining = maxTotalFindings
+				}
+				if remaining < 0 {
+					remaining = 0
+				}
+				jobFindings = countFindingRowsUpTo(fb, rec.ID, remaining+1)
+				if kept >= 1 && keptFindings+jobFindings > maxTotalFindings {
+					if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
+						return delErr
+					}
+					pruned++
+					continue
+				}
 			}
-			pruned++
+			kept++
+			keptFindings += jobFindings
 		}
 		return nil
 	})
@@ -265,11 +284,21 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 
 // countFindingRows returns the number of finding rows stored for jobID.
 func countFindingRows(fb *bolt.Bucket, jobID string) int {
+	return countFindingRowsUpTo(fb, jobID, 0)
+}
+
+// countFindingRowsUpTo counts finding rows stored for jobID, stopping early
+// after limit rows when limit > 0. The volume-cap retention path only needs to
+// know whether a job crosses a threshold, not its exact size above that point.
+func countFindingRowsUpTo(fb *bolt.Bucket, jobID string, limit int) int {
 	prefix := findingPrefix(jobID)
 	n := 0
 	c := fb.Cursor()
 	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
 		n++
+		if limit > 0 && n >= limit {
+			break
+		}
 	}
 	return n
 }

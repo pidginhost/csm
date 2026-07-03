@@ -166,6 +166,119 @@ func TestScanJobCapsFindingsAndSurfacesTruncation(t *testing.T) {
 	}
 }
 
+func TestScanJobQuarantineSkipsTruncatedFindings(t *testing.T) {
+	root := t.TempDir()
+	qdir := t.TempDir()
+	first := filepath.Join(root, "first.php")
+	second := filepath.Join(root, "second.php")
+	if err := os.WriteFile(first, []byte("<?php system($_GET['a']); ?>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("<?php system($_GET['b']); ?>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	restore := maxScanJobFindingsPerJob
+	maxScanJobFindingsPerJob = 1
+	defer func() { maxScanJobFindingsPerJob = restore }()
+
+	m.quarantineFile = fakeQuarantineFile(qdir)
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{
+			{Check: "webshell", FilePath: first},
+			{Check: "webshell", FilePath: second},
+		}
+	}
+
+	id, err := m.Enqueue("account", "acct", checks.AccountScanOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+	if rec.FindingCount != 2 || rec.FindingsStored != 1 || !rec.FindingsTruncated {
+		t.Fatalf("record = %+v, want count=2 stored=1 truncated=true", rec)
+	}
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].FilePath != first || findings[0].RemediationStatus != "quarantined" {
+		t.Fatalf("stored finding = %+v, want first file quarantined", findings[0])
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("first file should be quarantined, stat err=%v", err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("truncated second file should remain untouched: %v", err)
+	}
+}
+
+func TestAllScopeQuarantineSkipsTruncatedFindings(t *testing.T) {
+	root := t.TempDir()
+	qdir := t.TempDir()
+	first := filepath.Join(root, "all-first.php")
+	second := filepath.Join(root, "all-second.php")
+	if err := os.WriteFile(first, []byte("<?php system($_GET['a']); ?>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("<?php system($_GET['b']); ?>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	restore := maxScanJobFindingsPerJob
+	maxScanJobFindingsPerJob = 1
+	defer func() { maxScanJobFindingsPerJob = restore }()
+
+	m.quarantineFile = fakeQuarantineFile(qdir)
+	m.enumerateAccounts = func(_ *config.Config) ([]string, error) {
+		return []string{"acct"}, nil
+	}
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		return []alert.Finding{
+			{Check: "webshell", FilePath: first},
+			{Check: "webshell", FilePath: second},
+		}
+	}
+
+	id, err := m.Enqueue("all", "", checks.AccountScanOptions{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+	if rec.FindingCount != 2 || rec.FindingsStored != 1 || !rec.FindingsTruncated {
+		t.Fatalf("record = %+v, want count=2 stored=1 truncated=true", rec)
+	}
+
+	findings, total, err := db.ListScanJobFindings(id, 0, 0)
+	if err != nil || total != 1 || len(findings) != 1 {
+		t.Fatalf("findings total=%d len=%d err=%v, want 1", total, len(findings), err)
+	}
+	if findings[0].FilePath != first || findings[0].RemediationStatus != "quarantined" {
+		t.Fatalf("stored finding = %+v, want first file quarantined", findings[0])
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("first file should be quarantined, stat err=%v", err)
+	}
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("truncated second file should remain untouched: %v", err)
+	}
+}
+
 // TestScanJobCancelKeepsPartial verifies that canceling a running job
 // sets state "canceled" while preserving findings returned after ctx.Done().
 // A hook blocks the runner until the context is canceled, avoiding any sleep race.

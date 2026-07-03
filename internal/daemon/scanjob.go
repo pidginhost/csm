@@ -393,11 +393,12 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 		findings := m.runAccountScan(req.cancelCtx, cfg, m.st, rec.Target, req.opts)
 
 		// Persist findings (batched, capped), even if canceled mid-scan, so the
-		// "cancel keeps partial" guarantee holds.
-		for i := range findings {
-			findings[i] = m.annotateQuarantine(req, findings[i])
-		}
-		findingsStored, truncated = m.persistFindings(req.id, 0, findings)
+		// "cancel keeps partial" guarantee holds. Quarantine is applied only to
+		// findings that will be stored; truncated findings must not trigger
+		// unaudited file moves.
+		findingsStored, truncated = m.persistFindings(req.id, 0, findings, func(f alert.Finding) alert.Finding {
+			return m.annotateQuarantine(req, f)
+		})
 
 		findingCount = len(findings)
 		jobState = "done"
@@ -437,10 +438,11 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 
 // persistFindings writes findings for a job in batched transactions, honoring
 // the per-job findings cap. stored is how many findings the job has already
-// persisted (so the cap spans every account of a scope="all" job). It returns
-// how many findings from this slice were persisted and whether the cap dropped
-// any of them.
-func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []alert.Finding) (written int, truncated bool) {
+// persisted (so the cap spans every account of a scope="all" job). prepare is
+// applied only to the findings that fit under the cap. It returns how many
+// findings from this slice were persisted and whether the cap or a write error
+// dropped any of them.
+func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []alert.Finding, prepare func(alert.Finding) alert.Finding) (written int, truncated bool) {
 	room := len(findings)
 	if maxScanJobFindingsPerJob > 0 {
 		remaining := maxScanJobFindingsPerJob - stored
@@ -457,11 +459,20 @@ func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []al
 		if end > room {
 			end = room
 		}
-		if err := m.db.AppendScanJobFindings(jobID, stored+off, findings[off:end]); err != nil {
-			csmlog.Warn("scan job finding batch persist failed", "job_id", jobID, "seq", stored+off, "err", err)
+		batch := findings[off:end]
+		if prepare != nil {
+			batch = append([]alert.Finding(nil), batch...)
+			for i := range batch {
+				batch[i] = prepare(batch[i])
+			}
 		}
+		if err := m.db.AppendScanJobFindings(jobID, stored+off, batch); err != nil {
+			csmlog.Warn("scan job finding batch persist failed", "job_id", jobID, "seq", stored+off, "err", err)
+			return written, true
+		}
+		written += len(batch)
 	}
-	return room, truncated
+	return written, truncated
 }
 
 // runAllAccounts executes the scan body for a scope="all" job: enumerates
@@ -525,9 +536,10 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 			if findings[i].Timestamp.IsZero() {
 				findings[i].Timestamp = now
 			}
-			findings[i] = m.annotateQuarantine(req, findings[i])
 		}
-		written, trunc := m.persistFindings(req.id, findingsStored, findings)
+		written, trunc := m.persistFindings(req.id, findingsStored, findings, func(f alert.Finding) alert.Finding {
+			return m.annotateQuarantine(req, f)
+		})
 		findingsStored += written
 		truncated = truncated || trunc
 		findingCount += len(findings)

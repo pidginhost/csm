@@ -127,6 +127,56 @@ func TestPruneScanJobsFindingsVolumeCap(t *testing.T) {
 	}
 }
 
+func TestPruneScanJobsKeepsNewestOverVolumeCapOnLargeBucket(t *testing.T) {
+	db := openTestDB(t)
+	base := time.Unix(4000, 0)
+	newestID := "large-newest"
+	oldID := "older-small"
+
+	if err := db.PutScanJob(ScanJobRecord{
+		ID: newestID, Scope: "account", Target: "u", State: "done",
+		Created: base.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutScanJob(ScanJobRecord{
+		ID: oldID, Scope: "account", Target: "u", State: "done",
+		Created: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	batch := make([]alert.Finding, 1000)
+	for seq := 0; seq < 50000; seq += len(batch) {
+		if err := db.AppendScanJobFindings(newestID, seq, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.AppendScanJobFinding(oldID, 0, alert.Finding{Check: "webshells"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pruned, err := db.PruneScanJobs(20, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Fatalf("pruned=%d, want 1", pruned)
+	}
+	if _, ok, _ := db.GetScanJob(newestID); !ok {
+		t.Fatal("newest job was pruned even though it must survive the volume cap")
+	}
+	if _, total, err := db.ListScanJobFindings(newestID, 0, 1); err != nil || total != 50000 {
+		t.Fatalf("newest findings total=%d err=%v, want 50000", total, err)
+	}
+	if _, ok, _ := db.GetScanJob(oldID); ok {
+		t.Fatal("older job should be pruned when newest alone exceeds the volume cap")
+	}
+	if _, total, err := db.ListScanJobFindings(oldID, 0, 1); err != nil || total != 0 {
+		t.Fatalf("old findings total=%d err=%v, want 0", total, err)
+	}
+}
+
 // TestPruneScanJobsNoOrphanFindings verifies that PruneScanJobs removes all
 // finding rows for each pruned job -- no orphan findings survive the prune.
 func TestPruneScanJobsNoOrphanFindings(t *testing.T) {

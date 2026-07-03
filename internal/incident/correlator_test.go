@@ -965,6 +965,7 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 		{ID: "inc_old_open", Status: StatusOpen, Severity: alert.High, Account: "bob", CreatedAt: old, UpdatedAt: old},
 		{ID: "inc_fresh_closed", Status: StatusDismissed, Severity: alert.High, Account: "carol", CreatedAt: now, UpdatedAt: now},
 	})
+	c.lastPersistAt["inc_old_closed"] = old
 
 	pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour)
 	if pruned != 1 {
@@ -978,6 +979,9 @@ func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
 	}
 	if _, ok := c.Get("inc_fresh_closed"); !ok {
 		t.Fatal("fresh closed incident was pruned")
+	}
+	if _, ok := c.lastPersistAt["inc_old_closed"]; ok {
+		t.Fatal("lastPersistAt entry survived incident prune")
 	}
 }
 
