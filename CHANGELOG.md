@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed five firewall pages failing with a server error when the firewall state file on disk is corrupt; they now report the condition instead of crashing the request.
+- Unblocking an IP from the CLI or WebUI now also clears the auto-block threat record for that address, so stale local threat data cannot pull it straight back into a block loop. Operator-added permanent blocks are not affected.
 - Fixed four broken WebUI interactions: history detail rows that never expanded, saved views whose Apply changed nothing, the email findings table re-inserting stale rows after refreshes, and the dashboard last-critical chip being wiped by the time-ago updater.
 - Fixed the suspicious-login country detector never firing on the production dovecot log format: both known login-success line formats are now recognized by every mail detector.
 - An IP with good login history no longer gets brute-force leniency against mailboxes it never legitimately used: good standing now only vouches for the mailboxes where it was earned. Note this can auto-block an office IP that repeatedly fails a mailbox it has never authenticated to.

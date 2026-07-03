@@ -11,9 +11,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/store"
 )
+
+// dropAutoBlockThreatRow removes the auto-block threat row for ip after an
+// operator unblock. Operator permanent blocks are left in place: a
+// firewall-only unblock must not silently clear a deliberate block. Under
+// block_expiry:0 an auto-block row has no expiry, so without this it outlives
+// the firewall block and ip_reputation re-flags the IP into a new block loop.
+func dropAutoBlockThreatRow(ip string) {
+	sdb := store.Global()
+	if sdb == nil {
+		return
+	}
+	removed, err := sdb.RemoveAutoBlock(ip)
+	if err != nil || !removed {
+		return
+	}
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.RemovePermanent(ip)
+	}
+}
 
 type firewallAllowView struct {
 	IP        string `json:"ip"`
@@ -53,7 +74,11 @@ func formatRemaining(expiresAt time.Time) string {
 // apiFirewallStatus returns the firewall engine configuration and state summary.
 func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.Firewall
-	state, _ := firewall.LoadState(s.cfg.StatePath)
+	state, err := firewall.LoadState(s.cfg.StatePath)
+	if err != nil {
+		writeJSONError(w, "firewall state unavailable (corrupt state file)", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 
 	// Use top-level infra_ips if firewall.infra_ips is empty (daemon syncs at runtime)
@@ -121,7 +146,11 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 
 // apiFirewallAllowed returns active firewall allow rules and port exceptions.
 func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
-	state, _ := firewall.LoadState(s.cfg.StatePath)
+	state, err := firewall.LoadState(s.cfg.StatePath)
+	if err != nil {
+		writeJSONError(w, "firewall state unavailable (corrupt state file)", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 
 	var allowed []firewallAllowView
@@ -321,7 +350,11 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 
 // apiFirewallSubnets returns currently blocked subnets.
 func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
-	state, _ := firewall.LoadState(s.cfg.StatePath)
+	state, err := firewall.LoadState(s.cfg.StatePath)
+	if err != nil {
+		writeJSONError(w, "firewall state unavailable (corrupt state file)", http.StatusInternalServerError)
+		return
+	}
 
 	type subnetView struct {
 		CIDR      string `json:"cidr"`
@@ -493,7 +526,13 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check CSM firewall state
-	state, _ := firewall.LoadState(s.cfg.StatePath)
+	state, err := firewall.LoadState(s.cfg.StatePath)
+	if err != nil {
+		// A corrupt state file means we cannot tell whether the IP is
+		// blocked; report failure rather than a misleading "not blocked".
+		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "firewall state unavailable"})
+		return
+	}
 	now := time.Now()
 	for _, b := range state.Blocked {
 		if b.IP == ip {
@@ -623,12 +662,15 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	if s.blocker != nil {
 		_ = s.blocker.UnblockIP(req.IP)
 	}
+	dropAutoBlockThreatRow(req.IP)
 
-	// 2. Also remove from any covering subnet block
-	state, _ := firewall.LoadState(s.cfg.StatePath)
+	// 2. Also remove from any covering subnet block. A corrupt state file
+	// only costs us the subnet sweep; the IP unblock above already ran, so
+	// skip this step rather than fail the whole unban.
+	state, stateErr := firewall.LoadState(s.cfg.StatePath)
 	parsedIP := net.ParseIP(req.IP)
 	subnetRemoved := ""
-	if sb, ok := s.blocker.(interface{ UnblockSubnet(string) error }); ok {
+	if sb, ok := s.blocker.(interface{ UnblockSubnet(string) error }); ok && stateErr == nil && state != nil {
 		for _, sn := range state.BlockedNet {
 			_, network, err := net.ParseCIDR(sn.CIDR)
 			if err == nil && network.Contains(parsedIP) {

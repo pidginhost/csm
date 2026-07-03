@@ -1177,6 +1177,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("Unblock failed: %v", err), http.StatusInternalServerError)
 		return
 	}
+	dropAutoBlockThreatRow(req.IP)
 
 	// Also flush from cphulk (cPanel brute force detector)
 	flushCphulk(req.IP)
@@ -1217,6 +1218,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		if err := s.blocker.UnblockIP(ip); err != nil {
 			continue
 		}
+		dropAutoBlockThreatRow(ip)
 		flushCphulk(ip)
 		s.auditLog(r, "unblock_ip", ip, "bulk unblock via UI")
 		unblocked = append(unblocked, ip)
