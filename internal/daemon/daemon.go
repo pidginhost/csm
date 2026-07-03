@@ -3160,8 +3160,8 @@ func deployConfigs() {
 				// Present but unreadable: rewriting blind could destroy
 				// operator rules, so leave the file alone.
 			} else if merged, changed := checks.MergeModSecUserConfSection(existing, embeddedModSec); changed {
-				// #nosec G306 -- Apache reads this ModSecurity config; webserver
-				// runs as a different user.
+				// #nosec G306 G703 -- dst iterates the literal ModSecurity config
+				// paths above; Apache reads this config from a different user.
 				_ = os.WriteFile(dst, merged, 0644)
 			}
 			overridesFile := filepath.Join(filepath.Dir(dst), "modsec2.csm-overrides.conf")
