@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -51,6 +52,41 @@ func TestRetryStartStopsOnSignal(t *testing.T) {
 	)
 	if ok {
 		t.Error("retryStart must return false when stopped before success")
+	}
+}
+
+func TestRetryStartWithStopContextCancelsInFlightStart(t *testing.T) {
+	stop := make(chan struct{})
+	entered := make(chan struct{})
+	done := make(chan bool, 1)
+
+	go func() {
+		done <- retryStartWithStopContext(
+			func(ctx context.Context) error {
+				close(entered)
+				<-ctx.Done()
+				return ctx.Err()
+			},
+			stop,
+			time.Millisecond, time.Millisecond, 2,
+			nil,
+		)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("start was not called")
+	}
+	close(stop)
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("retryStartWithStopContext must not report success after stop")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight start was not cancelled by stop")
 	}
 }
 

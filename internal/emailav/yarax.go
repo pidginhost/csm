@@ -21,19 +21,34 @@ const defaultSeverity = "high"
 // both expose matches with string metadata pulled from the rule's
 // Metadata(), so this adapter is indifferent to which one is active.
 type YaraXScanner struct {
-	backend yara.Backend
+	backend  yara.Backend
+	resolver func() yara.Backend
 }
 
-// NewYaraXScanner returns a scanner backed by b. Pass yara.Active() so
-// the adapter follows whatever backend the daemon installed at startup.
-// A nil backend produces an unavailable scanner (Available() == false);
-// callers must still construct the scanner so the orchestrator's
-// engine list has a stable shape regardless of backend state.
+// NewYaraXScanner returns a scanner backed by a fixed backend snapshot. A nil
+// backend produces an unavailable scanner (Available() == false); callers must
+// still construct the scanner so the orchestrator's engine list has a stable
+// shape regardless of backend state. Use NewActiveYaraXScanner when the scanner
+// should follow later yara.Active() swaps.
 func NewYaraXScanner(b yara.Backend) *YaraXScanner {
 	return &YaraXScanner{backend: b}
 }
 
+// NewActiveYaraXScanner follows the process-wide active YARA backend at scan
+// time. This lets email AV recover when the daemon starts with the worker down
+// and the backend is installed later by the boot-retry path.
+func NewActiveYaraXScanner() *YaraXScanner {
+	return &YaraXScanner{resolver: yara.Active}
+}
+
 func (s *YaraXScanner) Name() string { return "yara-x" }
+
+func (s *YaraXScanner) currentBackend() yara.Backend {
+	if s.resolver != nil {
+		return s.resolver()
+	}
+	return s.backend
+}
 
 // Available reports whether the backend has rules compiled. Under worker
 // mode this is a liveness probe against the child process (Supervisor's
@@ -41,14 +56,16 @@ func (s *YaraXScanner) Name() string { return "yara-x" }
 // unavailable rather than silently returning clean verdicts on files we
 // could not actually scan.
 func (s *YaraXScanner) Available() bool {
-	return s.backend != nil && s.backend.RuleCount() > 0
+	backend := s.currentBackend()
+	return backend != nil && backend.RuleCount() > 0
 }
 
 // Scan reads path and matches against the backend's compiled rules.
 // Returns the first matching rule's verdict, with severity taken from
 // the rule's "severity" metadata (defaulting to "high" when absent).
 func (s *YaraXScanner) Scan(path string) (Verdict, error) {
-	if s.backend == nil {
+	backend := s.currentBackend()
+	if backend == nil {
 		return Verdict{}, fmt.Errorf("no YARA backend configured")
 	}
 	// #nosec G304 -- path is a quarantined attachment staged by the spool watcher under our own root.
@@ -56,7 +73,7 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, fmt.Errorf("reading file: %w", err)
 	}
-	matches, err := yara.ScanBytesChecked(s.backend, data)
+	matches, err := yara.ScanBytesChecked(backend, data)
 	if err != nil {
 		// Fail closed: a scan that could not complete (worker down, the
 		// attachment too large for one IPC frame, a transport error) must

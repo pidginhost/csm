@@ -14,6 +14,11 @@ func NewYaraXScanner(_ yara.Backend) *YaraXScanner {
 	return &YaraXScanner{}
 }
 
+// NewActiveYaraXScanner returns the same no-op scanner in non-YARA builds.
+func NewActiveYaraXScanner() *YaraXScanner {
+	return &YaraXScanner{}
+}
+
 func (s *YaraXScanner) Name() string    { return "yara-x" }
 func (s *YaraXScanner) Available() bool { return false }
 func (s *YaraXScanner) Scan(_ string) (Verdict, error) {

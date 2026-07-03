@@ -247,8 +247,14 @@ func (s *Supervisor) Reload() error {
 	if client == nil {
 		return errors.New("yaraworker: no client")
 	}
-	_, err := client.Reload(yaraipc.ReloadArgs{})
-	return err
+	res, err := client.Reload(yaraipc.ReloadArgs{})
+	if err != nil {
+		return err
+	}
+	if res.CompileError != "" {
+		return fmt.Errorf("yaraworker reload compile error: %s", res.CompileError)
+	}
+	return nil
 }
 
 // CompileError returns the worker's current rule-compile error, or "" when

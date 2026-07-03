@@ -15,6 +15,13 @@ func TestScanBytesCheckedSurfacesCheckedScannerError(t *testing.T) {
 	}
 }
 
+func TestScanBytesCheckedNilBackendErrors(t *testing.T) {
+	_, err := ScanBytesChecked(nil, []byte("x"))
+	if err == nil {
+		t.Fatal("nil backend must return an error, not panic or report clean")
+	}
+}
+
 // A backend that predates the capability falls back to the error-free
 // ScanBytes and returns its matches with a nil error.
 func TestScanBytesCheckedFallsBackForPlainBackend(t *testing.T) {

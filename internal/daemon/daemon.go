@@ -2288,12 +2288,11 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create ClamAV scanner
 	clamScanner := emailav.NewClamdScanner(d.cfg.EmailAV.ClamdSocket)
 
-	// YARA-X scanner over whichever backend initYaraBackend installed.
-	// Active() transparently resolves to the in-process *yara.Scanner
-	// or to the out-of-process supervisor depending on
-	// signatures.yara_worker_enabled; severity metadata now travels on
-	// matches so either backend yields the same verdict shape.
-	yaraScanner := emailav.NewYaraXScanner(yara.Active())
+	// YARA-X scanner over whichever backend initYaraBackend installs.
+	// The worker backend can come online after startup through the boot-retry
+	// path, so resolve yara.Active() lazily instead of capturing a nil backend
+	// forever while email AV is being wired.
+	yaraScanner := emailav.NewActiveYaraXScanner()
 
 	// Create orchestrator with both engines
 	scanners := []emailav.Scanner{clamScanner, yaraScanner}

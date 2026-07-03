@@ -76,6 +76,11 @@ func (d *Daemon) initYaraBackend() error {
 	if err != nil {
 		return fmt.Errorf("creating yara-worker supervisor: %w", err)
 	}
+	// Own the supervisor before the first Start attempt. If startup fails and
+	// the retry goroutine is still trying to bring it online when the daemon
+	// stops, stopYaraBackend can cancel/kill that in-flight Start instead of
+	// leaving an orphaned worker attempt outside shutdown ownership.
+	d.yaraSup = sup
 	if err := sup.Start(context.Background()); err != nil {
 		// A boot-time start failure must not disable YARA for the daemon's
 		// whole lifetime. Retry in the background with backoff and raise a
@@ -95,7 +100,6 @@ func (d *Daemon) initYaraBackend() error {
 // as a finding so a worker that is up but scanning nothing is visible instead
 // of masquerading as a healthy zero-rule host.
 func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
-	d.yaraSup = sup
 	yara.SetActive(sup)
 
 	// Expose the supervisor's cumulative restart count to Prometheus.
@@ -121,8 +125,8 @@ func (d *Daemon) activateYaraBackend(sup *yaraworker.Supervisor) {
 // backoff until it succeeds or the daemon stops, raising one finding once the
 // failure is persistent so the outage is visible.
 func (d *Daemon) retryYaraStart(sup *yaraworker.Supervisor) {
-	ok := retryStart(
-		func() error { return sup.Start(context.Background()) },
+	ok := retryStartWithStopContext(
+		func(ctx context.Context) error { return sup.Start(ctx) },
 		d.stopCh,
 		time.Second, 60*time.Second, 3,
 		func(attempt int, err error) {
@@ -135,6 +139,29 @@ func (d *Daemon) retryYaraStart(sup *yaraworker.Supervisor) {
 	}
 	fmt.Fprintf(os.Stderr, "[%s] yara-worker started after retrying a failed boot\n", ts())
 	d.activateYaraBackend(sup)
+}
+
+func retryStartWithStopContext(start func(context.Context) error, stop <-chan struct{}, minBackoff, maxBackoff time.Duration, alertAfter int, onPersistent func(attempt int, err error)) bool {
+	ctx, cancel := context.WithCancel(context.Background())
+	retryDone := make(chan struct{})
+	obs.Go("yara-init-retry-stop", func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-retryDone:
+		}
+	})
+	ok := retryStart(
+		func() error { return start(ctx) },
+		stop,
+		minBackoff, maxBackoff, alertAfter,
+		onPersistent,
+	)
+	close(retryDone)
+	if !ok {
+		cancel()
+	}
+	return ok
 }
 
 // retryStart calls start with capped exponential backoff until it returns nil,

@@ -1,6 +1,9 @@
 package yara
 
-import "sync/atomic"
+import (
+	"errors"
+	"sync/atomic"
+)
 
 // Backend is the consumable scanning surface shared by the in-process
 // *Scanner and out-of-process process supervisor. Callers should depend
@@ -32,6 +35,9 @@ type CheckedScanner interface {
 // error-free ScanBytes. Callers that must fail closed on an unscannable
 // payload should use this instead of Backend.ScanBytes.
 func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
+	if b == nil {
+		return nil, errors.New("yara: backend unavailable")
+	}
 	if cs, ok := b.(CheckedScanner); ok {
 		return cs.ScanBytesChecked(data)
 	}

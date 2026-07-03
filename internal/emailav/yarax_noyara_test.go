@@ -15,6 +15,13 @@ func TestYaraXStubNewScannerReturnsNonNil(t *testing.T) {
 	}
 }
 
+func TestYaraXStubNewActiveScannerReturnsNonNil(t *testing.T) {
+	s := NewActiveYaraXScanner()
+	if s == nil {
+		t.Fatal("NewActiveYaraXScanner should never return nil")
+	}
+}
+
 func TestYaraXStubNameIdentifiesItself(t *testing.T) {
 	s := NewYaraXScanner(nil)
 	if name := s.Name(); name != "yara-x" {

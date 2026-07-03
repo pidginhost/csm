@@ -169,6 +169,33 @@ func TestYaraXScannerNilBackendReturnsError(t *testing.T) {
 	}
 }
 
+func TestActiveYaraXScannerFollowsBackendSwap(t *testing.T) {
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	yara.SetActive(&fakeBackend{ruleCount: 0})
+	s := NewActiveYaraXScanner()
+	if s.Available() {
+		t.Fatal("precondition: zero-rule active backend should be unavailable")
+	}
+
+	b := &fakeBackend{ruleCount: 1}
+	yara.SetActive(b)
+	if !s.Available() {
+		t.Fatal("active scanner did not pick up the later YARA backend")
+	}
+
+	tmp := filepath.Join(t.TempDir(), "x.bin")
+	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(tmp); err != nil {
+		t.Fatalf("Scan with swapped active backend: %v", err)
+	}
+	if len(b.scanned) != 1 {
+		t.Fatalf("new active backend was not used, scans=%d", len(b.scanned))
+	}
+}
+
 // TestYaraXScannerErrorsWhenBackendBecomesUnavailableMidScan: when
 // ScanBytes returns no matches, the adapter must also confirm the
 // backend is still healthy. A worker crash mid-scan (RuleCount drops

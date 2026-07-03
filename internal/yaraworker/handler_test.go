@@ -11,6 +11,7 @@ import (
 type fakeScanner struct {
 	fileMatches  []yara.Match
 	bytesMatches []yara.Match
+	bytesErr     error
 	reloadErr    error
 	ruleCount    int
 
@@ -30,8 +31,16 @@ func (f *fakeScanner) ScanFile(path string, maxBytes int) []yara.Match {
 }
 
 func (f *fakeScanner) ScanBytes(data []byte) []yara.Match {
+	matches, _ := f.ScanBytesChecked(data)
+	return matches
+}
+
+func (f *fakeScanner) ScanBytesChecked(data []byte) ([]yara.Match, error) {
 	f.bytesCalls = append(f.bytesCalls, append([]byte(nil), data...))
-	return f.bytesMatches
+	if f.bytesErr != nil {
+		return nil, f.bytesErr
+	}
+	return f.bytesMatches, nil
 }
 
 func (f *fakeScanner) Reload() error {
@@ -97,6 +106,28 @@ func TestHandlerScanBytesPassesThrough(t *testing.T) {
 	}
 	if len(s.bytesCalls) != 1 || string(s.bytesCalls[0]) != string(payload) {
 		t.Errorf("scanner saw wrong payload: %q", s.bytesCalls[0])
+	}
+}
+
+func TestHandlerScanBytesSurfacesCheckedScannerError(t *testing.T) {
+	s := &fakeScanner{bytesErr: errors.New("yara scan: engine failed")}
+	h := NewHandler(s)
+
+	if _, err := h.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("payload")}); err == nil {
+		t.Fatal("ScanBytes must surface checked scanner errors to the IPC client")
+	}
+	if len(s.bytesCalls) != 1 {
+		t.Errorf("scanner calls = %d, want 1", len(s.bytesCalls))
+	}
+}
+
+func TestHandlerScanBytesFailsWhenStartupCompileFailed(t *testing.T) {
+	h := newRecoverableHandler(nil, func() (Scanner, error) {
+		return nil, errors.New("bad rule")
+	}, "bad rule at line 3")
+
+	if _, err := h.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("payload")}); err == nil {
+		t.Fatal("compile-failed nil scanner must error, not report a clean scan")
 	}
 }
 

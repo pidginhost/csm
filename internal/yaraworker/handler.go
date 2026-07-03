@@ -10,6 +10,7 @@
 package yaraworker
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/yara"
@@ -22,6 +23,7 @@ import (
 type Scanner interface {
 	ScanFile(path string, maxBytes int) []yara.Match
 	ScanBytes(data []byte) []yara.Match
+	ScanBytesChecked(data []byte) ([]yara.Match, error)
 	Reload() error
 	RuleCount() int
 }
@@ -56,26 +58,36 @@ type handler struct {
 	compileErr string
 }
 
-func (h *handler) currentScanner() Scanner {
+func (h *handler) currentState() (Scanner, string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.scanner
+	return h.scanner, h.compileErr
 }
 
 func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
-	sc := h.currentScanner()
+	sc, compileErr := h.currentState()
 	if sc == nil {
+		if compileErr != "" {
+			return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", compileErr)
+		}
 		return yaraipc.ScanResult{}, nil
 	}
 	return yaraipc.ScanResult{Matches: convertMatches(sc.ScanFile(a.Path, a.MaxBytes))}, nil
 }
 
 func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {
-	sc := h.currentScanner()
+	sc, compileErr := h.currentState()
 	if sc == nil {
+		if compileErr != "" {
+			return yaraipc.ScanResult{}, fmt.Errorf("yara scanner unavailable: %s", compileErr)
+		}
 		return yaraipc.ScanResult{}, nil
 	}
-	return yaraipc.ScanResult{Matches: convertMatches(sc.ScanBytes(a.Data))}, nil
+	matches, err := sc.ScanBytesChecked(a.Data)
+	if err != nil {
+		return yaraipc.ScanResult{}, err
+	}
+	return yaraipc.ScanResult{Matches: convertMatches(matches)}, nil
 }
 
 func (h *handler) Reload(_ yaraipc.ReloadArgs) (yaraipc.ReloadResult, error) {
