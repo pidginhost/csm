@@ -204,6 +204,9 @@ func (db *DB) ListScanJobFindings(id string, offset, limit int) ([]alert.Finding
 // the most recent result. The whole operation runs in one bolt.Update so a
 // concurrent insert cannot make the decision stale.
 func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
+	if keepJobs < 0 {
+		keepJobs = 0
+	}
 	pruned := 0
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		jb := tx.Bucket([]byte(scanJobsBucket))
@@ -241,7 +244,7 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 		keptFindings := 0
 		var delErr error
 		for _, rec := range jobs {
-			overJobCount := keepJobs > 0 && kept >= keepJobs
+			overJobCount := kept >= keepJobs
 			if overJobCount {
 				if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
 					return delErr

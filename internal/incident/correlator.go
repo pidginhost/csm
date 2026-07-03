@@ -908,6 +908,11 @@ type queuedPersist struct {
 // queuePersistLocked reserves this write's place in mutation order while
 // c.mu is still held. The returned callback must run after c.mu is released.
 func (c *Correlator) queuePersistLocked(snap Incident) (queuedPersist, bool) {
+	if snap.ID != "" {
+		// A queued full snapshot supersedes any bookkeeping-only merge that
+		// was skipped inside the debounce window.
+		delete(c.pendingPersist, snap.ID)
+	}
 	persist := c.cfg.Persist
 	if persist == nil {
 		return queuedPersist{}, false

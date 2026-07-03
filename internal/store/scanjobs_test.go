@@ -127,6 +127,40 @@ func TestPruneScanJobsFindingsVolumeCap(t *testing.T) {
 	}
 }
 
+func TestPruneScanJobsKeepZeroPrunesAllJobsAndFindings(t *testing.T) {
+	db := openTestDB(t)
+	base := time.Unix(3500, 0)
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("zero-%03d", i)
+		if err := db.PutScanJob(ScanJobRecord{
+			ID: id, Scope: "account", Target: "u", State: "done",
+			Created: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AppendScanJobFinding(id, 0, alert.Finding{Check: "webshells"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := db.PruneScanJobs(0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 3 {
+		t.Fatalf("pruned=%d, want 3", pruned)
+	}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("zero-%03d", i)
+		if _, ok, _ := db.GetScanJob(id); ok {
+			t.Fatalf("job %s survived keep=0 prune", id)
+		}
+		if _, total, err := db.ListScanJobFindings(id, 0, 1); err != nil || total != 0 {
+			t.Fatalf("job %s findings total=%d err=%v, want 0", id, total, err)
+		}
+	}
+}
+
 func TestPruneScanJobsKeepsNewestOverVolumeCapOnLargeBucket(t *testing.T) {
 	db := openTestDB(t)
 	base := time.Unix(4000, 0)

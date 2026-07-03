@@ -109,6 +109,54 @@ func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
 	}
 }
 
+func TestBulkStatusPersistClearsPendingDebounce(t *testing.T) {
+	var persisted []Incident
+	c := NewCorrelator(CorrelatorConfig{
+		Persist: func(inc Incident) { persisted = append(persisted, inc) },
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+
+	f := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.High, TenantID: "alice", Timestamp: base}
+	id, created, err := c.OnFinding(f)
+	if err != nil || !created || id == "" {
+		t.Fatalf("first finding = id %q created %v err %v, want created incident", id, created, err)
+	}
+	_, _, _ = c.OnFinding(f) // debounced bookkeeping-only merge
+	if got := len(persisted); got != 1 {
+		t.Fatalf("within window: want 1 write, got %d", got)
+	}
+
+	result, err := c.BulkSetStatus(BulkStatusFilter{
+		FromStatuses:   []Status{StatusOpen},
+		To:             StatusResolved,
+		LastSeenBefore: base.Add(time.Second),
+		Limit:          1,
+		Details:        "operator bulk close",
+		Now:            base.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Updated != 1 {
+		t.Fatalf("BulkSetStatus updated %d incidents, want 1", result.Updated)
+	}
+	if got := len(persisted); got != 2 {
+		t.Fatalf("bulk close should persist once after debounced merge, got %d writes", got)
+	}
+	last := persisted[len(persisted)-1]
+	if last.Status != StatusResolved || len(last.Timeline) != 2 {
+		t.Fatalf("bulk-persisted incident status=%s timeline=%d, want resolved with 2 events", last.Status, len(last.Timeline))
+	}
+	if flushed := c.FlushPendingPersists(); flushed != 0 {
+		t.Fatalf("FlushPendingPersists after bulk close = %d, want 0", flushed)
+	}
+	if got := len(persisted); got != 2 {
+		t.Fatalf("flush after bulk close wrote again: got %d writes, want 2", got)
+	}
+}
+
 func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
