@@ -184,6 +184,9 @@ type Correlator struct {
 	// write per incident id, used to debounce bookkeeping-only merges.
 	// Written under c.mu; cleared when the incident leaves c.incidents.
 	lastPersistAt map[string]time.Time
+	// pendingPersist records incidents whose latest bookkeeping-only merge was
+	// intentionally not written because it landed inside the debounce window.
+	pendingPersist map[string]struct{}
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -212,6 +215,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		openThreshold:         threshold,
 		now:                   time.Now,
 		lastPersistAt:         map[string]time.Time{},
+		pendingPersist:        map[string]struct{}{},
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
@@ -340,7 +344,10 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			delete(c.pending, keyStr)
 			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
 			inc := c.incidents[id]
-			c.mergeLocked(inc, f, now, true)
+			// The second finding is what satisfied the open threshold, so it
+			// is part of incident creation and must be durable even if it
+			// lands inside the bookkeeping debounce window.
+			c.mergeAndPersistLocked(inc, f, now, true)
 			if cb := c.maybeBlockIncidentLocked(inc, now, "threshold promote"); cb != nil {
 				afterUnlock = cb
 			}
@@ -620,11 +627,19 @@ func (c *Correlator) Snapshot() []Incident {
 // to seed the first finding -- in that case the create path owns the
 // "did a new incident appear" tally.
 func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, merged bool) {
+	c.mergeLockedWithPersistence(inc, f, now, merged, false)
+}
+
+func (c *Correlator) mergeAndPersistLocked(inc *Incident, f alert.Finding, now time.Time, merged bool) {
+	c.mergeLockedWithPersistence(inc, f, now, merged, true)
+}
+
+func (c *Correlator) mergeLockedWithPersistence(inc *Incident, f alert.Finding, now time.Time, merged, forcePersist bool) {
 	if merged {
 		c.counters.findingsMergedTotal.Add(1)
 	}
 	transition := c.mutateWithFindingLocked(inc, f, now)
-	c.persistAfterMergeLocked(inc, now, merged, transition)
+	c.persistAfterMergeLocked(inc, now, merged, transition || forcePersist)
 }
 
 // mutateWithFindingLocked folds f into inc and reports whether the fold caused
@@ -684,17 +699,22 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 }
 
 // persistAfterMergeLocked persists a just-merged incident. Incident creation
-// (merged==false) and any state-changing transition persist synchronously so a
-// restart never loses an open/escalate/kind-change. A pure bookkeeping merge is
-// debounced so a sustained-attack incident does not fsync its whole blob per
-// finding.
-func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merged, transition bool) {
-	if !merged || transition {
-		c.lastPersistAt[inc.ID] = now
+// (merged==false) and synchronous merge writes persist immediately so a restart
+// never loses an open/escalate/kind-change/threshold-promotion. A pure
+// bookkeeping merge is debounced so a sustained-attack incident does not fsync
+// its whole blob per finding.
+func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merged, syncPersist bool) {
+	if !merged || syncPersist {
+		c.markPersistedLocked(inc.ID, now)
 		c.persistLocked(*inc)
 		return
 	}
 	c.persistDebouncedLocked(inc, now)
+}
+
+func (c *Correlator) markPersistedLocked(id string, at time.Time) {
+	c.lastPersistAt[id] = at
+	delete(c.pendingPersist, id)
 }
 
 // persistDebouncedLocked writes inc only when at least incidentPersistDebounce
@@ -703,10 +723,38 @@ func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merge
 // Caller holds c.mu.
 func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
 	if last, ok := c.lastPersistAt[inc.ID]; ok && now.Sub(last) < incidentPersistDebounce {
+		c.pendingPersist[inc.ID] = struct{}{}
 		return
 	}
-	c.lastPersistAt[inc.ID] = now
+	c.markPersistedLocked(inc.ID, now)
 	c.persistLocked(*inc)
+}
+
+// FlushPendingPersists writes incidents whose latest bookkeeping-only merge was
+// skipped by the debounce window. It is intentionally cheap when no incidents
+// are dirty and is used by shutdown hooks before the store closes.
+func (c *Correlator) FlushPendingPersists() int {
+	var persist []queuedPersist
+	c.mu.Lock()
+	now := c.now()
+	for id := range c.pendingPersist {
+		inc, ok := c.incidents[id]
+		if !ok {
+			delete(c.pendingPersist, id)
+			delete(c.lastPersistAt, id)
+			continue
+		}
+		c.markPersistedLocked(id, now)
+		if req, ok := c.queuePersistLocked(*inc); ok {
+			persist = append(persist, req)
+		}
+	}
+	c.mu.Unlock()
+
+	for _, req := range persist {
+		c.runQueuedPersist(req)
+	}
+	return len(persist)
 }
 
 // appendCappedFingerprint appends fp to fps and trims to
@@ -947,6 +995,7 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 		inc.ClosedBy = ""
 		c.bindLocked(inc)
 	}
+	c.markPersistedLocked(id, now)
 	c.persistLocked(*inc)
 	return nil
 }
@@ -1020,6 +1069,7 @@ func (c *Correlator) CloseStaleLimited(now time.Time, idleThresholds map[Kind]ti
 		if c.spray != nil {
 			c.spray.UnbindIncident(id)
 		}
+		c.markPersistedLocked(id, now)
 		if req, ok := c.queuePersistLocked(*inc); ok {
 			persist = append(persist, req)
 		}
@@ -1053,6 +1103,7 @@ func (c *Correlator) closeIncidentLocked(inc *Incident, id string, now time.Time
 	if c.spray != nil {
 		c.spray.UnbindIncident(id)
 	}
+	c.markPersistedLocked(id, now)
 }
 
 // CloseStaleByAge is a kind-agnostic safety cap. It force-closes any Open or
@@ -1192,6 +1243,7 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 		}
 		delete(c.incidents, id)
 		delete(c.lastPersistAt, id)
+		delete(c.pendingPersist, id)
 		c.unbindLocked(id)
 		if c.spray != nil {
 			prunedIDs = append(prunedIDs, id)
@@ -1216,6 +1268,8 @@ func (c *Correlator) Restore(incidents []Incident) {
 	for i := range incidents {
 		inc := incidents[i]
 		c.incidents[inc.ID] = &inc
+		delete(c.lastPersistAt, inc.ID)
+		delete(c.pendingPersist, inc.ID)
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
 			continue
 		}
@@ -1480,6 +1534,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 				Result:  "ok",
 				Details: ip + " " + reason,
 			})
+			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
 		live = onBlock(ip, reason)
@@ -1603,6 +1658,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 				Result:  "ok",
 				Details: ip + " " + reason,
 			})
+			c.markPersistedLocked(incidentID, c.now())
 			c.persistLocked(*current)
 		}()
 		live = onSprayBlock(ip, reason)

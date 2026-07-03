@@ -76,6 +76,80 @@ func TestMergePersistsAfterDebounceWindow(t *testing.T) {
 	}
 }
 
+func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
+	var persisted []Incident
+	c := NewCorrelator(CorrelatorConfig{
+		Persist: func(inc Incident) { persisted = append(persisted, inc) },
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+
+	f := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.High, TenantID: "alice", Timestamp: base}
+	if _, created, _ := c.OnFinding(f); !created {
+		t.Fatal("first finding should open an incident")
+	}
+	_, _, _ = c.OnFinding(f) // debounced bookkeeping-only merge
+	if got := len(persisted); got != 1 {
+		t.Fatalf("within window: want 1 write, got %d", got)
+	}
+
+	if flushed := c.FlushPendingPersists(); flushed != 1 {
+		t.Fatalf("FlushPendingPersists = %d, want 1", flushed)
+	}
+	if got := len(persisted); got != 2 {
+		t.Fatalf("after flush: want 2 writes, got %d", got)
+	}
+	last := persisted[len(persisted)-1]
+	if len(last.Findings) != 2 || len(last.Timeline) != 2 {
+		t.Fatalf("flushed incident missing debounced merge: findings=%d timeline=%d", len(last.Findings), len(last.Timeline))
+	}
+	if flushed := c.FlushPendingPersists(); flushed != 0 {
+		t.Fatalf("second FlushPendingPersists = %d, want 0", flushed)
+	}
+}
+
+func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing.T) {
+	var persisted []Incident
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 2,
+		Persist:       func(inc Incident) { persisted = append(persisted, inc) },
+	})
+	base := time.Unix(1_700_000_000, 0)
+	clock := base
+	c.now = func() time.Time { return clock }
+
+	f := alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		Domain:    "example.com",
+		Timestamp: base,
+	}
+	if id, created, err := c.OnFinding(f); err != nil || created || id != "" {
+		t.Fatalf("first finding = id %q created %v err %v, want pending only", id, created, err)
+	}
+	if got := len(persisted); got != 0 {
+		t.Fatalf("pending first finding persisted %d times, want 0", got)
+	}
+
+	clock = base.Add(time.Second)
+	f.Timestamp = clock
+	f.Message = "second hit"
+	if id, created, err := c.OnFinding(f); err != nil || !created || id == "" {
+		t.Fatalf("second finding = id %q created %v err %v, want created incident", id, created, err)
+	}
+	if got := len(persisted); got != 2 {
+		t.Fatalf("threshold promotion persisted %d times, want 2", got)
+	}
+	if got := len(persisted[len(persisted)-1].Timeline); got != 2 {
+		t.Fatalf("durable threshold incident timeline length = %d, want 2", got)
+	}
+	if flushed := c.FlushPendingPersists(); flushed != 0 {
+		t.Fatalf("threshold promotion left pending flushes: got %d, want 0", flushed)
+	}
+}
+
 // TestSeverityEscalationPersistsWithinDebounceWindow proves a state-changing
 // transition (severity escalation) always persists synchronously, even when it
 // lands inside the debounce window of a prior write.
@@ -94,6 +168,9 @@ func TestSeverityEscalationPersistsWithinDebounceWindow(t *testing.T) {
 	_, _, _ = c.OnFinding(alert.Finding{Check: "outbound_connection", Severity: alert.Critical, TenantID: "alice", Timestamp: base})
 	if got := atomic.LoadInt32(&calls); got != before+1 {
 		t.Fatalf("severity escalation must persist synchronously within the debounce window: delta=%d, want 1", got-before)
+	}
+	if flushed := c.FlushPendingPersists(); flushed != 0 {
+		t.Fatalf("severity transition left pending flushes: got %d, want 0", flushed)
 	}
 }
 

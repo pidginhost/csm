@@ -67,6 +67,35 @@ func TestStopIncidentBackgroundLoopsCancelsBothLoops(t *testing.T) {
 	}
 }
 
+func TestStopIncidentBackgroundLoopsFlushesPendingIncidentPersists(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	var persisted []incident.Incident
+	c := incident.NewCorrelator(incident.CorrelatorConfig{
+		Persist: func(inc incident.Incident) { persisted = append(persisted, inc) },
+	})
+	incidentCorrelator = c
+
+	f := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()}
+	if _, created, _ := c.OnFinding(f); !created {
+		t.Fatal("first finding should open an incident")
+	}
+	_, _, _ = c.OnFinding(f) // debounced bookkeeping-only merge
+	if got := len(persisted); got != 1 {
+		t.Fatalf("before shutdown flush: want 1 write, got %d", got)
+	}
+
+	StopIncidentBackgroundLoops()
+	if got := len(persisted); got != 2 {
+		t.Fatalf("after shutdown flush: want 2 writes, got %d", got)
+	}
+	last := persisted[len(persisted)-1]
+	if len(last.Findings) != 2 || len(last.Timeline) != 2 {
+		t.Fatalf("shutdown flush missed debounced merge: findings=%d timeline=%d", len(last.Findings), len(last.Timeline))
+	}
+}
+
 func TestIncidentCorrelatorIngestsDirectFindings(t *testing.T) {
 	resetIncidentForTest()
 	c := IncidentCorrelator()

@@ -434,6 +434,11 @@ func StopIncidentBackgroundLoops() {
 		incidentAutoCloseCancel()
 		incidentAutoCloseCancel = nil
 	}
+	if incidentCorrelator != nil {
+		if flushed := incidentCorrelator.FlushPendingPersists(); flushed > 0 {
+			csmlog.Info("incident pending persists flushed", "count", flushed)
+		}
+	}
 }
 
 // resetIncidentForTest is a test seam. Stops any retention worker, zeros

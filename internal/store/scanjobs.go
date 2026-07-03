@@ -263,7 +263,7 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 					remaining = 0
 				}
 				jobFindings = countFindingRowsUpTo(fb, rec.ID, remaining+1)
-				if kept >= 1 && keptFindings+jobFindings > maxTotalFindings {
+				if kept >= 1 && jobFindings > 0 && keptFindings+jobFindings > maxTotalFindings {
 					if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
 						return delErr
 					}
