@@ -29,7 +29,9 @@ var legacyOperatorReasonPrefixes = []string{
 }
 
 // PermanentBlockEntry represents an IP blocked by the threat system.
-// A zero ExpiresAt with a non-empty Source means the row never expires.
+// A zero ExpiresAt on an operator row means the row never expires. Auto-block
+// rows must carry a real expiry; a zero expiry is treated as lapsed so it
+// cannot become permanent reputation evidence.
 type PermanentBlockEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
@@ -44,6 +46,9 @@ type PermanentBlockEntry struct {
 // temporary auto-block path and keeping them alive re-creates the
 // permablock loop on upgraded hosts.
 func (e PermanentBlockEntry) Expired(now time.Time) bool {
+	if e.Source == ThreatSourceAutoBlock && e.ExpiresAt.IsZero() {
+		return true
+	}
 	if !e.ExpiresAt.IsZero() {
 		return !e.ExpiresAt.After(now)
 	}
@@ -80,11 +85,15 @@ func (db *DB) AddPermanentBlock(ip, reason string) error {
 
 // AddTempBlock records an auto-blocked IP with an expiry matching the
 // firewall block, so the entry lapses together with the block instead of
-// flagging the IP forever. A zero expiresAt mirrors a never-expiring block.
+// flagging the IP forever. A zero expiresAt is deliberately ignored: an
+// auto-block-sourced threat row must never become permanent evidence.
 // Never downgrades an existing permanent row, and never shortens a longer
 // temp expiry already on file. Only increments threats:count if the key is
 // new.
 func (db *DB) AddTempBlock(ip, reason string, expiresAt time.Time) error {
+	if expiresAt.IsZero() {
+		return nil
+	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))
 
@@ -218,9 +227,8 @@ func (db *DB) RemovePermanentBlock(ip string) error {
 // RemoveAutoBlock deletes the threat row for ip only when it was written by
 // the temporary auto-block path (Source == autoblock). Operator rows and
 // legacy no-source rows are left untouched, so a firewall-only unblock never
-// silently clears an operator's deliberate permanent block. Under
-// block_expiry:0 an auto-block row has no expiry and would otherwise outlive
-// the firewall block and keep re-flagging the IP via ip_reputation. Returns
+// silently clears an operator's deliberate permanent block. Stale auto-block
+// rows would otherwise keep re-flagging the IP via ip_reputation. Returns
 // whether a row was removed. The read and delete run in one transaction so a
 // concurrent upgrade to an operator row cannot be clobbered.
 func (db *DB) RemoveAutoBlock(ip string) (bool, error) {

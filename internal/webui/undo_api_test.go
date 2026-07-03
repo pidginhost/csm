@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -238,6 +239,65 @@ func TestUndoRunWritesAuditEntry(t *testing.T) {
 	if !found {
 		t.Fatalf("expected audit entry for undo, got %+v (audit path=%s)",
 			entries, filepath.Join(s.cfg.StatePath, uiAuditFile))
+	}
+}
+
+func TestUndoRunBulkWhitelistLegacyPayloadWithoutRestoreThreats(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	blocker := newFullBlocker()
+	blocker.allowed["203.0.113.60"] = "CSM bulk whitelist"
+	s.blocker = blocker
+
+	tdb := checks.GetThreatDB()
+	tdb.AddWhitelist("203.0.113.60")
+
+	id := s.recordUndoEntry(bearerRequest("POST", "/api/v1/undo/run", nil),
+		"threat_bulk_whitelist", undoInverseThreatWhitelist,
+		"Whitelisted 1 IP", undoPayloadIPs{IPs: []string{"203.0.113.60"}})
+
+	body, _ := json.Marshal(undoRunRequest{ID: id})
+	rec := httptest.NewRecorder()
+	s.apiUndoRun(rec, bearerRequest("POST", "/api/v1/undo/run", body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := blocker.allowed["203.0.113.60"]; ok {
+		t.Fatal("legacy undo left firewall allow rule in place")
+	}
+	if store.Global().IsWhitelisted("203.0.113.60") {
+		t.Fatal("legacy undo left whitelist entry in place")
+	}
+}
+
+func TestUndoBulkWhitelistSkipsExpiredRestoreThreat(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+
+	ip := "203.0.113.61"
+	id := s.recordUndoEntry(bearerRequest("POST", "/api/v1/undo/run", nil),
+		"threat_bulk_whitelist", undoInverseThreatWhitelist,
+		"Whitelisted 1 IP", undoPayloadIPs{
+			IPs: []string{ip},
+			RestoreThreats: []undoThreatRow{{
+				IP:        ip,
+				Reason:    "web attack",
+				Source:    store.ThreatSourceAutoBlock,
+				ExpiresAt: time.Now().Add(-time.Minute),
+			}},
+		})
+
+	body, _ := json.Marshal(undoRunRequest{ID: id})
+	rec := httptest.NewRecorder()
+	s.apiUndoRun(rec, bearerRequest("POST", "/api/v1/undo/run", body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := checks.GetThreatDB().Lookup(ip); ok {
+		t.Fatal("undo restored an expired auto-block threat")
+	}
+	if _, found := store.Global().GetPermanentBlock(ip); found {
+		t.Fatal("expired auto-block threat was resurrected in store")
 	}
 }
 

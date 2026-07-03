@@ -10,7 +10,7 @@ import (
 
 // TestRemoveAutoBlockDeletesOnlyAutoBlockRows pins STO-18: an operator
 // unblock must clear a temporary auto-block threat row (so ip_reputation
-// stops re-flagging the IP under block_expiry:0), but must never delete an
+// stops re-flagging the IP after stale rows), but must never delete an
 // operator permanent block or a legacy no-source row.
 func TestRemoveAutoBlockDeletesOnlyAutoBlockRows(t *testing.T) {
 	db, err := Open(t.TempDir())
@@ -19,9 +19,10 @@ func TestRemoveAutoBlockDeletesOnlyAutoBlockRows(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Auto-block row with no expiry: the block_expiry:0 permablock case.
-	if err := db.AddTempBlock("192.0.2.10", "web_attack", time.Time{}); err != nil {
-		t.Fatalf("AddTempBlock(no-expiry): %v", err)
+	// Historical buggy auto-block row with no expiry: newer code must not
+	// create this, but RemoveAutoBlock should still be able to clean it up.
+	if err := seedRawAutoBlockThreatRow(db, "192.0.2.10", "web_attack", time.Time{}); err != nil {
+		t.Fatalf("seed no-expiry auto-block row: %v", err)
 	}
 	// Auto-block row with a future expiry.
 	if err := db.AddTempBlock("192.0.2.11", "web_attack", time.Now().Add(time.Hour)); err != nil {
@@ -78,6 +79,44 @@ func TestRemoveAutoBlockDeletesOnlyAutoBlockRows(t *testing.T) {
 	if count := db.getCounter("threats:count"); count != 2 {
 		t.Fatalf("threats:count after removals = %d, want 2", count)
 	}
+}
+
+func TestAddTempBlockRejectsNoExpiryAutoBlockRows(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := db.AddTempBlock("192.0.2.20", "web_attack", time.Time{}); err != nil {
+		t.Fatalf("AddTempBlock(no-expiry): %v", err)
+	}
+	if _, found := db.GetPermanentBlock("192.0.2.20"); found {
+		t.Fatal("AddTempBlock created a never-expiring auto-block row")
+	}
+	if count := db.getCounter("threats:count"); count != 0 {
+		t.Fatalf("threats:count = %d, want 0", count)
+	}
+}
+
+func seedRawAutoBlockThreatRow(db *DB, ip, reason string, expiresAt time.Time) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("threats"))
+		val, err := json.Marshal(PermanentBlockEntry{
+			IP:        ip,
+			Reason:    reason,
+			BlockedAt: time.Now(),
+			Source:    ThreatSourceAutoBlock,
+			ExpiresAt: expiresAt,
+		})
+		if err != nil {
+			return err
+		}
+		if err := b.Put([]byte(ip), val); err != nil {
+			return err
+		}
+		return incrCounter(tx, "threats:count", 1)
+	})
 }
 
 // seedRawThreatRow writes a threat row with no Source tag, mimicking a

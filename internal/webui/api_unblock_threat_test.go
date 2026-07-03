@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -19,7 +20,7 @@ func TestAPIUnblockIPDropsAutoBlockThreatRow(t *testing.T) {
 	s.blocker = newFullBlocker()
 
 	tdb := checks.GetThreatDB()
-	tdb.AddTemporary("203.0.113.20", "web_attack", 0)
+	tdb.AddTemporary("203.0.113.20", "web_attack", time.Hour)
 	tdb.AddPermanent("203.0.113.21", "operator block")
 
 	for _, ip := range []string{"203.0.113.20", "203.0.113.21"} {
@@ -52,8 +53,8 @@ func TestAPIUnblockBulkDropsAutoBlockThreatRows(t *testing.T) {
 	s.blocker = newFullBlocker()
 
 	tdb := checks.GetThreatDB()
-	tdb.AddTemporary("203.0.113.30", "web_attack", 0)
-	tdb.AddTemporary("203.0.113.31", "mail_bruteforce", 0)
+	tdb.AddTemporary("203.0.113.30", "web_attack", time.Hour)
+	tdb.AddTemporary("203.0.113.31", "mail_bruteforce", time.Hour)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/",

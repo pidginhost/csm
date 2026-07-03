@@ -310,12 +310,12 @@ func (s *Server) undoBulkWhitelist(payload undoPayloadIPs) int {
 			continue
 		}
 		if row.Source == store.ThreatSourceAutoBlock {
-			var ttl time.Duration
-			if !row.ExpiresAt.IsZero() {
-				ttl = time.Until(row.ExpiresAt)
-				if ttl <= 0 {
-					continue // already lapsed; nothing worth restoring
-				}
+			if row.ExpiresAt.IsZero() {
+				continue
+			}
+			ttl := time.Until(row.ExpiresAt)
+			if ttl <= 0 {
+				continue // already lapsed; nothing worth restoring
 			}
 			tdb.AddTemporary(row.IP, row.Reason, ttl)
 		} else {

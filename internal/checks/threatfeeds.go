@@ -183,12 +183,13 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 // block. Unlike AddPermanent the entry lapses with the block: a permanent
 // record turned every temporary auto-block into a forever "known malicious
 // IP" that re-flagged (and re-blocked) the address on each later access.
-// ttl <= 0 mirrors a never-expiring block.
+// ttl <= 0 is ignored because auto-block evidence must never become a
+// never-expiring threat row.
 func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
-	var expiresAt time.Time
-	if ttl > 0 {
-		expiresAt = time.Now().Add(ttl)
+	if ttl <= 0 {
+		return
 	}
+	expiresAt := time.Now().Add(ttl)
 
 	db.mu.Lock()
 	if _, exists := db.badIPs[ip]; exists {
@@ -199,18 +200,14 @@ func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
 			db.mu.Unlock()
 			return
 		}
-		if time.Now().Before(cur) && !expiresAt.IsZero() && cur.After(expiresAt) {
+		if time.Now().Before(cur) && cur.After(expiresAt) {
 			// Keep the longer live window; re-blocks extend, never truncate.
 			db.mu.Unlock()
 			return
 		}
 	}
 	db.badIPs[ip] = reason
-	if expiresAt.IsZero() {
-		delete(db.badIPExpiry, ip)
-	} else {
-		db.badIPExpiry[ip] = expiresAt
-	}
+	db.badIPExpiry[ip] = expiresAt
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {
@@ -222,11 +219,31 @@ func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
 	// block itself across restarts.
 }
 
+// RemoveTemporary removes only temporary auto-block evidence for ip. It leaves
+// operator/local permanent evidence untouched and restores feed ownership when
+// the IP is independently present in a threat feed.
+func (db *ThreatDB) RemoveTemporary(ip string) {
+	db.mu.Lock()
+	if _, isTemp := db.badIPExpiry[ip]; isTemp {
+		delete(db.badIPExpiry, ip)
+		if feed, ok := db.feedSourceLocked(ip); ok {
+			db.badIPs[ip] = feed
+		} else {
+			delete(db.badIPs, ip)
+		}
+	}
+	db.mu.Unlock()
+}
+
 // RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
 func (db *ThreatDB) RemovePermanent(ip string) {
 	db.mu.Lock()
-	delete(db.badIPs, ip)
 	delete(db.badIPExpiry, ip)
+	if feed, ok := db.feedSourceLocked(ip); ok {
+		db.badIPs[ip] = feed
+	} else {
+		delete(db.badIPs, ip)
+	}
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {

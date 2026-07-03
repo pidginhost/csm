@@ -20,8 +20,8 @@ import (
 // dropAutoBlockThreatRow removes the auto-block threat row for ip after an
 // operator unblock. Operator permanent blocks are left in place: a
 // firewall-only unblock must not silently clear a deliberate block. Under
-// block_expiry:0 an auto-block row has no expiry, so without this it outlives
-// the firewall block and ip_reputation re-flags the IP into a new block loop.
+// older builds a stale auto-block row could outlive the firewall block and
+// ip_reputation would re-flag the IP into a new block loop.
 func dropAutoBlockThreatRow(ip string) {
 	sdb := store.Global()
 	if sdb == nil {
@@ -32,7 +32,7 @@ func dropAutoBlockThreatRow(ip string) {
 		return
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
-		tdb.RemovePermanent(ip)
+		tdb.RemoveTemporary(ip)
 	}
 }
 

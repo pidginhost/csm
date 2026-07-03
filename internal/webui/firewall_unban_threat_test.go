@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -32,7 +33,7 @@ func TestAPIFirewallUnbanDropsAutoBlockThreatRow(t *testing.T) {
 	s.blocker = newFullBlocker()
 
 	tdb := checks.GetThreatDB()
-	tdb.AddTemporary("203.0.113.7", "web_attack", 0) // block_expiry:0 auto-block
+	tdb.AddTemporary("203.0.113.7", "web_attack", time.Hour)
 	tdb.AddPermanent("203.0.113.8", "operator block")
 
 	postUnban(t, s, "203.0.113.7")

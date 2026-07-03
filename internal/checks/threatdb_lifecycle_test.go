@@ -64,6 +64,23 @@ func TestThreatDBAddTemporaryPersistsExpiringEntry(t *testing.T) {
 	}
 }
 
+func TestThreatDBAddTemporarySkipsNonPositiveTTL(t *testing.T) {
+	withTestThreatStore(t)
+	db := newTestThreatDB(t)
+
+	db.AddTemporary("192.0.2.50", "web attack", 0)
+	db.AddTemporary("192.0.2.51", "web attack", -time.Second)
+
+	for _, ip := range []string{"192.0.2.50", "192.0.2.51"} {
+		if _, ok := db.Lookup(ip); ok {
+			t.Fatalf("non-positive TTL auto-block %s became reputation evidence", ip)
+		}
+		if _, found := store.Global().GetPermanentBlock(ip); found {
+			t.Fatalf("non-positive TTL auto-block %s persisted to store", ip)
+		}
+	}
+}
+
 func TestThreatDBAddTemporaryKeepsStrongerEvidence(t *testing.T) {
 	withTestThreatStore(t)
 	db := newTestThreatDB(t)
@@ -84,6 +101,41 @@ func TestThreatDBAddTemporaryKeepsStrongerEvidence(t *testing.T) {
 	}
 }
 
+func TestThreatDBRemoveTemporaryLeavesOperatorUpgrade(t *testing.T) {
+	withTestThreatStore(t)
+	db := newTestThreatDB(t)
+
+	db.AddTemporary("192.0.2.52", "web attack", time.Hour)
+	db.AddPermanent("192.0.2.52", "operator block")
+	db.RemoveTemporary("192.0.2.52")
+
+	if src, ok := db.Lookup("192.0.2.52"); !ok || src != "operator block" {
+		t.Fatalf("operator upgrade clobbered by temp cleanup: (%q, %v)", src, ok)
+	}
+	entry, found := store.Global().GetPermanentBlock("192.0.2.52")
+	if !found || entry.Source != store.ThreatSourceOperator {
+		t.Fatalf("operator store row not intact: found=%v entry=%+v", found, entry)
+	}
+}
+
+func TestThreatDBRemoveTemporaryFallsBackToFeedEvidence(t *testing.T) {
+	db := newTestThreatDB(t)
+	ip := "192.0.2.53"
+	db.AddTemporary(ip, "web attack", time.Hour)
+	db.feedIPs = map[string]map[string]struct{}{
+		"cins-army": {ip: {}},
+	}
+
+	db.RemoveTemporary(ip)
+
+	if src, ok := db.Lookup(ip); !ok || src != "cins-army" {
+		t.Fatalf("feed evidence hidden after temp cleanup: (%q, %v)", src, ok)
+	}
+	if _, ok := db.badIPExpiry[ip]; ok {
+		t.Fatal("temporary expiry survived cleanup")
+	}
+}
+
 func TestThreatDBRemovePermanentClearsExpiry(t *testing.T) {
 	withTestThreatStore(t)
 	db := newTestThreatDB(t)
@@ -96,6 +148,21 @@ func TestThreatDBRemovePermanentClearsExpiry(t *testing.T) {
 	}
 	if _, ok := db.badIPExpiry["192.0.2.43"]; ok {
 		t.Fatal("expiry metadata survived RemovePermanent")
+	}
+}
+
+func TestThreatDBRemovePermanentFallsBackToFeedEvidence(t *testing.T) {
+	db := newTestThreatDB(t)
+	ip := "192.0.2.54"
+	db.badIPs[ip] = "operator block"
+	db.feedIPs = map[string]map[string]struct{}{
+		"cins-army": {ip: {}},
+	}
+
+	db.RemovePermanent(ip)
+
+	if src, ok := db.Lookup(ip); !ok || src != "cins-army" {
+		t.Fatalf("feed evidence hidden after permanent removal: (%q, %v)", src, ok)
 	}
 }
 

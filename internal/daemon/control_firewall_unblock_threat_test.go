@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -21,8 +22,7 @@ func TestDropAutoBlockThreatRowClearsAutoBlockOnly(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
 
 	tdb := checks.GetThreatDB()
-	// block_expiry:0 auto-block: no expiry, so it never lapses on its own.
-	tdb.AddTemporary("192.0.2.10", "web_attack", 0)
+	tdb.AddTemporary("192.0.2.10", "web_attack", time.Hour)
 	// Operator permanent block.
 	tdb.AddPermanent("192.0.2.12", "operator block")
 
