@@ -28,9 +28,6 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	if !dovecotLoginSucceeded(line) {
 		return nil
 	}
-	if !strings.Contains(line, "dovecot:") {
-		return nil
-	}
 
 	user, ip := parseDovecotLoginFields(line)
 	if user == "" || ip == "" {

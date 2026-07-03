@@ -1143,8 +1143,13 @@ func isMailAuthLine(line string) bool {
 // accept BOTH; keying each consumer off a different single marker left one of
 // them silently dead on whichever format the deployment happened to use.
 func dovecotLoginSucceeded(line string) bool {
-	return strings.Contains(line, "-login: Logged in") ||
-		strings.Contains(line, "-login: Login: user=<")
+	msg := dovecotServiceMessage(line)
+	return strings.HasPrefix(msg, "imap-login: Logged in: user=<") ||
+		strings.HasPrefix(msg, "imap-login: Login: user=<") ||
+		strings.HasPrefix(msg, "pop3-login: Logged in: user=<") ||
+		strings.HasPrefix(msg, "pop3-login: Login: user=<") ||
+		strings.HasPrefix(msg, "managesieve-login: Logged in: user=<") ||
+		strings.HasPrefix(msg, "managesieve-login: Login: user=<")
 }
 
 // extractMailLoginEvent parses a dovecot login line and returns

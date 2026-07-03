@@ -21,6 +21,11 @@ func TestDovecotLoginSucceeded_AcceptsBothFormats(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "production format with pid tag",
+			line: `Apr 14 12:00:05 host dovecot[1234]: imap-login: Logged in: user=<alice@example.com>, method=PLAIN, rip=203.0.113.5, TLS`,
+			want: true,
+		},
+		{
 			name: "classic Login format",
 			line: `Apr 14 12:00:05 host dovecot: imap-login: Login: user=<alice@example.com>, method=PLAIN, rip=203.0.113.5, lip=192.0.2.1`,
 			want: true,
@@ -41,6 +46,11 @@ func TestDovecotLoginSucceeded_AcceptsBothFormats(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "auth-failure username cannot spoof success marker",
+			line: `Apr 14 12:00:08 host dovecot: imap-login: Aborted login (auth failed, 1 attempts): user=<dave-login: Logged in@example.com>, rip=203.0.113.7`,
+			want: false,
+		},
+		{
 			name: "disconnect is not a success",
 			line: `Apr 14 12:00:00 host dovecot: imap-login: Disconnected (no auth attempts)`,
 			want: false,
@@ -57,6 +67,14 @@ func TestDovecotLoginSucceeded_AcceptsBothFormats(t *testing.T) {
 				t.Errorf("dovecotLoginSucceeded(%q) = %v, want %v", tc.line, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractMailLoginEvent_UserCannotSpoofSuccessMarker(t *testing.T) {
+	line := `Apr 14 12:00:08 host dovecot: imap-login: Aborted login (auth failed, 1 attempts): user=<dave-login: Logged in@example.com>, method=PLAIN, rip=203.0.113.7, lip=192.0.2.1`
+	ip, account, success := extractMailLoginEvent(line)
+	if ip != "203.0.113.7" || account != "dave-login: Logged in@example.com" || success {
+		t.Errorf("got (%q, %q, %v), want (203.0.113.7, dave-login: Logged in@example.com, false)", ip, account, success)
 	}
 }
 
