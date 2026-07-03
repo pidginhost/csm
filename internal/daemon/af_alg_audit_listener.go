@@ -44,6 +44,7 @@ type AFAlgAuditListener struct {
 	pos             int64
 	leftover        []byte // partial line accumulator across reads
 	droppedOversize bool   // mid-drop of a line that overflowed the cap
+	cursorAnchor    []byte // bytes immediately before pos, used to detect copytruncate rewrites
 
 	// Re-open retry state. A rotation (or a broken inotify fd) sets
 	// reopenPending; each tick retries open() once its backoff has elapsed,
@@ -78,6 +79,13 @@ func nextAFAlgReopenBackoff(cur time.Duration) time.Duration {
 // SYSCALL record is well under 1 KiB; 64 KiB leaves generous headroom while
 // bounding memory if a record never terminates.
 const afAlgMaxLeftoverBytes = 64 * 1024
+
+// afAlgCursorAnchorBytes is the suffix length remembered at the current read
+// cursor. On each tail tick the listener verifies those bytes still sit before
+// pos; if copytruncate rewrote the file past the old cursor between ticks, the
+// anchor no longer matches and the listener resets to offset 0 instead of
+// skipping the fresh records.
+const afAlgCursorAnchorBytes = 64
 
 // Mode reports the live-monitor backend kind. Matches the BPF path's
 // "bpf-lsm" return so the coordinator and operator-visible logs use a
@@ -150,6 +158,7 @@ func (l *AFAlgAuditListener) open() error {
 	l.inotifyFd = fd
 	l.leftover = nil
 	l.droppedOversize = false
+	l.refreshCursorAnchor()
 	l.reopenPending = false
 	l.reopenBackoff = 0
 	l.reopenNotBefore = time.Time{}
@@ -281,31 +290,93 @@ func (l *AFAlgAuditListener) drainInotify(buf []byte) (rotated, ok bool) {
 // each complete line to handleLine. Partial trailing bytes (no newline
 // yet) are buffered in l.leftover for the next tick.
 func (l *AFAlgAuditListener) tail(buf []byte) {
-	// Detect in-place truncation (copytruncate logrotate, or a manual
-	// truncate). When the file shrinks below our read cursor, seeking forward
-	// would skip the content rewritten from offset 0 and the listener would go
-	// blind. Reset to the start and drop any partial-line state from the old
-	// content so the fresh file is tailed cleanly.
-	if fi, err := l.file.Stat(); err == nil && fi.Size() < l.pos {
-		l.pos = 0
-		l.leftover = nil
-		l.droppedOversize = false
-	}
-	if _, err := l.file.Seek(l.pos, 0); err != nil {
-		csmlog.Warn("af_alg audit listener: seek failed", "err", err)
-		return
-	}
 	for {
-		n, err := l.file.Read(buf)
-		if n > 0 {
-			l.feed(buf[:n])
-			l.pos += int64(n)
+		// Detect in-place truncation (copytruncate logrotate, or a manual
+		// truncate). When the file shrinks below our read cursor, seeking
+		// forward would skip the content rewritten from offset 0 and the
+		// listener would go blind. Size alone misses a fast truncate+rewrite
+		// that grows past the old cursor before this tick, so verify the
+		// cursor anchor too.
+		if fi, err := l.file.Stat(); err == nil {
+			switch {
+			case fi.Size() < l.pos:
+				l.resetTailCursor()
+			case l.cursorAnchorChanged():
+				l.resetTailCursor()
+			}
 		}
-		if err != nil {
-			// io.EOF or EAGAIN: out of data for this tick.
+
+		verifiedPos := l.pos
+		verifiedAnchor := append([]byte(nil), l.cursorAnchor...)
+		if _, err := l.file.Seek(l.pos, 0); err != nil {
+			csmlog.Warn("af_alg audit listener: seek failed", "err", err)
 			return
 		}
+		for {
+			n, err := l.file.Read(buf)
+			if n > 0 {
+				if l.cursorAnchorChangedAt(verifiedPos, verifiedAnchor) {
+					l.resetTailCursor()
+					break
+				}
+				l.feed(buf[:n])
+				l.pos += int64(n)
+			}
+			if err != nil {
+				if l.cursorAnchorChangedAt(verifiedPos, verifiedAnchor) {
+					l.resetTailCursor()
+					break
+				}
+				// io.EOF or EAGAIN: out of data for this tick.
+				l.refreshCursorAnchor()
+				return
+			}
+		}
 	}
+}
+
+func (l *AFAlgAuditListener) resetTailCursor() {
+	l.pos = 0
+	l.leftover = nil
+	l.droppedOversize = false
+	l.cursorAnchor = nil
+}
+
+func (l *AFAlgAuditListener) cursorAnchorChanged() bool {
+	return l.cursorAnchorChangedAt(l.pos, l.cursorAnchor)
+}
+
+func (l *AFAlgAuditListener) cursorAnchorChangedAt(pos int64, anchor []byte) bool {
+	if l.file == nil || pos <= 0 || len(anchor) == 0 {
+		return false
+	}
+	if int64(len(anchor)) > pos {
+		return true
+	}
+	buf := make([]byte, len(anchor))
+	n, err := l.file.ReadAt(buf, pos-int64(len(buf)))
+	if err != nil || n != len(buf) {
+		return true
+	}
+	return !bytes.Equal(buf, anchor)
+}
+
+func (l *AFAlgAuditListener) refreshCursorAnchor() {
+	if l.file == nil || l.pos <= 0 {
+		l.cursorAnchor = nil
+		return
+	}
+	n := afAlgCursorAnchorBytes
+	if l.pos < int64(n) {
+		n = int(l.pos)
+	}
+	buf := make([]byte, n)
+	read, err := l.file.ReadAt(buf, l.pos-int64(n))
+	if err != nil || read != n {
+		l.cursorAnchor = nil
+		return
+	}
+	l.cursorAnchor = buf
 }
 
 // feed appends a chunk of audit-log bytes to the leftover buffer and

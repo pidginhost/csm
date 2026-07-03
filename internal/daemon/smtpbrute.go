@@ -142,7 +142,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	e.times = append(e.times, now)
 	e.lastSeen = now
 
-	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) && !degraded {
+	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) && !degraded {
 		e.suppressed = now.Add(t.suppression)
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
@@ -166,7 +166,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		s.ips[ip] = now
 		s.lastSeen = now
 
-		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
+		if t.subnetThreshold > 0 && len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
 			s.suppressed = now.Add(t.suppression)
 			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{
@@ -192,7 +192,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		a.ips[ip] = now
 		a.lastSeen = now
 
-		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
+		if t.accountSprayThreshold > 0 && len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
 			a.suppressed = now.Add(t.suppression)
 			_, acctDomain := alert.SplitEmail(account)
 			findings = append(findings, alert.Finding{

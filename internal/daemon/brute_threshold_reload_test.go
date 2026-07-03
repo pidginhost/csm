@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +62,36 @@ func TestMailAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 	f := tr.Record(ip, "victim@example.com")
 	if !hasCheckFinding(f, "mail_bruteforce") {
 		t.Fatalf("mail_bruteforce did not fire after lowering threshold to 5; got %+v", f)
+	}
+}
+
+func TestSMTPAuthTrackerSetThresholdsZeroDisablesSignals(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, clk)
+	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 10000)
+
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+		for i := 0; i < 3; i++ {
+			if got := tr.Record(ip, "victim@example.com"); len(got) != 0 {
+				t.Fatalf("disabled SMTP auth thresholds emitted findings: %+v", got)
+			}
+		}
+	}
+}
+
+func TestMailAuthTrackerSetThresholdsZeroDisablesSignals(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, clk)
+	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 10000)
+
+	for _, ip := range []string{"203.0.113.4", "203.0.113.5", "203.0.113.6"} {
+		for i := 0; i < 3; i++ {
+			if got := tr.Record(ip, "victim@example.com"); len(got) != 0 {
+				t.Fatalf("disabled mail auth thresholds emitted findings: %+v", got)
+			}
+		}
 	}
 }
 
@@ -142,6 +173,64 @@ func TestReconcileBruteThresholdsPushesConfigIntoTrackers(t *testing.T) {
 	}
 	if !probeFired {
 		t.Error("smtp probe tracker did not adopt the reloaded threshold")
+	}
+}
+
+func TestReloadConfigPushesBruteThresholdsIntoAllTrackers(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	orig := hotReloadThresholdConfig()
+	orig.Hostname = "host-a"
+	orig.Thresholds.SMTPBruteForceThreshold = 50
+	orig.Thresholds.MailBruteForceThreshold = 50
+	orig.Thresholds.SMTPProbeThreshold = 10000
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load seeded config: %v", err)
+	}
+	prev := config.Active()
+	config.SetActive(loaded)
+	t.Cleanup(func() {
+		config.SetActive(prev)
+		SetAccountExtractor(nil)
+	})
+
+	d := New(loaded, nil, nil, "")
+	for i := 0; i < 4; i++ {
+		if got := d.smtpAuthTracker.Record("203.0.113.30", ""); len(got) != 0 {
+			t.Fatalf("smtp auth fired before reload: %+v", got)
+		}
+		if got := d.mailAuthTracker.Record("203.0.113.31", "victim@example.com"); len(got) != 0 {
+			t.Fatalf("mail auth fired before reload: %+v", got)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		if got := d.smtpProbeTracker.Record("203.0.113.32"); len(got) != 0 {
+			t.Fatalf("smtp probe fired before reload: %+v", got)
+		}
+	}
+
+	edited := hotReloadThresholdConfig()
+	edited.Hostname = "host-a"
+	edited.Thresholds.SMTPBruteForceSubnetThresh = 64
+	edited.Thresholds.SMTPProbeThreshold = 10
+	edited.Thresholds.MailBruteForceSubnetThresh = 64
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+
+	d.reloadConfig()
+
+	if got := d.smtpAuthTracker.Record("203.0.113.30", ""); !hasCheckFinding(got, "smtp_bruteforce") {
+		t.Fatalf("reload did not push smtp auth threshold; got %+v", got)
+	}
+	if got := d.mailAuthTracker.Record("203.0.113.31", "victim@example.com"); !hasCheckFinding(got, "mail_bruteforce") {
+		t.Fatalf("reload did not push mail auth threshold; got %+v", got)
+	}
+	if got := d.smtpProbeTracker.Record("203.0.113.32"); !hasCheckFinding(got, "smtp_probe_abuse") {
+		t.Fatalf("reload did not push smtp probe threshold; got %+v", got)
 	}
 }
 

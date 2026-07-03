@@ -495,7 +495,8 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 		// The metadataSize bounds check above guarantees we have enough
 		// bytes for the struct.
 		event := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
-		if event.EventLen < uint32(metadataSize) {
+		eventLen := int(event.EventLen)
+		if eventLen < metadataSize || offset+eventLen > len(buf) {
 			break
 		}
 
@@ -505,7 +506,7 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 			fm.handleEvent(int(event.Fd), event.Pid)
 		}
 
-		offset += int(event.EventLen)
+		offset += eventLen
 	}
 }
 

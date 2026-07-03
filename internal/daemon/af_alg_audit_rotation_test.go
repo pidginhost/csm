@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,63 @@ func TestAFAlgTailResetsOnTruncation(t *testing.T) {
 	l.tail(readBuf)
 	if l.EventCount() != 2 {
 		t.Fatalf("EventCount = %d, want 2 after post-truncation write", l.EventCount())
+	}
+}
+
+func TestAFAlgTailDetectsCopytruncateRewritePastOldCursor(t *testing.T) {
+	path, appendLine := withAuditLog(t)
+	l, err := NewAFAlgAuditListener(make(chan alert.Finding, 4), &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBuf := make([]byte, 16*1024)
+
+	appendLine(sampleAFAlgLine)
+	l.tail(readBuf)
+	if l.EventCount() != 1 {
+		t.Fatalf("EventCount = %d, want 1 after first tail", l.EventCount())
+	}
+	oldPos := l.pos
+
+	rewritten := sampleAFAlgLine + "\n" + strings.Repeat("# filler\n", int(oldPos/8)+32)
+	if int64(len(rewritten)) <= oldPos {
+		t.Fatalf("test rewrite size %d must exceed old cursor %d", len(rewritten), oldPos)
+	}
+	if err := os.WriteFile(path, []byte(rewritten), 0o600); err != nil {
+		t.Fatalf("copytruncate rewrite: %v", err)
+	}
+
+	l.tail(readBuf)
+	if l.EventCount() != 2 {
+		t.Fatalf("EventCount = %d, want 2 after copytruncate rewrite past old cursor", l.EventCount())
+	}
+}
+
+func TestAFAlgCursorAnchorDetectsTruncateBeforeReadEOF(t *testing.T) {
+	path, appendLine := withAuditLog(t)
+	l, err := NewAFAlgAuditListener(make(chan alert.Finding, 4), &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBuf := make([]byte, 16*1024)
+
+	appendLine(sampleAFAlgLine)
+	l.tail(readBuf)
+	oldPos := l.pos
+	oldAnchor := append([]byte(nil), l.cursorAnchor...)
+	if oldPos == 0 || len(oldAnchor) == 0 {
+		t.Fatalf("tail did not establish cursor anchor: pos=%d anchor=%d", oldPos, len(oldAnchor))
+	}
+
+	rewritten := []byte("# rewritten below old cursor\n")
+	if int64(len(rewritten)) >= oldPos {
+		t.Fatalf("test rewrite size %d must stay below old cursor %d", len(rewritten), oldPos)
+	}
+	if err := os.WriteFile(path, rewritten, 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if !l.cursorAnchorChangedAt(oldPos, oldAnchor) {
+		t.Fatal("cursor anchor did not detect truncation below the old cursor")
 	}
 }
 

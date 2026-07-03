@@ -639,7 +639,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	e.failedAccounts = appendMailAccountTime(e.failedAccounts, account, now)
 	e.lastSeen = now
 
-	if len(e.times) >= t.perIPThreshold {
+	if t.perIPThreshold > 0 && len(e.times) >= t.perIPThreshold {
 		e.succ = pruneTimes(e.succ, cutoff)
 		pruneMailAccountTimes(e.successAccounts, cutoff)
 		if !e.successDominant() && !degraded {
@@ -707,7 +707,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		s.ips[ip] = now
 		s.lastSeen = now
 
-		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
+		if t.subnetThreshold > 0 && len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
 			s.suppressed = now.Add(t.suppression)
 			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{
@@ -737,7 +737,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		a.ips[ip] = now
 		a.lastSeen = now
 
-		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
+		if t.accountSprayThreshold > 0 && len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
 			a.suppressed = now.Add(t.suppression)
 			_, acctDomain := alert.SplitEmail(account)
 			findings = append(findings, alert.Finding{
