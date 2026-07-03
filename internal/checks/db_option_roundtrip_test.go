@@ -15,10 +15,10 @@ import (
 // corrupts the value and breaks PHP-serialized length prefixes.
 func TestReadOptionValue_UnescapesBatchOutput(t *testing.T) {
 	// s:11 counts the real newline byte between "line1" and "line2".
-	original := "a:1:{s:3:\"css\";s:11:\"line1\nline2\";}"
+	original := "  a:1:{s:3:\"css\";s:11:\"line1\nline2\";}  "
 	// What `mysql -N -B` / mysqlclient hand back for that value: the newline
 	// rendered as a literal backslash-n (two bytes).
-	batchEscaped := `a:1:{s:3:"css";s:11:"line1\nline2";}`
+	batchEscaped := `  a:1:{s:3:"css";s:11:"line1\nline2";}  `
 
 	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
 		if !strings.Contains(query, "SELECT option_value") {
@@ -34,6 +34,9 @@ func TestReadOptionValue_UnescapesBatchOutput(t *testing.T) {
 	}
 	if strings.Contains(got, `\n`) {
 		t.Errorf("value still carries a literal backslash-n escape: %q", got)
+	}
+	if !strings.HasPrefix(got, "  ") || !strings.HasSuffix(got, "  ") {
+		t.Errorf("value lost leading/trailing spaces: %q", got)
 	}
 }
 

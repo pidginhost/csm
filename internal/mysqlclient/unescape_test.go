@@ -45,6 +45,20 @@ func TestBatchUnescape_RoundTripsBatchEscape(t *testing.T) {
 	}
 }
 
+func TestBatchUnescape_RoundTripsAllByteValues(t *testing.T) {
+	allBytes := make([]byte, 256)
+	for i := range allBytes {
+		allBytes[i] = byte(i)
+	}
+
+	in := string(allBytes)
+	escaped := mysqlBatchEscape(in)
+	got := BatchUnescape(escaped)
+	if got != in {
+		t.Fatalf("all-byte round-trip mismatch\nescaped: %q\n got: %q\nwant: %q", escaped, got, in)
+	}
+}
+
 // TestBatchUnescape_NewlineNotLeftLiteral is the direct regression for the
 // corruption bug: the batch output for a real newline is the two-byte sequence
 // backslash-n, and BatchUnescape must turn it back into one 0x0A byte.

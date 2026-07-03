@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"regexp"
@@ -441,12 +442,16 @@ func findCredsForDB(dbName string) wpDBCreds {
 
 // readOptionValue reads the full value of a wp_option from the database.
 //
-// runMySQLQuery returns mysql batch-mode output, where control bytes are
-// rendered as escape sequences (a real newline becomes the two bytes "\n").
-// The value is unescaped back to its true bytes before returning so callers
-// that write it back (the backup copy and the cleaned value) persist the
-// original content rather than the escaped text, keeping PHP-serialized length
-// prefixes valid.
+// mysqlclient returns mysql batch-mode output, where control bytes are rendered
+// as escape sequences (a real newline becomes the two bytes "\n"). The value is
+// unescaped back to its true bytes before returning so callers that write it
+// back (the backup copy and the cleaned value) persist the original content
+// rather than the escaped text, keeping PHP-serialized length prefixes valid.
+//
+// This path intentionally bypasses runMySQLQuery: that legacy scan helper trims
+// each returned row before handing it to callers, but wp_options values may
+// contain significant leading/trailing whitespace that must survive byte-for-
+// byte when CSM writes the backup and cleaned option value.
 func readOptionValue(creds wpDBCreds, prefix, optionName string) string {
 	if !isValidOptionName(optionName) {
 		return ""
@@ -454,7 +459,15 @@ func readOptionValue(creds wpDBCreds, prefix, optionName string) string {
 	query := fmt.Sprintf(
 		"SELECT option_value FROM %soptions WHERE option_name='%s' LIMIT 1",
 		prefix, escapeSQLString(optionName))
-	lines := runMySQLQuery(creds, query)
+	lines, err := mysqlclient.PerAccountQuery(context.Background(), mysqlclient.Creds{
+		User:     creds.dbUser,
+		Password: creds.dbPass,
+		Host:     creds.dbHost,
+		DBName:   creds.dbName,
+	}, query)
+	if err != nil {
+		return ""
+	}
 	if len(lines) == 0 {
 		return ""
 	}
