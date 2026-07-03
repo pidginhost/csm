@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -402,8 +403,13 @@ func (f fakeFileInfoWithModeX) Sys() interface{}   { return nil }
 
 func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.CleanDatabase = true
+	// Attacker session IPs are blocked through the real auto-block path, so
+	// blocking must be enabled and a firewall engine wired in.
+	cfg.AutoResponse.BlockIPs = true
+	swapBlocker(t, &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive})
 
 	// Temporary wp-config on disk; parseWPConfig uses osFS.Open → real file.
 	tmpDir := t.TempDir()
@@ -494,6 +500,10 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 // Covers handleSiteurlHijack happy path with suspicious sessions.
 func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	swapBlocker(t, &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive})
 
 	tmpDir := t.TempDir()
 	wpConfigPath := filepath.Join(tmpDir, "wp-config.php")

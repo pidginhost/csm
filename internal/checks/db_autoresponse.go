@@ -183,17 +183,11 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 		return nil
 	}
 
-	// 1. Extract and block attacker IPs from active WP sessions.
+	// 1. Extract and block attacker IPs from active WP sessions through the
+	// real auto-block path (dry-run, rate limits, and allowlists all apply).
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
-	for _, ip := range suspiciousIPs {
-		// Emit as auto_block check so AutoBlockIPs processes it.
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_block",
-			Message:   fmt.Sprintf("AUTO-BLOCK: %s (active WP session on compromised site, DB: %s)", ip, dbName),
-			Timestamp: time.Now(),
-		})
-	}
+	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
+		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName))...)
 
 	// 2. Revoke sessions only for users with suspicious IPs.
 	// This preserves the site admin's session if they're on an infra IP.
@@ -242,14 +236,8 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 	}
 
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
-	for _, ip := range suspiciousIPs {
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_block",
-			Message:   fmt.Sprintf("AUTO-BLOCK: %s (active session on hijacked site, DB: %s)", ip, dbName),
-			Timestamp: time.Now(),
-		})
-	}
+	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
+		fmt.Sprintf("active session on hijacked site, DB: %s", dbName))...)
 
 	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
 	if revoked > 0 {
@@ -262,6 +250,36 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 	}
 
 	return actions
+}
+
+// blockSessionAttackerIPs routes attacker IPs recovered from active WordPress
+// sessions through the standard auto-block path so each one lands as a real
+// firewall block subject to dry-run, rate limiting, allowlists, and the
+// expiring threat record. It returns the genuine AUTO-BLOCK / dry-run findings
+// AutoBlockIPs emits.
+//
+// The synthetic findings carry the local_threat_score check -- an existing
+// always-block signal meaning "this IP is a confirmed local threat" -- plus a
+// structured SourceIP, so AutoBlockIPs blocks exactly that address. Emitting a
+// fabricated "auto_block: AUTO-BLOCK <ip>" finding here instead -- as the code
+// once did -- never blocked anything, yet alert.FilterBlockedAlerts trusted it
+// as proof-of-block and suppressed the IP's reputation alert, so the address was
+// neither blocked nor surfaced.
+func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext string) []alert.Finding {
+	if len(ips) == 0 {
+		return nil
+	}
+	findings := make([]alert.Finding, 0, len(ips))
+	for _, ip := range ips {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Critical,
+			Check:     "local_threat_score",
+			Message:   fmt.Sprintf("attacker session IP %s (%s)", ip, siteContext),
+			SourceIP:  ip,
+			Timestamp: time.Now(),
+		})
+	}
+	return AutoBlockIPs(cfg, findings)
 }
 
 // --- URL analysis ---
