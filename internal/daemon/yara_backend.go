@@ -180,10 +180,7 @@ func retryStart(start func() error, stop <-chan struct{}, minBackoff, maxBackoff
 			return false
 		}
 		if err := start(); err == nil {
-			if stopRequested(stop) {
-				return false
-			}
-			return true
+			return !stopRequested(stop)
 		} else if attempt == alertAfter && onPersistent != nil {
 			if stopRequested(stop) {
 				return false
