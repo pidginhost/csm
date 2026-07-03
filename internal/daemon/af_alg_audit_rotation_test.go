@@ -111,6 +111,43 @@ func TestAFAlgCursorAnchorDetectsTruncateBeforeReadEOF(t *testing.T) {
 	}
 }
 
+func TestAFAlgCursorAnchorRefreshDoesNotMaskRewrite(t *testing.T) {
+	path, appendLine := withAuditLog(t)
+	l, err := NewAFAlgAuditListener(make(chan alert.Finding, 4), &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBuf := make([]byte, 16*1024)
+
+	appendLine(sampleAFAlgLine)
+	l.tail(readBuf)
+	oldPos := l.pos
+	oldAnchor := append([]byte(nil), l.cursorAnchor...)
+	if oldPos == 0 || len(oldAnchor) == 0 {
+		t.Fatalf("tail did not establish cursor anchor: pos=%d anchor=%d", oldPos, len(oldAnchor))
+	}
+
+	rewritten := sampleAFAlgLine + "\n" + strings.Repeat("# filler\n", int(oldPos/8)+32)
+	if int64(len(rewritten)) <= oldPos {
+		t.Fatalf("test rewrite size %d must exceed old cursor %d", len(rewritten), oldPos)
+	}
+	if err := os.WriteFile(path, []byte(rewritten), 0o600); err != nil {
+		t.Fatalf("copytruncate rewrite: %v", err)
+	}
+
+	if l.refreshCursorAnchorAfterRead(oldPos, oldAnchor) {
+		t.Fatal("anchor refresh masked a copytruncate rewrite instead of forcing a reset")
+	}
+	if l.pos != 0 || len(l.cursorAnchor) != 0 {
+		t.Fatalf("cursor after detected rewrite = pos %d anchor %d, want reset", l.pos, len(l.cursorAnchor))
+	}
+
+	l.tail(readBuf)
+	if l.EventCount() != 2 {
+		t.Fatalf("EventCount = %d, want 2 after reset reads rewritten event", l.EventCount())
+	}
+}
+
 // DMN-12: a failed rotation re-open must not blind the listener forever. The
 // re-open is retried with backoff until the replacement file appears.
 func TestAFAlgReopenRetriesWithBackoff(t *testing.T) {

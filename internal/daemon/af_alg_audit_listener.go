@@ -158,7 +158,7 @@ func (l *AFAlgAuditListener) open() error {
 	l.inotifyFd = fd
 	l.leftover = nil
 	l.droppedOversize = false
-	l.refreshCursorAnchor()
+	l.captureCursorAnchor()
 	l.reopenPending = false
 	l.reopenBackoff = 0
 	l.reopenNotBefore = time.Time{}
@@ -327,8 +327,13 @@ func (l *AFAlgAuditListener) tail(buf []byte) {
 					l.resetTailCursor()
 					break
 				}
-				// io.EOF or EAGAIN: out of data for this tick.
-				l.refreshCursorAnchor()
+				// io.EOF or EAGAIN: out of data for this tick. Re-check the
+				// old cursor after capturing the new anchor so a copytruncate
+				// rewrite cannot land in the tiny gap and get treated as the
+				// new baseline for the next tick.
+				if !l.refreshCursorAnchorAfterRead(verifiedPos, verifiedAnchor) {
+					break
+				}
 				return
 			}
 		}
@@ -361,7 +366,20 @@ func (l *AFAlgAuditListener) cursorAnchorChangedAt(pos int64, anchor []byte) boo
 	return !bytes.Equal(buf, anchor)
 }
 
-func (l *AFAlgAuditListener) refreshCursorAnchor() {
+func (l *AFAlgAuditListener) refreshCursorAnchorAfterRead(verifiedPos int64, verifiedAnchor []byte) bool {
+	if l.cursorAnchorChangedAt(verifiedPos, verifiedAnchor) {
+		l.resetTailCursor()
+		return false
+	}
+	l.captureCursorAnchor()
+	if l.cursorAnchorChangedAt(verifiedPos, verifiedAnchor) {
+		l.resetTailCursor()
+		return false
+	}
+	return true
+}
+
+func (l *AFAlgAuditListener) captureCursorAnchor() {
 	if l.file == nil || l.pos <= 0 {
 		l.cursorAnchor = nil
 		return
