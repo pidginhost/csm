@@ -285,11 +285,6 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 	return pruned, nil
 }
 
-// countFindingRows returns the number of finding rows stored for jobID.
-func countFindingRows(fb *bolt.Bucket, jobID string) int {
-	return countFindingRowsUpTo(fb, jobID, 0)
-}
-
 // countFindingRowsUpTo counts finding rows stored for jobID, stopping early
 // after limit rows when limit > 0. The volume-cap retention path only needs to
 // know whether a job crosses a threshold, not its exact size above that point.

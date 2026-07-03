@@ -183,20 +183,6 @@ func (t *subtreeChangeTracker) build(ctx context.Context) {
 	}
 }
 
-// subtreeHasChangedDir reports whether any directory beneath dir that a prior
-// scan already cached now has a different mtime, or has become unreadable. It
-// only reads -- the cache is left untouched so the follow-up rescan still
-// observes each change through dirChanged.
-//
-// A file written deep in the tree bumps only its immediate parent's mtime, not
-// the mtimes of the directories above it. Without this check a scan that finds
-// the top directory unchanged would carry the whole subtree forward from the
-// previous index and never notice the new file until the periodic forced full
-// scan. Checking every cached descendant closes that window.
-func subtreeHasChangedDir(dir string, cache dirMtimeCache) bool {
-	return newSubtreeChangeTracker(cache).hasChangedDir(context.Background(), dir)
-}
-
 // CheckFileIndex builds an index of suspicious files using pure Go directory
 // reads, diffs against the previous index, and alerts on new files.
 // Uses directory mtime caching: unchanged dirs carry forward previous entries
