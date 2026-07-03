@@ -163,6 +163,38 @@ func TestScanEximHistoryForPHPRelayAccountVolume_SkipsLinesOutsideWindow(t *test
 	}
 }
 
+func TestScanEximHistoryForPHPRelayAccountVolume_SkipsFutureDatedLines(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "exim_mainlog")
+	var b strings.Builder
+	for i := 0; i < 80; i++ {
+		fmt.Fprintf(&b, "2026-04-29 14:%02d:01 1ab%03d-DEF <= info@example.com U=exampleuser ID=1 B=redirect_resolver\n", i%60, i)
+	}
+	if err := os.WriteFile(logPath, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write exim mainlog fixture: %v", err)
+	}
+
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 50
+	accounts := newPerAccountWindow(5000)
+	eng := newEvaluator(nil, nil, accounts, cfg, nil)
+	eng.SetEffectiveAccountLimit(50)
+
+	now := time.Date(2026, 4, 29, 13, 0, 0, 0, time.Local)
+	var findings []alert.Finding
+	ScanEximHistoryForPHPRelayAccountVolume(context.Background(), logPath, eng, now, func(f alert.Finding) {
+		findings = append(findings, f)
+	})
+	for _, f := range findings {
+		if f.Path == "volume_account" {
+			t.Fatalf("future-dated log lines must not fire account-volume Critical: %+v", f)
+		}
+	}
+	if got := accounts.volumeSince("exampleuser", now.Add(-phpRelayAccountWindowDur)); got != 0 {
+		t.Fatalf("future-dated events leaked into the account window: %d", got)
+	}
+}
+
 // REL-01 (unit): the account event is stamped with the supplied eventTime, not
 // `now`, so a historical replay does not compress the window.
 func TestParsePHPRelayAccountVolumeAt_StampsEventTime(t *testing.T) {

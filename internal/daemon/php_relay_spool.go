@@ -398,10 +398,17 @@ func runStartupSpoolWalker(spoolRoot string, p *spoolPipeline) {
 				}
 				full := filepath.Join(subPath, f.Name())
 				fi, serr := os.Stat(full)
-				if serr != nil || fi.ModTime().Before(cutoff) {
+				if serr != nil {
+					continue
+				}
+				mod := fi.ModTime()
+				if mod.After(now) {
+					mod = now
+				}
+				if mod.Before(cutoff) {
 					continue // skip mail older than any detection window
 				}
-				entries = append(entries, walkEntry{path: full, mod: fi.ModTime()})
+				entries = append(entries, walkEntry{path: full, mod: mod})
 			}
 		}
 	}
@@ -411,6 +418,9 @@ func runStartupSpoolWalker(spoolRoot string, p *spoolPipeline) {
 	if len(entries) > phpRelayStartupWalkMax {
 		entries = entries[:phpRelayStartupWalkMax]
 	}
+	// Replay chronologically so bounded per-script/per-account rings retain the
+	// newest events after their own caps are applied.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mod.Before(entries[j].mod) })
 	for _, e := range entries {
 		p.onFileAt(e.path, e.mod)
 	}

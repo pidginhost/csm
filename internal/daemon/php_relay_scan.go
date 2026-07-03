@@ -89,7 +89,7 @@ func emitPHPRelayHistoryLine(line []byte, eng *evaluator, now time.Time, emit fu
 	// so a whole day of sends collapsed into one hour and fired a false
 	// "account sent >= N in the last hour" Critical on every daemon start.
 	ts, ok := parseEximTimestamp(s)
-	if !ok || ts.Before(now.Add(-phpRelayAccountWindowDur)) {
+	if !ok || ts.Before(now.Add(-phpRelayAccountWindowDur)) || ts.After(now) {
 		return
 	}
 	for _, ev := range eng.parsePHPRelayAccountVolumeAt(s, ts, now) {

@@ -229,6 +229,62 @@ func TestStartupSpoolWalker_SkipsStaleQueuedMail(t *testing.T) {
 	}
 }
 
+func TestStartupSpoolWalker_ReplaysCappedFilesChronologically(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pacct := newPerAccountWindow(5000)
+	eng := newEvaluator(psw, pip, pacct, cfg, nil)
+
+	udir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(udir, "u"), 0o755)
+	_ = os.WriteFile(filepath.Join(udir, "u", "main"), []byte("main_domain: example.com\n"), 0o644)
+	domains := newUserDomainsResolverWithRoot(udir, time.Minute)
+	pipeline := newSpoolPipeline(eng, domains, newTestPolicies(t), nil, nil, func(alert.Finding) {})
+
+	const extra = 4
+	total := phpRelayMaxEventsPerScript + extra
+	base := time.Now().Add(-30 * time.Minute).Truncate(time.Second)
+	body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: bad.example.com/x.php for 192.0.2.10\n"
+	for i := 0; i < total; i++ {
+		f := filepath.Join(sub, fmt.Sprintf("msg%03d-H", i))
+		if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ts := base.Add(time.Duration(i) * time.Second)
+		if err := os.Chtimes(f, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runStartupSpoolWalker(spoolRoot, pipeline)
+
+	s := psw.getOrCreate(scriptKey("bad.example.com:/x.php"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) != phpRelayMaxEventsPerScript {
+		t.Fatalf("recorded events = %d, want %d", len(s.events), phpRelayMaxEventsPerScript)
+	}
+	wantMin := base.Add(extra * time.Second)
+	wantMax := base.Add(time.Duration(total-1) * time.Second)
+	gotMin, gotMax := s.events[0].At, s.events[0].At
+	for _, ev := range s.events[1:] {
+		if ev.At.Before(gotMin) {
+			gotMin = ev.At
+		}
+		if ev.At.After(gotMax) {
+			gotMax = ev.At
+		}
+	}
+	if !gotMin.Equal(wantMin) || !gotMax.Equal(wantMax) {
+		t.Fatalf("startup replay retained wrong capped window: min=%v max=%v, want min=%v max=%v", gotMin, gotMax, wantMin, wantMax)
+	}
+}
+
 // REL-02 (unit): a message is attributed to its -H ModTime, not time.Now().
 func TestOnFileAt_UsesModTimeAsEventTime(t *testing.T) {
 	spoolRoot := t.TempDir()
