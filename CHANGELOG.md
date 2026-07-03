@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fixed brute-force detection thresholds not applying on config reload: the live mail, SMTP, and probe trackers now pick up changed thresholds immediately instead of requiring a full daemon restart.
+- Fixed brute-force detection thresholds not applying on config reload: the live mail, SMTP, and probe trackers now pick up changed thresholds immediately instead of requiring a full daemon restart. Reloading a threshold to zero disables that signal instead of firing on every event.
 - Kernel-side event queue overflows on the realtime file monitor and the mail spool scanner are no longer silent: both now count the loss, raise a rate-limited warning (the spool one states that mail may have been delivered unscanned), and trigger recovery where possible.
 - Fixed the crypto-audit log listener going permanently blind when a log rotation re-open failed once or the file was truncated in place; it now retries with backoff and resets its position after truncation.
 - Fixed directory-wide PHP handler remaps in upload folders going undetected, and fixed user-agent cloak cleanup leaving the paired redirect rule behind, which would have redirected every visitor to the attacker URL after a clean.
