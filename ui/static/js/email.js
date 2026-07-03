@@ -565,6 +565,7 @@
             })
             .catch(function() {
                 resetEmailFindingsTable();
+                clearEmailFindingsState();
                 var tbody = document.getElementById('email-tbody');
                 if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="text-center text-danger py-4">Failed to load findings</td></tr>';
             });
@@ -576,9 +577,19 @@
         emailTable = null;
     }
 
+    function clearEmailFindingsState() {
+        _emailExportData = [];
+        var label = document.getElementById('email-total-label');
+        if (label) label.textContent = '';
+    }
+
     function renderFindingsTable(findings) {
         var tbody = document.getElementById('email-tbody');
-        if (!tbody) { resetEmailFindingsTable(); return; }
+        if (!tbody) {
+            resetEmailFindingsTable();
+            clearEmailFindingsState();
+            return;
+        }
 
         // Drop the previous instance first: it still holds listeners on the
         // shared search box and sort headers, and its allRows point at the
