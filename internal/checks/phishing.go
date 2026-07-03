@@ -14,14 +14,34 @@ import (
 
 const phishingReadSize = 16384 // Read first 16KB - phishing pages are self-contained
 
+// phishingScanMaxDepth bounds how deep CheckPhishing recurses below each doc
+// root. Real kits land in date-nested WordPress upload folders
+// (wp-content/uploads/YYYY/MM/<kit>/), six directory levels below the root, so
+// the budget must clear that. Heavy/transient dirs (node_modules, vendor, WP
+// core, caches) are pruned by isKnownSafeDir before recursion, keeping the
+// deeper walk affordable.
+const phishingScanMaxDepth = 8
+
 // ---------------------------------------------------------------------------
 // Brand impersonation patterns
 // ---------------------------------------------------------------------------
+
+// phishingGenericBrandScoreFloor is the score a page matching only the
+// "Generic Login" pseudo-brand must reach before it is flagged. The generic
+// title patterns ("Sign In", "Secure Access") are ubiquitous on legitimate
+// login pages and, unlike a real brand, are not themselves evidence of
+// impersonation. A single equally-ubiquitous JS token (window.location,
+// fetch) would otherwise clear the normal brand floor and mislabel a
+// customer's own login page. Requiring this higher floor forces multiple
+// independent signals (external exfil, trust badge, urgency, server-side
+// credential capture) that a plain login page does not carry.
+const phishingGenericBrandScoreFloor = 7
 
 var phishingBrands = []struct {
 	name          string
 	titlePatterns []string
 	bodyPatterns  []string
+	generic       bool
 }{
 	{
 		name:          "Microsoft/SharePoint",
@@ -84,6 +104,7 @@ var phishingBrands = []struct {
 		name:          "Generic Login",
 		titlePatterns: []string{"secure access", "verify your", "confirm your identity", "account verification", "email verification", "sign in"},
 		bodyPatterns:  []string{"verify your identity", "confirm your account", "unusual activity"},
+		generic:       true,
 	},
 }
 
@@ -213,7 +234,7 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		}
 
 		for _, docRoot := range docRoots {
-			scanForPhishing(ctx, docRoot, 3, user, cfg, &findings)
+			scanForPhishing(ctx, docRoot, phishingScanMaxDepth, user, cfg, &findings)
 			if ctx.Err() != nil {
 				return findings
 			}
@@ -422,6 +443,7 @@ func analyzeHTMLForPhishing(path string) *phishingResult {
 
 	// --- Brand impersonation ---
 	brandMatch := ""
+	matchedGeneric := false
 	titleContent := extractTitle(contentLower)
 
 	for _, brand := range phishingBrands {
@@ -450,6 +472,7 @@ func analyzeHTMLForPhishing(path string) *phishingResult {
 
 		if titleHit || bodyHit {
 			brandMatch = brand.name
+			matchedGeneric = brand.generic
 			break
 		}
 	}
@@ -520,10 +543,18 @@ func analyzeHTMLForPhishing(path string) *phishingResult {
 	}
 
 	// --- Decision ---
-	// With brand match: need score >= 4 (brand gives 2-3 + at least 1 other signal)
-	// Without brand match: need score >= 6 (multiple strong signals)
-	if brandMatch != "" && score >= 4 {
-		return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
+	// Real brand match: need score >= 4 (brand gives 2-3 + at least 1 other
+	// signal). Generic pseudo-brand: need a higher floor since its title
+	// patterns are ubiquitous on legitimate login pages. No brand: need
+	// score >= 6 (multiple strong signals).
+	if brandMatch != "" {
+		floor := 4
+		if matchedGeneric {
+			floor = phishingGenericBrandScoreFloor
+		}
+		if score >= floor {
+			return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
+		}
 	}
 	if brandMatch == "" && score >= 6 {
 		return &phishingResult{brand: "Unknown", score: score, indicators: indicators}
@@ -1016,12 +1047,14 @@ func analyzePHPForPhishing(path string) *phishingResult {
 
 	// Check brand impersonation (same as HTML check)
 	brandMatch := ""
+	matchedGeneric := false
 	titleContent := extractTitle(contentLower)
 
 	for _, brand := range phishingBrands {
 		for _, tp := range brand.titlePatterns {
 			if strings.Contains(titleContent, tp) {
 				brandMatch = brand.name
+				matchedGeneric = brand.generic
 				indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
 				score += 3
 				break
@@ -1033,6 +1066,7 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		for _, bp := range brand.bodyPatterns {
 			if strings.Contains(contentLower, bp) {
 				brandMatch = brand.name
+				matchedGeneric = brand.generic
 				indicators = append(indicators, fmt.Sprintf("body impersonates '%s'", bp))
 				score += 2
 				break
@@ -1085,7 +1119,14 @@ func analyzePHPForPhishing(path string) *phishingResult {
 	if brandMatch == "" {
 		return nil
 	}
-	if score >= 4 {
+	// The generic pseudo-brand ("Sign In" titles) matches a customer's own
+	// login.php, which legitimately reads $_POST credentials. Require the
+	// higher floor so a real brand or genuine exfil behaviour is needed.
+	floor := 4
+	if matchedGeneric {
+		floor = phishingGenericBrandScoreFloor
+	}
+	if score >= floor {
 		return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
 	}
 
@@ -1390,11 +1431,18 @@ func isPhishingKitZip(nameLower string) bool {
 // Safe directory list
 // ---------------------------------------------------------------------------
 
+// isKnownSafeDir names directories that CheckPhishing does not recurse into.
+// The list is deliberately narrow: only heavy, non-servable, or checksum-
+// verified trees (WP core, dependency vendor dirs, VCS metadata) and transient
+// caches. wp-content and .well-known are NOT here - both are prime real-world
+// phishing drop paths (wp-content/uploads date folders, world-writable ACME
+// challenge dirs) and must be scanned. Never widen this list to skip a path
+// where a file could be dropped and served; fix detection instead.
 func isKnownSafeDir(name string) bool {
 	safeDirs := map[string]bool{
-		"wp-admin": true, "wp-includes": true, "wp-content": true,
+		"wp-admin": true, "wp-includes": true,
 		"node_modules": true, "vendor": true, ".git": true,
-		"cgi-bin": true, ".well-known": true, "mail": true,
+		"cgi-bin": true, "mail": true,
 		"cache": true, "tmp": true, "logs": true,
 	}
 	return safeDirs[name]

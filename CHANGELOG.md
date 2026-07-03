@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed directory-wide PHP handler remaps in upload folders going undetected, and fixed user-agent cloak cleanup leaving the paired redirect rule behind, which would have redirected every visitor to the attacker URL after a clean.
+- The phishing scan now recurses into wp-content uploads and .well-known, the most common real-world drop paths, and no longer flags customers' own login pages on a generic title plus a single common script token.
 - Fixed five firewall pages failing with a server error when the firewall state file on disk is corrupt; they now report the condition instead of crashing the request.
 - Unblocking an IP from the CLI or WebUI now also clears the auto-block threat record for that address, so stale local threat data cannot pull it straight back into a block loop. Operator-added permanent blocks are not affected.
 - Undoing a bulk whitelist now removes the firewall allow rules it created and restores the threat records it cleared; previously the undo reported success while leaving the addresses permanently allowed.
