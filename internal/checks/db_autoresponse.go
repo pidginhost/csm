@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // AutoRespondDBMalware processes database injection findings and takes
@@ -439,6 +440,13 @@ func findCredsForDB(dbName string) wpDBCreds {
 }
 
 // readOptionValue reads the full value of a wp_option from the database.
+//
+// runMySQLQuery returns mysql batch-mode output, where control bytes are
+// rendered as escape sequences (a real newline becomes the two bytes "\n").
+// The value is unescaped back to its true bytes before returning so callers
+// that write it back (the backup copy and the cleaned value) persist the
+// original content rather than the escaped text, keeping PHP-serialized length
+// prefixes valid.
 func readOptionValue(creds wpDBCreds, prefix, optionName string) string {
 	if !isValidOptionName(optionName) {
 		return ""
@@ -450,7 +458,7 @@ func readOptionValue(creds wpDBCreds, prefix, optionName string) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	return lines[0]
+	return mysqlclient.BatchUnescape(lines[0])
 }
 
 // extractSuspiciousSessionIPs reads WP session tokens and returns IPs that

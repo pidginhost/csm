@@ -253,6 +253,47 @@ func mysqlBatchEscape(s string) string {
 	return b.String()
 }
 
+// BatchUnescape is the exact inverse of mysqlBatchEscape (and of `mysql -N -B`
+// batch-mode output): it turns the escaped sequences \0 \n \r \t \\ back into
+// their raw bytes. Because the escaper backslash-escapes every literal
+// backslash, a backslash in batch output is always the start of one of these
+// sequences, so the inverse is unambiguous and round-trips byte-for-byte.
+//
+// Callers that write a value read from batch output back to the database must
+// unescape first; otherwise a real newline persists as the two-byte literal
+// "\n", corrupting the value and breaking PHP-serialized length prefixes.
+func BatchUnescape(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case '0':
+			b.WriteByte(0)
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case '\\':
+			b.WriteByte('\\')
+		default:
+			// Not a batch-escape sequence: keep both bytes verbatim.
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
 // --- Root creds via /root/.my.cnf ---------------------------------------
 
 var (
