@@ -830,6 +830,33 @@ func TestEmailFindingsUseStructuredAccountIP(t *testing.T) {
 	}
 }
 
+func TestEmailFindingsLoaderClearsAndGuardsState(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	for _, want := range []string{
+		"var _emailFindingsLoadSeq = 0;",
+		"var seq = ++_emailFindingsLoadSeq;",
+		"function clearEmailFindingsState()",
+		"_emailExportData = [];",
+		"if (label) label.textContent = '';",
+		"resetEmailFindingsTable();\n            clearEmailFindingsState();\n            return;",
+		"if (findings.length === 0) {",
+		"tbody.innerHTML = CSM.emptyState('No email findings in this period', 6);",
+		"emailTable = new CSM.Table({",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("email.js missing findings state guard fragment %q", want)
+		}
+	}
+	if strings.Count(text, "if (seq !== _emailFindingsLoadSeq) return;") < 2 {
+		t.Error("email.js must ignore stale successful and failed findings responses")
+	}
+}
+
 // TestHardeningAndRedisGuardZeroAndNoLimit pins item 7: the hardening score
 // must not divide by a zero or absent total (a NaN percent fell through every
 // threshold and painted the progress bar danger-red), and the performance

@@ -42,6 +42,7 @@
     ].join(',');
     var _emailExportData = [];
     var emailTable = null;
+    var _emailFindingsLoadSeq = 0;
     var quarantineLoaded = false;
     var authGroupsLoaded = false;
     var forwardersLoaded = false;
@@ -553,8 +554,10 @@
         if (from) params += '&from=' + encodeURIComponent(from);
         if (to)   params += '&to=' + encodeURIComponent(to);
         if (sev)  params += '&severity=' + encodeURIComponent(sev);
+        var seq = ++_emailFindingsLoadSeq;
         CSM.get('/api/v1/history?' + params)
             .then(function(data) {
+                if (seq !== _emailFindingsLoadSeq) return;
                 var findings = data.findings || [];
                 renderFindingsTable(findings);
                 var label = document.getElementById('email-total-label');
@@ -564,6 +567,7 @@
                 }
             })
             .catch(function() {
+                if (seq !== _emailFindingsLoadSeq) return;
                 resetEmailFindingsTable();
                 clearEmailFindingsState();
                 var tbody = document.getElementById('email-tbody');
