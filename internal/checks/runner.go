@@ -184,7 +184,7 @@ var runnerFindingNames = map[string][]string{
 	"dns_zones":             {"dns_zone_change"},
 	"email_content":         {"email_phishing_content"},
 	"email_forwarder_audit": {"email_pipe_forwarder", "email_suspicious_forwarder"},
-	"email_mail_filters":    {"email_filter_blackhole", "email_filter_exfil", "email_filter_forwarder", "email_filter_pipe"},
+	"email_mail_filters":    {"email_filter_blackhole", "email_filter_exfil", "email_filter_forwarder", "email_filter_pipe", "email_mail_filters"},
 	"email_weak_password":   {"email_weak_password"},
 	"exfiltration_paste":    {"exfiltration_paste_site"},
 	"fake_kernel_threads":   {"fake_kernel_thread"},
@@ -229,12 +229,12 @@ var runnerFindingNames = map[string][]string{
 	"suspicious_processes":  {"suspicious_process"},
 	"symlink_attacks":       {"symlink_attack"},
 	"uid0_accounts":         {"uid0_account"},
-	"user_outbound":         {"user_outbound_connection"},
+	"user_outbound":         {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
 	"waf_status":            {"waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
 	"webmail_logins":        {"webmail_bruteforce"},
 	"webshells":             {"webshell", "world_writable_php"},
 	"whm_access":            {"whm_account_action", "whm_password_change"},
-	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood"},
+	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
 	"wp_core":               {"wp_core_integrity"},
 }
 

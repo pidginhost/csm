@@ -2,7 +2,12 @@ package checks
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1078,5 +1083,129 @@ func TestRunParallelTimeoutMessageReflectsCheckBudget(t *testing.T) {
 	}
 	if !strings.Contains(saw[1], "10ms") {
 		t.Errorf("normal check timeout message must name 10ms budget, got %q", saw[1])
+	}
+}
+
+// --- CHK-R04: purge-map coverage for scheduled-check finding names -------
+
+// TestRunnerFindingNamesIncludesHTTPASNCrawl pins the specific regression:
+// CheckWPBruteForce (runner "wp_bruteforce") also emits http_asn_crawl via
+// stats.emit -> emitASNCrawl, so the name must be in that runner's purge list
+// or a stale Critical never gets cleared once the crawl ends.
+func TestRunnerFindingNamesIncludesHTTPASNCrawl(t *testing.T) {
+	if !slices.Contains(runnerFindingNames["wp_bruteforce"], "http_asn_crawl") {
+		t.Errorf("runnerFindingNames[wp_bruteforce] must include http_asn_crawl, got %v",
+			runnerFindingNames["wp_bruteforce"])
+	}
+}
+
+// TestRunnerFindingNamesIncludesOutboundEvaluatorChecks pins the sibling gaps:
+// the scheduled user_outbound check (CheckOutboundUserConnections -> scanProcNetTCP)
+// emits direct_smtp_egress and bad_asn_outbound through the shared connection
+// evaluators, so both must be owned by that runner's purge list.
+func TestRunnerFindingNamesIncludesOutboundEvaluatorChecks(t *testing.T) {
+	for _, name := range []string{"direct_smtp_egress", "bad_asn_outbound"} {
+		if !slices.Contains(runnerFindingNames["user_outbound"], name) {
+			t.Errorf("runnerFindingNames[user_outbound] must include %q, got %v",
+				name, runnerFindingNames["user_outbound"])
+		}
+	}
+}
+
+// TestRunnerPurgeMapCoversEmittedCheckNames is the drift guard that closes the
+// whole class behind CHK-R04. It scans every production source file in
+// internal/checks for finding-emission literals and fails if any emitted Check
+// name is not purgeable -- i.e. absent from every runner's finding list in
+// runnerFindingNames AND from the volatile/derived purge lists AND from the
+// documented set of names emitted only by non-scheduled paths.
+//
+// Without this, adding a new Check name to a scheduled check without also
+// registering it lets that finding persist forever after the condition clears,
+// because StoreLatestScanFindings never lists it for purge. When this test
+// fails on a genuinely new scheduled-check finding, add the name to that
+// runner's entry in runnerFindingNames. When it fails on a finding emitted only
+// by a realtime daemon path, the CLI account scan, or the scan-job manager, add
+// it to nonScheduledEmitters below with a one-line reason.
+func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
+	// Emitted only outside the scheduled-tier purge/merge flow. Each is stored
+	// (or intentionally not stored in the latest set) through its own path, so
+	// runnerFindingNames does not and should not own it.
+	nonScheduledEmitters := map[string]string{
+		"check_timeout":            "emitted by the runner harness itself, not a check function",
+		"account_scan":             "RunAccountScan summary finding, per-account CLI path (not a tier)",
+		"full_scan_file_too_large": "scan-job manager only, never dispatched to the live latest set",
+		"sensitive_file_modified":  "daemon legacy poller CheckSensitiveFiles, not wired into any tier",
+	}
+
+	covered := map[string]struct{}{}
+	for _, names := range runnerFindingNames {
+		for _, n := range names {
+			covered[n] = struct{}{}
+		}
+	}
+	for _, n := range latestVolatileCheckNames {
+		covered[n] = struct{}{}
+	}
+	for _, n := range latestDerivedCheckNames {
+		covered[n] = struct{}{}
+	}
+	for n := range nonScheduledEmitters {
+		covered[n] = struct{}{}
+	}
+
+	// Finding-emission literals used across internal/checks. Kept in sync with
+	// the emission styles the package actually uses; extend if a new one lands.
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`Check:\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+		regexp.MustCompile(`\breturn\s+alert\.(?:Warning|High|Critical)\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+		regexp.MustCompile(`\bcheck\s*:?=\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+	}
+
+	pkgDir := filepath.Join(findRepoRoot(t), "internal", "checks")
+	type hit struct{ name, where string }
+	var missing []hit
+	seen := map[string]struct{}{}
+
+	err := filepath.Walk(pkgDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, rerr := os.ReadFile(path) // #nosec G304 -- test-only scanner rooted at internal/checks
+		if rerr != nil {
+			return rerr
+		}
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			code := stripLineComment(line)
+			for _, re := range patterns {
+				for _, m := range re.FindAllStringSubmatch(code, -1) {
+					name := m[1]
+					if _, ok := seen[name]; ok {
+						continue
+					}
+					seen[name] = struct{}{}
+					if _, ok := covered[name]; !ok {
+						missing = append(missing, hit{name: name, where: fmt.Sprintf("%s:%d", path, lineNo+1)})
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", pkgDir, err)
+	}
+
+	if len(missing) > 0 {
+		sort.Slice(missing, func(i, j int) bool { return missing[i].name < missing[j].name })
+		var lines []string
+		for _, m := range missing {
+			lines = append(lines, m.name+" (at "+m.where+")")
+		}
+		t.Fatalf("%d emitted Check name(s) not purgeable -- add to the owning runner in runnerFindingNames "+
+			"(or to nonScheduledEmitters if emitted only off the scheduled tier):\n  %s",
+			len(missing), strings.Join(lines, "\n  "))
 	}
 }
