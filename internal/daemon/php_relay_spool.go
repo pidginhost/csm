@@ -347,6 +347,21 @@ func runRecoveryScan(spoolRoot string, maxFiles int, onFile func(string)) (int, 
 // the Path 2b history scan backstop anything beyond the cap.
 const phpRelayStartupWalkMax = 20000
 
+// maxDetectionWindow returns the widest window any php_relay path evaluates
+// over. The startup spool walker skips -H files older than this: such mail can
+// no longer contribute to any current detection and only costs parse time.
+// Lives in this linux-only file because the walker is its sole caller.
+func (e *evaluator) maxDetectionWindow() time.Duration {
+	maxMin := 60 // Path 2 absolute-volume window is hardcoded at 60 min
+	if v := e.cfg.EmailProtection.PHPRelay.RateWindowMin; v > maxMin {
+		maxMin = v
+	}
+	if v := e.cfg.EmailProtection.PHPRelay.FanoutWindowMin; v > maxMin {
+		maxMin = v
+	}
+	return time.Duration(maxMin) * time.Minute
+}
+
 // runStartupSpoolWalker walks the currently-queued -H files through the pipeline
 // in REBUILD mode, then performs one re-evaluation pass over the reconstructed
 // scriptStates. Findings are emitted ONLY in the re-evaluation pass, so the

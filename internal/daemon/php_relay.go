@@ -700,20 +700,6 @@ func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *
 // SetPolicies is called by daemon wiring once the policies file has loaded.
 func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
 
-// maxDetectionWindow returns the widest window any php_relay path evaluates
-// over. The startup spool walker skips -H files older than this: such mail can
-// no longer contribute to any current detection and only costs parse time.
-func (e *evaluator) maxDetectionWindow() time.Duration {
-	maxMin := 60 // Path 2 absolute-volume window is hardcoded at 60 min
-	if v := e.cfg.EmailProtection.PHPRelay.RateWindowMin; v > maxMin {
-		maxMin = v
-	}
-	if v := e.cfg.EmailProtection.PHPRelay.FanoutWindowMin; v > maxMin {
-		maxMin = v
-	}
-	return time.Duration(maxMin) * time.Minute
-}
-
 // evaluatePaths inspects the script's window state (and IP window) and
 // returns the set of findings that fire at this moment. Cooldowns prevent
 // duplicate emissions per (script, path).
