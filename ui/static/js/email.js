@@ -678,14 +678,7 @@
 
     function _resetEmailQuarTable() {
         if (_emailQuarTable) {
-            if (_emailQuarTable._searchDebounce && _emailQuarTable._searchDebounce.cancel) _emailQuarTable._searchDebounce.cancel();
-            _emailQuarTable.controlsEl = null;
-            _emailQuarTable.countTargetEl = null;
-            _emailQuarTable.allRows = [];
-            _emailQuarTable.filteredRows = [];
-            _emailQuarTable.tbody = null;
-            _emailQuarTable.table = null;
-            _emailQuarTable.rowFilter = null;
+            if (typeof _emailQuarTable.destroy === 'function') _emailQuarTable.destroy();
             _emailQuarTable = null;
         }
         var controls = document.getElementById('email-quar-table-controls');
