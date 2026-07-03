@@ -15,7 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-const emailBodySampleSize = 4096 // Read first 4KB of email body
+const emailBodySampleSize = 65536 // Analyze the first 64KB of email body
 
 // Suspicious mailer headers that indicate mass mailing scripts. PHPMailer is
 // deliberately absent: it is the default WordPress transport and appears on
@@ -197,20 +197,20 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		}
 	}
 
-	// Read and analyze body (sample first 4KB)
+	// Read and analyze a bounded body sample.
 	bodyData, _ := osFS.ReadFile(bodyPath)
 	if len(bodyData) > emailBodySampleSize {
 		bodyData = bodyData[:emailBodySampleSize]
 	}
 	if len(bodyData) > 0 {
-		indicators = append(indicators, bodyContentIndicators(strings.ToLower(string(bodyData)))...)
+		bodyLower := strings.ToLower(string(bodyData))
+		indicators = append(indicators, bodyContentIndicators(bodyLower)...)
 
 		// A base64 Content-Transfer-Encoding is standard MIME framing, not an
 		// indicator by itself. Decode the body and run the same content checks
 		// on the plaintext so a payload hidden behind base64 is caught -- the
 		// raw base64 blob would otherwise sail past every text pattern.
-		if strings.Contains(headersLower, "content-transfer-encoding: base64") &&
-			strings.Contains(headersLower, "text/html") {
+		if hasBase64HTMLMIME(headersLower, bodyLower) {
 			if decoded := decodeBase64Body(bodyData); decoded != "" {
 				indicators = append(indicators, bodyContentIndicators(strings.ToLower(decoded))...)
 			}
@@ -240,6 +240,14 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		Domain:   senderDomain,
 		Mailbox:  sender,
 	}
+}
+
+func hasBase64HTMLMIME(headersLower, bodyLower string) bool {
+	hasBase64 := strings.Contains(headersLower, "content-transfer-encoding: base64") ||
+		strings.Contains(bodyLower, "content-transfer-encoding: base64")
+	hasHTML := strings.Contains(headersLower, "text/html") ||
+		strings.Contains(bodyLower, "text/html")
+	return hasBase64 && hasHTML
 }
 
 // bodyContentIndicators runs the phishing-URL and credential-harvesting content
@@ -275,15 +283,26 @@ func bodyContentIndicators(bodyLower string) []string {
 // skipped.
 var base64BodyLineRe = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)
 
-// decodeBase64Body extracts the longest run of consecutive base64 lines from a
-// spool body sample and decodes it. Returns "" when no base64 region is present
-// or it does not decode. The 4KB sample may clip the payload mid-blob, so the
-// trailing partial group is dropped to keep the remaining prefix decodable.
+// decodeBase64Body extracts every run of consecutive base64 lines from a spool
+// body sample and decodes each valid run. Multipart messages can put a larger
+// benign image part before a shorter phishing HTML part; decoding only the
+// longest run misses that payload. A sample may clip the final blob mid-run, so
+// the trailing partial group is dropped to keep the remaining prefix decodable.
 func decodeBase64Body(raw []byte) string {
-	var best, cur []string
+	var decodedParts []string
+	var cur []string
 	flush := func() {
-		if len(cur) > len(best) {
-			best = cur
+		if len(cur) == 0 {
+			return
+		}
+		blob := strings.Join(cur, "")
+		if rem := len(blob) % 4; rem != 0 {
+			blob = blob[:len(blob)-rem]
+		}
+		if blob != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(blob); err == nil {
+				decodedParts = append(decodedParts, string(decoded))
+			}
 		}
 		cur = nil
 	}
@@ -296,20 +315,8 @@ func decodeBase64Body(raw []byte) string {
 		flush()
 	}
 	flush()
-	if len(best) == 0 {
+	if len(decodedParts) == 0 {
 		return ""
 	}
-
-	blob := strings.Join(best, "")
-	if rem := len(blob) % 4; rem != 0 {
-		blob = blob[:len(blob)-rem]
-	}
-	if blob == "" {
-		return ""
-	}
-	decoded, err := base64.StdEncoding.DecodeString(blob)
-	if err != nil {
-		return ""
-	}
-	return string(decoded)
+	return strings.Join(decodedParts, "\n")
 }

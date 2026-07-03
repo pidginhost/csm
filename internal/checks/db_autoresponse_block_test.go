@@ -5,11 +5,14 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // TestBlockSessionAttackerIPs_RoutesThroughRealBlocker asserts that attacker
@@ -20,14 +23,20 @@ import (
 // alert.FilterBlockedAlerts then trusted as proof-of-block and used to suppress
 // the IP's reputation alert -- so the IP was neither blocked nor alerted.
 func TestBlockSessionAttackerIPs_RoutesThroughRealBlocker(t *testing.T) {
+	withTestThreatStore(t)
+	restoreThreatDB := SetGlobalThreatDBForTest(t.TempDir())
+	t.Cleanup(restoreThreatDB)
+
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "45m"
 
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
 	swapBlocker(t, blocker)
 
+	before := time.Now()
 	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
 
 	if blocker.outcomeHits != 1 {
@@ -41,6 +50,19 @@ func TestBlockSessionAttackerIPs_RoutesThroughRealBlocker(t *testing.T) {
 	}
 	if actions[0].Check != "auto_block" || !strings.HasPrefix(actions[0].Message, "AUTO-BLOCK:") {
 		t.Fatalf("expected a real AUTO-BLOCK finding, got %+v", actions[0])
+	}
+	entry, found := store.Global().GetPermanentBlock("203.0.113.7")
+	if !found {
+		t.Fatal("session attacker block did not write a threat DB entry")
+	}
+	if entry.Source != store.ThreatSourceAutoBlock {
+		t.Fatalf("threat source = %q, want %q", entry.Source, store.ThreatSourceAutoBlock)
+	}
+	if entry.ExpiresAt.IsZero() {
+		t.Fatal("autoblock-sourced threat entry must expire")
+	}
+	if entry.ExpiresAt.Before(before.Add(40*time.Minute)) || entry.ExpiresAt.After(before.Add(50*time.Minute)) {
+		t.Fatalf("ExpiresAt = %v, want about 45m after %v", entry.ExpiresAt, before)
 	}
 }
 
@@ -62,6 +84,36 @@ func TestBlockSessionAttackerIPs_DryRunDoesNotFakeBlock(t *testing.T) {
 	for _, a := range actions {
 		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") && strings.Contains(a.Message, "blocked") {
 			t.Fatalf("dry-run must not emit a completed-block finding: %q", a.Message)
+		}
+	}
+}
+
+func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
+	swapBlocker(t, blocker)
+
+	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1")
+	if len(actions) == 0 {
+		t.Fatal("precondition: expected auto-block action")
+	}
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "auto_block", Message: "old stale auto-block"},
+	})
+
+	StoreLatestScanFindings(st, []string{"db_siteurl_hijack"}, actions)
+	for _, f := range st.LatestFindings() {
+		if f.Check == "auto_block" {
+			t.Fatalf("auto_block action persisted as latest scan state: %+v", f)
 		}
 	}
 }

@@ -197,3 +197,38 @@ func TestScanEximMessage_Base64BodyDecodedPhishing_Detected(t *testing.T) {
 		t.Errorf("base64 encoding itself must not be reported as an indicator; details=%q", got.Details)
 	}
 }
+
+func TestScanEximMessage_Base64MultipartLaterHTMLPayloadDetected(t *testing.T) {
+	msgID := "1aBcDe-000007-77"
+	header := eximHeader(msgID,
+		"From: shop@example.com",
+		`Content-Type: multipart/related; boundary="b1"`,
+	)
+	benignImage := strings.Repeat("fake image payload without phishing text ", 40)
+	decoded := "<html>please verify your account and confirm your identity at https://evil.workers.dev/login</html>"
+	body := msgID + "-D\n" +
+		"--b1\n" +
+		"Content-Type: image/png\n" +
+		"Content-Transfer-Encoding: base64\n\n" +
+		base64Wrap(benignImage) + "\n" +
+		"--b1\n" +
+		"Content-Type: text/html; charset=UTF-8\n" +
+		"Content-Transfer-Encoding: base64\n\n" +
+		base64Wrap(decoded) + "\n" +
+		"--b1--\n"
+	mockEximSpool(t, msgID, header, body)
+
+	got := scanEximMessage(msgID, "shop@example.com", &config.Config{})
+	if got == nil {
+		t.Fatal("base64 phishing HTML after a longer benign MIME part must produce a finding")
+	}
+	if got.Severity != alert.High {
+		t.Fatalf("severity = %v, want High for two decoded indicators; details=%q", got.Severity, got.Details)
+	}
+	if !strings.Contains(got.Details, "workers.dev") {
+		t.Errorf("decoded phishing URL indicator missing; details=%q", got.Details)
+	}
+	if !strings.Contains(strings.ToLower(got.Details), "credential harvesting") {
+		t.Errorf("decoded harvesting-language indicator missing; details=%q", got.Details)
+	}
+}
