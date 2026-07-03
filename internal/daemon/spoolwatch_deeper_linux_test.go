@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,13 +213,24 @@ func TestSpoolWatcherStopSkipsPipeWriteAfterClose(t *testing.T) {
 	}
 }
 
-// --- handleSpoolEvent fail-open on MIME parse error with tempfail=false --
+// --- handleSpoolEvent fail-open on a genuine MIME parse error -------------
 
 func TestSpoolWatcherHandleSpoolEventMIMEParseErrorFailOpen(t *testing.T) {
-	// Feed a non-existent spool path. ParseSpoolMessage will return an error
-	// and emitFinding should be called (email_av_parse_error), but because
-	// tempfail is false and evt.needResp is false, no response write.
+	// A genuine (non-ENOENT) header read failure must still surface an
+	// email_av_parse_error finding. We make the -H path a directory so
+	// os.ReadFile returns EISDIR, which is distinct from the reception-time
+	// race (ENOENT) that MAIL-03 allows silently. tempfail is false and
+	// needResp is false, so no response is written.
 	dir := t.TempDir()
+	msgID := "1parse-000000-EE"
+	bodyPath := filepath.Join(dir, msgID+"-D")
+	if err := os.WriteFile(bodyPath, []byte(msgID+"-D\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, msgID+"-H"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	ch := make(chan alert.Finding, 4)
 	cfg := &config.Config{}
 	cfg.EmailAV.MaxAttachmentSize = 1024 * 1024
@@ -240,7 +253,7 @@ func TestSpoolWatcherHandleSpoolEventMIMEParseErrorFailOpen(t *testing.T) {
 	}
 
 	evt := spoolEvent{
-		path:     dir + "/nonexistent-D",
+		path:     bodyPath,
 		fd:       tmpFd,
 		pid:      0,
 		needResp: false, // notification mode, no permission response needed

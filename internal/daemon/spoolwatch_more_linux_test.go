@@ -5,6 +5,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,29 @@ import (
 	"github.com/pidginhost/csm/internal/emailav"
 	emime "github.com/pidginhost/csm/internal/mime"
 )
+
+// eximHdrLine formats one real-format Exim -H header line:
+// "<byte-count><flag> <header>\n". The count is the header text length
+// including its terminating newline; flag is 'F'/'T'/'P' for From/To/Received
+// and a space for unflagged headers. Mirrors genuine cPanel-Exim spool output
+// so these fixtures exercise the same parse path production uses.
+func eximHdrLine(flag byte, header string) string {
+	return fmt.Sprintf("%d%c %s\n", len(header)+1, flag, header)
+}
+
+// eximPreamble returns the -H envelope preamble (message-id marker line,
+// envelope-user line, sender, options, single-recipient block) followed by the
+// blank separator that precedes the RFC header section.
+func eximPreamble(msgID string) string {
+	return msgID + "-H\n" +
+		"cpuser 1000 1000\n" +
+		"<sender@example.com>\n" +
+		"1777409000 0\n" +
+		"-local\n" +
+		"1\n" +
+		"recipient@example.com\n" +
+		"\n"
+}
 
 func TestResolveEmailAVTempDirCreatesPrivateDirectory(t *testing.T) {
 	stateDir := t.TempDir()
@@ -198,10 +222,22 @@ func TestSpoolWatcherDrainAndCloseIdempotent(t *testing.T) {
 	}
 }
 
-// --- handleSpoolEvent: tempfail mode with parse error → FAN_DENY response
+// --- handleSpoolEvent: tempfail mode with a genuine parse error → FAN_DENY
 
 func TestSpoolWatcherHandleSpoolEventTempfailParseErrorDenies(t *testing.T) {
 	dir := t.TempDir()
+
+	// A genuine (non-ENOENT) header failure must still defer in tempfail mode.
+	// Make the -H path a directory so os.ReadFile returns EISDIR, distinct from
+	// the reception-time race (ENOENT) that MAIL-03 allows silently.
+	msgID := "1tmpf-000000-DD"
+	bodyPath := filepath.Join(dir, msgID+"-D")
+	if err := os.WriteFile(bodyPath, []byte(msgID+"-D\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, msgID+"-H"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Wakeup pipe whose read end becomes the "event fd" (so the deferred
 	// unix.Close on evt.fd is harmless).
@@ -234,7 +270,7 @@ func TestSpoolWatcherHandleSpoolEventTempfailParseErrorDenies(t *testing.T) {
 	defer sw.closeFd()
 
 	evt := spoolEvent{
-		path:     filepath.Join(dir, "missing-D"),
+		path:     bodyPath,
 		fd:       evtPipe[0],
 		needResp: true, // exercise tempfail branch
 	}
@@ -267,23 +303,22 @@ func TestSpoolWatcherHandleSpoolEventTempfailParseErrorDenies(t *testing.T) {
 
 // --- handleSpoolEvent: clean message with no attachments allows ----------
 
-// buildMinimalEximSpool writes a minimal Exim -H/-D pair with no attachments.
+// buildMinimalEximSpool writes a minimal real-format Exim -H/-D pair with no
+// attachments.
 func buildMinimalEximSpool(t *testing.T, dir, msgID string) {
 	t.Helper()
-	header := "Exim message header file\n" +
-		msgID + "\n" +
-		"From: sender@example.com\n" +
-		"To: recipient@example.com\n" +
-		"Subject: hello\n" +
-		"MIME-Version: 1.0\n" +
-		"Content-Type: text/plain; charset=us-ascii\n" +
-		"\n"
+	header := eximPreamble(msgID) +
+		eximHdrLine('F', "From: sender@example.com") +
+		eximHdrLine('T', "To: recipient@example.com") +
+		eximHdrLine(' ', "Subject: hello") +
+		eximHdrLine(' ', "MIME-Version: 1.0") +
+		eximHdrLine(' ', "Content-Type: text/plain; charset=us-ascii")
 	hPath := filepath.Join(dir, msgID+"-H")
 	dPath := filepath.Join(dir, msgID+"-D")
 	if err := os.WriteFile(hPath, []byte(header), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dPath, []byte("just a plain text body, no attachments\n"), 0644); err != nil {
+	if err := os.WriteFile(dPath, []byte(msgID+"-D\njust a plain text body, no attachments\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -419,20 +454,18 @@ func buildEximSpoolWithAttachment(t *testing.T, dir, msgID string) {
 		encoded + "\r\n" +
 		"--" + boundary + "--\r\n"
 
-	header := "Exim message header file\n" +
-		msgID + "\n" +
-		"From: sender@example.com\n" +
-		"To: recipient@example.com\n" +
-		"Subject: with attachment\n" +
-		"MIME-Version: 1.0\n" +
-		"Content-Type: multipart/mixed; boundary=\"" + boundary + "\"\n" +
-		"\n"
+	header := eximPreamble(msgID) +
+		eximHdrLine('F', "From: sender@example.com") +
+		eximHdrLine('T', "To: recipient@example.com") +
+		eximHdrLine(' ', "Subject: with attachment") +
+		eximHdrLine(' ', "MIME-Version: 1.0") +
+		eximHdrLine(' ', "Content-Type: multipart/mixed; boundary=\""+boundary+"\"")
 	hPath := filepath.Join(dir, msgID+"-H")
 	dPath := filepath.Join(dir, msgID+"-D")
 	if err := os.WriteFile(hPath, []byte(header), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dPath, []byte(body), 0644); err != nil {
+	if err := os.WriteFile(dPath, []byte(msgID+"-D\n"+body), 0644); err != nil {
 		t.Fatal(err)
 	}
 }
