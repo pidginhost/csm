@@ -90,7 +90,7 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 		// almost certainly crashed mid-scan; report an error so the
 		// orchestrator routes the message conservatively instead of
 		// shipping it as "clean".
-		if !s.Available() {
+		if backend.RuleCount() == 0 {
 			return Verdict{}, fmt.Errorf("yara backend became unavailable during scan")
 		}
 		return Verdict{Infected: false}, nil

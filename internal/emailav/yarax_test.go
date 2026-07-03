@@ -30,6 +30,21 @@ func (f *fakeBackend) ScanBytes(data []byte) []yara.Match {
 func (f *fakeBackend) Reload() error  { return nil }
 func (f *fakeBackend) RuleCount() int { return f.ruleCount }
 
+type activeSwapBackend struct {
+	ruleCount int
+	scanned   [][]byte
+	swapTo    yara.Backend
+}
+
+func (b *activeSwapBackend) ScanFile(string, int) []yara.Match { return nil }
+func (b *activeSwapBackend) ScanBytes(data []byte) []yara.Match {
+	b.scanned = append(b.scanned, append([]byte(nil), data...))
+	yara.SetActive(b.swapTo)
+	return nil
+}
+func (b *activeSwapBackend) Reload() error  { return nil }
+func (b *activeSwapBackend) RuleCount() int { return b.ruleCount }
+
 func TestYaraXScannerNameAndAvailability(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -193,6 +208,32 @@ func TestActiveYaraXScannerFollowsBackendSwap(t *testing.T) {
 	}
 	if len(b.scanned) != 1 {
 		t.Fatalf("new active backend was not used, scans=%d", len(b.scanned))
+	}
+}
+
+func TestActiveYaraXScannerUsesScannedBackendForPostScanHealth(t *testing.T) {
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	b := &activeSwapBackend{
+		ruleCount: 1,
+		swapTo:    &fakeBackend{ruleCount: 0},
+	}
+	yara.SetActive(b)
+	s := NewActiveYaraXScanner()
+
+	tmp := filepath.Join(t.TempDir(), "x.bin")
+	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Scan(tmp)
+	if err != nil {
+		t.Fatalf("Scan should use the scanned backend health, got error: %v", err)
+	}
+	if v.Infected {
+		t.Fatal("clean scan reported infected")
+	}
+	if len(b.scanned) != 1 {
+		t.Fatalf("scan backend was not used, scans=%d", len(b.scanned))
 	}
 }
 

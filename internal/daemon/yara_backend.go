@@ -176,15 +176,36 @@ func retryStart(start func() error, stop <-chan struct{}, minBackoff, maxBackoff
 		case <-stop:
 			return false
 		}
+		if stopRequested(stop) {
+			return false
+		}
 		if err := start(); err == nil {
+			if stopRequested(stop) {
+				return false
+			}
 			return true
 		} else if attempt == alertAfter && onPersistent != nil {
+			if stopRequested(stop) {
+				return false
+			}
 			onPersistent(attempt, err)
 		}
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
 		}
+	}
+}
+
+func stopRequested(stop <-chan struct{}) bool {
+	if stop == nil {
+		return false
+	}
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
 	}
 }
 

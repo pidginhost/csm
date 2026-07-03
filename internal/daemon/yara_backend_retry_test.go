@@ -55,6 +55,49 @@ func TestRetryStartStopsOnSignal(t *testing.T) {
 	}
 }
 
+func TestRetryStartDoesNotSucceedAfterStopDuringStart(t *testing.T) {
+	stop := make(chan struct{})
+	calls := 0
+
+	ok := retryStart(
+		func() error {
+			calls++
+			close(stop)
+			return nil
+		},
+		stop,
+		time.Millisecond, time.Millisecond, 1,
+		nil,
+	)
+	if ok {
+		t.Fatal("retryStart must not report success after stop races with start")
+	}
+	if calls != 1 {
+		t.Fatalf("start calls = %d, want 1", calls)
+	}
+}
+
+func TestRetryStartSuppressesPersistentAlertAfterStopDuringFailure(t *testing.T) {
+	stop := make(chan struct{})
+	persistent := 0
+
+	ok := retryStart(
+		func() error {
+			close(stop)
+			return errors.New("cancelled start")
+		},
+		stop,
+		time.Millisecond, time.Millisecond, 1,
+		func(attempt int, err error) { persistent++ },
+	)
+	if ok {
+		t.Fatal("retryStart must not report success after stop")
+	}
+	if persistent != 0 {
+		t.Fatalf("persistent callback fired during stop: %d", persistent)
+	}
+}
+
 func TestRetryStartWithStopContextCancelsInFlightStart(t *testing.T) {
 	stop := make(chan struct{})
 	entered := make(chan struct{})
