@@ -26,7 +26,18 @@ var fileIndexScanCount int32
 // fileIndexShrinkPromoteThreshold consecutive shrinking scans the smaller index
 // is promoted as the new baseline, so new-file detection resumes instead of
 // forever diffing against a stale, permanently-larger previous index.
+// The live CheckFileIndex path is serialized by fileIndexLiveScanGate, so this
+// counter advances once per completed stateful index build rather than racing
+// between a periodic deep scan and an operator-triggered tier run.
 var fileIndexShrinkSkips int32
+
+// fileIndexLiveScanGate serializes the stateful CheckFileIndex path. The
+// scanner reads and writes fileindex.current, fileindex.previous, dircache.json,
+// and the shrink streak as one logical baseline update; overlapping live runs
+// can otherwise double-count one shrink window or compare against a half-written
+// peer scan. ForceFileIndex audit scans return before this gate because they do
+// not touch live baseline state.
+var fileIndexLiveScanGate = make(chan struct{}, 1)
 
 // fileIndexShrinkPromoteThreshold is how many consecutive shrinking scans must
 // occur before the smaller index becomes the baseline. Three deep cycles is
@@ -38,12 +49,19 @@ const fileIndexShrinkPromoteThreshold = 3
 // evaluateFileIndexShrink classifies the current-vs-previous index sizes and
 // advances the consecutive-shrink counter. isShrink reports whether this scan
 // tripped the mass-deletion guard (an empty current against a populated
-// previous, or a current below half the previous). promote reports whether the
-// shrink has now persisted for fileIndexShrinkPromoteThreshold consecutive
-// scans, in which case the caller must adopt the smaller index as the baseline.
+// previous, or a non-empty current below half the previous). promote reports
+// whether the shrink has now persisted for fileIndexShrinkPromoteThreshold
+// consecutive scans, in which case the caller must adopt the smaller index as
+// the baseline. Empty current indexes are never promoted: a persistent read
+// failure has the same shape, and adopting it would make recovery alert on
+// every indexed file as if the whole host were new.
 // A non-shrink scan resets the streak so only *consecutive* shrinks promote.
 func evaluateFileIndexShrink(prevLen, curLen int) (isShrink, promote bool) {
-	isShrink = (prevLen > 10 && curLen == 0) || (prevLen > 0 && curLen < prevLen/2)
+	if prevLen > 10 && curLen == 0 {
+		atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+		return true, false
+	}
+	isShrink = prevLen > 0 && curLen > 0 && curLen*2 < prevLen
 	if !isShrink {
 		atomic.StoreInt32(&fileIndexShrinkSkips, 0)
 		return false, false
@@ -53,6 +71,25 @@ func evaluateFileIndexShrink(prevLen, curLen int) (isShrink, promote bool) {
 		return true, true
 	}
 	return true, false
+}
+
+func acquireFileIndexLiveScan(ctx context.Context) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case fileIndexLiveScanGate <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func releaseFileIndexLiveScan() {
+	<-fileIndexLiveScanGate
 }
 
 // suspiciousExtensions are file extensions that should never appear in web roots.
@@ -102,6 +139,50 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 	return mtime != prev
 }
 
+type subtreeChangeTracker struct {
+	cache        dirMtimeCache
+	changedBelow map[string]struct{}
+	built        bool
+}
+
+func newSubtreeChangeTracker(cache dirMtimeCache) *subtreeChangeTracker {
+	snapshot := make(dirMtimeCache, len(cache))
+	for dir, mtime := range cache {
+		snapshot[dir] = mtime
+	}
+	return &subtreeChangeTracker{cache: snapshot}
+}
+
+func (t *subtreeChangeTracker) hasChangedDir(ctx context.Context, dir string) bool {
+	if t == nil {
+		return false
+	}
+	if !t.built {
+		t.build(ctx)
+	}
+	_, ok := t.changedBelow[dir]
+	return ok
+}
+
+func (t *subtreeChangeTracker) build(ctx context.Context) {
+	t.built = true
+	t.changedBelow = make(map[string]struct{})
+	for cached, mtime := range t.cache {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		info, err := osFS.Stat(cached)
+		if err == nil && info.ModTime().Unix() == mtime {
+			continue
+		}
+		for parent := filepath.Dir(cached); parent != "." && parent != string(filepath.Separator); parent = filepath.Dir(parent) {
+			if _, ok := t.cache[parent]; ok {
+				t.changedBelow[parent] = struct{}{}
+			}
+		}
+	}
+}
+
 // subtreeHasChangedDir reports whether any directory beneath dir that a prior
 // scan already cached now has a different mtime, or has become unreadable. It
 // only reads -- the cache is left untouched so the follow-up rescan still
@@ -113,17 +194,7 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 // previous index and never notice the new file until the periodic forced full
 // scan. Checking every cached descendant closes that window.
 func subtreeHasChangedDir(dir string, cache dirMtimeCache) bool {
-	prefix := dir + string(filepath.Separator)
-	for cached, mtime := range cache {
-		if cached == dir || !strings.HasPrefix(cached, prefix) {
-			continue
-		}
-		info, err := osFS.Stat(cached)
-		if err != nil || info.ModTime().Unix() != mtime {
-			return true
-		}
-	}
-	return false
+	return newSubtreeChangeTracker(cache).hasChangedDir(context.Background(), dir)
 }
 
 // CheckFileIndex builds an index of suspicious files using pure Go directory
@@ -157,6 +228,11 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		// All entries are "new" -- diff against empty previous set.
 		return checkFileIndexAnalyzeNewFiles(ctx, cfg, currentEntries)
 	}
+
+	if !acquireFileIndexLiveScan(ctx) {
+		return nil
+	}
+	defer releaseFileIndexLiveScan()
 
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)
 	forceFullScan := scanNum%6 == 0 // full rescan every 6th cycle
@@ -195,26 +271,6 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		return nil
 	}
 
-	// A large shrink (mass deletion, a WP install removed, or a transient read
-	// failure) must not instantly flush the baseline: promoting an empty or
-	// much-smaller index would make every surviving file look "new" next cycle
-	// and flood alerts. But the guard must also self-heal -- once the shrink has
-	// persisted across enough scans to be the steady state, adopt the smaller
-	// index as the baseline so new-file detection resumes instead of diffing
-	// against a stale, permanently-larger previous index forever.
-	if isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries)); isShrink {
-		if promote {
-			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
-				fileIndexShrinkPromoteThreshold, len(currentEntries), len(previousEntries))
-			copyFile(currentPath, previousPath)
-		} else {
-			fmt.Fprintf(os.Stderr, "file_index: current index (%d) shrank vs previous (%d); skipping diff this cycle\n",
-				len(currentEntries), len(previousEntries))
-		}
-		return nil
-	}
-
-	// Diff
 	prevSet := make(map[string]bool, len(previousEntries))
 	for _, e := range previousEntries {
 		prevSet[e] = true
@@ -227,9 +283,54 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		}
 	}
 
+	// A large shrink (mass deletion, a WP install removed, or a transient read
+	// failure) must not instantly flush the baseline: promoting an empty or
+	// much-smaller index would make every surviving file look "new" next cycle
+	// and flood alerts. Still, entries that are present in the shrunken current
+	// index but absent from the old baseline are genuinely new and must be
+	// classified now. Non-promoting shrink cycles merge those paths into the old
+	// baseline so they do not alert repeatedly while the deletion guard is still
+	// preserving the removed paths against recovery floods.
+	if isShrink, promote := evaluateFileIndexShrink(len(previousEntries), len(currentEntries)); isShrink {
+		findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
+		if promote {
+			fmt.Fprintf(os.Stderr, "file_index: shrink persisted %d scans; adopting smaller index (%d entries, was %d) as new baseline\n",
+				fileIndexShrinkPromoteThreshold, len(currentEntries), len(previousEntries))
+			copyFile(currentPath, previousPath)
+		} else {
+			if len(newFiles) > 0 {
+				writeIndex(previousPath, mergeIndexEntries(previousEntries, newFiles))
+			}
+			fmt.Fprintf(os.Stderr, "file_index: current index (%d) shrank vs previous (%d); preserving prior baseline this cycle\n",
+				len(currentEntries), len(previousEntries))
+		}
+		return findings
+	}
+
 	findings := checkFileIndexAnalyzeNewFiles(ctx, cfg, newFiles)
 	copyFile(currentPath, previousPath)
 	return findings
+}
+
+func mergeIndexEntries(base, extra []string) []string {
+	seen := make(map[string]bool, len(base)+len(extra))
+	merged := make([]string, 0, len(base)+len(extra))
+	for _, e := range base {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		merged = append(merged, e)
+	}
+	for _, e := range extra {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		merged = append(merged, e)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // checkFileIndexAnalyzeNewFiles classifies a list of newly-detected file paths
@@ -419,6 +520,11 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		return nil
 	}
 
+	var subtreeChanges *subtreeChangeTracker
+	if !forceFullScan {
+		subtreeChanges = newSubtreeChangeTracker(dirCache)
+	}
+
 	for _, homeEntry := range homeDirs {
 		// A cancelled scan must stop walking and let the caller discard the
 		// partial index rather than promote it as the new baseline.
@@ -471,7 +577,7 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 			if ctx.Err() != nil {
 				return entries
 			}
-			scanDirForPHPContext(ctx, uploadsDir, 6, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
+			scanDirForPHPContextWithTracker(ctx, uploadsDir, 6, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, subtreeChanges, &entries)
 		}
 
 		// Scan sensitive WP directories for any PHP files
@@ -479,7 +585,7 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 			if ctx.Err() != nil {
 				return entries
 			}
-			scanDirForPHPContext(ctx, sensitiveDir, 4, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, &entries)
+			scanDirForPHPContextWithTracker(ctx, sensitiveDir, 4, dirCache, prevByDir, forceFullScan, phpHandlerOverlay{}, subtreeChanges, &entries)
 		}
 
 		// Scan .config for executables
@@ -487,7 +593,7 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		if ctx.Err() != nil {
 			return entries
 		}
-		scanDirForExecutablesContext(ctx, configDir, 3, dirCache, prevByDir, forceFullScan, &entries)
+		scanDirForExecutablesContextWithTracker(ctx, configDir, 3, dirCache, prevByDir, forceFullScan, subtreeChanges, &entries)
 	}
 
 	if AccountFromContext(ctx) == "" {
@@ -496,7 +602,7 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 			if ctx.Err() != nil {
 				return entries
 			}
-			scanDirForSuspiciousExtContext(ctx, tmpDir, 2, dirCache, prevByDir, forceFullScan, &entries)
+			scanDirForSuspiciousExtContextWithTracker(ctx, tmpDir, 2, dirCache, prevByDir, forceFullScan, subtreeChanges, &entries)
 		}
 	}
 
@@ -511,6 +617,14 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 }
 
 func scanDirForPHPContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, entries *[]string) {
+	var subtreeChanges *subtreeChangeTracker
+	if !forceFullScan {
+		subtreeChanges = newSubtreeChangeTracker(cache)
+	}
+	scanDirForPHPContextWithTracker(ctx, dir, maxDepth, cache, prev, forceFullScan, overlay, subtreeChanges, entries)
+}
+
+func scanDirForPHPContextWithTracker(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, overlay phpHandlerOverlay, subtreeChanges *subtreeChangeTracker, entries *[]string) {
 	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
@@ -526,7 +640,14 @@ func scanDirForPHPContext(ctx context.Context, dir string, maxDepth int, cache d
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed && !subtreeHasChangedDir(dir, cache) {
+	subtreeChanged := false
+	if !changed {
+		subtreeChanged = subtreeChanges.hasChangedDir(ctx, dir)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed && !subtreeChanged {
 		// dir's mtime is unchanged and no cached subdirectory changed, so the
 		// whole subtree is stable: carry the previous entries forward without
 		// re-reading disk.
@@ -550,7 +671,7 @@ func scanDirForPHPContext(ctx context.Context, dir string, maxDepth int, cache d
 		fullPath := filepath.Join(dir, name)
 
 		if entry.IsDir() {
-			scanDirForPHPContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, overlay, entries)
+			scanDirForPHPContextWithTracker(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, overlay, subtreeChanges, entries)
 			continue
 		}
 
@@ -573,6 +694,14 @@ func scanDirForExecutables(dir string, maxDepth int, cache dirMtimeCache, prev m
 }
 
 func scanDirForExecutablesContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
+	var subtreeChanges *subtreeChangeTracker
+	if !forceFullScan {
+		subtreeChanges = newSubtreeChangeTracker(cache)
+	}
+	scanDirForExecutablesContextWithTracker(ctx, dir, maxDepth, cache, prev, forceFullScan, subtreeChanges, entries)
+}
+
+func scanDirForExecutablesContextWithTracker(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, subtreeChanges *subtreeChangeTracker, entries *[]string) {
 	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
@@ -580,7 +709,14 @@ func scanDirForExecutablesContext(ctx context.Context, dir string, maxDepth int,
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed && !subtreeHasChangedDir(dir, cache) {
+	subtreeChanged := false
+	if !changed {
+		subtreeChanged = subtreeChanges.hasChangedDir(ctx, dir)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed && !subtreeChanged {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
@@ -596,7 +732,7 @@ func scanDirForExecutablesContext(ctx context.Context, dir string, maxDepth int,
 		}
 		fullPath := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
-			scanDirForExecutablesContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
+			scanDirForExecutablesContextWithTracker(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, subtreeChanges, entries)
 			continue
 		}
 		info, err := entry.Info()
@@ -615,6 +751,14 @@ func scanDirForSuspiciousExt(dir string, maxDepth int, cache dirMtimeCache, prev
 }
 
 func scanDirForSuspiciousExtContext(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, entries *[]string) {
+	var subtreeChanges *subtreeChangeTracker
+	if !forceFullScan {
+		subtreeChanges = newSubtreeChangeTracker(cache)
+	}
+	scanDirForSuspiciousExtContextWithTracker(ctx, dir, maxDepth, cache, prev, forceFullScan, subtreeChanges, entries)
+}
+
+func scanDirForSuspiciousExtContextWithTracker(ctx context.Context, dir string, maxDepth int, cache dirMtimeCache, prev map[string][]string, forceFullScan bool, subtreeChanges *subtreeChangeTracker, entries *[]string) {
 	if maxDepth <= 0 || ctx.Err() != nil {
 		return
 	}
@@ -622,7 +766,14 @@ func scanDirForSuspiciousExtContext(ctx context.Context, dir string, maxDepth in
 	if ctx.Err() != nil {
 		return
 	}
-	if !changed && !subtreeHasChangedDir(dir, cache) {
+	subtreeChanged := false
+	if !changed {
+		subtreeChanged = subtreeChanges.hasChangedDir(ctx, dir)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if !changed && !subtreeChanged {
 		*entries = append(*entries, prev[dir]...)
 		return
 	}
@@ -639,7 +790,7 @@ func scanDirForSuspiciousExtContext(ctx context.Context, dir string, maxDepth in
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 		if entry.IsDir() {
-			scanDirForSuspiciousExtContext(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, entries)
+			scanDirForSuspiciousExtContextWithTracker(ctx, fullPath, maxDepth-1, cache, prev, forceFullScan, subtreeChanges, entries)
 			continue
 		}
 		ext := filepath.Ext(strings.ToLower(name))

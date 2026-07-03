@@ -584,12 +584,20 @@ func countIndexLines(t *testing.T, path string) int {
 	return n
 }
 
+func setFileIndexShrinkSkips(t *testing.T, n int32) {
+	t.Helper()
+	atomic.StoreInt32(&fileIndexShrinkSkips, n)
+	t.Cleanup(func() {
+		atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	})
+}
+
 // A legitimate >50% shrink (a WP install genuinely removed) must NOT instantly
 // flush the baseline, but it also must NOT wedge forever. After
 // fileIndexShrinkPromoteThreshold consecutive shrinking scans the smaller index
 // is promoted as the new baseline, so new-file detection resumes on its own.
 func TestCheckFileIndexShrinkWedgeSelfHeals(t *testing.T) {
-	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	setFileIndexShrinkSkips(t, 0)
 	stateDir := t.TempDir()
 	previousPath := filepath.Join(stateDir, "fileindex.previous")
 	uploadsPath := "/home/alice/public_html/wp-content/uploads"
@@ -614,7 +622,7 @@ func TestCheckFileIndexShrinkWedgeSelfHeals(t *testing.T) {
 
 	// Cycles 2..threshold-1: index shrinks hard. Baseline must stay intact
 	// (the guard's safety purpose: a mass deletion does not instantly flush).
-	files = phpDirEntries("keepone.php", "keeptwo.php")
+	files = phpDirEntries("f00.php", "f01.php")
 	for cycle := 2; cycle < fileIndexShrinkPromoteThreshold+1; cycle++ {
 		if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
 			t.Fatalf("shrink cycle %d must skip diff (no findings), got %+v", cycle, got)
@@ -634,7 +642,7 @@ func TestCheckFileIndexShrinkWedgeSelfHeals(t *testing.T) {
 	}
 
 	// Detection has resumed: a new webshell against the new baseline surfaces.
-	files = phpDirEntries("keepone.php", "keeptwo.php", "shell.php")
+	files = phpDirEntries("f00.php", "f01.php", "shell.php")
 	got := CheckFileIndex(context.Background(), cfg, nil)
 	newShell := filepath.Join(uploadsPath, "shell.php")
 	if !hasFindingPath(got, "new_webshell_file", newShell) {
@@ -642,10 +650,106 @@ func TestCheckFileIndexShrinkWedgeSelfHeals(t *testing.T) {
 	}
 }
 
+func TestCheckFileIndexEmptyCurrentShrinkDoesNotPromote(t *testing.T) {
+	setFileIndexShrinkSkips(t, 0)
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	uploadsPath := "/home/alice/public_html/wp-content/uploads"
+
+	var big []string
+	for i := 0; i < 12; i++ {
+		big = append(big, fmt.Sprintf("f%02d.php", i))
+	}
+	files := phpDirEntries(big...)
+	var mtime int64
+	withMockOS(t, stateAwareFileIndexMock(stateDir, uploadsPath, &files, &mtime))
+
+	cfg := &config.Config{StatePath: stateDir}
+	if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+		t.Fatalf("baseline scan must not emit findings, got %+v", got)
+	}
+	if n := countIndexLines(t, previousPath); n != 12 {
+		t.Fatalf("baseline previous index = %d entries, want 12", n)
+	}
+
+	files = nil
+	for cycle := 1; cycle <= fileIndexShrinkPromoteThreshold+1; cycle++ {
+		if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+			t.Fatalf("empty-current cycle %d must skip diff, got %+v", cycle, got)
+		}
+		if n := countIndexLines(t, previousPath); n != 12 {
+			t.Fatalf("empty-current cycle %d promoted empty baseline to %d entries, want 12", cycle, n)
+		}
+	}
+}
+
+func TestCheckFileIndexShrinkStillAlertsNewFiles(t *testing.T) {
+	setFileIndexShrinkSkips(t, 0)
+	stateDir := t.TempDir()
+	previousPath := filepath.Join(stateDir, "fileindex.previous")
+	uploadsPath := "/home/alice/public_html/wp-content/uploads"
+
+	baseline := []string{"keepone.php"}
+	for i := 0; i < 11; i++ {
+		baseline = append(baseline, fmt.Sprintf("f%02d.php", i))
+	}
+	files := phpDirEntries(baseline...)
+	var mtime int64
+	withMockOS(t, stateAwareFileIndexMock(stateDir, uploadsPath, &files, &mtime))
+
+	cfg := &config.Config{StatePath: stateDir}
+	if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+		t.Fatalf("baseline scan must not emit findings, got %+v", got)
+	}
+	if n := countIndexLines(t, previousPath); n != 12 {
+		t.Fatalf("baseline previous index = %d entries, want 12", n)
+	}
+
+	files = phpDirEntries("keepone.php", "shell.php")
+	shell := filepath.Join(uploadsPath, "shell.php")
+	got := CheckFileIndex(context.Background(), cfg, nil)
+	if !hasFindingPath(got, "new_webshell_file", shell) {
+		t.Fatalf("shrink cycle must still alert on new paths, got %+v", got)
+	}
+	if n := countIndexLines(t, previousPath); n != 13 {
+		t.Fatalf("shrink cycle must merge alerted path into preserved baseline, got %d entries, want 13", n)
+	}
+
+	if got := CheckFileIndex(context.Background(), cfg, nil); len(got) != 0 {
+		t.Fatalf("already-alerted shrink path must not repeat, got %+v", got)
+	}
+}
+
+func TestCheckFileIndexCanceledWhileLiveScanActiveDoesNotBlock(t *testing.T) {
+	select {
+	case fileIndexLiveScanGate <- struct{}{}:
+		t.Cleanup(func() { <-fileIndexLiveScanGate })
+	default:
+		t.Fatal("file index live scan gate unexpectedly held")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan []alert.Finding, 1)
+	go func() {
+		done <- CheckFileIndex(ctx, &config.Config{StatePath: t.TempDir()}, nil)
+	}()
+
+	select {
+	case got := <-done:
+		if len(got) != 0 {
+			t.Fatalf("canceled scan returned findings: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled scan blocked behind active live file-index run")
+	}
+}
+
 // --- CHK-R02: evaluateFileIndexShrink threshold logic --------------------
 
 func TestEvaluateFileIndexShrinkNonShrinkResetsCounter(t *testing.T) {
-	atomic.StoreInt32(&fileIndexShrinkSkips, 2) // pretend two shrinks happened
+	setFileIndexShrinkSkips(t, 2) // pretend two shrinks happened
 	isShrink, promote := evaluateFileIndexShrink(100, 100)
 	if isShrink || promote {
 		t.Fatalf("equal sizes are not a shrink: isShrink=%v promote=%v", isShrink, promote)
@@ -656,7 +760,7 @@ func TestEvaluateFileIndexShrinkNonShrinkResetsCounter(t *testing.T) {
 }
 
 func TestEvaluateFileIndexShrinkPromotesAfterThreshold(t *testing.T) {
-	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	setFileIndexShrinkSkips(t, 0)
 	for i := 1; i < fileIndexShrinkPromoteThreshold; i++ {
 		isShrink, promote := evaluateFileIndexShrink(100, 2)
 		if !isShrink || promote {
@@ -678,7 +782,7 @@ func TestEvaluateFileIndexShrinkStreakResetsOnRecovery(t *testing.T) {
 	if fileIndexShrinkPromoteThreshold < 3 {
 		t.Skipf("test assumes threshold >= 3, got %d", fileIndexShrinkPromoteThreshold)
 	}
-	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	setFileIndexShrinkSkips(t, 0)
 	evaluateFileIndexShrink(100, 2) // streak 1
 	evaluateFileIndexShrink(100, 2) // streak 2
 	evaluateFileIndexShrink(100, 100)
@@ -695,10 +799,26 @@ func TestEvaluateFileIndexShrinkStreakResetsOnRecovery(t *testing.T) {
 // The empty-index guard (previous had many entries, current is zero) is the
 // extreme shrink case and self-heals through the same counter.
 func TestEvaluateFileIndexShrinkEmptyCurrentIsShrink(t *testing.T) {
-	atomic.StoreInt32(&fileIndexShrinkSkips, 0)
+	setFileIndexShrinkSkips(t, 0)
 	isShrink, _ := evaluateFileIndexShrink(50, 0)
 	if !isShrink {
 		t.Fatal("empty current against a large previous must count as a shrink")
+	}
+}
+
+func TestEvaluateFileIndexShrinkEmptyCurrentDoesNotPromote(t *testing.T) {
+	setFileIndexShrinkSkips(t, 0)
+	for i := 1; i <= fileIndexShrinkPromoteThreshold+1; i++ {
+		isShrink, promote := evaluateFileIndexShrink(50, 0)
+		if !isShrink {
+			t.Fatalf("empty current cycle %d: isShrink=false", i)
+		}
+		if promote {
+			t.Fatalf("empty current cycle %d promoted an empty baseline", i)
+		}
+	}
+	if got := atomic.LoadInt32(&fileIndexShrinkSkips); got != 0 {
+		t.Fatalf("empty current must not advance shrink counter, got %d", got)
 	}
 }
 
@@ -844,5 +964,37 @@ func TestScanDirForPHPStableSubtreeUsesCacheShortcut(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("stable subtree must carry cached entry forward, got %v", entries)
+	}
+}
+
+func TestSubtreeChangeTrackerReusesStatSnapshotAcrossQueries(t *testing.T) {
+	const root = "/home/alice/public_html/wp-content/uploads"
+	base := time.Unix(1234, 0)
+	cache := dirMtimeCache{root: base.Unix()}
+	var children []string
+	for i := 0; i < 40; i++ {
+		child := filepath.Join(root, fmt.Sprintf("d%02d", i))
+		leaf := filepath.Join(child, "leaf")
+		cache[child] = base.Unix()
+		cache[leaf] = base.Unix()
+		children = append(children, child)
+	}
+
+	var statCalls int32
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			atomic.AddInt32(&statCalls, 1)
+			return &fakeFileInfoMtime{name: filepath.Base(name), dir: true, mode: 0o755, mtime: base}, nil
+		},
+	})
+
+	tracker := newSubtreeChangeTracker(cache)
+	for _, child := range children {
+		if tracker.hasChangedDir(context.Background(), child) {
+			t.Fatalf("unchanged child %s reported changed", child)
+		}
+	}
+	if got, want := atomic.LoadInt32(&statCalls), int32(len(cache)); got != want {
+		t.Fatalf("stat calls = %d, want one per cached dir (%d)", got, want)
 	}
 }

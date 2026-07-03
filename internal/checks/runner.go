@@ -460,6 +460,7 @@ var latestVolatileCheckNames = []string{
 	"auto_block",
 	"auto_response",
 	"challenge_route",
+	"check_timeout",
 }
 
 var latestDerivedCheckNames = []string{

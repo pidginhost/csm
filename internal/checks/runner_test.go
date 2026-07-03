@@ -203,6 +203,27 @@ func TestStoreLatestScanFindingsPurgesChallengeRoute(t *testing.T) {
 	}
 }
 
+func TestStoreLatestScanFindingsPurgesCheckTimeout(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "check_timeout", Message: "old timeout"},
+	})
+
+	StoreLatestScanFindings(st, []string{"webshell"}, []alert.Finding{
+		{Severity: alert.Warning, Check: "check_timeout", Message: "new timeout"},
+	})
+
+	if containsFindingCheck(st.LatestFindings(), "check_timeout") {
+		t.Fatalf("check_timeout persisted in latest findings: %+v", st.LatestFindings())
+	}
+	if !isLatestVolatileFinding("check_timeout") {
+		t.Fatal("check_timeout must be classified as a volatile finding")
+	}
+}
+
 func TestStoreLatestScanFindingsNoopsWithoutPurgeOrFindings(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
@@ -1131,9 +1152,8 @@ func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
 	// (or intentionally not stored in the latest set) through its own path, so
 	// runnerFindingNames does not and should not own it.
 	nonScheduledEmitters := map[string]string{
-		"check_timeout":            "emitted by the runner harness itself, not a check function",
 		"account_scan":             "RunAccountScan summary finding, per-account CLI path (not a tier)",
-		"full_scan_file_too_large": "scan-job manager only, never dispatched to the live latest set",
+		"full_scan_file_too_large": "full-scan account audit only, never dispatched to scheduled latest state",
 		"sensitive_file_modified":  "daemon legacy poller CheckSensitiveFiles, not wired into any tier",
 	}
 
