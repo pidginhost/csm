@@ -64,8 +64,9 @@ type Info struct {
 	DomlogGlobs []string
 
 	// Binary paths useful for reload/control.
-	ApacheBinary string
-	NginxBinary  string
+	ApacheBinary    string
+	NginxBinary     string
+	LiteSpeedBinary string
 }
 
 // IsCPanel is a convenience for checks that still need to gate cPanel-only
@@ -125,8 +126,13 @@ type Overrides struct {
 }
 
 var (
-	detected        Info
-	detectedOnce    sync.Once
+	// detectedPtr caches the merged Detect() result. Stored behind an atomic
+	// pointer (not a sync.Once + plain field) so Refresh can replace it after
+	// the daemon has already probed once -- a host that mis-detected its web
+	// server at boot (lsws not yet running) self-heals on a later refresh.
+	detectedPtr atomic.Pointer[Info]
+	detectMu    sync.Mutex // serialises the first Detect() and Refresh writes
+
 	overrideMu      sync.Mutex
 	pendingOverride *Overrides
 )
@@ -160,19 +166,39 @@ var detectedFlag atomic.Bool
 func isDetected() bool { return detectedFlag.Load() }
 
 // Detect inspects the host and returns platform info. The result is cached
-// for the process lifetime — callers that need a fresh probe should use
-// DetectFresh instead.
+// until the next Refresh — callers that need a fresh probe without touching
+// the cache should use DetectFresh instead.
 func Detect() Info {
-	detectedOnce.Do(func() {
-		detected = DetectFresh()
-		overrideMu.Lock()
-		if pendingOverride != nil {
-			detected = applyOverrides(detected, *pendingOverride)
-		}
-		detectedFlag.Store(true)
-		overrideMu.Unlock()
-	})
-	return detected
+	if p := detectedPtr.Load(); p != nil {
+		return *p
+	}
+	detectMu.Lock()
+	defer detectMu.Unlock()
+	// Double-check: another goroutine may have populated the cache while we
+	// waited for the lock.
+	if p := detectedPtr.Load(); p != nil {
+		return *p
+	}
+	i := DetectFreshWithOverrides()
+	detectedPtr.Store(&i)
+	detectedFlag.Store(true)
+	return i
+}
+
+// Refresh re-runs detection (applying any operator overrides) and replaces the
+// cached Detect() result. Intended for a periodic caller so a detection that
+// was wrong at boot -- for example a cPanel+LiteSpeed host probed before lsws
+// finished starting, which pins Apache for everything -- self-heals instead of
+// staying wrong for the daemon's lifetime. An operator web_server.type pin
+// still wins, exactly as it does through Detect(), because
+// DetectFreshWithOverrides re-applies the pending override.
+func Refresh() Info {
+	i := DetectFreshWithOverrides()
+	detectMu.Lock()
+	detectedPtr.Store(&i)
+	detectedFlag.Store(true)
+	detectMu.Unlock()
+	return i
 }
 
 // DetectFresh always re-runs detection, ignoring any cached result.
@@ -268,12 +294,13 @@ func applyOverrides(info Info, o Overrides) Info {
 // ResetForTest clears the cached Detect() result so tests can re-run with
 // different fixtures. Never call from production code.
 func ResetForTest() {
-	overrideMu.Lock()
-	defer overrideMu.Unlock()
-	detected = Info{}
-	detectedOnce = sync.Once{}
-	pendingOverride = nil
+	detectMu.Lock()
+	detectedPtr.Store(nil)
 	detectedFlag.Store(false)
+	detectMu.Unlock()
+	overrideMu.Lock()
+	pendingOverride = nil
+	overrideMu.Unlock()
 }
 
 func detectOS(i *Info) {
@@ -355,7 +382,57 @@ func detectWebServer(i *Info) {
 		}
 	}
 
+	// LiteSpeed ships lshttpd/litespeed under /usr/local/lsws/bin and is not
+	// in PATH under the service unit. A host that serves via LiteSpeed has
+	// this binary on disk even before the lsws service is up, so probing for
+	// it lets detection correct the boot-order misdetect below.
+	for _, p := range []string{"/usr/local/lsws/bin/lshttpd", "/usr/local/lsws/bin/litespeed"} {
+		if _, err := os.Stat(p); err == nil {
+			i.LiteSpeedBinary = p
+			break
+		}
+	}
+	if i.LiteSpeedBinary == "" {
+		if bin, err := exec.LookPath("lshttpd"); err == nil {
+			i.LiteSpeedBinary = bin
+		} else if bin, err := exec.LookPath("litespeed"); err == nil {
+			i.LiteSpeedBinary = bin
+		}
+	}
+
 	i.WebServer = selectWebServer(i.Panel, running, i.ApacheBinary != "", i.NginxBinary != "")
+	i.WebServer = liteSpeedBinaryFallback(i.WebServer, running, i.LiteSpeedBinary != "")
+}
+
+// liteSpeedBinaryFallback corrects the historical boot-order misdetect: when
+// no web server process is running yet, selectWebServer falls back to a
+// binary-only guess and (on cPanel, which always keeps an httpd binary) picks
+// Apache. A LiteSpeed binary present on disk is the strongest signal that this
+// host serves through LiteSpeed, so it outranks that binary-only fallback.
+//
+// It only overrides when nothing is actually running: a live Apache/Nginx
+// process is trusted over an installed-but-idle lsws binary.
+func liteSpeedBinaryFallback(ws WebServer, running map[string]bool, hasLiteSpeedBinary bool) WebServer {
+	if !hasLiteSpeedBinary || anyWebServerRunning(running) {
+		return ws
+	}
+	switch ws {
+	case WSApache, WSNginx, WSNone:
+		return WSLiteSpeed
+	default:
+		return ws
+	}
+}
+
+// anyWebServerRunning reports whether any known web server unit is active, so
+// the binary-only fallbacks only fire when nothing is genuinely serving.
+func anyWebServerRunning(running map[string]bool) bool {
+	for _, up := range running {
+		if up {
+			return true
+		}
+	}
+	return false
 }
 
 // runningServices returns which web server process units are currently
