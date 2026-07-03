@@ -123,11 +123,8 @@ func (s *Scanner) Reload() error {
 			continue
 		}
 
-		if rf.Version > maxVersion {
-			maxVersion = rf.Version
-		}
-
 		// Compile rules
+		rulesBeforeFile := len(allRules)
 		for i := range rf.Rules {
 			rule := &rf.Rules[i]
 			if err := rule.compile(); err != nil {
@@ -139,6 +136,9 @@ func (s *Scanner) Reload() error {
 				rule.MinMatch = 1
 			}
 			allRules = append(allRules, *rule)
+		}
+		if len(allRules) > rulesBeforeFile && rf.Version > maxVersion {
+			maxVersion = rf.Version
 		}
 	}
 

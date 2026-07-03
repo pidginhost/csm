@@ -96,3 +96,42 @@ rules:
 		t.Errorf("LoadError should be cleared after a clean reload, got: %v", s.LoadError())
 	}
 }
+
+func TestReloadVersionIgnoresFilesWithNoLoadedRules(t *testing.T) {
+	dir := t.TempDir()
+	good := `
+version: 3
+rules:
+  - name: ok
+    severity: high
+    category: webshell
+    file_types: [".php"]
+    patterns: ["eval("]
+`
+	badRegexOnly := `
+version: 99
+rules:
+  - name: broken_regex
+    severity: high
+    category: webshell
+    file_types: [".php"]
+    regexes: ["["]
+`
+	if err := os.WriteFile(filepath.Join(dir, "10-good.yml"), []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "20-bad.yml"), []byte(badRegexOnly), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewScanner(dir)
+	if s.LoadError() == nil {
+		t.Fatal("expected bad regex file to be reported")
+	}
+	if s.RuleCount() != 1 {
+		t.Fatalf("expected one usable rule, got %d", s.RuleCount())
+	}
+	if s.Version() != 3 {
+		t.Fatalf("Version = %d, want 3 from installed rules only", s.Version())
+	}
+}
