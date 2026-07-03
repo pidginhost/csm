@@ -129,6 +129,14 @@ func (e *mailIPEntry) establishedGoodConfined(now time.Time, window time.Duratio
 	return named == len(e.times)
 }
 
+func normalizeMailAuthAccount(account string) string {
+	local, domain, ok := strings.Cut(account, "@")
+	if !ok || local == "" || domain == "" {
+		return account
+	}
+	return local + "@" + strings.ToLower(domain)
+}
+
 // recentGoodCount returns how many distinct mailboxes this IP succeeded on
 // recently enough to still be on record (last success within
 // mailGoodSourceTTL), regardless of whether that standing has aged past the
@@ -378,6 +386,7 @@ func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time)
 	cutoff := now.Add(-mailGoodSourceTTL)
 	for ip, accts := range snap {
 		for acct, ts := range accts {
+			acct = normalizeMailAuthAccount(acct)
 			if ip == "" || acct == "" || !validGoodSourceTimes(ts, cutoff) {
 				continue
 			}
@@ -610,6 +619,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
+	account = normalizeMailAuthAccount(account)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -862,6 +872,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	if ip == "" || account == "" {
 		return nil
 	}
+	account = normalizeMailAuthAccount(account)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Successes create per-IP entries too; keep the tracker bounded on every

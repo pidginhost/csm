@@ -1035,12 +1035,91 @@ func recentOutgoingMailHold(domain string) bool {
 // string or a message Subject that contains square brackets -- e.g.
 // T="Order [20260701-123]" -- can no longer be mistaken for the source IP.
 func extractBracketedIP(line string) string {
-	if h := strings.Index(line, " H="); h >= 0 {
-		if ip := firstBracketedIP(line[h:]); ip != "" {
-			return ip
-		}
+	if start, ok := eximHFieldStart(line); ok {
+		return firstHFieldClientIP(line[start:])
+	}
+	if strings.HasPrefix(line, "H=") || strings.Contains(line, " H=") {
+		return ""
 	}
 	return firstBracketedIP(line)
+}
+
+func eximHFieldStart(line string) (int, bool) {
+	if strings.HasPrefix(line, "H=") {
+		return len("H="), true
+	}
+	if h := strings.Index(line, " H="); h >= 0 {
+		if t := strings.Index(line, " T="); t >= 0 && t < h {
+			return 0, false
+		}
+		return h + len(" H="), true
+	}
+	return 0, false
+}
+
+func firstHFieldClientIP(s string) string {
+	parenDepth := 0
+	for i := 0; i < len(s); i++ {
+		if parenDepth == 0 && beginsNextEximField(s[i:]) {
+			return ""
+		}
+		switch s[i] {
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			if parenDepth > 0 {
+				continue
+			}
+			end := strings.IndexByte(s[i+1:], ']')
+			if end < 0 {
+				return ""
+			}
+			candidate := s[i+1 : i+1+end]
+			after := s[i+1+end+1:]
+			if net.ParseIP(candidate) != nil && hClientIPTerminated(after) {
+				return candidate
+			}
+			i += end + 1
+		}
+	}
+	return ""
+}
+
+func beginsNextEximField(s string) bool {
+	if len(s) == 0 || (s[0] != ' ' && s[0] != '\t') {
+		return false
+	}
+	rest := strings.TrimLeft(s, " \t")
+	if strings.HasPrefix(rest, "for ") {
+		return true
+	}
+	eq := strings.IndexByte(rest, '=')
+	if eq <= 0 || eq > 3 {
+		return false
+	}
+	for i := 0; i < eq; i++ {
+		c := rest[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+func hClientIPTerminated(s string) bool {
+	if s == "" {
+		return true
+	}
+	switch s[0] {
+	case ':', ' ', '\t', '\n':
+		return true
+	default:
+		return false
+	}
 }
 
 // extractSetID extracts the account from "(set_id=user@domain)" or "(set_id=user)" in exim logs.

@@ -72,3 +72,24 @@ func TestDaemonExtractBracketedIP_SkipsBracketedHelo(t *testing.T) {
 		t.Errorf("extractBracketedIP = %q, want 198.51.100.9", got)
 	}
 }
+
+func TestDaemonExtractBracketedIP_SkipsBracketedIPInHelo(t *testing.T) {
+	line := `2026-07-01 12:00:00 1abc-DEF-01 <= s@example.com H=nic.example (EHLO [10.0.0.1]) [198.51.100.9]:2525 P=esmtpsa for r@example.net`
+	if got := extractBracketedIP(line); got != "198.51.100.9" {
+		t.Errorf("extractBracketedIP = %q, want 198.51.100.9", got)
+	}
+}
+
+func TestDaemonExtractBracketedIP_DoesNotUseSubjectIPWhenHFieldHasNoClient(t *testing.T) {
+	line := `2026-07-01 12:00:00 1abc-DEF-01 <= s@example.com H=nic.example P=esmtp T="Probe [203.0.113.44]" for r@example.net`
+	if got := extractBracketedIP(line); got != "" {
+		t.Errorf("extractBracketedIP = %q, want empty", got)
+	}
+}
+
+func TestDaemonExtractBracketedIP_DoesNotUseSubjectHFieldSpoof(t *testing.T) {
+	line := `2026-07-01 12:00:00 1abc-DEF-01 <= s@example.com T="Probe H=spoof [203.0.113.44]" for r@example.net`
+	if got := extractBracketedIP(line); got != "" {
+		t.Errorf("extractBracketedIP = %q, want empty", got)
+	}
+}

@@ -685,6 +685,31 @@ func TestMailAuthTracker_NoBruteForceFromEstablishedGoodSource(t *testing.T) {
 	}
 }
 
+func TestMailAuthTracker_EstablishedGoodSourceMatchesMailboxDomainCase(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.22"
+	establishGoodSource(tr, clock, ip, "owner@Example.RO")
+	var block, suspected bool
+	for i := 0; i < 6; i++ {
+		for _, f := range tr.Record(ip, "owner@example.ro") {
+			switch f.Check {
+			case "mail_bruteforce":
+				block = true
+			case "mail_bruteforce_suspected":
+				suspected = true
+			}
+		}
+		clock.advance(30 * time.Second)
+	}
+	if block {
+		t.Fatalf("domain case differences for the same established mailbox must not auto-block")
+	}
+	if !suspected {
+		t.Fatalf("domain case differences for the same established mailbox should surface mail_bruteforce_suspected")
+	}
+}
+
 func TestMailAuthTracker_GoodSourceWindowBoundary(t *testing.T) {
 	start := time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)
 	t.Run("before boundary fires", func(t *testing.T) {
@@ -1157,7 +1182,7 @@ func TestMailAuthTracker_ImportedGoodSourceSurvivesRestart(t *testing.T) {
 	tr := newTestMailTracker(t, clock)
 	now := clock.Now()
 	snap := goodSourceSnapshot{
-		"198.51.100.50": {"office@example.ro": {First: now.Add(-2 * time.Hour), Last: now.Add(-1 * time.Minute)}},
+		"198.51.100.50": {"office@Example.RO": {First: now.Add(-2 * time.Hour), Last: now.Add(-1 * time.Minute)}},
 	}
 	tr.LoadGoodSource(snap, now)
 	var block, suspected bool
