@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,33 +45,56 @@ type Scanner struct {
 	rules    []Rule
 	version  int
 	rulesDir string
+	loadErr  error
 }
 
 // NewScanner creates a scanner that loads rules from the given directory.
 // Returns a scanner with no rules if the directory doesn't exist (not an error).
+// Any load error is retained (see LoadError) so a best-effort init does not
+// hide a corrupt rules directory that silently disabled all detection.
 func NewScanner(rulesDir string) *Scanner {
 	s := &Scanner{rulesDir: rulesDir}
-	_ = s.Reload() // best-effort load on init
+	_ = s.Reload() // best-effort load on init; error retained via LoadError()
 	return s
+}
+
+// LoadError returns the error from the most recent Reload, or nil if the last
+// load was clean. A non-nil value means at least one rule file failed to load
+// (corrupt YAML, unreadable file, bad regex); the rules that did load are still
+// installed. Callers that can alert should surface this loudly at startup.
+func (s *Scanner) LoadError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loadErr
 }
 
 // Reload loads/reloads all .yml and .yaml rule files from the rules directory.
 func (s *Scanner) Reload() error {
 	if s.rulesDir == "" {
+		s.setLoadErr(nil)
 		return nil
 	}
 
 	entries, err := os.ReadDir(s.rulesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			s.setLoadErr(nil)
 			return nil // no rules dir = no rules, not an error
 		}
-		return fmt.Errorf("reading rules dir %s: %w", s.rulesDir, err)
+		e := fmt.Errorf("reading rules dir %s: %w", s.rulesDir, err)
+		s.setLoadErr(e)
+		return e
 	}
 
 	var allRules []Rule
 	maxVersion := 0
 	fileCount := 0
+	// One corrupt or unreadable file must not abort the whole load: an
+	// attacker or a fat-fingered operator dropping one bad file would
+	// otherwise silently disable every other signature. Bad files/rules are
+	// skipped and logged; their errors are aggregated and returned so a
+	// caller that can alert still sees the failure.
+	var loadErrs []error
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -87,12 +111,16 @@ func (s *Scanner) Reload() error {
 		// #nosec G304 -- filepath.Join under operator-configured rulesDir.
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("reading %s: %w", path, err)
+			loadErrs = append(loadErrs, fmt.Errorf("reading %s: %w", path, err))
+			fmt.Fprintf(os.Stderr, "signatures: skipping %s: %v\n", path, err)
+			continue
 		}
 
 		var rf RuleFile
 		if err := yaml.Unmarshal(data, &rf); err != nil {
-			return fmt.Errorf("parsing %s: %w", path, err)
+			loadErrs = append(loadErrs, fmt.Errorf("parsing %s: %w", path, err))
+			fmt.Fprintf(os.Stderr, "signatures: skipping %s: %v\n", path, err)
+			continue
 		}
 
 		if rf.Version > maxVersion {
@@ -103,7 +131,9 @@ func (s *Scanner) Reload() error {
 		for i := range rf.Rules {
 			rule := &rf.Rules[i]
 			if err := rule.compile(); err != nil {
-				return fmt.Errorf("compiling rule %q in %s: %w", rule.Name, path, err)
+				loadErrs = append(loadErrs, fmt.Errorf("compiling rule %q in %s: %w", rule.Name, path, err))
+				fmt.Fprintf(os.Stderr, "signatures: skipping rule %q in %s: %v\n", rule.Name, path, err)
+				continue
 			}
 			if rule.MinMatch == 0 {
 				rule.MinMatch = 1
@@ -117,24 +147,39 @@ func (s *Scanner) Reload() error {
 		hadRules := len(s.rules) > 0
 		s.mu.RUnlock()
 		if hadRules {
-			return fmt.Errorf("no signature rule files found in %s", s.rulesDir)
+			e := fmt.Errorf("no signature rule files found in %s", s.rulesDir)
+			s.setLoadErr(e)
+			return e
 		}
+		s.setLoadErr(nil)
 		return nil
 	}
+
+	// Nothing usable parsed. Preserve any previously-installed rules rather
+	// than wiping detection because the operator broke the only file.
 	if len(allRules) == 0 {
-		return fmt.Errorf("no signature rules loaded from %s", s.rulesDir)
+		err := errors.Join(append(loadErrs, fmt.Errorf("no signature rules loaded from %s", s.rulesDir))...)
+		s.setLoadErr(err)
+		return err
 	}
 
 	s.mu.Lock()
 	s.rules = allRules
 	s.version = maxVersion
+	s.loadErr = errors.Join(loadErrs...)
 	s.mu.Unlock()
 
-	if len(allRules) > 0 {
-		fmt.Fprintf(os.Stderr, "signatures: loaded %d rules (version %d) from %s\n", len(allRules), maxVersion, s.rulesDir)
-	}
+	fmt.Fprintf(os.Stderr, "signatures: loaded %d rules (version %d) from %s\n", len(allRules), maxVersion, s.rulesDir)
 
-	return nil
+	// Rules installed, but report any skipped files so the caller can alert.
+	return errors.Join(loadErrs...)
+}
+
+// setLoadErr records the outcome of a load under the write lock.
+func (s *Scanner) setLoadErr(err error) {
+	s.mu.Lock()
+	s.loadErr = err
+	s.mu.Unlock()
 }
 
 // compile pre-compiles regex patterns for a rule.

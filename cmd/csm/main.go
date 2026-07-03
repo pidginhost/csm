@@ -310,10 +310,16 @@ func runDaemon() {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
-	// Initialize signature scanner
+	// Initialize signature scanner. A corrupt rules file that disables
+	// detection must be loud, not silently swallowed by best-effort load.
 	scanner := signatures.Init(cfg.Signatures.RulesDir)
+	if err := scanner.LoadError(); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] signature rules failed to load cleanly: %v\n", err)
+	}
 	if scanner.RuleCount() > 0 {
 		fmt.Fprintf(os.Stderr, "Loaded %d signature rules (version %d)\n", scanner.RuleCount(), scanner.Version())
+	} else if cfg.Signatures.RulesDir != "" {
+		fmt.Fprintf(os.Stderr, "[WARN] no signature rules loaded from %s -- signature scanning is disabled\n", cfg.Signatures.RulesDir)
 	}
 
 	// One-shot migration of legacy /opt/csm/state to /var/lib/csm/state for upgrades.
