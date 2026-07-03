@@ -29,6 +29,11 @@ type ScanJobRecord struct {
 	FilesScanned int       `json:"files_scanned,omitempty"`
 	FilesEst     int       `json:"files_est,omitempty"`
 	FindingCount int       `json:"finding_count,omitempty"`
+	// FindingsStored is how many findings were actually persisted. It equals
+	// FindingCount unless the per-job cap truncated the tail, in which case
+	// FindingsTruncated is set and the UI shows "showing first N of M".
+	FindingsStored    int  `json:"findings_stored,omitempty"`
+	FindingsTruncated bool `json:"findings_truncated,omitempty"`
 	// Progress fields for scope="all" jobs. Zero/empty for account-scope jobs.
 	AccountsTotal  int            `json:"accounts_total,omitempty"`
 	AccountsDone   int            `json:"accounts_done,omitempty"`
@@ -122,16 +127,32 @@ func findingPrefix(jobID string) []byte {
 // Using many small values rather than one growing blob enables pagination
 // via cursor seeks without loading the whole finding list into memory.
 func (db *DB) AppendScanJobFinding(id string, seq int, f alert.Finding) error {
-	val, err := json.Marshal(f)
-	if err != nil {
-		return fmt.Errorf("scanjobs: marshal finding: %w", err)
+	return db.AppendScanJobFindings(id, seq, []alert.Finding{f})
+}
+
+// AppendScanJobFindings persists a batch of findings for the given job in a
+// single write transaction. Keys are seq, seq+1, ... seq+len-1. Batching
+// amortizes bbolt's per-commit fsync across the whole slice instead of paying
+// one fsync per finding, which dominated the write cost of a large scan.
+func (db *DB) AppendScanJobFindings(id string, seq int, findings []alert.Finding) error {
+	if len(findings) == 0 {
+		return nil
 	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(scanJobFindingsBucket))
 		if b == nil {
 			return fmt.Errorf("bucket %q missing", scanJobFindingsBucket)
 		}
-		return b.Put(findingKey(id, seq), val)
+		for i, f := range findings {
+			val, err := json.Marshal(f)
+			if err != nil {
+				return fmt.Errorf("scanjobs: marshal finding: %w", err)
+			}
+			if err := b.Put(findingKey(id, seq+i), val); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -169,13 +190,20 @@ func (db *DB) ListScanJobFindings(id string, offset, limit int) ([]alert.Finding
 	return findings, total, nil
 }
 
-// PruneScanJobs removes the oldest jobs beyond the newest keep, together with
-// all their finding rows. Returns the number of jobs pruned.
-// Jobs are ranked by Created descending; ID is the tiebreaker so the ordering
-// is deterministic when two jobs share the same timestamp.
-// The entire operation (read + sort + delete) runs inside a single bolt.Update
-// so no concurrent insert can make the pruning decision stale.
-func (db *DB) PruneScanJobs(keep int) (int, error) {
+// PruneScanJobs enforces two independent retention limits and removes the
+// finding rows of every pruned job. Returns the number of jobs pruned.
+//
+//   - keepJobs bounds how many job records are retained.
+//   - maxTotalFindings bounds the cumulative finding rows across retained jobs
+//     (0 disables the volume cap). A single scan can emit tens of thousands of
+//     findings, so a job-count cap alone lets retained findings grow without
+//     bound; the volume cap keeps the state file in check.
+//
+// Jobs are ranked newest-first (Created desc, ID tiebreaker). The newest job is
+// always kept even if it alone exceeds the volume cap, so retention never wipes
+// the most recent result. The whole operation runs in one bolt.Update so a
+// concurrent insert cannot make the decision stale.
+func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 	pruned := 0
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
 		jb := tx.Bucket([]byte(scanJobsBucket))
@@ -200,10 +228,6 @@ func (db *DB) PruneScanJobs(keep int) (int, error) {
 			return err
 		}
 
-		if len(jobs) <= keep {
-			return nil
-		}
-
 		// Sort newest-first: same ordering as ListScanJobs.
 		sort.Slice(jobs, func(i, j int) bool {
 			ci, cj := jobs[i].Created, jobs[j].Created
@@ -213,24 +237,21 @@ func (db *DB) PruneScanJobs(keep int) (int, error) {
 			return ci.After(cj)
 		})
 
-		toDelete := jobs[keep:] // oldest entries are at the tail
+		kept := 0
+		keptFindings := 0
 		var delErr error
-		for _, rec := range toDelete {
-			if delErr = jb.Delete([]byte(rec.ID)); delErr != nil {
+		for _, rec := range jobs {
+			jobFindings := countFindingRows(fb, rec.ID)
+			overJobCount := keepJobs > 0 && kept >= keepJobs
+			overVolume := maxTotalFindings > 0 && kept >= 1 &&
+				keptFindings+jobFindings > maxTotalFindings
+			if !overJobCount && !overVolume {
+				kept++
+				keptFindings += jobFindings
+				continue
+			}
+			if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
 				return delErr
-			}
-			// Prefix-sweep all finding rows for this job.
-			// Collect keys first (cursor cannot be mutated during iteration).
-			prefix := findingPrefix(rec.ID)
-			c := fb.Cursor()
-			var stale [][]byte
-			for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
-				stale = append(stale, append([]byte(nil), k...))
-			}
-			for _, k := range stale {
-				if delErr = fb.Delete(k); delErr != nil {
-					return delErr
-				}
 			}
 			pruned++
 		}
@@ -240,4 +261,35 @@ func (db *DB) PruneScanJobs(keep int) (int, error) {
 		return 0, err
 	}
 	return pruned, nil
+}
+
+// countFindingRows returns the number of finding rows stored for jobID.
+func countFindingRows(fb *bolt.Bucket, jobID string) int {
+	prefix := findingPrefix(jobID)
+	n := 0
+	c := fb.Cursor()
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		n++
+	}
+	return n
+}
+
+// deleteScanJobAndFindings removes a job record and all of its finding rows.
+// Keys are collected before deletion because the cursor cannot be mutated mid-iteration.
+func deleteScanJobAndFindings(jb, fb *bolt.Bucket, jobID string) error {
+	if err := jb.Delete([]byte(jobID)); err != nil {
+		return err
+	}
+	prefix := findingPrefix(jobID)
+	c := fb.Cursor()
+	var stale [][]byte
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		stale = append(stale, append([]byte(nil), k...))
+	}
+	for _, k := range stale {
+		if err := fb.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
 }

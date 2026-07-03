@@ -21,6 +21,25 @@ import (
 // while the single worker is busy. Enqueue returns an error when full.
 const scanJobQueueDepth = 8
 
+// maxScanJobFindingsPerJob caps how many findings a single job persists. A
+// server-wide scan can emit tens of thousands of findings; storing them all
+// bloats the state db and no operator triages that many per job. Findings past
+// the cap are counted (FindingCount) but not stored, and the record's
+// FindingsTruncated flag lets the UI show "showing first N of M". Declared as a
+// var so tests can pin a small cap. Production never mutates it.
+var maxScanJobFindingsPerJob = 10000
+
+// scanJobFindingFlushBatch bounds how many findings are written per bbolt
+// transaction. Batching amortizes the per-commit fsync while keeping any single
+// transaction (and its memory) bounded on a huge scan.
+const scanJobFindingFlushBatch = 1000
+
+// maxRetainedScanJobFindings bounds the cumulative finding rows kept across all
+// retained jobs, independent of the job-count retention. Without it, retaining
+// the newest N jobs still lets finding rows grow without bound when scans are
+// finding-heavy.
+const maxRetainedScanJobFindings = 50000
+
 // scanJobIDCounter is a process-wide monotonic counter used to make job IDs
 // unique when two Enqueue calls occur within the same millisecond.
 var scanJobIDCounter atomic.Int64
@@ -364,22 +383,21 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 
 	// Branch on scope: "all" runs every account; anything else (default
 	// "account") runs the single target as before.
-	var findingCount int
+	var findingCount, findingsStored int
+	var truncated bool
 	var jobState string
 	if rec.Scope == "all" {
-		findingCount, jobState = m.runAllAccounts(req, rec, cfg)
+		findingCount, findingsStored, truncated, jobState = m.runAllAccounts(req, rec, cfg)
 	} else {
 		// Run the scan. The runner blocks until complete or ctx is canceled.
 		findings := m.runAccountScan(req.cancelCtx, cfg, m.st, rec.Target, req.opts)
 
-		// Persist every finding the runner returned, even if canceled mid-scan.
-		// This preserves partial results for the "cancel keeps partial" guarantee.
-		for i, f := range findings {
-			f = m.annotateQuarantine(req, f)
-			if appendErr := m.db.AppendScanJobFinding(req.id, i, f); appendErr != nil {
-				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", i, "err", appendErr)
-			}
+		// Persist findings (batched, capped), even if canceled mid-scan, so the
+		// "cancel keeps partial" guarantee holds.
+		for i := range findings {
+			findings[i] = m.annotateQuarantine(req, findings[i])
 		}
+		findingsStored, truncated = m.persistFindings(req.id, 0, findings)
 
 		findingCount = len(findings)
 		jobState = "done"
@@ -399,19 +417,51 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 	rec2.State = jobState
 	rec2.Finished = time.Now().UTC()
 	rec2.FindingCount = findingCount
+	rec2.FindingsStored = findingsStored
+	rec2.FindingsTruncated = truncated
 	rec2.CurrentAccount = "" // clear transient progress field on completion
 	if putErr := m.db.PutScanJob(rec2); putErr != nil {
 		csmlog.Warn("scan job terminal state failed", "job_id", req.id, "err", putErr)
 	}
 
-	// Prune oldest jobs to keep the store within the configured retention.
+	// Prune oldest jobs to keep the store within the configured retention,
+	// bounding both the job count and the cumulative finding rows.
 	retention := cfg.Thresholds.ScanJobRetention
 	if retention <= 0 {
 		retention = 20
 	}
-	if _, pruneErr := m.db.PruneScanJobs(retention); pruneErr != nil {
+	if _, pruneErr := m.db.PruneScanJobs(retention, maxRetainedScanJobFindings); pruneErr != nil {
 		csmlog.Warn("scan job prune failed", "err", pruneErr)
 	}
+}
+
+// persistFindings writes findings for a job in batched transactions, honoring
+// the per-job findings cap. stored is how many findings the job has already
+// persisted (so the cap spans every account of a scope="all" job). It returns
+// how many findings from this slice were persisted and whether the cap dropped
+// any of them.
+func (m *ScanJobManager) persistFindings(jobID string, stored int, findings []alert.Finding) (written int, truncated bool) {
+	room := len(findings)
+	if maxScanJobFindingsPerJob > 0 {
+		remaining := maxScanJobFindingsPerJob - stored
+		if remaining <= 0 {
+			return 0, len(findings) > 0
+		}
+		if room > remaining {
+			room = remaining
+			truncated = true
+		}
+	}
+	for off := 0; off < room; off += scanJobFindingFlushBatch {
+		end := off + scanJobFindingFlushBatch
+		if end > room {
+			end = room
+		}
+		if err := m.db.AppendScanJobFindings(jobID, stored+off, findings[off:end]); err != nil {
+			csmlog.Warn("scan job finding batch persist failed", "job_id", jobID, "seq", stored+off, "err", err)
+		}
+	}
+	return room, truncated
 }
 
 // runAllAccounts executes the scan body for a scope="all" job: enumerates
@@ -423,7 +473,7 @@ func (m *ScanJobManager) runJob(req scanJobRequest) {
 // For cancel mid-iteration: the check at the top of the per-account loop
 // detects a canceled context before starting the next account, so partial
 // findings already persisted from completed accounts are retained.
-func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRecord, cfg *config.Config) (findingCount int, jobState string) {
+func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRecord, cfg *config.Config) (findingCount, findingsStored int, truncated bool, jobState string) {
 	accounts, err := m.enumerateAccounts(cfg)
 	if err != nil {
 		// Persist error state immediately so the outer runJob terminal write
@@ -436,7 +486,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 			recErr.Finished = time.Now().UTC()
 			_ = m.db.PutScanJob(recErr)
 		}
-		return 0, "error"
+		return 0, 0, false, "error"
 	}
 
 	// Set AccountsTotal and persist immediately so progress is visible.
@@ -445,8 +495,8 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 		csmlog.Warn("scan job accounts_total persist failed", "job_id", req.id, "err", putErr)
 	}
 
-	seq := 0 // continuous across accounts for unique AppendScanJobFinding keys
 	findingCount = 0
+	findingsStored = 0
 
 	for _, account := range accounts {
 		// Cancel check: stop before starting next account.
@@ -464,8 +514,9 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 		// abort the entire server-wide job.
 		findings := m.runAccountScanIsolated(req, cfg, account)
 
-		// Persist findings for this account; attribute each to the account if
-		// the check did not already set TenantID.
+		// Attribute each finding to the account when the check did not already
+		// set TenantID, then persist the account's findings as one batch. The
+		// per-job cap spans accounts via the running findingsStored counter.
 		now := time.Now().UTC()
 		for i := range findings {
 			if findings[i].TenantID == "" {
@@ -475,15 +526,16 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 				findings[i].Timestamp = now
 			}
 			findings[i] = m.annotateQuarantine(req, findings[i])
-			if appendErr := m.db.AppendScanJobFinding(req.id, seq, findings[i]); appendErr != nil {
-				csmlog.Warn("scan job finding persist failed", "job_id", req.id, "seq", seq, "err", appendErr)
-			}
-			seq++
-			findingCount++
 		}
+		written, trunc := m.persistFindings(req.id, findingsStored, findings)
+		findingsStored += written
+		truncated = truncated || trunc
+		findingCount += len(findings)
 
 		rec.AccountsDone++
 		rec.FindingCount = findingCount
+		rec.FindingsStored = findingsStored
+		rec.FindingsTruncated = truncated
 		if putErr := m.db.PutScanJob(rec); putErr != nil {
 			csmlog.Warn("scan job accounts_done persist failed", "job_id", req.id, "err", putErr)
 		}
@@ -496,7 +548,7 @@ func (m *ScanJobManager) runAllAccounts(req scanJobRequest, rec store.ScanJobRec
 	if req.cancelCtx.Err() != nil {
 		jobState = "canceled"
 	}
-	return findingCount, jobState
+	return findingCount, findingsStored, truncated, jobState
 }
 
 // runAccountScanIsolated calls m.runAccountScan inside a recover() so a panic

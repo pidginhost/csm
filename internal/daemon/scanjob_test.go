@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -119,6 +120,49 @@ func TestScanJobRejectsEnqueueAfterStop(t *testing.T) {
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("enqueue after Stop persisted %d job(s), want 0", len(jobs))
+	}
+}
+
+// TestScanJobCapsFindingsAndSurfacesTruncation verifies the per-job findings cap:
+// a scan that produces more findings than the cap persists only the first N,
+// records the total produced, and flags truncation so the UI can say
+// "showing first N".
+func TestScanJobCapsFindingsAndSurfacesTruncation(t *testing.T) {
+	st, db := openTestScanJobStores(t)
+	m, err := NewScanJobManager(st, &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+
+	restore := maxScanJobFindingsPerJob
+	maxScanJobFindingsPerJob = 10
+	defer func() { maxScanJobFindingsPerJob = restore }()
+
+	m.runAccountScan = func(ctx context.Context, cfg *config.Config, st *state.Store, target string, opts checks.AccountScanOptions) []alert.Finding {
+		out := make([]alert.Finding, 25)
+		for i := range out {
+			out[i] = alert.Finding{Check: "webshell", FilePath: fmt.Sprintf("/home/acct/public_html/%d.php", i)}
+		}
+		return out
+	}
+
+	id, err := m.Enqueue("account", "acct", checks.AccountScanOptions{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := waitForState(t, m, id, "done", 5*time.Second)
+	if rec.FindingCount != 25 {
+		t.Errorf("FindingCount=%d, want 25 (total produced)", rec.FindingCount)
+	}
+	if rec.FindingsStored != 10 {
+		t.Errorf("FindingsStored=%d, want 10 (capped)", rec.FindingsStored)
+	}
+	if !rec.FindingsTruncated {
+		t.Error("FindingsTruncated=false, want true")
+	}
+	if _, total, terr := db.ListScanJobFindings(id, 0, 0); terr != nil || total != 10 {
+		t.Fatalf("persisted findings total=%d err=%v, want 10", total, terr)
 	}
 }
 

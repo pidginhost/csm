@@ -52,6 +52,81 @@ func TestScanJobFindingPrefixNoCollision(t *testing.T) {
 	}
 }
 
+// TestAppendScanJobFindingsBatchesInOneTx proves the batch writer commits many
+// findings in a single write transaction instead of one fsync per finding. The
+// store's WriteTxID seam counts committed write transactions.
+func TestAppendScanJobFindingsBatchesInOneTx(t *testing.T) {
+	db := openTestDB(t)
+	if err := db.PutScanJob(ScanJobRecord{
+		ID: "bj", Scope: "account", Target: "u", State: "running", Created: time.Unix(1, 0),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := make([]alert.Finding, 50)
+	for i := range findings {
+		findings[i] = alert.Finding{Check: "webshells", Message: fmt.Sprintf("m%d", i)}
+	}
+
+	before := db.WriteTxID()
+	if err := db.AppendScanJobFindings("bj", 0, findings); err != nil {
+		t.Fatal(err)
+	}
+	after := db.WriteTxID()
+	if delta := after - before; delta != 1 {
+		t.Fatalf("batch of %d findings committed in %d write tx, want 1", len(findings), delta)
+	}
+
+	_, total, err := db.ListScanJobFindings("bj", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 50 {
+		t.Fatalf("persisted %d findings, want 50", total)
+	}
+}
+
+// TestPruneScanJobsFindingsVolumeCap verifies retention accounts for findings
+// volume: even when the job-count keep is generous, older jobs are pruned so the
+// retained finding rows stay under the volume cap. The newest job is always kept.
+func TestPruneScanJobsFindingsVolumeCap(t *testing.T) {
+	db := openTestDB(t)
+	base := time.Unix(3000, 0)
+	for i := 0; i < 5; i++ { // 5 jobs, 100 findings each (500 rows total)
+		id := fmt.Sprintf("vj-%03d", i)
+		if err := db.PutScanJob(ScanJobRecord{
+			ID: id, Scope: "account", Target: "u", State: "done",
+			Created: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		batch := make([]alert.Finding, 100)
+		if err := db.AppendScanJobFindings(id, 0, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// keepJobs is generous (20); the 250-row volume cap is the binding limit.
+	// Newest-first: vj-004 (100), vj-003 (200) fit; vj-002 would reach 300 -> prune it and older.
+	pruned, err := db.PruneScanJobs(20, 250)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 3 {
+		t.Fatalf("pruned=%d, want 3 (vj-000..vj-002 dropped by volume cap)", pruned)
+	}
+	for _, id := range []string{"vj-004", "vj-003"} {
+		if _, total, _ := db.ListScanJobFindings(id, 0, 0); total != 100 {
+			t.Errorf("kept job %s findings=%d, want 100", id, total)
+		}
+	}
+	for _, id := range []string{"vj-002", "vj-001", "vj-000"} {
+		if _, ok, _ := db.GetScanJob(id); ok {
+			t.Errorf("job %s should be pruned by findings-volume cap", id)
+		}
+	}
+}
+
 // TestPruneScanJobsNoOrphanFindings verifies that PruneScanJobs removes all
 // finding rows for each pruned job -- no orphan findings survive the prune.
 func TestPruneScanJobsNoOrphanFindings(t *testing.T) {
@@ -75,7 +150,7 @@ func TestPruneScanJobsNoOrphanFindings(t *testing.T) {
 	}
 
 	// Prune down to 2; that removes the 3 oldest (pj-000, pj-001, pj-002).
-	pruned, err := db.PruneScanJobs(2)
+	pruned, err := db.PruneScanJobs(2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +206,7 @@ func TestScanJobRoundTripAndRetention(t *testing.T) {
 	if jobs[0].ID != "job-024" || jobs[len(jobs)-1].ID != "job-000" {
 		t.Fatalf("jobs not newest first: first=%s last=%s", jobs[0].ID, jobs[len(jobs)-1].ID)
 	}
-	pruned, err := db.PruneScanJobs(20)
+	pruned, err := db.PruneScanJobs(20, 0)
 	if err != nil || pruned != 5 {
 		t.Fatalf("prune = %d err=%v, want 5", pruned, err)
 	}
