@@ -131,7 +131,7 @@ var (
 	// the daemon has already probed once -- a host that mis-detected its web
 	// server at boot (lsws not yet running) self-heals on a later refresh.
 	detectedPtr atomic.Pointer[Info]
-	detectMu    sync.Mutex // serialises the first Detect() and Refresh writes
+	detectMu    sync.Mutex // serialises first Detect/Refresh with SetOverrides
 
 	overrideMu      sync.Mutex
 	pendingOverride *Overrides
@@ -147,6 +147,9 @@ var (
 // Returns true if the override was installed, false if Detect() had already
 // cached an un-overridden result.
 func SetOverrides(o Overrides) bool {
+	detectMu.Lock()
+	defer detectMu.Unlock()
+
 	overrideMu.Lock()
 	defer overrideMu.Unlock()
 	// sync.Once has no public "was called" query, so detectedFlag is the
@@ -193,11 +196,12 @@ func Detect() Info {
 // still wins, exactly as it does through Detect(), because
 // DetectFreshWithOverrides re-applies the pending override.
 func Refresh() Info {
-	i := DetectFreshWithOverrides()
 	detectMu.Lock()
+	defer detectMu.Unlock()
+
+	i := DetectFreshWithOverrides()
 	detectedPtr.Store(&i)
 	detectedFlag.Store(true)
-	detectMu.Unlock()
 	return i
 }
 

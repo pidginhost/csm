@@ -3,6 +3,7 @@ package platform
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 // cPanel host booting before lsws is up: the Apache binary is present (cPanel
@@ -83,5 +84,37 @@ func TestRefreshCacheStaysConsistent(t *testing.T) {
 	got := Refresh()
 	if !reflect.DeepEqual(Detect(), got) {
 		t.Errorf("Detect() after Refresh must equal the Refresh result")
+	}
+}
+
+func TestSetOverridesWaitsForInProgressDetection(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+
+	detectMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			detectMu.Unlock()
+		}
+	}()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- SetOverrides(Overrides{WebServer: wsPtr(WSLiteSpeed)})
+	}()
+
+	select {
+	case ok := <-done:
+		t.Fatalf("SetOverrides returned %v while detection was in progress", ok)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	detectedFlag.Store(true)
+	detectMu.Unlock()
+	locked = false
+
+	if ok := <-done; ok {
+		t.Fatal("SetOverrides should reject an override once in-progress detection has completed")
 	}
 }
