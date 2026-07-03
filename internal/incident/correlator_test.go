@@ -508,14 +508,19 @@ func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
 		Persist: func(_ Incident) { calls++ },
 	})
-	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	base := time.Unix(1_700_000_000, 0)
+	clock := base
+	c.now = func() time.Time { return clock }
 
-	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: base})
 	if calls != 1 {
 		t.Errorf("after create: want 1 Persist call, got %d", calls)
 	}
 
-	_, _, _ = c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	// A bookkeeping merge past the debounce window persists exactly once more,
+	// never twice for a single finding.
+	clock = base.Add(incidentPersistDebounce + time.Second)
+	_, _, _ = c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: clock})
 	if calls != 2 {
 		t.Errorf("after merge: want 2 Persist calls total, got %d", calls)
 	}
@@ -627,7 +632,10 @@ func TestCorrelatorPersistReentrantReadDoesNotDeadlockBehindQueuedWriter(t *test
 
 	secondDone := make(chan struct{})
 	go func() {
-		_, _, _ = c.OnFinding(alert.Finding{Check: "second", Severity: alert.High, TenantID: "alice", Timestamp: base.Add(time.Second)})
+		// Critical so the merge is a severity transition and persists
+		// synchronously (queued behind the blocked first write); a
+		// same-severity merge would debounce and not exercise the queue.
+		_, _, _ = c.OnFinding(alert.Finding{Check: "second", Severity: alert.Critical, TenantID: "alice", Timestamp: base.Add(time.Second)})
 		close(secondDone)
 	}()
 	waitForTestSignal(t, secondHoldingMu, "second finding did not enter correlator")

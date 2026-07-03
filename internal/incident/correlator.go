@@ -40,6 +40,15 @@ const (
 // per project convention; config exposure deferred until operators ask.
 const incidentMergeWindow = 15 * time.Minute
 
+// incidentPersistDebounce bounds how often a bookkeeping-only merge (a
+// finding that appends fingerprint/timeline but does not change status,
+// severity, or kind) rewrites the whole incident blob to the store. A busy
+// incident under sustained attack would otherwise fsync a ~100-300KB blob on
+// every finding; instead those writes coalesce to at most one per window.
+// State-changing transitions always persist synchronously, so the only thing
+// at risk on a hard kill is up to one window of fingerprint bookkeeping.
+const incidentPersistDebounce = 5 * time.Second
+
 // CorrelatorConfig is reserved for future tunables and the persistence
 // hook used by the daemon to write incidents to bbolt.
 type CorrelatorConfig struct {
@@ -171,6 +180,10 @@ type Correlator struct {
 	now                   func() time.Time
 	counters              counters
 	spray                 *sprayDetector
+	// lastPersistAt records the wall-clock time of the most recent store
+	// write per incident id, used to debounce bookkeeping-only merges.
+	// Written under c.mu; cleared when the incident leaves c.incidents.
+	lastPersistAt map[string]time.Time
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -198,6 +211,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		pendingIncidentBlocks: map[string]struct{}{},
 		openThreshold:         threshold,
 		now:                   time.Now,
+		lastPersistAt:         map[string]time.Time{},
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
@@ -256,7 +270,11 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			id := c.spray.IncidentForIP(f.SourceIP)
 			inc, ok := c.incidents[id]
 			if ok && incidentStatusActive(inc.Status) {
-				c.mergeLocked(inc, f, now, true)
+				// Fold the finding and apply the spray-specific escalation
+				// before a single persist so the escalating finding does not
+				// write the blob twice (mutate + escalate in one write).
+				transition := c.mutateWithFindingLocked(inc, f, now)
+				c.counters.findingsMergedTotal.Add(1)
 				if hits >= c.spray.cfg.SeverityEscalateAt && inc.Severity < alert.Critical {
 					from := inc.Severity
 					inc.Severity = alert.Critical
@@ -267,8 +285,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 						Result:  "ok",
 						Details: from.String() + " -> CRITICAL: spray sustained " + strconv.Itoa(hits) + " mailboxes",
 					})
-					c.persistLocked(*inc)
+					transition = true
 				}
+				c.persistAfterMergeLocked(inc, now, true, transition)
 				// Re-evaluate the block gate on every merged finding. The
 				// configured BlockAtSeverity may have been armed AFTER the
 				// incident was opened or escalated, in which case the
@@ -604,6 +623,17 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 	if merged {
 		c.counters.findingsMergedTotal.Add(1)
 	}
+	transition := c.mutateWithFindingLocked(inc, f, now)
+	c.persistAfterMergeLocked(inc, now, merged, transition)
+}
+
+// mutateWithFindingLocked folds f into inc and reports whether the fold caused
+// a state-changing transition (kind change or severity escalation). It does not
+// persist: the caller decides synchronous vs debounced persistence via
+// persistAfterMergeLocked. Splitting mutation from persistence lets the
+// credential_spray path apply its own escalation before a single persist,
+// avoiding a redundant second write.
+func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now time.Time) (transition bool) {
 	// Re-classify before appending so timeline-aware compound rules
 	// see the unchanged history; the new finding is passed in
 	// explicitly so its Check participates in the compound check.
@@ -616,6 +646,7 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 			Result:  "ok",
 			Details: string(priorKind) + " -> " + string(inc.Kind),
 		})
+		transition = true
 	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
@@ -646,8 +677,35 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 			Result:  "ok",
 			Details: from.String() + " -> " + f.Severity.String(),
 		})
+		transition = true
 	}
 	inc.UpdatedAt = now
+	return transition
+}
+
+// persistAfterMergeLocked persists a just-merged incident. Incident creation
+// (merged==false) and any state-changing transition persist synchronously so a
+// restart never loses an open/escalate/kind-change. A pure bookkeeping merge is
+// debounced so a sustained-attack incident does not fsync its whole blob per
+// finding.
+func (c *Correlator) persistAfterMergeLocked(inc *Incident, now time.Time, merged, transition bool) {
+	if !merged || transition {
+		c.lastPersistAt[inc.ID] = now
+		c.persistLocked(*inc)
+		return
+	}
+	c.persistDebouncedLocked(inc, now)
+}
+
+// persistDebouncedLocked writes inc only when at least incidentPersistDebounce
+// has elapsed since its last merge-path store write; otherwise the update stays
+// in memory (durable state is still captured by the next transition or close).
+// Caller holds c.mu.
+func (c *Correlator) persistDebouncedLocked(inc *Incident, now time.Time) {
+	if last, ok := c.lastPersistAt[inc.ID]; ok && now.Sub(last) < incidentPersistDebounce {
+		return
+	}
+	c.lastPersistAt[inc.ID] = now
 	c.persistLocked(*inc)
 }
 
@@ -1133,6 +1191,7 @@ func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration
 			continue
 		}
 		delete(c.incidents, id)
+		delete(c.lastPersistAt, id)
 		c.unbindLocked(id)
 		if c.spray != nil {
 			prunedIDs = append(prunedIDs, id)
