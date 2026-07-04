@@ -107,10 +107,10 @@ func TestRemoveAutoBlockLeavesOperatorUpgrade(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	ip := "192.0.2.21"
-	if err := db.AddTempBlock(ip, "web_attack", time.Now().Add(time.Hour)); err != nil {
+	if err = db.AddTempBlock(ip, "web_attack", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("AddTempBlock: %v", err)
 	}
-	if err := db.AddPermanentBlock(ip, "operator block"); err != nil {
+	if err = db.AddPermanentBlock(ip, "operator block"); err != nil {
 		t.Fatalf("AddPermanentBlock: %v", err)
 	}
 
