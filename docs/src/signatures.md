@@ -85,6 +85,8 @@ The project operates the signed mirror shown above. A ready-to-use drop-in is sh
 
 YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `yara_forge.download_url` to point at a mirror you operate. The URL may contain `{tier}` and `{version}` placeholders. The detached signature must be available at the resolved ZIP URL plus `.sig`.
 
+When the URL has a standalone `{version}` path segment, CSM first reads a plain-text `latest` pointer from that version directory's parent, for example `https://mirrors.pidginhost.com/csm/yara-forge/latest`. If the pointer is not published, CSM falls back to the upstream GitHub release tag. Mirror network errors and server errors fail the update instead of falling back, because GitHub may name a release the mirror has not signed yet. CSM accepts only short tag tokens from the pointer; the ZIP signature still gates installation.
+
 If you do not have a signed update source yet, disable remote updates instead:
 
 ```yaml
@@ -105,8 +107,8 @@ signatures:
 
 ### Update Flow
 
-1. CSM checks the latest YARA Forge release tag on GitHub
-2. If newer than the installed version, downloads the ZIP for the configured tier from `yara_forge.download_url` and its detached signature
+1. CSM resolves the latest YARA Forge version from the mirror pointer, falling back to GitHub only when no pointer is published
+2. If different from the installed version, downloads the ZIP for the configured tier from `yara_forge.download_url` and its detached signature
 3. Verifies the download against `signatures.signing_key`
 4. Filters out any rules listed in `disabled_rules`
 5. Compile-tests the rules with YARA-X before installing

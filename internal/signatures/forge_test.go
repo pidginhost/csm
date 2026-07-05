@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,15 +214,23 @@ func TestForgeLatestPointerURL(t *testing.T) {
 	tests := []struct {
 		name   string
 		tmpl   string
+		tier   string
 		want   string
 		wantOK bool
 	}{
-		{"versioned", "https://host/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip", "https://host/csm/yara-forge/latest", true},
-		{"no version placeholder", "https://mirror.example/yara-forge-rules-{tier}.zip", "", false},
-		{"version not on a path boundary", "https://host/yf-{version}/rules.zip", "", false},
+		{"versioned", "https://host/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core", "https://host/csm/yara-forge/latest", true},
+		{"tier placeholder in host", "https://rules-{tier}.example/csm/{version}/rules.zip", "core", "https://rules-core.example/csm/latest", true},
+		{"version also in filename", "https://host/csm/{version}/rules-{version}.zip", "core", "https://host/csm/latest", true},
+		{"version final path segment", "https://host/csm/{version}", "core", "https://host/csm/latest", true},
+		{"no version placeholder", "https://mirror.example/yara-forge-rules-{tier}.zip", "core", "", false},
+		{"version not on a path boundary", "https://host/yf-{version}/rules.zip", "core", "", false},
+		{"version in host", "https://{version}.example/csm/rules.zip", "core", "", false},
+		{"version in host and path", "https://{version}.example/csm/{version}/rules.zip", "core", "", false},
+		{"version in query", "https://host/csm/rules.zip?version={version}", "core", "", false},
+		{"version before path segment", "https://host/csm/rules-{version}/{version}/rules.zip", "core", "", false},
 	}
 	for _, tt := range tests {
-		got, ok := forgeLatestPointerURL(tt.tmpl)
+		got, ok := forgeLatestPointerURL(tt.tmpl, tt.tier)
 		if got != tt.want || ok != tt.wantOK {
 			t.Errorf("%s: forgeLatestPointerURL(%q) = (%q, %v), want (%q, %v)", tt.name, tt.tmpl, got, ok, tt.want, tt.wantOK)
 		}
@@ -234,7 +243,7 @@ func TestForgeValidTag(t *testing.T) {
 			t.Errorf("forgeValidTag(%q) = false, want true", v)
 		}
 	}
-	for _, v := range []string{"", "   ", "../../../../etc", "a/b", "20260705/..", "has space", strings.Repeat("a", 100)} {
+	for _, v := range []string{"", "   ", "..", "../../../../etc", "a/b", "20260705/..", `a\..\b`, "20260705%2f..", "20260705%2F..", "20260705%2e%2e", "has space", "münchen", string([]byte{'2', '0', 0xff}), strings.Repeat("a", 100)} {
 		if forgeValidTag(v) {
 			t.Errorf("forgeValidTag(%q) = true, want false", v)
 		}
@@ -249,7 +258,7 @@ func TestForgeResolveLatestTagPrefersMirror(t *testing.T) {
 		releases:      []byte(`{"tag_name":"20260628"}`),
 		latestPointer: []byte("20260705\n"),
 	})
-	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip")
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core")
 	if err != nil {
 		t.Fatalf("forgeResolveLatestTag: %v", err)
 	}
@@ -264,7 +273,7 @@ func TestForgeResolveLatestTagFallsBackToGitHub(t *testing.T) {
 	swapDefaultTransport(t, &forgeRoundTripper{
 		releases: []byte(`{"tag_name":"20260705"}`),
 	})
-	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip")
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core")
 	if err != nil {
 		t.Fatalf("forgeResolveLatestTag: %v", err)
 	}
@@ -279,12 +288,22 @@ func TestForgeResolveLatestTagUnversionedURLUsesGitHub(t *testing.T) {
 	swapDefaultTransport(t, &forgeRoundTripper{
 		releases: []byte(`{"tag_name":"v2026.04.11"}`),
 	})
-	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge-rules-{tier}.zip")
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge-rules-{tier}.zip", "core")
 	if err != nil {
 		t.Fatalf("forgeResolveLatestTag: %v", err)
 	}
 	if got != "v2026.04.11" {
 		t.Fatalf("got %q, want GitHub tag v2026.04.11", got)
+	}
+}
+
+func TestForgeResolveLatestTagRejectsUnsafeGitHubFallback(t *testing.T) {
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"20260705%2f.."}`),
+	})
+	_, err := forgeResolveLatestTag("https://mirror.example/yara-forge-rules-{tier}.zip", "core")
+	if err == nil || !strings.Contains(err.Error(), "GitHub release has invalid tag") {
+		t.Fatalf("err = %v, want unsafe GitHub tag error", err)
 	}
 }
 
@@ -295,8 +314,40 @@ func TestForgeResolveLatestTagRejectsUnsafePointer(t *testing.T) {
 		releases:      []byte(`{"tag_name":"20260705"}`),
 		latestPointer: []byte("../../../../etc\n"),
 	})
-	if _, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip"); err == nil {
+	if _, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core"); err == nil {
 		t.Fatal("expected error for unsafe pointer tag, got nil")
+	}
+}
+
+func TestForgeResolveLatestTagMirrorServerErrorDoesNotFallBack(t *testing.T) {
+	rt := &forgeRoundTripper{
+		releases:     []byte(`{"tag_name":"20260705"}`),
+		latestStatus: http.StatusServiceUnavailable,
+	}
+	swapDefaultTransport(t, rt)
+
+	_, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core")
+	if err == nil || !strings.Contains(err.Error(), "mirror latest pointer returned 503") {
+		t.Fatalf("err = %v, want mirror pointer 503 error", err)
+	}
+	if rt.githubRequests != 0 {
+		t.Fatalf("GitHub fallback was used after mirror 503: requests=%d", rt.githubRequests)
+	}
+}
+
+func TestForgeResolveLatestTagMirrorNetworkErrorDoesNotFallBack(t *testing.T) {
+	rt := &forgeRoundTripper{
+		releases:  []byte(`{"tag_name":"20260705"}`),
+		latestErr: errors.New("dial failed"),
+	}
+	swapDefaultTransport(t, rt)
+
+	_, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", "core")
+	if err == nil || !strings.Contains(err.Error(), "dial failed") {
+		t.Fatalf("err = %v, want mirror network error", err)
+	}
+	if rt.githubRequests != 0 {
+		t.Fatalf("GitHub fallback was used after mirror network error: requests=%d", rt.githubRequests)
 	}
 }
 

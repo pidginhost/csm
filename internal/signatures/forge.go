@@ -58,7 +58,7 @@ func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL 
 		return "", 0, fmt.Errorf("signatures.yara_forge.download_url is required: upstream YARA Forge does not publish CSM detached signatures")
 	}
 
-	latestTag, err := forgeResolveLatestTag(downloadURL)
+	latestTag, err := forgeResolveLatestTag(downloadURL, tier)
 	if err != nil {
 		return "", 0, fmt.Errorf("checking YARA Forge release: %w", err)
 	}
@@ -171,25 +171,52 @@ func forgeValidTag(tag string) bool {
 //
 // Returns ("", false) when the template has no {version} path segment, in
 // which case there is no version-scoped directory to point into.
-func forgeLatestPointerURL(tmpl string) (string, bool) {
-	tmpl = strings.TrimSpace(tmpl)
-	i := strings.Index(tmpl, "{version}")
-	if i < 0 {
+func forgeLatestPointerURL(tmpl, tier string) (string, bool) {
+	tmpl = strings.ReplaceAll(strings.TrimSpace(tmpl), "{tier}", tier)
+	schemeEnd := strings.Index(tmpl, "://")
+	if schemeEnd < 0 {
 		return "", false
 	}
-	base := tmpl[:i]
-	if !strings.HasSuffix(base, "/") {
-		// {version} is not a standalone path segment; refuse to guess.
+	authorityStart := schemeEnd + len("://")
+	authorityEndRel := strings.IndexAny(tmpl[authorityStart:], "/?#")
+	if authorityEndRel < 0 {
 		return "", false
 	}
-	return base + "latest", true
+	pathStart := authorityStart + authorityEndRel
+	if tmpl[pathStart] != '/' {
+		return "", false
+	}
+	pathEnd := len(tmpl)
+	if pathEndRel := strings.IndexAny(tmpl[pathStart:], "?#"); pathEndRel >= 0 {
+		pathEnd = pathStart + pathEndRel
+	}
+
+	const versionPlaceholder = "{version}"
+	for search := pathStart; search < pathEnd; {
+		rel := strings.Index(tmpl[search:pathEnd], versionPlaceholder)
+		if rel < 0 {
+			return "", false
+		}
+		i := search + rel
+		after := i + len(versionPlaceholder)
+		standaloneSegment := tmpl[i-1] == '/' && (after == pathEnd || tmpl[after] == '/')
+		if standaloneSegment {
+			base := tmpl[:i]
+			if strings.Contains(base, versionPlaceholder) {
+				return "", false
+			}
+			return base + "latest", true
+		}
+		search = after
+	}
+	return "", false
 }
 
 // forgeLatestTagFromMirror fetches the mirror's latest-version pointer and
 // returns the tag it names. It returns errForgePointerAbsent when the pointer
 // is not published so the caller can fall back to the GitHub release API.
-func forgeLatestTagFromMirror(downloadURL string) (string, error) {
-	pointerURL, ok := forgeLatestPointerURL(downloadURL)
+func forgeLatestTagFromMirror(downloadURL, tier string) (string, error) {
+	pointerURL, ok := forgeLatestPointerURL(downloadURL, tier)
 	if !ok {
 		return "", errForgePointerAbsent
 	}
@@ -226,15 +253,22 @@ func forgeLatestTagFromMirror(downloadURL string) (string, error) {
 // the weekly mirror sync). It falls back to the upstream GitHub release tag
 // only when the mirror publishes no pointer, preserving prior behavior for
 // older mirror layouts and download_url templates without a {version} segment.
-func forgeResolveLatestTag(downloadURL string) (string, error) {
-	tag, err := forgeLatestTagFromMirror(downloadURL)
+func forgeResolveLatestTag(downloadURL, tier string) (string, error) {
+	tag, err := forgeLatestTagFromMirror(downloadURL, tier)
 	if err == nil {
 		return tag, nil
 	}
 	if !errors.Is(err, errForgePointerAbsent) {
 		return "", err
 	}
-	return forgeLatestTag()
+	tag, err = forgeLatestTag()
+	if err != nil {
+		return "", err
+	}
+	if !forgeValidTag(tag) {
+		return "", fmt.Errorf("GitHub release has invalid tag %q", tag)
+	}
+	return tag, nil
 }
 
 func forgeLatestTag() (string, error) {
