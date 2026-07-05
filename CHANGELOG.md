@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - csm backup no longer captures the runtime lock file, and csm restore now refuses to run while the daemon is running or starting. Restoring over live state corrupted both the running daemon's state and the restored copy.
 - Blocked-IP alert suppression now compares canonical source addresses instead of substrings, so unrelated look-alike IPs stay visible and already-blocked IPv6 sources suppress correctly even when written in compressed form. Findings without any usable source address are never suppressed.
 - WordPress plugin checks now launch wp-cli with runuser instead of su, so under the hardened service unit they no longer flood the journal with read-only lastlog errors and no longer record CSM's internal scans as user logins.
+- The KernelCare Copy Fail livepatch probe (kcarectl) no longer floods the journal with read-only-filesystem errors on every daemon start under the hardened service unit: its cache directory is now a writable path, so kcarectl runs as it does outside the sandbox without relaxing any kernel-tunable protection.
 
 ## [3.22.1] - 2026-06-28
 

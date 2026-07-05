@@ -63,6 +63,15 @@ ReadWritePaths=-/var/spool/cron -/var/spool/exim/input -/var/spool/exim4/input
 # all of /var/log. All "-" (tolerate-absent): cPanel/RHEL use the flat
 # /var/log/exim_* files, Debian/Ubuntu use the /var/log/exim4 directory.
 ReadWritePaths=-/var/log/exim_mainlog -/var/log/exim_paniclog -/var/log/exim_rejectlog -/var/log/exim4
+# CSM's af_alg check runs "kcarectl --patch-info" to detect a Copy Fail
+# (CVE-2026-31431) KernelCare livepatch. kcarectl rewrites its feature-flags
+# cache under /var/cache/kcare on every run; when that write is blocked it
+# floods the journal with EROFS failures and retries kernel-tunable writes
+# (also blocked by ProtectKernelTunables) at each daemon start. Granting the
+# cache dir lets kcarectl run as it does outside the sandbox -- silently --
+# without relaxing any kernel-tunable protection. "-" tolerates hosts that do
+# not have KernelCare installed (Ubuntu/AlmaLinux without kcare).
+ReadWritePaths=-/var/cache/kcare
 # CSM inspects the host's real /dev/shm; a private /dev would hide it.
 PrivateDevices=no
 ProtectKernelTunables=yes

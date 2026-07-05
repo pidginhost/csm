@@ -75,6 +75,11 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/var/log/exim_paniclog",
 		"-/var/log/exim_rejectlog",
 		"-/var/log/exim4",
+		// KernelCare cache dir: the af_alg Copy Fail probe runs
+		// "kcarectl --patch-info", which writes its feature-flags cache
+		// here. Without the grant kcarectl floods the journal with EROFS
+		// failures on every daemon start.
+		"-/var/cache/kcare",
 	} {
 		if !rwPaths[want] {
 			t.Errorf("ReadWritePaths missing %s", want)
