@@ -428,10 +428,11 @@ func (rt errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 }
 
 type forgeRoundTripper struct {
-	releases []byte // JSON for /repos/YARAHQ/yara-forge/releases/latest
-	zipBody  []byte // body for the download URL
-	sigBody  []byte // body for the .sig URL
-	status   int    // override status (0 = default logic)
+	releases      []byte // JSON for /repos/YARAHQ/yara-forge/releases/latest
+	latestPointer []byte // body for the mirror's <base>/latest pointer (empty => 404)
+	zipBody       []byte // body for the download URL
+	sigBody       []byte // body for the .sig URL
+	status        int    // override status (0 = default logic)
 }
 
 func (rt *forgeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -440,6 +441,12 @@ func (rt *forgeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	switch {
 	case strings.Contains(req.URL.Path, "/releases/latest") && req.URL.Host == "api.github.com":
 		body = rt.releases
+	case strings.HasSuffix(req.URL.Path, "/latest"):
+		if len(rt.latestPointer) == 0 {
+			status = http.StatusNotFound
+		} else {
+			body = rt.latestPointer
+		}
 	case strings.HasSuffix(req.URL.Path, ".zip.sig"):
 		body = rt.sigBody
 	case strings.HasSuffix(req.URL.Path, ".zip"):

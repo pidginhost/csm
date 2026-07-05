@@ -209,6 +209,119 @@ func TestForgeUpdateSameTierCleanupFailureKeepsExistingRules(t *testing.T) {
 	}
 }
 
+func TestForgeLatestPointerURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		tmpl   string
+		want   string
+		wantOK bool
+	}{
+		{"versioned", "https://host/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip", "https://host/csm/yara-forge/latest", true},
+		{"no version placeholder", "https://mirror.example/yara-forge-rules-{tier}.zip", "", false},
+		{"version not on a path boundary", "https://host/yf-{version}/rules.zip", "", false},
+	}
+	for _, tt := range tests {
+		got, ok := forgeLatestPointerURL(tt.tmpl)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("%s: forgeLatestPointerURL(%q) = (%q, %v), want (%q, %v)", tt.name, tt.tmpl, got, ok, tt.want, tt.wantOK)
+		}
+	}
+}
+
+func TestForgeValidTag(t *testing.T) {
+	for _, v := range []string{"20260705", "v2026.04.11", "2026-07-05", "core_1"} {
+		if !forgeValidTag(v) {
+			t.Errorf("forgeValidTag(%q) = false, want true", v)
+		}
+	}
+	for _, v := range []string{"", "   ", "../../../../etc", "a/b", "20260705/..", "has space", strings.Repeat("a", 100)} {
+		if forgeValidTag(v) {
+			t.Errorf("forgeValidTag(%q) = true, want false", v)
+		}
+	}
+}
+
+// The mirror only holds versions it has signed and published, so resolving the
+// latest tag from the mirror pointer (not the GitHub API) can never request a
+// version the mirror lacks. GitHub being ahead must not win.
+func TestForgeResolveLatestTagPrefersMirror(t *testing.T) {
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases:      []byte(`{"tag_name":"20260628"}`),
+		latestPointer: []byte("20260705\n"),
+	})
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip")
+	if err != nil {
+		t.Fatalf("forgeResolveLatestTag: %v", err)
+	}
+	if got != "20260705" {
+		t.Fatalf("got %q, want mirror pointer tag 20260705", got)
+	}
+}
+
+// A mirror that predates the latest pointer (404) must not break updates: the
+// resolver falls back to the GitHub release tag, preserving prior behavior.
+func TestForgeResolveLatestTagFallsBackToGitHub(t *testing.T) {
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"20260705"}`),
+	})
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip")
+	if err != nil {
+		t.Fatalf("forgeResolveLatestTag: %v", err)
+	}
+	if got != "20260705" {
+		t.Fatalf("got %q, want GitHub fallback tag 20260705", got)
+	}
+}
+
+// A download_url without {version} has no version-scoped mirror directory, so
+// resolution must go straight to GitHub without probing a bogus pointer.
+func TestForgeResolveLatestTagUnversionedURLUsesGitHub(t *testing.T) {
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases: []byte(`{"tag_name":"v2026.04.11"}`),
+	})
+	got, err := forgeResolveLatestTag("https://mirror.example/yara-forge-rules-{tier}.zip")
+	if err != nil {
+		t.Fatalf("forgeResolveLatestTag: %v", err)
+	}
+	if got != "v2026.04.11" {
+		t.Fatalf("got %q, want GitHub tag v2026.04.11", got)
+	}
+}
+
+// A tampered pointer must not be able to redirect the versioned download URL
+// via path traversal.
+func TestForgeResolveLatestTagRejectsUnsafePointer(t *testing.T) {
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases:      []byte(`{"tag_name":"20260705"}`),
+		latestPointer: []byte("../../../../etc\n"),
+	})
+	if _, err := forgeResolveLatestTag("https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip"); err == nil {
+		t.Fatal("expected error for unsafe pointer tag, got nil")
+	}
+}
+
+// End to end: with the mirror pointer naming 20260705 and GitHub stale at
+// 20260628, the update must resolve, download, and install 20260705 -- the
+// exact 404 scenario the pointer eliminates.
+func TestForgeUpdateResolvesVersionFromMirror(t *testing.T) {
+	pubHex, priv := genSigningKey(t)
+	zipData := buildForgeZip(t)
+	swapDefaultTransport(t, &forgeRoundTripper{
+		releases:      []byte(`{"tag_name":"20260628"}`),
+		latestPointer: []byte("20260705\n"),
+		zipBody:       zipData,
+		sigBody:       sign(priv, zipData),
+	})
+	rulesDir := t.TempDir()
+	newVersion, _, err := ForgeUpdateFromURL(rulesDir, "core", "20260628", pubHex, "https://mirror.example/yara-forge/{version}/yara-forge-rules-{tier}.zip", nil)
+	if err != nil {
+		t.Fatalf("ForgeUpdateFromURL: %v", err)
+	}
+	if newVersion != "20260705" {
+		t.Fatalf("newVersion = %q, want 20260705 (from mirror pointer)", newVersion)
+	}
+}
+
 func TestExtractRuleName(t *testing.T) {
 	tests := []struct {
 		line string

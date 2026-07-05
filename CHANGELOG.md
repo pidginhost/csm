@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blocked-IP alert suppression now compares canonical source addresses instead of substrings, so unrelated look-alike IPs stay visible and already-blocked IPv6 sources suppress correctly even when written in compressed form. Findings without any usable source address are never suppressed.
 - WordPress plugin checks now launch wp-cli with runuser instead of su, so under the hardened service unit they no longer flood the journal with read-only lastlog errors and no longer record CSM's internal scans as user logins.
 - The KernelCare Copy Fail livepatch probe (kcarectl) no longer floods the journal with read-only-filesystem errors on every daemon start under the hardened service unit: its cache directory is now a writable path, so kcarectl runs as it does outside the sandbox without relaxing any kernel-tunable protection.
+- YARA Forge rule updates now resolve the latest version from the signed mirror's own pointer instead of the upstream GitHub release, so the daemon no longer logs a download 404 during the window between an upstream weekend release and the weekly mirror sync. It falls back to the GitHub release tag when a mirror publishes no pointer, and rejects a pointer naming an unsafe version tag.
 
 ## [3.22.1] - 2026-06-28
 
