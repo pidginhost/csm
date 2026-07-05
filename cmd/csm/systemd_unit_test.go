@@ -25,6 +25,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"ProtectSystem=strict",
 		"ProtectHome=no",
 		"PrivateDevices=no",
+		"ProtectKernelTunables=yes",
 		"ProtectKernelLogs=no",
 		"PrivateTmp=no",
 		"ProtectControlGroups=no",
@@ -37,6 +38,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 
 	for _, bad := range []string{
 		"PrivateDevices=yes",
+		"ProtectKernelTunables=no",
 		"ProtectKernelLogs=yes",
 		"AF_PACKET",
 		"~@debug",
@@ -143,6 +145,31 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	} {
 		if !syscalls[want] {
 			t.Errorf("SystemCallFilter missing %s", want)
+		}
+	}
+}
+
+func TestSystemdServiceUnitKeepsKcareGrantNarrow(t *testing.T) {
+	unit := systemdServiceUnit("/opt/csm/csm")
+	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
+
+	if !rwPaths["-/var/cache/kcare"] {
+		t.Fatal("ReadWritePaths must tolerate an absent KernelCare cache dir")
+	}
+	if rwPaths["/var/cache/kcare"] {
+		t.Error("ReadWritePaths must not require the KernelCare cache dir to exist")
+	}
+
+	for path := range rwPaths {
+		cleanPath := strings.TrimPrefix(path, "-")
+		if cleanPath == "/proc" || strings.HasPrefix(cleanPath, "/proc/") ||
+			cleanPath == "/sys" || strings.HasPrefix(cleanPath, "/sys/") {
+			t.Errorf("ReadWritePaths must not reopen kernel tunables: %s", path)
+		}
+		if cleanPath == "/var/cache" || strings.HasPrefix(cleanPath, "/var/cache/") {
+			if path != "-/var/cache/kcare" {
+				t.Errorf("ReadWritePaths grants unexpected cache path %s", path)
+			}
 		}
 	}
 }
