@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-07-06
+
 ### Fixed
 
 - Fixed brute-force detection thresholds not applying on config reload: the live mail, SMTP, and probe trackers now pick up changed thresholds immediately instead of requiring a full daemon restart. Reloading a threshold to zero disables that signal instead of firing on every event.
@@ -1719,7 +1721,8 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v2.0.2...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.23.0...HEAD
+[3.23.0]: https://github.com/pidginhost/csm/compare/v3.22.1...v3.23.0
 [2.0.2]: https://github.com/pidginhost/csm/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/pidginhost/csm/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/pidginhost/csm/releases/tag/v2.0.0
