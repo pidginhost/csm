@@ -39,11 +39,14 @@ ProtectSystem=strict
 # paths outside explicit writable grants read-only; only the explicit -/home
 # grant below reopens account home directories.
 ProtectHome=no
-# /opt/csm/state covers installs that still pin the legacy state_path
-# (state_path: /opt/csm/state) instead of the FHS default /var/lib/csm/state;
-# without it the bbolt state db is read-only under ProtectSystem=strict and the
-# daemon cannot start.
-ReadWritePaths=/var/lib/csm /opt/csm/state /var/log/csm /etc/csm /opt/csm/quarantine /opt/csm/policies
+# -/opt/csm/state (tolerate-absent) covers installs that still pin the legacy
+# state_path (state_path: /opt/csm/state) instead of the FHS default
+# /var/lib/csm/state; without the grant the bbolt state db is read-only under
+# ProtectSystem=strict. The "-" is required: FHS installs never create this
+# dir (the package ships every other /opt/csm grant but not this one), and an
+# unprefixed grant makes systemd fail the namespace setup (226/NAMESPACE) so
+# the daemon cannot start.
+ReadWritePaths=/var/lib/csm -/opt/csm/state /var/log/csm /etc/csm /opt/csm/quarantine /opt/csm/policies
 ReadWritePaths=/opt/csm/rules -/opt/csm/deploy.sh -/home /tmp /var/tmp -/dev/shm
 # /etc: CSM atomically maintains the forward-guard router/transport in
 # /etc/exim.conf.local. The temp file must be a sibling in /etc, so a

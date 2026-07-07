@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the daemon failing to start on installs that use the default state directory: the service sandbox required a legacy state path that those installs never create, so startup aborted during sandbox setup. That path is now optional.
+
 ## [3.23.0] - 2026-07-06
 
 ### Fixed

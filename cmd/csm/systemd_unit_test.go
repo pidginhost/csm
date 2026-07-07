@@ -55,7 +55,9 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
 	for _, want := range []string{
 		"/var/lib/csm",
-		"/opt/csm/state",
+		// Tolerate-absent: FHS installs never create /opt/csm/state, and an
+		// unprefixed grant fails systemd's namespace setup (issue #28).
+		"-/opt/csm/state",
 		"/etc",
 		"/var/log/csm",
 		"/etc/csm",
@@ -171,6 +173,24 @@ func TestSystemdServiceUnitKeepsKcareGrantNarrow(t *testing.T) {
 				t.Errorf("ReadWritePaths grants unexpected cache path %s", path)
 			}
 		}
+	}
+}
+
+func TestSystemdServiceUnitToleratesAbsentLegacyStateDir(t *testing.T) {
+	// The legacy /opt/csm/state grant must be tolerate-absent ("-" prefix).
+	// FHS installs default state_path to /var/lib/csm/state and never create
+	// /opt/csm/state; the package ships every other /opt/csm grant as a dir
+	// but not this one. An unprefixed grant makes systemd fail the mount
+	// namespace setup (status=226/NAMESPACE) when the dir is missing, so the
+	// daemon cannot start. Regression test for issue #28.
+	unit := systemdServiceUnit("/opt/csm/csm")
+	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
+
+	if !rwPaths["-/opt/csm/state"] {
+		t.Error("ReadWritePaths must tolerate an absent legacy /opt/csm/state dir")
+	}
+	if rwPaths["/opt/csm/state"] {
+		t.Error("ReadWritePaths must not require the legacy /opt/csm/state dir to exist")
 	}
 }
 
