@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestPackagedSystemdUnitMatchesInstallerUnit(t *testing.T) {
@@ -56,7 +58,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	for _, want := range []string{
 		"/var/lib/csm",
 		// Tolerate-absent: FHS installs never create /opt/csm/state, and an
-		// unprefixed grant fails systemd's namespace setup (issue #28).
+		// unprefixed grant fails systemd's namespace setup.
 		"-/opt/csm/state",
 		"/etc",
 		"/var/log/csm",
@@ -176,6 +178,38 @@ func TestSystemdServiceUnitKeepsKcareGrantNarrow(t *testing.T) {
 	}
 }
 
+func TestSystemdServiceUnitRequiresOnlyPackagedWritablePaths(t *testing.T) {
+	unit := systemdServiceUnit("/opt/csm/csm")
+	rwPaths := unitDirectiveFields(unit, "ReadWritePaths")
+	packagedPaths := packagedContentPaths(t)
+	hostProvidedPaths := map[string]bool{
+		"/etc":     true,
+		"/tmp":     true,
+		"/var/tmp": true,
+	}
+	systemdCreatedPaths := map[string]bool{
+		"/etc/csm":     true,
+		"/var/lib/csm": true,
+		"/var/log/csm": true,
+	}
+
+	for path := range rwPaths {
+		if strings.HasPrefix(path, "-") {
+			continue
+		}
+		if _, ok := hostProvidedPaths[path]; ok {
+			continue
+		}
+		if _, ok := systemdCreatedPaths[path]; ok {
+			continue
+		}
+		if packageProvidesPath(packagedPaths, path) {
+			continue
+		}
+		t.Errorf("unprefixed ReadWritePaths entry %s is not guaranteed to exist before sandbox setup", path)
+	}
+}
+
 func TestSystemdServiceUnitToleratesAbsentLegacyStateDir(t *testing.T) {
 	// The legacy /opt/csm/state grant must be tolerate-absent ("-" prefix).
 	// FHS installs default state_path to /var/lib/csm/state and never create
@@ -192,6 +226,38 @@ func TestSystemdServiceUnitToleratesAbsentLegacyStateDir(t *testing.T) {
 	if rwPaths["/opt/csm/state"] {
 		t.Error("ReadWritePaths must not require the legacy /opt/csm/state dir to exist")
 	}
+}
+
+func packagedContentPaths(t *testing.T) []string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "build", "nfpm.yaml"))
+	if err != nil {
+		t.Fatalf("read nfpm package manifest: %v", err)
+	}
+	var manifest struct {
+		Contents []struct {
+			Dst string `yaml:"dst"`
+		} `yaml:"contents"`
+	}
+	if err := yaml.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("parse nfpm package manifest: %v", err)
+	}
+	paths := make([]string, 0, len(manifest.Contents))
+	for _, entry := range manifest.Contents {
+		if entry.Dst != "" {
+			paths = append(paths, strings.TrimRight(entry.Dst, "/"))
+		}
+	}
+	return paths
+}
+
+func packageProvidesPath(packagedPaths []string, path string) bool {
+	for _, packagedPath := range packagedPaths {
+		if packagedPath == path || strings.HasPrefix(packagedPath, path+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func unitDirectiveFields(unit, key string) map[string]bool {
