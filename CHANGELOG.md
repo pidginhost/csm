@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the legacy Apache/LSWS challenge snippet so webserver config validation follows the daemon-managed challenge map instead of a stale location. This prevents challenge redirects from breaking webserver reloads after upgrades.
+
 ## [3.23.1] - 2026-07-07
 
 ### Fixed
