@@ -455,22 +455,65 @@ func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 // mid-run must not put the binary and the assets on different versions.
 func TestDeployPinsReleaseTagAcrossArtifacts(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	data, err := os.ReadFile(filepath.Join(root, "scripts/deploy.sh"))
+	githubData, err := os.ReadFile(filepath.Join(root, "scripts/deploy.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, fn := range []string{"do_install", "do_upgrade"} {
-		body := shellFunctionBody(t, string(data), fn)
+		body := shellFunctionBody(t, string(githubData), fn)
+		if got := strings.Count(body, "resolve_release_tag"); got != 1 {
+			t.Errorf("%s resolves the GitHub release tag %d times, want exactly once", fn, got)
+		}
 		if !strings.Contains(body, "release_tag=$(resolve_release_tag)") {
-			t.Errorf("%s must resolve the release tag once", fn)
+			t.Errorf("%s must capture the resolved GitHub release tag", fn)
 		}
-		if !strings.Contains(body, `download_package "$release_tag"`) {
-			t.Errorf("%s must download the binary from the pinned tag", fn)
-		}
-		if !strings.Contains(body, `download_and_stage_assets "$release_tag"`) {
-			t.Errorf("%s must stage assets from the pinned tag", fn)
+		for _, call := range []struct {
+			name string
+			want string
+		}{
+			{name: "download_package", want: `download_package "$release_tag" "$tmpdir"`},
+			{name: "download_and_stage_assets", want: `download_and_stage_assets "$release_tag" "$tmpdir"`},
+		} {
+			if got := strings.Count(body, call.name); got != 1 {
+				t.Errorf("%s calls %s %d times, want exactly once", fn, call.name, got)
+			}
+			if !strings.Contains(body, call.want) {
+				t.Errorf("%s must call %s with the pinned GitHub tag", fn, call.name)
+			}
 		}
 	}
+
+	gitlabData, err := os.ReadFile(filepath.Join(root, "scripts/deploy-gitlab.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{"do_install", "do_upgrade"} {
+		body := shellFunctionBody(t, string(gitlabData), fn)
+		if strings.Contains(body, "resolve_release_tag") {
+			t.Errorf("%s in deploy-gitlab.sh must not require a GitHub release tag", fn)
+		}
+		for _, call := range []struct {
+			name string
+			want string
+		}{
+			{name: "download_package", want: `download_package "latest" "$tmpdir"`},
+			{name: "download_and_stage_assets", want: `download_and_stage_assets "latest" "$tmpdir"`},
+		} {
+			if got := strings.Count(body, call.name); got != 1 {
+				t.Errorf("%s in deploy-gitlab.sh calls %s %d times, want exactly once", fn, call.name, got)
+			}
+			if !strings.Contains(body, call.want) {
+				t.Errorf("%s in deploy-gitlab.sh missing package-registry call %q", fn, call.want)
+			}
+		}
+	}
+}
+
+func githubReleaseTagResolverStub(rel string) string {
+	if rel != "scripts/deploy.sh" {
+		return ""
+	}
+	return "resolve_release_tag() { printf 'v0.0.0\\n'; }"
 }
 
 func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
@@ -528,7 +571,7 @@ func TestDeployCleansTmpdirWhenPackageDownloadFails(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
-					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
+					githubReleaseTagResolverStub(rel),
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() {",
 					"    local tmpdir=\"$2\"",
@@ -581,7 +624,7 @@ func TestInstallCleansTmpdirAfterInstallerFailure(t *testing.T) {
 				"id() { printf '0\\n'; }",
 				"detect_auth_header() { :; }",
 				"save_token() { :; }",
-				"resolve_release_tag() { printf 'v0.0.0\\n'; }",
+				githubReleaseTagResolverStub(rel),
 				"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 				"download_package() { mkdir -p \"$2\"; cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 				"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -640,7 +683,7 @@ func TestInstallCleansBinaryAfterPlacementFailure(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
-					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
+					githubReleaseTagResolverStub(rel),
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -718,7 +761,7 @@ func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
-					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
+					githubReleaseTagResolverStub(rel),
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -969,7 +1012,7 @@ func TestUpgradeTmpdirLifecycle(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
-					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
+					githubReleaseTagResolverStub(rel),
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() {",
 					"    local tmpdir=\"$2\"",
@@ -1387,8 +1430,64 @@ func TestInstallHooksRespectConfiguredBinaryImmutability(t *testing.T) {
 	if strings.Contains(string(posttrans), "apply-immutability 2>/dev/null") {
 		t.Error("posttrans must not silence apply-immutability diagnostics")
 	}
-	if !strings.Contains(string(posttrans), "WARNING") {
-		t.Error("posttrans must warn when re-arming binary protection fails")
+}
+
+func TestPosttransReportsImmutabilityFailureWithoutFailing(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	posttrans, err := os.ReadFile(filepath.Join(root, "build/packaging/scripts/posttrans.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := t.TempDir()
+	fakeCSM := filepath.Join(tmp, "csm")
+	fakeBody := strings.Join([]string{
+		"#!/bin/bash",
+		"if [ \"${APPLY_EXIT:-0}\" -ne 0 ]; then",
+		"    echo 'apply-immutability diagnostic' >&2",
+		"fi",
+		"exit \"${APPLY_EXIT:-0}\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(fakeCSM, []byte(fakeBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapper := filepath.Join(tmp, "posttrans.sh")
+	body := strings.ReplaceAll(string(posttrans), "/opt/csm/csm", fakeCSM)
+	body = strings.ReplaceAll(body, "/var/lib/csm", filepath.Join(tmp, "state"))
+	if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		exit       string
+		wantWarn   bool
+		wantDetail bool
+	}{
+		{name: "success", exit: "0"},
+		{name: "failure", exit: "1", wantWarn: true, wantDetail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = withEnv(os.Environ(), "APPLY_EXIT="+tc.exit)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("posttrans must not fail the package transaction: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+			}
+			if got := strings.Contains(stderr.String(), "WARNING: could not apply configured binary immutability"); got != tc.wantWarn {
+				t.Errorf("warning present = %t, want %t; stderr:\n%s", got, tc.wantWarn, stderr.String())
+			}
+			if got := strings.Contains(stderr.String(), "apply-immutability diagnostic"); got != tc.wantDetail {
+				t.Errorf("command diagnostic present = %t, want %t; stderr:\n%s", got, tc.wantDetail, stderr.String())
+			}
+			if strings.Contains(stdout.String(), "WARNING") {
+				t.Errorf("warning must be written to stderr, got stdout:\n%s", stdout.String())
+			}
+		})
 	}
 }
 
