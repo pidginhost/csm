@@ -451,6 +451,32 @@ func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 	}
 }
 
+func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			for _, fn := range []string{"do_install", "do_upgrade"} {
+				fnBody := shellFunctionBody(t, body, fn)
+				if !strings.Contains(fnBody, `trap "rm -rf \"${tmpdir}\"" EXIT`) {
+					t.Errorf("%s %s must arm an EXIT trap that cleans its tmpdir", rel, fn)
+				}
+			}
+			rollbackBody := shellFunctionBody(t, body, "rollback_upgrade")
+			if !strings.Contains(rollbackBody, "trap - EXIT") {
+				t.Errorf("%s rollback_upgrade must disarm cleanup so rollback material survives", rel)
+			}
+			if !strings.Contains(rollbackBody, "Rollback material kept at") {
+				t.Errorf("%s rollback_upgrade must tell the operator where rollback material lives", rel)
+			}
+		})
+	}
+}
+
 func TestDeployAssetActivationRollbackRestoresPreviousRelease(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
@@ -768,6 +794,7 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 					"binary_backup=\"$TEST_BINARY\"",
 					"assets_stage=/tmp",
 					"asset_backup=/tmp",
+					"tmpdir=/tmp",
 					"binary_was_immutable=" + wasImmutable,
 					"rollback_upgrade 'Test failure'",
 					"",
@@ -825,6 +852,7 @@ func TestRollbackUpgradeReportsIncompleteRecovery(t *testing.T) {
 				"binary_backup=/missing",
 				"assets_stage=/tmp",
 				"asset_backup=/tmp",
+				"tmpdir=/tmp",
 				"binary_was_immutable=0",
 				"rollback_upgrade 'Test failure'",
 				"",

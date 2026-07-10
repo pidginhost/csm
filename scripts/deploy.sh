@@ -332,8 +332,8 @@ cleanup_upgrade_backup() {
     rm -rf "$1"
 }
 
-# Runs in do_upgrade scope: binary_backup, assets_stage, asset_backup and
-# binary_was_immutable are the caller's locals.
+# Runs in do_upgrade scope: binary_backup, assets_stage, asset_backup,
+# binary_was_immutable and tmpdir are the caller's locals.
 rollback_upgrade() {
     local reason="$1" rollback_status=0
     echo "WARNING: ${reason}; rolling back..." >&2
@@ -361,6 +361,9 @@ rollback_upgrade() {
     if ! start_services; then
         rollback_status=1
     fi
+    # Keep the download/backup dir for manual recovery after a failed upgrade.
+    trap - EXIT
+    echo "Rollback material kept at ${tmpdir}" >&2
     if [ "$rollback_status" -ne 0 ]; then
         die "${reason} - rollback incomplete; inspect the warnings above"
     fi
@@ -405,6 +408,7 @@ do_install() {
 
     local tmpdir
     tmpdir=$(download_package "latest")
+    trap "rm -rf \"${tmpdir}\"" EXIT
 
     local assets_stage asset_backup
     assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
@@ -447,6 +451,7 @@ do_upgrade() {
 
     local tmpdir
     tmpdir=$(download_package "latest")
+    trap "rm -rf \"${tmpdir}\"" EXIT
 
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
