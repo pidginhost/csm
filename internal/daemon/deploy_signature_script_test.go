@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,6 +142,74 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 				if _, err := os.Stat(path); !os.IsNotExist(err) {
 					t.Errorf("temporary verification file was not removed: %s", path)
 				}
+			}
+		})
+	}
+}
+
+func TestVerifyChecksumAcceptsOnlyMatchingArtifacts(t *testing.T) {
+	payload := []byte("release artifact")
+	sum := sha256.Sum256(payload)
+	matching := fmt.Sprintf("%x  csm\n", sum)
+	mismatched := strings.Repeat("0", sha256.Size*2) + "  csm\n"
+
+	for _, script := range deploySignatureScripts() {
+		t.Run(script.name, func(t *testing.T) {
+			output, code := runVerifyChecksum(t, script, payload, matching)
+			if code != 0 {
+				t.Fatalf("verify_checksum rejected a matching artifact, exit %d:\n%s", code, output)
+			}
+
+			output, code = runVerifyChecksum(t, script, payload, mismatched)
+			if code == 0 {
+				t.Fatalf("verify_checksum accepted a mismatched artifact:\n%s", output)
+			}
+			for _, want := range []string{
+				"CHECKSUM VERIFICATION FAILED",
+				"Expected: " + strings.Repeat("0", sha256.Size*2),
+				fmt.Sprintf("Got:      %x", sum),
+			} {
+				if !strings.Contains(output, want) {
+					t.Errorf("checksum failure missing %q:\n%s", want, output)
+				}
+			}
+
+			output, code = runVerifyChecksum(t, script, payload, "\n")
+			if code == 0 {
+				t.Fatalf("verify_checksum accepted an empty checksum:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestReleaseScriptsUseChecksumHelperForBinariesAndAssets(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, script := range deploySignatureScripts() {
+		t.Run(script.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, script.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(data)
+			if script.path == "scripts/install.sh" {
+				for _, call := range []string{
+					`verify_checksum "${TMPDIR}/csm" "${TMPDIR}/csm.sha256"`,
+					`verify_checksum "${TMPDIR}/assets.tar.gz" "${TMPDIR}/assets.tar.gz.sha256"`,
+				} {
+					if strings.Count(body, call) != 1 {
+						t.Errorf("%s must make exactly one checksum call %q", script.path, call)
+					}
+				}
+				return
+			}
+
+			packageDownload := shellFunctionBody(t, body, "download_package")
+			if strings.Count(packageDownload, `verify_checksum "${tmpdir}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}.sha256"`) != 1 {
+				t.Errorf("%s download_package must verify the downloaded binary exactly once", script.path)
+			}
+			assetDownload := shellFunctionBody(t, body, "download_and_stage_assets")
+			if strings.Count(assetDownload, `verify_checksum "$archive" "$checksum"`) != 1 {
+				t.Errorf("%s download_and_stage_assets must verify the asset archive exactly once", script.path)
 			}
 		})
 	}
@@ -439,8 +509,8 @@ func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 			}
 
 			upgradeBody := shellFunctionBody(t, body, "do_upgrade")
-			start := strings.LastIndex(upgradeBody, "start_services")
-			cleanup := strings.Index(upgradeBody, "cleanup_upgrade_backup")
+			start := strings.LastIndex(upgradeBody, "if ! start_services; then")
+			cleanup := strings.Index(upgradeBody, `cleanup_upgrade_backup "$tmpdir"`)
 			if start < 0 || cleanup < 0 || cleanup < start {
 				t.Errorf("%s must keep rollback material until start_services succeeds", rel)
 			}
@@ -1389,21 +1459,30 @@ func TestInstallGuardsCatchDanglingSymlinksAndFailedBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	install := string(installBody)
-	if !strings.Contains(install, `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`) {
+	guardStart := strings.Index(install, "# Check existing installation")
+	guardEnd := strings.Index(install, "ARCH=$(detect_arch)")
+	if guardStart < 0 || guardEnd < guardStart {
+		t.Fatal("install.sh existing-install guard block not found")
+	}
+	guard := install[guardStart:guardEnd]
+	if strings.Count(guard, `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`) != 1 {
 		t.Error("install.sh already-installed guard must catch dangling symlinks")
 	}
-	bootstrap := strings.Index(install, `if ! "$BINARY_PATH" install; then`)
-	if bootstrap < 0 {
-		t.Error("install.sh must handle csm install failures")
-	} else {
-		block := install[bootstrap:]
-		end := strings.Index(block, "fi")
-		if end < 0 || !strings.Contains(block[:end], `rm -f "$BINARY_PATH"`) {
-			t.Error("install.sh must remove the binary on bootstrap failure so a re-run can retry")
-		}
+	bootstrap := `if ! "$BINARY_PATH" install; then
+    rm -f "$BINARY_PATH"
+    die "csm install failed; the binary was removed so install.sh can be re-run"
+fi`
+	if strings.Count(install, bootstrap) != 1 {
+		t.Error("install.sh must remove the binary when csm install fails so a re-run can retry")
 	}
-	if strings.Contains(install, `chmod 755 "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true`) {
-		t.Error("install.sh must not tolerate chmod failure on a required archive member")
+	assetsOK := strings.Index(install, `info "Assets OK"`)
+	configuration := strings.Index(install, "# --- Configuration ---")
+	if assetsOK < 0 || configuration < assetsOK {
+		t.Fatal("install.sh asset placement block not found")
+	}
+	placement := install[assetsOK:configuration]
+	if strings.Count(placement, `chmod 755 "${INSTALL_DIR}/deploy.sh"`) != 1 || strings.Contains(placement, "|| true") {
+		t.Error("install.sh must fail when chmod of the required deploy script fails")
 	}
 
 	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
@@ -1412,7 +1491,8 @@ func TestInstallGuardsCatchDanglingSymlinksAndFailedBootstrap(t *testing.T) {
 			t.Fatal(err)
 		}
 		installFn := shellFunctionBody(t, string(body), "do_install")
-		if !strings.Contains(installFn, `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`) {
+		guard := `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`
+		if strings.Count(installFn, guard) != 1 || strings.Index(installFn, guard) > strings.Index(installFn, "mktemp") {
 			t.Errorf("%s do_install guard must catch dangling symlinks", rel)
 		}
 	}
@@ -1475,9 +1555,23 @@ func TestInstallHooksRespectConfiguredBinaryImmutability(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(body)
-		stripped := strings.Replace(text, shellFunctionBody(t, text, "rollback_upgrade"), "", 1)
-		if strings.Contains(stripped, "chattr +i") {
-			t.Errorf("%s must not apply chattr +i outside rollback state restoration", rel)
+		rollback := shellFunctionBody(t, text, "rollback_upgrade")
+		const immutableCommand = "chattr +i"
+		if strings.Count(rollback, immutableCommand) != 1 {
+			t.Errorf("%s rollback_upgrade must contain exactly one immutable-state restoration", rel)
+			continue
+		}
+		allowed := strings.Index(text, rollback) + strings.Index(rollback, immutableCommand)
+		for offset := 0; ; {
+			found := strings.Index(text[offset:], immutableCommand)
+			if found < 0 {
+				break
+			}
+			found += offset
+			if found != allowed {
+				t.Errorf("%s must not apply chattr +i outside rollback state restoration", rel)
+			}
+			offset = found + len(immutableCommand)
 		}
 	}
 
@@ -1603,6 +1697,45 @@ func runVerifySignature(t *testing.T, script deploySignatureScript, stubs string
 	return "", 0
 }
 
+func runVerifyChecksum(t *testing.T, script deploySignatureScript, payload []byte, checksum string) (string, int) {
+	t.Helper()
+
+	tmp := t.TempDir()
+	artifact := filepath.Join(tmp, "csm")
+	checksumFile := artifact + ".sha256"
+	if err := os.WriteFile(artifact, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(checksumFile, []byte(checksum), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapper := filepath.Join(tmp, "verify-checksum.sh")
+	body := strings.Join([]string{
+		"#!/bin/bash",
+		"set -euo pipefail",
+		"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_checksum"),
+		"verify_checksum \"$ARTIFACT\" \"$CHECKSUM_FILE\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("/bin/bash", wrapper)
+	cmd.Env = withEnv(os.Environ(), "ARTIFACT="+artifact, "CHECKSUM_FILE="+checksumFile)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return string(out), exitErr.ExitCode()
+	}
+	t.Fatalf("running checksum wrapper failed: %v\n%s", err, out)
+	return "", 0
+}
+
 func withEnv(base []string, overrides ...string) []string {
 	out := append([]string(nil), base...)
 	for _, override := range overrides {
@@ -1641,17 +1774,33 @@ func shellFunctionBody(t *testing.T, script, name string) string {
 	if start < 0 {
 		t.Fatalf("%s not found", name)
 	}
-	lines := strings.Split(script[start:], "\n")
 	depth := 0
-	for i, line := range lines {
-		depth += strings.Count(line, "{")
-		depth -= strings.Count(line, "}")
-		if i > 0 && depth == 0 {
-			return strings.Join(lines[:i+1], "\n")
+	opened := false
+	for offset, char := range script[start:] {
+		switch char {
+		case '{':
+			depth++
+			opened = true
+		case '}':
+			depth--
+			if opened && depth == 0 {
+				return script[start : start+offset+1]
+			}
 		}
 	}
 	t.Fatalf("%s body did not close", name)
 	return ""
+}
+
+func TestShellFunctionBodyExcludesCommandsAfterClosingBrace(t *testing.T) {
+	script := "rollback_upgrade() {\n    if true; then\n        chattr +i /opt/csm/csm\n    fi\n}; chattr +i /tmp/unconditional\n"
+	body := shellFunctionBody(t, script, "rollback_upgrade")
+	if strings.Contains(body, "/tmp/unconditional") {
+		t.Fatalf("function extraction included a command after its closing brace:\n%s", body)
+	}
+	if !strings.Contains(body, "/opt/csm/csm") {
+		t.Fatalf("function extraction omitted the function body:\n%s", body)
+	}
 }
 
 func runValidateAssetsArchive(t *testing.T, script, archive string) (string, int) {
