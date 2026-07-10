@@ -333,6 +333,30 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestIntegrityImmutableDefaultsTrueWhenAbsent(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "absent-integrity-block", yaml: "hostname: test\n", want: true},
+		{name: "integrity-without-immutable", yaml: "integrity:\n  binary_hash: \"abc\"\n", want: true},
+		{name: "explicit-false", yaml: "integrity:\n  immutable: false\n", want: false},
+		{name: "explicit-true", yaml: "integrity:\n  immutable: true\n", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+			if cfg.Integrity.Immutable != tc.want {
+				t.Errorf("Integrity.Immutable = %t, want %t", cfg.Integrity.Immutable, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadInvalidYAML(t *testing.T) {
 	tmpFile, err := os.CreateTemp("", "csm-config-*.yaml")
 	if err != nil {

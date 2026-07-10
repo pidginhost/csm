@@ -1392,6 +1392,7 @@ type defaultPresence struct {
 	httpASNCrawlMinIPs        bool
 	httpASNCrawlReverseProxy  bool
 	xmlrpcThreshold           bool
+	integrityImmutable        bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1443,6 +1444,11 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/var/lib/csm/state"
+	}
+	// Binary immutability defaults on; a config written before the key existed
+	// must not read as "disable protection". Explicit false is kept.
+	if !presence.integrityImmutable {
+		cfg.Integrity.Immutable = true
 	}
 	if cfg.Alerts.AuditLog.File.Enabled && cfg.Alerts.AuditLog.File.Path == "" {
 		cfg.Alerts.AuditLog.File.Path = "/var/log/csm/audit.jsonl"
@@ -1980,10 +1986,12 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
 		} `yaml:"alerts"`
 		Retention map[string]yaml.Node `yaml:"retention"`
+		Integrity map[string]yaml.Node `yaml:"integrity"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
+	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.httpASNCrawlMinIPs = raw.Thresholds["http_asn_crawl_min_ips"]
