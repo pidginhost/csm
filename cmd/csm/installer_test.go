@@ -69,6 +69,27 @@ func TestCommandSymlinkSkippedInPackageMode(t *testing.T) {
 	}
 }
 
+// Standalone hosts only run `csm rehash` on upgrade (deploy.sh never re-runs
+// `csm install`), so rehash is the path that must maintain the PATH launcher.
+func TestRehashMaintainsCommandSymlink(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rehash := string(body)
+	start := strings.Index(rehash, "func runRehash()")
+	if start < 0 {
+		t.Fatal("runRehash not found")
+	}
+	end := strings.Index(rehash[start:], "\nfunc ")
+	if end < 0 {
+		end = len(rehash) - start
+	}
+	if !strings.Contains(rehash[start:start+end], "ensureCommandSymlink(commandPath, binaryPath)") {
+		t.Error("runRehash must maintain the command symlink for standalone upgrades")
+	}
+}
+
 func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {
 	root := t.TempDir()
 	dirs := []string{

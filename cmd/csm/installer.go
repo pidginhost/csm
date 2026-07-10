@@ -156,8 +156,7 @@ func (inst *Installer) Uninstall() error {
 	}
 
 	// Remove immutable flag
-	// #nosec G204 -- chattr hardcoded; BinaryPath from installer init.
-	exec.Command("chattr", "-i", inst.BinaryPath).Run()
+	_ = setBinaryImmutable(inst.BinaryPath, false)
 	if err := removeCommandSymlink(inst.CommandPath, inst.BinaryPath); err != nil {
 		return fmt.Errorf("removing command symlink: %w", err)
 	}

@@ -784,6 +784,11 @@ func runRehash() {
 	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: updating binary immutable flag: %v\n", err)
 	}
+	// Standalone upgrades run rehash, never install, so this is where hosts
+	// upgraded from pre-launcher releases gain /usr/sbin/csm.
+	if err := ensureCommandSymlink(commandPath, binaryPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not install command at %s: %v\n", commandPath, err)
+	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
