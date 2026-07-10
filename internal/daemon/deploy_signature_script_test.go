@@ -478,7 +478,7 @@ func TestDeployAssetActivationRollbackRestoresPreviousRelease(t *testing.T) {
 				extractShellFunction(t, script, "activate_assets"),
 				extractShellFunction(t, script, "rollback_assets"),
 				"activate_assets \"$TEST_STAGE\" \"$TEST_BACKUP\"",
-				"rollback_assets \"$TEST_BACKUP\"",
+				"rollback_assets \"$TEST_STAGE\" \"$TEST_BACKUP\"",
 				"",
 			}, "\n")
 			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
@@ -509,6 +509,195 @@ func TestDeployAssetActivationRollbackRestoresPreviousRelease(t *testing.T) {
 				if string(got) != "old" {
 					t.Errorf("%s = %q after rollback, want old", path, got)
 				}
+			}
+		})
+	}
+}
+
+func TestRollbackAssetsPreservesEntriesNeverActivated(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			installDir := t.TempDir()
+			stage := t.TempDir()
+			backup := filepath.Join(t.TempDir(), "backup")
+			if err := os.MkdirAll(backup, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			// Activation failed before touching anything: the live entries are
+			// still in place, the stage still holds every new entry, and the
+			// backup is empty. Rollback must leave the live entries alone.
+			for _, entry := range []string{"ui", "configs", "pam"} {
+				writeDeployTestFile(t, filepath.Join(installDir, entry, "release"), "old")
+				writeDeployTestFile(t, filepath.Join(stage, entry, "release"), "new")
+			}
+			writeDeployTestFile(t, filepath.Join(installDir, "deploy.sh"), "old")
+			writeDeployTestFile(t, filepath.Join(stage, "deploy.sh"), "new")
+			writeDeployTestFile(t, filepath.Join(installDir, "rules", "malware.yml"), "old")
+			writeDeployTestFile(t, filepath.Join(installDir, "rules", "malware.yar"), "old")
+
+			script := filepath.Join(root, rel)
+			wrapper := filepath.Join(t.TempDir(), "asset-rollback-noop.sh")
+			body := strings.Join([]string{
+				"#!/bin/bash",
+				"set -euo pipefail",
+				extractShellFunction(t, script, "rollback_assets"),
+				"rollback_assets \"$TEST_STAGE\" \"$TEST_BACKUP\"",
+				"",
+			}, "\n")
+			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = append(os.Environ(),
+				"INSTALL_DIR="+installDir,
+				"TEST_STAGE="+stage,
+				"TEST_BACKUP="+backup,
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("rollback after failed activation: %v\n%s", err, out)
+			}
+
+			for _, path := range []string{
+				filepath.Join(installDir, "ui", "release"),
+				filepath.Join(installDir, "configs", "release"),
+				filepath.Join(installDir, "pam", "release"),
+				filepath.Join(installDir, "deploy.sh"),
+				filepath.Join(installDir, "rules", "malware.yml"),
+				filepath.Join(installDir, "rules", "malware.yar"),
+			} {
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("rollback destroyed a live entry it never backed up: %v", err)
+				}
+				if string(got) != "old" {
+					t.Errorf("%s = %q after rollback, want untouched old content", path, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRollbackAssetsContinuesPastFailures(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			installDir := t.TempDir()
+			stage := t.TempDir()
+			backup := filepath.Join(t.TempDir(), "backup")
+
+			// ui: unremovable (read-only dir), stage entry gone, backup ready -
+			// the restore step for ui fails. configs afterwards must still be
+			// restored and the function must not abort the script.
+			lockedUI := filepath.Join(installDir, "ui")
+			writeDeployTestFile(t, filepath.Join(lockedUI, "release"), "new")
+			writeDeployTestFile(t, filepath.Join(backup, "ui", "release"), "old")
+			if err := os.Chmod(lockedUI, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(lockedUI, 0o755) })
+
+			writeDeployTestFile(t, filepath.Join(installDir, "configs", "release"), "new")
+			writeDeployTestFile(t, filepath.Join(backup, "configs", "release"), "old")
+
+			script := filepath.Join(root, rel)
+			wrapper := filepath.Join(t.TempDir(), "asset-rollback-tolerant.sh")
+			body := strings.Join([]string{
+				"#!/bin/bash",
+				"set -euo pipefail",
+				extractShellFunction(t, script, "rollback_assets"),
+				"rollback_assets \"$TEST_STAGE\" \"$TEST_BACKUP\"",
+				"echo ROLLBACK_COMPLETED",
+				"",
+			}, "\n")
+			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = append(os.Environ(),
+				"INSTALL_DIR="+installDir,
+				"TEST_STAGE="+stage,
+				"TEST_BACKUP="+backup,
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("rollback aborted on a failing step instead of continuing: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "ROLLBACK_COMPLETED") {
+				t.Fatalf("rollback did not run to completion:\n%s", out)
+			}
+
+			got, err := os.ReadFile(filepath.Join(installDir, "configs", "release"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "old" {
+				t.Errorf("configs = %q after rollback, want old restored despite earlier failure", got)
+			}
+		})
+	}
+}
+
+func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			script := filepath.Join(root, rel)
+			upgradeBody, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(shellFunctionBody(t, string(upgradeBody), "do_upgrade"), "binary_was_immutable") {
+				t.Error("do_upgrade must capture the binary's immutable state before clearing it")
+			}
+
+			run := func(wasImmutable string) (string, int) {
+				dir := t.TempDir()
+				capture := filepath.Join(dir, "chattr-args")
+				wrapper := filepath.Join(dir, "rollback-upgrade.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -uo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					"chattr() { printf '%s\\n' \"$*\" >> \"$CHATTR_CAPTURE\"; }",
+					"lsattr() { :; }",
+					"cp() { :; }",
+					"start_services() { :; }",
+					"rollback_assets() { :; }",
+					extractShellFunction(t, script, "rollback_upgrade"),
+					"BINARY_PATH=/bin/true",
+					"binary_backup=/bin/true",
+					"assets_stage=/tmp",
+					"asset_backup=/tmp",
+					"binary_was_immutable=" + wasImmutable,
+					"rollback_upgrade 'Test failure'",
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(), "CHATTR_CAPTURE="+capture)
+				out, runErr := cmd.CombinedOutput()
+				calls := ""
+				if data, readErr := os.ReadFile(capture); readErr == nil {
+					calls = string(data)
+				}
+				if runErr == nil {
+					t.Fatalf("rollback_upgrade must die, but exited 0:\n%s", out)
+				}
+				return calls, 1
+			}
+
+			calls, _ := run("1")
+			if !strings.Contains(calls, "+i") {
+				t.Errorf("previously immutable binary not re-armed after rollback, chattr calls:\n%s", calls)
+			}
+
+			calls, _ = run("0")
+			if strings.Contains(calls, "+i") {
+				t.Errorf("chattr +i applied although the binary was not immutable before the upgrade:\n%s", calls)
 			}
 		})
 	}

@@ -286,24 +286,51 @@ activate_assets() {
     done
 }
 
+# Last-resort recovery: every step is individually guarded so one failure
+# cannot abort the script mid-restore under errexit.
 rollback_assets() {
-    local backup="$1" entry file
+    local stage="$1" backup="$2" entry file
     for entry in ui configs pam deploy.sh; do
-        rm -rf "${INSTALL_DIR:?}/${entry}"
+        # An entry still in the stage was never activated, so the live copy
+        # (if any) is the previous release - leave it in place.
+        if [ ! -e "${stage}/${entry}" ] && [ ! -L "${stage}/${entry}" ]; then
+            rm -rf "${INSTALL_DIR:?}/${entry}" 2>/dev/null || \
+                echo "WARNING: could not remove ${INSTALL_DIR}/${entry} during rollback" >&2
+        fi
         if [ -e "${backup}/${entry}" ] || [ -L "${backup}/${entry}" ]; then
-            mv "${backup}/${entry}" "${INSTALL_DIR}/${entry}"
+            mv "${backup}/${entry}" "${INSTALL_DIR}/${entry}" 2>/dev/null || \
+                echo "WARNING: could not restore ${entry} during rollback" >&2
         fi
     done
     for file in malware.yml malware.yar; do
-        rm -f "${INSTALL_DIR}/rules/${file}"
         if [ -f "${backup}/rules/${file}" ]; then
-            cp -p "${backup}/rules/${file}" "${INSTALL_DIR}/rules/${file}"
+            cp -p "${backup}/rules/${file}" "${INSTALL_DIR}/rules/${file}" 2>/dev/null || \
+                echo "WARNING: could not restore rules/${file} during rollback" >&2
         fi
     done
 }
 
 cleanup_upgrade_backup() {
     rm -rf "$1"
+}
+
+# Runs in do_upgrade scope: binary_backup, assets_stage, asset_backup and
+# binary_was_immutable are the caller's locals.
+rollback_upgrade() {
+    local reason="$1"
+    echo "WARNING: ${reason}; rolling back..." >&2
+    chattr -i "$BINARY_PATH" 2>/dev/null || true
+    cp -p "$binary_backup" "$BINARY_PATH" 2>/dev/null || \
+        echo "WARNING: could not restore previous binary from ${binary_backup}" >&2
+    rollback_assets "$assets_stage" "$asset_backup"
+    "$BINARY_PATH" rehash 2>&1 || true
+    # The restored binary's rehash predates config-driven immutability, so
+    # re-arm from the state observed before the upgrade.
+    if [ "$binary_was_immutable" = "1" ]; then
+        chattr +i "$BINARY_PATH" 2>/dev/null || true
+    fi
+    start_services || true
+    die "${reason} - rolled back to previous version"
 }
 
 # Stop daemon, wait for clean shutdown
@@ -353,13 +380,13 @@ do_install() {
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     chmod 0700 "$BINARY_PATH"
     if ! activate_assets "$assets_stage" "$asset_backup"; then
-        rollback_assets "$asset_backup"
+        rollback_assets "$assets_stage" "$asset_backup"
         rm -f "$BINARY_PATH"
         die "Asset installation failed"
     fi
 
     if ! "$BINARY_PATH" install; then
-        rollback_assets "$asset_backup"
+        rollback_assets "$assets_stage" "$asset_backup"
         rm -f "$BINARY_PATH"
         die "Installation failed"
     fi
@@ -404,16 +431,15 @@ do_upgrade() {
     stop_services
     cp -p "$BINARY_PATH" "$binary_backup"
 
+    local binary_was_immutable=0
+    case "$(lsattr "$BINARY_PATH" 2>/dev/null | awk '{print $1}')" in
+        *i*) binary_was_immutable=1 ;;
+    esac
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     chmod 0700 "$BINARY_PATH"
     if ! activate_assets "$assets_stage" "$asset_backup"; then
-        chattr -i "$BINARY_PATH" 2>/dev/null || true
-        cp -p "$binary_backup" "$BINARY_PATH"
-        rollback_assets "$asset_backup"
-        "$BINARY_PATH" rehash 2>&1 || true
-        start_services || true
-        die "Asset activation failed - rolled back to previous version"
+        rollback_upgrade "Asset activation failed"
     fi
 
     if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
@@ -422,22 +448,11 @@ do_upgrade() {
     fi
 
     if ! "$BINARY_PATH" rehash 2>&1; then
-        echo "WARNING: Rehash failed, rolling back..."
-        chattr -i "$BINARY_PATH" 2>/dev/null || true
-        cp -p "$binary_backup" "$BINARY_PATH"
-        rollback_assets "$asset_backup"
-        "$BINARY_PATH" rehash 2>&1 || true
-        start_services || true
-        die "Upgrade failed - rolled back to previous version"
+        rollback_upgrade "Rehash failed"
     fi
 
     if ! start_services; then
-        chattr -i "$BINARY_PATH" 2>/dev/null || true
-        cp -p "$binary_backup" "$BINARY_PATH"
-        rollback_assets "$asset_backup"
-        "$BINARY_PATH" rehash 2>&1 || true
-        start_services || true
-        die "Upgrade failed to start - rolled back to previous version"
+        rollback_upgrade "Daemon failed to start"
     fi
     cleanup_upgrade_backup "$tmpdir"
 
