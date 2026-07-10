@@ -99,6 +99,7 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 		t.Run(script.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			payload := filepath.Join(tmp, "csm")
+			keyFile := filepath.Join(tmp, "signing-key.pem")
 			if err := os.WriteFile(payload, []byte("payload"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -127,13 +128,18 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 			}
 
 			cmd := exec.Command("/bin/bash", wrapper)
-			cmd.Env = withEnv(os.Environ(), "PAYLOAD_FILE="+payload)
+			cmd.Env = withEnv(os.Environ(), "PAYLOAD_FILE="+payload, "KEY_FILE="+keyFile)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("verified artifact must not abort the calling function: %v\n%s", err, out)
 			}
 			if !strings.Contains(string(out), "VERIFY_WRAPPER_OK") {
 				t.Fatalf("wrapper did not complete after verification:\n%s", out)
+			}
+			for _, path := range []string{keyFile, payload + ".sig"} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("temporary verification file was not removed: %s", path)
+				}
 			}
 		})
 	}
@@ -574,6 +580,11 @@ pkg_download() {
 
 func verifyingOpenSSL() string {
 	return `
+mktemp() {
+    (umask 077; : > "$KEY_FILE")
+    printf '%s\n' "$KEY_FILE"
+}
+
 openssl() {
     if [ "$1" = "pkeyutl" ] && [ "${2:-}" = "-help" ]; then
         printf '%s\n' 'Usage: pkeyutl' ' -rawin raw input'
