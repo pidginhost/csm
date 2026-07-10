@@ -1,6 +1,6 @@
 module github.com/pidginhost/csm
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/VirusTotal/yara-x/go v1.19.0

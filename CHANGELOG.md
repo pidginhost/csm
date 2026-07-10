@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Built with Go 1.26.5 to pick up the crypto/tls standard-library vulnerability fix (GO-2026-5856).
+
 ### Fixed
 
 - Fixed installs and upgrades aborting right after a successful release-signature verification on hosts with OpenSSL 3.0 or newer.
