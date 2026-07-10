@@ -451,6 +451,28 @@ func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 	}
 }
 
+// Only the GitHub deploy script resolves release tags; a release published
+// mid-run must not put the binary and the assets on different versions.
+func TestDeployPinsReleaseTagAcrossArtifacts(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	data, err := os.ReadFile(filepath.Join(root, "scripts/deploy.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{"do_install", "do_upgrade"} {
+		body := shellFunctionBody(t, string(data), fn)
+		if !strings.Contains(body, "release_tag=$(resolve_release_tag)") {
+			t.Errorf("%s must resolve the release tag once", fn)
+		}
+		if !strings.Contains(body, `download_package "$release_tag"`) {
+			t.Errorf("%s must download the binary from the pinned tag", fn)
+		}
+		if !strings.Contains(body, `download_and_stage_assets "$release_tag"`) {
+			t.Errorf("%s must stage assets from the pinned tag", fn)
+		}
+	}
+}
+
 func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
@@ -463,7 +485,7 @@ func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 			for _, fn := range []string{"do_install", "do_upgrade"} {
 				fnBody := shellFunctionBody(t, body, fn)
 				trapPos := strings.Index(fnBody, `trap "rm -rf \"${tmpdir}\"" EXIT`)
-				downloadPos := strings.Index(fnBody, `download_package "latest" "$tmpdir"`)
+				downloadPos := strings.Index(fnBody, `download_package "`)
 				if trapPos < 0 {
 					t.Errorf("%s %s must arm an EXIT trap that cleans its tmpdir", rel, fn)
 				}
@@ -506,6 +528,7 @@ func TestDeployCleansTmpdirWhenPackageDownloadFails(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
+					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() {",
 					"    local tmpdir=\"$2\"",
@@ -558,6 +581,7 @@ func TestInstallCleansTmpdirAfterInstallerFailure(t *testing.T) {
 				"id() { printf '0\\n'; }",
 				"detect_auth_header() { :; }",
 				"save_token() { :; }",
+				"resolve_release_tag() { printf 'v0.0.0\\n'; }",
 				"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 				"download_package() { mkdir -p \"$2\"; cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 				"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -616,6 +640,7 @@ func TestInstallCleansBinaryAfterPlacementFailure(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
+					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -693,6 +718,7 @@ func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
+					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
 					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
@@ -943,6 +969,7 @@ func TestUpgradeTmpdirLifecycle(t *testing.T) {
 					"id() { printf '0\\n'; }",
 					"detect_auth_header() { :; }",
 					"save_token() { :; }",
+					"resolve_release_tag() { printf 'v0.0.0\\n'; }",
 					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
 					"download_package() {",
 					"    local tmpdir=\"$2\"",

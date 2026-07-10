@@ -403,14 +403,17 @@ do_install() {
     echo "=== Continuous Security Monitor - Install ==="
     echo ""
 
+    local release_tag
+    release_tag=$(resolve_release_tag)
+
     local tmpdir
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
     trap "rm -rf \"${tmpdir}\"" EXIT
-    download_package "latest" "$tmpdir"
+    download_package "$release_tag" "$tmpdir"
 
     local assets_stage asset_backup
-    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
+    assets_stage=$(download_and_stage_assets "$release_tag" "$tmpdir")
     asset_backup="${tmpdir}/asset-backup"
 
     mkdir -p "$INSTALL_DIR"
@@ -454,11 +457,14 @@ do_upgrade() {
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Current: ${old_version}"
 
+    local release_tag
+    release_tag=$(resolve_release_tag)
+
     local tmpdir
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
     trap "rm -rf \"${tmpdir}\"" EXIT
-    download_package "latest" "$tmpdir"
+    download_package "$release_tag" "$tmpdir"
 
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
@@ -471,7 +477,7 @@ do_upgrade() {
     fi
 
     local assets_stage asset_backup binary_backup
-    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
+    assets_stage=$(download_and_stage_assets "$release_tag" "$tmpdir")
     asset_backup="${tmpdir}/asset-backup"
     binary_backup="${tmpdir}/${ARTIFACT_NAME}.previous"
 
