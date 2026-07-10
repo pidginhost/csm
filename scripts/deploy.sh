@@ -182,6 +182,29 @@ verify_checksum() {
     fi
 }
 
+missing_assets_checksum_allowed() {
+    local version="${1#v}"
+    local major minor patch
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    patch="${BASH_REMATCH[3]}"
+
+    # v3.23.1 was the last release published without an assets checksum.
+    if [ "$major" -lt 3 ]; then
+        return 0
+    fi
+    if [ "$major" -gt 3 ] || [ "$minor" -gt 23 ]; then
+        return 1
+    fi
+    if [ "$minor" -lt 23 ]; then
+        return 0
+    fi
+    [ "$patch" -le 1 ]
+}
+
 validate_assets_archive() {
     local archive="$1" entry type
     while IFS= read -r entry; do
@@ -205,7 +228,9 @@ download_and_stage_assets() {
     local version="$1" tmpdir="$2"
     local archive="${tmpdir}/csm-assets.tar.gz"
     local checksum="${archive}.sha256"
-    local code
+    local code release_version
+
+    release_version=$("${tmpdir}/${ARTIFACT_NAME}" version | awk '{print $2}')
 
     code=$(curl -sS -w '%{http_code}' -L -o "$archive" \
         "$(get_download_url "csm-assets.tar.gz" "$version")")
@@ -214,7 +239,7 @@ download_and_stage_assets() {
         "$(get_download_url "csm-assets.tar.gz.sha256" "$version")")
     if [ "$code" = "200" ]; then
         verify_checksum "$archive" "$checksum"
-    elif [ "$code" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+    elif [ "$code" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ] && missing_assets_checksum_allowed "$release_version"; then
         echo "WARNING: assets checksum not published for this release (404), skipping checksum verification" >&2
         rm -f "$checksum"
     else

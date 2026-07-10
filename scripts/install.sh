@@ -115,6 +115,29 @@ verify_checksum() {
     fi
 }
 
+missing_assets_checksum_allowed() {
+    local version="${1#v}"
+    local major minor patch
+    if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    patch="${BASH_REMATCH[3]}"
+
+    # v3.23.1 was the last release published without an assets checksum.
+    if [ "$major" -lt 3 ]; then
+        return 0
+    fi
+    if [ "$major" -gt 3 ] || [ "$minor" -gt 23 ]; then
+        return 1
+    fi
+    if [ "$minor" -lt 23 ]; then
+        return 0
+    fi
+    [ "$patch" -le 1 ]
+}
+
 validate_assets_archive() {
     local archive="$1" entry type
     while IFS= read -r entry; do
@@ -243,6 +266,7 @@ verify_signature "${TMPDIR}/csm" "${BINARY_URL}.sig"
 
 chmod +x "${TMPDIR}/csm"
 VERSION=$("${TMPDIR}/csm" version 2>/dev/null || die "Binary failed to execute")
+RELEASE_VERSION=$(printf '%s\n' "$VERSION" | awk '{print $2}')
 info "Version: ${VERSION}"
 
 # Download assets
@@ -253,8 +277,9 @@ HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz" "$ASSETS_
 HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz.sha256" "${ASSETS_URL}.sha256")
 if [ "$HTTP_CODE" = "200" ]; then
     verify_checksum "${TMPDIR}/assets.tar.gz" "${TMPDIR}/assets.tar.gz.sha256"
-elif [ "$HTTP_CODE" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+elif [ "$HTTP_CODE" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ] && missing_assets_checksum_allowed "$RELEASE_VERSION"; then
     echo "  WARNING: assets checksum not published for this release (404), skipping checksum verification" >&2
+    rm -f "${TMPDIR}/assets.tar.gz.sha256"
 else
     die "Assets checksum download failed (HTTP ${HTTP_CODE})"
 fi

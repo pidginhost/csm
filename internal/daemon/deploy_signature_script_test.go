@@ -165,8 +165,12 @@ func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
 					"set -euo pipefail",
 					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
 					": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
+					": \"${RELEASE_VERSION:=3.23.1}\"",
+					"export RELEASE_VERSION",
+					"ARTIFACT_NAME='csm-linux-amd64'",
 					"PKG_BASE='https://example.invalid/pkg'",
 					extractShellFunction(t, script, "verify_checksum"),
+					extractShellFunction(t, script, "missing_assets_checksum_allowed"),
 					extractShellFunction(t, script, "validate_assets_archive"),
 					extractShellFunction(t, script, "download_and_stage_assets"),
 					"get_download_url() { printf 'https://example.invalid/%s\\n' \"$1\"; }",
@@ -188,6 +192,8 @@ func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
 					"    esac",
 					"}",
 					"verify_signature() { :; }",
+					"printf '%s\\n' '#!/bin/bash' 'printf \"csm %s (build: test, date: test)\\n\" \"$RELEASE_VERSION\"' > \"${WORK_DIR}/${ARTIFACT_NAME}\"",
+					"chmod +x \"${WORK_DIR}/${ARTIFACT_NAME}\"",
 					"stage=$(download_and_stage_assets latest \"$WORK_DIR\")",
 					"[ -d \"${stage}/ui\" ] || die \"stage missing ui: ${stage}\"",
 					"echo STAGE_OK",
@@ -200,6 +206,8 @@ func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
 				cmd.Env = withEnv(os.Environ(), append([]string{
 					"ASSET_FIXTURE=" + fixture,
 					"WORK_DIR=" + t.TempDir(),
+					"CSM_REQUIRE_SIGNATURES=0",
+					"RELEASE_VERSION=3.23.1",
 				}, env...)...)
 				out, err := cmd.CombinedOutput()
 				if err == nil {
@@ -227,17 +235,72 @@ func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
 			if code == 0 {
 				t.Fatalf("strict mode must reject a missing assets checksum:\n%s", output)
 			}
+
+			output, code = run("RELEASE_VERSION=3.24.0")
+			if code == 0 {
+				t.Fatalf("a release that should publish an assets checksum must reject a missing one:\n%s", output)
+			}
 		})
 	}
 
-	// install.sh verifies assets inline rather than via download_and_stage_assets;
-	// hold it to the same tolerance contract.
+	// install.sh verifies assets inline rather than via download_and_stage_assets.
 	body, err := os.ReadFile(filepath.Join(root, "scripts/install.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "skipping checksum") {
-		t.Error("scripts/install.sh must tolerate a missing assets checksum for pre-checksum releases")
+	for _, want := range []string{
+		`RELEASE_VERSION=$(printf '%s\n' "$VERSION" | awk '{print $2}')`,
+		`missing_assets_checksum_allowed "$RELEASE_VERSION"`,
+		`rm -f "${TMPDIR}/assets.tar.gz.sha256"`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("scripts/install.sh missing legacy-checksum handling %q", want)
+		}
+	}
+}
+
+func TestMissingAssetsChecksumAllowedOnlyForLegacyReleases(t *testing.T) {
+	tests := []struct {
+		version string
+		allowed bool
+	}{
+		{version: "2.12.0", allowed: true},
+		{version: "3.23.0", allowed: true},
+		{version: "3.23.1", allowed: true},
+		{version: "v3.23.1", allowed: true},
+		{version: "3.23.2", allowed: false},
+		{version: "3.24.0", allowed: false},
+		{version: "4.0.0", allowed: false},
+		{version: "3.23.1-5-gabcdef0", allowed: false},
+		{version: "dev", allowed: false},
+	}
+
+	root := repoRootFromDaemonTest()
+	for _, script := range deploySignatureScripts() {
+		t.Run(script.name, func(t *testing.T) {
+			function := extractShellFunction(t, filepath.Join(root, script.path), "missing_assets_checksum_allowed")
+			for _, test := range tests {
+				t.Run(test.version, func(t *testing.T) {
+					wrapper := filepath.Join(t.TempDir(), "legacy-checksum.sh")
+					body := strings.Join([]string{
+						"#!/bin/bash",
+						"set -euo pipefail",
+						function,
+						"missing_assets_checksum_allowed \"$RELEASE_VERSION\"",
+						"",
+					}, "\n")
+					if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					cmd := exec.Command("/bin/bash", wrapper)
+					cmd.Env = withEnv(os.Environ(), "RELEASE_VERSION="+test.version)
+					err := cmd.Run()
+					if (err == nil) != test.allowed {
+						t.Fatalf("missing checksum allowed=%t, want %t (error: %v)", err == nil, test.allowed, err)
+					}
+				})
+			}
+		})
 	}
 }
 
