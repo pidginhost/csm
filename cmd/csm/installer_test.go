@@ -12,6 +12,63 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestParseInstallFlags(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		phpShield   bool
+		phpOnly     bool
+		packageMode bool
+	}{
+		{name: "none", args: []string{"csm", "install"}},
+		{name: "php-shield", args: []string{"csm", "install", "--php-shield"}, phpShield: true},
+		{name: "php-shield-only", args: []string{"csm", "install", "--php-shield-only"}, phpOnly: true},
+		{name: "package-mode", args: []string{"csm", "install", "--package-mode"}, packageMode: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			phpShield, phpOnly, packageMode := parseInstallFlags(tc.args)
+			if phpShield != tc.phpShield || phpOnly != tc.phpOnly || packageMode != tc.packageMode {
+				t.Fatalf("parseInstallFlags(%v) = (%t, %t, %t), want (%t, %t, %t)",
+					tc.args, phpShield, phpOnly, packageMode, tc.phpShield, tc.phpOnly, tc.packageMode)
+			}
+		})
+	}
+}
+
+func TestConfiguredImmutableDefaultsTrueOnUnreadableConfig(t *testing.T) {
+	if got := configuredImmutable(filepath.Join(t.TempDir(), "missing.yaml")); !got {
+		t.Error("unreadable config must fail safe to immutable=true")
+	}
+
+	explicitFalse := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(explicitFalse, []byte("integrity:\n  immutable: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := configuredImmutable(explicitFalse); got {
+		t.Error("explicit immutable: false must be honored")
+	}
+
+	absentKey := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(absentKey, []byte("hostname: test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := configuredImmutable(absentKey); !got {
+		t.Error("config without the key must default to immutable=true")
+	}
+}
+
+func TestCommandSymlinkSkippedInPackageMode(t *testing.T) {
+	inst := &Installer{CommandPath: "/usr/sbin/csm", PackageMode: true}
+	if got := inst.commandSymlinkPath(); got != "" {
+		t.Errorf("package mode must not manage the command symlink, got %q", got)
+	}
+	inst.PackageMode = false
+	if got := inst.commandSymlinkPath(); got != "/usr/sbin/csm" {
+		t.Errorf("standalone install must manage the command symlink, got %q", got)
+	}
+}
+
 func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {
 	root := t.TempDir()
 	dirs := []string{

@@ -416,21 +416,26 @@ func runYaraWorker() {
 	}
 }
 
+func parseInstallFlags(args []string) (phpShield, phpShieldOnly, packageMode bool) {
+	for _, arg := range args {
+		switch arg {
+		case "--php-shield":
+			phpShield = true
+		case "--php-shield-only":
+			phpShieldOnly = true
+		case "--package-mode":
+			packageMode = true
+		}
+	}
+	return phpShield, phpShieldOnly, packageMode
+}
+
 func runInstall() {
 	cfgPath, configExplicit := configPathFromArgs(os.Args)
 	if !configExplicit {
 		cfgPath = preferredConfigPath
 	}
-	phpShield := false
-	phpShieldOnly := false
-	for _, arg := range os.Args {
-		if arg == "--php-shield" {
-			phpShield = true
-		}
-		if arg == "--php-shield-only" {
-			phpShieldOnly = true
-		}
-	}
+	phpShield, phpShieldOnly, packageMode := parseInstallFlags(os.Args)
 
 	installer := &Installer{
 		BinaryPath:     binaryPath,
@@ -439,6 +444,7 @@ func runInstall() {
 		StatePath:      defaultStatePath,
 		LogPath:        defaultLogPath,
 		ConfigExplicit: configExplicit,
+		PackageMode:    packageMode,
 	}
 
 	// --php-shield-only: just redeploy the PHP file (used by deploy.sh upgrade)

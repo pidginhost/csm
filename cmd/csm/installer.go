@@ -23,6 +23,16 @@ type Installer struct {
 	StatePath      string
 	LogPath        string
 	ConfigExplicit bool
+	PackageMode    bool
+}
+
+// commandSymlinkPath is empty in package mode: the rpm/deb manifest owns
+// /usr/sbin/csm there, and two owners would fight over conflict handling.
+func (inst *Installer) commandSymlinkPath() string {
+	if inst.PackageMode {
+		return ""
+	}
+	return inst.CommandPath
 }
 
 func (inst *Installer) Install() error {
@@ -59,10 +69,9 @@ func (inst *Installer) Install() error {
 		}
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
 	}
-	if err := ensureCommandSymlink(inst.CommandPath, inst.BinaryPath); err != nil {
-		return fmt.Errorf("installing command symlink: %w", err)
-	}
-	if inst.CommandPath != "" {
+	if err := ensureCommandSymlink(inst.commandSymlinkPath(), inst.BinaryPath); err != nil {
+		fmt.Printf("  Warning: could not install command at %s: %v\n", inst.CommandPath, err)
+	} else if inst.commandSymlinkPath() != "" {
 		fmt.Printf("  Command installed at %s\n", inst.CommandPath)
 	}
 
@@ -109,13 +118,10 @@ func (inst *Installer) Install() error {
 		fmt.Println("  logrotate config deployed")
 	}
 
-	cfg, loadErr := config.Load(inst.ConfigPath)
-	if loadErr != nil {
-		return fmt.Errorf("loading installed config: %w", loadErr)
-	}
-	if err := setBinaryImmutable(inst.BinaryPath, cfg.Integrity.Immutable); err != nil {
+	immutable := configuredImmutable(inst.ConfigPath)
+	if err := setBinaryImmutable(inst.BinaryPath, immutable); err != nil {
 		fmt.Printf("  Warning: could not update binary immutable flag: %v\n", err)
-	} else if cfg.Integrity.Immutable {
+	} else if immutable {
 		fmt.Println("  Binary set as immutable (chattr +i)")
 	} else {
 		fmt.Println("  Binary left writable (integrity.immutable=false)")
@@ -269,6 +275,17 @@ func removeCommandSymlink(path, target string) error {
 		return nil
 	}
 	return os.Remove(path)
+}
+
+// configuredImmutable fails safe: an unreadable or invalid config must not
+// read as "disable tamper protection".
+func configuredImmutable(path string) bool {
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Printf("  Warning: could not read %s (%v); defaulting to immutable binary\n", path, err)
+		return true
+	}
+	return cfg.Integrity.Immutable
 }
 
 func setBinaryImmutable(path string, enabled bool) error {
