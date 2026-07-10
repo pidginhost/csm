@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Binary immutability now defaults on when the config key is absent, so upgrades of configs written before the key existed keep their tamper protection.
 - Package installs no longer fail the whole rpm/deb transaction over a leftover unreadable config or a foreign /usr/sbin/csm; those degrade to warnings, and package mode leaves the packaged launcher alone.
 - Standalone hosts now gain the csm PATH launcher on their next upgrade, not only on fresh installs.
+- The rpm re-arm hook now warns instead of silently ignoring a failure to restore binary protection after an upgrade.
 - Installation and upgrade paths now verify supporting assets, install a PATH launcher, report setup failures, and keep rollback material until the daemon has restarted successfully.
 - Operator documentation now matches the shipped binary, configuration, dry-run, API, and release behavior, with a shorter README and task-oriented reference structure.
 - Fixed the legacy Apache/LSWS challenge snippet so webserver config validation follows the daemon-managed challenge map instead of a stale location. This prevents challenge redirects from breaking webserver reloads after upgrades.

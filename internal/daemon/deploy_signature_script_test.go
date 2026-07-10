@@ -1357,6 +1357,12 @@ func TestInstallHooksRespectConfiguredBinaryImmutability(t *testing.T) {
 	if !strings.Contains(string(posttrans), "/opt/csm/csm config apply-immutability") {
 		t.Fatal("posttrans must restore the configured immutable state")
 	}
+	if strings.Contains(string(posttrans), "apply-immutability 2>/dev/null") {
+		t.Error("posttrans must not silence apply-immutability diagnostics")
+	}
+	if !strings.Contains(string(posttrans), "WARNING") {
+		t.Error("posttrans must warn when re-arming binary protection fails")
+	}
 }
 
 func deploySignatureScripts() []deploySignatureScript {
