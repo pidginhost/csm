@@ -448,19 +448,20 @@ do_upgrade() {
     local tmpdir
     tmpdir=$(download_package "latest")
 
-    local assets_stage asset_backup binary_backup
-    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
-    asset_backup="${tmpdir}/asset-backup"
-    binary_backup="${tmpdir}/${ARTIFACT_NAME}.previous"
-
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
 
     if [ "$old_version" = "$new_version" ]; then
         rm -rf "$tmpdir"
         echo "Already running the latest version."
+        start_services
         return
     fi
+
+    local assets_stage asset_backup binary_backup
+    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
+    asset_backup="${tmpdir}/asset-backup"
+    binary_backup="${tmpdir}/${ARTIFACT_NAME}.previous"
 
     stop_services
     cp -p "$BINARY_PATH" "$binary_backup"

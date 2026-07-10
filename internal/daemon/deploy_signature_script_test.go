@@ -564,6 +564,34 @@ func TestRollbackAssetsRemovesRulesCreatedByFailedRelease(t *testing.T) {
 	}
 }
 
+func TestUpgradeChecksVersionBeforeStagingAssets(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			upgradeBody := shellFunctionBody(t, string(data), "do_upgrade")
+
+			staging := strings.Index(upgradeBody, "download_and_stage_assets")
+			sameVersion := strings.Index(upgradeBody, "Already running the latest version.")
+			if staging < 0 || sameVersion < 0 {
+				t.Fatalf("%s do_upgrade missing staging or same-version handling", rel)
+			}
+			if staging < sameVersion {
+				t.Errorf("%s must confirm a new version exists before downloading and staging assets", rel)
+			}
+
+			block := upgradeBody[sameVersion:]
+			end := strings.Index(block, "fi")
+			if end < 0 || !strings.Contains(block[:end], "start_services") {
+				t.Errorf("%s same-version path must ensure the daemon is running", rel)
+			}
+		})
+	}
+}
+
 func TestRollbackAssetsPreservesEntriesNeverActivated(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
