@@ -439,7 +439,7 @@ func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 			}
 
 			upgradeBody := shellFunctionBody(t, body, "do_upgrade")
-			start := strings.Index(upgradeBody, "start_services")
+			start := strings.LastIndex(upgradeBody, "start_services")
 			cleanup := strings.Index(upgradeBody, "cleanup_upgrade_backup")
 			if start < 0 || cleanup < 0 || cleanup < start {
 				t.Errorf("%s must keep rollback material until start_services succeeds", rel)
@@ -1433,8 +1433,18 @@ func TestInstallInstructionsStartDaemonBeforeBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := string(data)
-			start := strings.LastIndex(body, "systemctl enable --now csm.service")
-			baseline := strings.LastIndex(body, "baseline")
+			// Compare positions inside the next-steps block only; unrelated
+			// later mentions of either string must not mask a regression.
+			anchor := strings.Index(body, "ext steps")
+			if anchor < 0 {
+				t.Fatalf("%s has no next-steps block", rel)
+			}
+			block := body[anchor:]
+			if len(block) > 600 {
+				block = block[:600]
+			}
+			start := strings.Index(block, "systemctl enable --now csm.service")
+			baseline := strings.Index(block, "baseline")
 			if start < 0 || baseline < 0 || start > baseline {
 				t.Errorf("%s must tell operators to start csm.service before baseline", rel)
 			}
@@ -1454,6 +1464,20 @@ func TestInstallHooksRespectConfiguredBinaryImmutability(t *testing.T) {
 		}
 		if strings.Contains(string(body), "chattr +i") {
 			t.Errorf("%s must not override integrity.immutable=false", rel)
+		}
+	}
+
+	// The deploy scripts may re-arm chattr +i only inside rollback_upgrade,
+	// which restores the pre-upgrade state it observed.
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		stripped := strings.Replace(text, shellFunctionBody(t, text, "rollback_upgrade"), "", 1)
+		if strings.Contains(stripped, "chattr +i") {
+			t.Errorf("%s must not apply chattr +i outside rollback state restoration", rel)
 		}
 	}
 
@@ -1608,22 +1632,7 @@ func extractShellFunction(t *testing.T, path, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	start := strings.Index(text, name+"() {")
-	if start < 0 {
-		t.Fatalf("%s not found in %s", name, path)
-	}
-	lines := strings.Split(text[start:], "\n")
-	depth := 0
-	for i, line := range lines {
-		depth += strings.Count(line, "{")
-		depth -= strings.Count(line, "}")
-		if i > 0 && depth == 0 {
-			return strings.Join(lines[:i+1], "\n")
-		}
-	}
-	t.Fatalf("%s body did not close in %s", name, path)
-	return ""
+	return shellFunctionBody(t, string(data), name)
 }
 
 func shellFunctionBody(t *testing.T, script, name string) string {
