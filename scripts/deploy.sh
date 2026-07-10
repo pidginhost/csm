@@ -90,9 +90,13 @@ verify_signature() {
     fi
     local key_file
     key_file=$(mktemp)
-    trap 'rm -f "$key_file" "$sig_file"' RETURN
     printf '%s\n' "$CSM_SIGNING_KEY_PEM" > "$key_file"
-    if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
+    # No RETURN trap for cleanup: it would outlive this function and re-fire
+    # at the caller's return, where set -u aborts on the vanished locals.
+    local verify_status=0
+    openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1 || verify_status=$?
+    rm -f "$key_file" "$sig_file"
+    if [ "$verify_status" -eq 0 ]; then
         echo "Signature verified OK" >&2
     else
         die "SIGNATURE VERIFICATION FAILED - artifact may be tampered with!"

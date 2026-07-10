@@ -94,6 +94,51 @@ func TestVerifySignatureFailsClosedWhenStrict(t *testing.T) {
 	}
 }
 
+func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
+	for _, script := range deploySignatureScripts() {
+		t.Run(script.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			payload := filepath.Join(tmp, "csm")
+			if err := os.WriteFile(payload, []byte("payload"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			wrapper := filepath.Join(tmp, "run.sh")
+			body := strings.Join([]string{
+				"#!/bin/bash",
+				"set -euo pipefail",
+				"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+				"info() { echo \"  $1\" >&2; }",
+				": \"${CSM_SIGNING_KEY_PEM:=test-key}\"",
+				": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
+				verifyingOpenSSL(),
+				extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), script.path), "verify_signature"),
+				"stage_assets() {",
+				"    verify_signature \"$PAYLOAD_FILE\" \"https://example.invalid/csm.sig\"",
+				"    echo \"${PAYLOAD_FILE}.stage\"",
+				"}",
+				"stage=$(stage_assets)",
+				"[ \"$stage\" = \"${PAYLOAD_FILE}.stage\" ] || die \"stage path corrupted: ${stage}\"",
+				"echo VERIFY_WRAPPER_OK",
+				"",
+			}, "\n")
+			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = withEnv(os.Environ(), "PAYLOAD_FILE="+payload)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("verified artifact must not abort the calling function: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "VERIFY_WRAPPER_OK") {
+				t.Fatalf("wrapper did not complete after verification:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{"scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
@@ -523,6 +568,46 @@ curl() {
 pkg_download() {
     printf '%s' 'bad signature' > "$2"
     printf '%s' '` + httpStatus + `'
+}
+`
+}
+
+func verifyingOpenSSL() string {
+	return `
+openssl() {
+    if [ "$1" = "pkeyutl" ] && [ "${2:-}" = "-help" ]; then
+        printf '%s\n' 'Usage: pkeyutl' ' -rawin raw input'
+        return 0
+    fi
+    if [ "$1" = "version" ]; then
+        printf '%s\n' 'OpenSSL 3.0.0'
+        return 0
+    fi
+    if [ "$1" = "pkeyutl" ]; then
+        return 0
+    fi
+    return 2
+}
+
+curl() {
+    local out=''
+    while [ "$#" -gt 0 ]; do
+        if [ "$1" = "-o" ]; then
+            out="$2"
+            shift 2
+            continue
+        fi
+        shift
+    done
+    if [ -n "$out" ]; then
+        printf '%s' 'good signature' > "$out"
+    fi
+    printf '%s' '200'
+}
+
+pkg_download() {
+    printf '%s' 'good signature' > "$2"
+    printf '%s' '200'
 }
 `
 }
