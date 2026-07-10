@@ -111,7 +111,9 @@ verify_checksum() {
     expected=$(awk '{print $1}' "$checksum_file")
     actual=$(sha256sum "$file" | awk '{print $1}')
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")"
+        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")
+  Expected: ${expected}
+  Got:      ${actual}"
     fi
 }
 
@@ -268,9 +270,7 @@ HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/csm.sha256" "$CHECKSUM_U
 [ "$HTTP_CODE" != "200" ] && die "Checksum download failed (HTTP ${HTTP_CODE})"
 
 info "Verifying checksum..."
-EXPECTED=$(awk '{print $1}' "${TMPDIR}/csm.sha256")
-ACTUAL=$(sha256sum "${TMPDIR}/csm" | awk '{print $1}')
-[ "$EXPECTED" != "$ACTUAL" ] && die "CHECKSUM MISMATCH - binary may be tampered!"
+verify_checksum "${TMPDIR}/csm" "${TMPDIR}/csm.sha256"
 
 verify_signature "${TMPDIR}/csm" "${BINARY_URL}.sig"
 

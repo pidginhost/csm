@@ -143,19 +143,9 @@ download_package() {
         die "Checksum download failed (HTTP ${http_code})."
     fi
 
-    # Verify checksum
     echo "Verifying SHA256 checksum..." >&2
-    local expected_hash actual_hash
-    expected_hash=$(awk '{print $1}' "${tmpdir}/${ARTIFACT_NAME}.sha256")
-    actual_hash=$(sha256sum "${tmpdir}/${ARTIFACT_NAME}" | awk '{print $1}')
-    if [ "$expected_hash" != "$actual_hash" ]; then
-        rm -rf "$tmpdir"
-        die "CHECKSUM VERIFICATION FAILED!
-  Expected: ${expected_hash}
-  Got:      ${actual_hash}
-  The binary may have been tampered with."
-    fi
-    echo "Checksum OK (${actual_hash:0:16}...)" >&2
+    verify_checksum "${tmpdir}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}.sha256"
+    echo "Checksum OK" >&2
 
     verify_signature "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "${ARTIFACT_NAME}.sig" "$version")"
 
@@ -174,7 +164,9 @@ verify_checksum() {
     expected=$(awk '{print $1}' "$checksum_file")
     actual=$(sha256sum "$file" | awk '{print $1}')
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")"
+        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")
+  Expected: ${expected}
+  Got:      ${actual}"
     fi
 }
 
