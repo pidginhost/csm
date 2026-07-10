@@ -126,10 +126,7 @@ get_download_url() {
 }
 
 download_package() {
-    local version="${1:-latest}"
-    local tmpdir
-    mkdir -p "$INSTALL_DIR"
-    tmpdir=$(mktemp -d -p "$INSTALL_DIR")
+    local version="$1" tmpdir="$2"
 
     echo "Downloading ${ARTIFACT_NAME} (version: ${version})..." >&2
 
@@ -169,7 +166,6 @@ download_package() {
     fi
 
     echo "Downloaded: $("${tmpdir}/${ARTIFACT_NAME}" version)" >&2
-    echo "$tmpdir"
 }
 
 verify_checksum() {
@@ -336,6 +332,9 @@ cleanup_upgrade_backup() {
 # binary_was_immutable and tmpdir are the caller's locals.
 rollback_upgrade() {
     local reason="$1" rollback_status=0
+    # Recovery can itself be interrupted or fail unexpectedly. Preserve the
+    # package and backups from the moment rollback begins.
+    trap - EXIT
     echo "WARNING: ${reason}; rolling back..." >&2
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     if ! cp -p "$binary_backup" "$BINARY_PATH" 2>/dev/null; then
@@ -361,8 +360,6 @@ rollback_upgrade() {
     if ! start_services; then
         rollback_status=1
     fi
-    # Keep the download/backup dir for manual recovery after a failed upgrade.
-    trap - EXIT
     echo "Rollback material kept at ${tmpdir}" >&2
     if [ "$rollback_status" -ne 0 ]; then
         die "${reason} - rollback incomplete; inspect the warnings above"
@@ -407,16 +404,24 @@ do_install() {
     echo ""
 
     local tmpdir
-    tmpdir=$(download_package "latest")
+    mkdir -p "$INSTALL_DIR"
+    tmpdir=$(mktemp -d -p "$INSTALL_DIR")
     trap "rm -rf \"${tmpdir}\"" EXIT
+    download_package "latest" "$tmpdir"
 
     local assets_stage asset_backup
     assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
     asset_backup="${tmpdir}/asset-backup"
 
     mkdir -p "$INSTALL_DIR"
-    cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
-    chmod 0700 "$BINARY_PATH"
+    if ! cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"; then
+        rm -f "$BINARY_PATH" 2>/dev/null || true
+        die "Binary installation failed"
+    fi
+    if ! chmod 0700 "$BINARY_PATH"; then
+        rm -f "$BINARY_PATH" 2>/dev/null || true
+        die "Could not secure installed binary"
+    fi
     if ! activate_assets "$assets_stage" "$asset_backup"; then
         rollback_assets "$assets_stage" "$asset_backup" || true
         rm -f "$BINARY_PATH"
@@ -450,8 +455,10 @@ do_upgrade() {
     echo "Current: ${old_version}"
 
     local tmpdir
-    tmpdir=$(download_package "latest")
+    mkdir -p "$INSTALL_DIR"
+    tmpdir=$(mktemp -d -p "$INSTALL_DIR")
     trap "rm -rf \"${tmpdir}\"" EXIT
+    download_package "latest" "$tmpdir"
 
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
@@ -468,16 +475,22 @@ do_upgrade() {
     asset_backup="${tmpdir}/asset-backup"
     binary_backup="${tmpdir}/${ARTIFACT_NAME}.previous"
 
+    if ! cp -p "$BINARY_PATH" "$binary_backup"; then
+        die "Could not back up current binary"
+    fi
     stop_services
-    cp -p "$BINARY_PATH" "$binary_backup"
 
     local binary_was_immutable=0
     case "$(lsattr "$BINARY_PATH" 2>/dev/null | awk '{print $1}')" in
         *i*) binary_was_immutable=1 ;;
     esac
     chattr -i "$BINARY_PATH" 2>/dev/null || true
-    cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
-    chmod 0700 "$BINARY_PATH"
+    if ! cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"; then
+        rollback_upgrade "Binary installation failed"
+    fi
+    if ! chmod 0700 "$BINARY_PATH"; then
+        rollback_upgrade "Could not secure installed binary"
+    fi
     if ! activate_assets "$assets_stage" "$asset_backup"; then
         rollback_upgrade "Asset activation failed"
     fi

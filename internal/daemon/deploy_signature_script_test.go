@@ -462,8 +462,13 @@ func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 			body := string(data)
 			for _, fn := range []string{"do_install", "do_upgrade"} {
 				fnBody := shellFunctionBody(t, body, fn)
-				if !strings.Contains(fnBody, `trap "rm -rf \"${tmpdir}\"" EXIT`) {
+				trapPos := strings.Index(fnBody, `trap "rm -rf \"${tmpdir}\"" EXIT`)
+				downloadPos := strings.Index(fnBody, `download_package "latest" "$tmpdir"`)
+				if trapPos < 0 {
 					t.Errorf("%s %s must arm an EXIT trap that cleans its tmpdir", rel, fn)
+				}
+				if downloadPos < 0 || trapPos > downloadPos {
+					t.Errorf("%s %s must arm cleanup before downloading the package", rel, fn)
 				}
 			}
 			rollbackBody := shellFunctionBody(t, body, "rollback_upgrade")
@@ -474,6 +479,294 @@ func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 				t.Errorf("%s rollback_upgrade must tell the operator where rollback material lives", rel)
 			}
 		})
+	}
+}
+
+func TestDeployCleansTmpdirWhenPackageDownloadFails(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		for _, fn := range []string{"do_install", "do_upgrade"} {
+			t.Run(rel+"/"+fn, func(t *testing.T) {
+				installDir := t.TempDir()
+				tmpdir := filepath.Join(installDir, "partial-download")
+				binary := filepath.Join(installDir, "csm")
+				if fn == "do_upgrade" {
+					writeDeployTestFile(t, binary, "#!/bin/bash\nprintf 'csm 1.0.0\\n'\n")
+					if err := os.Chmod(binary, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				script := filepath.Join(root, rel)
+				wrapper := filepath.Join(t.TempDir(), "download-failure.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -euo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					"id() { printf '0\\n'; }",
+					"detect_auth_header() { :; }",
+					"save_token() { :; }",
+					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
+					"download_package() {",
+					"    local tmpdir=\"$2\"",
+					"    mkdir -p \"$tmpdir\"",
+					"    printf 'partial' > \"${tmpdir}/artifact\"",
+					"    return 1",
+					"}",
+					extractShellFunction(t, script, fn),
+					"INSTALL_DIR=\"$TEST_INSTALL_DIR\"",
+					"BINARY_PATH=\"${INSTALL_DIR}/csm\"",
+					"ARTIFACT_NAME=csm-linux-amd64",
+					"SERVICE_NAME=csm",
+					fn,
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(), "TEST_INSTALL_DIR="+installDir, "TEST_TMPDIR="+tmpdir)
+				if out, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("%s must fail when the package download fails:\n%s", fn, out)
+				}
+				if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+					t.Fatalf("partial package directory survived %s failure: %s (error: %v)", fn, tmpdir, err)
+				}
+			})
+		}
+	}
+}
+
+func TestInstallCleansTmpdirAfterInstallerFailure(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			installDir := t.TempDir()
+			tmpdir := filepath.Join(installDir, "package")
+			packageBinary := filepath.Join(t.TempDir(), "csm-new")
+			writeDeployTestFile(t, packageBinary, "#!/bin/bash\nexit 1\n")
+			if err := os.Chmod(packageBinary, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			script := filepath.Join(root, rel)
+			wrapper := filepath.Join(t.TempDir(), "install-failure.sh")
+			body := strings.Join([]string{
+				"#!/bin/bash",
+				"set -euo pipefail",
+				"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+				"id() { printf '0\\n'; }",
+				"detect_auth_header() { :; }",
+				"save_token() { :; }",
+				"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
+				"download_package() { mkdir -p \"$2\"; cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
+				"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
+				"activate_assets() { :; }",
+				"rollback_assets() { :; }",
+				"cleanup_upgrade_backup() { rm -rf \"$1\"; }",
+				extractShellFunction(t, script, "do_install"),
+				"INSTALL_DIR=\"$TEST_INSTALL_DIR\"",
+				"BINARY_PATH=\"${INSTALL_DIR}/csm\"",
+				"ARTIFACT_NAME=csm-linux-amd64",
+				"do_install",
+				"",
+			}, "\n")
+			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = withEnv(os.Environ(),
+				"TEST_INSTALL_DIR="+installDir,
+				"TEST_PACKAGE_BINARY="+packageBinary,
+				"TEST_TMPDIR="+tmpdir,
+			)
+			if out, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("failed installer unexpectedly succeeded:\n%s", out)
+			}
+			if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+				t.Fatalf("package directory survived installer failure: %s (error: %v)", tmpdir, err)
+			}
+			if _, err := os.Stat(filepath.Join(installDir, "csm")); !os.IsNotExist(err) {
+				t.Fatalf("failed installed binary survived cleanup (error: %v)", err)
+			}
+		})
+	}
+}
+
+func TestInstallCleansBinaryAfterPlacementFailure(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		for _, failure := range []string{"copy", "chmod"} {
+			t.Run(rel+"/"+failure, func(t *testing.T) {
+				installDir := t.TempDir()
+				tmpdir := filepath.Join(installDir, "package")
+				packageBinary := filepath.Join(t.TempDir(), "csm-new")
+				writeDeployTestFile(t, packageBinary, "#!/bin/bash\nexit 0\n")
+				if err := os.Chmod(packageBinary, 0o700); err != nil {
+					t.Fatal(err)
+				}
+
+				script := filepath.Join(root, rel)
+				wrapper := filepath.Join(t.TempDir(), "install-placement-failure.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -euo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					"id() { printf '0\\n'; }",
+					"detect_auth_header() { :; }",
+					"save_token() { :; }",
+					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
+					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
+					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
+					"cp() {",
+					"    if [ \"$TEST_FAILURE\" = copy ] && [ \"${!#}\" = \"$BINARY_PATH\" ]; then",
+					"        printf partial > \"$BINARY_PATH\"",
+					"        return 1",
+					"    fi",
+					"    command cp \"$@\"",
+					"}",
+					"chmod() {",
+					"    if [ \"$TEST_FAILURE\" = chmod ] && [ \"${!#}\" = \"$BINARY_PATH\" ]; then return 1; fi",
+					"    command chmod \"$@\"",
+					"}",
+					"activate_assets() { :; }",
+					"rollback_assets() { :; }",
+					"cleanup_upgrade_backup() { rm -rf \"$1\"; }",
+					extractShellFunction(t, script, "do_install"),
+					"INSTALL_DIR=\"$TEST_INSTALL_DIR\"",
+					"BINARY_PATH=\"${INSTALL_DIR}/csm\"",
+					"ARTIFACT_NAME=csm-linux-amd64",
+					"do_install",
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(),
+					"TEST_FAILURE="+failure,
+					"TEST_INSTALL_DIR="+installDir,
+					"TEST_PACKAGE_BINARY="+packageBinary,
+					"TEST_TMPDIR="+tmpdir,
+				)
+				if out, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("%s failure unexpectedly succeeded:\n%s", failure, out)
+				}
+				if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+					t.Fatalf("package directory survived %s failure: %s (error: %v)", failure, tmpdir, err)
+				}
+				if _, err := os.Stat(filepath.Join(installDir, "csm")); !os.IsNotExist(err) {
+					t.Fatalf("partial installed binary survived %s failure (error: %v)", failure, err)
+				}
+			})
+		}
+	}
+}
+
+func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		for _, failure := range []string{"backup", "copy", "chmod"} {
+			t.Run(rel+"/"+failure, func(t *testing.T) {
+				installDir := t.TempDir()
+				tmpdir := filepath.Join(installDir, "package")
+				stopped := filepath.Join(t.TempDir(), "stopped")
+				started := filepath.Join(t.TempDir(), "started")
+				binary := filepath.Join(installDir, "csm")
+				packageBinary := filepath.Join(t.TempDir(), "csm-new")
+				for path, version := range map[string]string{binary: "1.0.0", packageBinary: "2.0.0"} {
+					body := "#!/bin/bash\ncase \"${1:-}\" in\nversion) printf 'csm " + version + "\\n' ;;\nrehash) exit 0 ;;\nesac\n"
+					writeDeployTestFile(t, path, body)
+					if err := os.Chmod(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				script := filepath.Join(root, rel)
+				wrapper := filepath.Join(t.TempDir(), "upgrade-placement-failure.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -euo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					"id() { printf '0\\n'; }",
+					"detect_auth_header() { :; }",
+					"save_token() { :; }",
+					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
+					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"${2}/${ARTIFACT_NAME}\"; }",
+					"download_and_stage_assets() { mkdir -p \"${2}/assets-stage\"; printf '%s\\n' \"${2}/assets-stage\"; }",
+					"cp() {",
+					"    local destination=\"${!#}\"",
+					"    if [ \"$TEST_FAILURE\" = backup ] && [ \"${1:-}\" = -p ] && [ \"$destination\" != \"$BINARY_PATH\" ]; then return 1; fi",
+					"    if [ \"$TEST_FAILURE\" = copy ] && [ \"${1:-}\" != -p ] && [ \"$destination\" = \"$BINARY_PATH\" ]; then",
+					"        printf partial > \"$BINARY_PATH\"",
+					"        return 1",
+					"    fi",
+					"    command cp \"$@\"",
+					"}",
+					"chmod() {",
+					"    if [ \"$TEST_FAILURE\" = chmod ] && [ \"${!#}\" = \"$BINARY_PATH\" ]; then return 1; fi",
+					"    command chmod \"$@\"",
+					"}",
+					"stop_services() { : > \"$TEST_STOPPED\"; }",
+					"start_services() { : > \"$TEST_STARTED\"; }",
+					"activate_assets() { :; }",
+					"rollback_assets() { :; }",
+					"lsattr() { :; }",
+					"chattr() { :; }",
+					"cleanup_upgrade_backup() { rm -rf \"$1\"; }",
+					extractShellFunction(t, script, "rollback_upgrade"),
+					extractShellFunction(t, script, "do_upgrade"),
+					"INSTALL_DIR=\"$TEST_INSTALL_DIR\"",
+					"BINARY_PATH=\"${INSTALL_DIR}/csm\"",
+					"ARTIFACT_NAME=csm-linux-amd64",
+					"SERVICE_NAME=csm",
+					"do_upgrade",
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(),
+					"TEST_FAILURE="+failure,
+					"TEST_INSTALL_DIR="+installDir,
+					"TEST_PACKAGE_BINARY="+packageBinary,
+					"TEST_STARTED="+started,
+					"TEST_STOPPED="+stopped,
+					"TEST_TMPDIR="+tmpdir,
+				)
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Fatalf("%s failure unexpectedly succeeded:\n%s", failure, out)
+				}
+
+				versionOut, versionErr := exec.Command(binary, "version").CombinedOutput()
+				if versionErr != nil || !strings.Contains(string(versionOut), "csm 1.0.0") {
+					t.Fatalf("current binary was not preserved after %s failure: %v\n%s", failure, versionErr, versionOut)
+				}
+				if failure == "backup" {
+					if _, err := os.Stat(stopped); !os.IsNotExist(err) {
+						t.Fatalf("service was stopped despite backup failure (error: %v)", err)
+					}
+					if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+						t.Fatalf("package directory survived backup failure: %v", err)
+					}
+					return
+				}
+
+				for _, path := range []string{stopped, started, filepath.Join(tmpdir, "csm-linux-amd64.previous")} {
+					if _, err := os.Stat(path); err != nil {
+						t.Errorf("expected recovery state missing after %s failure: %s: %v", failure, path, err)
+					}
+				}
+				if !strings.Contains(string(out), "Rollback material kept at "+tmpdir) {
+					t.Errorf("rollback did not report preserved material after %s failure:\n%s", failure, out)
+				}
+			})
+		}
 	}
 }
 
@@ -615,6 +908,96 @@ func TestUpgradeChecksVersionBeforeStagingAssets(t *testing.T) {
 				t.Errorf("%s same-version path must ensure the daemon is running", rel)
 			}
 		})
+	}
+}
+
+func TestUpgradeTmpdirLifecycle(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		for _, releaseVersion := range []string{"1.0.0", "2.0.0"} {
+			name := "new-version"
+			if releaseVersion == "1.0.0" {
+				name = "same-version"
+			}
+			t.Run(rel+"/"+name, func(t *testing.T) {
+				installDir := t.TempDir()
+				tmpdir := filepath.Join(installDir, "package")
+				started := filepath.Join(t.TempDir(), "started")
+				staged := filepath.Join(t.TempDir(), "staged")
+				binary := filepath.Join(installDir, "csm")
+				packageBinary := filepath.Join(t.TempDir(), "csm-new")
+				for path, version := range map[string]string{binary: "1.0.0", packageBinary: releaseVersion} {
+					body := "#!/bin/bash\ncase \"${1:-}\" in\nversion) printf 'csm " + version + "\\n' ;;\nrehash) exit 0 ;;\nesac\n"
+					writeDeployTestFile(t, path, body)
+					if err := os.Chmod(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				script := filepath.Join(root, rel)
+				wrapper := filepath.Join(t.TempDir(), "upgrade.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -euo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					"id() { printf '0\\n'; }",
+					"detect_auth_header() { :; }",
+					"save_token() { :; }",
+					"mktemp() { mkdir -p \"$TEST_TMPDIR\"; printf '%s\\n' \"$TEST_TMPDIR\"; }",
+					"download_package() {",
+					"    local tmpdir=\"$2\"",
+					"    mkdir -p \"$tmpdir\"",
+					"    cp \"$TEST_PACKAGE_BINARY\" \"${tmpdir}/${ARTIFACT_NAME}\"",
+					"}",
+					"download_and_stage_assets() {",
+					"    local stage=\"${2}/assets-stage\"",
+					"    : > \"$TEST_STAGED\"",
+					"    mkdir -p \"$stage\"",
+					"    printf '%s\\n' \"$stage\"",
+					"}",
+					"stop_services() { :; }",
+					"start_services() { : > \"$TEST_STARTED\"; }",
+					"activate_assets() { :; }",
+					"lsattr() { :; }",
+					"chattr() { :; }",
+					"cleanup_upgrade_backup() { rm -rf \"$1\"; }",
+					extractShellFunction(t, script, "do_upgrade"),
+					"INSTALL_DIR=\"$TEST_INSTALL_DIR\"",
+					"BINARY_PATH=\"${INSTALL_DIR}/csm\"",
+					"ARTIFACT_NAME=csm-linux-amd64",
+					"SERVICE_NAME=csm",
+					"do_upgrade",
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(),
+					"TEST_INSTALL_DIR="+installDir,
+					"TEST_PACKAGE_BINARY="+packageBinary,
+					"TEST_STARTED="+started,
+					"TEST_STAGED="+staged,
+					"TEST_TMPDIR="+tmpdir,
+				)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("upgrade failed: %v\n%s", err, out)
+				}
+				if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+					t.Errorf("package directory survived successful upgrade path: %s (error: %v)", tmpdir, err)
+				}
+				if _, err := os.Stat(started); err != nil {
+					t.Errorf("upgrade did not ensure the service was running: %v", err)
+				}
+				_, stageErr := os.Stat(staged)
+				if releaseVersion == "1.0.0" && !os.IsNotExist(stageErr) {
+					t.Errorf("same-version upgrade staged assets (error: %v)", stageErr)
+				}
+				if releaseVersion == "2.0.0" && stageErr != nil {
+					t.Errorf("new-version upgrade did not stage assets: %v", stageErr)
+				}
+			})
+		}
 	}
 }
 
@@ -771,6 +1154,10 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 				dir := t.TempDir()
 				capture := filepath.Join(dir, "chattr-args")
 				binary := filepath.Join(dir, "csm")
+				tmpdir := filepath.Join(dir, "rollback-material")
+				if err := os.Mkdir(tmpdir, 0o700); err != nil {
+					t.Fatal(err)
+				}
 				fakeBinary := strings.Join([]string{
 					"#!/bin/bash",
 					"printf '%s\\n' \"+i $0\" >> \"$CHATTR_CAPTURE\"",
@@ -794,8 +1181,9 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 					"binary_backup=\"$TEST_BINARY\"",
 					"assets_stage=/tmp",
 					"asset_backup=/tmp",
-					"tmpdir=/tmp",
+					"tmpdir=\"$TEST_TMPDIR\"",
 					"binary_was_immutable=" + wasImmutable,
+					"trap \"rm -rf \\\"${tmpdir}\\\"\" EXIT",
 					"rollback_upgrade 'Test failure'",
 					"",
 				}, "\n")
@@ -803,7 +1191,7 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 					t.Fatal(err)
 				}
 				cmd := exec.Command("/bin/bash", wrapper)
-				cmd.Env = withEnv(os.Environ(), "CHATTR_CAPTURE="+capture, "TEST_BINARY="+binary)
+				cmd.Env = withEnv(os.Environ(), "CHATTR_CAPTURE="+capture, "TEST_BINARY="+binary, "TEST_TMPDIR="+tmpdir)
 				out, runErr := cmd.CombinedOutput()
 				calls := ""
 				if data, readErr := os.ReadFile(capture); readErr == nil {
@@ -811,6 +1199,9 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 				}
 				if runErr == nil {
 					t.Fatalf("rollback_upgrade must die, but exited 0:\n%s", out)
+				}
+				if _, statErr := os.Stat(tmpdir); statErr != nil {
+					t.Fatalf("rollback material was removed despite trap disarm: %v\n%s", statErr, out)
 				}
 				return calls, binary
 			}
@@ -828,6 +1219,52 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 			calls, binary = run("0")
 			if got := lastCall(calls); got != "-i "+binary {
 				t.Errorf("last chattr call = %q, want writable state restored; all calls:\n%s", got, calls)
+			}
+		})
+	}
+}
+
+func TestRollbackUpgradeDisarmsCleanupBeforeRecovery(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			tmpdir := filepath.Join(t.TempDir(), "rollback-material")
+			if err := os.Mkdir(tmpdir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			script := filepath.Join(root, rel)
+			wrapper := filepath.Join(t.TempDir(), "rollback-upgrade-interrupted.sh")
+			body := strings.Join([]string{
+				"#!/bin/bash",
+				"set -euo pipefail",
+				"die() { exit 1; }",
+				"chattr() { :; }",
+				"cp() { exit 70; }",
+				"start_services() { :; }",
+				"rollback_assets() { :; }",
+				extractShellFunction(t, script, "rollback_upgrade"),
+				"BINARY_PATH=/bin/true",
+				"binary_backup=/missing",
+				"assets_stage=/tmp",
+				"asset_backup=/tmp",
+				"tmpdir=\"$TEST_TMPDIR\"",
+				"binary_was_immutable=0",
+				"trap \"rm -rf \\\"${tmpdir}\\\"\" EXIT",
+				"rollback_upgrade 'Test failure'",
+				"",
+			}, "\n")
+			if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("/bin/bash", wrapper)
+			cmd.Env = withEnv(os.Environ(), "TEST_TMPDIR="+tmpdir)
+			if out, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("interrupted rollback unexpectedly succeeded:\n%s", out)
+			}
+			if _, err := os.Stat(tmpdir); err != nil {
+				t.Fatalf("interrupted rollback removed recovery material: %v", err)
 			}
 		})
 	}

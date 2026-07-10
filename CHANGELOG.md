@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Asset archive validation and extraction now fail closed on corrupt or unreadable archives instead of silently passing partial content.
 - Upgrade rollback now removes only assets activated by the failed release, preserves recoverable backups after individual failures, and reports incomplete recovery. It also restores the binary's prior immutable state.
 - Running upgrade on an up-to-date host no longer downloads assets it will discard, no longer fails on transient asset errors, and starts the daemon again if it was stopped.
-- Failed installs and upgrades no longer leave downloaded binaries behind in the install directory; only a failed rollback keeps its recovery material, and says where.
+- Failed installs and upgrades, including interrupted downloads, no longer leave binaries behind in the install directory. An upgrade that enters rollback keeps its recovery material and reports its location.
 - Installation and upgrade paths now verify supporting assets, install a PATH launcher, report setup failures, and keep rollback material until the daemon has restarted successfully.
 - Operator documentation now matches the shipped binary, configuration, dry-run, API, and release behavior, with a shorter README and task-oriented reference structure.
 - Fixed the legacy Apache/LSWS challenge snippet so webserver config validation follows the daemon-managed challenge map instead of a stale location. This prevents challenge redirects from breaking webserver reloads after upgrades.
