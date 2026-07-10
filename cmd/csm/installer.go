@@ -18,6 +18,7 @@ import (
 
 type Installer struct {
 	BinaryPath     string
+	CommandPath    string
 	ConfigPath     string
 	StatePath      string
 	LogPath        string
@@ -57,6 +58,12 @@ func (inst *Installer) Install() error {
 			return fmt.Errorf("writing binary: %w", err)
 		}
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
+	}
+	if err := ensureCommandSymlink(inst.CommandPath, inst.BinaryPath); err != nil {
+		return fmt.Errorf("installing command symlink: %w", err)
+	}
+	if inst.CommandPath != "" {
+		fmt.Printf("  Command installed at %s\n", inst.CommandPath)
 	}
 
 	if !inst.ConfigExplicit && inst.ConfigPath == preferredConfigPath {
@@ -102,13 +109,16 @@ func (inst *Installer) Install() error {
 		fmt.Println("  logrotate config deployed")
 	}
 
-	// Set immutable attribute on binary
-	// #nosec G204 -- chattr is hardcoded; inst.BinaryPath comes from
-	// installer init (fixed /opt/csm/csm by default), not runtime input.
-	if err := exec.Command("chattr", "+i", inst.BinaryPath).Run(); err != nil {
-		fmt.Printf("  Warning: could not set immutable flag: %v\n", err)
-	} else {
+	cfg, loadErr := config.Load(inst.ConfigPath)
+	if loadErr != nil {
+		return fmt.Errorf("loading installed config: %w", loadErr)
+	}
+	if err := setBinaryImmutable(inst.BinaryPath, cfg.Integrity.Immutable); err != nil {
+		fmt.Printf("  Warning: could not update binary immutable flag: %v\n", err)
+	} else if cfg.Integrity.Immutable {
 		fmt.Println("  Binary set as immutable (chattr +i)")
+	} else {
+		fmt.Println("  Binary left writable (integrity.immutable=false)")
 	}
 
 	// Deploy WHM plugin if cPanel is present
@@ -125,8 +135,9 @@ func (inst *Installer) Install() error {
 	fmt.Println()
 	fmt.Println("Install complete. Next steps:")
 	fmt.Printf("  1. Edit %s with your settings\n", inst.ConfigPath)
-	fmt.Printf("  2. Run: %s baseline\n", inst.BinaryPath)
-	fmt.Printf("  3. Run: %s check   (to test)\n", inst.BinaryPath)
+	fmt.Println("  2. Run: systemctl enable --now csm.service")
+	fmt.Printf("  3. Run: %s baseline\n", inst.BinaryPath)
+	fmt.Printf("  4. Run: %s check   (to test)\n", inst.BinaryPath)
 
 	return nil
 }
@@ -141,6 +152,9 @@ func (inst *Installer) Uninstall() error {
 	// Remove immutable flag
 	// #nosec G204 -- chattr hardcoded; BinaryPath from installer init.
 	exec.Command("chattr", "-i", inst.BinaryPath).Run()
+	if err := removeCommandSymlink(inst.CommandPath, inst.BinaryPath); err != nil {
+		return fmt.Errorf("removing command symlink: %w", err)
+	}
 
 	// Stop daemon service first
 	exec.Command("systemctl", "stop", "csm.service").Run()
@@ -202,6 +216,66 @@ func (inst *Installer) Uninstall() error {
 	fmt.Printf("  Config preserved at %s (remove manually if desired)\n", inst.ConfigPath)
 	fmt.Println("Uninstall complete")
 	return nil
+}
+
+func ensureCommandSymlink(path, target string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.Symlink(target, path)
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("refusing to replace existing non-symlink %s", path)
+	}
+	got, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	if sameLinkTarget(got, target, filepath.Dir(path)) {
+		return nil
+	}
+	return fmt.Errorf("refusing to replace symlink %s -> %s", path, got)
+}
+
+func removeCommandSymlink(path, target string) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	got, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	if !sameLinkTarget(got, target, filepath.Dir(path)) {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+func setBinaryImmutable(path string, enabled bool) error {
+	flag := "-i"
+	if enabled {
+		flag = "+i"
+	}
+	// #nosec G204 -- path is the fixed installed binary or a test-controlled installer path.
+	return exec.Command("chattr", flag, path).Run()
 }
 
 func installerRuntimeDirs(installRoot, statePath, logPath string) []string {
@@ -269,7 +343,7 @@ integrity:
   binary_hash: ""
   config_hash: ""
   confd_hash: ""
-  immutable: true
+  immutable: true  # apply chattr +i to /opt/csm/csm during install and rehash
 
 thresholds:
   mail_queue_warn: 500

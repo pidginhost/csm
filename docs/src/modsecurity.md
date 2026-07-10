@@ -1,16 +1,16 @@
 # ModSecurity Integration
 
-CSM detects and manages ModSecurity (WAF) on Apache, Nginx, and LiteSpeed across cPanel, plain Debian/Ubuntu, and plain AlmaLinux/Rocky/RHEL hosts. It deploys custom rules (cPanel only) and provides a web UI for rule overrides and escalation.
+CSM detects ModSecurity (WAF) on Apache, Nginx, and LiteSpeed across cPanel and plain Linux hosts. Custom rule deployment, override writes, and reload management are currently cPanel-only; other platforms still receive status, staleness, and event detection.
 
 ## Supported Web Servers
 
 | Web server | Config candidates | Status check | Custom rule deployment |
 |-----------|-------------------|--------------|------------------------|
 | Apache on cPanel EA4 | `/usr/local/apache/conf/*`, `/etc/apache2/conf.d/modsec*`, `whmapi1 modsec_is_installed` | Yes | Yes (via cPanel modsec user conf) |
-| Apache on Debian/Ubuntu | `/etc/apache2/mods-enabled/security2.conf`, `/etc/apache2/conf-enabled/*`, `/etc/apache2/conf.d/modsec2.conf` | Yes | Not yet (plain Linux) |
-| Apache on RHEL/Alma/Rocky | `/etc/httpd/conf.d/mod_security.conf`, `/etc/httpd/conf.modules.d/*` | Yes | Not yet (plain Linux) |
-| Nginx on any distro | `/etc/nginx/nginx.conf`, `/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf`, `/etc/nginx/modsec/main.conf` | Yes | Not yet (plain Linux) |
-| LiteSpeed | `/usr/local/lsws/conf/httpd_config.xml`, `/usr/local/lsws/conf/modsec2.conf` | Yes | Not yet |
+| Apache on Debian/Ubuntu | `/etc/apache2/mods-enabled/security2.conf`, `/etc/apache2/conf-enabled/*`, `/etc/apache2/conf.d/modsec2.conf` | Yes | No |
+| Apache on RHEL/Alma/Rocky | `/etc/httpd/conf.d/mod_security.conf`, `/etc/httpd/conf.modules.d/*` | Yes | No |
+| Nginx on any distro | `/etc/nginx/nginx.conf`, `/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf`, `/etc/nginx/modsec/main.conf` | Yes | No |
+| LiteSpeed | `/usr/local/lsws/conf/httpd_config.xml`, `/usr/local/lsws/conf/modsec2.conf` | Yes | cPanel only |
 
 When ModSecurity is not installed, the `waf_status` check emits a platform-specific install hint:
 

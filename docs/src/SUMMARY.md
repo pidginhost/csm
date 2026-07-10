@@ -9,16 +9,16 @@
 - [Upgrading](upgrading.md)
 - [CLI Commands](cli.md)
 
-# Detection
+# Detection and Response
 
 - [Real-Time Detection](detection-realtime.md)
-- [Direct SMTP egress](direct-smtp-egress.md)
-- [BPF enforcement](bpf-enforcement.md)
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
 - [Incidents](incidents.md)
 - [Incident Response Runbook](incident-response-runbook.md)
+- [Direct SMTP Egress](direct-smtp-egress.md)
+- [BPF Enforcement](bpf-enforcement.md)
 
 # Hardening
 
@@ -35,14 +35,14 @@
 - [Challenge Pages](challenge.md)
 - [Performance Monitor](performance.md)
 
-# Web UI
+# Operations and Integrations
 
-- [Overview](webui.md)
+- [Web UI](webui.md)
 - [API Reference](api.md)
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
 
 # Development
 
-- [Building & Testing](development.md)
+- [Building and Testing](development.md)
 - [Release Signing](release-signing.md)

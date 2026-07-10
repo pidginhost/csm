@@ -177,6 +177,84 @@ func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
 	}
 }
 
+func TestEnsureCommandSymlinkCreatesAndPreservesExpectedLink(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "opt", "csm", "csm")
+	commandPath := filepath.Join(dir, "usr", "sbin", "csm")
+	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureCommandSymlink(commandPath, binaryPath); err != nil {
+		t.Fatalf("ensureCommandSymlink: %v", err)
+	}
+	if err := ensureCommandSymlink(commandPath, binaryPath); err != nil {
+		t.Fatalf("ensureCommandSymlink idempotent call: %v", err)
+	}
+	target, err := os.Readlink(commandPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != binaryPath {
+		t.Fatalf("command symlink target = %q, want %q", target, binaryPath)
+	}
+}
+
+func TestEnsureCommandSymlinkRefusesUnrelatedPath(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "usr", "sbin", "csm")
+	if err := os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(commandPath, []byte("operator file"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCommandSymlink(commandPath, "/opt/csm/csm"); err == nil {
+		t.Fatal("ensureCommandSymlink replaced an unrelated path")
+	}
+	data, err := os.ReadFile(commandPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "operator file" {
+		t.Fatalf("unrelated command path changed to %q", data)
+	}
+}
+
+func TestSetBinaryImmutableAppliesConfiguredState(t *testing.T) {
+	dir := t.TempDir()
+	capture := filepath.Join(dir, "args")
+	chattr := filepath.Join(dir, "chattr")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$CAPTURE\"\n"
+	if err := os.WriteFile(chattr, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("CAPTURE", capture)
+
+	for _, tc := range []struct {
+		enabled bool
+		want    string
+	}{
+		{enabled: true, want: "+i /opt/csm/csm\n"},
+		{enabled: false, want: "-i /opt/csm/csm\n"},
+	} {
+		if err := setBinaryImmutable("/opt/csm/csm", tc.enabled); err != nil {
+			t.Fatalf("setBinaryImmutable(%v): %v", tc.enabled, err)
+		}
+		got, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != tc.want {
+			t.Fatalf("setBinaryImmutable(%v) args = %q, want %q", tc.enabled, got, tc.want)
+		}
+	}
+}
+
 // The installer template must ship bot_ranges with the same auto-update posture
 // as the packaged default and production reference, so the three default-config
 // sources stay in sync.

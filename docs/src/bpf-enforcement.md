@@ -1,10 +1,9 @@
 # BPF cgroup-deny enforcement
 
-Phase 4 of the BPF Incident Response Roadmap. Optional in-kernel
-denial of outbound connections that match a Phase 3 detection
-(direct SMTP egress is the only gate landed today). Defaults are
-all-safe; operators flip live denial only after Phase 3 telemetry
-review.
+Optional in-kernel denial of outbound connections that match an enabled
+userspace detector. Direct SMTP egress is currently the only enforcement
+gate. Every layer starts in dry-run so operators can review telemetry before
+allowing live denial.
 
 ## What it does
 
@@ -31,7 +30,7 @@ denial.
   enabled) runs in userspace after the BPF decision and enriches the
   emitted finding; it cannot undo a kernel denial.
 - It does NOT enforce on UDP, ICMP, or non-cgroup paths.
-- It does NOT replace any Phase 3 detection. Detections still run
+- It does NOT replace detection. Findings still emit
   regardless; enforcement is a separate, layered control.
 
 ## Configuration
@@ -40,7 +39,7 @@ denial.
 bpf_enforcement:
   enabled: false              # master switch; default off
   dry_run: true               # safety default; flip after telemetry review
-  direct_smtp_egress: false   # gate enforcement on the Phase 3 detector
+  direct_smtp_egress: false   # gate enforcement on the direct SMTP detector
   verdict_callback: false     # userspace post-decision callback
 ```
 
@@ -81,8 +80,7 @@ running on a fallback backend or has no live fallback active.
 
 Three independent dry_run knobs interact:
 
-1. `auto_response.dry_run` (global): suppresses every automatic
-   action (firewall block, kill, etc.).
+1. `auto_response.dry_run`: keeps automatic network response in observe-only mode.
 2. `detection.direct_smtp_egress.dry_run`: detector-scoped action
    knob.
 3. `bpf_enforcement.dry_run`: kernel-side denial knob.
@@ -93,11 +91,11 @@ are dry_run=true everywhere on first install.
 
 ## Rollout recipe
 
-1. Phase 3 detector enabled, no Phase 4 wiring. Watch
+1. Enable the direct SMTP detector without BPF enforcement. Watch
    `csm_direct_smtp_egress_findings_total` for a week.
-2. Phase 4 enabled with `dry_run: true`. Watch
+2. Enable BPF enforcement with `dry_run: true`. Watch
    `csm_bpf_enforcement_decisions_total{decision="dry_run"}` and
    confirm dry-run denials track expected hosted-account egress.
-3. Phase 4 dry_run=false on a single canary host. Audit incidents
+3. Set BPF `dry_run: false` on a single canary host. Audit incidents
    for false positives.
 4. Roll out to fleet.

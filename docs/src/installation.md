@@ -18,7 +18,7 @@ Check it with `journalctl -u csm.service | grep platform:` after starting the da
 
 ## APT repository (Debian / Ubuntu) -- recommended
 
-The package repository at `mirrors.pidginhost.com/csm/` is the preferred install method for Debian and Ubuntu. Future updates are picked up automatically via `apt upgrade`, and package metadata is GPG-signed so the trust chain is enforced by dpkg.
+The package repository at `mirrors.pidginhost.com/csm/` is the preferred install method for Debian and Ubuntu. Updates are available through `apt upgrade`, and APT verifies the repository's signed metadata before installing packages.
 
 ```bash
 # 1. Install the signing key
@@ -34,7 +34,7 @@ sudo apt update
 sudo apt install csm
 ```
 
-Works on Ubuntu 20.04+, Debian 11+, and any derivative. The single `stable` suite serves all Debian/Ubuntu releases -- the Go binary is statically linked and has no per-release glibc dependency.
+Works on Ubuntu 20.04+, Debian 11+, and compatible derivatives. The single `stable` suite serves every supported release. Production binaries dynamically link glibc with a build floor of 2.28, which is available on all supported distributions; YARA-X itself is linked into the executable.
 
 To upgrade later: `sudo apt update && sudo apt upgrade csm`.
 
@@ -65,19 +65,23 @@ The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Bot
 
 To upgrade later: `sudo dnf upgrade csm`.
 
-## Quick Install (all platforms, one-shot)
+## Online standalone installer
 
-For situations where you can't add a package repository (disconnected hosts, air-gapped mirrors, Docker base images):
-
-```bash
-curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
-```
-
-Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying. Works on Debian/Ubuntu and RHEL-family distros. Non-interactive mode:
+Use the standalone installer when the host has Internet access but cannot use the APT or DNF repository. It downloads the binary and supporting assets from the latest GitHub release, verifies their checksums, verifies Ed25519 signatures when the installed OpenSSL supports it, and installs outside the package manager.
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash -s -- --email admin@example.com --non-interactive
+curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
+less /tmp/csm-install.sh
+sudo bash /tmp/csm-install.sh
 ```
+
+It auto-detects the hostname and alert email, generates a Web UI token, and prompts before applying. Non-interactive mode:
+
+```bash
+sudo bash /tmp/csm-install.sh --email admin@example.com --non-interactive
+```
+
+This is not an offline or air-gapped installation path. Mirror the signed packages and repository metadata for disconnected environments.
 
 ## Manual `.rpm` / `.deb` download
 
@@ -93,7 +97,7 @@ curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_
 sudo apt install -y ./csm_VERSION_amd64.deb
 ```
 
-Replace `VERSION` with a real version (e.g. `2.2.2`). Both files are also available at `https://mirrors.pidginhost.com/csm/deb/pool/main/c/csm/` and `https://mirrors.pidginhost.com/csm/rpm/elN/ARCH/` if you prefer to pin versions from the mirror.
+Replace `VERSION` with a published version. Both files are also available from the package mirror if you need to pin a release without adding the repository.
 
 ## Filesystem layout
 
@@ -115,7 +119,7 @@ The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` 
 
 ## Post-install (all methods)
 
-All installation methods produce the same installed state. RPM/DEB packages auto-detect hostname and email and generate the auth token; you still set the infrastructure IPs and confirm the alert address.
+RPM/DEB packages are the maintained installation path and include package-manager ownership, integration profiles, UI assets, rules, and the prebuilt PAM module. The standalone installer supplies the runtime assets but does not register them with a package manager. In either case, set infrastructure IPs and confirm the alert address before starting the daemon.
 
 ```bash
 sudo vi /etc/csm/csm.yaml              # Set hostname, alert email, infra IPs
@@ -133,7 +137,7 @@ Both the APT and DNF repositories retain the **last 5 tagged releases** at any t
 ```bash
 # Debian/Ubuntu
 sudo apt-cache policy csm              # Show available versions
-sudo apt install csm=2.2.0-1
+sudo apt install csm=<version>-1
 
 # RHEL family
 sudo dnf --showduplicates list csm     # Show available versions
@@ -156,7 +160,7 @@ If any field shows `none` or `unknown` when you expect something, the auto-detec
 
 ## Optional system dependencies
 
-CSM runs as a single static Go binary and has no hard dependencies beyond systemd, but a few host packages enable additional checks:
+The daemon runs as one executable plus packaged UI, rule, profile, and PAM assets. Release binaries require glibc 2.28 or newer and the package depends on systemd. A few host packages enable additional checks:
 
 | Package | Platforms | Enables |
 |---------|-----------|---------|

@@ -7,8 +7,8 @@
 # Scope: every operation carries its method and x-csm-scope (read vs admin).
 # Method is derived from the route wrapper: CSRF-protected routes are
 # state-changing methods, the rest are GETs. Response bodies are typed as
-# generic JSON objects in this v1; per-endpoint response schemas are a
-# documented follow-up (see ROADMAP item 10, Y16).
+# generic JSON objects in this v1; per-endpoint response schemas can be
+# tightened incrementally without changing route coverage.
 openapi: 3.1.0
 info:
   title: CSM HTTP API

@@ -20,6 +20,8 @@ func runConfig() {
 		configShow()
 	case "schema":
 		runConfigSchema()
+	case "apply-immutability":
+		configApplyImmutability()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config command: %s\n", os.Args[2])
 		printConfigUsage()
@@ -35,7 +37,16 @@ Usage: csm config <command>
 Commands:
   show [--no-redact] [--json]   Display current config (secrets redacted by default)
   schema                        Print JSON Schema for the config file
+  apply-immutability            Apply integrity.immutable to the installed binary
 `)
+}
+
+func configApplyImmutability() {
+	cfg := loadConfigLite()
+	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
+		fmt.Fprintf(os.Stderr, "applying binary immutable flag: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runConfigSchema() {

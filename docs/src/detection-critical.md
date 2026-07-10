@@ -48,6 +48,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `http_claimed_bot_unverified` | High-volume claimed crawler traffic while reverse-DNS verification is still pending; challenge-routed when the challenge subsystem is enabled |
 | `http_ua_spoof` | IP hitting the per-IP spoof threshold with a search-engine bot UA that fails reverse-DNS verification, or with scripting/headless/empty UAs when those opt-in flags are enabled |
 | `http_distributed_flood` | Many already-abusive HTTP source IPs hitting the same vhost in one scheduled scan window |
+| `http_asn_crawl` | A single ASN distributing expensive, uncacheable requests across many addresses while one account's PHP worker pool is saturated. Reverse-proxy ASNs and operator allowlists are excluded; Critical findings can carry the specific source CIDRs eligible for temporary blocking. |
 | `ftp_logins` | FTP access patterns and failed auth |
 | `webmail_logins` | Roundcube/Horde access anomalies |
 | `api_auth_failures` | API authentication failure patterns |

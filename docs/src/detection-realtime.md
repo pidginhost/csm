@@ -155,16 +155,12 @@ Counters exposed at `/metrics`:
 Caveats:
 
 - `started_at` is emitted only when the event source supplies a trustworthy
-  start timestamp. Phase 1 does not infer process start time from procfs
-  directory metadata. A future refinement may add `/proc/<pid>/stat` field 22
-  + `/proc/stat` btime for kernel-tick precision.
+  start timestamp. CSM does not infer it from procfs directory metadata.
 - After daemon restart, the `csm_process_context_enrich_*` counters may show a
   small `enqueued - reads` delta. Pending requests in the enricher queue are
   dropped on shutdown by design.
 - Hosts without BPF support fall back to `/proc/net/tcp[6]` polling. That path
-  has no PID, so emitted findings do not carry a `process` field. A future
-  refinement could resolve the socket inode to a PID via `/proc/<pid>/fd`,
-  but that is out of scope for Phase 1.
+  has no PID, so emitted findings do not carry a `process` field.
 
 ## HTTP Flood, Scanner Profile, UA Spoof, and Distributed Flood
 

@@ -228,6 +228,32 @@ func TestSystemdServiceUnitToleratesAbsentLegacyStateDir(t *testing.T) {
 	}
 }
 
+func TestPackageInstallsCLIPathSymlink(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "build", "nfpm.yaml"))
+	if err != nil {
+		t.Fatalf("read nfpm package manifest: %v", err)
+	}
+	var manifest struct {
+		Contents []struct {
+			Src  string `yaml:"src"`
+			Dst  string `yaml:"dst"`
+			Type string `yaml:"type"`
+		} `yaml:"contents"`
+	}
+	if err := yaml.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("parse nfpm package manifest: %v", err)
+	}
+	for _, entry := range manifest.Contents {
+		if entry.Dst == "/usr/sbin/csm" {
+			if entry.Type != "symlink" || entry.Src != "/opt/csm/csm" {
+				t.Fatalf("/usr/sbin/csm entry = src %q type %q, want /opt/csm/csm symlink", entry.Src, entry.Type)
+			}
+			return
+		}
+	}
+	t.Fatal("package manifest must install /usr/sbin/csm")
+}
+
 func packagedContentPaths(t *testing.T) []string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("..", "..", "build", "nfpm.yaml"))

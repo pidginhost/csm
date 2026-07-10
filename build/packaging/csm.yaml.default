@@ -70,7 +70,7 @@ integrity:
   binary_hash: ""
   config_hash: ""
   confd_hash: ""
-  immutable: true
+  immutable: true  # apply chattr +i to /opt/csm/csm during install and rehash
 
 signatures:
   rules_dir: "/opt/csm/rules"

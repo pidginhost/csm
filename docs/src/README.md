@@ -1,34 +1,23 @@
-# CSM (Continuous Security Monitor)
+# CSM Documentation
 
-Security monitoring and response for Linux web servers. Single Go binary that detects compromise, phishing, mail abuse, and suspicious activity - then auto-responds and alerts within seconds.
+CSM is a local security monitoring and response daemon for Linux web servers. cPanel/WHM shared hosting is the primary target; platform detection also selects applicable paths and checks for Plesk, DirectAdmin, and panel-free hosts running Apache, Nginx, LiteSpeed, or no web server.
 
-Built for cPanel/WHM on CloudLinux/AlmaLinux. Also runs on plain Ubuntu/Debian + Nginx/Apache and on plain AlmaLinux/Rocky/RHEL + Apache/Nginx: the daemon auto-detects the OS, control panel, and web server at startup and picks the correct log paths, config candidates, and check set.
+## Start here
 
-Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email security, threat intelligence, hardening audit, performance monitoring, and a web dashboard.
+- **New installation:** [Install the signed package](installation.md), review [configuration](configuration.md), start the daemon, then establish the [baseline](installation.md#baseline-scan).
+- **Daily operation:** Use the [Web UI](webui.md), [`csm status` and `csm doctor`](cli.md#management), and the [incident response runbook](incident-response-runbook.md).
+- **Response policy:** Read [Auto-response](auto-response.md) and [Firewall](firewall.md) before enabling automatic actions.
+- **Coverage:** Compare [real-time](detection-realtime.md), [critical](detection-critical.md), and [deep](detection-deep.md) checks with the services installed on the host.
+- **Integrations:** Start with the [API](api.md), [metrics](metrics.md), and [audit log](audit-log.md).
 
-See [installation.md](installation.md) for supported platforms and how the check set differs between cPanel and non-cPanel hosts.
+## How CSM works
 
-## What CSM Does
+Real-time watchers process filesystem, authentication, access-log, mail, PAM, BPF, and ModSecurity events. Scheduled scans cover host integrity, accounts, CMS files and databases, packages, mail configuration, and performance. Findings are stored locally and can feed alerts, incidents, the Web UI, API clients, Prometheus, syslog, webhooks, and SIEM exports.
 
-```
-csm daemon
- +-- fanotify file monitor         < 1s detection on /home, /tmp, /dev/shm
- +-- inotify log watchers          ~2s detection on auth, access, exim, FTP logs
- +-- PAM brute-force listener      Real-time login failure tracking
- +-- PHP runtime shield            auto_prepend_file protection
- +-- critical scanner (10 min)     Processes, network, tokens, logins, firewall
- +-- deep scanner (60 min)         WP/CMS integrity, package integrity, DB injection, phishing
- +-- nftables firewall engine      Kernel netlink API, IP sets, rate limiting
- +-- threat intelligence           IP reputation, attack scoring, GeoIP
- +-- ModSecurity manager           Rule deployment, overrides, escalation
- +-- email security                AV scanning, quarantine, password/forwarder audit
- +-- challenge server              Proof-of-work pages for suspicious IPs
- +-- alert dispatcher              Email, Slack, Discord, webhooks
- +-- web UI                        HTTPS dashboard with authenticated operator pages
- +-- hardening audit               On-demand server hardening checks + scoring
- +-- performance monitor           PHP, MySQL, Redis, WordPress metrics
-```
+Platform-specific checks skip when their required panel or service is absent. The documentation calls out cPanel-only behavior instead of treating a skipped integration as a failure.
 
-## Built From Real Incidents
+## Safety model
 
-CSM was built after real attacks where GSocket reverse shells, LEVIATHAN webshell toolkits, credential-stuffed cPanel accounts, and phishing kits were found across production servers.
+Auto-response is off by default. Automatic IP blocking has a dry-run default, while file, process, mail, and BPF actions have their own gates. Infrastructure and operator-allowed addresses are protected from automatic blocks, quarantine records restoration metadata, and firewall configuration supports confirmation-based rollback.
+
+Use [Configuration](configuration.md) as the source for current defaults and [Upgrading](upgrading.md) for state, config, and package migration rules.

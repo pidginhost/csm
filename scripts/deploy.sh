@@ -1,5 +1,5 @@
 #!/bin/bash
-# Continuous Security Monitor — Deploy from GitHub Releases
+# Continuous Security Monitor - Deploy from GitHub Releases
 #
 # Downloads the latest binary + SHA256 checksum, verifies integrity,
 # and installs or upgrades.
@@ -95,7 +95,7 @@ verify_signature() {
     if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
         echo "Signature verified OK" >&2
     else
-        die "SIGNATURE VERIFICATION FAILED — binary may be tampered with!"
+        die "SIGNATURE VERIFICATION FAILED - artifact may be tampered with!"
     fi
 }
 
@@ -168,6 +168,100 @@ download_package() {
     echo "$tmpdir"
 }
 
+verify_checksum() {
+    local file="$1" checksum_file="$2"
+    local expected actual
+    expected=$(awk '{print $1}' "$checksum_file")
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")"
+    fi
+}
+
+validate_assets_archive() {
+    local archive="$1" entry type
+    while IFS= read -r entry; do
+        entry="${entry#./}"
+        case "$entry" in
+            ""|/*|../*|*/../*|*/..)
+                die "Unsafe path in asset archive: ${entry}"
+                ;;
+        esac
+    done < <(tar tzf "$archive")
+
+    while IFS= read -r type; do
+        case "$type" in
+            -|d) ;;
+            *) die "Asset archive contains a link or special file" ;;
+        esac
+    done < <(tar tvzf "$archive" | awk '{print substr($1,1,1)}')
+}
+
+download_and_stage_assets() {
+    local version="$1" tmpdir="$2"
+    local archive="${tmpdir}/csm-assets.tar.gz"
+    local checksum="${archive}.sha256"
+    local code
+
+    code=$(curl -sS -w '%{http_code}' -L -o "$archive" \
+        "$(get_download_url "csm-assets.tar.gz" "$version")")
+    [ "$code" = "200" ] || die "Assets download failed (HTTP ${code})"
+    code=$(curl -sS -w '%{http_code}' -L -o "$checksum" \
+        "$(get_download_url "csm-assets.tar.gz.sha256" "$version")")
+    [ "$code" = "200" ] || die "Assets checksum download failed (HTTP ${code})"
+
+    verify_checksum "$archive" "$checksum"
+    verify_signature "$archive" "$(get_download_url "csm-assets.tar.gz.sig" "$version")"
+    validate_assets_archive "$archive"
+
+    local stage="${tmpdir}/assets-stage"
+    mkdir -p "$stage"
+    tar xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+    for required in ui configs pam deploy.sh; do
+        [ -e "${stage}/${required}" ] || die "Asset archive missing ${required}"
+    done
+    echo "$stage"
+}
+
+activate_assets() {
+    local stage="$1" backup="$2" entry file
+    mkdir -p "$backup" "${backup}/rules"
+    for entry in ui configs pam deploy.sh; do
+        if [ -e "${INSTALL_DIR}/${entry}" ] || [ -L "${INSTALL_DIR}/${entry}" ]; then
+            mv "${INSTALL_DIR}/${entry}" "${backup}/${entry}" || return 1
+        fi
+        mv "${stage}/${entry}" "${INSTALL_DIR}/${entry}" || return 1
+    done
+
+    mkdir -p "${INSTALL_DIR}/rules"
+    for file in malware.yml malware.yar; do
+        if [ -f "${INSTALL_DIR}/rules/${file}" ]; then
+            cp -p "${INSTALL_DIR}/rules/${file}" "${backup}/rules/${file}" || return 1
+        fi
+        cp "${INSTALL_DIR}/configs/${file}" "${INSTALL_DIR}/rules/${file}" || return 1
+    done
+}
+
+rollback_assets() {
+    local backup="$1" entry file
+    for entry in ui configs pam deploy.sh; do
+        rm -rf "${INSTALL_DIR:?}/${entry}"
+        if [ -e "${backup}/${entry}" ] || [ -L "${backup}/${entry}" ]; then
+            mv "${backup}/${entry}" "${INSTALL_DIR}/${entry}"
+        fi
+    done
+    for file in malware.yml malware.yar; do
+        rm -f "${INSTALL_DIR}/rules/${file}"
+        if [ -f "${backup}/rules/${file}" ]; then
+            cp -p "${backup}/rules/${file}" "${INSTALL_DIR}/rules/${file}"
+        fi
+    done
+}
+
+cleanup_upgrade_backup() {
+    rm -rf "$1"
+}
+
 # Stop daemon, wait for clean shutdown
 stop_services() {
     echo "Stopping ${SERVICE_NAME}..."
@@ -182,7 +276,6 @@ stop_services() {
         pkill -9 -f "${BINARY_PATH} daemon" 2>/dev/null || true
         sleep 1
     fi
-    rm -f "${INSTALL_DIR}/state/csm.lock" "${INSTALL_DIR}/state/csm.pid" 2>/dev/null || true
     systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
 }
 
@@ -200,90 +293,109 @@ start_services() {
 do_install() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
 
-    echo "=== Continuous Security Monitor — Install ==="
+    if [ -e "$BINARY_PATH" ]; then die "CSM is already installed. Run: $0 upgrade"; fi
+
+    echo "=== Continuous Security Monitor - Install ==="
     echo ""
 
     local tmpdir
     tmpdir=$(download_package "latest")
 
+    local assets_stage asset_backup
+    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
+    asset_backup="${tmpdir}/asset-backup"
+
     mkdir -p "$INSTALL_DIR"
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
-    rm -rf "$tmpdir"
+    chmod 0700 "$BINARY_PATH"
+    if ! activate_assets "$assets_stage" "$asset_backup"; then
+        rollback_assets "$asset_backup"
+        rm -f "$BINARY_PATH"
+        die "Asset installation failed"
+    fi
 
-    "$BINARY_PATH" install
+    if ! "$BINARY_PATH" install; then
+        rollback_assets "$asset_backup"
+        rm -f "$BINARY_PATH"
+        die "Installation failed"
+    fi
+    cleanup_upgrade_backup "$tmpdir"
 
     echo ""
     echo "=== Next steps ==="
-    echo "  1. Edit config:    vi ${INSTALL_DIR}/csm.yaml"
-    echo "  2. Set baseline:   ${BINARY_PATH} baseline (or 'rehash' for hash-only update)"
-    echo "  3. Test:           ${BINARY_PATH} check"
+    echo "  1. Edit config:    vi /etc/csm/csm.yaml"
+    echo "  2. Start daemon:   systemctl enable --now csm.service"
+    echo "  3. Set baseline:   ${BINARY_PATH} baseline"
+    echo "  4. Test:           ${BINARY_PATH} check"
 }
 
 do_upgrade() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
     if [ ! -f "$BINARY_PATH" ]; then die "CSM not installed. Run: $0 install"; fi
 
-    echo "=== Continuous Security Monitor — Upgrade ==="
+    echo "=== Continuous Security Monitor - Upgrade ==="
     echo ""
 
     local old_version
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Current: ${old_version}"
 
-    stop_services
-
     local tmpdir
     tmpdir=$(download_package "latest")
+
+    local assets_stage asset_backup binary_backup
+    assets_stage=$(download_and_stage_assets "latest" "$tmpdir")
+    asset_backup="${tmpdir}/asset-backup"
+    binary_backup="${tmpdir}/${ARTIFACT_NAME}.previous"
 
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
 
     if [ "$old_version" = "$new_version" ]; then
         rm -rf "$tmpdir"
-        echo "Already running the latest version. Restarting..."
-        start_services
-        exit 0
+        echo "Already running the latest version."
+        return
     fi
 
-    cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
+    stop_services
+    cp -p "$BINARY_PATH" "$binary_backup"
 
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
-
-    # Download and extract UI + config assets
-    local assets_code
-    assets_code=$(curl -sS -w '%{http_code}' -L -o "${tmpdir}/csm-assets.tar.gz" \
-        "$(get_download_url "csm-assets.tar.gz" "latest")")
-    if [ "$assets_code" = "200" ]; then
-        tar xzf "${tmpdir}/csm-assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
-        mkdir -p "${INSTALL_DIR}/rules"
-        for f in "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/configs/malware.yar"; do
-            [ -f "$f" ] && cp "$f" "${INSTALL_DIR}/rules/" || echo "WARNING: rule file not found: $f"
-        done
-    else
-        echo "WARNING: Assets download failed (HTTP ${assets_code}), keeping existing UI/rules"
+    chmod 0700 "$BINARY_PATH"
+    if ! activate_assets "$assets_stage" "$asset_backup"; then
+        chattr -i "$BINARY_PATH" 2>/dev/null || true
+        cp -p "$binary_backup" "$BINARY_PATH"
+        rollback_assets "$asset_backup"
+        "$BINARY_PATH" rehash 2>&1 || true
+        start_services || true
+        die "Asset activation failed - rolled back to previous version"
     fi
-
-    rm -rf "$tmpdir"
 
     if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
         echo "Updating PHP Shield..."
         "$BINARY_PATH" install --php-shield-only 2>/dev/null || true
     fi
 
-    "$BINARY_PATH" rehash 2>&1 || true
     if ! "$BINARY_PATH" rehash 2>&1; then
         echo "WARNING: Rehash failed, rolling back..."
-        cp "${BINARY_PATH}.bak" "$BINARY_PATH" 2>/dev/null || true
-        chattr +i "$BINARY_PATH" 2>/dev/null || true
+        chattr -i "$BINARY_PATH" 2>/dev/null || true
+        cp -p "$binary_backup" "$BINARY_PATH"
+        rollback_assets "$asset_backup"
+        "$BINARY_PATH" rehash 2>&1 || true
         start_services || true
-        die "Upgrade failed — rolled back to previous version"
+        die "Upgrade failed - rolled back to previous version"
     fi
 
-    chattr +i "$BINARY_PATH" 2>/dev/null || true
-    rm -f "${BINARY_PATH}.bak"
-
-    start_services
+    if ! start_services; then
+        chattr -i "$BINARY_PATH" 2>/dev/null || true
+        cp -p "$binary_backup" "$BINARY_PATH"
+        rollback_assets "$asset_backup"
+        "$BINARY_PATH" rehash 2>&1 || true
+        start_services || true
+        die "Upgrade failed to start - rolled back to previous version"
+    fi
+    cleanup_upgrade_backup "$tmpdir"
 
     echo ""
     echo "Upgrade complete: ${old_version} -> ${new_version}"
@@ -327,7 +439,7 @@ case "${1:-}" in
     upgrade)  do_upgrade ;;
     check)    do_check ;;
     *)
-        echo "Continuous Security Monitor — Deploy"
+        echo "Continuous Security Monitor - Deploy"
         echo ""
         echo "Usage:"
         echo "  $0 install     Install latest"

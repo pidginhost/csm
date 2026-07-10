@@ -1,8 +1,9 @@
 #!/bin/bash
 # Continuous Security Monitor - Standalone Installer
 #
-# Quick install:
-#   curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
+# Download and review before running:
+#   curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
+#   less /tmp/csm-install.sh && sudo bash /tmp/csm-install.sh
 #
 # Non-interactive:
 #   bash install.sh --email admin@example.com --non-interactive
@@ -98,6 +99,35 @@ verify_signature() {
     else
         die "SIGNATURE VERIFICATION FAILED - binary may be tampered with!"
     fi
+}
+
+verify_checksum() {
+    local file="$1" checksum_file="$2"
+    local expected actual
+    expected=$(awk '{print $1}' "$checksum_file")
+    actual=$(sha256sum "$file" | awk '{print $1}')
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        die "CHECKSUM VERIFICATION FAILED for $(basename "$file")"
+    fi
+}
+
+validate_assets_archive() {
+    local archive="$1" entry type
+    while IFS= read -r entry; do
+        entry="${entry#./}"
+        case "$entry" in
+            ""|/*|../*|*/../*|*/..)
+                die "Unsafe path in asset archive: ${entry}"
+                ;;
+        esac
+    done < <(tar tzf "$archive")
+
+    while IFS= read -r type; do
+        case "$type" in
+            -|d) ;;
+            *) die "Asset archive contains a link or special file" ;;
+        esac
+    done < <(tar tvzf "$archive" | awk '{print substr($1,1,1)}')
 }
 
 detect_arch() {
@@ -215,33 +245,26 @@ info "Version: ${VERSION}"
 info "Downloading UI assets and rules..."
 ASSETS_URL=$(echo "$BINARY_URL" | sed "s/csm-[^/]*$/csm-assets.tar.gz/")
 HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz" "$ASSETS_URL")
-if [ "$HTTP_CODE" = "200" ]; then
-    tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
-    mkdir -p "${INSTALL_DIR}/rules"
-    cp "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/rules/" 2>/dev/null || true
-    cp "${INSTALL_DIR}/configs/malware.yar" "${INSTALL_DIR}/rules/" 2>/dev/null || true
-    info "Assets OK"
-else
-    echo "  WARNING: Assets download failed (HTTP ${HTTP_CODE}), UI may be missing"
-fi
+[ "$HTTP_CODE" = "200" ] || die "Assets download failed (HTTP ${HTTP_CODE})"
+HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz.sha256" "${ASSETS_URL}.sha256")
+[ "$HTTP_CODE" = "200" ] || die "Assets checksum download failed (HTTP ${HTTP_CODE})"
+verify_checksum "${TMPDIR}/assets.tar.gz" "${TMPDIR}/assets.tar.gz.sha256"
+verify_signature "${TMPDIR}/assets.tar.gz" "${ASSETS_URL}.sig"
+validate_assets_archive "${TMPDIR}/assets.tar.gz"
+tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" --no-same-owner --no-same-permissions
+for required in ui configs pam deploy.sh; do
+    [ -e "${INSTALL_DIR}/${required}" ] || die "Asset archive missing ${required}"
+done
+mkdir -p "${INSTALL_DIR}/rules"
+cp "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/rules/"
+cp "${INSTALL_DIR}/configs/malware.yar" "${INSTALL_DIR}/rules/"
+info "Assets OK"
 
 ## Place binary
 cp "${TMPDIR}/csm" "$BINARY_PATH"
 chmod 0700 "$BINARY_PATH"
 
-# deploy.sh is shipped inside csm-assets.tar.gz and extracted to
-# ${INSTALL_DIR}/deploy.sh by the tar xzf above. Make sure it's executable.
-# Fall back to downloading it from the release if the tarball didn't
-# ship it (older assets tarballs didn't include the upgrade helper).
-if [ ! -f "${INSTALL_DIR}/deploy.sh" ]; then
-    info "Fetching deploy.sh from release..."
-    DEPLOY_URL=$(echo "$BINARY_URL" | sed "s|/csm-[^/]*$|/deploy.sh|")
-    HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${INSTALL_DIR}/deploy.sh" "$DEPLOY_URL" || echo 000)
-    if [ "$HTTP_CODE" != "200" ]; then
-        echo "  WARNING: could not fetch deploy.sh (HTTP ${HTTP_CODE}); upgrades via /opt/csm/deploy.sh will not work until you install it manually" >&2
-        rm -f "${INSTALL_DIR}/deploy.sh"
-    fi
-fi
+# deploy.sh is a required, verified archive member.
 chmod 755 "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true
 
 # --- Configuration ---
@@ -268,7 +291,7 @@ AUTH_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
 # Run binary install (generates config, systemd, auditd, WHM, logrotate)
 info "Installing services..."
-"$BINARY_PATH" install 2>/dev/null || true
+"$BINARY_PATH" install
 
 # Patch config with detected values
 if [ -f "$CONFIG_PATH" ]; then
@@ -276,9 +299,6 @@ if [ -f "$CONFIG_PATH" ]; then
     sed -i "s/SET_EMAIL_HERE/${CONF_EMAIL}/g" "$CONFIG_PATH" 2>/dev/null || true
     sed -i "s/auth_token: \"\"/auth_token: \"${AUTH_TOKEN}\"/" "$CONFIG_PATH" 2>/dev/null || true
 fi
-
-# Immutable
-chattr +i "$BINARY_PATH" 2>/dev/null || true
 
 # Validate
 "$BINARY_PATH" validate 2>/dev/null || echo "  WARNING: Config has issues. Run: /opt/csm/csm validate"
@@ -296,8 +316,8 @@ echo "  Logs:    /var/log/csm/monitor.log"
 echo ""
 echo "  Next steps:"
 echo "    1. Review config:  vi /etc/csm/csm.yaml"
-echo "    2. Set baseline:   /opt/csm/csm baseline"
-echo "    3. Start daemon:   systemctl enable --now csm.service"
+echo "    2. Start daemon:   systemctl enable --now csm.service"
+echo "    3. Set baseline:   /opt/csm/csm baseline"
 echo ""
 echo "  Upgrade later with:  /opt/csm/deploy.sh upgrade"
 echo ""

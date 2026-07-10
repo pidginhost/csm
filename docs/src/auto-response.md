@@ -9,13 +9,13 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Kill processes** | Fake kernel threads, reverse shells, GSocket. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
-| **Clean malware** | 7 strategies: @include removal, prepend/append stripping, inline eval removal, base64 chain decoding, chr/pack cleanup, hex injection removal, confirmed database cleanup. |
+| **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories, detects webshell parameters. |
 | **PAM blocking** | Instant IP block on brute force threshold breach. |
 | **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
-| **Auto-freeze (PHP relay)** | When the email PHP-relay detector fires (Path 1 / 2 / 4), runs `exim -Mf` against the message IDs the offending script is currently sending. Snapshots `activeMsgs` from the per-script window first, falls back to a spool walk if the snapshot was capped or if the finding is a late reputation event. Default dry-run; flip to live with `csm phprelay dry-run off`. Skips `volume_account` (per-cpuser, no scriptKey). Rate-limited to `auto_response.php_relay.max_actions_per_minute` (default 60). cPanel only. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
+| **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
 ## Configuration
 
@@ -43,7 +43,7 @@ auto_response:
   # NOT touch nftables. Manual operator commands (`csm firewall ...`)
   # bypass via BlockIPForce and always apply. Flip to false only after
   # verifying the policy in dry-run.
-  dry_run: false
+  dry_run: true
 
   # Advisory verdict callback. CSM POSTs each impending auto-block
   # to the panel before applying. The panel can downgrade to "allow"
@@ -70,7 +70,9 @@ auto_response:
 
 ### Dry-run safety default
 
-`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without thinking through policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
+`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
+
+This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths, plus callers that explicitly consult the same safety switch. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
 
 IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns both live nftables mutations and dry-run block records; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
 
@@ -81,7 +83,7 @@ csm status --json | jq '.severities, .blocklist_size'
 csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
 ```
 
-To go live: set `dry_run: false`, run `csm rehash` (twice, due to the circular hash), then restart or SIGHUP-reload (the field is hot-reload-safe).
+To go live: set `dry_run: false`, then run `systemctl reload csm`. The field is hot-reload-safe, and a successful reload validates and re-signs the config. For a planned restart instead, run `csm rehash` once before restarting.
 
 ### Verdict callback (advisory)
 
@@ -140,6 +142,8 @@ Distributed HTTP flood rollups do not trigger a direct IP block because
 they describe one targeted vhost, not one source IP. The per-IP findings
 that feed the rollup still drive normal block decisions.
 
+`http_asn_crawl` is also handled separately because one finding can carry several offending CIDRs rather than one source IP. Only Critical findings with confirmed PHP worker saturation can tempban those CIDRs, using `auto_response.http_asn_crawl_tempban`. Dry-run and subnet safety guards still apply.
+
 `mail_bruteforce_suspected` is also visibility only and does not feed either
 auto-block path.
 
@@ -168,15 +172,15 @@ Beyond standard malware patterns, CSM detects advanced evasion techniques:
 - **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_bruteforce_suspected`, `mail_subnet_spray`, `mail_account_spray`, `mail_account_compromised`, and `mail_auth_backend_degraded`. Established good sources with a confined stale-password pattern emit the suspected advisory without auto-blocking; wider spraying and confirmed compromise still block. When the auth backend is degraded, `mail_bruteforce` and `mail_subnet_spray` auto-blocking pause until backend errors age out.
 - **Mail auth backend probe (cPanel)**: independently of the log signals above, CSM opens the `cpdoveauthd` socket on a short interval. dovecot keeps answering its IMAP/POP3 ports during a cpdoveauthd outage, so cPanel's own service checks do not notice, yet every login fails regardless of password. When the probe finds the socket unreachable CSM raises `mail_auth_backend_degraded` and pauses both mail and SMTP brute-force auto-block. With `auto_response.mail_auth_recovery.restart_enabled`, CSM restarts the mail service once the backend has been continuously down past `down_grace` (default 10m, rate-limited), so a brief blip during maintenance never triggers a needless restart. Changes to mail auth recovery settings require a daemon restart.
 
-## Dry-run precedence (Phase 4)
+## Network dry-run precedence
 
-CSM has three independent dry_run knobs after Phase 4. Any dry_run
-that is true wins; live actions require all applicable knobs to be
-false.
+Three settings combine for direct-SMTP BPF enforcement. Any applicable
+dry-run value that is true wins; live network denial requires all three
+to be false.
 
 | Layer | Knob | Default | Effect when true |
 |-------|------|---------|------------------|
-| Global | `auto_response.dry_run` | true | Suppress all automatic actions |
+| Auto-response | `auto_response.dry_run` | true | Record automatic block decisions without applying firewall denial |
 | Detector | `detection.direct_smtp_egress.dry_run` | true | Suppress detector-scoped action |
 | Kernel | `bpf_enforcement.dry_run` | true | BPF program emits decision but allows traffic |
 

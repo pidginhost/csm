@@ -3,9 +3,9 @@
 ## Development Environment
 
 **Requirements:**
-- Go 1.26+
+- The Go version declared in `go.mod`
 - `make`
-- `golangci-lint` (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`)
+- Pinned development tools installed with `make tools`
 - YARA-X (optional, for YARA rule support - build with `-tags yara`)
 - Linux host or VM (fanotify and nftables are Linux-only)
 
@@ -18,12 +18,12 @@ make build-linux        # cross-compile for Linux amd64
 
 **Run tests:**
 ```bash
-go test -race ./...
+go test ./... -count=1 -race
 ```
 
 **Lint:**
 ```bash
-make lint               # runs golangci-lint with repo-local caches
+make lint               # runs the pinned golangci-lint with repo-local caches
 gofmt -l .              # check formatting
 gofmt -w .              # fix formatting
 ```
@@ -39,8 +39,8 @@ gofmt -w .              # fix formatting
 ## Testing
 
 ```bash
-go test -race ./...                 # full suite with race detector
-go test -race ./internal/checks/... # specific package
+go test ./... -count=1 -race                 # full suite with race detector
+go test ./internal/checks/... -count=1 -race # specific package
 ```
 
 Integration tests that require a live cPanel server are marked with `//go:build integration` and are not run by default.
@@ -68,7 +68,7 @@ docs: update configuration reference
 
 1. Fork the repo and create a branch from `main`.
 2. Make your changes with tests.
-3. Ensure `go test -race ./...` and `make lint` both pass.
+3. Ensure `go test ./... -count=1 -race` and `make lint` both pass.
 4. Open a PR with a clear description of what and why.
 5. PRs require at least one review before merge.
 6. Squash commits on merge if the branch history is noisy.

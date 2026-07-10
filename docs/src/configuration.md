@@ -41,7 +41,7 @@ modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
 
 ### Account roots (plain Linux web-scan coverage)
 
-By default, the account-scan based checks (`perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and related) iterate `/home/*/public_html` which is the cPanel layout. On plain Ubuntu / AlmaLinux with Nginx or Apache, point CSM at your actual web roots:
+By default, web-root performance checks iterate `/home/*/public_html`, which is the cPanel layout. On a plain Linux host, point CSM at the actual web roots:
 
 ```yaml
 account_roots:
@@ -52,7 +52,7 @@ account_roots:
 
 Each entry is a glob pattern expanded at scan time. Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
 
-Today, three checks consume this: `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`. The remaining account-scan checks (WordPress core integrity, phishing kit detection, htaccess tampering, fileindex, etc.) still assume the cPanel `/home/*/public_html` layout and will be migrated in a follow-up release.
+The setting currently covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron`, including WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans still use the cPanel account layout.
 
 ## Minimal Config
 
@@ -119,10 +119,10 @@ alerts:
 
 # --- Integrity ---
 integrity:
-  binary_hash: ""                       # auto-populated by install/rehash
-  config_hash: ""                       # auto-populated by install/rehash
-  confd_hash: ""                        # auto-populated by install/rehash
-  immutable: false                      # prevent config changes at runtime
+  binary_hash: ""                       # populated by baseline/rehash
+  config_hash: ""                       # populated by baseline/rehash/reload
+  confd_hash: ""                        # populated by baseline/rehash/reload
+  immutable: true                       # apply chattr +i to the installed binary during install/rehash
 
 # --- Thresholds ---
 thresholds:
@@ -205,6 +205,22 @@ thresholds:
   http_scanner_min_distinct_paths: 10  # min distinct error paths, max 512 (default: 10)
   http_scanner_status_codes: [404, 403] # statuses counted as probe errors (default: 404, 403)
 
+  # Distributed expensive-request crawl from one ASN. The detector fires
+  # only when request breadth, uncacheable volume, account share, and PHP
+  # worker saturation agree. Set min_ips to 0 to disable.
+  http_asn_crawl_window_min: 60
+  http_asn_crawl_min_ips: 25
+  http_asn_crawl_min_expensive: 250
+  http_asn_crawl_min_share_pct: 50
+  http_asn_crawl_high_amp_pct: 50
+  http_asn_crawl_high_volume_mult: 4
+  http_asn_crawl_saturation: 0          # 0 = performance.php_process_warn_per_user
+  http_asn_crawl_max_prefix: 8
+  http_asn_crawl_16_pref_pct: 60
+  http_asn_crawl_max_tracked_ips: 20000
+  http_asn_crawl_allowlist_asns: []
+  http_asn_crawl_reverse_proxy_asns: [13335, 54113, 20940]
+
   # These three opt-in flags extend UA spoof detection to additional UA
   # classes. Leave disabled on busy shared hosts; scripting-language agents
   # and headless browsers appear on many legitimate monitoring stacks.
@@ -242,6 +258,11 @@ thresholds:
 # --- Web server overrides ---
 # Leave these empty to use auto-detected paths for the running platform.
 web_server:
+  type: ""                              # apache | nginx | litespeed; empty = detect
+  config_dir: ""                        # optional Apache/Nginx config root
+  access_logs: []                       # candidate access logs, replacing detected paths
+  error_logs: []                        # candidate error logs, replacing detected paths
+  modsec_audit_logs: []                 # candidate ModSecurity audit logs
   # Override the per-vhost access-log glob patterns. Empty uses the
   # auto-detected default for the panel (cPanel, Plesk, DirectAdmin,
   # bare Apache, or bare Nginx).
@@ -284,6 +305,7 @@ auto_response:
   quarantine_files: false               # move malware to quarantine
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # duration for temp blocks (e.g. "24h", "12h")
+  http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
   max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   fix_wp_cron: false                    # on perf_wp_cron findings, auto-disable WP-Cron and install a per-user system cron
@@ -624,7 +646,7 @@ firewall:
 
   # Outbound SMTP restriction
   smtp_block: false                     # block outgoing mail except allowed users
-  smtp_allow_users: []                  # usernames allowed to send
+  smtp_allow_users: [cpanel, mailman]   # extra outbound SMTP users; root and mailnull are always allowed
   smtp_ports: [25,465,587]
 
   # Dynamic DNS
@@ -756,7 +778,7 @@ webui:
 
 On cPanel servers, you can reuse the cPanel self-signed certificate (both cert and key are in the same PEM file). For production, use a proper certificate from Let's Encrypt or your CA.
 
-If `tls_cert` and `tls_key` are empty, the Web UI will not start.
+If both paths are empty, CSM generates an ECDSA self-signed certificate and key under `state_path`. Set both paths to use an operator-managed certificate. Configuring only one of the pair is invalid.
 
 ## Validation
 
@@ -920,20 +942,20 @@ ls /etc/csm/conf.d/
 
 csm validate                # validates the merged config
 csm config show             # prints the merged, redacted config
-csm config schema --json    # JSON Schema for editor / CI validation
+csm config schema           # JSON Schema for editor / CI validation
 ```
 
 `csm validate` and `csm config show` always operate on the **merged** config so you can audit the effective state without grepping fragments.
 
 ## detection.direct_smtp_egress
 
-Phase 3 detector. `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
+The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 `ports` must contain TCP ports in the 1-65535 range. See
 [Direct SMTP egress](direct-smtp-egress.md).
 
 ## bpf_enforcement
 
-Phase 4 enforcement. Requires a BPF-capable connection tracker at
+BPF enforcement requires a BPF-capable connection tracker at
 runtime; `auto` falls back to legacy detection on older servers. See
 [BPF enforcement](bpf-enforcement.md).
 

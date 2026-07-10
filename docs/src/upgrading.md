@@ -1,21 +1,31 @@
 # Upgrading
 
-## deploy.sh (recommended)
+## Package installations (recommended)
+
+Use the same signed repository that installed CSM:
 
 ```bash
-/opt/csm/deploy.sh upgrade
+sudo apt update && sudo apt install --only-upgrade csm   # Debian/Ubuntu
+sudo dnf upgrade csm                                     # RHEL family
 ```
 
-This will:
-1. Stop the daemon
-2. Back up the current binary
-3. Download the new version
-4. Verify SHA256 checksum
-5. Extract UI assets and rules
-6. Rehash config
-7. Restart the daemon
+The package preserves the operator config and state, updates runtime assets, re-signs integrity metadata, and restarts the daemon when it was already active.
 
-Rolls back automatically on failure.
+## Standalone installations
+
+```bash
+sudo /opt/csm/deploy.sh upgrade
+```
+
+The helper:
+
+1. Downloads and verifies the binary and supporting assets
+2. Stages the UI, rules, PAM files, and deploy helper before downtime
+3. Stops the daemon and keeps the previous binary and assets as rollback material
+4. Activates the staged release and rehashes the config once
+5. Restarts the daemon and confirms it is active
+
+If activation, rehash, or startup fails, the helper restores the previous binary and assets, re-signs the restored binary hash, and starts the previous version.
 
 ## Troubleshooting
 
@@ -34,16 +44,7 @@ If `systemctl` says CSM is stopped but bbolt still times out, find the process h
 
 **Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). Restore from backup when possible; for an intentional reset, run `csm baseline --confirm` rather than removing the database by hand.
 
-**Config changes require rehash** -- After editing `csm.yaml`, run `csm rehash` twice (the config hash is stored inside the config file, creating a circular dependency -- the second run stabilizes it). Or just restart via `systemctl restart csm`.
-
-## RPM/DEB
-
-```bash
-yum update csm              # RPM
-dpkg -i csm_NEW.deb         # DEB
-```
-
-Package managers handle stop/start automatically.
+**Config changes require rehash** -- After editing a restart-required field in `csm.yaml`, run `csm rehash` once, validate, then restart. Hot-reload-safe changes can use `systemctl reload csm`; the daemon validates and re-signs the accepted config itself.
 
 ## FHS migration (state, config, drop-ins, and profiles)
 
@@ -84,7 +85,7 @@ Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl 
 `auto_response.dry_run` defaults to `true` when the key is absent. The daemon records every IP it would have blocked but does not touch nftables. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
 
 ```bash
-csm status --json | jq '.capabilities, .severities'
+csm status --json | jq '.auto_response_dry_run, .dry_run_blocks'
 csm firewall status            # check that "Recently Blocked" picks up new entries after the restart
 ```
 

@@ -21,6 +21,10 @@ contents:
       owner: root
       group: root
 
+  - src: /opt/csm/csm
+    dst: /usr/sbin/csm
+    type: symlink
+
   # Upgrade helper script. Users run /opt/csm/deploy.sh upgrade to fetch
   # the latest release from GitHub. Shipped via the package so fresh
   # installs always have a working upgrade path.

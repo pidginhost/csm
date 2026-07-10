@@ -3,7 +3,7 @@
 CSM watches the local mail stack via spool + log scanning. Non-MTA
 processes that open outbound SMTP connections directly bypass that
 path. The direct SMTP egress detector catches that at connect time
-and feeds the incident correlator from Phase 2.
+and feeds the incident correlator.
 
 ## What fires
 
@@ -21,7 +21,7 @@ Process names are never a standalone allow condition. A hosted account
 renaming malware to `smtp` or `smtpd` still emits a finding.
 
 The detector always emits findings when enabled. The dry_run knob does
-not suppress findings; it participates in the Phase 4 BPF enforcement
+not suppress findings; it participates in the BPF enforcement
 gate, where any dry_run=true layer keeps kernel denial in observe-only
 mode.
 

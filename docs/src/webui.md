@@ -32,7 +32,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, whitelist management, search, audit log; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
-| **Email** | `/email` | Email workbench: status strip (queue, frozen, oldest, AV, group counts), grouped action rows on the left (compromised, spam outbreak, auth failure, queue, malware), Mail protection state on the right, and Findings / Auth failures / Queue / Quarantine / Senders / Forwarders / Deliverability / Outbound abuse tabs below. **Queue** breaks the spool into real mail vs null-sender bounce backscatter (frozen count, oldest age, top stuck recipients) and flushes frozen backscatter in one click without touching real or retrying mail. **Forwarders** lists cPanel forwarders -- destination provider, owner, and whether a local copy is also kept -- so off-server relays to free providers are visible at a glance; held forward copies appear here to release or delete. Enforce mode currently holds null-sender backscatter and bad-sender-IP copies before external relay while the local copy still delivers. **Deliverability** shows which providers are throttling the server, the affected sending IPs, and each provider's stated reason. **Outbound abuse** lists recent PHP-mail relay detections (spam outbreaks from one source IP across many sites, high-volume scripts or accounts) with the contributing site/script breakdown and a one-click 24h block. |
+| **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
@@ -46,7 +46,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 ## Security
 
 - **Authentication** - Bearer token (header or HttpOnly/Secure/SameSite=Strict cookie)
-- **CSRF** - HMAC-derived token on all POST mutations
+- **CSRF** - HMAC-derived token on cookie-authenticated POST, PUT, PATCH, and DELETE requests
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
 - **TLS** - Auto-generated self-signed certificate
 - **Rate limiting** - 5 login attempts/min, 600 API requests/min per IP
@@ -88,53 +88,18 @@ fixing something by hand instead of waiting for the next scan), **Dismiss**
 (hide it; restorable), and **Suppress** (create a rule to hide similar
 findings).
 
-Re-check is shown only on findings whose condition CSM can re-evaluate from
-current state: file-permission (world/group-writable), webshell and malware
-file findings, phishing pages/kits and credential logs, `.htaccess`
-directives, Exim spool messages, crontabs, outdated WordPress plugins,
-WordPress core integrity, unauthorized UID 0 accounts (re-reads `/etc/passwd`),
-SUID binaries in unusual locations (re-stats the setuid bit), and modified
-system binaries (re-runs `rpm -V` / `debsums` / `dpkg --verify` for the
-package). It resolves a finding only on confirmed evidence (the
-file is gone, the bit is cleared, the directives are clean) -- never on an
-ambiguous or unreadable target. Package-manager errors or unparsed output leave
-the finding in place. For periodic PHP-content findings plus signature and YARA
-findings, Re-check re-runs the classifier on the file's current bytes rather
-than only checking presence: it clears a still-present file only when the bytes
-are byte-for-byte identical to detection time and the current detection logic no
-longer flags them -- a false positive left behind by an improved heuristic. That
-detection-time fingerprint is read from the stored finding, not from the browser
-request. Realtime PHP heuristic, location, and name-based malware findings stay
-active while the file remains present. A file modified since detection is never
-auto-cleared (the edit could be a partial clean or an evasion attempt) and stays
-active for manual review or a full rescan. The WordPress re-checks are heavier
-than the file checks: they re-run `wp-cli` for that one site (bounded timeout)
-so a just-applied update or cleanup is reflected immediately -- the plugin check
-runs as the site owner and resolves when no active plugin is outdated, the core
-check runs `wp core verify-checksums` and resolves only when the install is gone or
-the checksum verification is clean. Other `wp-cli` errors or checksum warnings
-keep the finding active for a full account scan. Database findings with a
-concrete current-state target are also re-checkable: injected WordPress
-options/posts, cloaked-spam post injections, siteurl/home hijacks,
-Drupal/Joomla/Magento/OpenCart settings and content injections, the backdoor
-magic-token user, WordPress rogue/disposable-email administrator accounts,
-per-CMS administrator-account findings, and malicious or unexpected database
-triggers/events/procedures/functions. Row and account re-checks re-discover the
-CMS install, query the flagged row or account as root against that install's
-database, and clear only when it is gone or no longer matches the detector. If
-the query fails or the install cannot be located, the finding stays active.
-Database-object re-checks read the current trigger/event/procedure/function body
-from `INFORMATION_SCHEMA`; unexpected
-objects stay active while the object exists, and malicious objects clear only
-when the object is gone or its current body no longer matches the malware
-classifier. Event findings, such as brute force, login history, IP reputation,
-and WAF/ModSecurity blocks, reflect things that already happened and cannot be
-re-evaluated from current state, so they show no Re-check button; they age out
-or are dismissed. A few findings still need a full account scan and are not
-re-checkable per-finding: dependency/supply-chain advisories, running
-database-dump processes, database spam cleanup summaries and manual-review spam
-findings, and the cross-account admin-overlap / credential-reuse aggregates --
-use the account scan for those.
+Re-check appears only when CSM can test a current condition again. Supported
+targets include file permissions and content, phishing and `.htaccess` files,
+selected accounts and system integrity checks, WordPress core/plugins, CMS
+database rows, administrator accounts, and database objects. Re-check uses the
+stored finding identity and current host state; the browser cannot substitute a
+different path, row, account, or object.
+
+The operation fails closed. Missing or unreadable evidence, changed file bytes,
+package-manager errors, failed CMS discovery, and failed database queries leave
+the finding active. Historical events such as login attempts, WAF blocks, and IP
+reputation cannot be re-evaluated and therefore have no Re-check action. Broad
+aggregates and dependency findings require a new account or full scan.
 
 ## WHM Plugin
 

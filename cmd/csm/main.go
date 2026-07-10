@@ -42,6 +42,7 @@ const (
 	defaultLogPath      = "/var/log/csm/monitor.log"
 	defaultConfDir      = "/etc/csm/conf.d"
 	binaryPath          = "/opt/csm/csm"
+	commandPath         = "/usr/sbin/csm"
 )
 
 // ensureHomeEnv sets HOME from os/user.Current().HomeDir when systemd has
@@ -433,6 +434,7 @@ func runInstall() {
 
 	installer := &Installer{
 		BinaryPath:     binaryPath,
+		CommandPath:    commandPath,
 		ConfigPath:     cfgPath,
 		StatePath:      defaultStatePath,
 		LogPath:        defaultLogPath,
@@ -537,6 +539,7 @@ func runUninstall() {
 	}
 	installer := &Installer{
 		BinaryPath:     binaryPath,
+		CommandPath:    commandPath,
 		ConfigPath:     cfgPath,
 		StatePath:      defaultStatePath,
 		LogPath:        defaultLogPath,
@@ -772,6 +775,9 @@ func runRehash() {
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
 	cfg.Integrity.ConfdHash = confdHash
+	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: updating binary immutable flag: %v\n", err)
+	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)

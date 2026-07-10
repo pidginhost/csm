@@ -58,24 +58,28 @@ APT verifies signed repository metadata through the `signed-by=` keyring. DNF ve
 
 ## Detached Artifact Signatures
 
-`sign:artifacts` signs release files with the Ed25519 private key in `CSM_SIGNING_KEY` when that variable is present. Each signed file gets a `.sig` sibling uploaded with the artifact.
+`sign:artifacts` signs binaries and packages with the Ed25519 private key in `CSM_SIGNING_KEY` when that variable is present. The publish and GitHub release jobs create and sign `csm-assets.tar.gz` after assembling it. Each signed file gets a `.sig` sibling uploaded with the artifact.
 
 Examples:
 
 ```text
-csm-linux-amd64
-csm-linux-amd64.sig
-csm_3.0.0_amd64.deb
-csm_3.0.0_amd64.deb.sig
-csm-3.0.0-1.x86_64.rpm
-csm-3.0.0-1.x86_64.rpm.sig
+csm-X.Y.Z-linux-amd64
+csm-X.Y.Z-linux-amd64.sha256
+csm-X.Y.Z-linux-amd64.sig
+csm-assets.tar.gz
+csm-assets.tar.gz.sha256
+csm-assets.tar.gz.sig
+csm_X.Y.Z_amd64.deb
+csm_X.Y.Z_amd64.deb.sig
+csm-X.Y.Z-1.x86_64.rpm
+csm-X.Y.Z-1.x86_64.rpm.sig
 ```
 
 The signature covers the raw artifact bytes with no hashing wrapper. Verification uses:
 
 ```bash
 openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
-  -sigfile csm-linux-amd64.sig -in csm-linux-amd64
+  -sigfile csm-X.Y.Z-linux-amd64.sig -in csm-X.Y.Z-linux-amd64
 ```
 
 ## Detached Signature Setup
@@ -97,8 +101,11 @@ For standalone script verification, either:
 To make missing signatures or missing public keys fatal:
 
 ```bash
-CSM_REQUIRE_SIGNATURES=1 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
+curl -fsSLo /tmp/csm-install.sh https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh
+sudo env CSM_REQUIRE_SIGNATURES=1 bash /tmp/csm-install.sh
 ```
+
+Strict detached verification requires OpenSSL 3.0 or newer because the Ed25519 command uses `pkeyutl -rawin`. On older supported hosts, use the signed APT/DNF repository or verify the artifacts on a separate trusted system before transfer.
 
 If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`.
 
@@ -123,11 +130,12 @@ Old detached signatures remain verifiable only with the old public key. Archive 
 ## Manual Detached Verification
 
 ```bash
-curl -LO https://github.com/pidginhost/csm/releases/download/v3.0.0/csm-linux-amd64
-curl -LO https://github.com/pidginhost/csm/releases/download/v3.0.0/csm-linux-amd64.sig
+VERSION=X.Y.Z
+curl -LO "https://github.com/pidginhost/csm/releases/download/v${VERSION}/csm-${VERSION}-linux-amd64"
+curl -LO "https://github.com/pidginhost/csm/releases/download/v${VERSION}/csm-${VERSION}-linux-amd64.sig"
 
 openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
-  -sigfile csm-linux-amd64.sig -in csm-linux-amd64
+  -sigfile "csm-${VERSION}-linux-amd64.sig" -in "csm-${VERSION}-linux-amd64"
 ```
 
 If verification fails, treat the artifact as untrusted. Do not install it.

@@ -141,12 +141,11 @@ done
 systemctl daemon-reload 2>/dev/null || true
 
 if [ "$IS_UPGRADE" = "0" ]; then
-    /opt/csm/csm install --package-mode 2>/dev/null || true
+    /opt/csm/csm install --package-mode
     if command -v augenrules >/dev/null 2>&1; then
         augenrules --load 2>/dev/null || true
     fi
     /opt/csm/csm validate 2>/dev/null || echo "WARNING: Config has issues. Run: /opt/csm/csm validate"
-    chattr +i /opt/csm/csm 2>/dev/null || true
     echo ""
     echo "=== CSM installed ==="
     echo "  Config:       /etc/csm/csm.yaml"
@@ -158,12 +157,13 @@ if [ "$IS_UPGRADE" = "0" ]; then
     echo ""
     echo "Next steps:"
     echo "  1. Review config:   vi /etc/csm/csm.yaml"
-    echo "  2. Set baseline:    /opt/csm/csm baseline"
-    echo "  3. Start daemon:    systemctl enable --now csm.service"
+    echo "  2. Start daemon:    systemctl enable --now csm.service"
+    echo "  3. Set baseline:    /opt/csm/csm baseline"
 else
-    chattr -i /opt/csm/csm 2>/dev/null || true
-    chattr +i /opt/csm/csm 2>/dev/null || true
-    /opt/csm/csm rehash 2>/dev/null || true
+    if ! /opt/csm/csm rehash; then
+        echo "ERROR: CSM integrity rehash failed; package upgrade is incomplete." >&2
+        exit 1
+    fi
     if systemctl is-active --quiet csm.service 2>/dev/null; then
         systemctl restart csm.service
         echo "CSM upgraded and restarted (state will migrate on first run if needed)"

@@ -87,7 +87,7 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 
 ```
 GET  /api/v1/geoip               IP geolocation (?ip=&detail=1)
-POST /api/v1/geoip/batch         Batch GeoIP lookup (JSON array of IPs)
+POST /api/v1/geoip/batch         Batch GeoIP lookup (body: {"ips":["192.0.2.1"]}, maximum 500)
 ```
 
 ## Threat Intelligence
@@ -130,8 +130,6 @@ POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ## ModSecurity
 
 ```
-GET  /api/v1/incidents/groups          Roll up open/contained incidents by (kind, source) so credential spray collapses into one row per attacker IP. Read scope. Accepts ?status=active|all|open|contained|resolved|dismissed, ?kind=, ?limit=.
-
 GET  /api/v1/modsec/stats              WAF statistics (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP, with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/events             WAF event details with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
@@ -166,7 +164,9 @@ GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_ac
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
-POST /api/v1/email/quarantine/   Release or delete quarantined email
+GET  /api/v1/email/quarantine/{id}          One quarantined message
+POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
+DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
 
 ## Hardening
@@ -344,6 +344,8 @@ Fields are omitted when the daemon could not attribute them. Orchestrators shoul
 `GET /api/v1/db-object-backups` returns `restored` and `restored_at` when a captured MySQL trigger/event/procedure/function backup has already been replayed.
 
 ## Incidents
+
+`GET /api/v1/incidents/groups` is a read-scope rollup of active incidents by kind and source. It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, and `limit`, allowing a credential spray to render as one row per attacker rather than one row per target.
 
 ### `GET /api/v1/incidents`
 

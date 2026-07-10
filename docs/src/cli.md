@@ -1,5 +1,7 @@
 # CLI Commands
 
+Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/opt/csm/csm`. Commands that talk to the control socket require the daemon to be running; direct-store maintenance commands say explicitly when it must be stopped.
+
 ## Global flags
 
 | Flag | Description |
@@ -37,12 +39,13 @@
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall` | Clean removal |
 | `csm baseline` | Full server scan via the daemon, records current state for change tracking. Dangerous privileged accounts or WHM root tokens can still be reported on first scan. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
-| `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
+| `csm rehash` | Update binary/config hashes without scanning. Use once after editing restart-required config or replacing the binary. It also applies `integrity.immutable` to the installed binary. |
 | `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
 | `csm doctor` | Config + daemon + watchers + store sanity check. `csm doctor challenge` checks challenge public URL, TLS, port gate, webserver snippets, configtest, and the live `/challenge/gate` endpoint. Add `--json` for machine-readable output. |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show [--no-redact] [--json]` | Display config. Secrets are redacted unless `--no-redact`; `--json` emits JSON instead of YAML. |
 | `csm config schema` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
+| `csm config apply-immutability` | Reapply `integrity.immutable` to `/opt/csm/csm`. Package transaction hooks use this after upgrades. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
 | `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
@@ -103,7 +106,7 @@ Operator-driven mitigations applied to the host. Run `csm harden` with no argume
 
 ## PHP-relay (mail abuse, cPanel only)
 
-Operator controls for the email PHP-relay detector. Talks to the daemon's control socket; the daemon must be running. See [Real-time detection](detection-realtime.md#php-relay-mail-abuse-cpanel-only) for what the detector fires on, and [Auto-response](auto-response.md#auto-freeze-php-relay) for the freeze action.
+Operator controls for the email PHP-relay detector. Talks to the daemon's control socket; the daemon must be running. See [Real-time detection](detection-realtime.md#php-relay-mail-abuse-cpanel-only) for what the detector fires on, and [Auto-response](auto-response.md#actions) for the freeze action.
 
 | Command | Description |
 |---------|-------------|
