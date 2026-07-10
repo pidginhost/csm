@@ -222,6 +222,8 @@ func ensureCommandSymlink(path, target string) error {
 	if path == "" {
 		return nil
 	}
+	// #nosec G301 -- the parent is a system bin dir (/usr/sbin) that must stay
+	// world-readable and world-executable; the mode only applies if it is absent.
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
