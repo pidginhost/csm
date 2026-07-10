@@ -362,7 +362,63 @@ func TestValidateAssetsArchiveRejectsTraversalAndLinks(t *testing.T) {
 					t.Fatalf("symlink archive accepted, exit %d:\n%s", code, output)
 				}
 			})
+
+			t.Run("bare-parent-dir", func(t *testing.T) {
+				archive := writeAssetsArchive(t, []tar.Header{{Name: "..", Typeflag: tar.TypeDir, Mode: 0o777}})
+				output, code := runValidateAssetsArchive(t, script, archive)
+				if code == 0 || !strings.Contains(output, "Unsafe path") {
+					t.Fatalf("bare .. entry accepted, exit %d:\n%s", code, output)
+				}
+			})
+
+			t.Run("dot-slash-parent-dir", func(t *testing.T) {
+				archive := writeAssetsArchive(t, []tar.Header{{Name: "./..", Typeflag: tar.TypeDir, Mode: 0o777}})
+				output, code := runValidateAssetsArchive(t, script, archive)
+				if code == 0 || !strings.Contains(output, "Unsafe path") {
+					t.Fatalf("./.. entry accepted, exit %d:\n%s", code, output)
+				}
+			})
+
+			t.Run("corrupt-archive", func(t *testing.T) {
+				archive := writeAssetsArchive(t, []tar.Header{
+					{Name: "ui/", Typeflag: tar.TypeDir, Mode: 0o755},
+					{Name: "ui/index.html", Typeflag: tar.TypeReg, Mode: 0o644, Size: 2},
+				})
+				data, err := os.ReadFile(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(archive, data[:len(data)/2], 0o600); err != nil {
+					t.Fatal(err)
+				}
+				output, code := runValidateAssetsArchive(t, script, archive)
+				if code == 0 {
+					t.Fatalf("corrupt archive passed validation:\n%s", output)
+				}
+			})
 		})
+	}
+}
+
+func TestAssetExtractionFailuresAreFatal(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		stageBody := shellFunctionBody(t, string(body), "download_and_stage_assets")
+		if !strings.Contains(stageBody, `--no-same-permissions || die`) {
+			t.Errorf("%s download_and_stage_assets must die when tar extraction fails", rel)
+		}
+	}
+
+	installBody, err := os.ReadFile(filepath.Join(root, "scripts/install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installBody), `--no-same-permissions || die`) {
+		t.Error("scripts/install.sh must die when tar extraction fails")
 	}
 }
 

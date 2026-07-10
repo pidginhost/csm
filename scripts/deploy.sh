@@ -207,21 +207,31 @@ missing_assets_checksum_allowed() {
 
 validate_assets_archive() {
     local archive="$1" entry type
+    local listing="${archive}.entries"
+    # Listings are written to a file first so tar's exit status is checked;
+    # a process substitution would silently validate a truncated listing.
+    if ! tar tzf "$archive" > "$listing" 2>/dev/null; then
+        die "Asset archive is corrupt or unreadable"
+    fi
     while IFS= read -r entry; do
         entry="${entry#./}"
         case "$entry" in
-            ""|/*|../*|*/../*|*/..)
+            ""|.|..|/*|../*|*/../*|*/..)
                 die "Unsafe path in asset archive: ${entry}"
                 ;;
         esac
-    done < <(tar tzf "$archive")
+    done < "$listing"
 
+    if ! tar tvzf "$archive" > "$listing" 2>/dev/null; then
+        die "Asset archive is corrupt or unreadable"
+    fi
     while IFS= read -r type; do
         case "$type" in
             -|d) ;;
             *) die "Asset archive contains a link or special file" ;;
         esac
-    done < <(tar tvzf "$archive" | awk '{print substr($1,1,1)}')
+    done < <(awk '{print substr($1,1,1)}' "$listing")
+    rm -f "$listing"
 }
 
 download_and_stage_assets() {
@@ -250,7 +260,7 @@ download_and_stage_assets() {
 
     local stage="${tmpdir}/assets-stage"
     mkdir -p "$stage"
-    tar xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+    tar xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions || die "Asset archive extraction failed"
     for required in ui configs pam deploy.sh; do
         [ -e "${stage}/${required}" ] || die "Asset archive missing ${required}"
     done
