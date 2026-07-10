@@ -212,9 +212,14 @@ download_and_stage_assets() {
     [ "$code" = "200" ] || die "Assets download failed (HTTP ${code})"
     code=$(curl -sS -w '%{http_code}' -L -o "$checksum" \
         "$(get_download_url "csm-assets.tar.gz.sha256" "$version")")
-    [ "$code" = "200" ] || die "Assets checksum download failed (HTTP ${code})"
-
-    verify_checksum "$archive" "$checksum"
+    if [ "$code" = "200" ]; then
+        verify_checksum "$archive" "$checksum"
+    elif [ "$code" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+        echo "WARNING: assets checksum not published for this release (404), skipping checksum verification" >&2
+        rm -f "$checksum"
+    else
+        die "Assets checksum download failed (HTTP ${code})"
+    fi
     verify_signature "$archive" "$(get_download_url "csm-assets.tar.gz.sig" "$version")"
     validate_assets_archive "$archive"
 

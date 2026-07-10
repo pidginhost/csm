@@ -251,8 +251,13 @@ ASSETS_URL=$(echo "$BINARY_URL" | sed "s/csm-[^/]*$/csm-assets.tar.gz/")
 HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz" "$ASSETS_URL")
 [ "$HTTP_CODE" = "200" ] || die "Assets download failed (HTTP ${HTTP_CODE})"
 HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz.sha256" "${ASSETS_URL}.sha256")
-[ "$HTTP_CODE" = "200" ] || die "Assets checksum download failed (HTTP ${HTTP_CODE})"
-verify_checksum "${TMPDIR}/assets.tar.gz" "${TMPDIR}/assets.tar.gz.sha256"
+if [ "$HTTP_CODE" = "200" ]; then
+    verify_checksum "${TMPDIR}/assets.tar.gz" "${TMPDIR}/assets.tar.gz.sha256"
+elif [ "$HTTP_CODE" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+    echo "  WARNING: assets checksum not published for this release (404), skipping checksum verification" >&2
+else
+    die "Assets checksum download failed (HTTP ${HTTP_CODE})"
+fi
 verify_signature "${TMPDIR}/assets.tar.gz" "${ASSETS_URL}.sig"
 validate_assets_archive "${TMPDIR}/assets.tar.gz"
 tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" --no-same-owner --no-same-permissions

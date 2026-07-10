@@ -109,6 +109,8 @@ Strict detached verification requires OpenSSL 3.0 or newer because the Ed25519 c
 
 If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`.
 
+The same policy applies to the `csm-assets.tar.gz.sha256` checksum: releases published before checksums existed produce a warning and skip the checksum step, while `CSM_REQUIRE_SIGNATURES=1` makes the missing checksum fatal. A checksum that exists but does not match always aborts.
+
 ## Key Rotation
 
 Package repository GPG key rotation:

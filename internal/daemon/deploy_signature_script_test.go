@@ -145,6 +145,102 @@ func TestVerifySignatureSuccessDoesNotAbortEnclosingFunction(t *testing.T) {
 	}
 }
 
+func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
+	root := repoRootFromDaemonTest()
+	fixture := writeAssetsArchive(t, []tar.Header{
+		{Name: "ui/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "ui/index.html", Typeflag: tar.TypeReg, Mode: 0o644, Size: 2},
+		{Name: "configs/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "pam/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "deploy.sh", Typeflag: tar.TypeReg, Mode: 0o755, Size: 2},
+	})
+
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		t.Run(rel, func(t *testing.T) {
+			script := filepath.Join(root, rel)
+			run := func(env ...string) (string, int) {
+				wrapper := filepath.Join(t.TempDir(), "stage-assets.sh")
+				body := strings.Join([]string{
+					"#!/bin/bash",
+					"set -euo pipefail",
+					"die() { echo \"ERROR: $1\" >&2; exit 1; }",
+					": \"${CSM_REQUIRE_SIGNATURES:=0}\"",
+					"PKG_BASE='https://example.invalid/pkg'",
+					extractShellFunction(t, script, "verify_checksum"),
+					extractShellFunction(t, script, "validate_assets_archive"),
+					extractShellFunction(t, script, "download_and_stage_assets"),
+					"get_download_url() { printf 'https://example.invalid/%s\\n' \"$1\"; }",
+					"curl() {",
+					"    local out='' url=''",
+					"    while [ \"$#\" -gt 0 ]; do",
+					"        if [ \"$1\" = '-o' ]; then out=\"$2\"; shift 2; continue; fi",
+					"        url=\"$1\"; shift",
+					"    done",
+					"    case \"$url\" in",
+					"        *.sha256) printf '404' ;;",
+					"        *) cp \"$ASSET_FIXTURE\" \"$out\"; printf '200' ;;",
+					"    esac",
+					"}",
+					"pkg_download() {",
+					"    case \"$1\" in",
+					"        *.sha256) printf '404' ;;",
+					"        *) cp \"$ASSET_FIXTURE\" \"$2\"; printf '200' ;;",
+					"    esac",
+					"}",
+					"verify_signature() { :; }",
+					"stage=$(download_and_stage_assets latest \"$WORK_DIR\")",
+					"[ -d \"${stage}/ui\" ] || die \"stage missing ui: ${stage}\"",
+					"echo STAGE_OK",
+					"",
+				}, "\n")
+				if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(), append([]string{
+					"ASSET_FIXTURE=" + fixture,
+					"WORK_DIR=" + t.TempDir(),
+				}, env...)...)
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					return string(out), 0
+				}
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					return string(out), exitErr.ExitCode()
+				}
+				t.Fatalf("running staging wrapper failed: %v\n%s", err, out)
+				return "", 0
+			}
+
+			output, code := run()
+			if code != 0 {
+				t.Fatalf("missing checksum must not fail against releases published before checksums existed, exit %d:\n%s", code, output)
+			}
+			if !strings.Contains(output, "STAGE_OK") {
+				t.Fatalf("staging did not complete:\n%s", output)
+			}
+			if !strings.Contains(output, "skipping checksum") {
+				t.Fatalf("expected checksum-skip warning:\n%s", output)
+			}
+
+			output, code = run("CSM_REQUIRE_SIGNATURES=1")
+			if code == 0 {
+				t.Fatalf("strict mode must reject a missing assets checksum:\n%s", output)
+			}
+		})
+	}
+
+	// install.sh verifies assets inline rather than via download_and_stage_assets;
+	// hold it to the same tolerance contract.
+	body, err := os.ReadFile(filepath.Join(root, "scripts/install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "skipping checksum") {
+		t.Error("scripts/install.sh must tolerate a missing assets checksum for pre-checksum releases")
+	}
+}
+
 func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{"scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
