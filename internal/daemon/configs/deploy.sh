@@ -269,7 +269,7 @@ download_and_stage_assets() {
 
 activate_assets() {
     local stage="$1" backup="$2" entry file
-    mkdir -p "$backup" "${backup}/rules"
+    mkdir -p "$backup" "${backup}/rules" "${backup}/activated-rules"
     for entry in ui configs pam deploy.sh; do
         if [ -e "${INSTALL_DIR}/${entry}" ] || [ -L "${INSTALL_DIR}/${entry}" ]; then
             mv "${INSTALL_DIR}/${entry}" "${backup}/${entry}" || return 1
@@ -282,6 +282,9 @@ activate_assets() {
         if [ -f "${INSTALL_DIR}/rules/${file}" ]; then
             cp -p "${INSTALL_DIR}/rules/${file}" "${backup}/rules/${file}" || return 1
         fi
+        # Mark the rule before overwriting it so rollback also removes a
+        # partially written new file when cp fails.
+        : > "${backup}/activated-rules/${file}" || return 1
         cp "${INSTALL_DIR}/configs/${file}" "${INSTALL_DIR}/rules/${file}" || return 1
     done
 }
@@ -289,25 +292,40 @@ activate_assets() {
 # Last-resort recovery: every step is individually guarded so one failure
 # cannot abort the script mid-restore under errexit.
 rollback_assets() {
-    local stage="$1" backup="$2" entry file
+    local stage="$1" backup="$2" entry file rollback_status=0
     for entry in ui configs pam deploy.sh; do
         # An entry still in the stage was never activated, so the live copy
         # (if any) is the previous release - leave it in place.
         if [ ! -e "${stage}/${entry}" ] && [ ! -L "${stage}/${entry}" ]; then
-            rm -rf "${INSTALL_DIR:?}/${entry}" 2>/dev/null || \
+            if ! rm -rf "${INSTALL_DIR:?}/${entry}" 2>/dev/null; then
                 echo "WARNING: could not remove ${INSTALL_DIR}/${entry} during rollback" >&2
+                rollback_status=1
+            fi
         fi
         if [ -e "${backup}/${entry}" ] || [ -L "${backup}/${entry}" ]; then
-            mv "${backup}/${entry}" "${INSTALL_DIR}/${entry}" 2>/dev/null || \
+            if [ -e "${INSTALL_DIR}/${entry}" ] || [ -L "${INSTALL_DIR}/${entry}" ]; then
+                echo "WARNING: could not restore ${entry} because the live path still exists" >&2
+                rollback_status=1
+            elif ! mv "${backup}/${entry}" "${INSTALL_DIR}/${entry}" 2>/dev/null; then
                 echo "WARNING: could not restore ${entry} during rollback" >&2
+                rollback_status=1
+            fi
         fi
     done
     for file in malware.yml malware.yar; do
-        if [ -f "${backup}/rules/${file}" ]; then
-            cp -p "${backup}/rules/${file}" "${INSTALL_DIR}/rules/${file}" 2>/dev/null || \
+        if [ -f "${backup}/activated-rules/${file}" ]; then
+            if ! rm -f "${INSTALL_DIR}/rules/${file}" 2>/dev/null; then
+                echo "WARNING: could not remove rules/${file} during rollback" >&2
+                rollback_status=1
+            fi
+            if [ -f "${backup}/rules/${file}" ] && \
+                ! cp -p "${backup}/rules/${file}" "${INSTALL_DIR}/rules/${file}" 2>/dev/null; then
                 echo "WARNING: could not restore rules/${file} during rollback" >&2
+                rollback_status=1
+            fi
         fi
     done
+    return "$rollback_status"
 }
 
 cleanup_upgrade_backup() {
@@ -317,19 +335,35 @@ cleanup_upgrade_backup() {
 # Runs in do_upgrade scope: binary_backup, assets_stage, asset_backup and
 # binary_was_immutable are the caller's locals.
 rollback_upgrade() {
-    local reason="$1"
+    local reason="$1" rollback_status=0
     echo "WARNING: ${reason}; rolling back..." >&2
     chattr -i "$BINARY_PATH" 2>/dev/null || true
-    cp -p "$binary_backup" "$BINARY_PATH" 2>/dev/null || \
+    if ! cp -p "$binary_backup" "$BINARY_PATH" 2>/dev/null; then
         echo "WARNING: could not restore previous binary from ${binary_backup}" >&2
-    rollback_assets "$assets_stage" "$asset_backup"
-    "$BINARY_PATH" rehash 2>&1 || true
+        rollback_status=1
+    fi
+    rollback_assets "$assets_stage" "$asset_backup" || rollback_status=1
+    if ! "$BINARY_PATH" rehash 2>&1; then
+        echo "WARNING: could not rehash the restored release" >&2
+        rollback_status=1
+    fi
     # The restored binary's rehash predates config-driven immutability, so
     # re-arm from the state observed before the upgrade.
     if [ "$binary_was_immutable" = "1" ]; then
-        chattr +i "$BINARY_PATH" 2>/dev/null || true
+        if ! chattr +i "$BINARY_PATH" 2>/dev/null; then
+            echo "WARNING: could not restore the binary's immutable flag" >&2
+            rollback_status=1
+        fi
+    elif ! chattr -i "$BINARY_PATH" 2>/dev/null; then
+        echo "WARNING: could not restore the binary's writable state" >&2
+        rollback_status=1
     fi
-    start_services || true
+    if ! start_services; then
+        rollback_status=1
+    fi
+    if [ "$rollback_status" -ne 0 ]; then
+        die "${reason} - rollback incomplete; inspect the warnings above"
+    fi
     die "${reason} - rolled back to previous version"
 }
 
@@ -380,13 +414,13 @@ do_install() {
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     chmod 0700 "$BINARY_PATH"
     if ! activate_assets "$assets_stage" "$asset_backup"; then
-        rollback_assets "$assets_stage" "$asset_backup"
+        rollback_assets "$assets_stage" "$asset_backup" || true
         rm -f "$BINARY_PATH"
         die "Asset installation failed"
     fi
 
     if ! "$BINARY_PATH" install; then
-        rollback_assets "$assets_stage" "$asset_backup"
+        rollback_assets "$assets_stage" "$asset_backup" || true
         rm -f "$BINARY_PATH"
         die "Installation failed"
     fi
