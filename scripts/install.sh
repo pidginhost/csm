@@ -241,7 +241,7 @@ echo ""
 parse_args "$@"
 
 # Check existing installation
-if [ -f "$BINARY_PATH" ]; then
+if [ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]; then
     CURRENT=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "  CSM is already installed: ${CURRENT}"
     echo "  Use /opt/csm/deploy.sh upgrade instead."
@@ -308,8 +308,7 @@ info "Assets OK"
 cp "${TMPDIR}/csm" "$BINARY_PATH"
 chmod 0700 "$BINARY_PATH"
 
-# deploy.sh is a required, verified archive member.
-chmod 755 "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true
+chmod 755 "${INSTALL_DIR}/deploy.sh"
 
 # --- Configuration ---
 echo ""
@@ -335,7 +334,10 @@ AUTH_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
 
 # Run binary install (generates config, systemd, auditd, WHM, logrotate)
 info "Installing services..."
-"$BINARY_PATH" install
+if ! "$BINARY_PATH" install; then
+    rm -f "$BINARY_PATH"
+    die "csm install failed; the binary was removed so install.sh can be re-run"
+fi
 
 # Patch config with detected values
 if [ -f "$CONFIG_PATH" ]; then

@@ -1381,6 +1381,43 @@ func TestRollbackUpgradeReportsIncompleteRecovery(t *testing.T) {
 	}
 }
 
+func TestInstallGuardsCatchDanglingSymlinksAndFailedBootstrap(t *testing.T) {
+	root := repoRootFromDaemonTest()
+
+	installBody, err := os.ReadFile(filepath.Join(root, "scripts/install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	install := string(installBody)
+	if !strings.Contains(install, `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`) {
+		t.Error("install.sh already-installed guard must catch dangling symlinks")
+	}
+	bootstrap := strings.Index(install, `if ! "$BINARY_PATH" install; then`)
+	if bootstrap < 0 {
+		t.Error("install.sh must handle csm install failures")
+	} else {
+		block := install[bootstrap:]
+		end := strings.Index(block, "fi")
+		if end < 0 || !strings.Contains(block[:end], `rm -f "$BINARY_PATH"`) {
+			t.Error("install.sh must remove the binary on bootstrap failure so a re-run can retry")
+		}
+	}
+	if strings.Contains(install, `chmod 755 "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true`) {
+		t.Error("install.sh must not tolerate chmod failure on a required archive member")
+	}
+
+	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+		body, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		installFn := shellFunctionBody(t, string(body), "do_install")
+		if !strings.Contains(installFn, `[ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]`) {
+			t.Errorf("%s do_install guard must catch dangling symlinks", rel)
+		}
+	}
+}
+
 func TestInstallInstructionsStartDaemonBeforeBaseline(t *testing.T) {
 	root := repoRootFromDaemonTest()
 	for _, rel := range []string{

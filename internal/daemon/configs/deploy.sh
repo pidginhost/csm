@@ -398,7 +398,7 @@ start_services() {
 do_install() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
 
-    if [ -e "$BINARY_PATH" ]; then die "CSM is already installed. Run: $0 upgrade"; fi
+    if [ -e "$BINARY_PATH" ] || [ -L "$BINARY_PATH" ]; then die "CSM is already installed. Run: $0 upgrade"; fi
 
     echo "=== Continuous Security Monitor - Install ==="
     echo ""

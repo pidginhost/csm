@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standalone hosts now gain the csm PATH launcher on their next upgrade, not only on fresh installs.
 - The rpm re-arm hook now warns instead of silently ignoring a failure to restore binary protection after an upgrade.
 - The GitHub deploy script resolves the release tag once per run, so a release published mid-upgrade can no longer install a binary and assets from different versions.
+- Install guards now refuse a dangling symlink at the binary path instead of writing through it, and a failed standalone bootstrap removes the binary so the installer can be re-run.
 - Installation and upgrade paths now verify supporting assets, install a PATH launcher, report setup failures, and keep rollback material until the daemon has restarted successfully.
 - Operator documentation now matches the shipped binary, configuration, dry-run, API, and release behavior, with a shorter README and task-oriented reference structure.
 - Fixed the legacy Apache/LSWS challenge snippet so webserver config validation follows the daemon-managed challenge map instead of a stale location. This prevents challenge redirects from breaking webserver reloads after upgrades.
