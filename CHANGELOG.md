@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Firewall rules now keep IPv4 and IPv6 source, port, allow, and flood policies in their intended address families. Disabling IPv6 firewall management now leaves IPv6 traffic untouched instead of applying the inet chain policy without IPv6 rules.
+- Firewall rules now keep IPv4 and IPv6 source, port, allow, and flood policies in their intended address families. Disabling IPv6 firewall management leaves IPv6 traffic untouched, and restricting only IPv6 egress ports no longer severs all IPv4 outbound traffic.
 - Backups now require a stopped daemon and are written as private atomic archives. Restore validates and stages the full archive before replacement, rolls back failed changes, and reconciles stale state without replacing the daemon lock.
 - Fresh installs generate a private administrator token and fail when required service setup is incomplete. Uninstall now preserves configuration and state unless `--purge` is requested, and both paths close daemon-start races with the state lock.
 

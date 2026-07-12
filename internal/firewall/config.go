@@ -79,6 +79,16 @@ func effectiveIPv6Ports(ipv4, ipv6 []int) []int {
 	return ipv4
 }
 
+// restrictedOutputNeedsIPv4Bypass reports whether the restricted output chain
+// would drop all IPv4 egress. effectiveIPv6Ports mirrors IPv4 out-ports onto
+// IPv6 but never the reverse, so configuring only IPv6 egress ports puts the
+// shared inet chain into DROP mode with no IPv4 accept rules. Callers invoke
+// this only on the restricted path and, when true, must accept IPv4 wholesale
+// after the SMTP guard so smtp_block still applies to IPv4.
+func (c *FirewallConfig) restrictedOutputNeedsIPv4Bypass() bool {
+	return len(c.TCPOut) == 0 && len(c.UDPOut) == 0
+}
+
 // ExemptKnownMailProviders reports whether bundled mail-provider ranges are
 // included in the DoS-exempt set. Defaults to true when unset.
 func (c *FirewallConfig) ExemptKnownMailProviders() bool {

@@ -1375,6 +1375,14 @@ func (e *Engine) createOutputChain() error {
 		}
 	}
 
+	// The operator restricted egress for another family (e.g. IPv6 only) but
+	// configured no IPv4 out-ports. Accept IPv4 egress wholesale rather than let
+	// the chain's DROP policy sever it. Placed after the SMTP guard above so
+	// smtp_block still governs IPv4 mail.
+	if e.cfg.restrictedOutputNeedsIPv4Bypass() {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: familyBypassRuleExprs(2)})
+	}
+
 	// Allow configured outbound TCP ports (skip SMTP-blocked ports - handled above)
 	for _, port := range e.cfg.TCPOut {
 		if smtpBlocked[port] {
