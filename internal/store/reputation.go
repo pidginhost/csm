@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -199,6 +200,7 @@ func (db *DB) IncrementAbuseQueryCount(utcDate string) int {
 	var count int
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
+		pruneAbuseDailyCounts(b, utcDate)
 		key := []byte(abuseDailyCountPrefix + utcDate)
 		if v := b.Get(key); v != nil {
 			_, _ = fmt.Sscanf(string(v), "%d", &count)
@@ -219,6 +221,7 @@ func (db *DB) ReserveAbuseQuerySlots(utcDate string, requested, max int) int {
 	var reserved int
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
+		pruneAbuseDailyCounts(b, utcDate)
 		key := []byte(abuseDailyCountPrefix + utcDate)
 
 		count := 0
@@ -238,6 +241,23 @@ func (db *DB) ReserveAbuseQuerySlots(utcDate string, requested, max int) int {
 		return b.Put(key, []byte(fmt.Sprintf("%d", count)))
 	})
 	return reserved
+}
+
+func pruneAbuseDailyCounts(bucket *bolt.Bucket, keepDate string) {
+	prefix := []byte(abuseDailyCountPrefix)
+	cutoff, err := time.Parse("2006-01-02", keepDate)
+	if err != nil {
+		return
+	}
+	oldest := cutoff.AddDate(0, 0, -1)
+	cursor := bucket.Cursor()
+	for key, _ := cursor.Seek(prefix); key != nil && strings.HasPrefix(string(key), abuseDailyCountPrefix); key, _ = cursor.Next() {
+		date := strings.TrimPrefix(string(key), abuseDailyCountPrefix)
+		parsed, parseErr := time.Parse("2006-01-02", date)
+		if parseErr != nil || parsed.Before(oldest) {
+			_ = cursor.Delete()
+		}
+	}
 }
 
 // AbuseQueryCount returns the AbuseIPDB query count for the given UTC date.

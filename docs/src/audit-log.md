@@ -120,7 +120,9 @@ Severity mapping onto the standard syslog level set:
 | HIGH         | err          | 3       |
 | WARNING      | warning      | 4       |
 
-Tested against `rsyslog` and `syslog-ng` receivers in integration.
+Automated tests cover RFC 5424 output and UDP, TCP, TLS, Unix datagram,
+and Unix stream framing. Validate the chosen receiver configuration in a
+staging environment before production rollout.
 
 ### Backfill
 

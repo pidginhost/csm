@@ -576,6 +576,64 @@ func MergeModSecUserConfSection(existing, srcData []byte) (merged []byte, change
 	return merged, !upToDate
 }
 
+// RemoveModSecUserConfSections removes only content owned by CSM from the
+// shared ModSecurity user configuration. Operator bytes outside the exact CSM
+// marker lines are preserved.
+func RemoveModSecUserConfSections(existing []byte) (cleaned []byte, changed bool) {
+	cleaned = existing
+	for {
+		if begin, _, ok := markerLineBounds(cleaned, vpBeginMarker); ok {
+			end := vpSectionEnd(cleaned[begin:])
+			if end < 0 {
+				end = vpBlockEndBeforePreservedTail(cleaned, begin) - begin
+			}
+			cleaned = removeByteRange(cleaned, begin, begin+end)
+			changed = true
+			continue
+		}
+		if legacy, _, ok := markerLineBounds(cleaned, vpLegacyMarker); ok {
+			end := vpBlockEndBeforePreservedTail(cleaned, legacy)
+			cleaned = removeByteRange(cleaned, legacy, end)
+			changed = true
+			continue
+		}
+		break
+	}
+
+	for {
+		markerStart, markerEnd, ok := markerLineBounds(cleaned, vpOverridesIncludeMarker)
+		if !ok {
+			break
+		}
+		removeEnd := markerEnd
+		if includeEnd := nextLineEnd(cleaned, markerEnd); includeEnd > markerEnd {
+			line := bytes.TrimSpace(cleaned[markerEnd:includeEnd])
+			if bytes.HasPrefix(line, []byte("Include ")) && bytes.Contains(line, []byte("modsec2.csm-overrides.conf")) {
+				removeEnd = includeEnd
+			}
+		}
+		cleaned = removeByteRange(cleaned, markerStart, removeEnd)
+		changed = true
+	}
+	return cleaned, changed
+}
+
+func removeByteRange(data []byte, start, end int) []byte {
+	out := make([]byte, 0, len(data)-(end-start))
+	out = append(out, data[:start]...)
+	return append(out, data[end:]...)
+}
+
+func nextLineEnd(data []byte, start int) int {
+	if start >= len(data) {
+		return start
+	}
+	if offset := bytes.IndexByte(data[start:], '\n'); offset >= 0 {
+		return start + offset + 1
+	}
+	return len(data)
+}
+
 // buildVPSection wraps the rules payload in the begin/end marker lines.
 // The result is deterministic for a given payload so later cycles can
 // recognize an up-to-date section by byte comparison.

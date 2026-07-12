@@ -79,11 +79,19 @@ func (a *afAlgBPF) Run(ctx context.Context) {
 	}()
 
 	go a.reader.Run(ctx)
+	errorsCh := a.reader.Errors()
+	eventsCh := a.reader.Events()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-a.reader.Events():
+		case err, ok := <-errorsCh:
+			if !ok {
+				errorsCh = nil
+				continue
+			}
+			emitBPFReaderError(a.alertCh, "AF_ALG", err)
+		case ev, ok := <-eventsCh:
 			if !ok {
 				return
 			}

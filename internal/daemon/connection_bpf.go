@@ -150,6 +150,8 @@ func (c *connectionBPF) Run(ctx context.Context) {
 	}()
 
 	go c.reader.Run(ctx)
+	errorsCh := c.reader.Errors()
+	eventsCh := c.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
 	// Resolve MTA identities once; platform.Detect() probes the FS so
 	// keep it out of the per-event hot path.
@@ -158,7 +160,13 @@ func (c *connectionBPF) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-c.reader.Events():
+		case err, ok := <-errorsCh:
+			if !ok {
+				errorsCh = nil
+				continue
+			}
+			emitBPFReaderError(c.alertCh, "connection", err)
+		case ev, ok := <-eventsCh:
 			if !ok {
 				return
 			}

@@ -143,6 +143,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "webshell_realtime", Category: CategoryMalware},
 	{Name: "world_writable_php", Category: CategoryMalware},
 	{Name: "yara_match_realtime", Category: CategoryMalware},
+	{Name: "yara_match_scheduled", Category: CategoryMalware},
+	{Name: "yara_scan_incomplete", Category: CategoryMalware},
 	{Name: "yara_worker_crashed", Category: CategoryMalware},
 
 	// --- Web & Application ----------------------------------------------
@@ -291,6 +293,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "account_scan_error", Category: CategorySystem},
 	{Name: "account_scan_truncated", Category: CategorySystem},
 	{Name: "bpf_unavailable", Category: CategorySystem},
+	{Name: "bpf_ringbuf_error", Category: CategorySystem},
+	{Name: "check_panic", Category: CategorySystem},
 	{Name: "full_scan_file_too_large", Category: CategorySystem},
 	{Name: "crond_change", Category: CategorySystem},
 	{Name: "crontab_change", Category: CategorySystem},

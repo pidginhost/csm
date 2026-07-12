@@ -37,7 +37,7 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 | Command | Description |
 |---------|-------------|
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
-| `csm uninstall` | Clean removal |
+| `csm uninstall [--purge]` | Remove the executable and CSM-owned service, audit, logrotate, webserver, and ModSecurity integrations. Config, drop-ins, state, logs, signature rules, and quarantine data are preserved by default. `--purge` removes all CSM-owned data. Operator ModSecurity rules are never removed. |
 | `csm baseline` | Full server scan via the daemon, records current state for change tracking. Dangerous privileged accounts or WHM root tokens can still be reported on first scan. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
 | `csm rehash` | Update binary/config hashes without scanning. Use once after editing restart-required config or replacing the binary. It also applies `integrity.immutable` to the installed binary. |
 | `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
@@ -58,10 +58,12 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 
 | Command | Description |
 |---------|-------------|
-| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Runtime lock files are omitted. Daemon may be running. |
-| `csm restore <archive>` | Extract a backup archive into the live `csm.yaml` + `conf.d` + state directory. Rejects path-traversal entries, pre-existing symlinks under restore targets, and live or starting daemons. Stop the daemon first. |
+| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Runtime lock files are omitted. The daemon must be stopped; the command verifies both the control socket and state lock before reading data. |
+| `csm restore <archive>` | Validate and stage the complete archive before atomically replacing the live `csm.yaml`, `conf.d`, and state directory. Restore rolls back failed replacements, removes stale state entries, and refuses a running or starting daemon. Stop the daemon first. |
 
 `csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
+
+Backup and restore use the state lock to exclude daemon access. Restore stages all data beside its destination before replacement, so validation failures leave the live installation unchanged. Uninstall is intentionally non-destructive unless `--purge` is supplied.
 
 ## Hardening
 

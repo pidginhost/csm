@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -114,11 +115,13 @@ func accessLogQuotedFieldCount(line string) int {
 	return strings.Count(line, "\"") / 2
 }
 
-// CheckSSHLogins parses /var/log/secure for SSH logins from non-infra IPs.
+var authLogPath = func() string { return platform.Detect().AuthLogPath() }
+
+// CheckSSHLogins parses the platform authentication log for SSH logins from non-infra IPs.
 func CheckSSHLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	lines := tailFile("/var/log/secure", 100)
+	lines := tailFile(authLogPath(), 100)
 
 	for _, line := range lines {
 		if !strings.Contains(line, "Accepted") {

@@ -569,11 +569,10 @@ func (e *Engine) RefreshDOSExemptSets(providerNets []*net.IPNet) error {
 
 // dosExemptV4Lookup returns a two-expression sequence that loads the IPv4
 // source address (network-header offset 12, 4 bytes) into reg and performs an
-// inverted set lookup against dos_exempt_nets. Prepend the result to a meter
-// rule's Exprs to make the rule skip exempt sources. The Ct and Payload exprs
-// that follow in the meter rule reload reg independently, so register reuse is
-// safe: the lookup writes saddr, the Ct/Bitwise/Cmp block overwrites reg with
-// conntrack state, and the saddr Payload inside the Dynset overwrites it again.
+// inverted set lookup against dos_exempt_nets. The caller must place the result
+// after an IPv4 family guard and before the meter expressions. The Ct and
+// Payload expressions that follow reload reg independently, so register reuse
+// is safe.
 func (e *Engine) dosExemptV4Lookup(reg uint32) []expr.Any {
 	return []expr.Any{
 		&expr.Payload{DestRegister: reg, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
@@ -978,6 +977,9 @@ func (e *Engine) createInputChain() error {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
+	if !e.cfg.IPv6 {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: familyBypassRuleExprs(10)})
+	}
 
 	// Rule 2: Drop INVALID conntrack state (malformed packets)
 	e.conn.AddRule(&nftables.Rule{
@@ -1042,46 +1044,11 @@ func (e *Engine) createInputChain() error {
 	// Rule 9: Port-specific allows (IP+port, e.g. MySQL access for specific IPs)
 	state := e.loadStateFile()
 	for _, pa := range state.PortAllowed {
-		parsed := net.ParseIP(pa.IP)
-		if parsed == nil {
+		exprs := buildPortAllowExprs(pa, e.cfg.IPv6)
+		if exprs == nil {
 			continue
 		}
-		proto := byte(6) // TCP
-		if pa.Proto == "udp" {
-			proto = 17
-		}
-		if ip4 := parsed.To4(); ip4 != nil {
-			e.conn.AddRule(&nftables.Rule{
-				Table: e.table,
-				Chain: e.chainIn,
-				Exprs: []expr.Any{
-					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
-					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip4},
-					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pa.Port))},
-					&expr.Verdict{Kind: expr.VerdictAccept},
-				},
-			})
-		} else if e.cfg.IPv6 {
-			ip16 := parsed.To16()
-			e.conn.AddRule(&nftables.Rule{
-				Table: e.table,
-				Chain: e.chainIn,
-				Exprs: []expr.Any{
-					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
-					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}},
-					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip16},
-					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pa.Port))},
-					&expr.Verdict{Kind: expr.VerdictAccept},
-				},
-			})
-		}
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: exprs})
 	}
 
 	// ICMPv4 echo-request (type 8)
@@ -1187,22 +1154,9 @@ func (e *Engine) createInputChain() error {
 			}{family: portFloodIPv6, meter: e.meterPortFlood6[portFloodMeterName(pf, portFloodIPv6)]})
 		}
 		for _, item := range items {
-			exprs := buildPortFloodExprs(pf, item.meter, item.family)
+			exprs := e.portFloodRuleExprs(pf, item.meter, item.family)
 			if exprs == nil {
 				continue
-			}
-			// Mail TCP ports (25/465/587) get an inverted exempt-set lookup
-			// prepended so sources in dos_exempt_nets/dos_exempt_nets6 bypass
-			// rate limiting. Register-reuse safety: dosExemptV*Lookup writes
-			// saddr into reg 1; the MetaKeyNFPROTO load that immediately follows
-			// in the port-flood exprs overwrites reg 1 independently.
-			if isMailTCP(pf) {
-				switch {
-				case item.family == portFloodIPv4 && e.setDOSExempt != nil:
-					exprs = append(e.dosExemptV4Lookup(1), exprs...)
-				case item.family == portFloodIPv6 && e.setDOSExempt6 != nil:
-					exprs = append(e.dosExemptV6Lookup(1), exprs...)
-				}
 			}
 			e.conn.AddRule(&nftables.Rule{
 				Table: e.table,
@@ -1244,17 +1198,30 @@ func (e *Engine) createInputChain() error {
 		if restricted[port] {
 			continue
 		}
-		e.addPortAcceptRule(port, true)
+		e.addPortAcceptRule(port, true, 2)
 	}
 
 	// Open UDP ports (public)
 	for _, port := range e.cfg.UDPIn {
-		e.addPortAcceptRule(port, false)
+		e.addPortAcceptRule(port, false, 2)
+	}
+	if e.cfg.IPv6 {
+		for _, port := range effectiveIPv6Ports(e.cfg.TCPIn, e.cfg.TCP6In) {
+			if !restricted[port] {
+				e.addPortAcceptRule(port, true, 10)
+			}
+		}
+		for _, port := range effectiveIPv6Ports(e.cfg.UDPIn, e.cfg.UDP6In) {
+			e.addPortAcceptRule(port, false, 10)
+		}
 	}
 
 	// Passive FTP range
 	if e.cfg.PassiveFTPStart > 0 && e.cfg.PassiveFTPEnd > 0 {
-		e.addPortRangeAcceptRule(e.cfg.PassiveFTPStart, e.cfg.PassiveFTPEnd, true)
+		e.addPortRangeAcceptRule(e.cfg.PassiveFTPStart, e.cfg.PassiveFTPEnd, true, 2)
+		if e.cfg.IPv6 {
+			e.addPortRangeAcceptRule(e.cfg.PassiveFTPStart, e.cfg.PassiveFTPEnd, true, 10)
+		}
 	}
 
 	// Silent drop for commonly-scanned ports (no logging)
@@ -1308,7 +1275,9 @@ func (e *Engine) createInputChain() error {
 // createOutputChain builds the output filter chain.
 // Restricts outbound to configured ports only (prevents C2 on non-standard ports).
 func (e *Engine) createOutputChain() error {
-	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 {
+	tcp6Out := effectiveIPv6Ports(e.cfg.TCPOut, e.cfg.TCP6Out)
+	udp6Out := effectiveIPv6Ports(e.cfg.UDPOut, e.cfg.UDP6Out)
+	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 && (!e.cfg.IPv6 || len(tcp6Out) == 0 && len(udp6Out) == 0) {
 		// No outbound restrictions configured - accept all
 		policy := nftables.ChainPolicyAccept
 		e.chainOut = e.conn.AddChain(&nftables.Chain{
@@ -1361,6 +1330,9 @@ func (e *Engine) createOutputChain() error {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
+	if !e.cfg.IPv6 {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: familyBypassRuleExprs(10)})
+	}
 
 	// SMTP block - restrict outbound mail to allowed users only.
 	// resolveSMTPAllowedUIDs unconditionally includes root and mailnull
@@ -1408,12 +1380,22 @@ func (e *Engine) createOutputChain() error {
 		if smtpBlocked[port] {
 			continue
 		}
-		e.addOutboundPortRule(port, true)
+		e.addOutboundPortRule(port, true, 2)
 	}
 
 	// Allow configured outbound UDP ports
 	for _, port := range e.cfg.UDPOut {
-		e.addOutboundPortRule(port, false)
+		e.addOutboundPortRule(port, false, 2)
+	}
+	if e.cfg.IPv6 {
+		for _, port := range tcp6Out {
+			if !smtpBlocked[port] {
+				e.addOutboundPortRule(port, true, 10)
+			}
+		}
+		for _, port := range udp6Out {
+			e.addOutboundPortRule(port, false, 10)
+		}
 	}
 
 	// Allow only safe ICMP outbound (echo-reply + echo-request, block dest-unreachable)
@@ -1662,6 +1644,35 @@ func ipv6NFProtoGuard() []expr.Any {
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
 	}
+}
+
+func buildPortAllowExprs(pa PortAllowEntry, ipv6Enabled bool) []expr.Any {
+	parsed := net.ParseIP(pa.IP)
+	if parsed == nil || pa.Port <= 0 || pa.Port > 65535 {
+		return nil
+	}
+	proto := byte(6)
+	if pa.Proto == "udp" {
+		proto = 17
+	}
+	common := func(ip net.IP, offset, length uint32) []expr.Any {
+		return []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: length},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pa.Port))},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		}
+	}
+	if ip4 := parsed.To4(); ip4 != nil {
+		return append(ipv4NFProtoGuard(), common(ip4, 12, 4)...)
+	}
+	if !ipv6Enabled {
+		return nil
+	}
+	return append(ipv6NFProtoGuard(), common(parsed.To16(), 8, 16)...)
 }
 
 // ipv6Saddr64Key loads the IPv6 source address into register 1 and masks it to
@@ -1919,25 +1930,39 @@ func cfWhitelistRuleExprs(set *nftables.Set, ipv6 bool, port uint16) []expr.Any 
 	)
 }
 
-func (e *Engine) addPortAcceptRule(port int, tcp bool) {
+func buildFamilyPortRuleExprs(nfproto byte, port int, tcp bool) []expr.Any {
 	proto := byte(6) // TCP
 	if !tcp {
 		proto = 17 // UDP
 	}
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+}
+
+func familyBypassRuleExprs(nfproto byte) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+}
+
+func (e *Engine) addPortAcceptRule(port int, tcp bool, nfproto byte) {
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
+		Exprs: buildFamilyPortRuleExprs(nfproto, port, tcp),
 	})
 }
 
-func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool) {
+func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool, nfproto byte) {
 	proto := byte(6)
 	if !tcp {
 		proto = 17
@@ -1946,6 +1971,8 @@ func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool) {
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{nfproto}},
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
 			// Load dest port once, check range
@@ -1957,21 +1984,11 @@ func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool) {
 	})
 }
 
-func (e *Engine) addOutboundPortRule(port int, tcp bool) {
-	proto := byte(6)
-	if !tcp {
-		proto = 17
-	}
+func (e *Engine) addOutboundPortRule(port int, tcp bool, nfproto byte) {
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainOut,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
+		Exprs: buildFamilyPortRuleExprs(nfproto, port, tcp),
 	})
 }
 

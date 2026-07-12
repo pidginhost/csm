@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,6 +35,55 @@ func TestParseInstallFlags(t *testing.T) {
 					tc.args, phpShield, phpOnly, packageMode, tc.phpShield, tc.phpOnly, tc.packageMode)
 			}
 		})
+	}
+}
+
+func TestParseUninstallFlags(t *testing.T) {
+	if purge, err := parseUninstallFlags([]string{"csm", "uninstall"}); err != nil || purge {
+		t.Fatalf("default uninstall = purge %t, error %v; want preserve", purge, err)
+	}
+	if purge, err := parseUninstallFlags([]string{"csm", "uninstall", "--purge"}); err != nil || !purge {
+		t.Fatalf("purge uninstall = purge %t, error %v; want purge", purge, err)
+	}
+	if _, err := parseUninstallFlags([]string{"csm", "uninstall", "--force"}); err == nil {
+		t.Fatal("unknown uninstall flag must fail")
+	}
+}
+
+func TestResolveUninstallStorageUsesConfiguredStateWithoutPurge(t *testing.T) {
+	cfg := &config.Config{
+		ConfigFile: "/srv/csm/csm.yaml",
+		ConfigDir:  "/srv/csm/conf.d",
+		StatePath:  "/srv/csm/state",
+	}
+	configPath, configDir, statePath, err := resolveUninstallStorage(false, preferredConfigPath, func() (*config.Config, error) {
+		return cfg, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configPath != cfg.ConfigFile || configDir != cfg.ConfigDir || statePath != cfg.StatePath {
+		t.Fatalf("resolved uninstall storage = (%q, %q, %q), want configured paths", configPath, configDir, statePath)
+	}
+}
+
+func TestResolveUninstallStorageMissingConfigPolicy(t *testing.T) {
+	missing := func() (*config.Config, error) { return nil, os.ErrNotExist }
+	configPath, configDir, statePath, err := resolveUninstallStorage(false, preferredConfigPath, missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configPath != preferredConfigPath || configDir != defaultConfDir || statePath != defaultStatePath {
+		t.Fatalf("missing-config defaults = (%q, %q, %q)", configPath, configDir, statePath)
+	}
+	if _, _, _, err := resolveUninstallStorage(true, preferredConfigPath, missing); err == nil {
+		t.Fatal("purge must refuse when configured storage cannot be resolved")
+	}
+	invalid := errors.New("invalid config")
+	if _, _, _, err := resolveUninstallStorage(false, preferredConfigPath, func() (*config.Config, error) {
+		return nil, invalid
+	}); !errors.Is(err, invalid) {
+		t.Fatalf("invalid config error = %v, want %v", err, invalid)
 	}
 }
 
@@ -376,8 +427,12 @@ func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	if !ok {
 		t.Fatalf("generated config webui section has type %T, want map", raw["webui"])
 	}
-	if got, ok := webui["auth_token"].(string); !ok || got != "" {
-		t.Fatalf("installer default webui.auth_token = %#v, want empty placeholder", webui["auth_token"])
+	gotToken, ok := webui["auth_token"].(string)
+	if !ok || len(gotToken) != 64 {
+		t.Fatalf("installer default webui.auth_token = %#v, want 64-character generated token", webui["auth_token"])
+	}
+	if _, decodeErr := hex.DecodeString(gotToken); decodeErr != nil {
+		t.Fatalf("installer default webui.auth_token is not hexadecimal: %v", decodeErr)
 	}
 	if got, ok := webui["metrics_token"].(string); !ok || got != "" {
 		t.Fatalf("installer default webui.metrics_token = %#v, want empty placeholder", webui["metrics_token"])
@@ -395,6 +450,234 @@ func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	}
 	if cfg.WebUI.MetricsToken != "" {
 		t.Fatalf("WebUI.MetricsToken = %q, want empty placeholder", cfg.WebUI.MetricsToken)
+	}
+}
+
+func TestInstallerInstallFailsWhenSystemdDeploymentFails(t *testing.T) {
+	root := t.TempDir()
+	inst := &Installer{
+		BinaryPath:  filepath.Join(root, "opt", "csm", "csm"),
+		CommandPath: filepath.Join(root, "usr", "sbin", "csm"),
+		ConfigPath:  filepath.Join(root, "etc", "csm", "csm.yaml"),
+		StatePath:   filepath.Join(root, "var", "lib", "csm", "state"),
+		LogPath:     filepath.Join(root, "var", "log", "csm", "monitor.log"),
+		operations: &installerOperations{
+			getuid:          func() int { return 0 },
+			deployAuditd:    func() error { return nil },
+			deploySystemd:   func() error { return errors.New("systemd write failed") },
+			deployLogrotate: func() error { return nil },
+		},
+	}
+
+	err := inst.Install()
+	if err == nil || !strings.Contains(err.Error(), "systemd write failed") {
+		t.Fatalf("Install error = %v, want systemd deployment failure", err)
+	}
+}
+
+func TestInstallerInstallAllowsUnavailableOptionalIntegrations(t *testing.T) {
+	root := t.TempDir()
+	inst := &Installer{
+		BinaryPath:  filepath.Join(root, "opt", "csm", "csm"),
+		CommandPath: filepath.Join(root, "usr", "sbin", "csm"),
+		ConfigPath:  filepath.Join(root, "etc", "csm", "csm.yaml"),
+		StatePath:   filepath.Join(root, "var", "lib", "csm", "state"),
+		LogPath:     filepath.Join(root, "var", "log", "csm", "monitor.log"),
+		operations: &installerOperations{
+			getuid:          func() int { return 0 },
+			deployAuditd:    func() error { return errors.New("augenrules unavailable") },
+			deploySystemd:   func() error { return nil },
+			deployLogrotate: func() error { return errors.New("logrotate unavailable") },
+			setImmutable:    func(string, bool) error { return nil },
+		},
+	}
+	if err := inst.Install(); err != nil {
+		t.Fatalf("optional integration failure aborted install: %v", err)
+	}
+}
+
+func TestInstallerUninstallRefusesDeletionWhileDaemonStillLive(t *testing.T) {
+	removed := false
+	inst := &Installer{
+		BinaryPath: "/opt/csm/csm",
+		StatePath:  "/var/lib/csm/state",
+		LogPath:    "/var/log/csm/monitor.log",
+		operations: &installerOperations{
+			getuid:     func() int { return 0 },
+			runCommand: func(string, ...string) error { return errors.New("stop failed") },
+			daemonLive: func() bool { return true },
+			remove: func(string) error {
+				removed = true
+				return nil
+			},
+			removeAll: func(string) error {
+				removed = true
+				return nil
+			},
+		},
+	}
+
+	err := inst.Uninstall(false)
+	if err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("Uninstall error = %v, want daemon still running", err)
+	}
+	if removed {
+		t.Fatal("uninstall removed files while daemon was still live")
+	}
+}
+
+func TestInstallerUninstallRefusesDeletionWhileDaemonStateLockHeld(t *testing.T) {
+	removed := false
+	inst := &Installer{
+		StatePath: "/var/lib/csm/state",
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			acquireStateLock: func(string) (func(), error) { return nil, errors.New("lock held") },
+			remove: func(string) error {
+				removed = true
+				return nil
+			},
+		},
+	}
+	err := inst.Uninstall(false)
+	if err == nil || !strings.Contains(err.Error(), "state lock") {
+		t.Fatalf("Uninstall error = %v, want state-lock refusal", err)
+	}
+	if removed {
+		t.Fatal("uninstall removed files while daemon state lock was held")
+	}
+}
+
+func TestInstallerUninstallPreservesStateAndLogsWithoutPurge(t *testing.T) {
+	var removed, removedAll []string
+	inst := &Installer{
+		BinaryPath:  "/opt/csm/csm",
+		CommandPath: "/usr/sbin/csm",
+		ConfigPath:  "/etc/csm/csm.yaml",
+		StatePath:   "/var/lib/csm/state",
+		LogPath:     "/var/log/csm/monitor.log",
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return nil },
+			removeAuditd:     func() error { return nil },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			glob:             func(string) ([]string, error) { return nil, nil },
+			remove: func(path string) error {
+				removed = append(removed, path)
+				return nil
+			},
+			removeAll: func(path string) error {
+				removedAll = append(removedAll, path)
+				return nil
+			},
+		},
+	}
+
+	if err := inst.Uninstall(false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(removed, inst.BinaryPath) {
+		t.Fatalf("binary was not removed: %v", removed)
+	}
+	if slices.Contains(removedAll, inst.StatePath) || slices.Contains(removedAll, filepath.Dir(inst.LogPath)) {
+		t.Fatalf("state or logs removed without --purge: %v", removedAll)
+	}
+}
+
+func TestInstallerUninstallPurgeUsesResolvedConfigDirectory(t *testing.T) {
+	var removedAll []string
+	inst := &Installer{
+		BinaryPath: "/opt/csm/csm",
+		ConfigPath: "/opt/csm/csm.yaml",
+		ConfigDir:  "/etc/csm/conf.d",
+		StatePath:  "/srv/csm/state",
+		LogPath:    "/var/log/csm/monitor.log",
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return nil },
+			removeAuditd:     func() error { return nil },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			glob:             func(string) ([]string, error) { return nil, nil },
+			remove:           func(string) error { return nil },
+			removeAll: func(path string) error {
+				removedAll = append(removedAll, path)
+				return nil
+			},
+		},
+	}
+
+	if err := inst.Uninstall(true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(removedAll, inst.ConfigDir) {
+		t.Fatalf("resolved config directory was not purged: %v", removedAll)
+	}
+	if !slices.Contains(removedAll, filepath.Dir(inst.BinaryPath)) {
+		t.Fatalf("CSM install directory was not purged: %v", removedAll)
+	}
+	if slices.Contains(removedAll, "/opt/csm/conf.d") {
+		t.Fatalf("purge derived the wrong config directory from legacy config path: %v", removedAll)
+	}
+}
+
+func TestPurgeStateDirContentsRetainsAuthoritativeLock(t *testing.T) {
+	statePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(statePath, daemonStateLockFileName), []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(statePath, "csm.db"), []byte("state"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(statePath, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := purgeStateDirContents(statePath, os.RemoveAll); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != daemonStateLockFileName {
+		t.Fatalf("state contents after purge = %v, want only %s", entries, daemonStateLockFileName)
+	}
+}
+
+func TestPurgeInstallTreeRetainsNestedAuthoritativeStateLock(t *testing.T) {
+	installRoot := t.TempDir()
+	statePath := filepath.Join(installRoot, "state")
+	if err := os.MkdirAll(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		filepath.Join(installRoot, "configs", "csm.yaml"):  "config",
+		filepath.Join(installRoot, "rules", "malware.yar"): "rule",
+		filepath.Join(statePath, daemonStateLockFileName):  "lock",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := purgeInstallTree(installRoot, statePath, os.RemoveAll); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(statePath, daemonStateLockFileName)); err != nil {
+		t.Fatalf("authoritative state lock was removed: %v", err)
+	}
+	for _, removed := range []string{filepath.Join(installRoot, "configs"), filepath.Join(installRoot, "rules")} {
+		if _, err := os.Stat(removed); !os.IsNotExist(err) {
+			t.Fatalf("purged install content %s still exists: %v", removed, err)
+		}
 	}
 }
 

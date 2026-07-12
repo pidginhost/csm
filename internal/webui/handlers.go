@@ -132,7 +132,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		High:            high,
 		Warning:         warning,
 		Total:           critical + high + warning,
-		SigCount:        s.sigCount,
+		SigCount:        s.signatureCount(),
 		FanotifyActive:  s.fanotifyActive,
 		LogWatchers:     s.logWatcherCount,
 		LastCriticalAgo: lastCriticalAgo,

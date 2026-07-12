@@ -220,8 +220,17 @@ func (w *LogWatcher) readNewLines() {
 	}
 
 	reader := bufio.NewReaderSize(w.file, 64*1024)
+	committedOffset := w.offset
 	for {
 		rawLine, truncated, readErr := readBoundedWatcherLine(reader, logWatcherMaxLineBytes)
+		if len(rawLine) > 0 && readErr != nil {
+			break
+		}
+		if readErr == nil {
+			if current, seekErr := w.file.Seek(0, io.SeekCurrent); seekErr == nil {
+				committedOffset = current - int64(reader.Buffered())
+			}
+		}
 		if truncated {
 			fmt.Fprintf(os.Stderr, "[%s] Warning: skipped oversized log line from %s at %d bytes\n", ts(), w.path, logWatcherMaxLineBytes)
 		}
@@ -252,12 +261,8 @@ func (w *LogWatcher) readNewLines() {
 		}
 	}
 
-	// Update offset
-	newOffset, err := w.file.Seek(0, io.SeekCurrent)
-	if err == nil {
-		w.offset = newOffset
-		w.refreshOffsetMarker()
-	}
+	w.offset = committedOffset
+	w.refreshOffsetMarker()
 }
 
 func readBoundedWatcherLine(r *bufio.Reader, maxBytes int) (string, bool, error) {

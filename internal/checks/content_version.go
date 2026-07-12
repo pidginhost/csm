@@ -28,7 +28,7 @@ const ContentLogicVersion = 1
 var contentReverifiableChecks = []string{
 	"suspicious_php_content",
 	"obfuscated_php",
-	"signature_match_realtime", "yara_match_realtime",
+	"signature_match_realtime", "yara_match_realtime", "yara_match_scheduled",
 }
 
 var contentReverifiableSet = func() map[string]struct{} {

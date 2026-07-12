@@ -674,10 +674,8 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	// rate limiting, otherwise fleet correlation can miss attacker spread.
 	phpanelWebhook := cfg.Alerts.Webhook.Enabled && cfg.Alerts.Webhook.Type == "phpanel"
 	if phpanelWebhook {
-		for _, f := range findings {
-			if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
-				addDispatchError(&errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
-			}
+		if err := enqueuePhpanelFindings(cfg, findings); err != nil {
+			addDispatchError(&errs, err)
 		}
 	}
 

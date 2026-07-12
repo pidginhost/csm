@@ -147,15 +147,14 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	cutoffBucket := hourBucket(cutoff)
 	prefix := []byte("modsec:hits:")
 
-	// Track which keys need pruning - read first with View (no write lock),
-	// then prune in a separate Update only if needed.
 	type pruneItem struct {
-		key  []byte
-		data ruleHitData
+		key    []byte
+		data   ruleHitData
+		remove bool
 	}
 	var toPrune []pruneItem
 
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		c := b.Cursor()
 
@@ -185,35 +184,38 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 				// Deep copy key (bbolt keys are only valid inside tx)
 				keyCopy := make([]byte, len(k))
 				copy(keyCopy, k)
-				toPrune = append(toPrune, pruneItem{key: keyCopy, data: data})
+				toPrune = append(toPrune, pruneItem{key: keyCopy, data: data, remove: total == 0})
 			}
 
-			if total > 0 || !data.LastHit.IsZero() {
+			if total > 0 {
 				result[ruleID] = RuleHitStats{
 					Hits:    total,
 					LastHit: data.LastHit,
 				}
 			}
 		}
+		for _, item := range toPrune {
+			if item.remove {
+				if err := b.Delete(item.key); err != nil {
+					return err
+				}
+				continue
+			}
+			for bk := range item.data.Buckets {
+				if bk < cutoffBucket {
+					delete(item.data.Buckets, bk)
+				}
+			}
+			val, err := json.Marshal(item.data)
+			if err != nil {
+				return err
+			}
+			if err := b.Put(item.key, val); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
-
-	// Prune old buckets in a separate write transaction (only if needed)
-	if len(toPrune) > 0 {
-		_ = db.bolt.Update(func(tx *bolt.Tx) error {
-			b := tx.Bucket([]byte("meta"))
-			for _, item := range toPrune {
-				for bk := range item.data.Buckets {
-					if bk < cutoffBucket {
-						delete(item.data.Buckets, bk)
-					}
-				}
-				val, _ := json.Marshal(item.data)
-				_ = b.Put(item.key, val)
-			}
-			return nil
-		})
-	}
 
 	return result
 }

@@ -123,6 +123,13 @@ func TestOverlappingAdminEmails_StaleEntriesEvicted(t *testing.T) {
 	if len(out) != 0 {
 		t.Errorf("stale entry not evicted, overlap returned %v", out)
 	}
+	owners, err := db.AdminEmailOwners("mix@example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owners) != 1 || owners[0].Account != "bob" {
+		t.Fatalf("persisted owners after retention = %+v, want only bob", owners)
+	}
 }
 
 func TestOverlappingAdminEmails_ThresholdAboveTwoFiltersTwoOwnerCase(t *testing.T) {

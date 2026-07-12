@@ -142,6 +142,20 @@ func SendWebhookJSON(cfg *config.Config, payload any) error {
 // endpoint, signing the body with HMAC-SHA256 in X-CSM-Signature. Stateless;
 // caller is responsible for filtering / batching.
 func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
+	delivery := phpanelDeliveryConfig{
+		hostname:      cfg.Hostname,
+		url:           cfg.Alerts.Webhook.URL,
+		hmacSecret:    cfg.Alerts.Webhook.HMACSecret,
+		hmacSecretEnv: cfg.Alerts.Webhook.HMACSecretEnv,
+	}
+	return sendQueuedPhpanelWebhookFinding(delivery, queuedPhpanelFinding{Finding: f, Timestamp: time.Now().UTC()})
+}
+
+func sendQueuedPhpanelWebhookFinding(delivery phpanelDeliveryConfig, queued queuedPhpanelFinding) error {
+	cfg := &config.Config{Hostname: delivery.hostname}
+	cfg.Alerts.Webhook.URL = delivery.url
+	cfg.Alerts.Webhook.HMACSecret = delivery.hmacSecret
+	cfg.Alerts.Webhook.HMACSecretEnv = delivery.hmacSecretEnv
 	if cfg.Alerts.Webhook.URL == "" {
 		return fmt.Errorf("phpanel webhook URL not set")
 	}
@@ -151,8 +165,8 @@ func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
 	}
 	payload := map[string]interface{}{
 		"hostname":  cfg.Hostname,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"finding":   f,
+		"timestamp": queued.Timestamp.Format(time.RFC3339),
+		"finding":   queued.Finding,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

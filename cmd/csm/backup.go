@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 const daemonStateLockFileName = "csm.lock"
 
+var errBackupDaemonLive = errors.New("daemon is running; stop it first (systemctl stop csm)")
+
 // BackupSources lists the on-disk inputs csm backup includes.
 type BackupSources struct {
 	ConfigPath string // main csm.yaml path
@@ -21,9 +24,8 @@ type BackupSources struct {
 }
 
 // WriteBackupArchive bundles every source path into a tar+gzip file at out.
-// State files (bbolt, JSON) are read live; integrity is the operator's
-// responsibility - for a clean snapshot, stop the daemon first. Empty or
-// non-existent source paths are skipped silently.
+// The caller must prevent concurrent state writes while this function runs.
+// Empty or non-existent source paths are skipped silently.
 func WriteBackupArchive(out string, src BackupSources) (err error) {
 	outAbs, err := filepath.Abs(out)
 	if err != nil {
@@ -39,19 +41,25 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}
 
-	f, err := os.Create(out) // #nosec G304 G703 -- operator-supplied backup destination.
+	tmp, err := os.CreateTemp(filepath.Dir(outAbs), ".csm-backup-*.tmp") // #nosec G304 G703 -- operator-supplied backup destination directory.
 	if err != nil {
 		return fmt.Errorf("creating backup: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if chmodErr := tmp.Chmod(0o600); chmodErr != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting backup permissions: %w", chmodErr)
 	}
 	fileClosed := false
 	defer func() {
 		if !fileClosed {
-			if closeErr := f.Close(); err == nil && closeErr != nil {
+			if closeErr := tmp.Close(); err == nil && closeErr != nil {
 				err = fmt.Errorf("closing backup: %w", closeErr)
 			}
 		}
 	}()
-	gw := gzip.NewWriter(f)
+	gw := gzip.NewWriter(tmp)
 	tw := tar.NewWriter(gw)
 	writersClosed := false
 	defer func() {
@@ -67,12 +75,12 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		}
 	}
 	if src.ConfDir != "" {
-		if err := addDir(tw, src.ConfDir, "conf.d", outAbs); err != nil && !os.IsNotExist(err) {
+		if err := addDir(tw, src.ConfDir, "conf.d", []string{outAbs, tmpPath}); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
 	if src.StateDir != "" {
-		if err := addDir(tw, src.StateDir, "state", outAbs, daemonStateLockFileName); err != nil && !os.IsNotExist(err) {
+		if err := addDir(tw, src.StateDir, "state", []string{outAbs, tmpPath}, daemonStateLockFileName); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
@@ -87,11 +95,19 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		return fmt.Errorf("closing gzip: %w", err)
 	}
 	writersClosed = true
-	if err := f.Close(); err != nil {
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("syncing backup: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing backup: %w", err)
 	}
 	fileClosed = true
-	return nil
+	// #nosec G703 -- outAbs is the operator-selected backup destination and
+	// tmpPath is a same-directory private temporary file created above.
+	if err := os.Rename(tmpPath, outAbs); err != nil {
+		return fmt.Errorf("installing backup: %w", err)
+	}
+	return syncParentDir(filepath.Dir(outAbs))
 }
 
 func addFile(tw *tar.Writer, path, name string) error {
@@ -119,7 +135,17 @@ func addBytes(tw *tar.Writer, name string, data []byte) error {
 	return err
 }
 
-func addDir(tw *tar.Writer, dir, prefix, excludeAbs string, skipRelPaths ...string) error {
+func addDir(tw *tar.Writer, dir, prefix string, excludeAbs []string, skipRelPaths ...string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("backup source %s is not a directory", dir)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: prefix + "/", Typeflag: tar.TypeDir, Mode: 0o700, ModTime: info.ModTime()}); err != nil {
+		return err
+	}
 	skip := map[string]bool{}
 	for _, name := range skipRelPaths {
 		skip[name] = true
@@ -134,13 +160,18 @@ func addDir(tw *tar.Writer, dir, prefix, excludeAbs string, skipRelPaths ...stri
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		if excludeAbs != "" {
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		if len(excludeAbs) > 0 {
 			abs, absErr := filepath.Abs(filePath)
 			if absErr != nil {
 				return absErr
 			}
-			if abs == excludeAbs {
-				return nil
+			for _, excluded := range excludeAbs {
+				if abs == excluded {
+					return nil
+				}
 			}
 		}
 		rel, err := filepath.Rel(dir, filePath)
@@ -153,6 +184,23 @@ func addDir(tw *tar.Writer, dir, prefix, excludeAbs string, skipRelPaths ...stri
 		}
 		return addFile(tw, filePath, path.Join(prefix, rel))
 	})
+}
+
+func writeBackupArchiveGuarded(out string, src BackupSources) error {
+	if isDaemonLive() {
+		return errBackupDaemonLive
+	}
+	stateLock, err := acquireStoppedDaemonStateLock(src.StateDir)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBackupDaemonLive, err)
+	}
+	if stateLock != nil {
+		defer stateLock.Release()
+	}
+	if isDaemonLive() {
+		return errBackupDaemonLive
+	}
+	return WriteBackupArchive(out, src)
 }
 
 func runBackup() {
@@ -188,7 +236,7 @@ func runBackup() {
 		ConfDir:    cfg.ConfigDir,
 		StateDir:   cfg.StatePath,
 	}
-	if backupErr := WriteBackupArchive(out, src); backupErr != nil {
+	if backupErr := writeBackupArchiveGuarded(out, src); backupErr != nil {
 		fmt.Fprintf(os.Stderr, "backup failed: %v\n", backupErr)
 		os.Exit(1)
 	}

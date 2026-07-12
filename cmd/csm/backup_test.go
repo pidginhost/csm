@@ -3,10 +3,15 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func TestBackupArchive_IncludesConfigAndConfDir(t *testing.T) {
@@ -53,6 +58,46 @@ func TestBackupArchive_ManifestPresent(t *testing.T) {
 	got := tarNames(t, out)
 	if !got["manifest.txt"] {
 		t.Fatalf("expected manifest.txt in archive, got %v", got)
+	}
+}
+
+func TestBackupArchive_IsOwnerReadableOnly(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "backup.tar.gz")
+	oldUmask := syscall.Umask(0)
+	defer syscall.Umask(oldUmask)
+
+	if err := WriteBackupArchive(out, BackupSources{}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Mode().Perm(); got != 0o600 {
+		t.Fatalf("backup mode = %04o, want 0600", got)
+	}
+}
+
+func TestBackupArchiveGuarded_RefusesWhenStateLockHeld(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	if mkdirErr := os.MkdirAll(stateDir, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
+	}
+	held, err := state.AcquireLock(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	out := filepath.Join(dir, "backup.tar.gz")
+
+	err = writeBackupArchiveGuarded(out, BackupSources{StateDir: stateDir})
+	if err == nil || !errors.Is(err, errBackupDaemonLive) {
+		t.Fatalf("backup with state lock held error = %v, want errBackupDaemonLive", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("backup was created despite held state lock: %v", statErr)
 	}
 }
 
@@ -104,6 +149,32 @@ func TestBackupArchive_SkipsStateLockFile(t *testing.T) {
 	}
 	if !got["state/csm.db"] {
 		t.Fatalf("expected state/csm.db in archive, got %v", got)
+	}
+}
+
+func TestBackupArchive_SkipsSpecialFiles(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "csm-backup-special-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	stateDir := filepath.Join(dir, "state")
+	if mkdirErr := os.MkdirAll(stateDir, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
+	}
+	socketPath := filepath.Join(stateDir, "worker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	out := filepath.Join(dir, "backup.tar.gz")
+	if backupErr := WriteBackupArchive(out, BackupSources{StateDir: stateDir}); backupErr != nil {
+		t.Fatal(backupErr)
+	}
+	if got := tarNames(t, out); got["state/worker.sock"] {
+		t.Fatalf("backup archive included Unix socket: %v", got)
 	}
 }
 

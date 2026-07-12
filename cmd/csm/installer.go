@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/checks"
@@ -20,10 +25,109 @@ type Installer struct {
 	BinaryPath     string
 	CommandPath    string
 	ConfigPath     string
+	ConfigDir      string
 	StatePath      string
 	LogPath        string
 	ConfigExplicit bool
 	PackageMode    bool
+	operations     *installerOperations
+}
+
+type installerOperations struct {
+	getuid            func() int
+	runCommand        func(string, ...string) error
+	remove            func(string) error
+	removeAll         func(string) error
+	glob              func(string) ([]string, error)
+	setImmutable      func(string, bool) error
+	removeCommandLink func(string, string) error
+	deployAuditd      func() error
+	removeAuditd      func() error
+	removeModSecRules func() error
+	deploySystemd     func() error
+	deployLogrotate   func() error
+	daemonLive        func() bool
+	acquireStateLock  func(string) (func(), error)
+}
+
+func (inst *Installer) ops() installerOperations {
+	ops := installerOperations{
+		getuid: os.Getuid,
+		// #nosec G204 -- uninstall passes only fixed system commands and literal arguments.
+		runCommand:        func(name string, args ...string) error { return exec.Command(name, args...).Run() },
+		remove:            os.Remove,
+		removeAll:         os.RemoveAll,
+		glob:              filepath.Glob,
+		setImmutable:      setBinaryImmutable,
+		removeCommandLink: removeCommandSymlink,
+		deployAuditd:      auditd.Deploy,
+		removeAuditd:      auditd.Remove,
+		removeModSecRules: removeInstalledModSecRules,
+		deploySystemd:     deploySystemdTimer,
+		deployLogrotate:   deployLogrotate,
+		daemonLive:        isDaemonLive,
+		acquireStateLock: func(statePath string) (func(), error) {
+			lock, err := acquireStoppedDaemonStateLock(statePath)
+			if err != nil {
+				return nil, err
+			}
+			if lock == nil {
+				return func() {}, nil
+			}
+			return lock.Release, nil
+		},
+	}
+	if inst.operations == nil {
+		return ops
+	}
+	custom := inst.operations
+	if custom.getuid != nil {
+		ops.getuid = custom.getuid
+	}
+	if custom.runCommand != nil {
+		ops.runCommand = custom.runCommand
+	}
+	if custom.remove != nil {
+		ops.remove = custom.remove
+	}
+	if custom.removeAll != nil {
+		ops.removeAll = custom.removeAll
+	}
+	if custom.glob != nil {
+		ops.glob = custom.glob
+	}
+	if custom.setImmutable != nil {
+		ops.setImmutable = custom.setImmutable
+	}
+	if custom.removeCommandLink != nil {
+		ops.removeCommandLink = custom.removeCommandLink
+	}
+	if custom.deployAuditd != nil {
+		ops.deployAuditd = custom.deployAuditd
+	}
+	if custom.removeAuditd != nil {
+		ops.removeAuditd = custom.removeAuditd
+	}
+	if custom.removeModSecRules != nil {
+		ops.removeModSecRules = custom.removeModSecRules
+	} else {
+		// A custom operations table is a test boundary; never let a unit test
+		// fall through to host ModSecurity paths.
+		ops.removeModSecRules = func() error { return nil }
+	}
+	if custom.deploySystemd != nil {
+		ops.deploySystemd = custom.deploySystemd
+	}
+	if custom.deployLogrotate != nil {
+		ops.deployLogrotate = custom.deployLogrotate
+	}
+	if custom.daemonLive != nil {
+		ops.daemonLive = custom.daemonLive
+	}
+	if custom.acquireStateLock != nil {
+		ops.acquireStateLock = custom.acquireStateLock
+	}
+	return ops
 }
 
 // commandSymlinkPath is empty in package mode: the rpm/deb manifest owns
@@ -37,8 +141,9 @@ func (inst *Installer) commandSymlinkPath() string {
 
 func (inst *Installer) Install() error {
 	fmt.Println("=== Continuous Security Monitor - Install ===")
+	ops := inst.ops()
 
-	if os.Getuid() != 0 {
+	if ops.getuid() != 0 {
 		return fmt.Errorf("install must be run as root")
 	}
 
@@ -70,7 +175,7 @@ func (inst *Installer) Install() error {
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
 	}
 	if err := ensureCommandSymlink(inst.commandSymlinkPath(), inst.BinaryPath); err != nil {
-		fmt.Printf("  Warning: could not install command at %s: %v\n", inst.CommandPath, err)
+		return fmt.Errorf("installing command at %s: %w", inst.CommandPath, err)
 	} else if inst.commandSymlinkPath() != "" {
 		fmt.Printf("  Command installed at %s\n", inst.CommandPath)
 	}
@@ -98,29 +203,28 @@ func (inst *Installer) Install() error {
 	}
 
 	// Deploy auditd rules
-	if err := auditd.Deploy(); err != nil {
-		fmt.Printf("  Warning: auditd deploy failed: %v\n", err)
+	if err := ops.deployAuditd(); err != nil {
+		fmt.Printf("  Warning: auditd rules not active: %v\n", err)
 	} else {
 		fmt.Println("  auditd rules deployed")
 	}
 
 	// Deploy systemd daemon service unit
-	if err := deploySystemdTimer(); err != nil {
-		fmt.Printf("  Warning: systemd unit deploy failed: %v\n", err)
-	} else {
-		fmt.Println("  systemd daemon unit deployed")
+	if err := ops.deploySystemd(); err != nil {
+		return fmt.Errorf("deploying systemd unit: %w", err)
 	}
+	fmt.Println("  systemd daemon unit deployed")
 
 	// Deploy logrotate config
-	if err := deployLogrotate(); err != nil {
-		fmt.Printf("  Warning: logrotate deploy failed: %v\n", err)
+	if err := ops.deployLogrotate(); err != nil {
+		fmt.Printf("  Warning: logrotate config not installed: %v\n", err)
 	} else {
 		fmt.Println("  logrotate config deployed")
 	}
 
 	immutable := configuredImmutable(inst.ConfigPath)
-	if err := setBinaryImmutable(inst.BinaryPath, immutable); err != nil {
-		fmt.Printf("  Warning: could not update binary immutable flag: %v\n", err)
+	if err := ops.setImmutable(inst.BinaryPath, immutable); err != nil {
+		return fmt.Errorf("updating binary immutable flag: %w", err)
 	} else if immutable {
 		fmt.Println("  Binary set as immutable (chattr +i)")
 	} else {
@@ -148,79 +252,284 @@ func (inst *Installer) Install() error {
 	return nil
 }
 
-func (inst *Installer) Uninstall() error {
+func (inst *Installer) Uninstall(purge bool) error {
 	fmt.Println("=== Continuous Security Monitor - Uninstall ===")
+	ops := inst.ops()
 
-	if os.Getuid() != 0 {
+	if ops.getuid() != 0 {
 		return fmt.Errorf("uninstall must be run as root")
 	}
 
-	// Remove immutable flag
-	_ = setBinaryImmutable(inst.BinaryPath, false)
-	if err := removeCommandSymlink(inst.CommandPath, inst.BinaryPath); err != nil {
+	_ = ops.runCommand("systemctl", "stop", "csm.service")
+	if ops.daemonLive() {
+		return fmt.Errorf("csm.service is still running; refusing to remove files")
+	}
+	releaseStateLock, lockErr := ops.acquireStateLock(inst.StatePath)
+	if lockErr != nil {
+		return fmt.Errorf("csm.service state lock is held; refusing to remove files: %w", lockErr)
+	}
+	defer releaseStateLock()
+	if ops.daemonLive() {
+		return fmt.Errorf("csm.service started while uninstall was acquiring its state lock; refusing to remove files")
+	}
+	if _, statErr := os.Stat(inst.BinaryPath); statErr == nil {
+		if immutableErr := ops.setImmutable(inst.BinaryPath, false); immutableErr != nil {
+			return fmt.Errorf("clearing binary immutable flag: %w", immutableErr)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspecting binary: %w", statErr)
+	}
+	if err := ops.removeCommandLink(inst.CommandPath, inst.BinaryPath); err != nil {
 		return fmt.Errorf("removing command symlink: %w", err)
 	}
-
-	// Stop daemon service first
-	exec.Command("systemctl", "stop", "csm.service").Run()
 
 	// Stop and remove systemd units (including legacy timers from older
 	// installs; the daemon now schedules tier scans internally).
 	for _, name := range []string{"csm.timer", "csm-critical.timer", "csm-deep.timer"} {
-		// #nosec G204 -- systemctl hardcoded; `name` iterates a literal slice above.
-		exec.Command("systemctl", "stop", name).Run()
-		// #nosec G204 -- same.
-		exec.Command("systemctl", "disable", name).Run()
+		_ = ops.runCommand("systemctl", "stop", name)
+		_ = ops.runCommand("systemctl", "disable", name)
 	}
 	for _, name := range []string{"csm.service", "csm.timer", "csm-critical.service", "csm-critical.timer", "csm-deep.service", "csm-deep.timer"} {
-		os.Remove("/etc/systemd/system/" + name)
+		if err := removeInstallerPath(ops.remove, "/etc/systemd/system/"+name); err != nil {
+			return err
+		}
 	}
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := ops.runCommand("systemctl", "daemon-reload"); err != nil {
+		return fmt.Errorf("reloading systemd: %w", err)
+	}
 	fmt.Println("  systemd units removed")
 
 	// Remove cron and logrotate
-	os.Remove("/etc/cron.d/csm")
-	os.Remove("/etc/logrotate.d/csm")
+	for _, target := range []string{"/etc/cron.d/csm", "/etc/logrotate.d/csm"} {
+		if err := removeInstallerPath(ops.remove, target); err != nil {
+			return err
+		}
+	}
 	fmt.Println("  cron job and logrotate removed")
 
 	// Remove auditd rules
-	auditd.Remove()
+	if err := ops.removeAuditd(); err != nil {
+		return fmt.Errorf("removing auditd rules: %w", err)
+	}
 	fmt.Println("  auditd rules removed")
 
 	// Remove WHM plugin
-	_ = exec.Command("/usr/local/cpanel/bin/unregister_appconfig", "csm").Run()
-	os.Remove("/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi")
-	os.Remove("/var/cpanel/apps/csm.conf")
-	os.Remove("/var/cpanel/pluginscache.cache")
+	_ = ops.runCommand("/usr/local/cpanel/bin/unregister_appconfig", "csm")
+	for _, target := range []string{
+		"/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi",
+		"/var/cpanel/apps/csm.conf",
+		"/var/cpanel/pluginscache.cache",
+	} {
+		if err := removeInstallerPath(ops.remove, target); err != nil {
+			return err
+		}
+	}
 	fmt.Println("  WHM plugin removed")
 
-	// Remove ModSecurity custom rules
-	for _, p := range []string{
-		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
-		"/etc/apache2/conf.d/csm_challenge.conf",
-	} {
-		os.Remove(p)
+	// Remove only CSM-owned ModSecurity sections. The user config also holds
+	// operator-maintained rules and must never be deleted wholesale.
+	if err := ops.removeModSecRules(); err != nil {
+		return err
+	}
+	if err := removeInstallerPath(ops.remove, "/etc/apache2/conf.d/csm_challenge.conf"); err != nil {
+		return err
 	}
 
 	// Remove PHP Shield
-	os.Remove(phpShieldPath)
-	os.Remove(phpShieldConfPath)
-	iniGlob, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
-	for _, p := range iniGlob {
-		os.Remove(p)
+	for _, target := range []string{phpShieldPath, phpShieldConfPath} {
+		if err := removeInstallerPath(ops.remove, target); err != nil {
+			return err
+		}
 	}
-	os.RemoveAll("/var/run/csm")
+	iniGlob, err := ops.glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
+	if err != nil {
+		return fmt.Errorf("finding PHP Shield configuration: %w", err)
+	}
+	for _, p := range iniGlob {
+		if err := removeInstallerPath(ops.remove, p); err != nil {
+			return err
+		}
+	}
+	if err := ops.removeAll("/var/run/csm"); err != nil {
+		return fmt.Errorf("removing runtime directory: %w", err)
+	}
 	fmt.Println("  PHP Shield removed")
 
-	// Remove binary and state
-	os.Remove(inst.BinaryPath)
-	os.RemoveAll(inst.StatePath)
-	os.RemoveAll(filepath.Dir(inst.LogPath))
-	fmt.Println("  Binary, state, and logs removed")
+	if err := removeInstallerPath(ops.remove, inst.BinaryPath); err != nil {
+		return err
+	}
+	fmt.Println("  Binary removed")
+	if purge {
+		if err := purgeStateDirContents(inst.StatePath, ops.removeAll); err != nil {
+			return err
+		}
+		for _, target := range []string{filepath.Dir(inst.LogPath), inst.ConfigDir} {
+			if target == "" {
+				continue
+			}
+			if err := ops.removeAll(target); err != nil {
+				return fmt.Errorf("purging %s: %w", target, err)
+			}
+		}
+		if err := purgeInstallTree(filepath.Dir(inst.BinaryPath), inst.StatePath, ops.removeAll); err != nil {
+			return err
+		}
+		if err := removeInstallerPath(ops.remove, inst.ConfigPath); err != nil {
+			return err
+		}
+		fmt.Println("  Config, state, and logs purged")
+	} else {
+		fmt.Printf("  Config preserved at %s\n", inst.ConfigPath)
+		fmt.Printf("  State preserved at %s\n", inst.StatePath)
+		fmt.Printf("  Logs preserved at %s\n", filepath.Dir(inst.LogPath))
+	}
 
-	fmt.Printf("  Config preserved at %s (remove manually if desired)\n", inst.ConfigPath)
 	fmt.Println("Uninstall complete")
 	return nil
+}
+
+func purgeStateDirContents(statePath string, removeAll func(string) error) error {
+	if statePath == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(statePath) // #nosec G304 -- operator-configured state directory.
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading state directory for purge: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == daemonStateLockFileName {
+			continue
+		}
+		target := filepath.Join(statePath, entry.Name())
+		if err := removeAll(target); err != nil {
+			return fmt.Errorf("purging %s: %w", target, err)
+		}
+	}
+	return nil
+}
+
+// purgeInstallTree removes the install root without unlinking a state lock
+// nested below it. The lock must remain reachable by pathname until the
+// caller releases it, or a concurrently starting daemon could lock a new
+// inode while uninstall still holds the old unlinked one.
+func purgeInstallTree(installRoot, statePath string, removeAll func(string) error) error {
+	if installRoot == "" {
+		return nil
+	}
+	rootAbs, err := filepath.Abs(installRoot)
+	if err != nil {
+		return fmt.Errorf("resolving install directory %s: %w", installRoot, err)
+	}
+	if statePath == "" {
+		if removeErr := removeAll(rootAbs); removeErr != nil {
+			return fmt.Errorf("purging %s: %w", rootAbs, removeErr)
+		}
+		return nil
+	}
+	stateAbs, err := filepath.Abs(statePath)
+	if err != nil {
+		return fmt.Errorf("resolving state directory %s: %w", statePath, err)
+	}
+	rel, err := filepath.Rel(rootAbs, stateAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if removeErr := removeAll(rootAbs); removeErr != nil {
+			return fmt.Errorf("purging %s: %w", rootAbs, removeErr)
+		}
+		return nil
+	}
+	return purgeInstallTreeExcept(rootAbs, filepath.Clean(rel), removeAll)
+}
+
+func purgeInstallTreeExcept(current, protectedRel string, removeAll func(string) error) error {
+	if protectedRel == "." {
+		return nil
+	}
+	parts := strings.Split(protectedRel, string(filepath.Separator))
+	protectedName := parts[0]
+	entries, err := os.ReadDir(current) // #nosec G304 -- current is below the fixed install root.
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading install directory %s for purge: %w", current, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == protectedName {
+			continue
+		}
+		target := filepath.Join(current, entry.Name())
+		if removeErr := removeAll(target); removeErr != nil {
+			return fmt.Errorf("purging %s: %w", target, removeErr)
+		}
+	}
+	if len(parts) == 1 {
+		return nil
+	}
+	next := filepath.Join(current, protectedName)
+	info, err := os.Lstat(next)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspecting protected state path %s: %w", next, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("protected state path component %s is not a directory", next)
+	}
+	return purgeInstallTreeExcept(next, filepath.Join(parts[1:]...), removeAll)
+}
+
+func removeInstallerPath(remove func(string) error, target string) error {
+	if err := remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %s: %w", target, err)
+	}
+	return nil
+}
+
+func removeInstalledModSecRules() error {
+	var removeErr error
+	for _, dest := range modsecUserConfDests {
+		removeOverride := false
+		// #nosec G304 -- dest iterates the fixed ModSecurity destination list.
+		content, err := os.ReadFile(dest)
+		if err != nil && !os.IsNotExist(err) {
+			removeErr = errors.Join(removeErr, fmt.Errorf("reading ModSecurity config %s: %w", dest, err))
+			continue
+		}
+		if os.IsNotExist(err) {
+			removeOverride = true
+		} else if err == nil {
+			cleaned, changed := checks.RemoveModSecUserConfSections(content)
+			if changed {
+				updated := false
+				if len(bytes.TrimSpace(cleaned)) == 0 {
+					if err := removeInstallerPath(os.Remove, dest); err != nil {
+						removeErr = errors.Join(removeErr, err)
+					} else {
+						updated = true
+					}
+				} else if err := writeFileAtomic(dest, cleaned, 0o644); err != nil {
+					removeErr = errors.Join(removeErr, fmt.Errorf("updating ModSecurity config %s: %w", dest, err))
+				} else {
+					updated = true
+				}
+				removeOverride = updated
+			}
+		}
+		if removeOverride {
+			overrides := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
+			if err := removeInstallerPath(os.Remove, overrides); err != nil {
+				removeErr = errors.Join(removeErr, err)
+			}
+		}
+	}
+	return removeErr
 }
 
 func ensureCommandSymlink(path, target string) error {
@@ -314,6 +623,11 @@ func deployDefaultConfig(path string) error {
 		return err
 	}
 
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("generating WebUI auth token: %w", err)
+	}
+	authToken := hex.EncodeToString(tokenBytes)
 	content := `# Continuous Security Monitor configuration
 # Documentation: https://github.com/pidginhost/csm
 
@@ -607,6 +921,7 @@ backdoor_ports:
   - 55555
   - 31337
 `
+	content = strings.Replace(content, `auth_token: ""  # auto-generated on install`, `auth_token: "`+authToken+`"  # generated on install`, 1)
 	return writeFileAtomic(path, []byte(content), 0600)
 }
 

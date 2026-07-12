@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -84,10 +85,7 @@ func (db *DB) AdminEmailOwners(email string) ([]AdminEmailEntry, error) {
 
 // OverlappingAdminEmails returns every email whose owner list has at
 // least `minAccounts` distinct accounts after stale entries (older than
-// `retention`) are filtered out. Stale entries are silently dropped from
-// the returned slice but stay in the bucket -- a separate compaction
-// pass could prune them, but for the cross-account correlator the
-// in-memory filter is sufficient.
+// `retention`) are pruned.
 //
 // `minAccounts` smaller than 2 is clamped to 2 because a single-account
 // observation is never an overlap by definition.
@@ -97,6 +95,12 @@ func (db *DB) OverlappingAdminEmails(minAccounts int, retention time.Duration) (
 	}
 	cutoff := time.Now().Add(-retention)
 	out := map[string][]AdminEmailEntry{}
+	type pruneItem struct {
+		key      []byte
+		original []byte
+		fresh    []byte
+	}
+	var toPrune []pruneItem
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(adminEmailsBucket))
 		return b.ForEach(func(k, v []byte) error {
@@ -124,8 +128,42 @@ func (db *DB) OverlappingAdminEmails(minAccounts int, retention time.Duration) (
 			if len(distinct) >= minAccounts {
 				out[string(k)] = append([]AdminEmailEntry(nil), fresh...)
 			}
+			if len(fresh) == 0 {
+				toPrune = append(toPrune, pruneItem{key: append([]byte(nil), k...), original: append([]byte(nil), v...)})
+			} else if len(fresh) != len(entries) {
+				payload, err := json.Marshal(fresh)
+				if err != nil {
+					return err
+				}
+				toPrune = append(toPrune, pruneItem{
+					key:      append([]byte(nil), k...),
+					original: append([]byte(nil), v...),
+					fresh:    payload,
+				})
+			}
 			return nil
 		})
+	})
+	if err != nil || len(toPrune) == 0 {
+		return out, err
+	}
+	err = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(adminEmailsBucket))
+		for _, item := range toPrune {
+			if !bytes.Equal(b.Get(item.key), item.original) {
+				continue
+			}
+			if len(item.fresh) == 0 {
+				if deleteErr := b.Delete(item.key); deleteErr != nil {
+					return deleteErr
+				}
+				continue
+			}
+			if putErr := b.Put(item.key, item.fresh); putErr != nil {
+				return putErr
+			}
+		}
+		return nil
 	})
 	return out, err
 }

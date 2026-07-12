@@ -29,9 +29,16 @@ published.
 
 ```bash
 mkdir -p /root/csm-backups
+systemctl stop csm.service
 /opt/csm/csm backup /root/csm-backups/csm-pre-response-$(date +%Y%m%d%H%M%S).tar.gz
+systemctl start csm.service
+/opt/csm/csm doctor --json
 sha256sum /root/csm-backups/csm-pre-response-*.tar.gz
 ```
+
+Backup refuses a live or starting daemon and verifies the state lock before
+reading data. Restart the service immediately after the archive is created.
+If backup fails, start the service before investigating the failure.
 
 Confirm the archive is readable:
 

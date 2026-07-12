@@ -133,6 +133,8 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 	}()
 
 	go s.reader.Run(ctx)
+	errorsCh := s.reader.Errors()
+	eventsCh := s.reader.Events()
 
 	refresh := time.NewTicker(s.refreshInterval())
 	defer refresh.Stop()
@@ -141,11 +143,17 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case err, ok := <-errorsCh:
+			if !ok {
+				errorsCh = nil
+				continue
+			}
+			emitBPFReaderError(s.alertCh, "sensitive-file", err)
 		case <-refresh.C:
 			if err := s.refreshWatchset(true); err != nil {
 				csmlog.Warn("sensitive_file bpf: watchset refresh failed", "err", err)
 			}
-		case ev, ok := <-s.reader.Events():
+		case ev, ok := <-eventsCh:
 			if !ok {
 				return
 			}

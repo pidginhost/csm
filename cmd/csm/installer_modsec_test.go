@@ -126,3 +126,28 @@ func TestDeployModSecRulesUpToDateDoesNotRewrite(t *testing.T) {
 		t.Errorf("file rewritten on up-to-date run: mtime %v, want %v", info.ModTime(), past)
 	}
 }
+
+func TestRemoveInstalledModSecRulesPreservesOperatorRules(t *testing.T) {
+	existing := installTestOperator + "\n\n" + installTestBegin + "\n" + installTestSrcV2 + installTestEnd + "\n" +
+		"# CSM overrides - managed by CSM rule management\n" +
+		"Include /tmp/modsec2.csm-overrides.conf\n"
+	dest := setupModSecDeploy(t, installTestSrcV2, &existing)
+	overrides := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
+	if err := os.WriteFile(overrides, []byte("SecRuleRemoveById 900200\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeInstalledModSecRules(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != installTestOperator+"\n\n" {
+		t.Fatalf("operator ModSecurity rules changed during uninstall:\n%s", data)
+	}
+	if _, err := os.Stat(overrides); !os.IsNotExist(err) {
+		t.Fatalf("CSM overrides file survived uninstall: %v", err)
+	}
+}

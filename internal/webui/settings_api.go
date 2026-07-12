@@ -140,11 +140,12 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 		pendingSections = pendingRestartSections(live, disk)
 	}
 
-	w.Header().Set("ETag", disk.Integrity.ConfigHash)
+	etag := integrity.HashConfigStableBytes(diskBytes)
+	w.Header().Set("ETag", etag)
 	writeJSON(w, map[string]interface{}{
 		"section":          section,
 		"values":           values,
-		"etag":             disk.Integrity.ConfigHash,
+		"etag":             etag,
 		"pending_restart":  len(pendingFields) > 0,
 		"pending_fields":   pendingFields,
 		"pending_sections": pendingSections,
@@ -250,6 +251,12 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.settingsSaveMu.Lock()
+	defer s.settingsSaveMu.Unlock()
+	if s.settingsSaveHook != nil {
+		s.settingsSaveHook()
+	}
+
 	diskBytes, err := os.ReadFile(s.cfg.ConfigFile) // #nosec G304 -- operator-supplied config path
 	if err != nil {
 		writeJSONError(w, "read config: "+err.Error(), http.StatusInternalServerError)
@@ -262,7 +269,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	disk.ConfigFile = s.cfg.ConfigFile
 	disk.ConfigDir = s.cfg.ConfigDir
-	if disk.Integrity.ConfigHash != ifMatch {
+	if integrity.HashConfigStableBytes(diskBytes) != ifMatch {
 		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
 		return
 	}

@@ -308,18 +308,18 @@ func TestCheckPHPProcessLoadCriticalTotal(t *testing.T) {
 	hasCritTotal := false
 	hasPerUser := false
 	for _, f := range findings {
-		if f.Severity == alert.Critical && strings.Contains(f.Message, "Total lsphp") {
+		if f.Severity == alert.Critical && strings.Contains(f.Message, "Total PHP worker") {
 			hasCritTotal = true
 		}
-		if f.Severity == alert.High && strings.Contains(f.Message, "Excessive lsphp") {
+		if f.Severity == alert.High && strings.Contains(f.Message, "Excessive PHP worker") {
 			hasPerUser = true
 		}
 	}
 	if !hasCritTotal {
-		t.Error("expected critical finding for total lsphp exceeding threshold")
+		t.Error("expected critical finding for total PHP workers exceeding threshold")
 	}
 	if !hasPerUser {
-		t.Error("expected high finding for per-user lsphp exceeding threshold")
+		t.Error("expected high finding for per-user PHP workers exceeding threshold")
 	}
 }
 

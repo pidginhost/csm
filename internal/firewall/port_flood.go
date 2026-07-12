@@ -84,6 +84,28 @@ func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set, family portFlood
 	}
 }
 
+func (e *Engine) portFloodRuleExprs(pf PortFloodRule, meter *nftables.Set, family portFloodIPFamily) []expr.Any {
+	exprs := buildPortFloodExprs(pf, meter, family)
+	if exprs == nil || !isMailTCP(pf) {
+		return exprs
+	}
+
+	var exempt []expr.Any
+	switch {
+	case family == portFloodIPv4 && e.setDOSExempt != nil:
+		exempt = e.dosExemptV4Lookup(1)
+	case family == portFloodIPv6 && e.setDOSExempt6 != nil:
+		exempt = e.dosExemptV6Lookup(1)
+	default:
+		return exprs
+	}
+
+	guarded := make([]expr.Any, 0, len(exprs)+len(exempt))
+	guarded = append(guarded, exprs[:2]...)
+	guarded = append(guarded, exempt...)
+	return append(guarded, exprs[2:]...)
+}
+
 func portFloodMeterName(pf PortFloodRule, family portFloodIPFamily) string {
 	return fmt.Sprintf("meter_pf_%s_%d_%s", portFloodProto(pf), pf.Port, family.name)
 }

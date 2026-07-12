@@ -35,6 +35,31 @@ func TestCriticalChecksNotEmpty(t *testing.T) {
 	}
 }
 
+func TestRunParallelReportsPanicWithoutWaitingForTimeout(t *testing.T) {
+	previous := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = previous })
+	timeoutForFunc = func(string) time.Duration { return 5 * time.Second }
+	started := time.Now()
+	findings, purge := runParallel(&config.Config{}, nil, []namedCheck{{
+		name: "panic_check",
+		fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+			panic("crafted input")
+		},
+	}}, "test", true)
+	if time.Since(started) > time.Second {
+		t.Fatal("panicking check held a worker until its timeout")
+	}
+	if len(findings) != 1 || findings[0].Check != "check_panic" {
+		t.Fatalf("findings = %+v, want one check_panic", findings)
+	}
+	if !strings.Contains(findings[0].Details, "runner_test.go") {
+		t.Fatalf("panic finding lacks stack trace: %q", findings[0].Details)
+	}
+	if slices.Contains(purge, "panic_check") {
+		t.Fatalf("panicking check entered purge list: %v", purge)
+	}
+}
+
 func TestDeepChecksNotEmpty(t *testing.T) {
 	list := deepChecks()
 	if len(list) == 0 {

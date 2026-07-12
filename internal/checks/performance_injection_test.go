@@ -40,6 +40,25 @@ func TestParseMemInfoMocked(t *testing.T) {
 	}
 }
 
+func TestIsPHPWorkerCommandSupportsCommonHandlers(t *testing.T) {
+	for _, command := range []string{
+		"lsphp /home/alice/public_html/index.php",
+		"/usr/sbin/php-fpm: pool alice",
+		"/usr/bin/php-fpm8.3 --nodaemonize",
+		"/usr/bin/php-cgi -b 127.0.0.1:9000",
+		"/usr/bin/php-cgi8.3 -b 127.0.0.1:9000",
+	} {
+		if !isPHPWorkerCommand(command) {
+			t.Errorf("isPHPWorkerCommand(%q) = false", command)
+		}
+	}
+	for _, command := range []string{"php artisan queue:work", "phpunit", "php-fpm-helper", "httpd -DFOREGROUND"} {
+		if isPHPWorkerCommand(command) {
+			t.Errorf("isPHPWorkerCommand(%q) = true", command)
+		}
+	}
+}
+
 // --- CheckSwapAndOOM with actual memory data -------------------------
 
 func TestCheckSwapAndOOMWithData(t *testing.T) {

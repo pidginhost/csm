@@ -70,12 +70,20 @@ func (e *execBPF) Run(ctx context.Context) {
 	}()
 
 	go e.reader.Run(ctx)
+	errorsCh := e.reader.Errors()
+	eventsCh := e.reader.Events()
 	pcCache, pcEnr := ProcessCtx()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-e.reader.Events():
+		case err, ok := <-errorsCh:
+			if !ok {
+				errorsCh = nil
+				continue
+			}
+			emitBPFReaderError(e.alertCh, "execution", err)
+		case ev, ok := <-eventsCh:
 			if !ok {
 				return
 			}

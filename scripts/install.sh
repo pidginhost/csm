@@ -330,7 +330,8 @@ else
     prompt CONF_EMAIL "Alert email" "$DETECTED_EMAIL"
 fi
 
-AUTH_TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
+CONFIG_PREEXISTED=0
+[ -f "$CONFIG_PATH" ] && CONFIG_PREEXISTED=1
 
 # Run binary install (generates config, systemd, auditd, WHM, logrotate)
 info "Installing services..."
@@ -340,14 +341,25 @@ if ! "$BINARY_PATH" install; then
 fi
 
 # Patch config with detected values
-if [ -f "$CONFIG_PATH" ]; then
-    sed -i "s/SET_HOSTNAME_HERE/${CONF_HOST}/g" "$CONFIG_PATH" 2>/dev/null || true
-    sed -i "s/SET_EMAIL_HERE/${CONF_EMAIL}/g" "$CONFIG_PATH" 2>/dev/null || true
-    sed -i "s/auth_token: \"\"/auth_token: \"${AUTH_TOKEN}\"/" "$CONFIG_PATH" 2>/dev/null || true
+[ -f "$CONFIG_PATH" ] || die "csm install did not write $CONFIG_PATH"
+CONF_HOST_SED=$(printf '%s' "$CONF_HOST" | sed 's/[\/&\\"]/\\&/g')
+CONF_EMAIL_SED=$(printf '%s' "$CONF_EMAIL" | sed 's/[\/&\\"]/\\&/g')
+sed -i "s/SET_HOSTNAME_HERE/${CONF_HOST_SED}/g" "$CONFIG_PATH" || die "Could not set hostname in $CONFIG_PATH"
+sed -i "s/SET_EMAIL_HERE/${CONF_EMAIL_SED}/g" "$CONFIG_PATH" || die "Could not set alert email in $CONFIG_PATH"
+
+# csm install generates the token with crypto/rand and writes it atomically.
+# Read that exact value so the success message never prints an unused token.
+AUTH_TOKEN=$(sed -n 's/^[[:space:]]*auth_token:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_PATH" | head -n1)
+if [ "$CONFIG_PREEXISTED" = "0" ]; then
+    [ -n "$AUTH_TOKEN" ] || die "csm install did not write a WebUI auth token"
+elif [ -z "$AUTH_TOKEN" ]; then
+    AUTH_TOKEN="(legacy token disabled; use a configured scoped token)"
 fi
 
 # Validate
-"$BINARY_PATH" validate 2>/dev/null || echo "  WARNING: Config has issues. Run: /opt/csm/csm validate"
+if ! "$BINARY_PATH" validate; then
+    die "Generated config is invalid; installation is incomplete"
+fi
 
 echo ""
 echo "  ====================================="

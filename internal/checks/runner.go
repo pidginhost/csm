@@ -217,6 +217,7 @@ var runnerFindingNames = map[string][]string{
 	"perf_wp_cron":          {"perf_wp_cron"},
 	"perf_wp_transients":    {"perf_wp_transients"},
 	"phishing":              {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
+	"yara_deep":             {"yara_match_scheduled", "yara_scan_incomplete"},
 	"php_config_changes":    {"php_config_change"},
 	"php_content":           {"obfuscated_php", "suspicious_php_content"},
 	"php_processes":         {"php_suspicious_execution"},
@@ -275,6 +276,7 @@ var heavyChecks = map[string]bool{
 	"php_content": true,
 	"file_index":  true,
 	"phishing":    true,
+	"yara_deep":   true,
 }
 
 // timeoutFor returns the per-check execution budget. Heavy filesystem
@@ -341,6 +343,7 @@ func deepChecks() []namedCheck {
 		{"wp_core", CheckWPCore},
 		{"file_index", CheckFileIndex},
 		{"php_content", CheckPHPContent},
+		{"yara_deep", CheckYARADeep},
 		{"phishing", CheckPhishing},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
@@ -377,6 +380,7 @@ func deepChecks() []namedCheck {
 
 func reducedDeepChecks() []namedCheck {
 	return []namedCheck{
+		{"yara_deep", CheckYARADeep},
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
@@ -460,6 +464,7 @@ var latestVolatileCheckNames = []string{
 	"auto_block",
 	"auto_response",
 	"challenge_route",
+	"check_panic",
 	"check_timeout",
 }
 
@@ -640,6 +645,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	scanCtx, truncations := withAccountScanTruncationCollector(parent)
+	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -658,11 +664,10 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	for _, nc := range enabledChecks {
 		wg.Add(1)
 		c := nc
-		// Check functions run against user filesystem content (unparsed
-		// PHP, crafted archives, foreign encodings) so a panic here is
-		// plausible. SafeGo captures it and surfaces as a check_timeout
-		// finding on the outer select, keeping the scan and the daemon
-		// alive.
+		// Check functions run against user filesystem content (unparsed PHP,
+		// crafted archives, foreign encodings), so contain both a panic in the
+		// runner and one inside the check execution. The inner recovery reports
+		// check_panic immediately with a stack trace.
 		obs.SafeGo("check-runner", func() {
 			defer wg.Done()
 			select {
@@ -692,14 +697,31 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
 			ctx, cancel := context.WithTimeout(scanCtx, budget)
-			done := make(chan []alert.Finding, 1)
 			start := time.Now()
-			obs.SafeGo("check-exec", func() {
-				done <- c.fn(ctx, cfg, store)
+			done := executeCheckAsync("check-exec", func() []alert.Finding {
+				return c.fn(ctx, cfg, store)
 			})
 
 			select {
-			case results := <-done:
+			case outcome := <-done:
+				if outcome.panicErr != "" {
+					cancel()
+					if throttleReserved {
+						store.ReleaseThrottle(c.name)
+					}
+					observeCheckDuration(c.name, tier, time.Since(start))
+					mu.Lock()
+					findings = append(findings, alert.Finding{
+						Severity:  alert.High,
+						Check:     "check_panic",
+						Message:   fmt.Sprintf("Check '%s' stopped after an internal panic", c.name),
+						Details:   outcome.panicErr,
+						Timestamp: time.Now(),
+					})
+					mu.Unlock()
+					return
+				}
+				results := outcome.findings
 				if ctx.Err() != nil {
 					cancel()
 					if throttleReserved {
@@ -722,7 +744,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				cancel()
 				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
-				completedChecks = append(completedChecks, c)
+				if !incompleteChecks.contains(c.name) {
+					completedChecks = append(completedChecks, c)
+				}
 				if len(results) > 0 {
 					findings = append(findings, results...)
 				}

@@ -3,17 +3,22 @@ package alert
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestSendPhpanelWebhook_SignsBody(t *testing.T) {
@@ -115,11 +120,12 @@ func TestSendPhpanelWebhook_4xxReturnsError(t *testing.T) {
 }
 
 func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
 	var requests int32
 	var signatures []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
 		signatures = append(signatures, r.Header.Get("X-CSM-Signature"))
+		atomic.AddInt32(&requests, 1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -139,9 +145,7 @@ func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
 	if err := Dispatch(cfg, findings); err != nil {
 		t.Fatal(err)
 	}
-	if atomic.LoadInt32(&requests) != 2 {
-		t.Fatalf("requests = %d, want 2", requests)
-	}
+	waitForWebhookRequests(t, &requests, 2)
 	for _, sig := range signatures {
 		if !strings.HasPrefix(sig, "sha256=") {
 			t.Fatalf("missing phpanel signature in %q", sig)
@@ -150,6 +154,7 @@ func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
 }
 
 func TestDispatchPhpanelWebhookBypassesOperatorRateLimit(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&requests, 1)
@@ -176,15 +181,14 @@ func TestDispatchPhpanelWebhookBypassesOperatorRateLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := atomic.LoadInt32(&requests); got != 3 {
-		t.Fatalf("phpanel webhook requests = %d, want 3", got)
-	}
+	waitForWebhookRequests(t, &requests, 3)
 	if got := readRateLimitCount(t, cfg.StatePath); got != 0 {
 		t.Fatalf("rate-limit count = %d, want 0", got)
 	}
 }
 
 func TestDispatchPhpanelWebhookBypassesBlockedAlertSuppression(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
 	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&requests, 1)
@@ -212,13 +216,14 @@ func TestDispatchPhpanelWebhookBypassesBlockedAlertSuppression(t *testing.T) {
 	if err := Dispatch(cfg, []Finding{finding}); err != nil {
 		t.Fatal(err)
 	}
-	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Fatalf("phpanel webhook requests = %d, want 1", got)
-	}
+	waitForWebhookRequests(t, &requests, 1)
 }
 
-func TestDispatchPhpanelWebhookErrorIsReturned(t *testing.T) {
+func TestDispatchPhpanelWebhookErrorRemainsQueuedForRetry(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
+	var requests int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
@@ -230,11 +235,285 @@ func TestDispatchPhpanelWebhookErrorIsReturned(t *testing.T) {
 	cfg.Alerts.Webhook.URL = srv.URL
 	cfg.Alerts.Webhook.HMACSecret = "secret"
 
-	err := Dispatch(cfg, []Finding{{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()}})
-	if err == nil {
-		t.Fatal("expected phpanel webhook error")
+	if err := Dispatch(cfg, []Finding{{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()}}); err != nil {
+		t.Fatalf("durable enqueue failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "phpanel webhook") {
-		t.Fatalf("err = %v, want phpanel webhook context", err)
+	waitForWebhookRequests(t, &requests, 1)
+	if depth := phpanelQueueDepthForTest(cfg.StatePath); depth != 1 {
+		t.Fatalf("failed webhook queue depth = %d, want 1", depth)
+	}
+}
+
+type blockingWebhookTransport struct {
+	release <-chan struct{}
+}
+
+func (b blockingWebhookTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	<-b.release
+	return nil, errors.New("collector unavailable")
+}
+
+func TestDispatchPhpanelWebhookDoesNotWaitForNetwork(t *testing.T) {
+	release := make(chan struct{})
+	restore := SetWebhookTransportForTest(blockingWebhookTransport{release: release})
+	t.Cleanup(restore)
+	t.Cleanup(func() {
+		close(release)
+		closePhpanelQueuesForTest()
+	})
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = "https://panel.invalid/findings"
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+
+	started := time.Now()
+	if err := Dispatch(cfg, []Finding{{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()}}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("Dispatch blocked on phpanel network for %s", elapsed)
+	}
+	if depth := phpanelQueueDepthForTest(cfg.StatePath); depth != 1 {
+		t.Fatalf("durable phpanel queue depth = %d, want 1", depth)
+	}
+}
+
+func TestPhpanelQueueBatchKeepsNewestItemsAtLimit(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.Webhook.URL = "https://panel.invalid/findings"
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	queue, err := phpanelQueueFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []queuedPhpanelFinding{
+		{Finding: Finding{Check: "a"}, Timestamp: time.Now()},
+		{Finding: Finding{Check: "b"}, Timestamp: time.Now()},
+		{Finding: Finding{Check: "c"}, Timestamp: time.Now()},
+	}
+	dropped, err := queue.enqueueBatch(items, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+	checks := phpanelQueuedChecksForTest(t, queue)
+	if !slices.Equal(checks, []string{"b", "c"}) {
+		t.Fatalf("queued checks = %v, want newest batch entries [b c]", checks)
+	}
+}
+
+func TestPhpanelQueueQuarantinesMalformedEntryAndContinues(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	queue, err := phpanelQueueFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(phpanelQueueBucket)
+		seq, err := bucket.NextSequence()
+		if err != nil {
+			return err
+		}
+		var key [8]byte
+		binary.BigEndian.PutUint64(key[:], seq)
+		return bucket.Put(key[:], []byte("not-json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.enqueueBatch([]queuedPhpanelFinding{{Finding: Finding{Check: "valid"}, Timestamp: time.Now()}}, phpanelQueueLimit); err != nil {
+		t.Fatal(err)
+	}
+
+	queue.drainQueued()
+
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("delivered requests = %d, want 1 after malformed entry", got)
+	}
+	if depth := phpanelQueueDepthForTest(cfg.StatePath); depth != 0 {
+		t.Fatalf("active queue depth = %d, want 0", depth)
+	}
+	if quarantined := phpanelQuarantineDepthForTest(t, queue); quarantined != 1 {
+		t.Fatalf("quarantined queue depth = %d, want 1", quarantined)
+	}
+}
+
+func TestPhpanelQueueBoundsMalformedEntryQuarantine(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.Webhook.URL = "https://panel.invalid/findings"
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	queue, err := phpanelQueueFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodeErr := errors.New("malformed record")
+	const limit = 3
+	for i := 1; i <= limit+1; i++ {
+		var key [8]byte
+		binary.BigEndian.PutUint64(key[:], uint64(i)) // #nosec G115 -- bounded positive test loop.
+		payload := []byte("bad")
+		if err := queue.db.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket(phpanelQueueBucket).Put(key[:], payload)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := queue.quarantineMalformedWithLimit(key[:], payload, decodeErr, limit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if depth := phpanelQuarantineDepthForTest(t, queue); depth != limit {
+		t.Fatalf("quarantine depth = %d, want bounded depth %d", depth, limit)
+	}
+	if err := queue.db.View(func(tx *bolt.Tx) error {
+		var oldest [8]byte
+		binary.BigEndian.PutUint64(oldest[:], 1)
+		if tx.Bucket(phpanelQuarantineBucket).Get(oldest[:]) != nil {
+			t.Fatal("oldest malformed record was not evicted")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigurePhpanelQueueDrainsPendingAfterRestart(t *testing.T) {
+	statePath := t.TempDir()
+	release := make(chan struct{})
+	restore := SetWebhookTransportForTest(blockingWebhookTransport{release: release})
+
+	cfg := &config.Config{StatePath: statePath, Hostname: "host"}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = "https://panel.invalid/findings"
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	if err := Dispatch(cfg, []Finding{{Check: "pending", Severity: Critical}}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	closePhpanelQueuesForTest()
+	restore()
+
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	cfg.Alerts.Webhook.URL = srv.URL
+	if err := ConfigurePhpanelQueue(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(closePhpanelQueuesForTest)
+	waitForWebhookRequests(t, &requests, 1)
+	waitForPhpanelQueueDepth(t, statePath, 0)
+}
+
+func TestEnqueueWithStaleConfigDoesNotUndoReloadedDeliveryConfig(t *testing.T) {
+	t.Cleanup(closePhpanelQueuesForTest)
+	statePath := t.TempDir()
+	oldCfg := &config.Config{StatePath: statePath, Hostname: "old-host"}
+	oldCfg.Alerts.Webhook.Enabled = true
+	oldCfg.Alerts.Webhook.Type = "phpanel"
+	oldCfg.Alerts.Webhook.URL = "https://old.invalid/findings"
+	oldCfg.Alerts.Webhook.HMACSecret = "old-secret"
+	if err := ConfigurePhpanelQueue(oldCfg); err != nil {
+		t.Fatal(err)
+	}
+	newCfg := *oldCfg
+	newCfg.Hostname = "new-host"
+	newCfg.Alerts.Webhook.URL = "https://new.invalid/findings"
+	newCfg.Alerts.Webhook.HMACSecret = "new-secret"
+	if err := ConfigurePhpanelQueue(&newCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueuePhpanelFindings(oldCfg, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	absolute, err := filepath.Abs(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phpanelQueues.Lock()
+	queue := phpanelQueues.byState[absolute]
+	phpanelQueues.Unlock()
+	if queue == nil {
+		t.Fatal("phpanel queue was not created")
+	}
+	queue.cfgMu.RLock()
+	delivery := queue.cfg
+	queue.cfgMu.RUnlock()
+	if delivery.hostname != "new-host" || delivery.url != "https://new.invalid/findings" || delivery.hmacSecret != "new-secret" {
+		t.Fatalf("delivery config reverted after stale enqueue: %+v", delivery)
+	}
+}
+
+func phpanelQueuedChecksForTest(t *testing.T, queue *phpanelQueue) []string {
+	t.Helper()
+	var checks []string
+	if err := queue.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(phpanelQueueBucket).ForEach(func(_, value []byte) error {
+			var item queuedPhpanelFinding
+			if err := json.Unmarshal(value, &item); err != nil {
+				return err
+			}
+			checks = append(checks, item.Finding.Check)
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return checks
+}
+
+func phpanelQuarantineDepthForTest(t *testing.T, queue *phpanelQueue) int {
+	t.Helper()
+	depth := 0
+	if err := queue.db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(phpanelQuarantineBucket)
+		if bucket != nil {
+			depth = bucket.Stats().KeyN
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return depth
+}
+
+func waitForWebhookRequests(t *testing.T, requests *int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(requests) != want && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(requests); got != want {
+		t.Fatalf("phpanel webhook requests = %d, want %d", got, want)
+	}
+}
+
+func waitForPhpanelQueueDepth(t *testing.T, statePath string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for phpanelQueueDepthForTest(statePath) != want && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := phpanelQueueDepthForTest(statePath); got != want {
+		t.Fatalf("phpanel queue depth = %d, want %d", got, want)
 	}
 }

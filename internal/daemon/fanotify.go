@@ -100,6 +100,8 @@ type FileMonitor struct {
 	// so a sustained storm does not flood the alert channel.
 	overflowReportMu   sync.Mutex
 	lastOverflowReport time.Time
+	yaraErrorReportMu  sync.Mutex
+	lastYARAError      time.Time
 
 	// C4 - pipe for epoll stop signaling
 	pipeFds    [2]int // [0]=read, [1]=write
@@ -1820,7 +1822,11 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 	}
 
 	if yaraScanner := yara.Active(); yaraScanner != nil {
-		matches := yaraScanner.ScanBytes(data)
+		matches, err := yara.ScanBytesChecked(yaraScanner, data)
+		if err != nil {
+			fm.reportYARAScanError(path, err)
+			return false
+		}
 		if len(matches) > 0 {
 			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
 				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
@@ -1830,6 +1836,19 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 	}
 
 	return false
+}
+
+func (fm *FileMonitor) reportYARAScanError(path string, err error) {
+	fm.yaraErrorReportMu.Lock()
+	if !fm.lastYARAError.IsZero() && time.Since(fm.lastYARAError) < time.Minute {
+		fm.yaraErrorReportMu.Unlock()
+		return
+	}
+	fm.lastYARAError = time.Now()
+	fm.yaraErrorReportMu.Unlock()
+	fm.sendAlert(alert.High, "yara_scan_incomplete",
+		"YARA real-time scan could not inspect a changed file",
+		fmt.Sprintf("File: %s\nError: %v", path, err))
 }
 
 // M7 - sendAlert uses droppedAlerts counter, separate from droppedEvents.

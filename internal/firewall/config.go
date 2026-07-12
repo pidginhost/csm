@@ -72,6 +72,13 @@ type FirewallConfig struct {
 	DOSExemptKnownMailProviders *bool    `yaml:"dos_exempt_known_mail_providers"`
 }
 
+func effectiveIPv6Ports(ipv4, ipv6 []int) []int {
+	if len(ipv6) > 0 {
+		return ipv6
+	}
+	return ipv4
+}
+
 // ExemptKnownMailProviders reports whether bundled mail-provider ranges are
 // included in the DoS-exempt set. Defaults to true when unset.
 func (c *FirewallConfig) ExemptKnownMailProviders() bool {

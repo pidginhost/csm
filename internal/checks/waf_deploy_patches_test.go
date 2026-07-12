@@ -189,6 +189,39 @@ func TestMergeModSecUserConfSection_PreservesBytesOutsideSection(t *testing.T) {
 	}
 }
 
+func TestRemoveModSecUserConfSectionsPreservesOperatorContent(t *testing.T) {
+	after := "# Operator rule after CSM\nSecAction \"id:100002,phase:1,pass\"\n"
+	existing := []byte(vpTestOperator + "\n" + vpTestSection(vpTestSrcV2) +
+		"# CSM overrides - managed by CSM rule management\n" +
+		"Include /etc/apache2/conf.d/modsec/modsec2.csm-overrides.conf\n" + after)
+
+	cleaned, changed := RemoveModSecUserConfSections(existing)
+
+	if !changed {
+		t.Fatal("CSM sections were present but removal reported no change")
+	}
+	want := vpTestOperator + "\n" + after
+	if string(cleaned) != want {
+		t.Fatalf("cleaned ModSecurity config = %q, want %q", cleaned, want)
+	}
+}
+
+func TestRemoveModSecUserConfSectionsLeavesOperatorOnlyFileUnchanged(t *testing.T) {
+	existing := []byte(vpTestOperator)
+	cleaned, changed := RemoveModSecUserConfSections(existing)
+	if changed || string(cleaned) != string(existing) {
+		t.Fatalf("operator-only config changed: changed=%t content=%q", changed, cleaned)
+	}
+}
+
+func TestRemoveModSecUserConfSectionsRemovesDuplicateManagedBlocks(t *testing.T) {
+	existing := []byte(vpTestOperator + "\n" + vpTestSection(vpTestSrcV1) + vpTestSection(vpTestSrcV2))
+	cleaned, changed := RemoveModSecUserConfSections(existing)
+	if !changed || string(cleaned) != vpTestOperator+"\n" {
+		t.Fatalf("duplicate managed blocks not removed: changed=%t content=%q", changed, cleaned)
+	}
+}
+
 func TestMergeModSecUserConfSection_MigratesLegacyAppend(t *testing.T) {
 	existing := []byte(vpTestOperator + "\n\n" + vpTestSrcV1)
 

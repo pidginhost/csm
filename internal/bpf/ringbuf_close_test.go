@@ -4,6 +4,7 @@ package bpf
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,64 @@ import (
 
 	"github.com/cilium/ebpf/ringbuf"
 )
+
+type transientRingReader struct {
+	mu     sync.Mutex
+	reads  int
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (f *transientRingReader) Read() (ringbuf.Record, error) {
+	f.mu.Lock()
+	f.reads++
+	read := f.reads
+	f.mu.Unlock()
+	switch read {
+	case 1:
+		return ringbuf.Record{}, errors.New("temporary epoll failure")
+	case 2:
+		return ringbuf.Record{RawSample: []byte{42}}, nil
+	default:
+		<-f.closed
+		return ringbuf.Record{}, ringbuf.ErrClosed
+	}
+}
+
+func (f *transientRingReader) Close() error {
+	f.once.Do(func() { close(f.closed) })
+	return nil
+}
+
+func TestReaderRecoversAfterTransientReadError(t *testing.T) {
+	f := &transientRingReader{closed: make(chan struct{})}
+	r := &Reader[int]{
+		rb:     f,
+		decode: func(data []byte) (int, error) { return int(data[0]), nil },
+		out:    make(chan int, 1),
+		errs:   make(chan error, 1),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	select {
+	case err := <-r.Errors():
+		if err == nil || err.Error() != "temporary epoll failure" {
+			t.Fatalf("reader error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transient read error was not reported")
+	}
+	select {
+	case event := <-r.Events():
+		if event != 42 {
+			t.Fatalf("event = %d, want 42", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reader stopped instead of recovering")
+	}
+}
 
 // fakeRingReader stands in for *ringbuf.Reader so the shutdown path can be
 // tested without a privileged BPF map. Read blocks until Close unblocks it.

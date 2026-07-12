@@ -19,15 +19,15 @@ func TestRunAccountScanCheck_RecoversPanic(t *testing.T) {
 	// panic is plausible. RunAccountScan is reachable from the WebUI inside
 	// the daemon process; an unrecovered panic in a check goroutine would
 	// crash the whole daemon. The per-check runner must contain the panic
-	// and surface it as a timeout finding instead.
+	// and surface the actual failure instead of holding a worker until timeout.
 	panicCheck := namedCheck{"boom", func(context.Context, *config.Config, *state.Store) []alert.Finding {
 		panic("crafted input blew up the parser")
 	}}
 
 	got := runAccountScanCheck(context.Background(), panicCheck, &config.Config{}, nil, 100*time.Millisecond)
 
-	if len(got) != 1 || got[0].Check != "check_timeout" {
-		t.Fatalf("panicking check must yield a single check_timeout finding, got %+v", got)
+	if len(got) != 1 || got[0].Check != "check_panic" {
+		t.Fatalf("panicking check must yield a single check_panic finding, got %+v", got)
 	}
 }
 

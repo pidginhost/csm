@@ -159,3 +159,67 @@ func TestLogWatcherRunClosesFileOnStop(t *testing.T) {
 		t.Fatal("Run must close the watcher file on exit, but it is still open")
 	}
 }
+
+func TestLogWatcherWaitsForCompleteLineBeforeAdvancingOffset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	w, err := NewLogWatcher(path, &config.Config{}, func(line string, _ *config.Config) []alert.Finding {
+		lines = append(lines, line)
+		return nil
+	}, make(chan alert.Finding, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("authentication fail"); err != nil {
+		t.Fatal(err)
+	}
+	w.readNewLines()
+	if len(lines) != 0 {
+		t.Fatalf("partial line was dispatched: %v", lines)
+	}
+	if w.offset != 0 {
+		t.Fatalf("offset advanced over partial line to %d", w.offset)
+	}
+
+	if _, err := f.WriteString("ed for alice\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w.readNewLines()
+	if len(lines) != 1 || lines[0] != "authentication failed for alice" {
+		t.Fatalf("completed lines = %v, want one reconstructed line", lines)
+	}
+}
+
+func TestLogWatcherAdvancesOffsetPastCompleteBlankLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tail.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewLogWatcher(path, &config.Config{}, func(string, *config.Config) []alert.Finding {
+		t.Fatal("blank line must not reach the handler")
+		return nil
+	}, make(chan alert.Finding, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+	if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.readNewLines()
+	if w.offset != 1 {
+		t.Fatalf("offset after complete blank line = %d, want 1", w.offset)
+	}
+}

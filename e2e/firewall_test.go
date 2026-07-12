@@ -57,22 +57,23 @@ func TestNFTablesEngineLifecycle(t *testing.T) {
 	t.Run("AllowRemove", func(t *testing.T) {
 		err := engine.AllowIP("10.99.99.1", "integration-test")
 		if err != nil {
-			// nftables flush can fail in container/CI environments
-			t.Logf("AllowIP: %v (non-fatal in CI)", err)
+			t.Fatalf("AllowIP: %v", err)
 		}
 		err = engine.RemoveAllowIP("10.99.99.1")
 		if err != nil {
-			t.Logf("RemoveAllowIP: %v (non-fatal in CI)", err)
+			t.Fatalf("RemoveAllowIP: %v", err)
 		}
 	})
 
 	t.Run("TempAllow", func(t *testing.T) {
 		err := engine.TempAllowIP("10.99.99.2", "temp-test", 5*time.Minute)
 		if err != nil {
-			t.Logf("TempAllowIP: %v (non-fatal in CI)", err)
+			t.Fatalf("TempAllowIP: %v", err)
 		}
 		cleaned := engine.CleanExpiredAllows()
-		_ = cleaned
+		if cleaned != 0 {
+			t.Fatalf("fresh temporary allow was cleaned early: %d", cleaned)
+		}
 	})
 
 	t.Run("BlockSubnet", func(t *testing.T) {

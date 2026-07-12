@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,12 +42,24 @@ func TestFanotifyDetectsPHPWrite(t *testing.T) {
 	}
 	defer os.Remove(phpPath)
 
-	// Wait for alert (up to 10 seconds)
-	select {
-	case f := <-ch:
-		t.Logf("Received alert: check=%s message=%s", f.Check, f.Message)
-	case <-time.After(10 * time.Second):
-		t.Error("no alert received within 10s — fanotify may not be watching /tmp")
+	// Ignore unrelated host activity and wait up to 10 seconds for the seeded
+	// file's finding.
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case f := <-ch:
+			if f.FilePath != phpPath && !strings.Contains(f.Message, phpPath) {
+				continue
+			}
+			if f.Severity != alert.Critical {
+				t.Fatalf("seeded webshell severity = %v, want critical", f.Severity)
+			}
+			return
+		case <-timer.C:
+			t.Error("no alert received within 10s; fanotify may not be watching /tmp")
+			return
+		}
 	}
 }
 
@@ -85,14 +98,29 @@ func TestFanotifyIgnoresNonPHP(t *testing.T) {
 
 func TestSpoolWatcherCreateAndStop(t *testing.T) {
 	ch := make(chan alert.Finding, 50)
-	cfg := &config.Config{}
+	cfg := &config.Config{StatePath: t.TempDir()}
+	spoolRoot := "/var/spool/exim"
+	spoolInput := spoolRoot + "/input"
+	_, rootErr := os.Stat(spoolRoot)
+	_, inputErr := os.Stat(spoolInput)
+	if err := os.MkdirAll(spoolInput, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if os.IsNotExist(inputErr) {
+			_ = os.RemoveAll(spoolInput)
+		}
+		if os.IsNotExist(rootErr) {
+			_ = os.Remove(spoolRoot)
+		}
+	})
 
 	sw, err := daemon.NewSpoolWatcher(cfg, ch, nil, nil)
 	if err != nil {
-		t.Skipf("SpoolWatcher not available: %v", err)
+		t.Fatalf("SpoolWatcher unavailable on integration host: %v", err)
 	}
 	if sw == nil {
-		t.Skip("SpoolWatcher returned nil")
+		t.Fatal("SpoolWatcher returned nil")
 	}
 
 	// Just verify it can be created and stopped without panic

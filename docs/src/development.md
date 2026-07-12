@@ -77,9 +77,9 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 | **lint** | golangci-lint, gofmt, gosec (blocking), govulncheck |
 | **test** | `go test -v -race -timeout=300s -covermode=atomic -coverprofile -coverpkg=./internal/... ./...` |
 | **build-image** | Build CSM builder Docker image with YARA-X (manual trigger) |
-| **build** | Two architectures: amd64 with YARA-X CGO, arm64 pure Go |
+| **build** | amd64 and arm64 release binaries with YARA-X CGO and the `yara journal bpf` build tags. arm64 builds use QEMU/buildx. |
 | **package** | RPM + DEB via nFPM |
-| **integration** | Spin up AlmaLinux + Ubuntu cloud servers via phctl, install the pipeline-built amd64 packages, run the integration test binary on both hosts, collect coverage. Manual on `main`; automatic on release tags |
+| **integration** | Spin up AlmaLinux, Ubuntu, and the configured clean cPanel image via phctl, install the pipeline-built amd64 packages, run the integration test binary, and collect coverage. `main` can run a smaller manual matrix; release tags require cPanel coverage. |
 | **sign** | Detached signatures on release artifacts |
 | **publish** | Internal GitLab Generic Package Registry (versioned + `latest`) |
 | **repo** | Publish RPM/DEB to the public `mirrors.pidginhost.com` apt/dnf repos |
@@ -99,6 +99,10 @@ To cut a release:
    git push origin main vX.Y.Z
    ```
 3. Wait. The tag pipeline runs integration, publishes packages to the mirror, creates the GitHub release, and uploads every artifact including the fresh `merged-coverage.out`. No manual pipeline clicks needed.
+
+Tag pipelines require `INTEGRATION_CPANEL_IMAGE` to name a clean cPanel CI
+image. `INTEGRATION_CPANEL_PACKAGE` optionally selects its compute package and
+defaults to `cloudv-1`.
 
 The coverage badge rebuilds automatically once the GitHub release exists, because the Pages workflow fetches `merged-coverage.out` from the latest release that carries one (it walks back through releases if the newest is missing the asset).
 
@@ -215,8 +219,8 @@ Testing:
   standard `TestMain` + env-var helper-process pattern, including a
   real `SIGKILL`-driven signal-death test that exercises the
   `syscall.WaitStatus.Signaled()` branch.
-- Integration: staged in the GitLab pipeline's `integration` stage
-  against AlmaLinux + Ubuntu cloud servers.
+- Integration: staged in the GitLab pipeline's `integration` stage against
+  AlmaLinux, Ubuntu, and the configured clean cPanel release image.
 
 ## Building the Documentation
 

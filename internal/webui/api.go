@@ -51,7 +51,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 			"uptime":           time.Since(s.startTime).String(),
 			"started_at":       s.startTime.Format(time.RFC3339),
 			"started_at_token": daemonStartToken(s.startTime),
-			"rules_loaded":     s.sigCount,
+			"rules_loaded":     s.signatureCount(),
 			"scan_running":     scanning,
 			"last_scan_time":   lastScan,
 			"status":           "down",
@@ -67,7 +67,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"uptime_sec":       snap.UptimeSec,
 		"started_at":       snap.StartedAt.Format(time.RFC3339),
 		"started_at_token": daemonStartToken(snap.StartedAt),
-		"rules_loaded":     s.sigCount,
+		"rules_loaded":     s.signatureCount(),
 		"scan_running":     scanning,
 		// last_scan_time is the legacy key kept for older clients
 		// (cphulk dashboard, status_check.go). latest_scan mirrors the
@@ -102,7 +102,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		openBySev = s.incidentCorrelator.OpenCountsBySeverity()
 	}
 	resp["incidents_open_by_severity"] = openBySev
-	resp["security_posture"] = securityPosture(operationalProblems(s.sigCount, snap), openBySev["critical"], openBySev["high"])
+	resp["security_posture"] = securityPosture(operationalProblems(s.signatureCount(), snap), openBySev["critical"], openBySev["high"])
 
 	if !snap.Update.CheckedAt.IsZero() {
 		resp["update"] = snap.Update
@@ -837,7 +837,7 @@ func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 		"daemon_mode":    true,
 		"uptime":         time.Since(s.startTime).String(),
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
-		"rules_loaded":   s.sigCount,
+		"rules_loaded":   s.signatureCount(),
 		"fanotify":       s.fanotifyActive,
 		"log_watchers":   s.logWatcherCount,
 	}

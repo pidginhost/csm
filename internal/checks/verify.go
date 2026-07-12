@@ -236,7 +236,7 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 			return true, fmt.Sprintf("%d signature match(es)", len(hits)), snap.sha256, nil
 		}
 		return false, "", snap.sha256, nil
-	case "yara_match_realtime":
+	case "yara_match_realtime", "yara_match_scheduled":
 		y := contentYARAScanner()
 		if y == nil || y.RuleCount() == 0 {
 			return false, "", "", fmt.Errorf("YARA scanner unavailable")

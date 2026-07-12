@@ -16,6 +16,22 @@ file.
 
 ---
 
+## Release readiness gates
+
+These are release controls, not forward-looking feature work:
+
+- [x] Tag builds require signed amd64 and arm64 binaries and packages.
+- [x] Integration coverage must merge into the published coverage profile.
+- [x] Tag integration requires a clean cPanel image, verifies cPanel is
+  installed, installs the current pipeline package, and runs the integration
+  binary.
+- [x] Public release creation is blocked until assets, signatures, and coverage
+  pass preflight validation.
+- [ ] Provision and maintain the clean cPanel image referenced by the
+  `INTEGRATION_CPANEL_IMAGE` CI variable.
+
+---
+
 ## 2. `csm support-bundle` command
 
 **Status:** planned. Triage workflow: operators today grep journal +

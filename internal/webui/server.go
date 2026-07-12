@@ -109,14 +109,17 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
-	loginMu        sync.Mutex
-	loginAttempts  map[string][]time.Time
-	apiMu          sync.Mutex
-	apiRequests    map[string][]time.Time // per-IP API rate limiting
-	scanMu         sync.Mutex
-	scanRunning    bool       // only one scan at a time
-	modSecApplyMu  sync.Mutex // serializes modsec rules apply (write+reload+rollback)
-	verifiedBotsMu sync.Mutex // serializes verified-bots save (write+reload)
+	loginMu          sync.Mutex
+	loginAttempts    map[string][]time.Time
+	apiMu            sync.Mutex
+	apiRequests      map[string][]time.Time // per-IP API rate limiting
+	scanMu           sync.Mutex
+	scanRunning      bool       // only one scan at a time
+	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+	verifiedBotsMu   sync.Mutex // serializes verified-bots save (write+reload)
+	settingsSaveMu   sync.Mutex // serializes config ETag check through atomic save
+	sigCountMu       sync.RWMutex
+	settingsSaveHook func()
 
 	provider health.Provider // set by Daemon when it starts the WebUI
 
@@ -588,7 +591,15 @@ func (s *Server) Broadcast(_ []alert.Finding) {}
 
 // SetSigCount sets the loaded signature count for the status API.
 func (s *Server) SetSigCount(count int) {
+	s.sigCountMu.Lock()
 	s.sigCount = count
+	s.sigCountMu.Unlock()
+}
+
+func (s *Server) signatureCount() int {
+	s.sigCountMu.RLock()
+	defer s.sigCountMu.RUnlock()
+	return s.sigCount
 }
 
 // HasUI returns true if UI templates were loaded from disk.

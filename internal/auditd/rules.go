@@ -1,9 +1,19 @@
 package auditd
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 )
+
+type commandRunner func(name string, args ...string) error
+
+func runCommand(name string, args ...string) error {
+	// #nosec G204 -- production callers supply the fixed augenrules command or
+	// the absolute executable returned by exec.LookPath, never user input.
+	return exec.Command(name, args...).Run()
+}
 
 const rulesPath = "/etc/audit/rules.d/csm.rules"
 
@@ -55,13 +65,16 @@ const rules = `## Continuous Security Monitor - auditd rules
 `
 
 func Deploy() error {
+	return deployRules(rulesPath, runCommand)
+}
+
+func deployRules(path string, run commandRunner) error {
 	// #nosec G306 -- /etc/audit/rules.d/csm.rules is read by the auditd
 	// tooling (augenrules) on reload; 0640 keeps world-read off.
-	if err := os.WriteFile(rulesPath, []byte(rules), 0640); err != nil {
+	if err := os.WriteFile(path, []byte(rules), 0640); err != nil {
 		return err
 	}
-	// Reload auditd rules
-	return exec.Command("augenrules", "--load").Run()
+	return run("augenrules", "--load")
 }
 
 // EnsureDeployed compares the on-disk rules file to the embedded rules
@@ -87,7 +100,23 @@ func EnsureDeployed() (bool, error) {
 	return true, nil
 }
 
-func Remove() {
-	_ = os.Remove(rulesPath)
-	_ = exec.Command("augenrules", "--load").Run()
+func Remove() error {
+	return removeRules(rulesPath, exec.LookPath, runCommand)
+}
+
+func removeRules(path string, lookPath func(string) (string, error), run commandRunner) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing audit rules: %w", err)
+	}
+	command, err := lookPath("augenrules")
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("locating augenrules: %w", err)
+	}
+	if err := run(command, "--load"); err != nil {
+		return fmt.Errorf("reloading audit rules: %w", err)
+	}
+	return nil
 }

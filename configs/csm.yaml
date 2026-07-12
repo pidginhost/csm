@@ -1,3 +1,7 @@
+# This is a focused reference fragment for optional thresholds and integrations.
+# It is not a complete deployable configuration. Start from the packaged
+# /etc/csm/csm.yaml default and the configuration documentation.
+
 thresholds:
   # SMTP / dovecot brute-force detector (real-time, via daemon watcher)
   # Per-attacker-IP failed-auth threshold that triggers an immediate IP block.

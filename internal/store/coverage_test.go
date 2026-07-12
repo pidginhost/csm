@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	bolt "go.etcd.io/bbolt"
 )
 
 // openTestDB opens a fresh bbolt DB in a temp dir and wires a cleanup.
@@ -651,6 +652,20 @@ func TestIncrModSecRuleHitPrunesOldBuckets(t *testing.T) {
 	if hits[900200].Hits != 1 {
 		t.Errorf("only the fresh hit should be counted, got %d", hits[900200].Hits)
 	}
+}
+
+func TestGetModSecRuleHitsDeletesRuleWithOnlyExpiredBuckets(t *testing.T) {
+	db := openTestDB(t)
+	db.IncrModSecRuleHit(900201, time.Now().Add(-48*time.Hour))
+	if hits := db.GetModSecRuleHits(); len(hits) != 0 {
+		t.Fatalf("expired rule hits returned: %+v", hits)
+	}
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		if got := tx.Bucket([]byte("meta")).Get([]byte(modsecHitKey(900201))); got != nil {
+			t.Error("rule with only expired buckets remained in store")
+		}
+		return nil
+	})
 }
 
 // --- hourBucket / modsecHitKey helpers --------------------------------

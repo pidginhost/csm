@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -246,6 +247,38 @@ func TestRestoreArchive_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRestoreArchive_EmptyStateRemovesStaleDataButKeepsLock(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	sourceState := filepath.Join(src, "state")
+	targetState := filepath.Join(dst, "state")
+	if err := os.MkdirAll(sourceState, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(targetState, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetState, "stale.db"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetState, daemonStateLockFileName), []byte("lock"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := WriteBackupArchive(archive, BackupSources{StateDir: sourceState}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreBackupArchive(archive, BackupSources{StateDir: targetState}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(targetState, "stale.db")); !os.IsNotExist(err) {
+		t.Fatalf("stale state survived restore: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(targetState, daemonStateLockFileName)); err != nil || string(data) != "lock" {
+		t.Fatalf("state lock changed during restore: data=%q err=%v", data, err)
+	}
+}
+
 func TestRestoreArchive_CreatesNestedDestinationParents(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()
@@ -275,6 +308,32 @@ func TestRestoreArchive_MissingArchiveErrors(t *testing.T) {
 		ConfigPath: dir + "/csm.yaml", ConfDir: dir + "/conf.d", StateDir: dir + "/state",
 	}); err == nil {
 		t.Fatal("expected error for missing archive")
+	}
+}
+
+func TestRestoreArchive_RejectsArchiveWithoutManifest(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "no-manifest.tar.gz")
+	if err := writeArchiveWithoutManifest(archive, "csm.yaml", []byte("hostname: x\n")); err != nil {
+		t.Fatal(err)
+	}
+	err := RestoreBackupArchive(archive, BackupSources{ConfigPath: filepath.Join(t.TempDir(), "csm.yaml")})
+	if err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("restore error = %v, want missing manifest rejection", err)
+	}
+}
+
+func TestRestoreArchive_RejectsManifestWithPrefixedSchemaKey(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "bad-manifest.tar.gz")
+	badManifest := []byte("backup_ts=2026-07-12T00:00:00Z\nxschema=1\n")
+	if err := writeArchiveEntries(archive, []archiveTestEntry{
+		{name: "csm.yaml", size: 12, body: []byte("hostname: x\n")},
+		{name: "manifest.txt", size: int64(len(badManifest)), body: badManifest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := RestoreBackupArchive(archive, BackupSources{ConfigPath: filepath.Join(t.TempDir(), "csm.yaml")})
+	if err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("restore error = %v, want invalid manifest rejection", err)
 	}
 }
 
@@ -327,6 +386,180 @@ func TestRestoreArchive_RejectsOversizedEntry(t *testing.T) {
 	}
 }
 
+func TestRestoreArchive_InvalidLateEntryLeavesDestinationsUnchanged(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "invalid-late.tar.gz")
+	if err := writeArchiveEntries(archive, []archiveTestEntry{
+		{name: "csm.yaml", size: 18, body: []byte("hostname: changed\n")},
+		{name: "conf.d/../escaped.yaml", size: 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("hostname: original\n")
+	configPath := filepath.Join(dst, "csm.yaml")
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: configPath,
+		ConfDir:    filepath.Join(dst, "conf.d"),
+		StateDir:   filepath.Join(dst, "state"),
+	})
+	if err == nil {
+		t.Fatal("expected invalid archive to fail")
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("config changed before archive validation completed: got %q", got)
+	}
+}
+
+func TestRestoreArchive_CommitFailureRollsBackEarlierTargets(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := writeArchiveEntries(archive, []archiveTestEntry{
+		{name: "csm.yaml", size: 18, body: []byte("hostname: changed\n")},
+		{name: "conf.d/10.yaml", size: 14, body: []byte("value: changed")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dst, "csm.yaml")
+	confDir := filepath.Join(dst, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("hostname: original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10.yaml"), []byte("value: original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRename := renameRestorePath
+	renameRestorePath = func(oldPath, newPath string) error {
+		if newPath == confDir && strings.Contains(filepath.Base(oldPath), ".csm-restore-new-") {
+			return errors.New("injected install failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	defer func() { renameRestorePath = originalRename }()
+
+	err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: configPath,
+		ConfDir:    confDir,
+		StateDir:   filepath.Join(dst, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected install failure") {
+		t.Fatalf("restore error = %v, want injected install failure", err)
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(config) != "hostname: original\n" {
+		t.Fatalf("config was not rolled back: %q", config)
+	}
+	fragment, err := os.ReadFile(filepath.Join(confDir, "10.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(fragment) != "value: original" {
+		t.Fatalf("conf.d was not rolled back: %q", fragment)
+	}
+}
+
+func TestRestoreArchive_ReportsRollbackFailure(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := writeArchiveEntries(archive, []archiveTestEntry{
+		{name: "csm.yaml", size: 18, body: []byte("hostname: changed\n")},
+		{name: "conf.d/10.yaml", size: 14, body: []byte("value: changed")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dst, "csm.yaml")
+	confDir := filepath.Join(dst, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("hostname: original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10.yaml"), []byte("value: original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRename := renameRestorePath
+	renameRestorePath = func(oldPath, newPath string) error {
+		if newPath == confDir && strings.Contains(filepath.Base(oldPath), ".csm-restore-new-") {
+			return errors.New("injected install failure")
+		}
+		if newPath == configPath && strings.Contains(filepath.Base(oldPath), ".csm-restore-old-") {
+			return errors.New("injected rollback failure")
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	defer func() { renameRestorePath = originalRename }()
+
+	err := RestoreBackupArchive(archive, BackupSources{ConfigPath: configPath, ConfDir: confDir})
+	if err == nil || !strings.Contains(err.Error(), "injected install failure") || !strings.Contains(err.Error(), "injected rollback failure") {
+		t.Fatalf("restore error = %v, want both install and rollback failures", err)
+	}
+}
+
+type archiveTestEntry struct {
+	name string
+	size int64
+	body []byte
+}
+
+func writeArchiveEntries(archivePath string, entries []archiveTestEntry) error {
+	f, err := os.Create(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	for _, entry := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: 0o600, Size: entry.size}); err != nil {
+			return err
+		}
+		if len(entry.body) > 0 {
+			if _, err := tw.Write(entry.body); err != nil {
+				return err
+			}
+		}
+	}
+	hasManifest := false
+	for _, entry := range entries {
+		if entry.name == "manifest.txt" {
+			hasManifest = true
+			break
+		}
+	}
+	if !hasManifest {
+		manifest := []byte("backup_ts=2026-07-12T00:00:00Z\nschema=1\n")
+		if err := tw.WriteHeader(&tar.Header{Name: "manifest.txt", Mode: 0o600, Size: int64(len(manifest))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(manifest); err != nil {
+			return err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return gw.Close()
+}
+
 func writeMaliciousArchive(t *testing.T, archivePath string) error {
 	t.Helper()
 	return writeArchiveEntry(archivePath, "conf.d/../escaped.txt", 3, []byte("bad"))
@@ -360,6 +593,13 @@ func writeArchiveEntry(archivePath, name string, size int64, body []byte) error 
 	if int64(len(body)) < size {
 		return nil
 	}
+	manifest := []byte("backup_ts=2026-07-12T00:00:00Z\nschema=1\n")
+	if err = tw.WriteHeader(&tar.Header{Name: "manifest.txt", Mode: 0o600, Size: int64(len(manifest))}); err != nil {
+		return err
+	}
+	if _, err = tw.Write(manifest); err != nil {
+		return err
+	}
 	if err = tw.Close(); err != nil {
 		return err
 	}
@@ -368,4 +608,30 @@ func writeArchiveEntry(archivePath, name string, size int64, body []byte) error 
 	}
 	writersClosed = true
 	return nil
+}
+
+func writeArchiveWithoutManifest(archivePath, name string, body []byte) error {
+	f, err := os.Create(archivePath)
+	if err != nil {
+		return err
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body))}); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := tw.Write(body); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := gw.Close(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

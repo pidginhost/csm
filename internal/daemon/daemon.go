@@ -507,6 +507,7 @@ func (d *Daemon) registerFirewallMetrics() {
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	d.startTime = time.Now()
+	defer alert.ClosePhpanelQueues()
 	if d.store != nil {
 		d.store.EnsureBaseline(d.startTime)
 	}
@@ -519,6 +520,9 @@ func (d *Daemon) Run() error {
 	csmlog.Init()
 
 	csmlog.Info("CSM daemon starting")
+	if err := alert.ConfigurePhpanelQueue(d.cfg); err != nil {
+		return fmt.Errorf("initializing phpanel webhook queue: %w", err)
+	}
 
 	// Expose Go runtime memory/scheduler stats on /metrics (heap growth is
 	// observable for leak triage), and start the loopback pprof listener when
@@ -1185,6 +1189,7 @@ func (d *Daemon) Run() error {
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
+	alert.ClosePhpanelQueues()
 	d.stopAbuseReporting()
 	if d.findingBus != nil {
 		d.findingBus.Close()

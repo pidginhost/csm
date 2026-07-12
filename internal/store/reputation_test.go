@@ -4,7 +4,39 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
+
+func TestAbuseDailyCounterPrunesPreviousDates(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if got := db.IncrementAbuseQueryCount("2026-07-10"); got != 1 {
+		t.Fatalf("old date count = %d", got)
+	}
+	if got := db.IncrementAbuseQueryCount("2026-07-11"); got != 1 {
+		t.Fatalf("adjacent date count = %d", got)
+	}
+	if got := db.IncrementAbuseQueryCount("2026-07-12"); got != 1 {
+		t.Fatalf("current date count = %d", got)
+	}
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("meta"))
+		if bucket.Get([]byte(abuseDailyCountPrefix+"2026-07-10")) != nil {
+			t.Error("old daily AbuseIPDB counter was not pruned")
+		}
+		if bucket.Get([]byte(abuseDailyCountPrefix+"2026-07-11")) == nil {
+			t.Error("adjacent daily AbuseIPDB counter was pruned during UTC rollover")
+		}
+		if bucket.Get([]byte(abuseDailyCountPrefix+"2026-07-12")) == nil {
+			t.Error("current daily AbuseIPDB counter is missing")
+		}
+		return nil
+	})
+}
 
 func TestReputationGetSet(t *testing.T) {
 	db, err := Open(t.TempDir())

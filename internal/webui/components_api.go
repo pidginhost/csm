@@ -139,6 +139,7 @@ var componentCheckOrigin = map[string]string{
 	"webshell_content_realtime":                  "fanotify",
 	"webshell_realtime":                          "fanotify",
 	"yara_match_realtime":                        "fanotify",
+	"yara_match_scheduled":                       "scheduled",
 }
 
 // apiComponents returns one row per registered watcher with its live

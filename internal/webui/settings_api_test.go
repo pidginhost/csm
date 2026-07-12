@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -311,6 +314,117 @@ auto_response:
 	}
 	if loaded.Integrity.ConfigHash != resp.NewETag {
 		t.Errorf("disk config_hash = %q, new_etag = %q", loaded.Integrity.ConfigHash, resp.NewETag)
+	}
+}
+
+func TestSettingsPOSTSerializesETagCheckAndSave(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  http_scanner_action: "challenge"
+  netblock_threshold: 3
+  max_blocks_per_hour: 50
+`)
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag")
+	}
+
+	var active, maxActive atomic.Int32
+	s.settingsSaveHook = func() {
+		current := active.Add(1)
+		for {
+			max := maxActive.Load()
+			if current <= max || maxActive.CompareAndSwap(max, current) {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+		active.Add(-1)
+	}
+
+	start := make(chan struct{})
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for _, value := range []string{"75", "76"} {
+		wg.Add(1)
+		go func(value string) {
+			defer wg.Done()
+			<-start
+			req := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"max_blocks_per_hour":`+value+`}}`)
+			req.Header.Set("If-Match", etag)
+			w := httptest.NewRecorder()
+			s.apiSettingsPost(w, req)
+			codes <- w.Code
+		}(value)
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	counts := map[int]int{}
+	for code := range codes {
+		counts[code]++
+	}
+	if counts[http.StatusOK] != 1 || counts[http.StatusPreconditionFailed] != 1 {
+		t.Fatalf("concurrent save statuses = %v, want one 200 and one 412", counts)
+	}
+	if maxActive.Load() != 1 {
+		t.Fatalf("concurrent settings transactions = %d, want 1", maxActive.Load())
+	}
+}
+
+func TestSettingsPOSTRejectsETagAfterUnhashedDiskEdit(t *testing.T) {
+	s, path := newSettingsTestServer(t, "tok", `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  http_scanner_action: "challenge"
+  netblock_threshold: 3
+  max_blocks_per_hour: 50
+`)
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	staleETag := getW.Header().Get("ETag")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := bytes.Replace(data, []byte("max_blocks_per_hour: 50"), []byte("max_blocks_per_hour: 51"), 1)
+	if writeErr := os.WriteFile(path, edited, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	req := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"max_blocks_per_hour":75}}`)
+	req.Header.Set("If-Match", staleETag)
+	w := httptest.NewRecorder()
+	s.apiSettingsPost(w, req)
+	if w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("POST after unhashed disk edit status = %d, want 412; body=%s", w.Code, w.Body.String())
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(after, []byte("max_blocks_per_hour: 51")) {
+		t.Fatalf("manual disk edit was overwritten: %s", after)
 	}
 }
 

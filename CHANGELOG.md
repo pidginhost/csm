@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Firewall rules now keep IPv4 and IPv6 source, port, allow, and flood policies in their intended address families. Disabling IPv6 firewall management now leaves IPv6 traffic untouched instead of applying the inet chain policy without IPv6 rules.
+- Backups now require a stopped daemon and are written as private atomic archives. Restore validates and stages the full archive before replacement, rolls back failed changes, and reconciles stale state without replacing the daemon lock.
+- Fresh installs generate a private administrator token and fail when required service setup is incomplete. Uninstall now preserves configuration and state unless `--purge` is requested, and both paths close daemon-start races with the state lock.
+
+### Fixed
+
+- Scheduled deep scans now apply the compiled YARA rules to regular files below configured web roots. Failed or incomplete sweeps report the gap and retain earlier findings instead of treating unscanned content as clean.
+- Per-finding phpanel webhooks now use a durable asynchronous queue with retry backoff, restart recovery, bounded growth, and quarantine for malformed records. Collector outages no longer block the detection path or lose queued findings.
+- BPF readers now retry after ring-buffer failures and report the outage, while log watchers preserve partial lines across reads. Panicking or timed-out checks report immediately without purging earlier findings.
+- Concurrent settings updates no longer overwrite each other, and signature status reads are race-free. Retention sweeps now prune stale administration, verification, reputation, and ModSecurity records without turning valid cache reads into writes.
+- Platform-specific authentication logs, PHP worker names, and IPv6 port policies are now detected and applied consistently across supported hosts.
+- Uninstall now removes only CSM-owned ModSecurity sections and leaves operator-maintained rules in the shared configuration intact.
+- Release pipelines now require complete signed amd64 and arm64 assets, merged integration coverage, and a real cPanel integration image before publishing a tag. Integration checks fail on missing evidence instead of accepting partial runs.
+
 ## [3.23.2] - 2026-07-11
 
 ### Security

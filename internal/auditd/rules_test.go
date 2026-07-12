@@ -1,6 +1,11 @@
 package auditd
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,30 +40,64 @@ func TestRulesPathIsAuditDir(t *testing.T) {
 	}
 }
 
-func TestDeployReturnsErrorOnDevMachine(t *testing.T) {
-	// On non-Linux / dev machines, Deploy should fail because /etc/audit/ doesn't exist.
-	// This test exercises the function entry without requiring root/auditd.
-	err := Deploy()
-	if err == nil {
-		// If it somehow succeeded (running as root on Linux), clean up.
-		Remove()
+func TestDeployWritesRulesAndReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.rules")
+	var command []string
+	err := deployRules(path, func(name string, args ...string) error {
+		command = append([]string{name}, args...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Either way, the function didn't panic.
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != rules {
+		t.Fatal("deployed audit rules differ from the embedded rules")
+	}
+	if !slices.Equal(command, []string{"augenrules", "--load"}) {
+		t.Fatalf("reload command = %v, want [augenrules --load]", command)
+	}
 }
 
-func TestRemoveDoesNotPanic(t *testing.T) {
-	// Remove should not panic even when the file doesn't exist.
-	Remove()
+func TestRemoveMissingRulesSucceedsWithoutAugenrules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.rules")
+	runCalled := false
+	err := removeRules(path, func(string) (string, error) {
+		return "", exec.ErrNotFound
+	}, func(string, ...string) error {
+		runCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runCalled {
+		t.Fatal("reload command ran even though augenrules was absent")
+	}
 }
 
-func TestEnsureDeployedDoesNotPanic(t *testing.T) {
-	// On the dev machine /etc/audit/rules.d/csm.rules is unwritable, so
-	// EnsureDeployed returns an error rather than panicking. The test
-	// just exercises the entry point without requiring root or auditd.
-	_, err := EnsureDeployed()
-	if err == nil {
-		// Running as root on Linux with auditd installed: clean up.
-		Remove()
+func TestRemoveReportsReloadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.rules")
+	if err := os.WriteFile(path, []byte(rules), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("reload failed")
+	err := removeRules(path, func(string) (string, error) {
+		return "/usr/sbin/augenrules", nil
+	}, func(name string, args ...string) error {
+		if name != "/usr/sbin/augenrules" || !slices.Equal(args, []string{"--load"}) {
+			t.Fatalf("reload command = %s %v", name, args)
+		}
+		return want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("remove error = %v, want reload failure", err)
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("rules file remains after removal: %v", statErr)
 	}
 }
 

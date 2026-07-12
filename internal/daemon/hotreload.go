@@ -140,7 +140,19 @@ func (d *Daemon) reloadConfig() {
 			fmt.Sprintf("SIGHUP reload: account extractor update failed: %v; live config unchanged", err))
 		return
 	}
+	phpanelEnabled := newCfg.Alerts.Webhook.Enabled && newCfg.Alerts.Webhook.Type == "phpanel"
+	if phpanelEnabled {
+		if err := alert.ConfigurePhpanelQueue(newCfg); err != nil {
+			recordReloadResult(reloadResultError)
+			d.emitReloadFinding(alert.Critical, "config_reload_error",
+				fmt.Sprintf("SIGHUP reload: phpanel queue update failed: %v; live config unchanged", err))
+			return
+		}
+	}
 	publishActiveConfig(newCfg, "SIGHUP")
+	if !phpanelEnabled {
+		_ = alert.ConfigurePhpanelQueue(newCfg)
+	}
 	recordReloadResult(reloadResultSuccess)
 
 	var names []string

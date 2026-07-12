@@ -237,7 +237,7 @@ func CheckLoadAverage(ctx context.Context, cfg *config.Config, _ *state.Store) [
 }
 
 // phpWorkersByUser walks /proc and returns, per username, the cmdline samples
-// of that user's live lsphp processes. Instantaneous snapshot; callers that
+// of that user's live PHP web-worker processes. Instantaneous snapshot; callers that
 // need a count use len(result[user]).
 func phpWorkersByUser() map[string][]string {
 	cmdlinePaths, _ := osFS.Glob("/proc/[0-9]*/cmdline")
@@ -252,7 +252,7 @@ func phpWorkersByUser() map[string][]string {
 		cmdStr := strings.ReplaceAll(string(data), "\x00", " ")
 		cmdStr = strings.TrimSpace(cmdStr)
 
-		if !strings.Contains(cmdStr, "lsphp") {
+		if !isPHPWorkerCommand(cmdStr) {
 			continue
 		}
 
@@ -278,7 +278,34 @@ func phpWorkersByUser() map[string][]string {
 	return userProcs
 }
 
-// CheckPHPProcessLoad scans /proc for lsphp processes, groups them by user,
+func isPHPWorkerCommand(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	name := strings.TrimSuffix(strings.ToLower(filepath.Base(fields[0])), ":")
+	return isVersionedPHPWorkerBinary(name, "lsphp") ||
+		isVersionedPHPWorkerBinary(name, "php-cgi") ||
+		isVersionedPHPWorkerBinary(name, "php-fpm")
+}
+
+func isVersionedPHPWorkerBinary(name, base string) bool {
+	if name == base {
+		return true
+	}
+	suffix := strings.TrimPrefix(name, base)
+	if suffix == name || suffix == "" || suffix[0] < '0' || suffix[0] > '9' {
+		return false
+	}
+	for _, char := range suffix {
+		if (char < '0' || char > '9') && char != '.' {
+			return false
+		}
+	}
+	return suffix[len(suffix)-1] != '.'
+}
+
+// CheckPHPProcessLoad scans /proc for PHP web workers, groups them by user,
 // and fires Critical if total exceeds cores*multiplier, High per user if
 // individual count exceeds threshold.
 func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
@@ -300,13 +327,13 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 
 	var findings []alert.Finding
 
-	// Critical: total lsphp count exceeds cores * multiplier
+	// Critical: total PHP worker count exceeds cores * multiplier
 	critTotalThreshold := cores * cfg.Performance.PHPProcessCriticalTotalMult
 	if total > critTotalThreshold {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "perf_php_processes",
-			Message:   "Total lsphp process count exceeds critical threshold",
+			Message:   "Total PHP worker process count exceeds critical threshold",
 			Details:   fmt.Sprintf("Count: %d, Threshold: %d (cores: %d × %d)", total, critTotalThreshold, cores, cfg.Performance.PHPProcessCriticalTotalMult),
 			Timestamp: time.Now(),
 		})
@@ -323,7 +350,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 			findings = append(findings, alert.Finding{
 				Severity:  alert.High,
 				Check:     "perf_php_processes",
-				Message:   fmt.Sprintf("Excessive lsphp processes for user %s", username),
+				Message:   fmt.Sprintf("Excessive PHP worker processes for user %s", username),
 				Details:   fmt.Sprintf("Count: %d, Threshold: %d, Sample cmdlines: %s", len(procs), cfg.Performance.PHPProcessWarnPerUser, strings.Join(samples, " | ")),
 				Timestamp: time.Now(),
 			})

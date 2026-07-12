@@ -5,9 +5,12 @@ package e2e
 import (
 	"context"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -27,11 +30,13 @@ func TestCheckSuiteOnRealSystem(t *testing.T) {
 
 	// Run the critical check tier on the real system
 	checks.ForceAll = false
-	findings, _ := checks.RunTier(cfg, store, checks.TierCritical)
+	findings, purge := checks.RunTier(cfg, store, checks.TierCritical)
 	t.Logf("Critical tier produced %d findings on this host", len(findings))
-
-	// Just verify it ran without panicking — on a fresh server
-	// most checks will produce 0 or informational findings.
+	if len(purge) < 20 {
+		t.Fatalf("critical tier completed only %d check names: %v", len(purge), purge)
+	}
+	assertPurgeContains(t, purge, "shadow_change", "ssh_keys", "webshell", "firewall", "uid0_account")
+	assertNoRunnerFailures(t, findings)
 }
 
 func TestRunAllChecksOnRealSystem(t *testing.T) {
@@ -52,8 +57,13 @@ func TestRunAllChecksOnRealSystem(t *testing.T) {
 	checks.ForceAll = true
 	defer func() { checks.ForceAll = false }()
 
-	findings, _ := checks.RunAll(cfg, store)
+	findings, purge := checks.RunAll(cfg, store)
 	t.Logf("RunAll produced %d findings on this host", len(findings))
+	if len(purge) < 40 {
+		t.Fatalf("full tier completed only %d check names: %v", len(purge), purge)
+	}
+	assertPurgeContains(t, purge, "wp_core_integrity", "obfuscated_php", "phishing_page", "rpm_integrity")
+	assertNoRunnerFailures(t, findings)
 
 	// Categorize findings
 	critical, high, warning := 0, 0, 0
@@ -73,7 +83,14 @@ func TestRunAllChecksOnRealSystem(t *testing.T) {
 func TestCSMInstallVerification(t *testing.T) {
 	// Verify CSM binary exists and config is valid
 	if _, err := os.Stat("/opt/csm/csm"); err != nil {
-		t.Skip("CSM not installed — skipping install verification")
+		t.Fatalf("CSM package did not install /opt/csm/csm: %v", err)
+	}
+	versionOutput, err := exec.Command("/opt/csm/csm", "version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("packaged binary cannot execute: %v\n%s", err, versionOutput)
+	}
+	if !strings.HasPrefix(string(versionOutput), "csm ") {
+		t.Fatalf("unexpected packaged version output: %q", versionOutput)
 	}
 
 	cfgPath := "/etc/csm/csm.yaml"
@@ -87,8 +104,37 @@ func TestCSMInstallVerification(t *testing.T) {
 	if cfg.Hostname == "" {
 		t.Error("hostname should not be empty after install")
 	}
+	validateOutput, err := exec.Command("/opt/csm/csm", "validate", "--config", cfgPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("packaged config validation failed: %v\n%s", err, validateOutput)
+	}
 
 	t.Logf("CSM installed: hostname=%s", cfg.Hostname)
+}
+
+func assertNoRunnerFailures(t *testing.T, findings []alert.Finding) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Check == "check_timeout" || finding.Check == "check_panic" {
+			t.Fatalf("tier contained runner failure: %+v", finding)
+		}
+		if finding.Check == "" {
+			t.Fatalf("tier emitted finding without check name: %+v", finding)
+		}
+	}
+}
+
+func assertPurgeContains(t *testing.T, purge []string, required ...string) {
+	t.Helper()
+	present := make(map[string]bool, len(purge))
+	for _, name := range purge {
+		present[name] = true
+	}
+	for _, name := range required {
+		if !present[name] {
+			t.Errorf("completed tier purge list lacks %q: %v", name, purge)
+		}
+	}
 }
 
 func TestHardeningAuditOnRealSystem(t *testing.T) {

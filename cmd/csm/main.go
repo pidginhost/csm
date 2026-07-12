@@ -430,6 +430,24 @@ func parseInstallFlags(args []string) (phpShield, phpShieldOnly, packageMode boo
 	return phpShield, phpShieldOnly, packageMode
 }
 
+func parseUninstallFlags(args []string) (bool, error) {
+	purge := false
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--purge":
+			purge = true
+		case "--config", "--config-dir":
+			i++
+			if i >= len(args) {
+				return false, fmt.Errorf("%s requires a path", args[i-1])
+			}
+		default:
+			return false, fmt.Errorf("unknown uninstall flag %q", args[i])
+		}
+	}
+	return purge, nil
+}
+
 func runInstall() {
 	cfgPath, configExplicit := configPathFromArgs(os.Args)
 	if !configExplicit {
@@ -534,6 +552,11 @@ func runDisable() {
 }
 
 func runUninstall() {
+	purge, err := parseUninstallFlags(os.Args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Uninstall failed: %v\n", err)
+		os.Exit(2)
+	}
 	cfgPath, configExplicit := configPathFromArgs(os.Args)
 	if !configExplicit {
 		cfgPath = preferredConfigPath
@@ -543,17 +566,39 @@ func runUninstall() {
 			}
 		}
 	}
+	cfgPath, configDir, statePath, resolveErr := resolveUninstallStorage(purge, cfgPath, tryLoadConfigLite)
+	if resolveErr != nil {
+		fmt.Fprintf(os.Stderr, "Uninstall failed: cannot resolve configured storage safely: %v\n", resolveErr)
+		os.Exit(1)
+	}
 	installer := &Installer{
 		BinaryPath:     binaryPath,
 		CommandPath:    commandPath,
 		ConfigPath:     cfgPath,
-		StatePath:      defaultStatePath,
+		ConfigDir:      configDir,
+		StatePath:      statePath,
 		LogPath:        defaultLogPath,
 		ConfigExplicit: configExplicit,
 	}
-	if err := installer.Uninstall(); err != nil {
+	if err := installer.Uninstall(purge); err != nil {
 		fmt.Fprintf(os.Stderr, "Uninstall failed: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func resolveUninstallStorage(purge bool, configPath string, load func() (*config.Config, error)) (string, string, string, error) {
+	configDir := defaultConfDir
+	statePath := defaultStatePath
+	cfg, err := load()
+	switch {
+	case err == nil:
+		return cfg.ConfigFile, cfg.ConfigDir, cfg.StatePath, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return "", "", "", err
+	case purge:
+		return "", "", "", fmt.Errorf("config is missing: %w", err)
+	default:
+		return configPath, configDir, statePath, nil
 	}
 }
 

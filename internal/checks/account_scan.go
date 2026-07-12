@@ -167,8 +167,8 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 		c := nc
 		// Account checks run against user filesystem content (unparsed PHP,
 		// crafted archives, foreign encodings) so a panic is plausible.
-		// SafeGo captures it; runAccountScanCheck surfaces it as a
-		// check_timeout, keeping the scan and the daemon alive.
+		// runAccountScanCheck surfaces it as check_panic, keeping the scan and
+		// daemon alive.
 		obs.SafeGo("account-scan-runner", func() {
 			defer wg.Done()
 			sem <- struct{}{}
@@ -205,22 +205,26 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 }
 
 // runAccountScanCheck runs one check under a timeout, recovering any panic.
-// The check executes on a SafeGo goroutine, so a panic (recovered there)
-// never delivers to done and the timeout branch fires -- the same graceful
-// degradation runParallel uses, surfacing a check_timeout instead of
-// crashing the daemon that hosts the WebUI-triggered account scan.
 func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, store *state.Store, timeout time.Duration) []alert.Finding {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	done := make(chan []alert.Finding, 1)
-	obs.SafeGo("account-scan-exec", func() {
-		done <- c.fn(cctx, cfg, store)
+	done := executeCheckAsync("account-scan-exec", func() []alert.Finding {
+		return c.fn(cctx, cfg, store)
 	})
 
 	select {
-	case results := <-done:
-		return results
+	case outcome := <-done:
+		if outcome.panicErr != "" {
+			return []alert.Finding{{
+				Severity:  alert.High,
+				Check:     "check_panic",
+				Message:   fmt.Sprintf("Account scan check '%s' stopped after an internal panic", c.name),
+				Details:   outcome.panicErr,
+				Timestamp: time.Now(),
+			}}
+		}
+		return outcome.findings
 	case <-cctx.Done():
 		return []alert.Finding{{
 			Severity:  alert.Warning,

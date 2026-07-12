@@ -121,6 +121,22 @@ func TestCheckSSHLoginsWithData(t *testing.T) {
 	_ = findings
 }
 
+func TestCheckSSHLoginsUsesPlatformAuthLog(t *testing.T) {
+	original := authLogPath
+	authLogPath = func() string { return "/var/log/auth.log" }
+	t.Cleanup(func() { authLogPath = original })
+	var opened string
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		opened = name
+		return nil, os.ErrNotExist
+	}})
+
+	_ = CheckSSHLogins(context.Background(), &config.Config{}, nil)
+	if opened != "/var/log/auth.log" {
+		t.Fatalf("opened auth log = %q, want platform path", opened)
+	}
+}
+
 // --- CheckWebshells with deeper directory tree -----------------------
 
 func TestCheckWebshellsWithMultipleDirs(t *testing.T) {

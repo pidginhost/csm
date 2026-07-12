@@ -71,7 +71,8 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 }
 
 func syncParentDir(dir string) error {
-	parent, err := os.Open(dir) // #nosec G304 -- dir is derived from caller-owned target path.
+	// #nosec G304 G703 -- dir is the parent of a caller-owned target path and is opened only for fsync.
+	parent, err := os.Open(dir)
 	if err != nil {
 		return fmt.Errorf("open parent dir %s: %w", dir, err)
 	}

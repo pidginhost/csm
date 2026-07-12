@@ -57,6 +57,7 @@ func GetChallengeIPList() ChallengeIPList {
 var hardBlockChecks = map[string]bool{
 	"signature_match_realtime":    true,
 	"yara_match_realtime":         true,
+	"yara_match_scheduled":        true,
 	"webshell":                    true,
 	"backdoor_binary":             true,
 	"cross_account_malware":       true,

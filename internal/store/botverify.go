@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"time"
@@ -135,6 +136,7 @@ func (db *DB) GetBotVerify(ip net.IP, bot string) (verified, valid bool) {
 	if key == nil {
 		return false, false
 	}
+	var stored []byte
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("botverify"))
 		if b == nil {
@@ -144,12 +146,28 @@ func (db *DB) GetBotVerify(ip net.IP, bot string) (verified, valid bool) {
 		if len(val) != 9 {
 			return nil
 		}
+		stored = append([]byte(nil), val...)
 		exp := time.Unix(0, int64(binary.BigEndian.Uint64(val[1:]))) // #nosec G115 -- reinterpret stored bit pattern as signed nanos
 		if time.Now().After(exp) {
 			return nil
 		}
 		verified = val[0] == 1
 		valid = true
+		return nil
+	})
+	if valid || len(stored) != 9 {
+		return verified, valid
+	}
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("botverify"))
+		current := b.Get(key)
+		if !bytes.Equal(current, stored) {
+			return nil
+		}
+		exp := time.Unix(0, int64(binary.BigEndian.Uint64(current[1:]))) // #nosec G115 -- reinterpret stored bit pattern as signed nanos
+		if time.Now().After(exp) {
+			return b.Delete(key)
+		}
 		return nil
 	})
 	return verified, valid

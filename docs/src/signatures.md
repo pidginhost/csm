@@ -43,10 +43,18 @@ CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cm
 
 Place `.yar` or `.yara` files alongside YAML rules in `/opt/csm/rules/`. CSM compiles them at startup and uses them for:
 - Real-time fanotify file scanning
-- Deep scan filesystem sweeps
+- Scheduled deep-scan filesystem sweeps
 - Email attachment scanning
 
-Without the `yara` build tag, YARA rules are silently ignored.
+Scheduled YARA sweeps scan regular, non-empty files under configured
+`account_roots`, or cPanel `/home/*/public_html` roots when no override is
+configured. Files larger than `thresholds.full_scan_max_file_mb`, symlinks,
+and special files are skipped. An unreadable or oversized file, or a scanner
+backend error, emits `yara_scan_incomplete` and preserves findings from the
+previous complete sweep. Scheduled findings and real-time fanotify findings
+have separate ownership, so one path cannot purge the other's results.
+
+Without the `yara` build tag, YARA rules are not loaded or evaluated.
 
 ## Updating Rules
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
@@ -33,6 +34,7 @@ type Reader[T any] struct {
 	rb        ringReader
 	decode    func([]byte) (T, error)
 	out       chan T
+	errs      chan error
 	count     atomic.Uint64
 	dropped   atomic.Uint64
 	closeOnce sync.Once
@@ -56,12 +58,17 @@ func NewReader[T any](m *ebpf.Map, decode func([]byte) (T, error)) (*Reader[T], 
 		rb:     rb,
 		decode: decode,
 		out:    make(chan T, 256),
+		errs:   make(chan error, 1),
 	}, nil
 }
 
 // Events returns the channel that delivers decoded events. Closed when Run
 // returns (either ctx.Done() or rb.Close()).
 func (r *Reader[T]) Events() <-chan T { return r.out }
+
+// Errors reports one unexpected read error per outage. Run keeps retrying;
+// a successful read resets the outage gate so a later failure is reported.
+func (r *Reader[T]) Errors() <-chan error { return r.errs }
 
 // EventCount returns the total number of decoded events emitted on the channel.
 func (r *Reader[T]) EventCount() uint64 { return r.count.Load() }
@@ -75,6 +82,9 @@ func (r *Reader[T]) DroppedCount() uint64 { return r.dropped.Load() }
 // malformed record).
 func (r *Reader[T]) Run(ctx context.Context) {
 	defer close(r.out)
+	if r.errs != nil {
+		defer close(r.errs)
+	}
 	// Closing the reader is what unblocks the Read() below on shutdown. Both
 	// this ctx watcher and an external Close() funnel through closeReader, which
 	// runs exactly once, so the underlying ringbuf reader is never closed twice
@@ -89,6 +99,8 @@ func (r *Reader[T]) Run(ctx context.Context) {
 		case <-done:
 		}
 	}()
+	retryDelay := 10 * time.Millisecond
+	errorReported := false
 	for {
 		rec, err := r.rb.Read()
 		if err != nil {
@@ -96,8 +108,30 @@ func (r *Reader[T]) Run(ctx context.Context) {
 				return
 			}
 			csmlog.Warn("bpf ringbuf read error", "err", err)
-			return
+			if !errorReported && r.errs != nil {
+				select {
+				case r.errs <- err:
+				default:
+				}
+				errorReported = true
+			}
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if retryDelay < 5*time.Second {
+				retryDelay *= 2
+				if retryDelay > 5*time.Second {
+					retryDelay = 5 * time.Second
+				}
+			}
+			continue
 		}
+		retryDelay = 10 * time.Millisecond
+		errorReported = false
 		ev, err := r.decode(rec.RawSample)
 		if err != nil {
 			csmlog.Warn("bpf ringbuf decode error", "err", err, "len", len(rec.RawSample))

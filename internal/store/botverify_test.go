@@ -4,6 +4,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestBotVerifyCache_RoundTrip(t *testing.T) {
@@ -192,4 +194,11 @@ func TestBotVerifyCache_Expired(t *testing.T) {
 	if valid {
 		t.Error("expired entry must report invalid")
 	}
+	key := botVerifyKey(ip, "bingbot")
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		if got := tx.Bucket([]byte("botverify")).Get(key); got != nil {
+			t.Error("expired entry remained in botverify bucket")
+		}
+		return nil
+	})
 }
