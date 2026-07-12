@@ -38,6 +38,44 @@ func TestAbuseDailyCounterPrunesPreviousDates(t *testing.T) {
 	})
 }
 
+func TestAbuseDailyCounterPrunesAllConsecutiveStaleDates(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Seed several consecutive stale dates directly. A cursor that deletes and
+	// advances would skip every other one, leaving stragglers behind.
+	stale := []string{"2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14"}
+	if putErr := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
+		for _, date := range stale {
+			if err := b.Put([]byte(abuseDailyCountPrefix+date), []byte("7")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); putErr != nil {
+		t.Fatal(putErr)
+	}
+
+	db.IncrementAbuseQueryCount("2026-07-20")
+
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
+		for _, date := range stale {
+			if b.Get([]byte(abuseDailyCountPrefix+date)) != nil {
+				t.Errorf("stale daily counter %s survived prune", date)
+			}
+		}
+		if b.Get([]byte(abuseDailyCountPrefix+"2026-07-20")) == nil {
+			t.Error("current daily counter is missing")
+		}
+		return nil
+	})
+}
+
 func TestReputationGetSet(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
