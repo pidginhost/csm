@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,106 @@ import (
 	"github.com/pidginhost/csm/internal/integrity"
 	"gopkg.in/yaml.v3"
 )
+
+func TestImmutableUnsupportedClassifiesFilesystemErrors(t *testing.T) {
+	for _, out := range []string{
+		"chattr: Operation not supported while setting flags on /opt/csm/csm",
+		"chattr: Inappropriate ioctl for device while reading flags on /opt/csm/csm",
+	} {
+		if !immutableUnsupported([]byte(out)) {
+			t.Errorf("immutableUnsupported(%q) = false, want true", out)
+		}
+	}
+	for _, out := range []string{
+		"chattr: Permission denied while setting flags on /opt/csm/csm",
+		"",
+	} {
+		if immutableUnsupported([]byte(out)) {
+			t.Errorf("immutableUnsupported(%q) = true, want false", out)
+		}
+	}
+}
+
+func TestInstallToleratesUnsupportedImmutableFilesystem(t *testing.T) {
+	root := t.TempDir()
+	inst := &Installer{
+		BinaryPath:  filepath.Join(root, "opt", "csm", "csm"),
+		CommandPath: filepath.Join(root, "usr", "sbin", "csm"),
+		ConfigPath:  filepath.Join(root, "etc", "csm", "csm.yaml"),
+		StatePath:   filepath.Join(root, "var", "lib", "csm", "state"),
+		LogPath:     filepath.Join(root, "var", "log", "csm", "monitor.log"),
+		operations: &installerOperations{
+			getuid:          func() int { return 0 },
+			deployAuditd:    func() error { return nil },
+			deploySystemd:   func() error { return nil },
+			deployLogrotate: func() error { return nil },
+			setImmutable:    func(string, bool) error { return fmt.Errorf("%w: overlayfs", errImmutableUnsupported) },
+		},
+	}
+	if err := inst.Install(); err != nil {
+		t.Fatalf("unsupported immutable filesystem aborted install: %v", err)
+	}
+}
+
+func TestInstallStillFailsOnGenuineImmutableError(t *testing.T) {
+	root := t.TempDir()
+	inst := &Installer{
+		BinaryPath:  filepath.Join(root, "opt", "csm", "csm"),
+		CommandPath: filepath.Join(root, "usr", "sbin", "csm"),
+		ConfigPath:  filepath.Join(root, "etc", "csm", "csm.yaml"),
+		StatePath:   filepath.Join(root, "var", "lib", "csm", "state"),
+		LogPath:     filepath.Join(root, "var", "log", "csm", "monitor.log"),
+		operations: &installerOperations{
+			getuid:          func() int { return 0 },
+			deployAuditd:    func() error { return nil },
+			deploySystemd:   func() error { return nil },
+			deployLogrotate: func() error { return nil },
+			setImmutable:    func(string, bool) error { return errors.New("permission denied") },
+		},
+	}
+	err := inst.Install()
+	if err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("Install error = %v, want genuine immutable failure", err)
+	}
+}
+
+func TestUninstallToleratesUnsupportedImmutableClear(t *testing.T) {
+	root := t.TempDir()
+	binPath := filepath.Join(root, "csm")
+	if err := os.WriteFile(binPath, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var removedBinary bool
+	inst := &Installer{
+		BinaryPath:  binPath,
+		CommandPath: filepath.Join(root, "cmd"),
+		ConfigPath:  filepath.Join(root, "csm.yaml"),
+		StatePath:   filepath.Join(root, "state"),
+		LogPath:     filepath.Join(root, "log", "monitor.log"),
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return fmt.Errorf("%w: overlayfs", errImmutableUnsupported) },
+			removeAuditd:     func() error { return nil },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			glob:             func(string) ([]string, error) { return nil, nil },
+			remove: func(path string) error {
+				if path == binPath {
+					removedBinary = true
+				}
+				return nil
+			},
+			removeAll: func(string) error { return nil },
+		},
+	}
+	if err := inst.Uninstall(false); err != nil {
+		t.Fatalf("unsupported immutable clear aborted uninstall: %v", err)
+	}
+	if !removedBinary {
+		t.Fatal("uninstall did not proceed to remove the binary")
+	}
+}
 
 func TestParseInstallFlags(t *testing.T) {
 	cases := []struct {

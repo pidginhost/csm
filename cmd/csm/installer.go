@@ -223,11 +223,14 @@ func (inst *Installer) Install() error {
 	}
 
 	immutable := configuredImmutable(inst.ConfigPath)
-	if err := ops.setImmutable(inst.BinaryPath, immutable); err != nil {
+	switch err := ops.setImmutable(inst.BinaryPath, immutable); {
+	case errors.Is(err, errImmutableUnsupported):
+		fmt.Printf("  Warning: binary immutable flag not applied: %v\n", err)
+	case err != nil:
 		return fmt.Errorf("updating binary immutable flag: %w", err)
-	} else if immutable {
+	case immutable:
 		fmt.Println("  Binary set as immutable (chattr +i)")
-	} else {
+	default:
 		fmt.Println("  Binary left writable (integrity.immutable=false)")
 	}
 
@@ -274,7 +277,10 @@ func (inst *Installer) Uninstall(purge bool) error {
 	}
 	if _, statErr := os.Stat(inst.BinaryPath); statErr == nil {
 		if immutableErr := ops.setImmutable(inst.BinaryPath, false); immutableErr != nil {
-			return fmt.Errorf("clearing binary immutable flag: %w", immutableErr)
+			if !errors.Is(immutableErr, errImmutableUnsupported) {
+				return fmt.Errorf("clearing binary immutable flag: %w", immutableErr)
+			}
+			fmt.Printf("  Warning: binary immutable flag not cleared: %v\n", immutableErr)
 		}
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspecting binary: %w", statErr)
@@ -596,13 +602,36 @@ func configuredImmutable(path string) bool {
 	return cfg.Integrity.Immutable
 }
 
+// errImmutableUnsupported marks a chattr failure that stems from the host not
+// supporting the immutable flag (e.g. overlayfs/tmpfs, or chattr absent) rather
+// than a real fault. Callers downgrade this to a warning so an install is not
+// blocked on filesystems that cannot enforce integrity.immutable.
+var errImmutableUnsupported = errors.New("filesystem or tooling does not support the immutable flag")
+
 func setBinaryImmutable(path string, enabled bool) error {
 	flag := "-i"
 	if enabled {
 		flag = "+i"
 	}
 	// #nosec G204 -- path is the fixed installed binary or a test-controlled installer path.
-	return exec.Command("chattr", flag, path).Run()
+	out, err := exec.Command("chattr", flag, path).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if detail == "" {
+		detail = err.Error()
+	}
+	if errors.Is(err, exec.ErrNotFound) || immutableUnsupported(out) {
+		return fmt.Errorf("%w: %s", errImmutableUnsupported, detail)
+	}
+	return fmt.Errorf("chattr %s %s: %w (%s)", flag, path, err, detail)
+}
+
+func immutableUnsupported(chattrOutput []byte) bool {
+	lower := strings.ToLower(string(chattrOutput))
+	return strings.Contains(lower, "operation not supported") ||
+		strings.Contains(lower, "inappropriate ioctl")
 }
 
 func installerRuntimeDirs(installRoot, statePath, logPath string) []string {

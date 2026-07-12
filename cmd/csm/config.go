@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -44,6 +45,10 @@ Commands:
 func configApplyImmutability() {
 	cfg := loadConfigLite()
 	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
+		if errors.Is(err, errImmutableUnsupported) {
+			fmt.Fprintf(os.Stderr, "Warning: binary immutable flag not applied: %v\n", err)
+			return
+		}
 		fmt.Fprintf(os.Stderr, "applying binary immutable flag: %v\n", err)
 		os.Exit(1)
 	}
