@@ -238,6 +238,9 @@ func queuedFindingCount(bucket *bolt.Bucket) int {
 		return 0
 	}
 	lastKey, _ := cursor.Last()
+	// last >= first (bbolt key order) and the live span is bounded by
+	// phpanelQueueLimit, so the difference always fits in an int.
+	// #nosec G115 -- bounded span (<= phpanelQueueLimit); cannot overflow int.
 	return int(binary.BigEndian.Uint64(lastKey)-binary.BigEndian.Uint64(firstKey)) + 1
 }
 
