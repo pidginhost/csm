@@ -533,55 +533,89 @@ func phpanelActiveDepth(t *testing.T, queue *phpanelQueue) int {
 	return depth
 }
 
-func TestQueuedFindingCountMatchesStatsAfterFrontDeletions(t *testing.T) {
-	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{})
-	items := make([]queuedPhpanelFinding, 6)
-	for i := range items {
-		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
-	}
-	if _, err := q.enqueueBatch(items, phpanelQueueLimit); err != nil {
-		t.Fatal(err)
-	}
-	// Deliveries and overflow trimming only ever remove the oldest entry.
-	if err := q.db.Update(func(tx *bolt.Tx) error {
+func assertQueuedFindingCount(t *testing.T, q *phpanelQueue, want int) {
+	t.Helper()
+	if err := q.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(phpanelQueueBucket)
-		c := b.Cursor()
-		for n := 0; n < 2; n++ {
-			k, _ := c.First()
-			if k == nil {
-				break
-			}
-			if err := b.Delete(k); err != nil {
-				return err
-			}
+		if got := queuedFindingCount(b); got != want {
+			t.Errorf("queuedFindingCount = %d, want %d", got, want)
+		}
+		if got := b.Stats().KeyN; got != want {
+			t.Errorf("Stats().KeyN = %d, want %d", got, want)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	_ = q.db.View(func(tx *bolt.Tx) error {
+type oneSuccessWebhookTransport struct {
+	requests *int32
+}
+
+func (t oneSuccessWebhookTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	status := http.StatusServiceUnavailable
+	if atomic.AddInt32(t.requests, 1) == 1 {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+func TestQueuedFindingCountTracksEveryProductionDeletePath(t *testing.T) {
+	var requests int32
+	restore := SetWebhookTransportForTest(oneSuccessWebhookTransport{requests: &requests})
+	t.Cleanup(restore)
+
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"})
+	items := make([]queuedPhpanelFinding, 4)
+	for i := range items {
+		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
+	}
+	dropped, err := q.enqueueBatch(items, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Fatalf("overflow dropped = %d, want 1", dropped)
+	}
+	assertQueuedFindingCount(t, q, 3)
+
+	var firstKey, malformed []byte
+	if err := q.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(phpanelQueueBucket)
-		got := queuedFindingCount(b)
-		if want := b.Stats().KeyN; got != want {
-			t.Fatalf("queuedFindingCount = %d, want Stats().KeyN = %d", got, want)
+		key, _ := b.Cursor().First()
+		if key == nil {
+			return errors.New("queue unexpectedly empty")
 		}
-		if got != 4 {
-			t.Fatalf("queuedFindingCount = %d, want 4", got)
-		}
-		return nil
-	})
+		firstKey = append([]byte(nil), key...)
+		malformed = []byte("not-json")
+		return b.Put(firstKey, malformed)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.quarantineMalformed(firstKey, malformed, errors.New("malformed record")); err != nil {
+		t.Fatal(err)
+	}
+	assertQueuedFindingCount(t, q, 2)
+
+	q.drainQueued()
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Fatalf("delivery attempts = %d, want one success and one retryable failure", got)
+	}
+	assertQueuedFindingCount(t, q, 1)
 }
 
 func TestDrainQueuedStopsPromptlyWhenClosing(t *testing.T) {
 	var delivered int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&delivered, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	restore := SetWebhookTransportForTest(oneSuccessWebhookTransport{requests: &delivered})
+	t.Cleanup(restore)
 
-	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: srv.URL, hmacSecret: "secret"})
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: "secret"})
 	items := make([]queuedPhpanelFinding, 20)
 	for i := range items {
 		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}

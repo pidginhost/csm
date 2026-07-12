@@ -26,11 +26,50 @@ func TestImmutableUnsupportedClassifiesFilesystemErrors(t *testing.T) {
 	}
 	for _, out := range []string{
 		"chattr: Permission denied while setting flags on /opt/csm/csm",
+		"chattr: Operation not permitted while setting flags on /opt/csm/csm",
 		"",
 	} {
 		if immutableUnsupported([]byte(out)) {
 			t.Errorf("immutableUnsupported(%q) = true, want false", out)
 		}
+	}
+}
+
+func TestSetBinaryImmutableClassifiesCommandFailures(t *testing.T) {
+	dir := t.TempDir()
+	chattr := filepath.Join(dir, "chattr")
+	if err := os.WriteFile(chattr, []byte("#!/bin/sh\nprintf '%s\\n' \"$CHATTR_ERROR\" >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	for _, tc := range []struct {
+		name            string
+		output          string
+		wantUnsupported bool
+	}{
+		{name: "filesystem", output: "chattr: Operation not supported while setting flags", wantUnsupported: true},
+		{name: "ioctl", output: "chattr: Inappropriate ioctl for device", wantUnsupported: true},
+		{name: "permission", output: "chattr: Operation not permitted while setting flags"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CHATTR_ERROR", tc.output)
+			err := setBinaryImmutable("/opt/csm/csm", true)
+			if err == nil {
+				t.Fatal("setBinaryImmutable returned nil for a failed chattr")
+			}
+			if got := errors.Is(err, errImmutableUnsupported); got != tc.wantUnsupported {
+				t.Fatalf("errors.Is(err, errImmutableUnsupported) = %v, want %v: %v", got, tc.wantUnsupported, err)
+			}
+		})
+	}
+}
+
+func TestSetBinaryImmutableTreatsMissingChattrAsUnsupported(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	err := setBinaryImmutable("/opt/csm/csm", true)
+	if !errors.Is(err, errImmutableUnsupported) {
+		t.Fatalf("missing chattr error = %v, want errImmutableUnsupported", err)
 	}
 }
 
@@ -112,6 +151,37 @@ func TestUninstallToleratesUnsupportedImmutableClear(t *testing.T) {
 	}
 	if !removedBinary {
 		t.Fatal("uninstall did not proceed to remove the binary")
+	}
+}
+
+func TestUninstallFailsOnGenuineImmutableClearError(t *testing.T) {
+	root := t.TempDir()
+	binPath := filepath.Join(root, "csm")
+	if err := os.WriteFile(binPath, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var removed bool
+	inst := &Installer{
+		BinaryPath: binPath,
+		StatePath:  filepath.Join(root, "state"),
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return errors.New("permission denied") },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			remove: func(string) error {
+				removed = true
+				return nil
+			},
+		},
+	}
+	err := inst.Uninstall(false)
+	if err == nil || !strings.Contains(err.Error(), "clearing binary immutable flag") {
+		t.Fatalf("Uninstall error = %v, want immutable-clear failure", err)
+	}
+	if removed {
+		t.Fatal("uninstall removed files after a genuine immutable-clear failure")
 	}
 }
 

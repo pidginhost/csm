@@ -45,8 +45,8 @@ func TestAbuseDailyCounterPrunesAllConsecutiveStaleDates(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Seed several consecutive stale dates directly. A cursor that deletes and
-	// advances would skip every other one, leaving stragglers behind.
+	// Seed several consecutive stale dates directly so the prune must visit and
+	// remove every entry while deleting through its cursor.
 	stale := []string{"2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14"}
 	if putErr := db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))

@@ -104,6 +104,13 @@ type ruleHitData struct {
 	LastHit time.Time      `json:"last_hit"`
 }
 
+type modSecPruneItem struct {
+	key      []byte
+	original []byte
+	data     ruleHitData
+	remove   bool
+}
+
 func modsecHitKey(ruleID int) string {
 	return fmt.Sprintf("modsec:hits:%d", ruleID)
 }
@@ -148,13 +155,7 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	cutoffBucket := hourBucket(cutoff)
 	prefix := []byte("modsec:hits:")
 
-	type pruneItem struct {
-		key      []byte
-		original []byte
-		data     ruleHitData
-		remove   bool
-	}
-	var toPrune []pruneItem
+	var toPrune []modSecPruneItem
 
 	// Read pass stays read-only so the common (nothing-to-prune) call never
 	// commits a write transaction. Pruning runs in a separate Update only when
@@ -187,7 +188,7 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 
 			if needsPrune {
 				// bbolt keys/values are only valid inside the tx; deep copy both.
-				toPrune = append(toPrune, pruneItem{
+				toPrune = append(toPrune, modSecPruneItem{
 					key:      append([]byte(nil), k...),
 					original: append([]byte(nil), v...),
 					data:     data,
@@ -210,34 +211,37 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	}
 
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("meta"))
-		for _, item := range toPrune {
-			// A concurrent hit may have rewritten the row after the read pass.
-			// Leave it for the next read rather than clobbering the fresh count.
-			if !bytes.Equal(b.Get(item.key), item.original) {
-				continue
-			}
-			if item.remove {
-				if err := b.Delete(item.key); err != nil {
-					return err
-				}
-				continue
-			}
-			for bk := range item.data.Buckets {
-				if bk < cutoffBucket {
-					delete(item.data.Buckets, bk)
-				}
-			}
-			val, err := json.Marshal(item.data)
-			if err != nil {
-				return err
-			}
-			if err := b.Put(item.key, val); err != nil {
-				return err
-			}
-		}
-		return nil
+		return pruneModSecRuleHits(tx.Bucket([]byte("meta")), toPrune, cutoffBucket)
 	})
 
 	return result
+}
+
+func pruneModSecRuleHits(bucket *bolt.Bucket, items []modSecPruneItem, cutoffBucket string) error {
+	for _, item := range items {
+		// A concurrent hit may have rewritten the row after the read pass.
+		// Leave it for the next read rather than clobbering the fresh count.
+		if !bytes.Equal(bucket.Get(item.key), item.original) {
+			continue
+		}
+		if item.remove {
+			if err := bucket.Delete(item.key); err != nil {
+				return err
+			}
+			continue
+		}
+		for bk := range item.data.Buckets {
+			if bk < cutoffBucket {
+				delete(item.data.Buckets, bk)
+			}
+		}
+		val, err := json.Marshal(item.data)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put(item.key, val); err != nil {
+			return err
+		}
+	}
+	return nil
 }

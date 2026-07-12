@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -679,6 +680,93 @@ func TestGetModSecRuleHitsCleanReadDoesNotWrite(t *testing.T) {
 	after := currentModSecTxID(t, db)
 	if after != before {
 		t.Fatalf("clean GetModSecRuleHits committed a write transaction: txid %d -> %d", before, after)
+	}
+}
+
+func TestModSecPruneDoesNotOverwriteConcurrentHit(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ruleID := 900203
+	db.IncrModSecRuleHit(ruleID, now.Add(-48*time.Hour))
+	db.IncrModSecRuleHit(ruleID, now)
+
+	key := []byte(modsecHitKey(ruleID))
+	var snapshot modSecPruneItem
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket([]byte("meta")).Get(key)
+		snapshot.key = append([]byte(nil), key...)
+		snapshot.original = append([]byte(nil), value...)
+		return json.Unmarshal(value, &snapshot.data)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// This write represents IncrModSecRuleHit winning the write lock between
+	// GetModSecRuleHits' read snapshot and its conditional prune transaction.
+	db.IncrModSecRuleHit(ruleID, now)
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return pruneModSecRuleHits(
+			tx.Bucket([]byte("meta")),
+			[]modSecPruneItem{snapshot},
+			hourBucket(now.Add(-24*time.Hour)),
+		)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored ruleHitData
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		return json.Unmarshal(tx.Bucket([]byte("meta")).Get(key), &stored)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Buckets[hourBucket(now)]; got != 2 {
+		t.Fatalf("fresh bucket count = %d, want concurrent count 2", got)
+	}
+	if got := stored.Buckets[hourBucket(now.Add(-48*time.Hour))]; got != 1 {
+		t.Fatalf("stale bucket count = %d, want unchanged row left for the next prune", got)
+	}
+}
+
+func TestModSecPruneDoesNotDeleteConcurrentHit(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ruleID := 900204
+	db.IncrModSecRuleHit(ruleID, now.Add(-48*time.Hour))
+
+	key := []byte(modsecHitKey(ruleID))
+	var snapshot modSecPruneItem
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		value := tx.Bucket([]byte("meta")).Get(key)
+		snapshot = modSecPruneItem{
+			key:      append([]byte(nil), key...),
+			original: append([]byte(nil), value...),
+			remove:   true,
+		}
+		return json.Unmarshal(value, &snapshot.data)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	db.IncrModSecRuleHit(ruleID, now)
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return pruneModSecRuleHits(
+			tx.Bucket([]byte("meta")),
+			[]modSecPruneItem{snapshot},
+			hourBucket(now.Add(-24*time.Hour)),
+		)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var stored ruleHitData
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		return json.Unmarshal(tx.Bucket([]byte("meta")).Get(key), &stored)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Buckets[hourBucket(now)]; got != 1 {
+		t.Fatalf("fresh bucket count = %d, want concurrent count 1", got)
 	}
 }
 
