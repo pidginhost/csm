@@ -496,6 +496,113 @@ func phpanelQuarantineDepthForTest(t *testing.T, queue *phpanelQueue) int {
 	return depth
 }
 
+// newUnregisteredPhpanelQueue builds a queue with its own bbolt file but does
+// not register it in phpanelQueues or start its worker, so a test can drive
+// enqueueBatch/drainQueued and manipulate q.stop directly without the package
+// cleanup double-closing it.
+func newUnregisteredPhpanelQueue(t *testing.T, delivery phpanelDeliveryConfig) *phpanelQueue {
+	t.Helper()
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "phpanel.db"), 0o600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Update(func(tx *bolt.Tx) error {
+		if _, e := tx.CreateBucketIfNotExists(phpanelQueueBucket); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(phpanelQuarantineBucket)
+		return e
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q := &phpanelQueue{db: db, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
+	q.cfg = delivery
+	return q
+}
+
+func phpanelActiveDepth(t *testing.T, queue *phpanelQueue) int {
+	t.Helper()
+	depth := 0
+	if err := queue.db.View(func(tx *bolt.Tx) error {
+		depth = tx.Bucket(phpanelQueueBucket).Stats().KeyN
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return depth
+}
+
+func TestQueuedFindingCountMatchesStatsAfterFrontDeletions(t *testing.T) {
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{})
+	items := make([]queuedPhpanelFinding, 6)
+	for i := range items {
+		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
+	}
+	if _, err := q.enqueueBatch(items, phpanelQueueLimit); err != nil {
+		t.Fatal(err)
+	}
+	// Deliveries and overflow trimming only ever remove the oldest entry.
+	if err := q.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(phpanelQueueBucket)
+		c := b.Cursor()
+		for n := 0; n < 2; n++ {
+			k, _ := c.First()
+			if k == nil {
+				break
+			}
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = q.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(phpanelQueueBucket)
+		got := queuedFindingCount(b)
+		if want := b.Stats().KeyN; got != want {
+			t.Fatalf("queuedFindingCount = %d, want Stats().KeyN = %d", got, want)
+		}
+		if got != 4 {
+			t.Fatalf("queuedFindingCount = %d, want 4", got)
+		}
+		return nil
+	})
+}
+
+func TestDrainQueuedStopsPromptlyWhenClosing(t *testing.T) {
+	var delivered int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&delivered, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: srv.URL, hmacSecret: "secret"})
+	items := make([]queuedPhpanelFinding, 20)
+	for i := range items {
+		items[i] = queuedPhpanelFinding{Finding: Finding{Check: "c"}, Timestamp: time.Now()}
+	}
+	if _, err := q.enqueueBatch(items, phpanelQueueLimit); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shutdown requested before this drain runs. A healthy collector must not
+	// keep the drain (and thus close()) busy delivering the whole backlog.
+	close(q.stop)
+	q.drainQueued()
+
+	if got := atomic.LoadInt32(&delivered); got != 0 {
+		t.Fatalf("drainQueued delivered %d findings after stop; must abort promptly", got)
+	}
+	if depth := phpanelActiveDepth(t, q); depth != 20 {
+		t.Fatalf("queue depth = %d, want 20 preserved for next start", depth)
+	}
+}
+
 func waitForWebhookRequests(t *testing.T, requests *int32, want int32) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

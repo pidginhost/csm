@@ -198,7 +198,7 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding, limit int) (in
 	dropped := 0
 	err := q.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(phpanelQueueBucket)
-		count := bucket.Stats().KeyN + len(bodies)
+		count := queuedFindingCount(bucket) + len(bodies)
 		for _, body := range bodies {
 			seq, err := bucket.NextSequence()
 			if err != nil {
@@ -227,6 +227,20 @@ func (q *phpanelQueue) enqueueBatch(items []queuedPhpanelFinding, limit int) (in
 	return dropped, err
 }
 
+// queuedFindingCount returns the number of live entries without walking every
+// page. Deliveries, quarantine, and overflow trimming only ever remove the
+// current oldest entry, so live keys stay a contiguous span of the monotonic
+// sequence numbers assigned by NextSequence; the count is that span.
+func queuedFindingCount(bucket *bolt.Bucket) int {
+	cursor := bucket.Cursor()
+	firstKey, _ := cursor.First()
+	if firstKey == nil {
+		return 0
+	}
+	lastKey, _ := cursor.Last()
+	return int(binary.BigEndian.Uint64(lastKey)-binary.BigEndian.Uint64(firstKey)) + 1
+}
+
 func (q *phpanelQueue) run() {
 	defer close(q.done)
 	ticker := time.NewTicker(30 * time.Second)
@@ -253,6 +267,14 @@ func (q *phpanelQueue) drainQueued() {
 	}
 	q.retryMu.Unlock()
 	for {
+		// Stop draining promptly on shutdown. Undelivered findings are durable
+		// and resume on the next start, so a healthy collector with a large
+		// backlog must not keep close() blocked delivering the whole queue.
+		select {
+		case <-q.stop:
+			return
+		default:
+		}
 		var key []byte
 		var payload []byte
 		err := q.db.View(func(tx *bolt.Tx) error {
