@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Installation, uninstall, and package immutability hooks now warn and continue when the host cannot support immutable file flags. Permission and other unexpected failures still stop the operation.
 - Scheduled deep scans now apply the compiled YARA rules to regular files below configured web roots. Failed or incomplete sweeps report the gap and retain earlier findings instead of treating unscanned content as clean.
 - Per-finding phpanel webhooks now use a durable asynchronous queue with retry backoff, restart recovery, bounded growth, and quarantine for malformed records. Collector outages no longer block the detection path or lose queued findings.
 - BPF readers now retry after ring-buffer failures and report the outage, while log watchers preserve partial lines across reads. Panicking or timed-out checks report immediately without purging earlier findings.

@@ -38,7 +38,7 @@ Usage: csm config <command>
 Commands:
   show [--no-redact] [--json]   Display current config (secrets redacted by default)
   schema                        Print JSON Schema for the config file
-  apply-immutability            Apply integrity.immutable to the installed binary
+  apply-immutability            Apply integrity.immutable; warn if unsupported
 `)
 }
 

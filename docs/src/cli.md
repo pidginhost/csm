@@ -45,7 +45,7 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show [--no-redact] [--json]` | Display config. Secrets are redacted unless `--no-redact`; `--json` emits JSON instead of YAML. |
 | `csm config schema` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
-| `csm config apply-immutability` | Reapply `integrity.immutable` to `/opt/csm/csm`. Package transaction hooks use this after upgrades. |
+| `csm config apply-immutability` | Reapply `integrity.immutable` to `/opt/csm/csm`. Unsupported filesystems or missing tooling produce a warning and a successful exit; permission and other unexpected errors fail. Package transaction hooks use this after upgrades. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
 | `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
