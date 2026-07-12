@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -148,13 +149,17 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	prefix := []byte("modsec:hits:")
 
 	type pruneItem struct {
-		key    []byte
-		data   ruleHitData
-		remove bool
+		key      []byte
+		original []byte
+		data     ruleHitData
+		remove   bool
 	}
 	var toPrune []pruneItem
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	// Read pass stays read-only so the common (nothing-to-prune) call never
+	// commits a write transaction. Pruning runs in a separate Update only when
+	// stale buckets were found.
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		c := b.Cursor()
 
@@ -181,10 +186,13 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 			}
 
 			if needsPrune {
-				// Deep copy key (bbolt keys are only valid inside tx)
-				keyCopy := make([]byte, len(k))
-				copy(keyCopy, k)
-				toPrune = append(toPrune, pruneItem{key: keyCopy, data: data, remove: total == 0})
+				// bbolt keys/values are only valid inside the tx; deep copy both.
+				toPrune = append(toPrune, pruneItem{
+					key:      append([]byte(nil), k...),
+					original: append([]byte(nil), v...),
+					data:     data,
+					remove:   total == 0,
+				})
 			}
 
 			if total > 0 {
@@ -194,7 +202,21 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 				}
 			}
 		}
+		return nil
+	})
+
+	if len(toPrune) == 0 {
+		return result
+	}
+
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
 		for _, item := range toPrune {
+			// A concurrent hit may have rewritten the row after the read pass.
+			// Leave it for the next read rather than clobbering the fresh count.
+			if !bytes.Equal(b.Get(item.key), item.original) {
+				continue
+			}
 			if item.remove {
 				if err := b.Delete(item.key); err != nil {
 					return err

@@ -668,6 +668,32 @@ func TestGetModSecRuleHitsDeletesRuleWithOnlyExpiredBuckets(t *testing.T) {
 	})
 }
 
+func TestGetModSecRuleHitsCleanReadDoesNotWrite(t *testing.T) {
+	db := openTestDB(t)
+	db.IncrModSecRuleHit(900202, time.Now()) // fresh bucket only, nothing to prune
+
+	before := currentModSecTxID(t, db)
+	if hits := db.GetModSecRuleHits(); len(hits) != 1 {
+		t.Fatalf("fresh rule hits = %+v, want 1 rule", hits)
+	}
+	after := currentModSecTxID(t, db)
+	if after != before {
+		t.Fatalf("clean GetModSecRuleHits committed a write transaction: txid %d -> %d", before, after)
+	}
+}
+
+func currentModSecTxID(t *testing.T, db *DB) int {
+	t.Helper()
+	var id int
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		id = tx.ID()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 // --- hourBucket / modsecHitKey helpers --------------------------------
 
 func TestHourBucketFormat(t *testing.T) {
