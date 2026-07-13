@@ -35,7 +35,7 @@ func TestCheckSuiteOnRealSystem(t *testing.T) {
 	if len(purge) < 20 {
 		t.Fatalf("critical tier completed only %d check names: %v", len(purge), purge)
 	}
-	assertPurgeContains(t, purge, "shadow_change", "ssh_keys", "webshell", "firewall", "uid0_account")
+	assertPurgeContains(t, purge, "shadow_change", "ssh_keys", "firewall", "uid0_account")
 	assertNoRunnerFailures(t, findings)
 }
 
@@ -62,7 +62,7 @@ func TestRunAllChecksOnRealSystem(t *testing.T) {
 	if len(purge) < 40 {
 		t.Fatalf("full tier completed only %d check names: %v", len(purge), purge)
 	}
-	assertPurgeContains(t, purge, "wp_core_integrity", "obfuscated_php", "phishing_page", "rpm_integrity")
+	assertPurgeContains(t, purge, "wp_core_integrity", "obfuscated_php", "phishing_page", "rpm_integrity", "webshell")
 	assertNoRunnerFailures(t, findings)
 
 	// Categorize findings
