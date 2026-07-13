@@ -1406,7 +1406,7 @@ func normalizeCredentialLogText(data []byte) []byte {
 			return data
 		}
 		evenNUL, oddNUL := 0, 0
-		for i := 0; i < pairs*2; i += 2 {
+		for i := 0; i+1 < len(data); i += 2 {
 			if data[i] == 0 {
 				evenNUL++
 			}
