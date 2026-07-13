@@ -7,13 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Phishing detection no longer mislabels images, video, and legitimate plugin, theme, and framework source as harvested credential logs. Credential checks skip binary files, decode UTF-8 or UTF-16 dumps, and inspect the bounded file so long headers cannot hide a real dump.
-- PHP phishing detection ignores provider names found only in backend integration code, while visible brand or logo impersonation still flags when the page captures a submitted password.
-- Suspected phishing-kit archives are confirmed by at least two independent content signals from separate entries, so ordinary plugin and theme distribution zips are not reported as kits.
-- Full-screen iframe pages with explanatory text are treated as documented embeds, while scripts, styles, comments, hidden elements, and iframe fallback text cannot suppress detection.
-
 ## [3.24.0] - 2026-07-13
 
 ### Security
@@ -32,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Platform-specific authentication logs, PHP worker names, and IPv6 port policies are now detected and applied consistently across supported hosts.
 - Uninstall now removes only CSM-owned ModSecurity sections and leaves operator-maintained rules in the shared configuration intact.
 - Release pipelines require complete signed amd64 and arm64 assets and merged integration coverage before publishing a tag, and add cPanel integration coverage when a cPanel image is configured. Integration checks fail on missing evidence instead of accepting partial runs.
+- Phishing detection no longer mislabels images, video, and legitimate plugin, theme, and framework source as harvested credential logs. Credential checks skip binary files, decode UTF-8 or UTF-16 dumps, and inspect the bounded file so long headers cannot hide a real dump.
+- PHP phishing detection ignores provider names found only in backend integration code, while visible brand or logo impersonation still flags when the page captures a submitted password.
+- Suspected phishing-kit archives are confirmed by at least two independent content signals from separate entries, so ordinary plugin and theme distribution zips are not reported as kits.
+- Full-screen iframe pages with explanatory text are treated as documented embeds, while scripts, styles, comments, hidden elements, and iframe fallback text cannot suppress detection.
 
 ## [3.23.2] - 2026-07-11
 
