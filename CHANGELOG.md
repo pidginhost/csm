@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Concurrent settings updates no longer overwrite each other, and signature status reads are race-free. Retention sweeps now prune stale administration, verification, reputation, and ModSecurity records without turning valid cache reads into writes.
 - Platform-specific authentication logs, PHP worker names, and IPv6 port policies are now detected and applied consistently across supported hosts.
 - Uninstall now removes only CSM-owned ModSecurity sections and leaves operator-maintained rules in the shared configuration intact.
-- Release pipelines now require complete signed amd64 and arm64 assets, merged integration coverage, and a real cPanel integration image before publishing a tag. Integration checks fail on missing evidence instead of accepting partial runs.
+- Release pipelines require complete signed amd64 and arm64 assets and merged integration coverage before publishing a tag, and add cPanel integration coverage when a cPanel image is configured. Integration checks fail on missing evidence instead of accepting partial runs.
 
 ## [3.23.2] - 2026-07-11
 
