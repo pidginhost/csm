@@ -741,9 +741,12 @@ func TestScanForPhishingFindsPhishPageAndRedirector(t *testing.T) {
 	logPath := filepath.Join(root, "results.txt")
 	_ = os.WriteFile(logPath, []byte("a@a.com:p1\nb@a.com:p2\nc@a.com:p3\nd@a.com:p4\n"), 0600)
 
-	// Phishing kit zip
+	// Phishing kit zip: brand-named archive whose contents match kit shape
+	// (brand login page + capture script + credential sink).
 	zipPath := filepath.Join(root, "office365_kit.zip")
-	_ = os.WriteFile(zipPath, make([]byte, 2000), 0600)
+	writeKitTestZip(t, zipPath, []string{
+		"office365/login.html", "office365/next.php", "office365/results.txt",
+	})
 
 	cfg := &config.Config{}
 	var findings []alert.Finding

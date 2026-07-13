@@ -425,3 +425,16 @@ func FuzzSpamKeywordFromMessage(f *testing.F) {
 		_ = spamKeywordFromMessage(message)
 	})
 }
+
+func FuzzVisibleTextLen(f *testing.F) {
+	// Attacker-controlled HTML: iframe wrappers and documented embeds.
+	f.Add("<p>hello</p><iframe src=\"http://x/\"></iframe>")
+	f.Add("<iframe src='http://x/' width='100%'></iframe>")
+	f.Add("<<<>>>unterminated < tag")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		if n := visibleTextLen(s); n < 0 || n > len(s) {
+			t.Fatalf("visibleTextLen out of range: %d for len %d", n, len(s))
+		}
+	})
+}

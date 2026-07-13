@@ -1,9 +1,11 @@
 package checks
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -386,7 +388,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 
 		// --- Phishing kit ZIP archives ---
 		if strings.HasSuffix(nameLower, ".zip") && size > 1000 && size < 50*1024*1024 {
-			if isPhishingKitZip(nameLower) {
+			if isPhishingKitZip(nameLower) && zipLooksLikeKit(fullPath) {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "phishing_kit_archive",
@@ -1048,35 +1050,31 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		return nil
 	}
 
-	// Check brand impersonation (same as HTML check)
+	// Brand impersonation for a PHP page must come from the <title>. A real kit
+	// clones the target's page and its title ("Dropbox Shared File", "Sign
+	// In"). A bare body brand string is not impersonation: backup plugins
+	// reference "dropbox", donation/payment gateways reference "paypal.com",
+	// and AJAX handlers name social brands - all legitimately, with no brand
+	// title. Accepting body brand strings flagged those integration files
+	// wholesale.
 	brandMatch := ""
 	matchedGeneric := false
 	titleContent := extractTitle(contentLower)
 
-	for _, brand := range phishingBrands {
-		for _, tp := range brand.titlePatterns {
-			if strings.Contains(titleContent, tp) {
-				brandMatch = brand.name
-				matchedGeneric = brand.generic
-				indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
-				score += 3
+	if titleContent != "" {
+		for _, brand := range phishingBrands {
+			for _, tp := range brand.titlePatterns {
+				if strings.Contains(titleContent, tp) {
+					brandMatch = brand.name
+					matchedGeneric = brand.generic
+					indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
+					score += 3
+					break
+				}
+			}
+			if brandMatch != "" {
 				break
 			}
-		}
-		if brandMatch != "" {
-			break
-		}
-		for _, bp := range brand.bodyPatterns {
-			if strings.Contains(contentLower, bp) {
-				brandMatch = brand.name
-				matchedGeneric = brand.generic
-				indicators = append(indicators, fmt.Sprintf("body impersonates '%s'", bp))
-				score += 2
-				break
-			}
-		}
-		if brandMatch != "" {
-			break
 		}
 	}
 
@@ -1249,8 +1247,36 @@ func isCredentialLogName(nameLower string) bool {
 	return false
 }
 
+// emailPattern matches a plausibly-real email address. The old heuristic
+// counted any line containing '@', which random binary bytes and stray code
+// tokens trip constantly. Requiring a local part, host and TLD keeps the count
+// tied to actual addresses.
+var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// looksBinary reports whether a byte slice is non-text. A harvested credential
+// dump is always plain text; images, video, fonts and other binaries (some
+// named with a "result"/"harvest" keyword, e.g. olive-harvest.jpg or
+// WEBM-Result-1.webm) otherwise have their raw bytes scanned as text, where
+// NUL/high bytes and stray '@'/':' fool the email:password heuristic. A single
+// NUL - which never appears in a text dump - is decisive; a high share of
+// other control bytes is the backstop for NUL-free binaries.
+func looksBinary(data []byte) bool {
+	control := 0
+	for _, b := range data {
+		if b == 0x00 {
+			return true
+		}
+		// Bytes >= 0x80 are kept as text so UTF-8 (accented names in an email
+		// list) is not misread as binary.
+		if b < 0x09 || (b > 0x0d && b < 0x20) || b == 0x7f {
+			control++
+		}
+	}
+	return control*10 > len(data)
+}
+
 // checkCredentialLog reads a text file and checks if it contains harvested
-// credentials (email:password pairs, one per line).
+// credentials (email:password pairs, one per line) or a harvested address list.
 func checkCredentialLog(path string) string {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -1264,31 +1290,36 @@ func checkCredentialLog(path string) string {
 	if n == 0 {
 		return ""
 	}
-	content := string(buf[:n])
+	data := buf[:n]
+	if looksBinary(data) {
+		return ""
+	}
 
-	lines := strings.Split(content, "\n")
+	lines := strings.Split(string(data), "\n")
 	credentialLines := 0
-	emailCount := 0
+	emailLines := 0
+	nonEmpty := 0
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		// Pattern: email:password or email|password or email,password
-		if strings.Contains(line, "@") {
-			emailCount++
-			// Check for delimiter after email
-			for _, delim := range []string{":", "|", "\t", ","} {
-				parts := strings.SplitN(line, delim, 3)
-				if len(parts) >= 2 {
-					part0 := strings.TrimSpace(parts[0])
-					part1 := strings.TrimSpace(parts[1])
-					if strings.Contains(part0, "@") && len(part1) > 0 && !strings.Contains(part1, " ") {
-						credentialLines++
-						break
-					}
+		nonEmpty++
+		if !emailPattern.MatchString(line) {
+			continue
+		}
+		emailLines++
+		// Pattern: email:password or email|password or email,password, where the
+		// field before the delimiter holds the address and the field after is a
+		// non-empty secret token with no whitespace.
+		for _, delim := range []string{":", "|", "\t", ","} {
+			parts := strings.SplitN(line, delim, 3)
+			if len(parts) >= 2 {
+				secret := strings.TrimSpace(parts[1])
+				if emailPattern.MatchString(parts[0]) && secret != "" && !strings.ContainsAny(secret, " \t") {
+					credentialLines++
+					break
 				}
 			}
 		}
@@ -1297,12 +1328,16 @@ func checkCredentialLog(path string) string {
 	// 3+ lines that look like email:password pairs = credential log
 	if credentialLines >= 3 {
 		return fmt.Sprintf("File contains %d credential-like lines (email:password format) out of %d email lines",
-			credentialLines, emailCount)
+			credentialLines, emailLines)
 	}
 
-	// High density of emails alone (10+) in a non-.csv file is suspicious
-	if emailCount >= 10 && !strings.HasSuffix(strings.ToLower(path), ".csv") {
-		return fmt.Sprintf("File contains %d email addresses - possible harvested email list", emailCount)
+	// A harvested address list is dominated by addresses (about one per line).
+	// Source files (JavaScript modules, Drupal handlers) legitimately embed a
+	// handful of contributor/support addresses among mostly-code lines; those
+	// are not harvested lists, so require the addresses to be the majority of
+	// non-empty lines. .csv exports of a contact list are excluded outright.
+	if emailLines >= 10 && emailLines*2 >= nonEmpty && !strings.HasSuffix(strings.ToLower(path), ".csv") {
+		return fmt.Sprintf("File contains %d email addresses - possible harvested email list", emailLines)
 	}
 
 	return ""
@@ -1376,7 +1411,12 @@ func checkIframePhishing(path string) string {
 		strings.Contains(contentLower, "position:fixed") ||
 		strings.Contains(contentLower, "position: fixed")
 
-	if isFullscreen {
+	// A phishing wrapper is essentially just the iframe - its only purpose is to
+	// fill the screen with the external page. A documented embed or demo (e.g.
+	// software shipping an "iframe-example.html" with an explanatory paragraph)
+	// carries prose around the iframe, so real visible text means this is not a
+	// bare redirect wrapper.
+	if isFullscreen && visibleTextLen(contentLower) <= 40 {
 		return fmt.Sprintf("Full-screen iframe loading external URL: %s", src)
 	}
 
@@ -1428,6 +1468,115 @@ func isPhishingKitZip(nameLower string) bool {
 		}
 	}
 	return matches >= 2
+}
+
+// kitCaptureScripts are filenames phishing kits use for the server-side
+// credential-capture step. These names are kit idiom, not generic app files.
+var kitCaptureScripts = map[string]bool{
+	"next.php": true, "post.php": true, "send.php": true, "grab.php": true,
+	"result.php": true, "results.php": true, "antibot.php": true,
+	"blocker.php": true, "bots.php": true, "killbot.php": true,
+}
+
+// kitBrandWords name a brand-login or verification page inside a kit. Social
+// plugin categories ("instagram", "facebook") are deliberately excluded - they
+// name legitimate distribution archives far more often than kits.
+var kitBrandWords = []string{
+	"office365", "office-365", "sharepoint", "onedrive", "outlook", "webmail",
+	"roundcube", "paypal", "dropbox", "icloud", "docusign", "wetransfer",
+	"netflix", "signin", "sign-in", "verify", "login", "log-in", "secure",
+}
+
+// zipLooksLikeKit inspects a ZIP's central directory (entry names only, no
+// decompression) and reports whether the contents match a phishing kit rather
+// than a legitimate plugin/theme distribution archive. Filename brand keywords
+// alone flagged legitimate plugin zips (Instagram Feed, Facebook articles,
+// cPanel eCRM); the archive body is what actually distinguishes a kit: a
+// credential sink file, a capture script, a brand-login page, an anti-bot
+// blocker. A credential sink inside an uploaded archive is decisive on its own;
+// otherwise two independent kit signals are required.
+func zipLooksLikeKit(path string) bool {
+	info, err := osFS.Stat(path)
+	if err != nil {
+		return false
+	}
+	f, err := osFS.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	zr, err := zip.NewReader(f, info.Size())
+	if err != nil {
+		return false
+	}
+
+	capture, credSink, antibot := false, false, false
+	brandPages := 0
+	for _, e := range zr.File {
+		if e.FileInfo().IsDir() {
+			continue
+		}
+		base := e.Name
+		if i := strings.LastIndexByte(base, '/'); i >= 0 {
+			base = base[i+1:]
+		}
+		base = strings.ToLower(base)
+
+		if kitCaptureScripts[base] {
+			capture = true
+		}
+		if isCredentialLogName(base) {
+			credSink = true
+		}
+		if base == "antibots" || base == "blocker" || strings.Contains(base, "antibot") {
+			antibot = true
+		}
+		if strings.HasSuffix(base, ".html") || strings.HasSuffix(base, ".htm") || isExecutablePHPName(base) {
+			for _, w := range kitBrandWords {
+				if strings.Contains(base, w) {
+					brandPages++
+					break
+				}
+			}
+		}
+	}
+
+	if credSink {
+		return true
+	}
+	signals := 0
+	if capture {
+		signals++
+	}
+	if antibot {
+		signals++
+	}
+	if brandPages >= 1 {
+		signals++
+	}
+	return signals >= 2
+}
+
+// visibleTextLen counts characters that render as page text, skipping markup
+// inside angle brackets and collapsing whitespace. Used to tell a bare iframe
+// redirect wrapper (no prose) from a documented embed (explanatory text).
+func visibleTextLen(s string) int {
+	n := 0
+	inTag := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '<':
+			inTag = true
+		case c == '>':
+			inTag = false
+		case inTag:
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+		default:
+			n++
+		}
+	}
+	return n
 }
 
 // ---------------------------------------------------------------------------
