@@ -3,15 +3,19 @@ package checks
 import (
 	"archive/zip"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
+	"golang.org/x/net/html"
 )
 
 const phishingReadSize = 16384 // Read first 16KB - phishing pages are self-contained
@@ -373,7 +377,8 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		}
 
 		// --- Credential log files ---
-		if isCredentialLogName(nameLower) && size > 0 && size < 10*1024*1024 {
+		if !strings.HasSuffix(nameLower, ".zip") && isCredentialLogName(nameLower) &&
+			size > 0 && size < 10*1024*1024 {
 			if result := checkCredentialLog(fullPath); result != "" {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.Critical,
@@ -388,7 +393,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 
 		// --- Phishing kit ZIP archives ---
 		if strings.HasSuffix(nameLower, ".zip") && size > 1000 && size < 50*1024*1024 {
-			if isPhishingKitZip(nameLower) && zipLooksLikeKit(fullPath) {
+			if isPhishingKitZipName(nameLower) && zipLooksLikeKit(fullPath) {
 				*findings = append(*findings, alert.Finding{
 					Severity: alert.High,
 					Check:    "phishing_kit_archive",
@@ -571,10 +576,26 @@ func analyzeHTMLForPhishing(path string) *phishingResult {
 
 // extractTitle pulls the <title> content from HTML.
 func extractTitle(contentLower string) string {
-	start := strings.Index(contentLower, "<title>")
-	end := strings.Index(contentLower, "</title>")
-	if start >= 0 && end > start+7 {
-		return contentLower[start+7 : end]
+	for offset := 0; offset < len(contentLower); {
+		idx := strings.Index(contentLower[offset:], "<title")
+		if idx < 0 {
+			return ""
+		}
+		start := offset + idx
+		afterName := start + len("<title")
+		if afterName < len(contentLower) && !isTagBoundary(contentLower[afterName]) {
+			offset = afterName
+			continue
+		}
+		openEnd := findTagEnd(contentLower, afterName)
+		if openEnd < 0 {
+			return ""
+		}
+		closeOffset := strings.Index(contentLower[openEnd+1:], "</title>")
+		if closeOffset < 0 {
+			return ""
+		}
+		return strings.TrimSpace(contentLower[openEnd+1 : openEnd+1+closeOffset])
 	}
 	return ""
 }
@@ -1050,16 +1071,14 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		return nil
 	}
 
-	// Brand impersonation for a PHP page must come from the <title>. A real kit
-	// clones the target's page and its title ("Dropbox Shared File", "Sign
-	// In"). A bare body brand string is not impersonation: backup plugins
-	// reference "dropbox", donation/payment gateways reference "paypal.com",
-	// and AJAX handlers name social brands - all legitimately, with no brand
-	// title. Accepting body brand strings flagged those integration files
-	// wholesale.
+	// A title brand is strong evidence on its own. A visible body or logo brand
+	// is only accepted when the PHP reads a submitted password. Provider names
+	// in backend backup, payment, and AJAX integration code are not page
+	// impersonation and must not establish a brand.
 	brandMatch := ""
 	matchedGeneric := false
-	titleContent := extractTitle(contentLower)
+	pageMarkup := stripPHPBlocks(contentLower)
+	titleContent := extractTitle(pageMarkup)
 
 	if titleContent != "" {
 		for _, brand := range phishingBrands {
@@ -1069,6 +1088,25 @@ func analyzePHPForPhishing(path string) *phishingResult {
 					matchedGeneric = brand.generic
 					indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
 					score += 3
+					break
+				}
+			}
+			if brandMatch != "" {
+				break
+			}
+		}
+	}
+	if brandMatch == "" && hasPHPSubmittedPassword(contentLower) {
+		bodyContent := visiblePageContent(pageMarkup, true)
+		for _, brand := range phishingBrands {
+			if brand.generic {
+				continue
+			}
+			for _, bp := range brand.bodyPatterns {
+				if strings.Contains(bodyContent, bp) {
+					brandMatch = brand.name
+					indicators = append(indicators, fmt.Sprintf("body impersonates '%s'", bp))
+					score += 2
 					break
 				}
 			}
@@ -1132,6 +1170,74 @@ func analyzePHPForPhishing(path string) *phishingResult {
 	}
 
 	return nil
+}
+
+func hasPHPSubmittedPassword(contentLower string) bool {
+	passwordKeys := map[string]bool{
+		"password": true,
+		"pass":     true,
+		"passwd":   true,
+		"pwd":      true,
+		"passcode": true,
+	}
+	code := stripPHPCommentsFromCode(phpCodeOnly(contentLower))
+	for i := 0; i < len(code); {
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label)
+			continue
+		}
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i) + 1
+			continue
+		}
+
+		nameLen := 0
+		switch {
+		case strings.HasPrefix(code[i:], "$_post"):
+			nameLen = len("$_post")
+		case strings.HasPrefix(code[i:], "$_request"):
+			nameLen = len("$_request")
+		}
+		if nameLen == 0 || (i+nameLen < len(code) && isPHPIdentifierPart(code[i+nameLen])) {
+			i++
+			continue
+		}
+
+		j := skipPHPWhitespace(code, i+nameLen)
+		if j >= len(code) || code[j] != '[' {
+			i += nameLen
+			continue
+		}
+		j = skipPHPWhitespace(code, j+1)
+		if j >= len(code) || !isPHPQuote(code[j]) {
+			i += nameLen
+			continue
+		}
+		keyEnd := skipPHPString(code, j)
+		if keyEnd <= j || keyEnd >= len(code) || code[keyEnd] != code[j] {
+			return false
+		}
+		key := code[j+1 : keyEnd]
+		j = skipPHPWhitespace(code, keyEnd+1)
+		if j < len(code) && code[j] == ']' && passwordKeys[key] {
+			return true
+		}
+		i += nameLen
+	}
+	return false
+}
+
+func stripPHPBlocks(content string) string {
+	codeOnly := phpCodeOnly(content)
+	visible := []byte(content)
+	for i := range visible {
+		switch codeOnly[i] {
+		case ' ', '\t', '\n', '\r':
+		default:
+			visible[i] = ' '
+		}
+	}
+	return string(visible)
 }
 
 // isKnownCMSFile returns true for PHP files that are standard CMS files
@@ -1251,15 +1357,19 @@ func isCredentialLogName(nameLower string) bool {
 // counted any line containing '@', which random binary bytes and stray code
 // tokens trip constantly. Requiring a local part, host and TLD keeps the count
 // tied to actual addresses.
-var emailPattern = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+var (
+	emailPattern        = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	emailAddressPattern = regexp.MustCompile(`^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$`)
+)
 
-// looksBinary reports whether a byte slice is non-text. A harvested credential
-// dump is always plain text; images, video, fonts and other binaries (some
-// named with a "result"/"harvest" keyword, e.g. olive-harvest.jpg or
-// WEBM-Result-1.webm) otherwise have their raw bytes scanned as text, where
-// NUL/high bytes and stray '@'/':' fool the email:password heuristic. A single
-// NUL - which never appears in a text dump - is decisive; a high share of
-// other control bytes is the backstop for NUL-free binaries.
+// credentialLogReadLimit bounds how much of a candidate file is read for
+// credential analysis.
+const credentialLogReadLimit = 10 * 1024 * 1024
+
+// looksBinary reports whether normalized text bytes still look binary. Images,
+// video, fonts, and other files can carry result/harvest in their names and
+// incidental email delimiters in their bytes. A NUL or a high share of control
+// bytes keeps those files out of the credential parser.
 func looksBinary(data []byte) bool {
 	control := 0
 	for _, b := range data {
@@ -1275,6 +1385,52 @@ func looksBinary(data []byte) bool {
 	return control*10 > len(data)
 }
 
+func normalizeCredentialLogText(data []byte) []byte {
+	if len(data) >= 3 && data[0] == 0xef && data[1] == 0xbb && data[2] == 0xbf {
+		return data[3:]
+	}
+	isLittleEndian := len(data) >= 2 && data[0] == 0xff && data[1] == 0xfe
+	isBigEndian := len(data) >= 2 && data[0] == 0xfe && data[1] == 0xff
+	body := data
+	var order binary.ByteOrder
+	switch {
+	case isLittleEndian:
+		body = data[2:]
+		order = binary.LittleEndian
+	case isBigEndian:
+		body = data[2:]
+		order = binary.BigEndian
+	default:
+		pairs := len(data) / 2
+		if pairs < 4 {
+			return data
+		}
+		evenNUL, oddNUL := 0, 0
+		for i := 0; i < pairs*2; i += 2 {
+			if data[i] == 0 {
+				evenNUL++
+			}
+			if data[i+1] == 0 {
+				oddNUL++
+			}
+		}
+		switch {
+		case oddNUL >= 4 && oddNUL*2 >= pairs && evenNUL*20 <= pairs:
+			order = binary.LittleEndian
+		case evenNUL >= 4 && evenNUL*2 >= pairs && oddNUL*20 <= pairs:
+			order = binary.BigEndian
+		default:
+			return data
+		}
+	}
+
+	units := make([]uint16, len(body)/2)
+	for i := range units {
+		units[i] = order.Uint16(body[i*2:])
+	}
+	return []byte(string(utf16.Decode(units)))
+}
+
 // checkCredentialLog reads a text file and checks if it contains harvested
 // credentials (email:password pairs, one per line) or a harvested address list.
 func checkCredentialLog(path string) string {
@@ -1284,13 +1440,36 @@ func checkCredentialLog(path string) string {
 	}
 	defer func() { _ = f.Close() }()
 
-	// Read first 4KB
-	buf := make([]byte, 4096)
-	n, _ := f.Read(buf)
-	if n == 0 {
+	// Reject binaries from the head before reading the whole file into memory:
+	// images, video, and fonts that carry a "result"/"harvest" keyword in their
+	// name would otherwise be slurped in full only to be discarded. The head is
+	// decoded first so a UTF-16 dump, whose raw bytes look binary, survives the
+	// peek.
+	head := make([]byte, 8192)
+	hn, err := io.ReadFull(f, head)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return ""
 	}
-	data := buf[:n]
+	head = head[:hn]
+	if hn == 0 || looksBinary(normalizeCredentialLogText(head)) {
+		return ""
+	}
+
+	rest, err := io.ReadAll(io.LimitReader(f, credentialLogReadLimit+1-int64(hn)))
+	if err != nil {
+		return ""
+	}
+	return analyzeCredentialLog(append(head, rest...), path)
+}
+
+// analyzeCredentialLog classifies bounded, already-read file content as a
+// harvested credential dump (email:password pairs) or address list, returning
+// the finding detail or an empty string.
+func analyzeCredentialLog(data []byte, path string) string {
+	if len(data) == 0 || len(data) > credentialLogReadLimit {
+		return ""
+	}
+	data = normalizeCredentialLogText(data)
 	if looksBinary(data) {
 		return ""
 	}
@@ -1317,7 +1496,8 @@ func checkCredentialLog(path string) string {
 			parts := strings.SplitN(line, delim, 3)
 			if len(parts) >= 2 {
 				secret := strings.TrimSpace(parts[1])
-				if emailPattern.MatchString(parts[0]) && secret != "" && !strings.ContainsAny(secret, " \t") {
+				address := strings.TrimSpace(parts[0])
+				if emailAddressPattern.MatchString(address) && secret != "" && !strings.ContainsAny(secret, " \t") {
 					credentialLines++
 					break
 				}
@@ -1434,10 +1614,10 @@ func checkIframePhishing(path string) string {
 // Layer 8: Phishing kit ZIP archives
 // ---------------------------------------------------------------------------
 
-// isPhishingKitZip checks if a ZIP filename matches common phishing kit names.
+// isPhishingKitZipName checks if a ZIP filename matches common phishing kit names.
 // Requires 2+ keyword matches to reduce false positives (e.g. "CssCheckboxKit"
 // matched "kit" alone, but legitimate UI kits, CSS kits, etc. are common).
-func isPhishingKitZip(nameLower string) bool {
+func isPhishingKitZipName(nameLower string) bool {
 	// High-confidence single-match keywords (brand impersonation in filename)
 	singleMatch := []string{
 		"office365", "office 365", "sharepoint", "onedrive",
@@ -1474,17 +1654,28 @@ func isPhishingKitZip(nameLower string) bool {
 // credential-capture step. These names are kit idiom, not generic app files.
 var kitCaptureScripts = map[string]bool{
 	"next.php": true, "post.php": true, "send.php": true, "grab.php": true,
-	"result.php": true, "results.php": true, "antibot.php": true,
-	"blocker.php": true, "bots.php": true, "killbot.php": true,
+	"result.php": true, "results.php": true,
 }
 
-// kitBrandWords name a brand-login or verification page inside a kit. Social
-// plugin categories ("instagram", "facebook") are deliberately excluded - they
-// name legitimate distribution archives far more often than kits.
-var kitBrandWords = []string{
-	"office365", "office-365", "sharepoint", "onedrive", "outlook", "webmail",
-	"roundcube", "paypal", "dropbox", "icloud", "docusign", "wetransfer",
-	"netflix", "signin", "sign-in", "verify", "login", "log-in", "secure",
+var kitAntibotScripts = map[string]bool{
+	"antibots": true, "blocker": true,
+	"antibot.php": true, "blocker.php": true, "bots.php": true, "killbot.php": true,
+}
+
+// kitLoginPageWords identify login or verification pages inside an archive.
+// The archive prefilter already supplies the brand signal, so repeating brand
+// names here would misclassify ordinary provider plugins as login pages.
+var kitLoginPageWords = []string{
+	"signin", "sign-in", "verify", "login", "log-in", "secure",
+}
+
+func isKitCredentialSinkName(base string) bool {
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".txt", ".log", ".csv":
+		return isCredentialLogName(base)
+	default:
+		return false
+	}
 }
 
 // zipLooksLikeKit inspects a ZIP's central directory (entry names only, no
@@ -1493,60 +1684,79 @@ var kitBrandWords = []string{
 // alone flagged legitimate plugin zips (Instagram Feed, Facebook articles,
 // cPanel eCRM); the archive body is what actually distinguishes a kit: a
 // credential sink file, a capture script, a brand-login page, an anti-bot
-// blocker. A credential sink inside an uploaded archive is decisive on its own;
-// otherwise two independent kit signals are required.
+// blocker. Two signal categories from at least two distinct entries are
+// required so one generic result filename cannot decide the archive alone.
 func zipLooksLikeKit(path string) bool {
-	info, err := osFS.Stat(path)
-	if err != nil {
-		return false
-	}
 	f, err := osFS.Open(path)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 1000 || info.Size() >= 50*1024*1024 {
+		return false
+	}
+	return phishingKitZipHasEvidence(f, info.Size())
+}
 
-	zr, err := zip.NewReader(f, info.Size())
+// phishingKitZipHasEvidence confirms a bounded ZIP using independent entry-name
+// signals without decompressing attacker-controlled archive contents.
+func phishingKitZipHasEvidence(reader io.ReaderAt, size int64) bool {
+	if size <= 1000 || size >= 50*1024*1024 {
+		return false
+	}
+	zr, err := zip.NewReader(reader, size)
 	if err != nil {
 		return false
 	}
 
 	capture, credSink, antibot := false, false, false
 	brandPages := 0
+	evidenceEntries := make(map[string]bool)
 	for _, e := range zr.File {
 		if e.FileInfo().IsDir() {
 			continue
 		}
 		base := e.Name
-		if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
 			base = base[i+1:]
 		}
 		base = strings.ToLower(base)
 
+		hasEvidence := false
 		if kitCaptureScripts[base] {
 			capture = true
+			hasEvidence = true
 		}
-		if isCredentialLogName(base) {
+		if isKitCredentialSinkName(base) {
 			credSink = true
+			hasEvidence = true
 		}
-		if base == "antibots" || base == "blocker" || strings.Contains(base, "antibot") {
+		if kitAntibotScripts[base] || strings.Contains(base, "antibot") {
 			antibot = true
+			hasEvidence = true
 		}
 		if strings.HasSuffix(base, ".html") || strings.HasSuffix(base, ".htm") || isExecutablePHPName(base) {
-			for _, w := range kitBrandWords {
+			for _, w := range kitLoginPageWords {
 				if strings.Contains(base, w) {
 					brandPages++
+					hasEvidence = true
 					break
 				}
 			}
 		}
-	}
-
-	if credSink {
-		return true
+		if hasEvidence {
+			evidenceEntries[e.Name] = true
+		}
 	}
 	signals := 0
 	if capture {
+		signals++
+	}
+	if credSink {
 		signals++
 	}
 	if antibot {
@@ -1555,24 +1765,191 @@ func zipLooksLikeKit(path string) bool {
 	if brandPages >= 1 {
 		signals++
 	}
-	return signals >= 2
+	return signals >= 2 && len(evidenceEntries) >= 2
 }
 
-// visibleTextLen counts characters that render as page text, skipping markup
-// inside angle brackets and collapsing whitespace. Used to tell a bare iframe
-// redirect wrapper (no prose) from a documented embed (explanatory text).
+func visiblePageContent(s string, includeImageAttrs bool) string {
+	doc, err := html.Parse(strings.NewReader(s))
+	if err != nil {
+		return ""
+	}
+	hiddenClasses, hiddenIDs := stylesheetHiddenSelectors(doc)
+
+	var content strings.Builder
+	var walk func(*html.Node, bool)
+	walk = func(node *html.Node, hidden bool) {
+		if node.Type == html.ElementNode {
+			switch node.Data {
+			case "head", "script", "style", "template", "noscript", "iframe":
+				hidden = true
+			}
+			if htmlElementHidden(node, hiddenClasses, hiddenIDs) {
+				hidden = true
+			}
+			if includeImageAttrs && !hidden && node.Data == "img" {
+				for _, attr := range node.Attr {
+					switch attr.Key {
+					case "alt", "title", "aria-label", "src":
+						content.WriteByte(' ')
+						content.WriteString(attr.Val)
+					}
+				}
+			}
+		}
+		if node.Type == html.TextNode && !hidden {
+			content.WriteByte(' ')
+			content.WriteString(node.Data)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child, hidden)
+		}
+	}
+	walk(doc, false)
+	return content.String()
+}
+
+func htmlElementHidden(node *html.Node, hiddenClasses, hiddenIDs map[string]bool) bool {
+	for _, attr := range node.Attr {
+		switch attr.Key {
+		case "hidden":
+			return true
+		case "class":
+			for _, class := range strings.Fields(attr.Val) {
+				if hiddenClasses[class] {
+					return true
+				}
+			}
+		case "id":
+			if hiddenIDs[attr.Val] {
+				return true
+			}
+		case "aria-hidden":
+			if strings.EqualFold(strings.TrimSpace(attr.Val), "true") {
+				return true
+			}
+		case "style":
+			if cssDeclarationsHide(attr.Val) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stylesheetHiddenSelectors(doc *html.Node) (map[string]bool, map[string]bool) {
+	hiddenClasses := make(map[string]bool)
+	hiddenIDs := make(map[string]bool)
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "style" {
+			var css strings.Builder
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if child.Type == html.TextNode {
+					css.WriteString(child.Data)
+				}
+			}
+			collectHiddenStylesheetSelectors(css.String(), hiddenClasses, hiddenIDs)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	return hiddenClasses, hiddenIDs
+}
+
+func collectHiddenStylesheetSelectors(css string, hiddenClasses, hiddenIDs map[string]bool) {
+	css = stripCSSComments(css)
+	for {
+		open := strings.IndexByte(css, '{')
+		if open < 0 {
+			return
+		}
+		closeOffset := strings.IndexByte(css[open+1:], '}')
+		if closeOffset < 0 {
+			return
+		}
+		closeIndex := open + 1 + closeOffset
+		if cssDeclarationsHide(css[open+1 : closeIndex]) {
+			for _, selector := range strings.Split(css[:open], ",") {
+				selector = strings.TrimSpace(selector)
+				if len(selector) < 2 || strings.ContainsAny(selector, " >+~:[]*") {
+					continue
+				}
+				marker := strings.LastIndexAny(selector, ".#")
+				if marker < 0 || !isSimpleCSSIdentifier(selector[marker+1:]) {
+					continue
+				}
+				prefix := selector[:marker]
+				if prefix != "" && !isSimpleCSSIdentifier(prefix) {
+					continue
+				}
+				switch selector[marker] {
+				case '.':
+					hiddenClasses[selector[marker+1:]] = true
+				case '#':
+					hiddenIDs[selector[marker+1:]] = true
+				}
+			}
+		}
+		css = css[closeIndex+1:]
+	}
+}
+
+func stripCSSComments(css string) string {
+	var stripped strings.Builder
+	for len(css) > 0 {
+		start := strings.Index(css, "/*")
+		if start < 0 {
+			stripped.WriteString(css)
+			break
+		}
+		stripped.WriteString(css[:start])
+		end := strings.Index(css[start+2:], "*/")
+		if end < 0 {
+			break
+		}
+		css = css[start+2+end+2:]
+	}
+	return stripped.String()
+}
+
+func cssDeclarationsHide(declarations string) bool {
+	for _, declaration := range strings.Split(strings.ToLower(declarations), ";") {
+		parts := strings.SplitN(declaration, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		property := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(parts[1]), "!important"))
+		if (property == "display" && value == "none") ||
+			(property == "visibility" && (value == "hidden" || value == "collapse")) ||
+			(property == "opacity" && value == "0") {
+			return true
+		}
+	}
+	return false
+}
+
+func isSimpleCSSIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// visibleTextLen counts rendered non-whitespace characters. Script, style,
+// template, noscript, iframe fallback, comment, and head contents do not
+// document an embed.
 func visibleTextLen(s string) int {
 	n := 0
-	inTag := false
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '<':
-			inTag = true
-		case c == '>':
-			inTag = false
-		case inTag:
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-		default:
+	for _, r := range visiblePageContent(s, false) {
+		if !unicode.IsSpace(r) {
 			n++
 		}
 	}

@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Phishing detection no longer mislabels images, video, and legitimate plugin, theme, and framework source as harvested credential logs. Address-list and credential-pair checks now skip binary files and require real addresses that dominate the file, cutting a large batch of false alerts on media galleries and stock plugins.
-- PHP phishing detection now treats a brand named only in page body text (a backup, donation, or payment integration referencing its provider) as legitimate, and flags brand impersonation only when the page title clones the brand.
-- Suspected phishing-kit archives are now confirmed by their contents rather than the archive name alone, so ordinary plugin and theme distribution zips are no longer reported as kits.
-- Full-screen iframe pages that carry explanatory text are treated as documented embeds rather than redirect wrappers.
+- Phishing detection no longer mislabels images, video, and legitimate plugin, theme, and framework source as harvested credential logs. Credential checks skip binary files, decode UTF-8 or UTF-16 dumps, and inspect the bounded file so long headers cannot hide a real dump.
+- PHP phishing detection ignores provider names found only in backend integration code, while visible brand or logo impersonation still flags when the page captures a submitted password.
+- Suspected phishing-kit archives are confirmed by at least two independent content signals from separate entries, so ordinary plugin and theme distribution zips are not reported as kits.
+- Full-screen iframe pages with explanatory text are treated as documented embeds, while scripts, styles, comments, hidden elements, and iframe fallback text cannot suppress detection.
 
 ## [3.24.0] - 2026-07-13
 

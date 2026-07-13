@@ -438,3 +438,16 @@ func FuzzVisibleTextLen(f *testing.F) {
 		}
 	})
 }
+
+func FuzzStripPHPBlocks(f *testing.F) {
+	f.Add("<?php $password = $_POST['password']; ?><p>Dropbox</p>")
+	f.Add("before <?= $brand ?> after")
+	f.Add("<?php $brand = '?> dropbox'; ?><p>Local form</p>")
+	f.Add("<?php if ($a > $b) { echo 'x'; }")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, s string) {
+		if got := stripPHPBlocks(s); len(got) != len(s) {
+			t.Fatalf("stripped output length changed from %d to %d bytes", len(s), len(got))
+		}
+	})
+}

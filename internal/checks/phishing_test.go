@@ -20,6 +20,13 @@ func TestExtractTitleStandard(t *testing.T) {
 	}
 }
 
+func TestExtractTitleWithAttributes(t *testing.T) {
+	got := extractTitle(`<html><head><title lang="en">dropbox shared file</title></head>`)
+	if got != "dropbox shared file" {
+		t.Errorf("got %q", got)
+	}
+}
+
 func TestExtractTitleMissing(t *testing.T) {
 	if got := extractTitle("<html><body>no title here</body></html>"); got != "" {
 		t.Errorf("got %q, want empty", got)
@@ -258,28 +265,28 @@ func TestIsCredentialLogNameBenign(t *testing.T) {
 
 func TestIsPhishingKitZipSingleBrand(t *testing.T) {
 	for _, name := range []string{"office365_kit.zip", "outlook_login.zip", "paypal-scam.zip"} {
-		if !isPhishingKitZip(name) {
+		if !isPhishingKitZipName(name) {
 			t.Errorf("%q should match", name)
 		}
 	}
 }
 
 func TestIsPhishingKitZipMultiMatch(t *testing.T) {
-	if !isPhishingKitZip("secure_bank_login.zip") {
+	if !isPhishingKitZipName("secure_bank_login.zip") {
 		t.Error("multi-match (secure+bank+login) should match")
 	}
 }
 
 func TestIsPhishingKitZipSingleLowConfidenceDoesNotMatch(t *testing.T) {
 	for _, name := range []string{"login_form.zip", "secure_archive.zip", "bank_template.zip"} {
-		if isPhishingKitZip(name) {
+		if isPhishingKitZipName(name) {
 			t.Errorf("%q should not match (single low-conf keyword)", name)
 		}
 	}
 }
 
 func TestIsPhishingKitZipNoMatch(t *testing.T) {
-	if isPhishingKitZip("project_backup.zip") {
+	if isPhishingKitZipName("project_backup.zip") {
 		t.Error("unrelated archive should not match")
 	}
 }
@@ -765,6 +772,25 @@ func TestScanForPhishingFindsPhishPageAndRedirector(t *testing.T) {
 			t.Errorf("missing expected check %q in findings %v", want, checks)
 		}
 	}
+}
+
+func TestScanForPhishingChecksKitZipWithCredentialLikeName(t *testing.T) {
+	root := t.TempDir()
+	zipPath := filepath.Join(root, "paypal-results.zip")
+	writeKitTestZip(t, zipPath, []string{
+		"paypal/login.html", "paypal/next.php",
+	})
+
+	cfg := &config.Config{}
+	var findings []alert.Finding
+	scanForPhishing(context.Background(), root, 2, "alice", cfg, &findings)
+
+	for _, finding := range findings {
+		if finding.Check == "phishing_kit_archive" && finding.FilePath == zipPath {
+			return
+		}
+	}
+	t.Fatalf("credential-like ZIP name bypassed kit inspection: %+v", findings)
 }
 
 func TestScanForPhishingMaxDepthZero(t *testing.T) {
