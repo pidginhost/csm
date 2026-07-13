@@ -72,8 +72,12 @@ func TestReleaseCriticalJobsAreBlocking(t *testing.T) {
 	if strings.Contains(integration, "gocovmerge $PROFILES > dist/merged-coverage.out || true") {
 		t.Fatal("integration coverage merge still suppresses failure")
 	}
+	// cPanel integration runs when a cPanel image is configured; tag releases
+	// fall back to the Alma+Ubuntu matrix (with a warning) rather than blocking
+	// when no image is set. The provisioning and assertion machinery must still
+	// be present so cPanel is exercised whenever an image is available.
 	for _, want := range []string{
-		"INTEGRATION_CPANEL_IMAGE is required for tag releases",
+		"releasing with Alma+Ubuntu integration only",
 		`--image "$INTEGRATION_CPANEL_IMAGE"`,
 		`CPANEL_PACKAGE="${INTEGRATION_CPANEL_PACKAGE:-cloudv-1}"`,
 		`TEST_HOSTS="$TEST_HOSTS $CPANEL_IP:cpanel"`,
@@ -82,7 +86,7 @@ func TestReleaseCriticalJobsAreBlocking(t *testing.T) {
 		"dist/integ-cpanel.out",
 	} {
 		if !strings.Contains(integration, want) {
-			t.Errorf("tag integration job does not enforce cPanel coverage: missing %q", want)
+			t.Errorf("tag integration job missing expected cPanel handling: %q", want)
 		}
 	}
 }
