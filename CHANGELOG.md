@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The daemon now re-pins the legacy Apache/LSWS challenge snippet at startup when it references a challenge map file the daemon does not maintain, so upgrades that only swap the binary can no longer leave a snippet that breaks webserver config validation host-wide. Operator-edited or removed snippets are left untouched.
+- The daemon now creates the Apache/LSWS challenge map and re-pins the legacy challenge snippet at startup when it references a map the daemon does not maintain, preventing binary-only upgrades and disabled challenge mode from breaking host-wide webserver validation. Operator-edited or removed snippets are left untouched.
 - Scheduled deep YARA scans now roll through content across runs: each run resumes from where the last one stopped, keeps the findings it collected when the time budget runs out, and warns when a full pass has not completed within 30 days. Previously a run that exceeded its budget discarded everything it found and restarted from the top next time, so hosts with large content sets were never fully scanned.
 
 ## [3.24.0] - 2026-07-13

@@ -2,6 +2,7 @@ package challenge
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 // DefaultMapPath is the webserver-readable Apache / LSWS RewriteMap.
@@ -239,7 +242,7 @@ func writeMapFileIfChanged(path string, data []byte) (bool, error) {
 	return true, writeMapFile(path, data)
 }
 
-func writeMapFile(path string, data []byte) error {
+func ensureMapDir(path string) error {
 	// /run/csm must be world-readable so the webserver user
 	// (www-data / nobody / lsws) can stat + read the map underneath.
 	// The directory holds no sensitive data; only CSM-owned IP files
@@ -260,14 +263,56 @@ func writeMapFile(path string, data []byte) error {
 	if err := os.Chmod(mapDir, 0o755); err != nil {
 		return err
 	}
-	tmpPath := path + ".tmp"
-	// #nosec G306 -- webservers read this map file directly. It has to
-	// be readable by the webserver user. No sensitive data; only a list
-	// of IPs that must re-solve the PoW challenge.
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	return nil
+}
+
+// EnsureMapFile creates a readable empty map when path is absent and leaves
+// existing map contents intact. Apache validates txt: RewriteMap sources even
+// when challenge mode is disabled, before an IPList would otherwise create the
+// file.
+func EnsureMapFile(path string) error {
+	if err := ensureMapDir(path); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	// #nosec G302 G304 G703 -- path is the daemon-owned, webserver-readable challenge map.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("challenge map %s is not a regular file", path)
+		}
+		// #nosec G302 -- Apache/LSWS must be able to read the daemon-owned map.
+		return os.Chmod(path, 0o644)
+	}
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(path)
+	}
+	// OpenFile respects umask, so force the public read bits Apache needs.
+	// #nosec G302 -- Apache/LSWS must be able to read the daemon-owned map.
+	if err := f.Chmod(0o644); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+func writeMapFile(path string, data []byte) error {
+	if err := ensureMapDir(path); err != nil {
+		return err
+	}
+	// #nosec G306 -- webservers read this daemon-owned IP map directly.
+	return atomicio.AtomicWrite(path, 0o644, data)
 }
 
 func (l *IPList) reloadNginx(changed bool, reload func() error) {

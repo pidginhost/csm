@@ -14,7 +14,11 @@ import (
 var challengeConfSrc = "/opt/csm/configs/csm_challenge.conf"
 var challengeConfDest = "/etc/apache2/conf.d/csm_challenge.conf"
 
-var challengeMapDirective = regexp.MustCompile(`(?m)^\s*RewriteMap\s+csm_challenge\s+"?txt:([^"\s]+)"?`)
+var ensureChallengeMapFile = func() error {
+	return challenge.EnsureMapFile(challenge.DefaultMapPath)
+}
+
+var challengeMapDirective = regexp.MustCompile(`(?m)^[\t ]*(?i:RewriteMap)(?:[\t ]|\\\r?\n)+csm_challenge(?:[\t ]|\\\r?\n)+(?:"txt:([^"\r\n]+)"|'txt:([^'\r\n]+)'|txt:([^\t \r\n]+))(?:[\t \r]|$)`)
 
 // challengeMapPaths returns every path a "RewriteMap csm_challenge txt:"
 // directive in data references.
@@ -22,9 +26,21 @@ func challengeMapPaths(data []byte) []string {
 	matches := challengeMapDirective.FindAllSubmatch(data, -1)
 	paths := make([]string, 0, len(matches))
 	for _, m := range matches {
-		paths = append(paths, string(m[1]))
+		for _, path := range m[1:] {
+			if len(path) != 0 {
+				paths = append(paths, string(path))
+				break
+			}
+		}
 	}
 	return paths
+}
+
+func prepareChallengeConf() (bool, error) {
+	if err := ensureChallengeMapFile(); err != nil {
+		return false, fmt.Errorf("ensure daemon map %s: %w", challenge.DefaultMapPath, err)
+	}
+	return reconcileChallengeConf()
 }
 
 // reconcileChallengeConf re-deploys the legacy challenge snippet when its
@@ -37,14 +53,18 @@ func challengeMapPaths(data []byte) []string {
 // daemon map, are operator territory and stay untouched.
 //
 // Returns true when the snippet was rewritten.
-func reconcileChallengeConf() bool {
+func reconcileChallengeConf() (bool, error) {
+	// #nosec G304 -- challengeConfDest is the fixed legacy Apache path.
 	installed, err := os.ReadFile(challengeConfDest)
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read installed snippet %s: %w", challengeConfDest, err)
 	}
 	paths := challengeMapPaths(installed)
 	if len(paths) == 0 {
-		return false
+		return false, nil
 	}
 	stale := false
 	for _, p := range paths {
@@ -52,32 +72,34 @@ func reconcileChallengeConf() bool {
 			stale = true
 		}
 	}
-	if !stale {
-		return false
-	}
 
-	// #nosec G304 -- challengeConfSrc is the fixed shipped-template path.
-	tmpl, err := os.ReadFile(challengeConfSrc)
-	if err != nil {
-		return false
-	}
-	// Refuse a template that would re-install a wrong path (e.g. a stale
-	// package left behind by a partial upgrade).
-	tmplPaths := challengeMapPaths(tmpl)
-	if len(tmplPaths) == 0 {
-		return false
-	}
-	for _, p := range tmplPaths {
-		if p != challenge.DefaultMapPath {
-			return false
+	var tmpl []byte
+	if stale {
+		// #nosec G304 -- challengeConfSrc is the fixed shipped-template path.
+		tmpl, err = os.ReadFile(challengeConfSrc)
+		if err != nil {
+			return false, fmt.Errorf("read shipped template %s: %w", challengeConfSrc, err)
+		}
+		// Refuse a template that would re-install a wrong path (e.g. a stale
+		// package left behind by a partial upgrade).
+		tmplPaths := challengeMapPaths(tmpl)
+		if len(tmplPaths) == 0 {
+			return false, fmt.Errorf("shipped template %s has no challenge RewriteMap", challengeConfSrc)
+		}
+		for _, p := range tmplPaths {
+			if p != challenge.DefaultMapPath {
+				return false, fmt.Errorf("shipped template %s points at unsupported map %s", challengeConfSrc, p)
+			}
 		}
 	}
 
-	// #nosec G306 -- Apache conf.d file; the webserver reads it.
-	if err := os.WriteFile(challengeConfDest, tmpl, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "challenge: reconcile %s: %v\n", challengeConfDest, err)
-		return false
+	if !stale {
+		return false, nil
+	}
+
+	if err := writeFileAtomic(challengeConfDest, tmpl, 0o644); err != nil {
+		return false, fmt.Errorf("replace installed snippet %s: %w", challengeConfDest, err)
 	}
 	fmt.Fprintf(os.Stderr, "challenge: re-pinned %s to daemon map path %s\n", challengeConfDest, challenge.DefaultMapPath)
-	return true
+	return true, nil
 }

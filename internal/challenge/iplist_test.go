@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -127,6 +128,144 @@ func TestIPListFlushWritesFile(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Error("file should not be empty")
+	}
+}
+
+func TestEnsureMapFileCreatesReadableFileWithoutClobbering(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "run", "challenge_ips.txt")
+	oldUmask := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(oldUmask) })
+
+	if err := EnsureMapFile(mapPath); err != nil {
+		t.Fatalf("ensure new map: %v", err)
+	}
+	info, err := os.Stat(mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("new map mode = %04o, want 0644", info.Mode().Perm())
+	}
+	dirInfo, err := os.Stat(filepath.Dir(mapPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("map dir mode = %04o, want 0755", dirInfo.Mode().Perm())
+	}
+
+	want := "203.0.113.9 challenge\n"
+	if err = os.WriteFile(mapPath, []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(mapPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = EnsureMapFile(mapPath); err != nil {
+		t.Fatalf("ensure existing map: %v", err)
+	}
+	got, err := os.ReadFile(mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("existing map content = %q, want %q", got, want)
+	}
+	info, err = os.Stat(mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("existing map mode = %04o, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestEnsureMapFileRejectsNonRegularTarget(t *testing.T) {
+	mapPath := filepath.Join(t.TempDir(), "challenge_ips.txt")
+	if err := os.Mkdir(mapPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureMapFile(mapPath); err == nil {
+		t.Fatal("ensure directory as map: got nil error")
+	}
+	info, err := os.Stat(mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("map target mode = %s, want directory left intact", info.Mode())
+	}
+}
+
+func TestEnsureMapFileRejectsSymlinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "operator.conf")
+	mapPath := filepath.Join(dir, "challenge_ips.txt")
+	if err := os.WriteFile(target, []byte("operator content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, mapPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureMapFile(mapPath); err == nil {
+		t.Fatal("ensure symlink as map: got nil error")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "operator content\n" {
+		t.Fatalf("symlink target content changed: %q", got)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("symlink target mode = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteMapFileModeIgnoresUmask(t *testing.T) {
+	mapPath := filepath.Join(t.TempDir(), "run", "challenge_ips.txt")
+	oldUmask := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(oldUmask) })
+
+	if err := writeMapFile(mapPath, []byte("203.0.113.5 challenge\n")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(mapPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("map mode = %04o, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestWriteMapFileDoesNotFollowPredictableTempSymlink(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "challenge_ips.txt")
+	target := filepath.Join(dir, "operator.conf")
+	if err := os.WriteFile(target, []byte("operator content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, mapPath+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeMapFile(mapPath, []byte("203.0.113.5 challenge\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "operator content\n" {
+		t.Fatalf("predictable temp symlink target changed: %q", got)
 	}
 }
 

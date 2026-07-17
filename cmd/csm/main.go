@@ -313,7 +313,9 @@ func runDaemon() {
 
 	// Binary-swap upgrades never re-run the installer, so a stale legacy
 	// challenge snippet survives until it breaks webserver reloads host-wide.
-	reconcileChallengeConf()
+	if _, err := prepareChallengeConf(); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] challenge config reconciliation skipped: %v\n", err)
+	}
 
 	// Initialize signature scanner. A corrupt rules file that disables
 	// detection must be loud, not silently swallowed by best-effort load.
