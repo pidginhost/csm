@@ -301,7 +301,8 @@ func extractPHPString(s string) string {
 // `mysql -N -B -e <query>` output shape so existing tab-split callers
 // keep working unchanged. Returns nil on any open / query / scan
 // error (the legacy implementation swallowed errors the same way).
-func runMySQLQuery(creds wpDBCreds, query string) []string {
+// Var so tests can serve canned rows without a live database.
+var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	rows, err := mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
@@ -551,23 +552,54 @@ func dbContentFindingDetails(dbName, prefix string, lines ...string) string {
 	return strings.Join(out, "\n")
 }
 
+// wpInstallAdminGrace is how far after the first user registration an
+// admin account still counts as created by the site install itself.
+// Softaculous and similar installers register the initial admin (and any
+// setup-wizard co-admins) within moments of creating the users table, so
+// those accounts are the install, not a takeover. Anything later is a
+// change to an existing site and stays alert-worthy.
+const wpInstallAdminGrace = 15 * time.Minute
+
+const wpRegisteredLayout = "2006-01-02 15:04:05"
+
+// wpInstallEraAdmin reports whether an admin registration timestamp falls
+// within the install grace of the site's first user registration. Fails
+// open: unparseable timestamps never suppress.
+func wpInstallEraAdmin(registered, firstRegistered string) bool {
+	reg, err := time.Parse(wpRegisteredLayout, strings.TrimSpace(registered))
+	if err != nil {
+		return false
+	}
+	first, err := time.Parse(wpRegisteredLayout, strings.TrimSpace(firstRegistered))
+	if err != nil {
+		return false
+	}
+	diff := reg.Sub(first)
+	return diff >= 0 && diff <= wpInstallAdminGrace
+}
+
 // checkWPUsers checks for rogue admin accounts created recently.
 func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
 
-	// Find admin users created in the last 7 days
+	// Find admin users created in the last 7 days. MIN(user_registered)
+	// rides along as the install marker for the grace-window suppression.
 	query := fmt.Sprintf(
-		"SELECT u.ID, u.user_login, u.user_email, u.user_registered FROM %susers u "+
+		"SELECT u.ID, u.user_login, u.user_email, u.user_registered, "+
+			"(SELECT MIN(user_registered) FROM %susers) FROM %susers u "+
 			"INNER JOIN %susermeta m ON u.ID = m.user_id "+
 			"WHERE m.meta_key = '%scapabilities' AND m.meta_value LIKE '%%administrator%%' "+
 			"AND u.user_registered >= DATE_SUB(NOW(), INTERVAL 7 DAY) "+
 			"LIMIT 10",
-		prefix, prefix, prefix)
+		prefix, prefix, prefix, prefix)
 	lines := runMySQLQuery(creds, query)
 
 	for _, line := range lines {
-		parts := strings.SplitN(line, "\t", 4)
+		parts := strings.SplitN(line, "\t", 5)
 		if len(parts) < 3 {
+			continue
+		}
+		if wpInstallEraAdmin(safeGet(parts, 3), safeGet(parts, 4)) {
 			continue
 		}
 		findings = append(findings, alert.Finding{
