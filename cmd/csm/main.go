@@ -311,6 +311,10 @@ func runDaemon() {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
+	// Binary-swap upgrades never re-run the installer, so a stale legacy
+	// challenge snippet survives until it breaks webserver reloads host-wide.
+	reconcileChallengeConf()
+
 	// Initialize signature scanner. A corrupt rules file that disables
 	// detection must be loud, not silently swallowed by best-effort load.
 	scanner := signatures.Init(cfg.Signatures.RulesDir)

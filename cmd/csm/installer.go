@@ -1126,19 +1126,19 @@ func (inst *Installer) DeployModSecRules() {
 
 // DeployChallengeConfig copies the Apache challenge redirect config.
 func (inst *Installer) DeployChallengeConfig() {
-	src := "/opt/csm/configs/csm_challenge.conf"
+	src := challengeConfSrc
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		return
 	}
 
-	dest := "/etc/apache2/conf.d/csm_challenge.conf"
+	dest := challengeConfDest
 	if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
 		return
 	}
 
 	data, _ := os.ReadFile(src)
-	// #nosec G306 G703 -- Apache conf.d file; webserver reads it.
-	// `dest` is the hardcoded "/etc/apache2/conf.d/csm_challenge.conf".
+	// #nosec G304 G306 G703 -- src/dest are the fixed template and Apache
+	// conf.d paths; the webserver reads the result.
 	if err := os.WriteFile(dest, data, 0644); err == nil {
 		fmt.Printf("  Challenge page config deployed to %s\n", dest)
 	}

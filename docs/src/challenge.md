@@ -173,6 +173,13 @@ outside the private state directory so the webserver user can read them.
 CSM rewrites the Nginx include on challenge-list changes and reloads
 Nginx only when the file content changes.
 
+At startup the daemon also checks the legacy installer-deployed snippet
+(`/etc/apache2/conf.d/csm_challenge.conf`). If its RewriteMap points at a
+map file the daemon does not maintain -- which makes webserver config
+validation fail host-wide once that file goes missing -- the daemon
+re-deploys the shipped template. Files without the directive, or already
+pointing at the daemon map, are never touched, so operator edits survive.
+
 On every run, the installer:
 
 1. Writes the new snippet to a sibling temp file and renames it into
