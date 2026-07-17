@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"container/heap"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -20,6 +22,11 @@ import (
 
 var activeYARABackend = yara.Active
 var yaraAvailable = yara.Available
+
+// yaraDeepScanMu serializes the persisted host-wide cursor. Manual baseline
+// scans can overlap the daemon's scheduled scan; without serialization, the
+// older window can overwrite a newer cursor after it returns.
+var yaraDeepScanMu sync.Mutex
 
 // yaraDeepNow is indirected so tests can drive the soft-deadline clock.
 var yaraDeepNow = time.Now
@@ -38,7 +45,33 @@ const yaraDeepFullCycleStale = 30 * 24 * time.Hour
 // which the rolling deep-scan records its progress.
 const yaraDeepCursorCheck = "yara_deep"
 
+type yaraDeepScanEntry struct {
+	path      string
+	sortKey   string
+	info      os.FileInfo
+	err       error
+	inspected bool
+}
+
+type yaraDeepScanHeap []yaraDeepScanEntry
+
+func (h yaraDeepScanHeap) Len() int           { return len(h) }
+func (h yaraDeepScanHeap) Less(i, j int) bool { return h[i].sortKey < h[j].sortKey }
+func (h yaraDeepScanHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *yaraDeepScanHeap) Push(value any)    { *h = append(*h, value.(yaraDeepScanEntry)) }
+func (h *yaraDeepScanHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = yaraDeepScanEntry{}
+	*h = old[:last]
+	return value
+}
+
 func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	yaraDeepScanMu.Lock()
+	defer yaraDeepScanMu.Unlock()
+
 	backend := activeYARABackend()
 	if backend == nil || backend.RuleCount() == 0 {
 		markCheckIncomplete(ctx, "yara_deep")
@@ -80,22 +113,40 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	var incomplete int
 	var firstIncomplete string
 	stoppedEarly := false
-	lastScanned := ""
+	lastScanned := resume
 	sep := string(filepath.Separator)
+	subtreePrefix := func(path string) string {
+		path = filepath.Clean(path)
+		if strings.HasSuffix(path, sep) {
+			return path
+		}
+		return path + sep
+	}
+	advanceCursor := func(path string) {
+		if path > lastScanned {
+			lastScanned = path
+		}
+	}
 
 	// subtreeCovered reports whether every path under dir sorts before the
 	// resume point. Children all share the dir+sep prefix, so when resume
 	// does not itself start with that prefix, any child compares to resume
 	// exactly as the prefix does. Comparing the bare dir path instead would
 	// wrongly skip siblings like "ab/" when the cursor sits at "ab.zz"
-	// ('/' sorts after '.').
+	// ('/' sorts after '.'). An exact prefix cursor records a subtree already
+	// accounted for this cycle, including an empty or unreadable directory.
 	subtreeCovered := func(dir string) bool {
-		return resume != "" && !strings.HasPrefix(resume, dir+sep) && dir+sep < resume
+		prefix := subtreePrefix(dir)
+		return resume != "" && (resume == prefix || (!strings.HasPrefix(resume, prefix) && prefix < resume))
 	}
 
 	var scanDir func(string)
 	scanDir = func(dir string) {
 		if ctx.Err() != nil || stoppedEarly {
+			return
+		}
+		if outOfTime() {
+			stoppedEarly = true
 			return
 		}
 		entries, err := osFS.ReadDir(dir)
@@ -104,54 +155,90 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 			if firstIncomplete == "" {
 				firstIncomplete = fmt.Sprintf("reading %s: %v", dir, err)
 			}
+			advanceCursor(subtreePrefix(dir))
 			return
 		}
-		// The cursor's resume comparisons assume one stable path order
-		// across runs; sort defensively rather than trusting the injector.
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-		for _, entry := range entries {
+		// A directory's candidate paths start at dir+separator, not at the
+		// bare directory name. Bare-name order visits ab/ before ab.zz even
+		// though every child under ab/ sorts after ab.zz. The heap starts
+		// with each bare path as a lower bound, then requeues directories
+		// under their path+separator key after Lstat reveals their type.
+		ordered := make(yaraDeepScanHeap, len(entries))
+		for i, entry := range entries {
+			ordered[i].path = filepath.Join(dir, entry.Name())
+			ordered[i].sortKey = ordered[i].path
+		}
+		heap.Init(&ordered)
+
+		for ordered.Len() > 0 {
 			if ctx.Err() != nil || stoppedEarly {
 				return
-			}
-			path := filepath.Join(dir, entry.Name())
-			info, err := osFS.Lstat(path)
-			if err != nil {
-				incomplete++
-				if firstIncomplete == "" {
-					firstIncomplete = fmt.Sprintf("inspecting %s: %v", path, err)
-				}
-				continue
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				continue
-			}
-			if info.IsDir() {
-				if subtreeCovered(path) {
-					continue
-				}
-				scanDir(path)
-				continue
-			}
-			if !info.Mode().IsRegular() || info.Size() == 0 {
-				continue
-			}
-			if resume != "" && path <= resume {
-				continue
 			}
 			if outOfTime() {
 				stoppedEarly = true
 				return
 			}
-			// Advance past error and oversize files too, so a permanently
-			// unreadable file cannot wedge the cursor in place.
-			lastScanned = path
+
+			item := heap.Pop(&ordered).(yaraDeepScanEntry)
+			if !item.inspected {
+				item.info, item.err = osFS.Lstat(item.path)
+				item.inspected = true
+			}
+			path := item.path
+
+			if item.err == nil && item.info.Mode()&os.ModeSymlink == 0 && item.info.IsDir() {
+				if item.sortKey == path {
+					item.sortKey = subtreePrefix(path)
+					heap.Push(&ordered, item)
+					continue
+				}
+				if subtreeCovered(path) {
+					continue
+				}
+				if outOfTime() {
+					stoppedEarly = true
+					return
+				}
+				scanDir(path)
+				if ctx.Err() == nil && !stoppedEarly {
+					advanceCursor(item.sortKey)
+				}
+				continue
+			}
+
+			if resume != "" && path <= resume {
+				continue
+			}
+			if item.err != nil {
+				incomplete++
+				if firstIncomplete == "" {
+					firstIncomplete = fmt.Sprintf("inspecting %s: %v", path, item.err)
+				}
+				advanceCursor(path)
+				continue
+			}
+			info := item.info
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() == 0 {
+				advanceCursor(path)
+				continue
+			}
 			if info.Size() > maxBytes {
+				// Oversize files are intentionally not opened, but they still
+				// count as covered progress for this rolling cycle.
+				advanceCursor(path)
 				incomplete++
 				if firstIncomplete == "" {
 					firstIncomplete = fmt.Sprintf("%s exceeds the %d-byte scan limit", path, maxBytes)
 				}
 				continue
 			}
+			if outOfTime() {
+				stoppedEarly = true
+				return
+			}
+			// Advance before opening so permanently unreadable or unscannable
+			// files cannot wedge the cursor in place.
+			advanceCursor(path)
 
 			file, err := osFS.Open(path)
 			if err != nil {
@@ -204,15 +291,33 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	}
 
 	roots := ResolveWebRoots(cfg)
-	sort.Strings(roots)
+	normalizedRoots := roots[:0]
+	seenRoots := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if _, exists := seenRoots[root]; exists {
+			continue
+		}
+		seenRoots[root] = struct{}{}
+		normalizedRoots = append(normalizedRoots, root)
+	}
+	roots = normalizedRoots
+	sort.Slice(roots, func(i, j int) bool { return subtreePrefix(roots[i]) < subtreePrefix(roots[j]) })
 	for _, root := range roots {
 		if ctx.Err() != nil || stoppedEarly {
+			break
+		}
+		if outOfTime() {
+			stoppedEarly = true
 			break
 		}
 		if subtreeCovered(root) {
 			continue
 		}
 		scanDir(root)
+		if ctx.Err() == nil && !stoppedEarly {
+			advanceCursor(subtreePrefix(root))
+		}
 	}
 	if ctx.Err() != nil {
 		// The runner drops every finding a check returns after its budget
@@ -227,12 +332,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		next.Check = yaraDeepCursorCheck
 		if stoppedEarly {
 			next.LastPath = lastScanned
-			if next.LastPath == "" {
-				next.LastPath = resume
-			}
 			next.LastFullCycleTS = cur.LastFullCycleTS
 			next.WrappedAt = cur.WrappedAt
-			if resume == "" || next.WrappedAt.IsZero() {
+			if next.WrappedAt.IsZero() {
 				next.WrappedAt = now
 			}
 		} else {
@@ -249,7 +351,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	if stoppedEarly || resume != "" {
 		markCheckIncomplete(ctx, "yara_deep")
 	}
-	if stoppedEarly && resume != "" && !cur.WrappedAt.IsZero() && now.Sub(cur.WrappedAt) > yaraDeepFullCycleStale {
+	if stoppedEarly && !cur.WrappedAt.IsZero() && now.Sub(cur.WrappedAt) > yaraDeepFullCycleStale {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Warning,
 			Check:    "yara_scan_incomplete",

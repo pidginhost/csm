@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,6 +176,47 @@ func (b *recordingYARABackend) ScanBytesChecked(data []byte) ([]yara.Match, erro
 func (b *recordingYARABackend) RuleCount() int { return 1 }
 func (b *recordingYARABackend) Reload() error  { return nil }
 
+type concurrentYARABackend struct {
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+	slowCalls    atomic.Int32
+}
+
+func (b *concurrentYARABackend) ScanFile(string, int) []yara.Match { return nil }
+func (b *concurrentYARABackend) ScanBytes(data []byte) []yara.Match {
+	matches, _ := b.ScanBytesChecked(data)
+	return matches
+}
+func (b *concurrentYARABackend) ScanBytesChecked(data []byte) ([]yara.Match, error) {
+	if string(data) == "slow first" && b.slowCalls.Add(1) == 1 {
+		close(b.firstStarted)
+		<-b.releaseFirst
+	}
+	return nil, nil
+}
+func (b *concurrentYARABackend) RuleCount() int { return 1 }
+func (b *concurrentYARABackend) Reload() error  { return nil }
+
+type faultingYARADeepOS struct {
+	OS
+	lstat   func(string) (os.FileInfo, error)
+	readDir func(string) ([]os.DirEntry, error)
+}
+
+func (f *faultingYARADeepOS) Lstat(path string) (os.FileInfo, error) {
+	if f.lstat != nil {
+		return f.lstat(path)
+	}
+	return f.OS.Lstat(path)
+}
+
+func (f *faultingYARADeepOS) ReadDir(path string) ([]os.DirEntry, error) {
+	if f.readDir != nil {
+		return f.readDir(path)
+	}
+	return f.OS.ReadDir(path)
+}
+
 func writeYARADeepFile(t *testing.T, root string, rel, content string) string {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(rel))
@@ -192,6 +234,17 @@ func useYARADeepClock(t *testing.T, clock *time.Time) {
 	prev := yaraDeepNow
 	yaraDeepNow = func() time.Time { return *clock }
 	t.Cleanup(func() { yaraDeepNow = prev })
+}
+
+func putYARADeepCursor(t *testing.T, db *store.DB, lastPath string, wrappedAt time.Time) {
+	t.Helper()
+	var record store.ScanCursorRecord
+	record.Check = yaraDeepCursorCheck
+	record.LastPath = lastPath
+	record.WrappedAt = wrappedAt
+	if err := db.PutScanCursor(record); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCheckYARADeepReturnsPartialFindingsAtSoftDeadline(t *testing.T) {
@@ -239,10 +292,7 @@ func TestCheckYARADeepResumesFromCursorAndCompletesCycle(t *testing.T) {
 	root := t.TempDir()
 	first := writeYARADeepFile(t, root, "a/one.dat", "mal one")
 	second := writeYARADeepFile(t, root, "z/two.dat", "mal two")
-	seed := store.ScanCursorRecord{Account: "", Check: "yara_deep", LastPath: first, WrappedAt: time.Now().UTC()}
-	if err := db.PutScanCursor(seed); err != nil {
-		t.Fatal(err)
-	}
+	putYARADeepCursor(t, db, first, time.Now().UTC())
 
 	backend := &recordingYARABackend{}
 	yara.SetActive(backend)
@@ -285,10 +335,7 @@ func TestCheckYARADeepCursorSkipKeepsSiblingDirAfterDotFile(t *testing.T) {
 	root := t.TempDir()
 	scannedAlready := writeYARADeepFile(t, root, "ab.zz", "clean already covered")
 	inSibling := writeYARADeepFile(t, root, "ab/x.dat", "mal sibling")
-	seed := store.ScanCursorRecord{Account: "", Check: "yara_deep", LastPath: scannedAlready, WrappedAt: time.Now().UTC()}
-	if err := db.PutScanCursor(seed); err != nil {
-		t.Fatal(err)
-	}
+	putYARADeepCursor(t, db, scannedAlready, time.Now().UTC())
 
 	backend := &recordingYARABackend{}
 	yara.SetActive(backend)
@@ -309,6 +356,305 @@ func TestCheckYARADeepCursorSkipKeepsSiblingDirAfterDotFile(t *testing.T) {
 		if content == "clean already covered" {
 			t.Fatal("file at the cursor position was re-scanned")
 		}
+	}
+}
+
+func TestCheckYARADeepCursorFollowsFullPathOrder(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	first := writeYARADeepFile(t, root, "ab.zz", "mal dot file")
+	writeYARADeepFile(t, root, "ab/x.dat", "mal directory file")
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	backend := &recordingYARABackend{onScan: func() { clock = clock.Add(2 * yaraDeepDeadlineMargin) }}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	useYARADeepClock(t, &clock)
+
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	var paths []string
+	for _, finding := range findings {
+		if finding.Check == "yara_match_scheduled" {
+			paths = append(paths, finding.FilePath)
+		}
+	}
+	if len(paths) != 1 || paths[0] != first {
+		t.Fatalf("first cursor window scanned %v, want lexicographically first path %s", paths, first)
+	}
+	if !collector.contains("yara_deep") {
+		t.Fatal("partial path-order window must preserve findings from other windows")
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after first window: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != first {
+		t.Fatalf("cursor.LastPath = %q, want %q", cur.LastPath, first)
+	}
+}
+
+func TestCheckYARADeepOrdersRootSubtreesByFullPath(t *testing.T) {
+	db := useRollingStore(t)
+	parent := t.TempDir()
+	laterRoot := filepath.Join(parent, "ab")
+	firstRoot := filepath.Join(parent, "ab.zz")
+	first := writeYARADeepFile(t, firstRoot, "one.dat", "mal dot root")
+	writeYARADeepFile(t, laterRoot, "two.dat", "mal plain root")
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	backend := &recordingYARABackend{onScan: func() { clock = clock.Add(2 * yaraDeepDeadlineMargin) }}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	useYARADeepClock(t, &clock)
+
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{laterRoot, firstRoot}}, nil)
+
+	var paths []string
+	for _, finding := range findings {
+		if finding.Check == "yara_match_scheduled" {
+			paths = append(paths, finding.FilePath)
+		}
+	}
+	if len(paths) != 1 || paths[0] != first {
+		t.Fatalf("first root window scanned %v, want lexicographically first path %s", paths, first)
+	}
+	if !collector.contains("yara_deep") {
+		t.Fatal("partial root-order window must preserve findings from other windows")
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after first root window: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != first {
+		t.Fatalf("cursor.LastPath = %q, want %q", cur.LastPath, first)
+	}
+}
+
+func TestCheckYARADeepResumesRootWithTrailingSeparator(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	first := writeYARADeepFile(t, root, "a-first.dat", "mal first")
+	second := writeYARADeepFile(t, root, "z-second.dat", "mal second")
+	cfg := &config.Config{AccountRoots: []string{root + string(filepath.Separator)}}
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	firstBackend := &recordingYARABackend{onScan: func() { clock = clock.Add(2 * yaraDeepDeadlineMargin) }}
+	yara.SetActive(firstBackend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	useYARADeepClock(t, &clock)
+
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	firstFindings := CheckYARADeep(ctx, cfg, nil)
+	cancel()
+	if !findsPath(firstFindings, first) {
+		t.Fatalf("first window did not scan %s: %+v", first, firstFindings)
+	}
+
+	secondBackend := &recordingYARABackend{}
+	yara.SetActive(secondBackend)
+	secondCtx, collector := withIncompleteCheckCollector(context.Background())
+	secondFindings := CheckYARADeep(secondCtx, cfg, nil)
+
+	if !findsPath(secondFindings, second) {
+		t.Fatalf("resumed trailing-separator root did not scan %s: %+v", second, secondFindings)
+	}
+	if findsPath(secondFindings, first) {
+		t.Fatalf("resumed trailing-separator root rescanned %s: %+v", first, secondFindings)
+	}
+	if !collector.contains("yara_deep") {
+		t.Fatal("resumed trailing-separator root must preserve earlier-window findings")
+	}
+}
+
+func TestCheckYARADeepSerializesCursorUpdates(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	first := writeYARADeepFile(t, root, "a-first.dat", "slow first")
+	writeYARADeepFile(t, root, "z-last.dat", "clean last")
+
+	backend := &concurrentYARABackend{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	base := time.Now().Add(time.Hour)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	previousNow := yaraDeepNow
+	yaraDeepNow = func() time.Time { return time.Unix(0, clock.Load()) }
+	t.Cleanup(func() { yaraDeepNow = previousNow })
+
+	firstCtx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	firstDone := make(chan struct{})
+	go func() {
+		CheckYARADeep(firstCtx, &config.Config{AccountRoots: []string{root}}, nil)
+		close(firstDone)
+	}()
+	<-backend.firstStarted
+
+	secondDone := make(chan struct{})
+	go func() {
+		CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+		close(secondDone)
+	}()
+
+	select {
+	case <-secondDone:
+		clock.Store(base.Add(2 * time.Minute).UnixNano())
+		close(backend.releaseFirst)
+		<-firstDone
+		t.Fatal("second scan completed while the first scan still owned the shared cursor")
+	case <-time.After(100 * time.Millisecond):
+	}
+	clock.Store(base.Add(2 * time.Minute).UnixNano())
+	close(backend.releaseFirst)
+	<-firstDone
+	<-secondDone
+
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after concurrent scans: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != "" {
+		t.Fatalf("older partial window overwrote the completed cursor with %q, first path %q", cur.LastPath, first)
+	}
+}
+
+func TestCheckYARADeepAdvancesCursorPastLstatError(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	bad := writeYARADeepFile(t, root, "a-bad.dat", "unreadable")
+	writeYARADeepFile(t, root, "z-good.dat", "mal later")
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.lstat = func(path string) (os.FileInfo, error) {
+		if path == bad {
+			clock = clock.Add(2 * yaraDeepDeadlineMargin)
+			return nil, errors.New("metadata unavailable")
+		}
+		return fs.OS.Lstat(path)
+	}
+	withMockOS(t, fs)
+	useYARADeepClock(t, &clock)
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
+		t.Fatalf("metadata error did not mark the partial scan incomplete: %+v", findings)
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after metadata error: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != bad {
+		t.Fatalf("cursor.LastPath = %q, want metadata error path %q", cur.LastPath, bad)
+	}
+}
+
+func TestCheckYARADeepAdvancesCursorPastOversizeFile(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	oversize := writeYARADeepFile(t, root, "a-large.dat", strings.Repeat("x", 2*1024*1024))
+	writeYARADeepFile(t, root, "z-good.dat", "mal later")
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.lstat = func(path string) (os.FileInfo, error) {
+		info, err := fs.OS.Lstat(path)
+		if path == oversize {
+			clock = clock.Add(2 * yaraDeepDeadlineMargin)
+		}
+		return info, err
+	}
+	withMockOS(t, fs)
+	useYARADeepClock(t, &clock)
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+	cfg := &config.Config{AccountRoots: []string{root}}
+	cfg.Thresholds.FullScanMaxFileMB = 1
+
+	findings := CheckYARADeep(ctx, cfg, nil)
+
+	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
+		t.Fatalf("oversize file did not mark the partial scan incomplete: %+v", findings)
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after oversize file: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != oversize {
+		t.Fatalf("cursor.LastPath = %q, want oversize path %q", cur.LastPath, oversize)
+	}
+}
+
+func TestCheckYARADeepAdvancesCursorPastUnreadableDirectory(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	badDir := filepath.Join(root, "a-bad")
+	if err := os.Mkdir(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeYARADeepFile(t, root, "z-good.dat", "mal later")
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.readDir = func(path string) ([]os.DirEntry, error) {
+		if path == badDir {
+			clock = clock.Add(2 * yaraDeepDeadlineMargin)
+			return nil, errors.New("directory unavailable")
+		}
+		return fs.OS.ReadDir(path)
+	}
+	withMockOS(t, fs)
+	useYARADeepClock(t, &clock)
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") || !containsFindingCheck(findings, "yara_scan_incomplete") {
+		t.Fatalf("directory error did not mark the partial scan incomplete: %+v", findings)
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after directory error: ok=%v err=%v", ok, err)
+	}
+	want := badDir + string(filepath.Separator)
+	if cur.LastPath != want {
+		t.Fatalf("cursor.LastPath = %q, want unreadable subtree marker %q", cur.LastPath, want)
 	}
 }
 
@@ -351,15 +697,7 @@ func TestCheckYARADeepWarnsWhenFullCycleStale(t *testing.T) {
 	root := t.TempDir()
 	first := writeYARADeepFile(t, root, "a/one.dat", "mal one")
 	writeYARADeepFile(t, root, "b/two.dat", "mal two")
-	seed := store.ScanCursorRecord{
-		Account:   "",
-		Check:     "yara_deep",
-		LastPath:  first,
-		WrappedAt: time.Now().UTC().Add(-yaraDeepFullCycleStale - 24*time.Hour),
-	}
-	if err := db.PutScanCursor(seed); err != nil {
-		t.Fatal(err)
-	}
+	putYARADeepCursor(t, db, first, time.Now().UTC().Add(-yaraDeepFullCycleStale-24*time.Hour))
 
 	base := time.Now().Add(time.Hour)
 	clock := base
@@ -392,14 +730,56 @@ func TestCheckYARADeepWarnsWhenFullCycleStale(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepKeepsStaleCycleWhenNoPathWasScanned(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	writeYARADeepFile(t, root, "a/one.dat", "mal one")
+	wrappedAt := time.Now().UTC().Add(-yaraDeepFullCycleStale - 24*time.Hour)
+	var seed store.ScanCursorRecord
+	seed.Check = yaraDeepCursorCheck
+	seed.WrappedAt = wrappedAt
+	if err := db.PutScanCursor(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Add(time.Hour)
+	clock := base
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	useYARADeepClock(t, &clock)
+
+	ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin-time.Second))
+	defer cancel()
+	ctx, collector := withIncompleteCheckCollector(ctx)
+
+	findings := CheckYARADeep(ctx, &config.Config{AccountRoots: []string{root}}, nil)
+
+	if !collector.contains("yara_deep") {
+		t.Fatal("no-progress partial run must preserve findings from earlier windows")
+	}
+	warned := false
+	for _, finding := range findings {
+		if finding.Check == "yara_scan_incomplete" && finding.Severity == alert.Warning {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("stale cycle with no cursor path produced no warning: %+v", findings)
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("cursor after no-progress run: ok=%v err=%v", ok, err)
+	}
+	if !cur.WrappedAt.Equal(wrappedAt) {
+		t.Fatalf("cursor.WrappedAt = %s, want original cycle start %s", cur.WrappedAt, wrappedAt)
+	}
+}
+
 func TestCheckYARADeepHardCancelKeepsCursor(t *testing.T) {
 	db := useRollingStore(t)
 	root := t.TempDir()
 	first := writeYARADeepFile(t, root, "a/one.dat", "mal one")
-	seed := store.ScanCursorRecord{Account: "", Check: "yara_deep", LastPath: first, WrappedAt: time.Now().UTC()}
-	if err := db.PutScanCursor(seed); err != nil {
-		t.Fatal(err)
-	}
+	putYARADeepCursor(t, db, first, time.Now().UTC())
 
 	backend := &recordingYARABackend{}
 	yara.SetActive(backend)
