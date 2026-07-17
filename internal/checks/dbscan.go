@@ -562,15 +562,19 @@ const wpInstallAdminGrace = 15 * time.Minute
 
 const wpRegisteredLayout = "2006-01-02 15:04:05"
 
+func parseWPRegistered(value string) (time.Time, error) {
+	return time.Parse(wpRegisteredLayout, strings.TrimSpace(value))
+}
+
 // wpInstallEraAdmin reports whether an admin registration timestamp falls
 // within the install grace of the site's first user registration. Fails
 // open: unparseable timestamps never suppress.
 func wpInstallEraAdmin(registered, firstRegistered string) bool {
-	reg, err := time.Parse(wpRegisteredLayout, strings.TrimSpace(registered))
+	reg, err := parseWPRegistered(registered)
 	if err != nil {
 		return false
 	}
-	first, err := time.Parse(wpRegisteredLayout, strings.TrimSpace(firstRegistered))
+	first, err := parseWPRegistered(firstRegistered)
 	if err != nil {
 		return false
 	}
@@ -582,14 +586,24 @@ func wpInstallEraAdmin(registered, firstRegistered string) bool {
 func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
 
-	// Find admin users created in the last 7 days. MIN(user_registered)
-	// rides along as the install marker for the grace-window suppression.
+	// Find admin users created in the last 7 days. Missing registration
+	// timestamps stay in scope so the suppression fails open.
+	// MIN(user_registered) rides along as the install marker, but any NULL
+	// invalidates that marker. EXISTS keeps duplicate capability metadata
+	// from consuming the bounded result.
 	query := fmt.Sprintf(
 		"SELECT u.ID, u.user_login, u.user_email, u.user_registered, "+
-			"(SELECT MIN(user_registered) FROM %susers) FROM %susers u "+
-			"INNER JOIN %susermeta m ON u.ID = m.user_id "+
-			"WHERE m.meta_key = '%scapabilities' AND m.meta_value LIKE '%%administrator%%' "+
-			"AND u.user_registered >= DATE_SUB(NOW(), INTERVAL 7 DAY) "+
+			"(SELECT CASE WHEN COUNT(*) <> COUNT(user_registered) "+
+			"THEN NULL ELSE MIN(user_registered) END FROM %susers) FROM %susers u "+
+			"WHERE EXISTS (SELECT 1 FROM %susermeta m "+
+			"WHERE m.user_id = u.ID AND m.meta_key = '%scapabilities' "+
+			"AND m.meta_value LIKE '%%administrator%%') "+
+			"AND (u.user_registered >= DATE_SUB(NOW(), INTERVAL 7 DAY) "+
+			"OR u.user_registered IS NULL "+
+			"OR CAST(u.user_registered AS CHAR) = '0000-00-00 00:00:00') "+
+			"ORDER BY (u.user_registered IS NULL OR "+
+			"CAST(u.user_registered AS CHAR) = '0000-00-00 00:00:00') DESC, "+
+			"u.user_registered DESC "+
 			"LIMIT 10",
 		prefix, prefix, prefix, prefix)
 	lines := runMySQLQuery(creds, query)
@@ -602,12 +616,17 @@ func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 		if wpInstallEraAdmin(safeGet(parts, 3), safeGet(parts, 4)) {
 			continue
 		}
+		registered := safeGet(parts, 3)
+		message := fmt.Sprintf("New WordPress admin account created in last 7 days: %s (account: %s)", parts[1], user)
+		if _, err := parseWPRegistered(registered); err != nil {
+			message = fmt.Sprintf("WordPress admin account has a missing or invalid registration timestamp: %s (account: %s)", parts[1], user)
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "db_rogue_admin",
-			Message:  fmt.Sprintf("New WordPress admin account created in last 7 days: %s (account: %s)", parts[1], user),
+			Message:  message,
 			Details: fmt.Sprintf("Database: %s\nTable prefix: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
-				creds.dbName, prefix, parts[0], parts[1], parts[2], safeGet(parts, 3)),
+				creds.dbName, prefix, parts[0], parts[1], parts[2], registered),
 		})
 	}
 
