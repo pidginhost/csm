@@ -137,6 +137,12 @@ blocking is live again. Concurrent findings for the same incident share
 one in-flight firewall call, and resolved or dismissed spray incidents do
 not make new block decisions.
 
+Visibility-only findings do not make a spray incident blockable by themselves.
+This includes `mail_bruteforce_suspected` and the High
+`mail_account_compromised` advisory for an established multi-mailbox source.
+A separate blockable finding in the same spray incident can still trip the
+configured severity gate.
+
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
 internal mail relays, NAT egresses, and known-good infrastructure
@@ -209,6 +215,11 @@ review.
 If a long-running incident's timeline was truncated and the source IP is
 not part of the incident key, auto-block also stays off because the
 remaining visible timeline may not contain every source IP.
+
+The same visibility-only findings are excluded from generic incident
+auto-blocking. In particular, setting `block_at_severity: high` does not turn
+an established multi-mailbox `mail_account_compromised` advisory into firewall
+evidence. A Critical compromise finding remains blockable.
 
 credential_spray is explicitly excluded from this path; the dedicated
 spray hand-off owns it. Set `kinds` to narrow the surface (e.g. only

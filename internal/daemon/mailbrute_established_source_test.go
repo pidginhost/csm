@@ -86,3 +86,38 @@ func TestMailAuthTracker_CompromiseStaysCriticalWhenOtherSuccessesAreFresh(t *te
 		t.Fatalf("severity = %v, want Critical: fresh successes are not established standing", f.Severity)
 	}
 }
+
+func TestMailAuthTracker_CompromiseStaysCriticalWhenOtherStandingIsStale(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.5"
+	establishOfficeStanding(tr, clock, ip, "office1@example.com", "office2@example.com")
+	clock.advance(mailGoodSourceTTL + time.Second)
+
+	tr.Record(ip, "victim@example.com")
+	tr.Record(ip, "victim@example.com")
+	f := compromiseFinding(tr.RecordSuccess(ip, "victim@example.com"))
+	if f == nil {
+		t.Fatal("compromise finding missing")
+	}
+	if f.Severity != alert.Critical {
+		t.Fatalf("severity = %v, want Critical: stale standing must not vouch for a compromise", f.Severity)
+	}
+}
+
+func TestMailAuthTracker_DowngradedCompromiseDoesNotTrainGoodSource(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "203.0.113.5"
+	establishOfficeStanding(tr, clock, ip, "office1@example.com", "office2@example.com")
+
+	tr.Record(ip, "victim@example.com")
+	tr.Record(ip, "victim@example.com")
+	f := compromiseFinding(tr.RecordSuccess(ip, "victim@example.com"))
+	if f == nil || f.Severity != alert.High {
+		t.Fatalf("expected downgraded compromise finding, got %+v", f)
+	}
+	if _, ok := tr.ExportGoodSource()[ip]["victim@example.com"]; ok {
+		t.Fatal("a downgraded compromise success must not establish good-source standing")
+	}
+}

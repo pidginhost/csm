@@ -165,6 +165,7 @@ type IncidentEvent struct {
 	Time      time.Time `json:"time"`
 	Kind      string    `json:"kind"`
 	Check     string    `json:"check,omitempty"`
+	Severity  string    `json:"severity,omitempty"`
 	Message   string    `json:"message"`
 	FindingID string    `json:"finding_id,omitempty"`
 	PID       int       `json:"pid,omitempty"`

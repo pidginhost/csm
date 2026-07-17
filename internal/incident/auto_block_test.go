@@ -171,6 +171,180 @@ func TestAutoBlockSkipsMailBruteforceSuspectedOnly(t *testing.T) {
 	}
 }
 
+func TestAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "high",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	f := alert.Finding{
+		Check:     "mail_account_compromised",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.73",
+		Mailbox:   "victim@example.com",
+		Message:   "Mail account compromise from 192.0.2.73 (established multi-mailbox source)",
+		Timestamp: now,
+	}
+	id, _, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired for established-source compromise advisory: %d", got)
+	}
+	inc, ok := c.Get(id)
+	if !ok || len(inc.Timeline) != 1 || inc.Timeline[0].Severity != alert.High.String() {
+		t.Fatalf("timeline did not retain advisory severity: found=%v incident=%+v", ok, inc)
+	}
+}
+
+func TestAutoBlockCriticalMailCompromiseStillBlocksAfterAdvisory(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "high",
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	advisory := alert.Finding{
+		Check:     "mail_account_compromised",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.74",
+		Mailbox:   "victim@example.com",
+		Message:   "Mail account compromise from 192.0.2.74 (established multi-mailbox source)",
+		Timestamp: now,
+	}
+	if _, _, err := c.OnFinding(advisory); err != nil {
+		t.Fatalf("OnFinding advisory: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("incident auto-block fired before Critical evidence joined: %d", got)
+	}
+
+	critical := advisory
+	critical.Severity = alert.Critical
+	critical.Message = "Mail account compromise from 192.0.2.74"
+	critical.Timestamp = now.Add(time.Minute)
+	c.now = func() time.Time { return critical.Timestamp }
+	if _, _, err := c.OnFinding(critical); err != nil {
+		t.Fatalf("OnFinding critical: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("incident auto-block calls = %d, want 1 after Critical compromise", got)
+	}
+}
+
+func TestSprayAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		SpraySuppression: SpraySuppressionConfig{
+			Enabled:            true,
+			DistinctMailboxes:  1,
+			SeverityEscalateAt: 2,
+			PerCheck:           map[string]bool{"mail_account_compromised": true},
+			BlockAtSeverity:    "high",
+		},
+		OnSprayBlock: cap.record,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	f := alert.Finding{
+		Check:     "mail_account_compromised",
+		Severity:  alert.High,
+		SourceIP:  "192.0.2.75",
+		Mailbox:   "victim@example.com",
+		Message:   "Mail account compromise from 192.0.2.75 (established multi-mailbox source)",
+		Timestamp: now,
+	}
+	id, created, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if id == "" || !created {
+		t.Fatalf("advisory finding did not remain visible as an incident: id=%q created=%v", id, created)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("spray auto-block fired for established-source compromise advisory: %d", got)
+	}
+
+	critical := f
+	critical.Severity = alert.Critical
+	critical.Mailbox = "victim2@example.com"
+	critical.Message = "Mail account compromise from 192.0.2.75"
+	critical.Timestamp = now.Add(time.Minute)
+	c.now = func() time.Time { return critical.Timestamp }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+	if _, _, err := c.OnFinding(critical); err != nil {
+		t.Fatalf("OnFinding critical: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("spray auto-block calls = %d, want 1 after Critical compromise", got)
+	}
+}
+
+func TestIncidentAutoBlockExclusionRestoresLegacyMailCompromiseEvents(t *testing.T) {
+	tests := []struct {
+		name    string
+		event   IncidentEvent
+		exclude bool
+	}{
+		{
+			name: "advisory marker",
+			event: IncidentEvent{
+				Kind:    "finding",
+				Check:   "mail_account_compromised",
+				Message: "Mail account compromise (established multi-mailbox source)",
+			},
+			exclude: true,
+		},
+		{
+			name: "critical message",
+			event: IncidentEvent{
+				Kind:    "finding",
+				Check:   "mail_account_compromised",
+				Message: "Mail account compromise",
+			},
+			exclude: false,
+		},
+		{
+			name: "marker inside attacker-controlled text",
+			event: IncidentEvent{
+				Kind:    "finding",
+				Check:   "mail_account_compromised",
+				Message: "Mail account compromise for (established multi-mailbox source) from 192.0.2.76",
+			},
+			exclude: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inc := &Incident{Timeline: []IncidentEvent{tt.event}}
+			if got := incidentAutoBlockExcludedOnly(inc); got != tt.exclude {
+				t.Errorf("incidentAutoBlockExcludedOnly() = %v, want %v", got, tt.exclude)
+			}
+		})
+	}
+}
+
 func TestAutoBlockSkipsModSecAdvisoryOnly(t *testing.T) {
 	for _, check := range []string{"modsec_low_confidence_burst", "modsec_classifier_gap"} {
 		t.Run(check, func(t *testing.T) {

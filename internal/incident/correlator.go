@@ -665,10 +665,11 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
-		Time:    f.Timestamp,
-		Kind:    "finding",
-		Check:   f.Check,
-		Message: f.Message,
+		Time:     f.Timestamp,
+		Kind:     "finding",
+		Check:    f.Check,
+		Severity: f.Severity.String(),
+		Message:  f.Message,
 	}
 	if f.Process != nil {
 		ev.PID = f.Process.PID
@@ -1396,6 +1397,9 @@ func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, n
 	if !c.sprayBlockAllowed() {
 		return nil
 	}
+	if incidentAutoBlockExcludedOnly(inc) {
+		return nil
+	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
 	case "high":
 		if inc.Severity < alert.High {
@@ -1479,17 +1483,34 @@ func incidentAutoBlockExcludedOnly(inc *Incident) bool {
 			continue
 		}
 		seen = true
-		switch strings.ToLower(strings.TrimSpace(ev.Check)) {
-		case "ftp_login_after_bruteforce",
-			"mail_bruteforce_suspected",
-			"modsec_classifier_gap",
-			"modsec_low_confidence_burst":
-			continue
-		default:
+		if !incidentEventAutoBlockExcluded(ev) {
 			return false
 		}
 	}
 	return seen
+}
+
+const establishedMailSourceMarker = "(established multi-mailbox source)"
+
+func incidentEventAutoBlockExcluded(ev IncidentEvent) bool {
+	switch strings.ToLower(strings.TrimSpace(ev.Check)) {
+	case "ftp_login_after_bruteforce",
+		"mail_bruteforce_suspected",
+		"modsec_classifier_gap",
+		"modsec_low_confidence_burst":
+		return true
+	case "mail_account_compromised":
+		severity := strings.ToUpper(strings.TrimSpace(ev.Severity))
+		if severity != "" {
+			return severity != alert.Critical.String()
+		}
+		// Incidents persisted before timeline events carried severity can still
+		// contain this exact advisory marker. Critical compromise messages never
+		// carry it, so they remain blockable after restore.
+		return strings.HasSuffix(strings.TrimSpace(ev.Message), establishedMailSourceMarker)
+	default:
+		return false
+	}
 }
 
 func (c *Correlator) incidentBlockAllowed() bool {
