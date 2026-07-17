@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Scheduled deep YARA scans now roll through content across runs: each run resumes from where the last one stopped, keeps the findings it collected when the time budget runs out, and warns when a full pass has not completed within 30 days. Previously a run that exceeded its budget discarded everything it found and restarted from the top next time, so hosts with large content sets were never fully scanned.
+
 ## [3.24.0] - 2026-07-13
 
 ### Security

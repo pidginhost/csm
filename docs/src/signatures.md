@@ -2,6 +2,8 @@
 
 CSM uses YAML and YARA-X rules for malware detection. Rules are stored in `/opt/csm/rules/` and scanned both in real-time (fanotify) and during deep scans.
 
+Deep scans are rolling: each scheduled run resumes from a persisted cursor and scans as much as fits in its time budget, so the whole content set is covered across runs even when a single run cannot finish it. A warning finding is raised if no full pass has completed within 30 days.
+
 ## YAML Rules
 
 ```yaml
