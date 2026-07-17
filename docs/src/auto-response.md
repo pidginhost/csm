@@ -157,7 +157,7 @@ the same source.
 - Quarantined files preserve full metadata for restoration
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
-- CRITICAL alerts always bypass the email rate limit (default 30/hour)
+- CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour)
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
 
 ## What CSM Detects in Real-Time

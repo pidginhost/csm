@@ -73,7 +73,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 
 | Check | Description |
 |-------|-------------|
-| `ip_reputation` | IPs against external threat databases and optional rspamd history |
+| `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical |
 | `local_threat_score` | Aggregated score from internal attack database |
 | `modsec_audit` | ModSecurity audit log parsing |
 

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- High-severity threat-intel sightings no longer disappear behind operator alert rate limits or first-hit incident thresholds. Authentication activity also takes priority when the same IP appears on both passive and credential surfaces.
+
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself. Install-era accounts cannot crowd later additions out of the bounded scan, and missing registration timestamps alert instead of being excluded.
 - Mail account compromise findings from an IP with established login history on several other mailboxes are downgraded to an advisory and excluded from direct and incident-driven auto-blocking, so shared office and agency devices with one stale credential do not get their whole office firewalled.
 - The daemon now creates the Apache/LSWS challenge map and re-pins the legacy challenge snippet at startup when it references a map the daemon does not maintain, preventing binary-only upgrades and disabled challenge mode from breaking host-wide webserver validation. Operator-edited or removed snippets are left untouched.

@@ -700,17 +700,18 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		return formatDispatchErrors(errs)
 	}
 
-	// Rate limit check — CRITICAL realtime findings (malware, webshells,
-	// backdoors) always get through. Only non-critical alerts are rate-limited.
-	hasCritical := false
+	// Critical realtime findings always get through. Reputation delivery is
+	// also check-keyed: its surface-based severity is presentation metadata and
+	// must not make sightings that previously bypassed this gate disappear.
+	bypassRateLimit := false
 	for _, f := range findings {
-		if f.Severity == Critical {
-			hasCritical = true
+		if f.Severity == Critical || f.Check == "ip_reputation" {
+			bypassRateLimit = true
 			break
 		}
 	}
 	var reservation *rateLimitReservation
-	if !hasCritical {
+	if !bypassRateLimit {
 		var ok bool
 		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
 		if !ok {

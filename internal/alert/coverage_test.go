@@ -811,6 +811,45 @@ func TestDispatchCriticalAlwaysGoesThrough(t *testing.T) {
 	}
 }
 
+type countingWebhookTransport struct {
+	requests *atomic.Int32
+}
+
+func (t countingWebhookTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.requests.Add(1)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+func TestDispatchHighIPReputationAlwaysGoesThrough(t *testing.T) {
+	var count atomic.Int32
+	restore := SetWebhookTransportForTest(countingWebhookTransport{requests: &count})
+	t.Cleanup(restore)
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://collector.invalid/findings"
+
+	if err := Dispatch(cfg, []Finding{{Check: "a", Message: "budget", Severity: Warning, Timestamp: time.Now()}}); err != nil {
+		t.Fatalf("budget dispatch: %v", err)
+	}
+	if got := readRateLimitCount(t, cfg.StatePath); got != 1 {
+		t.Fatalf("rate-limit count before reputation sighting = %d, want exhausted budget", got)
+	}
+	if err := Dispatch(cfg, []Finding{{Check: "ip_reputation", Message: "sighting", Severity: High, Timestamp: time.Now()}}); err != nil {
+		t.Fatalf("ip_reputation dispatch: %v", err)
+	}
+
+	if got := count.Load(); got != 2 {
+		t.Errorf("webhook count = %d, want 2 (ip_reputation bypass)", got)
+	}
+}
+
 func TestDispatchEmailErrorIsReturned(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
 	cfg.Alerts.MaxPerHour = 10

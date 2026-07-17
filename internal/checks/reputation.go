@@ -591,7 +591,11 @@ func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config)
 	if isInfraIP(ip, cfg.InfraIPs) {
 		return
 	}
-	if _, exists := ips[ip]; !exists {
+	// One address can appear on several surfaces in the same scan. Keep the
+	// strongest sighting so an earlier passive web request cannot hide a later
+	// authentication attack and downgrade the resulting finding.
+	current, exists := ips[ip]
+	if !exists || reputationSightingSeverity(source) > reputationSightingSeverity(current) {
 		ips[ip] = source
 	}
 }
