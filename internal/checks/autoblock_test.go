@@ -1295,13 +1295,39 @@ func TestAutoBlock_MailAccountCompromisedTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "mail_account_compromised",
-		Message: "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures",
+		Check:    "mail_account_compromised",
+		Severity: alert.Critical,
+		Message:  "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures",
 	}}
 	AutoBlockIPs(cfg, findings)
 
 	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
 		t.Errorf("expected BlockIP(203.0.113.5), got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_MailAccountCompromisedAdvisorySeverityNotBlocked(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	// The established multi-mailbox office pattern is emitted at High as an
+	// advisory; firewalling a shared office line is the harm being avoided.
+	findings := []alert.Finding{{
+		Check:    "mail_account_compromised",
+		Severity: alert.High,
+		Message:  "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures (established multi-mailbox source)",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 0 {
+		t.Errorf("advisory compromise finding must not block, got %v", blocker.blocked)
 	}
 }
 

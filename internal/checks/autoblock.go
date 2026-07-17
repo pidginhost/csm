@@ -313,12 +313,22 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
+	// blockOnlyAtCritical marks checks whose sub-critical findings are
+	// advisory annotations (e.g. an established multi-mailbox office source)
+	// rather than confirmed-attacker evidence; those must never firewall.
+	blockOnlyAtCritical := map[string]bool{
+		"mail_account_compromised": true,
+	}
+
 	for _, f := range findings {
 		isBlockable := alwaysBlock[f.Check]
 		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
 			isBlockable = true
 		}
 		if !isBlockable {
+			continue
+		}
+		if blockOnlyAtCritical[f.Check] && f.Severity != alert.Critical {
 			continue
 		}
 

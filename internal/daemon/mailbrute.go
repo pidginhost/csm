@@ -93,6 +93,23 @@ func (e *mailIPEntry) establishedGood(account string, now time.Time, window time
 	return now.Sub(e.goodFirst[account]) >= window
 }
 
+// establishedOtherGoodAccounts counts mailboxes other than account for which
+// this IP holds established good standing. Same-window successes are not
+// established, so a stuffing run that already landed other mailboxes earns
+// nothing here. Caller must hold t.mu.
+func (e *mailIPEntry) establishedOtherGoodAccounts(account string, now time.Time, window time.Duration) int {
+	n := 0
+	for acct := range e.goodLast {
+		if acct == account {
+			continue
+		}
+		if e.establishedGood(acct, now, window) {
+			n++
+		}
+	}
+	return n
+}
+
 // establishedGoodConfined reports whether this IP looks like a misconfigured
 // legitimate client rather than a brute-forcer: every current failure is
 // attributed to a named mailbox, and every one of those failing mailboxes is a
@@ -516,6 +533,11 @@ const mailGoodSourceTTL = 24 * time.Hour
 // least-recently-successful first).
 const mailGoodSourceMaxAccountsPerIP = 256
 
+// mailEstablishedSourceAccounts is how many OTHER mailboxes an IP must hold
+// established good standing on before a compromise finding for one more
+// mailbox is downgraded to an advisory (office/agency device pattern).
+const mailEstablishedSourceAccounts = 2
+
 // maxMailTargetsListed caps how many mailboxes a brute-force finding names
 // before collapsing the rest into a "(+N more)" suffix, so a wide spray does
 // not dump dozens of names into one alert.
@@ -933,12 +955,25 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	a.compromiseSuppressed = now.Add(t.suppression)
 	_, compDomain := alert.SplitEmail(account)
 	t.findingsEmitted++
+	severity := alert.Critical
+	message := fmt.Sprintf("Mail account compromise: successful login for %s from %s after recent auth failures",
+		account, ip)
+	details := "Attacker succeeded after repeated failed attempts from the same IP for this mailbox. Rotate password and revoke sessions."
+	// An IP with established standing on several other mailboxes is far more
+	// likely a shared office or agency device carrying one stale credential
+	// than a takeover: real credential attacks come from sources with no
+	// legitimate multi-mailbox history on this host. Keep the finding for
+	// visibility but downgrade it below the auto-block bar.
+	if n := e.establishedOtherGoodAccounts(account, now, t.window); n >= mailEstablishedSourceAccounts {
+		severity = alert.High
+		message += " (established multi-mailbox source)"
+		details = fmt.Sprintf("Source IP holds established successful logins to %d other mailboxes on this host, so this is more likely a shared office or agency device with a stale credential than a takeover. Verify with the customer before acting; not auto-blocked.", n)
+	}
 	return []alert.Finding{{
-		Severity: alert.Critical,
-		Check:    "mail_account_compromised",
-		Message: fmt.Sprintf("Mail account compromise: successful login for %s from %s after recent auth failures",
-			account, ip),
-		Details:   "Attacker succeeded after repeated failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
+		Severity:  severity,
+		Check:     "mail_account_compromised",
+		Message:   message,
+		Details:   details,
 		Timestamp: now,
 		SourceIP:  ip,
 		Domain:    compDomain,

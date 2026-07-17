@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself; only admins added after the install window alert.
+- Mail account compromise findings from an IP with established login history on several other mailboxes are downgraded to an advisory and no longer auto-block, so shared office and agency devices with one stale credential do not get their whole office firewalled.
 - The daemon now creates the Apache/LSWS challenge map and re-pins the legacy challenge snippet at startup when it references a map the daemon does not maintain, preventing binary-only upgrades and disabled challenge mode from breaking host-wide webserver validation. Operator-edited or removed snippets are left untouched.
 - Scheduled deep YARA scans now roll through content across runs: each run resumes from where the last one stopped, keeps the findings it collected when the time budget runs out, and warns when a full pass has not completed within 30 days. Previously a run that exceeded its budget discarded everything it found and restarted from the top next time, so hosts with large content sets were never fully scanned.
 
