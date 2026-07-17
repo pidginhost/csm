@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Threat-intel reputation sightings are now graded by what the IP was doing: passive web sightings drop to High so ambient scanner noise no longer drowns compromise-class Criticals, while auth-surface contact (SSH, mail credential attacks) stays Critical. Auto-blocking behaviour is unchanged.
+
 ### Fixed
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself; only admins added after the install window alert.

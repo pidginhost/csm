@@ -184,7 +184,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		if threatDB != nil {
 			if dbSource, found := threatDB.Lookup(ip); found {
 				findings = append(findings, alert.Finding{
-					Severity:  alert.Critical,
+					Severity:  reputationSightingSeverity(source),
 					Check:     "ip_reputation",
 					Message:   fmt.Sprintf("Known malicious IP accessing server: %s (source: %s)", ip, dbSource),
 					Details:   fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
@@ -403,9 +403,25 @@ func capitalizeProvider(name string) string {
 	return strings.ToUpper(name[:1]) + name[1:]
 }
 
+// reputationSightingSeverity grades a threat-intel sighting by what the IP
+// was doing. Auth-surface contact (SSH, mail credential attacks) is an
+// active threat and stays Critical; a passive web sighting of a listed IP
+// is ambient scanner noise, downgraded to High so thousands of drive-by
+// scanners do not drown compromise-class Criticals. Auto-block eligibility
+// is keyed on the check name and is not affected by this severity. Unknown
+// future surfaces fail closed to Critical.
+func reputationSightingSeverity(detectedVia string) alert.Severity {
+	switch detectedVia {
+	case "HTTP request", "cPanel/WHM access":
+		return alert.High
+	default:
+		return alert.Critical
+	}
+}
+
 func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string) {
 	*findings = append(*findings, alert.Finding{
-		Severity:  alert.Critical,
+		Severity:  reputationSightingSeverity(detectedVia),
 		Check:     "ip_reputation",
 		Message:   fmt.Sprintf("Known malicious IP accessing server: %s (%s score: %d/100)", ip, provider, score),
 		Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
