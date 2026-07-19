@@ -71,16 +71,16 @@ func vhostMapFailureIsIncomplete(readErr error) bool {
 }
 
 // dedupVhostsByDocroot keeps one vhost per docroot (multiple domains -- www,
-// parked -- can share a docroot; one probe host is enough). Prefer a real
-// main/addon/subdomain over a parked alias, since parked domains commonly
-// redirect and therefore cannot confirm an otherwise reachable exposure.
+// parked -- can share a docroot; one probe host is enough). Prefer a vhost with
+// a usable serving IP, then a real main/addon/subdomain over a parked alias,
+// since parked domains commonly redirect and cannot confirm an exposure.
 func dedupVhostsByDocroot(vhosts []vhost) []vhost {
 	chosen := make(map[string]int, len(vhosts))
 	out := vhosts[:0:0]
 	for _, vh := range vhosts {
 		key := filepath.Clean(vh.docroot)
 		if i, ok := chosen[key]; ok {
-			if preferredProbeVhost(vh) && !preferredProbeVhost(out[i]) {
+			if betterProbeVhost(vh, out[i]) {
 				out[i] = vh
 			}
 			continue
@@ -89,6 +89,15 @@ func dedupVhostsByDocroot(vhosts []vhost) []vhost {
 		out = append(out, vh)
 	}
 	return out
+}
+
+func betterProbeVhost(candidate, current vhost) bool {
+	candidateUsable := probeHost(candidate) != ""
+	currentUsable := probeHost(current) != ""
+	if candidateUsable != currentUsable {
+		return candidateUsable
+	}
+	return preferredProbeVhost(candidate) && !preferredProbeVhost(current)
 }
 
 func preferredProbeVhost(vh vhost) bool {
@@ -109,6 +118,15 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 		if ctx.Err() != nil {
 			return findings
 		}
+		host := probeHost(vh)
+		if host == "" {
+			// A loopback fallback is not a meaningful reachability check:
+			// LiteSpeed rejects loopback-originated requests even when the same
+			// vhost serves the file on its configured address. Skip this vhost
+			// and preserve findings from the last complete scan instead.
+			markCheckIncomplete(ctx, "exposed_files")
+			continue
+		}
 		paths, complete := walkExposureCandidates(ctx, vh.docroot, depth)
 		if !complete {
 			markCheckIncomplete(ctx, "exposed_files")
@@ -125,7 +143,7 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			if rel == "" {
 				continue
 			}
-			pr := webProber.probe(ctx, vh.domain, rel)
+			pr := webProber.probe(ctx, vh.domain, host, rel)
 			confirmed := confirmExposure(class, pr)
 			if !confirmed && (!pr.reachable || pr.partial) {
 				// A transport failure cannot prove that a previous exposure was
@@ -267,10 +285,11 @@ func exposureLabel(class exposedClass) string {
 // ---------------------------------------------------------------------------
 
 // webProbe abstracts a headers-only reachability check against the local web
-// server. Tests inject a fake; production hits 127.0.0.1 with the vhost's
-// domain as SNI/Host and reads only the status line and Content-Type.
+// server. Tests inject a fake; production pins the connection to the vhost's
+// serving IP while using its domain as SNI/Host, and reads only the status line
+// and Content-Type.
 type webProbe interface {
-	probe(ctx context.Context, domain, urlPath string) probeResult
+	probe(ctx context.Context, domain, host, urlPath string) probeResult
 }
 
 var webProber webProbe = realWebProbe{}
@@ -280,11 +299,11 @@ func SetWebProbe(p webProbe) { webProber = p }
 
 type realWebProbe struct{}
 
-func (realWebProbe) probe(ctx context.Context, domain, urlPath string) probeResult {
+func (realWebProbe) probe(ctx context.Context, domain, host, urlPath string) probeResult {
 	results := make([]probeResult, 0, 2)
 	partial := false
 	for _, scheme := range []string{"https", "http"} {
-		if pr, ok := doLocalProbe(ctx, scheme, domain, urlPath); ok {
+		if pr, ok := doLocalProbe(ctx, scheme, domain, host, urlPath); ok {
 			results = append(results, pr)
 			// A successful non-HTML response is sufficient for every raw
 			// leak class; avoid an unnecessary second request.
@@ -334,9 +353,16 @@ func bestProbeResult(results []probeResult) probeResult {
 }
 
 // doLocalProbe issues one HEAD (falling back to a ranged GET when HEAD is
-// disallowed) to the loopback web server, presenting domain as the vhost. It
-// never reads the response body.
-func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeResult, bool) {
+// disallowed) to the vhost's own serving IP, presenting domain as the vhost. It
+// never reads the response body. The dial is pinned to the host's configured
+// serving address (never DNS-resolved) so the request reaches this origin, not
+// a CDN, and stays on-box. Loopback is not used: LiteSpeed answers 403 to
+// loopback-originated requests even for files it serves on the public IP.
+func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (probeResult, bool) {
+	host = normalizeServingIP(host)
+	if host == "" {
+		return probeResult{}, false
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
 	defer cancel()
 	transport := &http.Transport{
@@ -347,11 +373,11 @@ func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeRes
 				return nil, err
 			}
 			d := &net.Dialer{Timeout: exposureProbeConnTimeout}
-			return d.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+			return d.DialContext(ctx, network, net.JoinHostPort(host, port))
 		},
-		// #nosec G402 -- probing our own loopback vhost for reachability only;
-		// no trust decision rides on the certificate, and SNI must match the
-		// requested domain to select the right vhost.
+		// #nosec G402 -- reachability probe to this host's own serving IP (never
+		// an external endpoint); no trust decision rides on the certificate, and
+		// SNI must match the requested domain to select the right vhost.
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: domain},
 	}
 	// A fresh transport per probe is needed because SNI (ServerName) is
@@ -449,6 +475,11 @@ type vhost struct {
 	user    string
 	typ     string
 	docroot string
+	// ip is the vhost's serving address (from the ip:443/ip:80 columns). The
+	// reachability probe dials this rather than 127.0.0.1: LiteSpeed returns
+	// 403 to loopback-originated requests even for files it serves (HTTP 200)
+	// to a real request on the public IP, so a loopback probe confirms nothing.
+	ip string
 }
 
 // parseUserdataDomains parses the /etc/userdatadomains map. Each line is
@@ -484,19 +515,88 @@ func parseUserdataDomainsChecked(content string) ([]vhost, bool) {
 			complete = false
 			continue
 		}
+		servingIP := parseServingIP(fields)
+		if servingIP == "" {
+			// Without a literal serving address the vhost cannot be probed
+			// reliably. Keep the row so callers can preserve partial-scan state,
+			// but do not treat this map as a complete scan input.
+			complete = false
+		}
 		out = append(out, vhost{
 			domain:  domain,
 			user:    user,
 			typ:     strings.TrimSpace(fields[2]),
 			docroot: docroot,
+			ip:      servingIP,
 		})
 	}
 	return out, complete
 }
 
+// parseServingIP extracts the vhost's serving address from the ip:443 column
+// (preferred) or the ip:80 column. Only literal unicast IP addresses are
+// accepted so a malformed map can never turn the pinned origin probe into a
+// DNS lookup or a connection to a non-serving address.
+func parseServingIP(fields []string) string {
+	bindings := []struct {
+		field int
+		port  string
+	}{
+		{field: 6, port: "443"},
+		{field: 5, port: "80"},
+	}
+	for _, binding := range bindings {
+		if binding.field >= len(fields) {
+			continue
+		}
+		hp := strings.TrimSpace(fields[binding.field])
+		if hp == "" {
+			continue
+		}
+		if host, port, err := net.SplitHostPort(hp); err == nil {
+			if port == binding.port {
+				if ip := normalizeServingIP(host); ip != "" {
+					return ip
+				}
+			}
+			continue
+		}
+		// cPanel may render IPv6 bindings without brackets. SplitHostPort
+		// rejects those, so split at the last colon and validate both parts.
+		if idx := strings.LastIndexByte(hp, ':'); idx > 0 {
+			if strings.TrimSpace(hp[idx+1:]) == binding.port {
+				if ip := normalizeServingIP(hp[:idx]); ip != "" {
+					return ip
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// normalizeServingIP returns a canonical literal unicast address. In
+// particular, it rejects hostnames, unspecified/listener addresses, loopback,
+// multicast, and link-local addresses, none of which identify the vhost's
+// externally serving origin.
+func normalizeServingIP(host string) string {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil || !ip.IsGlobalUnicast() {
+		return ""
+	}
+	return ip.String()
+}
+
+// probeHost is the literal serving address the reachability probe dials. An
+// empty result means the vhost must be skipped and the scan marked incomplete;
+// loopback is deliberately not a fallback because it produces false 403s on
+// LiteSpeed.
+func probeHost(vh vhost) string {
+	return normalizeServingIP(vh.ip)
+}
+
 // validProbeDomain rejects URL authority syntax. Without this guard a corrupt
 // map entry containing a port could make the privileged daemon probe an
-// arbitrary loopback service instead of the vhost's port 80/443.
+// arbitrary service on the serving IP instead of the vhost's port 80/443.
 func validProbeDomain(domain string) bool {
 	if domain == "" || len(domain) > 253 || strings.ContainsAny(domain, ":/\\?#@[]%") {
 		return false

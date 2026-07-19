@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"net"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -34,6 +35,35 @@ func FuzzClassifyExposedFile(f *testing.F) {
 		case alert.Warning, alert.High, alert.Critical:
 		default:
 			t.Errorf("classified %q as %v with invalid severity", name, got)
+		}
+	})
+}
+
+// FuzzParseServingIP exercises malformed cPanel binding columns. Any accepted
+// result must remain a canonical literal unicast address so the probe cannot
+// fall through to DNS or pass malformed input to the dialer.
+func FuzzParseServingIP(f *testing.F) {
+	seeds := [][2]string{
+		{"192.0.2.80:80", "192.0.2.43:443"},
+		{"", "[2001:db8::43]:443"},
+		{"", "2001:db8::43:443"},
+		{"origin.example:80", "cdn.example:443"},
+		{"127.0.0.1:80", "[::]:443"},
+		{"192.0.2.80:443", "[2001:db8::43:443"},
+	}
+	for _, seed := range seeds {
+		f.Add(seed[0], seed[1])
+	}
+	f.Fuzz(func(t *testing.T, httpBinding, httpsBinding string) {
+		fields := make([]string, 7)
+		fields[5], fields[6] = httpBinding, httpsBinding
+		got := parseServingIP(fields)
+		if got == "" {
+			return
+		}
+		ip := net.ParseIP(got)
+		if ip == nil || !ip.IsGlobalUnicast() || got != ip.String() {
+			t.Fatalf("parseServingIP() returned non-canonical serving address %q", got)
 		}
 	})
 }

@@ -18,7 +18,7 @@ type fakeProbe struct {
 	seen   map[string]bool
 }
 
-func (f *fakeProbe) probe(_ context.Context, _ string, urlPath string) probeResult {
+func (f *fakeProbe) probe(_ context.Context, _ string, _ string, urlPath string) probeResult {
 	if f.seen == nil {
 		f.seen = map[string]bool{}
 	}
@@ -58,15 +58,16 @@ func TestScanVhostsForExposure(t *testing.T) {
 	mustWrite(t, filepath.Join(site2, "inc", "config.php.old"), "<?php $db='x';")
 
 	vhosts := []vhost{
-		{domain: "alice.example.com", user: "alice", typ: "main", docroot: site1},
-		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: site2},
+		{domain: "alice.example.com", user: "alice", typ: "main", docroot: site1, ip: "192.0.2.10"},
+		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: site2, ip: "192.0.2.11"},
 	}
 
-	withFakeProbe(t, &fakeProbe{byPath: map[string]probeResult{
+	probe := &fakeProbe{byPath: map[string]probeResult{
 		"/softsql.sql":        {status: 200, contentType: "text/x-sql", reachable: true},
 		"/.env":               {status: 403, contentType: "text/html", reachable: true}, // server blocks it
 		"/inc/config.php.old": {status: 200, contentType: "text/plain", reachable: true},
-	}})
+	}}
+	withFakeProbe(t, probe)
 
 	findings := scanVhostsForExposure(context.Background(), vhosts, nil)
 
@@ -90,6 +91,9 @@ func TestScanVhostsForExposure(t *testing.T) {
 	// The blocked .env and benign sample must not produce findings.
 	if byCheck["web_exposed_config_leak"] > 1 {
 		t.Errorf(".env (403) or sample must not be reported")
+	}
+	if !probe.seen["/.env"] {
+		t.Error(".env false-positive guard was not exercised")
 	}
 }
 
@@ -203,7 +207,7 @@ func TestScanVhostsPreservesFindingsWhenProbeIsUnreachable(t *testing.T) {
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 
 	findings := scanVhostsForExposure(ctx, []vhost{{
-		domain: "example.com", user: "alice", typ: "main", docroot: root,
+		domain: "example.com", user: "alice", typ: "main", docroot: root, ip: "192.0.2.10",
 	}}, nil)
 
 	if len(findings) != 0 {
@@ -226,7 +230,7 @@ func TestScanVhostsPreservesFindingsWhenProbeIsPartial(t *testing.T) {
 	ctx, collector := withIncompleteCheckCollector(context.Background())
 
 	findings := scanVhostsForExposure(ctx, []vhost{{
-		domain: "example.com", user: "alice", typ: "main", docroot: root,
+		domain: "example.com", user: "alice", typ: "main", docroot: root, ip: "192.0.2.10",
 	}}, nil)
 
 	if len(findings) != 0 {
@@ -242,7 +246,7 @@ func TestScanVhostsPreservesFindingsWhenDocrootIsUnreadable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-docroot")
 
 	findings := scanVhostsForExposure(ctx, []vhost{{
-		domain: "example.com", user: "alice", typ: "main", docroot: missing,
+		domain: "example.com", user: "alice", typ: "main", docroot: missing, ip: "192.0.2.10",
 	}}, nil)
 
 	if len(findings) != 0 {
