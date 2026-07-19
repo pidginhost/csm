@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Scheduled deep-scan malware signatures no longer flag legitimate WordPress, plugin, and framework code. The tightened rules still detect same-origin data theft, request-driven backdoors and relays, decoded SSH-key writes, and common obfuscation variants.
+- XMRig miner-reference signatures no longer flag the coincidental string "xmrig" inside embedded base64 or minified assets such as SVG icons. They now require miner-specific download, protocol, algorithm, or CLI context while retaining custom-pool launcher detection.
 - Deep scans no longer skip files that are within the size budget but too large to hand the scanner in one piece. Such files are scanned in place, and a worker or read failure is reported as incomplete instead of clean.
 - Scan findings are no longer dropped when a burst fills the alert queue during dispatch. The scan waits for room, but gives up on the undelivered tail after 90 seconds without progress so a wedged dispatcher cannot stall scans indefinitely.
 - Web-exposed file checks now reject malformed serving addresses and preserve earlier findings when a vhost has no usable origin IP instead of probing loopback.
