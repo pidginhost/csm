@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Scheduled deep-scan malware signatures no longer flag legitimate WordPress, plugin, and framework code. The tightened rules still detect same-origin data theft, request-driven backdoors and relays, decoded SSH-key writes, and common obfuscation variants.
 - Deep scans no longer skip files that are within the size budget but too large to hand the scanner in one piece. Such files are scanned in place, and a worker or read failure is reported as incomplete instead of clean.
-- A burst of scan findings no longer evicts other pending alerts. When a large batch fills the alert queue while alerts are being dispatched, the scan now waits for room instead of dropping findings, so a false-positive flood can no longer bury a real critical alert.
+- Scan findings are no longer dropped when a burst fills the alert queue during dispatch. The scan waits for room, but gives up on the undelivered tail after 90 seconds without progress so a wedged dispatcher cannot stall scans indefinitely.
 - High-severity threat-intel sightings no longer disappear behind operator alert rate limits or first-hit incident thresholds. Authentication activity also takes priority when the same IP appears on both passive and credential surfaces.
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself. Install-era accounts cannot crowd later additions out of the bounded scan, and missing registration timestamps alert instead of being excluded.

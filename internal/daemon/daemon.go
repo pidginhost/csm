@@ -1470,8 +1470,9 @@ func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Findin
 	d.enqueueScanAlerts(findings, label)
 }
 
-// scanAlertEnqueueTimeout bounds how long a scan finding waits for room on the
-// shared alert channel before it is dropped as an absolute last resort. The
+// scanAlertEnqueueTimeout bounds how long a scan enqueue can make no progress
+// while waiting for room on the shared alert channel. The undelivered tail is
+// dropped as an absolute last resort when that timeout expires. The
 // dispatcher stops draining only while it runs a batch, and auto-response can
 // hold that for tens of seconds; a scan burst that fills the buffer in that
 // window must apply backpressure rather than silently drop security findings
@@ -1491,8 +1492,12 @@ const scanAlertEnqueueTimeout = 90 * time.Second
 // otherwise fill the buffer while the dispatcher is mid-batch and evict
 // findings from this or any other producer sharing the channel.
 func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
-	for _, f := range findings {
-		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+	d.enqueueScanAlertsWithin(findings, label, scanAlertEnqueueTimeout)
+}
+
+func (d *Daemon) enqueueScanAlertsWithin(findings []alert.Finding, label string, timeout time.Duration) {
+	for i, f := range findings {
+		if !scanFindingIsAlertable(f) {
 			continue
 		}
 		select {
@@ -1500,7 +1505,7 @@ func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
 			continue
 		default:
 		}
-		timer := time.NewTimer(scanAlertEnqueueTimeout)
+		timer := time.NewTimer(timeout)
 		select {
 		case d.alertCh <- f:
 			timer.Stop()
@@ -1508,10 +1513,26 @@ func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			atomic.AddInt64(&d.droppedAlerts, 1)
-			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %s finding: %s\n", ts(), scanAlertEnqueueTimeout, label, f.Check)
+			dropped := countAlertableScanFindings(findings[i:])
+			atomic.AddInt64(&d.droppedAlerts, int64(dropped))
+			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %d remaining %s findings (first: %s)\n", ts(), timeout, dropped, label, f.Check)
+			return
 		}
 	}
+}
+
+func countAlertableScanFindings(findings []alert.Finding) int {
+	count := 0
+	for _, f := range findings {
+		if scanFindingIsAlertable(f) {
+			count++
+		}
+	}
+	return count
+}
+
+func scanFindingIsAlertable(f alert.Finding) bool {
+	return !strings.HasPrefix(f.Check, "perf_") || f.Severity != alert.Warning
 }
 
 // applyWPCronAutoFix disables WP-Cron and installs a per-user system cron for

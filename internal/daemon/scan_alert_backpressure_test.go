@@ -83,3 +83,40 @@ func TestEnqueueScanAlertsHonorsStopCh(t *testing.T) {
 		t.Fatal("enqueueScanAlerts ignored stopCh and hung on a full channel")
 	}
 }
+
+// A wedged dispatcher must bound the whole no-progress stall. Waiting for the
+// full timeout again for every remaining finding would turn a large scan burst
+// into an hours-long blocked scanner or control-socket request.
+func TestEnqueueScanAlertsTimeoutDropsRemainingBatch(t *testing.T) {
+	d := &Daemon{
+		alertCh: make(chan alert.Finding, 1),
+		stopCh:  make(chan struct{}),
+	}
+	d.alertCh <- alert.Finding{Check: "filler"}
+
+	findings := []alert.Finding{
+		{Check: "first", Severity: alert.Critical},
+		{Check: "perf_wp_cron", Severity: alert.Warning},
+		{Check: "second", Severity: alert.High},
+		{Check: "third", Severity: alert.Critical},
+		{Check: "fourth", Severity: alert.High},
+		{Check: "fifth", Severity: alert.Critical},
+	}
+	const timeout = 50 * time.Millisecond
+	start := time.Now()
+	d.enqueueScanAlertsWithin(findings, "deep", timeout)
+	elapsed := time.Since(start)
+
+	if elapsed < timeout {
+		t.Fatalf("enqueue returned after %s, before timeout %s", elapsed, timeout)
+	}
+	if elapsed >= 3*timeout {
+		t.Fatalf("enqueue took %s; timeout was applied repeatedly to the undelivered tail", elapsed)
+	}
+	if n := atomic.LoadInt64(&d.droppedAlerts); n != 5 {
+		t.Fatalf("droppedAlerts = %d, want 5 undelivered alertable findings", n)
+	}
+	if got := <-d.alertCh; got.Check != "filler" {
+		t.Fatalf("queued finding = %q, want filler", got.Check)
+	}
+}
