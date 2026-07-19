@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web-exposed file checks now reject malformed serving addresses and preserve earlier findings when a vhost has no usable origin IP instead of probing loopback.
 - High-severity threat-intel sightings no longer disappear behind operator alert rate limits or first-hit incident thresholds. Authentication activity also takes priority when the same IP appears on both passive and credential surfaces.
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself. Install-era accounts cannot crowd later additions out of the bounded scan, and missing registration timestamps alert instead of being excluded.

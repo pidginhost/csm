@@ -59,6 +59,44 @@ root.example: root==root==main==root.example==/
 	}
 }
 
+func TestParseServingIPValidatesBindingsAndIPv6(t *testing.T) {
+	tests := []struct {
+		name   string
+		http   string
+		https  string
+		wantIP string
+	}{
+		{name: "prefer https", http: "192.0.2.80:80", https: "192.0.2.43:443", wantIP: "192.0.2.43"},
+		{name: "fallback from malformed https", http: "192.0.2.80:80", https: "origin.example:443", wantIP: "192.0.2.80"},
+		{name: "bracketed IPv6", http: "192.0.2.80:80", https: "[2001:db8::43]:443", wantIP: "2001:db8::43"},
+		{name: "unbracketed IPv6", https: "2001:db8::43:443", wantIP: "2001:db8::43"},
+		{name: "wrong https port falls back", http: "192.0.2.80:80", https: "192.0.2.43:80", wantIP: "192.0.2.80"},
+		{name: "hostnames rejected", http: "origin.example:80", https: "cdn.example:443"},
+		{name: "non-serving addresses rejected", http: "127.0.0.1:80", https: "[::]:443"},
+		{name: "broken brackets rejected", https: "[2001:db8::43:443"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := make([]string, 7)
+			fields[5], fields[6] = tc.http, tc.https
+			if got := parseServingIP(fields); got != tc.wantIP {
+				t.Fatalf("parseServingIP() = %q, want %q", got, tc.wantIP)
+			}
+		})
+	}
+}
+
+func TestParseUserdataDomainsMarksMissingServingIPIncomplete(t *testing.T) {
+	content := "example.com: alice==root==main==example.com==/home/alice/public_html==origin.example:80==bad:443"
+	vhosts, complete := parseUserdataDomainsChecked(content)
+	if complete {
+		t.Fatal("invalid serving bindings must make the vhost map incomplete")
+	}
+	if len(vhosts) != 1 || vhosts[0].ip != "" {
+		t.Fatalf("parsed vhosts = %+v, want one vhost without a probe target", vhosts)
+	}
+}
+
 func TestDedupVhostsPrefersNonParkedProbeHost(t *testing.T) {
 	docroot := "/home/alice/public_html"
 	got := dedupVhostsByDocroot([]vhost{
@@ -72,6 +110,18 @@ func TestDedupVhostsPrefersNonParkedProbeHost(t *testing.T) {
 	}
 	if got[0].domain != "example.com" {
 		t.Fatalf("probe domain = %q, want non-parked main domain", got[0].domain)
+	}
+}
+
+func TestDedupVhostsPrefersUsableServingIP(t *testing.T) {
+	docroot := "/home/alice/public_html"
+	got := dedupVhostsByDocroot([]vhost{
+		{domain: "example.com", user: "alice", typ: "main", docroot: docroot},
+		{domain: "alias.example", user: "alice", typ: "parked", docroot: docroot, ip: "192.0.2.10"},
+	})
+
+	if len(got) != 1 || got[0].domain != "alias.example" {
+		t.Fatalf("deduped vhosts = %+v, want the vhost with a usable serving IP", got)
 	}
 }
 
