@@ -1,0 +1,112 @@
+package checks
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// fakeProbe returns canned reachability results keyed by URL path, and records
+// which paths were probed so a test can assert the classifier gate ran first.
+type fakeProbe struct {
+	byPath map[string]probeResult
+	seen   map[string]bool
+}
+
+func (f *fakeProbe) probe(_ context.Context, _ string, urlPath string) probeResult {
+	if f.seen == nil {
+		f.seen = map[string]bool{}
+	}
+	f.seen[urlPath] = true
+	return f.byPath[urlPath]
+}
+
+func withFakeProbe(t *testing.T, f webProbe) {
+	t.Helper()
+	prev := webProber
+	webProber = f
+	t.Cleanup(func() { webProber = prev })
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestScanVhostsForExposure reproduces the production reality: a docroot serves
+// a raw SQL dump (leak) and a source-config backup (leak), while the .env is
+// present on disk but blocked by the server (403), and wp-config-sample.php is
+// benign. Only the two real, confirmed leaks must be reported.
+func TestScanVhostsForExposure(t *testing.T) {
+	root := t.TempDir()
+	site1 := filepath.Join(root, "alice", "public_html")
+	site2 := filepath.Join(root, "bob", "shop.example.net")
+
+	mustWrite(t, filepath.Join(site1, "softsql.sql"), "-- dump\n")
+	mustWrite(t, filepath.Join(site1, "wp-config-sample.php"), "<?php // sample")
+	mustWrite(t, filepath.Join(site1, ".env"), "SECRET=redacted")
+	mustWrite(t, filepath.Join(site2, "inc", "config.php.old"), "<?php $db='x';")
+
+	vhosts := []vhost{
+		{domain: "alice.example.com", user: "alice", typ: "main", docroot: site1},
+		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: site2},
+	}
+
+	withFakeProbe(t, &fakeProbe{byPath: map[string]probeResult{
+		"/softsql.sql":        {status: 200, contentType: "text/x-sql", reachable: true},
+		"/.env":               {status: 403, contentType: "text/html", reachable: true}, // server blocks it
+		"/inc/config.php.old": {status: 200, contentType: "text/plain", reachable: true},
+	}})
+
+	findings := scanVhostsForExposure(context.Background(), vhosts, nil)
+
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 confirmed findings, got %d: %+v", len(findings), findings)
+	}
+
+	byCheck := map[string]int{}
+	for _, f := range findings {
+		byCheck[f.Check]++
+		if f.Domain == "" || f.FilePath == "" {
+			t.Errorf("finding missing domain/filepath: %+v", f)
+		}
+	}
+	if byCheck["web_exposed_db_dump"] != 1 {
+		t.Errorf("expected 1 db_dump finding, got %d", byCheck["web_exposed_db_dump"])
+	}
+	if byCheck["web_exposed_config_leak"] != 1 {
+		t.Errorf("expected 1 config_leak finding, got %d", byCheck["web_exposed_config_leak"])
+	}
+	// The blocked .env and benign sample must not produce findings.
+	if byCheck["web_exposed_config_leak"] > 1 {
+		t.Errorf(".env (403) or sample must not be reported")
+	}
+}
+
+// TestScanVhostsRespectsContextCancellation ensures a cancelled deep scan bails
+// out instead of walking every account on a busy host.
+func TestScanVhostsRespectsContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	site := filepath.Join(root, "alice", "public_html")
+	mustWrite(t, filepath.Join(site, "softsql.sql"), "-- dump\n")
+
+	withFakeProbe(t, &fakeProbe{byPath: map[string]probeResult{
+		"/softsql.sql": {status: 200, contentType: "text/x-sql", reachable: true},
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	findings := scanVhostsForExposure(ctx, []vhost{
+		{domain: "alice.example.com", user: "alice", docroot: site},
+	}, nil)
+	if len(findings) != 0 {
+		t.Errorf("cancelled scan should emit nothing, got %d", len(findings))
+	}
+}

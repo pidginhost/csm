@@ -197,8 +197,12 @@ type Config struct {
 		WPCoreCheckIntervalMin    int `yaml:"wp_core_check_interval_min"`
 		WebshellScanIntervalMin   int `yaml:"webshell_scan_interval_min"`
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
-		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
-		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
+		// ExposedFileScanDepth bounds how many directory levels below each
+		// docroot the web-exposed-file detector descends (default 2). Dumps and
+		// backups almost always sit at or just under the web root.
+		ExposedFileScanDepth  int `yaml:"exposed_file_scan_depth"`
+		MultiIPLoginThreshold int `yaml:"multi_ip_login_threshold"`
+		MultiIPLoginWindowMin int `yaml:"multi_ip_login_window_min"`
 		// CredStuffingDistinctAccounts is the number of distinct accounts a
 		// single source IP must fail against inside the multi_ip_login window
 		// to raise a credential_stuffing finding. This is the breadth signal

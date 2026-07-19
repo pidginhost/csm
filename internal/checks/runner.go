@@ -195,6 +195,7 @@ var runnerFindingNames = map[string][]string{
 	"group_writable_php":    {"group_writable_php"},
 	"health":                {"csm_health"},
 	"htaccess":              {"htaccess_handler_abuse", "htaccess_injection"},
+	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo"},
 	"ip_reputation":         {"ip_reputation"},
 	"kernel_modules":        {"kernel_module"},
 	"local_threat_score":    {"local_threat_score"},
@@ -270,13 +271,14 @@ const heavyCheckTimeout = 15 * time.Minute
 // document roots. Keep this list short and explicit; only checks that
 // observably blow past 5 minutes on production hosts belong here.
 var heavyChecks = map[string]bool{
-	"filesystem":  true,
-	"webshells":   true,
-	"htaccess":    true,
-	"php_content": true,
-	"file_index":  true,
-	"phishing":    true,
-	"yara_deep":   true,
+	"filesystem":    true,
+	"webshells":     true,
+	"htaccess":      true,
+	"exposed_files": true,
+	"php_content":   true,
+	"file_index":    true,
+	"phishing":      true,
+	"yara_deep":     true,
 }
 
 // timeoutFor returns the per-check execution budget. Heavy filesystem
@@ -340,6 +342,7 @@ func deepChecks() []namedCheck {
 		{"filesystem", CheckFilesystem},
 		{"webshells", CheckWebshells},
 		{"htaccess", CheckHtaccess},
+		{"exposed_files", CheckExposedFiles},
 		{"wp_core", CheckWPCore},
 		{"file_index", CheckFileIndex},
 		{"php_content", CheckPHPContent},
