@@ -44,3 +44,33 @@ func TestConfirmExposure(t *testing.T) {
 		}
 	}
 }
+
+func TestBestProbeResultPrefersHTTPExposureOverHTTPSRedirect(t *testing.T) {
+	got := bestProbeResult([]probeResult{
+		{scheme: "https", status: 301, contentType: "text/html", reachable: true},
+		{scheme: "http", status: 200, contentType: "application/zip", reachable: true},
+	})
+	if got.scheme != "http" || got.status != 200 {
+		t.Fatalf("bestProbeResult() = %+v, want reachable HTTP download", got)
+	}
+}
+
+func TestBestProbeResultPrefersRawResponseOverExecutedHTML(t *testing.T) {
+	got := bestProbeResult([]probeResult{
+		{scheme: "https", status: 200, contentType: "text/html", reachable: true},
+		{scheme: "http", status: 206, contentType: "text/plain", reachable: true},
+	})
+	if got.scheme != "http" || got.status != 206 {
+		t.Fatalf("bestProbeResult() = %+v, want raw HTTP response", got)
+	}
+}
+
+func TestPartialProbeStillConfirmsObservedExposure(t *testing.T) {
+	pr := probeResult{
+		scheme: "https", status: 200, contentType: "application/zip",
+		reachable: true, partial: true,
+	}
+	if !confirmExposure(classDBDump, pr) {
+		t.Fatal("observed exposure must be reported even if the other protocol failed")
+	}
+}

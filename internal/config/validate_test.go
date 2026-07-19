@@ -1218,6 +1218,35 @@ func TestValidate_SyslogMessagesTailLinesRange(t *testing.T) {
 	}
 }
 
+func TestValidate_ExposedFileScanDepthRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 1, false},
+		{"default accepted", DefaultExposedFileScanDepth, false},
+		{"maximum accepted", MaxExposedFileScanDepth, false},
+		{"negative rejected", -1, true},
+		{"above maximum rejected", MaxExposedFileScanDepth + 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.ExposedFileScanDepth = tc.value
+			if got := hasResult(Validate(cfg), "error", "thresholds.exposed_file_scan_depth"); got != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_CredStuffingDistinctAccountsRange(t *testing.T) {
 	cases := []struct {
 		name    string

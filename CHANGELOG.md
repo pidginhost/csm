@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- CSM now scans web document roots for sensitive files a visitor could download -- database dumps, full-site backup archives, configuration and source-code backups, and phpinfo pages -- and reports each one only after confirming the web server actually serves it, so files the server already blocks and the sample templates WordPress ships are never flagged.
+- CSM now scans web document roots for sensitive files a visitor could download -- database dumps, full-site backup archives, configuration and PHP source-code backups, and `phpinfo.php` diagnostics -- and reports each one only after confirming the web server actually serves it, so files the server already blocks and the sample templates WordPress ships are never flagged.
 
 ### Changed
 

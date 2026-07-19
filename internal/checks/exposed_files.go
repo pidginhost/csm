@@ -3,7 +3,9 @@ package checks
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,11 +21,12 @@ import (
 // userdataDomainsPath is cPanel's authoritative domain->docroot map. It covers
 // addon and subdomain docroots that /home/*/public_html misses.
 const userdataDomainsPath = "/etc/userdatadomains"
+const cpanelInstallPath = "/usr/local/cpanel"
 
 // Bounds so the deep scan stays cheap on a host with hundreds of docroots.
 const (
-	exposureDefaultDepth      = 2
 	exposureMaxFilesPerRoot   = 4000
+	exposureMaxDirsPerRoot    = 4000
 	exposureProbeConnTimeout  = 4 * time.Second
 	exposureProbeTotalTimeout = 6 * time.Second
 )
@@ -41,24 +44,60 @@ var walkSkipDirs = map[string]bool{
 func CheckExposedFiles(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	content, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
-		return nil // non-cPanel host or map unreadable: nothing to enumerate.
+		// Absence is an expected no-op only on a non-cPanel host. Other failures
+		// make the run incomplete: retaining prior findings is safer than
+		// clearing them because the map was temporarily unreadable.
+		if vhostMapFailureIsIncomplete(err) {
+			markCheckIncomplete(ctx, "exposed_files")
+		}
+		return nil
 	}
-	return scanVhostsForExposure(ctx, dedupVhostsByDocroot(parseUserdataDomains(string(content))), cfg)
+	vhosts, complete := parseUserdataDomainsChecked(string(content))
+	if !complete {
+		markCheckIncomplete(ctx, "exposed_files")
+	}
+	return scanVhostsForExposure(ctx, dedupVhostsByDocroot(vhosts), cfg)
+}
+
+func vhostMapFailureIsIncomplete(readErr error) bool {
+	if !errors.Is(readErr, fs.ErrNotExist) {
+		return true
+	}
+	_, statErr := osFS.Stat(cpanelInstallPath)
+	// A missing map is an expected no-op only when cPanel itself is absent.
+	// If the install path exists (or cannot be checked), preserve prior
+	// findings until the authoritative map is readable again.
+	return statErr == nil || !errors.Is(statErr, fs.ErrNotExist)
 }
 
 // dedupVhostsByDocroot keeps one vhost per docroot (multiple domains -- www,
-// parked -- can share a docroot; one probe host is enough).
+// parked -- can share a docroot; one probe host is enough). Prefer a real
+// main/addon/subdomain over a parked alias, since parked domains commonly
+// redirect and therefore cannot confirm an otherwise reachable exposure.
 func dedupVhostsByDocroot(vhosts []vhost) []vhost {
-	seen := make(map[string]struct{}, len(vhosts))
+	chosen := make(map[string]int, len(vhosts))
 	out := vhosts[:0:0]
 	for _, vh := range vhosts {
-		if _, ok := seen[vh.docroot]; ok {
+		key := filepath.Clean(vh.docroot)
+		if i, ok := chosen[key]; ok {
+			if preferredProbeVhost(vh) && !preferredProbeVhost(out[i]) {
+				out[i] = vh
+			}
 			continue
 		}
-		seen[vh.docroot] = struct{}{}
+		chosen[key] = len(out)
 		out = append(out, vh)
 	}
 	return out
+}
+
+func preferredProbeVhost(vh vhost) bool {
+	switch strings.ToLower(strings.TrimSpace(vh.typ)) {
+	case "main", "addon", "sub":
+		return true
+	default:
+		return false
+	}
 }
 
 // scanVhostsForExposure walks each vhost's docroot, classifies candidate files,
@@ -70,7 +109,11 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 		if ctx.Err() != nil {
 			return findings
 		}
-		for _, path := range walkExposureCandidates(vh.docroot, depth) {
+		paths, complete := walkExposureCandidates(ctx, vh.docroot, depth)
+		if !complete {
+			markCheckIncomplete(ctx, "exposed_files")
+		}
+		for _, path := range paths {
 			if ctx.Err() != nil {
 				return findings
 			}
@@ -83,7 +126,13 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 				continue
 			}
 			pr := webProber.probe(ctx, vh.domain, rel)
-			if !confirmExposure(class, pr) {
+			confirmed := confirmExposure(class, pr)
+			if !confirmed && (!pr.reachable || pr.partial) {
+				// A transport failure cannot prove that a previous exposure was
+				// fixed. Keep prior findings until a later probe gets a response.
+				markCheckIncomplete(ctx, "exposed_files")
+			}
+			if !confirmed {
 				continue
 			}
 			findings = append(findings, buildExposedFinding(vh, path, rel, class, pr))
@@ -93,45 +142,81 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 }
 
 func exposureScanDepth(cfg *config.Config) int {
+	depth := config.DefaultExposedFileScanDepth
 	if cfg != nil && cfg.Thresholds.ExposedFileScanDepth > 0 {
-		return cfg.Thresholds.ExposedFileScanDepth
+		depth = cfg.Thresholds.ExposedFileScanDepth
 	}
-	return exposureDefaultDepth
+	if depth > config.MaxExposedFileScanDepth {
+		return config.MaxExposedFileScanDepth
+	}
+	return depth
 }
 
 // walkExposureCandidates returns files under docroot down to maxDepth directory
-// levels, capped at exposureMaxFilesPerRoot to bound I/O on large trees.
-func walkExposureCandidates(docroot string, maxDepth int) []string {
+// levels, capped at exposureMaxFilesPerRoot to bound I/O on large trees. It
+// visits shallower directories first so a large cache subtree cannot consume
+// the cap before root-level leaks are considered.
+func walkExposureCandidates(ctx context.Context, docroot string, maxDepth int) ([]string, bool) {
+	return walkExposureCandidatesLimit(ctx, docroot, maxDepth, exposureMaxFilesPerRoot)
+}
+
+func walkExposureCandidatesLimit(ctx context.Context, docroot string, maxDepth, maxFiles int) ([]string, bool) {
+	if maxFiles <= 0 {
+		return nil, false
+	}
+	type pendingDir struct {
+		path  string
+		depth int
+	}
+	queue := []pendingDir{{path: docroot}}
+	queuedDirs := 1
 	var out []string
-	var rec func(dir string, depth int)
-	rec = func(dir string, depth int) {
-		if len(out) >= exposureMaxFilesPerRoot {
-			return
+	complete := true
+	for len(queue) > 0 && len(out) < maxFiles {
+		if ctx.Err() != nil {
+			return out, false
 		}
-		entries, err := osFS.ReadDir(dir)
+		dir := queue[0]
+		queue = queue[1:]
+		entries, err := osFS.ReadDir(dir.path)
 		if err != nil {
-			return
+			complete = false
+			continue
 		}
 		for _, e := range entries {
-			if len(out) >= exposureMaxFilesPerRoot {
-				return
+			if ctx.Err() != nil {
+				return out, false
+			}
+			if len(out) >= maxFiles {
+				complete = false
+				break
 			}
 			if e.IsDir() {
-				if depth < maxDepth && !walkSkipDirs[e.Name()] {
-					rec(filepath.Join(dir, e.Name()), depth+1)
+				if dir.depth < maxDepth && !walkSkipDirs[e.Name()] {
+					if queuedDirs >= exposureMaxDirsPerRoot {
+						complete = false
+						continue
+					}
+					queue = append(queue, pendingDir{
+						path:  filepath.Join(dir.path, e.Name()),
+						depth: dir.depth + 1,
+					})
+					queuedDirs++
 				}
 				continue
 			}
-			out = append(out, filepath.Join(dir, e.Name()))
+			out = append(out, filepath.Join(dir.path, e.Name()))
 		}
 	}
-	rec(docroot, 0)
-	return out
+	if len(queue) > 0 {
+		complete = false
+	}
+	return out, complete
 }
 
 func relURLPath(docroot, path string) string {
 	r, err := filepath.Rel(docroot, path)
-	if err != nil || strings.HasPrefix(r, "..") {
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		return ""
 	}
 	return "/" + filepath.ToSlash(r)
@@ -142,10 +227,15 @@ func buildExposedFinding(vh vhost, path, rel string, class exposedClass, pr prob
 	if fi, err := osFS.Stat(path); err == nil {
 		size = fi.Size()
 	}
+	scheme := pr.scheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	exposureURL := (&url.URL{Scheme: scheme, Host: vh.domain, Path: rel}).String()
 	return alert.Finding{
 		Severity: class.severity(),
 		Check:    class.findingName(),
-		Message:  fmt.Sprintf("Web-exposed %s reachable at https://%s%s", exposureLabel(class), vh.domain, rel),
+		Message:  fmt.Sprintf("Web-exposed %s reachable at %s", exposureLabel(class), exposureURL),
 		Details: fmt.Sprintf("File: %s (%d bytes), served as %q. Remove it from the web root or deny HTTP access.",
 			path, size, pr.contentType),
 		FilePath:  path,
@@ -191,19 +281,66 @@ func SetWebProbe(p webProbe) { webProber = p }
 type realWebProbe struct{}
 
 func (realWebProbe) probe(ctx context.Context, domain, urlPath string) probeResult {
+	results := make([]probeResult, 0, 2)
+	partial := false
 	for _, scheme := range []string{"https", "http"} {
 		if pr, ok := doLocalProbe(ctx, scheme, domain, urlPath); ok {
-			return pr
+			results = append(results, pr)
+			// A successful non-HTML response is sufficient for every raw
+			// leak class; avoid an unnecessary second request.
+			if successfulProbe(pr) && !isHTMLContentType(pr.contentType) {
+				return pr
+			}
+		} else {
+			partial = true
 		}
 	}
-	return probeResult{}
+	pr := bestProbeResult(results)
+	pr.partial = partial
+	return pr
+}
+
+func successfulProbe(pr probeResult) bool {
+	return pr.status == http.StatusOK || pr.status == http.StatusPartialContent
+}
+
+// bestProbeResult prefers a successful response over an HTTP error and a raw
+// response over HTML. This lets an HTTP-only exposure win when HTTPS redirects,
+// blocks the path, or executes a different handler.
+func bestProbeResult(results []probeResult) probeResult {
+	var firstReachable probeResult
+	var firstSuccess probeResult
+	for _, pr := range results {
+		if !pr.reachable {
+			continue
+		}
+		if !firstReachable.reachable {
+			firstReachable = pr
+		}
+		if !successfulProbe(pr) {
+			continue
+		}
+		if !isHTMLContentType(pr.contentType) {
+			return pr
+		}
+		if !firstSuccess.reachable {
+			firstSuccess = pr
+		}
+	}
+	if firstSuccess.reachable {
+		return firstSuccess
+	}
+	return firstReachable
 }
 
 // doLocalProbe issues one HEAD (falling back to a ranged GET when HEAD is
 // disallowed) to the loopback web server, presenting domain as the vhost. It
 // never reads the response body.
 func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeResult, bool) {
+	probeCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
+	defer cancel()
 	transport := &http.Transport{
+		MaxResponseHeaderBytes: 64 << 10,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			_, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -230,18 +367,18 @@ func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeRes
 	}
 	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
 
-	resp, err := doProbeRequest(ctx, client, http.MethodHead, u.String(), "")
+	resp, err := doProbeRequest(probeCtx, client, http.MethodHead, u.String(), "")
 	if err != nil {
 		return probeResult{}, false
 	}
 	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
 		_ = resp.Body.Close()
-		resp, err = doProbeRequest(ctx, client, http.MethodGet, u.String(), "bytes=0-0")
+		resp, err = doProbeRequest(probeCtx, client, http.MethodGet, u.String(), "bytes=0-0")
 		if err != nil {
 			return probeResult{}, false
 		}
 	}
-	pr := probeResult{status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), reachable: true}
+	pr := probeResult{scheme: scheme, status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), reachable: true}
 	_ = resp.Body.Close()
 	return pr, true
 }
@@ -257,8 +394,6 @@ func doProbeRequest(ctx context.Context, client *http.Client, method, u, rangeHd
 	req.Header.Set("User-Agent", "csm-exposure-probe")
 	return client.Do(req)
 }
-
-// phpExecExts are the extensions a cPanel PHP handler executes rather than
 
 // exposedClass labels a docroot file by the kind of exposure it represents
 // when the web server serves it as a raw download. The zero value classNone
@@ -320,24 +455,33 @@ type vhost struct {
 // "<domain>: <user>==<reseller>==<type>==<maindomain>==<docroot>==...".
 // Wildcard, comment, and short/malformed lines are skipped.
 func parseUserdataDomains(content string) []vhost {
+	vhosts, _ := parseUserdataDomainsChecked(content)
+	return vhosts
+}
+
+func parseUserdataDomainsChecked(content string) ([]vhost, bool) {
 	var out []vhost
+	complete := true
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "*:") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "*:") || strings.HasPrefix(line, "*.") {
 			continue
 		}
 		colon := strings.Index(line, ": ")
 		if colon <= 0 {
+			complete = false
 			continue
 		}
 		domain := strings.ToLower(strings.TrimSpace(line[:colon]))
 		fields := strings.Split(line[colon+2:], "==")
-		if domain == "" || len(fields) < 5 {
+		if !validProbeDomain(domain) || len(fields) < 5 {
+			complete = false
 			continue
 		}
-		docroot := strings.TrimSpace(fields[4])
+		docroot := filepath.Clean(strings.TrimSpace(fields[4]))
 		user := strings.TrimSpace(fields[0])
-		if docroot == "" || user == "" {
+		if !filepath.IsAbs(docroot) || docroot == string(filepath.Separator) || user == "" {
+			complete = false
 			continue
 		}
 		out = append(out, vhost{
@@ -347,16 +491,37 @@ func parseUserdataDomains(content string) []vhost {
 			docroot: docroot,
 		})
 	}
-	return out
+	return out, complete
+}
+
+// validProbeDomain rejects URL authority syntax. Without this guard a corrupt
+// map entry containing a port could make the privileged daemon probe an
+// arbitrary loopback service instead of the vhost's port 80/443.
+func validProbeDomain(domain string) bool {
+	if domain == "" || len(domain) > 253 || strings.ContainsAny(domain, ":/\\?#@[]%") {
+		return false
+	}
+	for _, r := range domain {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // probeResult is the local reachability check outcome for one candidate file.
-// It carries only headers-level facts (status, Content-Type); the body is
-// never read, so a leaked file's secret contents never enter CSM.
+// It carries the requested scheme and only headers-level response facts
+// (status, Content-Type); the body is never read, so a leaked file's secret
+// contents never enter CSM.
 type probeResult struct {
+	scheme      string
 	status      int
 	contentType string
 	reachable   bool
+	// partial is true when one protocol could not be reached. Unless the other
+	// protocol confirms an exposure, that uncertainty must prevent purging a
+	// finding observed during an earlier complete scan.
+	partial bool
 }
 
 // confirmExposure reports whether a classified candidate is a confirmed,
@@ -398,28 +563,38 @@ var phpExecExts = map[string]bool{
 var backupSuffixSet = map[string]bool{
 	"old": true, "bak": true, "save": true, "orig": true, "broken": true,
 	"swp": true, "swo": true, "tmp": true, "copy": true, "backup": true,
-	"1": true, "2": true,
 }
 
-// dbDumpSuffixes are the (possibly compound) endings of a raw database dump.
+// dbDumpSuffixes are raw database-dump endings. Each may optionally be wrapped
+// in one of dbDumpArchiveSuffixes.
 var dbDumpSuffixes = []string{
-	".sql", ".sql.gz", ".sql.zip", ".sql.bz2", ".sql.xz", ".dump", ".mysql",
+	".sql", ".dump", ".mysql",
+}
+
+var dbDumpArchiveSuffixes = []string{
+	"", ".gz", ".zip", ".bz2", ".xz", ".zst", ".7z", ".rar",
+	".tar", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz", ".tbz",
 }
 
 // archiveExts are archive endings that, combined with a backup token, denote a
 // full-site backup a visitor could download whole.
 var archiveExts = []string{
-	".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".tar", ".zip",
-	".rar", ".7z", ".gz", ".bz2", ".xz",
+	".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".tar.zst", ".tar",
+	".zip", ".rar", ".7z", ".gz", ".bz2", ".xz", ".zst",
 }
 
 // backupTokens are name fragments that mark an archive as a site/db backup
 // rather than a legitimately-offered download. Kept strong to avoid flagging
 // ordinary user zips.
 var backupTokens = []string{
-	"backup", "wpvivid", "updraft", "duplicator", "ai1wm", "all-in-one",
-	"migrate", "migration", "snapshot", "public_html", "wp-content",
-	"wordpress", "full", "dump",
+	"public_html", "wp-content",
+}
+
+// These generic words are backup signals only as complete filename tokens;
+// substring matching would turn names such as dumpster.zip or immigration.zip
+// into Critical false positives.
+var delimitedBackupTokens = []string{
+	"backup", "dump", "full",
 }
 
 // classifyExposedFile classifies a base file name. It is deliberately
@@ -432,9 +607,10 @@ func classifyExposedFile(name string) exposedClass {
 		return classNone
 	}
 
-	// Diagnostics by exact name. They execute (text/html); the reachability
-	// probe distinguishes a live phpinfo from a 403.
-	if lower == "phpinfo.php" || lower == "info.php" {
+	// Diagnostic by its unambiguous conventional name. A generic info.php can
+	// be any application endpoint, and headers alone cannot prove it calls
+	// phpinfo(), so classifying that name would create false positives.
+	if lower == "phpinfo.php" {
 		return classPHPInfo
 	}
 
@@ -443,8 +619,16 @@ func classifyExposedFile(name string) exposedClass {
 		return classNone
 	}
 
-	// Dotenv family (secrets).
-	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
+	// Live scripts are executed by the PHP handler rather than served as
+	// source. Keep the phpinfo diagnostic exceptions above, but reject every
+	// other candidate whose final extension still executes -- including names
+	// such as .env.php that would otherwise match the dotenv family.
+	if hasPHPExecExtension(lower) {
+		return classNone
+	}
+
+	// Dotenv family (secrets), including editor backups such as .env~.
+	if isDotenvName(lower) {
 		return classConfigLeak
 	}
 
@@ -456,37 +640,54 @@ func classifyExposedFile(name string) exposedClass {
 		return classBackupArchive
 	}
 
-	// Non-executing backups of PHP source / config files.
-	if stripped, ok := stripBackupSuffix(lower); ok && looksLikePHPSource(stripped) {
-		if looksLikeConfig(stripped) {
+	// A sensitive file can itself have been renamed with one or more backup
+	// suffixes (for example wp-config.php.bak.old).
+	if stripped, ok := stripBackupSuffixes(lower); ok {
+		switch {
+		case isDotenvName(stripped):
 			return classConfigLeak
+		case hasDBDumpSuffix(stripped):
+			return classDBDump
+		case isBackupArchive(stripped):
+			return classBackupArchive
+		case looksLikePHPSource(stripped):
+			if looksLikeConfig(stripped) {
+				return classConfigLeak
+			}
+			return classSourceBackup
 		}
-		return classSourceBackup
 	}
 
 	return classNone
 }
 
+func isDotenvName(lower string) bool {
+	return lower == ".env" || strings.HasPrefix(lower, ".env.")
+}
+
 // isBenignExposedName matches shipped samples and templates that carry no
 // secret and must never be flagged.
 func isBenignExposedName(lower string) bool {
-	switch {
-	case strings.Contains(lower, "sample"):
-		return true
-	case strings.Contains(lower, "example"):
-		return true
-	case strings.HasSuffix(lower, ".dist"):
-		return true
-	case strings.HasSuffix(lower, ".default"):
+	if lower == "wp-config-sample.php" {
 		return true
 	}
-	return false
+	if stripped, ok := stripBackupSuffixes(lower); ok && stripped == "wp-config-sample.php" {
+		return true
+	}
+	for _, template := range []string{".env.example", ".env.sample", ".env.dist", ".env.default"} {
+		if lower == template || strings.HasPrefix(lower, template+".") || strings.HasPrefix(lower, template+"~") {
+			return true
+		}
+	}
+	return strings.HasSuffix(lower, ".dist") || strings.HasSuffix(lower, ".default")
 }
 
 func hasDBDumpSuffix(lower string) bool {
-	for _, s := range dbDumpSuffixes {
-		if strings.HasSuffix(lower, s) {
-			return true
+	for _, base := range dbDumpSuffixes {
+		for _, archive := range dbDumpArchiveSuffixes {
+			if strings.HasSuffix(lower, base+archive) {
+				return true
+			}
 		}
 	}
 	return false
@@ -511,7 +712,34 @@ func isBackupArchive(lower string) bool {
 			return true
 		}
 	}
+	for _, tok := range delimitedBackupTokens {
+		if hasDelimitedFilenameToken(lower, tok) {
+			return true
+		}
+	}
 	return false
+}
+
+func hasDelimitedFilenameToken(name, token string) bool {
+	for start := 0; start <= len(name)-len(token); {
+		i := strings.Index(name[start:], token)
+		if i < 0 {
+			return false
+		}
+		i += start
+		beforeOK := i == 0 || !isASCIIAlphaNumeric(name[i-1])
+		after := i + len(token)
+		afterOK := after == len(name) || !isASCIIAlphaNumeric(name[after])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+func isASCIIAlphaNumeric(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
 }
 
 // stripBackupSuffix removes a single trailing backup marker (a "~" or a
@@ -532,27 +760,61 @@ func stripBackupSuffix(lower string) (string, bool) {
 	return lower, false
 }
 
+func stripBackupSuffixes(lower string) (string, bool) {
+	stripped := lower
+	found := false
+	for {
+		next, ok := stripBackupSuffix(stripped)
+		if !ok {
+			return stripped, found
+		}
+		stripped = next
+		found = true
+	}
+}
+
 func isBackupSuffix(seg string) bool {
-	if backupSuffixSet[seg] {
+	if backupSuffixSet[seg] || isASCIIDigits(seg) {
 		return true
 	}
 	// "bak-20260515-124446", "bak_1", "save1" style timestamped variants.
-	for _, p := range []string{"bak-", "bak_", "bak.", "old-", "old_", "save-"} {
+	for _, p := range []string{"bak-", "bak_", "old-", "old_", "save-", "save_", "backup-", "backup_", "orig-", "orig_"} {
 		if strings.HasPrefix(seg, p) {
+			return true
+		}
+	}
+	for _, p := range []string{"bak", "old", "save", "backup", "orig"} {
+		if strings.HasPrefix(seg, p) && isASCIIDigits(strings.TrimPrefix(seg, p)) {
 			return true
 		}
 	}
 	return false
 }
 
+func isASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // looksLikePHPSource reports whether the name (with its backup suffix already
 // removed) is a PHP source file the server would serve as text.
 func looksLikePHPSource(stripped string) bool {
-	idx := strings.LastIndexByte(stripped, '.')
+	return hasPHPExecExtension(stripped)
+}
+
+func hasPHPExecExtension(name string) bool {
+	idx := strings.LastIndexByte(name, '.')
 	if idx < 0 {
 		return false
 	}
-	ext := stripped[idx+1:]
+	ext := name[idx+1:]
 	return phpExecExts[ext]
 }
 

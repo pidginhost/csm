@@ -133,6 +133,7 @@ thresholds:
   wp_core_check_interval_min: 60        # WordPress core checksum interval (default: 60)
   webshell_scan_interval_min: 30        # webshell scan interval (default: 30)
   filesystem_scan_interval_min: 30      # filesystem scan interval (default: 30)
+  exposed_file_scan_depth: 2            # directory levels below each web docroot (default: 2, max: 10)
   multi_ip_login_threshold: 3           # IPs per account before alert (default: 3)
   multi_ip_login_window_min: 60         # time window for multi-IP check (default: 60)
   cred_stuffing_distinct_accounts: 5    # failed accounts from one IP before credential_stuffing (default: 5)
