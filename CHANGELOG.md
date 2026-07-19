@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scheduled deep-scan malware signatures no longer flag legitimate WordPress, plugin, and framework code. Keylogger, card-skimmer, mass-mailer, dropper, obfuscation, admin-creation, SSH-key, and hidden-spam-link rules now require the actual malicious behaviour (off-site exfiltration, hardcoded credentials, an execution sink) rather than ambient keywords that stock minified bundles and vendor libraries also contain.
 - High-severity threat-intel sightings no longer disappear behind operator alert rate limits or first-hit incident thresholds. Authentication activity also takes priority when the same IP appears on both passive and credential surfaces.
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself. Install-era accounts cannot crowd later additions out of the bounded scan, and missing registration timestamps alert instead of being excluded.
