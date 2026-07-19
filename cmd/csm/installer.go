@@ -714,6 +714,7 @@ thresholds:
   wp_core_check_interval_min: 60
   webshell_scan_interval_min: 30
   filesystem_scan_interval_min: 30
+  exposed_file_scan_depth: 2
   brute_force_window: 5000
   domlog_max_files: 500
   domlog_tail_lines: 500

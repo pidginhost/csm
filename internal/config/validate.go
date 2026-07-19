@@ -385,6 +385,14 @@ func Validate(cfg *Config) []ValidationResult {
 
 	// --- SMTP brute-force thresholds ---
 	t := cfg.Thresholds
+	if t.ExposedFileScanDepth != 0 &&
+		(t.ExposedFileScanDepth < 1 || t.ExposedFileScanDepth > MaxExposedFileScanDepth) {
+		results = append(results, ValidationResult{
+			"error",
+			"thresholds.exposed_file_scan_depth",
+			fmt.Sprintf("exposed_file_scan_depth must be between 1 and %d", MaxExposedFileScanDepth),
+		})
+	}
 	if t.DomlogMaxFiles != 0 && (t.DomlogMaxFiles < 1 || t.DomlogMaxFiles > 100000) {
 		results = append(results, ValidationResult{"error", "thresholds.domlog_max_files", "domlog_max_files must be between 1 and 100000"})
 	}

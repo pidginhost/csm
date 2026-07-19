@@ -8,16 +8,15 @@ import (
 )
 
 // newThresholdCorrelator builds a correlator that requires two findings
-// before an incident opens. Default Critical severity stays exempt from
-// the threshold so high-severity findings still page operators on the
-// first hit.
+// before an ordinary incident opens. Critical severity and explicit first-hit
+// signal types stay exempt from the threshold.
 func newThresholdCorrelator(threshold int) *Correlator {
 	c := NewCorrelator(CorrelatorConfig{OpenThreshold: threshold})
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 	return c
 }
 
-// First non-Critical finding must NOT open an incident; second finding
+// First ordinary non-Critical finding must NOT open an incident; second finding
 // against the same key inside the merge window opens with both events
 // present in the timeline. This is the headline behavior change: an
 // isolated probe (one modsec hit, one mistyped password) is no longer
@@ -79,6 +78,34 @@ func TestCorrelatorThresholdBypassedForCriticalSeverity(t *testing.T) {
 	}
 	if !created || id == "" {
 		t.Errorf("Critical finding must open incident on first hit: id=%q created=%v", id, created)
+	}
+}
+
+func TestCorrelatorThresholdBypassedForHighIPReputation(t *testing.T) {
+	c := newThresholdCorrelator(2)
+	f := alert.Finding{
+		Check:     "ip_reputation",
+		Severity:  alert.High,
+		SourceIP:  "203.0.113.7",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+
+	id, created, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created || id == "" {
+		t.Fatalf("High ip_reputation finding must open on first hit: id=%q created=%v", id, created)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("Get on freshly created incident returned not-found")
+	}
+	if inc.Severity != alert.High {
+		t.Errorf("severity = %v, want High", inc.Severity)
+	}
+	if inc.Kind != KindWebAttack {
+		t.Errorf("kind = %s, want web_attack", inc.Kind)
 	}
 }
 

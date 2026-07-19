@@ -197,8 +197,8 @@ func TestCollectRecentIPsEximSMTPAuthFailureOnNonCPanelWhenLogExists(t *testing.
 }
 
 func TestCollectRecentIPsDedupesAcrossSources(t *testing.T) {
-	// Same IP appears in SSH log and cPanel log. addIfNotInfra uses
-	// first-write-wins, so the SSH-login source should stick.
+	// Same IP appears in SSH and cPanel logs. Authentication activity is the
+	// stronger surface, so it must win regardless of collection order.
 	forceCPanelPlatform(t)
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
@@ -217,7 +217,7 @@ func TestCollectRecentIPsDedupesAcrossSources(t *testing.T) {
 	})
 	ips := collectRecentIPs(&config.Config{})
 	if src := ips["203.0.113.77"]; src != "SSH login" {
-		t.Errorf("first-seen SSH login should win, got %q (full map %v)", src, ips)
+		t.Errorf("stronger SSH login should win, got %q (full map %v)", src, ips)
 	}
 }
 

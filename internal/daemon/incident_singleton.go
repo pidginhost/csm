@@ -68,7 +68,7 @@ const incidentAutoCloseMaxPerSweep = 1000
 const incidentRetentionPeriod = 30 * 24 * time.Hour
 
 // incidentOpenThreshold is the number of correlated findings required
-// before a non-Critical finding opens an incident. Two means an
+// before a finding subject to the threshold opens an incident. Two means an
 // isolated probe (a single dictionary-attack guess, one modsec hit
 // from a wandering scanner) is treated as a finding only and never
 // promoted to an incident on its own; the next correlated event

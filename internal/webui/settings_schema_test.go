@@ -329,6 +329,26 @@ func TestThresholdsSchemaIncludesAccountScanMaxFiles(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesExposedFileScanDepth(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "exposed_file_scan_depth")
+	if f == nil {
+		t.Fatal("exposed_file_scan_depth field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("exposed_file_scan_depth type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 1 {
+		t.Fatalf("exposed_file_scan_depth min = %v, want 1", f.Min)
+	}
+	if f.Max == nil || *f.Max != int64(config.MaxExposedFileScanDepth) {
+		t.Fatalf("exposed_file_scan_depth max = %v, want %d", f.Max, config.MaxExposedFileScanDepth)
+	}
+	if f.FieldGroup != FieldGroupLimits {
+		t.Fatalf("exposed_file_scan_depth group = %q, want %q", f.FieldGroup, FieldGroupLimits)
+	}
+}
+
 func TestThresholdsSchemaIncludesCrontabBase64BlobMaxBytes(t *testing.T) {
 	s, _ := LookupSettingsSection("thresholds")
 	f := findSchemaField(s, "crontab_base64_blob_max_bytes")

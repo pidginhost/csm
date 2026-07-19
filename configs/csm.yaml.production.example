@@ -120,6 +120,7 @@ thresholds:
   wp_core_check_interval_min: 60
   webshell_scan_interval_min: 30
   filesystem_scan_interval_min: 30
+  exposed_file_scan_depth: 2
   multi_ip_login_threshold: 3
   multi_ip_login_window_min: 60
   cred_stuffing_distinct_accounts: 5

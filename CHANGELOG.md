@@ -7,11 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CSM now scans web document roots for sensitive files a visitor could download -- database dumps, full-site backup archives, configuration and PHP source-code backups, and `phpinfo.php` diagnostics -- and reports each one only after confirming the web server actually serves it, so files the server already blocks and the sample templates WordPress ships are never flagged.
+
 ### Changed
 
 - Threat-intel reputation sightings are now graded by what the IP was doing: passive web sightings drop to High so ambient scanner noise no longer drowns compromise-class Criticals, while auth-surface contact (SSH, mail credential attacks) stays Critical. Auto-blocking behaviour is unchanged.
 
 ### Fixed
+
+- High-severity threat-intel sightings no longer disappear behind operator alert rate limits or first-hit incident thresholds. Authentication activity also takes priority when the same IP appears on both passive and credential surfaces.
 
 - WordPress rogue-admin detection no longer flags the admin accounts a fresh site install creates itself. Install-era accounts cannot crowd later additions out of the bounded scan, and missing registration timestamps alert instead of being excluded.
 - Mail account compromise findings from an IP with established login history on several other mailboxes are downgraded to an advisory and excluded from direct and incident-driven auto-blocking, so shared office and agency devices with one stale credential do not get their whole office firewalled.

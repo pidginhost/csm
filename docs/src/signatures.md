@@ -148,7 +148,7 @@ Signature rules require **structural nesting**, not co-presence of strings. Two 
 
 ## Alert Rate Limiting
 
-Default: 30 emails/hour (configurable via `max_per_hour`). **CRITICAL findings always get through** regardless of rate limit. Only lower-severity alerts are rate-limited.
+Default: 30 operator alert dispatches/hour (configurable via `max_per_hour`). **CRITICAL findings and threat-intel reputation sightings always get through** by email or generic webhook regardless of the rate limit. Other lower-severity alerts are rate-limited.
 
 ## Suppressions
 

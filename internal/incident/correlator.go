@@ -57,12 +57,11 @@ type CorrelatorConfig struct {
 	Persist func(Incident)
 
 	// OpenThreshold is the number of correlated findings required before
-	// a non-Critical finding opens an incident. Critical-severity
-	// findings always open immediately so escalations page on first
-	// hit. Values <= 0 default to 1 (open on first finding) for
-	// backwards compatibility with callers that expect the original
-	// behavior; the daemon explicitly configures 2 to suppress
-	// one-shot scanner noise.
+	// a thresholded finding opens an incident. Critical-severity findings and
+	// check-specific first-hit signals always open immediately. Values <= 0
+	// default to 1 (open on first finding) for backwards compatibility with
+	// callers that expect the original behavior; the daemon explicitly
+	// configures 2 to suppress one-shot scanner noise.
 	OpenThreshold int
 
 	// SpraySuppression turns on the credential-spray super-incident
@@ -229,10 +228,10 @@ func closedPersistTail() chan struct{} {
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
 // and whether a new incident was created. Unattributable findings yield
-// ("", false, nil). Non-Critical findings whose key has fewer than
-// OpenThreshold prior findings inside the merge window are stashed in
-// the pending map and yield ("", false, nil) too; they will only open
-// an incident if the threshold is met inside the window.
+// ("", false, nil). Findings subject to the threshold whose key has fewer
+// than OpenThreshold prior findings inside the merge window are stashed in the
+// pending map and yield ("", false, nil) too; they will only open an incident
+// if the threshold is met inside the window.
 func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	key := KeyFor(f)
 	if key.IsEmpty() {
@@ -335,10 +334,8 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		delete(c.byKey, keyStr)
 	}
 
-	// Threshold gate. Non-Critical findings need OpenThreshold sightings
-	// inside the merge window before opening an incident, except High
-	// host-integrity findings. Those are not scanner noise and must
-	// surface on the first sighting like Critical escalations.
+	// Threshold gate. Findings without first-hit semantics need OpenThreshold
+	// sightings inside the merge window before opening an incident.
 	if c.openThreshold > 1 && !opensIncidentImmediately(f) {
 		if pf, ok := c.pending[keyStr]; ok && now.Sub(pf.at) <= incidentMergeWindow {
 			delete(c.pending, keyStr)
@@ -1363,6 +1360,11 @@ func keyString(k Key) string {
 
 func opensIncidentImmediately(f alert.Finding) bool {
 	if f.Severity >= alert.Critical {
+		return true
+	}
+	// Reputation severity describes the observed surface, not confidence in
+	// the threat-intel match. Preserve the pre-grading first-hit incident path.
+	if f.Check == "ip_reputation" {
 		return true
 	}
 	return f.Severity >= alert.High && ClassifyKind(f) == KindHostIntegrityRisk
