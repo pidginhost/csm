@@ -82,11 +82,25 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 // does for a payload past the frame ceiling, and matches only when the file is
 // scanned by path. It proves the deep scan falls back to a path scan instead of
 // dropping a large file into the coverage gap.
-type oversizeInlineBackend struct{ scanFileCalls int32 }
+type oversizeInlineBackend struct {
+	scanFileCalls int32
+	scanFileErr   error
+	scanFileSHA   string
+}
 
 func (b *oversizeInlineBackend) ScanFile(string, int) []yara.Match {
+	result, _ := b.ScanFileChecked("", 0)
+	return result.Matches
+}
+func (b *oversizeInlineBackend) ScanFileChecked(string, int) (yara.FileScanResult, error) {
 	atomic.AddInt32(&b.scanFileCalls, 1)
-	return []yara.Match{{RuleName: "webshell_php_exec_ladder", Meta: map[string]string{"severity": "critical"}}}
+	if b.scanFileErr != nil {
+		return yara.FileScanResult{}, b.scanFileErr
+	}
+	return yara.FileScanResult{
+		Matches:       []yara.Match{{RuleName: "webshell_php_exec_ladder", Meta: map[string]string{"severity": "critical"}}},
+		ContentSHA256: b.scanFileSHA,
+	}, nil
 }
 func (b *oversizeInlineBackend) ScanBytes(data []byte) []yara.Match {
 	m, _ := b.ScanBytesChecked(data)
@@ -107,7 +121,7 @@ func TestCheckYARADeepScansOversizeInlineFileByPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("padded bundle content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	backend := &oversizeInlineBackend{}
+	backend := &oversizeInlineBackend{scanFileSHA: strings.Repeat("a", 64)}
 	yara.SetActive(backend)
 	t.Cleanup(func() { yara.SetActive(nil) })
 
@@ -126,6 +140,28 @@ func TestCheckYARADeepScansOversizeInlineFileByPath(t *testing.T) {
 	}
 	if got == nil || got.FilePath != path {
 		t.Fatalf("findings = %+v, want yara_match_scheduled for %s", findings, path)
+	}
+	if got.ContentSHA256 != backend.scanFileSHA {
+		t.Fatalf("finding hash = %q, want worker-scanned content hash %q", got.ContentSHA256, backend.scanFileSHA)
+	}
+}
+
+func TestCheckYARADeepReportsFailedOversizePathScan(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "large.php")
+	if err := os.WriteFile(path, []byte("padded payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := &oversizeInlineBackend{scanFileErr: errors.New("worker exited during path scan")}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+	if atomic.LoadInt32(&backend.scanFileCalls) == 0 {
+		t.Fatal("oversize-inline file was not retried by path")
+	}
+	if !containsFindingCheck(findings, "yara_scan_incomplete") {
+		t.Fatalf("failed path fallback was reported clean: %+v", findings)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 // without pulling in the cgo build tag.
 type Scanner interface {
 	ScanFile(path string, maxBytes int) []yara.Match
+	ScanFileChecked(path string, maxBytes int) (yara.FileScanResult, error)
 	ScanBytes(data []byte) []yara.Match
 	ScanBytesChecked(data []byte) ([]yara.Match, error)
 	Reload() error
@@ -72,7 +73,14 @@ func (h *handler) ScanFile(a yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
 		}
 		return yaraipc.ScanResult{}, nil
 	}
-	return yaraipc.ScanResult{Matches: convertMatches(sc.ScanFile(a.Path, a.MaxBytes))}, nil
+	result, err := sc.ScanFileChecked(a.Path, a.MaxBytes)
+	if err != nil {
+		return yaraipc.ScanResult{}, err
+	}
+	return yaraipc.ScanResult{
+		Matches:       convertMatches(result.Matches),
+		ContentSHA256: result.ContentSHA256,
+	}, nil
 }
 
 func (h *handler) ScanBytes(a yaraipc.ScanBytesArgs) (yaraipc.ScanResult, error) {

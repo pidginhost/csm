@@ -1,7 +1,9 @@
 package yara
 
 import (
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync/atomic"
 )
 
@@ -30,6 +32,21 @@ type CheckedScanner interface {
 	ScanBytesChecked(data []byte) ([]Match, error)
 }
 
+// FileScanResult binds path-scan matches to the exact bytes the backend
+// scanned. ContentSHA256 is lowercase hex so it can be copied directly into a
+// finding and transported over the worker IPC boundary.
+type FileScanResult struct {
+	Matches       []Match
+	ContentSHA256 string
+}
+
+// CheckedFileScanner is the path-based equivalent of CheckedScanner. It is
+// used when a payload is too large for inline worker IPC and the worker must
+// reopen the file without turning a worker or read failure into a clean scan.
+type CheckedFileScanner interface {
+	ScanFileChecked(path string, maxBytes int) (FileScanResult, error)
+}
+
 // ScanBytesChecked scans data via b, surfacing a scan error when b supports
 // the CheckedScanner capability. Backends without it fall back to the
 // error-free ScanBytes. Callers that must fail closed on an unscannable
@@ -42,6 +59,29 @@ func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
 		return cs.ScanBytesChecked(data)
 	}
 	return b.ScanBytes(data), nil
+}
+
+// ScanFileChecked scans a path via b. Backends without the checked capability
+// return an error because a caller cannot safely distinguish failure from a
+// clean result through Backend.ScanFile.
+func ScanFileChecked(b Backend, path string, maxBytes int) (FileScanResult, error) {
+	if b == nil {
+		return FileScanResult{}, errors.New("yara: backend unavailable")
+	}
+	if cs, ok := b.(CheckedFileScanner); ok {
+		result, err := cs.ScanFileChecked(path, maxBytes)
+		if err != nil {
+			return FileScanResult{}, err
+		}
+		if len(result.ContentSHA256) != 64 {
+			return FileScanResult{}, errors.New("yara: checked file scan returned an invalid content hash")
+		}
+		if _, err := hex.DecodeString(result.ContentSHA256); err != nil {
+			return FileScanResult{}, fmt.Errorf("yara: checked file scan returned an invalid content hash: %w", err)
+		}
+		return result, nil
+	}
+	return FileScanResult{}, errors.New("yara: backend does not support checked file scans")
 }
 
 var activeBackend atomic.Pointer[backendHolder]

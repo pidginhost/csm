@@ -10,6 +10,8 @@ import (
 
 type fakeScanner struct {
 	fileMatches  []yara.Match
+	fileSHA      string
+	fileErr      error
 	bytesMatches []yara.Match
 	bytesErr     error
 	reloadErr    error
@@ -26,8 +28,13 @@ type fileCall struct {
 }
 
 func (f *fakeScanner) ScanFile(path string, maxBytes int) []yara.Match {
+	result, _ := f.ScanFileChecked(path, maxBytes)
+	return result.Matches
+}
+
+func (f *fakeScanner) ScanFileChecked(path string, maxBytes int) (yara.FileScanResult, error) {
 	f.fileCalls = append(f.fileCalls, fileCall{path, maxBytes})
-	return f.fileMatches
+	return yara.FileScanResult{Matches: f.fileMatches, ContentSHA256: f.fileSHA}, f.fileErr
 }
 
 func (f *fakeScanner) ScanBytes(data []byte) []yara.Match {
@@ -51,7 +58,10 @@ func (f *fakeScanner) Reload() error {
 func (f *fakeScanner) RuleCount() int { return f.ruleCount }
 
 func TestHandlerScanFileConvertsMatches(t *testing.T) {
-	s := &fakeScanner{fileMatches: []yara.Match{{RuleName: "r1"}, {RuleName: "r2"}}}
+	s := &fakeScanner{
+		fileMatches: []yara.Match{{RuleName: "r1"}, {RuleName: "r2"}},
+		fileSHA:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
 	h := NewHandler(s)
 
 	res, err := h.ScanFile(yaraipc.ScanFileArgs{Path: "/tmp/x", MaxBytes: 8192})
@@ -63,6 +73,21 @@ func TestHandlerScanFileConvertsMatches(t *testing.T) {
 	}
 	if len(s.fileCalls) != 1 || s.fileCalls[0].path != "/tmp/x" || s.fileCalls[0].maxBytes != 8192 {
 		t.Errorf("scanner call: got %+v", s.fileCalls)
+	}
+	if res.ContentSHA256 != s.fileSHA {
+		t.Errorf("content hash = %q, want %q", res.ContentSHA256, s.fileSHA)
+	}
+}
+
+func TestHandlerScanFileSurfacesCheckedScannerError(t *testing.T) {
+	s := &fakeScanner{fileErr: errors.New("file changed during scan")}
+	h := NewHandler(s)
+
+	if _, err := h.ScanFile(yaraipc.ScanFileArgs{Path: "/tmp/x", MaxBytes: 8192}); err == nil {
+		t.Fatal("ScanFile must surface checked scanner errors to the IPC client")
+	}
+	if len(s.fileCalls) != 1 {
+		t.Errorf("scanner calls = %d, want 1", len(s.fileCalls))
 	}
 }
 

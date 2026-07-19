@@ -260,6 +260,9 @@ func TestSupervisorScansShortCircuitAfterStop(t *testing.T) {
 	if got := sup.ScanFile("/tmp/x.php", 4096); got != nil {
 		t.Fatalf("ScanFile after Stop should return nil, got %v", got)
 	}
+	if _, err := sup.ScanFileChecked("/tmp/x.php", 4096); err == nil {
+		t.Fatal("ScanFileChecked after Stop must report the unavailable worker")
+	}
 }
 
 func TestSupervisorStopDuringStartDoesNotDeadlock(t *testing.T) {

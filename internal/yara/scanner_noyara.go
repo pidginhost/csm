@@ -2,6 +2,8 @@
 
 package yara
 
+import "errors"
+
 // Scanner is a no-op stub when YARA-X is not compiled in.
 type Scanner struct{}
 
@@ -29,6 +31,12 @@ func (s *Scanner) ScanBytesChecked(_ []byte) ([]Match, error) { return nil, nil 
 
 // ScanFile returns nil without YARA-X.
 func (s *Scanner) ScanFile(_ string, _ int) []Match { return nil }
+
+// ScanFileChecked reports that no YARA engine is available. Checked callers
+// must not treat an unscanned file as clean.
+func (s *Scanner) ScanFileChecked(_ string, _ int) (FileScanResult, error) {
+	return FileScanResult{}, errors.New("yara: scanner unavailable in this build")
+}
 
 // RuleCount returns 0 without YARA-X.
 func (s *Scanner) RuleCount() int { return 0 }

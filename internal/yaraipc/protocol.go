@@ -91,9 +91,11 @@ type Match struct {
 	Meta     map[string]string `json:"meta,omitempty"`
 }
 
-// ScanResult is returned for OpScanFile and OpScanBytes.
+// ScanResult is returned for OpScanFile and OpScanBytes. ContentSHA256 is set
+// for path scans so callers bind findings to the bytes scanned by the worker.
 type ScanResult struct {
-	Matches []Match `json:"matches,omitempty"`
+	Matches       []Match `json:"matches,omitempty"`
+	ContentSHA256 string  `json:"content_sha256,omitempty"`
 }
 
 // ReloadResult is returned for OpReload. CompileError is non-empty when the

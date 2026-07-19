@@ -100,7 +100,10 @@ func startServerWithOptions(t *testing.T, h Handler, opts ServeOptions) (socketP
 
 func TestClientServerScanFile(t *testing.T) {
 	h := &fakeHandler{
-		scanFileRes: ScanResult{Matches: []Match{{RuleName: "webshell_generic"}}},
+		scanFileRes: ScanResult{
+			Matches:       []Match{{RuleName: "webshell_generic"}},
+			ContentSHA256: "abc123",
+		},
 	}
 	socketPath, stop := startServer(t, h)
 	defer stop()
@@ -114,6 +117,9 @@ func TestClientServerScanFile(t *testing.T) {
 	}
 	if len(res.Matches) != 1 || res.Matches[0].RuleName != "webshell_generic" {
 		t.Errorf("matches: got %+v", res.Matches)
+	}
+	if res.ContentSHA256 != "abc123" {
+		t.Errorf("content hash: got %q want abc123", res.ContentSHA256)
 	}
 	if len(h.scanFileArgs) != 1 {
 		t.Fatalf("handler saw %d requests, want 1", len(h.scanFileArgs))
