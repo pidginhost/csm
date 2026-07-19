@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Threat-intel reputation sightings are now graded by what the IP was doing: passive web sightings drop to High so ambient scanner noise no longer drowns compromise-class Criticals, while auth-surface contact (SSH, mail credential attacks) stays Critical. Auto-blocking behaviour is unchanged.
 
+### Added
+
+- Deep scans now detect the self-healing PHP webshell family seen reinfecting WordPress sites: fake-plugin loaders that probe every command-execution backend, payloads that reset open_basedir to escape their sandbox, and the mu-plugin droppers that restore a webshell from the uploads directory back into the plugins directory. Previously the loaders and droppers went undetected while the payload persisted.
+
 ### Fixed
 
 - Scheduled deep-scan malware signatures no longer flag legitimate WordPress, plugin, and framework code. Keylogger, card-skimmer, mass-mailer, dropper, obfuscation, admin-creation, SSH-key, and hidden-spam-link rules now require the actual malicious behaviour (off-site exfiltration, hardcoded credentials, an execution sink) rather than ambient keywords that stock minified bundles and vendor libraries also contain.
