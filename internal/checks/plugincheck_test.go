@@ -6,9 +6,12 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -183,6 +186,130 @@ func TestRefreshPluginCacheTimeoutDoesNotDoubleLog(t *testing.T) {
 	}
 	if !sdb.GetPluginRefreshTime().IsZero() {
 		t.Error("refresh timestamp must not advance when every site timed out")
+	}
+}
+
+func TestRefreshPluginCacheNoInstallsClearsStaleInventory(t *testing.T) {
+	db := setupPluginStore(t)
+	if err := db.SetSitePlugins("/home/alice/public_html", store.SitePlugins{
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{{Slug: "ultimate-member", InstalledVersion: "2.4.1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{})
+
+	refreshPluginCache(context.Background(), db)
+
+	if got := db.AllSitePlugins(); len(got) != 0 {
+		t.Fatalf("stale inventories survived an empty discovery: %+v", got)
+	}
+	if !db.GetPluginRefreshTime().IsZero() {
+		t.Fatal("empty discovery must remain immediately retryable")
+	}
+}
+
+func TestRefreshPluginCacheFailedInventoryDropsStaleSite(t *testing.T) {
+	db := setupPluginStore(t)
+	wpPath := "/home/alice/public_html"
+	if err := db.SetSitePlugins(wpPath, store.SitePlugins{
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{{Slug: "ultimate-member", InstalledVersion: "2.4.1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
+		if pattern == "/home/*/public_html/wp-config.php" {
+			return []string{wpPath + "/wp-config.php"}, nil
+		}
+		return nil, nil
+	}})
+	withMockCmd(t, &mockCmd{runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
+		return nil, context.DeadlineExceeded
+	}})
+
+	refreshPluginCache(context.Background(), db)
+
+	if _, found := db.GetSitePlugins(wpPath); found {
+		t.Fatal("failed inventory left stale plugin versions available to vulnerability checks")
+	}
+	if !db.GetPluginRefreshTime().IsZero() {
+		t.Fatal("failed inventory marked the cache fresh")
+	}
+}
+
+func TestEnsurePluginCacheFreshCoalescesConcurrentRefreshes(t *testing.T) {
+	db := setupPluginStore(t)
+	wpConfig := "/home/alice/public_html/wp-config.php"
+	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
+		if pattern == "/home/*/public_html/wp-config.php" {
+			return []string{wpConfig}, nil
+		}
+		return nil, nil
+	}})
+	var inventoryCalls atomic.Int32
+	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		if strings.Contains(command, "plugin list") {
+			inventoryCalls.Add(1)
+			return []byte("[]"), nil
+		}
+		if strings.Contains(command, "option get siteurl") {
+			return []byte("https://alice.example\n"), nil
+		}
+		return nil, nil
+	}})
+	cfg := &config.Config{}
+	cfg.Thresholds.PluginCheckIntervalMin = 1440
+
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- ensurePluginCacheFresh(context.Background(), cfg, db)
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for fresh := range results {
+		if !fresh {
+			t.Fatal("concurrent refresh did not produce a fresh cache")
+		}
+	}
+	if got := inventoryCalls.Load(); got != 1 {
+		t.Fatalf("concurrent detectors walked plugin inventory %d times, want 1", got)
+	}
+}
+
+func TestEnsurePluginCacheFreshStopsWaitingWhenCancelled(t *testing.T) {
+	db := setupPluginStore(t)
+	call := &pluginCacheRefreshCall{done: make(chan struct{})}
+	pluginCacheRefreshMu.Lock()
+	pluginCacheRefreshes[db] = call
+	pluginCacheRefreshMu.Unlock()
+	t.Cleanup(func() {
+		pluginCacheRefreshMu.Lock()
+		delete(pluginCacheRefreshes, db)
+		close(call.done)
+		pluginCacheRefreshMu.Unlock()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if ensurePluginCacheFresh(ctx, &config.Config{}, db) {
+		t.Fatal("cancelled refresh wait reported a fresh cache")
+	}
+}
+
+func TestPluginCacheFreshRejectsFutureTimestamp(t *testing.T) {
+	db := setupPluginStore(t)
+	if err := db.SetPluginRefreshTime(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if pluginCacheFresh(db, &config.Config{}) {
+		t.Fatal("future refresh timestamp must not suppress inventory refreshes")
 	}
 }
 

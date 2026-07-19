@@ -236,9 +236,17 @@ mail_logs:
   file: ""                  # override the platform default when non-empty
   units: []                 # empty/omitted = postfix, dovecot
 
-# Detection knobs that are off by default. Each subsection is a separate
-# detector; flipping enabled: true picks it up on the next reload.
+# Detection knobs. Each subsection controls a separate detector.
 detection:
+  # Known-vulnerable WordPress plugin detector: matches installed plugin
+  # versions against a curated CVE/CISA-KEV feed and reports confirmed hits
+  # at High or Critical regardless of how far behind latest they are. Default on;
+  # alert-only (never disables a plugin). Accept a reviewed slug@version via
+  # vulnerable_plugin_allow.
+  vulnerable_plugin_scanning: true
+  # vulnerable_plugin_allow:
+  #   - some-plugin@1.2.3
+
   # Phase 3 of the BPF Incident Response Roadmap: flags non-MTA local
   # processes opening outbound SMTP connections. Detection-only here;
   # Phase 4 binds the auto-response action through bpf_enforcement.

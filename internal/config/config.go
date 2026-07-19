@@ -456,9 +456,7 @@ type Config struct {
 
 	StatePath string `yaml:"state_path" hotreload:"restart"`
 
-	// Detection groups operator-facing knobs that gate detection
-	// scanners. Today this is just the DB persistence-mechanism
-	// scanner; future detection toggles land here.
+	// Detection groups operator-facing knobs that gate individual scanners.
 	Detection struct {
 		// DBObjectScanning toggles the MySQL persistence scanner
 		// (triggers/events/procedures/functions). Tri-state *bool
@@ -476,6 +474,18 @@ type Config struct {
 		// The Critical tier (db_malicious_*) ignores this list --
 		// pattern hits always fire.
 		DBObjectAllowlist []string `yaml:"db_object_allowlist"`
+
+		// VulnerablePluginScanning toggles the known-vulnerable WordPress
+		// plugin detector (matches installed versions against a curated
+		// CVE/KEV feed). Tri-state *bool: nil = default-on, *true = on,
+		// *false = off. Independent of outdated_plugins.
+		VulnerablePluginScanning *bool `yaml:"vulnerable_plugin_scanning"`
+
+		// VulnerablePluginAllow suppresses vulnerable_plugins findings for a
+		// specific slug@version the operator has reviewed and accepted (for
+		// example a back-ported/vendor-patched build the feed cannot see).
+		// Entries shaped <slug>@<version>, case-insensitive presence check.
+		VulnerablePluginAllow []string `yaml:"vulnerable_plugin_allow"`
 
 		// AdminOverlapMinAccounts is the threshold at which the
 		// cross-account admin email correlator emits a finding. Default
@@ -1372,6 +1382,12 @@ func (cfg *Config) VirtualPatchMode() string {
 	default:
 		return VirtualPatchOff
 	}
+}
+
+// VulnerablePluginScanningEnabled reports whether the known-vulnerable plugin
+// detector runs. Tri-state *bool: nil (omitted) defaults to on.
+func (cfg *Config) VulnerablePluginScanningEnabled() bool {
+	return cfg.Detection.VulnerablePluginScanning == nil || *cfg.Detection.VulnerablePluginScanning
 }
 
 // DirectSMTPEgressDryRunEnabled reports the YAML-level dry-run state

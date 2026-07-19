@@ -178,6 +178,69 @@ func pluginAlertSeverity(installed, available string) string {
 
 const pluginCheckWorkers = 5
 
+const defaultPluginCheckIntervalMin = 1440
+
+type pluginCacheRefreshCall struct {
+	done chan struct{}
+}
+
+var (
+	pluginCacheRefreshMu sync.Mutex
+	pluginCacheRefreshes = make(map[*store.DB]*pluginCacheRefreshCall)
+)
+
+func pluginCacheFresh(db *store.DB, cfg *config.Config) bool {
+	lastRefresh := db.GetPluginRefreshTime()
+	if lastRefresh.IsZero() {
+		return false
+	}
+	intervalMin := defaultPluginCheckIntervalMin
+	if cfg != nil && cfg.Thresholds.PluginCheckIntervalMin > 0 {
+		intervalMin = cfg.Thresholds.PluginCheckIntervalMin
+	}
+	elapsed := time.Since(lastRefresh)
+	return elapsed >= 0 && elapsed <= time.Duration(intervalMin)*time.Minute
+}
+
+// ensurePluginCacheFresh coalesces refreshes shared by the outdated and
+// known-vulnerable detectors. The checks run concurrently, so list order in
+// the runner cannot establish the inventory dependency. Waiters reuse the
+// leader's failed result as well, avoiding a duplicate walk in the same scan.
+func ensurePluginCacheFresh(ctx context.Context, cfg *config.Config, db *store.DB) bool {
+	if pluginCacheFresh(db, cfg) {
+		return true
+	}
+
+	pluginCacheRefreshMu.Lock()
+	if call := pluginCacheRefreshes[db]; call != nil {
+		pluginCacheRefreshMu.Unlock()
+		select {
+		case <-call.done:
+			return pluginCacheFresh(db, cfg)
+		case <-ctx.Done():
+			return false
+		}
+	}
+	if pluginCacheFresh(db, cfg) {
+		pluginCacheRefreshMu.Unlock()
+		return true
+	}
+	call := &pluginCacheRefreshCall{done: make(chan struct{})}
+	pluginCacheRefreshes[db] = call
+	pluginCacheRefreshMu.Unlock()
+
+	func() {
+		defer func() {
+			pluginCacheRefreshMu.Lock()
+			delete(pluginCacheRefreshes, db)
+			close(call.done)
+			pluginCacheRefreshMu.Unlock()
+		}()
+		refreshPluginCache(ctx, db)
+	}()
+	return pluginCacheFresh(db, cfg)
+}
+
 // CheckOutdatedPlugins scans all WordPress installations for plugins with
 // available updates and emits findings based on severity of the version gap.
 // Results are cached in bbolt with a configurable refresh interval (default 24h).
@@ -187,12 +250,7 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 		return nil
 	}
 
-	// Refresh cache if stale.
-	lastRefresh := db.GetPluginRefreshTime()
-	interval := time.Duration(cfg.Thresholds.PluginCheckIntervalMin) * time.Minute
-	if time.Since(lastRefresh) > interval {
-		refreshPluginCache(ctx, db)
-	}
+	ensurePluginCacheFresh(ctx, cfg, db)
 
 	return evaluatePluginCache(db)
 }
@@ -278,14 +336,23 @@ type wpCLIPluginEntry struct {
 // and stores everything in bbolt.
 func refreshPluginCache(ctx context.Context, db *store.DB) {
 	wpConfigs := findAllWPInstalls()
+	if ctx.Err() != nil {
+		return
+	}
 	if len(wpConfigs) == 0 {
+		for path := range db.AllSitePlugins() {
+			if err := db.DeleteSitePlugins(path); err != nil {
+				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
+				return
+			}
+		}
 		return
 	}
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	successCount := 0
-	var timeoutCount, execFailCount, parseFailCount int
+	var timeoutCount, execFailCount, parseFailCount, cleanupFailCount int
 	slugsSeen := make(map[string]bool)
 	discoveredPaths := make(map[string]bool)
 
@@ -322,6 +389,12 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 						execFailCount++
 					}
 					mu.Unlock()
+					if err := db.DeleteSitePlugins(wpPath); err != nil {
+						fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, err)
+						mu.Lock()
+						cleanupFailCount++
+						mu.Unlock()
+					}
 					continue
 				}
 
@@ -333,6 +406,12 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 
 				if err := db.SetSitePlugins(wpPath, sitePlugins); err != nil {
 					fmt.Fprintf(os.Stderr, "plugincheck: store failed for %s: %v\n", wpPath, err)
+					if cleanupErr := db.DeleteSitePlugins(wpPath); cleanupErr != nil {
+						fmt.Fprintf(os.Stderr, "plugincheck: stale cache cleanup failed for %s: %v\n", wpPath, cleanupErr)
+					}
+					mu.Lock()
+					cleanupFailCount++
+					mu.Unlock()
 					continue
 				}
 
@@ -385,7 +464,10 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	allCached := db.AllSitePlugins()
 	for path := range allCached {
 		if !discoveredPaths[path] {
-			_ = db.DeleteSitePlugins(path)
+			if err := db.DeleteSitePlugins(path); err != nil {
+				fmt.Fprintf(os.Stderr, "plugincheck: prune failed for %s: %v\n", path, err)
+				cleanupFailCount++
+			}
 		}
 	}
 
@@ -396,7 +478,7 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	// retry next cycle.
 	mu.Lock()
 	sc := successCount
-	to, exf, pf := timeoutCount, execFailCount, parseFailCount
+	to, exf, pf, cf := timeoutCount, execFailCount, parseFailCount, cleanupFailCount
 	mu.Unlock()
 	failCount := len(wpConfigs) - sc
 	ts := time.Now().Format("2006-01-02 15:04:05")
@@ -410,11 +492,18 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 			ts, failCount, len(wpConfigs), failureBreakdown(to, exf, pf))
 		return
 	}
+	if cf > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refresh incomplete, %d stale cache cleanup(s) failed, not updating timestamp\n",
+			ts, cf)
+		return
+	}
 	if failCount > 0 {
 		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refreshed %d/%d sites%s\n",
 			ts, sc, len(wpConfigs), failureBreakdown(to, exf, pf))
 	}
-	_ = db.SetPluginRefreshTime(time.Now())
+	if err := db.SetPluginRefreshTime(time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "plugincheck: refresh timestamp failed: %v\n", err)
+	}
 }
 
 // failureBreakdown formats " (timeout=N exec_fail=N json_fail=N)" when any

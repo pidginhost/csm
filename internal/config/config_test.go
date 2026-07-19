@@ -589,6 +589,15 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	}
 
 	direct := cfg.Detection.DirectSMTPEgress
+	if cfg.Detection.VulnerablePluginScanning == nil || !*cfg.Detection.VulnerablePluginScanning {
+		t.Fatal("detection.vulnerable_plugin_scanning must be explicitly true in the packaged default")
+	}
+	if !cfg.VulnerablePluginScanningEnabled() {
+		t.Fatal("packaged vulnerable-plugin detector must remain enabled")
+	}
+	if len(cfg.Detection.VulnerablePluginAllow) != 0 {
+		t.Fatalf("packaged vulnerable_plugin_allow = %v, want empty", cfg.Detection.VulnerablePluginAllow)
+	}
 	if direct.Enabled {
 		t.Fatal("detection.direct_smtp_egress.enabled must stay false in the packaged default")
 	}
@@ -647,6 +656,22 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	}
 	if _, ok := raw.Thresholds["xmlrpc_threshold"]; !ok {
 		t.Error("packaged default config missing thresholds.xmlrpc_threshold")
+	}
+}
+
+func TestVulnerablePluginScanningConfig(t *testing.T) {
+	if !(&Config{}).VulnerablePluginScanningEnabled() {
+		t.Fatal("omitted vulnerable_plugin_scanning must default to enabled")
+	}
+	cfg, err := LoadBytes([]byte("detection:\n  vulnerable_plugin_scanning: false\n  vulnerable_plugin_allow:\n    - Ultimate-Member@2.4.1\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.VulnerablePluginScanningEnabled() {
+		t.Fatal("explicit false did not disable vulnerable-plugin scanning")
+	}
+	if want := []string{"Ultimate-Member@2.4.1"}; !reflect.DeepEqual(cfg.Detection.VulnerablePluginAllow, want) {
+		t.Fatalf("vulnerable_plugin_allow = %v, want %v", cfg.Detection.VulnerablePluginAllow, want)
 	}
 }
 

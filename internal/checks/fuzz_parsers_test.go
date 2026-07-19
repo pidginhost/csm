@@ -31,6 +31,25 @@ func FuzzIsSampleSQLPath(f *testing.F) {
 	})
 }
 
+// Plugin versions come from attacker-influenceable plugin metadata. Invalid
+// and oversized components must stay non-matching without panicking.
+func FuzzVersionLess(f *testing.F) {
+	seeds := []string{"", "1", "1.2.3", "2.6.7", "9999999999999999999.0", "a.b.c", "1.2.3-beta", "..", "1.-1"}
+	for _, a := range seeds {
+		for _, b := range seeds {
+			f.Add(a, b)
+		}
+	}
+	f.Fuzz(func(t *testing.T, a, b string) {
+		lt := versionLess(a, b)
+		gt := versionLess(b, a)
+		if lt && gt {
+			t.Fatalf("versionLess is inconsistent for %q,%q (both directions true)", a, b)
+		}
+		_ = matchPluginVuln(a, pluginVuln{FixedIn: b, MinAffected: a})
+	})
+}
+
 func FuzzExtractIPAfterKeyword(f *testing.F) {
 	// Seeds cover the shapes the function sees in real logs.
 	f.Add("Accepted publickey for root from 203.0.113.5 port 22", "from")

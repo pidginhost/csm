@@ -349,6 +349,11 @@ auto_response:
 
 # --- Detection ---
 detection:
+  # Known-vulnerable WordPress plugin matching is default-on and alert-only.
+  # Omit for the default, or set false to disable it. Allow entries suppress
+  # only the exact reviewed slug and installed version.
+  # vulnerable_plugin_scanning: true
+  vulnerable_plugin_allow: []           # entries: <slug>@<version>, case-insensitive
   # db_object_scanning is tri-state: omit for the default (on),
   # `false` to explicitly disable. When off, the MySQL persistence
   # scanner emits no findings; the manual `csm db-clean --drop-object`
