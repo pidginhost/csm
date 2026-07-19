@@ -1470,10 +1470,26 @@ func (d *Daemon) processScanFindings(cfg *config.Config, findings []alert.Findin
 	d.enqueueScanAlerts(findings, label)
 }
 
+// scanAlertEnqueueTimeout bounds how long a scan finding waits for room on the
+// shared alert channel before it is dropped as an absolute last resort. The
+// dispatcher stops draining only while it runs a batch, and auto-response can
+// hold that for tens of seconds; a scan burst that fills the buffer in that
+// window must apply backpressure rather than silently drop security findings
+// the way an earlier non-blocking send did -- a false-positive flood once
+// dropped a real rogue-admin finding. Set well above the dispatcher's
+// worst-case batch time so a drop here means the dispatcher is genuinely wedged.
+const scanAlertEnqueueTimeout = 90 * time.Second
+
 // enqueueScanAlerts forwards a scan's findings to the alert dispatcher.
 // Warning-severity perf findings stay off the channel so they never page an
 // operator; that is also why the WP-Cron auto-fix runs against the scan
 // findings directly rather than in dispatchBatch, which only sees the channel.
+//
+// Unlike the real-time kernel monitors, which must never block a BPF or
+// fanotify handler, the scan path is not latency-sensitive, so it applies
+// backpressure when the buffer is full instead of dropping. A finding burst can
+// otherwise fill the buffer while the dispatcher is mid-batch and evict
+// findings from this or any other producer sharing the channel.
 func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
 	for _, f := range findings {
 		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
@@ -1481,9 +1497,19 @@ func (d *Daemon) enqueueScanAlerts(findings []alert.Finding, label string) {
 		}
 		select {
 		case d.alertCh <- f:
+			continue
 		default:
+		}
+		timer := time.NewTimer(scanAlertEnqueueTimeout)
+		select {
+		case d.alertCh <- f:
+			timer.Stop()
+		case <-d.stopCh:
+			timer.Stop()
+			return
+		case <-timer.C:
 			atomic.AddInt64(&d.droppedAlerts, 1)
-			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping %s finding: %s\n", ts(), label, f.Check)
+			fmt.Fprintf(os.Stderr, "[%s] alert channel jammed for %s, dropping %s finding: %s\n", ts(), scanAlertEnqueueTimeout, label, f.Check)
 		}
 	}
 }
