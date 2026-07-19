@@ -321,6 +321,12 @@ auto_response:
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4
   permblock_interval: "24h"
+  # virtual_patch_exposed_files: write .htaccess "Require all denied" rules for
+  # confirmed web-exposed files (DB dumps, backups, config/source leaks).
+  #   off (default): detect and alert only.
+  #   manual: apply only when the operator runs `csm virtual-patch --apply`.
+  #   auto: apply confirmed findings except sample SQL (gated by dry_run below).
+  virtual_patch_exposed_files: "off"
   # mail_auth_recovery: optional self-heal for the mail auth backend (cPanel
   # cpdoveauthd). CSM always probes the socket, alerts on an outage, and pauses
   # mail/SMTP brute-force auto-block while it is down; only the restart is
@@ -331,7 +337,7 @@ auto_response:
     down_grace: "10m"         # continuously-down duration before restarting
     max_restarts_per_hour: 3  # hourly cap on restart attempts
     restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
-  dry_run: true               # safe default; logs intended IP blocks only
+  dry_run: true               # safe default; previews IP blocks and virtual patches
   verdict_callback:
     enabled: false
     url: ""

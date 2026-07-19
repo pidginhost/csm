@@ -149,6 +149,8 @@ func main() {
 		runPAM()
 	case "report":
 		runReport()
+	case "virtual-patch":
+		runVirtualPatch()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -199,6 +201,7 @@ Commands:
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   pam ...       Install or remove the pam_csm.so PAM hook (csm pam --help)
   report enroll Generate an abuse-reporting node key pair
+  virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
   version       Version info + build hash
 
 Options:

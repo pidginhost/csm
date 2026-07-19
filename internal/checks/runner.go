@@ -861,6 +861,15 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		observeAutoResponse("htaccess_clean", len(htaccessActions))
 		findings = append(findings, htaccessActions...)
 
+		vpatchActions := AutoVirtualPatchExposedFiles(cfg, findings)
+		for i := range vpatchActions {
+			if vpatchActions[i].Timestamp.IsZero() {
+				vpatchActions[i].Timestamp = now
+			}
+		}
+		observeAutoResponse("virtual_patch_exposed", len(vpatchActions))
+		findings = append(findings, vpatchActions...)
+
 		for i := range blockActions {
 			if blockActions[i].Timestamp.IsZero() {
 				blockActions[i].Timestamp = now

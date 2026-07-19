@@ -38,6 +38,11 @@ auto_response:
   # hard-blocks without offering a challenge.
   http_scanner_action: "challenge"
 
+  # Deny HTTP access to confirmed exposed files with reversible .htaccess
+  # rules. off: alert only; manual: `csm virtual-patch --apply`; auto:
+  # apply confirmed findings except warning-only sample SQL when dry_run is false.
+  virtual_patch_exposed_files: "off"
+
   # SAFETY DEFAULT: dry_run defaults to TRUE when this key is absent.
   # In dry-run, BlockIP records the intended block to bbolt but does
   # NOT touch nftables. Manual operator commands (`csm firewall ...`)
@@ -72,7 +77,7 @@ auto_response:
 
 `auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
 
-This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths, plus callers that explicitly consult the same safety switch. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
+This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths plus web-exposed-file virtual patches. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
 
 IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns both live nftables mutations and dry-run block records; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
 

@@ -319,6 +319,7 @@ auto_response:
   permblock_interval: "24h"             # window for counting temp blocks
   clean_database: false                 # auto-drop confirmed malicious DB objects after backup
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
+  virtual_patch_exposed_files: "off"    # off, manual CLI apply, or dry-run-gated auto apply except sample SQL
   disable_enforce_af_alg: false         # suspend periodic AF_ALG hardening re-assertion
   copy_fail_kill_process: false         # kill processes caught opening AF_ALG sockets via the live listener
   mail_auth_recovery:
@@ -326,7 +327,7 @@ auto_response:
     down_grace: "10m"                   # continuously-down duration before restart
     max_restarts_per_hour: 3            # hourly restart-attempt cap
     restart_command: "/usr/local/cpanel/scripts/restartsrv_dovecot"
-  dry_run: true                         # safe default; logs intended IP blocks without mutating nftables
+  dry_run: true                         # safe default; previews IP blocks and web-exposed-file virtual patches
   verdict_callback:
     enabled: false                      # call panel before each auto-block
     url: ""                             # POST target for verdict requests

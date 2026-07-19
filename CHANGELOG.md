@@ -11,9 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CSM now scans web document roots for sensitive files a visitor could download -- database dumps, full-site backup archives, configuration and PHP source-code backups, and `phpinfo.php` diagnostics -- and reports each one only after confirming the web server actually serves it, so files the server already blocks and the sample templates WordPress ships are never flagged.
 - Plain SQL files with sample/schema-specific names under framework/vendor scaffolding (`examples/`, `docs/`, `vendor/`, unpacked `*-main/` or `*-master/` project directories) are reported as a lower-severity `web_exposed_sample_sql` warning. Archived, renamed, customer-named, and other ambiguous dumps stay Critical.
+- CSM can now optionally block confirmed web-exposed files with reversible `.htaccess` deny rules while leaving application files in place. Operators can preview or apply them manually, or enable dry-run-gated automatic enforcement; warning-only sample SQL stays manual.
 - Deep scans now detect the self-healing PHP webshell family seen reinfecting WordPress sites: fake-plugin loaders that probe every command-execution backend, payloads that reset open_basedir to escape their sandbox, and the mu-plugin droppers that restore a webshell from the uploads directory back into the plugins directory. Previously the loaders and droppers went undetected while the payload persisted.
 
 ### Changed
+
+- Virtual-patch writes now preserve access-file ownership and mode, abort on concurrent edits or ownership failures, and restore both existing and CSM-created files without overwriting later customer changes. Whole-directory denial is limited to recognized backup storage paths.
 
 - Threat-intel reputation sightings are now graded by what the IP was doing: passive web sightings drop to High so ambient scanner noise no longer drowns compromise-class Criticals, while auth-surface contact (SSH, mail credential attacks) stays Critical. Auto-blocking behaviour is unchanged.
 

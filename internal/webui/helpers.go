@@ -398,13 +398,15 @@ func resolveQuarantineEntry(id string) (quarantineEntryRef, error) {
 // quarantineMeta represents the JSON sidecar metadata for a quarantined file.
 // Must match checks.QuarantineMeta on-disk format.
 type quarantineMeta struct {
-	OriginalPath string    `json:"original_path"`
-	Owner        int       `json:"owner_uid"`
-	Group        int       `json:"group_gid"`
-	Mode         string    `json:"mode"`
-	Size         int64     `json:"size"`
-	QuarantineAt time.Time `json:"quarantined_at"`
-	Reason       string    `json:"reason"`
+	OriginalPath          string    `json:"original_path"`
+	Owner                 int       `json:"owner_uid"`
+	Group                 int       `json:"group_gid"`
+	Mode                  string    `json:"mode"`
+	Size                  int64     `json:"size"`
+	QuarantineAt          time.Time `json:"quarantined_at"`
+	Reason                string    `json:"reason"`
+	RestoreAction         string    `json:"restore_action,omitempty"`
+	ExpectedCurrentSHA256 string    `json:"expected_current_sha256,omitempty"`
 }
 
 // readQuarantineMeta reads and parses a quarantine .meta JSON file.

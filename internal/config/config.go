@@ -617,14 +617,21 @@ type Config struct {
 		NetBlockThreshold int    `yaml:"netblock_threshold"` // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
 		// MaxBlocksPerHour caps per-IP auto-blocks per wall-clock hour.
 		// 0 uses DefaultMaxBlocksPerHour.
-		MaxBlocksPerHour    int    `yaml:"max_blocks_per_hour"`
-		PermBlock           bool   `yaml:"permblock"`              // auto-promote to permanent after N temp blocks
-		PermBlockCount      int    `yaml:"permblock_count"`        // temp blocks before permanent (default 4)
-		PermBlockInterval   string `yaml:"permblock_interval"`     // window for counting temp blocks (default "24h")
-		CleanDatabase       bool   `yaml:"clean_database"`         // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
-		CleanHtaccess       bool   `yaml:"clean_htaccess"`         // auto-clean .htaccess directives flagged by the hardened detectors (default false)
-		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
-		CopyFailKillProcess bool   `yaml:"copy_fail_kill_process"` // SIGKILL processes caught opening AF_ALG sockets via the live listener (default false; alert-only)
+		MaxBlocksPerHour  int    `yaml:"max_blocks_per_hour"`
+		PermBlock         bool   `yaml:"permblock"`          // auto-promote to permanent after N temp blocks
+		PermBlockCount    int    `yaml:"permblock_count"`    // temp blocks before permanent (default 4)
+		PermBlockInterval string `yaml:"permblock_interval"` // window for counting temp blocks (default "24h")
+		CleanDatabase     bool   `yaml:"clean_database"`     // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
+		CleanHtaccess     bool   `yaml:"clean_htaccess"`     // auto-clean .htaccess directives flagged by the hardened detectors (default false)
+		// VirtualPatchExposedFiles controls automatic .htaccess "Require all
+		// denied" rules for confirmed web_exposed_* findings. "off" (default,
+		// also the value for any unrecognised setting): detection only. "manual":
+		// deny rules are written only when the operator runs `csm virtual-patch`.
+		// "auto": deny rules are written on every scan except for warning-only
+		// sample SQL, gated by DryRun. Use VirtualPatchMode() for the safe default.
+		VirtualPatchExposedFiles string `yaml:"virtual_patch_exposed_files"`
+		DisableEnforceAFAlg      bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
+		CopyFailKillProcess      bool   `yaml:"copy_fail_kill_process"` // SIGKILL processes caught opening AF_ALG sockets via the live listener (default false; alert-only)
 
 		// MailAuthRecovery optionally self-heals the mail auth backend
 		// (cPanel's cpdoveauthd). CSM always probes the socket, alerts on an
@@ -1344,6 +1351,27 @@ func (cfg *Config) PHPRelayDryRunEnabled() bool {
 // explicit false is required to enable live nftables blocking.
 func (cfg *Config) AutoResponseDryRunEnabled() bool {
 	return cfg.AutoResponse.DryRun == nil || *cfg.AutoResponse.DryRun
+}
+
+// Virtual-patch modes for auto_response.virtual_patch_exposed_files.
+const (
+	VirtualPatchOff    = "off"
+	VirtualPatchManual = "manual"
+	VirtualPatchAuto   = "auto"
+)
+
+// VirtualPatchMode resolves auto_response.virtual_patch_exposed_files to one of
+// off/manual/auto. Any unrecognised or empty value is treated as off so a typo
+// never silently enables automatic file blocking.
+func (cfg *Config) VirtualPatchMode() string {
+	switch strings.ToLower(strings.TrimSpace(cfg.AutoResponse.VirtualPatchExposedFiles)) {
+	case VirtualPatchManual:
+		return VirtualPatchManual
+	case VirtualPatchAuto:
+		return VirtualPatchAuto
+	default:
+		return VirtualPatchOff
+	}
 }
 
 // DirectSMTPEgressDryRunEnabled reports the YAML-level dry-run state

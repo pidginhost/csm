@@ -19,13 +19,15 @@ var quarantineDir = "/opt/csm/quarantine"
 
 // QuarantineMeta stores original file metadata alongside quarantined files.
 type QuarantineMeta struct {
-	OriginalPath string    `json:"original_path"`
-	Owner        int       `json:"owner_uid"`
-	Group        int       `json:"group_gid"`
-	Mode         string    `json:"mode"`
-	Size         int64     `json:"size"`
-	QuarantineAt time.Time `json:"quarantined_at"`
-	Reason       string    `json:"reason"`
+	OriginalPath          string    `json:"original_path"`
+	Owner                 int       `json:"owner_uid"`
+	Group                 int       `json:"group_gid"`
+	Mode                  string    `json:"mode"`
+	Size                  int64     `json:"size"`
+	QuarantineAt          time.Time `json:"quarantined_at"`
+	Reason                string    `json:"reason"`
+	RestoreAction         string    `json:"restore_action,omitempty"`
+	ExpectedCurrentSHA256 string    `json:"expected_current_sha256,omitempty"`
 }
 
 // AutoKillProcesses kills processes that match critical findings.

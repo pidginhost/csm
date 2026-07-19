@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -1392,12 +1393,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var meta struct {
-		OriginalPath string `json:"original_path"`
-		Owner        int    `json:"owner_uid"`
-		Group        int    `json:"group_gid"`
-		Mode         string `json:"mode"`
-	}
+	var meta checks.QuarantineMeta
 	if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr != nil {
 		writeJSONError(w, "Invalid metadata", http.StatusInternalServerError)
 		return
@@ -1406,16 +1402,6 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	restorePath, err := validateQuarantineRestorePath(meta.OriginalPath)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Ensure parent directory exists
-	parentDir := filepath.Dir(restorePath)
-	// #nosec G301 -- Restoring a quarantined file into a user's public_html
-	// (validated by validateQuarantineRestorePath). The webserver must be
-	// able to traverse intermediate directories to serve the file.
-	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
 		return
 	}
 
@@ -1434,6 +1420,48 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	restoredMode := os.FileMode(0644)
 	if meta.Mode != "" && len(meta.Mode) >= 10 {
 		restoredMode = parseModeString(meta.Mode)
+	}
+
+	if meta.RestoreAction != "" {
+		if filepath.Clean(filepath.Dir(entry.ItemPath)) != filepath.Join(quarantineDir, "pre_clean") {
+			writeJSONError(w, "Virtual-patch backups must come from pre_clean", http.StatusBadRequest)
+			return
+		}
+		if quarInfo.IsDir() {
+			writeJSONError(w, "Invalid virtual-patch backup", http.StatusInternalServerError)
+			return
+		}
+		if err := checks.RestoreVirtualPatchBackup(entry.ItemPath, restorePath, meta); err != nil {
+			if errors.Is(err, checks.ErrVirtualPatchRestoreConflict) {
+				writeJSONError(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSONError(w, fmt.Sprintf("Cannot restore virtual-patch backup: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.ItemPath), err)
+		}
+		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.MetaPath), err)
+		}
+		s.auditLog(r, "restore", restorePath, "virtual-patch restore")
+		writeJSON(w, map[string]string{
+			"status":  "restored",
+			"path":    restorePath,
+			"warning": "Virtual-patch reverted. Re-scan recommended.",
+		})
+		return
+	}
+
+	// Ensure parent directory exists
+	parentDir := filepath.Dir(restorePath)
+	// #nosec G301 -- Restoring a quarantined file into a user's public_html
+	// (validated by validateQuarantineRestorePath). The webserver must be
+	// able to traverse intermediate directories to serve the file.
+	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
+		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
+		return
 	}
 
 	if quarInfo.IsDir() {

@@ -179,6 +179,10 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "auto_response.block_expiry", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.BlockExpiry)})
 		}
 	}
+	if v := strings.ToLower(strings.TrimSpace(cfg.AutoResponse.VirtualPatchExposedFiles)); v != "" &&
+		v != VirtualPatchOff && v != VirtualPatchManual && v != VirtualPatchAuto {
+		results = append(results, ValidationResult{"error", "auto_response.virtual_patch_exposed_files", fmt.Sprintf("must be off, manual, or auto (got %q)", cfg.AutoResponse.VirtualPatchExposedFiles)})
+	}
 	if cfg.Signatures.UpdateInterval != "" {
 		if _, err := time.ParseDuration(cfg.Signatures.UpdateInterval); err != nil {
 			results = append(results, ValidationResult{"error", "signatures.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.Signatures.UpdateInterval)})

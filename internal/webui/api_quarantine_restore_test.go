@@ -1,7 +1,9 @@
 package webui
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -182,6 +185,218 @@ func TestApiQuarantineRestoreRestoresRegularFile(t *testing.T) {
 	// Quarantined item should be gone.
 	if _, err := os.Stat(filepath.Join(qdir, id)); !os.IsNotExist(err) {
 		t.Errorf("quarantined file should be removed, stat err=%v", err)
+	}
+}
+
+func restoreTestSHA256(content []byte) string {
+	sum := sha256.Sum256(content)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func TestApiQuarantineRestoreRemovesCSMCreatedHtaccess(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	preClean := filepath.Join(qdir, "pre_clean")
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(preClean, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(restoreRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "new-htaccess"
+	itemPath := filepath.Join(preClean, id)
+	if err := os.WriteFile(itemPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(restoreRoot, ".htaccess")
+	patched := []byte("# BEGIN CSM exposed-file virtual-patch .env\n<Files \".env\">\nRequire all denied\n</Files>\n# END CSM exposed-file virtual-patch .env\n")
+	if err := os.WriteFile(live, patched, 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta := checks.QuarantineMeta{
+		OriginalPath:          live,
+		Owner:                 os.Getuid(),
+		Group:                 os.Getgid(),
+		Mode:                  "-rw-r--r--",
+		RestoreAction:         checks.QuarantineRestoreRemoveIfUnchanged,
+		ExpectedCurrentSHA256: restoreTestSHA256(patched),
+	}
+	metaJSON, _ := json.Marshal(meta)
+	if err := os.WriteFile(itemPath+".meta", metaJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": "pre_clean:" + id}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := os.Lstat(live); !os.IsNotExist(err) {
+		t.Fatalf("CSM-created .htaccess was not removed: %v", err)
+	}
+}
+
+func TestApiQuarantineRestorePreservesEditToCSMCreatedHtaccess(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	preClean := filepath.Join(qdir, "pre_clean")
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(preClean, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(restoreRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "edited-new-htaccess"
+	itemPath := filepath.Join(preClean, id)
+	if err := os.WriteFile(itemPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(restoreRoot, ".htaccess")
+	patched := []byte("Require all denied\n")
+	customerEdit := append(append([]byte{}, patched...), []byte("# customer rule\n")...)
+	if err := os.WriteFile(live, customerEdit, 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta := checks.QuarantineMeta{
+		OriginalPath:          live,
+		Owner:                 os.Getuid(),
+		Group:                 os.Getgid(),
+		Mode:                  "-rw-r--r--",
+		RestoreAction:         checks.QuarantineRestoreRemoveIfUnchanged,
+		ExpectedCurrentSHA256: restoreTestSHA256(patched),
+	}
+	metaJSON, _ := json.Marshal(meta)
+	if err := os.WriteFile(itemPath+".meta", metaJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": "pre_clean:" + id}))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got, err := os.ReadFile(live); err != nil || string(got) != string(customerEdit) {
+		t.Fatalf("customer edit changed during failed removal: %q, %v", got, err)
+	}
+	if _, err := os.Stat(itemPath); err != nil {
+		t.Fatalf("rollback entry removed after conflict: %v", err)
+	}
+}
+
+func TestApiQuarantineRestoreReplacesUnchangedVirtualPatch(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	preClean := filepath.Join(qdir, "pre_clean")
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(preClean, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(restoreRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "existing-htaccess"
+	itemPath := filepath.Join(preClean, id)
+	original := []byte("Options -Indexes\n")
+	patched := append(append([]byte{}, original...), []byte("# BEGIN CSM exposed-file virtual-patch dump.sql\n<Files \"dump.sql\">\nRequire all denied\n</Files>\n# END CSM exposed-file virtual-patch dump.sql\n")...)
+	if err := os.WriteFile(itemPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(restoreRoot, ".htaccess")
+	if err := os.WriteFile(live, patched, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(live, 0600); err != nil {
+		t.Fatal(err)
+	}
+	meta := checks.QuarantineMeta{
+		OriginalPath:          live,
+		Owner:                 os.Getuid(),
+		Group:                 os.Getgid(),
+		Mode:                  "-rw-------",
+		RestoreAction:         checks.QuarantineRestoreReplaceIfUnchanged,
+		ExpectedCurrentSHA256: restoreTestSHA256(patched),
+	}
+	metaJSON, _ := json.Marshal(meta)
+	if err := os.WriteFile(itemPath+".meta", metaJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": "pre_clean:" + id}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got, err := os.ReadFile(live); err != nil || string(got) != string(original) {
+		t.Fatalf("restored .htaccess = %q, %v", got, err)
+	}
+	if info, err := os.Stat(live); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("restored mode = %v, %v", info, err)
+	}
+}
+
+func TestApiQuarantineRestorePreservesPostPatchCustomerEdit(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	preClean := filepath.Join(qdir, "pre_clean")
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(preClean, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(restoreRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "changed-htaccess"
+	itemPath := filepath.Join(preClean, id)
+	if err := os.WriteFile(itemPath, []byte("original\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(restoreRoot, ".htaccess")
+	patched := []byte("patched\n")
+	customerEdit := []byte("patched\n# customer update\n")
+	if err := os.WriteFile(live, customerEdit, 0644); err != nil {
+		t.Fatal(err)
+	}
+	meta := checks.QuarantineMeta{
+		OriginalPath:          live,
+		Owner:                 os.Getuid(),
+		Group:                 os.Getgid(),
+		Mode:                  "-rw-r--r--",
+		RestoreAction:         checks.QuarantineRestoreReplaceIfUnchanged,
+		ExpectedCurrentSHA256: restoreTestSHA256(patched),
+	}
+	metaJSON, _ := json.Marshal(meta)
+	if err := os.WriteFile(itemPath+".meta", metaJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": "pre_clean:" + id}))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got, err := os.ReadFile(live); err != nil || string(got) != string(customerEdit) {
+		t.Fatalf("customer edit changed during failed restore: %q, %v", got, err)
+	}
+	if _, err := os.Stat(itemPath); err != nil {
+		t.Fatalf("backup removed after restore conflict: %v", err)
 	}
 }
 
