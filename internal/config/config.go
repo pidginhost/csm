@@ -31,6 +31,13 @@ type WebUIToken struct {
 const DefaultMaxBlocksPerHour = 50
 
 const (
+	// DefaultExposedFileScanDepth is the number of directory levels below a
+	// document root inspected by the web-exposed-file detector.
+	DefaultExposedFileScanDepth = 2
+	// MaxExposedFileScanDepth prevents a configuration typo from turning the
+	// hourly detector into an effectively unbounded filesystem traversal.
+	MaxExposedFileScanDepth = 10
+
 	// DefaultHTTPScannerErrorPct is the fallback percentage gate for the
 	// URL scanner-profile detector when the operator leaves it unset.
 	DefaultHTTPScannerErrorPct = 90
@@ -197,8 +204,12 @@ type Config struct {
 		WPCoreCheckIntervalMin    int `yaml:"wp_core_check_interval_min"`
 		WebshellScanIntervalMin   int `yaml:"webshell_scan_interval_min"`
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
-		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
-		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
+		// ExposedFileScanDepth bounds how many directory levels below each
+		// docroot the web-exposed-file detector descends (default 2, maximum
+		// 10). Dumps and backups almost always sit at or just under the web root.
+		ExposedFileScanDepth  int `yaml:"exposed_file_scan_depth"`
+		MultiIPLoginThreshold int `yaml:"multi_ip_login_threshold"`
+		MultiIPLoginWindowMin int `yaml:"multi_ip_login_window_min"`
 		// CredStuffingDistinctAccounts is the number of distinct accounts a
 		// single source IP must fail against inside the multi_ip_login window
 		// to raise a credential_stuffing finding. This is the breadth signal
@@ -1521,6 +1532,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.FilesystemScanIntervalMin == 0 {
 		cfg.Thresholds.FilesystemScanIntervalMin = 30
+	}
+	if cfg.Thresholds.ExposedFileScanDepth == 0 {
+		cfg.Thresholds.ExposedFileScanDepth = DefaultExposedFileScanDepth
 	}
 	if cfg.Thresholds.PluginCheckIntervalMin == 0 {
 		cfg.Thresholds.PluginCheckIntervalMin = 1440

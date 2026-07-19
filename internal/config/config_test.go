@@ -38,6 +38,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DeepScanIntervalMin != 60 {
 		t.Errorf("deep_scan_interval = %d, want 60", cfg.Thresholds.DeepScanIntervalMin)
 	}
+	if cfg.Thresholds.ExposedFileScanDepth != 2 {
+		t.Errorf("exposed_file_scan_depth = %d, want 2", cfg.Thresholds.ExposedFileScanDepth)
+	}
 	if cfg.Thresholds.DomlogMaxFiles != 500 {
 		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
 	}
@@ -115,6 +118,19 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Challenge.ListenPort != 8439 {
 		t.Errorf("challenge.listen_port = %d, want 8439", cfg.Challenge.ListenPort)
+	}
+}
+
+func TestLoadPreservesInvalidExposedFileScanDepthForValidation(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: test\nthresholds:\n  exposed_file_scan_depth: -1\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes failed: %v", err)
+	}
+	if cfg.Thresholds.ExposedFileScanDepth != -1 {
+		t.Fatalf("exposed_file_scan_depth = %d, want invalid value preserved", cfg.Thresholds.ExposedFileScanDepth)
+	}
+	if !hasResult(Validate(cfg), "error", "thresholds.exposed_file_scan_depth") {
+		t.Fatal("negative exposed_file_scan_depth must fail validation")
 	}
 }
 
