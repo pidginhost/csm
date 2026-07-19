@@ -18,7 +18,7 @@ type fakeProbe struct {
 	seen   map[string]bool
 }
 
-func (f *fakeProbe) probe(_ context.Context, _ string, urlPath string) probeResult {
+func (f *fakeProbe) probe(_ context.Context, _ string, _ string, urlPath string) probeResult {
 	if f.seen == nil {
 		f.seen = map[string]bool{}
 	}

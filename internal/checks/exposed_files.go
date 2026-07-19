@@ -125,7 +125,7 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			if rel == "" {
 				continue
 			}
-			pr := webProber.probe(ctx, vh.domain, rel)
+			pr := webProber.probe(ctx, vh.domain, probeHost(vh), rel)
 			confirmed := confirmExposure(class, pr)
 			if !confirmed && (!pr.reachable || pr.partial) {
 				// A transport failure cannot prove that a previous exposure was
@@ -270,7 +270,7 @@ func exposureLabel(class exposedClass) string {
 // server. Tests inject a fake; production hits 127.0.0.1 with the vhost's
 // domain as SNI/Host and reads only the status line and Content-Type.
 type webProbe interface {
-	probe(ctx context.Context, domain, urlPath string) probeResult
+	probe(ctx context.Context, domain, host, urlPath string) probeResult
 }
 
 var webProber webProbe = realWebProbe{}
@@ -280,11 +280,11 @@ func SetWebProbe(p webProbe) { webProber = p }
 
 type realWebProbe struct{}
 
-func (realWebProbe) probe(ctx context.Context, domain, urlPath string) probeResult {
+func (realWebProbe) probe(ctx context.Context, domain, host, urlPath string) probeResult {
 	results := make([]probeResult, 0, 2)
 	partial := false
 	for _, scheme := range []string{"https", "http"} {
-		if pr, ok := doLocalProbe(ctx, scheme, domain, urlPath); ok {
+		if pr, ok := doLocalProbe(ctx, scheme, domain, host, urlPath); ok {
 			results = append(results, pr)
 			// A successful non-HTML response is sufficient for every raw
 			// leak class; avoid an unnecessary second request.
@@ -334,9 +334,12 @@ func bestProbeResult(results []probeResult) probeResult {
 }
 
 // doLocalProbe issues one HEAD (falling back to a ranged GET when HEAD is
-// disallowed) to the loopback web server, presenting domain as the vhost. It
-// never reads the response body.
-func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeResult, bool) {
+// disallowed) to the vhost's own serving IP, presenting domain as the vhost. It
+// never reads the response body. The dial is pinned to the host's configured
+// serving address (never DNS-resolved) so the request reaches this origin, not
+// a CDN, and stays on-box. Loopback is not used: LiteSpeed answers 403 to
+// loopback-originated requests even for files it serves on the public IP.
+func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (probeResult, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
 	defer cancel()
 	transport := &http.Transport{
@@ -347,11 +350,11 @@ func doLocalProbe(ctx context.Context, scheme, domain, urlPath string) (probeRes
 				return nil, err
 			}
 			d := &net.Dialer{Timeout: exposureProbeConnTimeout}
-			return d.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", port))
+			return d.DialContext(ctx, network, net.JoinHostPort(host, port))
 		},
-		// #nosec G402 -- probing our own loopback vhost for reachability only;
-		// no trust decision rides on the certificate, and SNI must match the
-		// requested domain to select the right vhost.
+		// #nosec G402 -- reachability probe to this host's own serving IP (never
+		// an external endpoint); no trust decision rides on the certificate, and
+		// SNI must match the requested domain to select the right vhost.
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: domain},
 	}
 	// A fresh transport per probe is needed because SNI (ServerName) is
@@ -449,6 +452,11 @@ type vhost struct {
 	user    string
 	typ     string
 	docroot string
+	// ip is the vhost's serving address (from the ip:443/ip:80 columns). The
+	// reachability probe dials this rather than 127.0.0.1: LiteSpeed returns
+	// 403 to loopback-originated requests even for files it serves (HTTP 200)
+	// to a real request on the public IP, so a loopback probe confirms nothing.
+	ip string
 }
 
 // parseUserdataDomains parses the /etc/userdatadomains map. Each line is
@@ -489,9 +497,40 @@ func parseUserdataDomainsChecked(content string) ([]vhost, bool) {
 			user:    user,
 			typ:     strings.TrimSpace(fields[2]),
 			docroot: docroot,
+			ip:      parseServingIP(fields),
 		})
 	}
 	return out, complete
+}
+
+// parseServingIP extracts the vhost's serving address from the ip:443 column
+// (preferred) or the ip:80 column. Empty when neither is a parseable host:port.
+func parseServingIP(fields []string) string {
+	for _, i := range []int{6, 5} { // 443 binding first, then 80
+		if i >= len(fields) {
+			continue
+		}
+		hp := strings.TrimSpace(fields[i])
+		if hp == "" {
+			continue
+		}
+		if host, _, err := net.SplitHostPort(hp); err == nil && host != "" {
+			return host
+		}
+		if idx := strings.LastIndexByte(hp, ':'); idx > 0 {
+			return hp[:idx]
+		}
+	}
+	return ""
+}
+
+// probeHost is the address the reachability probe dials for a vhost: its
+// serving IP when known, otherwise loopback.
+func probeHost(vh vhost) string {
+	if vh.ip != "" {
+		return vh.ip
+	}
+	return "127.0.0.1"
 }
 
 // validProbeDomain rejects URL authority syntax. Without this guard a corrupt

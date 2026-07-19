@@ -26,9 +26,9 @@ malformed-no-fields.example.com: onlyuser
 		t.Fatalf("expected 3 vhosts, got %d: %+v", len(got), got)
 	}
 	want := []vhost{
-		{domain: "foodture.example.com", user: "alice", typ: "sub", docroot: "/home/alice/foodture.example.com"},
-		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: "/home/bob/public_html"},
-		{domain: "example.org", user: "carol", typ: "main", docroot: "/home/carol/public_html"},
+		{domain: "foodture.example.com", user: "alice", typ: "sub", docroot: "/home/alice/foodture.example.com", ip: "192.0.2.10"},
+		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: "/home/bob/public_html", ip: "192.0.2.11"},
+		{domain: "example.org", user: "carol", typ: "main", docroot: "/home/carol/public_html", ip: "192.0.2.12"},
 	}
 	for i, w := range want {
 		if got[i] != w {
