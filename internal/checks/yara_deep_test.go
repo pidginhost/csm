@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 type deepYARATestBackend struct {
@@ -73,6 +75,57 @@ func TestCheckYARADeepReportsIncompleteScan(t *testing.T) {
 	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
 	if len(findings) != 1 || findings[0].Check != "yara_scan_incomplete" {
 		t.Fatalf("findings = %+v, want one yara_scan_incomplete finding", findings)
+	}
+}
+
+// oversizeInlineBackend rejects inline byte scans the way the real IPC client
+// does for a payload past the frame ceiling, and matches only when the file is
+// scanned by path. It proves the deep scan falls back to a path scan instead of
+// dropping a large file into the coverage gap.
+type oversizeInlineBackend struct{ scanFileCalls int32 }
+
+func (b *oversizeInlineBackend) ScanFile(string, int) []yara.Match {
+	atomic.AddInt32(&b.scanFileCalls, 1)
+	return []yara.Match{{RuleName: "webshell_php_exec_ladder", Meta: map[string]string{"severity": "critical"}}}
+}
+func (b *oversizeInlineBackend) ScanBytes(data []byte) []yara.Match {
+	m, _ := b.ScanBytesChecked(data)
+	return m
+}
+func (b *oversizeInlineBackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	return nil, fmt.Errorf("%w (%d > %d bytes)", yaraipc.ErrPayloadTooLarge, 15000000, yaraipc.MaxScanBytes)
+}
+func (b *oversizeInlineBackend) RuleCount() int { return 1 }
+func (b *oversizeInlineBackend) Reload() error  { return nil }
+
+func TestCheckYARADeepScansOversizeInlineFileByPath(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "wp-content", "big.js")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("padded bundle content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := &oversizeInlineBackend{}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+	if atomic.LoadInt32(&backend.scanFileCalls) == 0 {
+		t.Fatal("oversize-inline file was not scanned by path")
+	}
+	var got *alert.Finding
+	for i := range findings {
+		if findings[i].Check == "yara_scan_incomplete" {
+			t.Fatalf("oversize file recorded as coverage gap instead of scanned: %+v", findings[i])
+		}
+		if findings[i].Check == "yara_match_scheduled" {
+			got = &findings[i]
+		}
+	}
+	if got == nil || got.FilePath != path {
+		t.Fatalf("findings = %+v, want yara_match_scheduled for %s", findings, path)
 	}
 }
 

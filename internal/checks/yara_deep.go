@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 var activeYARABackend = yara.Active
@@ -267,6 +269,16 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 				continue
 			}
 			matches, scanErr := yara.ScanBytesChecked(backend, data)
+			if errors.Is(scanErr, yaraipc.ErrPayloadTooLarge) {
+				// Within the deep-scan size budget but too large for one inline
+				// IPC frame once JSON base64 expands it. Scan by path instead of
+				// recording a coverage gap an attacker could hide a payload
+				// behind by padding it past the inline ceiling. The too-large
+				// error is a client-side pre-check, so the worker is connected
+				// and ScanFile reaches it.
+				// #nosec G115 -- maxBytes is FullScanMaxFileBytes (int) widened to int64; the round-trip back to int is lossless.
+				matches, scanErr = backend.ScanFile(path, int(maxBytes)), nil
+			}
 			if scanErr != nil {
 				incomplete++
 				if firstIncomplete == "" {
