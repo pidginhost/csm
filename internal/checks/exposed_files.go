@@ -143,6 +143,7 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			if rel == "" {
 				continue
 			}
+			class = demoteSampleSQL(class, rel)
 			pr := webProber.probe(ctx, vh.domain, host, rel)
 			confirmed := confirmExposure(class, pr)
 			if !confirmed && (!pr.reachable || pr.partial) {
@@ -275,6 +276,8 @@ func exposureLabel(class exposedClass) string {
 		return "source-code backup"
 	case classPHPInfo:
 		return "phpinfo diagnostic"
+	case classSampleSQL:
+		return "framework/sample SQL file"
 	default:
 		return "sensitive file"
 	}
@@ -433,6 +436,10 @@ const (
 	classBackupArchive
 	classSourceBackup
 	classPHPInfo
+	// classSampleSQL is a plain SQL file with a sample-specific name under a
+	// framework/vendor/downloaded-project directory. It is still served, but is
+	// a Warning rather than a Critical database dump.
+	classSampleSQL
 )
 
 // severity maps a class to its finding severity. Credential- and
@@ -462,6 +469,8 @@ func (c exposedClass) findingName() string {
 		return "web_exposed_source_backup"
 	case classPHPInfo:
 		return "web_exposed_phpinfo"
+	case classSampleSQL:
+		return "web_exposed_sample_sql"
 	default:
 		return ""
 	}
@@ -695,6 +704,79 @@ var backupTokens = []string{
 // into Critical false positives.
 var delimitedBackupTokens = []string{
 	"backup", "dump", "full",
+}
+
+// sampleSQLDirMarkers are directory-name segments that provide supporting
+// context for a sample-specific SQL file name. Directory context alone is not
+// enough to demote a dump because these paths are customer-controlled.
+var sampleSQLDirMarkers = map[string]bool{
+	"example": true, "examples": true,
+	"sample": true, "samples": true,
+	"demo": true, "demos": true,
+	"doc": true, "docs": true,
+	"fixture": true, "fixtures": true, "testdata": true,
+	"vendor": true, "node_modules": true, "bower_components": true,
+}
+
+var sampleSQLNameTokens = map[string]bool{
+	"demo": true, "example": true, "fixture": true, "install": true,
+	"migration": true, "sample": true, "schema": true, "seed": true,
+	"setup": true, "structure": true, "update": true, "upgrade": true,
+}
+
+// isSampleSQLPath reports whether rel (a leading-slash URL path) names a plain
+// SQL file with a sample/schema-specific name under framework scaffolding.
+// Both the file name and directory context must support that classification.
+// Archived, renamed, and customer-named dumps remain Critical even under a
+// generic docs/vendor path.
+func isSampleSQLPath(rel string) bool {
+	segs := strings.Split(rel, "/")
+	if len(segs) < 2 {
+		return false
+	}
+	name := strings.ToLower(segs[len(segs)-1])
+	if !strings.HasSuffix(name, ".sql") {
+		return false
+	}
+	stem := strings.TrimSuffix(name, ".sql")
+	sampleName := false
+	for _, token := range strings.FieldsFunc(stem, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || r == ' '
+	}) {
+		if sampleSQLNameTokens[token] {
+			sampleName = true
+			break
+		}
+	}
+
+	archiveProject := false
+	for _, seg := range segs[:len(segs)-1] { // dir segments only, skip file name
+		s := strings.ToLower(seg)
+		if s == "" {
+			continue
+		}
+		if sampleName && sampleSQLDirMarkers[s] {
+			return true
+		}
+		// Directories unpacked from a GitHub archive keep a "-master"/"-main"
+		// suffix, a strong signal the tree is a downloaded sample project.
+		if (strings.HasSuffix(s, "-master") && len(s) > len("-master")) ||
+			(strings.HasSuffix(s, "-main") && len(s) > len("-main")) {
+			archiveProject = true
+		}
+	}
+	return archiveProject && (sampleName || stem == "database")
+}
+
+// demoteSampleSQL lowers a database-dump candidate to classSampleSQL when its
+// path has specific sample-file and framework-scaffolding signals. Only
+// classDBDump is eligible; credential, archive, and source classes are never
+// demoted.
+func demoteSampleSQL(class exposedClass, rel string) exposedClass {
+	if class == classDBDump && isSampleSQLPath(rel) {
+		return classSampleSQL
+	}
+	return class
 }
 
 // classifyExposedFile classifies a base file name. It is deliberately

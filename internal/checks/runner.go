@@ -195,7 +195,7 @@ var runnerFindingNames = map[string][]string{
 	"group_writable_php":    {"group_writable_php"},
 	"health":                {"csm_health"},
 	"htaccess":              {"htaccess_handler_abuse", "htaccess_injection"},
-	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo"},
+	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
 	"ip_reputation":         {"ip_reputation"},
 	"kernel_modules":        {"kernel_module"},
 	"local_threat_score":    {"local_threat_score"},

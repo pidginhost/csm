@@ -14,6 +14,23 @@ import (
 // `go test -fuzz=FuzzFoo -fuzztime=30s ./internal/checks/` during
 // investigation.
 
+func FuzzIsSampleSQLPath(f *testing.F) {
+	f.Add("/ajaxCRUD/examples/example.sql")
+	f.Add("/crud-php-simple-master/database.sql")
+	f.Add("/examples/customer.sql")
+	f.Add("/testdata/rows.sql.gz")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, rel string) {
+		got := isSampleSQLPath(rel)
+		if got != isSampleSQLPath(rel) {
+			t.Fatalf("isSampleSQLPath(%q) is non-deterministic", rel)
+		}
+		if got && !strings.HasSuffix(strings.ToLower(rel), ".sql") {
+			t.Fatalf("isSampleSQLPath(%q) accepted a non-SQL path", rel)
+		}
+	})
+}
+
 func FuzzExtractIPAfterKeyword(f *testing.F) {
 	// Seeds cover the shapes the function sees in real logs.
 	f.Add("Accepted publickey for root from 203.0.113.5 port 22", "from")

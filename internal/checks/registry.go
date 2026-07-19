@@ -160,6 +160,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "web_exposed_config_leak", Category: CategoryWeb},
 	{Name: "web_exposed_db_dump", Category: CategoryWeb},
 	{Name: "web_exposed_phpinfo", Category: CategoryWeb},
+	{Name: "web_exposed_sample_sql", Category: CategoryWeb},
 	{Name: "web_exposed_source_backup", Category: CategoryWeb},
 	{Name: "htaccess_spam_redirect", Category: CategoryWeb},
 	{Name: "htaccess_user_agent_cloak", Category: CategoryWeb},

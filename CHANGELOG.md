@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - CSM now scans web document roots for sensitive files a visitor could download -- database dumps, full-site backup archives, configuration and PHP source-code backups, and `phpinfo.php` diagnostics -- and reports each one only after confirming the web server actually serves it, so files the server already blocks and the sample templates WordPress ships are never flagged.
+- Plain SQL files with sample/schema-specific names under framework/vendor scaffolding (`examples/`, `docs/`, `vendor/`, unpacked `*-main/` or `*-master/` project directories) are reported as a lower-severity `web_exposed_sample_sql` warning. Archived, renamed, customer-named, and other ambiguous dumps stay Critical.
 - Deep scans now detect the self-healing PHP webshell family seen reinfecting WordPress sites: fake-plugin loaders that probe every command-execution backend, payloads that reset open_basedir to escape their sandbox, and the mu-plugin droppers that restore a webshell from the uploads directory back into the plugins directory. Previously the loaders and droppers went undetected while the payload persisted.
 
 ### Changed
