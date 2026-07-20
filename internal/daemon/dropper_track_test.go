@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,20 +36,35 @@ func TestDropperDocrootFor(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("normalizes configured roots", func(t *testing.T) {
+		got := dropperDocrootFor(
+			"/home/carol/public_html/index.php",
+			[]string{"relative/public_html", "/home/carol/public_html/"},
+		)
+		if got != "/home/carol/public_html" {
+			t.Fatalf("dropperDocrootFor() = %q, want normalized absolute root", got)
+		}
+	})
 }
 
 func freshDropperCandidate(now time.Time) dropperCandidate {
-	return dropperCandidate{
+	c := dropperCandidate{
 		Path:       "/home/alice/public_html/wp-content/plugins/media-opt/media-opt.php",
 		Docroot:    "/home/alice/public_html",
 		Observed:   now,
 		Birth:      now.Add(-2 * time.Second),
 		BirthKnown: true,
+		Device:     41,
+		Inode:      7001,
 		Mode:       0o100644,
 		Size:       1621,
 		PID:        4242,
 		Head:       []byte("<?php /* fake plugin loader */ if (isset($_GET['k'])) { system($_POST['c']); }"),
 	}
+	c.Digest = sha256.Sum256(c.Head)
+	c.DigestKnown = true
+	return c
 }
 
 func TestShouldTrackDropper(t *testing.T) {
@@ -77,11 +95,22 @@ func TestShouldTrackDropper(t *testing.T) {
 		}, false},
 		{"atomic-write staging name", func(c *dropperCandidate) {
 			c.Path = "/home/alice/public_html/.temp.1770000000123.plugin.php"
-		}, false},
+		}, true},
 		{"stale file modified not created", func(c *dropperCandidate) {
 			c.Birth = now.Add(-48 * time.Hour)
 		}, false},
+		{"birth time after observation", func(c *dropperCandidate) {
+			c.Birth = now.Add(time.Second)
+		}, false},
 		{"birth time unavailable", func(c *dropperCandidate) { c.BirthKnown = false }, false},
+		{"create event with unavailable birth time", func(c *dropperCandidate) {
+			c.BirthKnown = false
+			c.Created = true
+		}, true},
+		{"nonstandard php handler extension", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/uploads/image.jpg"
+			c.PHPExecutable = true
+		}, true},
 		{"csm's own write", func(c *dropperCandidate) { c.PID = selfPID }, false},
 	}
 	for _, tc := range cases {
@@ -114,6 +143,46 @@ func TestDropperTrackerObserveDue(t *testing.T) {
 	}
 }
 
+func TestDropperTrackerDueAtTTLBoundary(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(3 * time.Minute)
+	tr.Observe(freshDropperCandidate(now))
+
+	if due := tr.Due(now.Add(3 * time.Minute)); len(due) != 1 {
+		t.Fatalf("Due at TTL boundary returned %d entries, want 1", len(due))
+	}
+}
+
+func TestDropperTrackerOwnsCandidateHead(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	c := freshDropperCandidate(now)
+	wantHead := string(c.Head)
+	tr.Observe(c)
+
+	c.Head[0] = '!'
+	due := tr.Due(now.Add(time.Minute + time.Second))
+	if len(due) != 1 {
+		t.Fatalf("got %d due entries, want 1", len(due))
+	}
+	if got := string(due[0].Head); got != wantHead {
+		t.Fatalf("stored head changed through caller alias: got %q, want %q", got, wantHead)
+	}
+}
+
+func TestDropperTrackerBoundsCandidateHead(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	c := freshDropperCandidate(now)
+	c.Head = make([]byte, dropperTrackedHeadMax+1)
+	tr.Observe(c)
+
+	due := tr.Due(now.Add(time.Minute))
+	if len(due) != 1 || len(due[0].Head) != dropperTrackedHeadMax {
+		t.Fatalf("stored head length = %d, want %d", len(due[0].Head), dropperTrackedHeadMax)
+	}
+}
+
 func TestDropperTrackerReobserveKeepsFirstSeen(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	tr := newDropperTracker(3 * time.Minute)
@@ -139,6 +208,171 @@ func TestDropperTrackerReobserveKeepsFirstSeen(t *testing.T) {
 	}
 }
 
+func TestDropperTrackerCreateThenCloseWithoutBirthTime(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	created := freshDropperCandidate(now)
+	created.BirthKnown = false
+	created.Created = true
+	created.Size = 0
+	created.Head = nil
+	created.DigestKnown = false
+	if !shouldTrackDropper(created, 999, 5*time.Minute) {
+		t.Fatal("FAN_CREATE candidate without birth time was not admitted")
+	}
+	tr.Observe(created)
+
+	closed := freshDropperCandidate(now.Add(2 * time.Second))
+	closed.BirthKnown = false
+	closed.Created = false
+	closed.ContentSuspicious = true
+	if shouldTrackDropper(closed, 999, 5*time.Minute) {
+		t.Fatal("standalone close without create or birth evidence must not be admitted")
+	}
+	if !tr.Refresh(closed) {
+		t.Fatal("close event did not refresh its prior create candidate")
+	}
+
+	due := tr.Due(now.Add(time.Minute))
+	if len(due) != 1 {
+		t.Fatalf("got %d due entries, want 1", len(due))
+	}
+	if !due[0].Observed.Equal(now) || due[0].Size != closed.Size ||
+		string(due[0].Head) != string(closed.Head) || !due[0].Created || !due[0].ContentSuspicious {
+		t.Fatalf("create/close candidate was not merged correctly: %+v", due[0])
+	}
+}
+
+func TestDropperTrackerRefreshDoesNotAdmitUnknownFile(t *testing.T) {
+	tr := newDropperTracker(time.Minute)
+	if tr.Refresh(freshDropperCandidate(time.Unix(1_770_000_000, 0))) {
+		t.Fatal("Refresh admitted a file without a prior create candidate")
+	}
+}
+
+func TestDropperTrackerRefreshUpgradesBirthIdentity(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	created := freshDropperCandidate(now)
+	created.BirthKnown = false
+	created.Created = true
+	tr.Observe(created)
+
+	closed := created
+	closed.Observed = now.Add(time.Second)
+	closed.Birth = now
+	closed.BirthKnown = true
+	if !tr.Refresh(closed) {
+		t.Fatal("close event with newly available birth time did not refresh create candidate")
+	}
+	due := tr.Due(now.Add(time.Minute))
+	if len(due) != 1 || !due[0].BirthKnown || !due[0].Birth.Equal(now) {
+		t.Fatalf("refreshed candidate did not retain stronger birth identity: %+v", due)
+	}
+}
+
+func TestDropperTrackerOutOfOrderObserveKeepsNewestSnapshot(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(3 * time.Minute)
+
+	older := freshDropperCandidate(now)
+	newer := older
+	newer.Observed = now.Add(2 * time.Minute)
+	newer.Size = 9000
+	tr.Observe(newer)
+	older.Size = 100
+	tr.Observe(older)
+
+	due := tr.Due(now.Add(3 * time.Minute))
+	if len(due) != 1 {
+		t.Fatalf("got %d due entries, want 1", len(due))
+	}
+	if !due[0].Observed.Equal(now) || due[0].Size != newer.Size {
+		t.Fatalf("due candidate = %+v, want earliest time with newest size %d", due[0], newer.Size)
+	}
+}
+
+func TestDropperTrackerKeepsReplacementAtSamePath(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	first := freshDropperCandidate(now)
+	second := first
+	second.Inode++
+	second.Birth = second.Birth.Add(time.Second)
+	second.Observed = second.Observed.Add(time.Second)
+
+	tr.Observe(first)
+	tr.Observe(second)
+	due := tr.Due(now.Add(time.Minute + time.Second))
+	if len(due) != 2 {
+		t.Fatalf("same-path replacement produced %d candidates, want 2", len(due))
+	}
+}
+
+func TestDropperTrackerSeparatesReusedInodeByBirthTime(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	first := freshDropperCandidate(now)
+	second := first
+	second.Birth = second.Birth.Add(time.Second)
+	second.Observed = second.Observed.Add(time.Second)
+
+	tr.Observe(first)
+	tr.Observe(second)
+	if due := tr.Due(now.Add(time.Minute + time.Second)); len(due) != 2 {
+		t.Fatalf("reused inode produced %d candidates, want 2", len(due))
+	}
+}
+
+func TestDropperTrackerConcurrentAnalyzerAndProbe(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	const (
+		workers   = 8
+		perWorker = 32
+	)
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+	probeCount := make(chan int, 1)
+	go func() {
+		<-start
+		count := 0
+		for {
+			select {
+			case <-done:
+				count += len(tr.Due(now.Add(time.Hour)))
+				probeCount <- count
+				return
+			default:
+				count += len(tr.Due(now.Add(time.Hour)))
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perWorker; i++ {
+				c := freshDropperCandidate(now)
+				c.Path += "-" + string(rune('a'+worker)) + string(rune('A'+i))
+				tr.Observe(c)
+			}
+		}(worker)
+	}
+	close(start)
+	wg.Wait()
+	close(done)
+
+	if got, want := <-probeCount, workers*perWorker; got != want {
+		t.Fatalf("concurrent probe returned %d candidates, want %d", got, want)
+	}
+}
+
 func TestWPUpgradeRenameCandidates(t *testing.T) {
 	cases := []struct {
 		name string
@@ -161,6 +395,14 @@ func TestWPUpgradeRenameCandidates(t *testing.T) {
 			},
 		},
 		{
+			"wordpress installed below docroot",
+			"/home/alice/public_html/blog/wp-content/upgrade/akismet-x/akismet/akismet.php",
+			[]string{
+				"/home/alice/public_html/blog/wp-content/plugins/akismet/akismet.php",
+				"/home/alice/public_html/blog/wp-content/themes/akismet/akismet.php",
+			},
+		},
+		{
 			"not under upgrade dir",
 			"/home/alice/public_html/wp-content/plugins/x/x.php",
 			nil,
@@ -170,10 +412,15 @@ func TestWPUpgradeRenameCandidates(t *testing.T) {
 			"/home/alice/public_html/wp-content/upgrade/loose.php",
 			nil,
 		},
+		{
+			"unclean traversal path",
+			"/home/alice/public_html/wp-content/upgrade/stage/plugin/../evil.php",
+			nil,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := wpUpgradeRenameCandidates(tc.path)
+			got := wpUpgradeRenameCandidates(tc.path, "/home/alice/public_html")
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -186,11 +433,29 @@ func TestWPUpgradeRenameCandidates(t *testing.T) {
 	}
 }
 
+func TestWPUpgradeRenameCandidatesRejectsUnrelatedRoot(t *testing.T) {
+	path := "/home/bob/public_html/wp-content/upgrade/x/y/file.php"
+	if got := wpUpgradeRenameCandidates(path, "/home/alice/public_html"); got != nil {
+		t.Fatalf("candidate outside docroot = %v, want nil", got)
+	}
+}
+
+func TestDropperAtomicWriteRenameCandidate(t *testing.T) {
+	path := "/home/alice/public_html/.temp.1770000000123.plugin.php"
+	if got, want := atomicWriteRenameCandidate(path), "/home/alice/public_html/plugin.php"; got != want {
+		t.Fatalf("atomicWriteRenameCandidate() = %q, want %q", got, want)
+	}
+	if got := atomicWriteRenameCandidate("/home/alice/public_html/plugin.php"); got != "" {
+		t.Fatalf("plain path produced rename candidate %q", got)
+	}
+}
+
 func TestLooksLikeCompiledTemplate(t *testing.T) {
 	twig := []byte("<?php\n\nuse Twig\\Environment;\nuse Twig\\Template;\n\n/* tables/browse.twig */\nclass __TwigTemplate_9f8ab12cd34ef56 extends Template\n{")
 	smarty := []byte("<?php\n/* Smarty version 4.3.1, created on 2026-07-19 17:27:12\n  from 'index.tpl' */\n")
 	shell := []byte("<?php if (isset($_GET['k']) && hash_equals($t,$_GET['k'])) { system($_POST['c']); }")
 	plain := []byte("<?php\nrequire __DIR__ . '/wp-load.php';\n")
+	markerOnly := []byte("<?php /* __TwigTemplate_ */ system($_POST['c']);")
 
 	if !looksLikeCompiledTemplate(twig) {
 		t.Error("twig compile head not recognised")
@@ -204,24 +469,47 @@ func TestLooksLikeCompiledTemplate(t *testing.T) {
 	if looksLikeCompiledTemplate(plain) {
 		t.Error("plain php head misrecognised as compiled template")
 	}
+	if looksLikeCompiledTemplate(markerOnly) {
+		t.Error("a loose Twig marker must not demote arbitrary PHP")
+	}
 }
 
 func TestDropperRenameMatch(t *testing.T) {
 	c := freshDropperCandidate(time.Unix(1_770_000_000, 0))
-	c.Inode = 7001
-	c.Size = 1621
 
-	if !dropperRenameMatch(c, 9999, 7001, nil) {
-		t.Error("same inode must match regardless of size (rename(2) keeps inode)")
+	sameInode := dropperFileState{Device: c.Device, Inode: c.Inode, Size: 9999, Birth: c.Birth, BirthKnown: true}
+	if !dropperRenameMatch(c, sameInode) {
+		t.Error("same device, inode, and birth time must match regardless of size")
 	}
-	if !dropperRenameMatch(c, 1621, 8888, c.Head) {
-		t.Error("same size + same head must match (copy+delete fallback)")
+	differentDevice := sameInode
+	differentDevice.Device++
+	if dropperRenameMatch(c, differentDevice) {
+		t.Error("same inode number on another filesystem must not match")
 	}
-	if dropperRenameMatch(c, 1621, 8888, []byte("<?php different content")) {
-		t.Error("same size but different head must not match")
+	differentBirth := sameInode
+	differentBirth.Birth = differentBirth.Birth.Add(time.Second)
+	if dropperRenameMatch(c, differentBirth) {
+		t.Error("reused inode with a different birth time must not match")
 	}
-	if dropperRenameMatch(c, 42, 8888, c.Head) {
-		t.Error("different size must not match")
+	zeroInode := sameInode
+	zeroInode.Inode = 0
+	cZero := c
+	cZero.Inode = 0
+	if dropperRenameMatch(cZero, zeroInode) {
+		t.Error("unknown zero inode must not match")
+	}
+	copyTarget := dropperFileState{Device: c.Device + 1, Inode: 8888, Size: c.Size, Digest: c.Digest, DigestKnown: true}
+	if !dropperRenameMatch(c, copyTarget) {
+		t.Error("same size and full digest must match a copy-delete fallback")
+	}
+	copyTarget.Digest = sha256.Sum256([]byte("different content"))
+	if dropperRenameMatch(c, copyTarget) {
+		t.Error("same size with a different digest must not match")
+	}
+	copyTarget.Digest = c.Digest
+	copyTarget.DigestKnown = false
+	if dropperRenameMatch(c, copyTarget) {
+		t.Error("a leading-byte snapshot without a full digest must not match")
 	}
 }
 
@@ -233,14 +521,58 @@ func TestAssessDropper(t *testing.T) {
 		probe dropperProbe
 		want  dropperVerdict
 	}{
-		{"file survived ttl", nil, dropperProbe{Exists: true}, dropperBenign},
-		{"docroot itself removed", nil, dropperProbe{DocrootGone: true}, dropperBenign},
-		{"moved by wp upgrade", nil, dropperProbe{RenamedTo: "/home/alice/public_html/wp-content/plugins/x/x.php"}, dropperBenign},
-		{"quarantined by csm", nil, dropperProbe{Quarantined: true}, dropperBenign},
-		{"vanished fake plugin", nil, dropperProbe{}, dropperSuspect},
+		{"probe not conclusive", nil, dropperProbe{}, dropperInconclusive},
+		{"file survived ttl", nil, dropperProbe{Conclusive: true, AtPath: candidateFileState(freshDropperCandidate(now))}, dropperBenign},
+		{"replacement exists at path", nil, dropperProbe{Conclusive: true, AtPath: &dropperFileState{
+			Path: freshDropperCandidate(now).Path, Device: 41, Inode: 9999,
+		}}, dropperSuspect},
+		{"docroot itself removed", nil, dropperProbe{Conclusive: true, DocrootRemoved: true}, dropperDemotedDocroot},
+		{"unvalidated wp destination", nil, dropperProbe{Conclusive: true, RenamedTo: "/home/alice/public_html/wp-content/plugins/x/x.php"}, dropperSuspect},
+		{"matching file at unrelated destination", nil, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/unrelated/file.php",
+			RenameTarget: candidateFileState(freshDropperCandidate(now)),
+		}, dropperSuspect},
+		{"moved by wp upgrade", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/staging/y/file.php"
+		}, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/wp-content/plugins/y/file.php",
+			RenameTarget: candidateFileStateAt(freshDropperCandidate(now), "/home/alice/public_html/wp-content/plugins/y/file.php"),
+		}, dropperBenign},
+		{"rename state from wrong path", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/staging/y/file.php"
+		}, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/wp-content/plugins/y/file.php",
+			RenameTarget: candidateFileStateAt(freshDropperCandidate(now), "/home/alice/public_html/unrelated/file.php"),
+		}, dropperSuspect},
+		{"moved by atomic write", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/.temp.1770000000123.plugin.php"
+		}, dropperProbe{
+			Conclusive:   true,
+			RenamedTo:    "/home/alice/public_html/plugin.php",
+			RenameTarget: candidateFileStateAt(freshDropperCandidate(now), "/home/alice/public_html/plugin.php"),
+		}, dropperBenign},
+		{"quarantined by csm", nil, dropperProbe{Conclusive: true, QuarantineMatched: true}, dropperBenign},
+		{"vanished fake plugin", nil, dropperProbe{Conclusive: true}, dropperSuspect},
 		{"vanished compiled template demoted", func(c *dropperCandidate) {
 			c.Head = []byte("<?php\nuse Twig\\Template;\nclass __TwigTemplate_9f8ab12cd34ef56 extends Template {")
-		}, dropperProbe{}, dropperDemoted},
+		}, dropperProbe{Conclusive: true}, dropperDemotedTemplate},
+		{"content signal defeats template demotion", func(c *dropperCandidate) {
+			c.Head = []byte("<?php\nclass __TwigTemplate_9f8ab12cd34ef56 extends Template { system($_POST['c']); }")
+			c.ContentSuspicious = true
+		}, dropperProbe{Conclusive: true}, dropperSuspect},
+		{"vanished atomic stage demoted", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/.temp.1770000000123.plugin.php"
+		}, dropperProbe{Conclusive: true}, dropperDemotedAtomicWrite},
+		{"content signal defeats atomic stage demotion", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/.temp.1770000000123.plugin.php"
+			c.ContentSuspicious = true
+		}, dropperProbe{Conclusive: true}, dropperSuspect},
+		{"vanished wp upgrade stage demoted", func(c *dropperCandidate) {
+			c.Path = "/home/alice/public_html/wp-content/upgrade/x/y/file.php"
+		}, dropperProbe{Conclusive: true}, dropperDemotedWPUpgrade},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,6 +584,23 @@ func TestAssessDropper(t *testing.T) {
 				t.Errorf("assessDropper() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func candidateFileState(c dropperCandidate) *dropperFileState {
+	return candidateFileStateAt(c, c.Path)
+}
+
+func candidateFileStateAt(c dropperCandidate, path string) *dropperFileState {
+	return &dropperFileState{
+		Path:        path,
+		Device:      c.Device,
+		Inode:       c.Inode,
+		Size:        c.Size,
+		Birth:       c.Birth,
+		BirthKnown:  c.BirthKnown,
+		Digest:      c.Digest,
+		DigestKnown: c.DigestKnown,
 	}
 }
 
@@ -281,6 +630,49 @@ func TestDropperFlushSingletonAfterGrace(t *testing.T) {
 	}
 }
 
+func TestDropperFlushAtGraceBoundary(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	tr.HoldGone(freshDropperCandidate(now), dropperSuspect, now)
+
+	if got := tr.FlushDue(now.Add(dropperGraceWindow)); len(got) != 1 {
+		t.Fatalf("flush at grace boundary returned %d findings, want 1", len(got))
+	}
+}
+
+func TestDropperTrackerDoesNotHoldNonFindingVerdicts(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(time.Minute)
+	tr.HoldGone(freshDropperCandidate(now), dropperBenign, now)
+	tr.HoldGone(freshDropperCandidate(now), dropperInconclusive, now)
+
+	if got := tr.FlushDue(now.Add(time.Hour)); len(got) != 0 {
+		t.Fatalf("benign candidate produced %d findings, want 0", len(got))
+	}
+}
+
+func TestDropperFlushBelowBurstKeepsEveryCandidate(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(3 * time.Minute)
+
+	const count = dropperBurstThreshold - 1
+	for i := 0; i < count; i++ {
+		c := freshDropperCandidate(now)
+		c.Path += string(rune('a' + i))
+		tr.HoldGone(c, dropperSuspect, now)
+	}
+
+	got := tr.FlushDue(now.Add(dropperGraceWindow + time.Second))
+	if len(got) != count {
+		t.Fatalf("below-threshold flush returned %d findings, want %d", len(got), count)
+	}
+	for _, f := range got {
+		if f.Aggregate || len(f.Items) != 1 {
+			t.Fatalf("below-threshold finding must be a singleton: %+v", f)
+		}
+	}
+}
+
 func TestDropperFlushBurstAggregates(t *testing.T) {
 	now := time.Unix(1_770_000_000, 0)
 	tr := newDropperTracker(3 * time.Minute)
@@ -302,6 +694,40 @@ func TestDropperFlushBurstAggregates(t *testing.T) {
 	}
 	if got[0].Docroot != "/home/alice/public_html" {
 		t.Errorf("aggregate docroot = %q", got[0].Docroot)
+	}
+}
+
+func TestDropperFlushDoesNotHideSuspectInDemotedChurn(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	tr := newDropperTracker(3 * time.Minute)
+
+	for i := 0; i < dropperBurstThreshold-1; i++ {
+		c := freshDropperCandidate(now)
+		c.Path += string(rune('a' + i))
+		tr.HoldGone(c, dropperDemotedTemplate, now)
+	}
+	suspect := freshDropperCandidate(now)
+	suspect.Path += "-suspect"
+	tr.HoldGone(suspect, dropperSuspect, now)
+
+	got := tr.FlushDue(now.Add(dropperGraceWindow))
+	if len(got) != dropperBurstThreshold {
+		t.Fatalf("mixed churn returned %d findings, want %d separate findings", len(got), dropperBurstThreshold)
+	}
+	foundSuspect := false
+	for _, f := range got {
+		if f.Aggregate {
+			t.Fatalf("mixed demoted and suspect candidates must not aggregate together: %+v", f)
+		}
+		if f.Items[0].Verdict == dropperSuspect {
+			foundSuspect = true
+			if sev, _, _, _ := dropperAlertParams(f); sev != alert.Critical {
+				t.Fatalf("suspect mixed with churn has severity %v, want Critical", sev)
+			}
+		}
+	}
+	if !foundSuspect {
+		t.Fatal("suspect candidate was lost from mixed churn")
 	}
 }
 
@@ -364,7 +790,7 @@ func TestDropperAlertParams(t *testing.T) {
 	t.Run("demoted compiled template is warning", func(t *testing.T) {
 		c := freshDropperCandidate(now)
 		c.Head = []byte("<?php class __TwigTemplate_ab12 extends Template {")
-		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperDemoted}}}
+		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperDemotedTemplate}}}
 		sev, _, details, _ := dropperAlertParams(f)
 		if sev != alert.Warning {
 			t.Errorf("severity = %v, want Warning", sev)
@@ -374,7 +800,22 @@ func TestDropperAlertParams(t *testing.T) {
 		}
 	})
 
-	t.Run("aggregate is warning keyed to docroot", func(t *testing.T) {
+	t.Run("all false-positive demotions remain visible warnings", func(t *testing.T) {
+		for _, verdict := range []dropperVerdict{
+			dropperDemotedAtomicWrite,
+			dropperDemotedWPUpgrade,
+			dropperDemotedDocroot,
+		} {
+			c := freshDropperCandidate(now)
+			f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: verdict}}}
+			sev, _, details, _ := dropperAlertParams(f)
+			if sev != alert.Warning || !strings.Contains(details, "Demoted:") {
+				t.Errorf("verdict %v rendered severity=%v details=%q, want explained Warning", verdict, sev, details)
+			}
+		}
+	})
+
+	t.Run("unclassified aggregate is high keyed to docroot", func(t *testing.T) {
 		var items []dropperGone
 		for i := 0; i < dropperBurstThreshold; i++ {
 			c := freshDropperCandidate(now)
@@ -383,8 +824,8 @@ func TestDropperAlertParams(t *testing.T) {
 		}
 		f := dropperFinding{Aggregate: true, Docroot: "/home/alice/public_html", Items: items}
 		sev, msg, details, path := dropperAlertParams(f)
-		if sev != alert.Warning {
-			t.Errorf("severity = %v, want Warning", sev)
+		if sev != alert.High {
+			t.Errorf("severity = %v, want High", sev)
 		}
 		if !strings.Contains(msg, "8") || !strings.Contains(msg, "/home/alice/public_html") {
 			t.Errorf("aggregate message %q must carry count and docroot", msg)
@@ -394,6 +835,20 @@ func TestDropperAlertParams(t *testing.T) {
 		}
 		if !strings.Contains(details, items[0].Cand.Path) {
 			t.Errorf("details must sample member paths, got %q", details)
+		}
+	})
+
+	t.Run("classified churn aggregate is warning", func(t *testing.T) {
+		var items []dropperGone
+		for i := 0; i < dropperBurstThreshold; i++ {
+			c := freshDropperCandidate(now)
+			c.Path += string(rune('a' + i))
+			items = append(items, dropperGone{Cand: c, Verdict: dropperDemotedTemplate})
+		}
+		f := dropperFinding{Aggregate: true, Docroot: "/home/alice/public_html", Items: items}
+		sev, _, _, _ := dropperAlertParams(f)
+		if sev != alert.Warning {
+			t.Errorf("severity = %v, want Warning", sev)
 		}
 	})
 
@@ -413,6 +868,16 @@ func TestDropperAlertParams(t *testing.T) {
 			t.Errorf("details should keep printable head bytes, got %q", details)
 		}
 	})
+
+	t.Run("process evidence cannot inject an alert line", func(t *testing.T) {
+		c := freshDropperCandidate(now)
+		c.ProcInfo = "pid=4242 cmd=worker\nCRITICAL fake"
+		f := dropperFinding{Docroot: c.Docroot, Items: []dropperGone{{Cand: c, Verdict: dropperSuspect}}}
+		_, _, details, _ := dropperAlertParams(f)
+		if strings.Contains(details, "\nCRITICAL fake") {
+			t.Fatalf("process info injected a details line: %q", details)
+		}
+	})
 }
 
 func TestDropperTrackerCapBoundsMemory(t *testing.T) {
@@ -423,7 +888,9 @@ func TestDropperTrackerCapBoundsMemory(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c := freshDropperCandidate(now)
 		c.Path = c.Path + string(rune('a'+i))
-		tr.Observe(c)
+		if accepted := tr.Observe(c); accepted != (i < 3) {
+			t.Errorf("Observe candidate %d accepted = %v, want %v", i, accepted, i < 3)
+		}
 	}
 	if got := tr.trackedCount(); got != 3 {
 		t.Errorf("tracked %d entries, want cap 3", got)
