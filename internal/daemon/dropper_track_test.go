@@ -679,7 +679,7 @@ func TestDropperFlushBurstAggregates(t *testing.T) {
 
 	for i := 0; i < dropperBurstThreshold; i++ {
 		c := freshDropperCandidate(now)
-		c.Path = c.Path + string(rune('a'+i))
+		c.Path += string(rune('a' + i))
 		tr.HoldGone(c, dropperSuspect, now.Add(time.Duration(i)*time.Second))
 	}
 	got := tr.FlushDue(now.Add(dropperGraceWindow + time.Second))
@@ -819,7 +819,7 @@ func TestDropperAlertParams(t *testing.T) {
 		var items []dropperGone
 		for i := 0; i < dropperBurstThreshold; i++ {
 			c := freshDropperCandidate(now)
-			c.Path = c.Path + string(rune('a'+i))
+			c.Path += string(rune('a' + i))
 			items = append(items, dropperGone{Cand: c, Verdict: dropperSuspect})
 		}
 		f := dropperFinding{Aggregate: true, Docroot: "/home/alice/public_html", Items: items}
@@ -887,7 +887,7 @@ func TestDropperTrackerCapBoundsMemory(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		c := freshDropperCandidate(now)
-		c.Path = c.Path + string(rune('a'+i))
+		c.Path += string(rune('a' + i))
 		if accepted := tr.Observe(c); accepted != (i < 3) {
 			t.Errorf("Observe candidate %d accepted = %v, want %v", i, accepted, i < 3)
 		}

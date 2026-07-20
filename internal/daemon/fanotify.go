@@ -138,6 +138,15 @@ type FileMonitor struct {
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
 	// it first starts; subsequent calls are a no-op.
 	metricsOnce sync.Once
+
+	// dropper drives the self-deleting-dropper detector: candidates are
+	// admitted from the analyzer path and probed for deletion after a TTL by
+	// dropperProbeLoop. nil when thresholds.dropper_detection is off.
+	dropper *dropperEngine
+	// dropperDocroots is the cached web-document-root list the admission
+	// gate matches paths against, refreshed on the probe loop's cadence so
+	// account add/remove is picked up without a restart.
+	dropperDocroots atomic.Value // []string
 }
 
 const (
@@ -332,6 +341,8 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
 	fm.wpCache.SetStopCh(fm.stopCh)
 
+	fm.initDropperDetector(cfg)
+
 	return fm, nil
 }
 
@@ -354,6 +365,12 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Start overflow reporter
 	fm.wg.Add(1)
 	obs.Go("fanotify-overflow", fm.overflowReporter)
+
+	// Start the self-deleting-dropper probe loop when the detector is enabled.
+	if fm.dropper != nil {
+		fm.wg.Add(1)
+		obs.Go("fanotify-dropper", fm.dropperProbeLoop)
+	}
 
 	// C4 - create epoll instance, watch fanotify fd + pipe read end
 	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
@@ -920,6 +937,11 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Resolve process info from PID (best-effort - process may have exited)
 	procInfo := resolveProcessInfo(event.pid)
+
+	// Snapshot this write as a possible self-deleting dropper before the
+	// per-type checks below can early-return. Reads are positional (Pread/
+	// Fstat/Statx) so they do not disturb the fd for later content checks.
+	fm.observeDropperCandidate(event, procInfo)
 
 	// H2 - suppression path matching using filepath.Match. Read the live config
 	// (config.Active via currentCfg) so a SIGHUP change to suppressions.ignore_paths

@@ -129,6 +129,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "php_dropper_realtime", Category: CategoryMalware},
 	{Name: "php_in_sensitive_dir_realtime", Category: CategoryMalware},
 	{Name: "php_in_uploads_realtime", Category: CategoryMalware},
+	{Name: "self_deleting_dropper_realtime", Category: CategoryMalware},
+	{Name: "self_deleting_dropper_overflow", Category: CategoryMalware},
 	{Name: "php_shield_block", Category: CategoryMalware},
 	{Name: "php_shield_eval", Category: CategoryMalware},
 	{Name: "php_shield_webshell", Category: CategoryMalware},
