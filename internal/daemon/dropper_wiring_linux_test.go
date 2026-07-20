@@ -15,6 +15,26 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+// dropperWebrootFixture returns a writable document root outside the system
+// temp prefixes. isInteresting treats /tmp, /dev/shm, and /var/tmp as always
+// content-interesting, which would make handleEvent classify a fixture there as
+// a content event rather than a dropper-only one -- unrelated to the path under
+// test. Real web roots live under /home, never system temp, so root the fixture
+// under the package working directory (writable in CI and container runs).
+func dropperWebrootFixture(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(".", "dropper-webroot-")
+	if err != nil {
+		t.Fatalf("create webroot fixture: %v", err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("resolve webroot fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(abs) })
+	return abs
+}
+
 func newDropperWiringTestMonitor(docroot string, ttl time.Duration) *FileMonitor {
 	fm := &FileMonitor{
 		alertCh: make(chan alert.Finding, 8),
@@ -184,7 +204,7 @@ func TestDropperHandleEventKeepsAlreadyDeletedPHP(t *testing.T) {
 }
 
 func TestDropperHandleEventAdmitsArbitraryExecutableUnderDocroot(t *testing.T) {
-	docroot := t.TempDir()
+	docroot := dropperWebrootFixture(t)
 	path := filepath.Join(docroot, "worker.bin")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nid\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -210,7 +230,7 @@ func TestDropperHandleEventAdmitsArbitraryExecutableUnderDocroot(t *testing.T) {
 }
 
 func TestDropperHandleEventAdmitsInheritedPHPHandler(t *testing.T) {
-	docroot := t.TempDir()
+	docroot := dropperWebrootFixture(t)
 	path := filepath.Join(docroot, "payload.jpg")
 	if err := os.WriteFile(filepath.Join(docroot, ".htaccess"),
 		[]byte("AddHandler application/x-httpd-php .jpg\n"), 0o644); err != nil {

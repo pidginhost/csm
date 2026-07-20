@@ -133,7 +133,7 @@ func (fm *FileMonitor) dropperPHPHandlerFor(docroot, dir string) checks.PHPExecu
 		return checks.ResolvePHPExecutionOverlay(docroot, dir)
 	}
 	fm.dropperHandlerMu.Lock()
-	if len(fm.dropperHandlerCache) >= dropperPHPHandlerCacheMax {
+	if fm.dropperHandlerCache == nil || len(fm.dropperHandlerCache) >= dropperPHPHandlerCacheMax {
 		fm.dropperHandlerCache = make(map[string]dropperPHPHandlerCacheEntry)
 	}
 	fm.dropperHandlerCache[key] = dropperPHPHandlerCacheEntry{
