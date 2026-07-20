@@ -580,6 +580,42 @@ func TestDeployDefaultConfigEnablesBotRangesAutoUpdate(t *testing.T) {
 	assertInstallerRawBotRangesAutoUpdate(t, data)
 }
 
+// The installer template must ship the dropper-detector keys with the same
+// values as the packaged default and production reference, so the three
+// default-config sources stay in sync.
+func TestDeployDefaultConfigCarriesDropperKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
+	if deployErr := deployDefaultConfig(path); deployErr != nil {
+		t.Fatalf("deployDefaultConfig: %v", deployErr)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes generated config: %v", err)
+	}
+	if !cfg.Thresholds.DropperDetection {
+		t.Fatal("installer default thresholds.dropper_detection must be true")
+	}
+	if cfg.Thresholds.DropperUnlinkTTLSec != config.DefaultDropperUnlinkTTLSec {
+		t.Fatalf("installer default thresholds.dropper_unlink_ttl_sec = %d, want %d",
+			cfg.Thresholds.DropperUnlinkTTLSec, config.DefaultDropperUnlinkTTLSec)
+	}
+	var raw struct {
+		Thresholds map[string]any `yaml:"thresholds"`
+	}
+	if unmarshalErr := yaml.Unmarshal(data, &raw); unmarshalErr != nil {
+		t.Fatalf("unmarshal generated config: %v", unmarshalErr)
+	}
+	for _, key := range []string{"dropper_detection", "dropper_unlink_ttl_sec"} {
+		if _, ok := raw.Thresholds[key]; !ok {
+			t.Fatalf("installer template missing thresholds.%s", key)
+		}
+	}
+}
+
 func TestDeployDefaultConfigIncludesWebUIMetricsToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "etc", "csm", "csm.yaml")
 	if deployErr := deployDefaultConfig(path); deployErr != nil {

@@ -117,6 +117,10 @@ thresholds:
   mail_queue_crit: 2000
   state_expiry_hours: 24
   deep_scan_interval_min: 60
+  # Realtime self-deleting-dropper detector: flags a PHP/executable created
+  # under a web document root and unlinked before the TTL probe fires.
+  dropper_detection: true
+  dropper_unlink_ttl_sec: 300
   wp_core_check_interval_min: 60
   webshell_scan_interval_min: 30
   filesystem_scan_interval_min: 30

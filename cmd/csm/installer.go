@@ -745,6 +745,10 @@ thresholds:
   scan_job_retention: 20
   # Rolling coverage sweeps path-sorted dormant files each cycle so they are eventually content-scanned.
   rolling_coverage: true
+  # Realtime self-deleting-dropper detector: flags a PHP/executable created
+  # under a web document root and unlinked before the TTL probe fires.
+  dropper_detection: true
+  dropper_unlink_ttl_sec: 300
   # http_asn_crawl: single-ASN distributed crawl of uncacheable URLs that
   # saturates one account's PHP pool. Set http_asn_crawl_min_ips: 0 to disable.
   http_asn_crawl_window_min: 60

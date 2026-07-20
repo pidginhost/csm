@@ -183,6 +183,9 @@ func Validate(cfg *Config) []ValidationResult {
 		v != VirtualPatchOff && v != VirtualPatchManual && v != VirtualPatchAuto {
 		results = append(results, ValidationResult{"error", "auto_response.virtual_patch_exposed_files", fmt.Sprintf("must be off, manual, or auto (got %q)", cfg.AutoResponse.VirtualPatchExposedFiles)})
 	}
+	if v := cfg.Thresholds.DropperUnlinkTTLSec; v != 0 && (v < MinDropperUnlinkTTLSec || v > MaxDropperUnlinkTTLSec) {
+		results = append(results, ValidationResult{"error", "thresholds.dropper_unlink_ttl_sec", fmt.Sprintf("must be between %d and %d seconds (got %d)", MinDropperUnlinkTTLSec, MaxDropperUnlinkTTLSec, v)})
+	}
 	if cfg.Signatures.UpdateInterval != "" {
 		if _, err := time.ParseDuration(cfg.Signatures.UpdateInterval); err != nil {
 			results = append(results, ValidationResult{"error", "signatures.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.Signatures.UpdateInterval)})

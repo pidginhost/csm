@@ -38,6 +38,17 @@ const (
 	// hourly detector into an effectively unbounded filesystem traversal.
 	MaxExposedFileScanDepth = 10
 
+	// DefaultDropperUnlinkTTLSec is how long the realtime monitor waits after
+	// a fresh PHP/executable lands under a web docroot before probing whether
+	// it self-deleted. Long enough that upgrade staging has settled, short
+	// enough that a dropper is reported minutes after it vanishes.
+	DefaultDropperUnlinkTTLSec = 300
+	// MinDropperUnlinkTTLSec / MaxDropperUnlinkTTLSec bound the operator
+	// knob: below 30s legitimate installers race the probe, above 1h the
+	// tracker holds state for little detection gain.
+	MinDropperUnlinkTTLSec = 30
+	MaxDropperUnlinkTTLSec = 3600
+
 	// DefaultHTTPScannerErrorPct is the fallback percentage gate for the
 	// URL scanner-profile detector when the operator leaves it unset.
 	DefaultHTTPScannerErrorPct = 90
@@ -403,6 +414,14 @@ type Config struct {
 		// the mtime cap so dormant files are eventually content-scanned.
 		// Default true; set false to restore pure top-N-by-mtime behavior.
 		RollingCoverage bool `yaml:"rolling_coverage"`
+
+		// DropperDetection gates the realtime self-deleting-dropper detector:
+		// a PHP/executable file created under a web document root and
+		// unlinked before the TTL probe. Default true.
+		DropperDetection bool `yaml:"dropper_detection"`
+		// DropperUnlinkTTLSec is the tracking TTL in seconds for that
+		// detector. Default 300.
+		DropperUnlinkTTLSec int `yaml:"dropper_unlink_ttl_sec"`
 
 		// HTTPASNCrawlWindowMin is the rolling window in minutes for the
 		// single-ASN distributed crawl detector. Default 60.
@@ -1438,16 +1457,17 @@ func (c *Config) BotRangesAutoUpdate() bool {
 }
 
 type defaultPresence struct {
-	smtpProbeThreshold        bool
-	forwardGuard              forwardGuardPresence
-	phpRelay                  phpRelayPresence
-	retention                 retentionPresence
-	blockDigestMinBlock       bool
-	thresholdsRollingCoverage bool
-	httpASNCrawlMinIPs        bool
-	httpASNCrawlReverseProxy  bool
-	xmlrpcThreshold           bool
-	integrityImmutable        bool
+	smtpProbeThreshold         bool
+	forwardGuard               forwardGuardPresence
+	phpRelay                   phpRelayPresence
+	retention                  retentionPresence
+	blockDigestMinBlock        bool
+	thresholdsRollingCoverage  bool
+	thresholdsDropperDetection bool
+	httpASNCrawlMinIPs         bool
+	httpASNCrawlReverseProxy   bool
+	xmlrpcThreshold            bool
+	integrityImmutable         bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1883,6 +1903,15 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.Thresholds.RollingCoverage = true
 	}
 
+	// Same shape as rolling_coverage: a literal dropper_detection: false is an
+	// operator opt-out; only an absent key defaults to enabled.
+	if !presence.thresholdsDropperDetection {
+		cfg.Thresholds.DropperDetection = true
+	}
+	if cfg.Thresholds.DropperUnlinkTTLSec == 0 {
+		cfg.Thresholds.DropperUnlinkTTLSec = DefaultDropperUnlinkTTLSec
+	}
+
 	// http_asn_crawl: min_ips uses presence so an explicit 0 disables the
 	// detector; an absent key defaults to 25.
 	if !presence.httpASNCrawlMinIPs && cfg.Thresholds.HTTPASNCrawlMinIPs == 0 {
@@ -2052,6 +2081,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
+	_, presence.thresholdsDropperDetection = raw.Thresholds["dropper_detection"]
 	_, presence.httpASNCrawlMinIPs = raw.Thresholds["http_asn_crawl_min_ips"]
 	_, presence.httpASNCrawlReverseProxy = raw.Thresholds["http_asn_crawl_reverse_proxy_asns"]
 	_, presence.xmlrpcThreshold = raw.Thresholds["xmlrpc_threshold"]
