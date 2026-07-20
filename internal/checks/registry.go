@@ -169,6 +169,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "open_basedir", Category: CategoryWeb},
 	{Name: "outdated_plugins", Category: CategoryWeb},
 	{Name: "vulnerable_plugins", Category: CategoryWeb},
+	{Name: "vulnerable_timthumb", Category: CategoryWeb},
 	{Name: "php_config_change", Category: CategoryWeb},
 	{Name: "php_config_realtime", Category: CategoryWeb},
 	{Name: "symlink_attack", Category: CategoryWeb},

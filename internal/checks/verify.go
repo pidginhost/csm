@@ -47,6 +47,7 @@ var presenceVerifiableChecks = []string{
 	"php_in_sensitive_dir_realtime", "php_in_uploads_realtime",
 	"suspicious_file",
 	"nulled_plugin", "symlink_attack",
+	"vulnerable_timthumb",
 	"backdoor_binary", "new_executable_in_config",
 	"executable_in_config_realtime", "executable_in_tmp_realtime",
 	"cgi_backdoor_realtime", "cgi_suspicious_location_realtime",
