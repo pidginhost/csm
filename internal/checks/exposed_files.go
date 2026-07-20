@@ -1,10 +1,12 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -153,6 +155,20 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			}
 			if !confirmed {
 				continue
+			}
+			if class == classPHPInfo {
+				// Headers cannot distinguish a real dump from a stub whose
+				// phpinfo() call is commented out or guarded: both answer 200
+				// text/html. Only a body carrying actual phpinfo output is an
+				// information disclosure.
+				body, ok := fetchPHPInfoBody(ctx, pr.scheme, vh.domain, host, rel)
+				if !ok {
+					markCheckIncomplete(ctx, "exposed_files")
+					continue
+				}
+				if !isRealPHPInfoBody(body) {
+					continue
+				}
 			}
 			findings = append(findings, buildExposedFinding(vh, path, rel, class, pr))
 		}
@@ -368,32 +384,8 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
 	defer cancel()
-	transport := &http.Transport{
-		MaxResponseHeaderBytes: 64 << 10,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			_, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			d := &net.Dialer{Timeout: exposureProbeConnTimeout}
-			return d.DialContext(ctx, network, net.JoinHostPort(host, port))
-		},
-		// #nosec G402 -- reachability probe to this host's own serving IP (never
-		// an external endpoint); no trust decision rides on the certificate, and
-		// SNI must match the requested domain to select the right vhost.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: domain},
-	}
-	// A fresh transport per probe is needed because SNI (ServerName) is
-	// per-domain; release its connections so the daemon does not accumulate
-	// idle sockets across scan cycles.
-	defer transport.CloseIdleConnections()
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   exposureProbeTotalTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client, closeIdle := exposureProbeHTTPClient(domain, host)
+	defer closeIdle()
 	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
 
 	resp, err := doProbeRequest(probeCtx, client, http.MethodHead, u.String(), "")
@@ -410,6 +402,88 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 	pr := probeResult{scheme: scheme, status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), reachable: true}
 	_ = resp.Body.Close()
 	return pr, true
+}
+
+// exposureProbeHTTPClient builds the pinned-dial client shared by the
+// headers-only probe and the phpinfo body confirmation: connections dial the
+// vhost's configured serving address (never DNS), SNI/Host carry the domain,
+// and redirects are never followed. The returned func releases idle
+// connections; a fresh transport per probe is needed because SNI
+// (ServerName) is per-domain.
+func exposureProbeHTTPClient(domain, host string) (*http.Client, func()) {
+	transport := &http.Transport{
+		MaxResponseHeaderBytes: 64 << 10,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			d := &net.Dialer{Timeout: exposureProbeConnTimeout}
+			return d.DialContext(ctx, network, net.JoinHostPort(host, port))
+		},
+		// #nosec G402 -- reachability probe to this host's own serving IP (never
+		// an external endpoint); no trust decision rides on the certificate, and
+		// SNI must match the requested domain to select the right vhost.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: domain},
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   exposureProbeTotalTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return client, transport.CloseIdleConnections
+}
+
+// phpinfoBodyReadMax bounds how much of the phpinfo.php response body the
+// confirmation stage reads. Real dumps put "PHP Version" in the first couple
+// of KB; 64 KiB leaves generous room for custom headers while keeping the
+// probe cheap.
+const phpinfoBodyReadMax = 64 << 10
+
+// phpinfoMinBodyBytes is the minimum confirmed-dump size. Even a minimal PHP
+// build renders tens of KB of phpinfo output; the observed false-positive
+// stubs answer with empty or sub-100-byte bodies.
+const phpinfoMinBodyBytes = 4096
+
+// phpinfoBodyFetcher retrieves up to phpinfoBodyReadMax bytes of the response
+// body for a confirmed-reachable phpinfo candidate. Separate seam from
+// webProbe so every other exposure class keeps its headers-only contract.
+type phpinfoBodyFetcher func(ctx context.Context, scheme, domain, host, urlPath string) ([]byte, bool)
+
+var fetchPHPInfoBody phpinfoBodyFetcher = realFetchPHPInfoBody
+
+func realFetchPHPInfoBody(ctx context.Context, scheme, domain, host, urlPath string) ([]byte, bool) {
+	host = normalizeServingIP(host)
+	if host == "" {
+		return nil, false
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
+	defer cancel()
+	client, closeIdle := exposureProbeHTTPClient(domain, host)
+	defer closeIdle()
+	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
+	resp, err := doProbeRequest(fetchCtx, client, http.MethodGet, u.String(), "")
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, phpinfoBodyReadMax))
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+// isRealPHPInfoBody reports whether a response body is genuine phpinfo()
+// output: the version banner every phpinfo variant emits (HTML "PHP Version
+// x.y" heading or CLI "PHP Version => x.y") plus a dump-sized body.
+func isRealPHPInfoBody(body []byte) bool {
+	return len(body) >= phpinfoMinBodyBytes && bytes.Contains(body, []byte("PHP Version"))
 }
 
 func doProbeRequest(ctx context.Context, client *http.Client, method, u, rangeHdr string) (*http.Response, error) {
