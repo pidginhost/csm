@@ -30,6 +30,24 @@ const timThumbScanDepth = 10
 
 var timThumbVersionRE = regexp.MustCompile(`(?i)define\s*\(\s*['"]VERSION['"]\s*,\s*['"]([0-9]+(?:\.[0-9]+)*)['"]`)
 
+// timThumbFeatureRE holds the boolean feature constants that make a copy
+// directly exploitable, compiled once rather than per scanned file.
+var timThumbFeatureRE = map[string]*regexp.Regexp{
+	timThumbWebshot:  timThumbFeatureMatcher(timThumbWebshot),
+	timThumbExternal: timThumbFeatureMatcher(timThumbExternal),
+}
+
+const (
+	timThumbWebshot  = "WEBSHOT_ENABLED"
+	timThumbExternal = "ALLOW_EXTERNAL"
+)
+
+// timThumbFeatureMatcher builds the define('NAME', true) matcher for a feature
+// constant.
+func timThumbFeatureMatcher(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*true\s*\)`)
+}
+
 // timThumbCandidateName reports whether a filename is a TimThumb-style script by
 // convention. Content confirmation happens in looksLikeTimThumb.
 func timThumbCandidateName(nameLower string) bool {
@@ -98,11 +116,11 @@ func assessTimThumb(head []byte) (alert.Severity, []string) {
 	default:
 		reasons = append(reasons, fmt.Sprintf("version %s is deprecated and unmaintained", version))
 	}
-	if timThumbFeatureEnabled(head, "WEBSHOT_ENABLED") {
+	if timThumbFeatureEnabled(head, timThumbWebshot) {
 		reasons = append(reasons, "WebShot feature is enabled (remote command execution)")
 		exploitable = true
 	}
-	if timThumbFeatureEnabled(head, "ALLOW_EXTERNAL") {
+	if timThumbFeatureEnabled(head, timThumbExternal) {
 		reasons = append(reasons, "external image fetching is enabled (SSRF and cache-poisoning surface)")
 		exploitable = true
 	}
@@ -113,9 +131,13 @@ func assessTimThumb(head []byte) (alert.Severity, []string) {
 }
 
 // timThumbFeatureEnabled reports whether a TimThumb boolean constant is defined
-// true. Matches define('NAME', true) with optional whitespace.
+// true. Matches define('NAME', true) with optional whitespace. Unknown names
+// fall back to compiling on demand so a new caller cannot silently read false.
 func timThumbFeatureEnabled(head []byte, name string) bool {
-	re := regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*true\s*\)`)
+	re, ok := timThumbFeatureRE[name]
+	if !ok {
+		re = timThumbFeatureMatcher(name)
+	}
 	return re.Match(head)
 }
 
