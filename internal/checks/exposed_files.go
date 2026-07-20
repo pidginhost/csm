@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -42,7 +43,7 @@ var walkSkipDirs = map[string]bool{
 // CheckExposedFiles scans every cPanel docroot for sensitive files (database
 // dumps, backup archives, config/source backups, phpinfo) that the web server
 // actually serves, and reports each confirmed exposure. It reads only response
-// headers during confirmation -- a leaked file's contents never enter CSM.
+// headers except for a bounded phpinfo body used to reject empty stubs.
 func CheckExposedFiles(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	content, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
@@ -161,14 +162,14 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 				// phpinfo() call is commented out or guarded: both answer 200
 				// text/html. Only a body carrying actual phpinfo output is an
 				// information disclosure.
-				body, ok := fetchPHPInfoBody(ctx, pr.scheme, vh.domain, host, rel)
-				if !ok {
+				scheme, exposed, complete := confirmPHPInfoBody(ctx, pr.scheme, vh.domain, host, rel)
+				if !complete {
 					markCheckIncomplete(ctx, "exposed_files")
+				}
+				if !exposed {
 					continue
 				}
-				if !isRealPHPInfoBody(body) {
-					continue
-				}
+				pr.scheme = scheme
 			}
 			findings = append(findings, buildExposedFinding(vh, path, rel, class, pr))
 		}
@@ -386,15 +387,19 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 	defer cancel()
 	client, closeIdle := exposureProbeHTTPClient(domain, host)
 	defer closeIdle()
+	return doLocalProbeWithClient(probeCtx, client, scheme, domain, urlPath)
+}
+
+func doLocalProbeWithClient(ctx context.Context, client *http.Client, scheme, domain, urlPath string) (probeResult, bool) {
 	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
 
-	resp, err := doProbeRequest(probeCtx, client, http.MethodHead, u.String(), "")
+	resp, err := doProbeRequest(ctx, client, http.MethodHead, u.String(), "")
 	if err != nil {
 		return probeResult{}, false
 	}
 	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
 		_ = resp.Body.Close()
-		resp, err = doProbeRequest(probeCtx, client, http.MethodGet, u.String(), "bytes=0-0")
+		resp, err = doProbeRequest(ctx, client, http.MethodGet, u.String(), "bytes=0-0")
 		if err != nil {
 			return probeResult{}, false
 		}
@@ -448,8 +453,11 @@ const phpinfoBodyReadMax = 64 << 10
 const phpinfoMinBodyBytes = 4096
 
 // phpinfoBodyFetcher retrieves up to phpinfoBodyReadMax bytes of the response
-// body for a confirmed-reachable phpinfo candidate. Separate seam from
-// webProbe so every other exposure class keeps its headers-only contract.
+// body for a phpinfo candidate. The bool reports whether the result can clear
+// an earlier finding: non-success HTTP statuses are complete negatives, while
+// transport, body-read, and inconclusive partial-response failures are not.
+// This separate seam keeps every other exposure class on its headers-only
+// contract.
 type phpinfoBodyFetcher func(ctx context.Context, scheme, domain, host, urlPath string) ([]byte, bool)
 
 var fetchPHPInfoBody phpinfoBodyFetcher = realFetchPHPInfoBody
@@ -464,26 +472,84 @@ func realFetchPHPInfoBody(ctx context.Context, scheme, domain, host, urlPath str
 	client, closeIdle := exposureProbeHTTPClient(domain, host)
 	defer closeIdle()
 	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
-	resp, err := doProbeRequest(fetchCtx, client, http.MethodGet, u.String(), "")
+	return fetchPHPInfoBodyWithClient(fetchCtx, client, u.String())
+}
+
+func fetchPHPInfoBodyWithClient(ctx context.Context, client *http.Client, u string) ([]byte, bool) {
+	resp, err := doProbeRequest(ctx, client, http.MethodGet, u, "")
 	if err != nil {
 		return nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
+	partial := resp.StatusCode == http.StatusPartialContent
+	if resp.StatusCode != http.StatusOK && !partial {
+		return nil, true
+	}
+	reader := io.Reader(resp.Body)
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "":
+	case "gzip":
+		compressed, gzErr := gzip.NewReader(resp.Body)
+		if gzErr != nil {
+			return nil, false
+		}
+		defer func() { _ = compressed.Close() }()
+		reader = compressed
+	default:
 		return nil, false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, phpinfoBodyReadMax))
+	body, err := io.ReadAll(io.LimitReader(reader, phpinfoBodyReadMax))
 	if err != nil {
+		return nil, false
+	}
+	if partial && !isRealPHPInfoBody(body) {
 		return nil, false
 	}
 	return body, true
 }
 
+// confirmPHPInfoBody checks both origin protocols because HEAD and GET can be
+// routed differently, and HTTPS and HTTP can execute different handlers. A
+// dump observed on either protocol is conclusive; if neither exposes a dump,
+// every GET must complete before an earlier finding can be cleared.
+func confirmPHPInfoBody(ctx context.Context, preferredScheme, domain, host, urlPath string) (string, bool, bool) {
+	schemes := []string{"https", "http"}
+	if preferredScheme == "http" {
+		schemes[0], schemes[1] = schemes[1], schemes[0]
+	}
+	complete := true
+	for _, scheme := range schemes {
+		body, ok := fetchPHPInfoBody(ctx, scheme, domain, host, urlPath)
+		if !ok {
+			complete = false
+			continue
+		}
+		if isRealPHPInfoBody(body) {
+			return scheme, true, true
+		}
+	}
+	return "", false, complete
+}
+
 // isRealPHPInfoBody reports whether a response body is genuine phpinfo()
 // output: the version banner every phpinfo variant emits (HTML "PHP Version
-// x.y" heading or CLI "PHP Version => x.y") plus a dump-sized body.
+// x.y" heading or CLI "PHP Version => x.y") plus a dump-sized body. UTF-16
+// variants cover output handlers that transcode the otherwise ASCII banner.
 func isRealPHPInfoBody(body []byte) bool {
-	return len(body) >= phpinfoMinBodyBytes && bytes.Contains(body, []byte("PHP Version"))
+	if len(body) < phpinfoMinBodyBytes {
+		return false
+	}
+	marker := []byte("PHP Version")
+	if bytes.Contains(body, marker) {
+		return true
+	}
+	le := make([]byte, len(marker)*2)
+	be := make([]byte, len(marker)*2)
+	for i, b := range marker {
+		le[i*2] = b
+		be[i*2+1] = b
+	}
+	return bytes.Contains(body, le) || bytes.Contains(body, be)
 }
 
 func doProbeRequest(ctx context.Context, client *http.Client, method, u, rangeHdr string) (*http.Response, error) {
