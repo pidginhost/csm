@@ -1,10 +1,13 @@
 package checks
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -40,7 +43,7 @@ var walkSkipDirs = map[string]bool{
 // CheckExposedFiles scans every cPanel docroot for sensitive files (database
 // dumps, backup archives, config/source backups, phpinfo) that the web server
 // actually serves, and reports each confirmed exposure. It reads only response
-// headers during confirmation -- a leaked file's contents never enter CSM.
+// headers except for a bounded phpinfo body used to reject empty stubs.
 func CheckExposedFiles(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	content, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
@@ -153,6 +156,20 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			}
 			if !confirmed {
 				continue
+			}
+			if class == classPHPInfo {
+				// Headers cannot distinguish a real dump from a stub whose
+				// phpinfo() call is commented out or guarded: both answer 200
+				// text/html. Only a body carrying actual phpinfo output is an
+				// information disclosure.
+				scheme, exposed, complete := confirmPHPInfoBody(ctx, pr.scheme, vh.domain, host, rel)
+				if !complete {
+					markCheckIncomplete(ctx, "exposed_files")
+				}
+				if !exposed {
+					continue
+				}
+				pr.scheme = scheme
 			}
 			findings = append(findings, buildExposedFinding(vh, path, rel, class, pr))
 		}
@@ -368,6 +385,37 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
 	defer cancel()
+	client, closeIdle := exposureProbeHTTPClient(domain, host)
+	defer closeIdle()
+	return doLocalProbeWithClient(probeCtx, client, scheme, domain, urlPath)
+}
+
+func doLocalProbeWithClient(ctx context.Context, client *http.Client, scheme, domain, urlPath string) (probeResult, bool) {
+	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
+
+	resp, err := doProbeRequest(ctx, client, http.MethodHead, u.String(), "")
+	if err != nil {
+		return probeResult{}, false
+	}
+	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
+		_ = resp.Body.Close()
+		resp, err = doProbeRequest(ctx, client, http.MethodGet, u.String(), "bytes=0-0")
+		if err != nil {
+			return probeResult{}, false
+		}
+	}
+	pr := probeResult{scheme: scheme, status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), reachable: true}
+	_ = resp.Body.Close()
+	return pr, true
+}
+
+// exposureProbeHTTPClient builds the pinned-dial client shared by the
+// headers-only probe and the phpinfo body confirmation: connections dial the
+// vhost's configured serving address (never DNS), SNI/Host carry the domain,
+// and redirects are never followed. The returned func releases idle
+// connections; a fresh transport per probe is needed because SNI
+// (ServerName) is per-domain.
+func exposureProbeHTTPClient(domain, host string) (*http.Client, func()) {
 	transport := &http.Transport{
 		MaxResponseHeaderBytes: 64 << 10,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -383,10 +431,6 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 		// SNI must match the requested domain to select the right vhost.
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: domain},
 	}
-	// A fresh transport per probe is needed because SNI (ServerName) is
-	// per-domain; release its connections so the daemon does not accumulate
-	// idle sockets across scan cycles.
-	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   exposureProbeTotalTimeout,
@@ -394,22 +438,118 @@ func doLocalProbe(ctx context.Context, scheme, domain, host, urlPath string) (pr
 			return http.ErrUseLastResponse
 		},
 	}
-	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
+	return client, transport.CloseIdleConnections
+}
 
-	resp, err := doProbeRequest(probeCtx, client, http.MethodHead, u.String(), "")
-	if err != nil {
-		return probeResult{}, false
+// phpinfoBodyReadMax bounds how much of the phpinfo.php response body the
+// confirmation stage reads. Real dumps put "PHP Version" in the first couple
+// of KB; 64 KiB leaves generous room for custom headers while keeping the
+// probe cheap.
+const phpinfoBodyReadMax = 64 << 10
+
+// phpinfoMinBodyBytes is the minimum confirmed-dump size. Even a minimal PHP
+// build renders tens of KB of phpinfo output; the observed false-positive
+// stubs answer with empty or sub-100-byte bodies.
+const phpinfoMinBodyBytes = 4096
+
+// phpinfoBodyFetcher retrieves up to phpinfoBodyReadMax bytes of the response
+// body for a phpinfo candidate. The bool reports whether the result can clear
+// an earlier finding: non-success HTTP statuses are complete negatives, while
+// transport, body-read, and inconclusive partial-response failures are not.
+// This separate seam keeps every other exposure class on its headers-only
+// contract.
+type phpinfoBodyFetcher func(ctx context.Context, scheme, domain, host, urlPath string) ([]byte, bool)
+
+var fetchPHPInfoBody phpinfoBodyFetcher = realFetchPHPInfoBody
+
+func realFetchPHPInfoBody(ctx context.Context, scheme, domain, host, urlPath string) ([]byte, bool) {
+	host = normalizeServingIP(host)
+	if host == "" {
+		return nil, false
 	}
-	if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotImplemented {
-		_ = resp.Body.Close()
-		resp, err = doProbeRequest(probeCtx, client, http.MethodGet, u.String(), "bytes=0-0")
-		if err != nil {
-			return probeResult{}, false
+	fetchCtx, cancel := context.WithTimeout(ctx, exposureProbeTotalTimeout)
+	defer cancel()
+	client, closeIdle := exposureProbeHTTPClient(domain, host)
+	defer closeIdle()
+	u := url.URL{Scheme: scheme, Host: domain, Path: urlPath}
+	return fetchPHPInfoBodyWithClient(fetchCtx, client, u.String())
+}
+
+func fetchPHPInfoBodyWithClient(ctx context.Context, client *http.Client, u string) ([]byte, bool) {
+	resp, err := doProbeRequest(ctx, client, http.MethodGet, u, "")
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	partial := resp.StatusCode == http.StatusPartialContent
+	if resp.StatusCode != http.StatusOK && !partial {
+		return nil, true
+	}
+	reader := io.Reader(resp.Body)
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "":
+	case "gzip":
+		compressed, gzErr := gzip.NewReader(resp.Body)
+		if gzErr != nil {
+			return nil, false
+		}
+		defer func() { _ = compressed.Close() }()
+		reader = compressed
+	default:
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, phpinfoBodyReadMax))
+	if err != nil {
+		return nil, false
+	}
+	if partial && !isRealPHPInfoBody(body) {
+		return nil, false
+	}
+	return body, true
+}
+
+// confirmPHPInfoBody checks both origin protocols because HEAD and GET can be
+// routed differently, and HTTPS and HTTP can execute different handlers. A
+// dump observed on either protocol is conclusive; if neither exposes a dump,
+// every GET must complete before an earlier finding can be cleared.
+func confirmPHPInfoBody(ctx context.Context, preferredScheme, domain, host, urlPath string) (string, bool, bool) {
+	schemes := []string{"https", "http"}
+	if preferredScheme == "http" {
+		schemes[0], schemes[1] = schemes[1], schemes[0]
+	}
+	complete := true
+	for _, scheme := range schemes {
+		body, ok := fetchPHPInfoBody(ctx, scheme, domain, host, urlPath)
+		if !ok {
+			complete = false
+			continue
+		}
+		if isRealPHPInfoBody(body) {
+			return scheme, true, true
 		}
 	}
-	pr := probeResult{scheme: scheme, status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), reachable: true}
-	_ = resp.Body.Close()
-	return pr, true
+	return "", false, complete
+}
+
+// isRealPHPInfoBody reports whether a response body is genuine phpinfo()
+// output: the version banner every phpinfo variant emits (HTML "PHP Version
+// x.y" heading or CLI "PHP Version => x.y") plus a dump-sized body. UTF-16
+// variants cover output handlers that transcode the otherwise ASCII banner.
+func isRealPHPInfoBody(body []byte) bool {
+	if len(body) < phpinfoMinBodyBytes {
+		return false
+	}
+	marker := []byte("PHP Version")
+	if bytes.Contains(body, marker) {
+		return true
+	}
+	le := make([]byte, len(marker)*2)
+	be := make([]byte, len(marker)*2)
+	for i, b := range marker {
+		le[i*2] = b
+		be[i*2+1] = b
+	}
+	return bytes.Contains(body, le) || bytes.Contains(body, be)
 }
 
 func doProbeRequest(ctx context.Context, client *http.Client, method, u, rangeHdr string) (*http.Response, error) {
