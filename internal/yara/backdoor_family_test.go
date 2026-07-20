@@ -37,10 +37,18 @@ func TestBackdoorFamily_OpenBasedirEscape(t *testing.T) {
 	if !hasYaraRule(s.ScanBytes(mal), "exploit_open_basedir_escape") {
 		t.Error("exploit_open_basedir_escape: root open_basedir reset not detected")
 	}
+	commented := []byte(`<?php ini_set/**/('open_basedir', '/');`)
+	if !hasYaraRule(s.ScanBytes(commented), "exploit_open_basedir_escape") {
+		t.Error("exploit_open_basedir_escape: comment-separated reset not detected")
+	}
 	// Legit hardening narrows open_basedir to a real path.
 	legit := []byte(`<?php ini_set('open_basedir', ABSPATH . PATH_SEPARATOR . WP_CONTENT_DIR);`)
 	if hasYaraRule(s.ScanBytes(legit), "exploit_open_basedir_escape") {
 		t.Error("exploit_open_basedir_escape FP: matched legitimate open_basedir narrowing")
+	}
+	wrapped := []byte(`<?php my_ini_set('open_basedir', '/');`)
+	if hasYaraRule(s.ScanBytes(wrapped), "exploit_open_basedir_escape") {
+		t.Error("exploit_open_basedir_escape FP: matched ini_set substring in another function")
 	}
 }
 
