@@ -61,7 +61,10 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 	if ttl <= 0 {
 		ttl = time.Duration(config.DefaultDropperUnlinkTTLSec) * time.Second
 	}
-	e := newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: int32(os.Getpid())})
+	// #nosec G115 -- os.Getpid returns this process's PID, bounded by
+	// /proc/sys/kernel/pid_max (<= 2^22 on Linux), so it always fits in int32.
+	selfPID := int32(os.Getpid())
+	e := newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: selfPID})
 	e.emit = func(sev alert.Severity, check, msg, details, path string) {
 		fm.sendAlertWithPath(sev, check, msg, details, path, "")
 	}
