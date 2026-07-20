@@ -18,7 +18,8 @@ func TestWebshellTokenGateIndirectDetectsRealShell(t *testing.T) {
 		"if ($token === $input_token && isset(" + gGet + "['c'])) {\n" +
 		"    $cmd = (string)" + gGet + "['c'];\n" +
 		"    $output = '';\n" +
-		"    if (function_exists('shell_exec')) {\n" +
+		"    // Try multiple execution methods\n" +
+		"    if (function_exists('shell_exec') && !in_array('shell_exec', explode(',', @ini_get('disable_functions')))) {\n" +
 		"        $output = @shell_exec($cmd . ' 2>&1');\n" +
 		"    }\n}"
 	if !hasRule(scanner.ScanContent([]byte(realShell), ".php"), "webshell_token_gate_indirect") {
@@ -28,21 +29,33 @@ func TestWebshellTokenGateIndirectDetectsRealShell(t *testing.T) {
 	variants := []struct{ name, content string }{
 		{
 			"direct assignment then loose compare",
-			"<?php $k = 'a1b2c3d4e5f6'; $t = " + gPost + "['t']; if ($t == $k) { " + sSys + "($c); }",
+			"<?php $k = 'a1b2c3d4e5f6'; $t = " + gPost + "['t']; if ($t == $k) { $c = " + gPost + "['c']; " + sSys + "($c); }",
 		},
 		{
 			"request var compared first, strict",
-			"<?php $secret = \"zx98yw76vu54\"; $given = " + gReq + "['auth']; if ($given === $secret) { @" + sPass + "($c . ' 2>&1'); }",
+			"<?php $secret = \"zx98yw76vu54\"; $given = " + gReq + "['auth']; if ($given === $secret) { $c = " + gReq + "['cmd']; @" + sPass + "((string)$c . ' 2>&1'); }",
 		},
 		{
-			"cookie-sourced token with popen sink",
-			"<?php $tok = 'qqww11ee22rr'; $in = " + gGet + "['k']; if ($tok === $in) { $fp = @popen($cmd, 'r'); }",
+			"GET-sourced token with popen sink",
+			"<?php $tok = 'qqww11ee22rr'; $in = " + gGet + "['k']; if ($tok === $in) { $cmd = " + gGet + "['c']; $fp = @popen($cmd, 'r'); }",
 		},
 		// Declaration order is trivially swapped by an author; the gate is the
 		// same shape, so reversing it must not evade the rule.
 		{
 			"request captured before the token literal",
-			"<?php $in = " + gGet + "['k']; $tok = 'mm44nn55bb66'; if ($in === $tok) { " + sSys + "($cmd); }",
+			"<?php $in = " + gGet + "['k']; $tok = 'mm44nn55bb66'; if ($in === $tok) { $cmd = " + gGet + "['c']; " + sSys + "($cmd); }",
+		},
+		{
+			"double-quoted token, key, and comment separators",
+			"<?php $secret/*a*/=/*b*/\"zx98yw76vu54\"; $given = " + gReq + "[\"auth\"]; if ($given === $secret) { $c = " + gReq + "['cmd']; @" + sPass + "($c); }",
+		},
+		{
+			"hash_equals with call_user_func sink",
+			"<?php $tok = 'hh44jj55kk66'; $in = " + gPost + "['k']; if (hash_equals($tok, $in)) { $cmd = " + gPost + "['c']; call_user_func('" + sSys + "', $cmd); }",
+		},
+		{
+			"strcmp with backtick sink",
+			"<?php $tok = 'ss44tt55uu66'; $in = " + gGet + "['k']; if (strcmp($in, $tok) === 0) { $cmd = " + gGet + "['c']; $out = `$cmd`; }",
 		},
 	}
 	for _, v := range variants {
@@ -89,6 +102,24 @@ func TestWebshellTokenGateIndirectFPSafe(t *testing.T) {
 		{
 			"config comparison",
 			"<?php $expected = 'buildhash1234'; $actual = $manifest['hash']; if ($actual === $expected) { " + sSys + "($deployCmd); }",
+		},
+		// The original four uncorrelated fragments must not chain across an
+		// ordinary request handler and a command outside the guarded branch.
+		{
+			"unrelated sink after closed gate",
+			"<?php $channel = 'production'; $action = " + gReq + "['action']; if ($current === $expected) { dispatch($action); } " + sSys + "($maintenanceCmd);",
+		},
+		// A large plugin method can contain a request capture, an unrelated
+		// configuration comparison, and a capability command in the same branch.
+		// None of that establishes request-to-command data flow.
+		{
+			"unrelated capability command inside gate",
+			"<?php $channel = 'production'; $action = " + gReq + "['action']; if ($installed === $required) { " + sSys + "($healthCheck); dispatch($action); }",
+		},
+		// Comparison helper names must have a callable boundary, just like sinks.
+		{
+			"hash_equals wrapper",
+			"<?php $secret = 'aa11bb22cc33'; $in = " + gGet + "['k']; if (my_hash_equals($secret, $in)) { $cmd = " + gGet + "['c']; " + sSys + "($cmd); }",
 		},
 	}
 	for _, b := range benign {
