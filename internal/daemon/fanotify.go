@@ -147,6 +147,20 @@ type FileMonitor struct {
 	// gate matches paths against, refreshed on the probe loop's cadence so
 	// account add/remove is picked up without a restart.
 	dropperDocroots atomic.Value // []string
+	// dropperQuarantines records exact snapshots of files CSM moved out of
+	// their original paths, so the later absence probe does not misclassify
+	// CSM's own remediation as attacker self-deletion.
+	dropperQuarantines *dropperQuarantineLedger
+	// dropperOverflowReported is the last cumulative tracker-overflow count
+	// surfaced to the operator. Only the probe goroutine accesses it.
+	dropperOverflowReported   uint64
+	lastDropperOverflowReport time.Time
+	// dropperHandlerCache shares immutable inherited .htaccess PHP mappings
+	// across analyzer events. The generation changes as soon as a .htaccess
+	// event reaches the reader, invalidating every inherited snapshot.
+	dropperHandlerMu         sync.Mutex
+	dropperHandlerCache      map[string]dropperPHPHandlerCacheEntry
+	dropperHandlerGeneration uint64
 }
 
 const (
@@ -255,9 +269,12 @@ func recordReadTruncation(fd int, maxBytes int, check string) {
 }
 
 type fileEvent struct {
-	path string
-	fd   int
-	pid  int32
+	path          string
+	fd            int
+	pid           int32
+	mask          uint64
+	dropperOnly   bool
+	phpExecutable bool
 }
 
 func (fm *FileMonitor) currentCfg() *config.Config {
@@ -522,7 +539,7 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 		if event.Mask&unix.FAN_Q_OVERFLOW != 0 {
 			fm.handleQueueOverflow()
 		} else if event.Fd >= 0 {
-			fm.handleEvent(int(event.Fd), event.Pid)
+			fm.handleEvent(int(event.Fd), event.Pid, event.Mask)
 		}
 
 		offset += eventLen
@@ -591,13 +608,14 @@ func (fm *FileMonitor) Stop() {
 	})
 }
 
-func (fm *FileMonitor) handleEvent(fd int, pid int32) {
+func (fm *FileMonitor) handleEvent(fd int, pid int32, mask uint64) {
 	// Get the file path from the fd via /proc/self/fd/N
 	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
 		_ = unix.Close(fd)
 		return
 	}
+	path = normalizeFanotifyEventPath(path)
 
 	// M5 - skip directory events
 	if strings.HasSuffix(path, "/") {
@@ -605,15 +623,25 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 		return
 	}
 
-	// Fast filter - decide if this file is interesting based on path only
-	if !fm.isInteresting(path) {
+	// Keep the existing content scanner filter separate from the dropper
+	// admission filter. Atomic-write staging names deliberately skip the
+	// normal content pipeline, while the dropper tracker still needs to see
+	// them so it can distinguish a rename from a deletion. Likewise, an
+	// executable with an arbitrary filename has no path-only content signal.
+	fm.invalidateDropperPHPHandlerCache(path)
+	contentInteresting := fm.isInteresting(path)
+	dropperInteresting, phpExecutable := fm.isDropperInteresting(path, fd)
+	if !contentInteresting && !dropperInteresting {
 		_ = unix.Close(fd)
 		return
 	}
 
 	// Send to analyzer pool (with backpressure)
 	select {
-	case fm.analyzerCh <- fileEvent{path: path, fd: fd, pid: pid}:
+	case fm.analyzerCh <- fileEvent{
+		path: path, fd: fd, pid: pid, mask: mask,
+		dropperOnly: !contentInteresting, phpExecutable: phpExecutable,
+	}:
 	default:
 		// Queue full - drop event, count, and record the parent dir so the
 		// reconcile pass in overflowReporter can rescan it. Without this
@@ -630,6 +658,16 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
+}
+
+// normalizeFanotifyEventPath removes procfs's synthetic " (deleted)" suffix
+// when the event fd's directory entry was already unlinked. Linux does not
+// disambiguate that marker from a literal filename suffix. Treat it as the
+// kernel marker: otherwise an attacker can create a same-inode hardlink with
+// the literal suffix and make an immediate self-delete miss the PHP path gate.
+func normalizeFanotifyEventPath(path string) string {
+	const deletedSuffix = " (deleted)"
+	return strings.TrimSuffix(path, deletedSuffix)
 }
 
 // maybeTriggerEagerReconcile nudges overflowReporter to run reconcileDrops
@@ -941,7 +979,29 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Snapshot this write as a possible self-deleting dropper before the
 	// per-type checks below can early-return. Reads are positional (Pread/
 	// Fstat/Statx) so they do not disturb the fd for later content checks.
-	fm.observeDropperCandidate(event, procInfo)
+	cand := fm.observeDropperCandidate(event, procInfo)
+	markDropperContentSuspicious := func() {
+		if cand == nil {
+			return
+		}
+		cand.ContentSuspicious = true
+		fm.dropper.tr.Refresh(*cand)
+	}
+
+	// Some events are admitted only for dropper tracking. Handler-mapped PHP
+	// still needs the normal PHP scanner; arbitrary executables and atomic-write
+	// staging paths retain only the strongest cheap content signal so staging
+	// does not regain the false-positive storm this pipeline already avoided.
+	if event.dropperOnly {
+		if event.phpExecutable {
+			if fm.checkPHPContent(event.fd, path, procInfo) {
+				markDropperContentSuspicious()
+			}
+		} else if cand != nil && looksLikePHPWebshell(cand.Head) {
+			markDropperContentSuspicious()
+		}
+		return
+	}
 
 	// H2 - suppression path matching using filepath.Match. Read the live config
 	// (config.Active via currentCfg) so a SIGHUP change to suppressions.ignore_paths
@@ -996,6 +1056,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if knownWebshells[nameLower] {
 		recordReadTruncation(event.fd, 65536, "phpcontent_inline")
 		if data := readFromFd(event.fd, 65536); looksLikePHPWebshell(data) {
+			markDropperContentSuspicious()
 			fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
 				fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
 			return
@@ -1098,12 +1159,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		recordReadTruncation(event.fd, 65536, "phpcontent_uploads")
 		data := readFromFd(event.fd, 65536)
 		if looksLikePHPWebshell(data) {
+			markDropperContentSuspicious()
 			fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
 				fmt.Sprintf("PHP file created in uploads: %s", path),
 				"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
 				path, procInfo)
 		} else {
 			if fm.checkPHPContent(event.fd, path, procInfo) {
+				markDropperContentSuspicious()
 				return
 			}
 			// Content-shape gate: file whose reachable code is
@@ -1161,7 +1224,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// index file.
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
-		if !fm.checkPHPContent(event.fd, path, procInfo) {
+		if fm.checkPHPContent(event.fd, path, procInfo) {
+			markDropperContentSuspicious()
+		} else {
 			data := readFromFd(event.fd, 65536)
 			if isBenignPHPStubData(event.fd, data) {
 				return
@@ -1182,7 +1247,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// earlier in this function (before the /tmp early-return) so specific
 	// file types take precedence over the /tmp generic block.
 	if isPHPExtension(nameLower) {
-		fm.checkPHPContent(event.fd, path, procInfo)
+		if fm.checkPHPContent(event.fd, path, procInfo) {
+			markDropperContentSuspicious()
+		}
 		return
 	}
 
@@ -1834,6 +1901,7 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 					FilePath: path,
 				}
 				if qPath, ok := checks.InlineQuarantineGated(fm.currentCfg(), finding, path, data); ok {
+					fm.recordDropperQuarantine(path, qPath)
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))

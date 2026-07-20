@@ -509,7 +509,7 @@ func TestHandleEventQueueFullDropsAndCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fm.handleEvent(dupFd, 0)
+	fm.handleEvent(dupFd, 0, FAN_CLOSE_WRITE)
 
 	if atomic.LoadInt64(&fm.droppedEvents) != 1 {
 		t.Errorf("droppedEvents = %d, want 1", atomic.LoadInt64(&fm.droppedEvents))

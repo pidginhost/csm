@@ -152,6 +152,25 @@ func TestPHPHandlerOverlay_StockFilesMatchIsInactive(t *testing.T) {
 	}
 }
 
+func TestResolvePHPExecutionOverlayExposesInheritedMapping(t *testing.T) {
+	docroot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(docroot, ".htaccess"),
+		[]byte("AddHandler application/x-httpd-php .jpg\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subdir := filepath.Join(docroot, "uploads", "nested")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	overlay := ResolvePHPExecutionOverlay(docroot, subdir)
+	if !overlay.Executes("payload.jpg") {
+		t.Fatal("exported overlay did not preserve inherited PHP handler")
+	}
+	if overlay.Executes("payload.txt") {
+		t.Fatal("exported overlay widened handler mapping to unrelated extension")
+	}
+}
+
 func TestScanObfuscatedPHP_FilesMatchMappedExtensionDetected(t *testing.T) {
 	dir := t.TempDir()
 	htaccess := `<FilesMatch "\.inc$">

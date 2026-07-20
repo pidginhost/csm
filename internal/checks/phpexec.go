@@ -26,6 +26,24 @@ func IsExecutablePHPName(nameLower string) bool {
 	return isExecutablePHPName(nameLower)
 }
 
+// PHPExecutionOverlay is an immutable snapshot of inherited .htaccess PHP
+// handler mappings for one directory. Realtime monitors can cache it and test
+// arbitrary filenames without duplicating the periodic scanner's parser.
+type PHPExecutionOverlay struct {
+	overlay phpHandlerOverlay
+}
+
+// ResolvePHPExecutionOverlay reconstructs the PHP handler mappings inherited
+// by fileDir from docroot through the directory's own .htaccess file.
+func ResolvePHPExecutionOverlay(docroot, fileDir string) PHPExecutionOverlay {
+	return PHPExecutionOverlay{overlay: reconstructOverlay(docroot, fileDir)}
+}
+
+// Executes reports whether nameLower is handled as PHP by this overlay.
+func (o PHPExecutionOverlay) Executes(nameLower string) bool {
+	return o.overlay.executes(nameLower)
+}
+
 func isExecutablePHPName(nameLower string) bool {
 	for _, ext := range executablePHPExtensions {
 		if strings.HasSuffix(nameLower, ext) {
