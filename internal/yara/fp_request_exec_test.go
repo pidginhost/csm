@@ -13,6 +13,8 @@ var (
 	fGz   = "gzinf" + "late"
 	gReq  = "$_" + "REQUEST"
 	gPost = "$_" + "POST"
+	gGet  = "$_" + "GET"
+	fDef  = "def" + "ine"
 )
 
 func TestWebshellRequestDecodedExec_Yara(t *testing.T) {
@@ -48,9 +50,37 @@ func TestWebshellAuthTokenGate_Yara(t *testing.T) {
 	if !hasYaraRule(s.ScanBytes([]byte(pxFull)), "webshell_auth_token_gate") {
 		t.Error("webshell_auth_token_gate: real px-token shell not detected by deep scan")
 	}
-	// FP guard: WP nonce comparison (function result, not a hardcoded token).
-	nonce := "<?php $e = wp_create_nonce('a'); if(isset(" + gPost + "['_wpnonce']) && " + gPost + "['_wpnonce'] === $e){ ok(); }"
-	if hasYaraRule(s.ScanBytes([]byte(nonce)), "webshell_auth_token_gate") {
-		t.Error("webshell_auth_token_gate FP: WordPress nonce check")
+
+	variants := []struct{ name, content string }{
+		{
+			"loose comparison and single quotes",
+			"<?php $key='a1b2c3d4e5'; if(isset(" + gGet + "['key']) && " + gGet + "['key'] == $key){ " + sSys + "($cmd); }",
+		},
+		{
+			"define token",
+			"<?php " + fDef + "('PX_TOKEN', 'z9y8x7w6v5'); if(isset(" + gPost + "['key']) && " + gPost + "['key'] === PX_TOKEN){ " + sPass + "($cmd); }",
+		},
+		{
+			"class const token",
+			"<?php class Gate { private const TOKEN = \"q1w2e3r4t5\"; function run(){ if(isset(" + gReq + "['key']) && " + gReq + "['key'] === self::TOKEN){ " + sPass + "($cmd); }}}",
+		},
+	}
+	for _, v := range variants {
+		if !hasYaraRule(s.ScanBytes([]byte(v.content)), "webshell_auth_token_gate") {
+			t.Errorf("webshell_auth_token_gate missed %s", v.name)
+		}
+	}
+
+	benign := []struct{ name, content string }{
+		{"WP nonce", "<?php $e = wp_create_nonce('a'); if(isset(" + gPost + "['_wpnonce']) && " + gPost + "['_wpnonce'] === $e){ ok(); }"},
+		{"hardcoded plugin action", "<?php $action = \"activate123\"; if(isset(" + gReq + "['action']) && " + gReq + "['action'] === $action){ activate_plugin(); }"},
+		{"hardcoded license key", "<?php $license = 'prolicense2026'; if(isset(" + gPost + "['license']) && " + gPost + "['license'] == $license){ enable_pro(); }"},
+		{"object exec method", "<?php $key='a1b2c3d4'; if(isset(" + gPost + "['key']) && " + gPost + "['key'] === $key){ $runner->exec($task); }"},
+		{"sink substring", "<?php $key='a1b2c3d4'; if(isset(" + gPost + "['key']) && " + gPost + "['key'] === $key){ my_" + sSys + "($task); }"},
+	}
+	for _, b := range benign {
+		if hasYaraRule(s.ScanBytes([]byte(b.content)), "webshell_auth_token_gate") {
+			t.Errorf("webshell_auth_token_gate FP on %s", b.name)
+		}
 	}
 }

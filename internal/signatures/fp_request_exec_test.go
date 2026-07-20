@@ -15,6 +15,7 @@ var (
 	gPost = "$_" + "POST"
 	gGet  = "$_" + "GET"
 	iniOB = "ini_" + "set"
+	fDef  = "def" + "ine"
 )
 
 // webshell_request_decoded_exec targets a decode assignment whose very next
@@ -66,6 +67,26 @@ func TestWebshellAuthTokenGateDetectsPxShell(t *testing.T) {
 	if !hasRule(scanner.ScanContent([]byte(pxFull), ".php"), "webshell_auth_token_gate") {
 		t.Error("webshell_auth_token_gate missed the real px-token 404.php shell")
 	}
+
+	variants := []struct{ name, content string }{
+		{
+			"loose comparison and single quotes",
+			"<?php $key='a1b2c3d4e5'; if(isset(" + gGet + "['key']) && " + gGet + "['key'] == $key){ " + sSys + "($cmd); }",
+		},
+		{
+			"define token",
+			"<?php " + fDef + "('PX_TOKEN', 'z9y8x7w6v5'); if(isset(" + gPost + "['key']) && " + gPost + "['key'] === PX_TOKEN){ " + sPass + "($cmd); }",
+		},
+		{
+			"class const token",
+			"<?php class Gate { private const TOKEN = \"q1w2e3r4t5\"; function run(){ if(isset(" + gReq + "['key']) && " + gReq + "['key'] === self::TOKEN){ " + sPass + "($cmd); }}}",
+		},
+	}
+	for _, v := range variants {
+		if !hasRule(scanner.ScanContent([]byte(v.content), ".php"), "webshell_auth_token_gate") {
+			t.Errorf("webshell_auth_token_gate missed %s", v.name)
+		}
+	}
 }
 
 func TestWebshellAuthTokenGateFPSafe(t *testing.T) {
@@ -77,6 +98,14 @@ func TestWebshellAuthTokenGateFPSafe(t *testing.T) {
 		{"api key constant", "<?php $apikey = \"abcd1234efgh\"; $client->auth($apikey);"},
 		// short token (< 8 chars) is not a random secret.
 		{"short compare token", "<?php $m = \"ok\"; if(isset(" + gGet + "['t']) && " + gGet + "['t'] === $m){ echo 1; }"},
+		// Realistic plugin routing: a literal action name is compared to request
+		// data, but the accepted branch contains no code/command sink.
+		{"hardcoded plugin action", "<?php $action = \"activate123\"; if(isset(" + gReq + "['action']) && " + gReq + "['action'] === $action){ activate_plugin(); }"},
+		{"hardcoded license key", "<?php $license = 'prolicense2026'; if(isset(" + gPost + "['license']) && " + gPost + "['license'] == $license){ enable_pro(); }"},
+		// Method names and longer identifiers containing a sink name are not
+		// dangerous PHP built-in invocations.
+		{"object exec method", "<?php $key='a1b2c3d4'; if(isset(" + gPost + "['key']) && " + gPost + "['key'] === $key){ $runner->exec($task); }"},
+		{"sink substring", "<?php $key='a1b2c3d4'; if(isset(" + gPost + "['key']) && " + gPost + "['key'] === $key){ my_" + sSys + "($task); }"},
 	}
 	for _, b := range benign {
 		if hasRule(scanner.ScanContent([]byte(b.content), ".php"), "webshell_auth_token_gate") {
