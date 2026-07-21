@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // Scanner wraps YARA-X for malware file scanning.
@@ -137,6 +138,15 @@ func (s *Scanner) ScanBytesChecked(data []byte) ([]Match, error) {
 	s.mu.RUnlock()
 
 	if rules == nil {
+		return nil, nil
+	}
+
+	// Raw bytes of a compressed archive are not meaningfully scannable: a
+	// deflated body cannot be pattern-matched, and stored entries plus the
+	// central-directory filenames trip rules with spurious tokens (plugin
+	// backup .zip archives flagged as webshells/phishing). The real payload is
+	// scanned when the archive is extracted to disk, so skip the container.
+	if contenttype.IsCompressedArchive(data) {
 		return nil, nil
 	}
 

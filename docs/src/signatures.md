@@ -4,6 +4,8 @@ CSM uses YAML and YARA-X rules for malware detection. Rules are stored in `/opt/
 
 Deep scans are rolling: each scheduled run resumes from a persisted cursor and scans as much as fits in its time budget, so the whole content set is covered across runs even when a single run cannot finish it. A warning finding is raised if no full pass has completed within 30 days.
 
+Both engines skip raw ZIP, gzip, bzip2, xz, 7z, and RAR containers. Matching compressed bytes or stored filenames produces false positives without inspecting the archived file, so content is scanned when it is extracted onto monitored storage instead. Uncompressed tar files and executable PHP archives (PHAR) remain scannable, and filename-based phishing-kit archive detection is unchanged.
+
 ## YAML Rules
 
 ```yaml

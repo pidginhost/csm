@@ -17,6 +17,11 @@ import (
 // docs/superpowers/specs/2026-06-20-stale-content-finding-reverification-design.md.
 const ContentLogicVersion = 1
 
+// ContentScannerVersion identifies scanner behavior that is not represented by
+// the loaded YAML signature version or YARA rule count. Bump it when shared
+// content classification changes so the daemon re-checks stale findings.
+const ContentScannerVersion = 1
+
 // contentReverifiableChecks are content findings whose condition can be
 // re-evaluated here by re-running the classifier that produced them on the
 // file's current bytes. Unlike presenceVerifiableChecks, a still-present file
@@ -47,9 +52,9 @@ func IsContentReverifiable(check string) bool {
 }
 
 // ContentDetectionVersion returns a token identifying the full content-detection
-// logic in effect: the heuristic version, the loaded signature-set version, and
-// the loaded YARA rule count. The re-verifier always re-runs the real
-// classifier, so this token only gates the daemon sweep and enriches audit
+// logic in effect: the heuristic and scanner versions, the loaded signature-set
+// version, and the loaded YARA rule count. The re-verifier always re-runs the
+// real classifier, so this token only gates the daemon sweep and enriches audit
 // detail; its precision is not security-critical.
 func ContentDetectionVersion() string {
 	sigVer := 0
@@ -60,7 +65,7 @@ func ContentDetectionVersion() string {
 	if y := yara.Active(); y != nil {
 		yaraRules = y.RuleCount()
 	}
-	return fmt.Sprintf("php=%d;sig=%d;yara=%d", ContentLogicVersion, sigVer, yaraRules)
+	return fmt.Sprintf("php=%d;scan=%d;sig=%d;yara=%d", ContentLogicVersion, ContentScannerVersion, sigVer, yaraRules)
 }
 
 // contentFingerprintMaxBytes caps the file size hashed for a finding's

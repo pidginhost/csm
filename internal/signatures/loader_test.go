@@ -171,6 +171,26 @@ rules:
 	}
 }
 
+func TestScanContentSkipsCompressedArchivesForWildcardRules(t *testing.T) {
+	scanner := &Scanner{rules: []Rule{{
+		Name:      "all_files_backdoor",
+		FileTypes: []string{"*"},
+		Patterns:  []string{"gs-netcat"},
+		MinMatch:  1,
+	}}}
+
+	archive := append([]byte{'P', 'K', 0x03, 0x04}, []byte("gs-netcat")...)
+	if matches := scanner.ScanContent(archive, ".zip"); len(matches) != 0 {
+		t.Fatalf("compressed archive matched wildcard rule: %v", matches)
+	}
+	if matches := scanner.ScanContent([]byte("#!/bin/sh\ngs-netcat"), ".sh"); len(matches) != 1 {
+		t.Fatalf("plain malicious script matches = %d, want 1", len(matches))
+	}
+	if matches := scanner.ScanContent([]byte("<?php // phar stub: gs-netcat\n__HALT_COMPILER();"), ".phar"); len(matches) != 1 {
+		t.Fatalf("executable PHAR matches = %d, want 1", len(matches))
+	}
+}
+
 func TestExcludePatterns(t *testing.T) {
 	dir := t.TempDir()
 	rulesYAML := `
