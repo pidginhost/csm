@@ -167,9 +167,13 @@ func TestFPFlood_MailerSmtpRelay_StockPhpmailer(t *testing.T) {
 
 func TestFPFlood_MailerSmtpRelay_RequestDrivenSingleShot(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	mal := []byte(`<?php $host=$_POST['x']; $from=$_POST['y']; $to=$_POST['z']; $s=fsockopen($host,25); fputs($s,"MAIL FROM:<".$from.">\r\n"); fputs($s,"RCPT TO:<".$to.">\r\n");`)
-	if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
-		t.Error("mailer_smtp_relay regression: request-driven single-shot SMTP relay not detected")
+	for _, mal := range [][]byte{
+		[]byte(`<?php $host=$_POST['x']; $from=$_POST['y']; $to=$_POST['z']; $s=fsockopen($host,25); fputs($s,"MAIL FROM:<".$from.">\r\n"); fputs($s,"RCPT TO:<".$to.">\r\n");`),
+		[]byte(`<?php $host=$_GET['x']; $from=$_GET['y']; $to=$_GET['z']; $s=fsockopen($host,25); fputs($s,"MAIL FROM:<".$from.">\r\n"); fputs($s,"RCPT TO:<".$to.">\r\n");`),
+	} {
+		if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
+			t.Errorf("mailer_smtp_relay regression: request-driven single-shot SMTP relay not detected: %s", mal)
+		}
 	}
 }
 

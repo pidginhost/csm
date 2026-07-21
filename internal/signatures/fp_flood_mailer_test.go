@@ -5,7 +5,8 @@ import "testing"
 // YAML-engine mirror of the mailer-family FP-flood fix. The YAML engine only
 // scans .php, so the .php false positives are: bbPress functions.php (the
 // phrase "Anonymous Email"), stock PHPMailer SMTP.php (fsockopen + MAIL FROM
-// + a response-reading loop), and wp-mail-smtp translation code.
+// + a response-reading loop), wp-mail-smtp translation code, and Monolog's
+// configured recipient iteration through a local $to loop variable.
 
 func TestFPFlood_YML_MailerAnonemail_BbpressField(t *testing.T) {
 	s := loadRepoScanner(t)
@@ -66,6 +67,7 @@ func TestFPFlood_YML_MailerSmtpRelay_AlternateInputs(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`<?php $s=fsockopen('127.0.0.1',25); for($i=0;$i<count($emails);$i++){ fputs($s,"MAIL FROM:<x>\r\nRCPT TO:<".$emails[$i].">\r\n"); }`),
 		[]byte(`<?php $h=$_POST['host']; $f=$_POST['from']; $t=$_POST['to']; $s=fsockopen($h,25); fputs($s,"MAIL FROM:<$f>\r\n"); fwrite($s,"RCPT TO:<$t>\r\n");`),
+		[]byte(`<?php $h=$_GET['host']; $f=$_GET['from']; $t=$_GET['to']; $s=fsockopen($h,25); fputs($s,"MAIL FROM:<$f>\r\n"); fwrite($s,"RCPT TO:<$t>\r\n");`),
 		[]byte(`<?php $s=fsockopen/* split */('127.0.0.1',25); foreach($recipients as $to){ fputs($s,"MAIL FROM :<x>\r\nRCPT TO:<$to>\r\n"); }`),
 	} {
 		if !hasRule(s.ScanContent(body, ".php"), "mailer_smtp_relay") {
@@ -154,5 +156,47 @@ function wp_notify_moderator($id){
 	nestedGuard := []byte(`<?php foreach($emails as $email){ if(!$email){ continue; } mail($email,'Win','http://evil/'); }`)
 	if !hasRule(s.ScanContent(nestedGuard, ".php"), "mailer_mass_sender") {
 		t.Error("mailer_mass_sender regression: recipient loop with a nested validation block not detected")
+	}
+	for _, requestRecipients := range [][]byte{
+		[]byte(`<?php foreach($_POST['recipients'] as $to){ mail($to, $_POST['subj'], $_POST['body']); }`),
+		[]byte(`<?php foreach($_GET['recipients'] as $to){ mail($to, $_GET['subj'], $_GET['body']); }`),
+	} {
+		if !hasRule(s.ScanContent(requestRecipients, ".php"), "mailer_mass_sender") {
+			t.Errorf("mailer_mass_sender regression: request recipient loop not detected: %s", requestRecipients)
+		}
+	}
+}
+
+func TestFPFlood_YML_MailerLoopVariableTo(t *testing.T) {
+	s := loadRepoScanner(t)
+	monolog := []byte(`<?php
+class NativeMailerHandler extends MailHandler {
+    protected $to;
+    protected function send(string $content, array $records): void {
+        foreach ($this->to as $to) {
+            mail($to, $this->subject, $content, $this->headers, $this->parameters);
+        }
+    }
+}`)
+	if hasRule(s.ScanContent(monolog, ".php"), "mailer_mass_sender") {
+		t.Error("mailer_mass_sender FP: matched Monolog NativeMailerHandler ($to loop variable)")
+	}
+
+	smtpTransport := []byte(`<?php
+class SMTPTransport {
+    protected $connection;
+    protected $to;
+    public function connect(string $host): void {
+        $this->connection = fsockopen($host, 25);
+    }
+    public function send(string $from): void {
+        fwrite($this->connection, "MAIL FROM:<$from>\r\n");
+        foreach ($this->to as $to) {
+            fwrite($this->connection, "RCPT TO:<$to>\r\n");
+        }
+    }
+}`)
+	if hasRule(s.ScanContent(smtpTransport, ".php"), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay FP: treated $to loop variable as a recipient collection")
 	}
 }
