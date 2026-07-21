@@ -231,6 +231,43 @@ func TestContentReverifyScannerUnavailableFailsClosed(t *testing.T) {
 	}
 }
 
+func TestContentReverifyCompressedArchiveResolvesSignatureFinding(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	rulesDir := t.TempDir()
+	rules := []byte(`version: 1
+rules:
+  - name: wildcard_backdoor
+    file_types: ["*"]
+    patterns: ["gs-netcat"]
+    min_match: 1
+`)
+	if err := os.WriteFile(filepath.Join(rulesDir, "test.yml"), rules, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := signatures.NewScanner(rulesDir)
+	if err := scanner.LoadError(); err != nil {
+		t.Fatal(err)
+	}
+	orig := contentSignatureScanner
+	contentSignatureScanner = func() *signatures.Scanner { return scanner }
+	t.Cleanup(func() { contentSignatureScanner = orig })
+
+	p := filepath.Join(tmp, "backup.zip")
+	archive := append([]byte{'P', 'K', 0x03, 0x04}, []byte("gs-netcat")...)
+	if err := os.WriteFile(p, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := reverifyContentFinding(VerifyInput{
+		Check:         "signature_match_realtime",
+		Path:          p,
+		ContentSHA256: FileContentSHA256(p),
+	})
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("identical compressed archive finding should resolve, got %+v", res)
+	}
+}
+
 func TestVerifyFindingInputDispatchesReverify(t *testing.T) {
 	tmp := t.TempDir()
 	withQuarantineAllowedRoots(t, tmp)

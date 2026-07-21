@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pidginhost/csm/internal/contenttype"
 	"gopkg.in/yaml.v3"
 )
 
@@ -219,6 +220,9 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 	defer s.mu.RUnlock()
 
 	if len(s.rules) == 0 {
+		return nil
+	}
+	if contenttype.IsCompressedArchive(content) {
 		return nil
 	}
 

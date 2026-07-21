@@ -15,6 +15,9 @@ func TestContentDetectionVersionFormat(t *testing.T) {
 	if !strings.HasPrefix(v, fmt.Sprintf("php=%d;", ContentLogicVersion)) {
 		t.Errorf("token %q missing php=%d prefix", v, ContentLogicVersion)
 	}
+	if !strings.Contains(v, fmt.Sprintf("scan=%d;", ContentScannerVersion)) {
+		t.Errorf("token %q missing scan=%d component", v, ContentScannerVersion)
+	}
 	if !strings.Contains(v, "sig=") || !strings.Contains(v, "yara=") {
 		t.Errorf("token %q missing sig=/yara= components", v)
 	}

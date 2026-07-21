@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	yara_x "github.com/VirusTotal/yara-x/go"
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // Scanner wraps YARA-X for malware file scanning.
@@ -145,7 +146,7 @@ func (s *Scanner) ScanBytesChecked(data []byte) ([]Match, error) {
 	// central-directory filenames trip rules with spurious tokens (plugin
 	// backup .zip archives flagged as webshells/phishing). The real payload is
 	// scanned when the archive is extracted to disk, so skip the container.
-	if isRawArchive(data) {
+	if contenttype.IsCompressedArchive(data) {
 		return nil, nil
 	}
 
@@ -289,28 +290,4 @@ func TestCompile(source string) error {
 		return fmt.Errorf("no rules compiled from source")
 	}
 	return nil
-}
-
-// isRawArchive reports whether data begins with a compressed-container magic
-// whose body cannot be scanned as raw content. Uncompressed containers (tar) and
-// PHP archives (phar, whose stub is executable PHP) are intentionally excluded.
-func isRawArchive(data []byte) bool {
-	if len(data) < 4 {
-		return false
-	}
-	switch {
-	case data[0] == 'P' && data[1] == 'K' && (data[2] == 0x03 || data[2] == 0x05 || data[2] == 0x07):
-		return true // ZIP and derivatives (jar, docx, apk, plugin backups)
-	case data[0] == 0x1f && data[1] == 0x8b:
-		return true // gzip
-	case data[0] == 'B' && data[1] == 'Z' && data[2] == 'h':
-		return true // bzip2
-	case data[0] == 0xfd && data[1] == '7' && data[2] == 'z' && data[3] == 'X':
-		return true // xz
-	case data[0] == '7' && data[1] == 'z' && data[2] == 0xbc && data[3] == 0xaf:
-		return true // 7z
-	case data[0] == 'R' && data[1] == 'a' && data[2] == 'r' && data[3] == '!':
-		return true // rar
-	}
-	return false
 }
