@@ -9,12 +9,13 @@ import "testing"
 // contained the brand: security-plugin signature databases (Wordfence
 // wflogs/rules.php, hide-my-wp firewall Rules.php), password wordlists,
 // images, archives, and IDE config. The fix requires a PHP open tag plus a
-// command/code execution sink in the file, so a file that only CATALOGS the
-// brand (or is not PHP at all) is no longer convicted. Real branded shells
-// carry both and stay detected. Paths are never allowlisted.
+// command-execution or file-modification action in the file, so a file that
+// only CATALOGS the brand (or is not PHP at all) is no longer convicted. Real
+// branded shells carry both and stay detected. Paths are never allowlisted.
 
 // wordfenceRuleset models Wordfence's generated WAF ruleset: PHP that stores
-// attacker fingerprints as wfWAFRuleComparison patterns, with no exec sink.
+// attacker fingerprints as wfWAFRuleComparison patterns, with no dangerous
+// action.
 const wordfenceRuleset = `<?php
 if (!defined('WFWAF_VERSION')) { exit('Access denied'); }
 $this->add(new wfWAFRule($this, 1001, 'block', 'attackers',
@@ -26,7 +27,7 @@ $this->add(new wfWAFRule($this, 1001, 'block', 'attackers',
 `
 
 // hideMyWpRuleset models hide-my-wp's firewall Rules.php: a big preg_match
-// alternation of attack tokens, no exec sink.
+// alternation of attack tokens, with no dangerous action.
 const hideMyWpRuleset = `<?php
 class HMW_Model_Rules {
 	public function checkPath($uri) {
@@ -132,5 +133,88 @@ func TestFPFlood_WebshellWso_IdeConfig(t *testing.T) {
 if($_POST['a']=='FilesMan'){ passthru($_POST['c1']); }`)
 	if !hasYaraRule(s.ScanBytes(mal), "webshell_wso") {
 		t.Error("webshell_wso regression: real WSO shell not detected")
+	}
+}
+
+func TestFPFlood_AllBrandedShellsKeepDirectSinkDetection(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, tc := range []struct{ rule, brand string }{
+		{"webshell_c99", "c99shell"},
+		{"webshell_r57", "r57shell"},
+		{"webshell_wso", "wso_version"},
+		{"webshell_alfa", "AlfaTeam"},
+		{"webshell_b374k", "b374k"},
+		{"webshell_anonymousfox", "AnonymousFox"},
+		{"webshell_indoxploit", "IndoXploit"},
+		{"webshell_sadrazam", "Sadrazam"},
+		{"webshell_mini_shell", "Mini Shell"},
+		{"webshell_filesman_variants", "Fil3sM4n"},
+		{"webshell_priv8", "Priv8"},
+		{"webshell_meterpreter_php", "meterpreter"},
+		{"webshell_laudanum", "laudanum"},
+		{"webshell_phpsploit", "phpsploit"},
+		{"webshell_icesword", "IceSword"},
+	} {
+		body := []byte("<?php /* " + tc.brand + " */\nsystem($_POST['cmd']);")
+		if !hasYaraRule(s.ScanBytes(body), tc.rule) {
+			t.Errorf("%s regression: bare sink after newline was not detected", tc.rule)
+		}
+	}
+}
+
+func TestFPFlood_SinkBoundaryAndPhpComments(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, body := range []string{
+		"<?php /* c99shell */ Runner::system($cmd);",
+		"<?php /* c99shell */ $runner->exec($cmd);",
+		"<?php /* c99shell */ $exec($cmd);",
+	} {
+		if hasYaraRule(s.ScanBytes([]byte(body)), "webshell_c99") {
+			t.Errorf("webshell_c99 FP: method or variable call counted as a built-in sink: %s", body)
+		}
+	}
+
+	for _, body := range []string{
+		"<?php /* c99shell */ system/* split token */($_POST['cmd']);",
+		"<?php /* c99shell */ system // split token\n($_POST['cmd']);",
+		"<?php /* c99shell */ system # split token\n($_POST['cmd']);",
+	} {
+		if !hasYaraRule(s.ScanBytes([]byte(body)), "webshell_c99") {
+			t.Errorf("webshell_c99 regression: PHP comment before call parenthesis bypassed sink gate: %s", body)
+		}
+	}
+
+	bufferStart := []byte("eval($payload); <?php /* c99shell */")
+	if !hasYaraRule(s.ScanBytes(bufferStart), "webshell_c99") {
+		t.Error("webshell_c99 regression: bare sink at buffer start was not detected")
+	}
+}
+
+func TestFPFlood_FileManagerActionsRemainDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, tc := range []struct{ rule, body string }{
+		{"webshell_wso", `<?php $wso_version = '2.5'; move_uploaded_file($_FILES['f']['tmp_name'], $_POST['path']);`},
+		{"webshell_filesman_variants", `<?php /* Fil3sM4n */ move_uploaded_file($_FILES['f']['tmp_name'], $_POST['path']);`},
+		{"webshell_anonymousfox", `<?php /* AnonymousFox password reset */ file_put_contents($_POST['path'], $_POST['data']);`},
+	} {
+		if !hasYaraRule(s.ScanBytes([]byte(tc.body)), tc.rule) {
+			t.Errorf("%s regression: file-operation-only shell was not detected", tc.rule)
+		}
+	}
+}
+
+func TestFPFlood_P0wnyConditionPaths(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	structural := []byte(`function featureShell(cmd) { return makeCommand(cmd); }`)
+	if !hasYaraRule(s.ScanBytes(structural), "webshell_p0wny") {
+		t.Error("webshell_p0wny regression: structural-marker path was not detected")
+	}
+	gatedBrand := []byte(`<?php // p0wny tool
+eval($_POST['cmd']);`)
+	if !hasYaraRule(s.ScanBytes(gatedBrand), "webshell_p0wny") {
+		t.Error("webshell_p0wny regression: gated bare-brand path was not detected")
+	}
+	if hasYaraRule(s.ScanBytes([]byte("p0wny tool")), "webshell_p0wny") {
+		t.Error("webshell_p0wny FP: bare brand cleared the PHP and sink gate")
 	}
 }
