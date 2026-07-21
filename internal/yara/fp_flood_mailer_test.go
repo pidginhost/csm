@@ -27,6 +27,10 @@ func TestFPFlood_MailerKing_CheckingMailerAndJson(t *testing.T) {
 	if hasYaraRule(s.ScanBytes(pluginJSON), "mailer_king") {
 		t.Error("mailer_king FP: matched a kingmailer_log JSON key")
 	}
+	pluginCode := []byte(`<?php $options['kingmailer_log']=true; mail($admin,'Plugin status',$body);`)
+	if hasYaraRule(s.ScanBytes(pluginCode), "mailer_king") {
+		t.Error("mailer_king FP: matched kingmailer_log key in PHP that sends unrelated mail")
+	}
 	mal := []byte(`<?php /* King Mailer v2 */ $to=$_POST['to']; mail($to, $_POST['s'], $_POST['b']);`)
 	if !hasYaraRule(s.ScanBytes(mal), "mailer_king") {
 		t.Error("mailer_king regression: real King Mailer script not detected")
@@ -42,9 +46,11 @@ function bbp_filter_anonymous_post_data($r=array()){ $r['bbp_anonymous_email']=s
 	if hasYaraRule(s.ScanBytes(bb), "mailer_anonemail") {
 		t.Error("mailer_anonemail FP: matched bbPress anonymous-email field handling")
 	}
-	mal := []byte(`<?php /* AnonEmail anonymous sender */ $to=$_POST['rcpt']; mail($to,'x',$_POST['msg']);`)
-	if !hasYaraRule(s.ScanBytes(mal), "mailer_anonemail") {
-		t.Error("mailer_anonemail regression: real AnonEmail tool not detected")
+	for _, brand := range []string{"AnonEmail", "anon_email"} {
+		mal := []byte(`<?php /* ` + brand + ` anonymous sender */ $to=$_POST['rcpt']; mail($to,'x',$_POST['msg']);`)
+		if !hasYaraRule(s.ScanBytes(mal), "mailer_anonemail") {
+			t.Errorf("mailer_anonemail regression: %s brand variant not detected", brand)
+		}
 	}
 }
 
@@ -57,20 +63,41 @@ func TestFPFlood_MailerBrands_NonPhpExcluded(t *testing.T) {
 			t.Errorf("%s FP: matched a non-PHP resource that only names the brand", rule)
 		}
 	}
+	commentOnly := []byte(`<?php /* King Mailer documentation: call mail($to, $subject, $body) here. */`)
+	if hasYaraRule(s.ScanBytes(commentOnly), "mailer_king") {
+		t.Error("mailer_king FP: counted mail() inside a comment as a send action")
+	}
 	// Real branded mailers: brand + php + a send action.
 	for _, tc := range []struct{ rule, body string }{
 		{"mailer_leafmailer", `<?php /* Leaf PHPMailer */ $s=fsockopen($h,25); fputs($s,"MAIL FROM:<x>");`},
 		{"mailer_inbox_sender", `<?php /* Inbox Sender */ foreach($l as $to){ mail($to,'s','b'); }`},
-		{"mailer_alfa_sender", `<?php /* Alfa Sender */ mail($_POST['to'],'s',$_POST['b']);`},
+		{"mailer_inbox_sender", `<?php /* inbox_sender */ foreach($l as $to){ mail($to,'s','b'); }`},
+		{"mailer_alfa_sender", `<?php /* Alfa Sender */ mail/* split */($_POST['to'],'s',$_POST['b']);`},
 	} {
 		if !hasYaraRule(s.ScanBytes([]byte(tc.body)), tc.rule) {
 			t.Errorf("%s regression: real branded mailer not detected", tc.rule)
+		}
+	}
+	for _, tc := range []struct{ rule, key string }{
+		{"mailer_leafmailer", "leafmailer_log"},
+		{"mailer_king", "kingmailer_log"},
+		{"mailer_anonemail", "anonemail_enabled"},
+		{"mailer_inbox_sender", "inboxsender_status"},
+		{"mailer_alfa_sender", "alfasender_status"},
+	} {
+		body := []byte(`<?php $options['` + tc.key + `']=true; mail($admin,'Plugin status',$body);`)
+		if hasYaraRule(s.ScanBytes(body), tc.rule) {
+			t.Errorf("%s FP: matched embedded brand in %s key", tc.rule, tc.key)
 		}
 	}
 }
 
 func TestFPFlood_MailerSmtpRelay_StockClientResponseLoop(t *testing.T) {
 	s := loadRepoYaraScanner(t)
+	nonPHP := []byte(`fsockopen($host,25); foreach($recipients as $to){ fwrite($s,"MAIL FROM:<x> RCPT TO:<$to>"); }`)
+	if hasYaraRule(s.ScanBytes(nonPHP), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay FP: matched documentation without PHP source")
+	}
 	// Stock PHPMailer/CodeIgniter SMTP.php: fsockopen + "MAIL FROM:" plus a
 	// while(fgets($conn)) loop that reads the server RESPONSE, not recipients.
 	stock := []byte(`<?php
@@ -84,10 +111,31 @@ class SMTP {
 	if hasYaraRule(s.ScanBytes(stock), "mailer_smtp_relay") {
 		t.Error("mailer_smtp_relay FP: matched a stock SMTP client's response-reading loop")
 	}
+	unrelatedRecipientLoop := []byte(`<?php
+class SMTP {
+	public function connect($host){ $this->conn=fsockopen($host,25); }
+	public function sender($from){ fwrite($this->conn,"MAIL FROM:<$from>\r\n"); }
+	public function normalize($recipients){ foreach($recipients as $to){ $clean[]=trim($to); } return $clean; }
+}`)
+	if hasYaraRule(s.ScanBytes(unrelatedRecipientLoop), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay FP: joined an unrelated recipient-normalization loop to SMTP commands")
+	}
 	// Real mass relay: iterates a recipient list and sends to each.
 	mal := []byte(`<?php $list=file('targets.txt'); foreach($list as $to){ $sk=fsockopen('127.0.0.1',25); fputs($sk,"MAIL FROM:<spam@x>\r\nRCPT TO:<$to>\r\n"); }`)
 	if !hasYaraRule(s.ScanBytes(mal), "mailer_smtp_relay") {
 		t.Error("mailer_smtp_relay regression: real mass SMTP relay not detected")
+	}
+	genericReader := []byte(`<?php $s=fsockopen('127.0.0.1',25); $fp=fopen('targets.txt','r'); while($e=fgets($fp)){ fputs($s,"MAIL FROM:<x>\r\nRCPT TO:<$e>\r\n"); }`)
+	if !hasYaraRule(s.ScanBytes(genericReader), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay regression: recipient file loop with generic variable names not detected")
+	}
+	nestedGuard := []byte(`<?php $s=fsockopen('127.0.0.1',25); $fp=fopen('targets.txt','r'); while($e=fgets($fp)){ if(!$e){ continue; } fputs($s,"MAIL FROM:<x>\r\nRCPT TO:<$e>\r\n"); }`)
+	if !hasYaraRule(s.ScanBytes(nestedGuard), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay regression: recipient loop with a nested validation block not detected")
+	}
+	obfuscatedCall := []byte(`<?php $s=fsockopen/* split */('127.0.0.1',25); foreach($recipients as $to){ fputs($s,"MAIL FROM :<x>\r\nRCPT TO:<$to>\r\n"); }`)
+	if !hasYaraRule(s.ScanBytes(obfuscatedCall), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay regression: comment-obfuscated socket call not detected")
 	}
 }
 
@@ -111,10 +159,22 @@ function wp_notify_moderator($comment_id){
 	if hasYaraRule(s.ScanBytes(report), "mailer_mass_sender") {
 		t.Error("mailer_mass_sender FP: matched a single-shot backup-report mail()")
 	}
+	outsideLoop := []byte(`<?php foreach($emails as $email){ $email=trim($email); } mail($admin,'Summary',$body);`)
+	if hasYaraRule(s.ScanBytes(outsideLoop), "mailer_mass_sender") {
+		t.Error("mailer_mass_sender FP: joined a closed recipient loop to a later single-shot mail")
+	}
+	commentOnly := []byte(`<?php while($line=fgets($log)){ // mail($line,'subject','body') would notify the owner.
+		process($line); }`)
+	if hasYaraRule(s.ScanBytes(commentOnly), "mailer_mass_sender") {
+		t.Error("mailer_mass_sender FP: counted mail() inside a loop comment as a send action")
+	}
 	// Real mass sender: recipient loop sends to each list entry.
 	for _, mal := range [][]byte{
 		[]byte(`<?php $fh=fopen('list.txt','r'); while($e=fgets($fh)){ mail($e,'Win','http://evil/'); }`),
+		[]byte(`<?php while($e=fgets($fh)){mail($e,'Win','http://evil/');}`),
 		[]byte(`<?php foreach($_POST['recipients'] as $to){ mail($to, $_POST['subj'], $_POST['body']); }`),
+		[]byte(`<?php for($i=0;$i<count($emails);$i++){ mail($emails[$i],'Win','http://evil/'); }`),
+		[]byte(`<?php foreach($emails as $email){ if(!$email){ continue; } mail($email,'Win','http://evil/'); }`),
 	} {
 		if !hasYaraRule(s.ScanBytes(mal), "mailer_mass_sender") {
 			t.Errorf("mailer_mass_sender regression: real recipient-loop mailer not detected: %s", mal)
