@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Virtual-patch writes now preserve access-file ownership and mode, abort on concurrent edits or ownership failures, and restore both existing and CSM-created files without overwriting later customer changes. Whole-directory denial is limited to recognized backup storage paths.
-
 - Threat-intel reputation sightings are now graded by what the IP was doing: passive web sightings drop to High so ambient scanner noise no longer drowns compromise-class Criticals, while auth-surface contact (SSH, mail credential attacks) stays Critical. Auto-blocking behaviour is unchanged.
 
 ### Fixed
