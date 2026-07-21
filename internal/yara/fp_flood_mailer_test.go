@@ -181,3 +181,28 @@ function wp_notify_moderator($comment_id){
 		}
 	}
 }
+
+// Residual FP found in the 2026-07-21 post-deploy deep scan: Monolog's
+// NativeMailerHandler (bundled in google-site-kit) mails log records to a
+// configured recipient list with `foreach ($this->to as $to) { mail($to,...) }`.
+// The loop variable name `$to` is not a mass-recipient signal.
+func TestFPFlood_MailerMassSender_MonologNativeMailer(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte(`<?php
+class NativeMailerHandler extends MailHandler {
+    protected $to;
+    protected function send(string $content, array $records): void {
+        $subject = $this->subject;
+        $headers = ltrim(implode("\r\n", $this->headers) . "\r\n", "\r\n");
+        foreach ($this->to as $to) {
+            mail($to, $subject, $content, $headers, $this->parameters);
+        }
+    }
+}`)
+	if hasYaraRule(s.ScanBytes(legit), "mailer_mass_sender") {
+		t.Error("mailer_mass_sender FP: matched Monolog NativeMailerHandler ($to loop variable)")
+	}
+	if hasYaraRule(s.ScanBytes(legit), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay FP: matched Monolog NativeMailerHandler")
+	}
+}
