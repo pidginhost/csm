@@ -173,11 +173,55 @@ function wp_notify_moderator($comment_id){
 		[]byte(`<?php $fh=fopen('list.txt','r'); while($e=fgets($fh)){ mail($e,'Win','http://evil/'); }`),
 		[]byte(`<?php while($e=fgets($fh)){mail($e,'Win','http://evil/');}`),
 		[]byte(`<?php foreach($_POST['recipients'] as $to){ mail($to, $_POST['subj'], $_POST['body']); }`),
+		[]byte(`<?php foreach($_GET['recipients'] as $to){ mail($to, $_GET['subj'], $_GET['body']); }`),
 		[]byte(`<?php for($i=0;$i<count($emails);$i++){ mail($emails[$i],'Win','http://evil/'); }`),
 		[]byte(`<?php foreach($emails as $email){ if(!$email){ continue; } mail($email,'Win','http://evil/'); }`),
 	} {
 		if !hasYaraRule(s.ScanBytes(mal), "mailer_mass_sender") {
 			t.Errorf("mailer_mass_sender regression: real recipient-loop mailer not detected: %s", mal)
 		}
+	}
+}
+
+// Residual FP found in the 2026-07-21 post-deploy deep scan: Monolog's
+// NativeMailerHandler (bundled in google-site-kit) mails log records to a
+// configured recipient list with `foreach ($this->to as $to) { mail($to,...) }`.
+// The loop variable name `$to` is not a mass-recipient signal.
+func TestFPFlood_MailerMassSender_MonologNativeMailer(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte(`<?php
+class NativeMailerHandler extends MailHandler {
+    protected $to;
+    protected function send(string $content, array $records): void {
+        $subject = $this->subject;
+        $headers = ltrim(implode("\r\n", $this->headers) . "\r\n", "\r\n");
+        foreach ($this->to as $to) {
+            mail($to, $subject, $content, $headers, $this->parameters);
+        }
+    }
+}`)
+	if hasYaraRule(s.ScanBytes(legit), "mailer_mass_sender") {
+		t.Error("mailer_mass_sender FP: matched Monolog NativeMailerHandler ($to loop variable)")
+	}
+}
+
+func TestFPFlood_MailerSmtpRelay_ToLoopVariable(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte(`<?php
+class SMTPTransport {
+    protected $connection;
+    protected $to;
+    public function connect(string $host): void {
+        $this->connection = fsockopen($host, 25);
+    }
+    public function send(string $from): void {
+        fwrite($this->connection, "MAIL FROM:<$from>\r\n");
+        foreach ($this->to as $to) {
+            fwrite($this->connection, "RCPT TO:<$to>\r\n");
+        }
+    }
+}`)
+	if hasYaraRule(s.ScanBytes(legit), "mailer_smtp_relay") {
+		t.Error("mailer_smtp_relay FP: treated $to loop variable as a recipient collection")
 	}
 }
