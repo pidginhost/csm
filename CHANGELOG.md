@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.25.0] - 2026-07-21
+
 ### Added
 
 - Deep scans now flag bundled TimThumb image-resizer scripts, the abandoned library whose remote-code-execution bug is a recurring WordPress entry point (and was the entry vector in a recent cross-account compromise). Versions below the last patch are reported as a high-severity finding, patched-but-deprecated copies as a warning to remove. It only reports -- TimThumb is never removed automatically, since that would break the theme.
