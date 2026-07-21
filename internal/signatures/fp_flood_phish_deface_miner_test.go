@@ -2,10 +2,16 @@ package signatures
 
 import "testing"
 
-// YAML-engine mirror of the phishing/deface/miner FP-flood fix. The YAML engine
-// scans .html/.htm/.php, so the .php false positive is the cookie-notice
-// welcome.php admin page (PayPal brand + a password setting + an SPA form).
-// office365 keeps its stronger DOM-ID design and is not retested here.
+// The YAML engine scans .html/.htm/.php, so the .php false positive is the
+// cookie-notice welcome.php admin page (PayPal brand + a password setting + an
+// SPA form). Office 365 intentionally keeps its stronger DOM-ID detector.
+
+func TestFPFlood_YML_RulesCompile(t *testing.T) {
+	s := loadRepoScanner(t)
+	if err := s.LoadError(); err != nil {
+		t.Fatalf("loading repository rules: %v", err)
+	}
+}
 
 func TestFPFlood_YML_PhishingPaypal_AdminPage(t *testing.T) {
 	s := loadRepoScanner(t)
@@ -19,26 +25,101 @@ func TestFPFlood_YML_PhishingPaypal_AdminPage(t *testing.T) {
 	}
 }
 
+func TestFPFlood_YML_PhishingCollectorVariants(t *testing.T) {
+	s := loadRepoScanner(t)
+	tests := []struct {
+		name   string
+		rule   string
+		brand  string
+		action string
+	}{
+		{name: "sharepoint absolute URL", rule: "phishing_sharepoint", brand: "SharePoint", action: "https://evil.example/collect"},
+		{name: "sharepoint root path", rule: "phishing_sharepoint", brand: "secured by Microsoft", action: "/collect"},
+		{name: "paypal relative path", rule: "phishing_paypal", brand: "PayPal", action: "./collect"},
+		{name: "paypal root", rule: "phishing_paypal", brand: "PayPal", action: "/"},
+		{name: "bank script query", rule: "phishing_bank_generic", brand: "online banking account number", action: "collect.php?step=1"},
+		{name: "bank script path info", rule: "phishing_bank_generic", brand: "online banking account number", action: "collect.php/next"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.brand + `<form action="` + tc.action + `" method="post"><input type="password"></form>`)
+			if !hasRule(s.ScanContent(body, ".html"), tc.rule) {
+				t.Errorf("%s regression: collector action %q was not detected", tc.rule, tc.action)
+			}
+		})
+	}
+}
+
+func TestFPFlood_YML_PhishingRejectsPseudoHTMLAttributes(t *testing.T) {
+	s := loadRepoScanner(t)
+	rules := []struct {
+		name  string
+		brand string
+	}{
+		{name: "phishing_sharepoint", brand: "SharePoint"},
+		{name: "phishing_bank_generic", brand: "online banking account number"},
+		{name: "phishing_paypal", brand: "PayPal"},
+	}
+	for _, tc := range rules {
+		t.Run(tc.name, func(t *testing.T) {
+			legitimate := [][]byte{
+				[]byte(tc.brand + `<form action="settings" data-action="/collect"><input type="password"></form>`),
+				[]byte(tc.brand + `<form action="/collect"><div data-type="password"></div></form>`),
+				[]byte(tc.brand + `<form title=" action='/collect'" action="settings"><input type="password"></form>`),
+				[]byte(tc.brand + `<form action="/collect"><input title=" type='password'"></form>`),
+				[]byte(tc.brand + `<form action="collect.phpx"><input type="password"></form>`),
+			}
+			for _, body := range legitimate {
+				if hasRule(s.ScanContent(body, ".html"), tc.name) {
+					t.Errorf("%s FP: pseudo collector or password attribute matched: %s", tc.name, body)
+				}
+			}
+		})
+	}
+}
+
 func TestFPFlood_YML_DefaceHackedBy_Prose(t *testing.T) {
 	s := loadRepoScanner(t)
-	prose := []byte("<p>Web Application Firewall stops you from getting hacked by identifying malicious traffic.</p>")
-	if hasRule(s.ScanContent(prose, ".php"), "deface_hacked_by") {
-		t.Error("deface_hacked_by FP: matched prose in body text")
+	prose := [][]byte{
+		[]byte("<p>Web Application Firewall stops you from getting hacked by identifying malicious traffic.</p>"),
+		[]byte("<h1>Security guidance</h1><p>Getting hacked by identifying malicious traffic can be prevented.</p>"),
+		[]byte("<p>Getting hacked by identifying malicious traffic can be prevented.</p><h1>Security guidance</h1>"),
 	}
-	mal := []byte("<html><title>Hacked By xShadow</title><h1>Hacked By xShadow</h1></html>")
-	if !hasRule(s.ScanContent(mal, ".html"), "deface_hacked_by") {
-		t.Error("deface_hacked_by regression: real defacement heading not detected")
+	for _, body := range prose {
+		if hasRule(s.ScanContent(body, ".php"), "deface_hacked_by") {
+			t.Errorf("deface_hacked_by FP: matched prose outside a heading: %s", body)
+		}
+	}
+	malicious := [][]byte{
+		[]byte("<html><TITLE>HACKED BY xShadow</TITLE><H1>HACKED BY xShadow</H1></html>"),
+		[]byte("<center><font color=red><b>Hacked By xShadow</b></font></center>"),
+	}
+	for _, body := range malicious {
+		if !hasRule(s.ScanContent(body, ".html"), "deface_hacked_by") {
+			t.Errorf("deface_hacked_by regression: real defacement heading not detected: %s", body)
+		}
 	}
 }
 
 func TestFPFlood_YML_MinerCoinhive_LoaderStructure(t *testing.T) {
 	s := loadRepoScanner(t)
-	botList := []byte("<?php return array('bots'=>array('Googlebot','CoinHive','AhrefsBot'));")
-	if hasRule(s.ScanContent(botList, ".php"), "miner_coinhive_js") {
-		t.Error("miner_coinhive FP: matched a bot user-agent list")
+	legitimate := [][]byte{
+		[]byte("<?php return array('bots'=>array('Googlebot','CoinHive','AhrefsBot'));"),
+		[]byte("renew CoinHive membership; renew AuthedMine membership"),
 	}
-	mal := []byte("var m=new CoinHive.Anonymous('KEY'); m.start();")
-	if !hasRule(s.ScanContent(mal, ".js"), "miner_coinhive_js") {
-		t.Error("miner_coinhive regression: real CoinHive loader not detected")
+	for _, body := range legitimate {
+		if hasRule(s.ScanContent(body, ".php"), "miner_coinhive_js") {
+			t.Errorf("miner_coinhive FP: matched a bare or embedded brand mention: %s", body)
+		}
+	}
+	malicious := [][]byte{
+		[]byte("var m=new CoinHive.Anonymous('KEY'); m.start();"),
+		[]byte("var m = new CoinHive({siteKey: 'KEY'}); m.start();"),
+		[]byte("var m = new AuthedMine({siteKey: 'KEY'}); m.start();"),
+	}
+	for _, body := range malicious {
+		if !hasRule(s.ScanContent(body, ".js"), "miner_coinhive_js") {
+			t.Errorf("miner_coinhive regression: real miner loader not detected: %s", body)
+		}
 	}
 }
