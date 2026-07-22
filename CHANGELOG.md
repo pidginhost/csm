@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updated Go dependencies: cilium/ebpf v0.22.0, sentry-go v0.48.0, klauspost/compress v1.19.1, maxminddb-golang v2.4.1, x/net v0.57.0, x/sys v0.47.0.
+
 ### Fixed
 
 - Malware content scans no longer flag signature tokens inside compressed archive files under any scan backend, including the daemon's out-of-process worker. Existing identical findings are re-checked after upgrade, including archives too large for inline worker requests.
