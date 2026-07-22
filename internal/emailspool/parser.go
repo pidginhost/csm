@@ -33,11 +33,13 @@ func ExtractDomain(s string) string {
 	}
 	domain := strings.TrimSpace(s[at+1:])
 	domain = strings.ToLower(domain)
-	ascii, err := idna.ToASCII(domain)
-	if err != nil {
-		return ""
+	// On IDNA failure keep the raw lowercased domain rather than returning "".
+	// Callers gate mismatch checks on a non-empty domain, so an empty return
+	// would let a malformed attacker-controlled label bypass those checks.
+	if ascii, err := idna.ToASCII(domain); err == nil {
+		domain = ascii
 	}
-	return ascii
+	return domain
 }
 
 // lastUnquotedAt returns the index of the rightmost '@' character that is not

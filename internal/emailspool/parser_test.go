@@ -57,8 +57,12 @@ func TestExtractDomain_Subdomain(t *testing.T) {
 }
 
 func TestExtractDomain_InvalidIDNA(t *testing.T) {
-	if got := ExtractDomain("user@xn--example-.com"); got != "" {
-		t.Errorf("ExtractDomain invalid IDNA = %q, want empty", got)
+	// Malformed punycode must fall back to the raw lowercased domain, never
+	// "". Callers gate mismatch checks on a non-empty domain, so returning ""
+	// would let an attacker-controlled From/Reply-To label like
+	// xn--foo-.evil.com skip those checks entirely.
+	if got := ExtractDomain("user@XN--Example-.com"); got != "xn--example-.com" {
+		t.Errorf("ExtractDomain invalid IDNA = %q, want raw fallback xn--example-.com", got)
 	}
 }
 
