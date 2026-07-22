@@ -23,6 +23,13 @@ func TestContentDetectionVersionFormat(t *testing.T) {
 	}
 }
 
+func TestContentScannerVersionIncludesBackendArchiveGuard(t *testing.T) {
+	const backendArchiveGuardVersion = 2
+	if ContentScannerVersion < backendArchiveGuardVersion {
+		t.Fatalf("ContentScannerVersion = %d, want at least %d so existing archive findings are re-checked", ContentScannerVersion, backendArchiveGuardVersion)
+	}
+}
+
 func TestFileContentSHA256MatchesStdlib(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.php")

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // Backend is the consumable scanning surface shared by the in-process
@@ -54,6 +56,14 @@ type CheckedFileScanner interface {
 func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
 	if b == nil {
 		return nil, errors.New("yara: backend unavailable")
+	}
+	// Keep the archive policy at the backend-agnostic boundary used by daemon
+	// content scans. Active may resolve to the IPC supervisor instead of the
+	// in-process Scanner, so dispatching first would bypass Scanner's guard. Raw
+	// archive bytes are not scannable and their stored entries trip rules with
+	// spurious tokens; the real payload is scanned when the archive is extracted.
+	if contenttype.IsCompressedArchive(data) {
+		return nil, nil
 	}
 	if cs, ok := b.(CheckedScanner); ok {
 		return cs.ScanBytesChecked(data)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Malware content scans no longer flag signature tokens inside compressed archive files under any scan backend, including the daemon's out-of-process worker. Existing identical findings are re-checked after upgrade, including archives too large for inline worker requests.
+
 ## [3.25.0] - 2026-07-21
 
 ### Added
@@ -29,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Malware content scans no longer flag signature tokens inside compressed archive files (plugin backup `.zip`, `.gz`, `.bz2`, `.xz`, `.7z`, `.rar`). Both signature engines skip only recognized archive headers; tar and executable PHAR content stay scannable, existing identical findings are re-checked after upgrade, and payloads are scanned when extracted to disk.
 - `web_exposed_phpinfo` no longer flags `phpinfo.php` stubs that answer 200 but render no real phpinfo output; the probe now confirms the response body carries an actual dump before reporting.
 - Scheduled deep-scan malware signatures no longer flag legitimate WordPress, plugin, and framework code. The tightened rules still detect same-origin data theft, request-driven backdoors and relays, decoded SSH-key writes, and common obfuscation variants.
 - Branded PHP webshell signatures that keyed on a shell name alone no longer fire on password wordlists, images, archives, or security-plugin signature databases. They now require PHP plus a command-execution or file-modification action, including comment-obfuscated calls, without treating method calls as built-in actions.
