@@ -56,6 +56,18 @@ func TestExtractDomain_Subdomain(t *testing.T) {
 	}
 }
 
+func TestExtractDomain_InvalidIDNA(t *testing.T) {
+	if got := ExtractDomain("user@xn--example-.com"); got != "" {
+		t.Errorf("ExtractDomain invalid IDNA = %q, want empty", got)
+	}
+}
+
+func TestExtractDomain_ValidIDNA(t *testing.T) {
+	if got := ExtractDomain("user@b\u00fccher.example"); got != "xn--bcher-kva.example" {
+		t.Errorf("ExtractDomain valid IDNA = %q, want xn--bcher-kva.example", got)
+	}
+}
+
 func TestExtractDomain_EmptyAngleBrackets(t *testing.T) {
 	// Bounce-style "<>" envelope marker has no address; must return empty.
 	// Previously protected by TestExtractDomainBounce.

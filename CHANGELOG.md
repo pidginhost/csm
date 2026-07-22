@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Malformed internationalized sender domains are now rejected instead of being used in mail security checks.
 - Malware content scans no longer flag signature tokens inside compressed archive files under any scan backend, including the daemon's out-of-process worker. Existing identical findings are re-checked after upgrade, including archives too large for inline worker requests.
 
 ### Security

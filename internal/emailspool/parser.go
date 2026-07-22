@@ -33,10 +33,11 @@ func ExtractDomain(s string) string {
 	}
 	domain := strings.TrimSpace(s[at+1:])
 	domain = strings.ToLower(domain)
-	if ascii, err := idna.ToASCII(domain); err == nil {
-		domain = ascii
+	ascii, err := idna.ToASCII(domain)
+	if err != nil {
+		return ""
 	}
-	return domain
+	return ascii
 }
 
 // lastUnquotedAt returns the index of the rightmost '@' character that is not
