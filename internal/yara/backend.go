@@ -57,12 +57,11 @@ func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
 	if b == nil {
 		return nil, errors.New("yara: backend unavailable")
 	}
-	// Skip compressed archives here, at the backend-agnostic entry point every
-	// caller uses, so the guard also applies to the out-of-process worker (the
-	// production backend). A guard on *Scanner alone only covered the
-	// in-process backend used by tests. Raw archive bytes are not scannable and
-	// their stored entries trip rules with spurious tokens; the real payload is
-	// scanned when the archive is extracted.
+	// Keep the archive policy at the backend-agnostic boundary used by daemon
+	// content scans. Active may resolve to the IPC supervisor instead of the
+	// in-process Scanner, so dispatching first would bypass Scanner's guard. Raw
+	// archive bytes are not scannable and their stored entries trip rules with
+	// spurious tokens; the real payload is scanned when the archive is extracted.
 	if contenttype.IsCompressedArchive(data) {
 		return nil, nil
 	}

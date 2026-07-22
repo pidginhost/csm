@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // A YARA scan that could not complete (worker down, payload too large for one
@@ -36,6 +37,30 @@ func TestContentReverifyYARAScanErrorFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "scan error") {
 		t.Errorf("detail should mention the scan error, got %q", res.Detail)
+	}
+}
+
+func TestContentReverifyOversizeArchiveResolvesWithoutYARAScan(t *testing.T) {
+	tmp := t.TempDir()
+	withQuarantineAllowedRoots(t, tmp)
+	orig := contentYARAScanner
+	contentYARAScanner = func() yara.Backend { return scanErrBackend{} }
+	t.Cleanup(func() { contentYARAScanner = orig })
+
+	archive := make([]byte, yaraipc.MaxScanBytes+1)
+	copy(archive, []byte{'P', 'K', 0x03, 0x04})
+	p := filepath.Join(tmp, "oversize.zip")
+	if err := os.WriteFile(p, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash := FileContentSHA256(p)
+	if hash == "" {
+		t.Fatal("oversize inline archive must remain within the reverify fingerprint limit")
+	}
+
+	res := reverifyContentFinding(VerifyInput{Check: "yara_match_realtime", Path: p, ContentSHA256: hash})
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("unchanged archive must resolve before the backend rejects its size, got %+v", res)
 	}
 }
 

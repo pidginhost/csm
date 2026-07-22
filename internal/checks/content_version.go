@@ -20,7 +20,7 @@ const ContentLogicVersion = 1
 // ContentScannerVersion identifies scanner behavior that is not represented by
 // the loaded YAML signature version or YARA rule count. Bump it when shared
 // content classification changes so the daemon re-checks stale findings.
-const ContentScannerVersion = 1
+const ContentScannerVersion = 2
 
 // contentReverifiableChecks are content findings whose condition can be
 // re-evaluated here by re-running the classifier that produced them on the
