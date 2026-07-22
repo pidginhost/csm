@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Malware content scans no longer flag signature tokens inside compressed archive files under any scan backend, including the daemon's out-of-process worker. Existing identical findings are re-checked after upgrade, including archives too large for inline worker requests.
 
+### Security
+
+- Updated the transitive `golang.org/x/text` dependency to v0.39.0 to resolve GO-2026-5970 (an infinite loop on invalid input reachable through IDNA domain parsing in `emailspool` and Unicode normalization in `forensic`).
+
 ## [3.25.0] - 2026-07-21
 
 ### Added
