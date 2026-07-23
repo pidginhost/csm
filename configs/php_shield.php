@@ -6,22 +6,26 @@
  * Loaded via: auto_prepend_file in php.ini or .user.ini
  *
  * Features:
- * 1. Blocks PHP execution from dangerous paths (configurable)
- * 2. Detects webshell command parameters on GET and POST
- * 3. Detects eval() abuse at runtime via shutdown handler
- * 4. Per-account disable via .csm-shield-disable file
- * 5. IP allowlisting from shield.conf.php
- * 6. Rate limiting via log file size cap
- * 7. Proper 403 response page
+ * 1. Blocks PHP execution from dangerous paths (uploads, tmp)
+ * 2. Blocks directly-executed wp-content scripts whose source matches a
+ *    webshell signature (exec sink over request input, or packed eval loader)
+ * 3. Blocks command parameters backed by an exec sink in the running script
+ * 4. Detects eval() abuse at runtime via shutdown handler
+ * 5. Per-account disable via .csm-shield-disable file
+ * 6. IP allowlisting from shield.conf.php
+ * 7. Rate limiting via log file size cap
  *
- * Performance: < 0.1ms overhead per request (path checks, no I/O on safe requests)
- * Safety: fails open — if the shield file is deleted or errors, PHP continues normally
+ * This reference copy is kept in sync with the deployed shield embedded in
+ * cmd/csm/installer.go (shieldContent). Behaviour must match; only the naming
+ * and documentation differ.
+ *
+ * Safety: fails open — if the shield file is deleted or errors, PHP continues.
  */
 
 // Fail open: wrap everything in try/catch so errors don't break sites
 try {
 
-    define('CSM_SHIELD_VERSION', '2.0.0');
+    define('CSM_SHIELD_VERSION', '2.1.0');
     define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
     define('CSM_SHIELD_MAX_LOG_BYTES', 10485760); // 10MB
@@ -30,63 +34,58 @@ try {
     if ($csm_script === '' || $csm_script === __FILE__) return;
 
     // --- Per-account disable ---
-    // Create /home/<user>/.csm-shield-disable to skip shield for that account
     if (preg_match('#^/home/([^/]+)/#', $csm_script, $csm_m)) {
         if (file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
     }
 
-    // --- Load config (blocked paths, allowed IPs) ---
     $csm_conf = csm_shield_load_config();
 
-    // --- IP allowlist check (supports both plain IPs and CIDR notation) ---
+    // --- IP allowlist (plain IPs and CIDR) ---
     $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
     if ($csm_ip !== '' && csm_shield_ip_allowed($csm_ip, $csm_conf['allowed_ips'])) return;
 
     $csm_script_lower = strtolower($csm_script);
+    $csm_basename = basename($csm_script_lower);
+    $csm_src = null;
 
-    // --- 1. Block PHP execution from dangerous paths ---
+    // --- 1. Block PHP execution from dangerous paths (uploads/tmp) ---
+    // No path is allowlisted here: an attacker who learns a "safe" prefix drops
+    // the shell there. Cache/plugin/theme directories are covered by content
+    // inspection below instead of a blanket path skip.
     foreach ($csm_conf['blocked_paths'] as $blocked) {
         if (strpos($csm_script_lower, $blocked) !== false) {
-            // Allow known safe files (WP handles, cache plugins)
-            $csm_basename = basename($csm_script_lower);
-            $csm_safe_uploads = array('index.php', 'wp-cron.php');
-            if (in_array($csm_basename, $csm_safe_uploads)) continue;
-
-            // Allow known safe paths
-            $csm_safe_paths = array('/cache/', '/imunify', '/sucuri/', '/smush/');
-            $csm_is_safe = false;
-            foreach ($csm_safe_paths as $safe) {
-                if (strpos($csm_script_lower, $safe) !== false) {
-                    $csm_is_safe = true;
-                    break;
-                }
-            }
-            if ($csm_is_safe) continue;
-
-            // Block and log
+            if ($csm_basename === 'index.php' || $csm_basename === 'wp-cron.php') continue;
             csm_shield_log('BLOCK_PATH', $csm_script, 'PHP execution from blocked path');
-            http_response_code(403);
-            echo "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body>\n";
-            echo "<h1>403 Forbidden</h1>\n";
-            echo "<p>PHP execution is not allowed from this location.</p>\n";
-            echo "<hr><small>Security Policy</small></body></html>\n";
-            exit;
+            csm_shield_deny();
         }
     }
 
-    // --- 2. Detect webshell command parameters (GET and POST) ---
-    // Only inspects $_REQUEST arrays — never reads php://input
+    // --- 2. Content-based webshell block for direct wp-content script hits ---
+    // A normal request executes index.php; a direct hit on any other .php under
+    // wp-content is the webshell access pattern (fake plugin, cache dropper).
+    if (strpos($csm_script_lower, '/wp-content/') !== false && $csm_basename !== 'index.php') {
+        $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
+        if ($csm_src !== false && csm_shield_is_webshell($csm_src)) {
+            csm_shield_log('BLOCK_WEBSHELL', $csm_script, 'Webshell signature in directly-executed script');
+            csm_shield_deny();
+        }
+    }
+
+    // --- 3. Command parameter backed by an exec sink in the running script ---
     $csm_cmd_params = array('cmd', 'command', 'exec', 'execute', 'c', 'e', 'shell');
     foreach ($csm_cmd_params as $param) {
         if (isset($_REQUEST[$param])) {
-            csm_shield_log('WEBSHELL_PARAM', $csm_script,
-                'Request contains command parameter: ' . $param);
+            csm_shield_log('WEBSHELL_PARAM', $csm_script, 'Request contains command parameter: ' . $param);
+            if ($csm_src === null) $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
+            if ($csm_src !== false && csm_shield_has_exec_sink($csm_src)) {
+                csm_shield_log('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $param);
+                csm_shield_deny();
+            }
             break;
         }
     }
 
-    // --- 3. Register shutdown function to detect eval() abuse ---
-    // This catches fatal errors from eval() chains that fail
+    // --- 4. Shutdown handler to detect eval() chains that fatal ---
     register_shutdown_function(function() {
         $error = error_get_last();
         if ($error !== null && $error['type'] === E_ERROR) {
@@ -102,6 +101,41 @@ try {
 }
 
 /**
+ * True if the script's own source calls a command-execution sink. The negative
+ * lookbehind keeps method calls like $pdo->exec() and mysqli::query() out.
+ */
+function csm_shield_has_exec_sink($src) {
+    return (bool) preg_match('/(?<![\w>:])(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', $src);
+}
+
+/**
+ * True if the script source looks like a webshell: an exec sink applied in a
+ * script that reads request input, or an eval() fed by a decode/inflate wrapper.
+ */
+function csm_shield_is_webshell($src) {
+    if (csm_shield_has_exec_sink($src) && preg_match('/\$_(?:REQUEST|GET|POST|COOKIE|SERVER)\b/', $src)) {
+        return true;
+    }
+    if (preg_match('/\beval\s*\(/i', $src)
+        && preg_match('/(?:gzinflate|gzuncompress|gzdecode|str_rot13|base64_decode)\s*\(/i', $src)) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Emit a 403 and stop. Shared by every block path.
+ */
+function csm_shield_deny() {
+    http_response_code(403);
+    echo "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body>\n";
+    echo "<h1>403 Forbidden</h1>\n";
+    echo "<p>PHP execution is not allowed from this location.</p>\n";
+    echo "<hr><small>Security Policy</small></body></html>\n";
+    exit;
+}
+
+/**
  * Check if an IP matches any entry in the allowlist (plain IP or CIDR).
  */
 function csm_shield_ip_allowed($ip, $allowlist) {
@@ -110,7 +144,6 @@ function csm_shield_ip_allowed($ip, $allowlist) {
 
     foreach ($allowlist as $entry) {
         if (strpos($entry, '/') !== false) {
-            // CIDR notation
             list($subnet, $bits) = explode('/', $entry, 2);
             $subnet_long = ip2long($subnet);
             $mask = -1 << (32 - (int)$bits);
@@ -125,7 +158,6 @@ function csm_shield_ip_allowed($ip, $allowlist) {
 /**
  * Load shield config from /opt/csm/shield.conf.php.
  * Falls back to hardcoded defaults if file doesn't exist.
- * The config file is a PHP file that returns an array (opcode-cacheable).
  */
 function csm_shield_load_config() {
     $defaults = array(
@@ -167,7 +199,6 @@ function csm_shield_log($event_type, $script, $details) {
     }
     @chmod($dir, 01733);
 
-    // Health check: verify writability
     if (!is_writable($dir)) {
         if (!defined('CSM_SHIELD_LOG_WARNED')) {
             define('CSM_SHIELD_LOG_WARNED', true);
@@ -176,7 +207,6 @@ function csm_shield_log($event_type, $script, $details) {
         return;
     }
 
-    // Rate limit: skip if log file exceeds size cap (logrotate handles cleanup)
     $size = @filesize($log_file);
     if ($size !== false && $size > CSM_SHIELD_MAX_LOG_BYTES) return;
 
@@ -190,10 +220,8 @@ function csm_shield_log($event_type, $script, $details) {
         $ip,
         $script,
         $uri,
-        $ua,
         $details
     );
 
-    // Append atomically — O_APPEND ensures no interleaving on Linux
     @file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX);
 }

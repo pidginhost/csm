@@ -1166,10 +1166,10 @@ var (
 
 // shieldContent is the PHP Shield deployed to servers. Kept in sync with configs/php_shield.php.
 var shieldContent = `<?php
-// CSM PHP Shield v2.0.0 - Runtime Protection (auto_prepend_file)
+// CSM PHP Shield v2.1.0 - Runtime Protection (auto_prepend_file)
 // Fails open: errors don't break sites. See configs/php_shield.php for docs.
 try {
-    define('CSM_SHIELD_VERSION', '2.0.0');
+    define('CSM_SHIELD_VERSION', '2.1.0');
     define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
     define('CSM_SHIELD_MAX_LOG_BYTES', 10485760);
@@ -1186,25 +1186,40 @@ try {
     $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
     if ($csm_ip !== '') { $csm_ipl = ip2long($csm_ip); if ($csm_ipl !== false) { foreach ($csm_conf['allowed_ips'] as $e) { if (strpos($e, '/') !== false) { list($sn,$b) = explode('/',$e,2); $sl = ip2long($sn); $mk = -1 << (32-(int)$b); if (($csm_ipl & $mk) === ($sl & $mk)) return; } elseif ($csm_ip === $e) return; } } }
     $csm_lower = strtolower($csm_script);
-    // 1. Block dangerous paths
+    $csm_bn = basename($csm_lower);
+    $csm_src = null;
+    // 1. Block dangerous paths (uploads/tmp must never execute PHP)
     foreach ($csm_conf['blocked_paths'] as $b) {
         if (strpos($csm_lower, $b) !== false) {
-            $bn = basename($csm_lower);
-            if ($bn === 'index.php' || $bn === 'wp-cron.php') continue;
-            $safe = array('/cache/', '/imunify', '/sucuri/', '/smush/');
-            $ok = false;
-            foreach ($safe as $s) { if (strpos($csm_lower, $s) !== false) { $ok = true; break; } }
-            if ($ok) continue;
+            if ($csm_bn === 'index.php' || $csm_bn === 'wp-cron.php') continue;
             csm_log_event('BLOCK_PATH', $csm_script, 'PHP execution from blocked path');
-            http_response_code(403);
-            echo "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>PHP execution is not allowed from this location.</p><hr><small>Security Policy</small></body></html>";
-            exit;
+            csm_deny();
         }
     }
-    // 2. Webshell params (GET + POST)
+    // 2. Content-based webshell block for directly-executed wp-content scripts.
+    // Normal requests run index.php; a direct hit on any other .php under
+    // wp-content is the webshell access pattern (fake plugin, cache dropper).
+    if (strpos($csm_lower, '/wp-content/') !== false && $csm_bn !== 'index.php') {
+        $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
+        if ($csm_src !== false && csm_is_webshell($csm_src)) {
+            csm_log_event('BLOCK_WEBSHELL', $csm_script, 'Webshell signature in directly-executed script');
+            csm_deny();
+        }
+    }
+    // 3. Command parameter backed by an exec sink in the executing script.
     $cmds = array('cmd','command','exec','execute','c','e','shell');
-    foreach ($cmds as $p) { if (isset($_REQUEST[$p])) { csm_log_event('WEBSHELL_PARAM', $csm_script, $p); break; } }
-    // 3. Eval chain detection
+    foreach ($cmds as $p) {
+        if (isset($_REQUEST[$p])) {
+            csm_log_event('WEBSHELL_PARAM', $csm_script, $p);
+            if ($csm_src === null) $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
+            if ($csm_src !== false && csm_has_exec_sink($csm_src)) {
+                csm_log_event('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $p);
+                csm_deny();
+            }
+            break;
+        }
+    }
+    // 4. Eval chain detection (shutdown)
     register_shutdown_function(function() {
         $e = error_get_last();
         if ($e !== null && $e['type'] === E_ERROR && strpos($e['message'], 'eval()') !== false) {
@@ -1212,6 +1227,19 @@ try {
         }
     });
 } catch (Exception $e) {}
+function csm_has_exec_sink($src) {
+    return (bool) preg_match('/(?<![\w>:])(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', $src);
+}
+function csm_is_webshell($src) {
+    if (csm_has_exec_sink($src) && preg_match('/\$_(?:REQUEST|GET|POST|COOKIE|SERVER)\b/', $src)) return true;
+    if (preg_match('/\beval\s*\(/i', $src) && preg_match('/(?:gzinflate|gzuncompress|gzdecode|str_rot13|base64_decode)\s*\(/i', $src)) return true;
+    return false;
+}
+function csm_deny() {
+    http_response_code(403);
+    echo "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>PHP execution is not allowed from this location.</p><hr><small>Security Policy</small></body></html>";
+    exit;
+}
 function csm_log_event($type, $script, $details) {
     $f = CSM_SHIELD_LOG; $dir = dirname($f);
     if (!is_dir($dir)) @mkdir($dir, 01733, true);

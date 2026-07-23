@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WAF rules now block the wp2shell exploit tool by its User-Agent and rate-limit the WordPress REST batch endpoint, the path a mass-exploit campaign used to create rogue administrators across accounts.
+
 ### Changed
 
+- The runtime PHP shield now inspects directly-executed plugin, theme, and cache scripts for webshell behavior instead of waving cache directories through, so a fake-plugin command shell can no longer run where the path rules did not reach.
 - Updated Go dependencies: cilium/ebpf v0.22.0, sentry-go v0.48.0, klauspost/compress v1.19.1, maxminddb-golang v2.4.1, x/net v0.57.0, x/sys v0.47.0.
 
 ### Fixed
