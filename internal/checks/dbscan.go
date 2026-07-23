@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -621,12 +622,34 @@ func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 		if _, err := parseWPRegistered(registered); err != nil {
 			message = fmt.Sprintf("WordPress admin account has a missing or invalid registration timestamp: %s (account: %s)", parts[1], user)
 		}
+
+		severity := alert.Critical
+		details := fmt.Sprintf("Database: %s\nTable prefix: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
+			creds.dbName, prefix, parts[0], parts[1], parts[2], registered)
+
+		// Interactive-login history separates a scripted rogue admin (no logins,
+		// or logins from rotating/hostile IPs) from a legitimate new developer or
+		// agency (repeated logins from one stable IP). Downgrade -- never suppress
+		// -- on the strong single-IP signal so the operator still sees the account.
+		loginIPs := wpAdminLoginIPs(creds, prefix, parts[0])
+		switch {
+		case len(loginIPs) == 0:
+			details += "\nInteractive logins: none recorded (created without an interactive login -- typical of a scripted rogue admin)."
+		case len(loginIPs) >= wpEstablishedLoginSessions && len(uniqueStrings(loginIPs)) == 1:
+			severity = alert.Warning
+			details += fmt.Sprintf("\nInteractive logins: %d from a single IP (%s) -- consistent with a legitimate developer, not a scripted rogue admin. Verify with the account owner before acting.",
+				len(loginIPs), uniqueStrings(loginIPs)[0])
+		default:
+			distinct := uniqueStrings(loginIPs)
+			details += fmt.Sprintf("\nInteractive logins: %d from %d IP(s): %s",
+				len(loginIPs), len(distinct), strings.Join(firstN(distinct, 5), ", "))
+		}
+
 		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
+			Severity: severity,
 			Check:    "db_rogue_admin",
 			Message:  message,
-			Details: fmt.Sprintf("Database: %s\nTable prefix: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
-				creds.dbName, prefix, parts[0], parts[1], parts[2], registered),
+			Details:  details,
 		})
 	}
 
@@ -770,4 +793,57 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 	}
 
 	return findings
+}
+
+// wpEstablishedLoginSessions is the number of interactive login sessions from
+// a single stable IP that marks a new admin as an established human user
+// (developer/agency) rather than a scripted rogue admin.
+const wpEstablishedLoginSessions = 5
+
+var reSessionTokenIP = regexp.MustCompile(`"ip";s:\d+:"([^"]+)"`)
+
+// parseSessionTokenIPs extracts the login source IPs from a WordPress
+// session_tokens usermeta blob (PHP-serialized), in order, one per session.
+func parseSessionTokenIPs(serialized string) []string {
+	var ips []string
+	for _, m := range reSessionTokenIP.FindAllStringSubmatch(serialized, -1) {
+		if len(m) == 2 && m[1] != "" {
+			ips = append(ips, m[1])
+		}
+	}
+	return ips
+}
+
+// wpAdminLoginIPs returns the source IPs of an admin's active login sessions.
+// A scripted rogue admin typically has none.
+func wpAdminLoginIPs(creds wpDBCreds, prefix, userID string) []string {
+	if !wpNumericID(userID) {
+		return nil
+	}
+	q := fmt.Sprintf(
+		"SELECT meta_value FROM %susermeta WHERE user_id = %s AND meta_key = '%ssession_tokens' LIMIT 1",
+		prefix, userID, prefix)
+	return parseSessionTokenIPs(strings.Join(runMySQLQuery(creds, q), ""))
+}
+
+// wpNumericID guards the user id (a prior query row value) before it is
+// interpolated into the session lookup.
+func wpNumericID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// firstN caps a slice for display in finding details.
+func firstN(in []string, n int) []string {
+	if len(in) <= n {
+		return in
+	}
+	return in[:n]
 }

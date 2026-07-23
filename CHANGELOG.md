@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The rogue-WordPress-admin check now weighs a new admin's interactive-login history: an account with repeated logins from a single stable IP (the developer/agency pattern) is downgraded to a warning with the evidence attached, while one created with no interactive login stays critical -- cutting false positives without hiding a scripted takeover.
 - The runtime PHP shield now inspects directly-executed plugin, theme, and cache scripts for webshell behavior instead of waving cache directories through, so a fake-plugin command shell can no longer run where the path rules did not reach.
 - Updated Go dependencies: cilium/ebpf v0.22.0, sentry-go v0.48.0, klauspost/compress v1.19.1, maxminddb-golang v2.4.1, x/net v0.57.0, x/sys v0.47.0.
 
