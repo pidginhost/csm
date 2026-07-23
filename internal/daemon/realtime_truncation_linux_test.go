@@ -128,7 +128,8 @@ func TestRealtimeNonPHPChecksRecordTruncationMetric(t *testing.T) {
 		{
 			name: "htaccess",
 			path: filepath.Join(dir, ".htaccess"),
-			body: []byte(strings.Repeat("# filler\n", 2000)),
+			// Must exceed the realtime .htaccess read window to truncate.
+			body: []byte(strings.Repeat("# filler\n", htaccessRealtimeMaxBytes/9+2)),
 			run: func(fd int, path string) {
 				fm.checkHtaccess(fd, path, "pid=1 cmd=httpd")
 			},
