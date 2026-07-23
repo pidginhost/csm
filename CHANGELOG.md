@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Real-time `.htaccess` scans now inspect the full bounded file and continue through every detector after an earlier heuristic match. `php.ini` monitoring now follows configured or detected web roots and marks alternate account mounts.
 - PHP configuration scans now keep dangerous files active until they are remediated, parse scheduled and real-time directives consistently, and stop safely on special files, oversized configs, cancellation, or traversal limits. Recursive scans now use authoritative cPanel document roots with non-cPanel fallbacks, report incomplete coverage, and use the full deep-check time budget.
 - `.htaccess` remediation now handles the new CGI-handler and ModSecurity-disable findings. Handler scans reject broad or malformed file scopes without flagging standard CGI mappings, and WAF tampering ignores unrelated ModSecurity settings.
 - PHP Shield no longer exempts index-named scripts under protected WordPress paths or reads the WordPress front controller for command-like query parameters. Signature checks now distinguish command functions from same-named methods, declarations, comments, and strings, and the reference copy logs the same request metadata as the deployed shield.

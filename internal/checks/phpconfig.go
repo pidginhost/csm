@@ -661,6 +661,52 @@ func PHPConfigSecurityBypasses(content string) []string {
 	return out
 }
 
+// PHPConfigRealtimeRootPatterns returns the startup-time path patterns used to
+// admit php.ini writes into the fanotify analyzer. Explicit account_roots are
+// authoritative. On cPanel, account homes are intentionally broader than the
+// primary public_html root because addon domains can live anywhere below an
+// account and on alternate home mounts.
+func PHPConfigRealtimeRootPatterns(cfg *config.Config) []string {
+	if cfg != nil && len(cfg.AccountRoots) > 0 {
+		return WebRootPatterns(cfg)
+	}
+	if len(WebRootPatterns(cfg)) == 0 {
+		return nil
+	}
+
+	patterns := []string{"/home/*"}
+	seen := map[string]struct{}{patterns[0]: {}}
+	data, err := osFS.ReadFile(userdataDomainsPath)
+	if err != nil {
+		return patterns
+	}
+	vhosts, _ := parseUserdataDomainRootsChecked(string(data))
+	for _, vhost := range vhosts {
+		pattern := phpConfigRealtimeRootPattern(vhost.user, vhost.docroot)
+		if pattern == "" {
+			continue
+		}
+		if _, exists := seen[pattern]; exists {
+			continue
+		}
+		seen[pattern] = struct{}{}
+		patterns = append(patterns, pattern)
+	}
+	return patterns
+}
+
+func phpConfigRealtimeRootPattern(user, docroot string) string {
+	clean := filepath.Clean(docroot)
+	if !filepath.IsAbs(clean) {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, string(filepath.Separator)), string(filepath.Separator))
+	if len(parts) >= 2 && strings.HasPrefix(parts[0], "home") && parts[1] == user {
+		return filepath.Join(string(filepath.Separator), parts[0], "*")
+	}
+	return clean
+}
+
 var dangerousPHPFunctions = []string{
 	"exec",
 	"system",

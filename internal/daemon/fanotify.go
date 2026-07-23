@@ -51,6 +51,8 @@ type fanotifyEventMetadata struct {
 
 const metadataSize = int(unsafe.Sizeof(fanotifyEventMetadata{}))
 
+const htaccessRealtimeMaxBytes = 1 << 20
+
 // M1 - webshells map at package level (avoid per-call allocation)
 var knownWebshells = map[string]bool{
 	"h4x0r.php": true, "c99.php": true, "r57.php": true,
@@ -115,6 +117,10 @@ type FileMonitor struct {
 
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
+
+	// webRootPatterns is the immutable PHP configuration root set captured at
+	// startup from account_roots and platform discovery.
+	webRootPatterns []string
 
 	// WordPress core checksum verifier - skips detection on unmodified WP core files
 	wpCache *wpcheck.Cache
@@ -297,9 +303,18 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	// Mark mount points; M2 - track successful mounts
-	mountPaths := []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
+	webRootPatterns := checks.PHPConfigRealtimeRootPatterns(cfg)
+	mountPaths := fanotifyMountPaths(webRootPatterns)
 	mountOK := 0
-	for _, path := range mountPaths {
+	for index, path := range mountPaths {
+		if index >= 4 {
+			if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+				continue
+			} else if statErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot inspect configured watch root %s: %v\n", ts(), path, statErr)
+				continue
+			}
+		}
 		// H1 - use golang.org/x/sys/unix for fanotify_mark
 		err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
 		if err != nil {
@@ -345,14 +360,15 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm := &FileMonitor{
-		fd:            fd,
-		cfg:           cfg,
-		alertCh:       alertCh,
-		analyzerCh:    make(chan fileEvent, analyzerChBufferSize),
-		pipeFds:       pipeFds,
-		stopCh:        make(chan struct{}),
-		reconcileDirs: make(map[string]time.Time),
-		reconcileSig:  make(chan struct{}, 1),
+		fd:              fd,
+		cfg:             cfg,
+		alertCh:         alertCh,
+		analyzerCh:      make(chan fileEvent, analyzerChBufferSize),
+		pipeFds:         pipeFds,
+		stopCh:          make(chan struct{}),
+		reconcileDirs:   make(map[string]time.Time),
+		reconcileSig:    make(chan struct{}, 1),
+		webRootPatterns: webRootPatterns,
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -361,6 +377,45 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	fm.initDropperDetector(cfg)
 
 	return fm, nil
+}
+
+func fanotifyMountPaths(webRootPatterns []string) []string {
+	paths := []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
+	seen := make(map[string]struct{}, len(paths)+len(webRootPatterns))
+	for _, path := range paths {
+		seen[path] = struct{}{}
+	}
+	for _, pattern := range webRootPatterns {
+		anchor := fanotifyMountAnchor(pattern)
+		if anchor == "" {
+			continue
+		}
+		if _, exists := seen[anchor]; exists {
+			continue
+		}
+		seen[anchor] = struct{}{}
+		paths = append(paths, anchor)
+	}
+	return paths
+}
+
+func fanotifyMountAnchor(pattern string) string {
+	if strings.TrimSpace(pattern) == "" {
+		return ""
+	}
+	clean := filepath.Clean(pattern)
+	if !filepath.IsAbs(clean) {
+		return ""
+	}
+	meta := strings.IndexAny(clean, "*?[")
+	if meta < 0 {
+		return clean
+	}
+	prefix := clean[:meta]
+	if strings.HasSuffix(prefix, string(filepath.Separator)) {
+		return filepath.Clean(prefix)
+	}
+	return filepath.Dir(prefix)
 }
 
 // Run starts the file monitor event loop and analyzer workers.
@@ -802,12 +857,13 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		}
 	}
 
-	// .htaccess and .user.ini files (any location), and php.ini under a web
-	// root -- an attacker plants a php.ini to weaken disable_functions.
+	// .htaccess and .user.ini files (any location), and php.ini under a
+	// configured or detected web root. An attacker plants php.ini files there
+	// to weaken disable_functions.
 	if strings.HasSuffix(lower, ".htaccess") || strings.HasSuffix(lower, ".user.ini") {
 		return true
 	}
-	if strings.HasPrefix(path, "/home/") && filepath.Base(lower) == "php.ini" {
+	if filepath.Base(lower) == "php.ini" && pathMatchesWebRootPatterns(path, fm.webRootPatterns) {
 		return true
 	}
 
@@ -853,6 +909,23 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	return false
+}
+
+func pathMatchesWebRootPatterns(path string, patterns []string) bool {
+	dir := filepath.Clean(filepath.Dir(path))
+	for {
+		for _, pattern := range patterns {
+			matched, err := filepath.Match(filepath.Clean(pattern), dir)
+			if err == nil && matched {
+				return true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // credentialLogNames are filenames commonly used by phishing kits to store
@@ -1331,9 +1404,16 @@ func (fm *FileMonitor) checkCrontab(fd int, path, procInfo string) {
 // checkHtaccess reads .htaccess content from the event fd and checks for injection.
 // C3 - reads from fd, not path.
 func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
-	recordReadTruncation(fd, 16384, "htaccess")
-	data := readFromFd(fd, 16384)
+	recordReadTruncation(fd, htaccessRealtimeMaxBytes, "htaccess")
+	data := readFromFd(fd, htaccessRealtimeMaxBytes+1)
 	if data == nil {
+		return
+	}
+	if len(data) > htaccessRealtimeMaxBytes {
+		fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
+			fmt.Sprintf(".htaccess too large to inspect in real time: %s", path),
+			"The file exceeds the real-time .htaccess scan limit and may hide malicious directives.",
+			path, procInfo)
 		return
 	}
 
@@ -1353,7 +1433,7 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 			fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
 				fmt.Sprintf("Suspicious .htaccess modification: %s", path),
 				"auto_prepend_file/auto_append_file target not recognised", path, procInfo)
-			return
+			continue
 		}
 
 		// eval( / base64_decode outside a RewriteCond/RewriteRule is a
@@ -1367,7 +1447,6 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 			fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
 				fmt.Sprintf("Suspicious .htaccess modification: %s", path),
 				"PHP function reference outside RewriteCond/RewriteRule", path, procInfo)
-			return
 		}
 	}
 

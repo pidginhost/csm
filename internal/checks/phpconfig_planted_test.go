@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -206,6 +207,40 @@ func TestCheckPHPConfigChangesUsesDocrootOutsidePrimaryHomeMount(t *testing.T) {
 	}
 	if findings[0].FilePath != configPath {
 		t.Fatalf("alternate-home finding path = %q, want %q", findings[0].FilePath, configPath)
+	}
+}
+
+func TestPHPConfigRealtimeRootPatternsIncludeCPanelHomeMounts(t *testing.T) {
+	panel := platform.PanelCPanel
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{Panel: &panel})
+	withMockOS(t, phpIniFS(map[string]string{
+		userdataDomainsPath: strings.Join([]string{
+			"primary.example: victim==root==main==example.com==/home/victim/public_html==192.0.2.10:80==192.0.2.10:443",
+			"alternate.example: victim==root==addon==example.com==/home2/victim/addon==192.0.2.10:80==192.0.2.10:443",
+			"external.example: victim==root==addon==example.com==/srv/vhosts/external==192.0.2.10:80==192.0.2.10:443",
+			"custom-home.example: victim==root==addon==example.com==/srv/victim/site==192.0.2.10:80==192.0.2.10:443",
+		}, "\n"),
+	}))
+
+	got := PHPConfigRealtimeRootPatterns(&config.Config{})
+	want := []string{"/home/*", "/home2/*", "/srv/vhosts/external", "/srv/victim/site"}
+	if len(got) != len(want) {
+		t.Fatalf("realtime PHP config roots = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("realtime PHP config roots = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestPHPConfigRealtimeRootPatternsPreferExplicitConfig(t *testing.T) {
+	cfg := &config.Config{AccountRoots: []string{"/var/www/vhosts/*/httpdocs"}}
+	got := PHPConfigRealtimeRootPatterns(cfg)
+	if len(got) != 1 || got[0] != cfg.AccountRoots[0] {
+		t.Fatalf("realtime PHP config roots = %v, want %v", got, cfg.AccountRoots)
 	}
 }
 

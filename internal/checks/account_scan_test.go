@@ -79,6 +79,20 @@ func TestResolveWebRoots_ExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestWebRootPatternsReturnsExplicitConfigCopy(t *testing.T) {
+	cfg := &config.Config{
+		AccountRoots: []string{"/var/www/*/public", "/srv/http/*"},
+	}
+	got := WebRootPatterns(cfg)
+	if len(got) != len(cfg.AccountRoots) {
+		t.Fatalf("web root patterns = %v, want %v", got, cfg.AccountRoots)
+	}
+	got[0] = "/changed"
+	if cfg.AccountRoots[0] == got[0] {
+		t.Fatal("WebRootPatterns returned the mutable config slice")
+	}
+}
+
 func TestResolveWebRoots_Dedupes(t *testing.T) {
 	tmp := t.TempDir()
 	dir := filepath.Join(tmp, "srv", "site")

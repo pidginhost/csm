@@ -356,6 +356,19 @@ func GetScanHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
 	return osFS.ReadDir("/home")
 }
 
+// WebRootPatterns returns the configured web-root globs, including the
+// platform default when the operator did not set account_roots.
+func WebRootPatterns(cfg *config.Config) []string {
+	switch {
+	case cfg != nil && len(cfg.AccountRoots) > 0:
+		return append([]string(nil), cfg.AccountRoots...)
+	case platform.Detect().IsCPanel():
+		return []string{"/home/*/public_html"}
+	default:
+		return nil
+	}
+}
+
 // ResolveWebRoots returns the list of directory paths CSM should scan for
 // web-facing content (wp-config.php, .htaccess, public_html trees, etc.).
 //
@@ -369,15 +382,7 @@ func GetScanHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
 //
 // Each returned path is an absolute directory that exists on disk.
 func ResolveWebRoots(cfg *config.Config) []string {
-	var patterns []string
-	switch {
-	case len(cfg.AccountRoots) > 0:
-		patterns = cfg.AccountRoots
-	case platform.Detect().IsCPanel():
-		patterns = []string{"/home/*/public_html"}
-	default:
-		return nil
-	}
+	patterns := WebRootPatterns(cfg)
 
 	var roots []string
 	seen := make(map[string]struct{})

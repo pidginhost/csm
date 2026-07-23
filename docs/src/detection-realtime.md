@@ -4,7 +4,7 @@ CSM detects threats in under 2 seconds using kernel and log watchers running ins
 
 ## fanotify File Monitor (< 1 second)
 
-Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
+Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configured `account_roots`, and detected cPanel document roots.
 
 **Detects:**
 - Webshell creation (PHP files in web directories)
@@ -13,7 +13,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`
 - `.htaccess` injection and tampering (auto_prepend, eval/base64 handlers, CGI execution remaps, and ModSecurity disablement)
-- `.user.ini` tampering
+- `.user.ini` tampering and `php.ini` tampering under configured or detected web roots
 - Obfuscated PHP (encoded, packed, concatenated)
 - Fragmented base64 evasion (`$a="base"; $b="64_decode"` -- function name split across variables)
 - Concatenation payloads (hundreds of `$z .= "xxxx"` lines with eval at end)
@@ -22,7 +22,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 - SEO spam: gambling/togel dofollow link injection in PHP/HTML files
 - Phishing pages and credential harvest logs
 - Phishing kit ZIP archives
-- YAML signature matches (PHP, HTML, .htaccess, .user.ini)
+- YAML signature matches (PHP, HTML, .htaccess, .user.ini, php.ini)
 - YARA-X rule matches (if built with `-tags yara`)
 
 **Features:**

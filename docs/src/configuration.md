@@ -52,7 +52,7 @@ account_roots:
 
 Each entry is a glob pattern expanded at scan time. Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
 
-The setting currently covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron`, including WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans still use the cPanel account layout.
+The setting covers `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, real-time `php.ini` monitoring, and WP-Cron remediation roots. CMS integrity, phishing, `.htaccess`, and file-index scans still use the cPanel account layout.
 
 ## Minimal Config
 
