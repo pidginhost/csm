@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/netip"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -627,21 +628,20 @@ func checkWPUsers(user string, creds wpDBCreds, prefix string) []alert.Finding {
 		details := fmt.Sprintf("Database: %s\nTable prefix: %s\nUser ID: %s\nLogin: %s\nEmail: %s\nRegistered: %s",
 			creds.dbName, prefix, parts[0], parts[1], parts[2], registered)
 
-		// Interactive-login history separates a scripted rogue admin (no logins,
-		// or logins from rotating/hostile IPs) from a legitimate new developer or
-		// agency (repeated logins from one stable IP). Downgrade -- never suppress
-		// -- on the strong single-IP signal so the operator still sees the account.
+		// A stable session pattern can support the legitimate developer or agency
+		// case, but session metadata is not authoritative. Downgrade -- never
+		// suppress -- so a forged session record cannot hide the account.
 		loginIPs := wpAdminLoginIPs(creds, prefix, parts[0])
+		distinct := uniqueStrings(loginIPs)
 		switch {
 		case len(loginIPs) == 0:
-			details += "\nInteractive logins: none recorded (created without an interactive login -- typical of a scripted rogue admin)."
-		case len(loginIPs) >= wpEstablishedLoginSessions && len(uniqueStrings(loginIPs)) == 1:
+			details += "\nSession-token IP evidence: none recorded."
+		case len(loginIPs) >= wpEstablishedLoginSessions && len(distinct) == 1:
 			severity = alert.Warning
-			details += fmt.Sprintf("\nInteractive logins: %d from a single IP (%s) -- consistent with a legitimate developer, not a scripted rogue admin. Verify with the account owner before acting.",
-				len(loginIPs), uniqueStrings(loginIPs)[0])
+			details += fmt.Sprintf("\nSession-token IP evidence: %d stored sessions from a single IP (%s) -- consistent with a stable operator login pattern, but not proof the account is legitimate. Verify with the account owner before acting.",
+				len(loginIPs), distinct[0])
 		default:
-			distinct := uniqueStrings(loginIPs)
-			details += fmt.Sprintf("\nInteractive logins: %d from %d IP(s): %s",
+			details += fmt.Sprintf("\nSession-token IP evidence: %d stored sessions from %d IP(s): %s",
 				len(loginIPs), len(distinct), strings.Join(firstN(distinct, 5), ", "))
 		}
 
@@ -795,35 +795,89 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 	return findings
 }
 
-// wpEstablishedLoginSessions is the number of interactive login sessions from
-// a single stable IP that marks a new admin as an established human user
-// (developer/agency) rather than a scripted rogue admin.
+// wpEstablishedLoginSessions is the number of stored login sessions from a
+// single stable IP that is strong enough to downgrade the finding for review.
 const wpEstablishedLoginSessions = 5
 
-var reSessionTokenIP = regexp.MustCompile(`"ip";s:\d+:"([^"]+)"`)
-
-// parseSessionTokenIPs extracts the login source IPs from a WordPress
-// session_tokens usermeta blob (PHP-serialized), in order, one per session.
+// parseSessionTokenIPs extracts structurally valid login source IPs from a
+// WordPress session_tokens usermeta blob in session order.
 func parseSessionTokenIPs(serialized string) []string {
 	var ips []string
-	for _, m := range reSessionTokenIP.FindAllStringSubmatch(serialized, -1) {
-		if len(m) == 2 && m[1] != "" {
-			ips = append(ips, m[1])
+	for i := 0; i < len(serialized); {
+		key, next, ok := parsePHPSerializedStringAt(serialized, i)
+		if !ok {
+			if serialized[i] == 's' && i+1 < len(serialized) && serialized[i+1] == ':' {
+				return nil
+			}
+			i++
+			continue
 		}
+		if key != "ip" {
+			i = next
+			continue
+		}
+
+		value, afterValue, ok := parsePHPSerializedStringAt(serialized, next)
+		if !ok {
+			return nil
+		}
+		addr, err := netip.ParseAddr(value)
+		if err == nil {
+			ips = append(ips, addr.Unmap().String())
+		}
+		i = afterValue
 	}
 	return ips
 }
 
-// wpAdminLoginIPs returns the source IPs of an admin's active login sessions.
-// A scripted rogue admin typically has none.
+// parsePHPSerializedStringAt reads one PHP s:<length>:"<value>"; token. Using
+// the declared byte length prevents a forged token-looking fragment inside a
+// session's attacker-controlled user-agent string from being treated as a key.
+func parsePHPSerializedStringAt(serialized string, start int) (string, int, bool) {
+	if start < 0 || start+2 > len(serialized) ||
+		serialized[start] != 's' || serialized[start+1] != ':' {
+		return "", start, false
+	}
+
+	lengthStart := start + 2
+	lengthEnd := lengthStart
+	for lengthEnd < len(serialized) &&
+		serialized[lengthEnd] >= '0' && serialized[lengthEnd] <= '9' {
+		lengthEnd++
+	}
+	if lengthEnd == lengthStart || lengthEnd+2 > len(serialized) ||
+		serialized[lengthEnd] != ':' || serialized[lengthEnd+1] != '"' {
+		return "", start, false
+	}
+
+	valueLen, err := strconv.Atoi(serialized[lengthStart:lengthEnd])
+	if err != nil {
+		return "", start, false
+	}
+	valueStart := lengthEnd + 2
+	if valueLen > len(serialized)-valueStart {
+		return "", start, false
+	}
+	valueEnd := valueStart + valueLen
+	if valueEnd+2 > len(serialized) ||
+		serialized[valueEnd] != '"' || serialized[valueEnd+1] != ';' {
+		return "", start, false
+	}
+	return serialized[valueStart:valueEnd], valueEnd + 2, true
+}
+
+// wpAdminLoginIPs returns source IPs encoded in an admin's stored login
+// sessions. The caller treats this forgeable metadata only as downgrade
+// evidence and never uses it to suppress the finding.
 func wpAdminLoginIPs(creds wpDBCreds, prefix, userID string) []string {
 	if !wpNumericID(userID) {
 		return nil
 	}
 	q := fmt.Sprintf(
-		"SELECT meta_value FROM %susermeta WHERE user_id = %s AND meta_key = '%ssession_tokens' LIMIT 1",
-		prefix, userID, prefix)
-	return parseSessionTokenIPs(strings.Join(runMySQLQuery(creds, q), ""))
+		"SELECT meta_value FROM %susermeta WHERE user_id = %s AND meta_key = 'session_tokens' LIMIT 1",
+		prefix, userID)
+	serialized := mysqlclient.BatchUnescape(strings.Join(runMySQLQuery(creds, q), ""))
+	return parseSessionTokenIPs(serialized)
 }
 
 // wpNumericID guards the user id (a prior query row value) before it is

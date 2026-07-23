@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -270,6 +271,21 @@ func FuzzExtractPHPString(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, s string) {
 		_ = extractPHPString(s)
+	})
+}
+
+func FuzzParseSessionTokenIPs(f *testing.F) {
+	f.Add(`a:1:{s:5:"token";a:4:{s:10:"expiration";i:1775817506;s:2:"ip";s:11:"203.0.113.7";s:2:"ua";s:11:"Mozilla/5.0";s:5:"login";i:1775644706;}}`)
+	f.Add(`a:1:{s:2:"ip";s:1:"203.0.113.7";}`)
+	f.Add(`s:2:"ip";s:11:"203.0.113.7";`)
+	f.Add("")
+	f.Fuzz(func(t *testing.T, serialized string) {
+		for _, ip := range parseSessionTokenIPs(serialized) {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil || addr.Unmap().String() != ip {
+				t.Fatalf("parseSessionTokenIPs returned a non-canonical IP: %q", ip)
+			}
+		}
 	})
 }
 
