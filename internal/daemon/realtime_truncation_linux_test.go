@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -135,7 +136,8 @@ func TestRealtimeNonPHPChecksRecordTruncationMetric(t *testing.T) {
 		{
 			name: "user_ini",
 			path: filepath.Join(dir, ".user.ini"),
-			body: []byte(strings.Repeat("; filler\n", 600)),
+			// Must exceed the shared PHP-config read ceiling to truncate.
+			body: []byte(strings.Repeat("; filler\n", checks.PHPConfigMaxBytes/9+2)),
 			run: func(fd int, path string) {
 				fm.checkUserINI(fd, path, "pid=1 cmd=php")
 			},
