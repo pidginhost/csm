@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Malware detection now recognizes eval() loaders that decrypt their payload with openssl_decrypt, a variant seen in a cross-account compromise, in both the deep-scan rules and the runtime PHP shield.
 - `.htaccess` scans now flag two intrusion techniques seen in a cross-account compromise: routing a non-standard extension (or the whole directory) to a CGI handler to arm an uploaded Perl/binary webshell, and disabling ModSecurity to mask the attack. Both are auto-cleanable.
 - The PHP-config check now scans for `.user.ini` and `php.ini` files anywhere under a document root (not just `.user.ini` at its top) and flags a newly-planted one whose `disable_functions` is emptied or set to junk that disables nothing -- the camouflage a cross-account intruder used to re-enable shell functions.
+- Real-time monitoring now watches `php.ini` writes, flags a `disable_functions` value that disables nothing (not only when it is empty), and runs the full `.htaccess` detector set on write -- so CGI-handler webshell arming and ModSecurity-disable tampering are caught immediately instead of at the next deep scan.
 
 ### Changed
 

@@ -412,7 +412,7 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot read .htaccess: %v", err)}
 	}
-	findings, _ := auditHtaccessContent(clean, content)
+	findings, _ := AuditHtaccessContent(clean, content)
 	if len(findings) == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: "no malicious directives remain in .htaccess"}
 	}

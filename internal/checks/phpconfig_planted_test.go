@@ -132,8 +132,8 @@ func TestDisableFunctionsNeutralized(t *testing.T) {
 		{"pcntl_exec", false},                    // pcntl family
 	}
 	for _, c := range cases {
-		if got := disableFunctionsNeutralized(c.val); got != c.want {
-			t.Errorf("disableFunctionsNeutralized(%q) = %v, want %v", c.val, got, c.want)
+		if got := DisableFunctionsNeutralized(c.val); got != c.want {
+			t.Errorf("DisableFunctionsNeutralized(%q) = %v, want %v", c.val, got, c.want)
 		}
 	}
 }

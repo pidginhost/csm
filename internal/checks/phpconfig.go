@@ -215,7 +215,7 @@ func phpINISecurityBypass(content string) []string {
 		val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 		switch {
 		case strings.HasPrefix(key, "disable_functions"):
-			if disableFunctionsNeutralized(val) {
+			if DisableFunctionsNeutralized(val) {
 				out = append(out, "disable_functions cleared or neutralized (dangerous PHP functions enabled)")
 			}
 		case strings.HasPrefix(key, "allow_url_include"):
@@ -231,13 +231,14 @@ func phpINISecurityBypass(content string) []string {
 	return out
 }
 
-// disableFunctionsNeutralized reports whether a disable_functions value fails
+// DisableFunctionsNeutralized reports whether a disable_functions value fails
 // to actually disable any dangerous function -- empty, "none", or set to junk
 // (the `disable_functions=ByPassed By 0xNix` camouflage). val must be
 // lowercased and unquoted. A genuine hardening list always names at least one
 // dangerous function, so the absence of every one means the directive disables
 // nothing.
-func disableFunctionsNeutralized(val string) bool {
+func DisableFunctionsNeutralized(val string) bool {
+	val = strings.Trim(strings.TrimSpace(val), "\"'")
 	if val == "" || val == "none" {
 		return true
 	}

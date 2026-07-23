@@ -802,8 +802,12 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		}
 	}
 
-	// .htaccess and .user.ini files
+	// .htaccess and .user.ini files (any location), and php.ini under a web
+	// root -- an attacker plants a php.ini to weaken disable_functions.
 	if strings.HasSuffix(lower, ".htaccess") || strings.HasSuffix(lower, ".user.ini") {
+		return true
+	}
+	if strings.HasPrefix(path, "/home/") && filepath.Base(lower) == "php.ini" {
 		return true
 	}
 
@@ -1080,7 +1084,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// .user.ini modification - check for dangerous PHP settings (C3 - read from fd).
 	// Also checked before /tmp so malicious .user.ini is detected anywhere.
-	if nameLower == ".user.ini" {
+	if nameLower == ".user.ini" || nameLower == "php.ini" {
 		fm.checkUserINI(event.fd, path, procInfo)
 		return
 	}
@@ -1367,6 +1371,14 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 		}
 	}
 
+	// Run the full .htaccess detector registry so realtime detection matches
+	// the depth of the scheduled scan: CGI-handler webshell arming, ModSecurity
+	// disable, PHP-in-uploads, handler remaps, cloaks, and redirect hijacks.
+	hardened, _ := checks.AuditHtaccessContent(path, data)
+	for _, f := range hardened {
+		fm.sendAlertWithPath(f.Severity, f.Check, f.Message, f.Details, path, procInfo)
+	}
+
 	// Run signature/YARA scanning on .htaccess content
 	fm.runSignatureScan(data, path, ".htaccess", procInfo)
 }
@@ -1400,10 +1412,10 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 					parts := strings.SplitN(line, "=", 2)
 					if len(parts) == 2 {
 						val := strings.TrimSpace(parts[1])
-						if val == "" || val == "\"\"" || val == "none" {
+						if checks.DisableFunctionsNeutralized(val) {
 							fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
-								fmt.Sprintf("PHP disable_functions cleared: %s", path),
-								"All dangerous PHP functions enabled - shell execution possible", path, procInfo)
+								fmt.Sprintf("PHP disable_functions neutralized: %s", path),
+								"disable_functions disables no dangerous functions - shell execution possible", path, procInfo)
 							return
 						}
 					}
