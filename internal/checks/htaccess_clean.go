@@ -346,11 +346,45 @@ func cgiExtensionListIsSuspicious(tokens []string) bool {
 	return false
 }
 
+// cgiExecutionNeutralized reports whether the file disables CGI execution for
+// its directory, which makes any cgi-script handler mapping inert. Security
+// plugins (Wordfence, BuddyBoss) and app stacks (Magento) map .php and friends
+// to cgi-script but pair it with `Options -ExecCGI`; the cgi-script handler
+// cannot run without ExecCGI, so the mapping hardens rather than arms. An
+// attacker who wants execution turns ExecCGI back on, so a later enabling
+// Options directive (or `Options All`) cancels the neutralization. Comments are
+// skipped, so a commented-out `-ExecCGI` cannot suppress a live mapping.
+func cgiExecutionNeutralized(content []byte) bool {
+	neutralized := false
+	for _, logical := range htaccessLogicalByteLines(content) {
+		fields := apacheDirectiveFields(strings.TrimSpace(logical.text))
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "Options") {
+			continue
+		}
+		for _, tok := range fields[1:] {
+			switch strings.ToLower(strings.Trim(strings.TrimSpace(tok), `"'`)) {
+			case "-execcgi", "none":
+				neutralized = true
+			case "+execcgi", "execcgi", "all", "+all":
+				neutralized = false
+			}
+		}
+	}
+	return neutralized
+}
+
 // detectCGIHandlerAbuse flags an .htaccess that maps a non-conventional
 // extension (or the whole directory) to a CGI interpreter. An attacker uses
 // this to make an uploaded Perl/binary file execute: e.g.
 // `AddHandler cgi-script .alfa` / `AddType application/x-httpd-cgi .alfa`.
 func detectCGIHandlerAbuse(content []byte, _ string) []htaccessMatch {
+	// A cgi-script handler mapping is inert when the directory disables CGI
+	// execution, so a hardening block that maps .php to cgi-script alongside
+	// Options -ExecCGI is not webshell arming and must not be flagged or
+	// auto-cleaned out of a legitimate security plugin's .htaccess.
+	if cgiExecutionNeutralized(content) {
+		return nil
+	}
 	var out []htaccessMatch
 	var contexts []cgiHandlerContext
 	for _, logical := range htaccessLogicalByteLines(content) {

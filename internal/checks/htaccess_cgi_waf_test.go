@@ -328,3 +328,97 @@ func TestNewHtaccessDetectorsApplyAndAutoClean(t *testing.T) {
 		})
 	}
 }
+
+// Wordfence/BuddyBoss/Magento "code execution protection" blocks map
+// .php and friends to cgi-script but pair it with Options -ExecCGI, which
+// disables CGI execution -- the mapping is inert hardening, not webshell
+// arming. Real 2026-07-23 false positives that auto-remediation then edited
+// out of legitimate customer files.
+func TestDetectorCGIHandlerAbuseSkipsWordfenceExecCGIProtection(t *testing.T) {
+	dir := t.TempDir()
+	body := "# BEGIN Wordfence code execution protection\n" +
+		"<IfModule mod_php7.c>\nphp_flag engine 0\n</IfModule>\n\n" +
+		"AddHandler cgi-script .php .phtml .php3 .pl .py .jsp .asp .htm .shtml .sh .cgi\n" +
+		"Options -ExecCGI\n" +
+		"# END Wordfence code execution protection\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 0 {
+		t.Errorf("cgi_handler_abuse (Wordfence -ExecCGI protection) = %d, want 0", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseSkipsMagentoDefaultHandler(t *testing.T) {
+	dir := t.TempDir()
+	body := "Options -Indexes\n<IfModule mod_php7.c>\nphp_flag engine 0\n</IfModule>\n" +
+		"AddHandler cgi-script .php .pl .py .jsp .asp .htm .shtml .sh .cgi\n" +
+		"Options -ExecCGI\n" +
+		"<FilesMatch \".+\\.(ph(p[3457]?|t|tml)|[aj]sp|p[ly]|sh|cgi|shtml?|html?)$\">\n" +
+		"SetHandler default-handler\n</FilesMatch>\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 0 {
+		t.Errorf("cgi_handler_abuse (Magento default-handler + -ExecCGI) = %d, want 0", got)
+	}
+}
+
+// An attacker who actually wants execution enables it: the neutralizer skip
+// must not fire when ExecCGI is turned back on.
+func TestDetectorCGIHandlerAbuseFlagsWhenExecCGIReEnabled(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .php .phtml\nOptions -ExecCGI\nOptions +ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (ExecCGI re-enabled) = %d, want 1", got)
+	}
+}
+
+// Mapping .php to cgi-script with CGI execution enabled (no disabling Options)
+// is the arming technique and must still be flagged.
+func TestDetectorCGIHandlerAbuseFlagsExecCGIEnabledMapping(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .php .phtml\nOptions +ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (+ExecCGI mapping) = %d, want 1", got)
+	}
+}
+
+// A commented-out -ExecCGI is not active and must not suppress a live mapping.
+func TestDetectorCGIHandlerAbuseIgnoresCommentedExecCGI(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .php .phtml\n# Options -ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (commented -ExecCGI) = %d, want 1", got)
+	}
+}
+
+// Real 2026-07-23 legacy-shop file: `Options All -Indexes` (All would enable
+// ExecCGI) precedes the mapping, but a trailing `Options -ExecCGI` wins, so
+// execution is off and the mapping is inert.
+func TestDetectorCGIHandlerAbuseSkipsAllThenDisabledExecCGI(t *testing.T) {
+	dir := t.TempDir()
+	body := "Options All -Indexes\n<IfModule mod_php7.c>\nphp_flag engine 0\n</IfModule>\n" +
+		"AddHandler cgi-script .php .pl .py .jsp .asp .htm .shtml .sh .cgi\n" +
+		"Options -ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 0 {
+		t.Errorf("cgi_handler_abuse (Options All then -ExecCGI) = %d, want 0", got)
+	}
+}
+
+// But `Options All` after a `-ExecCGI` re-enables execution and must flag.
+func TestDetectorCGIHandlerAbuseFlagsDisabledThenAllExecCGI(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .php\nOptions -ExecCGI\nOptions All -Indexes\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (Options All re-enables) = %d, want 1", got)
+	}
+}
