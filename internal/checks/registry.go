@@ -151,6 +151,7 @@ var checkRegistry = []CheckInfo{
 
 	// --- Web & Application ----------------------------------------------
 	{Name: "htaccess_auto_prepend", Category: CategoryWeb},
+	{Name: "htaccess_cgi_handler_abuse", Category: CategoryWeb},
 	{Name: "htaccess_errordocument_hijack", Category: CategoryWeb},
 	{Name: "htaccess_filesmatch_shield", Category: CategoryWeb},
 	{Name: "htaccess_handler_abuse", Category: CategoryWeb},
@@ -158,6 +159,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "htaccess_injection", Category: CategoryWeb},
 	{Name: "htaccess_injection_realtime", Category: CategoryWeb},
 	{Name: "htaccess_php_in_uploads", Category: CategoryWeb},
+	{Name: "htaccess_security_disabled", Category: CategoryWeb},
 	{Name: "web_exposed_backup_archive", Category: CategoryWeb},
 	{Name: "web_exposed_config_leak", Category: CategoryWeb},
 	{Name: "web_exposed_db_dump", Category: CategoryWeb},

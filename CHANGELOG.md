@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `.htaccess` remediation now handles the new CGI-handler and ModSecurity-disable findings. Handler scans reject broad or malformed file scopes without flagging standard CGI mappings, and WAF tampering ignores unrelated ModSecurity settings.
 - PHP Shield no longer exempts index-named scripts under protected WordPress paths or reads the WordPress front controller for command-like query parameters. Signature checks now distinguish command functions from same-named methods, declarations, comments, and strings, and the reference copy logs the same request metadata as the deployed shield.
 - Malware content scans no longer flag signature tokens inside compressed archive files under any scan backend, including the daemon's out-of-process worker. Existing identical findings are re-checked after upgrade, including archives too large for inline worker requests.
 

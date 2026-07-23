@@ -194,7 +194,7 @@ var runnerFindingNames = map[string][]string{
 	"ftp_logins":            {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
 	"group_writable_php":    {"group_writable_php"},
 	"health":                {"csm_health"},
-	"htaccess":              {"htaccess_handler_abuse", "htaccess_injection"},
+	"htaccess":              append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
 	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
 	"ip_reputation":         {"ip_reputation"},
 	"kernel_modules":        {"kernel_module"},

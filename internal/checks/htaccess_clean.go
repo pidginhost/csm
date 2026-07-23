@@ -16,7 +16,7 @@ import (
 
 // .htaccess hardened detection / cleaning.
 //
-// Detection emits one of seven specific finding names so operators
+// Detection emits a specific finding name for each pattern so operators
 // can suppress, route, or auto-respond per attack pattern instead of
 // relying on the generic htaccess_injection / htaccess_handler_abuse
 // categories. Cleaning is gated by AutoResponse.CleanHtaccess and is
@@ -50,7 +50,7 @@ type htaccessMatch struct {
 
 // htaccessDetector pairs a finding category with a function that
 // scans the content and reports every range the detector wants
-// removed. Adding an 8th pattern is one entry in this slice.
+// removed. Adding a pattern is one entry in this slice.
 type htaccessDetector struct {
 	Name     string
 	Severity alert.Severity
@@ -118,14 +118,6 @@ var (
 	reHeaderSetAdd    = regexp.MustCompile(`(?im)^\s*Header\s+(set|add)\s+([A-Za-z0-9_-]+)`)
 	reErrorDocument   = regexp.MustCompile(`(?im)^\s*ErrorDocument\s+\d+\s+(https?://[^\s]+)`)
 
-	// Handler directives routing a non-conventional extension (or the whole
-	// directory) to a CGI interpreter -- the technique that arms an uploaded
-	// Perl/binary webshell (ALFA .alfa shell, 2026-07-23).
-	reCGIHandlerLine = regexp.MustCompile(`(?im)^\s*(?:AddHandler|AddType|SetHandler|ForceType)\s+\S.*$`)
-	// A per-account .htaccess turning ModSecurity off to mask an intrusion.
-	// `Sec\S*` also matches obfuscated directive names (`Sec------Engine Off`).
-	reSecDisable = regexp.MustCompile(`(?im)^\s*Sec\S*\s+Off\b.*$`)
-
 	// crawlerUARegex matches the UA strings frequently used in cloak
 	// conditions: search-engine bots and social-share scrapers. Used
 	// as a positive filter on the htaccess_user_agent_cloak finding;
@@ -134,9 +126,8 @@ var (
 	crawlerUARegex = regexp.MustCompile(`(?i)(googlebot|bingbot|baiduspider|yandex|facebookexternalhit|slurp|duckduckbot)`)
 )
 
-// htaccessDetectors is the registry. Order matters only for finding
-// emission: detectors run in slice order so the first detector to
-// see a line wins.
+// htaccessDetectors is the registry. Detectors run in slice order for
+// deterministic finding emission. Overlapping removal ranges are merged later.
 var htaccessDetectors = []htaccessDetector{
 	{
 		Name:     "htaccess_php_in_uploads",
@@ -185,17 +176,25 @@ var htaccessDetectors = []htaccessDetector{
 	},
 }
 
+func htaccessDetectorNames() []string {
+	names := make([]string, 0, len(htaccessDetectors))
+	for _, detector := range htaccessDetectors {
+		names = append(names, detector.Name)
+	}
+	return names
+}
+
 // handlerIsCGI reports whether an Apache handler/MIME token routes matching
 // files to a CGI interpreter (as opposed to serving them statically). This is
 // the CGI counterpart of handlerIsPHP.
 func handlerIsCGI(token string) bool {
 	token = strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
-	switch {
-	case strings.Contains(token, "cgi-script"),
-		strings.Contains(token, "fcgid-script"),
-		strings.Contains(token, "fastcgi-script"),
-		strings.Contains(token, "x-httpd-cgi"),
-		strings.Contains(token, "x-httpd-fcgi"):
+	switch token {
+	case "cgi-script",
+		"fcgid-script",
+		"fastcgi-script",
+		"application/x-httpd-cgi",
+		"application/x-httpd-fcgi":
 		return true
 	}
 	return false
@@ -206,8 +205,143 @@ func handlerIsCGI(token string) bool {
 // other extension is the webshell-arming remap.
 func conventionalCGIExt(ext string) bool {
 	switch ext {
-	case ".cgi", ".pl", ".pm", ".py", ".rb":
+	case ".cgi", ".fcg", ".fcgi", ".pl", ".py", ".rb":
 		return true
+	}
+	return false
+}
+
+type cgiHandlerContext struct {
+	onlyConventional bool
+}
+
+func openCGIHandlerContext(line string) (cgiHandlerContext, bool) {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	switch {
+	case strings.HasPrefix(lower, "<filesmatch"):
+		return cgiHandlerContext{
+			onlyConventional: filesMatchTargetsOnlyConventionalCGI(apacheContainerArgument(line)),
+		}, true
+	case strings.HasPrefix(lower, "<files"):
+		name := strings.ToLower(strings.TrimSpace(apacheContainerArgument(line)))
+		if name == "" || strings.Contains(name, "/") {
+			return cgiHandlerContext{}, true
+		}
+		if strings.HasPrefix(name, "~") {
+			return cgiHandlerContext{
+				onlyConventional: filesMatchTargetsOnlyConventionalCGI(name),
+			}, true
+		}
+		ext := normalizeExt(filepath.Ext(name))
+		if ext == "" {
+			return cgiHandlerContext{}, true
+		}
+		return cgiHandlerContext{
+			onlyConventional: conventionalCGIExt(ext),
+		}, true
+	default:
+		return cgiHandlerContext{}, false
+	}
+}
+
+func filesMatchTargetsOnlyConventionalCGI(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if strings.HasPrefix(pattern, "~") {
+		pattern = strings.TrimSpace(strings.TrimPrefix(pattern, "~"))
+	}
+	if len(pattern) >= 2 {
+		quote := pattern[0]
+		if (quote == '"' || quote == '\'') && pattern[len(pattern)-1] == quote {
+			pattern = pattern[1 : len(pattern)-1]
+		}
+	}
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+
+	switch {
+	case strings.HasSuffix(pattern, `\z`):
+		pattern = pattern[:len(pattern)-2]
+	case strings.HasSuffix(pattern, "$"):
+		pattern = pattern[:len(pattern)-1]
+	default:
+		// An unanchored "\.cgi" also matches names such as shell.cgi.jpg.
+		return false
+	}
+
+	dot := lastRegexLiteralDot(pattern)
+	if dot < 0 || strings.Contains(pattern[:dot], "|") {
+		return false
+	}
+	extPattern := pattern[dot+2:]
+	switch {
+	case strings.HasPrefix(extPattern, "(?:") && strings.HasSuffix(extPattern, ")"):
+		extPattern = extPattern[3 : len(extPattern)-1]
+	case strings.HasPrefix(extPattern, "(") && strings.HasSuffix(extPattern, ")"):
+		extPattern = extPattern[1 : len(extPattern)-1]
+	}
+	parts := strings.Split(extPattern, "|")
+	exts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		ext := normalizeExt(part)
+		if ext == "" {
+			return false
+		}
+		exts = append(exts, ext)
+	}
+	return allConventionalCGIExts(exts)
+}
+
+// lastRegexLiteralDot returns the escape backslash before the final literal
+// dot. An odd backslash run escapes the dot; an even run leaves it as a regex
+// wildcard and cannot prove an extension-only match.
+func lastRegexLiteralDot(pattern string) int {
+	for dot := len(pattern) - 1; dot >= 0; dot-- {
+		if pattern[dot] != '.' {
+			continue
+		}
+		backslashes := 0
+		for i := dot - 1; i >= 0 && pattern[i] == '\\'; i-- {
+			backslashes++
+		}
+		if backslashes%2 == 1 {
+			return dot - 1
+		}
+	}
+	return -1
+}
+
+func allConventionalCGIExts(exts []string) bool {
+	if len(exts) == 0 {
+		return false
+	}
+	for _, ext := range exts {
+		if !conventionalCGIExt(ext) {
+			return false
+		}
+	}
+	return true
+}
+
+func cgiHandlerTargetsOnlyConventional(contexts []cgiHandlerContext) bool {
+	for _, context := range contexts {
+		// Nested file containers intersect. Any conventional-only container
+		// therefore prevents the handler from reaching a custom extension even
+		// when another container is broader.
+		if context.onlyConventional {
+			return true
+		}
+	}
+	return false
+}
+
+func cgiExtensionListIsSuspicious(tokens []string) bool {
+	for _, token := range tokens {
+		ext := normalizeExt(token)
+		// AddHandler and AddType treat every remaining token as an
+		// extension. If the shared plain-extension parser cannot normalize
+		// one, it is still a custom target and must fail closed.
+		if ext == "" || !conventionalCGIExt(ext) {
+			return true
+		}
 	}
 	return false
 }
@@ -218,48 +352,98 @@ func conventionalCGIExt(ext string) bool {
 // `AddHandler cgi-script .alfa` / `AddType application/x-httpd-cgi .alfa`.
 func detectCGIHandlerAbuse(content []byte, _ string) []htaccessMatch {
 	var out []htaccessMatch
-	for _, idx := range reCGIHandlerLine.FindAllIndex(content, -1) {
-		fields := apacheDirectiveFields(string(content[idx[0]:idx[1]]))
+	var contexts []cgiHandlerContext
+	for _, logical := range htaccessLogicalByteLines(content) {
+		line := strings.TrimSpace(logical.text)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if context, ok := openCGIHandlerContext(line); ok {
+			contexts = append(contexts, context)
+			continue
+		}
+		if closesPHPHandlerContext(line) {
+			if len(contexts) > 0 {
+				contexts = contexts[:len(contexts)-1]
+			}
+			continue
+		}
+
+		fields := apacheDirectiveFields(line)
 		if len(fields) < 2 || !handlerIsCGI(fields[1]) {
 			continue
 		}
-		exts := normalizedExts(fields[2:])
-		flagged := false
-		if len(exts) == 0 {
-			// SetHandler/ForceType with no extension list routes EVERY file in
-			// the directory to the CGI interpreter -- the directory-wide form.
-			switch strings.ToLower(fields[0]) {
-			case "sethandler", "forcetype":
-				flagged = true
-			}
-		} else {
-			for _, ext := range exts {
-				if !conventionalCGIExt(ext) {
-					flagged = true
-					break
-				}
-			}
+		var flagged bool
+		switch strings.ToLower(fields[0]) {
+		case "addhandler", "addtype":
+			flagged = cgiExtensionListIsSuspicious(fields[2:])
+		case "sethandler", "forcetype":
+			flagged = !cgiHandlerTargetsOnlyConventional(contexts)
 		}
 		if flagged {
 			out = append(out, htaccessMatch{
-				Range:   lineRange(content, idx[0], idx[1]),
-				Excerpt: trimExcerpt(content, idx[0], idx[1]),
+				Range:   logical.span,
+				Excerpt: trimExcerpt(content, logical.span.Start, logical.span.End),
 			})
 		}
 	}
 	return out
 }
 
-// detectSecurityDisabled flags a per-account .htaccess that turns ModSecurity
-// off (SecRuleEngine/SecFilterEngine/SecFilterScanPOST ... Off). A customer
-// .htaccess never legitimately disables the WAF; attackers add it to mask an
-// intrusion. `Sec\S* Off` also matches obfuscated directive spellings.
+func normalizeModSecurityDirective(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		default:
+			return -1
+		}
+	}, name)
+}
+
+func modSecurityDirectiveDisablesWAF(name, value string) bool {
+	name = normalizeModSecurityDirective(name)
+	value = strings.ToLower(strings.Trim(strings.TrimSpace(value), `"'`))
+
+	switch value {
+	case "off":
+		switch name {
+		case "secruleengine",
+			"secfilterengine",
+			"secfilterscanpost",
+			"secruleinheritance",
+			"secrequestbodyaccess",
+			"secengine",
+			"secscanpost":
+			return true
+		}
+	case "detectiononly":
+		switch name {
+		case "secruleengine", "secfilterengine", "secengine":
+			return true
+		}
+	}
+	return false
+}
+
+// detectSecurityDisabled flags a per-account .htaccess that disables
+// ModSecurity enforcement, request inspection, or inherited rules. A customer
+// .htaccess never legitimately weakens those controls; attackers do it to mask
+// an intrusion. Punctuation is removed from directive names so known
+// obfuscated spellings are classified without matching unrelated settings such
+// as SecAuditEngine or SecStatusEngine.
 func detectSecurityDisabled(content []byte, _ string) []htaccessMatch {
 	var out []htaccessMatch
-	for _, idx := range reSecDisable.FindAllIndex(content, -1) {
+	for _, logical := range htaccessLogicalByteLines(content) {
+		fields := apacheDirectiveFields(strings.TrimSpace(logical.text))
+		if len(fields) < 2 || !modSecurityDirectiveDisablesWAF(fields[0], fields[1]) {
+			continue
+		}
 		out = append(out, htaccessMatch{
-			Range:   lineRange(content, idx[0], idx[1]),
-			Excerpt: trimExcerpt(content, idx[0], idx[1]),
+			Range:   logical.span,
+			Excerpt: trimExcerpt(content, logical.span.Start, logical.span.End),
 		})
 	}
 	return out

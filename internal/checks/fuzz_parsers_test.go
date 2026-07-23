@@ -292,6 +292,40 @@ func FuzzCronHasDangerTokens(f *testing.F) {
 	})
 }
 
+func FuzzHtaccessCGIWAFDetectors(f *testing.F) {
+	f.Add("AddHandler cgi-script .alfa\n")
+	f.Add("<FilesMatch \"\\.cgi$\">\nSetHandler cgi-script\n</FilesMatch>\n")
+	f.Add("<FilesMatch \"\\.cgi\">\nSetHandler cgi-script\n</FilesMatch>\n")
+	f.Add("<FilesMatch \"^shell$|\\.pl$\">\nSetHandler cgi-script\n</FilesMatch>\n")
+	f.Add("SecRuleEngine DetectionOnly\n")
+	f.Add("Sec------Engine Off\n")
+	f.Add("AddHandler cgi-script \\\n.alfa\n")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, content string) {
+		body := []byte(content)
+		matches := append(
+			detectCGIHandlerAbuse(body, ".htaccess"),
+			detectSecurityDisabled(body, ".htaccess")...,
+		)
+		for _, match := range matches {
+			if match.Range.Start < 0 ||
+				match.Range.Start > match.Range.End ||
+				match.Range.End > len(body) {
+				t.Fatalf("detector returned invalid range %+v for %d bytes", match.Range, len(body))
+			}
+		}
+		_ = applyRangeRemoval(body, mergeRanges(matchRanges(matches)))
+	})
+}
+
+func matchRanges(matches []htaccessMatch) []htaccessByteRange {
+	ranges := make([]htaccessByteRange, 0, len(matches))
+	for _, match := range matches {
+		ranges = append(ranges, match.Range)
+	}
+	return ranges
+}
+
 func FuzzParseDBFindingDetails(f *testing.F) {
 	f.Add("Database: alice_wp\nOption: siteurl")
 	f.Add("no match at all")

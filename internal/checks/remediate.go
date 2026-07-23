@@ -44,6 +44,12 @@ type RemediationResult struct {
 // for a given check type and file path. Returns empty string if no fix is available.
 func FixDescription(checkType, message string, filePath ...string) string {
 	path := selectFindingPath(message, filePath...)
+	if isHtaccessHardenedFinding(checkType) {
+		if path != "" {
+			return fmt.Sprintf("Remove malicious directives from %s", path)
+		}
+		return ""
+	}
 
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
@@ -65,11 +71,7 @@ func FixDescription(checkType, message string, filePath ...string) string {
 			return fmt.Sprintf("Quarantine and truncate crontab %s", path)
 		}
 		return "Quarantine and truncate crontab"
-	case "htaccess_injection", "htaccess_handler_abuse",
-		"htaccess_auto_prepend", "htaccess_errordocument_hijack",
-		"htaccess_filesmatch_shield", "htaccess_header_injection",
-		"htaccess_php_in_uploads", "htaccess_spam_redirect",
-		"htaccess_user_agent_cloak":
+	case "htaccess_injection", "htaccess_handler_abuse":
 		if path != "" {
 			return fmt.Sprintf("Remove malicious directives from %s", path)
 		}
@@ -84,6 +86,9 @@ func FixDescription(checkType, message string, filePath ...string) string {
 
 // HasFix returns true if the check type has a known automated fix.
 func HasFix(checkType string) bool {
+	if isHtaccessHardenedFinding(checkType) {
+		return true
+	}
 	fixableChecks := map[string]bool{
 		"world_writable_php":       true,
 		"group_writable_php":       true,
@@ -100,18 +105,8 @@ func HasFix(checkType string) bool {
 		"new_executable_in_config": true,
 		"htaccess_injection":       true,
 		"htaccess_handler_abuse":   true,
-		// Per-pattern findings from the hardened detectors. Each routes
-		// through CleanHtaccessFile, which runs the full registry and
-		// removes every detector's matched ranges atomically.
-		"htaccess_auto_prepend":         true,
-		"htaccess_errordocument_hijack": true,
-		"htaccess_filesmatch_shield":    true,
-		"htaccess_header_injection":     true,
-		"htaccess_php_in_uploads":       true,
-		"htaccess_spam_redirect":        true,
-		"htaccess_user_agent_cloak":     true,
-		"email_phishing_content":        true,
-		"suspicious_crontab":            true,
+		"email_phishing_content":   true,
+		"suspicious_crontab":       true,
 	}
 	return fixableChecks[checkType]
 }
@@ -119,6 +114,11 @@ func HasFix(checkType string) bool {
 // ApplyFix executes the remediation action for a finding.
 func ApplyFix(checkType, message, details string, filePath ...string) RemediationResult {
 	path := selectFindingPath(message, filePath...)
+	if isHtaccessHardenedFinding(checkType) {
+		// CleanHtaccessFile re-runs the full detector registry, so a single
+		// action removes every malicious directive the audit found.
+		return CleanHtaccessFile(path)
+	}
 
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
@@ -131,17 +131,6 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 		return fixKillAndQuarantine(path, details)
 	case "htaccess_injection", "htaccess_handler_abuse":
 		return fixHtaccess(path, message)
-	case "htaccess_auto_prepend", "htaccess_errordocument_hijack",
-		"htaccess_filesmatch_shield", "htaccess_header_injection",
-		"htaccess_php_in_uploads", "htaccess_spam_redirect",
-		"htaccess_user_agent_cloak":
-		// Per-pattern findings emit alongside the generic
-		// htaccess_injection / htaccess_handler_abuse categories from
-		// the existing detector. Both routes converge on byte-range
-		// cleaning here -- CleanHtaccessFile re-runs the full
-		// detector registry, so a single click cleans every malicious
-		// directive the audit found.
-		return CleanHtaccessFile(path)
 	case "email_phishing_content":
 		return fixQuarantineSpoolMessage(message)
 	case "suspicious_crontab":

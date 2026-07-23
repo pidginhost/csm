@@ -392,7 +392,7 @@ func closesPHPHandlerContext(line string) bool {
 }
 
 func apacheContainerArgument(line string) string {
-	start := strings.IndexByte(line, ' ')
+	start := strings.IndexAny(line, " \t")
 	end := strings.LastIndexByte(line, '>')
 	if start < 0 || end <= start {
 		return ""

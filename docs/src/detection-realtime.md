@@ -12,7 +12,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`
-- `.htaccess` injection (auto_prepend, eval, base64 handlers)
+- `.htaccess` injection and tampering (auto_prepend, eval/base64 handlers, CGI execution remaps, and ModSecurity disablement)
 - `.user.ini` tampering
 - Obfuscated PHP (encoded, packed, concatenated)
 - Fragmented base64 evasion (`$a="base"; $b="64_decode"` -- function name split across variables)

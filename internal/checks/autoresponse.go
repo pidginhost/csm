@@ -777,12 +777,10 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 }
 
 func isHtaccessHardenedFinding(check string) bool {
-	switch check {
-	case "htaccess_auto_prepend", "htaccess_errordocument_hijack",
-		"htaccess_filesmatch_shield", "htaccess_header_injection",
-		"htaccess_php_in_uploads", "htaccess_spam_redirect",
-		"htaccess_user_agent_cloak":
-		return true
+	for _, detector := range htaccessDetectors {
+		if check == detector.Name {
+			return true
+		}
 	}
 	return false
 }

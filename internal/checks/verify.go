@@ -59,13 +59,10 @@ var presenceVerifiableChecks = []string{
 
 // htaccessVerifiableChecks re-audit the .htaccess and resolve when no malicious
 // directive remains (or the file is gone).
-var htaccessVerifiableChecks = []string{
-	"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse",
-	"htaccess_auto_prepend", "htaccess_errordocument_hijack",
-	"htaccess_filesmatch_shield", "htaccess_header_injection",
-	"htaccess_php_in_uploads", "htaccess_spam_redirect",
-	"htaccess_user_agent_cloak",
-}
+var htaccessVerifiableChecks = append(
+	[]string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"},
+	htaccessDetectorNames()...,
+)
 
 // findingVerifiers maps a finding's Check to a read-only re-check. A check not
 // present here has no automated re-check -- either an event finding (a brute
