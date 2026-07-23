@@ -1186,33 +1186,32 @@ try {
     $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
     if ($csm_ip !== '') { $csm_ipl = ip2long($csm_ip); if ($csm_ipl !== false) { foreach ($csm_conf['allowed_ips'] as $e) { if (strpos($e, '/') !== false) { list($sn,$b) = explode('/',$e,2); $sl = ip2long($sn); $mk = -1 << (32-(int)$b); if (($csm_ipl & $mk) === ($sl & $mk)) return; } elseif ($csm_ip === $e) return; } } }
     $csm_lower = strtolower($csm_script);
-    $csm_bn = basename($csm_lower);
     $csm_src = null;
+    $csm_code = null;
     // 1. Block dangerous paths (uploads/tmp must never execute PHP)
     foreach ($csm_conf['blocked_paths'] as $b) {
         if (strpos($csm_lower, $b) !== false) {
-            if ($csm_bn === 'index.php' || $csm_bn === 'wp-cron.php') continue;
             csm_log_event('BLOCK_PATH', $csm_script, 'PHP execution from blocked path');
             csm_deny();
         }
     }
     // 2. Content-based webshell block for directly-executed wp-content scripts.
-    // Normal requests run index.php; a direct hit on any other .php under
-    // wp-content is the webshell access pattern (fake plugin, cache dropper).
-    if (strpos($csm_lower, '/wp-content/') !== false && $csm_bn !== 'index.php') {
+    // Normal requests run the document-root index.php, outside wp-content.
+    // Any entry script under wp-content is a direct hit and needs inspection.
+    if (strpos($csm_lower, '/wp-content/') !== false) {
         $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
-        if ($csm_src !== false && csm_is_webshell($csm_src)) {
+        if ($csm_src !== false) $csm_code = csm_code_only($csm_src);
+        if ($csm_code !== null && csm_is_webshell($csm_code)) {
             csm_log_event('BLOCK_WEBSHELL', $csm_script, 'Webshell signature in directly-executed script');
             csm_deny();
         }
     }
-    // 3. Command parameter backed by an exec sink in the executing script.
+    // 3. Command parameter backed by an exec sink in the inspected script.
     $cmds = array('cmd','command','exec','execute','c','e','shell');
     foreach ($cmds as $p) {
         if (isset($_REQUEST[$p])) {
             csm_log_event('WEBSHELL_PARAM', $csm_script, $p);
-            if ($csm_src === null) $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
-            if ($csm_src !== false && csm_has_exec_sink($csm_src)) {
+            if ($csm_code !== null && csm_has_exec_sink($csm_code)) {
                 csm_log_event('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $p);
                 csm_deny();
             }
@@ -1227,8 +1226,69 @@ try {
         }
     });
 } catch (Exception $e) {}
+function csm_code_only($src) {
+    if (!function_exists('token_get_all')) return $src;
+    $out = ''; $quoted = false; $heredoc = false;
+    foreach (token_get_all($src) as $token) {
+        if (is_array($token)) {
+            $id = $token[0];
+            if ($id === T_START_HEREDOC) { $heredoc = true; $out .= ' '; continue; }
+            if ($id === T_END_HEREDOC) { $heredoc = false; $out .= ' '; continue; }
+            if ($quoted || $heredoc || $id === T_COMMENT || $id === T_DOC_COMMENT ||
+                $id === T_CONSTANT_ENCAPSED_STRING || $id === T_ENCAPSED_AND_WHITESPACE ||
+                $id === T_INLINE_HTML) { $out .= ' '; continue; }
+            $out .= $token[1];
+        } else {
+            if ($token === '"') { $quoted = !$quoted; $out .= ' '; continue; }
+            if (!$quoted && !$heredoc) $out .= $token;
+        }
+    }
+    return $out;
+}
 function csm_has_exec_sink($src) {
-    return (bool) preg_match('/(?<![\w>:])(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', $src);
+    $sinks = array_fill_keys(array('system','passthru','shell_exec','proc_open','popen','exec'), true);
+    if (!function_exists('token_get_all')) {
+        $src = preg_replace('/(?:->|::)\s*(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', '', $src);
+        return (bool) preg_match('/(?<![\w>:\\\\])\\\\?(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', $src);
+    }
+    $tokens = token_get_all($src); $count = count($tokens);
+    for ($i = 0; $i < $count; $i++) {
+        $token = $tokens[$i];
+        if (!is_array($token)) continue;
+        $id = $token[0]; $name = null; $qualified = false;
+        if ($id === T_STRING) {
+            $name = strtolower($token[1]);
+        } elseif (defined('T_NAME_FULLY_QUALIFIED') && $id === constant('T_NAME_FULLY_QUALIFIED')) {
+            $name = strtolower(ltrim($token[1], '\\')); $qualified = true;
+            if (strpos($name, '\\') !== false) continue;
+        }
+        if ($name === null || !isset($sinks[$name])) continue;
+        $prev = null; $prevIndex = -1;
+        for ($j = $i - 1; $j >= 0; $j--) {
+            if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+            $prev = $tokens[$j]; $prevIndex = $j; break;
+        }
+        if (!$qualified && is_array($prev)) {
+            if ($prev[0] === T_OBJECT_OPERATOR || $prev[0] === T_DOUBLE_COLON ||
+                $prev[0] === T_FUNCTION || $prev[0] === T_NEW) continue;
+            if (defined('T_NULLSAFE_OBJECT_OPERATOR') &&
+                $prev[0] === constant('T_NULLSAFE_OBJECT_OPERATOR')) continue;
+            if ($prev[0] === T_NS_SEPARATOR) {
+                $before = null;
+                for ($j = $prevIndex - 1; $j >= 0; $j--) {
+                    if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+                    $before = $tokens[$j]; break;
+                }
+                if (is_array($before) && ($before[0] === T_STRING || $before[0] === T_NAMESPACE)) continue;
+            }
+        }
+        for ($j = $i + 1; $j < $count; $j++) {
+            if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+            if ($tokens[$j] === '(') return true;
+            break;
+        }
+    }
+    return false;
 }
 function csm_is_webshell($src) {
     if (csm_has_exec_sink($src) && preg_match('/\$_(?:REQUEST|GET|POST|COOKIE|SERVER)\b/', $src)) return true;

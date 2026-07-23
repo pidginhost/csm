@@ -11,7 +11,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
-| **PHP shield** | Blocks PHP execution from uploads/tmp directories, detects webshell parameters. |
+| **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
 | **PAM blocking** | Instant IP block on brute force threshold breach. |
 | **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |

@@ -1,6 +1,6 @@
 <?php
 /**
- * CSM PHP Shield — Runtime Protection
+ * CSM PHP Shield -- Runtime Protection
  *
  * Deployed via: csm install --php-shield
  * Loaded via: auto_prepend_file in php.ini or .user.ini
@@ -9,7 +9,7 @@
  * 1. Blocks PHP execution from dangerous paths (uploads, tmp)
  * 2. Blocks directly-executed wp-content scripts whose source matches a
  *    webshell signature (exec sink over request input, or packed eval loader)
- * 3. Blocks command parameters backed by an exec sink in the running script
+ * 3. Blocks command parameters backed by an exec sink in an inspected script
  * 4. Detects eval() abuse at runtime via shutdown handler
  * 5. Per-account disable via .csm-shield-disable file
  * 6. IP allowlisting from shield.conf.php
@@ -19,7 +19,7 @@
  * cmd/csm/installer.go (shieldContent). Behaviour must match; only the naming
  * and documentation differ.
  *
- * Safety: fails open — if the shield file is deleted or errors, PHP continues.
+ * Safety: fails open -- if the shield file is deleted or errors, PHP continues.
  */
 
 // Fail open: wrap everything in try/catch so errors don't break sites
@@ -45,8 +45,8 @@ try {
     if ($csm_ip !== '' && csm_shield_ip_allowed($csm_ip, $csm_conf['allowed_ips'])) return;
 
     $csm_script_lower = strtolower($csm_script);
-    $csm_basename = basename($csm_script_lower);
     $csm_src = null;
+    $csm_code = null;
 
     // --- 1. Block PHP execution from dangerous paths (uploads/tmp) ---
     // No path is allowlisted here: an attacker who learns a "safe" prefix drops
@@ -54,30 +54,29 @@ try {
     // inspection below instead of a blanket path skip.
     foreach ($csm_conf['blocked_paths'] as $blocked) {
         if (strpos($csm_script_lower, $blocked) !== false) {
-            if ($csm_basename === 'index.php' || $csm_basename === 'wp-cron.php') continue;
             csm_shield_log('BLOCK_PATH', $csm_script, 'PHP execution from blocked path');
             csm_shield_deny();
         }
     }
 
     // --- 2. Content-based webshell block for direct wp-content script hits ---
-    // A normal request executes index.php; a direct hit on any other .php under
-    // wp-content is the webshell access pattern (fake plugin, cache dropper).
-    if (strpos($csm_script_lower, '/wp-content/') !== false && $csm_basename !== 'index.php') {
+    // A normal request executes the document-root index.php, outside
+    // wp-content. Any entry script under wp-content is a direct hit.
+    if (strpos($csm_script_lower, '/wp-content/') !== false) {
         $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
-        if ($csm_src !== false && csm_shield_is_webshell($csm_src)) {
+        if ($csm_src !== false) $csm_code = csm_shield_code_only($csm_src);
+        if ($csm_code !== null && csm_shield_is_webshell($csm_code)) {
             csm_shield_log('BLOCK_WEBSHELL', $csm_script, 'Webshell signature in directly-executed script');
             csm_shield_deny();
         }
     }
 
-    // --- 3. Command parameter backed by an exec sink in the running script ---
+    // --- 3. Command parameter backed by an exec sink in the inspected script ---
     $csm_cmd_params = array('cmd', 'command', 'exec', 'execute', 'c', 'e', 'shell');
     foreach ($csm_cmd_params as $param) {
         if (isset($_REQUEST[$param])) {
             csm_shield_log('WEBSHELL_PARAM', $csm_script, 'Request contains command parameter: ' . $param);
-            if ($csm_src === null) $csm_src = @file_get_contents($csm_script, false, null, 0, 65536);
-            if ($csm_src !== false && csm_shield_has_exec_sink($csm_src)) {
+            if ($csm_code !== null && csm_shield_has_exec_sink($csm_code)) {
                 csm_shield_log('BLOCK_WEBSHELL', $csm_script, 'Command parameter with exec sink: ' . $param);
                 csm_shield_deny();
             }
@@ -97,15 +96,140 @@ try {
     });
 
 } catch (Exception $e) {
-    // Fail open — don't break sites if shield has a bug
+    // Fail open -- don't break sites if shield has a bug
 }
 
 /**
- * True if the script's own source calls a command-execution sink. The negative
- * lookbehind keeps method calls like $pdo->exec() and mysqli::query() out.
+ * Remove comments and string contents before signature matching so help text,
+ * examples, and inert literals cannot turn a legitimate endpoint into a hit.
+ */
+function csm_shield_code_only($src) {
+    if (!function_exists('token_get_all')) return $src;
+
+    $out = '';
+    $quoted = false;
+    $heredoc = false;
+    foreach (token_get_all($src) as $token) {
+        if (is_array($token)) {
+            $id = $token[0];
+            if ($id === T_START_HEREDOC) {
+                $heredoc = true;
+                $out .= ' ';
+                continue;
+            }
+            if ($id === T_END_HEREDOC) {
+                $heredoc = false;
+                $out .= ' ';
+                continue;
+            }
+            if ($quoted || $heredoc
+                || $id === T_COMMENT
+                || $id === T_DOC_COMMENT
+                || $id === T_CONSTANT_ENCAPSED_STRING
+                || $id === T_ENCAPSED_AND_WHITESPACE
+                || $id === T_INLINE_HTML) {
+                $out .= ' ';
+                continue;
+            }
+            $out .= $token[1];
+        } else {
+            if ($token === '"') {
+                $quoted = !$quoted;
+                $out .= ' ';
+                continue;
+            }
+            if (!$quoted && !$heredoc) $out .= $token;
+        }
+    }
+    return $out;
+}
+
+/**
+ * True if the script's own source calls a command-execution function.
+ * Token inspection separates global calls from methods, static methods,
+ * constructors, and function declarations with the same names.
  */
 function csm_shield_has_exec_sink($src) {
-    return (bool) preg_match('/(?<![\w>:])(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i', $src);
+    $sinks = array_fill_keys(array(
+        'system',
+        'passthru',
+        'shell_exec',
+        'proc_open',
+        'popen',
+        'exec',
+    ), true);
+    if (!function_exists('token_get_all')) {
+        $src = preg_replace(
+            '/(?:->|::)\s*(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i',
+            '',
+            $src
+        );
+        return (bool) preg_match(
+            '/(?<![\w>:\\\\])\\\\?(?:system|passthru|shell_exec|proc_open|popen|exec)\s*\(/i',
+            $src
+        );
+    }
+
+    $tokens = token_get_all($src);
+    $count = count($tokens);
+    for ($i = 0; $i < $count; $i++) {
+        $token = $tokens[$i];
+        if (!is_array($token)) continue;
+
+        $id = $token[0];
+        $name = null;
+        $qualified = false;
+        if ($id === T_STRING) {
+            $name = strtolower($token[1]);
+        } elseif (defined('T_NAME_FULLY_QUALIFIED')
+            && $id === constant('T_NAME_FULLY_QUALIFIED')) {
+            $name = strtolower(ltrim($token[1], '\\'));
+            $qualified = true;
+            if (strpos($name, '\\') !== false) continue;
+        }
+        if ($name === null || !isset($sinks[$name])) continue;
+
+        $previous = null;
+        $previous_index = -1;
+        for ($j = $i - 1; $j >= 0; $j--) {
+            if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+            $previous = $tokens[$j];
+            $previous_index = $j;
+            break;
+        }
+        if (!$qualified && is_array($previous)) {
+            if ($previous[0] === T_OBJECT_OPERATOR
+                || $previous[0] === T_DOUBLE_COLON
+                || $previous[0] === T_FUNCTION
+                || $previous[0] === T_NEW) {
+                continue;
+            }
+            if (defined('T_NULLSAFE_OBJECT_OPERATOR')
+                && $previous[0] === constant('T_NULLSAFE_OBJECT_OPERATOR')) {
+                continue;
+            }
+            if ($previous[0] === T_NS_SEPARATOR) {
+                $before_separator = null;
+                for ($j = $previous_index - 1; $j >= 0; $j--) {
+                    if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+                    $before_separator = $tokens[$j];
+                    break;
+                }
+                if (is_array($before_separator)
+                    && ($before_separator[0] === T_STRING
+                        || $before_separator[0] === T_NAMESPACE)) {
+                    continue;
+                }
+            }
+        }
+
+        for ($j = $i + 1; $j < $count; $j++) {
+            if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) continue;
+            if ($tokens[$j] === '(') return true;
+            break;
+        }
+    }
+    return false;
 }
 
 /**
@@ -202,7 +326,7 @@ function csm_shield_log($event_type, $script, $details) {
     if (!is_writable($dir)) {
         if (!defined('CSM_SHIELD_LOG_WARNED')) {
             define('CSM_SHIELD_LOG_WARNED', true);
-            error_log('CSM PHP Shield: cannot write to ' . $dir . ' — events will not be logged');
+            error_log('CSM PHP Shield: cannot write to ' . $dir . ' -- events will not be logged');
         }
         return;
     }
@@ -220,6 +344,7 @@ function csm_shield_log($event_type, $script, $details) {
         $ip,
         $script,
         $uri,
+        $ua,
         $details
     );
 
