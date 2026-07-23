@@ -1383,68 +1383,29 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	fm.runSignatureScan(data, path, ".htaccess", procInfo)
 }
 
-// checkUserINI reads .user.ini content from the event fd and checks for dangerous PHP settings.
-// C3 - reads from fd, not path. H6 - proper allow_url_include parsing.
+// checkUserINI reads the event fd so a path replacement cannot change the
+// content being analyzed.
 func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
-	recordReadTruncation(fd, 4096, "user_ini")
-	data := readFromFd(fd, 4096)
+	recordReadTruncation(fd, checks.PHPConfigMaxBytes, "user_ini")
+	data := readFromFd(fd, checks.PHPConfigMaxBytes+1)
 	if data == nil {
 		return
 	}
-	content := strings.ToLower(string(data))
-
-	dangerous := []struct {
-		pattern string
-		desc    string
-	}{
-		{"allow_url_include", "allow_url_include (remote code inclusion)"},
-		{"disable_functions", "disable_functions modified"},
+	if len(data) > checks.PHPConfigMaxBytes {
+		fm.sendAlertWithPath(alert.High, "php_config_realtime",
+			fmt.Sprintf("PHP configuration too large to inspect: %s", path),
+			"The file exceeds the PHP configuration scan limit and may hide dangerous directives.",
+			path, procInfo)
+		return
+	}
+	if dangerous := checks.PHPConfigSecurityBypasses(string(data)); len(dangerous) > 0 {
+		fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
+			fmt.Sprintf("PHP security configuration weakened: %s", path),
+			fmt.Sprintf("Dangerous settings:\n- %s", strings.Join(dangerous, "\n- ")), path, procInfo)
+		return
 	}
 
-	for _, d := range dangerous {
-		if !strings.Contains(content, d.pattern) {
-			continue
-		}
-
-		if d.pattern == "disable_functions" {
-			for _, line := range strings.Split(content, "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "disable_functions") {
-					parts := strings.SplitN(line, "=", 2)
-					if len(parts) == 2 {
-						val := strings.TrimSpace(parts[1])
-						if checks.DisableFunctionsNeutralized(val) {
-							fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
-								fmt.Sprintf("PHP disable_functions neutralized: %s", path),
-								"disable_functions disables no dangerous functions - shell execution possible", path, procInfo)
-							return
-						}
-					}
-				}
-			}
-		}
-
-		// H6 - parse the specific line value instead of checking for "on" anywhere
-		if d.pattern == "allow_url_include" {
-			for _, line := range strings.Split(content, "\n") {
-				line = strings.TrimSpace(line)
-				if !strings.HasPrefix(line, "allow_url_include") {
-					continue
-				}
-				parts := strings.SplitN(line, "=", 2)
-				if len(parts) == 2 {
-					val := strings.TrimSpace(strings.ToLower(parts[1]))
-					if val == "on" || val == "1" || val == "\"on\"" || val == "'on'" {
-						fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
-							fmt.Sprintf("PHP allow_url_include enabled: %s", path),
-							"Remote PHP file inclusion is now possible", path, procInfo)
-						return
-					}
-				}
-			}
-		}
-	}
-
-	// Run signature/YARA scanning on .user.ini content
+	// Run signature/YARA scanning on PHP configuration content.
 	fm.runSignatureScan(data, path, ".ini", procInfo)
 }
 

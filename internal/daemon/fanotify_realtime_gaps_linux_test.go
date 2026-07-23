@@ -5,9 +5,11 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -33,6 +35,100 @@ func TestCheckUserININeutralizedDisableFunctions(t *testing.T) {
 		}
 	default:
 		t.Error("neutralized disable_functions should alert in real time")
+	}
+}
+
+func TestCheckUserINIParsesEffectiveDirectiveNamesAndValues(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "prefixed directive is ignored",
+			content: "disable_functions_backup = none\nallow_url_include_backup = on\n",
+		},
+		{
+			name:    "later value overrides earlier value",
+			content: "allow_url_include = on\nallow_url_include = off\n",
+		},
+		{
+			name:    "quoted mixed-case function list is effective",
+			content: `disable_functions = "EXEC, system" ; generated`,
+		},
+		{
+			name:    "truthy value is detected",
+			content: "allow_url_include = yes\n",
+			want:    true,
+		},
+		{
+			name:    "unrestricted path is detected",
+			content: "open_basedir = /srv/www:/\n",
+			want:    true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ".user.ini")
+			if err := os.WriteFile(path, []byte(tc.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			fd := openRawFd(t, path)
+
+			ch := make(chan alert.Finding, 1)
+			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+			fm.checkUserINI(fd, path, "pi")
+
+			if got := len(ch) > 0; got != tc.want {
+				t.Fatalf("alerted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckUserINIReadsPastLegacyPrefix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "php.ini")
+	content := strings.Repeat("; harmless padding\n", 300) + "allow_url_include = on\n"
+	if len(content) <= 4096 {
+		t.Fatal("test fixture does not exceed the legacy realtime read limit")
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 1)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.checkUserINI(fd, path, "pi")
+
+	if len(ch) != 1 {
+		t.Fatal("dangerous directive after the legacy prefix was not detected")
+	}
+}
+
+func TestCheckUserINIAlertsWhenConfigExceedsReadLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "php.ini")
+	content := append(make([]byte, checks.PHPConfigMaxBytes), '\n')
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 1)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.checkUserINI(fd, path, "pi")
+
+	select {
+	case finding := <-ch:
+		if finding.Check != "php_config_realtime" ||
+			finding.Severity != alert.High ||
+			!strings.Contains(finding.Message, "too large") {
+			t.Fatalf("oversized PHP configuration finding = %+v", finding)
+		}
+	default:
+		t.Fatal("oversized PHP configuration did not produce a coverage alert")
 	}
 }
 

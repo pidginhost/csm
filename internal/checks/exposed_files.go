@@ -640,6 +640,17 @@ func parseUserdataDomains(content string) []vhost {
 }
 
 func parseUserdataDomainsChecked(content string) ([]vhost, bool) {
+	return parseUserdataDomainsForUse(content, true)
+}
+
+// parseUserdataDomainRootsChecked validates the fields needed by filesystem
+// scanners. Unlike exposure probing, a local docroot walk does not need a
+// serving IP, so a row without one is still complete for this use.
+func parseUserdataDomainRootsChecked(content string) ([]vhost, bool) {
+	return parseUserdataDomainsForUse(content, false)
+}
+
+func parseUserdataDomainsForUse(content string, requireServingIP bool) ([]vhost, bool) {
 	var out []vhost
 	complete := true
 	for _, line := range strings.Split(content, "\n") {
@@ -660,12 +671,13 @@ func parseUserdataDomainsChecked(content string) ([]vhost, bool) {
 		}
 		docroot := filepath.Clean(strings.TrimSpace(fields[4]))
 		user := strings.TrimSpace(fields[0])
-		if !filepath.IsAbs(docroot) || docroot == string(filepath.Separator) || user == "" {
+		if !filepath.IsAbs(docroot) || docroot == string(filepath.Separator) ||
+			!validAccountName.MatchString(user) {
 			complete = false
 			continue
 		}
 		servingIP := parseServingIP(fields)
-		if servingIP == "" {
+		if requireServingIP && servingIP == "" {
 			// Without a literal serving address the vhost cannot be probed
 			// reliably. Keep the row so callers can preserve partial-scan state,
 			// but do not treat this map as a complete scan input.

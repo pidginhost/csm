@@ -156,6 +156,12 @@ func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testi
 	if !slices.Contains(names, "outdated_plugins") {
 		t.Fatalf("reduced deep purge names missing outdated_plugins")
 	}
+	if !slices.Contains(names, "php_config_change") {
+		t.Fatalf("reduced deep purge names missing php_config_change")
+	}
+	if !slices.Contains(names, "php_config_scan_incomplete") {
+		t.Fatalf("reduced deep purge names missing php_config_scan_incomplete")
+	}
 	if slices.Contains(names, "webshell") {
 		t.Fatalf("reduced deep purge names included fanotify-replaced webshell")
 	}
@@ -1034,14 +1040,23 @@ func TestRunParallelThrottledCheckCompletionStampsThrottle(t *testing.T) {
 
 // --- Per-check timeout budgets ---------------------------------------
 
-// TestTimeoutForHeavyChecksGetExpandedBudget pins the heavy-filesystem
-// checks (webshells, php_content, filesystem, htaccess, file_index,
-// phishing) to a longer execution budget than the default 5 minutes.
+// TestTimeoutForHeavyChecksGetExpandedBudget pins the heavy-filesystem checks
+// to a longer execution budget than the default 5 minutes.
 // On busy shared hosts these legitimately exceed 5 minutes on hundreds
 // of WP installs, generating noisy check_timeout warnings even when the
 // scan would have completed cleanly given another minute or two.
 func TestTimeoutForHeavyChecksGetExpandedBudget(t *testing.T) {
-	for _, name := range []string{"webshells", "php_content", "filesystem", "htaccess", "file_index", "phishing"} {
+	for _, name := range []string{
+		"webshells",
+		"php_content",
+		"filesystem",
+		"htaccess",
+		"file_index",
+		"phishing",
+		"exposed_files",
+		"yara_deep",
+		"php_config_changes",
+	} {
 		got := timeoutFor(name)
 		if got != heavyCheckTimeout {
 			t.Errorf("timeoutFor(%q) = %s, want %s", name, got, heavyCheckTimeout)

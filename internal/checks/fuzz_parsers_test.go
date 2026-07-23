@@ -156,6 +156,24 @@ func FuzzExtractPHPDefine(f *testing.F) {
 	})
 }
 
+func FuzzPHPIniSecurityDirectives(f *testing.F) {
+	f.Add("disable_functions = bypassed by 0xnix\n")
+	f.Add("allow_url_include = yes ; enabled\nopen_basedir = /srv/www:/\n")
+	f.Add("disable_functions_backup = none\n; allow_url_include = on\n")
+	f.Add(`disable_functions = "exec,system"`)
+	f.Add("")
+	f.Fuzz(func(t *testing.T, content string) {
+		bypass := PHPConfigSecurityBypasses(content)
+		if len(bypass) > 3 {
+			t.Fatalf("PHPConfigSecurityBypasses returned %d findings", len(bypass))
+		}
+		full := analyzePHPINI(content)
+		if len(full) > len(dangerousPHPFunctions)+3 {
+			t.Fatalf("analyzePHPINI returned %d findings", len(full))
+		}
+	})
+}
+
 func FuzzHasPregReplaceEvalWithRequest(f *testing.F) {
 	f.Add("preg_replace('/.*/e', $_POST['c'], $s);")
 	f.Add("preg_replace('~x~ie', $r, $s);")

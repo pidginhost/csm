@@ -174,7 +174,7 @@ func RunAccountScanWithOptions(ctx context.Context, cfg *config.Config, store *s
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			results := runAccountScanCheck(scanCtx, c, cfg, store, checkTimeout)
+			results := runAccountScanCheck(scanCtx, c, cfg, store, timeoutFor(c.name))
 			if len(results) > 0 {
 				mu.Lock()
 				findings = append(findings, results...)

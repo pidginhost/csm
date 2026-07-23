@@ -173,6 +173,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "vulnerable_plugins", Category: CategoryWeb},
 	{Name: "vulnerable_timthumb", Category: CategoryWeb},
 	{Name: "php_config_change", Category: CategoryWeb},
+	{Name: "php_config_scan_incomplete", Category: CategoryWeb},
 	{Name: "php_config_realtime", Category: CategoryWeb},
 	{Name: "symlink_attack", Category: CategoryWeb},
 	{Name: "wp_core_integrity", Category: CategoryWeb},

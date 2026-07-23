@@ -59,7 +59,7 @@ Current scanner scope:
 |-------|-------------|
 | `rpm_integrity` | System binary verification via rpm -V |
 | `open_basedir` | open_basedir restriction validation |
-| `php_config_changes` | php.ini modifications |
+| `php_config_changes` | Security-weakening `.user.ini` and `php.ini` files under account web roots |
 
 ## DNS & SSL
 
@@ -102,7 +102,8 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `dns_zones`, `ssl_certs` -- read cPanel's DNS zone store and SSL installation records
 - `email_weak_password`, `email_forwarder_audit` -- read `/etc/valiases`, Dovecot/Courier auth databases
 - `email_mail_filters` -- read per-mailbox Exim filters under `/home/*/etc/<domain>/<localpart>/filter` and domain filters under `/etc/vfilters`
-- `open_basedir`, `php_config_changes` -- read EA-PHP `php.ini` under `/opt/cpanel/ea-php*/`
+- `open_basedir` -- reads EA-PHP `php.ini` under `/opt/cpanel/ea-php*/`
+- `php_config_changes` -- recursively scans `.user.ini` and `php.ini` below account web roots; incomplete walks emit a coverage finding and preserve prior findings
 - `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, `perf_php_handler` -- WordPress and PHP handler introspection via cPanel's EA-PHP layout
 
 **Runs on every platform:**

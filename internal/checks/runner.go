@@ -221,7 +221,7 @@ var runnerFindingNames = map[string][]string{
 	"perf_wp_transients":    {"perf_wp_transients"},
 	"phishing":              {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
 	"yara_deep":             {"yara_match_scheduled", "yara_scan_incomplete"},
-	"php_config_changes":    {"php_config_change"},
+	"php_config_changes":    {"php_config_change", "php_config_scan_incomplete"},
 	"php_content":           {"obfuscated_php", "suspicious_php_content"},
 	"php_processes":         {"php_suspicious_execution"},
 	"rpm_integrity":         {"dpkg_integrity", "rpm_integrity"},
@@ -262,25 +262,25 @@ const (
 
 const checkTimeout = 5 * time.Minute
 
-// heavyCheckTimeout applies to filesystem walks that traverse every WP
-// install on the host. On busy shared servers (300+ WP installs, tens of
-// thousands of plugin/theme PHP files) these legitimately run longer than
-// the default 5-minute budget, so they get a wider window to avoid
-// noisy check_timeout warnings while leaving fast checks aggressive.
+// heavyCheckTimeout applies to filesystem walks that traverse account web
+// roots. On busy shared servers these legitimately run longer than the
+// default 5-minute budget, so they get a wider window to avoid noisy
+// check_timeout warnings while leaving fast checks aggressive.
 const heavyCheckTimeout = 15 * time.Minute
 
 // heavyChecks names the deep-tier checks that walk every account's
 // document roots. Keep this list short and explicit; only checks that
 // observably blow past 5 minutes on production hosts belong here.
 var heavyChecks = map[string]bool{
-	"filesystem":    true,
-	"webshells":     true,
-	"htaccess":      true,
-	"exposed_files": true,
-	"php_content":   true,
-	"file_index":    true,
-	"phishing":      true,
-	"yara_deep":     true,
+	"filesystem":         true,
+	"webshells":          true,
+	"htaccess":           true,
+	"exposed_files":      true,
+	"php_content":        true,
+	"file_index":         true,
+	"phishing":           true,
+	"yara_deep":          true,
+	"php_config_changes": true,
 }
 
 // timeoutFor returns the per-check execution budget. Heavy filesystem
@@ -394,6 +394,7 @@ func reducedDeepChecks() []namedCheck {
 		{"group_writable_php", CheckGroupWritablePHP},
 		{"open_basedir", CheckOpenBasedir},
 		{"symlink_attacks", CheckSymlinkAttacks},
+		{"php_config_changes", CheckPHPConfigChanges},
 		{"dns_zones", CheckDNSZoneChanges},
 		{"ssl_certs", CheckSSLCertIssuance},
 		{"waf_status", CheckWAFStatus},
@@ -601,8 +602,10 @@ func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.F
 //
 // Skipped (fanotify handles these in real-time):
 //
-//	filesystem, webshells, htaccess, file_index, php_content,
-//	phishing, php_config_changes
+//	filesystem, webshells, htaccess, file_index, php_content, phishing
+//
+// php_config_changes remains scheduled because fanotify sees only writes and
+// cannot find a planted configuration that predates daemon startup.
 //
 // The second return value is the per-scan purge name list scoped to the
 // checks that actually executed this cycle.
