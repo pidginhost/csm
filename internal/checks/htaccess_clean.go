@@ -346,31 +346,162 @@ func cgiExtensionListIsSuspicious(tokens []string) bool {
 	return false
 }
 
-// cgiExecutionNeutralized reports whether the file disables CGI execution for
-// its directory, which makes any cgi-script handler mapping inert. Security
-// plugins (Wordfence, BuddyBoss) and app stacks (Magento) map .php and friends
-// to cgi-script but pair it with `Options -ExecCGI`; the cgi-script handler
-// cannot run without ExecCGI, so the mapping hardens rather than arms. An
-// attacker who wants execution turns ExecCGI back on, so a later enabling
-// Options directive (or `Options All`) cancels the neutralization. Comments are
-// skipped, so a commented-out `-ExecCGI` cannot suppress a live mapping.
+type cgiOptionsScope struct {
+	name           string
+	neutralized    bool
+	childMayEnable bool
+}
+
+func apacheContainerTag(line string) (name string, closing bool, ok bool) {
+	line = strings.TrimSpace(line)
+	if len(line) < 3 || line[0] != '<' {
+		return "", false, false
+	}
+	end := strings.IndexByte(line, '>')
+	if end < 0 {
+		return "", false, false
+	}
+	tag := strings.TrimSpace(line[1:end])
+	if tag == "" || strings.HasPrefix(tag, "!") {
+		return "", false, false
+	}
+	if strings.HasPrefix(tag, "/") {
+		closing = true
+		tag = strings.TrimSpace(tag[1:])
+	}
+	if fields := strings.Fields(tag); len(fields) > 0 {
+		return strings.ToLower(fields[0]), closing, true
+	}
+	return "", false, false
+}
+
+func unquoteApacheOption(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	if token[0] == '"' || token[0] == '\'' {
+		if len(token) < 2 || token[len(token)-1] != token[0] {
+			return "", false
+		}
+		token = token[1 : len(token)-1]
+	}
+	if token == "" || strings.ContainsAny(token, `"'`) {
+		return "", false
+	}
+	return strings.ToLower(token), true
+}
+
+// applyCGIOptions follows Apache's Options parser for the ExecCGI bit. Bare
+// option lists replace the inherited set, while lists made only of +/- tokens
+// merge with it. All and None may start a list before relative adjustments.
+func applyCGIOptions(fields []string, neutralized bool) (bool, bool) {
+	if len(fields) < 2 {
+		return false, false
+	}
+
+	first := true
+	merge := false
+	allOrNone := false
+	for _, field := range fields[1:] {
+		token, ok := unquoteApacheOption(field)
+		if !ok {
+			return false, false
+		}
+
+		var action byte
+		switch {
+		case token[0] == '+' || token[0] == '-':
+			action = token[0]
+			token = token[1:]
+			if token == "" || (!merge && !first && !allOrNone) {
+				return false, false
+			}
+			merge = true
+		case first:
+			neutralized = true
+		case merge:
+			return false, false
+		}
+
+		switch token {
+		case "none":
+			if !first || merge {
+				return false, false
+			}
+			neutralized = true
+			allOrNone = true
+		case "all":
+			if !first || merge {
+				return false, false
+			}
+			neutralized = false
+			allOrNone = true
+		case "execcgi", "runscripts":
+			neutralized = action == '-'
+		case "indexes", "includes", "includesnoexec", "followsymlinks",
+			"symlinksifownermatch", "multiviews":
+		default:
+			return false, false
+		}
+		first = false
+	}
+	return neutralized, true
+}
+
+// cgiExecutionNeutralized reports whether CGI execution is disabled for every
+// request in this directory. Conditional or scoped Options blocks cannot prove
+// a global disable and may re-enable ExecCGI after directory options merge.
 func cgiExecutionNeutralized(content []byte) bool {
 	neutralized := false
+	nestedMayEnable := false
+	var scopes []cgiOptionsScope
+
 	for _, logical := range htaccessLogicalByteLines(content) {
-		fields := apacheDirectiveFields(strings.TrimSpace(logical.text))
-		if len(fields) < 2 || !strings.EqualFold(fields[0], "Options") {
+		line := strings.TrimSpace(logical.text)
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		for _, tok := range fields[1:] {
-			switch strings.ToLower(strings.Trim(strings.TrimSpace(tok), `"'`)) {
-			case "-execcgi", "none":
-				neutralized = true
-			case "+execcgi", "execcgi", "all", "+all":
-				neutralized = false
+		if name, closing, ok := apacheContainerTag(line); ok {
+			if !closing {
+				scopes = append(scopes, cgiOptionsScope{
+					name:        name,
+					neutralized: true,
+				})
+				continue
 			}
+			if len(scopes) == 0 || scopes[len(scopes)-1].name != name {
+				return false
+			}
+			scope := scopes[len(scopes)-1]
+			scopes = scopes[:len(scopes)-1]
+			mayEnable := !scope.neutralized || scope.childMayEnable
+			if len(scopes) == 0 {
+				nestedMayEnable = nestedMayEnable || mayEnable
+			} else {
+				scopes[len(scopes)-1].childMayEnable =
+					scopes[len(scopes)-1].childMayEnable || mayEnable
+			}
+			continue
+		}
+
+		fields := apacheDirectiveFields(line)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "Options") {
+			continue
+		}
+		var valid bool
+		if len(scopes) == 0 {
+			neutralized, valid = applyCGIOptions(fields, neutralized)
+		} else {
+			scope := &scopes[len(scopes)-1]
+			scope.neutralized, valid = applyCGIOptions(fields, scope.neutralized)
+		}
+		if !valid {
+			return false
 		}
 	}
-	return neutralized
+
+	return len(scopes) == 0 && neutralized && !nestedMayEnable
 }
 
 // detectCGIHandlerAbuse flags an .htaccess that maps a non-conventional

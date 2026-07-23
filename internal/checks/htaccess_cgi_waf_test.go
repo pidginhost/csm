@@ -422,3 +422,67 @@ func TestDetectorCGIHandlerAbuseFlagsDisabledThenAllExecCGI(t *testing.T) {
 		t.Errorf("cgi_handler_abuse (Options All re-enables) = %d, want 1", got)
 	}
 }
+
+func TestDetectorCGIHandlerAbuseHonorsAbsoluteOptionsReset(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .php\nOptions +ExecCGI\nOptions Indexes FollowSymLinks\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 0 {
+		t.Errorf("cgi_handler_abuse (absolute Options reset) = %d, want 0", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseFlagsRunScriptsReEnable(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .alfa\nOptions -ExecCGI\nOptions +RunScripts\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (RunScripts re-enables ExecCGI) = %d, want 1", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseDoesNotTrustConditionalDisable(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .alfa\nOptions +ExecCGI\n" +
+		"<IfModule !mod_cgi.c>\nOptions -ExecCGI\n</IfModule>\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (conditional -ExecCGI) = %d, want 1", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseFlagsConditionalReEnable(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .alfa\n" +
+		"<If \"%{REQUEST_URI} =~ m#\\\\.alfa$#\">\nOptions +ExecCGI\n</If>\n" +
+		"Options -ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (conditional +ExecCGI) = %d, want 1", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseSkipsFilesMatchUnderDirectoryDisable(t *testing.T) {
+	dir := t.TempDir()
+	body := "Options -ExecCGI\n<FilesMatch \"\\.alfa$\">\n" +
+		"SetHandler cgi-script\n</FilesMatch>\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 0 {
+		t.Errorf("cgi_handler_abuse (directory -ExecCGI with FilesMatch) = %d, want 0", got)
+	}
+}
+
+func TestDetectorCGIHandlerAbuseRejectsMalformedOptionsNeutralizer(t *testing.T) {
+	dir := t.TempDir()
+	body := "AddHandler cgi-script .alfa\nOptions ExecCGI -ExecCGI\n"
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_cgi_handler_abuse"); got != 1 {
+		t.Errorf("cgi_handler_abuse (malformed Options syntax) = %d, want 1", got)
+	}
+}
