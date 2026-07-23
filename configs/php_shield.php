@@ -241,7 +241,7 @@ function csm_shield_is_webshell($src) {
         return true;
     }
     if (preg_match('/\beval\s*\(/i', $src)
-        && preg_match('/(?:gzinflate|gzuncompress|gzdecode|str_rot13|base64_decode)\s*\(/i', $src)) {
+        && preg_match('/(?:gzinflate|gzuncompress|gzdecode|str_rot13|base64_decode|openssl_decrypt)\s*\(/i', $src)) {
         return true;
     }
     return false;

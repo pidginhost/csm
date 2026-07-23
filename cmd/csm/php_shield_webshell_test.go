@@ -85,6 +85,8 @@ require getenv('CSM_SHIELD_TEST_FILE');
 			"<?php function run() { \\exec($_GET['c']); } echo 'UNSAFE';", "", true, true},
 		{"packed_eval_in_cache", "wp-content/cache/rrhe.php",
 			"<?php eval(gzinflate(base64_decode('AAAA')));", "", true, true},
+		{"packed_eval_openssl_decrypt", "wp-content/cache/enc.php",
+			"<?php eval(openssl_decrypt('x', 'aes-256-cbc', 'k'));", "", true, true},
 		{"blocked_upload_index", "wp-content/uploads/index.php",
 			"<?php echo 'SAFE';", "", true, true},
 		{"index_named_plugin_webshell", "wp-content/plugins/evil/index.php",

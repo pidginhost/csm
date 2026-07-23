@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - WAF rules now block the wp2shell exploit tool by its User-Agent and rate-limit POST requests to the WordPress REST batch endpoint, the path a mass-exploit campaign used to create rogue administrators across accounts.
+- Malware detection now recognizes eval() loaders that decrypt their payload with openssl_decrypt, a variant seen in a cross-account compromise, in both the deep-scan rules and the runtime PHP shield.
 
 ### Changed
 
