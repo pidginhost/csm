@@ -1595,6 +1595,9 @@ func TestCheckPHPConfigChangesDetectsChange(t *testing.T) {
 			if strings.HasSuffix(name, "alice") {
 				return []os.DirEntry{testDirEntry{name: "public_html", isDir: true}}, nil
 			}
+			if strings.HasSuffix(name, "public_html") {
+				return []os.DirEntry{testDirEntry{name: ".user.ini", isDir: false}}, nil
+			}
 			return nil, os.ErrNotExist
 		},
 		stat: func(name string) (os.FileInfo, error) {

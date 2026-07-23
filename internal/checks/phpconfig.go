@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,9 +12,10 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// CheckPHPConfigChanges monitors .user.ini and .htaccess for PHP configuration
-// changes that weaken security (disabling disable_functions, enabling dangerous functions).
-// This runs as a deep check. The fanotify watcher also catches .user.ini writes in real-time.
+// CheckPHPConfigChanges monitors .user.ini and php.ini files anywhere under an
+// account's document roots for settings that weaken PHP security (disable_functions
+// cleared or neutralized, allow_url_include enabled, open_basedir removed). It runs
+// as a deep check; the fanotify watcher also catches these writes in real-time.
 func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -24,52 +26,61 @@ func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.S
 		}
 		user := homeEntry.Name()
 
-		// Check .user.ini in public_html and addon domains
-		iniPaths := []string{
-			filepath.Join("/home", user, "public_html", ".user.ini"),
-		}
+		// Collect every .user.ini and php.ini under the account's document
+		// roots. An attacker plants a php.ini (or a nested .user.ini) deep in
+		// the tree -- e.g. wp-includes/assets/php.ini -- to weaken PHP, so the
+		// scan cannot stop at the docroot root or watch .user.ini alone.
+		roots := []string{filepath.Join("/home", user, "public_html")}
 		subDirs, _ := osFS.ReadDir(filepath.Join("/home", user))
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
-				iniPath := filepath.Join("/home", user, sd.Name(), ".user.ini")
-				if _, err := osFS.Stat(iniPath); err == nil {
-					iniPaths = append(iniPaths, iniPath)
-				}
+				roots = append(roots, filepath.Join("/home", user, sd.Name()))
 			}
 		}
 
+		var iniPaths []string
+		for _, root := range roots {
+			iniPaths = append(iniPaths, collectPHPIniFiles(root, phpIniWalkMaxDepth)...)
+		}
+
 		for _, iniPath := range iniPaths {
-			// Hash-based change detection
-			hash, err := hashFileContent(iniPath)
+			// Read once, then hash and analyze the same bytes so a file that
+			// changes between two reads cannot slip past change detection.
+			data, err := osFS.ReadFile(iniPath)
 			if err != nil {
 				continue
 			}
+			sum := sha256.Sum256(data)
+			hash := fmt.Sprintf("%x", sum[:])
 
 			key := "_phpini:" + iniPath
 			prev, exists := store.GetRaw(key)
 			store.SetRaw(key, hash)
 
-			if !exists || prev == hash {
-				continue
+			if exists && prev == hash {
+				continue // already assessed at this content
 			}
 
-			// File changed - analyze content for dangerous settings
-			data, err := osFS.ReadFile(iniPath)
-			if err != nil {
-				continue
-			}
 			content := strings.ToLower(string(data))
 
-			// Check for dangerous PHP settings
-			dangerous := analyzePHPINI(content)
+			// A newly-seen file is judged on the strong, low-false-positive
+			// bypass signals alone so a benign new .user.ini stays quiet; a
+			// file whose content changed gets the full directive analysis.
+			var dangerous []string
+			if exists {
+				dangerous = analyzePHPINI(content)
+			} else {
+				dangerous = phpINISecurityBypass(content)
+			}
 			if len(dangerous) > 0 {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "php_config_change",
-					Message:  fmt.Sprintf("Dangerous PHP config change: %s (user: %s)", iniPath, user),
+					Message:  fmt.Sprintf("Dangerous PHP configuration: %s (user: %s)", iniPath, user),
 					Details:  fmt.Sprintf("Dangerous settings:\n- %s", strings.Join(dangerous, "\n- ")),
+					FilePath: iniPath,
 				})
 			}
 		}
@@ -148,4 +159,92 @@ func analyzePHPINI(content string) []string {
 	}
 
 	return dangerous
+}
+
+// phpIniWalkMaxDepth bounds how deep the php-config scan recurses under a
+// document root. Deep enough to reach payloads hidden in nested plugin,
+// theme, and node_modules directories; bounded so the walk stays cheap.
+const phpIniWalkMaxDepth = 6
+
+// collectPHPIniFiles walks root up to maxDepth and returns every .user.ini and
+// php.ini path found. No directory is skipped by name -- attackers hide these
+// under node_modules and vendor trees -- so cost is bounded by depth alone.
+func collectPHPIniFiles(root string, maxDepth int) []string {
+	var out []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		entries, err := osFS.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			name := e.Name()
+			full := filepath.Join(dir, name)
+			if e.IsDir() {
+				if depth > 0 {
+					walk(full, depth-1)
+				}
+				continue
+			}
+			if name == ".user.ini" || name == "php.ini" {
+				out = append(out, full)
+			}
+		}
+	}
+	walk(root, maxDepth)
+	return out
+}
+
+// phpINISecurityBypass returns the strong, low-false-positive signals that a
+// PHP ini file weakens security: disable_functions cleared or neutralized,
+// allow_url_include enabled, or open_basedir removed. content must be
+// lowercased. Used for newly-seen files, where the noisier per-function
+// diffing of analyzePHPINI would flag benign partial disable lists.
+func phpINISecurityBypass(content string) []string {
+	var out []string
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
+		switch {
+		case strings.HasPrefix(key, "disable_functions"):
+			if disableFunctionsNeutralized(val) {
+				out = append(out, "disable_functions cleared or neutralized (dangerous PHP functions enabled)")
+			}
+		case strings.HasPrefix(key, "allow_url_include"):
+			if val == "on" || val == "1" {
+				out = append(out, "allow_url_include enabled (remote code inclusion)")
+			}
+		case strings.HasPrefix(key, "open_basedir"):
+			if val == "" || val == "/" {
+				out = append(out, "open_basedir cleared (filesystem sandbox removed)")
+			}
+		}
+	}
+	return out
+}
+
+// disableFunctionsNeutralized reports whether a disable_functions value fails
+// to actually disable any dangerous function -- empty, "none", or set to junk
+// (the `disable_functions=ByPassed By 0xNix` camouflage). val must be
+// lowercased and unquoted. A genuine hardening list always names at least one
+// dangerous function, so the absence of every one means the directive disables
+// nothing.
+func disableFunctionsNeutralized(val string) bool {
+	if val == "" || val == "none" {
+		return true
+	}
+	for _, fn := range []string{"exec", "system", "shell_exec", "passthru", "proc_open", "popen", "eval", "assert", "pcntl"} {
+		if strings.Contains(val, fn) {
+			return false
+		}
+	}
+	return true
 }
