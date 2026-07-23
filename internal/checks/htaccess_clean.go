@@ -118,6 +118,14 @@ var (
 	reHeaderSetAdd    = regexp.MustCompile(`(?im)^\s*Header\s+(set|add)\s+([A-Za-z0-9_-]+)`)
 	reErrorDocument   = regexp.MustCompile(`(?im)^\s*ErrorDocument\s+\d+\s+(https?://[^\s]+)`)
 
+	// Handler directives routing a non-conventional extension (or the whole
+	// directory) to a CGI interpreter -- the technique that arms an uploaded
+	// Perl/binary webshell (ALFA .alfa shell, 2026-07-23).
+	reCGIHandlerLine = regexp.MustCompile(`(?im)^\s*(?:AddHandler|AddType|SetHandler|ForceType)\s+\S.*$`)
+	// A per-account .htaccess turning ModSecurity off to mask an intrusion.
+	// `Sec\S*` also matches obfuscated directive names (`Sec------Engine Off`).
+	reSecDisable = regexp.MustCompile(`(?im)^\s*Sec\S*\s+Off\b.*$`)
+
 	// crawlerUARegex matches the UA strings frequently used in cloak
 	// conditions: search-engine bots and social-share scrapers. Used
 	// as a positive filter on the htaccess_user_agent_cloak finding;
@@ -165,6 +173,96 @@ var htaccessDetectors = []htaccessDetector{
 		Severity: alert.High,
 		Detect:   detectErrorDocumentHijack,
 	},
+	{
+		Name:     "htaccess_cgi_handler_abuse",
+		Severity: alert.Critical,
+		Detect:   detectCGIHandlerAbuse,
+	},
+	{
+		Name:     "htaccess_security_disabled",
+		Severity: alert.High,
+		Detect:   detectSecurityDisabled,
+	},
+}
+
+// handlerIsCGI reports whether an Apache handler/MIME token routes matching
+// files to a CGI interpreter (as opposed to serving them statically). This is
+// the CGI counterpart of handlerIsPHP.
+func handlerIsCGI(token string) bool {
+	token = strings.ToLower(strings.Trim(strings.TrimSpace(token), `"'`))
+	switch {
+	case strings.Contains(token, "cgi-script"),
+		strings.Contains(token, "fcgid-script"),
+		strings.Contains(token, "fastcgi-script"),
+		strings.Contains(token, "x-httpd-cgi"),
+		strings.Contains(token, "x-httpd-fcgi"):
+		return true
+	}
+	return false
+}
+
+// conventionalCGIExt reports whether ext (leading dot, lowercase) is one a
+// legitimate cgi-bin routes to a CGI handler. A CGI handler mapped onto any
+// other extension is the webshell-arming remap.
+func conventionalCGIExt(ext string) bool {
+	switch ext {
+	case ".cgi", ".pl", ".pm", ".py", ".rb":
+		return true
+	}
+	return false
+}
+
+// detectCGIHandlerAbuse flags an .htaccess that maps a non-conventional
+// extension (or the whole directory) to a CGI interpreter. An attacker uses
+// this to make an uploaded Perl/binary file execute: e.g.
+// `AddHandler cgi-script .alfa` / `AddType application/x-httpd-cgi .alfa`.
+func detectCGIHandlerAbuse(content []byte, _ string) []htaccessMatch {
+	var out []htaccessMatch
+	for _, idx := range reCGIHandlerLine.FindAllIndex(content, -1) {
+		fields := apacheDirectiveFields(string(content[idx[0]:idx[1]]))
+		if len(fields) < 2 || !handlerIsCGI(fields[1]) {
+			continue
+		}
+		exts := normalizedExts(fields[2:])
+		flagged := false
+		if len(exts) == 0 {
+			// SetHandler/ForceType with no extension list routes EVERY file in
+			// the directory to the CGI interpreter -- the directory-wide form.
+			switch strings.ToLower(fields[0]) {
+			case "sethandler", "forcetype":
+				flagged = true
+			}
+		} else {
+			for _, ext := range exts {
+				if !conventionalCGIExt(ext) {
+					flagged = true
+					break
+				}
+			}
+		}
+		if flagged {
+			out = append(out, htaccessMatch{
+				Range:   lineRange(content, idx[0], idx[1]),
+				Excerpt: trimExcerpt(content, idx[0], idx[1]),
+			})
+		}
+	}
+	return out
+}
+
+// detectSecurityDisabled flags a per-account .htaccess that turns ModSecurity
+// off (SecRuleEngine/SecFilterEngine/SecFilterScanPOST ... Off). A customer
+// .htaccess never legitimately disables the WAF; attackers add it to mask an
+// intrusion. `Sec\S* Off` also matches obfuscated directive spellings.
+func detectSecurityDisabled(content []byte, _ string) []htaccessMatch {
+	var out []htaccessMatch
+	for _, idx := range reSecDisable.FindAllIndex(content, -1) {
+		out = append(out, htaccessMatch{
+			Range:   lineRange(content, idx[0], idx[1]),
+			Excerpt: trimExcerpt(content, idx[0], idx[1]),
+		})
+	}
+	return out
 }
 
 // AuditHtaccessFile runs every registered detector against the file
