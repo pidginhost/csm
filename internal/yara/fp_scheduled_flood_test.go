@@ -404,19 +404,26 @@ func TestFPFlood_MinerXmrigBinaryRef_XmrStakNeedsContext(t *testing.T) {
 // decoder immediately after eval(, so the packer slipped through.
 func TestFPFlood_EvalDecodeChain_PhpCloseConcatPacker(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	mal := []byte(`<?php eval("?>".base64_decode("Pz48P3BocCBzeXN0ZW0oJF9HRVRbMF0pOw==")); `)
-	if !hasYaraRule(s.ScanBytes(mal), "php_eval_base64_chain") {
+	mal := append([]byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00"), []byte(
+		`<?php eval("?>".base64_decode("Pz48P3BocCBzeXN0ZW0oJF9HRVRbMF0pOw==")); `,
+	)...)
+	matches := s.ScanBytes(mal)
+	if !hasYaraRule(matches, "php_eval_base64_chain") {
 		t.Error("php_eval_base64_chain regression: eval(\"?>\".base64_decode(...)) packer not detected")
 	}
+	assertYaraRuleMeta(t, matches, "php_eval_base64_chain", "severity", "critical")
+	assertYaraRuleMeta(t, matches, "php_eval_base64_chain", "category", "dropper")
 	malGz := []byte(`<?= eval('?>' . gzinflate(base64_decode($x))); `)
 	if !hasYaraRule(s.ScanBytes(malGz), "php_eval_base64_chain") {
 		t.Error("php_eval_base64_chain regression: eval('?>'.gzinflate(...)) packer not detected")
 	}
-	// A template engine that evaluates compiled PHP with a "?>" prefix but no
-	// decoder is not a packer loader.
-	legit := []byte(`<?php $compiled = $this->compileTemplate($tpl); eval("?>" . $compiled); `)
-	if hasYaraRule(s.ScanBytes(legit), "php_eval_base64_chain") {
-		t.Error("php_eval_base64_chain FP: matched a template-engine eval with no decoder")
+	for _, legit := range [][]byte{
+		[]byte(`<?php $compiled = $this->compileTemplate($tpl); eval("?>" . $compiled); `),
+		[]byte(`<?php eval("prefix" . base64_decode($payload)); `),
+	} {
+		if hasYaraRule(s.ScanBytes(legit), "php_eval_base64_chain") {
+			t.Errorf("php_eval_base64_chain FP: matched non-packer eval: %s", legit)
+		}
 	}
 }
 
@@ -426,17 +433,81 @@ func TestFPFlood_EvalDecodeChain_PhpCloseConcatPacker(t *testing.T) {
 // fired.
 func TestFPFlood_WebConsole_Tool(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	mal := []byte("<?php\n// Web Console v0.9.7 (2016-11-05)\n" +
-		"// GitHub: https://github.com/nickola/web-console\n" +
-		"$NO_LOGIN = false;\n$USER = 'Noxipom12';\n$PASSWORD = 'x';\n$ACCOUNTS = array();\n" +
-		"$ACCOUNTS[$USER] = $PASSWORD;\n$p = proc_open($command, $descriptors, $pipes, $cwd);\n")
-	if !hasYaraRule(s.ScanBytes(mal), "webshell_web_console") {
-		t.Error("webshell_web_console regression: nickola web-console command tool not detected")
+	for _, tc := range []struct {
+		identity string
+		accounts string
+	}{
+		{"// Web Console v0.9.7 (2016-11-05)\n", "$ACCOUNTS = array();\n"},
+		{"// GitHub: https://github.com/nickola/web-console\n", "$ACCOUNTS[$USER] = $PASSWORD;\n"},
+	} {
+		mal := []byte("<?php\n" + tc.identity +
+			"$NO_LOGIN = false;\n$USER = 'Noxipom12';\n$PASSWORD = 'x';\n" +
+			tc.accounts + "$p = proc_open($command, $descriptors, $pipes, $cwd);\n")
+		matches := s.ScanBytes(mal)
+		if !hasYaraRule(matches, "webshell_web_console") {
+			t.Errorf("webshell_web_console regression: tool identity %q not detected", tc.identity)
+		}
+		assertYaraRuleMeta(t, matches, "webshell_web_console", "severity", "critical")
+		assertYaraRuleMeta(t, matches, "webshell_web_console", "category", "webshell")
 	}
-	// Documentation or an admin page that merely mentions "Web Console" is not
-	// the tool.
-	legit := []byte(`<?php /* Settings page: open the Web Console tab to view logs. */ echo "Web Console";`)
-	if hasYaraRule(s.ScanBytes(legit), "webshell_web_console") {
-		t.Error("webshell_web_console FP: matched prose mentioning a web console")
+}
+
+func TestFPFlood_WebConsole_RequiresEveryStructuralMarker(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, tc := range []struct {
+		name   string
+		sample string
+	}{
+		{
+			name: "identity",
+			sample: "<?php\n$NO_LOGIN = false;\n$ACCOUNTS = array();\n" +
+				"$p = proc_open($command, $descriptors, $pipes);\n",
+		},
+		{
+			name: "no-login setting",
+			sample: "<?php\n// Web Console v0.9.7\n$ACCOUNTS = array();\n" +
+				"$p = proc_open($command, $descriptors, $pipes);\n",
+		},
+		{
+			name: "accounts setting",
+			sample: "<?php\n// Web Console v0.9.7\n$NO_LOGIN = false;\n" +
+				"$p = proc_open($command, $descriptors, $pipes);\n",
+		},
+		{
+			name:   "command sink",
+			sample: "<?php\n// Web Console v0.9.7\n$NO_LOGIN = false;\n$ACCOUNTS = array();\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if hasYaraRule(s.ScanBytes([]byte(tc.sample)), "webshell_web_console") {
+				t.Errorf("webshell_web_console matched without %s", tc.name)
+			}
+		})
 	}
+}
+
+func TestFPFlood_WebConsole_SystemSinkUsesWordBoundary(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	prefix := "<?php\n// Web Console v0.9.7\n$NO_LOGIN = false;\n$ACCOUNTS = array();\n"
+	if !hasYaraRule(s.ScanBytes([]byte(prefix+"system($command);\n")), "webshell_web_console") {
+		t.Error("webshell_web_console did not match the system() sink")
+	}
+	for _, call := range []string{"filesystem($path);", "ecosystem($path);"} {
+		if hasYaraRule(s.ScanBytes([]byte(prefix+call)), "webshell_web_console") {
+			t.Errorf("webshell_web_console treated %s as system()", call)
+		}
+	}
+}
+
+func assertYaraRuleMeta(t *testing.T, matches []Match, ruleName, key, want string) {
+	t.Helper()
+	for _, match := range matches {
+		if match.RuleName == ruleName {
+			if got := match.Meta[key]; got != want {
+				t.Errorf("%s metadata %s = %q, want %q", ruleName, key, got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("%s missing while checking metadata %s", ruleName, key)
 }
