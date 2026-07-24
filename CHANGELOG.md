@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.26.1] - 2026-07-25
+
 ### Fixed
 
 - The JavaScript keylogger signature no longer reports stock minified plugin bundles. It now requires the keystroke itself (or a named credential field) and the network call to sit close together, in either order, which also catches keyloggers that buffer keystrokes before sending them -- a shape the previous forward-only rule missed. The YAML fallback rule, which had drifted far looser than its YARA counterpart, was brought back in line.
@@ -1855,7 +1857,8 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.0...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.1...HEAD
+[3.26.1]: https://github.com/pidginhost/csm/compare/v3.26.0...v3.26.1
 [3.26.0]: https://github.com/pidginhost/csm/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/pidginhost/csm/compare/v3.24.0...v3.25.0
 [3.24.0]: https://github.com/pidginhost/csm/compare/v3.23.2...v3.24.0
