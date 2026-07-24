@@ -20,8 +20,6 @@ import (
 const (
 	phpIniWalkMaxDepth      = -1
 	phpIniMaxRootsPerUser   = 1024
-	phpIniWalkMaxDirs       = 10000
-	phpIniWalkMaxEntries    = 250000
 	phpIniReadDirBatch      = 256
 	phpIniStateFormat       = 1
 	phpIniFindingCheck      = "php_config_change"
@@ -32,6 +30,20 @@ const (
 
 	// PHPConfigMaxBytes is the shared scheduled and realtime read ceiling.
 	PHPConfigMaxBytes = 1 << 20
+)
+
+// Walk limits. Per-root limits bound one document root; the per-account
+// limits bound the whole account. They are vars so tests can shrink them.
+//
+// The per-root allowance is what the account limits used to be, because a
+// single shared budget meant a large first root (a vendor or node_modules tree
+// is thousands of directories on its own) consumed everything and every later
+// addon domain was reported unscanned without being walked.
+var (
+	phpIniWalkMaxDirs           = 10000
+	phpIniWalkMaxEntries        = 250000
+	phpIniWalkAccountMaxDirs    = 150000
+	phpIniWalkAccountMaxEntries = 3000000
 )
 
 var (
@@ -47,9 +59,34 @@ type phpIniFileState struct {
 	FullAnalysis bool   `json:"full_analysis,omitempty"`
 }
 
+// phpIniWalkBudget carries both the allowance for the root currently being
+// walked and the running total for the account. collectPHPIniFilesWithBudget
+// resets the per-root counters on entry, so roots do not starve each other.
 type phpIniWalkBudget struct {
 	dirs    int
 	entries int
+
+	accountDirs    int
+	accountEntries int
+}
+
+func (b *phpIniWalkBudget) startRoot() {
+	b.dirs = 0
+	b.entries = 0
+}
+
+func (b *phpIniWalkBudget) accountExhausted() bool {
+	return b.accountDirs >= phpIniWalkAccountMaxDirs || b.accountEntries >= phpIniWalkAccountMaxEntries
+}
+
+func (b *phpIniWalkBudget) addDir() {
+	b.dirs++
+	b.accountDirs++
+}
+
+func (b *phpIniWalkBudget) addEntry() {
+	b.entries++
+	b.accountEntries++
 }
 
 // CheckPHPConfigChanges monitors .user.ini and php.ini files anywhere under an
@@ -521,12 +558,13 @@ func collectPHPIniFilesWithBudget(
 		observed bool
 	}
 
-	if budget.dirs >= phpIniWalkMaxDirs || budget.entries >= phpIniWalkMaxEntries {
+	if budget.accountExhausted() {
 		return nil, false
 	}
+	budget.startRoot()
 	var out []string
 	queue := []pendingDir{{path: root}}
-	budget.dirs++
+	budget.addDir()
 	complete := true
 
 	for len(queue) > 0 {
@@ -536,20 +574,20 @@ func collectPHPIniFilesWithBudget(
 		dir := queue[0]
 		queue = queue[1:]
 		visitComplete, err := forEachPHPIniDirEntry(ctx, dir.path, func(e os.DirEntry) bool {
-			budget.entries++
-			if budget.entries > phpIniWalkMaxEntries {
+			budget.addEntry()
+			if budget.entries > phpIniWalkMaxEntries || budget.accountEntries > phpIniWalkAccountMaxEntries {
 				return false
 			}
 			name := e.Name()
 			full := filepath.Join(dir.path, name)
 			if e.IsDir() {
 				if maxDepth < 0 || dir.depth < maxDepth {
-					if budget.dirs >= phpIniWalkMaxDirs {
+					if budget.dirs >= phpIniWalkMaxDirs || budget.accountDirs >= phpIniWalkAccountMaxDirs {
 						complete = false
 						return true
 					}
 					queue = append(queue, pendingDir{path: full, depth: dir.depth + 1, observed: true})
-					budget.dirs++
+					budget.addDir()
 				}
 				return true
 			}
