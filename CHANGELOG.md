@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The JavaScript keylogger signature no longer reports stock minified plugin bundles. It now requires the keystroke itself (or a named credential field) and the network call to sit close together, in either order, which also catches keyloggers that buffer keystrokes before sending them -- a shape the previous forward-only rule missed. The YAML fallback rule, which had drifted far looser than its YARA counterpart, was brought back in line.
+- A download piped to a shell is no longer reported both as a dropper and as a shell-startup-file backdoor. The startup-file finding now requires a startup file, so vendored library CI scripts stop producing two criticals for one line.
+
 ## [3.26.0] - 2026-07-25
 
 ### Added

