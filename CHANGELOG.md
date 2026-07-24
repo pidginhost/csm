@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-07-25
+
 ### Added
 
 - WAF rules now block the wp2shell exploit tool by its User-Agent and rate-limit POST requests to the WordPress REST batch endpoint, the path a mass-exploit campaign used to create rogue administrators across accounts.
@@ -1843,7 +1845,12 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.23.0...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.0...HEAD
+[3.26.0]: https://github.com/pidginhost/csm/compare/v3.25.0...v3.26.0
+[3.25.0]: https://github.com/pidginhost/csm/compare/v3.24.0...v3.25.0
+[3.24.0]: https://github.com/pidginhost/csm/compare/v3.23.2...v3.24.0
+[3.23.2]: https://github.com/pidginhost/csm/compare/v3.23.1...v3.23.2
+[3.23.1]: https://github.com/pidginhost/csm/compare/v3.23.0...v3.23.1
 [3.23.0]: https://github.com/pidginhost/csm/compare/v3.22.1...v3.23.0
 [2.0.2]: https://github.com/pidginhost/csm/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/pidginhost/csm/compare/v2.0.0...v2.0.1
