@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.26.2] - 2026-07-25
+
 ### Fixed
 
 - The record of a write CSM made is now tied to the specific file it changed, so replacing that file with identical content is still reported rather than inheriting the suppression.
@@ -1862,7 +1864,8 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.1...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.2...HEAD
+[3.26.2]: https://github.com/pidginhost/csm/compare/v3.26.1...v3.26.2
 [3.26.1]: https://github.com/pidginhost/csm/compare/v3.26.0...v3.26.1
 [3.26.0]: https://github.com/pidginhost/csm/compare/v3.25.0...v3.26.0
 [3.25.0]: https://github.com/pidginhost/csm/compare/v3.24.0...v3.25.0
