@@ -46,6 +46,13 @@ type htaccessByteRange struct {
 type htaccessMatch struct {
 	Range   htaccessByteRange
 	Excerpt string // the offending line(s), trimmed for the finding details
+	// Severity overrides the detector's default for this match. Nil keeps the
+	// default. Used where one detector covers directives of differing effect.
+	Severity *alert.Severity
+	// Retain keeps the match out of the cleaner's removal set. A match that is
+	// reported for visibility but has no effect on the server must not cause an
+	// edit to a customer's file.
+	Retain bool
 }
 
 // htaccessDetector pairs a finding category with a function that
@@ -601,17 +608,38 @@ func modSecurityDirectiveDisablesWAF(name, value string) bool {
 // as SecAuditEngine or SecStatusEngine.
 func detectSecurityDisabled(content []byte, _ string) []htaccessMatch {
 	var out []htaccessMatch
+	warning := alert.Warning
 	for _, logical := range htaccessLogicalByteLines(content) {
 		fields := apacheDirectiveFields(strings.TrimSpace(logical.text))
 		if len(fields) < 2 || !modSecurityDirectiveDisablesWAF(fields[0], fields[1]) {
 			continue
 		}
-		out = append(out, htaccessMatch{
+		match := htaccessMatch{
 			Range:   logical.span,
 			Excerpt: trimExcerpt(content, logical.span.Start, logical.span.End),
-		})
+		}
+		if legacyModSecurityDirective(fields[0]) {
+			match.Severity = &warning
+			match.Retain = true
+		}
+		out = append(out, match)
 	}
 	return out
+}
+
+// legacyModSecurityDirective reports whether a directive belongs to
+// mod_security 1.x, which no supported server reads. Apache runs
+// mod_security2 or mod_security3, LiteSpeed reads its own equivalent, and
+// Nginx has neither, so these lines change nothing wherever CSM runs. They are
+// still worth surfacing -- an intruder who pastes one is announcing an attempt
+// -- but they did not disable anything, and stripping them from a legacy shop
+// or Magento .htaccess edits a customer file to no effect.
+func legacyModSecurityDirective(name string) bool {
+	switch normalizeModSecurityDirective(name) {
+	case "secfilterengine", "secfilterscanpost", "secscanpost":
+		return true
+	}
+	return false
 }
 
 // AuditHtaccessFile runs every registered detector against the file
@@ -637,15 +665,21 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 	for _, d := range htaccessDetectors {
 		matches := d.Detect(content, path)
 		for _, m := range matches {
+			severity := d.Severity
+			if m.Severity != nil {
+				severity = *m.Severity
+			}
 			findings = append(findings, alert.Finding{
-				Severity:  d.Severity,
+				Severity:  severity,
 				Check:     d.Name,
 				Message:   fmt.Sprintf("%s in %s", d.Name, path),
 				Details:   fmt.Sprintf("File: %s\nMatch: %s", path, m.Excerpt),
 				FilePath:  path,
 				Timestamp: time.Now(),
 			})
-			ranges = append(ranges, m.Range)
+			if !m.Retain {
+				ranges = append(ranges, m.Range)
+			}
 		}
 	}
 	return findings, mergeRanges(ranges)
