@@ -80,7 +80,9 @@ func (s *Scanner) Reload() error {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
-		if err := compiler.AddSource(string(data)); err != nil {
+		// Strip at compile time, not only at download time: a tier already on
+		// disk would otherwise keep firing until the next weekly update.
+		if err := compiler.AddSource(string(StripRules(data, SuppressedRuleNames()))); err != nil {
 			return fmt.Errorf("compiling %s: %w", path, err)
 		}
 	}

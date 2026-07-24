@@ -87,9 +87,7 @@ func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL 
 		return "", 0, fmt.Errorf("extracting YARA Forge rules: %w", err)
 	}
 
-	if len(disabledRules) > 0 {
-		yarContent = filterDisabledRules(yarContent, disabledRules)
-	}
+	yarContent = filterDisabledRules(yarContent, mergeDisabledRules(disabledRules))
 
 	ruleCount = countRules(yarContent)
 
@@ -341,76 +339,11 @@ func forgeExtractYar(zipData []byte, assetPath string) ([]byte, error) {
 }
 
 func filterDisabledRules(content []byte, disabled []string) []byte {
-	if len(disabled) == 0 {
-		return content
-	}
-
-	disabledSet := make(map[string]bool, len(disabled))
-	for _, name := range disabled {
-		disabledSet[name] = true
-	}
-
-	lines := strings.Split(string(content), "\n")
-	var result []string
-	skipping := false
-	braceDepth := 0
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		if skipping {
-			for _, ch := range trimmed {
-				switch ch {
-				case '{':
-					braceDepth++
-				case '}':
-					braceDepth--
-				}
-			}
-			if braceDepth <= 0 {
-				skipping = false
-				braceDepth = 0
-			}
-			continue
-		}
-
-		ruleName := extractRuleName(trimmed)
-		if ruleName != "" && disabledSet[ruleName] {
-			skipping = true
-			braceDepth = 0
-			for _, ch := range trimmed {
-				switch ch {
-				case '{':
-					braceDepth++
-				case '}':
-					braceDepth--
-				}
-			}
-			if braceDepth <= 0 {
-				skipping = false
-				braceDepth = 0
-			}
-			continue
-		}
-
-		result = append(result, line)
-	}
-
-	return []byte(strings.Join(result, "\n"))
+	return yara.StripRules(content, disabled)
 }
 
 func extractRuleName(line string) string {
-	s := strings.TrimPrefix(line, "private ")
-	if !strings.HasPrefix(s, "rule ") {
-		return ""
-	}
-	s = s[5:]
-	for i, ch := range s {
-		if ch == ' ' || ch == '\t' || ch == ':' || ch == '{' {
-			return s[:i]
-		}
-	}
-	return s
+	return yara.RuleNameFromLine(line)
 }
 
 func countRules(content []byte) int {

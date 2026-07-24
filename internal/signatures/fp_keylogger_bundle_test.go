@@ -55,3 +55,24 @@ func TestKeyloggerYAML_CredentialFieldExfilStillDetected(t *testing.T) {
 		t.Error("exfil_keylogger_js regression: credential-field exfil not detected")
 	}
 }
+
+// Go-fallback parity for the replacement HTML-smuggling rule. The suppressed
+// Forge rule fired without any smuggled payload; this one must not.
+func TestHTMLSmugglingYAML_BenignDownloadBundle(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	legit := []byte(`function h(p){for(var v=0,i=0;i<p.length;i++)v=(v<<5)-v+p.charCodeAt(i)^0;return v}` +
+		`function dl(d,n){var b=new Blob([new Uint8Array(atob(d).split("").map(function(c){return c.charCodeAt(0)}))]);` +
+		`var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=n;a.click()}`)
+	if hasRule(scanner.ScanContent(legit, ".js"), "html_smuggling_payload") {
+		t.Error("html_smuggling_payload FP: matched a bundle that smuggles nothing")
+	}
+}
+
+func TestHTMLSmugglingYAML_EmbeddedExecutableDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	mal := []byte(`<script>var p="TVqQAAMAAAAEAAAA";var b=new Blob([new Uint8Array(atob(p).split("").map(c=>c.charCodeAt(0)))]);` +
+		`var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="invoice.exe";a.click();</script>`)
+	if !hasRule(scanner.ScanContent(mal, ".html"), "html_smuggling_payload") {
+		t.Error("html_smuggling_payload regression: base64 PE payload not detected")
+	}
+}
