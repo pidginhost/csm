@@ -412,6 +412,18 @@ func (s *Store) SetRaw(key, value string) {
 	s.setRawLocked(key, value)
 }
 
+// DeleteRaw drops a raw housekeeping entry. Underscore-prefixed keys are exempt
+// from the sweeper, so a caller that no longer wants one has to say so.
+func (s *Store) DeleteRaw(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.entries[key]; !ok {
+		return
+	}
+	delete(s.entries, key)
+	s.dirty = true
+}
+
 // SetRawAndSave stores a raw housekeeping value and immediately persists the
 // state file. Use it for cursors where a completed scan must survive restart
 // even when no finding is emitted later in the cycle.

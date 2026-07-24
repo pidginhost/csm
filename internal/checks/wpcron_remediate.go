@@ -361,7 +361,7 @@ func recordCrontabSelfWrite(owner string, expected []byte) {
 		if err != nil {
 			continue
 		}
-		if crontabContentEqual(data, expected) {
+		if crontabContentEqual(data, expected) || crontabExplainedBy(data, expected) {
 			RecordSelfWrite(p, data)
 			recorded = p
 			break
@@ -384,6 +384,42 @@ func crontabSpoolPaths(owner string) []string {
 		paths = append(paths, filepath.Join(dir, owner))
 	}
 	return paths
+}
+
+// crontabExplainedBy reports whether every executable line on disk came from
+// the buffer CSM installed. The cPanel crontab wrapper rewrites the spool after
+// `crontab -u` -- it prepends its own SHELL= and drops comments -- so the bytes
+// never match what was staged, and refusing to record a self-write then left
+// CSM's own change looking like a third party's.
+//
+// This is not a blanket "trust whatever is on disk": a job line that is not in
+// the staged buffer, or an environment assignment that could steer execution,
+// means something other than the wrapper touched the file, and the change is
+// reported instead of vouched for.
+func crontabExplainedBy(got, want []byte) bool {
+	staged := make(map[string]struct{})
+	for _, raw := range strings.Split(string(normalizeCrontabLineEndings(want)), "\n") {
+		if line := strings.TrimSpace(raw); line != "" {
+			staged[line] = struct{}{}
+		}
+	}
+	if len(staged) == 0 {
+		return false
+	}
+	for _, raw := range strings.Split(string(normalizeCrontabLineEndings(got)), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, ok := staged[line]; ok {
+			continue
+		}
+		if name, val, ok := splitCrontabEnv(line); ok && safeCrontabEnvAssignment(name, val) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func crontabContentEqual(got, want []byte) bool {

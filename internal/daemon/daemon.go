@@ -181,6 +181,9 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		alertCh:    make(chan alert.Finding, 500),
 		stopCh:     make(chan struct{}),
 	}
+	// Remediation records what it wrote here, so the sensitive-file detectors
+	// can tell CSM's own change from a third party's after a restart.
+	checks.SetSelfWriteStore(store)
 	d.smtpAuthTracker = newSMTPAuthTracker(
 		cfg.Thresholds.SMTPBruteForceThreshold,
 		cfg.Thresholds.SMTPBruteForceSubnetThresh,
