@@ -491,6 +491,56 @@ func TestSetRawSameValueIsNoDirty(t *testing.T) {
 	}
 }
 
+func TestDeleteRawPersistsOnNextSave(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.SetRaw("_housekeeping", "value")
+	if closeErr := s.Close(); closeErr != nil {
+		t.Fatalf("persist raw value: %v", closeErr)
+	}
+
+	s.DeleteRaw("_housekeeping")
+	if closeErr := s.Close(); closeErr != nil {
+		t.Fatalf("persist raw deletion: %v", closeErr)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if _, ok := reopened.GetRaw("_housekeeping"); ok {
+		t.Error("deleted raw value was resurrected after reopen")
+	}
+}
+
+func TestDeleteRawAndSavePersistsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.SetRaw("_housekeeping", "value")
+	if closeErr := s.Close(); closeErr != nil {
+		t.Fatalf("persist raw value: %v", closeErr)
+	}
+	if deleteErr := s.DeleteRawAndSave("_housekeeping"); deleteErr != nil {
+		t.Fatalf("DeleteRawAndSave: %v", deleteErr)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if _, ok := reopened.GetRaw("_housekeeping"); ok {
+		t.Error("DeleteRawAndSave did not persist before reopen")
+	}
+}
+
 // --- Entries / EntryForKey ---------------------------------------------
 
 func TestEntriesSkipsInternalKeys(t *testing.T) {

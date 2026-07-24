@@ -397,10 +397,11 @@ func crontabSpoolPaths(owner string) []string {
 // means something other than the wrapper touched the file, and the change is
 // reported instead of vouched for.
 func crontabExplainedBy(got, want []byte) bool {
-	staged := make(map[string]struct{})
+	staged := make(map[string]int)
 	for _, raw := range strings.Split(string(normalizeCrontabLineEndings(want)), "\n") {
-		if line := strings.TrimSpace(raw); line != "" {
-			staged[line] = struct{}{}
+		line := strings.TrimSpace(raw)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			staged[line]++
 		}
 	}
 	if len(staged) == 0 {
@@ -411,13 +412,21 @@ func crontabExplainedBy(got, want []byte) bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if _, ok := staged[line]; ok {
+		if staged[line] > 0 {
+			staged[line]--
 			continue
 		}
-		if name, val, ok := splitCrontabEnv(line); ok && safeCrontabEnvAssignment(name, val) {
+		if name, val, ok := splitCrontabEnv(line); ok &&
+			strings.EqualFold(name, "SHELL") &&
+			val == "/usr/local/cpanel/bin/jailshell" {
 			continue
 		}
 		return false
+	}
+	for _, remaining := range staged {
+		if remaining != 0 {
+			return false
+		}
 	}
 	return true
 }

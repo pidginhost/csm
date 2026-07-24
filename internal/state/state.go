@@ -417,11 +417,28 @@ func (s *Store) SetRaw(key, value string) {
 func (s *Store) DeleteRaw(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.deleteRawLocked(key)
+}
+
+// DeleteRawAndSave drops a raw housekeeping entry and persists the deletion
+// before returning.
+func (s *Store) DeleteRawAndSave(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := s.deleteRawLocked(key)
+	if !changed && !s.dirty {
+		return nil
+	}
+	return s.save()
+}
+
+func (s *Store) deleteRawLocked(key string) bool {
 	if _, ok := s.entries[key]; !ok {
-		return
+		return false
 	}
 	delete(s.entries, key)
 	s.dirty = true
+	return true
 }
 
 // SetRawAndSave stores a raw housekeeping value and immediately persists the

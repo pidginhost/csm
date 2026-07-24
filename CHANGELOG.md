@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The record of a write CSM made is now tied to the specific file it changed, so replacing that file with identical content is still reported rather than inheriting the suppression.
+- Recognizing a crontab the cPanel wrapper rewrote is stricter: a job line repeated more times than CSM wrote it, a line CSM wrote that has gone missing, an environment assignment other than the one the wrapper adds, or mismatched quoting all mean the file is reported instead of being treated as CSM's own work.
+
 ## [3.26.1] - 2026-07-25
 
 ### Fixed

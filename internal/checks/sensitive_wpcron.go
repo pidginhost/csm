@@ -165,7 +165,7 @@ func splitCrontabEnv(line string) (name, value string, ok bool) {
 	if eq <= 0 {
 		return "", "", false
 	}
-	name = line[:eq]
+	name = strings.TrimSpace(line[:eq])
 	if strings.ContainsAny(name, " \t") {
 		return "", "", false
 	}
@@ -180,7 +180,16 @@ func splitCrontabEnv(line string) (name, value string, ok bool) {
 		}
 	}
 	value = strings.TrimSpace(line[eq+1:])
-	value = strings.Trim(value, `"'`)
+	if value == "" {
+		return name, value, true
+	}
+	switch value[0] {
+	case '\'', '"':
+		if len(value) < 2 || value[len(value)-1] != value[0] {
+			return "", "", false
+		}
+		value = value[1 : len(value)-1]
+	}
 	return name, value, true
 }
 
