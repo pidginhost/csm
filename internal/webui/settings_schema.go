@@ -402,7 +402,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "wp_transient_warn_mb", Type: "int", Label: "WP transient warn (MB)", Min: int64p(1)},
 			{YAMLPath: "wp_transient_critical_mb", Type: "int", Label: "WP transient critical (MB)", Min: int64p(1)},
 			{YAMLPath: "wp_cron_fix.interval_minutes", Type: "int", Label: "WP-Cron fix: system cron interval (min)", Min: int64p(1), Max: int64p(60), Help: "How often the installed system cron runs wp-cron.php. Only bounds task latency; WordPress keeps its own event schedule. Default 15."},
-			{YAMLPath: "wp_cron_fix.php_bin", Type: "string", Label: "WP-Cron fix: PHP binary", Placeholder: "/usr/local/bin/php", Help: "Overrides the cron interpreter for every site. Leave empty so each site runs under its own MultiPHP version."},
+			{YAMLPath: "wp_cron_fix.php_bin", Type: "string", Label: "WP-Cron fix: PHP binary", Placeholder: "/usr/local/bin/php", Help: "Overrides the cron interpreter for every site. Leave empty to use the unambiguous cPanel MultiPHP version, then auto-detect."},
 		},
 	},
 	{

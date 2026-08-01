@@ -34,7 +34,9 @@ func (m *migrateCrontabMock) mock() *mockCmd {
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "crontab" && !containsArg(args, "-l") && len(args) >= 3 {
 				if b, err := os.ReadFile(args[len(args)-1]); err == nil {
-					m.installs[args[1]] = string(b)
+					installed := string(b)
+					m.installs[args[1]] = installed
+					m.crontabs[args[1]] = installed
 				}
 			}
 			return nil, nil
@@ -212,5 +214,136 @@ func TestMigrateWPCronCrontabsSkipsUnsafeOwnersBeforeCrontab(t *testing.T) {
 	}
 	if called {
 		t.Fatal("unsafe owner names must be rejected before invoking crontab")
+	}
+}
+
+func TestMigrateWPCronCrontabsPreservesManagedPHPWhenMapUnavailable(t *testing.T) {
+	spool := t.TempDir()
+	withWPCronSpoolDirs(t, spool)
+	docroot := "/home/alice/public_html"
+	managed := wpCronJobMarker + docroot + "\n" +
+		wpCronJobLine("alice", docroot, WPCronFixOptions{
+			IntervalMinutes: 15,
+			PHPBin:          "/opt/cpanel/ea-php74/root/usr/bin/php",
+		}) + "\n"
+	if err := os.WriteFile(filepath.Join(spool, "alice"), []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		readDir: os.ReadDir,
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return nil, os.ErrPermission
+			}
+			return os.ReadFile(name)
+		},
+	})
+	rec := &migrateCrontabMock{
+		crontabs: map[string]string{"alice": managed},
+		installs: map[string]string{},
+	}
+	withMockCmd(t, rec.mock())
+	cfg := wpCronMigrateConfig()
+	cfg.Performance.WPCronFix.PHPBin = ""
+
+	for pass := 1; pass <= 2; pass++ {
+		if got := MigrateWPCronCrontabs(cfg); got != 0 {
+			t.Errorf("pass %d rewrote %d crontabs with no authoritative PHP mapping", pass, got)
+		}
+	}
+	if len(rec.installs) != 0 {
+		t.Errorf("managed PHP path was replaced by fallback detection: %v", rec.installs)
+	}
+}
+
+func TestMigrateWPCronCrontabsUpdatesScheduleWithoutPHPMapping(t *testing.T) {
+	spool := t.TempDir()
+	withWPCronSpoolDirs(t, spool)
+	docroot := "/home/alice/public_html"
+	managed := wpCronJobMarker + docroot + "\n" +
+		wpCronJobLine("alice", docroot, WPCronFixOptions{
+			IntervalMinutes: 5,
+			PHPBin:          "/opt/cpanel/ea-php74/root/usr/bin/php",
+		}) + "\n"
+	if err := os.WriteFile(filepath.Join(spool, "alice"), []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		readDir: os.ReadDir,
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return nil, os.ErrPermission
+			}
+			return os.ReadFile(name)
+		},
+	})
+	rec := &migrateCrontabMock{
+		crontabs: map[string]string{"alice": managed},
+		installs: map[string]string{},
+	}
+	withMockCmd(t, rec.mock())
+	cfg := wpCronMigrateConfig()
+	cfg.Performance.WPCronFix.PHPBin = ""
+
+	if got := MigrateWPCronCrontabs(cfg); got != 1 {
+		t.Fatalf("schedule migration = %d, want 1", got)
+	}
+	installed := rec.installs["alice"]
+	if !strings.Contains(installed, "'/opt/cpanel/ea-php74/root/usr/bin/php'") {
+		t.Fatalf("schedule migration replaced the managed PHP path:\n%s", installed)
+	}
+	wantJob := wpCronJobLine("alice", docroot, WPCronFixOptions{
+		IntervalMinutes: 15,
+		PHPBin:          "/opt/cpanel/ea-php74/root/usr/bin/php",
+	})
+	if !strings.Contains(installed, wantJob) {
+		t.Fatalf("schedule migration did not install the configured interval:\n%s", installed)
+	}
+	if got := MigrateWPCronCrontabs(cfg); got != 0 {
+		t.Errorf("second schedule migration = %d, want 0", got)
+	}
+}
+
+func TestMigrateWPCronCrontabsUsesVhostPHPOnce(t *testing.T) {
+	spool := t.TempDir()
+	withWPCronSpoolDirs(t, spool)
+	docroot := "/home/alice/public_html"
+	managed := wpCronJobMarker + docroot + "\n" +
+		wpCronJobLine("alice", docroot, WPCronFixOptions{
+			IntervalMinutes: 15,
+			PHPBin:          "/usr/local/bin/php",
+		}) + "\n"
+	if err := os.WriteFile(filepath.Join(spool, "alice"), []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	userdata := "example.com: alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74\n"
+	withMockOS(t, &mockOS{
+		readDir: os.ReadDir,
+		readFile: func(name string) ([]byte, error) {
+			if name == userdataDomainsPath {
+				return []byte(userdata), nil
+			}
+			return os.ReadFile(name)
+		},
+	})
+	rec := &migrateCrontabMock{
+		crontabs: map[string]string{"alice": managed},
+		installs: map[string]string{},
+	}
+	withMockCmd(t, rec.mock())
+	cfg := wpCronMigrateConfig()
+	cfg.Performance.WPCronFix.PHPBin = ""
+
+	if got := MigrateWPCronCrontabs(cfg); got != 1 {
+		t.Fatalf("first migration pass = %d, want 1", got)
+	}
+	if got := rec.installs["alice"]; !strings.Contains(got, "'/opt/cpanel/ea-php74/root/usr/bin/php'") {
+		t.Fatalf("migration did not install the vhost PHP path:\n%s", got)
+	}
+	if got := MigrateWPCronCrontabs(cfg); got != 0 {
+		t.Errorf("second migration pass = %d, want 0", got)
 	}
 }

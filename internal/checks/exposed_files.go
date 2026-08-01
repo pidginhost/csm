@@ -630,7 +630,7 @@ type vhost struct {
 	// to a real request on the public IP, so a loopback probe confirms nothing.
 	ip string
 	// phpVersion is the vhost's MultiPHP selection ("ea-php83", "alt-php81")
-	// from the trailing column, empty when the row omits it. Callers that run
+	// from the PHP-version column, empty when the row omits it. Callers that run
 	// code against a docroot need this: the system default interpreter is not
 	// necessarily the one the site is pinned to.
 	phpVersion string

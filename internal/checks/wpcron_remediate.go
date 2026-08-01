@@ -23,8 +23,8 @@ type WPCronFixOptions struct {
 	// IntervalMinutes is how often the installed system cron runs wp-cron.php.
 	// Clamped to [1,60]; a non-positive value falls back to the 15-minute default.
 	IntervalMinutes int
-	// PHPBin is the interpreter the cron line invokes. Empty means "detect":
-	// LookPath("php") first, then the cPanel default /usr/local/bin/php.
+	// PHPBin is the interpreter the cron line invokes. Empty uses an unambiguous
+	// cPanel vhost version, then LookPath("php"), then /usr/local/bin/php.
 	PHPBin string
 }
 
@@ -283,20 +283,26 @@ func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, erro
 	if !safeWPCronDocroot(docroot) {
 		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron docroot %q", docroot)
 	}
-	// Resolve here, not in the line builder, so the validation below covers
-	// whatever interpreter actually reaches the crontab.
-	opts.PHPBin = wpCronPHPBin(docroot, opts)
-	if !safeCronCommandString(opts.PHPBin) {
-		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron php binary %q", opts.PHPBin)
-	}
-
 	lock := wpCronCrontabLock(owner)
 	lock.Lock()
 	defer lock.Unlock()
 
+	// Resolve under the account lock so a caller that waited for another
+	// crontab edit cannot install a PHP mapping captured before that edit.
+	var authoritativePHPBin bool
+	opts.PHPBin, authoritativePHPBin = resolveWPCronPHPBin(owner, docroot, opts)
+	if !safeCronCommandString(opts.PHPBin) {
+		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron php binary %q", opts.PHPBin)
+	}
+
 	existing := ""
 	if out, err := cmdExec.RunAllowNonZero("crontab", "-u", owner, "-l"); err == nil {
 		existing = string(out)
+	}
+	if !authoritativePHPBin {
+		if existingPHPBin := currentManagedWPCronPHPBin(existing, owner, docroot); existingPHPBin != "" {
+			opts.PHPBin = existingPHPBin
+		}
 	}
 
 	want := wpCronJobLine(owner, docroot, opts)
@@ -456,7 +462,7 @@ func normalizeCrontabLineEndings(data []byte) []byte {
 // lives in the account home because /tmp is symlink-attackable.
 func wpCronJobLine(owner, docroot string, opts WPCronFixOptions) string {
 	interval := clampInterval(opts.IntervalMinutes)
-	php := wpCronPHPBin(docroot, opts)
+	php := wpCronPHPBin(owner, docroot, opts)
 	return fmt.Sprintf(`%s * * * * cd %s && flock -n "$HOME/.csm-wpcron-%08x.lock" %s -d max_execution_time=300 wp-cron.php >/dev/null 2>&1`,
 		wpCronMinuteField(wpCronStaggerOffset(owner, docroot, interval), interval),
 		shellQuote(docroot), wpCronLockID(docroot), shellQuote(php))
@@ -534,6 +540,28 @@ func wpCronUpgradeManagedLine(existing, docroot, want string, buf *bytes.Buffer)
 		return true
 	}
 	return false
+}
+
+func currentManagedWPCronPHPBin(existing, owner, docroot string) string {
+	lines := strings.Split(existing, "\n")
+	marker := wpCronJobMarker + docroot
+	for i, line := range lines {
+		if strings.TrimSpace(line) != marker || i+1 >= len(lines) {
+			continue
+		}
+		job := strings.TrimSpace(lines[i+1])
+		managedDocroot, ok := csmManagedWPCronJob(job, owner)
+		if !ok || managedDocroot != docroot {
+			return ""
+		}
+		match := csmManagedWPCronJobRe.FindStringSubmatch(job)
+		phpBin, ok := unquoteShellSingle(match[4])
+		if !ok {
+			return ""
+		}
+		return phpBin
+	}
+	return ""
 }
 
 func writeCrontabLines(buf *bytes.Buffer, lines []string) {

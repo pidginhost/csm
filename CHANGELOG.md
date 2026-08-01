@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The WP-Cron system cron now runs each site under the PHP version that site is set to use, instead of the server default. Sites pinned to an older PHP were failing every run.
+- The WP-Cron system cron now uses a site's cPanel PHP version when the domain map provides an unambiguous version, instead of always using the server default. Existing managed jobs keep their interpreter if the map is unavailable.
 
 ## [3.26.2] - 2026-07-25
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // userdataFS serves only /etc/userdatadomains; every other read is a miss.
@@ -29,6 +30,64 @@ func withLookPath(t *testing.T, path string) {
 	t.Cleanup(func() { SetCmdRunner(old) })
 }
 
+func TestParseVhostPHPVersionUsesOnlyVersionColumn(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		want   string
+	}{
+		{
+			name:   "fixed PHP-version column",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php83", "=="),
+			want:   "ea-php83",
+		},
+		{
+			name:   "fixed column with trailing empties",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==alt-php81====", "=="),
+			want:   "alt-php81",
+		},
+		{
+			name:   "short legacy row with version-shaped final field",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====ea-php74", "=="),
+		},
+		{
+			name:   "version-shaped non-version column",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==ea-php74==192.0.2.10:443====0==", "=="),
+		},
+		{
+			name:   "version-shaped field after empty version column",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0====ea-php74", "=="),
+		},
+		{
+			name:   "nonempty field after version column",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74==unexpected", "=="),
+		},
+		{
+			name:   "delimiter in attacker-adjacent docroot",
+			fields: strings.Split("alice==root==main==example.com==/home/alice/public_html==one==two==three==four==ea-php74==192.0.2.10:80==192.0.2.10:443====0==ea-php83", "=="),
+		},
+		{
+			name:   "version-shaped domain and docroot",
+			fields: strings.Split("alice==root==main==ea-php82==/home/alice/ea-php83==192.0.2.10:80==192.0.2.10:443====0==", "=="),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseVhostPHPVersion(tt.fields); got != tt.want {
+				t.Errorf("parseVhostPHPVersion() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPHPBinForVersionRejectsUnsupportedTokenWidths(t *testing.T) {
+	for _, version := range []string{"ea-php8", "ea-php810", "alt-php8", "alt-php810"} {
+		if got := phpBinForVersion(version); got != "" {
+			t.Errorf("phpBinForVersion(%q) = %q, want empty", version, got)
+		}
+	}
+}
+
 // The managed WP-Cron line used to hardcode the system-default interpreter, so
 // a docroot pinned to an older MultiPHP version ran wp-cron.php under the wrong
 // PHP and fatal-errored every interval. The vhost's own version must win.
@@ -39,14 +98,14 @@ func TestResolveDocrootPHPBinUsesVhostVersion(t *testing.T) {
 		"alt.example.org: carol==root==main==alt.example.org==/home/carol/public_html==192.0.2.12:80==192.0.2.12:443====0==alt-php81",
 	}, "\n")))
 
-	cases := []struct{ docroot, want string }{
-		{"/home/alice/public_html", "/opt/cpanel/ea-php74/root/usr/bin/php"},
-		{"/home/bob/public_html", "/opt/cpanel/ea-php83/root/usr/bin/php"},
-		{"/home/carol/public_html", "/opt/alt/php81/usr/bin/php"},
-		{"/home/alice/public_html/", "/opt/cpanel/ea-php74/root/usr/bin/php"},
+	cases := []struct{ owner, docroot, want string }{
+		{"alice", "/home/alice/public_html", "/opt/cpanel/ea-php74/root/usr/bin/php"},
+		{"bob", "/home/bob/public_html", "/opt/cpanel/ea-php83/root/usr/bin/php"},
+		{"carol", "/home/carol/public_html", "/opt/alt/php81/usr/bin/php"},
+		{"alice", "/home/alice/public_html/", "/opt/cpanel/ea-php74/root/usr/bin/php"},
 	}
 	for _, c := range cases {
-		if got := resolveDocrootPHPBin(c.docroot); got != c.want {
+		if got := resolveDocrootPHPBin(c.owner, c.docroot); got != c.want {
 			t.Errorf("resolveDocrootPHPBin(%q) = %q, want %q", c.docroot, got, c.want)
 		}
 	}
@@ -58,8 +117,51 @@ func TestResolveDocrootPHPBinUnknownDocrootReturnsEmpty(t *testing.T) {
 	withMockOS(t, userdataFS(
 		"known.example.com: alice==root==main==known.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php83\n"))
 
-	if got := resolveDocrootPHPBin("/home/mallory/public_html"); got != "" {
+	if got := resolveDocrootPHPBin("mallory", "/home/mallory/public_html"); got != "" {
 		t.Errorf("unknown docroot resolved to %q, want empty", got)
+	}
+}
+
+func TestResolveDocrootPHPBinRejectsConflictingVhostVersions(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"one.example.com: alice==root==main==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"two.example.com: alice==root==addon==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php83",
+	}, "\n")))
+
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html"); got != "" {
+		t.Errorf("conflicting vhost versions resolved to %q, want empty", got)
+	}
+}
+
+func TestResolveDocrootPHPBinRejectsPartiallyUnusableVhostVersions(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"one.example.com: alice==root==main==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"alias.example.com: alice==root==addon==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==inherit",
+	}, "\n")))
+
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html"); got != "" {
+		t.Errorf("partially unusable vhost versions resolved to %q, want empty", got)
+	}
+}
+
+func TestResolveDocrootPHPBinAcceptsMatchingDuplicateVersions(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"one.example.com: alice==root==main==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"alias.example.com: alice==root==addon==one.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+	}, "\n")))
+
+	want := "/opt/cpanel/ea-php74/root/usr/bin/php"
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html"); got != want {
+		t.Errorf("matching vhost versions resolved to %q, want %q", got, want)
+	}
+}
+
+func TestResolveDocrootPHPBinRequiresMatchingOwner(t *testing.T) {
+	withMockOS(t, userdataFS(
+		"alias.example.com: bob==root==addon==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74\n"))
+
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html"); got != "" {
+		t.Errorf("different account's vhost resolved to %q, want empty", got)
 	}
 }
 
@@ -72,16 +174,20 @@ func TestResolveDocrootPHPBinRejectsMalformedVersions(t *testing.T) {
 		"inherit.example.net: bob==root==main==inherit.example.net==/home/bob/public_html==192.0.2.11:80==192.0.2.11:443====0==inherit",
 		"evil.example.org: carol==root==main==evil.example.org==/home/carol/public_html==192.0.2.12:80==192.0.2.12:443====0==ea-php83; rm -rf /",
 		"trav.example.io: dave==root==main==trav.example.io==/home/dave/public_html==192.0.2.13:80==192.0.2.13:443====0==../../bin/sh",
+		"short.example.dev: erin==root==main==short.example.dev==/home/erin/public_html==192.0.2.14:80==192.0.2.14:443====0==ea-php8",
+		"long.example.dev: frank==root==main==long.example.dev==/home/frank/public_html==192.0.2.15:80==192.0.2.15:443====0==alt-php810",
 	}, "\n")))
 
-	for _, dr := range []string{
-		"/home/alice/public_html",
-		"/home/bob/public_html",
-		"/home/carol/public_html",
-		"/home/dave/public_html",
+	for _, account := range []struct{ owner, docroot string }{
+		{"alice", "/home/alice/public_html"},
+		{"bob", "/home/bob/public_html"},
+		{"carol", "/home/carol/public_html"},
+		{"dave", "/home/dave/public_html"},
+		{"erin", "/home/erin/public_html"},
+		{"frank", "/home/frank/public_html"},
 	} {
-		if got := resolveDocrootPHPBin(dr); got != "" {
-			t.Errorf("resolveDocrootPHPBin(%q) = %q, want empty for malformed version", dr, got)
+		if got := resolveDocrootPHPBin(account.owner, account.docroot); got != "" {
+			t.Errorf("resolveDocrootPHPBin(%q) = %q, want empty for malformed version", account.docroot, got)
 		}
 	}
 }
@@ -91,17 +197,27 @@ func TestResolveDocrootPHPBinRejectsMalformedVersions(t *testing.T) {
 // sensitive-file change on the next scan.
 func TestResolveDocrootPHPBinOutputIsRecognizedAsManaged(t *testing.T) {
 	withMockOS(t, userdataFS(strings.Join([]string{
-		"a.example.com: alice==root==main==a.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
-		"b.example.com: bob==root==main==b.example.com==/home/bob/public_html==192.0.2.11:80==192.0.2.11:443====0==alt-php81",
+		"a.example.com: alice==root==main==a.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php56",
+		"b.example.com: bob==root==main==b.example.com==/home/bob/public_html==192.0.2.11:80==192.0.2.11:443====0==ea-php85",
+		"c.example.com: carol==root==main==c.example.com==/home/carol/public_html==192.0.2.12:80==192.0.2.12:443====0==alt-php81",
 	}, "\n")))
 
-	for _, dr := range []string{"/home/alice/public_html", "/home/bob/public_html"} {
-		bin := resolveDocrootPHPBin(dr)
+	for _, account := range []struct{ owner, docroot string }{
+		{"alice", "/home/alice/public_html"},
+		{"bob", "/home/bob/public_html"},
+		{"carol", "/home/carol/public_html"},
+	} {
+		bin := resolveDocrootPHPBin(account.owner, account.docroot)
 		if bin == "" {
-			t.Fatalf("resolveDocrootPHPBin(%q) returned empty", dr)
+			t.Fatalf("resolveDocrootPHPBin(%q) returned empty", account.docroot)
 		}
 		if !safeManagedWPCronPHPBin(bin) {
 			t.Errorf("resolved %q is not accepted by safeManagedWPCronPHPBin", bin)
+		}
+		job := wpCronJobMarker + account.docroot + "\n" +
+			wpCronJobLine(account.owner, account.docroot, WPCronFixOptions{PHPBin: bin}) + "\n"
+		if !crontabIsExclusivelyCSMWPCron(account.owner, []byte(job)) {
+			t.Errorf("resolved %q produced a cron line not recognized as CSM-managed", bin)
 		}
 	}
 }
@@ -163,6 +279,48 @@ func TestInstallUserWPCronWritesPerVhostPHP(t *testing.T) {
 	}
 	if strings.Contains(rec.lastInstalled, "'/usr/local/bin/php'") {
 		t.Errorf("installed crontab still pins the system default PHP:\n%s", rec.lastInstalled)
+	}
+}
+
+func TestInstallUserWPCronResolvesPHPInsideAccountLock(t *testing.T) {
+	readStarted := make(chan struct{}, 1)
+	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
+		if name != userdataDomainsPath {
+			return nil, os.ErrNotExist
+		}
+		readStarted <- struct{}{}
+		return []byte("old.example.com: alice==root==main==old.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74\n"), nil
+	}})
+	rec := &crontabRecorder{}
+	withMockCmd(t, rec.mock())
+
+	lock := wpCronCrontabLock("alice")
+	lock.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := installUserWPCron("alice", "/home/alice/public_html",
+			WPCronFixOptions{IntervalMinutes: 15})
+		done <- err
+	}()
+
+	resolvedBeforeLock := false
+	select {
+	case <-readStarted:
+		resolvedBeforeLock = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	lock.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("installUserWPCron: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("installUserWPCron did not finish after releasing account lock")
+	}
+	if resolvedBeforeLock {
+		t.Fatal("PHP mapping was resolved before acquiring the account lock")
 	}
 }
 

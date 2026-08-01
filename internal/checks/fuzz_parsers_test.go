@@ -555,3 +555,31 @@ func FuzzStripPHPBlocks(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseVhostPHPVersion(f *testing.F) {
+	f.Add("alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php83")
+	f.Add("alice==root==main==ea-php82==/home/alice/ea-php83==192.0.2.10:80==192.0.2.10:443====0==")
+	f.Add("alice==root==main==example.com==/home/alice/public_html==one==two==three==four==ea-php74==192.0.2.10:80==192.0.2.10:443====0==ea-php83")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, row string) {
+		fields := strings.Split(row, "==")
+		got := parseVhostPHPVersion(fields)
+		if got == "" {
+			return
+		}
+		if len(fields) <= userdataPHPVersionField || got != strings.TrimSpace(fields[userdataPHPVersionField]) {
+			t.Fatalf("parseVhostPHPVersion returned %q outside the fixed version field", got)
+		}
+		for _, trailing := range fields[userdataPHPVersionField+1:] {
+			if strings.TrimSpace(trailing) != "" {
+				t.Fatalf("parseVhostPHPVersion returned %q with nonempty trailing fields", got)
+			}
+		}
+		if !userdataPHPVersionRe.MatchString(got) {
+			t.Fatalf("parseVhostPHPVersion returned malformed token %q", got)
+		}
+		if bin := phpBinForVersion(got); !safeManagedWPCronPHPBin(bin) {
+			t.Fatalf("parseVhostPHPVersion returned %q, which maps to unsafe path %q", got, bin)
+		}
+	})
+}

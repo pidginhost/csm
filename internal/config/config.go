@@ -1080,7 +1080,7 @@ type Config struct {
 		// cron that runs wp-cron.php on this interval.
 		WPCronFix struct {
 			IntervalMinutes int    `yaml:"interval_minutes"` // system cron frequency; default 15, clamped to [1,60]
-			PHPBin          string `yaml:"php_bin"`          // php interpreter for the cron line; empty => detect
+			PHPBin          string `yaml:"php_bin"`          // cron interpreter override; empty => per-vhost, then detect
 		} `yaml:"wp_cron_fix"`
 	} `yaml:"performance" hotreload:"restart"`
 
