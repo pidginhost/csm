@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
 
+- A WordPress install in a subdirectory of a document root now runs its system cron under the PHP version of the site that serves it, instead of the server default.
 - The WP-Cron system cron now uses a site's cPanel PHP version when the domain map provides an unambiguous version, instead of always using the server default. Existing managed jobs keep their interpreter if the map is unavailable.
 
 ## [3.26.2] - 2026-07-25

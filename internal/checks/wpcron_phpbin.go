@@ -67,21 +67,49 @@ func resolveDocrootPHPBin(owner, docroot string) string {
 	}
 	want := filepath.Clean(docroot)
 	vhosts, _ := parseUserdataDomainRootsChecked(string(content))
-	resolved := ""
+
+	// Match the most specific docroot this account owns that serves the target.
+	// A WordPress install in a subdirectory is not its own vhost, so the map has
+	// no entry for it, but cPanel serves it under the enclosing vhost and hence
+	// that vhost's PHP version. An exact entry always wins, because a subdomain
+	// docroot can be nested inside the main one.
+	version, bestLen := "", -1
 	for _, vh := range vhosts {
-		if vh.user != owner || vh.docroot != want {
+		if vh.user != owner || !wpCronDocrootCovers(vh.docroot, want) {
 			continue
 		}
-		bin := phpBinForVersion(vh.phpVersion)
-		if bin == "" || !safeManagedWPCronPHPBin(bin) {
-			return ""
+		switch {
+		case len(vh.docroot) > bestLen:
+			version, bestLen = vh.phpVersion, len(vh.docroot)
+		case len(vh.docroot) == bestLen && vh.phpVersion != version:
+			// Two vhosts claim the same docroot with different versions;
+			// picking either would pin the wrong interpreter.
+			version = ""
 		}
-		if resolved != "" && resolved != bin {
-			return ""
-		}
-		resolved = bin
 	}
-	return resolved
+	if version == "" {
+		return ""
+	}
+	bin := phpBinForVersion(version)
+	if bin == "" || !safeManagedWPCronPHPBin(bin) {
+		return ""
+	}
+	return bin
+}
+
+// wpCronDocrootCovers reports whether vhostRoot serves docroot: either the same
+// path or an ancestor of it. Comparison is path-segment aware so
+// /home/a/public_html never covers /home/a/public_html_old, and a root shallower
+// than /home/<user>/<dir> is rejected so inheritance cannot cross accounts.
+func wpCronDocrootCovers(vhostRoot, docroot string) bool {
+	vhostRoot = filepath.Clean(vhostRoot)
+	if vhostRoot == docroot {
+		return true
+	}
+	if strings.Count(strings.TrimSuffix(vhostRoot, "/"), "/") < 3 {
+		return false
+	}
+	return strings.HasPrefix(docroot, vhostRoot+"/")
 }
 
 // resolveWPCronPHPBin distinguishes an operator override or unambiguous vhost

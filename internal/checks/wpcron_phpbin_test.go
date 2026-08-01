@@ -335,3 +335,62 @@ func TestWPCronJobLineFallsBackWhenVhostUnknown(t *testing.T) {
 		t.Errorf("expected detected PHP fallback, got: %s", line)
 	}
 }
+
+// A WordPress install in a subdirectory of a docroot is not its own vhost, so
+// the domain map has no entry for it -- but cPanel still serves it under the
+// parent vhost, and therefore under the parent's PHP version. Falling back to
+// the system default there reintroduced the exact breakage this fix exists to
+// prevent: on a live host 19 managed jobs ran under 8.4 while their parent
+// vhost was pinned as low as ea-php56.
+func TestResolveDocrootPHPBinInheritsFromParentVhost(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"old.example.com: alice==root==main==old.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"new.example.net: bob==root==main==new.example.net==/home/bob/public_html==192.0.2.11:80==192.0.2.11:443====0==ea-php83",
+	}, "\n")))
+
+	cases := []struct{ owner, docroot, want string }{
+		{"alice", "/home/alice/public_html/blog", "/opt/cpanel/ea-php74/root/usr/bin/php"},
+		{"alice", "/home/alice/public_html/old/wordpress", "/opt/cpanel/ea-php74/root/usr/bin/php"},
+		{"bob", "/home/bob/public_html/shop", "/opt/cpanel/ea-php83/root/usr/bin/php"},
+	}
+	for _, c := range cases {
+		if got := resolveDocrootPHPBin(c.owner, c.docroot); got != c.want {
+			t.Errorf("resolveDocrootPHPBin(%q, %q) = %q, want %q", c.owner, c.docroot, got, c.want)
+		}
+	}
+}
+
+// An exact entry must always beat an ancestor, or a subdomain docroot nested
+// under the main one would silently run the parent's PHP version.
+func TestResolveDocrootPHPBinPrefersExactOverAncestor(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"main.example.com: alice==root==main==main.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"sub.example.com: alice==root==sub==main.example.com==/home/alice/public_html/sub==192.0.2.10:80==192.0.2.10:443====0==ea-php83",
+	}, "\n")))
+
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html/sub"); got != "/opt/cpanel/ea-php83/root/usr/bin/php" {
+		t.Errorf("exact entry did not win over ancestor: got %q", got)
+	}
+	// deeper path under the subdomain inherits the subdomain, not the main site
+	if got := resolveDocrootPHPBin("alice", "/home/alice/public_html/sub/blog"); got != "/opt/cpanel/ea-php83/root/usr/bin/php" {
+		t.Errorf("nearest ancestor did not win: got %q", got)
+	}
+}
+
+// Inheritance must never cross an account boundary or climb out of the account
+// home; a docroot belonging to another user says nothing about this one.
+func TestResolveDocrootPHPBinDoesNotInheritAcrossAccounts(t *testing.T) {
+	withMockOS(t, userdataFS(strings.Join([]string{
+		"a.example.com: alice==root==main==a.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+		"home.example.com: root==root==main==home.example.com==/home==192.0.2.12:80==192.0.2.12:443====0==ea-php83",
+	}, "\n")))
+
+	// mallory has no vhost of her own; /home must not be treated as an ancestor
+	if got := resolveDocrootPHPBin("mallory", "/home/mallory/public_html/blog"); got != "" {
+		t.Errorf("inherited across accounts or from /home: got %q", got)
+	}
+	// owner mismatch against alice's docroot must not resolve either
+	if got := resolveDocrootPHPBin("mallory", "/home/alice/public_html/blog"); got != "" {
+		t.Errorf("inherited another account's version: got %q", got)
+	}
+}
