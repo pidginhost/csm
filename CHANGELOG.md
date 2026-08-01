@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
+
 ### Fixed
 
 - The WP-Cron system cron now uses a site's cPanel PHP version when the domain map provides an unambiguous version, instead of always using the server default. Existing managed jobs keep their interpreter if the map is unavailable.
