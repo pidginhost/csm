@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -24,12 +25,6 @@ func TestEmbeddedModSecBlocksWP2ShellUserAgent(t *testing.T) {
 
 func TestEmbeddedModSecRateLimitsRESTBatchEndpoint(t *testing.T) {
 	conf := string(embeddedModSec)
-	for _, want := range []string{"ip.batch_count", "@gt 20", "expirevar:ip.batch_count=60", "t:none,t:urlDecodeUni"} {
-		if !strings.Contains(conf, want) {
-			t.Errorf("modsec ruleset missing REST batch rate-limit element %q", want)
-		}
-	}
-
 	const marker = "# --- Rate-limit WordPress REST batch endpoint"
 	batchStart := strings.Index(conf, marker)
 	if batchStart < 0 {
@@ -53,6 +48,18 @@ func TestEmbeddedModSecRateLimitsRESTBatchEndpoint(t *testing.T) {
 		"    \"setvar:ip.batch_count=+1,expirevar:ip.batch_count=60\""
 	if !strings.Contains(batchBlock, incrementGuard) {
 		t.Error("batch counter update is not guarded by the final POST chain rule")
+	}
+	const limitGuard = "SecRule IP:BATCH_COUNT \"@gt 20\" \\\n" +
+		"    \"id:900124,phase:1,deny,status:429,log,msg:'CSM: REST batch endpoint rate limit',\\\n" +
+		"    chain\""
+	if !strings.Contains(batchBlock, limitGuard) {
+		t.Error("batch deny rule does not enforce the expected counter threshold and action")
+	}
+	if got := strings.Count(batchBlock, "id:900123"); got != 1 {
+		t.Errorf("found %d batch counter rule IDs, want 1", got)
+	}
+	if got := strings.Count(batchBlock, "id:900124"); got != 1 {
+		t.Errorf("found %d batch deny rule IDs, want 1", got)
 	}
 	patterns := regexp.MustCompile(`SecRule REQUEST_URI "@rx ([^"]+)"`).FindAllStringSubmatch(batchBlock, -1)
 	if len(patterns) != 2 {
@@ -122,23 +129,56 @@ func TestModSecEmbeddedAndInstallerCopiesAreIdentical(t *testing.T) {
 	}
 }
 
+func TestModSecSyncedCopyPreservesEmbeddedProtections(t *testing.T) {
+	conf := string(embeddedModSec)
+	for _, want := range []string{
+		"SecRule REQUEST_URI \"/xmlrpc\\.php$\" \\\n" +
+			"    \"id:900006,phase:1,pass,nolog,\\\n" +
+			"    setvar:ip.xmlrpc_count=+1,\\\n" +
+			"    expirevar:ip.xmlrpc_count=600\"",
+		"SecRule IP:XMLRPC_COUNT \"@gt 10\" \\\n" +
+			"    \"id:900007,phase:1,deny,status:429,log,msg:'CSM: XML-RPC rate limit exceeded',\\\n" +
+			"    chain\"",
+		`id:900120,phase:1,deny,status:403,log,msg:'CSM: Blocked wp-coder preview endpoint'`,
+		`id:900121,phase:1,deny,status:403,log,msg:'CSM: Blocked wp-coder attributes endpoint'`,
+	} {
+		if got := strings.Count(conf, want); got != 1 {
+			t.Errorf("found %d copies of synced protection %q, want 1", got, want)
+		}
+	}
+}
+
+func TestEmbeddedModSecRuleIDsAreUniqueAndAvoidOperatorRange(t *testing.T) {
+	ids := regexp.MustCompile(`\bid:([0-9]+)\b`).FindAllStringSubmatch(string(embeddedModSec), -1)
+	if len(ids) == 0 {
+		t.Fatal("no ModSecurity rule IDs found")
+	}
+	seen := make(map[int]bool, len(ids))
+	for _, match := range ids {
+		id, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("parse rule ID %q: %v", match[1], err)
+		}
+		if seen[id] {
+			t.Errorf("ModSecurity rule ID %d is duplicated", id)
+		}
+		seen[id] = true
+		if id >= 900200 && id <= 900205 {
+			t.Errorf("ModSecurity rule ID %d collides with the operator-managed range", id)
+		}
+	}
+}
+
 func TestModSecBlocksWP2ShellFingerprintParameter(t *testing.T) {
 	conf := string(embeddedModSec)
-	if !strings.Contains(conf, "id:900125") {
-		t.Fatal("wp2shell fingerprint rule missing")
+	const rule = "SecRule ARGS_GET_NAMES \"@streq _w2s\" \\\n" +
+		"    \"id:900125,phase:1,deny,status:403,log,t:none,t:urlDecodeUni,t:lowercase,msg:'CSM: Blocked wp2shell tool fingerprint'\""
+	if got := strings.Count(conf, rule); got != 1 {
+		t.Fatalf("found %d normalized wp2shell fingerprint rules, want 1", got)
 	}
 	// The User-Agent rule and the batch rate limit were both bypassed in the
 	// 2026-08-01 wave (spoofed browser UAs, requests paced under the window).
 	// This parameter was on every request of both waves.
-	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx (\[\?&\]_w2s=)"`)
-	m := re.FindStringSubmatch(conf)
-	if m == nil {
-		t.Fatal("wp2shell fingerprint rule does not match on the _w2s parameter")
-	}
-	routeRE, err := regexp.Compile(m[1])
-	if err != nil {
-		t.Fatalf("compile fingerprint regex: %v", err)
-	}
 	for _, tc := range []struct {
 		uri   string
 		match bool
@@ -146,13 +186,42 @@ func TestModSecBlocksWP2ShellFingerprintParameter(t *testing.T) {
 		{"/?rest_route=/batch/v1&_w2s=bf49e2b6", true},
 		{"/wp-login.php?_w2s=f91570af", true},
 		{"/?a=1&_w2s=0673563c", true},
+		{"/?_W2S=bf49e2b6", true},
+		{"/?%5fw%32s=bf49e2b6", true},
+		{"/?%255fw2s=bf49e2b6", true},
+		{"/?_w2s=first&_w2s=second", true},
 		{"/?rest_route=/batch/v1", false},
 		{"/normal/page/", false},
-		// must not fire on an unrelated parameter that merely ends in w2s
 		{"/?myw2s=1", false},
+		{"/?_w2s_token=1", false},
+		{"/?next=%2Ftarget%3F_w2s%3Dbf49e2b6", false},
+		{"/?payload=prefix_w2s%3Dbf49e2b6", false},
 	} {
-		if got := routeRE.MatchString(tc.uri); got != tc.match {
+		if got := queryHasModSecArgName(t, tc.uri, "_w2s"); got != tc.match {
 			t.Errorf("fingerprint match for %q = %v, want %v", tc.uri, got, tc.match)
 		}
 	}
+}
+
+func queryHasModSecArgName(t *testing.T, uri, want string) bool {
+	t.Helper()
+	parsed, err := url.ParseRequestURI(uri)
+	if err != nil {
+		t.Fatalf("parse request URI %q: %v", uri, err)
+	}
+	for _, field := range strings.Split(parsed.RawQuery, "&") {
+		name, _, _ := strings.Cut(field, "=")
+		// ARGS_GET_NAMES provides the parser-decoded name. The rule's
+		// urlDecodeUni transformation normalizes one remaining encoded layer.
+		for range 2 {
+			name, err = url.QueryUnescape(name)
+			if err != nil {
+				return false
+			}
+		}
+		if strings.EqualFold(name, want) {
+			return true
+		}
+	}
+	return false
 }

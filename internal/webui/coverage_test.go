@@ -1340,10 +1340,20 @@ func TestExtractModSecDescriptionStructured(t *testing.T) {
 func TestExtractModSecDescriptionCSMRuleFallback(t *testing.T) {
 	// LiteSpeed log format drops the [msg] field. CSM custom rules
 	// should fall back to the static description map.
-	f := alert.Finding{Details: `Rule: 900009`}
-	got := extractModSecDescription(f)
-	if got == "" {
-		t.Error("csm rule description fallback should fire")
+	tests := map[string]string{
+		"900009": "Blocked GSocket User-Agent",
+		"900122": "Blocked wp2shell exploit tool User-Agent",
+		"900123": "REST batch request counter",
+		"900124": "REST batch endpoint rate limit",
+		"900125": "Blocked wp2shell tool fingerprint",
+	}
+	for rule, want := range tests {
+		t.Run(rule, func(t *testing.T) {
+			f := alert.Finding{Details: `Rule: ` + rule}
+			if got := extractModSecDescription(f); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
 	}
 }
 

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The wp2shell WAF fingerprint now inspects parsed query parameter names, so encoded or mixed-case variants are blocked without treating `_w2s` text inside another parameter value as an attack. LiteSpeed reports for the new wp2shell rules now retain useful descriptions in the UI.
 - The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
 

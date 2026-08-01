@@ -535,6 +535,10 @@ var csmRuleDescriptions = map[string]string{
 	"900116": "Blocked scanner probe",
 	"900120": "Blocked wp-coder preview endpoint",
 	"900121": "Blocked wp-coder attributes endpoint",
+	"900122": "Blocked wp2shell exploit tool User-Agent",
+	"900123": "REST batch request counter",
+	"900124": "REST batch endpoint rate limit",
+	"900125": "Blocked wp2shell tool fingerprint",
 	// Comodo WAF (CWAF) common rules. Rule IDs in the 21xxxx range are
 	// from the Comodo vendor ruleset (e.g. /etc/apache2/conf.d/
 	// modsec_vendor_configs/comodo_litespeed/), NOT from OWASP CRS.
