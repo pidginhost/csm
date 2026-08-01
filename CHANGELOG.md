@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, which had started spoofing browser user agents and pacing requests under the existing rate limit.
+- The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, including a percent-encoded form of it, which had started spoofing browser user agents and pacing requests under the existing rate limit.
 - Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
 
 ### Fixed

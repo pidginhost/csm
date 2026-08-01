@@ -225,3 +225,42 @@ func queryHasModSecArgName(t *testing.T, uri, want string) bool {
 	}
 	return false
 }
+
+// The parsed-name rule alone let a percent-encoded parameter through: on
+// LiteSpeed t:urlDecodeUni did not decode %5F before matching, verified against
+// a live server. The raw-query rule covers that without matching the same text
+// inside a parameter value.
+func TestModSecBlocksEncodedWP2ShellFingerprint(t *testing.T) {
+	conf := string(embeddedModSec)
+	if !strings.Contains(conf, "id:900126") {
+		t.Fatal("encoded wp2shell fingerprint rule missing")
+	}
+	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx (\(\?i\)\[\?&\]\(\?:_\|%5f\)w2s=)"`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatal("encoded fingerprint rule does not match the expected pattern")
+	}
+	routeRE, err := regexp.Compile(m[1])
+	if err != nil {
+		t.Fatalf("compile encoded fingerprint regex: %v", err)
+	}
+	for _, tc := range []struct {
+		uri   string
+		match bool
+	}{
+		{"/?%5Fw2s=abc", true},
+		{"/?%5fw2s=abc", true},
+		{"/?_w2s=abc", true},
+		{"/?a=1&_w2s=abc", true},
+		{"/?_W2S=abc", true},
+		// the same text inside a value is not a parameter of that name
+		{"/?q=_w2s=x", false},
+		{"/?q=%3F_w2s%3Dx", false},
+		{"/normal/page/", false},
+		{"/?myw2s=1", false},
+	} {
+		if got := routeRE.MatchString(tc.uri); got != tc.match {
+			t.Errorf("encoded fingerprint match for %q = %v, want %v", tc.uri, got, tc.match)
+		}
+	}
+}
