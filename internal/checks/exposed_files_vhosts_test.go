@@ -27,7 +27,7 @@ malformed-no-fields.example.com: onlyuser
 	}
 	want := []vhost{
 		{domain: "foodture.example.com", user: "alice", typ: "sub", docroot: "/home/alice/foodture.example.com", ip: "192.0.2.10"},
-		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: "/home/bob/public_html", ip: "192.0.2.11"},
+		{domain: "shop.example.net", user: "bob", typ: "addon", docroot: "/home/bob/public_html", ip: "192.0.2.11", phpVersion: "ea-php83"},
 		{domain: "example.org", user: "carol", typ: "main", docroot: "/home/carol/public_html", ip: "192.0.2.12"},
 	}
 	for i, w := range want {

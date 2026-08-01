@@ -366,7 +366,7 @@ performance:
   # can edit or remove that cron afterwards.
   wp_cron_fix:
     interval_minutes: 15      # system cron frequency; 1-60 (only bounds task latency)
-    php_bin: ""               # php interpreter for the cron line; empty = auto-detect
+    php_bin: ""               # override the cron interpreter; empty = use each vhost's own PHP version
 
 firewall:
   enabled: false              # enable to activate nftables-based firewall engine

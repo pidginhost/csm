@@ -72,9 +72,13 @@ Tune the WP-Cron remediation under **Settings -> Performance**:
   pass with nothing due is a wasted full bootstrap -- so 15 minutes is right
   for most sites. Lower it per host only when busy stores need tighter
   Action Scheduler latency.
-- `performance.wp_cron_fix.php_bin` (default empty = auto-detect): the PHP
-  interpreter for the cron line. CLI php is used instead of an HTTP request so
-  the job never ties up a web worker.
+- `performance.wp_cron_fix.php_bin` (default empty): overrides the PHP
+  interpreter for the cron line. Leave it empty and each site runs under the
+  PHP version its own vhost is set to, read from cPanel's domain map; a site
+  pinned to an older version would otherwise fatal-error under the server
+  default. Setting a value pins that one interpreter for every managed site, so
+  use it only on hosts where the domain map is not authoritative. CLI php is
+  used instead of an HTTP request so the job never ties up a web worker.
 
 To let the daemon apply this fix automatically on every WP-Cron finding, set
 `auto_response.fix_wp_cron: true` (default `false`; requires

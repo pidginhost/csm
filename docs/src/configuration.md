@@ -700,7 +700,7 @@ performance:
   wp_transient_critical_mb: 10          # WordPress transient data critical in MB (default: 10)
   wp_cron_fix:                          # tuning for the WP-Cron remediation (manual fix from the Web UI or auto_response.fix_wp_cron)
     interval_minutes: 15                # system cron frequency; default 15, clamped to [1, 60]
-    php_bin: ""                         # php interpreter for the cron line; empty = auto-detect
+    php_bin: ""                         # override the cron interpreter; empty = use each vhost's own PHP version
 
 # --- Cloudflare ---
 cloudflare:

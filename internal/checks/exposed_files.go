@@ -629,6 +629,11 @@ type vhost struct {
 	// 403 to loopback-originated requests even for files it serves (HTTP 200)
 	// to a real request on the public IP, so a loopback probe confirms nothing.
 	ip string
+	// phpVersion is the vhost's MultiPHP selection ("ea-php83", "alt-php81")
+	// from the trailing column, empty when the row omits it. Callers that run
+	// code against a docroot need this: the system default interpreter is not
+	// necessarily the one the site is pinned to.
+	phpVersion string
 }
 
 // parseUserdataDomains parses the /etc/userdatadomains map. Each line is
@@ -684,11 +689,12 @@ func parseUserdataDomainsForUse(content string, requireServingIP bool) ([]vhost,
 			complete = false
 		}
 		out = append(out, vhost{
-			domain:  domain,
-			user:    user,
-			typ:     strings.TrimSpace(fields[2]),
-			docroot: docroot,
-			ip:      servingIP,
+			domain:     domain,
+			user:       user,
+			typ:        strings.TrimSpace(fields[2]),
+			docroot:    docroot,
+			ip:         servingIP,
+			phpVersion: parseVhostPHPVersion(fields),
 		})
 	}
 	return out, complete

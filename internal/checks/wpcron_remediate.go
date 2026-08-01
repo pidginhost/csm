@@ -283,9 +283,9 @@ func installUserWPCron(owner, docroot string, opts WPCronFixOptions) (bool, erro
 	if !safeWPCronDocroot(docroot) {
 		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron docroot %q", docroot)
 	}
-	if opts.PHPBin == "" {
-		opts.PHPBin = detectPHPBin()
-	}
+	// Resolve here, not in the line builder, so the validation below covers
+	// whatever interpreter actually reaches the crontab.
+	opts.PHPBin = wpCronPHPBin(docroot, opts)
 	if !safeCronCommandString(opts.PHPBin) {
 		return false, fmt.Errorf("refusing crontab edit for unsafe WP-Cron php binary %q", opts.PHPBin)
 	}
@@ -456,10 +456,7 @@ func normalizeCrontabLineEndings(data []byte) []byte {
 // lives in the account home because /tmp is symlink-attackable.
 func wpCronJobLine(owner, docroot string, opts WPCronFixOptions) string {
 	interval := clampInterval(opts.IntervalMinutes)
-	php := opts.PHPBin
-	if php == "" {
-		php = detectPHPBin()
-	}
+	php := wpCronPHPBin(docroot, opts)
 	return fmt.Sprintf(`%s * * * * cd %s && flock -n "$HOME/.csm-wpcron-%08x.lock" %s -d max_execution_time=300 wp-cron.php >/dev/null 2>&1`,
 		wpCronMinuteField(wpCronStaggerOffset(owner, docroot, interval), interval),
 		shellQuote(docroot), wpCronLockID(docroot), shellQuote(php))
