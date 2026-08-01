@@ -51,6 +51,98 @@ func TestBlockchainInjectorDetectsHexEscapedVariant(t *testing.T) {
 	}
 }
 
+func TestBlockchainInjectorDetectsMixedIdentifierVariants(t *testing.T) {
+	sample := injectorSample(hexAtob, "Uint8Array", hexFunction)
+	if _, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; !ok {
+		t.Error("injector with mixed plain and hex-escaped identifiers not detected")
+	}
+}
+
+func TestBlockchainInjectorDetectsAliasedJavaScriptPrimitives(t *testing.T) {
+	sample := strings.Join([]string{
+		"<?php",
+		"if (is_admin()) { return; }",
+		"ob_start('visitor_filter');",
+		"const decode = atob;",
+		"const byteAt = Function.call.bind(String.prototype.charCodeAt);",
+		"const Bytes = Uint8Array;",
+		"const execute = Function;",
+		"const decoded = decode(payload);",
+		"const bytes = new Bytes(decoded.length);",
+		"bytes[0] = byteAt(decoded, 0);",
+		"execute(new TextDecoder().decode(bytes))();",
+	}, "\n")
+	if _, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; !ok {
+		t.Error("injector with aliased JavaScript primitives not detected")
+	}
+}
+
+func TestBlockchainInjectorDetectsUppercaseHexDigits(t *testing.T) {
+	sample := injectorSample(
+		`\x61\x74\x6F\x62`,
+		`\x55\x69\x6E\x74\x38\x41\x72\x72\x61\x79`,
+		`\x46\x75\x6E\x63\x74\x69\x6F\x6E`,
+	)
+	if _, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; !ok {
+		t.Error("hex-escaped injector with uppercase hex digits not detected")
+	}
+}
+
+func TestBlockchainInjectorSignalsAreOrderIndependent(t *testing.T) {
+	sample := strings.Join([]string{
+		"<?php",
+		"new Function",
+		"Uint8Array",
+		"charCodeAt",
+		"atob",
+		"IS_ADMIN ( )",
+		"OB_START (",
+	}, "\n")
+	if _, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; !ok {
+		t.Error("injector evidence was made order-dependent")
+	}
+}
+
+func TestBlockchainInjectorRequiresEverySignal(t *testing.T) {
+	full := injectorSample("atob", "Uint8Array", "new Function")
+	cases := map[string]string{
+		"output buffering": strings.ReplaceAll(full, "ob_start", "start_buffer"),
+		"admin guard":      strings.ReplaceAll(full, "is_admin", "current_user_can"),
+		"base64 decoder":   strings.ReplaceAll(full, "atob", "decode64"),
+		"byte access":      strings.ReplaceAll(full, "charCodeAt", "byteAt"),
+		"byte array":       strings.ReplaceAll(full, "Uint8Array", "Array"),
+		"execution sink":   strings.ReplaceAll(full, "new Function", "console.log"),
+	}
+	for missing, sample := range cases {
+		if m, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; ok {
+			t.Errorf("injector matched without %s: %+v", missing, m)
+		}
+	}
+}
+
+func TestBlockchainInjectorRejectsCaseInsensitiveJSLookalikes(t *testing.T) {
+	sample := injectorSample("ATOB", "UINT8ARRAY", "new FUNCTION")
+	sample = strings.ReplaceAll(sample, "charCodeAt", "CHARCODEAT")
+	if m, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; ok {
+		t.Errorf("case-insensitive JavaScript lookalikes matched: %+v", m)
+	}
+}
+
+func TestBlockchainInjectorRequiresWholeJavaScriptIdentifiers(t *testing.T) {
+	sample := strings.Join([]string{
+		"<?php",
+		"if (is_admin()) { return; }",
+		"ob_start('visitor_filter');",
+		"const datobValue = payload;",
+		"const mycharCodeAtHelper = datobValue;",
+		"const MyUint8ArrayFactory = mycharCodeAtHelper;",
+		"someFunction(MyUint8ArrayFactory);",
+	}, "\n")
+	if m, ok := scanRepoRules(t, []byte(sample))["js_injector_decode_exec"]; ok {
+		t.Errorf("JavaScript identifier substrings matched as a complete injector chain: %+v", m)
+	}
+}
+
 // Each of these carries part of the chain. A rule that fires on any of them
 // would bury the operator: buffering, decoding and self-hiding are all ordinary
 // on their own across a real plugin estate.
@@ -120,14 +212,106 @@ class WP_Security_Helper {
 `
 
 func TestAdminCloakerDetectsPlainVariant(t *testing.T) {
-	if _, ok := scanRepoRules(t, []byte(cloakerPlain))["wp_admin_list_cloak"]; !ok {
+	match, ok := scanRepoRules(t, []byte(cloakerPlain))["wp_admin_list_cloak"]
+	if !ok {
 		t.Error("plaintext rogue-admin cloaker not detected")
+	}
+	if match.Severity != "critical" || match.Category != "backdoor" {
+		t.Errorf("wp_admin_list_cloak metadata = %q/%q, want critical/backdoor", match.Severity, match.Category)
 	}
 }
 
 func TestAdminCloakerDetectsEscapedHookVariant(t *testing.T) {
 	if _, ok := scanRepoRules(t, []byte(cloakerEscaped))["wp_admin_list_cloak"]; !ok {
 		t.Error("escaped-hook rogue-admin cloaker not detected")
+	}
+}
+
+func TestAdminCloakerAcceptsCaseInsensitivePHPCalls(t *testing.T) {
+	sample := `<?php
+PLUGIN_BASENAME(__file__)
+GET_CURRENT_USER_ID
+ADD_FILTER("\x70\x72\x65\x5f", "callback");`
+	if _, ok := scanRepoRules(t, []byte(sample))["wp_admin_list_cloak"]; !ok {
+		t.Error("escaped-hook cloak with uppercase PHP calls not detected")
+	}
+}
+
+func TestAdminCloakerPlainBranchIsOrderIndependent(t *testing.T) {
+	hooks := []string{
+		"pre_user_query",
+		"pre_count_users",
+		"views_users",
+		"users_list_table_query_args",
+		"wsh_tracked_admin_ids",
+	}
+	for i := 0; i < len(hooks); i++ {
+		for j := i + 1; j < len(hooks); j++ {
+			orders := [][]string{
+				{"all_plugins", hooks[i], hooks[j]},
+				{hooks[i], "all_plugins", hooks[j]},
+				{hooks[i], hooks[j], "all_plugins"},
+			}
+			for position, evidence := range orders {
+				sample := "<?php\nplugin_basename(__FILE__)\n" + strings.Join(evidence, "\n")
+				if _, ok := scanRepoRules(t, []byte(sample))["wp_admin_list_cloak"]; !ok {
+					t.Errorf("plaintext cloak not detected for %s + %s at plugin-hook position %d", hooks[i], hooks[j], position)
+				}
+			}
+		}
+	}
+}
+
+func TestAdminCloakerRequiresTwoDistinctPlaintextSignals(t *testing.T) {
+	hooks := []string{
+		"pre_user_query",
+		"pre_count_users",
+		"views_users",
+		"users_list_table_query_args",
+		"wsh_tracked_admin_ids",
+	}
+	for _, hook := range hooks {
+		sample := strings.Join([]string{
+			"<?php",
+			"plugin_basename(__FILE__)",
+			"all_plugins",
+			hook,
+			hook,
+		}, "\n")
+		if m, ok := scanRepoRules(t, []byte(sample))["wp_admin_list_cloak"]; ok {
+			t.Errorf("plaintext cloak matched repeated single signal %s: %+v", hook, m)
+		}
+	}
+}
+
+func TestAdminCloakerEscapedBranchRequiresCurrentUserGuard(t *testing.T) {
+	withoutGuard := strings.ReplaceAll(cloakerEscaped, "get_current_user_id", "wp_get_current_user")
+	if m, ok := scanRepoRules(t, []byte(withoutGuard))["wp_admin_list_cloak"]; ok {
+		t.Errorf("escaped-hook cloak matched without current-user guard: %+v", m)
+	}
+}
+
+func TestAdminCloakerDoesNotCombineIncompleteBranches(t *testing.T) {
+	cases := []string{`<?php
+plugin_basename(__FILE__)
+all_plugins
+pre_user_query
+
+add_filter("\x70\x72\x65\x5f", "callback");`, `<?php
+plugin_basename(__FILE__)
+pre_user_query
+views_users`}
+	for _, sample := range cases {
+		if m, ok := scanRepoRules(t, []byte(sample))["wp_admin_list_cloak"]; ok {
+			t.Errorf("admin cloaker matched incomplete evidence: %+v", m)
+		}
+	}
+}
+
+func TestAdminCloakerRejectsCaseInsensitiveHookLookalikes(t *testing.T) {
+	sample := "<?php\nplugin_basename(__FILE__)\nALL_PLUGINS\npre_user_query\nviews_users"
+	if m, ok := scanRepoRules(t, []byte(sample))["wp_admin_list_cloak"]; ok {
+		t.Errorf("case-insensitive hook lookalike matched: %+v", m)
 	}
 }
 
