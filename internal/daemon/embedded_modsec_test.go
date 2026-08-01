@@ -35,18 +35,26 @@ func TestEmbeddedModSecRateLimitsRESTBatchEndpoint(t *testing.T) {
 	if batchStart < 0 {
 		t.Fatal("REST batch rate-limit block missing")
 	}
-	if got := strings.Count(conf[batchStart:], `SecRule REQUEST_METHOD "@streq POST"`); got != 2 {
+	// Bound the slice to this block. Counting to end-of-file made every
+	// assertion below depend on nothing else ever being appended to the
+	// ruleset, so an unrelated rule broke tests that claim to measure "batch"
+	// elements.
+	batchBlock := conf[batchStart:]
+	if next := strings.Index(batchBlock[len(marker):], "\n# --- "); next >= 0 {
+		batchBlock = batchBlock[:len(marker)+next]
+	}
+	if got := strings.Count(batchBlock, `SecRule REQUEST_METHOD "@streq POST"`); got != 2 {
 		t.Errorf("found %d batch POST guards, want 2", got)
 	}
-	if got := strings.Count(conf[batchStart:], "t:none,t:urlDecodeUni"); got != 2 {
+	if got := strings.Count(batchBlock, "t:none,t:urlDecodeUni"); got != 2 {
 		t.Errorf("found %d batch URI normalizers, want 2", got)
 	}
 	const incrementGuard = "SecRule REQUEST_METHOD \"@streq POST\" \\\n" +
 		"    \"setvar:ip.batch_count=+1,expirevar:ip.batch_count=60\""
-	if !strings.Contains(conf[batchStart:], incrementGuard) {
+	if !strings.Contains(batchBlock, incrementGuard) {
 		t.Error("batch counter update is not guarded by the final POST chain rule")
 	}
-	patterns := regexp.MustCompile(`SecRule REQUEST_URI "@rx ([^"]+)"`).FindAllStringSubmatch(conf[batchStart:], -1)
+	patterns := regexp.MustCompile(`SecRule REQUEST_URI "@rx ([^"]+)"`).FindAllStringSubmatch(batchBlock, -1)
 	if len(patterns) != 2 {
 		t.Fatalf("found %d batch route rules, want 2", len(patterns))
 	}
@@ -95,5 +103,56 @@ func TestModSecWP2ShellRulesMatchInstallerCopy(t *testing.T) {
 	installerRules := strings.TrimSpace(string(installer)[installerStart:])
 	if embeddedRules != installerRules {
 		t.Errorf("wp2shell ModSecurity rules differ between embedded and installer copies")
+	}
+}
+
+func TestModSecEmbeddedAndInstallerCopiesAreIdentical(t *testing.T) {
+	installerPath := filepath.Join("..", "..", "configs", "csm_modsec_custom.conf")
+	installer, err := os.ReadFile(installerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The daemon serves the embedded copy while checks/waf.go deploys the
+	// packaged one from /opt/csm/configs, so a host gets whichever path ran.
+	// Any drift means two servers on the same version enforce different rules;
+	// comparing only the wp2shell block let an xmlrpc window and two wp-coder
+	// rules diverge unnoticed.
+	if string(embeddedModSec) != string(installer) {
+		t.Errorf("embedded and installer ModSecurity configs differ; they must stay byte-identical")
+	}
+}
+
+func TestModSecBlocksWP2ShellFingerprintParameter(t *testing.T) {
+	conf := string(embeddedModSec)
+	if !strings.Contains(conf, "id:900125") {
+		t.Fatal("wp2shell fingerprint rule missing")
+	}
+	// The User-Agent rule and the batch rate limit were both bypassed in the
+	// 2026-08-01 wave (spoofed browser UAs, requests paced under the window).
+	// This parameter was on every request of both waves.
+	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx (\[\?&\]_w2s=)"`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatal("wp2shell fingerprint rule does not match on the _w2s parameter")
+	}
+	routeRE, err := regexp.Compile(m[1])
+	if err != nil {
+		t.Fatalf("compile fingerprint regex: %v", err)
+	}
+	for _, tc := range []struct {
+		uri   string
+		match bool
+	}{
+		{"/?rest_route=/batch/v1&_w2s=bf49e2b6", true},
+		{"/wp-login.php?_w2s=f91570af", true},
+		{"/?a=1&_w2s=0673563c", true},
+		{"/?rest_route=/batch/v1", false},
+		{"/normal/page/", false},
+		// must not fire on an unrelated parameter that merely ends in w2s
+		{"/?myw2s=1", false},
+	} {
+		if got := routeRE.MatchString(tc.uri); got != tc.match {
+			t.Errorf("fingerprint match for %q = %v, want %v", tc.uri, got, tc.match)
+		}
 	}
 }

@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, which had started spoofing browser user agents and pacing requests under the existing rate limit.
 - Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
 
 ### Fixed
 
+- The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
 
 - The WP-Cron system cron now uses a site's cPanel PHP version when the domain map provides an unambiguous version, instead of always using the server default. Existing managed jobs keep their interpreter if the map is unavailable.
