@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1367,14 +1368,65 @@ func CheckWPCron(ctx context.Context, cfg *config.Config, _ *state.Store) []aler
 		return nil
 	}
 
-	homeDirs := ResolveWebRoots(cfg)
-
 	var findings []alert.Finding
-	for _, dir := range homeDirs {
+	for _, dir := range wpCronScanRoots(cfg) {
 		scanWPCron(dir, accountFromPath(dir), 2, &findings)
 		if len(findings) >= 30 {
 			break
 		}
 	}
 	return findings
+}
+
+// wpCronScanRoots lists the document roots to search for WordPress installs.
+//
+// ResolveWebRoots alone resolves to /home/*/public_html on cPanel, which misses
+// every addon domain: those are served from /home/<user>/<domain>/ and never
+// appear beneath public_html. On a live host that hid 177 of 277 installs from
+// this check, so the fix could never reach them. cPanel's own domain map is the
+// authoritative list, and is already how the exposed-files and php-config
+// checks enumerate document roots.
+//
+// Roots are de-duplicated, and a root nested inside another is dropped so the
+// same install is not walked (and reported) twice.
+func wpCronScanRoots(cfg *config.Config) []string {
+	roots := ResolveWebRoots(cfg)
+	if data, err := osFS.ReadFile(userdataDomainsPath); err == nil {
+		vhosts, _ := parseUserdataDomainRootsChecked(string(data))
+		for _, vh := range vhosts {
+			roots = append(roots, vh.docroot)
+		}
+	}
+
+	seen := make(map[string]struct{}, len(roots))
+	unique := roots[:0:0]
+	for _, r := range roots {
+		clean := filepath.Clean(r)
+		if _, dup := seen[clean]; dup {
+			continue
+		}
+		if info, err := osFS.Stat(clean); err != nil || !info.IsDir() {
+			continue
+		}
+		seen[clean] = struct{}{}
+		unique = append(unique, clean)
+	}
+
+	// Drop any root that already sits under another; scanWPCron descends two
+	// levels, so a nested root would rescan the same wp-config.php.
+	sort.Slice(unique, func(i, j int) bool { return len(unique[i]) < len(unique[j]) })
+	var out []string
+	for _, r := range unique {
+		nested := false
+		for _, kept := range out {
+			if strings.HasPrefix(r, kept+string(filepath.Separator)) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, r)
+		}
+	}
+	return out
 }
