@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-08-02
+
 ### Added
 
 - The bundled ModSecurity ruleset now blocks the Ultimate Member privilege-escalation flaw (CVE-2023-3460), which is on CISA's actively-exploited list, including the parameter-name spellings PHP folds together. The rule that exempts wp-admin reads the request path only, so a link in a query string cannot turn the patch off.
