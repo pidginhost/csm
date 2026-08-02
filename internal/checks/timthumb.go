@@ -33,19 +33,47 @@ var timThumbVersionRE = regexp.MustCompile(`(?i)define\s*\(\s*['"]VERSION['"]\s*
 // timThumbFeatureRE holds the boolean feature constants that make a copy
 // directly exploitable, compiled once rather than per scanned file.
 var timThumbFeatureRE = map[string]*regexp.Regexp{
-	timThumbWebshot:  timThumbFeatureMatcher(timThumbWebshot),
-	timThumbExternal: timThumbFeatureMatcher(timThumbExternal),
+	timThumbWebshot:     timThumbFeatureMatcher(timThumbWebshot),
+	timThumbExternal:    timThumbFeatureMatcher(timThumbExternal),
+	timThumbAllExternal: timThumbFeatureMatcher(timThumbAllExternal),
 }
 
 const (
-	timThumbWebshot  = "WEBSHOT_ENABLED"
-	timThumbExternal = "ALLOW_EXTERNAL"
+	timThumbWebshot     = "WEBSHOT_ENABLED"
+	timThumbExternal    = "ALLOW_EXTERNAL"
+	timThumbAllExternal = "ALLOW_ALL_EXTERNAL_SITES"
 )
 
 // timThumbFeatureMatcher builds the define('NAME', true) matcher for a feature
 // constant.
 func timThumbFeatureMatcher(name string) *regexp.Regexp {
 	return regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*true\s*\)`)
+}
+
+// timThumbFeatureDisabledRE matches define('NAME', false). Absence of a define
+// is deliberately NOT treated as disabled: TimThumb sets these defaults
+// elsewhere, so a file that simply does not mention the constant tells us
+// nothing about whether the feature is on.
+var timThumbFeatureDisabledRE = map[string]*regexp.Regexp{
+	timThumbWebshot:     timThumbDisabledMatcher(timThumbWebshot),
+	timThumbExternal:    timThumbDisabledMatcher(timThumbExternal),
+	timThumbAllExternal: timThumbDisabledMatcher(timThumbAllExternal),
+}
+
+func timThumbDisabledMatcher(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*false\s*\)`)
+}
+
+// timThumbFeatureExplicitlyDisabled reports a visible define(NAME, false).
+// An unknown name compiles on demand rather than silently reporting false, so a
+// new caller cannot get a wrong answer; the map itself is never mutated, which
+// keeps concurrent scans race-free.
+func timThumbFeatureExplicitlyDisabled(head []byte, name string) bool {
+	re, ok := timThumbFeatureDisabledRE[name]
+	if !ok {
+		re = timThumbDisabledMatcher(name)
+	}
+	return re.Match(head)
 }
 
 // timThumbCandidateName reports whether a filename is a TimThumb-style script by
@@ -130,6 +158,28 @@ func assessTimThumb(head []byte) (alert.Severity, []string) {
 	return alert.Warning, reasons
 }
 
+// timThumbMitigated reports whether a copy has nothing left to act on: the final
+// release, with every remote-fetch and screenshot feature explicitly off. The
+// remote-fetch path is what CVE-2011-4106 abused to write PHP into the image
+// cache, so with it disabled on the last version there is no fix to apply and no
+// residual exposure -- only the fact that the project is abandoned, which
+// re-reporting every scan does not help anyone act on.
+//
+// Anything else (older release, unreadable version, any risky feature on) is
+// still reported. This is a judgement about the file's own contents, never about
+// where it lives.
+func timThumbMitigated(head []byte) bool {
+	if parseTimThumbVersion(head) != timThumbFixedVersion {
+		return false
+	}
+	for _, feature := range []string{timThumbWebshot, timThumbExternal, timThumbAllExternal} {
+		if !timThumbFeatureExplicitlyDisabled(head, feature) {
+			return false
+		}
+	}
+	return true
+}
+
 // timThumbFeatureEnabled reports whether a TimThumb boolean constant is defined
 // true. Matches define('NAME', true) with optional whitespace. Unknown names
 // fall back to compiling on demand so a new caller cannot silently read false.
@@ -203,6 +253,9 @@ func scanForTimThumb(ctx context.Context, dir string, maxDepth int, findings *[]
 		}
 		head := readFileHead(fullPath, timThumbReadHead)
 		if head == nil || !looksLikeTimThumb(head) {
+			continue
+		}
+		if timThumbMitigated(head) {
 			continue
 		}
 		severity, reasons := assessTimThumb(head)

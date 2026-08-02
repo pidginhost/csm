@@ -540,6 +540,7 @@ var csmRuleDescriptions = map[string]string{
 	"900124": "REST batch endpoint rate limit",
 	"900125": "Blocked wp2shell tool fingerprint",
 	"900126": "Blocked wp2shell tool fingerprint (encoded)",
+	"900127": "Ultimate Member privilege escalation (CVE-2023-3460)",
 	// Comodo WAF (CWAF) common rules. Rule IDs in the 21xxxx range are
 	// from the Comodo vendor ruleset (e.g. /etc/apache2/conf.d/
 	// modsec_vendor_configs/comodo_litespeed/), NOT from OWASP CRS.

@@ -227,3 +227,47 @@ func TestModSecBlocksEncodedWP2ShellFingerprint(t *testing.T) {
 		}
 	}
 }
+
+// CVE-2023-3460 is on CISA's known-exploited list and CSM shipped virtual
+// patches for other Ultimate Member CVEs but not this one, so the only
+// protection was a hand-added rule on a single host.
+func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
+	conf := string(embeddedModSec)
+	if !strings.Contains(conf, "id:900127") {
+		t.Fatal("CVE-2023-3460 virtual patch missing")
+	}
+	if !strings.Contains(conf, "CVE-2023-3460") {
+		t.Error("rule does not name the CVE it patches")
+	}
+	re := regexp.MustCompile(`SecRule ARGS_NAMES "@rx (\(\?i\)[^"]+)"[\s\S]{0,240}id:900127`)
+	m := re.FindStringSubmatch(conf)
+	if m == nil {
+		t.Fatal("CVE-2023-3460 rule does not match on ARGS_NAMES")
+	}
+	argRE, err := regexp.Compile(m[1])
+	if err != nil {
+		t.Fatalf("compile priv-esc regex: %v", err)
+	}
+	for _, tc := range []struct {
+		arg   string
+		match bool
+	}{
+		{"wp_capabilities", true},
+		{"wp_capabilities[administrator]", true},
+		{"um_role", true},
+		{"UM_ROLE", true},
+		// must not fire on ordinary registration fields
+		{"user_login", false},
+		{"user_email", false},
+		{"role_description", false},
+		{"my_um_roles_note", false},
+	} {
+		if got := argRE.MatchString(tc.arg); got != tc.match {
+			t.Errorf("priv-esc match for arg %q = %v, want %v", tc.arg, got, tc.match)
+		}
+	}
+	// wp-admin must be exempt so operators can still assign roles
+	if !strings.Contains(conf, `SecRule REQUEST_URI "!@rx (?i)/wp-admin/"`) {
+		t.Error("wp-admin exemption missing; role management would break")
+	}
+}
