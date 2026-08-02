@@ -226,6 +226,36 @@ func TestFPFlood_ObfuscationChrConstruction_VariableFunction(t *testing.T) {
 	}
 }
 
+func TestFPFlood_ObfuscationChrConstruction_EvasionShapes(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for name, mal := range map[string][]byte{
+		"fragmented chain": []byte(`<?php
+$code=chr(112); $code.=chr(104); $code.=chr(112); $code.=chr(105); $code.=chr(110);
+$code.=chr(102); $code.=chr(111); $code.=chr(40); $code.=chr(41); $code.=chr(59); eval($code);`),
+		"variable-variable sink": []byte(`<?php
+$name=chr(115).chr(104).chr(101).chr(108).chr(108).chr(95).chr(101).chr(120).chr(101).chr(99);
+${$name}($_POST['cmd']);`),
+		"str-repeat padding": []byte(`<?php
+$fn=chr(115).str_repeat('',8).chr(104).chr(101).str_repeat('',16).chr(108).chr(108).chr(95).chr(101).chr(120).chr(101).chr(99);
+$fn($_REQUEST['cmd']);`),
+		"mixed-case calls": []byte(`<?php
+$fn=CHR(115).CHR(104).CHR(101).CHR(108).CHR(108).CHR(95).CHR(101).CHR(120).CHR(101).CHR(99);
+$fn($_REQUEST['cmd']);`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !hasYaraRule(s.ScanBytes(mal), "obfuscation_chr_construction") {
+				t.Errorf("obfuscation_chr_construction missed %s", name)
+			}
+		})
+	}
+	legit := []byte(`<?php
+$prefix=chr(0).chr(1).chr(2); $callback($prefix);
+$table=[chr(3),chr(4),chr(5),chr(6),chr(7),chr(8),chr(9),chr(10)];`)
+	if hasYaraRule(s.ScanBytes(legit), "obfuscation_chr_construction") {
+		t.Error("obfuscation_chr_construction FP: scattered chr calls satisfied the volume gate")
+	}
+}
+
 func TestFPFlood_PhpGotoObfuscation_WpHtmlProcessor(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php

@@ -1,6 +1,9 @@
 package checks
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -43,6 +46,78 @@ func TestTimThumbStillReportedWhenRiskyFeatureEnabled(t *testing.T) {
 	}
 }
 
+func TestTimThumbMissingFeatureDefineIsNotMitigated(t *testing.T) {
+	base := string(timThumbFile("2.8.14", "false", "false", "false"))
+	for _, feature := range []string{timThumbExternal, timThumbAllExternal, timThumbWebshot} {
+		line := "define ('" + feature + "', false);\n"
+		head := []byte(strings.Replace(base, line, "", 1))
+		if timThumbMitigated(head) {
+			t.Errorf("missing %s define must not count as disabled", feature)
+		}
+	}
+}
+
+func TestTimThumbConflictingFeatureDefinesAreNotMitigated(t *testing.T) {
+	head := append(timThumbFile("2.8.14", "false", "false", "false"),
+		[]byte("define('ALLOW_EXTERNAL', true);\n")...)
+	if timThumbMitigated(head) {
+		t.Error("a true feature define must prevent mitigation even when a false define is also present")
+	}
+}
+
+func TestTimThumbCommentedSafetyDefinesAreNotMitigated(t *testing.T) {
+	head := []byte(`<?php
+/* TimThumb */
+define('VERSION', '2.8.14');
+/*
+define('ALLOW_EXTERNAL', false);
+define('ALLOW_ALL_EXTERNAL_SITES', false);
+define('WEBSHOT_ENABLED', false);
+*/
+`)
+	if timThumbMitigated(head) {
+		t.Error("commented-out feature defines are not evidence that TimThumb is disabled")
+	}
+}
+
+func TestTimThumbMarkupSafetyDefinesAreNotMitigated(t *testing.T) {
+	head := []byte(`<?php
+/* TimThumb */
+define('VERSION', '2.8.14');
+?>
+define('ALLOW_EXTERNAL', false);
+define('ALLOW_ALL_EXTERNAL_SITES', false);
+define('WEBSHOT_ENABLED', false);
+`)
+	if timThumbMitigated(head) {
+		t.Error("define-like page text outside PHP is not evidence that TimThumb is disabled")
+	}
+}
+
+func TestTimThumbStringSafetyDefinesAreNotMitigated(t *testing.T) {
+	const defines = `define('ALLOW_EXTERNAL', false);
+define('ALLOW_ALL_EXTERNAL_SITES', false);
+define('WEBSHOT_ENABLED', false);`
+	for name, literal := range map[string]string{
+		"quoted string": `$documentation = "` + defines + `";`,
+		"heredoc":       "$documentation = <<<'DOC'\n" + defines + "\nDOC;",
+		"shell string":  "$documentation = `" + defines + "`;",
+	} {
+		head := []byte("<?php\n/* TimThumb */\ndefine('VERSION', '2.8.14');\n" + literal)
+		if timThumbMitigated(head) {
+			t.Errorf("%s define-like text is not evidence that TimThumb is disabled", name)
+		}
+	}
+}
+
+func TestTimThumbCommentedFinalVersionDoesNotHideOldRelease(t *testing.T) {
+	body := strings.TrimPrefix(string(timThumbFile("2.8.13", "false", "false", "false")), "<?php\n")
+	head := []byte("<?php // define('VERSION', '2.8.14');\n" + body)
+	if timThumbMitigated(head) {
+		t.Error("a final-version string in a comment must not hide an active older version")
+	}
+}
+
 // An older release carries CVE-2011-4106 regardless of how the feature flags are
 // set, so it is never mitigated.
 func TestTimThumbOldVersionNeverMitigated(t *testing.T) {
@@ -59,15 +134,38 @@ func TestTimThumbOldVersionNeverMitigated(t *testing.T) {
 
 // Severity for the cases that still report must not change.
 func TestTimThumbSeverityUnchangedForReportedCases(t *testing.T) {
-	sev, reasons := assessTimThumb(timThumbFile("2.8.14", "true", "false", "false"))
-	if sev != alert.High {
-		t.Errorf("external fetching enabled = %v, want High", sev)
+	for name, tc := range map[string]struct {
+		head []byte
+		want alert.Severity
+	}{
+		"external fetching":  {timThumbFile("2.8.14", "true", "false", "false"), alert.High},
+		"all external sites": {timThumbFile("2.8.14", "false", "true", "false"), alert.Warning},
+		"webshot":            {timThumbFile("2.8.14", "false", "false", "true"), alert.High},
+		"outdated version":   {timThumbFile("2.0", "false", "false", "false"), alert.High},
+	} {
+		sev, reasons := assessTimThumb(tc.head)
+		if sev != tc.want {
+			t.Errorf("%s severity = %v, want %v", name, sev, tc.want)
+		}
+		if len(reasons) == 0 {
+			t.Errorf("%s: expected a reason to be reported", name)
+		}
 	}
-	if len(reasons) == 0 {
-		t.Error("expected a reason to be reported")
+}
+
+func TestScanForTimThumbSuppressesOnlyFullyMitigatedCopy(t *testing.T) {
+	docroot := t.TempDir()
+	mustWriteFile(t, filepath.Join(docroot, "safe", "timthumb.php"),
+		string(timThumbFile("2.8.14", "false", "false", "false")))
+	mustWriteFile(t, filepath.Join(docroot, "enabled", "timthumb.php"),
+		string(timThumbFile("2.8.14", "true", "false", "false")))
+
+	var findings []alert.Finding
+	scanForTimThumb(context.Background(), docroot, 10, &findings)
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want only the enabled copy: %+v", len(findings), findings)
 	}
-	sev, _ = assessTimThumb(timThumbFile("2.0", "FALSE", "false", "false"))
-	if sev != alert.High {
-		t.Errorf("outdated version = %v, want High", sev)
+	if findings[0].Severity != alert.High || findings[0].FilePath != filepath.Join(docroot, "enabled", "timthumb.php") {
+		t.Errorf("enabled copy finding = %+v, want the enabled path at High severity", findings[0])
 	}
 }

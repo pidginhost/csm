@@ -254,20 +254,86 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 	}{
 		{"wp_capabilities", true},
 		{"wp_capabilities[administrator]", true},
+		{"wp_capabiliti\\es", true},
+		{"w/P_capabilities", true},
+		{"wP_capa\u0332bilities-29[administrator]", true},
+		{"wp.capabilities", true},
+		{"wp capabilities", true},
 		{"um_role", true},
+		{"u/m_role-29", true},
+		{"um.role", true},
+		{"um role", true},
 		{"UM_ROLE", true},
 		// must not fire on ordinary registration fields
 		{"user_login", false},
 		{"user_email", false},
 		{"role_description", false},
 		{"my_um_roles_note", false},
+		{"wp_capabilities_description", false},
+		{"wp_capabilities-help", false},
+		{"w.p_capabilities", false},
+		{"w p_capabilities", false},
+		{"wp_capabilit.ies", false},
+		{"u.m_role", false},
 	} {
 		if got := argRE.MatchString(tc.arg); got != tc.match {
 			t.Errorf("priv-esc match for arg %q = %v, want %v", tc.arg, got, tc.match)
 		}
 	}
-	// wp-admin must be exempt so operators can still assign roles
-	if !strings.Contains(conf, `SecRule REQUEST_URI "!@rx (?i)/wp-admin/"`) {
-		t.Error("wp-admin exemption missing; role management would break")
+	for _, encoded := range []struct {
+		arg     string
+		decodes int
+	}{
+		{"WP%5fCAPABILITIES", 1},
+		{"wp%255fcapabilities%255badministrator%255d", 2},
+		{"wP_capa%cc%b2bilities-29%5badministrator%5d", 1},
+		{"wp_capabiliti%5ces", 1},
+		{"um%2erole", 1},
+		{"um+role", 1},
+	} {
+		arg := encoded.arg
+		for i := 0; i < encoded.decodes; i++ {
+			decoded, decodeErr := url.QueryUnescape(arg)
+			if decodeErr != nil {
+				t.Fatalf("decode argument name %q: %v", encoded.arg, decodeErr)
+			}
+			arg = decoded
+		}
+		if !argRE.MatchString(arg) {
+			t.Errorf("priv-esc rule misses encoded argument %q after transforms (%q)", encoded.arg, arg)
+		}
+	}
+	if !strings.Contains(conf, "id:900127,phase:2,deny,status:403,log,t:none,t:urlDecodeUni") {
+		t.Error("priv-esc rule does not URL-decode argument names before matching")
+	}
+	// wp-admin must be exempt so operators can still assign roles, but a
+	// registration request cannot earn that exemption by putting the path in a
+	// query value.
+	exemptionRule := regexp.MustCompile(`SecRule REQUEST_URI "!@rx (\(\?i\)[^"]+)" "t:none,t:urlDecodeUni"`)
+	exemptionMatch := exemptionRule.FindStringSubmatch(conf)
+	if exemptionMatch == nil {
+		t.Fatal("wp-admin exemption missing; role management would break")
+	}
+	wpAdminRE, err := regexp.Compile(exemptionMatch[1])
+	if err != nil {
+		t.Fatalf("compile wp-admin exemption: %v", err)
+	}
+	for _, uri := range []string{
+		"/wp-admin/",
+		"/wp-admin/user-edit.php",
+		"/wordpress/wp-admin/users.php?page=um_options",
+	} {
+		if !wpAdminRE.MatchString(uri) {
+			t.Errorf("wp-admin exemption misses admin URI %q", uri)
+		}
+	}
+	for _, uri := range []string{
+		"/register/?redirect_to=/wp-admin/",
+		"/register/?field=wp-admin/",
+		"/wp-administer/register/",
+	} {
+		if wpAdminRE.MatchString(uri) {
+			t.Errorf("wp-admin exemption can be injected into non-admin URI %q", uri)
+		}
 	}
 }

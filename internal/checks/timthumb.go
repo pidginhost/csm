@@ -28,7 +28,7 @@ const timThumbReadHead = 16 * 1024
 // bundled in themes, sometimes several directories deep (framework/scripts).
 const timThumbScanDepth = 10
 
-var timThumbVersionRE = regexp.MustCompile(`(?i)define\s*\(\s*['"]VERSION['"]\s*,\s*['"]([0-9]+(?:\.[0-9]+)*)['"]`)
+var timThumbVersionRE = timThumbDefineMatcher("VERSION", `['"]([0-9]+(?:\.[0-9]+)*)['"]`)
 
 // timThumbFeatureRE holds the boolean feature constants that make a copy
 // directly exploitable, compiled once rather than per scanned file.
@@ -47,7 +47,7 @@ const (
 // timThumbFeatureMatcher builds the define('NAME', true) matcher for a feature
 // constant.
 func timThumbFeatureMatcher(name string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*true\s*\)`)
+	return timThumbDefineMatcher(name, `(true)`)
 }
 
 // timThumbFeatureDisabledRE matches define('NAME', false). Absence of a define
@@ -61,7 +61,7 @@ var timThumbFeatureDisabledRE = map[string]*regexp.Regexp{
 }
 
 func timThumbDisabledMatcher(name string) *regexp.Regexp {
-	return regexp.MustCompile(`(?i)define\s*\(\s*['"]` + regexp.QuoteMeta(name) + `['"]\s*,\s*false\s*\)`)
+	return timThumbDefineMatcher(name, `(false)`)
 }
 
 // timThumbFeatureExplicitlyDisabled reports a visible define(NAME, false).
@@ -73,7 +73,10 @@ func timThumbFeatureExplicitlyDisabled(head []byte, name string) bool {
 	if !ok {
 		re = timThumbDisabledMatcher(name)
 	}
-	return re.Match(head)
+	if timThumbDefineValue(head, re) == "" {
+		return false
+	}
+	return !timThumbFeatureEnabled(head, name)
 }
 
 // timThumbCandidateName reports whether a filename is a TimThumb-style script by
@@ -102,11 +105,58 @@ func looksLikeTimThumb(head []byte) bool {
 // parseTimThumbVersion extracts the value of TimThumb's VERSION define, or ""
 // when it is absent.
 func parseTimThumbVersion(head []byte) string {
-	m := timThumbVersionRE.FindSubmatch(head)
-	if m == nil {
-		return ""
+	return timThumbDefineValue(head, timThumbVersionRE)
+}
+
+func timThumbDefineMatcher(name, valuePattern string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)^define\s*\(\s*['"]` + regexp.QuoteMeta(name) +
+		`['"]\s*,\s*` + valuePattern + `\s*\)`)
+}
+
+// timThumbDefineValue returns a literal from an executable define() call.
+// Comment and string text cannot prove a copy is patched or a feature is off,
+// so walk only PHP identifiers outside those regions before applying the small
+// call matcher.
+func timThumbDefineValue(head []byte, matcher *regexp.Regexp) string {
+	code := stripPHPCommentsFromCode(string(head))
+	inPHP := false
+	for i := 0; i < len(code); i++ {
+		if !inPHP {
+			if i+1 < len(code) && code[i] == '<' && code[i+1] == '?' &&
+				(i+5 > len(code) || !strings.EqualFold(code[i:i+5], "<?xml")) {
+				inPHP = true
+				i++
+			}
+			continue
+		}
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
+		if isPHPQuote(code[i]) || code[i] == '`' {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if i+1 < len(code) && code[i] == '?' && code[i+1] == '>' {
+			inPHP = false
+			i++
+			continue
+		}
+		if !isPHPIdentifierStart(code[i]) {
+			continue
+		}
+		end := i + 1
+		for end < len(code) && isPHPIdentifierPart(code[end]) {
+			end++
+		}
+		if strings.EqualFold(code[i:end], "define") {
+			if match := matcher.FindStringSubmatch(code[i:]); len(match) == 2 {
+				return match[1]
+			}
+		}
+		i = end - 1
 	}
-	return string(m[1])
+	return ""
 }
 
 // timThumbVersionLess reports whether dotted numeric version a is older than b.
@@ -188,7 +238,7 @@ func timThumbFeatureEnabled(head []byte, name string) bool {
 	if !ok {
 		re = timThumbFeatureMatcher(name)
 	}
-	return re.Match(head)
+	return timThumbDefineValue(head, re) != ""
 }
 
 // CheckVulnerableTimThumb scans web document roots for bundled TimThumb scripts

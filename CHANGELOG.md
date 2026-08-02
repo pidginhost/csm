@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Reports of the chr() obfuscation signature now require the assembled string to reach a code-execution call, so PDF and font libraries that legitimately build binary strings are no longer flagged.
-- A TimThumb copy on the final release with remote image fetching and screenshots explicitly disabled is no longer reported on every scan; there is nothing left to act on. Older copies, and any copy with those features enabled, are still reported.
+- Reports of the chr() obfuscation signature now require the assembled string to reach a code-execution call, so PDF and font libraries that legitimately build binary strings are no longer flagged. Fragmented construction, mixed-case calls, variable-variable sinks, and inert padding remain detectable.
+- A TimThumb copy on the final release with remote image fetching and screenshots explicitly disabled is no longer reported on every scan; there is nothing left to act on. Suppression requires active, non-conflicting false definitions, while older copies and any copy with an enabled feature still report.
+- The Ultimate Member virtual patch now covers encoded, Unicode-marked, dotted, spaced, and form-suffixed names that normalize to protected capability keys. Its admin exemption applies only to wp-admin paths.
 - The wp2shell WAF fingerprint now checks parsed names and raw query-field boundaries, blocking mixed-case, nested-encoded, and PHP-normalized variants without treating `_w2s` text inside another value as an attack. LiteSpeed reports for the new wp2shell rules now retain useful descriptions in the UI.
 - The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
