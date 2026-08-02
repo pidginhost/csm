@@ -9,15 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The bundled ModSecurity ruleset now blocks the Ultimate Member privilege-escalation flaw (CVE-2023-3460), which is on CISA's actively-exploited list.
 - The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, including nested percent-encoded and PHP-normalized forms, which had started spoofing browser user agents and pacing requests under the existing rate limit.
 - Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
 
 ### Fixed
 
+- Reports of the chr() obfuscation signature now require the assembled string to reach a code-execution call, so PDF and font libraries that legitimately build binary strings are no longer flagged.
+- A TimThumb copy on the final release with remote image fetching and screenshots explicitly disabled is no longer reported on every scan; there is nothing left to act on. Older copies, and any copy with those features enabled, are still reported.
 - The wp2shell WAF fingerprint now checks parsed names and raw query-field boundaries, blocking mixed-case, nested-encoded, and PHP-normalized variants without treating `_w2s` text inside another value as an attack. LiteSpeed reports for the new wp2shell rules now retain useful descriptions in the UI.
 - The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
-
 - A WordPress install in a subdirectory of a document root now runs its system cron under the PHP version of the site that serves it, instead of the server default.
 - The WP-Cron system cron now uses a site's cPanel PHP version when the domain map provides an unambiguous version, instead of always using the server default. Existing managed jobs keep their interpreter if the map is unavailable.
 
