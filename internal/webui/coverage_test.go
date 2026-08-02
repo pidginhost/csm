@@ -1346,6 +1346,7 @@ func TestExtractModSecDescriptionCSMRuleFallback(t *testing.T) {
 		"900123": "REST batch request counter",
 		"900124": "REST batch endpoint rate limit",
 		"900125": "Blocked wp2shell tool fingerprint",
+		"900126": "Blocked wp2shell tool fingerprint (encoded)",
 	}
 	for rule, want := range tests {
 		t.Run(rule, func(t *testing.T) {

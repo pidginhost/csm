@@ -176,54 +176,6 @@ func TestModSecBlocksWP2ShellFingerprintParameter(t *testing.T) {
 	if got := strings.Count(conf, rule); got != 1 {
 		t.Fatalf("found %d normalized wp2shell fingerprint rules, want 1", got)
 	}
-	// The User-Agent rule and the batch rate limit were both bypassed in the
-	// 2026-08-01 wave (spoofed browser UAs, requests paced under the window).
-	// This parameter was on every request of both waves.
-	for _, tc := range []struct {
-		uri   string
-		match bool
-	}{
-		{"/?rest_route=/batch/v1&_w2s=bf49e2b6", true},
-		{"/wp-login.php?_w2s=f91570af", true},
-		{"/?a=1&_w2s=0673563c", true},
-		{"/?_W2S=bf49e2b6", true},
-		{"/?%5fw%32s=bf49e2b6", true},
-		{"/?%255fw2s=bf49e2b6", true},
-		{"/?_w2s=first&_w2s=second", true},
-		{"/?rest_route=/batch/v1", false},
-		{"/normal/page/", false},
-		{"/?myw2s=1", false},
-		{"/?_w2s_token=1", false},
-		{"/?next=%2Ftarget%3F_w2s%3Dbf49e2b6", false},
-		{"/?payload=prefix_w2s%3Dbf49e2b6", false},
-	} {
-		if got := queryHasModSecArgName(t, tc.uri, "_w2s"); got != tc.match {
-			t.Errorf("fingerprint match for %q = %v, want %v", tc.uri, got, tc.match)
-		}
-	}
-}
-
-func queryHasModSecArgName(t *testing.T, uri, want string) bool {
-	t.Helper()
-	parsed, err := url.ParseRequestURI(uri)
-	if err != nil {
-		t.Fatalf("parse request URI %q: %v", uri, err)
-	}
-	for _, field := range strings.Split(parsed.RawQuery, "&") {
-		name, _, _ := strings.Cut(field, "=")
-		// ARGS_GET_NAMES provides the parser-decoded name. The rule's
-		// urlDecodeUni transformation normalizes one remaining encoded layer.
-		for range 2 {
-			name, err = url.QueryUnescape(name)
-			if err != nil {
-				return false
-			}
-		}
-		if strings.EqualFold(name, want) {
-			return true
-		}
-	}
-	return false
 }
 
 // The parsed-name rule alone let a percent-encoded parameter through: on
@@ -232,35 +184,46 @@ func queryHasModSecArgName(t *testing.T, uri, want string) bool {
 // inside a parameter value.
 func TestModSecBlocksEncodedWP2ShellFingerprint(t *testing.T) {
 	conf := string(embeddedModSec)
-	if !strings.Contains(conf, "id:900126") {
-		t.Fatal("encoded wp2shell fingerprint rule missing")
+	const pattern = `(?i)(?:^|&)(?:[+ ]|%(?:25)*20)*(?:_|[.]|%(?:25)*(?:5f|2e))(?:w|%(?:25)*77)(?:2|%(?:25)*32)(?:s|%(?:25)*73)=`
+	const rule = `SecRule QUERY_STRING "@rx ` + pattern + `" \` + "\n" +
+		`    "id:900126,phase:1,deny,status:403,log,t:none,msg:'CSM: Blocked wp2shell tool fingerprint (encoded)'"`
+	if got := strings.Count(conf, rule); got != 1 {
+		t.Fatalf("found %d encoded wp2shell fingerprint rules, want 1", got)
 	}
-	re := regexp.MustCompile(`SecRule REQUEST_URI "@rx (\(\?i\)\[\?&\]\(\?:_\|%5f\)w2s=)"`)
-	m := re.FindStringSubmatch(conf)
-	if m == nil {
-		t.Fatal("encoded fingerprint rule does not match the expected pattern")
-	}
-	routeRE, err := regexp.Compile(m[1])
-	if err != nil {
-		t.Fatalf("compile encoded fingerprint regex: %v", err)
-	}
+	queryRE := regexp.MustCompile(pattern)
 	for _, tc := range []struct {
-		uri   string
+		query string
 		match bool
 	}{
-		{"/?%5Fw2s=abc", true},
-		{"/?%5fw2s=abc", true},
-		{"/?_w2s=abc", true},
-		{"/?a=1&_w2s=abc", true},
-		{"/?_W2S=abc", true},
-		// the same text inside a value is not a parameter of that name
-		{"/?q=_w2s=x", false},
-		{"/?q=%3F_w2s%3Dx", false},
-		{"/normal/page/", false},
-		{"/?myw2s=1", false},
+		{"%5Fw2s=abc", true},
+		{"%5fw2s=abc", true},
+		{"%255Fw2s=abc", true},
+		{"%25255Fw2s=abc", true},
+		{"%5fw%32s=abc", true},
+		{"%255f%2577%2532%2573=abc", true},
+		{"+_w2s=abc", true},
+		{"++%5Fw2s=abc", true},
+		{"%20_w2s=abc", true},
+		{"%2520%255Fw2s=abc", true},
+		{".w2s=abc", true},
+		{"%2ew2s=abc", true},
+		{"_w2s=abc", true},
+		{"a=1&_w2s=abc", true},
+		{"_W2S=abc", true},
+		// The same text inside a value is not a parameter of that name.
+		{"q=_w2s=x", false},
+		{"q=?_w2s=x", false},
+		{"q=?%5Fw2s=x", false},
+		{"q=?+_w2s=x", false},
+		{"q=+w2s=x", false},
+		{"q=%3F_w2s%3Dx", false},
+		{"q=%26%5Fw2s%3Dx", false},
+		{"myw2s=1", false},
+		{"+w2s=1", false},
+		{"_w2s_token=1", false},
 	} {
-		if got := routeRE.MatchString(tc.uri); got != tc.match {
-			t.Errorf("encoded fingerprint match for %q = %v, want %v", tc.uri, got, tc.match)
+		if got := queryRE.MatchString(tc.query); got != tc.match {
+			t.Errorf("encoded fingerprint match for %q = %v, want %v", tc.query, got, tc.match)
 		}
 	}
 }

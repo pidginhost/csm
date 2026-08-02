@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, including a percent-encoded form of it, which had started spoofing browser user agents and pacing requests under the existing rate limit.
+- The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, including nested percent-encoded and PHP-normalized forms, which had started spoofing browser user agents and pacing requests under the existing rate limit.
 - Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
 
 ### Fixed
 
-- The wp2shell WAF fingerprint now inspects parsed query parameter names, so encoded or mixed-case variants are blocked without treating `_w2s` text inside another parameter value as an attack. LiteSpeed reports for the new wp2shell rules now retain useful descriptions in the UI.
+- The wp2shell WAF fingerprint now checks parsed names and raw query-field boundaries, blocking mixed-case, nested-encoded, and PHP-normalized variants without treating `_w2s` text inside another value as an attack. LiteSpeed reports for the new wp2shell rules now retain useful descriptions in the UI.
 - The ModSecurity ruleset the installer ships now matches the one the daemon uses. They had drifted, so a server could enforce weaker rules than its version implies.
 - The new WordPress malware signatures now require the same complete evidence in the regex fallback and YARA-X, while handling PHP call casing, whitespace, JavaScript aliases, and hex escape variants consistently.
 

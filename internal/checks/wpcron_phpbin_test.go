@@ -377,6 +377,28 @@ func TestResolveDocrootPHPBinPrefersExactOverAncestor(t *testing.T) {
 	}
 }
 
+// A more specific vhost that cannot provide an unambiguous PHP version must
+// not be skipped in favor of a usable parent. That would silently run the site
+// under an interpreter its own mapping did not select.
+func TestResolveDocrootPHPBinRejectsUnusableNearestVhost(t *testing.T) {
+	for _, childRows := range []string{
+		"sub.example.com: alice==root==sub==main.example.com==/home/alice/public_html/sub==192.0.2.10:80==192.0.2.10:443====0==inherit",
+		strings.Join([]string{
+			"one.example.com: alice==root==sub==main.example.com==/home/alice/public_html/sub==192.0.2.10:80==192.0.2.10:443====0==ea-php82",
+			"two.example.com: alice==root==addon==main.example.com==/home/alice/public_html/sub==192.0.2.10:80==192.0.2.10:443====0==ea-php83",
+		}, "\n"),
+	} {
+		withMockOS(t, userdataFS(strings.Join([]string{
+			"main.example.com: alice==root==main==main.example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php74",
+			childRows,
+		}, "\n")))
+
+		if got := resolveDocrootPHPBin("alice", "/home/alice/public_html/sub/blog"); got != "" {
+			t.Errorf("skipped unusable nearest vhost and resolved parent version %q", got)
+		}
+	}
+}
+
 // Inheritance must never cross an account boundary or climb out of the account
 // home; a docroot belonging to another user says nothing about this one.
 func TestResolveDocrootPHPBinDoesNotInheritAcrossAccounts(t *testing.T) {
@@ -392,5 +414,26 @@ func TestResolveDocrootPHPBinDoesNotInheritAcrossAccounts(t *testing.T) {
 	// owner mismatch against alice's docroot must not resolve either
 	if got := resolveDocrootPHPBin("mallory", "/home/alice/public_html/blog"); got != "" {
 		t.Errorf("inherited another account's version: got %q", got)
+	}
+}
+
+func TestWPCronDocrootCoversRequiresSafePathBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, vhostRoot, docroot string
+		want                     bool
+	}{
+		{"exact", "/home/alice/public_html", "/home/alice/public_html", true},
+		{"subdirectory", "/home/alice/public_html", "/home/alice/public_html/blog", true},
+		{"prefix sibling", "/home/alice/public_html", "/home/alice/public_html_old/blog", false},
+		{"home ancestor", "/home", "/home/alice/public_html", false},
+		{"root ancestor", "/", "/home/alice/public_html", false},
+		{"exact home", "/home", "/home", false},
+		{"exact root", "/", "/", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wpCronDocrootCovers(tc.vhostRoot, tc.docroot); got != tc.want {
+				t.Errorf("wpCronDocrootCovers(%q, %q) = %v, want %v", tc.vhostRoot, tc.docroot, got, tc.want)
+			}
+		})
 	}
 }

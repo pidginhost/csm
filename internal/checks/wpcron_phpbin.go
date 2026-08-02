@@ -103,11 +103,11 @@ func resolveDocrootPHPBin(owner, docroot string) string {
 // than /home/<user>/<dir> is rejected so inheritance cannot cross accounts.
 func wpCronDocrootCovers(vhostRoot, docroot string) bool {
 	vhostRoot = filepath.Clean(vhostRoot)
-	if vhostRoot == docroot {
-		return true
-	}
 	if strings.Count(strings.TrimSuffix(vhostRoot, "/"), "/") < 3 {
 		return false
+	}
+	if vhostRoot == docroot {
+		return true
 	}
 	return strings.HasPrefix(docroot, vhostRoot+"/")
 }
