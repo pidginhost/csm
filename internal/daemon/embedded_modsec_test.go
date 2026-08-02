@@ -254,13 +254,9 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 	}{
 		{"wp_capabilities", true},
 		{"wp_capabilities[administrator]", true},
-		{"wp_capabiliti\\es", true},
-		{"w/P_capabilities", true},
-		{"wP_capa\u0332bilities-29[administrator]", true},
 		{"wp.capabilities", true},
 		{"wp capabilities", true},
 		{"um_role", true},
-		{"u/m_role-29", true},
 		{"um.role", true},
 		{"um role", true},
 		{"UM_ROLE", true},
@@ -275,6 +271,12 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 		{"w p_capabilities", false},
 		{"wp_capabilit.ies", false},
 		{"u.m_role", false},
+		// PHP folds only dot, space and plus in parameter names. A name carrying
+		// any other injected byte reaches the application as a different key, so
+		// it cannot set wp_capabilities and is deliberately not matched.
+		{"wp_capabiliti\\es", false},
+		{"w/P_capabilities", false},
+		{"u/m_role-29", false},
 	} {
 		if got := argRE.MatchString(tc.arg); got != tc.match {
 			t.Errorf("priv-esc match for arg %q = %v, want %v", tc.arg, got, tc.match)
@@ -286,8 +288,6 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 	}{
 		{"WP%5fCAPABILITIES", 1},
 		{"wp%255fcapabilities%255badministrator%255d", 2},
-		{"wP_capa%cc%b2bilities-29%5badministrator%5d", 1},
-		{"wp_capabiliti%5ces", 1},
 		{"um%2erole", 1},
 		{"um+role", 1},
 	} {
@@ -309,7 +309,9 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 	// wp-admin must be exempt so operators can still assign roles, but a
 	// registration request cannot earn that exemption by putting the path in a
 	// query value.
-	exemptionRule := regexp.MustCompile(`SecRule REQUEST_URI "!@rx (\(\?i\)[^"]+)" "t:none,t:urlDecodeUni"`)
+	// REQUEST_FILENAME is the path without the query string. Matching on
+	// REQUEST_URI let /?x=/wp-admin/ exempt an attacker from this patch.
+	exemptionRule := regexp.MustCompile(`SecRule REQUEST_FILENAME "!@rx (\(\?i\)[^"]+)" "t:none,t:urlDecodeUni"`)
 	exemptionMatch := exemptionRule.FindStringSubmatch(conf)
 	if exemptionMatch == nil {
 		t.Fatal("wp-admin exemption missing; role management would break")
@@ -318,22 +320,35 @@ func TestModSecBlocksUltimateMemberPrivEsc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile wp-admin exemption: %v", err)
 	}
-	for _, uri := range []string{
+	// These are REQUEST_FILENAME values: the path only, never the query. A
+	// WordPress install in a subdirectory must still reach its own admin.
+	for _, path := range []string{
 		"/wp-admin/",
 		"/wp-admin/user-edit.php",
-		"/wordpress/wp-admin/users.php?page=um_options",
+		"/wordpress/wp-admin/users.php",
+		"/site/blog/wp-admin/options.php",
 	} {
-		if !wpAdminRE.MatchString(uri) {
-			t.Errorf("wp-admin exemption misses admin URI %q", uri)
+		if !wpAdminRE.MatchString(path) {
+			t.Errorf("wp-admin exemption misses admin path %q", path)
 		}
 	}
-	for _, uri := range []string{
-		"/register/?redirect_to=/wp-admin/",
-		"/register/?field=wp-admin/",
+	for _, path := range []string{
+		"/register/",
 		"/wp-administer/register/",
+		"/my-wp-admin-guide/",
+		"/downloads/wp-admin.zip",
 	} {
-		if wpAdminRE.MatchString(uri) {
-			t.Errorf("wp-admin exemption can be injected into non-admin URI %q", uri)
+		if wpAdminRE.MatchString(path) {
+			t.Errorf("wp-admin exemption wrongly covers non-admin path %q", path)
 		}
+	}
+	// The query string is where an attacker could plant "/wp-admin/". Matching
+	// REQUEST_FILENAME instead of REQUEST_URI is what makes that impossible, so
+	// pin the variable rather than only the pattern.
+	if !strings.Contains(conf, `SecRule REQUEST_FILENAME "!@rx`) {
+		t.Error("exemption must read REQUEST_FILENAME; REQUEST_URI carries the query string")
+	}
+	if strings.Contains(conf, `id:900127`) && strings.Contains(conf, `SecRule REQUEST_URI "!@rx (?i)(?:^|/)wp-admin`) {
+		t.Error("exemption still reads REQUEST_URI, which a query value can satisfy")
 	}
 }

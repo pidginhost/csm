@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The bundled ModSecurity ruleset now blocks the Ultimate Member privilege-escalation flaw (CVE-2023-3460), which is on CISA's actively-exploited list.
+- The bundled ModSecurity ruleset now blocks the Ultimate Member privilege-escalation flaw (CVE-2023-3460), which is on CISA's actively-exploited list, including the parameter-name spellings PHP folds together. The rule that exempts wp-admin reads the request path only, so a link in a query string cannot turn the patch off.
 - The bundled ModSecurity ruleset now blocks the request fingerprint of the wp2shell mass-exploit tool, including nested percent-encoded and PHP-normalized forms, which had started spoofing browser user agents and pacing requests under the existing rate limit.
 - Detection for WordPress plugins that inject obfuscated JavaScript into visitor pages, and for plugins that hide themselves while concealing administrator accounts from the user list.
 
