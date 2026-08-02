@@ -197,7 +197,7 @@ func TestExtractPHPDefineUnquotedBooleanAndNumber(t *testing.T) {
 
 func TestScanWPCronMissingDir(t *testing.T) {
 	var findings []alert.Finding
-	scanWPCron("/no-such-dir", "alice", 4, &findings)
+	scanWPCronForTest("/no-such-dir", "alice", 4, &findings)
 	if len(findings) != 0 {
 		t.Errorf("missing dir should yield no findings, got %d", len(findings))
 	}
@@ -210,7 +210,7 @@ func TestScanWPCronDepthBelowZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	var findings []alert.Finding
-	scanWPCron(tmp, "alice", -1, &findings)
+	scanWPCronForTest(tmp, "alice", -1, &findings)
 	if len(findings) != 0 {
 		t.Errorf("depth<0 should yield no findings, got %d", len(findings))
 	}
@@ -220,12 +220,9 @@ func TestScanWPCronEmitsWhenWPCronEnabled(t *testing.T) {
 	tmp := t.TempDir()
 	// wp-config.php that does NOT define DISABLE_WP_CRON → treated as
 	// enabled (default), should emit a Warning finding.
-	if err := os.WriteFile(filepath.Join(tmp, "wp-config.php"),
-		[]byte("<?php\ndefine('DB_NAME', 'wp');\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, tmp, wpCronScanConfig)
 	var findings []alert.Finding
-	scanWPCron(tmp, "alice", 4, &findings)
+	scanWPCronForTest(tmp, "alice", 4, &findings)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 warning, got %d: %+v", len(findings), findings)
 	}
@@ -236,12 +233,10 @@ func TestScanWPCronEmitsWhenWPCronEnabled(t *testing.T) {
 
 func TestScanWPCronSilentWhenWPCronDisabled(t *testing.T) {
 	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "wp-config.php"),
-		[]byte("<?php\ndefine('DISABLE_WP_CRON', true);\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, tmp, strings.Replace(wpCronScanConfig,
+		"require_once", "define('DISABLE_WP_CRON', true);\nrequire_once", 1))
 	var findings []alert.Finding
-	scanWPCron(tmp, "alice", 4, &findings)
+	scanWPCronForTest(tmp, "alice", 4, &findings)
 	if len(findings) != 0 {
 		t.Errorf("DISABLE_WP_CRON=true should produce no findings, got %+v", findings)
 	}
@@ -249,12 +244,10 @@ func TestScanWPCronSilentWhenWPCronDisabled(t *testing.T) {
 
 func TestScanWPCronEmitsForCommentedDisableDefine(t *testing.T) {
 	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "wp-config.php"),
-		[]byte("<?php\n// define('DISABLE_WP_CRON', true);\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, tmp, strings.Replace(wpCronScanConfig,
+		"require_once", "// define('DISABLE_WP_CRON', true);\nrequire_once", 1))
 	var findings []alert.Finding
-	scanWPCron(tmp, "alice", 4, &findings)
+	scanWPCronForTest(tmp, "alice", 4, &findings)
 	if len(findings) != 1 {
 		t.Fatalf("commented DISABLE_WP_CRON must not count as disabled, got %+v", findings)
 	}
@@ -266,12 +259,9 @@ func TestScanWPCronRecursesIntoSubdirs(t *testing.T) {
 	if err := os.MkdirAll(sub, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sub, "wp-config.php"),
-		[]byte("<?php "), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, sub, wpCronScanConfig)
 	var findings []alert.Finding
-	scanWPCron(tmp, "alice", 4, &findings)
+	scanWPCronForTest(tmp, "alice", 4, &findings)
 	if len(findings) != 1 {
 		t.Errorf("expected nested wp-config.php to be flagged, got %d: %+v", len(findings), findings)
 	}

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The WP-Cron check now finds WordPress installs on addon domains. It previously looked only below each account's main document root, so sites served from their own directory were never reported and never fixed.
+- The WP-Cron check now safely finds WordPress installs on addon domains. It validates account roots and WordPress core files, avoids duplicate nested walks, and rotates capped results so every site can be reported and fixed.
 - Reports of the chr() obfuscation signature now require the assembled string to reach a code-execution call, so PDF and font libraries that legitimately build binary strings are no longer flagged. Fragmented construction, mixed-case calls, variable-variable sinks, and inert padding remain detectable.
 - A TimThumb copy on the final release with remote image fetching and screenshots explicitly disabled is no longer reported on every scan; there is nothing left to act on. Suppression requires active, non-conflicting false definitions, while older copies and any copy with an enabled feature still report.
 - The Ultimate Member virtual patch now covers encoded, Unicode-marked, dotted, spaced, and form-suffixed names that normalize to protected capability keys. Its admin exemption applies only to wp-admin paths.

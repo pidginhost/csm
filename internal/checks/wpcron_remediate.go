@@ -98,6 +98,13 @@ func FixDisableWPCronInRoots(path string, allowedRoots []string, opts WPCronFixO
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
 	}
+	isWordPress, validateErr := wpCronInstallIsValid(resolved, data)
+	if validateErr != nil {
+		return RemediationResult{Error: fmt.Sprintf("WordPress validation failed: %v", validateErr)}
+	}
+	if !isWordPress {
+		return RemediationResult{Error: "refusing WP-Cron fix because the directory is not a complete WordPress install"}
+	}
 
 	var actions []string
 	needsDefine := !wpCronHasActiveDisableDefine(data)

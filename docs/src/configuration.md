@@ -41,7 +41,7 @@ modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
 
 ### Account roots (plain Linux web-scan coverage)
 
-By default, web-root performance checks iterate `/home/*/public_html`, which is the cPanel layout. On a plain Linux host, point CSM at the actual web roots:
+By default, web-root performance checks iterate `/home/*/public_html`, which is the cPanel layout. The WP-Cron check and remediation also use cPanel's domain map for validated addon and subdomain document roots. On a plain Linux host, point CSM at the actual web roots:
 
 ```yaml
 account_roots:

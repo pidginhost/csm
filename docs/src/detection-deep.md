@@ -104,7 +104,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `email_mail_filters` -- read per-mailbox Exim filters under `/home/*/etc/<domain>/<localpart>/filter` and domain filters under `/etc/vfilters`
 - `open_basedir` -- reads EA-PHP `php.ini` under `/opt/cpanel/ea-php*/`
 - `php_config_changes` -- recursively scans `.user.ini` and `php.ini` below account web roots; incomplete walks emit a coverage finding and preserve prior findings
-- `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, `perf_php_handler` -- WordPress and PHP handler introspection via cPanel's EA-PHP layout
+- `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, `perf_php_handler` -- WordPress and PHP handler introspection via cPanel's EA-PHP layout; the WP-Cron check also uses cPanel's domain map for addon and subdomain roots
 
 **Runs on every platform:**
 

@@ -61,10 +61,7 @@ func TestCheckWPCronWithRealWPConfigEmitsWarning(t *testing.T) {
 	if err := os.MkdirAll(docRoot, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(docRoot, "wp-config.php"),
-		[]byte("<?php\ndefine('DB_NAME', 'wp');\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, docRoot, wpCronScanConfig)
 
 	cfg := &config.Config{
 		AccountRoots: []string{filepath.Join(tmp, "*", "public_html")},
@@ -81,6 +78,7 @@ func TestCheckWPCronWithRealWPConfigEmitsWarning(t *testing.T) {
 	withMockOS(t, &mockOS{
 		glob:     filepath.Glob,
 		stat:     os.Stat,
+		lstat:    os.Lstat,
 		readDir:  os.ReadDir,
 		readFile: os.ReadFile,
 		open:     os.Open,

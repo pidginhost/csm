@@ -486,7 +486,7 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
-	res := checks.FixDisableWPCronInRoots(req.Path, s.perfFixAllowedRoots(), s.wpCronFixOptions())
+	res := checks.FixDisableWPCronInRoots(req.Path, s.wpCronFixAllowedRoots(), s.wpCronFixOptions())
 	if !res.Success {
 		writeJSON(w, res)
 		return
@@ -511,6 +511,10 @@ func (s *Server) perfFixAllowedRoots() []string {
 		return []string{"/home"}
 	}
 	return checks.ResolveWebRoots(s.cfg)
+}
+
+func (s *Server) wpCronFixAllowedRoots() []string {
+	return checks.ResolveWPCronRoots(s.cfg)
 }
 
 func (s *Server) dismissPerfFinding(key string) {

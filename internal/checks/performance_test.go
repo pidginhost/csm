@@ -364,10 +364,7 @@ func TestCheckWPCron_UsesConfiguredAccountRoots(t *testing.T) {
 	if err := os.MkdirAll(webroot, 0755); err != nil {
 		t.Fatal(err)
 	}
-	wpConfig := filepath.Join(webroot, "wp-config.php")
-	if err := os.WriteFile(wpConfig, []byte("<?php\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeWPCronScanInstall(t, webroot, wpCronScanConfig)
 	cfg.AccountRoots = []string{filepath.Join(tmp, "srv", "sites", "*", "public")}
 
 	store, err := state.Open(filepath.Join(tmp, "state"))

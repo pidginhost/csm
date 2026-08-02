@@ -51,6 +51,16 @@ func wpCronTestEnv(t *testing.T, content string) (cfgPath, docroot string) {
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, name := range []string{"wp-settings.php", "wp-cron.php", "wp-load.php"} {
+		if err := os.WriteFile(filepath.Join(docroot, name), []byte("<?php\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"wp-admin", "wp-includes"} {
+		if err := os.Mkdir(filepath.Join(docroot, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return cfgPath, docroot
 }
 
@@ -602,8 +612,39 @@ func TestFixDisableWPCronRefusesWithoutInsertionPoint(t *testing.T) {
 	}
 }
 
+func TestFixDisableWPCronRefusesOrphanedConfig(t *testing.T) {
+	root := realTempDir(t)
+	withPerfFixRoots(t, root)
+	docroot := filepath.Join(root, "alice", "public_html")
+	if err := os.MkdirAll(docroot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(docroot, "wp-config.php")
+	if err := os.WriteFile(configPath, []byte(sampleWPConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := &crontabRecorder{}
+	withMockCmd(t, rec.mock())
+
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := FixDisableWPCron(configPath, WPCronFixOptions{PHPBin: "/usr/local/bin/php"})
+	if res.Success {
+		t.Fatalf("orphaned wp-config.php was remediated: %+v", res)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) || rec.installCalls != 0 {
+		t.Fatalf("orphaned config changed: installs=%d body=%s", rec.installCalls, after)
+	}
+}
+
 func TestFixDisableWPCronInsertsBeforeRequireWhenNoMarker(t *testing.T) {
-	noMarker := "<?php\ndefine( 'DB_NAME', 'x' );\nrequire_once ABSPATH . 'wp-settings.php';\n"
+	noMarker := "<?php\ndefine( 'DB_NAME', 'x' );\n$table_prefix = 'wp_';\nrequire_once ABSPATH . 'wp-settings.php';\n"
 	cfgPath, _ := wpCronTestEnv(t, noMarker)
 	rec := &crontabRecorder{}
 	withMockCmd(t, rec.mock())

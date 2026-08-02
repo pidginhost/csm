@@ -299,7 +299,7 @@ func AutoFixWPCron(cfg *config.Config, findings []alert.Finding) (actions []aler
 		IntervalMinutes: cfg.Performance.WPCronFix.IntervalMinutes,
 		PHPBin:          cfg.Performance.WPCronFix.PHPBin,
 	}
-	allowedRoots := ResolveWebRoots(cfg)
+	allowedRoots := ResolveWPCronRoots(cfg)
 
 	for _, f := range findings {
 		if f.Check != "perf_wp_cron" {

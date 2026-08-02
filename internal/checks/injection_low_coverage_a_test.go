@@ -681,7 +681,7 @@ func TestScanWPConfigsExcessiveMemoryAndInsecure(t *testing.T) {
 // ===========================================================================
 
 func TestScanWPCronNotDisabled(t *testing.T) {
-	wpConfig := "<?php\ndefine('DB_NAME','wp');\n"
+	wpConfig := wpCronScanConfig
 
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
@@ -693,17 +693,19 @@ func TestScanWPCronNotDisabled(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		lstat: wpCronMockInstallInfo,
 	})
 
 	var findings []alert.Finding
-	scanWPCron("/home/alice/public_html", "alice", 2, &findings)
+	scanWPCronForTest("/home/alice/public_html", "alice", 2, &findings)
 	if len(findings) == 0 {
 		t.Error("expected warning for WP-Cron not disabled")
 	}
 }
 
 func TestScanWPCronDisabledTrue(t *testing.T) {
-	wpConfig := "<?php\ndefine('DISABLE_WP_CRON', 'true');\n"
+	wpConfig := strings.Replace(wpCronScanConfig,
+		"require_once", "define('DISABLE_WP_CRON', 'true');\nrequire_once", 1)
 
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
@@ -715,17 +717,19 @@ func TestScanWPCronDisabledTrue(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		lstat: wpCronMockInstallInfo,
 	})
 
 	var findings []alert.Finding
-	scanWPCron("/home/alice/public_html", "alice", 2, &findings)
+	scanWPCronForTest("/home/alice/public_html", "alice", 2, &findings)
 	if len(findings) != 0 {
 		t.Error("DISABLE_WP_CRON=true should produce no findings")
 	}
 }
 
 func TestScanWPCronDisabledFalse(t *testing.T) {
-	wpConfig := "<?php\ndefine('DISABLE_WP_CRON', 'false');\n"
+	wpConfig := strings.Replace(wpCronScanConfig,
+		"require_once", "define('DISABLE_WP_CRON', 'false');\nrequire_once", 1)
 
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
@@ -737,10 +741,11 @@ func TestScanWPCronDisabledFalse(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		lstat: wpCronMockInstallInfo,
 	})
 
 	var findings []alert.Finding
-	scanWPCron("/home/alice/public_html", "alice", 2, &findings)
+	scanWPCronForTest("/home/alice/public_html", "alice", 2, &findings)
 	if len(findings) == 0 {
 		t.Error("DISABLE_WP_CRON=false should produce a warning")
 	}

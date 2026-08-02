@@ -10,6 +10,18 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+type wpCronUserdataOverlay struct {
+	OS
+	content string
+}
+
+func (o wpCronUserdataOverlay) ReadFile(name string) ([]byte, error) {
+	if name == userdataDomainsPath {
+		return []byte(o.content), nil
+	}
+	return o.OS.ReadFile(name)
+}
+
 func wpCronFinding(path string) alert.Finding {
 	return alert.Finding{
 		Check:   "perf_wp_cron",
@@ -79,6 +91,40 @@ func TestAutoFixWPCronAppliesAndReportsAction(t *testing.T) {
 	body, _ := os.ReadFile(cfgPath)
 	if !strings.Contains(string(body), "DISABLE_WP_CRON") {
 		t.Errorf("wp-config.php should have the define after auto-fix")
+	}
+}
+
+func TestAutoFixWPCronAllowsValidatedAddonDomainRoot(t *testing.T) {
+	root := realTempDir(t)
+	home := filepath.Join(root, "home")
+	main := filepath.Join(home, "alice", "public_html")
+	addon := filepath.Join(home, "alice", "shop.example.com")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeWPCronScanInstall(t, addon, wpCronScanConfig)
+	withWPCronOwner(t, "alice")
+	rec := &crontabRecorder{}
+	withMockCmd(t, rec.mock())
+
+	mapData := "shop.example.com: alice==root==addon==example.com==" + addon + "==192.0.2.10:80==192.0.2.10:443====0==ea-php82"
+	withMockOS(t, wpCronUserdataOverlay{OS: realOS{}, content: mapData})
+	cfg := &config.Config{AccountRoots: []string{main}}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.FixWPCron = true
+	cfg.Performance.WPCronFix.PHPBin = "/usr/local/bin/php"
+
+	f := wpCronFinding(cfgPath)
+	actions, fixed := AutoFixWPCron(cfg, []alert.Finding{f})
+	if len(actions) != 1 || len(fixed) != 1 || fixed[0] != f.Key() {
+		t.Fatalf("addon-domain auto-fix did not complete: actions=%+v fixed=%v", actions, fixed)
+	}
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !wpCronHasActiveDisableDefine(body) || rec.installCalls != 1 {
+		t.Fatalf("addon-domain fix did not edit config and cron: installs=%d body=%s", rec.installCalls, body)
 	}
 }
 

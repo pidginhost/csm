@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1307,74 +1310,258 @@ func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, _ *state.Sto
 // CheckWPCron
 // ---------------------------------------------------------------------------
 
-// scanWPCron recursively searches dir for wp-config.php files and checks
-// whether DISABLE_WP_CRON is defined and set to true.
-func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
-	if depth < 0 || len(*findings) >= 30 {
-		return
-	}
+const (
+	wpCronFindingLimit = 30
+	wpCronCursorKey    = "_wpcron_scan_cursor"
+)
 
-	entries, err := osFS.ReadDir(dir)
-	if err != nil {
-		return
-	}
+var (
+	wpCronTablePrefixAssignRe = regexp.MustCompile(`(?im)^[\t ]*\$table_prefix[\t ]*=`)
+	wpCronRequireRe           = regexp.MustCompile(`(?im)^[\t ]*require(?:_once)?\b`)
+)
 
-	for _, e := range entries {
-		if len(*findings) >= 30 {
-			return
+type wpCronScanRoot struct {
+	path    string
+	account string
+}
+
+type wpCronCandidate struct {
+	path    string
+	account string
+}
+
+type wpCronScanCursor struct {
+	Root string `json:"root"`
+	Path string `json:"path,omitempty"`
+}
+
+// scanWPCronCandidates recursively finds real WordPress installs. When a
+// nested vhost is also a scan root, the broader root leaves that subtree to
+// the more-specific root. This preserves the full depth allowance for both
+// roots without reading or reporting the same install twice.
+func scanWPCronCandidates(
+	ctx context.Context,
+	scanRoot, dir, account string,
+	depth int,
+	allRoots map[string]struct{},
+	candidates map[string]wpCronCandidate,
+) bool {
+	if depth < 0 {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	cleanDir := filepath.Clean(dir)
+	if cleanDir != filepath.Clean(scanRoot) {
+		if _, nestedRoot := allRoots[cleanDir]; nestedRoot {
+			return true
 		}
-		name := e.Name()
-		fullPath := filepath.Join(dir, name)
+	}
 
-		if e.IsDir() {
+	entries, err := osFS.ReadDir(cleanDir)
+	if err != nil {
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	complete := true
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return false
+		}
+		name := entry.Name()
+		fullPath := filepath.Join(cleanDir, name)
+		if entry.IsDir() {
 			if skipDirs[name] {
 				continue
 			}
-			scanWPCron(fullPath, account, depth-1, findings)
+			if !scanWPCronCandidates(ctx, scanRoot, fullPath, account, depth-1, allRoots, candidates) {
+				complete = false
+			}
 			continue
 		}
-
-		if name != "wp-config.php" {
+		if name != "wp-config.php" || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			complete = false
+			continue
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 
 		data, readErr := osFS.ReadFile(fullPath)
 		if readErr != nil {
+			if !errors.Is(readErr, fs.ErrNotExist) {
+				complete = false
+			}
 			continue
 		}
-
-		if !wpCronHasActiveDisableDefine(data) {
-			*findings = append(*findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "perf_wp_cron",
-				Message:  fmt.Sprintf("WP-Cron not disabled for %s", account),
-				Details: fmt.Sprintf(
-					"File: %s - add define('DISABLE_WP_CRON', true); and use a real cron job instead",
-					fullPath,
-				),
-				Timestamp: time.Now(),
-			})
+		if wpCronHasActiveDisableDefine(data) {
+			continue
 		}
+		isWordPress, validateErr := wpCronInstallIsValid(fullPath, data)
+		if validateErr != nil {
+			complete = false
+			continue
+		}
+		if !isWordPress {
+			continue
+		}
+		candidates[fullPath] = wpCronCandidate{path: fullPath, account: account}
+	}
+	return complete
+}
+
+// wpCronInstallIsValid requires both the WordPress bootstrap shape and the
+// core files the remediation will invoke. A stray or backup wp-config.php is
+// not enough evidence to edit customer data or install a crontab entry.
+func wpCronInstallIsValid(configPath string, data []byte) (bool, error) {
+	code := stripPHPCommentsFromCode(phpCodeOnly(string(data)))
+	codeWithoutStrings := stripPHPStringsFromCode(code)
+	if !wpCronTablePrefixAssignRe.MatchString(codeWithoutStrings) ||
+		!wpCronHasSettingsRequire(code, codeWithoutStrings) {
+		return false, nil
+	}
+
+	docroot := filepath.Dir(configPath)
+	for _, name := range []string{"wp-settings.php", "wp-cron.php", "wp-load.php"} {
+		info, err := osFS.Lstat(filepath.Join(docroot, name))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !info.Mode().IsRegular() {
+			return false, nil
+		}
+	}
+	for _, name := range []string{"wp-admin", "wp-includes"} {
+		info, err := osFS.Lstat(filepath.Join(docroot, name))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return false, nil
+			}
+			return false, err
+		}
+		if !info.IsDir() {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// wpCronHasSettingsRequire ties the wp-settings.php literal to an active
+// require statement. Looking for both tokens independently lets quoted sample
+// text masquerade as a WordPress bootstrap and can trigger destructive fixes.
+func wpCronHasSettingsRequire(code, codeWithoutStrings string) bool {
+	for _, loc := range wpCronRequireRe.FindAllStringIndex(codeWithoutStrings, -1) {
+		statementEnd := strings.IndexByte(codeWithoutStrings[loc[1]:], ';')
+		if statementEnd < 0 {
+			continue
+		}
+		statementEnd += loc[1]
+		if strings.Contains(strings.ToLower(code[loc[0]:statementEnd]), "wp-settings.php") {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedWPCronCandidates(candidates map[string]wpCronCandidate) []wpCronCandidate {
+	out := make([]wpCronCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out
+}
+
+func newWPCronFinding(candidate wpCronCandidate) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning,
+		Check:    "perf_wp_cron",
+		Message:  fmt.Sprintf("WP-Cron not disabled for %s", candidate.account),
+		Details: fmt.Sprintf(
+			"File: %s - add define('DISABLE_WP_CRON', true); and use a real cron job instead",
+			candidate.path,
+		),
+		Timestamp: time.Now(),
 	}
 }
 
-// CheckWPCron scans configured web roots (default /home/*/public_html on
-// cPanel) for WordPress installs that have not disabled the built-in
-// WP-Cron mechanism. Running WP-Cron via HTTP is a common cause of high
-// load on busy sites.
+// CheckWPCron scans configured web roots plus validated cPanel document roots
+// for WordPress installs that have not disabled the built-in WP-Cron
+// mechanism. Running WP-Cron via HTTP is a common cause of high load on busy
+// sites.
 // The runner enforces a 60-minute throttle via checkThrottleMin.
-func CheckWPCron(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPCron(ctx context.Context, cfg *config.Config, scanState *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
 
+	roots, rootsComplete := wpCronScanRootSet(cfg)
+	if !rootsComplete {
+		markCheckIncomplete(ctx, "perf_wp_cron")
+	}
+	if len(roots) == 0 {
+		clearWPCronCursor(scanState)
+		return nil
+	}
+
+	allRoots := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		allRoots[root.path] = struct{}{}
+	}
+	cursor := loadWPCronCursor(scanState)
+	start, resumeCurrent := wpCronStartRoot(roots, cursor)
 	var findings []alert.Finding
-	for _, dir := range wpCronScanRoots(cfg) {
-		scanWPCron(dir, accountFromPath(dir), 2, &findings)
-		if len(findings) >= 30 {
+	var nextCursor wpCronScanCursor
+	capped := false
+	for visited := 0; visited < len(roots); visited++ {
+		if ctx.Err() != nil {
+			return findings
+		}
+		root := roots[(start+visited)%len(roots)]
+		candidates := make(map[string]wpCronCandidate)
+		if !scanWPCronCandidates(ctx, root.path, root.path, root.account, 2, allRoots, candidates) {
+			markCheckIncomplete(ctx, "perf_wp_cron")
+		}
+		sorted := sortedWPCronCandidates(candidates)
+		lastPath := ""
+		if visited == 0 && resumeCurrent && root.path == cursor.Root {
+			lastPath = cursor.Path
+		}
+		first := sort.Search(len(sorted), func(i int) bool { return sorted[i].path > lastPath })
+		eligible := sorted[first:]
+		remaining := wpCronFindingLimit - len(findings)
+		selected := len(eligible)
+		if selected > remaining {
+			selected = remaining
+		}
+		for _, candidate := range eligible[:selected] {
+			findings = append(findings, newWPCronFinding(candidate))
+		}
+		if len(findings) == wpCronFindingLimit {
+			nextCursor.Root = root.path
+			if selected < len(eligible) {
+				nextCursor.Path = eligible[selected-1].path
+			}
+			capped = true
 			break
 		}
 	}
+	if ctx.Err() != nil {
+		return findings
+	}
+	if capped {
+		storeWPCronCursor(scanState, nextCursor)
+	} else {
+		clearWPCronCursor(scanState)
+	}
+	sort.Slice(findings, func(i, j int) bool { return findings[i].Details < findings[j].Details })
 	return findings
 }
 
@@ -1387,46 +1574,209 @@ func CheckWPCron(ctx context.Context, cfg *config.Config, _ *state.Store) []aler
 // authoritative list, and is already how the exposed-files and php-config
 // checks enumerate document roots.
 //
-// Roots are de-duplicated, and a root nested inside another is dropped so the
-// same install is not walked (and reported) twice.
+// Roots are de-duplicated and path-sorted. Nested roots stay in the list so
+// each gets its own full depth allowance; the scanner assigns the nested
+// subtree to the more-specific root to avoid duplicate work and findings.
 func wpCronScanRoots(cfg *config.Config) []string {
-	roots := ResolveWebRoots(cfg)
-	if data, err := osFS.ReadFile(userdataDomainsPath); err == nil {
-		vhosts, _ := parseUserdataDomainRootsChecked(string(data))
-		for _, vh := range vhosts {
-			roots = append(roots, vh.docroot)
-		}
+	rootSet, _ := wpCronScanRootSet(cfg)
+	roots := make([]string, 0, len(rootSet))
+	for _, root := range rootSet {
+		roots = append(roots, root.path)
+	}
+	return roots
+}
+
+// ResolveWPCronRoots returns the same validated roots used by CheckWPCron.
+// Remediation callers use it so a finding from an addon domain remains inside
+// the exact root authorized by cPanel's map.
+func ResolveWPCronRoots(cfg *config.Config) []string {
+	return wpCronScanRoots(cfg)
+}
+
+func wpCronScanRootSet(cfg *config.Config) ([]wpCronScanRoot, bool) {
+	configured := ResolveWebRoots(cfg)
+	byPath := make(map[string]wpCronScanRoot, len(configured))
+	for _, root := range configured {
+		clean := filepath.Clean(root)
+		byPath[clean] = wpCronScanRoot{path: clean, account: accountFromPath(clean)}
 	}
 
-	seen := make(map[string]struct{}, len(roots))
-	unique := roots[:0:0]
-	for _, r := range roots {
-		clean := filepath.Clean(r)
-		if _, dup := seen[clean]; dup {
+	complete := true
+	data, err := osFS.ReadFile(userdataDomainsPath)
+	if err != nil {
+		if vhostMapFailureIsIncomplete(err) {
+			complete = false
+		}
+		return sortedWPCronRoots(byPath), complete
+	}
+	vhosts, parsedComplete := parseUserdataDomainRootsChecked(string(data))
+	complete = complete && parsedComplete
+	attempted := make(map[string]struct{}, len(vhosts))
+	for _, vhost := range vhosts {
+		clean := filepath.Clean(vhost.docroot)
+		key := vhost.user + "\x00" + clean
+		if _, duplicate := attempted[key]; duplicate {
 			continue
 		}
-		if info, err := osFS.Stat(clean); err != nil || !info.IsDir() {
+		attempted[key] = struct{}{}
+		homeBase, accountHome, safe := wpCronMapAccountHome(vhost.user, clean, configured)
+		if !safe {
+			complete = false
 			continue
 		}
-		seen[clean] = struct{}{}
-		unique = append(unique, clean)
+		exists, pathComplete := wpCronMapRootIsSafe(homeBase, accountHome, clean)
+		if !pathComplete {
+			complete = false
+		}
+		if !exists {
+			continue
+		}
+		byPath[clean] = wpCronScanRoot{path: clean, account: vhost.user}
+	}
+	return sortedWPCronRoots(byPath), complete
+}
+
+func sortedWPCronRoots(byPath map[string]wpCronScanRoot) []wpCronScanRoot {
+	roots := make([]wpCronScanRoot, 0, len(byPath))
+	for _, root := range byPath {
+		roots = append(roots, root)
+	}
+	sort.Slice(roots, func(i, j int) bool { return roots[i].path < roots[j].path })
+	return roots
+}
+
+func wpCronMapAccountHome(user, docroot string, configured []string) (homeBase, accountHome string, ok bool) {
+	clean := filepath.Clean(docroot)
+	if !filepath.IsAbs(clean) {
+		return "", "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, string(filepath.Separator)), string(filepath.Separator))
+	if len(parts) >= 3 && wpCronHomeVolume(parts[0]) && parts[1] == user {
+		homeBase = filepath.Join(string(filepath.Separator), parts[0])
+		accountHome = filepath.Join(homeBase, user)
+		return homeBase, accountHome, clean != accountHome
 	}
 
-	// Drop any root that already sits under another; scanWPCron descends two
-	// levels, so a nested root would rescan the same wp-config.php.
-	sort.Slice(unique, func(i, j int) bool { return len(unique[i]) < len(unique[j]) })
-	var out []string
-	for _, r := range unique {
-		nested := false
-		for _, kept := range out {
-			if strings.HasPrefix(r, kept+string(filepath.Separator)) {
-				nested = true
-				break
+	// Explicit account_roots may point into a chroot-style test or custom
+	// mount. Only extend a map root to a sibling when the configured root
+	// already anchors that same /home/USER boundary.
+	for _, configuredRoot := range configured {
+		rootParts := strings.Split(strings.TrimPrefix(filepath.Clean(configuredRoot), string(filepath.Separator)), string(filepath.Separator))
+		for i := 0; i+1 < len(rootParts); i++ {
+			if rootParts[i] != "home" || rootParts[i+1] != user {
+				continue
+			}
+			homeBaseParts := append([]string{string(filepath.Separator)}, rootParts[:i+1]...)
+			homeBase = filepath.Join(homeBaseParts...)
+			accountHome = filepath.Join(homeBase, user)
+			if filepath.Clean(configuredRoot) != accountHome &&
+				isPathWithinOrEqual(configuredRoot, accountHome) &&
+				clean != accountHome && isPathWithinOrEqual(clean, accountHome) {
+				return homeBase, accountHome, true
 			}
 		}
-		if !nested {
-			out = append(out, r)
+	}
+	return "", "", false
+}
+
+func wpCronHomeVolume(name string) bool {
+	if name == "home" {
+		return true
+	}
+	if !strings.HasPrefix(name, "home") || len(name) == len("home") {
+		return false
+	}
+	for _, r := range name[len("home"):] {
+		if r < '0' || r > '9' {
+			return false
 		}
 	}
-	return out
+	return true
+}
+
+// wpCronMapRootIsSafe rejects symlinks at every component from the home mount
+// through the docroot. Stat on only the final path would follow an intermediate
+// symlink and let a malformed map redirect the scan outside the account.
+func wpCronMapRootIsSafe(homeBase, accountHome, root string) (exists, complete bool) {
+	if !isPathWithinOrEqual(accountHome, homeBase) ||
+		!isPathWithinOrEqual(root, accountHome) || root == accountHome {
+		return false, false
+	}
+	rel, err := filepath.Rel(homeBase, root)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false, false
+	}
+	paths := []string{homeBase}
+	current := homeBase
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		paths = append(paths, current)
+	}
+	for _, path := range paths {
+		info, statErr := osFS.Lstat(path)
+		if statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				return false, true
+			}
+			return false, false
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false, false
+		}
+	}
+	return true, true
+}
+
+func loadWPCronCursor(scanState *state.Store) wpCronScanCursor {
+	if scanState == nil {
+		return wpCronScanCursor{}
+	}
+	raw, ok := scanState.GetRaw(wpCronCursorKey)
+	if !ok {
+		return wpCronScanCursor{}
+	}
+	var cursor wpCronScanCursor
+	if json.Unmarshal([]byte(raw), &cursor) != nil {
+		return wpCronScanCursor{}
+	}
+	return cursor
+}
+
+func wpCronStartRoot(roots []wpCronScanRoot, cursor wpCronScanCursor) (start int, resume bool) {
+	if cursor.Root == "" {
+		return 0, false
+	}
+	if cursor.Path != "" {
+		i := sort.Search(len(roots), func(i int) bool { return roots[i].path >= cursor.Root })
+		if i < len(roots) && roots[i].path == cursor.Root {
+			return i, true
+		}
+	}
+	i := sort.Search(len(roots), func(i int) bool { return roots[i].path > cursor.Root })
+	if i == len(roots) {
+		i = 0
+	}
+	return i, false
+}
+
+func storeWPCronCursor(scanState *state.Store, cursor wpCronScanCursor) {
+	if scanState == nil {
+		return
+	}
+	raw, err := json.Marshal(cursor)
+	if err != nil {
+		return
+	}
+	if err := scanState.SetRawAndSave(wpCronCursorKey, string(raw)); err != nil {
+		fmt.Fprintf(os.Stderr, "wpcron: cursor write: %v\n", err)
+	}
+}
+
+func clearWPCronCursor(scanState *state.Store) {
+	if scanState == nil {
+		return
+	}
+	if err := scanState.DeleteRawAndSave(wpCronCursorKey); err != nil {
+		fmt.Fprintf(os.Stderr, "wpcron: cursor clear: %v\n", err)
+	}
 }
