@@ -1468,6 +1468,10 @@ type defaultPresence struct {
 	httpASNCrawlReverseProxy   bool
 	xmlrpcThreshold            bool
 	integrityImmutable         bool
+	// firewall records which firewall: keys the operator wrote, so a
+	// partial block keeps the defaults for everything unlisted. nil means
+	// the whole block was absent.
+	firewall map[string]bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1724,6 +1728,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Firewall == nil {
 		cfg.Firewall = firewall.DefaultConfig()
+	} else {
+		applyFirewallFieldDefaults(cfg.Firewall, presence.firewall)
 	}
 	if len(cfg.GeoIP.Editions) == 0 {
 		cfg.GeoIP.Editions = []string{"GeoLite2-City", "GeoLite2-ASN"}
@@ -2074,9 +2080,16 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		} `yaml:"alerts"`
 		Retention map[string]yaml.Node `yaml:"retention"`
 		Integrity map[string]yaml.Node `yaml:"integrity"`
+		Firewall  map[string]yaml.Node `yaml:"firewall"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
+	}
+	if raw.Firewall != nil {
+		presence.firewall = make(map[string]bool, len(raw.Firewall))
+		for key := range raw.Firewall {
+			presence.firewall[key] = true
+		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
@@ -2133,6 +2146,76 @@ func applyForwardGuardDefaults(fg *ForwardGuardConfig, p forwardGuardPresence) {
 	}
 	if !p.retention {
 		fg.QuarantineRetentionDays = 14
+	}
+}
+
+// applyFirewallFieldDefaults fills absent firewall: keys from DefaultConfig.
+// The whole-pointer default used to be all-or-nothing: any partial firewall
+// block ("enabled: true" alone) lost every unlisted default and produced a
+// DROP-policy chain with empty accept lists - an instant lockout. Presence
+// tracking keeps operator-explicit values, including empty lists, zeros,
+// and false. Fields whose default is the zero value need no entry here.
+func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]bool) {
+	def := firewall.DefaultConfig()
+	if !present["tcp_in"] {
+		fc.TCPIn = def.TCPIn
+	}
+	if !present["tcp_out"] {
+		fc.TCPOut = def.TCPOut
+	}
+	if !present["udp_in"] {
+		fc.UDPIn = def.UDPIn
+	}
+	if !present["udp_out"] {
+		fc.UDPOut = def.UDPOut
+	}
+	if !present["restricted_tcp"] {
+		fc.RestrictedTCP = def.RestrictedTCP
+	}
+	if !present["passive_ftp_start"] {
+		fc.PassiveFTPStart = def.PassiveFTPStart
+	}
+	if !present["passive_ftp_end"] {
+		fc.PassiveFTPEnd = def.PassiveFTPEnd
+	}
+	if !present["conn_rate_limit"] {
+		fc.ConnRateLimit = def.ConnRateLimit
+	}
+	if !present["syn_flood_protection"] {
+		fc.SYNFloodProtection = def.SYNFloodProtection
+	}
+	if !present["conn_limit"] {
+		fc.ConnLimit = def.ConnLimit
+	}
+	if !present["port_flood"] {
+		fc.PortFlood = def.PortFlood
+	}
+	if !present["udp_flood"] {
+		fc.UDPFlood = def.UDPFlood
+	}
+	if !present["udp_flood_rate"] {
+		fc.UDPFloodRate = def.UDPFloodRate
+	}
+	if !present["udp_flood_burst"] {
+		fc.UDPFloodBurst = def.UDPFloodBurst
+	}
+	if !present["drop_nolog"] {
+		fc.DropNoLog = def.DropNoLog
+	}
+	if !present["deny_ip_limit"] {
+		fc.DenyIPLimit = def.DenyIPLimit
+	}
+	if !present["deny_temp_ip_limit"] {
+		fc.DenyTempIPLimit = def.DenyTempIPLimit
+	}
+	if !present["smtp_ports"] {
+		fc.SMTPPorts = def.SMTPPorts
+	}
+	if !present["log_dropped"] {
+		fc.LogDropped = def.LogDropped
+	}
+	if !present["log_rate"] {
+		fc.LogRate = def.LogRate
 	}
 }
 
