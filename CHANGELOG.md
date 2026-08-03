@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CSM now raises a High finding when the firewall is enabled with IPv6 management off while the host has a global IPv6 address, since all IPv6 traffic bypasses the firewall in that configuration.
+
 ### Fixed
 
 - Firewall flushes now serialize auto-block cleanup with scans and report persistence failures, so stale or newly recreated threat rows cannot undo the flush.

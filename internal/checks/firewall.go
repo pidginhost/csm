@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -11,12 +12,64 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+// firewallHostIPv6Addrs is the host's global-unicast IPv6 address source;
+// swapped in tests.
+var firewallHostIPv6Addrs = hostGlobalIPv6Addrs
+
+// hostGlobalIPv6Addrs returns the host's global-unicast IPv6 addresses.
+// Loopback, link-local, ULA, and IPv4 do not count: only globally routable
+// IPv6 makes the unmanaged-family bypass reachable from the internet.
+func hostGlobalIPv6Addrs() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range addrs {
+		if ip := globalUnicastIPv6FromCIDR(a.String()); ip != "" {
+			out = append(out, ip)
+		}
+	}
+	return out
+}
+
+func globalUnicastIPv6FromCIDR(cidr string) string {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		ip = net.ParseIP(cidr)
+	}
+	if ip == nil || ip.To4() != nil {
+		return ""
+	}
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return ""
+	}
+	return ip.String()
+}
+
 func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	if !cfg.Firewall.Enabled {
 		// Firewall not managed by CSM - skip nftables checks
 		return findings
+	}
+
+	// When firewall.ipv6 is false the engine inserts a blanket NFPROTO
+	// ipv6 accept ahead of the blocked sets and every port rule, so on a
+	// dual-stack host the entire IPv6 attack surface bypasses the
+	// DROP-policy firewall. That trade-off must never be silent.
+	if !cfg.Firewall.IPv6 {
+		if addrs := firewallHostIPv6Addrs(); len(addrs) > 0 {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "firewall_ipv6_unmanaged",
+				Message: fmt.Sprintf(
+					"IPv6 traffic bypasses the CSM firewall: firewall.ipv6 is disabled but this host has a global IPv6 address (%s); all IPv6 traffic is accepted unfiltered - set firewall.ipv6: true",
+					addrs[0]),
+				Timestamp: time.Now(),
+			})
+		}
 	}
 
 	// Verify the CSM nftables table exists and has expected components.

@@ -294,6 +294,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "exfiltration_paste_site", Category: CategoryNetwork},
 	{Name: "firewall", Category: CategoryNetwork},
 	{Name: "firewall_ports", Category: CategoryNetwork},
+	{Name: "firewall_ipv6_unmanaged", Category: CategoryNetwork},
 	{Name: "bad_asn_outbound", Category: CategoryNetwork},
 	{Name: "infra_ips_unresolvable", Category: CategoryNetwork},
 	{Name: "ip_reputation", Category: CategoryNetwork},

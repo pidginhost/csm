@@ -190,7 +190,7 @@ var runnerFindingNames = map[string][]string{
 	"fake_kernel_threads":   {"fake_kernel_thread"},
 	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
 	"filesystem":            {"backdoor_binary", "suid_binary", "suspicious_file"},
-	"firewall":              {"firewall", "firewall_ports"},
+	"firewall":              {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
 	"ftp_logins":            {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
 	"group_writable_php":    {"group_writable_php"},
 	"health":                {"csm_health"},
