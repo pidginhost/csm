@@ -6,7 +6,22 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 )
+
+type cloudflareCoverageTestChecker bool
+
+func (c cloudflareCoverageTestChecker) CloudflareCovers(string) bool { return bool(c) }
+
+func TestCloudflareCoverageSuffix(t *testing.T) {
+	want := " (warning: " + firewall.CloudflareCoverageWarning + ")"
+	if got := cloudflareCoverageSuffix(cloudflareCoverageTestChecker(true), "203.0.113.9"); got != want {
+		t.Fatalf("covered suffix = %q, want %q", got, want)
+	}
+	if got := cloudflareCoverageSuffix(cloudflareCoverageTestChecker(false), "203.0.113.9"); got != "" {
+		t.Fatalf("uncovered suffix = %q, want empty", got)
+	}
+}
 
 func TestHandleFirewallStatusReturnsLiveState(t *testing.T) {
 	// Use the simpler in-memory harness. cfg is zero-value so

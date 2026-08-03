@@ -119,4 +119,7 @@ func TestNonLinuxStubReadsStayInert(t *testing.T) {
 	if v4 != nil || v6 != nil {
 		t.Errorf("CloudflareIPs = (%v, %v)", v4, v6)
 	}
+	if e.CloudflareCovers("198.51.100.7") {
+		t.Error("CloudflareCovers should return false")
+	}
 }

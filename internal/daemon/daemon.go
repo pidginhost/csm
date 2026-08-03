@@ -3068,7 +3068,9 @@ func (d *Daemon) refreshCloudflareIPs() {
 		}
 	}
 
-	firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now())
+	if err := firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now()); err != nil {
+		csmlog.Error("cloudflare state save error", "err", err)
+	}
 
 	// Update the checks package so AutoBlockIPs/ChallengeRouteIPs skip CF IPs.
 	// Blocking a CF edge IP would block thousands of legitimate users.

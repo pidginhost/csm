@@ -8,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
@@ -128,6 +129,7 @@ func (d *Daemon) observeBlocks(actions []alert.Finding) {
 			continue
 		}
 		reason := strings.TrimPrefix(f.Details, "Reason: ")
+		reason = strings.TrimSuffix(reason, " (warning: "+firewall.CloudflareCoverageWarning+")")
 		if reason == "" {
 			continue
 		}

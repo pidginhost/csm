@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 type cloudflareAwareBlocker struct {
@@ -38,8 +39,16 @@ func TestAutoBlockWarnsWhenBlockedIPInsideCloudflareRange(t *testing.T) {
 	if blockFinding == nil {
 		t.Fatalf("actions = %+v, want AUTO-BLOCK finding", actions)
 	}
-	if !strings.Contains(blockFinding.Details, "Cloudflare") {
-		t.Errorf("Details = %q, want Cloudflare coverage warning", blockFinding.Details)
+	wantDetails := "Reason: brute force from 203.0.113.40 (warning: " + firewall.CloudflareCoverageWarning + ")"
+	if blockFinding.Details != wantDetails {
+		t.Errorf("Details = %q, want %q", blockFinding.Details, wantDetails)
+	}
+	fields := strings.Fields(blockFinding.Message)
+	if len(fields) < 2 || fields[0] != "AUTO-BLOCK:" || fields[1] != "203.0.113.40" {
+		t.Errorf("Message = %q, want stable AUTO-BLOCK token and IP", blockFinding.Message)
+	}
+	if strings.Contains(blockFinding.Message, "Cloudflare") {
+		t.Errorf("Message = %q, Cloudflare warning belongs only in Details", blockFinding.Message)
 	}
 }
 
@@ -55,9 +64,13 @@ func TestAutoBlockNoCloudflareWarningOutsideRanges(t *testing.T) {
 		SourceIP: "203.0.113.41",
 	}})
 
-	for _, f := range actions {
-		if strings.Contains(f.Details, "Cloudflare") {
-			t.Errorf("unexpected Cloudflare warning: %+v", f)
+	for i := range actions {
+		if strings.HasPrefix(actions[i].Message, "AUTO-BLOCK: 203.0.113.41") {
+			if strings.Contains(actions[i].Details, "Cloudflare") {
+				t.Errorf("unexpected Cloudflare warning: %+v", actions[i])
+			}
+			return
 		}
 	}
+	t.Fatalf("actions = %+v, want AUTO-BLOCK finding", actions)
 }

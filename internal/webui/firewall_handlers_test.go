@@ -174,8 +174,8 @@ func TestAPIBlockIPWarnsWhenCloudflareCovered(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body["warning"], "Cloudflare") {
-		t.Errorf("body = %v, want a Cloudflare coverage warning", body)
+	if body["warning"] != firewall.CloudflareCoverageWarning {
+		t.Errorf("body = %v, want warning %q", body, firewall.CloudflareCoverageWarning)
 	}
 }
 

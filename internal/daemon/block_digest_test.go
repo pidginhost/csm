@@ -88,6 +88,50 @@ func TestObserveBlocksCategorizesWAFAttackerBlock(t *testing.T) {
 	}
 }
 
+func TestObserveBlocksIgnoresCloudflareWarningWhenClassifying(t *testing.T) {
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now:       func() time.Time { return time.Unix(0, 0) },
+		CountryOf: func(string) string { return "RO" },
+	})
+	d.observeBlocks([]alert.Finding{{
+		Check:     "auto_block",
+		Severity:  alert.Critical,
+		Message:   "AUTO-BLOCK: 203.0.113.56 blocked (expires in 24h)",
+		Details:   "Reason: rule escalation: repeated denies (warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted)",
+		Timestamp: time.Unix(0, 0),
+	}})
+
+	dg := d.blockDigest.Drain()
+	if dg.Total != 1 || dg.AttackerCount != 1 || dg.ByCategory["modsec"] != 1 {
+		t.Fatalf("digest = %+v, want one modsec attacker block", dg)
+	}
+	if got, want := dg.Records[0].Reason, "rule escalation: repeated denies"; got != want {
+		t.Fatalf("digest reason = %q, want %q without coverage annotation", got, want)
+	}
+}
+
+func TestObserveBlocksCloudflareWarningDoesNotReplaceMissingReason(t *testing.T) {
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now:       func() time.Time { return time.Unix(0, 0) },
+		CountryOf: func(string) string { return "RO" },
+	})
+	d.observeBlocks([]alert.Finding{{
+		Check:     "auto_block",
+		Severity:  alert.Critical,
+		Message:   "AUTO-BLOCK: 203.0.113.57 blocked (expires in 24h)",
+		Details:   "Reason:  (warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted)",
+		Timestamp: time.Unix(0, 0),
+	}})
+
+	if dg := d.blockDigest.Drain(); dg.Total != 0 {
+		t.Fatalf("digest = %+v, coverage annotation must not become a block reason", dg)
+	}
+}
+
 func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
 	d := &Daemon{} // blockDigest nil (feature disabled)
 	d.observeBlocks([]alert.Finding{{Check: "auto_block", Severity: alert.Critical,

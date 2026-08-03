@@ -76,7 +76,9 @@ func TestSaveLoadCFState(t *testing.T) {
 	ipv6 := []string{"2400:cb00::/32", "2606:4700::/32"}
 	now := time.Now().Truncate(time.Second)
 
-	SaveCFState(dir, ipv4, ipv6, now)
+	if err := SaveCFState(dir, ipv4, ipv6, now); err != nil {
+		t.Fatalf("SaveCFState: %v", err)
+	}
 
 	// Verify file was created
 	stateFile := filepath.Join(dir, "firewall", "cf_whitelist.txt")
@@ -109,6 +111,46 @@ func TestSaveLoadCFState(t *testing.T) {
 	gotTime := LoadCFRefreshTime(dir)
 	if !gotTime.Equal(now) {
 		t.Errorf("refresh time: got %v, want %v", gotTime, now)
+	}
+}
+
+// CloudflareCovers reads this file while the refresh loop replaces it. The
+// replacement must use rename so readers see either the complete old snapshot
+// or the complete new one, never a truncated or partially-written file.
+func TestSaveCFStateAtomicallyReplacesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveCFState(dir, []string{"198.51.100.0/24"}, nil, time.Now()); err != nil {
+		t.Fatalf("initial SaveCFState: %v", err)
+	}
+	stateFile := filepath.Join(dir, "firewall", "cf_whitelist.txt")
+	before, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if saveErr := SaveCFState(dir, []string{"203.0.113.0/24"}, nil, time.Now()); saveErr != nil {
+		t.Fatalf("replacement SaveCFState: %v", saveErr)
+	}
+	after, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Error("state file was rewritten in place, want atomic rename replacement")
+	}
+	v4, _ := LoadCFState(dir)
+	if len(v4) != 1 || v4[0] != "203.0.113.0/24" {
+		t.Fatalf("loaded IPv4 ranges = %v, want replacement snapshot", v4)
+	}
+}
+
+func TestSaveCFStateReturnsFilesystemError(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(statePath, []byte("occupied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCFState(statePath, nil, nil, time.Now()); err == nil {
+		t.Fatal("SaveCFState returned nil for an unusable state path")
 	}
 }
 

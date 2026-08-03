@@ -26,7 +26,9 @@ func TestEngineCloudflareIPsReadsSaved(t *testing.T) {
 	dir := t.TempDir()
 	ipv4 := []string{"173.245.48.0/20"}
 	ipv6 := []string{"2400:cb00::/32"}
-	SaveCFState(dir, ipv4, ipv6, time.Now())
+	if err := SaveCFState(dir, ipv4, ipv6, time.Now()); err != nil {
+		t.Fatalf("SaveCFState: %v", err)
+	}
 
 	e := &Engine{statePath: dir}
 	gv4, gv6 := e.CloudflareIPs()
@@ -35,6 +37,23 @@ func TestEngineCloudflareIPsReadsSaved(t *testing.T) {
 	}
 	if len(gv6) != 1 || gv6[0] != ipv6[0] {
 		t.Errorf("v6 = %v, want %v", gv6, ipv6)
+	}
+}
+
+func TestEngineCloudflareCoversReadsSavedRanges(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveCFState(dir, []string{"198.51.100.0/24"}, []string{"2001:db8:100::/48"}, time.Now()); err != nil {
+		t.Fatalf("SaveCFState: %v", err)
+	}
+	e := &Engine{statePath: dir}
+	if !e.CloudflareCovers("198.51.100.7") {
+		t.Error("CloudflareCovers returned false for saved IPv4 range")
+	}
+	if !e.CloudflareCovers("2001:db8:100::7") {
+		t.Error("CloudflareCovers returned false for saved IPv6 range")
+	}
+	if e.CloudflareCovers("203.0.113.7") {
+		t.Error("CloudflareCovers returned true outside saved ranges")
 	}
 }
 

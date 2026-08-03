@@ -8,11 +8,17 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 const (
 	cfIPv4URL = "https://www.cloudflare.com/ips-v4"
 	cfIPv6URL = "https://www.cloudflare.com/ips-v6"
+
+	// CloudflareCoverageWarning is shared by every operator-facing block
+	// response so API, CLI, and finding wording cannot drift apart.
+	CloudflareCoverageWarning = "IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted"
 )
 
 // FetchCloudflareIPs downloads the current Cloudflare IP ranges.
@@ -65,13 +71,15 @@ func parseCloudflareResponse(scanner *bufio.Scanner) []string {
 	return cidrs
 }
 
-// SaveCFState persists the Cloudflare CIDRs for status display.
-func SaveCFState(statePath string, ipv4, ipv6 []string, refreshed time.Time) {
+// SaveCFState persists the Cloudflare CIDRs for status and coverage checks.
+func SaveCFState(statePath string, ipv4, ipv6 []string, refreshed time.Time) error {
 	path := statePath
 	if !strings.HasSuffix(path, "/firewall") {
 		path += "/firewall"
 	}
-	_ = os.MkdirAll(path, 0700)
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return fmt.Errorf("creating Cloudflare state directory: %w", err)
+	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# refreshed: %s\n", refreshed.Format(time.RFC3339))
@@ -87,7 +95,10 @@ func SaveCFState(statePath string, ipv4, ipv6 []string, refreshed time.Time) {
 	}
 
 	file := path + "/cf_whitelist.txt"
-	_ = os.WriteFile(file, []byte(sb.String()), 0600)
+	if err := atomicio.AtomicWrite(file, 0600, []byte(sb.String())); err != nil {
+		return fmt.Errorf("writing Cloudflare state: %w", err)
+	}
+	return nil
 }
 
 // CloudflareRangesCover reports whether ip falls inside any of the given

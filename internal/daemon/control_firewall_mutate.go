@@ -60,9 +60,9 @@ func (c *ControlListener) handleFirewallBlock(argsRaw json.RawMessage) (any, err
 // cloudflareCoverageSuffix warns the operator when a just-blocked IP sits
 // inside a Cloudflare allow range: the input chain accepts CF edges on TCP
 // 80/443 before the blocked drop, so the block does not stop web traffic.
-func cloudflareCoverageSuffix(e *firewall.Engine, ip string) string {
+func cloudflareCoverageSuffix(e interface{ CloudflareCovers(string) bool }, ip string) string {
 	if e != nil && e.CloudflareCovers(ip) {
-		return " (warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted)"
+		return " (warning: " + firewall.CloudflareCoverageWarning + ")"
 	}
 	return ""
 }
