@@ -1,6 +1,10 @@
 package config
 
-import "gopkg.in/yaml.v3"
+import (
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+)
 
 // CollisionFn is invoked when DeepMergeTracked detects a scalar in the
 // overlay overwriting a different scalar in the base. Identical-value
@@ -48,6 +52,194 @@ func DeepMergeTracked(base, overlay *yaml.Node, onCollision CollisionFn) *yaml.N
 	}
 	mergeNodesAt(base.Content[0], overlay.Content[0], "", onCollision)
 	return base
+}
+
+const maxYAMLMergeExpansionNodes = 100_000
+
+// normalizeYAMLForMerge resolves aliases and YAML merge keys before custom
+// main+conf.d merging. Scalar nodes are preserved verbatim: decoding through
+// interface{} would coerce date-like strings and other tagged values before
+// Config gets its typed decode.
+func normalizeYAMLForMerge(root *yaml.Node) (*yaml.Node, error) {
+	if root == nil || !containsAliasOrMerge(root) {
+		return root, nil
+	}
+	n := yamlMergeNormalizer{active: make(map[*yaml.Node]bool)}
+	// The initial scan already proved the tree needs normalization. Clone the
+	// whole tree in one pass so a deeply nested alias cannot make each ancestor
+	// rescan the same descendants.
+	return n.normalize(root)
+}
+
+func containsAliasOrMerge(node *yaml.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Kind == yaml.AliasNode {
+		return true
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if isYAMLMergeKey(node.Content[i]) {
+				return true
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if containsAliasOrMerge(child) {
+			return true
+		}
+	}
+	return false
+}
+
+type yamlMergeNormalizer struct {
+	active  map[*yaml.Node]bool
+	created int
+}
+
+func (n *yamlMergeNormalizer) normalize(node *yaml.Node) (*yaml.Node, error) {
+	if node == nil {
+		return nil, nil
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias %q has no anchor", node.Value)
+		}
+		if n.active[node.Alias] {
+			return nil, fmt.Errorf("YAML anchor %q contains itself", node.Value)
+		}
+		return n.normalize(node.Alias)
+	}
+	if n.active[node] {
+		return nil, fmt.Errorf("YAML anchor %q contains itself", node.Anchor)
+	}
+	if n.created >= maxYAMLMergeExpansionNodes {
+		return nil, fmt.Errorf("YAML alias expansion exceeds %d nodes", maxYAMLMergeExpansionNodes)
+	}
+	n.created++
+	n.active[node] = true
+	defer delete(n.active, node)
+
+	if node.Kind == yaml.MappingNode {
+		return n.normalizeMapping(node)
+	}
+
+	clone := *node
+	clone.Anchor = ""
+	clone.Alias = nil
+	clone.Content = make([]*yaml.Node, 0, len(node.Content))
+	for _, child := range node.Content {
+		normalized, err := n.normalize(child)
+		if err != nil {
+			return nil, err
+		}
+		clone.Content = append(clone.Content, normalized)
+	}
+	return &clone, nil
+}
+
+func (n *yamlMergeNormalizer) normalizeMapping(node *yaml.Node) (*yaml.Node, error) {
+	clone := *node
+	clone.Anchor = ""
+	clone.Alias = nil
+	clone.Content = make([]*yaml.Node, 0, len(node.Content))
+	explicit := make(map[string]bool, len(node.Content)/2)
+	var mergeValue *yaml.Node
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if isYAMLMergeKey(key) {
+			if mergeValue != nil {
+				return nil, fmt.Errorf("YAML mapping contains multiple merge keys")
+			}
+			mergeValue = node.Content[i+1]
+			continue
+		}
+		normalizedKey, err := n.normalize(key)
+		if err != nil {
+			return nil, err
+		}
+		normalizedValue, err := n.normalize(node.Content[i+1])
+		if err != nil {
+			return nil, err
+		}
+		clone.Content = append(clone.Content, normalizedKey, normalizedValue)
+		if id, ok := yamlScalarKeyID(normalizedKey); ok {
+			explicit[id] = true
+		}
+	}
+
+	if mergeValue == nil {
+		return &clone, nil
+	}
+	mergeMappings, err := n.normalizeMergeValue(mergeValue)
+	if err != nil {
+		return nil, err
+	}
+	for _, mapping := range mergeMappings {
+		if err := validateMergeMappingKeys(mapping); err != nil {
+			return nil, err
+		}
+		for i := 0; i+1 < len(mapping.Content); i += 2 {
+			id, _ := yamlScalarKeyID(mapping.Content[i])
+			if explicit[id] {
+				continue
+			}
+			explicit[id] = true
+			clone.Content = append(clone.Content, mapping.Content[i], mapping.Content[i+1])
+		}
+	}
+	return &clone, nil
+}
+
+func (n *yamlMergeNormalizer) normalizeMergeValue(node *yaml.Node) ([]*yaml.Node, error) {
+	normalized, err := n.normalize(node)
+	if err != nil {
+		return nil, err
+	}
+	switch normalized.Kind {
+	case yaml.MappingNode:
+		return []*yaml.Node{normalized}, nil
+	case yaml.SequenceNode:
+		mappings := make([]*yaml.Node, 0, len(normalized.Content))
+		for _, child := range normalized.Content {
+			if child.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("YAML map merge requires a map or sequence of maps")
+			}
+			mappings = append(mappings, child)
+		}
+		return mappings, nil
+	default:
+		return nil, fmt.Errorf("YAML map merge requires a map or sequence of maps")
+	}
+}
+
+func validateMergeMappingKeys(mapping *yaml.Node) error {
+	seen := make(map[string]bool, len(mapping.Content)/2)
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		id, ok := yamlScalarKeyID(mapping.Content[i])
+		if !ok {
+			return fmt.Errorf("YAML map merge contains a non-scalar key")
+		}
+		if seen[id] {
+			return fmt.Errorf("YAML map merge contains duplicate key %q", mapping.Content[i].Value)
+		}
+		seen[id] = true
+	}
+	return nil
+}
+
+func yamlScalarKeyID(key *yaml.Node) (string, bool) {
+	if key == nil || key.Kind != yaml.ScalarNode {
+		return "", false
+	}
+	return key.ShortTag() + "\x00" + key.Value, true
+}
+
+func isYAMLMergeKey(key *yaml.Node) bool {
+	return key != nil && key.Kind == yaml.ScalarNode && key.Value == "<<" &&
+		(key.Tag == "" || key.Tag == "!" || key.ShortTag() == "!!merge")
 }
 
 func mergeNodesAt(b, o *yaml.Node, path string, onCollision CollisionFn) {

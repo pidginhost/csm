@@ -191,6 +191,11 @@ func parseConfFragment(ff confFragmentFile) (*yaml.Node, bool, error) {
 	if len(node.Content) == 0 {
 		return nil, false, nil
 	}
+	normalized, err := normalizeYAMLForMerge(&node)
+	if err != nil {
+		return nil, false, fmt.Errorf("parsing %s: %w", ff.path, err)
+	}
+	node = *normalized
 	if hasTopLevelKey(&node, "integrity") {
 		return nil, false, fmt.Errorf("conf.d fragment %s must not set daemon-managed integrity metadata", ff.path)
 	}

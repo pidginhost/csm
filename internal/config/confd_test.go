@@ -95,6 +95,31 @@ func TestLoadConfDirRejectsIntegrityOverride(t *testing.T) {
 	}
 }
 
+func TestLoadConfDirRejectsMergedIntegrityOverride(t *testing.T) {
+	dir := t.TempDir()
+	fragment := `<<: &managed
+  integrity:
+    config_hash: ""
+`
+	must(t, os.WriteFile(filepath.Join(dir, "10-integrity.yaml"), []byte(fragment), 0o600))
+
+	_, err := LoadConfDir(dir)
+	if err == nil {
+		t.Fatal("conf.d integrity override hidden in a YAML merge must be rejected")
+	}
+	if !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("error = %v, want integrity refusal", err)
+	}
+
+	_, err = ConfDirFragmentDigestInput(dir)
+	if err == nil {
+		t.Fatal("digest input must reject the same merged integrity override")
+	}
+	if !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("digest error = %v, want integrity refusal", err)
+	}
+}
+
 func TestLoadConfDir_RejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(dir, "10.yaml"), []byte("not_a_real_field: 1\n"), 0o600))
