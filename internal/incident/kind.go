@@ -187,6 +187,7 @@ var hostIntegrityChecks = map[string]bool{
 	"kernel_module":              true,
 	"crontab_change":             true,
 	"crond_change":               true,
+	"firewall_ipv6_unmanaged":    true,
 	"mail_auth_backend_degraded": true,
 }
 

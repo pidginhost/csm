@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- IPv6 firewall gap detection now reports address-inspection failures, recognizes scoped addresses, keeps a stable finding identity across address-order changes, and opens host-level incidents.
 - Firewall flushes now serialize auto-block cleanup with scans and report persistence failures, so stale or newly recreated threat rows cannot undo the flush.
 - Dry-run subnet notices now honor firewall safety checks, so protected ranges are not reported as block candidates.
 - Web UI block, allow, and deny-subnet requests now reject invalid or out-of-range durations instead of silently treating them as permanent.

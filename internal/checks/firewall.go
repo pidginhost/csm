@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,10 +21,10 @@ var firewallHostIPv6Addrs = hostGlobalIPv6Addrs
 // hostGlobalIPv6Addrs returns the host's global-unicast IPv6 addresses.
 // Loopback, link-local, ULA, and IPv4 do not count: only globally routable
 // IPv6 makes the unmanaged-family bypass reachable from the internet.
-func hostGlobalIPv6Addrs() []string {
+func hostGlobalIPv6Addrs() ([]string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("enumerate interface addresses: %w", err)
 	}
 	var out []string
 	for _, a := range addrs {
@@ -30,17 +32,25 @@ func hostGlobalIPv6Addrs() []string {
 			out = append(out, ip)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func globalUnicastIPv6FromCIDR(cidr string) string {
-	ip, _, err := net.ParseCIDR(cidr)
+	addrText, prefixText, hasPrefix := strings.Cut(cidr, "/")
+	ip, err := netip.ParseAddr(addrText)
 	if err != nil {
-		ip = net.ParseIP(cidr)
-	}
-	if ip == nil || ip.To4() != nil {
 		return ""
 	}
+	if hasPrefix {
+		bits, err := strconv.Atoi(prefixText)
+		if err != nil || bits < 0 || bits > ip.BitLen() {
+			return ""
+		}
+	}
+	if ip.Is4() || ip.Is4In6() {
+		return ""
+	}
+	ip = ip.WithZone("")
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
 		return ""
 	}
@@ -60,13 +70,19 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 	// dual-stack host the entire IPv6 attack surface bypasses the
 	// DROP-policy firewall. That trade-off must never be silent.
 	if !cfg.Firewall.IPv6 {
-		if addrs := firewallHostIPv6Addrs(); len(addrs) > 0 {
+		addrs, err := firewallHostIPv6Addrs()
+		if err != nil {
 			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "firewall_ipv6_unmanaged",
-				Message: fmt.Sprintf(
-					"IPv6 traffic bypasses the CSM firewall: firewall.ipv6 is disabled but this host has a global IPv6 address (%s); all IPv6 traffic is accepted unfiltered - set firewall.ipv6: true",
-					addrs[0]),
+				Severity:  alert.Warning,
+				Check:     "firewall_ipv6_unmanaged",
+				Message:   "Unable to inspect host IPv6 addresses while firewall.ipv6 is disabled; CSM cannot determine whether the unmanaged IPv6 path exposes this host",
+				Timestamp: time.Now(),
+			})
+		} else if len(addrs) > 0 {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "firewall_ipv6_unmanaged",
+				Message:   "IPv6 traffic bypasses the CSM firewall: firewall.ipv6 is disabled but this host has a global IPv6 address; all IPv6 traffic is accepted unfiltered - set firewall.ipv6: true",
 				Timestamp: time.Now(),
 			})
 		}
