@@ -165,11 +165,11 @@ func TestFlushAutoBlockStateReportsStoreFailure(t *testing.T) {
 	})
 
 	const ip = "203.0.113.27"
-	if err := sdb.AddTempBlock(ip, "automatic", time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
+	if addErr := sdb.AddTempBlock(ip, "automatic", time.Now().Add(time.Hour)); addErr != nil {
+		t.Fatal(addErr)
 	}
-	if err := sdb.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := sdb.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 
 	statePath := t.TempDir()
