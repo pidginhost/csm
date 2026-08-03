@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reputation alerts are now suppressed only for IPs that were actually blocked, not whenever auto-blocking is enabled, so dry-run, rate-limited, and panel-allowed IPs surface to the operator again.
 - Firewall config rollback now clears its pending record before triggering the daemon restart; the old order left the record behind and made every subsequent boot revert and restart again.
 - A partial firewall config section now keeps the defaults for unlisted keys; previously any partial section dropped every default and could produce a drop-all firewall with no accept rules.
+- Rate-limited block candidates are no longer lost when the firewall engine is unavailable or a block call fails; queued entries are requeued with a timestamp and retired after two hours so stale evidence never triggers a late block.
 - Drop-in YAML aliases are now resolved before merge, so aliased firewall overrides load correctly and cannot hide protected integrity settings.
 
 ## [3.27.0] - 2026-08-02

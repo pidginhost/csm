@@ -30,6 +30,13 @@ const (
 	// re-detected from the same findings on the next scan, so the cap
 	// loses no durable protection.
 	maxPendingBlocks = 1000
+
+	// maxPendingAge drops queued entries whose evidence has gone stale: a
+	// pending IP survives requeue cycles (rate limit, engine down, block
+	// errors), and blocking hours after the triggering findings is worse
+	// than not blocking. Two hours covers one full rate-limit window plus
+	// slack for the queue to drain.
+	maxPendingAge = 2 * time.Hour
 )
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
@@ -136,6 +143,11 @@ type blockedIP struct {
 type pendingIP struct {
 	IP     string `json:"ip"`
 	Reason string `json:"reason"`
+	// QueuedAt is when the IP first entered the queue; it survives
+	// requeue cycles so age accumulates instead of resetting. Zero on
+	// entries written by older builds (treated as fresh once, then
+	// stamped on the first requeue).
+	QueuedAt time.Time `json:"queued_at,omitempty"`
 }
 
 type blockState struct {
@@ -212,7 +224,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Collect IPs to block from findings
-	ipsToBlock := make(map[string]string) // ip -> reason
+	ipsToBlock := make(map[string]pendingIP)
 
 	// Always blockable findings carry a confirmed attacker IP: thresholded
 	// brute force, confirmed compromise, C2/reputation, or escalation.
@@ -261,10 +273,17 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"ftp_auth_failure_realtime":   true,
 	}
 
-	// Drain pending queue first (IPs from prior rate-limited cycles)
+	// Drain pending queue first (IPs from prior rate-limited or failed
+	// cycles). Stale entries are dropped by name so the audit trail shows
+	// exactly which attackers aged out instead of being blocked.
 	for _, p := range state.Pending {
+		if !p.QueuedAt.IsZero() && autoBlockNow().Sub(p.QueuedAt) > maxPendingAge {
+			fmt.Fprintf(os.Stderr, "auto-block: dropping stale pending %s (queued %s)\n",
+				p.IP, p.QueuedAt.Format(time.RFC3339))
+			continue
+		}
 		if !isAlreadyBlocked(state, p.IP) {
-			ipsToBlock[p.IP] = p.Reason
+			ipsToBlock[p.IP] = p
 		}
 	}
 	state.Pending = nil
@@ -353,7 +372,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		ipsToBlock[ip] = f.Message
+		// A drained pending entry keeps its QueuedAt when the same IP
+		// recurs in fresh findings; only the reason is refreshed.
+		if existing, ok := ipsToBlock[ip]; ok {
+			existing.Reason = f.Message
+			ipsToBlock[ip] = existing
+		} else {
+			ipsToBlock[ip] = pendingIP{IP: ip, Reason: f.Message}
+		}
 	}
 
 	// Block IPs - queue any that can't be blocked due to rate limit
@@ -401,23 +427,34 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	rateLimited := false
 	droppedPending := 0
-	for ip, reason := range ipsToBlock {
+	// requeue preserves an IP that could not be blocked this cycle (rate
+	// limit, engine unavailable, transient block error). QueuedAt is
+	// stamped on first entry so the drain's age check can retire it; the
+	// bound keeps a sustained flood from growing the queue without limit,
+	// and overflow drops are named so they are recoverable from logs.
+	requeue := func(p pendingIP) {
+		if p.QueuedAt.IsZero() {
+			p.QueuedAt = autoBlockNow()
+		}
+		if len(state.Pending) < maxPendingBlocks {
+			state.Pending = append(state.Pending, p)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
+		droppedPending++
+	}
+	for ip, cand := range ipsToBlock {
 		if state.BlocksThisHour >= maxPerHour {
-			// Queue for next cycle instead of dropping, bounded so a
-			// sustained flood cannot grow the queue without limit.
-			if len(state.Pending) < maxPendingBlocks {
-				state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: reason})
-			} else {
-				droppedPending++
-			}
+			requeue(cand)
 			rateLimited = true
 			continue
 		}
 
 		// Block via firewall engine (nftables)
-		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(reason, 100))
+		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(cand.Reason, 100))
 		if blocker == nil {
-			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping %s\n", ip)
+			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeuing %s\n", ip)
+			requeue(cand)
 			continue
 		}
 		outcome, err := callBlockIP(blocker, ip, blockReason, expiry)
@@ -425,9 +462,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
 			// The triggering finding still stands, so suspicious activity from a
-			// protected address is still surfaced.
+			// protected address is still surfaced. Any other error is treated
+			// as transient and the IP is requeued; the age cap retires it if
+			// the failure persists.
 			if !errors.Is(err, firewall.ErrIPProtected) {
-				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
+				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (requeued)\n", ip, err)
+				requeue(cand)
 			}
 			continue
 		}
@@ -443,7 +483,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				Severity:  alert.Warning,
 				Check:     "auto_block",
 				Message:   fmt.Sprintf("AUTO-BLOCK [dry-run]: %s would be blocked (expires in %s)", ip, expiry),
-				Details:   fmt.Sprintf("Reason: %s", reason),
+				Details:   fmt.Sprintf("Reason: %s", cand.Reason),
 				Timestamp: time.Now(),
 			})
 			continue
@@ -476,12 +516,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// ip_reputation on every access after the temp block lapses and
 		// re-blocks it forever (permablock loop).
 		if db := GetThreatDB(); db != nil {
-			db.AddTemporary(ip, reason, expiry)
+			db.AddTemporary(ip, cand.Reason, expiry)
 		}
 
 		state.IPs = append(state.IPs, blockedIP{
 			IP:        ip,
-			Reason:    reason,
+			Reason:    cand.Reason,
 			BlockedAt: time.Now(),
 			ExpiresAt: time.Now().Add(expiry),
 		})
@@ -490,7 +530,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Severity:  alert.Critical,
 			Check:     "auto_block",
 			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", ip, expiry),
-			Details:   fmt.Sprintf("Reason: %s", reason),
+			Details:   fmt.Sprintf("Reason: %s", cand.Reason),
 			Timestamp: time.Now(),
 		})
 
