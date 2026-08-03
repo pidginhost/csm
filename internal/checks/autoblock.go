@@ -214,8 +214,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	state.IPs = stillBlocked
 
 	// Prune auto-response subnet blocks that now intersect the DoS-exempt set
-	// before making new subnet decisions this cycle.
-	if blocker != nil {
+	// before making new subnet decisions this cycle. Never in dry-run:
+	// dry-run promises a read-only firewall and pruning is a kernel mutation.
+	if blocker != nil && isAutoResponseActive(cfg) {
 		PruneExemptAutoSubnets(cfg, blocker)
 	}
 
@@ -308,7 +309,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if cidr == "" {
 			continue
 		}
+		if isSubnetAlreadyBlocked(blocker, cidr) {
+			continue
+		}
+		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+			continue
+		}
 		if !isAutoResponseActive(cfg) {
+			// Dry-run: same visibility contract as per-IP blocks - emit a
+			// Warning notice instead of skipping silently.
+			actions = append(actions, dryRunSubnetNotice(cidr, "", f.Message))
 			continue
 		}
 		if blocker == nil {
@@ -318,12 +328,6 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		sb, ok := blocker.(subnetBlocker)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping %s\n", cidr)
-			continue
-		}
-		if isSubnetAlreadyBlocked(blocker, cidr) {
-			continue
-		}
-		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
@@ -399,23 +403,28 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 	// http_asn_crawl: surgical subnet tempban for confirmed Critical findings.
 	// Each CIDR consumes one MaxBlocksPerHour slot. Independent of the per-IP
-	// list but shares its hourly budget. Skips dry-run, infra intersections,
-	// and already-blocked subnets.
-	if sb, ok := blocker.(subnetBlocker); ok && isAutoResponseActive(cfg) {
+	// list but shares its hourly budget. Skips infra intersections and
+	// already-blocked subnets; dry-run emits notices instead of blocking and
+	// consumes no budget.
+	if sb, ok := blocker.(subnetBlocker); ok {
 		tempban := parseExpiry(cfg.AutoResponse.HTTPASNCrawlTempban)
 		for _, f := range findings {
 			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
 			}
 			for _, cidr := range f.CIDRs {
-				if state.BlocksThisHour >= maxPerHour {
-					break
-				}
 				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
 					continue
 				}
 				if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 					continue
+				}
+				if !isAutoResponseActive(cfg) {
+					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f.Message))
+					continue
+				}
+				if state.BlocksThisHour >= maxPerHour {
+					break
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
 				if err := sb.BlockSubnet(cidr, reason, tempban); err != nil {
@@ -602,8 +611,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	// Subnet auto-blocking: detect per-family subnet patterns.
-	if cfg.AutoResponse.NetBlock && blocker != nil && isAutoResponseActive(cfg) {
+	// Subnet auto-blocking: detect per-family subnet patterns. Runs in
+	// dry-run too so escalations that would fire (from live blocks recorded
+	// before dry-run was enabled) surface as notices.
+	if cfg.AutoResponse.NetBlock && blocker != nil {
 		threshold := cfg.AutoResponse.NetBlockThreshold
 		if threshold < 2 {
 			threshold = 3
@@ -628,6 +639,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 						continue
 					}
 					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+						continue
+					}
+					if !isAutoResponseActive(cfg) {
+						subnetBlocked[cidr] = true
+						actions = append(actions, alert.Finding{
+							Severity:  alert.Warning,
+							Check:     "auto_block",
+							Message:   fmt.Sprintf("AUTO-NETBLOCK [dry-run]: %s would be blocked (%d IPs from same subnet)", cidr, count),
+							Timestamp: time.Now(),
+						})
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
@@ -886,6 +907,21 @@ func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	path := filepath.Join(statePath, "permblock_tracker.json")
 	if err := atomicio.AtomicWriteJSON(path, 0o600, tracker); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+	}
+}
+
+// dryRunSubnetNotice mirrors the per-IP dry-run notice for the subnet block
+// paths so operators evaluating dry-run see subnet decisions instead of
+// silence. The message deliberately differs from the live
+// "AUTO-BLOCK-SUBNET:" token so alert-filter suppression never treats a
+// notice as a real block.
+func dryRunSubnetNotice(cidr, kind, reason string) alert.Finding {
+	return alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "auto_block",
+		Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET [dry-run]: %s would be blocked%s", cidr, kind),
+		Details:   fmt.Sprintf("Reason: %s", reason),
+		Timestamp: time.Now(),
 	}
 }
 
