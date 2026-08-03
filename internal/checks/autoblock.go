@@ -732,7 +732,6 @@ func saveBlockState(statePath string, s *blockState) {
 }
 
 // PendingBlockIPs returns IPs queued for blocking (rate-limited).
-// Used by alert.FilterBlockedAlerts to suppress reputation alerts for these IPs.
 func PendingBlockIPs(statePath string) map[string]bool {
 	state := loadBlockState(statePath)
 	ips := make(map[string]bool, len(state.Pending))

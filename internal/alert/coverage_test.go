@@ -1151,7 +1151,7 @@ func TestLoadBlockedIPsMalformedFirewallStateWarns(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedAlertsMalformedBlockedEntriesStillUsesPendingEntries(t *testing.T) {
+func TestFilterBlockedAlertsMalformedBlockedEntriesKeepsPendingFinding(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = nil
 	t.Cleanup(func() { BlockedIPsFunc = orig })
@@ -1171,8 +1171,8 @@ func TestFilterBlockedAlertsMalformedBlockedEntriesStillUsesPendingEntries(t *te
 		got = FilterBlockedAlerts(cfg, findings)
 	})
 
-	if len(got) != 0 {
-		t.Fatalf("valid pending entry should still suppress finding, got %+v", got)
+	if len(got) != 1 || got[0].Message != findings[0].Message {
+		t.Fatalf("pending block is not actual block state and must stay visible, got %+v", got)
 	}
 	if !strings.Contains(logs, "blocked entries unparseable") {
 		t.Fatalf("missing blocked-entry warning: %q", logs)
@@ -1198,13 +1198,13 @@ func TestLoadPendingIPsMissing(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedAlertsPendingIPsSuppressed(t *testing.T) {
+func TestFilterBlockedAlertsPendingIPsRemainVisible(t *testing.T) {
 	orig := BlockedIPsFunc
 	BlockedIPsFunc = nil
 	t.Cleanup(func() { BlockedIPsFunc = orig })
 
 	dir := t.TempDir()
-	body := `{"pending":[{"ip":"8.8.8.8"}]}`
+	body := `{"ips":[{"ip":"9.9.9.9","expires_at":"2099-01-01T00:00:00Z"}],"pending":[{"ip":"8.8.8.8"}]}`
 	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1213,8 +1213,8 @@ func TestFilterBlockedAlertsPendingIPsSuppressed(t *testing.T) {
 	cfg.Suppressions.SuppressBlockedAlerts = true
 	findings := []Finding{{Check: "ip_reputation", Message: "8.8.8.8 scanning"}}
 	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 0 {
-		t.Errorf("pending IP should be suppressed, got %v", got)
+	if len(got) != 1 || got[0].Message != findings[0].Message {
+		t.Errorf("pending IP is not blocked and must stay visible, got %v", got)
 	}
 }
 

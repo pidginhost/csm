@@ -25,8 +25,9 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		return findings
 	}
 
-	// Load all currently blocked IPs and queued blocks from state.
-	blockedIPs, pendingIPs := loadBlockedAlertState(cfg.StatePath)
+	// Load only IPs with actual block state. Pending entries have not reached
+	// the firewall and must remain visible to the operator.
+	blockedIPs := loadBlockedIPs(cfg.StatePath)
 
 	// Also collect IPs and subnets blocked in this batch.
 	var blockedSubnets []*net.IPNet
@@ -47,12 +48,6 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 				break
 			}
 		}
-	}
-
-	// Also suppress alerts for IPs queued for blocking (rate-limited).
-	// These will be blocked once the rate limit resets - no need to alert.
-	for ip := range pendingIPs {
-		blockedIPs[ip] = true
 	}
 
 	if len(blockedIPs) == 0 && len(blockedSubnets) == 0 {
@@ -231,15 +226,6 @@ func loadBlockedIPs(statePath string) map[string]bool {
 	loadBlockedIPSource(statePath, now, ips)
 	loadBlockFileEntries(statePath, now, ips, nil, blockFileIPsSection)
 	return ips
-}
-
-func loadBlockedAlertState(statePath string) (map[string]bool, map[string]bool) {
-	ips := make(map[string]bool)
-	pending := make(map[string]bool)
-	now := time.Now()
-	loadBlockedIPSource(statePath, now, ips)
-	loadBlockFileEntries(statePath, now, ips, pending, blockFileIPsSection|blockFilePendingSection)
-	return ips, pending
 }
 
 func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool) {
