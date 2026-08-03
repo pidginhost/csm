@@ -183,6 +183,9 @@ func TestAutoBlockIPs_ProtectedIPErrorDoesNotMutateStateOrLog(t *testing.T) {
 	if state.BlocksThisHour != 0 {
 		t.Errorf("state.BlocksThisHour = %d on protected-IP refusal, want 0", state.BlocksThisHour)
 	}
+	if len(state.Pending) != 0 {
+		t.Errorf("protected-IP refusal was requeued: %+v", state.Pending)
+	}
 	if len(actions) != 0 {
 		t.Fatalf("protected-IP refusal emitted auto-block actions: %+v", actions)
 	}

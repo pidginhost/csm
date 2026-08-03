@@ -23,12 +23,11 @@ const (
 	defaultBlockExpiry = "24h"
 	blockStateFile     = "blocked_ips.json"
 
-	// maxPendingBlocks bounds the rate-limit overflow queue. Under a
-	// sustained flood the daemon can see more distinct attacker IPs in an
-	// hour than the block cap allows; without a bound the pending queue
-	// grows without limit and bloats blocked_ips.json. Dropped IPs are
-	// re-detected from the same findings on the next scan, so the cap
-	// loses no durable protection.
+	// maxPendingBlocks bounds the retry queue. Under a sustained flood or
+	// firewall outage the daemon can accumulate more distinct attacker IPs
+	// than it can block; without a bound the queue grows without limit and
+	// bloats blocked_ips.json. Overflow is named in stderr and surfaced as
+	// a warning so the resulting loss is visible to operators.
 	maxPendingBlocks = 1000
 
 	// maxPendingAge drops queued entries whose evidence has gone stale: a
@@ -152,7 +151,7 @@ type pendingIP struct {
 
 type blockState struct {
 	IPs            []blockedIP `json:"ips"`
-	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for rate-limit reset
+	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for another block attempt
 	BlocksThisHour int         `json:"blocks_this_hour"`
 	HourKey        string      `json:"hour_key"`
 	// RateLimitWarnedHour is the HourKey for which the rate-limit warning
@@ -161,6 +160,10 @@ type blockState struct {
 	// every scan tick -- the per-tick emission flooded the audit log with
 	// one identical finding every few seconds during a sustained attack.
 	RateLimitWarnedHour string `json:"rate_limit_warned_hour,omitempty"`
+	// PendingDropWarnedHour throttles queue-overflow findings independently
+	// from rate-limit warnings. Engine-down and block-error retries can fill
+	// the queue without reaching the hourly block limit.
+	PendingDropWarnedHour string `json:"pending_drop_warned_hour,omitempty"`
 }
 
 // AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
@@ -277,6 +280,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
 	for _, p := range state.Pending {
+		ip := normalizeBlockIP(p.IP)
+		if ip == "" {
+			fmt.Fprintf(os.Stderr, "auto-block: dropping invalid pending IP %q\n", p.IP)
+			continue
+		}
+		p.IP = ip
 		if !p.QueuedAt.IsZero() && autoBlockNow().Sub(p.QueuedAt) > maxPendingAge {
 			fmt.Fprintf(os.Stderr, "auto-block: dropping stale pending %s (queued %s)\n",
 				p.IP, p.QueuedAt.Format(time.RFC3339))
@@ -382,7 +391,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	// Block IPs - queue any that can't be blocked due to rate limit
+	// Block IPs and queue candidates that cannot be attempted or completed.
 	expiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 	maxPerHour := cfg.AutoResponse.MaxBlocksPerHour
 	if maxPerHour <= 0 {
@@ -427,21 +436,23 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	rateLimited := false
 	droppedPending := 0
+	engineUnavailableRequeued := 0
 	// requeue preserves an IP that could not be blocked this cycle (rate
 	// limit, engine unavailable, transient block error). QueuedAt is
 	// stamped on first entry so the drain's age check can retire it; the
 	// bound keeps a sustained flood from growing the queue without limit,
-	// and overflow drops are named so they are recoverable from logs.
-	requeue := func(p pendingIP) {
+	// and overflow drops are named so they remain identifiable in logs.
+	requeue := func(p pendingIP) bool {
 		if p.QueuedAt.IsZero() {
 			p.QueuedAt = autoBlockNow()
 		}
 		if len(state.Pending) < maxPendingBlocks {
 			state.Pending = append(state.Pending, p)
-			return
+			return true
 		}
 		fmt.Fprintf(os.Stderr, "auto-block: pending queue full, dropping %s\n", p.IP)
 		droppedPending++
+		return false
 	}
 	for ip, cand := range ipsToBlock {
 		if state.BlocksThisHour >= maxPerHour {
@@ -453,8 +464,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(cand.Reason, 100))
 		if blocker == nil {
-			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeuing %s\n", ip)
-			requeue(cand)
+			if requeue(cand) {
+				engineUnavailableRequeued++
+			}
 			continue
 		}
 		outcome, err := callBlockIP(blocker, ip, blockReason, expiry)
@@ -463,11 +475,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// intentionally never blocked -- an expected no-op, not a failure.
 			// The triggering finding still stands, so suspicious activity from a
 			// protected address is still surfaced. Any other error is treated
-			// as transient and the IP is requeued; the age cap retires it if
-			// the failure persists.
+			// as transient and the IP is requeued when capacity permits; the
+			// age cap retires it if the failure persists.
 			if !errors.Is(err, firewall.ErrIPProtected) {
-				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (requeued)\n", ip, err)
-				requeue(cand)
+				if requeue(cand) {
+					fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (requeued)\n", ip, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v (retry dropped)\n", ip, err)
+				}
 			}
 			continue
 		}
@@ -557,12 +572,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 		}
 	}
+	if engineUnavailableRequeued > 0 {
+		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)
+	}
 
-	if rateLimited && state.RateLimitWarnedHour != currentHour {
-		state.RateLimitWarnedHour = currentHour
-		msg := fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending))
-		if droppedPending > 0 {
-			msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
+	warnRateLimit := rateLimited && state.RateLimitWarnedHour != currentHour
+	warnPendingDrop := droppedPending > 0 && state.PendingDropWarnedHour != currentHour
+	if warnRateLimit || warnPendingDrop {
+		var msg string
+		if rateLimited {
+			msg = fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending))
+			if droppedPending > 0 {
+				msg += fmt.Sprintf(", %d dropped (queue full)", droppedPending)
+			}
+		} else {
+			msg = fmt.Sprintf("Auto-block pending queue full, %d IPs queued for retry, %d dropped", len(state.Pending), droppedPending)
 		}
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
@@ -570,6 +594,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Message:   msg,
 			Timestamp: time.Now(),
 		})
+		if rateLimited {
+			state.RateLimitWarnedHour = currentHour
+		}
+		if droppedPending > 0 {
+			state.PendingDropWarnedHour = currentHour
+		}
 	}
 
 	// Subnet auto-blocking: detect per-family subnet patterns.
