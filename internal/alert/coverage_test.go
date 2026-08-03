@@ -934,10 +934,11 @@ func TestFilterBlockedAlertsDisabledPassesThrough(t *testing.T) {
 	}
 }
 
-func TestFilterBlockedAlertsAutoResponseSkipsReputationFindings(t *testing.T) {
-	// FilterBlockedAlerts returns early when the blocked-IP set is
-	// empty. Seed one so the function reaches the per-finding filter
-	// loop where the AutoResponse branch lives.
+// Suppression must key on the actual block state, not on auto-response
+// intent: with block_ips enabled, a reputation finding for an IP that was
+// never blocked (dry-run, rate-limited, verdict-allowed) still needs the
+// operator's attention.
+func TestFilterBlockedAlertsAutoResponseKeepsUnblockedReputationFindings(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(dir, "blocked_ips.json"),
@@ -953,11 +954,35 @@ func TestFilterBlockedAlertsAutoResponseSkipsReputationFindings(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	findings := []Finding{
 		{Check: "ip_reputation", Message: "1.2.3.4 flagged", Severity: Warning},
+		{Check: "ip_reputation", Message: "99.99.99.99 flagged", Severity: Warning},
 		{Check: "malware", Message: "shell.php", Severity: Critical},
 	}
 	got := FilterBlockedAlerts(cfg, findings)
-	if len(got) != 1 || got[0].Check != "malware" {
-		t.Errorf("got %+v, want only [malware]", got)
+	if len(got) != 2 {
+		t.Fatalf("got %d findings %+v, want 2 (unblocked reputation + malware)", len(got), got)
+	}
+	if got[0].Check != "ip_reputation" || !strings.Contains(got[0].Message, "1.2.3.4") {
+		t.Errorf("kept wrong finding first: %+v", got[0])
+	}
+	if got[1].Check != "malware" {
+		t.Errorf("malware finding dropped: %+v", got)
+	}
+}
+
+// Same-batch AUTO-BLOCK findings still suppress the matching reputation
+// alert when auto-response is live: the block landed this cycle.
+func TestFilterBlockedAlertsAutoResponseSuppressesSameBatchBlock(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	findings := []Finding{
+		{Check: "auto_block", Message: "AUTO-BLOCK: 7.7.7.7 blocked (expires in 24h)"},
+		{Check: "ip_reputation", Message: "7.7.7.7 flagged", Severity: Warning},
+	}
+	got := FilterBlockedAlerts(cfg, findings)
+	if len(got) != 0 {
+		t.Errorf("got %+v, want both suppressed (auto_block dropped, reputation covered by same-batch block)", got)
 	}
 }
 

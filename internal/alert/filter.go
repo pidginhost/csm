@@ -77,11 +77,12 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	var filtered []Finding
 	for _, f := range findings {
 		if f.Check == "ip_reputation" || f.Check == "local_threat_score" {
-			// If auto-blocking is enabled, these IPs are handled automatically.
-			// Skip the alert - there's nothing for the operator to do.
-			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
-				continue
-			}
+			// Suppression keys on the actual block state, never on
+			// auto-response intent: an enabled block_ips used to drop every
+			// reputation finding here, which hid exactly the IPs auto-block
+			// did NOT handle (dry-run, rate-limited queue drops,
+			// verdict-allowed). Same-batch AUTO-BLOCK findings already feed
+			// blockedIPs above, so an IP blocked this cycle stays suppressed.
 			// Check if the finding's IP is already blocked. Structured
 			// SourceIP wins when present; older findings fall back to the
 			// message token. The address is compared canonically:
