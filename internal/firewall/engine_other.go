@@ -116,6 +116,7 @@ func (e *Engine) Status() map[string]interface{} { return nil }
 
 func (e *Engine) UpdateCloudflareSet(_, _ []string) error { return ErrUnsupportedPlatform }
 func (e *Engine) CloudflareIPs() ([]string, []string)     { return nil, nil }
+func (e *Engine) CloudflareCovers(_ string) bool          { return false }
 func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet) {}
 func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error {
 	return ErrUnsupportedPlatform

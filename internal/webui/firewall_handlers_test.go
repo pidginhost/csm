@@ -154,6 +154,50 @@ func TestAPIFirewallDenySubnetInvalidDurationRejected(t *testing.T) {
 	}
 }
 
+type cfCoveredBlocker struct{ *fullBlocker }
+
+func (b cfCoveredBlocker) CloudflareCovers(string) bool { return true }
+
+// Blocking an IP inside a Cloudflare allow range is a silent no-op on
+// 80/443, so the response must carry a warning the UI can show.
+func TestAPIBlockIPWarnsWhenCloudflareCovered(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	s.blocker = cfCoveredBlocker{newFullBlocker()}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.50"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("block = %d, body %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["warning"], "Cloudflare") {
+		t.Errorf("body = %v, want a Cloudflare coverage warning", body)
+	}
+}
+
+func TestAPIBlockIPNoWarningWithoutCloudflareCoverage(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	s.blocker = newFullBlocker()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.51"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("block = %d, body %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["warning"]; ok {
+		t.Errorf("body = %v, want no warning field", body)
+	}
+}
+
 // --- apiFirewallRemoveAllow (POST validation) ------------------------
 
 func TestAPIFirewallRemoveAllowGetRejected(t *testing.T) {

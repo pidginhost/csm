@@ -1150,7 +1150,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditLog(r, "block_ip", req.IP, req.Reason)
-	writeJSON(w, map[string]string{"status": "blocked", "ip": req.IP})
+	resp := map[string]string{"status": "blocked", "ip": req.IP}
+	// The input chain accepts Cloudflare edges on 80/443 before the blocked
+	// drop, so a block of a covered IP does not stop its web traffic.
+	if cc, ok := s.blocker.(interface{ CloudflareCovers(string) bool }); ok && cc.CloudflareCovers(req.IP) {
+		resp["warning"] = "IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted"
+	}
+	writeJSON(w, resp)
 }
 
 // apiUnblockIP removes an IP from the firewall + cphulk.

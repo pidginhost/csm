@@ -90,6 +90,32 @@ func SaveCFState(statePath string, ipv4, ipv6 []string, refreshed time.Time) {
 	_ = os.WriteFile(file, []byte(sb.String()), 0600)
 }
 
+// CloudflareRangesCover reports whether ip falls inside any of the given
+// Cloudflare CIDR ranges. The input chain accepts Cloudflare edges on TCP
+// 80/443 before the blocked-IP drop, so blocking a covered IP does not stop
+// its web traffic; callers use this to warn the operator at block time.
+// Malformed CIDRs are skipped so one bad cache line cannot hide coverage.
+func CloudflareRangesCover(v4, v6 []string, ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	ranges := v4
+	if parsed.To4() == nil {
+		ranges = v6
+	}
+	for _, cidr := range ranges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadCFState reads the cached Cloudflare CIDRs.
 func LoadCFState(statePath string) (ipv4, ipv6 []string) {
 	path := statePath

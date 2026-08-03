@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - CSM now raises a High finding when the firewall is enabled with IPv6 management off while the host has a global IPv6 address, since all IPv6 traffic bypasses the firewall in that configuration.
+- Blocking an IP that sits inside a Cloudflare allow range now warns the operator in the CLI response, the web UI, and the auto-block finding, since web ports from such an IP remain reachable through the Cloudflare accept rule.
 
 ### Fixed
 

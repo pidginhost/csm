@@ -80,6 +80,18 @@ type subnetBlockValidator interface {
 	ValidateSubnetBlock(cidr string) error
 }
 
+// cloudflareCoverChecker is satisfied by engines that can report whether an
+// IP falls inside the Cloudflare allow ranges. The input chain accepts
+// Cloudflare edges on TCP 80/443 before the blocked drop, so a block of a
+// covered IP does not stop its web traffic; findings carry that caveat.
+type cloudflareCoverChecker interface {
+	CloudflareCovers(ip string) bool
+}
+
+// cloudflareCoverageWarning is appended to block confirmations for IPs the
+// firewall cannot fully drop because a Cloudflare accept precedes the block.
+const cloudflareCoverageWarning = "warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted"
+
 // allowChecker is satisfied by engines that can report whether an IP is
 // firewall-allowed (whitelisted). http_asn_crawl uses it at emit time to drop
 // any candidate subnet that contains an observed source IP which is already
@@ -568,11 +580,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			ExpiresAt: time.Now().Add(expiry),
 		})
 
+		details := fmt.Sprintf("Reason: %s", cand.Reason)
+		if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(ip) {
+			details += " (" + cloudflareCoverageWarning + ")"
+		}
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "auto_block",
 			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", ip, expiry),
-			Details:   fmt.Sprintf("Reason: %s", cand.Reason),
+			Details:   details,
 			Timestamp: time.Now(),
 		})
 

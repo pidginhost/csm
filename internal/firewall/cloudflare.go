@@ -79,3 +79,11 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 func (e *Engine) CloudflareIPs() (ipv4, ipv6 []string) {
 	return LoadCFState(e.statePath)
 }
+
+// CloudflareCovers reports whether ip is inside a cached Cloudflare range,
+// meaning a block of it leaves TCP 80/443 reachable (the CF accept precedes
+// the blocked drop in the input chain).
+func (e *Engine) CloudflareCovers(ip string) bool {
+	v4, v6 := LoadCFState(e.statePath)
+	return CloudflareRangesCover(v4, v6, ip)
+}

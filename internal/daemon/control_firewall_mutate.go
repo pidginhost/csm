@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -51,7 +52,19 @@ func (c *ControlListener) handleFirewallBlock(argsRaw json.RawMessage) (any, err
 	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, 0); err != nil {
 		return nil, fmt.Errorf("block %s: %w", args.IP, err)
 	}
-	return control.FirewallAckResult{Message: fmt.Sprintf("Blocked %s - %s", args.IP, reason)}, nil
+	msg := fmt.Sprintf("Blocked %s - %s", args.IP, reason)
+	msg += cloudflareCoverageSuffix(c.d.fwEngine, args.IP)
+	return control.FirewallAckResult{Message: msg}, nil
+}
+
+// cloudflareCoverageSuffix warns the operator when a just-blocked IP sits
+// inside a Cloudflare allow range: the input chain accepts CF edges on TCP
+// 80/443 before the blocked drop, so the block does not stop web traffic.
+func cloudflareCoverageSuffix(e *firewall.Engine, ip string) string {
+	if e != nil && e.CloudflareCovers(ip) {
+		return " (warning: IP is inside a Cloudflare allow range; ports 80/443 from it are still accepted)"
+	}
+	return ""
 }
 
 func (c *ControlListener) handleFirewallUnblock(argsRaw json.RawMessage) (any, error) {
@@ -216,9 +229,9 @@ func (c *ControlListener) handleFirewallTempBan(argsRaw json.RawMessage) (any, e
 	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, timeout); err != nil {
 		return nil, fmt.Errorf("tempban %s: %w", args.IP, err)
 	}
-	return control.FirewallAckResult{
-		Message: fmt.Sprintf("Temp-banned %s for %s - %s", args.IP, timeout, reason),
-	}, nil
+	msg := fmt.Sprintf("Temp-banned %s for %s - %s", args.IP, timeout, reason)
+	msg += cloudflareCoverageSuffix(c.d.fwEngine, args.IP)
+	return control.FirewallAckResult{Message: msg}, nil
 }
 
 func (c *ControlListener) handleFirewallTempAllow(argsRaw json.RawMessage) (any, error) {
