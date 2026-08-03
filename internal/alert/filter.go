@@ -193,13 +193,6 @@ func parseNormalizedIP(raw string) net.IP {
 	return nil
 }
 
-// loadPendingIPs reads IPs queued for blocking from blocked_ips.json.
-func loadPendingIPs(statePath string) map[string]bool {
-	ips := make(map[string]bool)
-	loadBlockFileEntries(statePath, time.Time{}, nil, ips, blockFilePendingSection)
-	return ips
-}
-
 func loadBlockedIPSource(statePath string, now time.Time, ips map[string]bool) {
 	// Use injected loader (bbolt-backed) when available.
 	if BlockedIPsFunc != nil {

@@ -638,7 +638,7 @@ define('DB_PASSWORD', 'p');
 	}
 }
 
-// --- isAlreadyBlocked / loadBlockState / PendingBlockIPs ----------------
+// --- isAlreadyBlocked / loadBlockState ----------------------------------
 
 func TestIsAlreadyBlockedHit(t *testing.T) {
 	state := &blockState{
@@ -699,27 +699,6 @@ func TestLoadBlockStateRoundTrip(t *testing.T) {
 	}
 	if loaded.BlocksThisHour != 3 {
 		t.Errorf("BlocksThisHour = %d, want 3", loaded.BlocksThisHour)
-	}
-}
-
-func TestPendingBlockIPsEmpty(t *testing.T) {
-	got := PendingBlockIPs(t.TempDir())
-	if len(got) != 0 {
-		t.Errorf("got %v, want empty map", got)
-	}
-}
-
-func TestPendingBlockIPsPopulated(t *testing.T) {
-	dir := t.TempDir()
-	saveBlockState(dir, &blockState{
-		Pending: []pendingIP{
-			{IP: "1.1.1.1", Reason: "rate limited"},
-			{IP: "2.2.2.2", Reason: "rate limited"},
-		},
-	})
-	got := PendingBlockIPs(dir)
-	if len(got) != 2 || !got["1.1.1.1"] || !got["2.2.2.2"] {
-		t.Errorf("got %v, want both pending IPs", got)
 	}
 }
 

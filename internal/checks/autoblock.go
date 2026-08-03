@@ -731,16 +731,6 @@ func saveBlockState(statePath string, s *blockState) {
 	}
 }
 
-// PendingBlockIPs returns IPs queued for blocking (rate-limited).
-func PendingBlockIPs(statePath string) map[string]bool {
-	state := loadBlockState(statePath)
-	ips := make(map[string]bool, len(state.Pending))
-	for _, p := range state.Pending {
-		ips[p.IP] = true
-	}
-	return ips
-}
-
 // subnetEscalationCIDR returns the canonical CIDR used by the
 // auto-netblock escalation path for the given IP. IPv4 collapses to
 // /24 (the historical block size); IPv6 collapses to /64 because most

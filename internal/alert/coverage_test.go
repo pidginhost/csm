@@ -923,7 +923,7 @@ func TestSendHeartbeatHTTPErrorIsSwallowed(t *testing.T) {
 	SendHeartbeat(cfg)
 }
 
-// --- FilterBlockedAlerts / loadBlockedIPs / loadPendingIPs ------------
+// --- FilterBlockedAlerts / loadBlockedIPs -----------------------------
 
 func TestFilterBlockedAlertsDisabledPassesThrough(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
@@ -1176,25 +1176,6 @@ func TestFilterBlockedAlertsMalformedBlockedEntriesKeepsPendingFinding(t *testin
 	}
 	if !strings.Contains(logs, "blocked entries unparseable") {
 		t.Fatalf("missing blocked-entry warning: %q", logs)
-	}
-}
-
-func TestLoadPendingIPs(t *testing.T) {
-	dir := t.TempDir()
-	body := `{"pending":[{"ip":"3.3.3.3"},{"ip":"4.4.4.4"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
-		t.Fatal(err)
-	}
-	got := loadPendingIPs(dir)
-	if !got["3.3.3.3"] || !got["4.4.4.4"] {
-		t.Errorf("loadPendingIPs = %v, want [3.3.3.3, 4.4.4.4]", got)
-	}
-}
-
-func TestLoadPendingIPsMissing(t *testing.T) {
-	got := loadPendingIPs(t.TempDir())
-	if len(got) != 0 {
-		t.Errorf("missing file should yield empty, got %v", got)
 	}
 }
 
