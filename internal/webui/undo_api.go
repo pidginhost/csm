@@ -209,8 +209,10 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		resp.Count = s.undoBulkBlock(payload.IPs)
 	case undoInverseThreatUnblock:
 		// Original unblocked IPs; inverse re-blocks them with the saved reason.
-		timeout := parseDuration(payload.Timeout)
-		if timeout == 0 {
+		// The payload is self-written state, so a bad timeout falls back to
+		// the default instead of failing the undo.
+		timeout, terr := parseDuration(payload.Timeout)
+		if terr != nil || timeout == 0 {
 			timeout = 24 * time.Hour
 		}
 		reason := payload.Reason
@@ -231,8 +233,8 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		if reason == "" {
 			reason = "Undo: re-block via CSM Web UI"
 		}
-		timeout := parseDuration(payload.Timeout)
-		if timeout == 0 {
+		timeout, terr := parseDuration(payload.Timeout)
+		if terr != nil || timeout == 0 {
 			timeout = 24 * time.Hour
 		}
 		count, err := s.undoBulkReblock(payload.IPs, reason, timeout)

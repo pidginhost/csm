@@ -91,6 +91,39 @@ func TestAPIFirewallAllowIPMissingIP(t *testing.T) {
 	}
 }
 
+func TestAPIFirewallAllowIPInvalidDurationRejected(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.5","duration":"1w"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiFirewallAllowIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid duration = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIBlockIPInvalidDurationRejected(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.5","duration":"24 hours"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid duration = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIFirewallDenySubnetInvalidDurationRejected(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"cidr":"203.0.113.0/24","duration":"forever"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiFirewallDenySubnet(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid duration = %d, want 400", w.Code)
+	}
+}
+
 // --- apiFirewallRemoveAllow (POST validation) ------------------------
 
 func TestAPIFirewallRemoveAllowGetRejected(t *testing.T) {

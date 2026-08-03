@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Web UI block, allow, and deny-subnet requests now reject durations they cannot parse instead of silently treating them as permanent.
+
 ## [3.27.0] - 2026-08-02
 
 ### Added

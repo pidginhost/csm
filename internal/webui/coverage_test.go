@@ -20,42 +20,49 @@ import (
 // --- parseDuration -----------------------------------------------------
 
 func TestParseDurationEmpty(t *testing.T) {
-	if got := parseDuration(""); got != 0 {
-		t.Errorf("empty = %v, want 0", got)
+	got, err := parseDuration("")
+	if err != nil || got != 0 {
+		t.Errorf("empty = %v, %v, want 0, nil", got, err)
 	}
 }
 
 func TestParseDurationZero(t *testing.T) {
-	if got := parseDuration("0"); got != 0 {
-		t.Errorf("'0' = %v, want 0", got)
+	got, err := parseDuration("0")
+	if err != nil || got != 0 {
+		t.Errorf("'0' = %v, %v, want 0, nil", got, err)
 	}
 }
 
 func TestParseDurationDays(t *testing.T) {
-	if got := parseDuration("7d"); got != 7*24*time.Hour {
-		t.Errorf("7d = %v, want 168h", got)
+	got, err := parseDuration("7d")
+	if err != nil || got != 7*24*time.Hour {
+		t.Errorf("7d = %v, %v, want 168h, nil", got, err)
 	}
-	if got := parseDuration("30d"); got != 30*24*time.Hour {
-		t.Errorf("30d = %v, want 720h", got)
+	got, err = parseDuration("30d")
+	if err != nil || got != 30*24*time.Hour {
+		t.Errorf("30d = %v, %v, want 720h, nil", got, err)
 	}
 }
 
 func TestParseDurationHours(t *testing.T) {
-	if got := parseDuration("24h"); got != 24*time.Hour {
-		t.Errorf("24h = %v", got)
+	got, err := parseDuration("24h")
+	if err != nil || got != 24*time.Hour {
+		t.Errorf("24h = %v, %v", got, err)
 	}
 }
 
-func TestParseDurationInvalidDaysFallsBack(t *testing.T) {
-	if got := parseDuration("abcd"); got != 0 {
-		t.Errorf("abcd = %v, want 0", got)
+// Unparseable input must error, not silently become 0 (= permanent).
+func TestParseDurationInvalidInputErrors(t *testing.T) {
+	for _, s := range []string{"abcd", "not a duration", "1w", "d", "24 hours"} {
+		if got, err := parseDuration(s); err == nil {
+			t.Errorf("parseDuration(%q) = %v, nil; want error", s, got)
+		}
 	}
 }
 
-func TestParseDurationInvalidBareGoesToGoParser(t *testing.T) {
-	// "not a duration" → time.ParseDuration fails → returns 0.
-	if got := parseDuration("not a duration"); got != 0 {
-		t.Errorf("garbage = %v, want 0", got)
+func TestParseDurationNegativeErrors(t *testing.T) {
+	if got, err := parseDuration("-5h"); err == nil {
+		t.Errorf("-5h = %v, nil; want error", got)
 	}
 }
 

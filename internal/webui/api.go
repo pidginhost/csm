@@ -1133,7 +1133,11 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Blocked via CSM Web UI"
 	}
 
-	dur := parseDuration(req.Duration)
+	dur, err := parseDuration(req.Duration)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	if s.blocker == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)

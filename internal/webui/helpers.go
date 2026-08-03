@@ -272,26 +272,33 @@ func validateCIDR(s string) (*net.IPNet, error) {
 
 // parseDuration parses a human-friendly duration string from the web UI.
 // Supported formats: "24h", "7d", "30d", "0" (permanent), "" (permanent).
-func parseDuration(s string) time.Duration {
+// Zero means permanent in the block/allow contexts that consume this, so
+// only an explicit ""/"0" maps to zero; unparseable or negative input is
+// an error to keep a typo from silently becoming a permanent rule.
+func parseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" {
-		return 0
+		return 0, nil
 	}
 	if strings.HasSuffix(s, "d") {
-		s = strings.TrimSuffix(s, "d")
+		num := strings.TrimSuffix(s, "d")
+		if num == "" {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
 		days := 0
-		for _, c := range s {
+		for _, c := range num {
 			if c < '0' || c > '9' {
-				return 0
+				return 0, fmt.Errorf("invalid duration %q", s)
 			}
 			days = days*10 + int(c-'0')
 		}
-		return time.Duration(days) * 24 * time.Hour
+		return time.Duration(days) * 24 * time.Hour, nil
 	}
-	if d, err := time.ParseDuration(s); err == nil {
-		return d
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("invalid duration %q", s)
 	}
-	return 0
+	return d, nil
 }
 
 // isPathUnder returns true if the cleaned path is strictly under the base
