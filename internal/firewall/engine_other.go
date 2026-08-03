@@ -95,6 +95,7 @@ func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error {
 func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error {
 	return ErrUnsupportedPlatform
 }
+func (e *Engine) ValidateSubnetBlock(_ string) error            { return ErrUnsupportedPlatform }
 func (e *Engine) IsSubnetBlocked(_ string) bool                 { return false }
 func (e *Engine) BlockedSubnetCovering(_ string) (string, bool) { return "", false }
 func (e *Engine) UnblockSubnet(_ string) error                  { return ErrUnsupportedPlatform }

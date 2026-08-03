@@ -95,6 +95,31 @@ func TestObserveBlocksNilCollectorIsNoop(t *testing.T) {
 	// must not panic
 }
 
+func TestObserveBlocksSkipsDryRunSubnetNotices(t *testing.T) {
+	d := &Daemon{}
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		Countries: nil, SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now:       func() time.Time { return time.Unix(0, 0) },
+		CountryOf: func(string) string { return "RO" },
+	})
+	d.observeBlocks([]alert.Finding{
+		{
+			Check: "auto_block", Severity: alert.Warning,
+			Message: "AUTO-BLOCK-SUBNET [dry-run]: 203.0.113.0/24 would be blocked",
+			Details: "Reason: mail auth brute force", Timestamp: time.Unix(0, 0),
+		},
+		{
+			Check: "auto_block", Severity: alert.Warning,
+			Message: "AUTO-NETBLOCK [dry-run]: 198.51.100.0/24 would be blocked",
+			Details: "Reason: rule escalation", Timestamp: time.Unix(0, 0),
+		},
+	})
+
+	if digest := d.blockDigest.Drain(); digest.Total != 0 {
+		t.Fatalf("digest = %+v, dry-run notices must not be classified as live blocks", digest)
+	}
+}
+
 func TestBlockDigestSinksChannelSelection(t *testing.T) {
 	d := &Daemon{}
 	mk := func(channel string, email, webhook bool) *config.Config {

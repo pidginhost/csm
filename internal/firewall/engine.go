@@ -3170,31 +3170,52 @@ func (e *Engine) subnetSafetyGuardLocked(network *net.IPNet) error {
 	return nil
 }
 
+func (e *Engine) subnetBlockPlanLocked(cidr string) (*net.IPNet, *nftables.Set, []nftables.SetElement, bool, error) {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, nil, nil, false, fmt.Errorf("invalid CIDR: %s", cidr)
+	}
+	if err := e.subnetSafetyGuardLocked(network); err != nil {
+		return nil, nil, nil, false, err
+	}
+	if e.isSubnetBlockedStateLocked(network.String()) {
+		return network, nil, nil, true, nil
+	}
+
+	targetSet, start, end := e.resolveSubnetSet(network)
+	if targetSet == nil {
+		return nil, nil, nil, false, fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
+	}
+
+	elements := intervalSetElements(start, end)
+	if len(elements) == 0 {
+		return nil, nil, nil, false, fmt.Errorf("CIDR has no safe interval end: %s", network.String())
+	}
+	return network, targetSet, elements, false, nil
+}
+
+// ValidateSubnetBlock runs the same safety and capability checks as
+// BlockSubnet without changing persisted or kernel firewall state.
+func (e *Engine) ValidateSubnetBlock(cidr string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	_, _, _, _, err := e.subnetBlockPlanLocked(cidr)
+	return err
+}
+
 // BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
 // timeout 0 = permanent block.
 func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	_, network, err := net.ParseCIDR(cidr)
+	network, targetSet, elements, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr)
 	if err != nil {
-		return fmt.Errorf("invalid CIDR: %s", cidr)
-	}
-	if err := e.subnetSafetyGuardLocked(network); err != nil {
 		return err
 	}
-	if e.isSubnetBlockedStateLocked(network.String()) {
+	if alreadyBlocked {
 		return nil
-	}
-
-	targetSet, start, end := e.resolveSubnetSet(network)
-	if targetSet == nil {
-		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
-	}
-
-	elements := intervalSetElements(start, end)
-	if len(elements) == 0 {
-		return fmt.Errorf("CIDR has no safe interval end: %s", network.String())
 	}
 
 	entry := SubnetEntry{

@@ -72,6 +72,13 @@ type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
 
+// subnetBlockValidator is satisfied by firewall engines that can run their
+// subnet safety and capability checks without changing firewall state. Dry-run
+// notices use it so they only describe blocks the live path could attempt.
+type subnetBlockValidator interface {
+	ValidateSubnetBlock(cidr string) error
+}
+
 // allowChecker is satisfied by engines that can report whether an IP is
 // firewall-allowed (whitelisted). http_asn_crawl uses it at emit time to drop
 // any candidate subnet that contains an observed source IP which is already
@@ -312,10 +319,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
+		if cidrIntersectsInfra(cfg, cidr) {
+			continue
+		}
 		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 			continue
 		}
 		if !isAutoResponseActive(cfg) {
+			if !canDryRunBlockSubnet(blocker, cidr) {
+				continue
+			}
 			// Dry-run: same visibility contract as per-IP blocks - emit a
 			// Warning notice instead of skipping silently.
 			actions = append(actions, dryRunSubnetNotice(cidr, "", f.Message))
@@ -420,6 +433,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					continue
 				}
 				if !isAutoResponseActive(cfg) {
+					if !canDryRunBlockSubnet(blocker, cidr) {
+						continue
+					}
 					actions = append(actions, dryRunSubnetNotice(cidr, " (asn-crawl)", f.Message))
 					continue
 				}
@@ -638,10 +654,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 					if isSubnetAlreadyBlocked(blocker, cidr) {
 						continue
 					}
+					if cidrIntersectsInfra(cfg, cidr) {
+						continue
+					}
 					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 						continue
 					}
 					if !isAutoResponseActive(cfg) {
+						if !canDryRunBlockSubnet(blocker, cidr) {
+							continue
+						}
 						subnetBlocked[cidr] = true
 						actions = append(actions, alert.Finding{
 							Severity:  alert.Warning,
@@ -923,6 +945,27 @@ func dryRunSubnetNotice(cidr, kind, reason string) alert.Finding {
 		Details:   fmt.Sprintf("Reason: %s", reason),
 		Timestamp: time.Now(),
 	}
+}
+
+// canDryRunBlockSubnet applies the firewall engine's read-only preflight when
+// available. A missing or incapable engine cannot make the claimed live block,
+// so it must not produce a "would be blocked" notice.
+func canDryRunBlockSubnet(blocker IPBlocker, cidr string) bool {
+	if blocker == nil {
+		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping dry-run subnet %s\n", cidr)
+		return false
+	}
+	if _, ok := blocker.(subnetBlocker); !ok {
+		fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping dry-run subnet %s\n", cidr)
+		return false
+	}
+	if validator, ok := blocker.(subnetBlockValidator); ok {
+		if err := validator.ValidateSubnetBlock(cidr); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: dry-run subnet %s rejected: %v\n", cidr, err)
+			return false
+		}
+	}
+	return true
 }
 
 // isAutoResponseActive reports whether real blocking should happen now:

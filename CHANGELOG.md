@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dry-run subnet notices now honor firewall safety checks, so protected ranges are not reported as block candidates.
 - Web UI block, allow, and deny-subnet requests now reject invalid or out-of-range durations instead of silently treating them as permanent.
 - Firewall engine stubs on unsupported platforms now return an error from every mutating method instead of silent success, so callers can no longer record blocks that never reached a kernel.
 - Reputation alerts are now suppressed only for IPs that were actually blocked, not whenever auto-blocking is enabled, so dry-run, rate-limited, and panel-allowed IPs surface to the operator again.

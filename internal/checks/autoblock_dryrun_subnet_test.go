@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,8 @@ type subnetRecorder struct {
 	blockedSubnets  []string
 	unblockedSubnet []string
 	subnets         []firewall.SubnetEntry
+	validationErrs  map[string]error
+	validated       []string
 }
 
 func (b *subnetRecorder) BlockIP(string, string, time.Duration) error { return nil }
@@ -44,6 +47,10 @@ func (b *subnetRecorder) BlockedSubnets() []firewall.SubnetEntry {
 func (b *subnetRecorder) UnblockSubnet(cidr string) error {
 	b.unblockedSubnet = append(b.unblockedSubnet, cidr)
 	return nil
+}
+func (b *subnetRecorder) ValidateSubnetBlock(cidr string) error {
+	b.validated = append(b.validated, cidr)
+	return b.validationErrs[cidr]
 }
 
 func findDryRunSubnetNotice(actions []alert.Finding, cidr string) *alert.Finding {
@@ -112,6 +119,41 @@ func TestDryRunASNCrawlEmitsNoticeWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestDryRunASNCrawlPreservesExhaustedBudget(t *testing.T) {
+	cfg := dryRunSubnetConfig(t)
+	cfg.AutoResponse.MaxBlocksPerHour = 2
+	now := time.Date(2026, 8, 3, 18, 0, 0, 0, time.UTC)
+	oldNow := autoBlockNow
+	autoBlockNow = func() time.Time { return now }
+	t.Cleanup(func() { autoBlockNow = oldNow })
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour: 2,
+		HourKey:        now.Format("2006-01-02T15"),
+	})
+
+	blocker := &subnetRecorder{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:    "http_asn_crawl",
+		Severity: alert.Critical,
+		Message:  "distributed crawl saturating PHP pool",
+		CIDRs:    []string{"198.51.100.0/24", "203.0.113.0/24"},
+	}})
+
+	for _, cidr := range []string{"198.51.100.0/24", "203.0.113.0/24"} {
+		if findDryRunSubnetNotice(actions, cidr) == nil {
+			t.Errorf("actions = %+v, want dry-run notice for %s despite exhausted budget", actions, cidr)
+		}
+	}
+	state := loadBlockState(cfg.StatePath)
+	if state.BlocksThisHour != 2 {
+		t.Errorf("BlocksThisHour = %d, want existing budget usage preserved", state.BlocksThisHour)
+	}
+}
+
 func TestDryRunNetblockEscalationEmitsNoticeWithoutBlocking(t *testing.T) {
 	cfg := dryRunSubnetConfig(t)
 	cfg.AutoResponse.NetBlock = true
@@ -135,6 +177,89 @@ func TestDryRunNetblockEscalationEmitsNoticeWithoutBlocking(t *testing.T) {
 	}
 	if findDryRunSubnetNotice(actions, "203.0.113.0/24") == nil {
 		t.Fatalf("actions = %+v, want a [dry-run] netblock notice", actions)
+	}
+}
+
+func TestDryRunSubnetNoticesHonorFirewallPreflight(t *testing.T) {
+	errUnsafe := errors.New("contains protected address")
+	tests := []struct {
+		name     string
+		cidr     string
+		findings []alert.Finding
+		seed     func(*config.Config)
+	}{
+		{
+			name: "spray",
+			cidr: "192.0.2.0/24",
+			findings: []alert.Finding{{
+				Check: "mail_subnet_spray", Message: "mail auth spray from 192.0.2.0/24",
+			}},
+		},
+		{
+			name: "asn-crawl",
+			cidr: "198.51.100.0/24",
+			findings: []alert.Finding{{
+				Check: "http_asn_crawl", Severity: alert.Critical,
+				Message: "distributed crawl", CIDRs: []string{"198.51.100.0/24"},
+			}},
+		},
+		{
+			name: "netblock",
+			cidr: "203.0.113.0/24",
+			seed: func(cfg *config.Config) {
+				cfg.AutoResponse.NetBlock = true
+				saveBlockState(cfg.StatePath, &blockState{IPs: []blockedIP{
+					{IP: "203.0.113.1", ExpiresAt: time.Now().Add(time.Hour)},
+					{IP: "203.0.113.2", ExpiresAt: time.Now().Add(time.Hour)},
+					{IP: "203.0.113.3", ExpiresAt: time.Now().Add(time.Hour)},
+				}})
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := dryRunSubnetConfig(t)
+			if tc.seed != nil {
+				tc.seed(cfg)
+			}
+			blocker := &subnetRecorder{validationErrs: map[string]error{tc.cidr: errUnsafe}}
+			oldBlocker := getIPBlocker()
+			SetIPBlocker(blocker)
+			t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+			actions := AutoBlockIPs(cfg, tc.findings)
+
+			if findDryRunSubnetNotice(actions, tc.cidr) != nil {
+				t.Fatalf("actions = %+v, must not claim safety-rejected subnet would be blocked", actions)
+			}
+			if len(blocker.validated) != 1 || blocker.validated[0] != tc.cidr {
+				t.Fatalf("validated = %v, want [%s]", blocker.validated, tc.cidr)
+			}
+			if len(blocker.blockedSubnets) != 0 {
+				t.Fatalf("BlockSubnet called in dry-run: %v", blocker.blockedSubnets)
+			}
+		})
+	}
+}
+
+func TestDryRunSubnetSpraySkipsInfraIntersection(t *testing.T) {
+	cfg := dryRunSubnetConfig(t)
+	cfg.InfraIPs = []string{"203.0.113.200"}
+	blocker := &subnetRecorder{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check: "mail_subnet_spray", Message: "mail auth spray from 203.0.113.0/24",
+	}})
+
+	if findDryRunSubnetNotice(actions, "203.0.113.0/24") != nil {
+		t.Fatalf("actions = %+v, must not report a subnet containing infra IP", actions)
+	}
+	if len(blocker.validated) != 0 {
+		t.Fatalf("firewall preflight ran after config guard: %v", blocker.validated)
 	}
 }
 

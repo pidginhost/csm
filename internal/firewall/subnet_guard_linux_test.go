@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/nftables"
 )
 
 // Documentation ranges (RFC 5737 / RFC 3849) keep real customer addresses out
@@ -141,5 +143,36 @@ func TestSubnetSafetyGuard_LoadsStateForAllowedIPs(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+func TestValidateSubnetBlockIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:              &FirewallConfig{},
+		localAddrsLookup: func() ([]string, error) { return nil, nil },
+		setBlockedNet:    &nftables.Set{Name: "blocked_nets"},
+		statePath:        dir,
+	}
+
+	if err := e.ValidateSubnetBlock("198.51.100.0/24"); err != nil {
+		t.Fatalf("safe subnet preflight failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state.json")); !os.IsNotExist(err) {
+		t.Fatalf("preflight changed firewall state: stat error = %v", err)
+	}
+}
+
+func TestValidateSubnetBlockAppliesSafetyGuard(t *testing.T) {
+	e := &Engine{
+		cfg:              &FirewallConfig{InfraIPs: []string{"203.0.113.9"}},
+		localAddrsLookup: func() ([]string, error) { return nil, nil },
+		setBlockedNet:    &nftables.Set{Name: "blocked_nets"},
+		statePath:        t.TempDir(),
+	}
+
+	err := e.ValidateSubnetBlock("203.0.113.0/24")
+	if err == nil || !strings.Contains(err.Error(), "infra IP") {
+		t.Fatalf("preflight error = %v, want infra safety rejection", err)
 	}
 }

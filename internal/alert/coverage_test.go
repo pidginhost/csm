@@ -1258,6 +1258,29 @@ func TestFilter_SubnetBlockSuppressesReputationInSameBatch(t *testing.T) {
 	}
 }
 
+func TestFilterDryRunSubnetNoticeDoesNotSuppressReputation(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+
+	findings := []Finding{
+		{
+			Severity: Warning,
+			Check:    "auto_block",
+			Message:  "AUTO-BLOCK-SUBNET [dry-run]: 203.0.113.0/24 would be blocked",
+		},
+		{
+			Severity: Warning,
+			Check:    "ip_reputation",
+			Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
+		},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+	if len(got) != 2 || got[1].Check != "ip_reputation" {
+		t.Fatalf("got %+v, want dry-run notice and reputation finding retained", got)
+	}
+}
+
 func TestFilterBlockedAlertsExactIPMatchOnly(t *testing.T) {
 	// Blocked 1.2.3.4 must not suppress a finding about the unrelated
 	// 1.2.3.45; substring matching used to swallow such alerts.
