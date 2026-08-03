@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -163,8 +164,10 @@ func TestRevertClearsRecordBeforeRestart(t *testing.T) {
 	}
 
 	var recordPresentAtRestart atomic.Bool
+	var restartCount atomic.Int32
 	var m *Manager
 	restart := func(_ context.Context) error {
+		restartCount.Add(1)
 		_, ok := db.GetFirewallRollback()
 		recordPresentAtRestart.Store(ok)
 		return nil
@@ -183,6 +186,9 @@ func TestRevertClearsRecordBeforeRestart(t *testing.T) {
 	}
 	if recordPresentAtRestart.Load() {
 		t.Error("rollback record still present when restart fired; a killed process never clears it and the next boot loops")
+	}
+	if got := restartCount.Load(); got != 1 {
+		t.Errorf("restart called %d times, want 1", got)
 	}
 }
 
@@ -295,6 +301,117 @@ func TestRevertRestartFailureSurfaces(t *testing.T) {
 	// re-ran the identical revert+restart on every boot.
 	if _, ok := db.GetFirewallRollback(); ok {
 		t.Error("rollback record should be cleared once the config is restored")
+	}
+}
+
+func TestRevertClearFailureDoesNotRestart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prev := []byte("hostname: prev\n")
+	rb := store.FirewallRollback{
+		PrevYAML:  prev,
+		AppliedAt: time.Now().Add(-2 * time.Minute).UTC(),
+		ExpiresAt: time.Now().Add(-time.Minute).UTC(),
+		AppliedBy: "tok",
+	}
+	if serr := db.SaveFirewallRollback(rb); serr != nil {
+		t.Fatal(serr)
+	}
+	if cerr := db.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	if werr := os.WriteFile(cfgPath, []byte("hostname: next\n"), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	var restartCount atomic.Int32
+	m := NewManager(db, cfgPath, func(_ context.Context) error {
+		restartCount.Add(1)
+		return nil
+	}, time.Now)
+
+	m.mu.Lock()
+	err = m.applyRevertLocked(context.Background(), rb)
+	m.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "clear rollback before restart") {
+		t.Fatalf("applyRevertLocked error = %v, want clear failure", err)
+	}
+	if got := restartCount.Load(); got != 0 {
+		t.Errorf("restart called %d times after clear failure, want 0", got)
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, prev) {
+		t.Errorf("config not restored before clear failure: got %q want %q", got, prev)
+	}
+
+	reopened, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, ok := reopened.GetFirewallRollback(); !ok {
+		t.Error("rollback record should remain pending when clear fails")
+	}
+}
+
+func TestRecoverOnStartupConvergesAfterCrashBeforeClear(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	prev := []byte("hostname: prev\n")
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	if werr := os.WriteFile(cfgPath, prev, 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	past := time.Now().Add(-time.Minute).UTC()
+	if serr := db.SaveFirewallRollback(store.FirewallRollback{
+		PrevYAML:  prev,
+		AppliedAt: past.Add(-5 * time.Minute),
+		ExpiresAt: past,
+		AppliedBy: "tok",
+	}); serr != nil {
+		t.Fatal(serr)
+	}
+
+	var restartCount atomic.Int32
+	restart := func(_ context.Context) error {
+		restartCount.Add(1)
+		if _, ok := db.GetFirewallRollback(); ok {
+			t.Error("rollback record present when restart fired")
+		}
+		return nil
+	}
+	firstStart := NewManager(db, cfgPath, restart, time.Now)
+	reverted, err := firstStart.RecoverOnStartup(context.Background())
+	if err != nil {
+		t.Fatalf("first RecoverOnStartup: %v", err)
+	}
+	if !reverted {
+		t.Error("expired record should re-run the interrupted revert")
+	}
+
+	secondStart := NewManager(db, cfgPath, restart, time.Now)
+	reverted, err = secondStart.RecoverOnStartup(context.Background())
+	if err != nil {
+		t.Fatalf("second RecoverOnStartup: %v", err)
+	}
+	if reverted {
+		t.Error("cleared record should not revert on the next startup")
+	}
+	if got := restartCount.Load(); got != 1 {
+		t.Errorf("restart called %d times, want 1", got)
 	}
 }
 
