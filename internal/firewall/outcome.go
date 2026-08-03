@@ -10,6 +10,12 @@ import "errors"
 // attributed to a protected address is still surfaced.
 var ErrIPProtected = errors.New("ip is protected from auto-block")
 
+// ErrUnsupportedPlatform is returned by every mutating Engine method on
+// platforms without nftables support. The stubs used to return nil, which
+// let callers record blocks that never reached any kernel; failing loudly
+// keeps a miswired caller from trusting a phantom mutation.
+var ErrUnsupportedPlatform = errors.New("nftables firewall not supported on this platform")
+
 // BlockOutcome reports what the firewall engine actually did in response
 // to a BlockIPOutcome call. Auto-response callers consult it to decide
 // whether to apply local side effects (state.IPs append, BlocksThisHour++,

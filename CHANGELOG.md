@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web UI block, allow, and deny-subnet requests now reject invalid or out-of-range durations instead of silently treating them as permanent.
+- Firewall engine stubs on unsupported platforms now return an error from every mutating method instead of silent success, so callers can no longer record blocks that never reached a kernel.
 
 ## [3.27.0] - 2026-08-02
 

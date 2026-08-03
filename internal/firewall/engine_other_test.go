@@ -3,8 +3,8 @@
 package firewall
 
 import (
+	"errors"
 	"testing"
-	"time"
 )
 
 func TestNewEngineReturnsError(t *testing.T) {
@@ -21,43 +21,61 @@ func TestConnectExistingReturnsError(t *testing.T) {
 	}
 }
 
-func TestEngineStubMethods(t *testing.T) {
+// Every mutating stub must fail loudly. A nil-success stub lets a caller
+// record a phantom block that never reached any kernel.
+func TestNonLinuxStubMutatorsReturnErrUnsupportedPlatform(t *testing.T) {
 	e := &Engine{}
-	if err := e.Apply(); err != nil {
-		t.Errorf("Apply: %v", err)
+	calls := map[string]error{
+		"Apply":                e.Apply(),
+		"BlockIP":              e.BlockIP("203.0.113.5", "r", 0),
+		"BlockIPForce":         e.BlockIPForce("203.0.113.5", "r", 0),
+		"UnblockIP":            e.UnblockIP("203.0.113.5"),
+		"AllowIP":              e.AllowIP("203.0.113.5", "r"),
+		"RemoveAllowIP":        e.RemoveAllowIP("203.0.113.5"),
+		"RemoveAllowIPBySrc":   e.RemoveAllowIPBySource("203.0.113.5", "cli"),
+		"BlockSubnet":          e.BlockSubnet("203.0.113.0/24", "r", 0),
+		"UnblockSubnet":        e.UnblockSubnet("203.0.113.0/24"),
+		"TempAllowIP":          e.TempAllowIP("203.0.113.5", "r", 0),
+		"AllowIPPort":          e.AllowIPPort("203.0.113.5", 25, "tcp", "r"),
+		"RemoveAllowIPPort":    e.RemoveAllowIPPort("203.0.113.5", 25, "tcp"),
+		"FlushBlocked":         e.FlushBlocked(),
+		"UpdateCloudflareSet":  e.UpdateCloudflareSet(nil, nil),
+		"RefreshDOSExemptSets": e.RefreshDOSExemptSets(nil),
 	}
-	if err := e.BlockIP("1.2.3.4", "test", time.Hour); err != nil {
-		t.Errorf("BlockIP: %v", err)
+	for name, err := range calls {
+		if !errors.Is(err, ErrUnsupportedPlatform) {
+			t.Errorf("%s = %v, want ErrUnsupportedPlatform", name, err)
+		}
 	}
-	if err := e.UnblockIP("1.2.3.4"); err != nil {
-		t.Errorf("UnblockIP: %v", err)
+}
+
+func TestNonLinuxStubBlockIPOutcomeErrors(t *testing.T) {
+	e := &Engine{}
+	outcome, err := e.BlockIPOutcome("203.0.113.5", "r", 0)
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("BlockIPOutcome err = %v, want ErrUnsupportedPlatform", err)
 	}
-	if e.IsBlocked("1.2.3.4") {
+	if outcome != BlockOutcomeNoop {
+		t.Errorf("BlockIPOutcome outcome = %q, want noop", outcome)
+	}
+}
+
+func TestNonLinuxStubIsBlockedLiveErrors(t *testing.T) {
+	e := &Engine{}
+	blocked, err := e.IsBlockedLive("203.0.113.5")
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("IsBlockedLive err = %v, want ErrUnsupportedPlatform", err)
+	}
+	if blocked {
+		t.Error("IsBlockedLive = true on stub")
+	}
+}
+
+// Read-only stubs stay inert so status paths degrade gracefully.
+func TestNonLinuxStubReadsStayInert(t *testing.T) {
+	e := &Engine{}
+	if e.IsBlocked("203.0.113.5") {
 		t.Error("IsBlocked should return false")
-	}
-	if err := e.AllowIP("1.2.3.4", "test"); err != nil {
-		t.Errorf("AllowIP: %v", err)
-	}
-	if err := e.RemoveAllowIP("1.2.3.4"); err != nil {
-		t.Errorf("RemoveAllowIP: %v", err)
-	}
-	if err := e.RemoveAllowIPBySource("1.2.3.4", "src"); err != nil {
-		t.Errorf("RemoveAllowIPBySource: %v", err)
-	}
-	if err := e.BlockSubnet("10.0.0.0/8", "test", time.Hour); err != nil {
-		t.Errorf("BlockSubnet: %v", err)
-	}
-	if err := e.UnblockSubnet("10.0.0.0/8"); err != nil {
-		t.Errorf("UnblockSubnet: %v", err)
-	}
-	if err := e.TempAllowIP("1.2.3.4", "test", time.Hour); err != nil {
-		t.Errorf("TempAllowIP: %v", err)
-	}
-	if err := e.AllowIPPort("1.2.3.4", 80, "tcp", "test"); err != nil {
-		t.Errorf("AllowIPPort: %v", err)
-	}
-	if err := e.RemoveAllowIPPort("1.2.3.4", 80, "tcp"); err != nil {
-		t.Errorf("RemoveAllowIPPort: %v", err)
 	}
 	if n := e.CleanExpiredAllows(); n != 0 {
 		t.Errorf("CleanExpiredAllows = %d", n)
@@ -65,14 +83,8 @@ func TestEngineStubMethods(t *testing.T) {
 	if n := e.CleanExpiredSubnets(); n != 0 {
 		t.Errorf("CleanExpiredSubnets = %d", n)
 	}
-	if err := e.FlushBlocked(); err != nil {
-		t.Errorf("FlushBlocked: %v", err)
-	}
 	if s := e.Status(); s != nil {
 		t.Errorf("Status = %v, want nil", s)
-	}
-	if err := e.UpdateCloudflareSet(nil, nil); err != nil {
-		t.Errorf("UpdateCloudflareSet: %v", err)
 	}
 	v4, v6 := e.CloudflareIPs()
 	if v4 != nil || v6 != nil {

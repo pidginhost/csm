@@ -4,7 +4,6 @@ package firewall
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"time"
 )
@@ -52,50 +51,68 @@ type FirewallState struct {
 }
 
 func NewEngine(_ *FirewallConfig, _ string) (*Engine, error) {
-	return nil, fmt.Errorf("nftables firewall not available on this platform")
+	return nil, ErrUnsupportedPlatform
 }
 
 func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
-	return nil, fmt.Errorf("nftables firewall not available on this platform")
+	return nil, ErrUnsupportedPlatform
 }
 
-func (e *Engine) Apply() error                                      { return nil }
-func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
+// Mutating methods fail loudly (ErrUnsupportedPlatform) so a caller can
+// never record a phantom block; read-only methods stay inert so status
+// paths degrade gracefully.
+
+func (e *Engine) Apply() error                                      { return ErrUnsupportedPlatform }
+func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error { return ErrUnsupportedPlatform }
 func (e *Engine) BlockedCount() int                                 { return 0 }
 func (e *Engine) RuleCounts() RuleCounts                            { return RuleCounts{} }
 func (e *Engine) UpdateInfraResolved(_ string, _ []string)          {}
 func (e *Engine) DropInfraResolved(_ string)                        {}
 func (e *Engine) BlockIPOutcome(_ string, _ string, _ time.Duration) (BlockOutcome, error) {
-	return BlockOutcomeNoop, nil
+	return BlockOutcomeNoop, ErrUnsupportedPlatform
 }
-func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error  { return nil }
+func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error {
+	return ErrUnsupportedPlatform
+}
 func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
 func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {
 }
-func (e *Engine) SetShutdownContext(_ context.Context)                  {}
-func (e *Engine) SetSoftAllowChecker(_ func(string) bool)               {}
-func (e *Engine) UnblockIP(_ string) error                              { return nil }
-func (e *Engine) IsBlocked(_ string) bool                               { return false }
-func (e *Engine) IsAllowed(_ string) bool                               { return false }
-func (e *Engine) IsBlockedLive(_ string) (bool, error)                  { return false, nil }
-func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
-func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }
-func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error        { return nil }
-func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error { return nil }
-func (e *Engine) IsSubnetBlocked(_ string) bool                         { return false }
-func (e *Engine) BlockedSubnetCovering(_ string) (string, bool)         { return "", false }
-func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
-func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
-func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }
-func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error     { return nil }
-func (e *Engine) CleanExpiredAllows() int                               { return 0 }
-func (e *Engine) CleanExpiredSubnets() int                              { return 0 }
-func (e *Engine) FlushBlocked() error                                   { return nil }
-func (e *Engine) BlockedSubnets() []SubnetEntry                         { return nil }
-func (e *Engine) Status() map[string]interface{}                        { return nil }
+func (e *Engine) SetShutdownContext(_ context.Context)    {}
+func (e *Engine) SetSoftAllowChecker(_ func(string) bool) {}
+func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupportedPlatform }
+func (e *Engine) IsBlocked(_ string) bool                 { return false }
+func (e *Engine) IsAllowed(_ string) bool                 { return false }
+func (e *Engine) IsBlockedLive(_ string) (bool, error)    { return false, ErrUnsupportedPlatform }
+func (e *Engine) AllowIP(_ string, _ string) error        { return ErrUnsupportedPlatform }
+func (e *Engine) RemoveAllowIP(_ string) error            { return ErrUnsupportedPlatform }
+func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) IsSubnetBlocked(_ string) bool                 { return false }
+func (e *Engine) BlockedSubnetCovering(_ string) (string, bool) { return "", false }
+func (e *Engine) UnblockSubnet(_ string) error                  { return ErrUnsupportedPlatform }
+func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error {
+	return ErrUnsupportedPlatform
+}
+func (e *Engine) CleanExpiredAllows() int        { return 0 }
+func (e *Engine) CleanExpiredSubnets() int       { return 0 }
+func (e *Engine) FlushBlocked() error            { return ErrUnsupportedPlatform }
+func (e *Engine) BlockedSubnets() []SubnetEntry  { return nil }
+func (e *Engine) Status() map[string]interface{} { return nil }
 
-func (e *Engine) UpdateCloudflareSet(_, _ []string) error   { return nil }
-func (e *Engine) CloudflareIPs() ([]string, []string)       { return nil, nil }
-func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet)   {}
-func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error { return nil }
+func (e *Engine) UpdateCloudflareSet(_, _ []string) error { return ErrUnsupportedPlatform }
+func (e *Engine) CloudflareIPs() ([]string, []string)     { return nil, nil }
+func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet) {}
+func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error {
+	return ErrUnsupportedPlatform
+}
