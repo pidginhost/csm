@@ -155,21 +155,25 @@ func (c *ControlListener) handleFirewallFlush(_ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("firewall disabled in csm.yaml")
 	}
 	cfg := c.d.currentCfg()
-	before, _ := firewall.LoadState(cfg.StatePath)
-	count := len(before.Blocked)
-	if err := c.d.fwEngine.FlushBlocked(); err != nil {
-		return nil, fmt.Errorf("flushing blocked: %w", err)
-	}
 	// Clear the auto-block bookkeeping for the flushed IPs; a surviving
 	// ThreatDB temp row re-blocks the IP on the next scan and silently
 	// undoes the flush.
-	flushed := make([]string, 0, count)
-	for _, b := range before.Blocked {
-		flushed = append(flushed, b.IP)
+	result, err := checks.FlushAutoBlockState(cfg.StatePath, c.d.fwEngine.FlushBlocked)
+	if result.SnapshotErr != nil {
+		csmlog.Warn("firewall flush could not snapshot persisted blocks", "err", result.SnapshotErr)
 	}
-	checks.FlushAutoBlockState(cfg.StatePath, flushed)
+	if err != nil {
+		if result.Flushed {
+			return nil, fmt.Errorf("firewall flushed but auto-block cleanup failed: %w", err)
+		}
+		return nil, err
+	}
+	message := "Flushed blocked IPs (subnet blocks kept; use remove-subnet)"
+	if result.SnapshotErr == nil {
+		message = fmt.Sprintf("Flushed %d blocked IPs (subnet blocks kept; use remove-subnet)", result.BlockedCount)
+	}
 	return control.FirewallAckResult{
-		Message: fmt.Sprintf("Flushed %d blocked IPs (subnet blocks kept; use remove-subnet)", count),
+		Message: message,
 	}, nil
 }
 

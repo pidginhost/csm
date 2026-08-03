@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -92,6 +93,59 @@ func TestBlockIPReportsStateRestoreFailure(t *testing.T) {
 	}
 	if writes != 2 {
 		t.Fatalf("state writes = %d, want persist plus restore", writes)
+	}
+}
+
+func TestFlushBlockedPersistsIntentBeforeChangingNft(t *testing.T) {
+	dir := t.TempDir()
+	conn, sends := nftConnReturningErrsThenOK(t)
+	e := &Engine{
+		conn:       conn,
+		statePath:  dir,
+		cfg:        &FirewallConfig{Enabled: true},
+		setBlocked: namedIPv4Set("blocked_ips"),
+	}
+	if err := e.saveState(&FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.5"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	previousWriter := writeFirewallStateJSON
+	t.Cleanup(func() { writeFirewallStateJSON = previousWriter })
+	writeFirewallStateJSON = func(string, os.FileMode, any) error {
+		return errors.New("state directory read-only")
+	}
+
+	err := e.FlushBlocked()
+	if err == nil || !strings.Contains(err.Error(), "persisting flush") {
+		t.Fatalf("FlushBlocked error = %v, want persistence failure", err)
+	}
+	if got := sends(); got != 0 {
+		t.Fatalf("nft sends = %d, want none before intent is persisted", got)
+	}
+	if !e.IsBlocked("203.0.113.5") {
+		t.Fatal("failed flush removed the persisted block")
+	}
+}
+
+func TestFlushBlockedRestoresStateWhenNftFlushFails(t *testing.T) {
+	dir := t.TempDir()
+	conn, _ := nftConnReturningErrsThenOK(t, syscall.EPERM)
+	e := &Engine{
+		conn:       conn,
+		statePath:  dir,
+		cfg:        &FirewallConfig{Enabled: true},
+		setBlocked: namedIPv4Set("blocked_ips"),
+	}
+	if err := e.saveState(&FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.6"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.FlushBlocked()
+	if err == nil || !strings.Contains(err.Error(), "flushing blocked set") {
+		t.Fatalf("FlushBlocked error = %v, want nft failure", err)
+	}
+	if !e.IsBlocked("203.0.113.6") {
+		t.Fatal("nft flush failure did not restore the prior state")
 	}
 }
 

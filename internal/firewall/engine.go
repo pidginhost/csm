@@ -3099,19 +3099,28 @@ func (e *Engine) FlushBlocked() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Persist the operator's intent before changing nftables. If the process
+	// dies between these steps, the next Apply must converge to an empty block
+	// set instead of restoring every flushed IP from stale state.
+	priorState := e.loadStateFile()
+	nextState := copyFirewallState(priorState)
+	nextState.Blocked = nil
+	if err := e.saveState(&nextState); err != nil {
+		return fmt.Errorf("persisting flush: %w", err)
+	}
+
 	e.conn.FlushSet(e.setBlocked)
 	if e.setBlocked6 != nil {
 		e.conn.FlushSet(e.setBlocked6)
 	}
 	if err := e.conn.Flush(); err != nil {
+		if restoreErr := e.saveState(&priorState); restoreErr != nil {
+			return fmt.Errorf("flushing blocked set: %w (state restore failed: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("flushing blocked set: %w", err)
 	}
 
-	state := e.loadStateFile()
-	count := len(state.Blocked)
-	state.Blocked = nil
-	_ = e.saveState(&state)
-	AppendAudit(e.statePath, "flush", "", fmt.Sprintf("cleared %d entries", count), SourceSystem, 0)
+	AppendAudit(e.statePath, "flush", "", fmt.Sprintf("cleared %d entries", len(priorState.Blocked)), SourceSystem, 0)
 
 	return nil
 }

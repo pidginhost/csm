@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -478,21 +479,18 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot the engine's block list before the flush so the auto-block
-	// bookkeeping (tracker + ThreatDB rows) can be cleared for the same
-	// IPs; a leftover threat row re-blocks the IP on the next scan.
-	var flushed []string
-	if state, err := firewall.LoadState(s.cfg.StatePath); err == nil {
-		for _, b := range state.Blocked {
-			flushed = append(flushed, b.IP)
-		}
+	result, err := checks.FlushAutoBlockState(s.cfg.StatePath, fb.FlushBlocked)
+	if result.SnapshotErr != nil {
+		csmlog.Warn("web firewall flush could not snapshot persisted blocks", "err", result.SnapshotErr)
 	}
-
-	if err := fb.FlushBlocked(); err != nil {
-		writeJSONError(w, fmt.Sprintf("Flush failed: %v", err), http.StatusInternalServerError)
+	if err != nil {
+		if result.Flushed {
+			writeJSONError(w, fmt.Sprintf("Firewall flushed but auto-block cleanup failed: %v", err), http.StatusInternalServerError)
+		} else {
+			writeJSONError(w, fmt.Sprintf("Flush failed: %v", err), http.StatusInternalServerError)
+		}
 		return
 	}
-	checks.FlushAutoBlockState(s.cfg.StatePath, flushed)
 	writeJSON(w, map[string]string{"status": "flushed"})
 }
 

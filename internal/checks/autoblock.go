@@ -160,6 +160,7 @@ type pendingIP struct {
 type blockState struct {
 	IPs            []blockedIP `json:"ips"`
 	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for another block attempt
+	CleanupPending []string    `json:"cleanup_pending,omitempty"`
 	BlocksThisHour int         `json:"blocks_this_hour"`
 	HourKey        string      `json:"hour_key"`
 	// RateLimitWarnedHour is the HourKey for which the rate-limit warning
@@ -827,22 +828,42 @@ func parseExpiry(s string) time.Duration {
 }
 
 func loadBlockState(statePath string) *blockState {
-	state := &blockState{}
-	path := filepath.Join(statePath, blockStateFile)
-	data, err := osFS.ReadFile(path)
-	if err == nil {
-		if uerr := json.Unmarshal(data, state); uerr != nil {
-			fmt.Fprintf(os.Stderr, "autoblock: %s is corrupt, ignoring queued blocks: %v\n", path, uerr)
-		}
+	state, err := readBlockState(statePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "autoblock: %v; ignoring queued blocks\n", err)
+		return &blockState{}
 	}
 	return state
 }
 
+func readBlockState(statePath string) (*blockState, error) {
+	path := filepath.Join(statePath, blockStateFile)
+	data, err := osFS.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &blockState{}, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	state := &blockState{}
+	if err := json.Unmarshal(data, state); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return state, nil
+}
+
 func saveBlockState(statePath string, s *blockState) {
+	_ = writeBlockState(statePath, s)
+}
+
+func writeBlockState(statePath string, s *blockState) error {
 	path := filepath.Join(statePath, blockStateFile)
 	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+		return err
 	}
+	return nil
 }
 
 // subnetEscalationCIDR returns the canonical CIDR used by the
@@ -933,37 +954,100 @@ func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	}
 }
 
-// FlushAutoBlockState clears the auto-block bookkeeping after an operator
-// firewall flush. Without this the flush was self-reverting: surviving
-// ThreatDB temp rows re-flagged every flushed IP through ip_reputation on
-// the next scan and re-blocked it, and stale tracker entries suppressed
-// re-block accounting. ips is the engine's pre-flush block list; tracker
-// entries the engine never held are cleaned up too. Pending entries are
-// kept - they are queued candidates, not blocks.
-func FlushAutoBlockState(statePath string, ips []string) {
+// AutoBlockFlushResult reports which phases of a coordinated firewall flush
+// completed and whether its best-effort persisted-state snapshot was readable.
+type AutoBlockFlushResult struct {
+	Flushed      bool
+	BlockedCount int
+	SnapshotErr  error
+}
+
+// FlushAutoBlockState snapshots the engine's pre-flush IPs, runs an operator
+// firewall flush, and clears the auto-block bookkeeping in one critical
+// section. Without this the flush was self-reverting: surviving ThreatDB temp
+// rows re-flagged every flushed IP through ip_reputation on the next scan and
+// re-blocked it, and stale tracker entries suppressed re-block accounting.
+// Tracker entries the engine never held are cleaned up too. Pending entries
+// are kept - they are queued candidates, not blocks.
+//
+// The firewall mutation and cleanup stay serialized with AutoBlockIPs so a
+// concurrent scan either finishes before the snapshot or starts after cleanup
+// with fresh evidence. Result.Flushed is true with a non-nil error when the
+// firewall was flushed but bookkeeping cleanup was only partial. SnapshotErr
+// is advisory because the tracker-side union still covers tracked auto-blocks.
+func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushResult, error) {
 	blockStateMu.Lock()
-	state := loadBlockState(statePath)
-	seen := make(map[string]bool, len(ips)+len(state.IPs))
+	defer blockStateMu.Unlock()
+
+	var result AutoBlockFlushResult
+	engineState, snapshotErr := firewall.LoadState(statePath)
+	result.SnapshotErr = snapshotErr
+	var ips []string
+	if snapshotErr == nil {
+		result.BlockedCount = len(engineState.Blocked)
+		ips = make([]string, 0, result.BlockedCount)
+		for _, b := range engineState.Blocked {
+			ips = append(ips, b.IP)
+		}
+	}
+	if err := flush(); err != nil {
+		return result, fmt.Errorf("flushing blocked IPs: %w", err)
+	}
+	result.Flushed = true
+
+	var cleanupErr error
+	state, err := readBlockState(statePath)
+	seenCapacity := len(ips)
+	if state != nil {
+		seenCapacity += len(state.IPs) + len(state.CleanupPending)
+	}
+	seen := make(map[string]bool, seenCapacity)
+	cleanupIPs := make([]string, 0, seenCapacity)
+	addCleanupIP := func(ip string) {
+		if !seen[ip] {
+			seen[ip] = true
+			cleanupIPs = append(cleanupIPs, ip)
+		}
+	}
 	for _, ip := range ips {
-		seen[ip] = true
+		addCleanupIP(ip)
 	}
-	for _, b := range state.IPs {
-		seen[b.IP] = true
+	if err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reading auto-block state: %w", err))
+	} else {
+		for _, b := range state.IPs {
+			addCleanupIP(b.IP)
+		}
+		for _, ip := range state.CleanupPending {
+			addCleanupIP(ip)
+		}
 	}
-	state.IPs = nil
-	saveBlockState(statePath, state)
-	blockStateMu.Unlock()
 
 	sdb := store.Global()
 	tdb := GetThreatDB()
-	for ip := range seen {
+	failed := make([]string, 0)
+	for _, ip := range cleanupIPs {
 		if sdb != nil {
-			_, _ = sdb.RemoveAutoBlock(ip)
+			if _, err := sdb.RemoveAutoBlock(ip); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("removing auto-block store row for %s: %w", ip, err))
+				failed = append(failed, ip)
+			}
 		}
 		if tdb != nil {
 			tdb.RemoveTemporary(ip)
 		}
 	}
+	if state != nil {
+		state.IPs = nil
+		// A failed bbolt cleanup must survive in the tracker after the
+		// firewall state is empty, or a retry has no way to identify the
+		// stale row that can recreate the block after restart.
+		state.CleanupPending = failed
+		if err := writeBlockState(statePath, state); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clearing auto-block state: %w", err))
+		}
+	}
+	return result, cleanupErr
 }
 
 // dryRunSubnetNotice mirrors the per-IP dry-run notice for the subnet block
