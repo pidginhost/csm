@@ -50,7 +50,7 @@ csm firewall lookup <ip>                         # GeoIP + block status lookup
 # Bulk operations
 csm firewall deny-file <path>                    # Bulk block from file
 csm firewall allow-file <path>                   # Bulk allow from file
-csm firewall flush                               # Clear all dynamic blocks
+csm firewall flush                               # Clear all blocked IPs (subnet blocks kept)
 
 # Safety
 csm firewall apply-confirmed <minutes>           # Apply with auto-rollback timer

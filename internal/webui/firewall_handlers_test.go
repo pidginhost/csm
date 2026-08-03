@@ -6,10 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -213,6 +217,47 @@ func TestAPIFirewallFlushGetRejected(t *testing.T) {
 	s.apiFirewallFlush(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET flush = %d, want 405", w.Code)
+	}
+}
+
+// A web UI flush must clear the auto-block tracker and ThreatDB rows the
+// same way the single-IP unblock path does; otherwise the next scan
+// re-blocks every flushed IP from its surviving threat row.
+func TestAPIFirewallFlushClearsAutoBlockState(t *testing.T) {
+	s := newTestServerWithFirewall(t, "tok")
+	restore := checks.SetGlobalThreatDBForTest(t.TempDir())
+	t.Cleanup(restore)
+
+	fwDir := filepath.Join(s.cfg.StatePath, "firewall")
+	if err := os.MkdirAll(fwDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"),
+		[]byte(`{"blocked":[{"ip":"203.0.113.30","reason":"r"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.cfg.StatePath, "blocked_ips.json"),
+		[]byte(`{"ips":[{"ip":"203.0.113.30","expires_at":"2099-01-01T00:00:00Z"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checks.GetThreatDB().AddTemporary("203.0.113.30", "r", time.Hour)
+
+	s.blocker = newFullBlocker()
+	w := httptest.NewRecorder()
+	s.apiFirewallFlush(w, httptest.NewRequest("POST", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("flush = %d, body %s", w.Code, w.Body.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(s.cfg.StatePath, "blocked_ips.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "203.0.113.30") {
+		t.Errorf("blocked_ips.json still tracks flushed IP: %s", data)
+	}
+	if _, found := checks.GetThreatDB().Lookup("203.0.113.30"); found {
+		t.Error("threat row survived web UI flush; next scan would re-block")
 	}
 }
 

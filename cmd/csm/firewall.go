@@ -93,7 +93,7 @@ Commands:
   tempban <ip> <duration> [reason]  Temporary block (e.g. 24h, 7d, 1h30m)
   tempallow <ip> <duration> [reason] Temporary allow (e.g. 4h, 1d)
   ports                             Show configured port rules
-  flush                             Remove all dynamic IP blocks
+  flush                             Remove all blocked IPs (subnet blocks kept)
   restart                           Reapply full firewall ruleset
   apply-confirmed <minutes>         Apply rules with auto-rollback timer (like Juniper commit confirmed)
   confirm                           Confirm applied rules (cancel rollback timer)

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -159,8 +160,16 @@ func (c *ControlListener) handleFirewallFlush(_ json.RawMessage) (any, error) {
 	if err := c.d.fwEngine.FlushBlocked(); err != nil {
 		return nil, fmt.Errorf("flushing blocked: %w", err)
 	}
+	// Clear the auto-block bookkeeping for the flushed IPs; a surviving
+	// ThreatDB temp row re-blocks the IP on the next scan and silently
+	// undoes the flush.
+	flushed := make([]string, 0, count)
+	for _, b := range before.Blocked {
+		flushed = append(flushed, b.IP)
+	}
+	checks.FlushAutoBlockState(cfg.StatePath, flushed)
 	return control.FirewallAckResult{
-		Message: fmt.Sprintf("Flushed %d blocked IPs", count),
+		Message: fmt.Sprintf("Flushed %d blocked IPs (subnet blocks kept; use remove-subnet)", count),
 	}, nil
 }
 

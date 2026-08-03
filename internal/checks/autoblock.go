@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mailranges"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const (
@@ -929,6 +930,39 @@ func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	path := filepath.Join(statePath, "permblock_tracker.json")
 	if err := atomicio.AtomicWriteJSON(path, 0o600, tracker); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+	}
+}
+
+// FlushAutoBlockState clears the auto-block bookkeeping after an operator
+// firewall flush. Without this the flush was self-reverting: surviving
+// ThreatDB temp rows re-flagged every flushed IP through ip_reputation on
+// the next scan and re-blocked it, and stale tracker entries suppressed
+// re-block accounting. ips is the engine's pre-flush block list; tracker
+// entries the engine never held are cleaned up too. Pending entries are
+// kept - they are queued candidates, not blocks.
+func FlushAutoBlockState(statePath string, ips []string) {
+	blockStateMu.Lock()
+	state := loadBlockState(statePath)
+	seen := make(map[string]bool, len(ips)+len(state.IPs))
+	for _, ip := range ips {
+		seen[ip] = true
+	}
+	for _, b := range state.IPs {
+		seen[b.IP] = true
+	}
+	state.IPs = nil
+	saveBlockState(statePath, state)
+	blockStateMu.Unlock()
+
+	sdb := store.Global()
+	tdb := GetThreatDB()
+	for ip := range seen {
+		if sdb != nil {
+			_, _ = sdb.RemoveAutoBlock(ip)
+		}
+		if tdb != nil {
+			tdb.RemoveTemporary(ip)
+		}
 	}
 }
 
