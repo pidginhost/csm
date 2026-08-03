@@ -74,6 +74,9 @@ func (e *Engine) BlockIPOutcome(_ string, _ string, _ time.Duration) (BlockOutco
 func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error {
 	return ErrUnsupportedPlatform
 }
+func (e *Engine) PromoteToPermanentBlock(_ string, _ string) error {
+	return ErrUnsupportedPlatform
+}
 func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
 func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {

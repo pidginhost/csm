@@ -8,16 +8,22 @@ import (
 )
 
 func TestNewEngineReturnsError(t *testing.T) {
-	_, err := NewEngine(nil, "")
-	if err == nil {
-		t.Error("expected error on non-linux")
+	e, err := NewEngine(nil, "")
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("NewEngine err = %v, want ErrUnsupportedPlatform", err)
+	}
+	if e != nil {
+		t.Errorf("NewEngine engine = %v, want nil", e)
 	}
 }
 
 func TestConnectExistingReturnsError(t *testing.T) {
-	_, err := ConnectExisting(nil, "")
-	if err == nil {
-		t.Error("expected error on non-linux")
+	e, err := ConnectExisting(nil, "")
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("ConnectExisting err = %v, want ErrUnsupportedPlatform", err)
+	}
+	if e != nil {
+		t.Errorf("ConnectExisting engine = %v, want nil", e)
 	}
 }
 
@@ -25,26 +31,30 @@ func TestConnectExistingReturnsError(t *testing.T) {
 // record a phantom block that never reached any kernel.
 func TestNonLinuxStubMutatorsReturnErrUnsupportedPlatform(t *testing.T) {
 	e := &Engine{}
-	calls := map[string]error{
-		"Apply":                e.Apply(),
-		"BlockIP":              e.BlockIP("203.0.113.5", "r", 0),
-		"BlockIPForce":         e.BlockIPForce("203.0.113.5", "r", 0),
-		"UnblockIP":            e.UnblockIP("203.0.113.5"),
-		"AllowIP":              e.AllowIP("203.0.113.5", "r"),
-		"RemoveAllowIP":        e.RemoveAllowIP("203.0.113.5"),
-		"RemoveAllowIPBySrc":   e.RemoveAllowIPBySource("203.0.113.5", "cli"),
-		"BlockSubnet":          e.BlockSubnet("203.0.113.0/24", "r", 0),
-		"UnblockSubnet":        e.UnblockSubnet("203.0.113.0/24"),
-		"TempAllowIP":          e.TempAllowIP("203.0.113.5", "r", 0),
-		"AllowIPPort":          e.AllowIPPort("203.0.113.5", 25, "tcp", "r"),
-		"RemoveAllowIPPort":    e.RemoveAllowIPPort("203.0.113.5", 25, "tcp"),
-		"FlushBlocked":         e.FlushBlocked(),
-		"UpdateCloudflareSet":  e.UpdateCloudflareSet(nil, nil),
-		"RefreshDOSExemptSets": e.RefreshDOSExemptSets(nil),
+	calls := []struct {
+		name string
+		err  error
+	}{
+		{"Apply", e.Apply()},
+		{"BlockIP", e.BlockIP("203.0.113.5", "r", 0)},
+		{"BlockIPForce", e.BlockIPForce("203.0.113.5", "r", 0)},
+		{"PromoteToPermanentBlock", e.PromoteToPermanentBlock("203.0.113.5", "r")},
+		{"UnblockIP", e.UnblockIP("203.0.113.5")},
+		{"AllowIP", e.AllowIP("203.0.113.5", "r")},
+		{"RemoveAllowIP", e.RemoveAllowIP("203.0.113.5")},
+		{"RemoveAllowIPBySrc", e.RemoveAllowIPBySource("203.0.113.5", "cli")},
+		{"BlockSubnet", e.BlockSubnet("203.0.113.0/24", "r", 0)},
+		{"UnblockSubnet", e.UnblockSubnet("203.0.113.0/24")},
+		{"TempAllowIP", e.TempAllowIP("203.0.113.5", "r", 0)},
+		{"AllowIPPort", e.AllowIPPort("203.0.113.5", 25, "tcp", "r")},
+		{"RemoveAllowIPPort", e.RemoveAllowIPPort("203.0.113.5", 25, "tcp")},
+		{"FlushBlocked", e.FlushBlocked()},
+		{"UpdateCloudflareSet", e.UpdateCloudflareSet(nil, nil)},
+		{"RefreshDOSExemptSets", e.RefreshDOSExemptSets(nil)},
 	}
-	for name, err := range calls {
-		if !errors.Is(err, ErrUnsupportedPlatform) {
-			t.Errorf("%s = %v, want ErrUnsupportedPlatform", name, err)
+	for _, call := range calls {
+		if !errors.Is(call.err, ErrUnsupportedPlatform) {
+			t.Errorf("%s = %v, want ErrUnsupportedPlatform", call.name, call.err)
 		}
 	}
 }
@@ -74,14 +84,32 @@ func TestNonLinuxStubIsBlockedLiveErrors(t *testing.T) {
 // Read-only stubs stay inert so status paths degrade gracefully.
 func TestNonLinuxStubReadsStayInert(t *testing.T) {
 	e := &Engine{}
+	if n := e.BlockedCount(); n != 0 {
+		t.Errorf("BlockedCount = %d", n)
+	}
+	if counts := e.RuleCounts(); counts != (RuleCounts{}) {
+		t.Errorf("RuleCounts = %+v, want zero value", counts)
+	}
 	if e.IsBlocked("203.0.113.5") {
 		t.Error("IsBlocked should return false")
+	}
+	if e.IsAllowed("203.0.113.5") {
+		t.Error("IsAllowed should return false")
+	}
+	if e.IsSubnetBlocked("203.0.113.0/24") {
+		t.Error("IsSubnetBlocked should return false")
+	}
+	if cidr, ok := e.BlockedSubnetCovering("203.0.113.5"); cidr != "" || ok {
+		t.Errorf("BlockedSubnetCovering = (%q, %t), want empty false", cidr, ok)
 	}
 	if n := e.CleanExpiredAllows(); n != 0 {
 		t.Errorf("CleanExpiredAllows = %d", n)
 	}
 	if n := e.CleanExpiredSubnets(); n != 0 {
 		t.Errorf("CleanExpiredSubnets = %d", n)
+	}
+	if subnets := e.BlockedSubnets(); subnets != nil {
+		t.Errorf("BlockedSubnets = %v, want nil", subnets)
 	}
 	if s := e.Status(); s != nil {
 		t.Errorf("Status = %v, want nil", s)
