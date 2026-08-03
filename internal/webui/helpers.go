@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -272,30 +273,36 @@ func validateCIDR(s string) (*net.IPNet, error) {
 
 // parseDuration parses a human-friendly duration string from the web UI.
 // Supported formats: "24h", "7d", "30d", "0" (permanent), "" (permanent).
-// Zero means permanent in the block/allow contexts that consume this, so
-// only an explicit ""/"0" maps to zero; unparseable or negative input is
-// an error to keep a typo from silently becoming a permanent rule.
+// Zero means permanent in the block/allow contexts that consume this.
+// Unparseable, negative, or out-of-range input is an error to keep a typo or
+// integer overflow from silently becoming a permanent rule.
 func parseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" {
 		return 0, nil
+	}
+	if strings.HasPrefix(s, "-") {
+		return 0, fmt.Errorf("invalid duration %q", s)
 	}
 	if strings.HasSuffix(s, "d") {
 		num := strings.TrimSuffix(s, "d")
 		if num == "" {
 			return 0, fmt.Errorf("invalid duration %q", s)
 		}
-		days := 0
 		for _, c := range num {
 			if c < '0' || c > '9' {
 				return 0, fmt.Errorf("invalid duration %q", s)
 			}
-			days = days*10 + int(c-'0')
+		}
+		days, err := strconv.ParseUint(num, 10, 64)
+		const maxDuration = time.Duration(1<<63 - 1)
+		if err != nil || days > uint64(maxDuration/(24*time.Hour)) {
+			return 0, fmt.Errorf("invalid duration %q", s)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	d, err := time.ParseDuration(s)
-	if err != nil || d < 0 {
+	if err != nil || d == 0 && strings.ContainsAny(s, "123456789") {
 		return 0, fmt.Errorf("invalid duration %q", s)
 	}
 	return d, nil

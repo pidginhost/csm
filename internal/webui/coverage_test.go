@@ -33,6 +33,15 @@ func TestParseDurationZero(t *testing.T) {
 	}
 }
 
+func TestParseDurationZeroAndWhitespaceVariants(t *testing.T) {
+	for _, input := range []string{" ", "\t\n", "0d", " 0d "} {
+		got, err := parseDuration(input)
+		if err != nil || got != 0 {
+			t.Errorf("parseDuration(%q) = %v, %v, want 0, nil", input, got, err)
+		}
+	}
+}
+
 func TestParseDurationDays(t *testing.T) {
 	got, err := parseDuration("7d")
 	if err != nil || got != 7*24*time.Hour {
@@ -61,8 +70,34 @@ func TestParseDurationInvalidInputErrors(t *testing.T) {
 }
 
 func TestParseDurationNegativeErrors(t *testing.T) {
-	if got, err := parseDuration("-5h"); err == nil {
-		t.Errorf("-5h = %v, nil; want error", got)
+	for _, input := range []string{"-5h", "-5d", "-0h", "-0d", "-0.0h"} {
+		if got, err := parseDuration(input); err == nil {
+			t.Errorf("parseDuration(%q) = %v, nil; want error", input, got)
+		}
+	}
+}
+
+func TestParseDurationSubNanosecondErrors(t *testing.T) {
+	for _, input := range []string{"0.1ns", "0.000000000001ms"} {
+		got, err := parseDuration(input)
+		if err == nil || got != 0 {
+			t.Errorf("parseDuration(%q) = %v, %v, want 0, error", input, got, err)
+		}
+	}
+}
+
+func TestParseDurationDayBoundary(t *testing.T) {
+	const maxWholeDays = 106751
+	got, err := parseDuration("106751d")
+	if err != nil || got != maxWholeDays*24*time.Hour {
+		t.Errorf("maximum whole days = %v, %v, want %v, nil", got, err, maxWholeDays*24*time.Hour)
+	}
+
+	for _, input := range []string{"106752d", "999999999999999999999999999999d"} {
+		got, err := parseDuration(input)
+		if err == nil || got != 0 {
+			t.Errorf("parseDuration(%q) = %v, %v, want 0, error", input, got, err)
+		}
 	}
 }
 

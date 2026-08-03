@@ -20,17 +20,22 @@ import (
 type recordingBlocker struct {
 	mu       sync.Mutex
 	blocked  map[string]string
+	timeouts map[string]time.Duration
 	unblocks []string
 }
 
 func newRecordingBlocker() *recordingBlocker {
-	return &recordingBlocker{blocked: make(map[string]string)}
+	return &recordingBlocker{
+		blocked:  make(map[string]string),
+		timeouts: make(map[string]time.Duration),
+	}
 }
 
-func (b *recordingBlocker) BlockIP(ip, reason string, _ time.Duration) error {
+func (b *recordingBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.blocked[ip] = reason
+	b.timeouts[ip] = timeout
 	return nil
 }
 
@@ -155,6 +160,36 @@ func TestUndoRunDispatchesInverseReblock(t *testing.T) {
 	}
 	if blocker.blocked["203.0.113.10"] == "" || blocker.blocked["203.0.113.11"] == "" {
 		t.Fatalf("missing IP after reblock: %+v", blocker.blocked)
+	}
+}
+
+func TestUndoReblockInvalidTimeoutFallsBackTo24Hours(t *testing.T) {
+	for _, inverse := range []string{undoInverseThreatUnblock, undoInverseFirewallUnblock} {
+		t.Run(inverse, func(t *testing.T) {
+			blocker := newRecordingBlocker()
+			s := &Server{blocker: blocker}
+			payload, err := json.Marshal(undoPayloadIPs{
+				IPs:     []string{"203.0.113.15"},
+				Timeout: "not-a-duration",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := s.runUndoEntry(nil, store.UndoEntry{Inverse: inverse, Payload: payload})
+			if err != nil {
+				t.Fatalf("runUndoEntry returned error for self-written timeout: %v", err)
+			}
+			if resp.Count != 1 {
+				t.Fatalf("reblocked count = %d, want 1", resp.Count)
+			}
+
+			blocker.mu.Lock()
+			defer blocker.mu.Unlock()
+			if got := blocker.timeouts["203.0.113.15"]; got != 24*time.Hour {
+				t.Errorf("fallback timeout = %v, want 24h", got)
+			}
+		})
 	}
 }
 

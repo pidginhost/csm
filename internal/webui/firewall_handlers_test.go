@@ -47,6 +47,23 @@ func decodeFirewallCheckBody(t *testing.T, w *httptest.ResponseRecorder) map[str
 	return body
 }
 
+func assertJSONErrorResponse(t *testing.T, w *httptest.ResponseRecorder, code int, message string) {
+	t.Helper()
+	if w.Code != code {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
+	}
+	if len(body) != 1 || body["error"] != message {
+		t.Errorf("error body = %#v, want map[error:%q]", body, message)
+	}
+}
+
 // --- apiFirewallStatus ------------------------------------------------
 
 func TestAPIFirewallStatusReturnsJSON(t *testing.T) {
@@ -93,34 +110,43 @@ func TestAPIFirewallAllowIPMissingIP(t *testing.T) {
 
 func TestAPIFirewallAllowIPInvalidDurationRejected(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
+	blocker := newFullBlocker()
+	s.blocker = blocker
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.5","duration":"1w"}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiFirewallAllowIP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("invalid duration = %d, want 400", w.Code)
+	assertJSONErrorResponse(t, w, http.StatusBadRequest, `invalid duration "1w"`)
+	if len(blocker.allowed) != 0 {
+		t.Errorf("invalid request changed allow rules: %#v", blocker.allowed)
 	}
 }
 
 func TestAPIBlockIPInvalidDurationRejected(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
+	blocker := newFullBlocker()
+	s.blocker = blocker
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ip":"203.0.113.5","duration":"24 hours"}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBlockIP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("invalid duration = %d, want 400", w.Code)
+	assertJSONErrorResponse(t, w, http.StatusBadRequest, `invalid duration "24 hours"`)
+	if len(blocker.blocked) != 0 {
+		t.Errorf("invalid request changed block rules: %#v", blocker.blocked)
 	}
 }
 
 func TestAPIFirewallDenySubnetInvalidDurationRejected(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
+	blocker := newFullBlocker()
+	s.blocker = blocker
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"cidr":"203.0.113.0/24","duration":"forever"}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiFirewallDenySubnet(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("invalid duration = %d, want 400", w.Code)
+	assertJSONErrorResponse(t, w, http.StatusBadRequest, `invalid duration "forever"`)
+	if len(blocker.subnetsBlocked) != 0 {
+		t.Errorf("invalid request changed subnet rules: %#v", blocker.subnetsBlocked)
 	}
 }
 
