@@ -264,9 +264,17 @@ func (m *Manager) timerExpired(ctx context.Context) error {
 	return m.applyRevertLocked(ctx, rb)
 }
 
-// applyRevertLocked restores the snapshot bytes to the config path,
-// triggers a daemon restart, and clears the pending record only after
-// the restart command succeeds. Caller must hold m.mu.
+// applyRevertLocked restores the snapshot bytes to the config path, clears
+// the pending record, and only then triggers the daemon restart. The order
+// is load-bearing: systemctl restart kills this very process, so anything
+// sequenced after a successful restart never runs. Clearing after the
+// restart left the record in place, and every subsequent boot found it
+// expired, reverted, and restarted again - a permanent restart loop. Once
+// the snapshot is on disk any later daemon start converges on the reverted
+// config, so a failed restart (surfaced as an error) loses nothing but
+// immediacy. A failed clear aborts before the restart for the same reason:
+// restarting with the record still present is what loops.
+// Caller must hold m.mu.
 func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollback) error {
 	if m.timer != nil {
 		m.timer.Stop()
@@ -278,13 +286,13 @@ func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollba
 	if err := integrity.WriteConfigBytesAtomic(m.configPath, rb.PrevYAML); err != nil {
 		return fmt.Errorf("restore previous config: %w", err)
 	}
+	if err := m.db.ClearFirewallRollback(); err != nil {
+		return fmt.Errorf("clear rollback before restart: %w", err)
+	}
 	if m.restart != nil {
 		if err := m.restart(ctx); err != nil {
-			return fmt.Errorf("trigger restart after revert: %w", err)
+			return fmt.Errorf("trigger restart after revert (config already restored on disk): %w", err)
 		}
-	}
-	if err := m.db.ClearFirewallRollback(); err != nil {
-		return fmt.Errorf("clear rollback after revert: %w", err)
 	}
 	return nil
 }

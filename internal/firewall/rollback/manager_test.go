@@ -146,6 +146,46 @@ func TestRevertRestoresPreviousAndRestarts(t *testing.T) {
 	}
 }
 
+// The pending record must be gone BEFORE the restart fires: systemctl
+// restart kills this very process, so anything sequenced after it never
+// runs. A record that survives a successful restart makes the next boot
+// revert and restart again, forever.
+func TestRevertClearsRecordBeforeRestart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	if werr := os.WriteFile(cfgPath, []byte("hostname: next\n"), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+
+	var recordPresentAtRestart atomic.Bool
+	var m *Manager
+	restart := func(_ context.Context) error {
+		_, ok := db.GetFirewallRollback()
+		recordPresentAtRestart.Store(ok)
+		return nil
+	}
+	m = NewManager(db, cfgPath, restart, time.Now)
+	t.Cleanup(func() {
+		_ = m.Confirm()
+		_ = db.Close()
+	})
+
+	if _, aerr := m.Apply([]byte("hostname: prev\n"), []byte("hostname: next\n"), time.Minute, "tok"); aerr != nil {
+		t.Fatal(aerr)
+	}
+	if rerr := m.Revert(context.Background()); rerr != nil {
+		t.Fatalf("Revert: %v", rerr)
+	}
+	if recordPresentAtRestart.Load() {
+		t.Error("rollback record still present when restart fired; a killed process never clears it and the next boot loops")
+	}
+}
+
 func TestRevertNoPendingErrors(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
 	if err := m.Revert(context.Background()); err == nil {
@@ -250,8 +290,11 @@ func TestRevertRestartFailureSurfaces(t *testing.T) {
 	if !bytes.Equal(got, prev) {
 		t.Errorf("config not restored before restart failure: got %q want %q", got, prev)
 	}
-	if _, ok := db.GetFirewallRollback(); !ok {
-		t.Error("rollback record should remain pending when restart fails")
+	// The record is cleared even on restart failure: the snapshot is on
+	// disk, so any later daemon start converges on it. Keeping the record
+	// re-ran the identical revert+restart on every boot.
+	if _, ok := db.GetFirewallRollback(); ok {
+		t.Error("rollback record should be cleared once the config is restored")
 	}
 }
 
@@ -291,7 +334,10 @@ func TestRecoverOnStartupExpiredRevertFailureDoesNotClaimReverted(t *testing.T) 
 	if reverted {
 		t.Error("failed recovery must not report reverted=true")
 	}
-	if _, ok := db.GetFirewallRollback(); !ok {
-		t.Error("rollback record should remain pending after failed startup recovery")
+	// Cleared despite the failed restart: the restored config is on disk
+	// and this daemon start (or the next) loads it; a retained record
+	// would revert+restart on every boot forever.
+	if _, ok := db.GetFirewallRollback(); ok {
+		t.Error("rollback record should be cleared once the config is restored")
 	}
 }
