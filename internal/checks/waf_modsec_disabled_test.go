@@ -362,3 +362,31 @@ func TestModsecDisabledFindings_CapsDetailListing(t *testing.T) {
 		t.Errorf("message should state the full count of 30, got %q", f.Message)
 	}
 }
+
+// On cPanel the platform layer reports ApacheConfigDir as
+// /usr/local/apache/conf, and the userdata tree hangs directly off it.
+// The conf.d segment belongs to the distro path (/etc/apache2/conf.d),
+// which is the same directory reached another way -- it is not a
+// subdirectory of the cPanel config dir.
+func TestModsecDisabledScopes_CPanelApacheConfLayout(t *testing.T) {
+	old := osFS
+	defer SetOS(old)
+	SetOS(newGlobFS(map[string]string{
+		"/usr/local/apache/conf/userdata/std/2_4/bob/modsec.conf":              "SecRuleEngine Off\n",
+		"/usr/local/apache/conf/userdata/ssl/2_4/bob/shop.example/modsec.conf": "SecRuleEngine Off\n",
+	}))
+
+	info := cpanelInfo()
+	info.ApacheConfigDir = "/usr/local/apache/conf"
+
+	scopes := modsecDisabledScopes(info)
+
+	account := hasScopeFor(t, scopes, "/usr/local/apache/conf/userdata/std/2_4/bob/modsec.conf")
+	if account.User != "bob" || account.Domain != "" {
+		t.Errorf("account scope = %q/%q, want bob with empty domain", account.User, account.Domain)
+	}
+	domain := hasScopeFor(t, scopes, "/usr/local/apache/conf/userdata/ssl/2_4/bob/shop.example/modsec.conf")
+	if domain.Domain != "shop.example" {
+		t.Errorf("domain scope = %q, want shop.example", domain.Domain)
+	}
+}

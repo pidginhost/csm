@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Disabled-scope audits now ignore cPanel userdata metadata, cover LiteSpeed's Apache-compatible include tree, and avoid treating disabled rules as a disabled WAF.
+- Disabled-scope audits now find the per-account and per-domain include files on cPanel, where the config directory is reported without the conf.d segment. Account-wide scopes were previously missed entirely.
 - The new WordPress backdoor rules now require the incident's stealth behavior and produce the same result in the regex and YARA-X scanners without flagging ordinary membership or branding code.
 - IPv6 firewall gap detection now reports address-inspection failures, recognizes scoped addresses, keeps a stable finding identity across address-order changes, and opens host-level incidents.
 - Firewall flushes now serialize auto-block cleanup with scans and report persistence failures, so stale or newly recreated threat rows cannot undo the flush.

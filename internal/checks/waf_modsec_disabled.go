@@ -89,9 +89,7 @@ func confTreeDisabledScopes(info platform.Info) []modsecDisabledScope {
 	}
 
 	var scopes []modsecDisabledScope
-	for _, tree := range []string{"std", "ssl"} {
-		base := filepath.Join(configDir, "conf.d", "userdata", tree, "2_4")
-
+	for _, base := range userdataTreeBases(configDir) {
 		for _, path := range globPaths(filepath.Join(base, "*", "modsec.conf")) {
 			if !confSecRuleEngineOff(path) {
 				continue
@@ -115,6 +113,25 @@ func confTreeDisabledScopes(info platform.Info) []modsecDisabledScope {
 		}
 	}
 	return scopes
+}
+
+// userdataTreeBases returns the per-vhost include roots to walk.
+//
+// cPanel reports its config dir as /usr/local/apache/conf, and the
+// userdata tree hangs directly off it. The distro-style path for the same
+// directory is /etc/apache2/conf.d/userdata, so "conf.d" belongs to that
+// spelling of the path, not under the cPanel config dir. Both layouts are
+// walked because either spelling can be the one the platform layer
+// reports; duplicate hits collapse during deduplication.
+func userdataTreeBases(configDir string) []string {
+	var bases []string
+	for _, prefix := range [][]string{{"userdata"}, {"conf.d", "userdata"}} {
+		for _, tree := range []string{"std", "ssl"} {
+			parts := append(append([]string{configDir}, prefix...), tree, "2_4")
+			bases = append(bases, filepath.Join(parts...))
+		}
+	}
+	return bases
 }
 
 func confSecRuleEngineOff(path string) bool {
