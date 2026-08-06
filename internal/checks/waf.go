@@ -126,20 +126,6 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 	// reads the userdata and conf.d state that actually gates filtering.
 	findings = append(findings, modsecDisabledFindings(info)...)
 
-	// --- Per-account WAF bypass check ---
-	// whmapi1-only, skip on non-cPanel hosts.
-	if info.IsCPanel() {
-		bypassed := checkPerAccountBypass()
-		for _, domain := range bypassed {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "waf_bypass",
-				Message:  fmt.Sprintf("ModSecurity disabled for domain: %s", domain),
-				Details:  "This domain has ModSecurity bypassed. All web attacks pass through unfiltered.\nCheck: WHM > Security Center > ModSecurity > Domains",
-			})
-		}
-	}
-
 	return findings
 }
 
@@ -468,39 +454,6 @@ func isRuleArtifact(name string) bool {
 	return strings.HasSuffix(name, ".conf") ||
 		strings.HasSuffix(name, ".data") ||
 		strings.HasSuffix(name, ".rules")
-}
-
-// checkPerAccountBypass checks for domains with ModSecurity disabled.
-func checkPerAccountBypass() []string {
-	out, err := runCmd("whmapi1", "modsec_get_rules")
-	if err != nil || out == nil {
-		return nil
-	}
-
-	var bypassed []string
-	outStr := string(out)
-
-	// Parse YAML-like output for disabled domains
-	// The output format varies, but disabled rules/domains show "disabled: 1" or "active: 0"
-	lines := strings.Split(outStr, "\n")
-	for i, line := range lines {
-		lineLower := strings.ToLower(strings.TrimSpace(line))
-		if strings.Contains(lineLower, "disabled: 1") || strings.Contains(lineLower, "active: 0") {
-			// Look backward for the domain/config name
-			for j := i - 1; j >= 0 && j >= i-5; j-- {
-				prev := strings.TrimSpace(lines[j])
-				if strings.HasSuffix(prev, ":") && !strings.HasPrefix(prev, "-") {
-					domain := strings.TrimSuffix(prev, ":")
-					if strings.Contains(domain, ".") { // looks like a domain
-						bypassed = append(bypassed, domain)
-					}
-					break
-				}
-			}
-		}
-	}
-
-	return bypassed
 }
 
 // Markers delimiting the CSM-managed section inside modsec2.user.conf.

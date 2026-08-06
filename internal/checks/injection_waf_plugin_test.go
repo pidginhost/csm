@@ -74,31 +74,6 @@ func TestCheckEngineMode_SkipsComments(t *testing.T) {
 	}
 }
 
-// --- checkPerAccountBypass (waf.go:464, 0%) --------------------------------
-
-func TestCheckPerAccountBypass_NoCmd(t *testing.T) {
-	withMockCmd(t, &mockCmd{run: func(string, ...string) ([]byte, error) { return nil, fmt.Errorf("not found") }})
-	if bypassed := checkPerAccountBypass(); len(bypassed) != 0 {
-		t.Errorf("expected empty, got %v", bypassed)
-	}
-}
-
-func TestCheckPerAccountBypass_WithDisabled(t *testing.T) {
-	output := "    example.com:\n      disabled: 1\n    good.com:\n      disabled: 0\n"
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			if name == "whmapi1" {
-				return []byte(output), nil
-			}
-			return nil, nil
-		},
-	})
-	bypassed := checkPerAccountBypass()
-	if len(bypassed) != 1 || bypassed[0] != "example.com" {
-		t.Errorf("expected [example.com], got %v", bypassed)
-	}
-}
-
 // --- deployVirtualPatches (waf.go:498, 0%) --------------------------------
 
 func TestDeployVirtualPatches_NoSource(t *testing.T) {

@@ -74,6 +74,20 @@ type Info struct {
 // tailing, etc.) without re-detecting each time.
 func (i Info) IsCPanel() bool { return i.Panel == PanelCPanel }
 
+// ApacheCompatibleConfigDir returns the Apache-style config root consumed by
+// the active web server. cPanel LiteSpeed reads the EA4 Apache tree even when
+// Apache itself is not the detected server, and older detection snapshots may
+// therefore have no ApacheConfigDir populated.
+func (i Info) ApacheCompatibleConfigDir() string {
+	if i.ApacheConfigDir != "" {
+		return i.ApacheConfigDir
+	}
+	if i.IsCPanel() {
+		return "/etc/apache2"
+	}
+	return ""
+}
+
 // IsRHELFamily reports whether the OS uses rpm/dnf and /etc/httpd style paths.
 func (i Info) IsRHELFamily() bool {
 	switch i.OS {

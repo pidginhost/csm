@@ -25,12 +25,14 @@ func cpanelInfo() platform.Info {
 // stored path whose shape lines up with the pattern.
 type globFS struct {
 	mockOS
-	files map[string]string
+	files     map[string]string
+	readPaths []string
 }
 
 func newGlobFS(files map[string]string) *globFS {
 	f := &globFS{files: files}
 	f.readFile = func(name string) ([]byte, error) {
+		f.readPaths = append(f.readPaths, name)
 		if body, ok := f.files[name]; ok {
 			return []byte(body), nil
 		}
@@ -205,6 +207,66 @@ func TestModsecDisabledScopes_DeduplicatesUserdataSiblings(t *testing.T) {
 	}
 	if scopes[0].Domain != "example.com" {
 		t.Errorf("domain = %q, want example.com", scopes[0].Domain)
+	}
+}
+
+// The userdata directory also contains account metadata, generated caches,
+// and directories. None describes a vhost, and cache JSON can be large, so
+// scope discovery must reject those names before trying to read them.
+func TestModsecDisabledScopes_SkipsUserdataMetadataWithoutReadingIt(t *testing.T) {
+	old := osFS
+	defer SetOS(old)
+	fs := newGlobFS(map[string]string{
+		"/var/cpanel/userdata/alice/cache.json":        "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/main":              "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/main.cache":        "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/nginx-cache.json":  "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/scope":             "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/example.com":       "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/alice/example.com.cache": "secruleengineoff: 1\n",
+	})
+	SetOS(fs)
+
+	scopes := modsecDisabledScopes(cpanelInfo())
+
+	if len(scopes) != 1 || scopes[0].Domain != "example.com" {
+		t.Fatalf("scopes = %+v, want only example.com", scopes)
+	}
+	wantReads := []string{"/var/cpanel/userdata/alice/example.com"}
+	if strings.Join(fs.readPaths, "\n") != strings.Join(wantReads, "\n") {
+		t.Errorf("ReadFile paths = %v, want %v", fs.readPaths, wantReads)
+	}
+}
+
+func TestDedupeScopes_KeepsAccountAndDomainScopesDistinct(t *testing.T) {
+	scopes := dedupeScopes([]modsecDisabledScope{
+		{User: "alice", Source: "/std/alice/modsec.conf"},
+		{User: "alice", Domain: "example.com", Source: "/std/alice/example.com/modsec.conf"},
+	})
+
+	if len(scopes) != 2 {
+		t.Fatalf("scopes = %+v, want distinct account-wide and per-domain entries", scopes)
+	}
+	if scopes[0].Domain != "" || scopes[1].Domain != "example.com" {
+		t.Fatalf("scopes = %+v, account-wide and per-domain keys shadowed each other", scopes)
+	}
+}
+
+// cPanel LiteSpeed consumes the same EA4 Apache userdata includes. Platform
+// detection can identify LiteSpeed without populating ApacheConfigDir, so the
+// audit must still inspect the canonical cPanel include tree.
+func TestModsecDisabledScopes_LiteSpeedUsesCPanelApacheTree(t *testing.T) {
+	old := osFS
+	defer SetOS(old)
+	const source = "/etc/apache2/conf.d/userdata/ssl/2_4/alice/example.com/modsec.conf"
+	SetOS(newGlobFS(map[string]string{source: "SecRuleEngine Off\n"}))
+
+	info := platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}
+	scopes := modsecDisabledScopes(info)
+
+	got := hasScopeFor(t, scopes, source)
+	if got.User != "alice" || got.Domain != "example.com" {
+		t.Fatalf("scope = %+v, want alice/example.com", got)
 	}
 }
 

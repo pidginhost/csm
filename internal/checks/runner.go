@@ -234,7 +234,7 @@ var runnerFindingNames = map[string][]string{
 	"symlink_attacks":       {"symlink_attack"},
 	"uid0_accounts":         {"uid0_account"},
 	"user_outbound":         {"user_outbound_connection", "direct_smtp_egress", "bad_asn_outbound"},
-	"waf_status":            {"modsec_disabled_vhost", "waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
+	"waf_status":            {"modsec_disabled_vhost", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
 	"webmail_logins":        {"webmail_bruteforce"},
 	"webshells":             {"webshell", "world_writable_php"},
 	"whm_access":            {"whm_account_action", "whm_password_change"},

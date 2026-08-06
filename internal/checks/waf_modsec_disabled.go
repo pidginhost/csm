@@ -51,8 +51,8 @@ func modsecDisabledScopes(info platform.Info) []modsecDisabledScope {
 func userdataDisabledScopes() []modsecDisabledScope {
 	var scopes []modsecDisabledScope
 	for _, path := range globPaths("/var/cpanel/userdata/*/*") {
-		name := filepath.Base(path)
-		if strings.HasSuffix(name, ".cache") {
+		domain, ok := cpanelUserdataDomain(filepath.Base(path))
+		if !ok {
 			continue
 		}
 		data, err := osFS.ReadFile(path)
@@ -61,24 +61,36 @@ func userdataDisabledScopes() []modsecDisabledScope {
 		}
 		scopes = append(scopes, modsecDisabledScope{
 			User:   filepath.Base(filepath.Dir(path)),
-			Domain: strings.TrimSuffix(name, "_SSL"),
+			Domain: domain,
 			Source: path,
 		})
 	}
 	return scopes
 }
 
+// cpanelUserdataDomain accepts only per-vhost records. The same directory
+// contains main/scope metadata and generated JSON/cache files; rejecting them
+// by shape before ReadFile avoids bogus scopes and large cache reads.
+func cpanelUserdataDomain(name string) (string, bool) {
+	if strings.HasSuffix(name, ".cache") || strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	domain := cleanDomlogDomain(strings.TrimSuffix(name, "_SSL"))
+	return domain, domain != ""
+}
+
 // confTreeDisabledScopes walks the Apache userdata include tree, where a
 // modsec.conf directly under the account directory disables every vhost
 // the account owns and one a level deeper disables a single domain.
 func confTreeDisabledScopes(info platform.Info) []modsecDisabledScope {
-	if info.ApacheConfigDir == "" {
+	configDir := info.ApacheCompatibleConfigDir()
+	if configDir == "" {
 		return nil
 	}
 
 	var scopes []modsecDisabledScope
 	for _, tree := range []string{"std", "ssl"} {
-		base := filepath.Join(info.ApacheConfigDir, "conf.d", "userdata", tree, "2_4")
+		base := filepath.Join(configDir, "conf.d", "userdata", tree, "2_4")
 
 		for _, path := range globPaths(filepath.Join(base, "*", "modsec.conf")) {
 			if !confSecRuleEngineOff(path) {

@@ -8,12 +8,12 @@ import "testing"
 func TestWPPluginSelfHidingMatchesAllPluginsFilter(t *testing.T) {
 	sample := []byte(`<?php
 if (!defined('ABSPATH')) { exit; }
-add_filter('all_plugins', function ($plugins) {
+add_filter ('all_plugins', function ($plugins) {
     if (isset($_GET['sp'])) {
         return $plugins;
     }
-    $current = plugin_basename(__FILE__);
-    unset($plugins[$current]);
+    $current = plugin_basename (__FILE__);
+    unset ($plugins[$current]);
     return $plugins;
 });
 `)
@@ -26,8 +26,8 @@ add_filter('all_plugins', function ($plugins) {
 	}
 }
 
-// White-label plugins legitimately hide OTHER plugins by name. Only
-// self-concealment via plugin_basename(__FILE__) is the backdoor tell.
+// White-label plugins legitimately hide OTHER plugins by name. Without both
+// self-concealment and the incident's reveal flag, this is ordinary branding.
 func TestWPPluginSelfHidingIgnoresWhiteLabelHidingOtherPlugins(t *testing.T) {
 	sample := []byte(`<?php
 add_filter('all_plugins', function ($plugins) {
@@ -41,13 +41,72 @@ add_filter('all_plugins', function ($plugins) {
 	}
 }
 
-// wpueditors exposed an unauthenticated REST route that minted hidden
-// administrators. permission_callback __return_true plus administrator
-// role assignment in one file has no legitimate use.
+// Some white-label products intentionally hide their own bootstrap from the
+// plugin list. Self-hiding alone is not enough: the incident loader also had
+// a magic request flag that temporarily revealed it to the attacker.
+func TestWPPluginSelfHidingIgnoresLegitimateSelfHiding(t *testing.T) {
+	sample := []byte(`<?php
+add_filter('all_plugins', function ($plugins) {
+    if (!get_option('agency_hide_branding')) {
+        return $plugins;
+    }
+    $current = plugin_basename(__FILE__);
+    unset($plugins[$current]);
+    return $plugins;
+});
+`)
+	if _, ok := scanRepoRules(t, sample)["wp_plugin_self_hiding"]; ok {
+		t.Error("wp_plugin_self_hiding matched ordinary white-label self-hiding")
+	}
+}
+
+func TestWPPluginSelfHidingIgnoresUnrelatedRequestFlag(t *testing.T) {
+	sample := []byte(`<?php
+add_filter('all_plugins', function ($plugins) {
+    $current = plugin_basename(__FILE__);
+    unset($plugins[$current]);
+    return $plugins;
+});
+function agency_share_preview() {
+    if (isset($_GET['sp'])) {
+        return sanitize_text_field($_GET['sp']);
+    }
+}
+`)
+	if _, ok := scanRepoRules(t, sample)["wp_plugin_self_hiding"]; ok {
+		t.Error("wp_plugin_self_hiding matched an unrelated request flag outside the hiding callback")
+	}
+}
+
+// The reveal flag must guard the self-removal branch itself. A plugin can
+// inspect the same short query key for an unrelated feature in the callback
+// without turning separate branding logic into an attacker reveal channel.
+func TestWPPluginSelfHidingIgnoresUnrelatedFlagInCallback(t *testing.T) {
+	sample := []byte(`<?php
+add_filter('all_plugins', function ($plugins) {
+    if (isset($_GET['sp'])) {
+        audit_share_preview($_GET['sp']);
+    }
+    return $plugins;
+});
+function agency_hide_branding($plugins) {
+    $current = plugin_basename(__FILE__);
+    unset($plugins[$current]);
+    return $plugins;
+}
+`)
+	if _, ok := scanRepoRules(t, sample)["wp_plugin_self_hiding"]; ok {
+		t.Error("wp_plugin_self_hiding joined an unrelated request flag to separate branding logic")
+	}
+}
+
+// wpueditors exposed an unauthenticated command route that minted hidden
+// administrators. The open command channel plus administrator assignment is
+// the incident shape; unrelated public routes are insufficient.
 func TestWPRestUnauthAdminCreateMatchesBackdoorController(t *testing.T) {
 	sample := []byte(`<?php
 function wpeditor_register_routes() {
-    register_rest_route($namespace, "/command", array(
+    register_rest_route ($namespace, "/command", array(
         "methods" => "POST",
         "callback" => "wpeditor_handle_command",
         "permission_callback" => "__return_true",
@@ -55,9 +114,9 @@ function wpeditor_register_routes() {
 }
 function wpeditor_create_admin($login, $email) {
     $password = wp_generate_password(24, true, false);
-    $user_id = wp_create_user($login, $password, $email);
+    $user_id = wp_create_user ($login, $password, $email);
     $user = new WP_User($user_id);
-    $user->set_role("administrator");
+    $user->set_role ("administrator");
     return $user_id;
 }
 `)
@@ -85,12 +144,63 @@ register_rest_route('myplugin/v1', '/posts', array(
 	}
 }
 
+// Membership plugins can keep public registration and privileged account
+// management in one controller file. A flat file-wide token conjunction must
+// not turn those unrelated routes into an unauthenticated admin backdoor.
+func TestWPRestUnauthAdminCreateIgnoresMembershipController(t *testing.T) {
+	sample := []byte(`<?php
+register_rest_route('membership/v1', '/register', array(
+    'methods' => 'POST',
+    'callback' => 'membership_register',
+    'permission_callback' => '__return_true',
+));
+function membership_register($request) {
+    return wp_insert_user(array(
+        'user_login' => $request['login'],
+        'role' => 'subscriber',
+    ));
+}
+function membership_promote($user_id) {
+    if (!current_user_can('promote_users')) {
+        return new WP_Error('forbidden');
+    }
+    return wp_update_user(array('ID' => $user_id, 'role' => 'administrator'));
+}
+`)
+	if _, ok := scanRepoRules(t, sample)["wp_rest_unauth_admin_create"]; ok {
+		t.Error("wp_rest_unauth_admin_create matched unrelated public registration and privileged admin management")
+	}
+}
+
+// A protected command endpoint can coexist with a separate open read route.
+// The open permission must belong to the command route, not merely follow it
+// somewhere else in the file.
+func TestWPRestUnauthAdminCreateDoesNotBorrowPermissionFromLaterRoute(t *testing.T) {
+	sample := []byte(`<?php
+register_rest_route('membership/v1', '/command', array(
+    'callback' => 'membership_admin_command',
+    'permission_callback' => 'membership_can_manage_users',
+));
+register_rest_route('membership/v1', '/plans', array(
+    'callback' => 'membership_list_plans',
+    'permission_callback' => '__return_true',
+));
+function membership_admin_command($request) {
+    $id = wp_create_user($request['login'], wp_generate_password());
+    (new WP_User($id))->set_role('administrator');
+}
+`)
+	if _, ok := scanRepoRules(t, sample)["wp_rest_unauth_admin_create"]; ok {
+		t.Error("wp_rest_unauth_admin_create borrowed an open permission from a later route")
+	}
+}
+
 // The 402KB wpueditors loader built every array key and string from
 // chr() chains so static scanners saw no readable identifiers.
 func TestPHPChrChainObfuscationMatchesImplodeChrArray(t *testing.T) {
 	sample := []byte(`<?php
 $e = error_get_last();
-if ($e && in_array($e[implode('', array(chr(116), chr(121), chr(112), chr(101)))], array(1, 4, 16, 64), true)) {
+if ($e && in_array($e[implode ('', array (chr (116), chr (121), chr (112), chr (101)))], array(1, 4, 16, 64), true)) {
     error_log($e[implode('', array(chr(109), chr(101), chr(115), chr(115), chr(97), chr(103), chr(101)))]);
 }
 `)
