@@ -328,6 +328,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "modsec_low_confidence_burst", Category: CategoryWAF},
 	{Name: "modsec_warning_realtime", Category: CategoryWAF},
 	{Name: "waf_attack_blocked", Category: CategoryWAF},
+	{Name: "modsec_disabled_vhost", Category: CategoryWAF},
 	{Name: "waf_bypass", Category: CategoryWAF},
 	{Name: "waf_detection_only", Category: CategoryWAF},
 	{Name: "waf_rules", Category: CategoryWAF},

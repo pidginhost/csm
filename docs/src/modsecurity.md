@@ -39,6 +39,7 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Rule override management** - `SecRuleRemoveById` directives for false positive suppression
 - **Escalation control** - change rule severity or action per-rule
 - **Live deny escalation** - repeated ModSecurity deny events from one IP emit an escalation finding that feeds auto-response blocking. CSM-owned rules keep their existing per-rule escalation controls.
+- **Disabled-scope detection** - reports domains and accounts with the engine switched off, covering both the userdata flag and the per-account and per-domain config includes in the std and ssl trees
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 

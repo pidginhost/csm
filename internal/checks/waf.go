@@ -121,6 +121,11 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 		deployVirtualPatches()
 	}
 
+	// --- Disabled ModSecurity scopes ---
+	// whmapi1 reports disabled *rules*, never a disabled engine, so this
+	// reads the userdata and conf.d state that actually gates filtering.
+	findings = append(findings, modsecDisabledFindings(info)...)
+
 	// --- Per-account WAF bypass check ---
 	// whmapi1-only, skip on non-cPanel hosts.
 	if info.IsCPanel() {
