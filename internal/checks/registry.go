@@ -329,6 +329,9 @@ var checkRegistry = []CheckInfo{
 	{Name: "modsec_warning_realtime", Category: CategoryWAF},
 	{Name: "waf_attack_blocked", Category: CategoryWAF},
 	{Name: "modsec_disabled_vhost", Category: CategoryWAF},
+	// Retired in favour of modsec_disabled_vhost. Kept registered so the
+	// waf_status runner can still purge findings written by older versions.
+	{Name: "waf_bypass", Category: CategoryWAF},
 	{Name: "waf_detection_only", Category: CategoryWAF},
 	{Name: "waf_rules", Category: CategoryWAF},
 	{Name: "waf_rules_stale", Category: CategoryWAF},
