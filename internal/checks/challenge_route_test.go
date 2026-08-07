@@ -348,18 +348,21 @@ func TestResponseActionForCheckFallsBackToBlockWhenChallengeDisabled(t *testing.
 }
 
 // shouldSkipAutoBlockForChallenge must stay the exact inverse of a resolved
-// block action: an IP is left for the challenge gate only while the check
+// block action: an IP is left for the challenge gate only while the finding
 // resolves to "challenge".
 func TestShouldSkipAutoBlockForChallengeMatchesResponseAction(t *testing.T) {
 	for _, check := range []string{"wp_login_bruteforce", "http_scanner_profile", "webshell", "ip_reputation"} {
 		for _, action := range []string{"", "block"} {
-			cfg := &config.Config{}
-			cfg.Challenge.Enabled = true
-			cfg.AutoResponse.HTTPScannerAction = action
-			wantSkip := responseActionForCheck(cfg, check) == responseChallenge
-			if got := shouldSkipAutoBlockForChallenge(cfg, check); got != wantSkip {
-				t.Errorf("shouldSkipAutoBlockForChallenge(%q, action=%q) = %v, want %v",
-					check, action, got, wantSkip)
+			for _, sev := range []alert.Severity{alert.Warning, alert.High, alert.Critical} {
+				cfg := &config.Config{}
+				cfg.Challenge.Enabled = true
+				cfg.AutoResponse.HTTPScannerAction = action
+				f := alert.Finding{Check: check, Severity: sev}
+				wantSkip := responseActionForFinding(cfg, f) == responseChallenge
+				if got := shouldSkipAutoBlockForChallenge(cfg, f); got != wantSkip {
+					t.Errorf("shouldSkipAutoBlockForChallenge(%q, action=%q, sev=%v) = %v, want %v",
+						check, action, sev, got, wantSkip)
+				}
 			}
 		}
 	}

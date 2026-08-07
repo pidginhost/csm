@@ -404,7 +404,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// Skip IPs that are already being challenged, but do not let a
 		// prior challenge suppress a later hard-block-only finding.
-		if cl := GetChallengeIPList(); cl != nil && cl.Contains(ip) && shouldSkipAutoBlockForChallenge(cfg, f.Check) {
+		if cl := GetChallengeIPList(); cl != nil && cl.Contains(ip) && shouldSkipAutoBlockForChallenge(cfg, f) {
 			continue
 		}
 
@@ -740,12 +740,12 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 	return firewall.BlockOutcomeLive, nil
 }
 
-// shouldSkipAutoBlockForChallenge reports whether an IP carrying this check
+// shouldSkipAutoBlockForChallenge reports whether an IP carrying this finding
 // should be left for the challenge gate instead of hard-blocked. It is the
-// exact inverse of responseActionForCheck resolving to a block, so the two
+// exact inverse of responseActionForFinding resolving to a block, so the two
 // auto-response paths share one decision.
-func shouldSkipAutoBlockForChallenge(cfg *config.Config, check string) bool {
-	return responseActionForCheck(cfg, check) == responseChallenge
+func shouldSkipAutoBlockForChallenge(cfg *config.Config, f alert.Finding) bool {
+	return responseActionForFinding(cfg, f) == responseChallenge
 }
 
 // promoteToPermanentBlock upgrades an existing temp block to permanent. The
