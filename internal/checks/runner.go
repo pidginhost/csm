@@ -196,7 +196,7 @@ var runnerFindingNames = map[string][]string{
 	"health":                {"csm_health"},
 	"htaccess":              append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
 	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
-	"ip_reputation":         {"ip_reputation"},
+	"ip_reputation":         {"ip_reputation", "reputation_quota_exhausted", "threat_feed_stale"},
 	"kernel_modules":        {"kernel_module"},
 	"local_threat_score":    {"local_threat_score"},
 	"mail_per_account":      {"mail_per_account"},
@@ -906,8 +906,27 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	purgeNames := latestPurgeCheckNamesForChecks(purgeChecks)
-	for _, name := range incompleteRan {
-		purgeNames = append(purgeNames, perRunFindingNames[name]...)
+	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
+}
+
+// mergePerRunPurgeNames preserves the purge list's sorted, duplicate-free
+// contract. incompleteRan is populated by concurrent workers, so appending it
+// directly made the returned order depend on goroutine completion order.
+func mergePerRunPurgeNames(purgeNames, incompleteRan []string) []string {
+	seen := make(map[string]struct{}, len(purgeNames)+len(incompleteRan))
+	for _, name := range purgeNames {
+		seen[name] = struct{}{}
 	}
-	return findings, purgeNames
+	for _, owner := range incompleteRan {
+		for _, name := range perRunFindingNames[owner] {
+			seen[name] = struct{}{}
+		}
+	}
+
+	merged := make([]string, 0, len(seen))
+	for name := range seen {
+		merged = append(merged, name)
+	}
+	sort.Strings(merged)
+	return merged
 }

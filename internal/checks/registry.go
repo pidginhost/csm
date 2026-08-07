@@ -298,6 +298,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "bad_asn_outbound", Category: CategoryNetwork},
 	{Name: "infra_ips_unresolvable", Category: CategoryNetwork},
 	{Name: "ip_reputation", Category: CategoryNetwork},
+	{Name: "reputation_quota_exhausted", Category: CategoryNetwork},
+	{Name: "threat_feed_stale", Category: CategoryNetwork},
 	{Name: "ssl_cert_issued", Category: CategoryNetwork},
 	{Name: "user_outbound_connection", Category: CategoryNetwork},
 

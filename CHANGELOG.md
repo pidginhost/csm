@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New malware rules detect WordPress plugins that hide themselves from the plugin list, expose unauthenticated administrator-creation endpoints, or obfuscate strings and URLs to evade scanners.
 - The web UI Blocks table now supports selecting visible rows and unblocking them in one action, with the standard 30-second undo banner.
 - New metric csm_firewall_block_outcome_total{outcome,source} counts every IP block attempt across all sources, so dashboards can prove auto-response is actually landing blocks and spot engine failures.
+- Reputation coverage degradation is now visible as findings: an exhausted AbuseIPDB quota emits reputation_quota_exhausted and threat feeds older than 7 days emit threat_feed_stale, instead of only stderr lines.
 
 ### Fixed
 
