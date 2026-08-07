@@ -742,6 +742,12 @@ function unblockIP(ip) {
 function unbanEverywhere(ip) {
     CSM.confirm('Unban ' + ip + ' from CSM and cPHulk?').then(function() {
         CSM.post('/api/v1/firewall/unban', { ip: ip }).then(function(data) {
+            // The unban endpoint reports validation failures as HTTP 200
+            // with success:false, which CSM.post resolves normally.
+            if (data && data.success === false) {
+                CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');
+                return;
+            }
             var msg = 'Removed lockouts for ' + ip;
             if (data.subnet_removed) msg += ' (also removed subnet ' + data.subnet_removed + ')';
             CSM.toast(msg, 'success');
