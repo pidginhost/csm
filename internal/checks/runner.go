@@ -469,6 +469,18 @@ func LatestPurgeCheckNamesForReducedDeep() []string {
 	return latestPurgeCheckNamesForChecks(reducedDeepChecks())
 }
 
+// perRunFindingNames lists finding names that describe a single run's scan
+// coverage rather than discovered state. They are purged whenever their
+// owning check ran and returned, even when that run marked itself
+// incomplete: a rolling scan on a large host never completes in one run, so
+// gating these on completion would let every run's status finding accumulate
+// forever. Discovered-state names (yara_match_scheduled) stay
+// completion-gated so mid-cycle windows never wipe earlier windows' finds.
+var perRunFindingNames = map[string][]string{
+	"yara_deep":          {"yara_scan_incomplete"},
+	"php_config_changes": {"php_config_scan_incomplete"},
+}
+
 var latestVolatileCheckNames = []string{
 	"account_scan_truncated",
 	"auto_block",
@@ -669,6 +681,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// while merging nothing back.
 	completedChecks := make([]namedCheck, 0, len(enabledChecks))
 	completedThrottled := make([]string, 0)
+	// incompleteRan collects checks that returned within budget but marked
+	// themselves incomplete; their per-run status finding names still purge.
+	incompleteRan := make([]string, 0)
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
@@ -758,6 +773,8 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 				mu.Lock()
 				if !incompleteChecks.contains(c.name) {
 					completedChecks = append(completedChecks, c)
+				} else {
+					incompleteRan = append(incompleteRan, c.name)
 				}
 				if len(results) > 0 {
 					findings = append(findings, results...)
@@ -888,5 +905,9 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		findings = append(findings, blockActions...)
 	}
 
-	return findings, latestPurgeCheckNamesForChecks(purgeChecks)
+	purgeNames := latestPurgeCheckNamesForChecks(purgeChecks)
+	for _, name := range incompleteRan {
+		purgeNames = append(purgeNames, perRunFindingNames[name]...)
+	}
+	return findings, purgeNames
 }

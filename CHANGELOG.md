@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reputation sightings for IPs routed to the browser challenge are no longer emailed when blocked-alert suppression is on, since the challenge either verifies the visitor or escalates to a block without operator action. On busy hosts this removes hundreds of scanner-noise alert lines per day.
+- Reputation sightings detected on mail and other browserless channels now hard-block the IP instead of routing it to a challenge nothing can ever answer, which left those attackers unblocked and re-alerting daily.
+- Scan-coverage status findings (YARA and PHP-config scan incomplete) are now replaced on every run of their owning check instead of accumulating forever on hosts where the rolling scan never finishes in one pass.
 - Bulk unblock now normalizes addresses, keeps selection controls and saved sorting correct after table changes, retains undo for full-page actions, and clears cPHulk history in one call so large selections do not time out.
 - Upgrades no longer leave the daemon in a crash-restart loop. Rewriting the recorded binary checksum updates one config copy, and that difference alone is now tolerated at startup instead of being treated as conflicting configuration.
 - Disabled-scope audits now ignore cPanel userdata metadata, cover LiteSpeed's Apache-compatible include tree, and avoid treating disabled rules as a disabled WAF.
