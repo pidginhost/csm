@@ -13,7 +13,11 @@ package jstaint
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/js"
@@ -65,10 +69,28 @@ func (s Status) String() string {
 // from a truncated prefix.
 const MaxSourceBytes = 2 << 20
 
-// MaxReasonBytes bounds Report.Reason. Parser diagnostics quote source text,
-// which is attacker controlled, so the reason can never grow a log or finding
-// without limit.
+// MaxReasonBytes bounds Report.Reason. Parser diagnostics can contain
+// attacker-controlled text, so reports retain only sanitized, bounded context.
 const MaxReasonBytes = 256
+
+const (
+	maxAnalysisDepth   = 300
+	maxPropagatedFacts = 200_000
+)
+
+type analysisLimitError uint8
+
+const (
+	errAnalysisDepthLimit analysisLimitError = iota
+	errFactLimit
+)
+
+func (e analysisLimitError) Error() string {
+	if e == errAnalysisDepthLimit {
+		return "maximum AST recursion depth exceeded"
+	}
+	return "maximum propagated fact count exceeded"
+}
 
 // Result is one keystroke-to-sink flow.
 type Result struct {
@@ -85,34 +107,35 @@ type Report struct {
 	Status Status
 	// Results is non-empty only when Status is StatusAnalyzed.
 	Results []Result
+	// TotalResults counts every distinct flow before evidence truncation. It is
+	// non-zero only when Status is StatusAnalyzed.
+	TotalResults int
 	// Reason carries bounded diagnostic context for a non-analyzed status.
 	Reason string
 	// EvidenceTruncated reports that more flows existed than Results holds.
 	EvidenceTruncated bool
 }
 
-// keyHandlerTokens and sinkTokens are the content pre-filter alphabet. The
-// pre-filter is deliberately broader than the AST rules: it admits comments,
-// strings, and unrelated APIs, because the parse decides what is real. It must
-// have no false negatives against the handler and sink forms the analyzer
-// recognises, so it matches bare substrings rather than syntax.
-var keyHandlerTokens = []string{"keydown", "keypress", "keyup"}
-
-var sinkTokens = []string{"fetch", "sendbeacon", "send", "open", "src", "websocket"}
-
 // Analyze examines src for keystroke data reaching a network sink.
 //
 // It never panics: a panic anywhere inside is converted to StatusPanic so one
 // malformed input cannot take down a scan.
-func Analyze(ctx context.Context, src []byte) (report Report) {
+func Analyze(ctx context.Context, src []byte) Report {
+	return analyzeWithPass(ctx, src, validateAST)
+}
+
+type analysisPass func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error)
+
+func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report Report) {
 	defer func() {
 		if r := recover(); r != nil {
-			report = Report{Status: StatusPanic, Reason: boundReason("recovered panic during analysis")}
+			report = Report{Status: StatusPanic, Reason: "recovered panic during analysis"}
 		}
+		report = finalizeReport(report)
 	}()
 
 	if err := ctx.Err(); err != nil {
-		return Report{Status: StatusCanceled, Reason: boundReason(err.Error())}
+		return Report{Status: StatusCanceled, Reason: cancellationReason(err)}
 	}
 
 	// The size gate runs before the pre-filter so an oversize file is reported
@@ -126,48 +149,194 @@ func Analyze(ctx context.Context, src []byte) (report Report) {
 		return Report{Status: StatusNotCandidate}
 	}
 
-	if _, err := js.Parse(parse.NewInputBytes(src), js.Options{}); err != nil {
-		return Report{Status: StatusParseError, Reason: boundReason(err.Error())}
+	ast, err := js.Parse(parse.NewInputBytes(src), js.Options{})
+	if err != nil {
+		return Report{Status: StatusParseError, Reason: parseFailureContext(err)}
 	}
 
-	return Report{Status: StatusAnalyzed}
+	results, evidenceTruncated, err := pass(ctx, ast, &resourceBudget{})
+	if err != nil {
+		status := analysisErrorStatus(err)
+		return Report{
+			Status:            status,
+			Results:           results,
+			TotalResults:      len(results),
+			Reason:            analysisErrorReason(status, err),
+			EvidenceTruncated: evidenceTruncated,
+		}
+	}
+
+	return Report{
+		Status:            StatusAnalyzed,
+		Results:           results,
+		TotalResults:      len(results),
+		EvidenceTruncated: evidenceTruncated,
+	}
 }
 
 // isCandidate reports whether src carries both a key-handler token and a sink
 // token. Matching is ASCII-case-insensitive so React's onKeyDown and a quoted
 // "KeyDown" event name are admitted alongside the lowercase spellings.
 func isCandidate(src []byte) bool {
-	folded := asciiLower(src)
-	return containsAny(folded, keyHandlerTokens) && containsAny(folded, sinkTokens)
+	return containsAnyASCIIFold(src, "keydown", "keypress", "keyup") &&
+		containsAnyASCIIFold(src, "fetch", "sendbeacon", "send", "open", "src", "websocket")
 }
 
-func containsAny(s string, tokens []string) bool {
-	for _, token := range tokens {
-		if strings.Contains(s, token) {
-			return true
+func containsAnyASCIIFold(src []byte, tokens ...string) bool {
+	for i, c := range src {
+		c = asciiLower(c)
+		for _, token := range tokens {
+			if c != token[0] || len(src)-i < len(token) {
+				continue
+			}
+			matched := true
+			for j := 1; j < len(token); j++ {
+				if asciiLower(src[i+j]) != token[j] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// asciiLower lowercases ASCII letters only. Unicode case folding is not used:
-// the tokens are ASCII API names, and folding non-ASCII would cost a full
-// scan of every bundle for no added coverage.
-func asciiLower(src []byte) string {
-	out := make([]byte, len(src))
-	for i, c := range src {
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
+func asciiLower(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
 	}
-	return string(out)
+	return c
+}
+
+type resourceBudget struct {
+	depth int
+	facts int
+}
+
+func (b *resourceBudget) enterAST() error {
+	if b.depth >= maxAnalysisDepth {
+		return errAnalysisDepthLimit
+	}
+	b.depth++
+	return nil
+}
+
+func (b *resourceBudget) leaveAST() {
+	b.depth--
+}
+
+func (b *resourceBudget) addFact() error {
+	if b.facts >= maxPropagatedFacts {
+		return errFactLimit
+	}
+	b.facts++
+	return nil
+}
+
+type limitVisitor struct {
+	ctx    context.Context
+	budget *resourceBudget
+	err    error
+}
+
+func (v *limitVisitor) Enter(js.INode) js.IVisitor {
+	if v.err != nil {
+		return nil
+	}
+	if err := v.ctx.Err(); err != nil {
+		v.err = err
+		return nil
+	}
+	if err := v.budget.enterAST(); err != nil {
+		v.err = err
+		return nil
+	}
+	return v
+}
+
+func (v *limitVisitor) Exit(js.INode) {
+	v.budget.leaveAST()
+}
+
+func validateAST(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Result, bool, error) {
+	visitor := &limitVisitor{ctx: ctx, budget: budget}
+	js.Walk(visitor, ast)
+	return nil, false, visitor.err
+}
+
+func analysisErrorStatus(err error) Status {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return StatusCanceled
+	case errors.Is(err, errAnalysisDepthLimit), errors.Is(err, errFactLimit):
+		return StatusResourceLimit
+	default:
+		panic(fmt.Sprintf("unexpected analyzer error: %v", err))
+	}
+}
+
+func analysisErrorReason(status Status, err error) string {
+	if status == StatusCanceled {
+		return cancellationReason(err)
+	}
+	return err.Error()
+}
+
+func cancellationReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded.Error()
+	}
+	return context.Canceled.Error()
+}
+
+func parseFailureContext(err error) string {
+	var parseErr *parse.Error
+	if errors.As(err, &parseErr) {
+		return fmt.Sprintf("invalid JavaScript at line %d, column %d", parseErr.Line, parseErr.Column)
+	}
+	return "invalid JavaScript"
+}
+
+func finalizeReport(report Report) Report {
+	if report.Status == StatusAnalyzed {
+		report.Reason = ""
+		return report
+	}
+
+	report.Results = nil
+	report.TotalResults = 0
+	report.EvidenceTruncated = false
+	detail := sanitizeReason(report.Reason)
+	report.Reason = report.Status.String()
+	if detail != "" {
+		report.Reason += ": " + detail
+	}
+	report.Reason = boundReason(report.Reason)
+	return report
+}
+
+func sanitizeReason(reason string) string {
+	reason = strings.ToValidUTF8(reason, "?")
+	reason = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, reason)
+	return strings.Join(strings.Fields(reason), " ")
 }
 
 func boundReason(reason string) string {
-	reason = strings.TrimSpace(reason)
+	reason = sanitizeReason(reason)
 	if len(reason) <= MaxReasonBytes {
 		return reason
 	}
-	return reason[:MaxReasonBytes-3] + "..."
+	cut := MaxReasonBytes - 3
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + "..."
 }
