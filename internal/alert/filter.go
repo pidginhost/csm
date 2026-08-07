@@ -29,28 +29,41 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	// the firewall and must remain visible to the operator.
 	blockedIPs := loadBlockedIPs(cfg.StatePath)
 
-	// Also collect IPs and subnets blocked in this batch.
+	// Also collect IPs and subnets blocked in this batch, and IPs routed
+	// to the challenge in this batch. A challenge-routed IP is handled
+	// automatically the same way a blocked one is: it either solves the
+	// PoW (legitimate) or gets escalated to a block by the port gate, so
+	// the operator needs no notification either way.
 	var blockedSubnets []*net.IPNet
+	challengedIPs := make(map[string]bool)
 	for _, f := range findings {
-		if f.Check != "auto_block" {
-			continue
-		}
-		parts := strings.Fields(f.Message)
-		for i, p := range parts {
-			if p == "AUTO-BLOCK:" && i+1 < len(parts) {
-				blockedIPs[parts[i+1]] = true
-				break
-			}
-			if p == "AUTO-BLOCK-SUBNET:" && i+1 < len(parts) {
-				if _, ipnet, err := net.ParseCIDR(parts[i+1]); err == nil {
-					blockedSubnets = append(blockedSubnets, ipnet)
+		switch f.Check {
+		case "auto_block":
+			parts := strings.Fields(f.Message)
+			for i, p := range parts {
+				if p == "AUTO-BLOCK:" && i+1 < len(parts) {
+					blockedIPs[parts[i+1]] = true
+					break
 				}
-				break
+				if p == "AUTO-BLOCK-SUBNET:" && i+1 < len(parts) {
+					if _, ipnet, err := net.ParseCIDR(parts[i+1]); err == nil {
+						blockedSubnets = append(blockedSubnets, ipnet)
+					}
+					break
+				}
+			}
+		case "challenge_route":
+			parts := strings.Fields(f.Message)
+			for i, p := range parts {
+				if p == "CHALLENGE:" && i+1 < len(parts) {
+					challengedIPs[parts[i+1]] = true
+					break
+				}
 			}
 		}
 	}
 
-	if len(blockedIPs) == 0 && len(blockedSubnets) == 0 {
+	if len(blockedIPs) == 0 && len(blockedSubnets) == 0 && len(challengedIPs) == 0 && ChallengedIPFunc == nil {
 		return findings
 	}
 
@@ -62,6 +75,12 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	for ip := range blockedIPs {
 		if parsed := net.ParseIP(ip); parsed != nil {
 			canonicalBlocked[parsed.String()] = true
+		}
+	}
+	canonicalChallenged := make(map[string]bool, len(challengedIPs))
+	for ip := range challengedIPs {
+		if parsed := net.ParseIP(ip); parsed != nil {
+			canonicalChallenged[parsed.String()] = true
 		}
 	}
 
@@ -100,11 +119,23 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 					}
 				}
 			}
+			// A challenge-routed IP counts as handled: same-batch
+			// CHALLENGE actions and the live challenge list both
+			// qualify. Only reputation-class findings honour this;
+			// thresholded attack findings must stay visible even
+			// while the IP sits behind the challenge.
+			if !isBlocked && findingIP != nil {
+				if canonicalChallenged[findingIP.String()] {
+					isBlocked = true
+				} else if ChallengedIPFunc != nil && ChallengedIPFunc(findingIP.String()) {
+					isBlocked = true
+				}
+			}
 			if isBlocked {
 				continue
 			}
 		}
-		if f.Check == "auto_block" {
+		if f.Check == "auto_block" || f.Check == "challenge_route" {
 			continue
 		}
 		filtered = append(filtered, f)
@@ -210,6 +241,12 @@ func loadBlockedIPSource(statePath string, now time.Time, ips map[string]bool) {
 // avoiding a circular import between alert and store packages.
 // When nil, loadBlockedIPs falls back to reading flat files.
 var BlockedIPsFunc func() map[string]bool
+
+// ChallengedIPFunc reports whether an IP is currently on the challenge
+// list. Set by the daemon from the live challenge IP list, mirroring
+// BlockedIPsFunc; nil means challenge membership is unknown and no
+// challenge-based suppression happens (fail open to alerting).
+var ChallengedIPFunc func(ip string) bool
 
 // loadBlockedIPs reads blocked IPs from both the firewall engine state
 // and the legacy blocked_ips.json file.
