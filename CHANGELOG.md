@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Malware rules no longer flag a PHP bind shell in non-PHP files, a hardened or webshot-disabled TimThumb, a template's hidden social-icon bar, or a plugin that hides admin notices via a stylesheet, cutting recurring false positives on stock library and template content.
 - Reputation sightings for IPs routed to the browser challenge are no longer emailed when blocked-alert suppression is on, since the challenge either verifies the visitor or escalates to a block without operator action. On busy hosts this removes hundreds of scanner-noise alert lines per day.
 - Reputation sightings detected on mail and other browserless channels now hard-block the IP instead of routing it to a challenge nothing can ever answer, which left those attackers unblocked and re-alerting daily.
 - Scan-coverage status findings (YARA and PHP-config scan incomplete) are now replaced on every run of their owning check instead of accumulating forever on hosts where the rolling scan never finishes in one pass.
