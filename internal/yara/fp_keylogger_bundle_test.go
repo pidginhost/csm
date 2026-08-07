@@ -91,6 +91,15 @@ func TestFPKeylogger_SmushTutorialsBundle(t *testing.T) {
 	}
 }
 
+func TestFPKeylogger_KeyCodeConstantNearFetch(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte(`window.onkeydown=function(e){return e};` +
+		`var label="enter="+ct.KeyCode.RETURN;fetch("/wp-json/plugin/v1/settings")`)
+	if hasYaraRule(s.ScanBytes(legit), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js FP: treated a KeyCode constant as a captured keyCode property")
+	}
+}
+
 // Keystrokes pushed into an array, then beaconed to a same-origin collector.
 func TestFPKeylogger_PushedKeystrokeBufferStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
