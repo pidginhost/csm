@@ -209,6 +209,21 @@ func responseActionForCheck(cfg *config.Config, check string) string {
 	return responseChallenge
 }
 
+// responseActionForFinding narrows responseActionForCheck for one finding.
+// ip_reputation grades its sighting severity by detection vector
+// (reputationSightingSeverity: HTTP and cPanel access are High, every
+// other vector Critical), so a Critical reputation sighting came from a
+// browserless channel (SMTP, IMAP, FTP, SSH) where nothing can ever
+// answer the PoW page -- challenge-routing it just leaves the attacker
+// unblocked, retrying daily. Those resolve to a hard block.
+func responseActionForFinding(cfg *config.Config, f alert.Finding) string {
+	action := responseActionForCheck(cfg, f.Check)
+	if action == responseChallenge && f.Check == "ip_reputation" && f.Severity == alert.Critical {
+		return responseBlock
+	}
+	return action
+}
+
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
 func isHardBlockCheck(check string) bool {
 	if hardBlockChecks[check] {
@@ -264,7 +279,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 		// The scanner-profile response is operator-selectable: "block"
 		// skips routing here so AutoBlockIPs hard-blocks the IP instead.
-		if responseActionForCheck(cfg, f.Check) == responseBlock {
+		if responseActionForFinding(cfg, f) == responseBlock {
 			continue
 		}
 
