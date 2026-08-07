@@ -1,0 +1,340 @@
+SECURITY ALERT - cluster6.pidginhost.net
+Timestamp: 2026-08-07 10:01:00 EEST
+Findings: 0 critical, 9 high, 0 warning
+────────────────────────────────────────────────────────────
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 147.185.132.219 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 40.124.173.234 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 172.174.244.189 (source: blocklist-de)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.27 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 188.166.160.126 (source: blocklist-de)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 20.65.194.174 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 10:00:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 43.157.82.252 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Asia Pacific Network Information Center, Pty. Ltd.), 510 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 10:00:56
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 20.163.74.182 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Microsoft Corporation), 1563 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 10:00:56
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 87.236.176.169 (AbuseIPDB score: 100/100)
+ Detected via: cPanel/WHM access
+ Category: Data Center/Web Hosting/Transit (Driftnet Ltd), 311 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 10:00:56
+
+────────────────────────────────────────────────────────────
+CSM - Continuous Security Monitor
+
+SECURITY ALERT - cluster6.pidginhost.net
+Timestamp: 2026-08-07 09:51:00 EEST
+Findings: 0 critical, 22 high, 0 warning
+────────────────────────────────────────────────────────────
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.32 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.30 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.225 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 159.65.148.75 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.228 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 147.185.132.13 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 194.50.235.143 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.192 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.114 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.94 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.113 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.131 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 115.227.26.85 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.111 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 64.62.156.222 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.212 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 157.245.245.246 (source: blocklist-de)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 89.37.172.134 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 66.132.172.110 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Censys, Inc.), 2167 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.27 (AbuseIPDB score: 100/100)
+ Detected via: cPanel/WHM access
+ Category: Fixed Line ISP (The Shadowserver Foundation, Inc.), 1702 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 65.49.1.26 (AbuseIPDB score: 100/100)
+ Detected via: cPanel/WHM access
+ Category: Fixed Line ISP (The Shadowserver Foundation, Inc.), 1708 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:50:55
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 20.168.0.218 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Microsoft Corporation), 1535 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:50:55
+
+────────────────────────────────────────────────────────────
+CSM - Continuous Security Monitor
+
+SECURITY ALERT - cluster6.pidginhost.net
+Timestamp: 2026-08-07 09:41:00 EEST
+Findings: 0 critical, 9 high, 0 warning
+────────────────────────────────────────────────────────────
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.26 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.30 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.63 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.22 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 51.103.152.96 (source: blocklist-de)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 199.45.154.114 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 147.185.132.21 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.36 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:40:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 34.52.195.22 (AbuseIPDB score: 60/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Google LLC), 10 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:40:55
+
+────────────────────────────────────────────────────────────
+CSM - Continuous Security Monitor
+SECURITY ALERT - cluster6.pidginhost.net
+Timestamp: 2026-08-07 09:31:00 EEST
+Findings: 0 critical, 15 high, 0 warning
+────────────────────────────────────────────────────────────
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.203 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.185 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 94.231.206.7 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 162.216.150.184 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 193.124.20.252 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.254 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 91.230.168.19 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 69.5.169.251 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 94.231.206.0 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 3.233.59.216 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Amazon Data Services Northern Virginia), 116 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 54.86.115.253 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Amazon Technologies Inc.), 115 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 194.88.98.84 (source: cins-army)
+ Detected via: cPanel/WHM access
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 154.83.197.85 (source: cins-army)
+ Detected via: HTTP request
+ Matched in local threat intelligence database
+ Time: 2026-08-07 09:30:54
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 20.65.193.168 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Microsoft Corporation), 1550 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:30:57
+
+[HIGH] ip_reputation - Known malicious IP accessing server: 43.159.138.217 (AbuseIPDB score: 100/100)
+ Detected via: HTTP request
+ Category: Data Center/Web Hosting/Transit (Asia Pacific Network Information Center, Pty. Ltd.), 426 reports
+ This IP is reported in threat intelligence databases
+ Time: 2026-08-07 09:30:57
+
+────────────────────────────────────────────────────────────
+CSM - Continuous Security Monitor
+SECURITY ALERT - cluster6.pidginhost.net
+Timestamp: 2026-08-07 09:06:35 EEST
+Findings: 3 critical, 1 high, 0 warning
+────────────────────────────────────────────────────────────
+
+[CRITICAL] yara_match_scheduled - YARA rule match [dropper_wget_pipe_exec]: /home/drpenromaniaro/public_html/app/lib/vendor/twig/twig/drupal_test.sh
+ Scheduled deep scan matched YARA rule dropper_wget_pipe_exec
+ Time: 2026-08-07 09:06:31
+
+[CRITICAL] yara_match_scheduled - YARA rule match [dropper_uploader_no_auth]: /home/dssol/public_html/old/shop/app/code/core/Mage/Adminhtml/controllers/Extensions/FileController.php
+ Scheduled deep scan matched YARA rule dropper_uploader_no_auth
+ Time: 2026-08-07 09:06:31
+
+[CRITICAL] yara_match_scheduled - YARA rule match [dropper_uploader_no_auth]: /home/dssol/public_html/old/shop/app/code/core/Mage/Core/Model/Convert/Adapter/Interactive.php
+ Scheduled deep scan matched YARA rule dropper_uploader_no_auth
+ Time: 2026-08-07 09:06:31
+
+[HIGH] yara_scan_incomplete - YARA deep scan could not inspect 25 file or directory entries
+ /home/drpenromaniaro/public_html/Backup12082021/backup_12082021.zip exceeds the 16777216-byte scan limit
+ Time: 2026-08-07 09:06:31
+
+────────────────────────────────────────────────────────────
+CSM - Continuous Security Monitor
