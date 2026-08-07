@@ -2534,6 +2534,7 @@ func (d *Daemon) startChallengeServer() {
 	}
 	d.attachChallengePortGate()
 	checks.SetChallengeIPList(d.ipList)
+	alert.ChallengedIPFunc = d.ipList.Contains
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
 	d.wg.Add(1)
