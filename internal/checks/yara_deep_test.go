@@ -190,8 +190,11 @@ func TestIncompleteCheckDoesNotPurgeLastCompletedFindings(t *testing.T) {
 	if len(findings) != 1 || findings[0].Check != "yara_scan_incomplete" {
 		t.Fatalf("findings = %+v, want incomplete finding", findings)
 	}
+	// Discovered-state findings from earlier windows must survive an
+	// incomplete run; the per-run scan_incomplete status finding is replaced
+	// by this run's own emission instead of accumulating.
 	for _, name := range purge {
-		if name == "yara_match_scheduled" || name == "yara_scan_incomplete" || name == "yara_deep" {
+		if name == "yara_match_scheduled" || name == "yara_deep" {
 			t.Fatalf("incomplete scan included %q in purge list: %v", name, purge)
 		}
 	}
