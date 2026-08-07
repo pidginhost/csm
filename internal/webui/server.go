@@ -23,6 +23,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/broadcast"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/geoip"
@@ -50,11 +51,16 @@ type forceBlocker interface {
 // blockIPForOperator calls BlockIPForce when the blocker supports it (engine
 // on live systems), otherwise falls back to BlockIP (test stubs). This ensures
 // operator-initiated blocks from the Web UI are never silenced by dry_run.
+// Every attempt reports into the shared firewall outcome metric.
 func blockIPForOperator(b IPBlocker, ip, reason string, timeout time.Duration) error {
+	var err error
 	if fb, ok := b.(forceBlocker); ok {
-		return fb.BlockIPForce(ip, reason, timeout)
+		err = fb.BlockIPForce(ip, reason, timeout)
+	} else {
+		err = b.BlockIP(ip, reason, timeout)
 	}
-	return b.BlockIP(ip, reason, timeout)
+	checks.ObserveOperatorBlock(err, checks.BlockSourceWebUI)
+	return err
 }
 
 // noListDir wraps an http.FileSystem so http.FileServer cannot serve a

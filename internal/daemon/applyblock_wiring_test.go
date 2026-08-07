@@ -3,9 +3,11 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -135,6 +138,51 @@ func TestPerformCentralActionBlockRecordsEvidenceAndOutcome(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "outcome") {
 		t.Errorf("central block outcome not logged; log=%q", buf.String())
+	}
+}
+
+// blockOutcomeValue reads the exported counter for one outcome/source pair
+// from the default registry exposition, the same view a scraper gets.
+func blockOutcomeValue(t *testing.T, outcome, source string) float64 {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := metrics.WriteOpenMetrics(&buf); err != nil {
+		t.Fatal(err)
+	}
+	needle := `csm_firewall_block_outcome_total{outcome="` + outcome + `",source="` + source + `"} `
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.HasPrefix(line, needle) {
+			v, err := strconv.ParseFloat(strings.TrimPrefix(line, needle), 64)
+			if err != nil {
+				t.Fatalf("parse metric line %q: %v", line, err)
+			}
+			return v
+		}
+	}
+	return 0
+}
+
+type stubForceBlocker struct{ err error }
+
+func (b stubForceBlocker) BlockIPForce(string, string, time.Duration) error { return b.err }
+
+// Operator CLI blocks report into the shared outcome metric so dashboards
+// see every block source, not only auto-response.
+func TestOperatorForceBlockCountsMetric(t *testing.T) {
+	before := blockOutcomeValue(t, "live", checks.BlockSourceCLI)
+	if err := operatorForceBlock(stubForceBlocker{}, "203.0.113.73", "r", 0); err != nil {
+		t.Fatalf("operatorForceBlock: %v", err)
+	}
+	if got := blockOutcomeValue(t, "live", checks.BlockSourceCLI); got != before+1 {
+		t.Fatalf("live/cli = %v, want %v", got, before+1)
+	}
+
+	beforeErr := blockOutcomeValue(t, "error", checks.BlockSourceCLI)
+	if err := operatorForceBlock(stubForceBlocker{err: errors.New("engine down")}, "203.0.113.74", "r", 0); err == nil {
+		t.Fatal("expected error passthrough")
+	}
+	if got := blockOutcomeValue(t, "error", checks.BlockSourceCLI); got != beforeErr+1 {
+		t.Fatalf("error/cli = %v, want %v", got, beforeErr+1)
 	}
 }
 

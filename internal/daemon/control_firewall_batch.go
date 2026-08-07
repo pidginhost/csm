@@ -101,7 +101,7 @@ func (c *ControlListener) handleFirewallDenyFile(argsRaw json.RawMessage) (any, 
 			continue
 		}
 		// Operator-initiated batch: bypass auto_response.dry_run gate.
-		if err := c.d.fwEngine.BlockIPForce(ip, reason, 0); err != nil {
+		if err := operatorForceBlock(c.d.fwEngine, ip, reason, 0); err != nil {
 			failed++
 			continue
 		}
