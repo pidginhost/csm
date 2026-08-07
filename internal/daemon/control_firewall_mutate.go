@@ -31,6 +31,16 @@ func dropAutoBlockThreatRow(ip string) {
 // c.d.fwEngine != nil, calls the matching engine method, and returns a
 // FirewallAckResult with a human-readable message the CLI prints verbatim.
 
+// operatorForceBlock runs an operator-initiated force block and reports it
+// to the shared firewall outcome metric alongside auto-response blocks.
+func operatorForceBlock(e interface {
+	BlockIPForce(ip string, reason string, timeout time.Duration) error
+}, ip, reason string, timeout time.Duration) error {
+	err := e.BlockIPForce(ip, reason, timeout)
+	checks.ObserveOperatorBlock(err, checks.BlockSourceCLI)
+	return err
+}
+
 func (c *ControlListener) handleFirewallBlock(argsRaw json.RawMessage) (any, error) {
 	var args control.FirewallIPArgs
 	if len(argsRaw) > 0 {
@@ -49,7 +59,7 @@ func (c *ControlListener) handleFirewallBlock(argsRaw json.RawMessage) (any, err
 		reason = "Blocked via CLI"
 	}
 	// Operator-initiated: bypass auto_response.dry_run gate.
-	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, 0); err != nil {
+	if err := operatorForceBlock(c.d.fwEngine, args.IP, reason, 0); err != nil {
 		return nil, fmt.Errorf("block %s: %w", args.IP, err)
 	}
 	msg := fmt.Sprintf("Blocked %s - %s", args.IP, reason)
@@ -226,7 +236,7 @@ func (c *ControlListener) handleFirewallTempBan(argsRaw json.RawMessage) (any, e
 		reason = "Temp-banned via CLI"
 	}
 	// Operator-initiated: bypass auto_response.dry_run gate.
-	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, timeout); err != nil {
+	if err := operatorForceBlock(c.d.fwEngine, args.IP, reason, timeout); err != nil {
 		return nil, fmt.Errorf("tempban %s: %w", args.IP, err)
 	}
 	msg := fmt.Sprintf("Temp-banned %s for %s - %s", args.IP, timeout, reason)

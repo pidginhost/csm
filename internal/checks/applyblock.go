@@ -76,6 +76,7 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 // dispatching them.
 func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, req ApplyBlockRequest) (ApplyBlockResult, error) {
 	outcome, err := callBlockIP(blocker, req.IP, req.EngineReason, req.TTL)
+	observeBlockOutcome(outcome, err, req.Source)
 	res := ApplyBlockResult{Outcome: outcome}
 	if err != nil {
 		return res, err

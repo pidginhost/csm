@@ -268,6 +268,18 @@ Registered when `reputation.upstream.enabled: true`.
   blocked), plus `dry_run`, `allowed`, and `allowlisted`. `outcome=live`
   is how many challenges actually became blocks.
 
+### Firewall blocks
+
+- `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP
+  block attempt, labelled by firewall `outcome` (`live`, `dry_run`,
+  `allowed`, `allowlisted`, `noop`, `protected` for refused
+  infrastructure IPs, `error` for engine failures) and by `source`
+  (`scan`, `challenge`, `incident`, `central_intel`, `cli`, `web_ui`).
+  This is the aliveness signal for auto-response: alert when
+  `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0`
+  while attack findings keep coming, and watch `outcome="error"` for a
+  dying engine.
+
 ### Retention (when `retention.enabled: true`)
 
 - `csm_retention_sweeps_total` (counter): number of retention

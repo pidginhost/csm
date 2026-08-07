@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CSM now reports when ModSecurity is switched off for a domain or an entire account, since virtual patches are inert and no audit record is written for that traffic. The finding is aggregated so a host with many disabled domains raises one alert, not hundreds.
 - New malware rules detect WordPress plugins that hide themselves from the plugin list, expose unauthenticated administrator-creation endpoints, or obfuscate strings and URLs to evade scanners.
 - The web UI Blocks table now supports selecting visible rows and unblocking them in one action, with the standard 30-second undo banner.
+- New metric csm_firewall_block_outcome_total{outcome,source} counts every IP block attempt across all sources, so dashboards can prove auto-response is actually landing blocks and spot engine failures.
 
 ### Fixed
 
