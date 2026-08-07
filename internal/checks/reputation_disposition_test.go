@@ -72,6 +72,7 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
 	cfg.Challenge.Enabled = true
+	cfg.Suppressions.SuppressBlockedAlerts = true
 	setAutoResponseLive(cfg)
 
 	blocker := &recordingIPBlocker{}
@@ -80,10 +81,14 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	oldChallengeList := GetChallengeIPList()
-	SetChallengeIPList(&staticChallengeIPList{ips: map[string]bool{"192.0.2.30": true}})
+	challengeList := &staticChallengeIPList{ips: map[string]bool{"192.0.2.30": true}}
+	SetChallengeIPList(challengeList)
 	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+	oldChallengedIPFunc := alert.ChallengedIPFunc
+	alert.ChallengedIPFunc = challengeList.Contains
+	t.Cleanup(func() { alert.ChallengedIPFunc = oldChallengedIPFunc })
 
-	actions := AutoBlockIPs(cfg, []alert.Finding{
+	findings := []alert.Finding{
 		{
 			Check:     "ip_reputation",
 			Severity:  alert.Critical,
@@ -92,13 +97,27 @@ func TestAutoBlockIPs_MailVectorReputationBlocksDespiteChallengeListing(t *testi
 			SourceIP:  "192.0.2.30",
 			Timestamp: time.Now(),
 		},
-	})
+	}
+
+	// Dispatch filtering must not treat the old challenge as sufficient for
+	// this browserless finding before the hard-block stage has run.
+	if got := alert.FilterBlockedAlerts(cfg, findings); len(got) != 1 {
+		t.Fatalf("pre-block filtered findings = %+v, want Critical reputation retained", got)
+	}
+
+	challengeActions, actions := ChallengeThenBlock(cfg, findings)
+	if len(challengeActions) != 0 {
+		t.Fatalf("challenge actions = %+v, want none for mail-vector reputation", challengeActions)
+	}
 
 	if len(blocker.blocked) != 1 || blocker.blocked[0] != "192.0.2.30" {
 		t.Fatalf("blocked IPs = %v, want [192.0.2.30] despite challenge listing", blocker.blocked)
 	}
 	if len(actions) == 0 {
 		t.Fatal("expected an auto_block action finding")
+	}
+	if got := alert.FilterBlockedAlerts(cfg, append(findings, actions...)); len(got) != 0 {
+		t.Fatalf("post-block filtered findings = %+v, want hard-blocked reputation suppressed", got)
 	}
 }
 

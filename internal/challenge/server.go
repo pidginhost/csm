@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"html"
@@ -156,15 +157,33 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	return s
 }
 
-// Start begins serving challenge pages. Explicit challenge TLS makes the
-// listener HTTPS. Direct/public listeners can reuse the WebUI TLS pair.
-// Loopback listeners stay plain HTTP by default.
+// Listen validates configured TLS material and binds the challenge address.
+// Daemon startup calls this synchronously before publishing the challenge IP
+// list to response routing, so a bind or certificate error fails open to
+// alerting instead of treating an unavailable challenge as a handled finding.
+func (s *Server) Listen() (net.Listener, error) {
+	cert, key := s.resolveTLSMaterial()
+	if cert != "" && key != "" {
+		if _, err := tls.LoadX509KeyPair(cert, key); err != nil {
+			return nil, fmt.Errorf("challenge TLS material: %w", err)
+		}
+	}
+	listener, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("challenge listen %s: %w", s.srv.Addr, err)
+	}
+	return listener, nil
+}
+
+// Serve begins serving challenge pages on an already-bound listener. Explicit
+// challenge TLS makes the listener HTTPS. Direct/public listeners can reuse
+// the WebUI TLS pair. Loopback listeners stay plain HTTP by default.
 //
 // Resolution order:
 //  1. challenge.tls_cert + challenge.tls_key      (explicit per-service)
 //  2. webui.tls_cert + webui.tls_key              (direct/public binds only)
 //  3. plain HTTP                                  (loopback-only default)
-func (s *Server) Start() error {
+func (s *Server) Serve(listener net.Listener) error {
 	cert, key := s.resolveTLSMaterial()
 	if cert == "" || key == "" {
 		if !isLoopbackListenAddr(s.cfg.Challenge.ListenAddr) {
@@ -172,9 +191,20 @@ func (s *Server) Start() error {
 				"[%s] WARNING: public challenge listener has no complete TLS cert/key configured; HSTS-pinned domains will fail with ERR_SSL_PROTOCOL_ERROR\n",
 				time.Now().Format("2006-01-02 15:04:05"))
 		}
-		return s.srv.ListenAndServe()
+		return s.srv.Serve(listener)
 	}
-	return s.srv.ListenAndServeTLS(cert, key)
+	return s.srv.ServeTLS(listener, cert, key)
+}
+
+// Start binds and serves in one call for standalone users. The daemon uses
+// Listen followed by Serve so it can publish challenge routing only after the
+// listener is known to be available.
+func (s *Server) Start() error {
+	listener, err := s.Listen()
+	if err != nil {
+		return err
+	}
+	return s.Serve(listener)
 }
 
 // resolveTLSMaterial picks the cert / key pair the challenge listener

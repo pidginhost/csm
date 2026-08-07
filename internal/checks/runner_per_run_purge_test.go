@@ -70,3 +70,14 @@ func TestRunParallelPerRunPurgeCoversPhpConfigScanIncomplete(t *testing.T) {
 		t.Errorf("purge = %v, php_config_change must survive an incomplete run", purge)
 	}
 }
+
+func TestMergePerRunPurgeNamesIsSortedAndUnique(t *testing.T) {
+	got := mergePerRunPurgeNames(
+		[]string{"z_check", "php_config_scan_incomplete"},
+		[]string{"yara_deep", "php_config_changes", "unknown"},
+	)
+	want := []string{"php_config_scan_incomplete", "yara_scan_incomplete", "z_check"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mergePerRunPurgeNames() = %v, want %v", got, want)
+	}
+}

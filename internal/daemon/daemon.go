@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -2518,6 +2519,16 @@ func (d *Daemon) emailQuarantineCleanup() {
 }
 
 func (d *Daemon) startChallengeServer() {
+	if d.challengeServer != nil {
+		return
+	}
+
+	// Challenge suppression must fail open until the listener is known to be
+	// available. This also clears stale package wiring in repeated daemon
+	// construction paths used by tests and embedding callers.
+	checks.SetChallengeIPList(nil)
+	alert.ChallengedIPFunc = nil
+
 	if !d.cfg.Challenge.Enabled {
 		return
 	}
@@ -2534,15 +2545,27 @@ func (d *Daemon) startChallengeServer() {
 		d.ipList.SetNginxMap(challenge.DefaultNginxMapPath, d.reloadChallengeNginxMap)
 	}
 	d.attachChallengePortGate()
+	srv := challenge.New(d.cfg, unblocker, d.ipList)
+	listener, err := srv.Listen()
+	if err != nil {
+		if d.challengeGate != nil {
+			if closeErr := d.challengeGate.Close(); closeErr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] challenge port-gate cleanup: %v\n", ts(), closeErr)
+			}
+			d.challengeGate = nil
+		}
+		d.ipList = nil
+		csmlog.Error("challenge server unavailable; challenge routing disabled", "err", err)
+		return
+	}
 	checks.SetChallengeIPList(d.ipList)
 	alert.ChallengedIPFunc = d.ipList.Contains
-	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
 	d.wg.Add(1)
 	obs.Go("challenge-server", func() {
 		defer d.wg.Done()
 		csmlog.Info("challenge server active", "port", d.cfg.Challenge.ListenPort)
-		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			csmlog.Error("challenge server error", "err", err)
 		}
 	})

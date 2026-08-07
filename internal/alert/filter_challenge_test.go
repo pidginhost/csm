@@ -50,6 +50,47 @@ func TestFilterBlockedAlertsSuppressesActiveChallengeListIP(t *testing.T) {
 	}
 }
 
+func TestFilterBlockedAlertsChallengeKeepsCriticalReputationUntilBlocked(t *testing.T) {
+	orig := ChallengedIPFunc
+	defer func() { ChallengedIPFunc = orig }()
+	ChallengedIPFunc = func(ip string) bool { return ip == "5.5.5.5" }
+
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	finding := Finding{
+		Check:    "ip_reputation",
+		Message:  "Known malicious IP accessing server: 5.5.5.5 (source: blocklist-de)",
+		Severity: Critical,
+		SourceIP: "5.5.5.5",
+	}
+
+	got := FilterBlockedAlerts(cfg, []Finding{finding})
+	if len(got) != 1 || got[0].Check != "ip_reputation" {
+		t.Fatalf("got %+v, want hard-block-only reputation finding kept while merely challenged", got)
+	}
+
+	got = FilterBlockedAlerts(cfg, []Finding{
+		{Check: "challenge_route", Message: "CHALLENGE: 5.5.5.5 sent to PoW challenge", Severity: Warning},
+		finding,
+	})
+	if len(got) != 1 || got[0].Check != "ip_reputation" {
+		t.Fatalf("got %+v, want same-batch challenge action not to hide hard-block-only reputation", got)
+	}
+}
+
+func TestFilterBlockedAlertsBlockSuppressesCriticalReputation(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{
+		{Check: "auto_block", Message: "AUTO-BLOCK: 5.5.5.5 blocked", Severity: Critical},
+		{Check: "ip_reputation", Message: "Known malicious IP accessing server: 5.5.5.5", Severity: Critical, SourceIP: "5.5.5.5"},
+	}
+
+	if got := FilterBlockedAlerts(cfg, findings); len(got) != 0 {
+		t.Fatalf("got %+v, want critical reputation suppressed after same-batch hard block", got)
+	}
+}
+
 func TestFilterBlockedAlertsChallengeDoesNotSuppressNonReputationChecks(t *testing.T) {
 	orig := ChallengedIPFunc
 	defer func() { ChallengedIPFunc = orig }()
