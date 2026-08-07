@@ -554,6 +554,17 @@ func (db *ThreatDB) Stats() map[string]interface{} {
 	}
 }
 
+// LastFeedRefresh returns when feeds last loaded successfully, preferring
+// the in-memory timestamp over the persisted one. Zero means never.
+func (db *ThreatDB) LastFeedRefresh() time.Time {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if !db.LastUpdated.IsZero() {
+		return db.LastUpdated
+	}
+	return db.lastUpdate
+}
+
 // FeedsStale returns true if threat feeds have not been updated in over 7 days.
 func (db *ThreatDB) FeedsStale() bool {
 	db.mu.RLock()

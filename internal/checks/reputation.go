@@ -122,12 +122,18 @@ func (c *reputationCache) changedEntries() map[string]store.ReputationEntry {
 //  3. Check AbuseIPDB cache
 //  4. Query AbuseIPDB for truly unknown IPs (max 5/cycle, ~720/day)
 func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
-	var findings []alert.Finding
+	sdb := store.Global()
+	now := time.Now()
+	quotaExhausted := !abuseQuotaReady(sdb, now)
+
+	// Coverage-health findings are emitted even with no recent IPs: the
+	// degradation exists whether or not this cycle had traffic to score.
+	findings := reputationHealthFindings(cfg, sdb, now, quotaExhausted)
 
 	supplementalAgg := newSupplementalThreatAggregator(cfg)
 	ips := collectRecentIPs(cfg)
 	if len(ips) == 0 {
-		return nil
+		return findings
 	}
 
 	authenticated := collectAuthenticatedIPs(cfg)
@@ -135,10 +141,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
 	client := abuseIPDBClient
-	sdb := store.Global()
-	now := time.Now()
 	utcDay := now.UTC().Format("2006-01-02")
-	quotaExhausted := !abuseQuotaReady(sdb, now)
 
 	// Two-pass design so the slow AbuseIPDB HTTP queries can run in
 	// parallel:
@@ -428,6 +431,42 @@ func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provide
 		Timestamp: time.Now(),
 		SourceIP:  ip,
 	})
+}
+
+// reputationHealthFindings surfaces degraded reputation coverage: an
+// exhausted AbuseIPDB quota (tier-4 lookups paused) and threat feeds that
+// have not refreshed in over a week (stale tier-2 data). Feeds that never
+// loaded stay silent - a fresh install's first download may still be
+// pending, which is not operator-actionable.
+func reputationHealthFindings(cfg *config.Config, sdb *store.DB, now time.Time, quotaExhausted bool) []alert.Finding {
+	var out []alert.Finding
+	if cfg.Reputation.AbuseIPDBKey != "" && quotaExhausted {
+		detail := "Daily query budget reached; lookups resume at 00:00 UTC. Local threat DB and cached scores still apply."
+		if sdb != nil {
+			if until := sdb.AbuseQuotaExhaustedUntil(); !until.IsZero() && now.Before(until) {
+				detail = fmt.Sprintf("API returned a quota error; lookups paused until %s. Local threat DB and cached scores still apply.", until.UTC().Format(time.RFC3339))
+			}
+		}
+		out = append(out, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "reputation_quota_exhausted",
+			Message:   "AbuseIPDB quota exhausted: reputation lookups degraded to local data",
+			Details:   detail,
+			Timestamp: now,
+		})
+	}
+	if db := GetThreatDB(); db != nil {
+		if last := db.LastFeedRefresh(); !last.IsZero() && now.Sub(last) > 7*24*time.Hour {
+			out = append(out, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "threat_feed_stale",
+				Message:   "Threat intelligence feeds stale: reputation matching runs on old data",
+				Details:   fmt.Sprintf("Last successful feed update: %s. Downloads retry on each deep-scan cycle; check outbound connectivity to the feed mirrors.", last.UTC().Format(time.RFC3339)),
+				Timestamp: now,
+			})
+		}
+	}
+	return out
 }
 
 // nextUTCMidnight returns 00:00 UTC on the day after now — the point at
