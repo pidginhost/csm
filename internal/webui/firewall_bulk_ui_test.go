@@ -98,3 +98,29 @@ func TestAPIUnblockBulkAccepts500IPs(t *testing.T) {
 		t.Fatalf("bulk unblock of 501 IPs = %d, want 400", w.Code)
 	}
 }
+
+// apiFirewallUnban reports validation failures as HTTP 200 with
+// {"success": false, "error_msg": ...}; unbanEverywhere must check that flag
+// instead of toasting success for a failed unban.
+func TestFirewallUnbanEverywhereSurfacesBackendFailure(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	start := strings.Index(text, "function unbanEverywhere(")
+	if start < 0 {
+		t.Fatal("firewall.js missing unbanEverywhere")
+	}
+	end := strings.Index(text[start:], "\nfunction ")
+	if end < 0 {
+		end = len(text) - start
+	}
+	fn := text[start : start+end]
+	if !strings.Contains(fn, "data.success === false") {
+		t.Fatal("unbanEverywhere must check data.success before reporting success")
+	}
+	if !strings.Contains(fn, "error_msg") {
+		t.Fatal("unbanEverywhere must surface the backend error_msg on failure")
+	}
+}

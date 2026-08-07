@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI block, allow, and deny-subnet requests now reject invalid or out-of-range durations instead of silently treating them as permanent.
 - Firewall engine stubs on unsupported platforms now return an error from every mutating method instead of silent success, so callers can no longer record blocks that never reached a kernel.
 - Reputation alerts are now suppressed only for IPs that were actually blocked, not whenever auto-blocking is enabled, so dry-run, rate-limited, and panel-allowed IPs surface to the operator again.
+- The web UI "Unban everywhere" action now reports a failed unban as an error instead of showing success while the IP stays locked out.
 - Firewall config rollback now clears its pending record before triggering the daemon restart; the old order left the record behind and made every subsequent boot revert and restart again.
 - A partial firewall config section now keeps the defaults for unlisted keys; previously any partial section dropped every default and could produce a drop-all firewall with no accept rules.
 - Auto-block candidates now survive rate limits, unavailable firewall engines, and transient block failures. Retries expire after two hours; queue overflow raises a warning, and engine-down logs are batched.
