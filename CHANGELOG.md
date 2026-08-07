@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Upgrades no longer leave the daemon in a crash-restart loop. Rewriting the recorded binary checksum updates one config copy, and that difference alone is now tolerated at startup instead of being treated as conflicting configuration.
 - Disabled-scope audits now ignore cPanel userdata metadata, cover LiteSpeed's Apache-compatible include tree, and avoid treating disabled rules as a disabled WAF.
 - Disabled-scope audits now find the per-account and per-domain include files on cPanel, where the config directory is reported without the conf.d segment. Account-wide scopes were previously missed entirely.
 - The new WordPress backdoor rules now require the incident's stealth behavior and produce the same result in the regex and YARA-X scanners without flagging ordinary membership or branding code.

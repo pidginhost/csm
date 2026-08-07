@@ -200,3 +200,44 @@ func assertSymlinkTarget(t *testing.T, path, want string) {
 		t.Fatalf("symlink target = %q, want %q", got, want)
 	}
 }
+
+// The upgrade path runs `csm rehash`, which rewrites binary_hash in one
+// copy only. Treating that as split-brain takes security monitoring down
+// on every upgrade, so a divergence confined to binary_hash resolves to
+// the preferred copy instead of refusing to start.
+func TestResolveDefaultConfigPathToleratesBinaryHashOnlyDivergence(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "hostname: prod\nintegrity:\n    binary_hash: sha256:new\n")
+	writeConfig(t, legacy, "hostname: prod\nintegrity:\n    binary_hash: sha256:old\n")
+
+	got, err := resolveDefaultConfigPath(preferred, legacy)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != preferred {
+		t.Fatalf("config path = %q, want %q", got, preferred)
+	}
+}
+
+// A binary_hash difference alongside a real setting change is still
+// split-brain: the operator edited one copy and must resolve it.
+func TestResolveDefaultConfigPathRejectsHashPlusSettingDivergence(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "hostname: prod\nintegrity:\n    binary_hash: sha256:new\n")
+	writeConfig(t, legacy, "hostname: staging\nintegrity:\n    binary_hash: sha256:old\n")
+
+	if _, err := resolveDefaultConfigPath(preferred, legacy); err == nil {
+		t.Fatal("expected split-brain error when a real setting also differs")
+	}
+}
+
+// Line counts differing means structure changed, not just a rewritten hash.
+func TestResolveDefaultConfigPathRejectsExtraLineDivergence(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "hostname: prod\nintegrity:\n    binary_hash: sha256:new\n")
+	writeConfig(t, legacy, "hostname: prod\nintegrity:\n    binary_hash: sha256:new\nextra: 1\n")
+
+	if _, err := resolveDefaultConfigPath(preferred, legacy); err == nil {
+		t.Fatal("expected split-brain error when one copy has extra settings")
+	}
+}

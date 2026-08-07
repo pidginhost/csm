@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -37,7 +38,15 @@ func resolveDefaultConfigPath(preferred, legacy string) (string, error) {
 				return "", err
 			}
 			if !same {
-				return "", fmt.Errorf("both %s and %s exist with different content; move one aside or pass --config <path>", preferred, legacy)
+				hashOnly, hashErr := divergesOnlyByBinaryHash(preferred, legacy)
+				if hashErr != nil {
+					return "", hashErr
+				}
+				if !hashOnly {
+					return "", fmt.Errorf("both %s and %s exist with different content; move one aside or pass --config <path>", preferred, legacy)
+				}
+				fmt.Fprintf(os.Stderr, "warning: %s and %s differ only by binary_hash; using %s. Re-sync the copies to silence this.\n",
+					preferred, legacy, preferred)
 			}
 		} else if legacyErr != nil && !os.IsNotExist(legacyErr) {
 			return "", fmt.Errorf("checking config %s: %w", legacy, legacyErr)
@@ -214,4 +223,46 @@ func copyFilePreserveMeta(src, dst string) error {
 		_ = os.Chown(dst, int(stat.Uid), int(stat.Gid))
 	}
 	return os.Chmod(dst, mode)
+}
+
+// divergesOnlyByBinaryHash reports whether two config copies differ solely
+// in the integrity binary_hash value.
+//
+// `csm rehash` rewrites that field in one copy only, so after every
+// upgrade the two default paths disagree by exactly this line. Refusing to
+// start on that difference takes the daemon down for a value CSM itself
+// rewrote, while any real setting divergence must still be surfaced.
+func divergesOnlyByBinaryHash(preferred, legacy string) (bool, error) {
+	preferredData, err := os.ReadFile(preferred) // #nosec G304 -- operator-owned config paths
+	if err != nil {
+		return false, err
+	}
+	legacyData, err := os.ReadFile(legacy) // #nosec G304 -- operator-owned config paths
+	if err != nil {
+		return false, err
+	}
+
+	preferredLines := strings.Split(string(preferredData), "\n")
+	legacyLines := strings.Split(string(legacyData), "\n")
+	// Differing line counts mean the structure changed, not just a value.
+	if len(preferredLines) != len(legacyLines) {
+		return false, nil
+	}
+
+	sawHashDifference := false
+	for i := range preferredLines {
+		if preferredLines[i] == legacyLines[i] {
+			continue
+		}
+		if !isBinaryHashLine(preferredLines[i]) || !isBinaryHashLine(legacyLines[i]) {
+			return false, nil
+		}
+		sawHashDifference = true
+	}
+	return sawHashDifference, nil
+}
+
+func isBinaryHashLine(line string) bool {
+	key, _, found := strings.Cut(strings.TrimSpace(line), ":")
+	return found && strings.TrimSpace(key) == "binary_hash"
 }
