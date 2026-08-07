@@ -1,6 +1,7 @@
 package jstaint
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tdewolff/parse/v2"
@@ -26,14 +27,15 @@ func sourceOf(t *testing.T, expr string) (string, bool) {
 
 func TestKeyboardSource_Positives(t *testing.T) {
 	cases := map[string]string{
-		"e.key":                 "e.key",
-		"e.keyCode":             "e.keyCode",
-		"e.charCode":            "e.charCode",
-		"e.which":               "e.which",
-		"e.code":                "e.code",
-		`e["key"]`:              "e.key",
-		"e.originalEvent.key":   "e.originalEvent.key",
-		"e.nativeEvent.which":   "e.nativeEvent.which",
+		"e.key":                               "e.key",
+		"(e).keyCode":                         "e.keyCode",
+		"e?.charCode":                         "e.charCode",
+		"e.which":                             "e.which",
+		"e.code":                              "e.code",
+		`e["key"]`:                            "e.key",
+		"e.originalEvent.key":                 "e.originalEvent.key",
+		`e["originalEvent"]?.["key"]`:         "e.originalEvent.key",
+		"e.nativeEvent.which":                 "e.nativeEvent.which",
 		"e.originalEvent.nativeEvent.keyCode": "e.originalEvent.nativeEvent.keyCode",
 	}
 	for expr, want := range cases {
@@ -49,15 +51,47 @@ func TestKeyboardSource_Positives(t *testing.T) {
 	}
 }
 
+func TestKeyboardSource_DeepWrapperChainUsesBoundedAllocations(t *testing.T) {
+	const wrappers = 250
+	eventVar := &js.Var{Data: []byte("e"), Decl: js.ArgumentDecl}
+	var expr js.IExpr = eventVar
+	for range wrappers {
+		expr = &js.DotExpr{
+			X: expr,
+			Y: js.LiteralExpr{TokenType: js.IdentifierToken, Data: []byte("originalEvent")},
+		}
+	}
+	expr = &js.DotExpr{
+		X: expr,
+		Y: js.LiteralExpr{TokenType: js.IdentifierToken, Data: []byte("key")},
+	}
+
+	var got string
+	var ok bool
+	allocs := testing.AllocsPerRun(5, func() {
+		got, ok = keyboardSource(expr, eventVar)
+	})
+	if !ok {
+		t.Fatal("deep wrapper chain not recognized as a source")
+	}
+	want := "e" + strings.Repeat(".originalEvent", wrappers) + ".key"
+	if got != want {
+		t.Errorf("display = %q, want %q", got, want)
+	}
+	if allocs > 64 {
+		t.Errorf("keyboardSource allocated %.0f objects, want at most 64", allocs)
+	}
+}
+
 func TestKeyboardSource_Negatives(t *testing.T) {
 	exprs := []string{
-		"e.target.value",           // input value, not a keystroke
-		"e.target.dataset.key",     // arbitrary chain, not a wrapper
-		"KeyCode.RETURN",           // base is not the event var
-		"obj.which",                // base is not the event var
+		"e.target.value",               // input value, not a keystroke
+		"e.target.dataset.key",         // arbitrary chain, not a wrapper
+		"KeyCode.RETURN",               // base is not the event var
+		"obj.which",                    // base is not the event var
 		"e.originalEvent.target.value", // wrapper then non-source
-		"e.value",                  // not a keyboard property
-		"e.target.key",             // target is not a known wrapper
+		"e.value",                      // not a keyboard property
+		"e.target.key",                 // target is not a known wrapper
 	}
 	for _, expr := range exprs {
 		t.Run(expr, func(t *testing.T) {
