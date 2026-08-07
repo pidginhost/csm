@@ -119,12 +119,13 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 					}
 				}
 			}
-			// A challenge-routed IP counts as handled: same-batch
-			// CHALLENGE actions and the live challenge list both
-			// qualify. Only reputation-class findings honour this;
-			// thresholded attack findings must stay visible even
-			// while the IP sits behind the challenge.
-			if !isBlocked && findingIP != nil {
+			// A challenge-routed IP counts as handled only while this
+			// finding remains challenge-eligible. Critical ip_reputation
+			// means a browserless mail/SSH/FTP sighting and must stay visible
+			// until a same-batch AUTO-BLOCK (or live block state above) proves
+			// that the hard block landed. Otherwise an old challenge entry can
+			// hide the exact finding that is supposed to escalate it.
+			if !isBlocked && findingIP != nil && challengeHandlesFinding(f) {
 				if canonicalChallenged[findingIP.String()] {
 					isBlocked = true
 				} else if ChallengedIPFunc != nil && ChallengedIPFunc(findingIP.String()) {
@@ -142,6 +143,22 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	}
 
 	return filtered
+}
+
+// challengeHandlesFinding mirrors the only finding-level exception to the
+// challenge response policy. ip_reputation has one production grading source:
+// High is browser-facing HTTP/cPanel traffic, while Critical is a browserless
+// vector that resolves to a hard block. local_threat_score remains challenge-
+// eligible at Critical severity.
+func challengeHandlesFinding(f Finding) bool {
+	switch f.Check {
+	case "ip_reputation":
+		return f.Severity != Critical
+	case "local_threat_score":
+		return true
+	default:
+		return false
+	}
 }
 
 func suppressionIPFromFinding(f Finding) net.IP {

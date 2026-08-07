@@ -1,14 +1,14 @@
 package challenge
 
 import (
+	"net"
 	"testing"
 )
 
 // resolveTLSMaterial must prefer the per-service challenge.tls_cert /
 // challenge.tls_key pair, fall back to the shared webui.tls_cert pair,
 // and return empty strings only when neither is configured. The empty
-// result is the signal Start() uses to decide between
-// ListenAndServeTLS (https) and ListenAndServe (plain http + warning).
+// result is the signal Serve() uses to decide between TLS and plain HTTP.
 func TestResolveTLSMaterialPrefersChallengePair(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TLSCert = "/etc/csm/chal.crt"
@@ -86,6 +86,29 @@ func TestServerHonorsExplicitIPv6ListenAddr(t *testing.T) {
 	s, _, _ := newTestServer(t, cfg)
 	if got := s.srv.Addr; got != "[::1]:18439" {
 		t.Fatalf("server bound to %q; want [::1]:18439", got)
+	}
+}
+
+func TestServerListenReportsOccupiedAddressSynchronously(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listener: %v", err)
+	}
+	defer func() { _ = occupied.Close() }()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "127.0.0.1"
+	cfg.Challenge.ListenPort = port
+	s, _, _ := newTestServer(t, cfg)
+
+	listener, err := s.Listen()
+	if listener != nil {
+		_ = listener.Close()
+		t.Fatalf("Listen unexpectedly bound occupied port %d", port)
+	}
+	if err == nil {
+		t.Fatalf("Listen on occupied port %d succeeded; challenge routing would be published without a server", port)
 	}
 }
 
