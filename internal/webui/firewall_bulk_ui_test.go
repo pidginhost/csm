@@ -66,6 +66,70 @@ func TestFirewallBlockedSelectAllSkipsHiddenRows(t *testing.T) {
 	}
 }
 
+// Every CSM.Table render can change the visible selection. Recounting from
+// its onRender hook keeps the action label and select-all state aligned after
+// debounced search, filters, sorting, page-size changes, and pagination.
+func TestFirewallBlockedSelectionSyncsAfterTableRender(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	buttonFn := firewallJSFunction(t, text, "function updateBlockedBulkButton(")
+	for _, want := range []string{
+		"selectAll.indeterminate",
+		"selectAll.checked",
+	} {
+		if !strings.Contains(buttonFn, want) {
+			t.Errorf("firewall.js missing blocked-selection sync %q", want)
+		}
+	}
+	tableStart := strings.Index(text, "_fwTables.blocked = new CSM.Table({")
+	if tableStart < 0 {
+		t.Fatal("firewall.js missing blocked CSM.Table setup")
+	}
+	tableEnd := strings.Index(text[tableStart:], "\n            });")
+	if tableEnd < 0 {
+		t.Fatal("firewall.js blocked CSM.Table setup not terminated")
+	}
+	tableConfig := text[tableStart : tableStart+tableEnd]
+	if !strings.Contains(tableConfig, "onRender: updateBlockedBulkButton") {
+		t.Fatal("blocked CSM.Table must synchronize selection after every render")
+	}
+}
+
+// Adding the checkbox column shifts every sortable column by one. Existing
+// saved sort indexes must be migrated instead of silently sorting the wrong
+// column (or the empty checkbox column) after upgrade.
+func TestFirewallBlockedTableMigratesSavedSortColumn(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := firewallJSFunction(t, string(js), "function blockedTableStateKey(")
+	for _, want := range []string{
+		"csm-firewall-blocked-selectable",
+		"state.sortCol += 1",
+	} {
+		if !strings.Contains(fn, want) {
+			t.Errorf("firewall.js missing blocked-table state migration %q", want)
+		}
+	}
+}
+
+func firewallJSFunction(t *testing.T, text, signature string) string {
+	t.Helper()
+	start := strings.Index(text, signature)
+	if start < 0 {
+		t.Fatalf("firewall.js missing %s", signature)
+	}
+	end := strings.Index(text[start:], "\n}")
+	if end < 0 {
+		t.Fatalf("firewall.js function %s not terminated", signature)
+	}
+	return text[start : start+end]
+}
+
 // The bulk endpoint cap must fit one full Blocks page (page-size options go
 // up to 250 plus All), so one selection round-trips as one request and one
 // undo token. 500 IPs is accepted; 501 is rejected loudly.
@@ -96,6 +160,25 @@ func TestAPIUnblockBulkAccepts500IPs(t *testing.T) {
 	s.apiUnblockBulk(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("bulk unblock of 501 IPs = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIUnblockBulkCanonicalizesIPs(t *testing.T) {
+	s := newTestServer(t, "tok")
+	blocker := newRecordingBlocker()
+	s.blocker = blocker
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ips":[" 2001:0db8:0:0:0:0:0:5 "]}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiUnblockBulk(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bulk unblock status = %d; body=%s", w.Code, w.Body.String())
+	}
+	blocker.mu.Lock()
+	defer blocker.mu.Unlock()
+	if len(blocker.unblocks) != 1 || blocker.unblocks[0] != "2001:db8::5" {
+		t.Fatalf("unblocked IPs = %q, want canonical IPv6", blocker.unblocks)
 	}
 }
 

@@ -1226,9 +1226,11 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 	unblocked := make([]string, 0, len(req.IPs))
 	removedThreats := make([]undoThreatRow, 0, len(req.IPs))
 	for _, ip := range req.IPs {
-		if _, err := parseAndValidateIP(ip); err != nil {
+		parsed, err := parseAndValidateIP(ip)
+		if err != nil {
 			continue
 		}
+		ip = parsed.String()
 		if err := s.blocker.UnblockIP(ip); err != nil {
 			continue
 		}
@@ -1236,11 +1238,11 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 			removedThreats = append(removedThreats, row)
 		}
 		dropAutoBlockThreatRow(ip)
-		flushCphulk(ip)
 		s.auditLog(r, "unblock_ip", ip, "bulk unblock via UI")
 		unblocked = append(unblocked, ip)
 		succeeded++
 	}
+	flushCphulkIPs(unblocked)
 
 	var undoToken string
 	if succeeded > 0 {
@@ -1789,13 +1791,32 @@ func parseModeString(s string) os.FileMode {
 // expose a shell-execution surface even if exec.Command itself does not
 // invoke a shell.
 func flushCphulk(ip string) {
-	if _, err := parseAndValidateIP(ip); err != nil {
+	flushCphulkIPs([]string{ip})
+}
+
+// flushCphulkIPs uses the WHM API's indexed array arguments so a bulk
+// firewall action starts one whmapi1 process instead of one per address.
+func flushCphulkIPs(ips []string) {
+	args := []string{"flush_cphulk_login_history_for_ips"}
+	valid := 0
+	for _, ip := range ips {
+		parsed, err := parseAndValidateIP(ip)
+		if err != nil {
+			continue
+		}
+		param := "ip"
+		if valid > 0 {
+			param = fmt.Sprintf("ip-%d", valid)
+		}
+		args = append(args, param+"="+parsed.String())
+		valid++
+	}
+	if valid == 0 {
 		return
 	}
-	// #nosec G204 -- whmapi1 hardcoded; `ip` is validated above with
-	// parseAndValidateIP. exec.Command passes args directly to execve
-	// without shell interpolation, so no shell-meta risk either way.
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip).Output()
+	// #nosec G204 -- whmapi1 is fixed and every argument value is parsed as
+	// an IP above. exec.Command passes arguments directly without a shell.
+	_, _ = exec.Command("whmapi1", args...).Output()
 }
 
 // apiExport returns a JSON bundle of exportable state.

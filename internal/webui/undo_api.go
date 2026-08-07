@@ -1,8 +1,11 @@
 package webui
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -21,6 +24,10 @@ const (
 	undoInverseFirewallUnblock   = "firewall_bulk_reblock"
 )
 
+// maxUndoPayloadSize bounds decompression of persisted data while leaving
+// room for the threat-row snapshot behind the 500-item firewall action.
+const maxUndoPayloadSize = 4 * 1024 * 1024
+
 // undoPayloadIPs is the payload schema for every undo entry we currently
 // generate: a list of IPs plus an optional reason and timeout. Future undo
 // kinds can add their own payload structs alongside this one.
@@ -28,9 +35,8 @@ type undoPayloadIPs struct {
 	IPs     []string `json:"ips"`
 	Reason  string   `json:"reason,omitempty"`
 	Timeout string   `json:"timeout,omitempty"` // ParseDuration-compatible
-	// RestoreThreats carries the threat-DB rows a bulk whitelist removed so
-	// the matching undo can put them back exactly. Only the whitelist path
-	// sets it.
+	// RestoreThreats carries the threat-DB rows a bulk action removed so the
+	// matching undo can put them back exactly.
 	RestoreThreats []undoThreatRow `json:"restore_threats,omitempty"`
 }
 
@@ -48,7 +54,7 @@ type undoThreatRow struct {
 // returns the new entry's ID. The ID lets the calling handler surface the
 // undo token to the client in the same response. Any store error is logged
 // and swallowed so a bulk action never fails just because the undo queue
-// could not be written.
+// could not be encoded or written.
 func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary string, payload undoPayloadIPs) string {
 	if r == nil {
 		return ""
@@ -61,8 +67,9 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 	if sdb == nil {
 		return ""
 	}
-	raw, err := json.Marshal(payload)
+	raw, err := encodeUndoPayload(payload)
 	if err != nil {
+		log.Printf("webui: encode undo entry: %v", err)
 		return ""
 	}
 	entry, err := sdb.AppendUndoEntry(opkey, store.UndoEntry{
@@ -76,6 +83,55 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	return entry.ID
+}
+
+func encodeUndoPayload(payload undoPayloadIPs) ([]byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxUndoPayloadSize {
+		return nil, fmt.Errorf("undo payload exceeds %d bytes", maxUndoPayloadSize)
+	}
+
+	var compressed bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&compressed, gzip.BestSpeed)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := zw.Write(raw); err != nil {
+		_ = zw.Close()
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	if compressed.Len() < len(raw) {
+		return compressed.Bytes(), nil
+	}
+	return raw, nil
+}
+
+func decodeUndoPayload(raw []byte, payload *undoPayloadIPs) error {
+	if len(raw) < 2 || raw[0] != 0x1f || raw[1] != 0x8b {
+		return json.Unmarshal(raw, payload)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	decoded, readErr := io.ReadAll(io.LimitReader(zr, maxUndoPayloadSize+1))
+	closeErr := zr.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if len(decoded) > maxUndoPayloadSize {
+		return fmt.Errorf("undo payload exceeds %d bytes", maxUndoPayloadSize)
+	}
+	return json.Unmarshal(decoded, payload)
 }
 
 // undoPendingView is the JSON shape returned to the client. The payload is
@@ -194,7 +250,7 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunResponse, error) {
 	var payload undoPayloadIPs
 	if len(entry.Payload) > 0 {
-		if err := json.Unmarshal(entry.Payload, &payload); err != nil {
+		if err := decodeUndoPayload(entry.Payload, &payload); err != nil {
 			return undoRunResponse{}, fmt.Errorf("decode payload: %w", err)
 		}
 	}
