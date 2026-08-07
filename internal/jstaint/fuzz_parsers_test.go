@@ -1,8 +1,10 @@
 package jstaint
 
 import (
+	"reflect"
 	"testing"
 
+	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/js"
 )
 
@@ -37,4 +39,51 @@ func FuzzLiteralText(f *testing.F) {
 			}
 		}
 	})
+}
+
+func FuzzDiscoverHandlers(f *testing.F) {
+	seeds := []string{
+		`document.onkeydown=(function(e){e.key;});`,
+		`document[("onkeypress")]=(e)=>e.which;`,
+		`el.addEventListener(("keyup"),function(e){e.code;});`,
+		`addEventListener("keydown",function(e){e.keyCode;});`,
+		`var h=(e)=>e.charCode;var o={onKeyDown:h};`,
+		`el.addEventListener(..."keydown",function(e){e.key;});`,
+	}
+	for _, seed := range seeds {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, src []byte) {
+		if len(src) > MaxSourceBytes {
+			return
+		}
+		ast, err := js.Parse(parse.NewInputBytes(src), js.Options{})
+		if err != nil {
+			return
+		}
+
+		got := handlerIdentities(t, discoverHandlers(ast))
+		again := handlerIdentities(t, discoverHandlers(ast))
+		if !reflect.DeepEqual(got, again) {
+			t.Fatalf("handler discovery is nondeterministic: first %#v, second %#v", got, again)
+		}
+	})
+}
+
+type handlerIdentity struct {
+	body     *js.BlockStmt
+	eventVar *js.Var
+}
+
+func handlerIdentities(t *testing.T, sites []handlerSite) []handlerIdentity {
+	t.Helper()
+	identities := make([]handlerIdentity, len(sites))
+	for i, site := range sites {
+		if site.fn == nil || site.fn.body == nil {
+			t.Fatalf("handler %d has no function body", i)
+		}
+		identities[i] = handlerIdentity{body: site.fn.body, eventVar: site.eventVar}
+	}
+	return identities
 }

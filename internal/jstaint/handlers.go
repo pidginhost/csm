@@ -19,16 +19,6 @@ type handlerSite struct {
 	eventVar *js.Var
 }
 
-// DOM on* properties are lowercase; the DOM does not fire a camelCase
-// element.onKeyDown assignment.
-var domHandlerProps = map[string]bool{"onkeydown": true, "onkeypress": true, "onkeyup": true}
-
-// DOM event type strings passed to addEventListener are case-sensitive lowercase.
-var domEventNames = map[string]bool{"keydown": true, "keypress": true, "keyup": true}
-
-// React object-literal handler props are camelCase.
-var reactHandlerProps = map[string]bool{"onKeyDown": true, "onKeyPress": true, "onKeyUp": true}
-
 // discoverHandlers finds every statically resolvable keyboard-handler
 // registration in the parse unit and returns one site per resolved function.
 // When a handler identifier resolves to more than one function value, each is
@@ -57,11 +47,11 @@ func (v *handlerVisitor) Enter(n js.INode) js.IVisitor {
 			v.emit(e.Y)
 		}
 	case *js.CallExpr:
-		if name, fn, ok := addEventListenerHandler(e); ok && domEventNames[name] {
+		if name, fn, ok := addEventListenerHandler(e); ok && isDOMEventName(name) {
 			v.emit(fn)
 		}
 	case *js.Property:
-		if e.Name != nil && !e.Name.IsComputed() && reactHandlerProps[e.Name.String()] {
+		if e.Name != nil && !e.Name.IsComputed() && isReactHandlerProp(e.Name.String()) {
 			v.emit(e.Value)
 		}
 	}
@@ -82,13 +72,48 @@ func (v *handlerVisitor) emit(expr js.IExpr) {
 // keyboard on* property, in either dot or static-bracket form.
 func isKeyHandlerProperty(target js.IExpr) bool {
 	name, ok := memberName(target)
-	return ok && domHandlerProps[name]
+	return ok && isDOMHandlerProp(name)
+}
+
+// DOM on* properties are lowercase; the DOM does not fire a camelCase
+// element.onKeyDown assignment.
+func isDOMHandlerProp(name string) bool {
+	switch name {
+	case "onkeydown", "onkeypress", "onkeyup":
+		return true
+	default:
+		return false
+	}
+}
+
+// DOM event type strings passed to addEventListener are case-sensitive
+// lowercase.
+func isDOMEventName(name string) bool {
+	switch name {
+	case "keydown", "keypress", "keyup":
+		return true
+	default:
+		return false
+	}
+}
+
+// React object-literal handler props are camelCase.
+func isReactHandlerProp(name string) bool {
+	switch name {
+	case "onKeyDown", "onKeyPress", "onKeyUp":
+		return true
+	default:
+		return false
+	}
 }
 
 // addEventListenerHandler matches both the receiver form el.addEventListener and
 // the bare unshadowed-global form, returning the event name and handler value.
 func addEventListenerHandler(call *js.CallExpr) (string, js.IExpr, bool) {
 	if len(call.Args.List) < 2 {
+		return "", nil, false
+	}
+	if call.Args.List[0].Rest || call.Args.List[1].Rest {
 		return "", nil, false
 	}
 	switch callee := call.X.(type) {
@@ -103,7 +128,7 @@ func addEventListenerHandler(call *js.CallExpr) (string, js.IExpr, bool) {
 	default:
 		return "", nil, false
 	}
-	eventName, ok := staticStringOrIdent(call.Args.List[0].Value)
+	eventName, ok := staticStringOrIdent(ungroupExpr(call.Args.List[0].Value))
 	if !ok {
 		return "", nil, false
 	}
@@ -114,11 +139,21 @@ func addEventListenerHandler(call *js.CallExpr) (string, js.IExpr, bool) {
 func memberName(expr js.IExpr) (string, bool) {
 	switch e := expr.(type) {
 	case *js.DotExpr:
-		return staticStringOrIdent(e.Y)
+		return staticStringOrIdent(ungroupExpr(e.Y))
 	case *js.IndexExpr:
-		return staticStringOrIdent(e.Y)
+		return staticStringOrIdent(ungroupExpr(e.Y))
 	default:
 		return "", false
+	}
+}
+
+func ungroupExpr(expr js.IExpr) js.IExpr {
+	for {
+		group, ok := expr.(*js.GroupExpr)
+		if !ok {
+			return expr
+		}
+		expr = group.X
 	}
 }
 
@@ -141,15 +176,15 @@ func firstParamVar(params js.Params) *js.Var {
 	return nil
 }
 
-// resolveFuncValues returns the concrete functions expr can denote: a direct
-// function/arrow literal, or a same-file identifier whose collected values are
-// functions.
+// resolveFuncValues returns the concrete functions expr can denote: a direct,
+// possibly parenthesized function or arrow literal, or a same-file identifier
+// whose collected values are functions.
 func resolveFuncValues(expr js.IExpr, funcs map[*js.Var][]*funcInfo) []*funcInfo {
+	expr = ungroupExpr(expr)
+	if fn := literalFuncValue(expr); fn != nil {
+		return []*funcInfo{fn}
+	}
 	switch e := expr.(type) {
-	case *js.FuncDecl:
-		return []*funcInfo{{params: e.Params, body: &e.Body, generator: e.Generator}}
-	case *js.ArrowFunc:
-		return []*funcInfo{{params: e.Params, body: &e.Body}}
 	case *js.Var:
 		return funcs[canonicalVar(e)]
 	default:
@@ -208,16 +243,23 @@ func (c *funcValueCollector) bind(v *js.Var, fn *funcInfo) {
 	c.funcs[key] = append(c.funcs[key], fn)
 }
 
-// literalFuncValues returns a function value only for a direct function or arrow
-// literal; it does not chase identifier aliases, so binding collection cannot
-// recurse without bound.
+// literalFuncValues returns a function value only for a direct, possibly
+// parenthesized function or arrow literal. It does not chase identifier aliases,
+// so binding collection cannot recurse without bound.
 func literalFuncValues(expr js.IExpr) []*funcInfo {
+	if fn := literalFuncValue(ungroupExpr(expr)); fn != nil {
+		return []*funcInfo{fn}
+	}
+	return nil
+}
+
+func literalFuncValue(expr js.IExpr) *funcInfo {
 	switch e := expr.(type) {
 	case *js.FuncDecl:
-		return []*funcInfo{{params: e.Params, body: &e.Body, generator: e.Generator}}
+		return &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator}
 	case *js.ArrowFunc:
-		return []*funcInfo{{params: e.Params, body: &e.Body}}
+		return &funcInfo{params: e.Params, body: &e.Body}
 	default:
-		return nil
 	}
+	return nil
 }
