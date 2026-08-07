@@ -83,13 +83,18 @@ type analysisLimitError uint8
 const (
 	errAnalysisDepthLimit analysisLimitError = iota
 	errFactLimit
+	errNodeLimit
 )
 
 func (e analysisLimitError) Error() string {
-	if e == errAnalysisDepthLimit {
+	switch e {
+	case errAnalysisDepthLimit:
 		return "maximum AST recursion depth exceeded"
+	case errNodeLimit:
+		return "maximum AST node count exceeded"
+	default:
+		return "maximum propagated fact count exceeded"
 	}
-	return "maximum propagated fact count exceeded"
 }
 
 // Result is one keystroke-to-sink flow.
@@ -121,7 +126,7 @@ type Report struct {
 // It never panics: a panic anywhere inside is converted to StatusPanic so one
 // malformed input cannot take down a scan.
 func Analyze(ctx context.Context, src []byte) Report {
-	return analyzeWithPass(ctx, src, validateAST)
+	return analyzeWithPass(ctx, src, taintPass)
 }
 
 type analysisPass func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error)
@@ -214,6 +219,7 @@ func asciiLower(c byte) byte {
 type resourceBudget struct {
 	depth int
 	facts int
+	nodes int
 }
 
 func (b *resourceBudget) enterAST() error {
@@ -254,6 +260,13 @@ func (v *limitVisitor) Enter(js.INode) js.IVisitor {
 		v.err = err
 		return nil
 	}
+	// Count each parser node once, here, so the taint pass need not recount as it
+	// revisits basic blocks during fixed-point iteration.
+	v.budget.nodes++
+	if v.budget.nodes > maxASTNodes {
+		v.err = errNodeLimit
+		return nil
+	}
 	return v
 }
 
@@ -261,17 +274,11 @@ func (v *limitVisitor) Exit(js.INode) {
 	v.budget.leaveAST()
 }
 
-func validateAST(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Result, bool, error) {
-	visitor := &limitVisitor{ctx: ctx, budget: budget}
-	js.Walk(visitor, ast)
-	return nil, false, visitor.err
-}
-
 func analysisErrorStatus(err error) Status {
 	switch {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return StatusCanceled
-	case errors.Is(err, errAnalysisDepthLimit), errors.Is(err, errFactLimit):
+	case errors.Is(err, errAnalysisDepthLimit), errors.Is(err, errFactLimit), errors.Is(err, errNodeLimit):
 		return StatusResourceLimit
 	default:
 		panic(fmt.Sprintf("unexpected analyzer error: %v", err))
