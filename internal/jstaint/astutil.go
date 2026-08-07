@@ -24,30 +24,48 @@ func canonicalVar(v *js.Var) *js.Var {
 // \x6b are out of version 1 scope, so the raw bytes between the quotes are
 // returned verbatim.
 func staticStringOrIdent(expr js.IExpr) (string, bool) {
+	data, ok := staticBytesOrIdent(expr)
+	if !ok {
+		return "", false
+	}
+	return string(data), true
+}
+
+// staticBytesOrIdent is the allocation-free form of staticStringOrIdent for
+// AST walkers that only need to compare or render the literal bytes.
+func staticBytesOrIdent(expr js.IExpr) ([]byte, bool) {
 	switch lit := expr.(type) {
 	case *js.LiteralExpr:
-		return literalText(lit.TokenType, lit.Data)
+		return literalBytes(lit.TokenType, lit.Data)
 	case js.LiteralExpr:
-		return literalText(lit.TokenType, lit.Data)
+		return literalBytes(lit.TokenType, lit.Data)
 	default:
-		return "", false
+		return nil, false
 	}
 }
 
 func literalText(tt js.TokenType, data []byte) (string, bool) {
+	literal, ok := literalBytes(tt, data)
+	if !ok {
+		return "", false
+	}
+	return string(literal), true
+}
+
+func literalBytes(tt js.TokenType, data []byte) ([]byte, bool) {
 	switch tt {
 	case js.IdentifierToken:
-		return string(data), true
+		return data, true
 	case js.StringToken:
 		if len(data) < 2 {
-			return "", false
+			return nil, false
 		}
 		q := data[0]
 		if (q != '\'' && q != '"') || data[len(data)-1] != q {
-			return "", false
+			return nil, false
 		}
-		return string(data[1 : len(data)-1]), true
+		return data[1 : len(data)-1], true
 	default:
-		return "", false
+		return nil, false
 	}
 }

@@ -1,28 +1,28 @@
 package jstaint
 
-import "github.com/tdewolff/parse/v2/js"
+import (
+	"bytes"
+	"strings"
 
-// keyboardProps are the event properties whose value is a keystroke. e.target is
-// deliberately absent: its .value is the input's current text, which legitimate
-// search-as-you-type widgets read and post.
-func isKeyboardProp(name string) bool {
-	switch name {
-	case "key", "keyCode", "charCode", "which", "code":
-		return true
-	default:
-		return false
-	}
+	"github.com/tdewolff/parse/v2/js"
+)
+
+// isKeyboardProp reports whether name is an event property whose value is a
+// keystroke. e.target is deliberately absent: its .value is the input's current
+// text, which legitimate search-as-you-type widgets read and post.
+func isKeyboardProp(name []byte) bool {
+	return bytes.Equal(name, []byte("key")) ||
+		bytes.Equal(name, []byte("keyCode")) ||
+		bytes.Equal(name, []byte("charCode")) ||
+		bytes.Equal(name, []byte("which")) ||
+		bytes.Equal(name, []byte("code"))
 }
 
 // The only member accesses allowed between the event variable and a keyboard
 // property are these framework wrappers, for example e.originalEvent.key.
-func isEventWrapperProp(name string) bool {
-	switch name {
-	case "originalEvent", "nativeEvent":
-		return true
-	default:
-		return false
-	}
+func isEventWrapperProp(name []byte) bool {
+	return bytes.Equal(name, []byte("originalEvent")) ||
+		bytes.Equal(name, []byte("nativeEvent"))
 }
 
 // keyboardSource reports whether expr statically reads a keyboard property off
@@ -30,7 +30,7 @@ func isEventWrapperProp(name string) bool {
 // wrappers, and returns a dotted display string for evidence. The boolean result
 // of a comparison is not handled here; barriers are enforced during propagation.
 func keyboardSource(expr js.IExpr, eventVar *js.Var) (string, bool) {
-	name, base, ok := memberAccess(expr)
+	name, base, ok := memberAccessBytes(expr)
 	if !ok || !isKeyboardProp(name) {
 		return "", false
 	}
@@ -46,45 +46,75 @@ func resolvesToEventBase(base js.IExpr, eventVar *js.Var) bool {
 	if eventVar == nil {
 		return false
 	}
-	base = ungroupExpr(base)
-	if v, ok := base.(*js.Var); ok {
-		return canonicalVar(v) == eventVar
+	eventVar = canonicalVar(eventVar)
+	for {
+		base = ungroupExpr(base)
+		if v, ok := base.(*js.Var); ok {
+			return canonicalVar(v) == eventVar
+		}
+		name, inner, ok := memberAccessBytes(base)
+		if !ok || !isEventWrapperProp(name) {
+			return false
+		}
+		base = inner
 	}
-	name, inner, ok := memberAccess(base)
-	if !ok || !isEventWrapperProp(name) {
-		return false
-	}
-	return resolvesToEventBase(inner, eventVar)
 }
 
 // memberAccess splits a dot or static-bracket member access into its property
 // name and base expression.
 func memberAccess(expr js.IExpr) (name string, base js.IExpr, ok bool) {
+	data, base, ok := memberAccessBytes(expr)
+	if !ok {
+		return "", nil, false
+	}
+	return string(data), base, true
+}
+
+func memberAccessBytes(expr js.IExpr) (name []byte, base js.IExpr, ok bool) {
 	switch e := ungroupExpr(expr).(type) {
 	case *js.DotExpr:
-		if n, ok := staticStringOrIdent(ungroupExpr(e.Y)); ok {
+		if n, ok := staticBytesOrIdent(ungroupExpr(e.Y)); ok {
 			return n, e.X, true
 		}
 	case *js.IndexExpr:
-		if n, ok := staticStringOrIdent(ungroupExpr(e.Y)); ok {
+		if n, ok := staticBytesOrIdent(ungroupExpr(e.Y)); ok {
 			return n, e.X, true
 		}
 	}
-	return "", nil, false
+	return nil, nil, false
 }
 
 // memberDisplay renders a member-access chain as dotted names for evidence,
 // normalizing bracket access to dot form. An unresolvable base is shown as "?".
 func memberDisplay(expr js.IExpr) string {
-	expr = ungroupExpr(expr)
-	if v, ok := expr.(*js.Var); ok {
-		return string(v.Name())
+	var names [][]byte
+	for {
+		expr = ungroupExpr(expr)
+		if v, ok := expr.(*js.Var); ok {
+			return joinMemberDisplay(v.Name(), names)
+		}
+		name, base, ok := memberAccessBytes(expr)
+		if !ok {
+			return joinMemberDisplay([]byte("?"), names)
+		}
+		names = append(names, name)
+		expr = base
 	}
-	name, base, ok := memberAccess(expr)
-	if !ok {
-		return "?"
+}
+
+func joinMemberDisplay(base []byte, reversedNames [][]byte) string {
+	size := len(base)
+	for _, name := range reversedNames {
+		size += 1 + len(name)
 	}
-	return memberDisplay(base) + "." + name
+	var display strings.Builder
+	display.Grow(size)
+	display.Write(base)
+	for i := len(reversedNames) - 1; i >= 0; i-- {
+		display.WriteByte('.')
+		display.Write(reversedNames[i])
+	}
+	return display.String()
 }
 
 // binaryOpPropagates reports whether a binary operator's result carries taint
