@@ -809,7 +809,7 @@ func TestEmailQuarantineActionRejectsTraversalMessageID(t *testing.T) {
 	}
 }
 
-func TestFlushCphulkRevalidatesIP(t *testing.T) {
+func TestFlushCphulkIPsRevalidatesAndBatches(t *testing.T) {
 	binDir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "whmapi1.args")
 	script := "#!/bin/sh\nprintf 'ran\\n' > \"$CSM_TEST_MARKER\"\nprintf '%s\\n' \"$@\" >> \"$CSM_TEST_MARKER\"\n"
@@ -819,17 +819,17 @@ func TestFlushCphulkRevalidatesIP(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CSM_TEST_MARKER", marker)
 
-	flushCphulk("203.0.113.5;touch /tmp/pwned")
+	flushCphulkIPs([]string{"203.0.113.5;touch /tmp/pwned"})
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("invalid IP executed whmapi1, stat err = %v", err)
 	}
 
-	flushCphulk("203.0.113.5")
+	flushCphulkIPs([]string{" 203.0.113.5 ", "invalid", "2001:0db8:0:0:0:0:0:5"})
 	got, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), "flush_cphulk_login_history_for_ips\nip=203.0.113.5") {
+	if !strings.Contains(string(got), "flush_cphulk_login_history_for_ips\nip=203.0.113.5\nip-1=2001:db8::5") {
 		t.Fatalf("whmapi1 args = %q", string(got))
 	}
 }

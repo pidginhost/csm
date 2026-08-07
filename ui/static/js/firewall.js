@@ -327,13 +327,39 @@ function getSelectedBlockedIPs() {
 function updateBlockedBulkButton() {
     var btn = document.getElementById('blocked-bulk-unblock-btn');
     if (!btn) return;
-    var count = getSelectedBlockedIPs().length;
+    var visible = visibleBlockedCheckboxes();
+    var count = visible.filter(function(cb) { return cb.checked; }).length;
+    var selectAll = document.getElementById('select-all-blocked');
+    if (selectAll) {
+        selectAll.checked = visible.length > 0 && count === visible.length;
+        selectAll.indeterminate = count > 0 && count < visible.length;
+    }
     if (count > 0) {
         btn.classList.remove('d-none');
         btn.textContent = 'Unblock selected (' + count + ')';
     } else {
         btn.classList.add('d-none');
     }
+}
+
+function blockedTableStateKey() {
+    var oldKey = 'csm-firewall-blocked';
+    var newKey = 'csm-firewall-blocked-selectable';
+    try {
+        if (localStorage.getItem(newKey) === null) {
+            var raw = localStorage.getItem(oldKey);
+            if (raw !== null) {
+                var state = JSON.parse(raw);
+                // The new checkbox is column zero; old sortable columns were
+                // zero through four and now sit one position to the right.
+                if (typeof state.sortCol === 'number' && state.sortCol >= 0 && state.sortCol <= 4) {
+                    state.sortCol += 1;
+                }
+                localStorage.setItem(newKey, JSON.stringify(state));
+            }
+        }
+    } catch (e) { /* localStorage may be unavailable or contain invalid JSON */ }
+    return newKey;
 }
 
 function loadBlocked() {
@@ -395,9 +421,10 @@ function loadBlocked() {
                 tableId: 'blocked-table',
                 perPage: 25,
                 perPageSelectId: 'blocked-perpage',
-                stateKey: 'csm-firewall-blocked',
+                stateKey: blockedTableStateKey(),
                 searchId: 'blocked-search',
                 sortable: true,
+                onRender: updateBlockedBulkButton,
                 filters: [
                     { id: 'blocked-lifetime-filter', attr: 'data-lifetime' },
                     { id: 'blocked-source-filter', attr: 'data-source' }
@@ -461,6 +488,7 @@ function loadBlocked() {
         })
         .catch(function() {
             CSM.loadError(document.getElementById('blocked-content'), loadBlocked);
+            updateBlockedBulkButton();
         });
 }
 
@@ -1125,19 +1153,6 @@ if (bulkUnblockBtn) {
             if (err) CSM.toast(err.message || 'Request failed', 'error');
         });
     });
-
-    // Filter, search, page-size, sort, and pagination all change which rows
-    // are visible; recount so the button label never overstates the action.
-    // The submit path recounts anyway, so a stale label can't over-unblock.
-    ['blocked-search', 'blocked-lifetime-filter', 'blocked-source-filter', 'blocked-perpage'].forEach(function(id) {
-        var ctl = document.getElementById(id);
-        if (!ctl) return;
-        ctl.addEventListener(ctl.tagName === 'SELECT' ? 'change' : 'input', updateBlockedBulkButton);
-    });
-    var blockedContent = document.getElementById('blocked-content');
-    if (blockedContent) {
-        blockedContent.addEventListener('click', function() { updateBlockedBulkButton(); });
-    }
 }
 
 var refreshBtn = document.getElementById('firewall-refresh-btn');

@@ -3,6 +3,7 @@ package webui
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +15,41 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+func TestRecordUndoEntryFitsLargestBulkUnblock(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	ips := make([]string, 0, 500)
+	rows := make([]undoThreatRow, 0, 500)
+	for _, prefix := range []string{"192.0.2.", "198.51.100."} {
+		for octet := 0; octet < 250; octet++ {
+			ip := fmt.Sprintf("%s%d", prefix, octet)
+			ips = append(ips, ip)
+			rows = append(rows, undoThreatRow{
+				IP:        ip,
+				Reason:    "web_attack",
+				Source:    store.ThreatSourceAutoBlock,
+				ExpiresAt: time.Now().Add(time.Hour),
+			})
+		}
+	}
+	req := bearerRequest("POST", "/api/v1/unblock-bulk", nil)
+	token := s.recordUndoEntry(req, "firewall_bulk_unblock", undoInverseFirewallUnblock,
+		"Unblocked 500 IPs", undoPayloadIPs{IPs: ips, RestoreThreats: rows})
+	if token == "" {
+		t.Fatal("largest bulk unblock payload returned no undo token")
+	}
+	entry, ok, err := store.Global().LatestUndoEntry(s.operatorKey(req))
+	if err != nil || !ok {
+		t.Fatalf("stored undo entry: ok=%v err=%v", ok, err)
+	}
+	var decoded undoPayloadIPs
+	if err := decodeUndoPayload(entry.Payload, &decoded); err != nil {
+		t.Fatalf("decode stored undo payload: %v", err)
+	}
+	if len(decoded.IPs) != 500 || len(decoded.RestoreThreats) != 500 {
+		t.Fatalf("decoded payload has %d IPs and %d threat rows", len(decoded.IPs), len(decoded.RestoreThreats))
+	}
+}
 
 // recordingBlocker captures every block/unblock call so the undo handler's
 // dispatch can be observed without a real firewall engine.
