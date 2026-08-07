@@ -71,7 +71,7 @@ func (v *handlerVisitor) emit(expr js.IExpr) {
 // isKeyHandlerProperty reports whether target is a member access naming a DOM
 // keyboard on* property, in either dot or static-bracket form.
 func isKeyHandlerProperty(target js.IExpr) bool {
-	name, ok := memberName(target)
+	name, _, ok := memberAccess(target)
 	return ok && isDOMHandlerProp(name)
 }
 
@@ -133,18 +133,6 @@ func addEventListenerHandler(call *js.CallExpr) (string, js.IExpr, bool) {
 		return "", nil, false
 	}
 	return eventName, call.Args.List[1].Value, true
-}
-
-// memberName returns the static property name of a dot or bracket member access.
-func memberName(expr js.IExpr) (string, bool) {
-	switch e := expr.(type) {
-	case *js.DotExpr:
-		return staticStringOrIdent(ungroupExpr(e.Y))
-	case *js.IndexExpr:
-		return staticStringOrIdent(ungroupExpr(e.Y))
-	default:
-		return "", false
-	}
 }
 
 func ungroupExpr(expr js.IExpr) js.IExpr {
