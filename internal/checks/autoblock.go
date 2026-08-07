@@ -504,7 +504,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			continue
 		}
-		outcome, err := callBlockIP(blocker, ip, blockReason, expiry)
+		res, err := applyBlockLocked(cfg, blocker, state, ApplyBlockRequest{
+			IP:           ip,
+			EngineReason: blockReason,
+			Reason:       cand.Reason,
+			TTL:          expiry,
+			Source:       BlockSourceScan,
+		})
 		if err != nil {
 			// Protected IPs (the server's own interface or infra_ips) are
 			// intentionally never blocked -- an expected no-op, not a failure.
@@ -521,95 +527,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			continue
 		}
-
-		switch outcome {
-		case firewall.BlockOutcomeLive:
-			// nft was mutated. Record the real block below.
-		case firewall.BlockOutcomeDryRun:
-			// dry-run intercepted: nft was NOT mutated. Do not record a real
-			// block locally or in the permanent threat DB; emit a Warning
-			// notice instead so operators see what would have been blocked.
-			actions = append(actions, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "auto_block",
-				Message:   fmt.Sprintf("AUTO-BLOCK [dry-run]: %s would be blocked (expires in %s)", ip, expiry),
-				Details:   fmt.Sprintf("Reason: %s", cand.Reason),
-				Timestamp: time.Now(),
-			})
-			continue
-		case firewall.BlockOutcomeAllowed:
-			// Verdict callback returned "allow": CSM intentionally did not
-			// block. Stay silent at finding level - the panel already knows
-			// it downgraded the decision and the engine logged it to stderr.
-			continue
-		case firewall.BlockOutcomeAllowlisted:
-			// IP is on a soft-allow list (operator full/port allow or a
-			// verified-bot range). The engine declined the auto-block and
-			// logged it; record nothing and emit no AUTO-BLOCK finding.
-			continue
-		case firewall.BlockOutcomeNoop:
-			// Already-blocked, deny-limit, or other guard rejected the call.
-			// No local state to record.
-			continue
-		default:
-			fmt.Fprintf(os.Stderr, "auto-block: unknown block outcome %q for %s, skipping local state\n", outcome, ip)
+		actions = append(actions, res.Findings...)
+		if res.Outcome != firewall.BlockOutcomeLive {
 			continue
 		}
 		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
-
 		state.BlocksThisHour++
-
-		// Record in the local threat DB with the same lifetime as the
-		// firewall block. A permanent record here re-flags the IP via
-		// ip_reputation on every access after the temp block lapses and
-		// re-blocks it forever (permablock loop).
-		if db := GetThreatDB(); db != nil {
-			db.AddTemporary(ip, cand.Reason, expiry)
-		}
-
-		state.IPs = append(state.IPs, blockedIP{
-			IP:        ip,
-			Reason:    cand.Reason,
-			BlockedAt: time.Now(),
-			ExpiresAt: time.Now().Add(expiry),
-		})
-
-		details := fmt.Sprintf("Reason: %s", cand.Reason)
-		if cc, ok := blocker.(cloudflareCoverChecker); ok && cc.CloudflareCovers(ip) {
-			details += " (warning: " + firewall.CloudflareCoverageWarning + ")"
-		}
-		actions = append(actions, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "auto_block",
-			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", ip, expiry),
-			Details:   details,
-			Timestamp: time.Now(),
-		})
-
-		// Permanent block escalation: promote to permanent after N temp blocks
-		if cfg.AutoResponse.PermBlock {
-			count := cfg.AutoResponse.PermBlockCount
-			if count < 2 {
-				count = 4
-			}
-			interval := parseExpiry(cfg.AutoResponse.PermBlockInterval)
-			if interval == 0 {
-				interval = 24 * time.Hour
-			}
-			if checkPermBlockEscalation(cfg.StatePath, ip, count, interval) {
-				permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-				if promoteToPermanentBlock(blocker, ip, permReason) {
-					actions = append(actions, alert.Finding{
-						Severity:  alert.Critical,
-						Check:     "auto_block",
-						Message:   fmt.Sprintf("AUTO-PERMBLOCK: %s promoted to permanent block (%d temp blocks)", ip, count),
-						Timestamp: time.Now(),
-					})
-				}
-			}
-		}
 	}
 	if engineUnavailableRequeued > 0 {
 		fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, requeued %d IPs\n", engineUnavailableRequeued)

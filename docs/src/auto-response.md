@@ -154,6 +154,15 @@ that feed the rollup still drive normal block decisions.
 incident, or spray auto-blocking. A separate blockable finding can still block
 the same source.
 
+Every auto-response block source - scan findings, challenge-timeout
+escalations, central-intel corroborated blocks, and incident spray
+containment - records the same evidence: a temporary threat-DB row, a
+blocked-IPs tracker entry, an `auto_block` finding visible to the block
+digest and alerting, and a step toward permanent-block escalation.
+Challenge, central, and incident blocks are not limited by
+`auto_response.max_blocks_per_hour`; that budget applies to scan-driven
+blocks only.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services

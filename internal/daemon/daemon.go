@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -2603,26 +2604,92 @@ func (d *Daemon) challengeEscalator() {
 				d.challengeServer.CleanExpired()
 			}
 
-			expired := d.ipList.ExpiredEntries()
-			for _, e := range expired {
-				if d.fwEngine == nil {
-					continue
-				}
-				reason := fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100))
-				outcome, err := d.fwEngine.BlockIPOutcome(e.IP, reason, expiry)
-				if err != nil {
-					// Own-interface / infra IPs are never blockable; an expected
-					// no-op, not a failure worth logging.
-					if !isProtectedIPRefusal(err) {
-						fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
-					}
-					continue
-				}
-				observeChallengeEscalated(outcome)
-				fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, outcome))
+			d.escalateExpiredChallenges(expiry)
+		}
+	}
+}
+
+// escalateExpiredChallenges hard-blocks every challenge-list entry whose
+// window lapsed. Blocks route through the checks.ApplyBlock chokepoint so
+// escalations leave the same evidence trail as scan auto-blocks (threat-DB
+// row, tracker entry, digest visibility, permblock counting) instead of
+// only a stderr line.
+func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
+	if d.ipList == nil {
+		return
+	}
+	expired := d.ipList.ExpiredEntries()
+	if len(expired) == 0 {
+		return
+	}
+	cfg := d.currentCfg()
+	var recorded []alert.Finding
+	for _, e := range expired {
+		res, err := checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
+			IP:           e.IP,
+			EngineReason: fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100)),
+			Reason:       fmt.Sprintf("challenge timeout: %s", truncateStr(e.Reason, 100)),
+			TTL:          expiry,
+			Source:       checks.BlockSourceChallenge,
+		})
+		if err != nil {
+			// Own-interface / infra IPs are never blockable, and a host
+			// without a firewall engine cannot escalate; both are expected
+			// no-ops, not failures worth logging.
+			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
+				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
+			}
+			continue
+		}
+		observeChallengeEscalated(res.Outcome)
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", ts(), challengeEscalateLogLine(e.IP, res.Outcome))
+		recorded = append(recorded, res.Findings...)
+	}
+	d.recordAppliedBlocks(recorded)
+}
+
+// recordAppliedBlocks routes chokepoint findings from async block sources
+// (challenge escalation, central intel, incident spray) through the same
+// bookkeeping dispatchBatch gives scan blocks: block digest, attack-DB
+// blocked marker, finding history, and alert dispatch, which applies the
+// standard suppression rules.
+func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
+	if len(findings) == 0 {
+		return
+	}
+	d.observeBlocks(findings)
+	if adb := attackdb.Global(); adb != nil {
+		for _, f := range findings {
+			if f.Check != "auto_block" || f.Severity != alert.Critical {
+				continue
+			}
+			if ip := checks.ExtractIPFromFinding(f); ip != "" {
+				adb.MarkBlocked(ip)
 			}
 		}
 	}
+	if d.store != nil {
+		d.store.AppendHistory(findings)
+	}
+	_ = alert.Dispatch(d.currentCfg(), findings)
+}
+
+// applyIncidentSprayBlock is the incident correlator's firewall hand-off,
+// routed through the chokepoint so spray blocks leave evidence and reach
+// the digest.
+func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration) (bool, error) {
+	res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
+		IP:           ip,
+		EngineReason: reason,
+		Reason:       reason,
+		TTL:          timeout,
+		Source:       checks.BlockSourceIncident,
+	})
+	if err != nil {
+		return false, err
+	}
+	d.recordAppliedBlocks(res.Findings)
+	return res.Outcome == firewall.BlockOutcomeLive, nil
 }
 
 var (
@@ -2883,13 +2950,10 @@ func (d *Daemon) startFirewall() {
 	// The mail-provider cache is loaded (initMailRanges ran before startFirewall)
 	// and Apply has completed, so the exempt set is current.
 	checks.PruneExemptAutoSubnets(d.cfg, engine)
-	// Wire the incident firewall hand-off through BlockIPOutcome so the
-	// correlator can distinguish live nftables mutation from dry-run,
-	// verdict-allow, and other no-op outcomes.
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) (bool, error) {
-		outcome, err := engine.BlockIPOutcome(ip, reason, timeout)
-		return outcome == firewall.BlockOutcomeLive, err
-	})
+	// Wire the incident firewall hand-off through the ApplyBlock chokepoint
+	// so the correlator distinguishes live mutation from dry-run and no-op
+	// outcomes AND spray blocks leave the standard evidence trail.
+	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
 
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)
 	csmlog.Info("firewall active",
