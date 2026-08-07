@@ -70,6 +70,15 @@ func TestKeyloggerYAML_SmushTutorialsBundle(t *testing.T) {
 	}
 }
 
+func TestKeyloggerYAML_KeyCodeConstantNearFetch(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	legit := []byte(`window.onkeydown=function(e){return e};` +
+		`var label="enter="+ct.KeyCode.RETURN;fetch("/wp-json/plugin/v1/settings")`)
+	if hasRule(scanner.ScanContent(legit, ".js"), "exfil_keylogger_js") {
+		t.Error("exfil_keylogger_js FP: treated a KeyCode constant as a captured keyCode property")
+	}
+}
+
 func TestKeyloggerYAML_PushedKeystrokeBufferStillDetected(t *testing.T) {
 	scanner := loadRepoScanner(t)
 	mal := []byte(`var q=[];window.addEventListener("keyup",function(e){q.push(e.key);` +

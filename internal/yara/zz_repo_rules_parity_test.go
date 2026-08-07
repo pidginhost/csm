@@ -196,6 +196,12 @@ system($_GET['cmd']);`,
 				`fetch("https://api.example.test/wp-json/wp/v2/media/"+t).then((function(e){return e.json()}))`,
 		},
 		{
+			name: "KeyCode constant concatenated near unrelated fetch",
+			rule: "exfil_keylogger_js",
+			sample: `window.onkeydown=function(e){return e};` +
+				`var label="enter="+ct.KeyCode.RETURN;fetch("/wp-json/plugin/v1/settings")`,
+		},
+		{
 			name: "keystroke buffer accumulated and posted",
 			rule: "exfil_keylogger_js",
 			want: true,
