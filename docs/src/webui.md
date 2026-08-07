@@ -29,7 +29,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
-| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, whitelist management, search, audit log; destructive actions live under the Danger tab |
+| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), whitelist management, search, audit log; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
 | **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |

@@ -544,7 +544,7 @@ func TestAPIUnblockBulkEmptyIPs(t *testing.T) {
 
 func TestAPIUnblockBulkTooManyIPs(t *testing.T) {
 	s := newTestServer(t, "tok")
-	ips := make([]string, 101)
+	ips := make([]string, 501)
 	for i := range ips {
 		ips[i] = "203.0.113.1"
 	}
@@ -554,7 +554,7 @@ func TestAPIUnblockBulkTooManyIPs(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	s.apiUnblockBulk(w, req)
 	if w.Code != http.StatusBadRequest {
-		t.Errorf("101 IPs = %d, want 400", w.Code)
+		t.Errorf("501 IPs = %d, want 400", w.Code)
 	}
 }
 

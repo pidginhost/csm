@@ -1211,8 +1211,10 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IPs array is required", http.StatusBadRequest)
 		return
 	}
-	if len(req.IPs) > 100 {
-		writeJSONError(w, "IPs must be 1-100 items", http.StatusBadRequest)
+	// 500 fits the largest Blocks-table page size (250 plus All) so one UI
+	// selection round-trips as a single request and a single undo token.
+	if len(req.IPs) > 500 {
+		writeJSONError(w, "IPs must be 1-500 items", http.StatusBadRequest)
 		return
 	}
 	if s.blocker == nil {

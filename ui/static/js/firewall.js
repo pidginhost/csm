@@ -302,6 +302,40 @@ function loadSubnets() {
         });
 }
 
+// Bulk unblock selection helpers. Only rows the table currently shows count:
+// CSM.Table hides filtered/other-page rows via style.display, and acting on
+// hidden rows would let a narrowed filter mass-unblock entries the operator
+// never saw. Checked rows that a later filter hid are ignored the same way.
+function visibleBlockedCheckboxes() {
+    var out = [];
+    document.querySelectorAll('#blocked-table tbody tr').forEach(function(row) {
+        if (row.style.display === 'none') return;
+        var cb = row.querySelector('.fw-blocked-cb');
+        if (cb) out.push(cb);
+    });
+    return out;
+}
+
+function getSelectedBlockedIPs() {
+    var ips = [];
+    visibleBlockedCheckboxes().forEach(function(cb) {
+        if (cb.checked) ips.push(cb.getAttribute('data-ip'));
+    });
+    return ips;
+}
+
+function updateBlockedBulkButton() {
+    var btn = document.getElementById('blocked-bulk-unblock-btn');
+    if (!btn) return;
+    var count = getSelectedBlockedIPs().length;
+    if (count > 0) {
+        btn.classList.remove('d-none');
+        btn.textContent = 'Unblock selected (' + count + ')';
+    } else {
+        btn.classList.add('d-none');
+    }
+}
+
 function loadBlocked() {
     CSM.get('/api/v1/blocked-ips', {silent: true})
         .then(function(ips) {
@@ -310,6 +344,7 @@ function loadBlocked() {
             if (!ips || ips.length === 0) {
                 _fwBlockedData = [];
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';
+                updateBlockedBulkButton();
                 return;
             }
 
@@ -325,6 +360,7 @@ function loadBlocked() {
             });
 
             var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
+            h += '<th class="w-1"><input type="checkbox" class="form-check-input" id="select-all-blocked" aria-label="Select all visible blocked IPs"></th>';
             h += '<th>IP</th><th>Location</th><th>Reason</th><th>Blocked</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
 
             for (var i = 0; i < ips.length; i++) {
@@ -332,6 +368,7 @@ function loadBlocked() {
                 var source = ips[i].source || 'unknown';
                 var lifetime = classifyLifetime(ips[i]);
                 h += '<tr data-source="' + CSM.esc(source) + '" data-lifetime="' + lifetime + '">';
+                h += '<td><input type="checkbox" class="form-check-input fw-blocked-cb" data-ip="' + CSM.esc(ips[i].ip) + '" aria-label="Select ' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(ips[i].ip) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(ips[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
@@ -407,6 +444,19 @@ function loadBlocked() {
                     flushCphulkOnly(this.getAttribute('data-ip'));
                 });
             });
+
+            var selectAll = document.getElementById('select-all-blocked');
+            if (selectAll) {
+                selectAll.addEventListener('change', function() {
+                    var checked = this.checked;
+                    visibleBlockedCheckboxes().forEach(function(cb) { cb.checked = checked; });
+                    updateBlockedBulkButton();
+                });
+            }
+            el.querySelectorAll('.fw-blocked-cb').forEach(function(cb) {
+                cb.addEventListener('change', updateBlockedBulkButton);
+            });
+            updateBlockedBulkButton();
 
         })
         .catch(function() {
@@ -1043,6 +1093,46 @@ document.getElementById('lookup-form').addEventListener('submit', function(e) {
 
 var flushBtn = document.getElementById('flush-blocked-btn');
 if (flushBtn) flushBtn.addEventListener('click', flushBlocked);
+
+var bulkUnblockBtn = document.getElementById('blocked-bulk-unblock-btn');
+if (bulkUnblockBtn) {
+    bulkUnblockBtn.addEventListener('click', function() {
+        var ips = getSelectedBlockedIPs();
+        if (ips.length === 0) return;
+        if (ips.length > 500) {
+            CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is 500. Narrow the filter or page and repeat.', 'error');
+            return;
+        }
+        CSM.confirm('Unblock ' + ips.length + ' selected IP(s)?\n\nThis also clears their auto-block threat rows and cPHulk history.').then(function() {
+            CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
+                var succeeded = data.succeeded || 0;
+                var total = data.total || ips.length;
+                if (succeeded < total) {
+                    CSM.toast('Unblocked ' + succeeded + ' of ' + total + ' IP(s); the rest failed or were already gone', 'warning');
+                } else {
+                    CSM.toast('Unblocked ' + succeeded + ' IP(s)', 'success');
+                }
+                if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Unblocked ' + succeeded + ' IP(s)' });
+                refreshFirewallData();
+            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(err) {
+            if (err) CSM.toast(err.message || 'Request failed', 'error');
+        });
+    });
+
+    // Filter, search, page-size, sort, and pagination all change which rows
+    // are visible; recount so the button label never overstates the action.
+    // The submit path recounts anyway, so a stale label can't over-unblock.
+    ['blocked-search', 'blocked-lifetime-filter', 'blocked-source-filter', 'blocked-perpage'].forEach(function(id) {
+        var ctl = document.getElementById(id);
+        if (!ctl) return;
+        ctl.addEventListener(ctl.tagName === 'SELECT' ? 'change' : 'input', updateBlockedBulkButton);
+    });
+    var blockedContent = document.getElementById('blocked-content');
+    if (blockedContent) {
+        blockedContent.addEventListener('click', function() { updateBlockedBulkButton(); });
+    }
+}
 
 var refreshBtn = document.getElementById('firewall-refresh-btn');
 if (refreshBtn) refreshBtn.addEventListener('click', refreshFirewallData);
