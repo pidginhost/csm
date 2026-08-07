@@ -150,8 +150,8 @@ func ungroupExpr(expr js.IExpr) js.IExpr {
 // identity with the expected name is a global; a local declaration of the same
 // name has a declaration type and is therefore not the platform global.
 func isGlobalRef(v *js.Var, name string) bool {
-	c := canonicalVar(v)
-	return c.Decl == js.NoDecl && string(c.Name()) == name
+	n, ok := globalName(v)
+	return ok && n == name
 }
 
 func firstParamVar(params js.Params) *js.Var {
