@@ -190,20 +190,15 @@ func TestFirewallUnbanEverywhereSurfacesBackendFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(js)
-	start := strings.Index(text, "function unbanEverywhere(")
-	if start < 0 {
-		t.Fatal("firewall.js missing unbanEverywhere")
+	fn := firewallJSFunction(t, string(js), "function unbanEverywhere(")
+	failureCheck := strings.Index(fn, "if (data && data.success === false)")
+	errorToast := strings.Index(fn, "CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');")
+	failureReturn := strings.Index(fn, "return;")
+	successToast := strings.Index(fn, "CSM.toast(msg, 'success');")
+	if failureCheck < 0 || errorToast < failureCheck {
+		t.Fatal("unbanEverywhere must surface the backend error_msg when success is false")
 	}
-	end := strings.Index(text[start:], "\nfunction ")
-	if end < 0 {
-		end = len(text) - start
-	}
-	fn := text[start : start+end]
-	if !strings.Contains(fn, "data.success === false") {
-		t.Fatal("unbanEverywhere must check data.success before reporting success")
-	}
-	if !strings.Contains(fn, "error_msg") {
-		t.Fatal("unbanEverywhere must surface the backend error_msg on failure")
+	if failureReturn < errorToast || successToast < failureReturn {
+		t.Fatal("unbanEverywhere must stop before reporting a failed unban as successful")
 	}
 }
