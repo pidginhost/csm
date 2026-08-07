@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -188,16 +190,26 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) {
 			d.ipList.AddNonEscalating(a.ip, "central-intel", centralChallengeTTL)
 		}
 	case reporting.DecisionBlock:
-		if d.fwEngine != nil {
-			if err := d.fwEngine.BlockIP(a.ip, "central-intel (locally corroborated)", centralBlockTTL); err != nil {
-				logCentralBlockFailure(a.ip, err)
-			}
+		res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
+			IP:           a.ip,
+			EngineReason: "central-intel (locally corroborated)",
+			Reason:       "central-intel (locally corroborated)",
+			TTL:          centralBlockTTL,
+			Source:       checks.BlockSourceCentral,
+		})
+		if err != nil {
+			logCentralBlockFailure(a.ip, err)
+			return
 		}
+		log.Printf("central-intel: block %s outcome: %s", a.ip, res.Outcome)
+		d.recordAppliedBlocks(res.Findings)
 	}
 }
 
 func logCentralBlockFailure(ip string, err error) {
-	if isProtectedIPRefusal(err) {
+	// Protected IPs are never blockable and a host without a firewall
+	// engine cannot block; both are expected, not failures.
+	if isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) {
 		return
 	}
 	log.Printf("central-intel: block %s failed: %v", ip, err)
