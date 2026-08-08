@@ -9,8 +9,10 @@ import (
 
 // maxASTNodes bounds the parser nodes the structural pass visits. It is a safety
 // ceiling: exceeding it fails the whole analysis rather than returning a partial
-// decision.
-const maxASTNodes = 200_000
+// decision. Real minified bundles average 4-6 bytes per node, so the cap must
+// admit about 2.6 bytes per node at the 2 MiB input limit or real files become
+// permanent coverage gaps; it still rejects pathological synthetic nesting.
+const maxASTNodes = 800_000
 
 // taintChain is the shortest known list of via display names a captured value
 // passed through to reach a program point.

@@ -124,7 +124,7 @@ func (a *analysis) analyzeBinding(be *js.BindingElement, st *state, clearAbsent 
 	cv := canonicalVar(v)
 	if be.Default == nil {
 		if clearAbsent {
-			delete(st.env, cv)
+			st.delEnv(cv)
 		}
 		return
 	}
@@ -140,10 +140,10 @@ func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) value {
 		allocs: rhs.allocs, allocOnly: rhs.allocOnly, scheme: rhs.scheme,
 	}
 	if !storable(nt) {
-		delete(st.env, cv)
+		st.delEnv(cv)
 		return value{}
 	}
-	st.env[cv] = nt
+	st.setEnv(cv, nt)
 	a.fact()
 	return nt
 }
@@ -200,17 +200,17 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 		}
 	}
 	if !storable(nt) {
-		delete(st.env, cv)
+		st.delEnv(cv)
 		return value{}
 	}
-	st.env[cv] = nt
+	st.setEnv(cv, nt)
 	a.fact()
 	return nt
 }
 
 func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) value {
 	recv, key := a.evalMemberTarget(target, st)
-	st.captures[be] = recv
+	st.setCapture(be, recv)
 	var old value
 	if be.Op != js.EqToken {
 		// Compound assignment captures the current property value before the RHS
@@ -219,7 +219,7 @@ func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) v
 	}
 	rhs := a.evalExpr(be.Y, st)
 	recv = st.captures[be]
-	delete(st.captures, be)
+	st.delCapture(be)
 	writeVal := rhs
 	if be.Op != js.EqToken {
 		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
@@ -246,14 +246,14 @@ func (a *analysis) handleLogicalAssign(be *js.BinaryExpr, target js.IExpr, st *s
 		return st.env[cv]
 	default:
 		recv, key := a.evalMemberTarget(target, st)
-		st.captures[be] = recv
+		st.setCapture(be, recv)
 		skipped := st.clone()
 		taken := st.clone()
 		rhs := a.evalExpr(be.Y, taken)
 		takenRecv := taken.captures[be]
 		resultRecv := mergeValue(skipped.captures[be], takenRecv)
-		delete(taken.captures, be)
-		delete(skipped.captures, be)
+		taken.delCapture(be)
+		skipped.delCapture(be)
 		a.resourceSrcSink(takenRecv, key, rhs, be, taken)
 		a.writeField(taken, takenRecv, key, rhs)
 		st.replaceWith(mergeState(skipped, taken))
@@ -270,10 +270,10 @@ func (a *analysis) evalMemberTarget(target js.IExpr, st *state) (value, fieldKey
 		return recv, fieldKeyOf(ungroupExpr(t.Y))
 	case *js.IndexExpr:
 		recv := a.evalExpr(t.X, st)
-		st.captures[t] = recv
+		st.setCapture(t, recv)
 		a.evalExpr(t.Y, st)
 		recv = st.captures[t]
-		delete(st.captures, t)
+		st.delCapture(t)
 		return recv, fieldKeyOf(ungroupExpr(t.Y))
 	}
 	return value{}, fieldKey{}
@@ -553,10 +553,10 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 			return a.srcValue(occ.id)
 		}
 		base := a.evalExpr(x.X, st)
-		st.captures[x] = base
+		st.setCapture(x, base)
 		key := a.evalReadIndexKey(x, st)
 		base = st.captures[x]
-		delete(st.captures, x)
+		st.delCapture(x)
 		return a.readField(st, base, key)
 	case *js.BinaryExpr:
 		if isAssignOp(x.Op) {
