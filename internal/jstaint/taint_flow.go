@@ -70,7 +70,10 @@ func (a *analysis) analyzeStmt(stmt js.IStmt, st *state) *state {
 		st = a.analyzeTry(s, st)
 	case *js.ReturnStmt:
 		if s.Value != nil {
-			a.evalExpr(s.Value, st)
+			rv := a.evalExpr(s.Value, st)
+			if n := len(a.retStack); n > 0 {
+				a.retStack[n-1] = mergeValue(a.retStack[n-1], rv)
+			}
 		}
 	case *js.ThrowStmt:
 		a.evalExpr(s.Value, st)

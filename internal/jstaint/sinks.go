@@ -38,6 +38,9 @@ func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	}
 
 	a.checkCallSink(call, args, isFetch, isBeacon)
+	if ret, ok := a.evalUserCall(callee, args, st); ok {
+		return ret
+	}
 	return a.evalCallReturn(st, callee, args, recv)
 }
 
