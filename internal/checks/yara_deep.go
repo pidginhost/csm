@@ -124,6 +124,9 @@ func (h *yaraDeepScanHeap) Pop() any {
 func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
 	yaraDeepScanMu.Lock()
 	defer yaraDeepScanMu.Unlock()
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	db := store.Global()
 	yaraConsumer := &deepScanConsumer{name: yaraDeepCursorCheck}
@@ -133,6 +136,17 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	yaraOff := yaraDeepConsumerDisabled(cfg)
 	jsOff := jsTaintDeepConsumerDisabled(cfg)
 	jsConsumer.dispatch = !jsOff
+	// Disabled-consumer resets are persistent scan progress too. Commit them
+	// only on a normal return path so a hard-canceled shared walk writes no
+	// cursor state for either consumer.
+	resetDisabledCursors := func() {
+		if yaraOff {
+			resetDeepScanCursor(db, yaraDeepCursorCheck)
+		}
+		if jsOff {
+			resetDeepScanCursor(db, jsTaintDeepCursorCheck)
+		}
+	}
 
 	var findings []alert.Finding
 	backend := activeYARABackend()
@@ -152,17 +166,12 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			})
 		}
 	}
-	if yaraOff {
-		resetDeepScanCursor(db, yaraDeepCursorCheck)
-	}
-	if jsOff {
-		resetDeepScanCursor(db, jsTaintDeepCursorCheck)
-	}
 	if !yaraConsumer.dispatch && !jsConsumer.dispatch {
+		if ctx.Err() != nil {
+			return nil
+		}
+		resetDisabledCursors()
 		return findings
-	}
-	if ctx.Err() != nil {
-		return nil
 	}
 	maxBytes := int64(FullScanMaxFileBytes(cfg))
 	jsMaxBytes := int64(jstaint.MaxSourceBytes)
@@ -524,6 +533,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		// untouched and let the next run redo this window.
 		return nil
 	}
+	resetDisabledCursors()
 
 	now := yaraDeepNow().UTC()
 	if db != nil {
@@ -590,11 +600,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			// the JS finding set, so a known-path coverage gap must re-emit
 			// that path's prior finding or the purge would clear it. A
 			// completed negative or missing path stays cleared.
-			for _, prior := range st.LatestFindings() {
-				if prior.Check == "js_keylogger_dataflow" && jsGaps.hasPath(prior.FilePath) {
-					findings = append(findings, prior)
-				}
-			}
+			findings = append(findings, carryForwardJSTaintFindings(st.LatestFindings(), jsGaps)...)
 		}
 	}
 	return findings

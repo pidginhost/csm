@@ -273,6 +273,31 @@ func TestCheckYARADeepYARAErrorRetainsJSResult(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepJSTaintHashStaysBoundToSharedSnapshotOnYARAFallback(t *testing.T) {
+	useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
+	workerSHA := strings.Repeat("a", sha256.Size*2)
+	backend := &oversizeInlineBackend{scanFileSHA: workerSHA}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, nil)
+
+	jsFindings := jsFindingsByCheck(findings, "js_keylogger_dataflow")
+	if len(jsFindings) != 1 {
+		t.Fatalf("JS findings = %+v, want one shared-snapshot detection", jsFindings)
+	}
+	wantSnapshotSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(jsKeyloggerFixture)))
+	if jsFindings[0].FilePath != path || jsFindings[0].ContentSHA256 != wantSnapshotSHA {
+		t.Fatalf("JS finding = %+v, want in-memory snapshot hash %q", jsFindings[0], wantSnapshotSHA)
+	}
+	yaraFindings := jsFindingsByCheck(findings, "yara_match_scheduled")
+	if len(yaraFindings) != 1 || yaraFindings[0].ContentSHA256 != workerSHA {
+		t.Fatalf("YARA findings = %+v, want path-worker hash %q", yaraFindings, workerSHA)
+	}
+}
+
 func TestCheckYARADeepDivergentCursorsScanIndependentRanges(t *testing.T) {
 	db := useRollingStore(t)
 	root := t.TempDir()
@@ -387,6 +412,75 @@ func TestCheckYARADeepSoftDeadlinePersistsBothCursors(t *testing.T) {
 		if cur.LastPath != first {
 			t.Fatalf("%s cursor = %q, want the pre-deadline stop point %q", name, cur.LastPath, first)
 		}
+	}
+}
+
+func TestCheckYARADeepSizeGateDoesNotAdvanceOtherConsumerAtSoftDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		size             int
+		configure        func(*config.Config)
+		advancedConsumer string
+	}{
+		{
+			name: "YARA gate leaves JS before the file",
+			size: jstaint.MaxSourceBytes,
+			configure: func(cfg *config.Config) {
+				cfg.Thresholds.FullScanMaxFileMB = 1
+			},
+			advancedConsumer: yaraDeepCursorCheck,
+		},
+		{
+			name:             "JS gate leaves YARA before the file",
+			size:             jstaint.MaxSourceBytes + 1,
+			configure:        func(*config.Config) {},
+			advancedConsumer: jsTaintDeepCursorCheck,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := useRollingStore(t)
+			root := t.TempDir()
+			path := writeYARADeepFile(t, root, "oversize.dat", strings.Repeat("x", tc.size))
+			cfg := &config.Config{AccountRoots: []string{root}}
+			tc.configure(cfg)
+
+			base := time.Now().Add(time.Hour)
+			clock := base
+			counter := &openCountingOS{OS: realOS{}, opens: map[string]int{}}
+			fs := &faultingYARADeepOS{OS: counter}
+			fs.lstat = func(gotPath string) (os.FileInfo, error) {
+				info, err := fs.OS.Lstat(gotPath)
+				if gotPath == path {
+					clock = clock.Add(2 * yaraDeepDeadlineMargin)
+				}
+				return info, err
+			}
+			withMockOS(t, fs)
+			useYARADeepClock(t, &clock)
+			yara.SetActive(&recordingYARABackend{})
+			t.Cleanup(func() { yara.SetActive(nil) })
+
+			ctx, cancel := context.WithDeadline(context.Background(), base.Add(yaraDeepDeadlineMargin+time.Minute))
+			defer cancel()
+			CheckYARADeep(ctx, cfg, nil)
+
+			if counter.opens[path] != 0 {
+				t.Fatalf("file opened %d time(s) after the soft deadline, want 0", counter.opens[path])
+			}
+			for _, name := range []string{yaraDeepCursorCheck, jsTaintDeepCursorCheck} {
+				cur, ok, err := db.GetScanCursor("", name)
+				if err != nil || !ok {
+					t.Fatalf("%s cursor: ok=%v err=%v", name, ok, err)
+				}
+				wantPath := ""
+				if name == tc.advancedConsumer {
+					wantPath = path
+				}
+				if cur.LastPath != wantPath {
+					t.Fatalf("%s cursor = %q, want %q", name, cur.LastPath, wantPath)
+				}
+			}
+		})
 	}
 }
 
@@ -507,6 +601,31 @@ func TestCheckYARADeepJSOversizeGapCarriesForward(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepCarriesOnlyNewestPriorJSTaintFindingPerGapPath(t *testing.T) {
+	useRollingStore(t)
+	useNilYARABackend(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	root := t.TempDir()
+	brokenPath := writeYARADeepFile(t, root, "broken.js", "keydown fetch ((((")
+	now := time.Now().UTC()
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "older prior", FilePath: brokenPath, Timestamp: now.Add(-time.Hour)},
+		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "newer prior", FilePath: brokenPath, Timestamp: now},
+	})
+
+	findings := CheckYARADeep(context.Background(), &config.Config{AccountRoots: []string{root}}, st)
+
+	carried := jsFindingsByCheck(findings, "js_keylogger_dataflow")
+	if len(carried) != 1 || carried[0].Message != "newer prior" {
+		t.Fatalf("carry-forward = %+v, want only the newest prior finding for %s", carried, brokenPath)
+	}
+}
+
 func TestCheckYARADeepHardCancelLeavesBothCursors(t *testing.T) {
 	db := useRollingStore(t)
 	root := t.TempDir()
@@ -534,5 +653,87 @@ func TestCheckYARADeepHardCancelLeavesBothCursors(t *testing.T) {
 		if err != nil || !ok || cur.LastPath != first {
 			t.Fatalf("hard cancel disturbed %s cursor: %+v ok=%v err=%v", name, cur, ok, err)
 		}
+	}
+}
+
+func TestCheckYARADeepHardCancelDoesNotResetDisabledConsumerCursor(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "probe.js", jsKeyloggerFixture)
+	wrappedAt := time.Now().UTC().Add(-time.Hour)
+	lastFullCycle := wrappedAt.Add(-time.Hour)
+
+	for _, name := range []string{yaraDeepCursorCheck, jsTaintDeepCursorCheck} {
+		var seed store.ScanCursorRecord
+		seed.Check = name
+		seed.LastPath = path
+		seed.WrappedAt = wrappedAt
+		seed.LastFullCycleTS = lastFullCycle
+		if err := db.PutScanCursor(seed); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	yara.SetActive(&recordingYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	findings := CheckYARADeep(ctx, &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{logicalOwnerJSTaintDeep},
+	}, nil)
+
+	if findings != nil {
+		t.Fatalf("hard-canceled run returned findings the runner would drop: %+v", findings)
+	}
+	for _, name := range []string{yaraDeepCursorCheck, jsTaintDeepCursorCheck} {
+		cur, ok, err := db.GetScanCursor("", name)
+		if err != nil || !ok {
+			t.Fatalf("%s cursor after hard cancel: ok=%v err=%v", name, ok, err)
+		}
+		if cur.LastPath != path || !cur.WrappedAt.Equal(wrappedAt) || !cur.LastFullCycleTS.Equal(lastFullCycle) {
+			t.Fatalf("hard cancel disturbed %s cursor: %+v", name, cur)
+		}
+	}
+}
+
+func TestCheckYARADeepMidWalkHardCancelDoesNotResetDisabledConsumerCursor(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "probe.dat", "mal payload")
+	wrappedAt := time.Now().UTC().Add(-time.Hour)
+	lastFullCycle := wrappedAt.Add(-time.Hour)
+	var seed store.ScanCursorRecord
+	seed.Check = jsTaintDeepCursorCheck
+	seed.LastPath = path
+	seed.WrappedAt = wrappedAt
+	seed.LastFullCycleTS = lastFullCycle
+	if err := db.PutScanCursor(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	backend := &recordingYARABackend{onScan: cancel}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	findings := CheckYARADeep(ctx, &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{logicalOwnerJSTaintDeep},
+	}, nil)
+
+	if findings != nil {
+		t.Fatalf("hard-canceled run returned findings the runner would drop: %+v", findings)
+	}
+	if len(backend.scanned) != 1 {
+		t.Fatalf("backend scanned %d snapshots, want cancellation during the first scan", len(backend.scanned))
+	}
+	cur, ok, err := db.GetScanCursor("", jsTaintDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("JS cursor after hard cancel: ok=%v err=%v", ok, err)
+	}
+	if cur.LastPath != path || !cur.WrappedAt.Equal(wrappedAt) || !cur.LastFullCycleTS.Equal(lastFullCycle) {
+		t.Fatalf("mid-walk hard cancel disturbed disabled JS cursor: %+v", cur)
 	}
 }
