@@ -578,10 +578,17 @@ func (n *siteNumberer) Enter(node js.INode) js.IVisitor {
 	if walkComputedClassName(n, node) {
 		return n
 	}
-	switch node.(type) {
+	switch e := node.(type) {
 	case *js.ObjectExpr, *js.ArrayExpr, *js.NewExpr:
 		n.sites[node] = n.next
 		n.next++
+	case *js.CallExpr:
+		// A createElement call allocates a fresh element, so it needs its own site
+		// for the resource-element receiver model.
+		if prop, _, ok := memberAccess(ungroupExpr(e.X)); ok && prop == "createElement" {
+			n.sites[node] = n.next
+			n.next++
+		}
 	}
 	return n
 }

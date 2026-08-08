@@ -135,14 +135,23 @@ func (a *analysis) analyzeBinding(be *js.BindingElement, st *state, clearAbsent 
 // bindVar performs a strong update binding a variable to a value, appending the
 // variable name to the laundering chain and preserving aliased allocations.
 func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) value {
-	nt := value{scalar: appendVia(rhs.scalar, string(cv.Name())), allocs: rhs.allocs, allocOnly: rhs.allocOnly}
-	if nt.isEmpty() {
+	nt := value{
+		scalar: appendVia(rhs.scalar, string(cv.Name())),
+		allocs: rhs.allocs, allocOnly: rhs.allocOnly, scheme: rhs.scheme,
+	}
+	if !storable(nt) {
 		delete(st.env, cv)
 		return value{}
 	}
 	st.env[cv] = nt
 	a.fact()
 	return nt
+}
+
+// storable reports whether a value carries information worth keeping in the
+// environment: taint, an allocation identity, or a definite URL scheme.
+func storable(v value) bool {
+	return len(v.scalar) != 0 || len(v.allocs) != 0 || v.scheme.set
 }
 
 func (a *analysis) analyzeExprStmt(expr js.IExpr, st *state) {
@@ -181,13 +190,13 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 	name := string(cv.Name())
 	var nt value
 	if op == js.EqToken {
-		nt = value{scalar: appendVia(rhs.scalar, name), allocs: rhs.allocs, allocOnly: rhs.allocOnly}
+		nt = value{scalar: appendVia(rhs.scalar, name), allocs: rhs.allocs, allocOnly: rhs.allocOnly, scheme: rhs.scheme}
 	} else {
 		// A compound assignment coerces to a string or number, so the result is a
 		// scalar and carries no allocation identity.
 		nt = value{scalar: appendVia(mergeTaint(old.scalar, rhs.scalar), name)}
 	}
-	if nt.isEmpty() {
+	if !storable(nt) {
 		delete(st.env, cv)
 		return value{}
 	}
@@ -209,6 +218,7 @@ func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) v
 	if be.Op != js.EqToken {
 		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
 	}
+	a.resourceSrcSink(recv, key, writeVal, be, st)
 	a.writeField(st, recv, key, writeVal)
 	return writeVal
 }
@@ -508,7 +518,7 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 	case *js.Var:
 		return st.env[canonicalVar(x)]
 	case *js.LiteralExpr:
-		return value{}
+		return value{scheme: schemeOfLiteral(x)}
 	case *js.DotExpr:
 		if occ, ok := a.sources[expr]; ok {
 			return a.srcValue(occ.id)
@@ -546,7 +556,12 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 				// scalars can flow through.
 				return mergeValue(lx, rx)
 			}
-			return value{scalar: mergeTaint(lx.scalar, rx.scalar)}
+			out := value{scalar: mergeTaint(lx.scalar, rx.scalar)}
+			if x.Op == js.AddToken {
+				// A concatenation's URL scheme is fixed by its leftmost prefix.
+				out.scheme = lx.scheme
+			}
+			return out
 		}
 		return value{}
 	case *js.UnaryExpr:
@@ -675,7 +690,7 @@ func (a *analysis) evalTemplate(x *js.TemplateExpr, st *state) value {
 	for i := range x.List {
 		ts = mergeTaint(ts, a.evalExpr(x.List[i].Expr, st).scalar)
 	}
-	return value{scalar: ts}
+	return value{scalar: ts, scheme: templateScheme(x)}
 }
 
 // evalReadIndexKey evaluates a read index expression, honoring optional-chain
@@ -705,6 +720,9 @@ func (a *analysis) evalNew(x *js.NewExpr, st *state) value {
 	site, ok := a.sites[x]
 	if !ok {
 		return value{}
+	}
+	if v, handled := a.evalNewSink(x, args, site, st); handled {
+		return v
 	}
 	if !isArray {
 		return a.allocate(st, site, a.loopDepth > 0)
