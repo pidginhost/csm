@@ -58,6 +58,7 @@ var hardBlockChecks = map[string]bool{
 	"signature_match_realtime":    true,
 	"yara_match_realtime":         true,
 	"yara_match_scheduled":        true,
+	"js_keylogger_dataflow":       true,
 	"webshell":                    true,
 	"backdoor_binary":             true,
 	"cross_account_malware":       true,

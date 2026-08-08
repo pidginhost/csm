@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pidginhost/csm/internal/jstaint"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -254,6 +256,26 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 			return true, fmt.Sprintf("%d YARA rule match(es)", len(hits)), snap.sha256, nil
 		}
 		return false, "", snap.sha256, nil
+	case "js_keylogger_dataflow":
+		snap, err := readContentSnapshotForReverify(path, info)
+		if err != nil {
+			return false, "", "", fmt.Errorf("cannot read file: %v", err)
+		}
+		rctx, cancel := context.WithTimeout(context.Background(), jsTaintReverifyTimeout)
+		defer cancel()
+		report := runJSTaintAnalysis(rctx, snap.data)
+		switch report.Status {
+		case jstaint.StatusAnalyzed, jstaint.StatusNotCandidate:
+			if len(report.Results) > 0 {
+				return true, fmt.Sprintf("%d keystroke exfiltration flow(s)", report.TotalResults), snap.sha256, nil
+			}
+			return false, "", snap.sha256, nil
+		default:
+			// Fail closed: a coverage-gap status (oversize, parse error,
+			// resource limit, cancellation, panic) must not auto-clear a
+			// still-infected finding as a superseded false positive.
+			return false, "", "", fmt.Errorf("JS taint analysis did not complete: %s", report.Status)
+		}
 	default: // PHP heuristic content family
 		res, currentHash, err := analyzePHPContentForReverify(path, info)
 		if err != nil {
