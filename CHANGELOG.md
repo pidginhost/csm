@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The web UI Blocks table now supports selecting visible rows and unblocking them in one action, with the standard 30-second undo banner.
 - New metric csm_firewall_block_outcome_total{outcome,source} counts every IP block attempt across all sources, so dashboards can prove auto-response is actually landing blocks and spot engine failures.
 - Reputation coverage degradation is now visible as findings: an exhausted AbuseIPDB quota emits reputation_quota_exhausted and threat feeds older than 7 days emit threat_feed_stale, instead of only stderr lines.
+- The scheduled deep scan now feeds a JavaScript keystroke taint analyzer that reports js_keylogger_dataflow when keystroke data flows into a network send, catching keyloggers that launder the value through variables where regex rules cannot follow. It runs on the same file snapshots as the YARA pass but independently of it, keeps its own rolling cursor, and reports files it could not analyze as js_taint_scan_incomplete instead of counting them clean.
 
 ### Fixed
 
