@@ -109,26 +109,39 @@ func (o *object) clone() *object {
 }
 
 // state is the flow-sensitive abstract store at a program point: per-variable
-// values and the heap of allocation contents. Branch forks clone it; merges
-// union it; loop fixed points compare it.
+// values, transient receiver captures, and the heap of allocation contents.
+// Branch forks clone it; merges union it; loop fixed points compare it.
 type state struct {
-	env       map[*js.Var]value
+	env map[*js.Var]value
+	// captures holds transient receivers across computed keys, right-hand sides,
+	// and call arguments. It is part of state so allocation promotion rewrites
+	// captured identities on every branch before the operation uses its receiver.
+	captures  map[js.INode]value
 	heap      map[allocID]*object
 	continues bool
 }
 
 func newState() *state {
-	return &state{env: map[*js.Var]value{}, heap: map[allocID]*object{}, continues: true}
+	return &state{
+		env:       map[*js.Var]value{},
+		captures:  map[js.INode]value{},
+		heap:      map[allocID]*object{},
+		continues: true,
+	}
 }
 
 func (s *state) clone() *state {
 	n := &state{
 		env:       make(map[*js.Var]value, len(s.env)),
+		captures:  make(map[js.INode]value, len(s.captures)),
 		heap:      make(map[allocID]*object, len(s.heap)),
 		continues: s.continues,
 	}
 	for k, v := range s.env {
 		n.env[k] = v
+	}
+	for k, v := range s.captures {
+		n.captures[k] = v
 	}
 	for k, o := range s.heap {
 		n.heap[k] = o.clone()
@@ -142,11 +155,17 @@ func (s *state) replaceWith(src *state) {
 	for k := range s.env {
 		delete(s.env, k)
 	}
+	for k := range s.captures {
+		delete(s.captures, k)
+	}
 	for k := range s.heap {
 		delete(s.heap, k)
 	}
 	for k, v := range src.env {
 		s.env[k] = v
+	}
+	for k, v := range src.captures {
+		s.captures[k] = v
 	}
 	for k, o := range src.heap {
 		s.heap[k] = o
@@ -178,6 +197,14 @@ func mergeValue(a, b value) value {
 		allocOnly: a.allocOnly && b.allocOnly,
 		scheme:    mergeScheme(a.scheme, b.scheme),
 	}
+}
+
+// widenAbsentValue adds an untracked non-allocation alternative to v. A value
+// missing on one path cannot retain a definite allocation or URL scheme.
+func widenAbsentValue(v value) value {
+	v.allocOnly = false
+	v.scheme = schemeState{}
+	return v
 }
 
 // advanceCallValue moves a value across one user-defined call edge. Facts past
@@ -283,7 +310,7 @@ func mergeObject(a, b *object) *object {
 		xhrOpened:   a.xhrOpened || b.xhrOpened,
 		xhrURL:      mergeTaint(a.xhrURL, b.xhrURL),
 		xhrHeader:   mergeTaint(a.xhrHeader, b.xhrHeader),
-		xhrScheme:   mergeScheme(a.xhrScheme, b.xhrScheme),
+		xhrScheme:   mergeXHRScheme(a, b),
 		wsMaybeOpen: a.wsMaybeOpen || b.wsMaybeOpen,
 		wsClosed:    a.wsClosed && b.wsClosed,
 	}
@@ -332,6 +359,20 @@ func mergeObject(a, b *object) *object {
 	return n
 }
 
+// mergeXHRScheme joins only paths with an active request. A path where open has
+// not run cannot contribute a destination scheme because send cannot issue a
+// network request there.
+func mergeXHRScheme(a, b *object) schemeState {
+	switch {
+	case !a.xhrOpened:
+		return b.xhrScheme
+	case !b.xhrOpened:
+		return a.xhrScheme
+	default:
+		return mergeScheme(a.xhrScheme, b.xhrScheme)
+	}
+}
+
 func mergeState(a, b *state) *state {
 	if !a.continues && b.continues {
 		return b.clone()
@@ -341,6 +382,7 @@ func mergeState(a, b *state) *state {
 	}
 	n := &state{
 		env:       make(map[*js.Var]value, len(a.env)+len(b.env)),
+		captures:  make(map[js.INode]value, len(a.captures)+len(b.captures)),
 		heap:      make(map[allocID]*object, len(a.heap)+len(b.heap)),
 		continues: a.continues || b.continues,
 	}
@@ -350,8 +392,7 @@ func mergeState(a, b *state) *state {
 				n.env[k] = merged
 			}
 		} else {
-			v.allocOnly = false
-			v.scheme = schemeState{}
+			v = widenAbsentValue(v)
 			if storable(v) {
 				n.env[k] = v
 			}
@@ -359,11 +400,22 @@ func mergeState(a, b *state) *state {
 	}
 	for k, v := range b.env {
 		if _, ok := a.env[k]; !ok {
-			v.allocOnly = false
-			v.scheme = schemeState{}
+			v = widenAbsentValue(v)
 			if storable(v) {
 				n.env[k] = v
 			}
+		}
+	}
+	for node, v := range a.captures {
+		if bv, ok := b.captures[node]; ok {
+			n.captures[node] = mergeValue(v, bv)
+		} else {
+			n.captures[node] = widenAbsentValue(v)
+		}
+	}
+	for node, v := range b.captures {
+		if _, ok := a.captures[node]; !ok {
+			n.captures[node] = widenAbsentValue(v)
 		}
 	}
 	for k, o := range a.heap {
@@ -423,11 +475,18 @@ func objectEqual(a, b *object) bool {
 }
 
 func stateEqual(a, b *state) bool {
-	if a.continues != b.continues || len(a.env) != len(b.env) || len(a.heap) != len(b.heap) {
+	if a.continues != b.continues || len(a.env) != len(b.env) ||
+		len(a.captures) != len(b.captures) || len(a.heap) != len(b.heap) {
 		return false
 	}
 	for k, va := range a.env {
 		vb, ok := b.env[k]
+		if !ok || !valueEqual(va, vb) {
+			return false
+		}
+	}
+	for node, va := range a.captures {
+		vb, ok := b.captures[node]
 		if !ok || !valueEqual(va, vb) {
 			return false
 		}
