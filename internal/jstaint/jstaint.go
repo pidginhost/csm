@@ -129,7 +129,7 @@ func Analyze(ctx context.Context, src []byte) Report {
 	return analyzeWithPass(ctx, src, taintPass)
 }
 
-type analysisPass func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error)
+type analysisPass func(context.Context, *js.AST, *resourceBudget) (results []Result, total int, truncated bool, err error)
 
 func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report Report) {
 	defer func() {
@@ -159,13 +159,13 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 		return Report{Status: StatusParseError, Reason: parseFailureContext(err)}
 	}
 
-	results, evidenceTruncated, err := pass(ctx, ast, &resourceBudget{})
+	results, total, evidenceTruncated, err := pass(ctx, ast, &resourceBudget{})
 	if err != nil {
 		status := analysisErrorStatus(err)
 		return Report{
 			Status:            status,
 			Results:           results,
-			TotalResults:      len(results),
+			TotalResults:      total,
 			Reason:            analysisErrorReason(status, err),
 			EvidenceTruncated: evidenceTruncated,
 		}
@@ -174,7 +174,7 @@ func analyzeWithPass(ctx context.Context, src []byte, pass analysisPass) (report
 	return Report{
 		Status:            StatusAnalyzed,
 		Results:           results,
-		TotalResults:      len(results),
+		TotalResults:      total,
 		EvidenceTruncated: evidenceTruncated,
 	}
 }

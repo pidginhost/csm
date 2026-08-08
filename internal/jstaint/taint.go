@@ -74,11 +74,11 @@ type analysis struct {
 // taintPass is the production analysis pass wired into Analyze. It first enforces
 // the structural depth, node, and cancellation limits with a bounded walk, then
 // runs the taint analysis on the within-limit tree.
-func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Result, bool, error) {
+func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Result, int, bool, error) {
 	lv := &limitVisitor{ctx: ctx, budget: budget}
 	js.Walk(lv, ast)
 	if lv.err != nil {
-		return nil, false, lv.err
+		return nil, 0, false, lv.err
 	}
 
 	sharedVars := map[*js.Var]bool{}
@@ -107,9 +107,10 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 
 	a.analyzeReachable(ast, roots)
 	if a.err != nil {
-		return nil, false, a.err
+		return nil, 0, false, a.err
 	}
-	return a.sortedResults(), a.truncated, nil
+	results, total, truncated := a.finalizeResults()
+	return results, total, truncated, nil
 }
 
 // analyzeReachable runs the top level once, then every reachable callback root to
