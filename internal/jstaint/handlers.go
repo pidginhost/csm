@@ -9,6 +9,7 @@ type funcInfo struct {
 	params    js.Params
 	body      *js.BlockStmt
 	generator bool
+	async     bool
 }
 
 // handlerSite is one discovered keyboard-event handler registration. eventVar is
@@ -211,7 +212,7 @@ func (c *funcValueCollector) Enter(n js.INode) js.IVisitor {
 	switch e := n.(type) {
 	case *js.FuncDecl:
 		if e.Name != nil {
-			c.bind(e.Name, &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator})
+			c.bind(e.Name, &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator, async: e.Async})
 		}
 	case *js.VarDecl:
 		for i := range e.List {
@@ -255,9 +256,9 @@ func literalFuncValues(expr js.IExpr) []*funcInfo {
 func literalFuncValue(expr js.IExpr) *funcInfo {
 	switch e := expr.(type) {
 	case *js.FuncDecl:
-		return &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator}
+		return &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator, async: e.Async}
 	case *js.ArrowFunc:
-		return &funcInfo{params: e.Params, body: &e.Body}
+		return &funcInfo{params: e.Params, body: &e.Body, async: e.Async}
 	default:
 	}
 	return nil

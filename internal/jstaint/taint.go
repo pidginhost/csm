@@ -37,15 +37,20 @@ type sourceOccurrence struct {
 
 // analysis holds the mutable state for one Analyze call.
 type analysis struct {
-	ctx       context.Context
-	budget    *resourceBudget
-	sources   map[js.IExpr]sourceOccurrence
-	sites     map[js.INode]int
-	display   map[int]string
-	results   map[flowKey]Result
-	loopDepth int
-	truncated bool
-	err       error
+	ctx        context.Context
+	budget     *resourceBudget
+	sources    map[js.IExpr]sourceOccurrence
+	sites      map[js.INode]int
+	funcs      map[*js.Var][]*funcInfo
+	sharedVars map[*js.Var]bool
+	inProgress map[*funcInfo]bool
+	retStack   []value
+	display    map[int]string
+	results    map[flowKey]Result
+	loopDepth  int
+	callDepth  int
+	truncated  bool
+	err        error
 }
 
 // taintPass is the production analysis pass wired into Analyze. It first enforces
@@ -67,35 +72,76 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 	}
 
 	sources, display := numberSources(ast, eventVars)
+	sharedVars := map[*js.Var]bool{}
+	for _, v := range ast.Declared {
+		sharedVars[canonicalVar(v)] = true
+	}
 	a := &analysis{
-		ctx:     ctx,
-		budget:  budget,
-		sources: sources,
-		sites:   numberAllocSites(ast),
-		display: display,
-		results: map[flowKey]Result{},
+		ctx:        ctx,
+		budget:     budget,
+		sources:    sources,
+		sites:      numberAllocSites(ast),
+		funcs:      collectFuncValues(ast),
+		sharedVars: sharedVars,
+		inProgress: map[*funcInfo]bool{},
+		display:    display,
+		results:    map[flowKey]Result{},
 	}
 
-	for _, h := range handlers {
-		if !a.alive() {
-			return nil, false, a.err
-		}
-		if h.eventVar == nil {
-			continue
-		}
-		st := newState()
-		// Browser keyboard handlers receive exactly the event argument. Defaults on
-		// later parameters therefore execute before the body.
-		for i := 1; i < len(h.fn.params.List); i++ {
-			a.analyzeBinding(&h.fn.params.List[i], st, true)
-		}
-		a.analyzeBlock(h.fn.body, st)
-		if a.err != nil {
-			return nil, false, a.err
-		}
+	a.analyzeReachable(ast)
+	if a.err != nil {
+		return nil, false, a.err
 	}
-
 	return a.sortedResults(), a.truncated, nil
+}
+
+// analyzeReachable runs the top level once, then every reachable callback root to
+// a fixed point over the file-scope may-state that callbacks publish to and read
+// from one another.
+func (a *analysis) analyzeReachable(ast *js.AST) {
+	roots := a.discoverReachableRoots(ast)
+
+	// The top level runs once with a clean published state, so a request that runs
+	// before any event cannot observe a taint a later handler produces.
+	top := newState()
+	a.analyzeBlock(&ast.BlockStmt, top)
+	if !a.alive() {
+		return
+	}
+	global := a.sharedState(top)
+
+	for a.alive() {
+		changed := false
+		for i := range roots {
+			st := global.clone()
+			a.bindRootParams(roots[i], st)
+			a.analyzeBlock(roots[i].fn.body, st)
+			if !a.alive() {
+				return
+			}
+			next := a.publishShared(global, st)
+			if !stateEqual(next, global) {
+				global = next
+				changed = true
+			}
+		}
+		if !changed || !a.fact() {
+			return
+		}
+	}
+}
+
+// bindRootParams binds a callback's parameters before its body. A keyboard
+// handler's first parameter is the event object whose keystroke reads are the
+// numbered sources, so only its later parameters are bound here.
+func (a *analysis) bindRootParams(r rootSite, st *state) {
+	start := 0
+	if r.eventVar != nil {
+		start = 1
+	}
+	for i := start; i < len(r.fn.params.List); i++ {
+		a.analyzeBinding(&r.fn.params.List[i], st, true)
+	}
 }
 
 // sortedResults returns the recorded flows in deterministic content order.
