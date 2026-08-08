@@ -223,6 +223,15 @@ func TestChallengeRoute_ScannerProfileBlockActionSkipsChallenge(t *testing.T) {
 	}
 }
 
+func TestChallengeRoute_JSKeyloggerIsHardBlocked(t *testing.T) {
+	if isChallengeableCheck("js_keylogger_dataflow") {
+		t.Error("js_keylogger_dataflow must not be challenge-routed (hard-block only)")
+	}
+	if !isHardBlockCheck("js_keylogger_dataflow") {
+		t.Error("js_keylogger_dataflow must be in hardBlockChecks")
+	}
+}
+
 func TestChallengeRoute_ScannerProfileNotHardBlocked(t *testing.T) {
 	if isHardBlockCheck("http_scanner_profile") {
 		t.Error("http_scanner_profile must not be in hardBlockChecks")
