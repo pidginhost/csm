@@ -17,6 +17,7 @@ const (
 func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	callee := ungroupExpr(call.X)
 	recv := a.evalCallCallee(callee, st)
+	st.captures[call] = recv
 	isFetch := a.isGlobalCallee(callee, "fetch")
 	isBeacon := a.isBeaconCallee(callee)
 
@@ -36,6 +37,8 @@ func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	if argsMayBeSkipped {
 		st.replaceWith(mergeState(st, argsSt))
 	}
+	recv = st.captures[call]
+	delete(st.captures, call)
 
 	a.checkCallSink(call, args, isFetch, isBeacon)
 	if a.xhrOrWSMethod(call, recv, args, st) {
@@ -73,6 +76,7 @@ func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 		return a.evalExpr(c.X, st)
 	case *js.IndexExpr:
 		recv := a.evalExpr(c.X, st)
+		st.captures[c] = recv
 		if c.Optional || optionalChainMaySkip(c.X) {
 			skipped := st.clone()
 			taken := st.clone()
@@ -81,6 +85,8 @@ func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 		} else {
 			a.evalExpr(c.Y, st)
 		}
+		recv = st.captures[c]
+		delete(st.captures, c)
 		return recv
 	default:
 		a.evalExpr(callee, st)

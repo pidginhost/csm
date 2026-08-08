@@ -70,6 +70,12 @@ func rewriteAlloc(st *state, from, to allocID) {
 			st.env[k] = v
 		}
 	}
+	for node, v := range st.captures {
+		if hasAllocID(v.allocs, from) {
+			v.allocs = replaceAlloc(v.allocs, from, to)
+			st.captures[node] = v
+		}
+	}
 	for _, o := range st.heap {
 		for fk, fv := range o.fields {
 			if hasAllocID(fv.allocs, from) {
@@ -103,10 +109,8 @@ func replaceAlloc(s allocSet, from, to allocID) allocSet {
 }
 
 func valueCarriesDepthZero(st *state, v value) bool {
-	for fact := range v.scalar {
-		if fact.callDepth == 0 {
-			return true
-		}
+	if taintCarriesDepthZero(v.scalar) {
+		return true
 	}
 	seen := map[allocRef]bool{}
 	stack := make([]allocRef, 0, len(v.allocs))
@@ -150,9 +154,22 @@ func valueCarriesDepthZero(st *state, v value) bool {
 	return false
 }
 
-// resetAllocRefDepth records that an allocation now carries a fact created on
-// the current root path. Existing field facts retain their own depth, but aliases
-// must no longer impose an older return-path barrier on the new write.
+func taintCarriesDepth(ts taintSet, depth int) bool {
+	for fact := range ts {
+		if int(fact.callDepth) == depth {
+			return true
+		}
+	}
+	return false
+}
+
+func taintCarriesDepthZero(ts taintSet) bool {
+	return taintCarriesDepth(ts, 0)
+}
+
+// resetAllocRefDepth records that an allocation now carries a fact created in
+// the current invocation. Existing field facts retain their own depth, but
+// aliases must no longer impose an older return-path barrier on the new write.
 func resetAllocRefDepth(st *state, ids map[allocID]bool) {
 	reset := func(v value) value {
 		if len(v.allocs) == 0 {
@@ -171,6 +188,9 @@ func resetAllocRefDepth(st *state, ids map[allocID]bool) {
 	}
 	for cv, v := range st.env {
 		st.env[cv] = reset(v)
+	}
+	for node, v := range st.captures {
+		st.captures[node] = reset(v)
 	}
 	for _, o := range st.heap {
 		for name, v := range o.fields {
@@ -208,7 +228,7 @@ func allocsConstrained(s allocSet) bool {
 // elements and wildcard writes stay weak because they can represent many keys.
 func (a *analysis) writeField(st *state, recv value, key fieldKey, rhs value) {
 	ids := uniqueAllocIDs(recv.allocs)
-	strong := len(ids) == 1 && soleCurrent(recv.allocs)
+	strong := recv.allocOnly && len(ids) == 1 && soleCurrent(recv.allocs)
 	for id := range ids {
 		o := st.heap[id]
 		if o == nil {

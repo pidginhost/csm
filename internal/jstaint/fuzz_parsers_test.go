@@ -41,6 +41,47 @@ func FuzzLiteralText(f *testing.F) {
 	})
 }
 
+func FuzzSchemeOfBytes(f *testing.F) {
+	for _, seed := range [][]byte{
+		[]byte("data:text/plain,x"),
+		[]byte("JAVASCRIPT:alert(1)"),
+		[]byte("https://example.invalid/"),
+		[]byte("1data:x"),
+		[]byte("relative/path"),
+		{},
+	} {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got := schemeOfBytes(data)
+		if again := schemeOfBytes(data); got != again {
+			t.Fatalf("scheme parsing is nondeterministic: first %+v, second %+v", got, again)
+		}
+		if !got.set {
+			return
+		}
+		if got.name == "" {
+			t.Fatal("set scheme has an empty name")
+		}
+		if !isASCIILetter(got.name[0]) {
+			t.Fatalf("scheme name %q does not start with an ASCII letter", got.name)
+		}
+		if len(data) <= len(got.name) || data[len(got.name)] != ':' {
+			t.Fatalf("scheme name %q does not precede a colon in %q", got.name, data)
+		}
+		for i := range got.name {
+			c := got.name[i]
+			if !isSchemeChar(c) || (c >= 'A' && c <= 'Z') {
+				t.Fatalf("scheme name %q contains invalid normalized byte %q", got.name, c)
+			}
+			if c != asciiLower(data[i]) {
+				t.Fatalf("scheme name %q does not match input prefix %q", got.name, data[:len(got.name)])
+			}
+		}
+	})
+}
+
 func FuzzDiscoverHandlers(f *testing.F) {
 	seeds := []string{
 		`document.onkeydown=(function(e){e.key;});`,

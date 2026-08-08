@@ -350,6 +350,20 @@ func (a *analysis) sharedState(src *state) *state {
 func (a *analysis) publishShared(global, src *state) *state {
 	out := global.clone()
 	var roots []value
+	for cv, v := range out.env {
+		if !a.isShared(cv) {
+			continue
+		}
+		if _, ok := src.env[cv]; ok {
+			continue
+		}
+		v = widenAbsentValue(v)
+		if storable(v) {
+			out.env[cv] = v
+		} else {
+			delete(out.env, cv)
+		}
+	}
 	for cv, v := range src.env {
 		if !a.isShared(cv) {
 			continue
@@ -362,7 +376,10 @@ func (a *analysis) publishShared(global, src *state) *state {
 				delete(out.env, cv)
 			}
 		} else {
-			out.env[cv] = v
+			v = widenAbsentValue(v)
+			if storable(v) {
+				out.env[cv] = v
+			}
 		}
 		roots = append(roots, v)
 	}
@@ -448,19 +465,23 @@ func (a *analysis) evalUserCall(callee js.IExpr, args []value, st *state) (value
 		return value{}, false
 	}
 	var ret value
+	haveRet := false
 	handled := false
+	unmodeledAlternative := false
 	base := st.clone()
 	effects := base.clone()
 	for _, fn := range fns {
 		if fn.generator || fn.body == nil || a.inProgress[fn] {
+			unmodeledAlternative = true
 			continue
 		}
 		handled = true
 		branch := base.clone()
 		branchRet := a.analyzeCallee(fn, args, branch)
-		if !fn.async {
-			ret = mergeValue(ret, branchRet)
+		if fn.async {
+			branchRet = value{}
 		}
+		ret, haveRet = mergePresentValue(ret, haveRet, branchRet)
 		effects = mergeState(effects, branch)
 		if !a.alive() {
 			break
@@ -468,7 +489,13 @@ func (a *analysis) evalUserCall(callee js.IExpr, args []value, st *state) (value
 	}
 	if handled {
 		st.replaceWith(effects)
+		if unmodeledAlternative {
+			ret = mergeValue(ret, value{})
+		}
 	}
+	// A user call is not a scheme-preserving operation. Receiver allocations and
+	// scalar taint return, but destination classification becomes unknown.
+	ret.scheme = schemeState{}
 	return ret, handled
 }
 
@@ -492,10 +519,13 @@ func (a *analysis) analyzeCallee(fn *funcInfo, args []value, st *state) value {
 	exits := a.popReturnExits(sub)
 	a.retStack = a.retStack[:len(a.retStack)-1]
 	var ret value
+	haveRet := false
 	for i := range exits {
+		var exitRet value
 		if exits[i].returned {
-			ret = mergeValue(ret, exits[i].ret)
+			exitRet = exits[i].ret
 		}
+		ret, haveRet = mergePresentValue(ret, haveRet, exitRet)
 	}
 
 	// The callee shares the caller's heap identities, so its object mutations and

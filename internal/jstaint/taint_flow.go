@@ -210,6 +210,7 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 
 func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) value {
 	recv, key := a.evalMemberTarget(target, st)
+	st.captures[be] = recv
 	var old value
 	if be.Op != js.EqToken {
 		// Compound assignment captures the current property value before the RHS
@@ -217,6 +218,8 @@ func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) v
 		old = a.readField(st, recv, key)
 	}
 	rhs := a.evalExpr(be.Y, st)
+	recv = st.captures[be]
+	delete(st.captures, be)
 	writeVal := rhs
 	if be.Op != js.EqToken {
 		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
@@ -243,13 +246,18 @@ func (a *analysis) handleLogicalAssign(be *js.BinaryExpr, target js.IExpr, st *s
 		return st.env[cv]
 	default:
 		recv, key := a.evalMemberTarget(target, st)
+		st.captures[be] = recv
 		skipped := st.clone()
 		taken := st.clone()
 		rhs := a.evalExpr(be.Y, taken)
-		a.resourceSrcSink(recv, key, rhs, be, taken)
-		a.writeField(taken, recv, key, rhs)
+		takenRecv := taken.captures[be]
+		resultRecv := mergeValue(skipped.captures[be], takenRecv)
+		delete(taken.captures, be)
+		delete(skipped.captures, be)
+		a.resourceSrcSink(takenRecv, key, rhs, be, taken)
+		a.writeField(taken, takenRecv, key, rhs)
 		st.replaceWith(mergeState(skipped, taken))
-		return a.readField(st, recv, key)
+		return a.readField(st, resultRecv, key)
 	}
 }
 
@@ -262,7 +270,10 @@ func (a *analysis) evalMemberTarget(target js.IExpr, st *state) (value, fieldKey
 		return recv, fieldKeyOf(ungroupExpr(t.Y))
 	case *js.IndexExpr:
 		recv := a.evalExpr(t.X, st)
+		st.captures[t] = recv
 		a.evalExpr(t.Y, st)
+		recv = st.captures[t]
+		delete(st.captures, t)
 		return recv, fieldKeyOf(ungroupExpr(t.Y))
 	}
 	return value{}, fieldKey{}
@@ -542,7 +553,10 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 			return a.srcValue(occ.id)
 		}
 		base := a.evalExpr(x.X, st)
+		st.captures[x] = base
 		key := a.evalReadIndexKey(x, st)
+		base = st.captures[x]
+		delete(st.captures, x)
 		return a.readField(st, base, key)
 	case *js.BinaryExpr:
 		if isAssignOp(x.Op) {
@@ -561,8 +575,11 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		if binaryOpPropagates(x.Op) {
 			if isLogicalOp(x.Op) {
 				// ||, &&, and ?? return one operand value, so both allocations and
-				// scalars can flow through.
-				return mergeValue(lx, rx)
+				// scalars can flow through. The operator itself is not one of the
+				// scheme-preserving forms, so destination classification is reset.
+				out := mergeValue(lx, rx)
+				out.scheme = schemeState{}
+				return out
 			}
 			out := value{scalar: mergeTaint(lx.scalar, rx.scalar)}
 			if x.Op == js.AddToken {
@@ -589,6 +606,7 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		for i := range x.List {
 			last = a.evalExpr(x.List[i], st)
 		}
+		last.scheme = schemeState{}
 		return last
 	case *js.CallExpr:
 		return a.evalCall(x, st)
@@ -623,6 +641,7 @@ func (a *analysis) evalUnary(x *js.UnaryExpr, st *state) value {
 		if a.suspensions != nil {
 			a.suspensions = append(a.suspensions, st.clone())
 		}
+		xt.scheme = schemeState{}
 		return xt
 	}
 	if unaryOpPropagates(x.Op) {

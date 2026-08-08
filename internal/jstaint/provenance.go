@@ -155,11 +155,13 @@ func resourceElementTag(name string) bool {
 	}
 }
 
-// allocateKinded installs a fresh platform-object allocation of the given kind.
+// allocateKinded installs a fresh current platform-object allocation. Recency is
+// retained inside loops because constructor-local protocol state must not inherit
+// from older instances; promoteCurrent still bounds each site to two identities.
 func (a *analysis) allocateKinded(st *state, site int, kind objectKind) value {
 	a.promoteCurrent(st, site)
 	fresh := &object{kind: kind}
-	return a.installLiteral(st, site, a.loopDepth > 0, fresh)
+	return a.installLiteral(st, site, false, fresh)
 }
 
 // evalNewSink handles new-expression receivers with network provenance. It
@@ -233,13 +235,13 @@ func (a *analysis) xhrOrWSMethod(call *js.CallExpr, recv value, args []value, st
 	if len(ids) == 0 {
 		return false
 	}
-	strong := len(uniqueAllocIDs(recv.allocs)) == 1 && soleCurrent(recv.allocs)
+	strong := recv.allocOnly && len(uniqueAllocIDs(recv.allocs)) == 1 && soleCurrent(recv.allocs)
 	handled := false
 	for id := range ids {
 		o := st.heap[id]
 		switch o.kind {
 		case kindXHR:
-			handled = a.applyXHRMethod(o, prop, call, args, strong && !id.summary) || handled
+			handled = a.applyXHRMethod(st, o, prop, call, args, recv, id, strong && !id.summary) || handled
 		case kindWebSocket:
 			handled = a.applyWSMethod(o, prop, call, args, strong && !id.summary) || handled
 		}
@@ -264,34 +266,50 @@ func xhrWSTargets(st *state, recv value) map[allocID]bool {
 	return ids
 }
 
-func (a *analysis) applyXHRMethod(o *object, prop string, call *js.CallExpr, args []value, strong bool) bool {
+func (a *analysis) applyXHRMethod(
+	st *state,
+	o *object,
+	prop string,
+	call *js.CallExpr,
+	args []value,
+	recv value,
+	id allocID,
+	strong bool,
+) bool {
 	switch prop {
 	case "open":
 		if len(args) < 2 {
 			return true
 		}
+		wasOpened := o.xhrOpened
 		// A later open reinitializes the request. Only a lone current receiver can
 		// prove the reset clears an earlier path's remembered URL and headers.
 		o.xhrOpened = true
-		if strong {
+		switch {
+		case strong:
 			o.xhrURL = argScalar(args, 1)
 			o.xhrHeader = nil
 			o.xhrScheme = args[1].scheme
-		} else {
+		case !wasOpened:
+			o.xhrURL = argScalar(args, 1)
+			o.xhrScheme = args[1].scheme
+		default:
 			o.xhrURL = mergeTaint(o.xhrURL, argScalar(args, 1))
 			o.xhrScheme = mergeScheme(o.xhrScheme, args[1].scheme)
 		}
+		a.resetReceiverDepth(st, id, argScalar(args, 1))
 		return true
 	case "setRequestHeader":
 		if o.xhrOpened {
 			o.xhrHeader = mergeTaint(o.xhrHeader, argScalar(args, 1))
+			a.resetReceiverDepth(st, id, argScalar(args, 1))
 		}
 		return true
 	case "send":
 		if o.xhrOpened && !o.xhrScheme.isNonNetwork() {
 			a.record(argScalar(args, 0), call, 0, sinkXHRBody)
-			a.record(o.xhrURL, call, 1, sinkXHRURL)
-			a.record(o.xhrHeader, call, 2, sinkXHRHeader)
+			a.record(receiverTaint(recv, id, o.xhrURL), call, 1, sinkXHRURL)
+			a.record(receiverTaint(recv, id, o.xhrHeader), call, 2, sinkXHRHeader)
 		}
 		return true
 	case "abort":
@@ -304,6 +322,24 @@ func (a *analysis) applyXHRMethod(o *object, prop string, call *js.CallExpr, arg
 		return true
 	}
 	return false
+}
+
+func (a *analysis) resetReceiverDepth(st *state, id allocID, ts taintSet) {
+	if taintCarriesDepth(ts, a.callDepth) {
+		resetAllocRefDepth(st, map[allocID]bool{id: true})
+	}
+}
+
+// receiverTaint applies every call-depth constraint carried by receiver aliases
+// to state stored on one allocation.
+func receiverTaint(recv value, id allocID, ts taintSet) taintSet {
+	var out taintSet
+	for ref := range recv.allocs {
+		if ref.id == id {
+			out = mergeTaint(out, applyTaintDepth(ts, ref.minDepth, ref.advance))
+		}
+	}
+	return out
 }
 
 func (a *analysis) applyWSMethod(o *object, prop string, call *js.CallExpr, args []value, strong bool) bool {
