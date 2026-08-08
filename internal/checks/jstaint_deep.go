@@ -106,6 +106,35 @@ func (g *jsTaintGapCollector) finding() alert.Finding {
 	}
 }
 
+// carryForwardJSTaintFindings keeps at most one prior state finding for each
+// path the current full cycle could not analyze. Partial rolling windows can
+// leave more than one historical variant at a path because their owner is not
+// purgeable; the most recently observed variant is the one that represents
+// current state when a later full cycle hits a path-specific gap.
+func carryForwardJSTaintFindings(prior []alert.Finding, gaps *jsTaintGapCollector) []alert.Finding {
+	byPath := make(map[string]alert.Finding)
+	for _, finding := range prior {
+		if finding.Check != "js_keylogger_dataflow" || !gaps.hasPath(finding.FilePath) {
+			continue
+		}
+		current, exists := byPath[finding.FilePath]
+		if !exists || finding.Timestamp.After(current.Timestamp) ||
+			(finding.Timestamp.Equal(current.Timestamp) && finding.Key() < current.Key()) {
+			byPath[finding.FilePath] = finding
+		}
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	carried := make([]alert.Finding, 0, len(paths))
+	for _, path := range paths {
+		carried = append(carried, byPath[path])
+	}
+	return carried
+}
+
 // analyzeJSTaintSnapshot runs the JS consumer on one complete in-memory
 // snapshot and converts the result into at most one finding. A non-completed
 // status is recorded as a known-path coverage gap, never as a clean file.
