@@ -112,12 +112,22 @@ func asciiFoldString(b []byte) string {
 }
 
 // templateScheme reads the definite scheme from a template literal's leading
-// cooked text, before any substitution can change the prefix.
-func templateScheme(x *js.TemplateExpr) schemeState {
-	if x.Tag != nil || len(x.List) == 0 {
+// text, or from its first substitution when no literal prefix precedes it.
+func templateScheme(x *js.TemplateExpr, first schemeState) schemeState {
+	if x.Tag != nil {
 		return schemeState{}
 	}
-	return schemeOfBytes(templateCooked(x.List[0].Value))
+	if len(x.List) == 0 {
+		return schemeOfBytes(templateCooked(x.Tail))
+	}
+	leading := templateCooked(x.List[0].Value)
+	if scheme := schemeOfBytes(leading); scheme.set {
+		return scheme
+	}
+	if len(leading) == 0 {
+		return first
+	}
+	return schemeState{}
 }
 
 // templateCooked strips the surrounding backtick or `}`/`${` delimiters from a
@@ -162,8 +172,12 @@ func (a *analysis) evalNewSink(x *js.NewExpr, args []value, site int, st *state)
 	case a.isGlobalCallee(x.X, "Image"):
 		return a.allocateKinded(st, site, kindResource), true
 	case a.isGlobalCallee(x.X, "WebSocket"):
-		if len(args) >= 1 {
-			a.recordURL(args[0], x, 0, sinkWSURL)
+		if len(args) == 0 {
+			return value{}, true
+		}
+		a.recordURL(args[0], x, 0, sinkWSURL)
+		if args[0].scheme.isNonNetwork() {
+			return value{}, true
 		}
 		if len(args) >= 2 {
 			a.record(argScalar(args, 1), x, 1, sinkWSProtocol)
@@ -219,7 +233,7 @@ func (a *analysis) xhrOrWSMethod(call *js.CallExpr, recv value, args []value, st
 	if len(ids) == 0 {
 		return false
 	}
-	strong := len(ids) == 1 && soleCurrent(recv.allocs)
+	strong := len(uniqueAllocIDs(recv.allocs)) == 1 && soleCurrent(recv.allocs)
 	handled := false
 	for id := range ids {
 		o := st.heap[id]
@@ -253,14 +267,19 @@ func xhrWSTargets(st *state, recv value) map[allocID]bool {
 func (a *analysis) applyXHRMethod(o *object, prop string, call *js.CallExpr, args []value, strong bool) bool {
 	switch prop {
 	case "open":
+		if len(args) < 2 {
+			return true
+		}
 		// A later open reinitializes the request. Only a lone current receiver can
 		// prove the reset clears an earlier path's remembered URL and headers.
 		o.xhrOpened = true
 		if strong {
 			o.xhrURL = argScalar(args, 1)
 			o.xhrHeader = nil
+			o.xhrScheme = args[1].scheme
 		} else {
 			o.xhrURL = mergeTaint(o.xhrURL, argScalar(args, 1))
+			o.xhrScheme = mergeScheme(o.xhrScheme, args[1].scheme)
 		}
 		return true
 	case "setRequestHeader":
@@ -269,7 +288,7 @@ func (a *analysis) applyXHRMethod(o *object, prop string, call *js.CallExpr, arg
 		}
 		return true
 	case "send":
-		if o.xhrOpened {
+		if o.xhrOpened && !o.xhrScheme.isNonNetwork() {
 			a.record(argScalar(args, 0), call, 0, sinkXHRBody)
 			a.record(o.xhrURL, call, 1, sinkXHRURL)
 			a.record(o.xhrHeader, call, 2, sinkXHRHeader)
@@ -280,6 +299,7 @@ func (a *analysis) applyXHRMethod(o *object, prop string, call *js.CallExpr, arg
 			o.xhrOpened = false
 			o.xhrURL = nil
 			o.xhrHeader = nil
+			o.xhrScheme = schemeState{}
 		}
 		return true
 	}

@@ -66,32 +66,25 @@ func (a *analysis) promoteCurrent(st *state, site int) {
 func rewriteAlloc(st *state, from, to allocID) {
 	for k, v := range st.env {
 		if hasAllocID(v.allocs, from) {
-			st.env[k] = value{scalar: v.scalar, allocs: replaceAlloc(v.allocs, from, to), allocOnly: v.allocOnly}
+			v.allocs = replaceAlloc(v.allocs, from, to)
+			st.env[k] = v
 		}
 	}
 	for _, o := range st.heap {
 		for fk, fv := range o.fields {
 			if hasAllocID(fv.allocs, from) {
-				o.fields[fk] = value{
-					scalar: fv.scalar, allocs: replaceAlloc(fv.allocs, from, to), allocOnly: fv.allocOnly,
-				}
+				fv.allocs = replaceAlloc(fv.allocs, from, to)
+				o.fields[fk] = fv
 			}
 		}
 		if hasAllocID(o.wild.allocs, from) {
-			o.wild = value{
-				scalar: o.wild.scalar, allocs: replaceAlloc(o.wild.allocs, from, to), allocOnly: o.wild.allocOnly,
-			}
+			o.wild.allocs = replaceAlloc(o.wild.allocs, from, to)
 		}
 		if hasAllocID(o.wildReq.allocs, from) {
-			o.wildReq = value{
-				scalar: o.wildReq.scalar, allocs: replaceAlloc(o.wildReq.allocs, from, to),
-				allocOnly: o.wildReq.allocOnly,
-			}
+			o.wildReq.allocs = replaceAlloc(o.wildReq.allocs, from, to)
 		}
 		if hasAllocID(o.elem.allocs, from) {
-			o.elem = value{
-				scalar: o.elem.scalar, allocs: replaceAlloc(o.elem.allocs, from, to), allocOnly: o.elem.allocOnly,
-			}
+			o.elem.allocs = replaceAlloc(o.elem.allocs, from, to)
 		}
 	}
 }
@@ -291,10 +284,12 @@ func (a *analysis) readField(st *state, recv value, key fieldKey) value {
 	var out value
 	have := false
 	definiteAlloc := recv.allocOnly && len(recv.allocs) != 0
+	definiteField := definiteAlloc
 	for ref := range recv.allocs {
 		o := st.heap[ref.id]
 		if o == nil {
 			definiteAlloc = false
+			definiteField = false
 			continue
 		}
 		fv, definite := getField(o, key)
@@ -303,11 +298,17 @@ func (a *analysis) readField(st *state, recv value, key fieldKey) value {
 		if !definite || !fv.allocOnly {
 			definiteAlloc = false
 		}
+		if !definite {
+			definiteField = false
+		}
 	}
 	if !have {
 		return value{}
 	}
 	out.allocOnly = definiteAlloc
+	if !definiteField {
+		out.scheme = schemeState{}
+	}
 	return out
 }
 
@@ -559,8 +560,9 @@ func (a *analysis) serializeArray(st *state, v value) taintSet {
 	return out
 }
 
-// numberAllocSites assigns a deterministic site id to every object, array, and
-// new expression in source order. The ids drive the two-class recency model.
+// numberAllocSites assigns a deterministic site id to every object, array, new
+// expression, and modeled createElement call in source order. The ids drive the
+// two-class recency model.
 func numberAllocSites(ast *js.AST) map[js.INode]int {
 	n := &siteNumberer{sites: map[js.INode]int{}}
 	js.Walk(n, ast)
