@@ -46,15 +46,20 @@ func resolvesToEventBase(base js.IExpr, eventVar *js.Var) bool {
 	if eventVar == nil {
 		return false
 	}
-	eventVar = canonicalVar(eventVar)
+	return eventBaseVar(base) == canonicalVar(eventVar)
+}
+
+// eventBaseVar returns the canonical event-variable candidate at the root of a
+// supported wrapper chain.
+func eventBaseVar(base js.IExpr) *js.Var {
 	for {
 		base = ungroupExpr(base)
 		if v, ok := base.(*js.Var); ok {
-			return canonicalVar(v) == eventVar
+			return canonicalVar(v)
 		}
 		name, inner, ok := memberAccessBytes(base)
 		if !ok || !isEventWrapperProp(name) {
-			return false
+			return nil
 		}
 		base = inner
 	}
@@ -134,11 +139,11 @@ func binaryOpPropagates(op js.TokenType) bool {
 }
 
 // unaryOpPropagates reports whether a unary operator's result carries taint.
-// !, typeof, void, and delete are barriers; +, -, ~, and increment/decrement
-// keep a value derived from the operand.
+// !, typeof, void, and delete are barriers; +, -, ~, increment/decrement, and
+// await keep a value derived from the operand.
 func unaryOpPropagates(op js.TokenType) bool {
 	switch op {
-	case js.PosToken, js.NegToken, js.BitNotToken,
+	case js.PosToken, js.NegToken, js.BitNotToken, js.AwaitToken,
 		js.PreIncrToken, js.PreDecrToken, js.PostIncrToken, js.PostDecrToken:
 		return true
 	default:

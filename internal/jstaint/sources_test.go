@@ -121,7 +121,7 @@ func TestBinaryOpPropagates(t *testing.T) {
 }
 
 func TestUnaryOpPropagates(t *testing.T) {
-	for _, op := range []js.TokenType{js.PosToken, js.NegToken, js.BitNotToken,
+	for _, op := range []js.TokenType{js.PosToken, js.NegToken, js.BitNotToken, js.AwaitToken,
 		js.PreIncrToken, js.PreDecrToken, js.PostIncrToken, js.PostDecrToken} {
 		if !unaryOpPropagates(op) {
 			t.Errorf("unaryOpPropagates(%s) = false, want true", op)

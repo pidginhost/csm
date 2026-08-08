@@ -248,7 +248,7 @@ type limitVisitor struct {
 	err    error
 }
 
-func (v *limitVisitor) Enter(js.INode) js.IVisitor {
+func (v *limitVisitor) Enter(node js.INode) js.IVisitor {
 	if v.err != nil {
 		return nil
 	}
@@ -265,8 +265,10 @@ func (v *limitVisitor) Enter(js.INode) js.IVisitor {
 	v.budget.nodes++
 	if v.budget.nodes > maxASTNodes {
 		v.err = errNodeLimit
+		v.budget.leaveAST()
 		return nil
 	}
+	walkComputedClassName(v, node)
 	return v
 }
 

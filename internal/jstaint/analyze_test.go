@@ -195,6 +195,19 @@ func TestAnalyze_AnalyzerRecursionLimit(t *testing.T) {
 	}
 }
 
+func TestAnalyze_AnalyzerNodeLimit(t *testing.T) {
+	// Each array entry contributes an Element and LiteralExpr node, so this stays
+	// well below the byte limit while crossing the independent AST node ceiling.
+	src := []byte(`var values=[` + strings.Repeat("0,", maxASTNodes/2+1) + `];/* keydown fetch */`)
+	if len(src) > MaxSourceBytes {
+		t.Fatalf("fixture is %d bytes, want at most %d", len(src), MaxSourceBytes)
+	}
+	got := Analyze(context.Background(), src)
+	if got.Status != StatusResourceLimit {
+		t.Fatalf("Status = %v (%s), want StatusResourceLimit", got.Status, got.Reason)
+	}
+}
+
 func TestAnalyze_ParserDepthLimitDoesNotCrash(t *testing.T) {
 	if os.Getenv("CSM_JSTAINT_DEPTH_CHILD") == "1" {
 		got := Analyze(context.Background(), nestedUnaryCandidate(1100))

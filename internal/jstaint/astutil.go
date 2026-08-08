@@ -14,6 +14,18 @@ func canonicalVar(v *js.Var) *js.Var {
 	return v
 }
 
+// tdewolff's walker reaches ClassElementName but does not descend into its
+// computed expression. Walk it explicitly so limits and semantic visitors see
+// code that JavaScript executes while defining a class.
+func walkComputedClassName(v js.IVisitor, node js.INode) bool {
+	name, ok := node.(*js.ClassElementName)
+	if !ok {
+		return false
+	}
+	js.Walk(v, name.Computed)
+	return true
+}
+
 // staticStringOrIdent returns the literal identifier or string value of expr, if
 // expr is a literal. It accepts both concrete literal forms the AST uses: a
 // DotExpr member name arrives as a LiteralExpr value, while a bracket index or
