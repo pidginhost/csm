@@ -68,6 +68,7 @@ type object struct {
 	xhrOpened bool
 	xhrURL    taintSet
 	xhrHeader taintSet
+	xhrScheme schemeState
 	// WebSocket path state: possibly open once a later callback can observe it,
 	// definitely closed only when closed on every merged path.
 	wsMaybeOpen bool
@@ -88,6 +89,7 @@ func (o *object) clone() *object {
 		xhrOpened:   o.xhrOpened,
 		xhrURL:      o.xhrURL,
 		xhrHeader:   o.xhrHeader,
+		xhrScheme:   o.xhrScheme,
 		wsMaybeOpen: o.wsMaybeOpen,
 		wsClosed:    o.wsClosed,
 	}
@@ -281,6 +283,7 @@ func mergeObject(a, b *object) *object {
 		xhrOpened:   a.xhrOpened || b.xhrOpened,
 		xhrURL:      mergeTaint(a.xhrURL, b.xhrURL),
 		xhrHeader:   mergeTaint(a.xhrHeader, b.xhrHeader),
+		xhrScheme:   mergeScheme(a.xhrScheme, b.xhrScheme),
 		wsMaybeOpen: a.wsMaybeOpen || b.wsMaybeOpen,
 		wsClosed:    a.wsClosed && b.wsClosed,
 	}
@@ -343,16 +346,24 @@ func mergeState(a, b *state) *state {
 	}
 	for k, v := range a.env {
 		if bv, ok := b.env[k]; ok {
-			n.env[k] = mergeValue(v, bv)
+			if merged := mergeValue(v, bv); storable(merged) {
+				n.env[k] = merged
+			}
 		} else {
 			v.allocOnly = false
-			n.env[k] = v
+			v.scheme = schemeState{}
+			if storable(v) {
+				n.env[k] = v
+			}
 		}
 	}
 	for k, v := range b.env {
-		if _, ok := n.env[k]; !ok {
+		if _, ok := a.env[k]; !ok {
 			v.allocOnly = false
-			n.env[k] = v
+			v.scheme = schemeState{}
+			if storable(v) {
+				n.env[k] = v
+			}
 		}
 	}
 	for k, o := range a.heap {
@@ -390,6 +401,7 @@ func objectEqual(a, b *object) bool {
 		a.elemMust != b.elemMust || a.wildMust != b.wildMust ||
 		a.kind != b.kind || a.xhrOpened != b.xhrOpened ||
 		a.wsMaybeOpen != b.wsMaybeOpen || a.wsClosed != b.wsClosed ||
+		a.xhrScheme != b.xhrScheme ||
 		!taintEqual(a.xhrURL, b.xhrURL) || !taintEqual(a.xhrHeader, b.xhrHeader) ||
 		len(a.must) != len(b.must) || !valueEqual(a.elem, b.elem) ||
 		!valueEqual(a.wildReq, b.wildReq) ||

@@ -355,7 +355,12 @@ func (a *analysis) publishShared(global, src *state) *state {
 			continue
 		}
 		if ex, ok := out.env[cv]; ok {
-			out.env[cv] = mergeValue(ex, v)
+			merged := mergeValue(ex, v)
+			if storable(merged) {
+				out.env[cv] = merged
+			} else {
+				delete(out.env, cv)
+			}
 		} else {
 			out.env[cv] = v
 		}

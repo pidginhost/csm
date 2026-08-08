@@ -195,6 +195,9 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 		// A compound assignment coerces to a string or number, so the result is a
 		// scalar and carries no allocation identity.
 		nt = value{scalar: appendVia(mergeTaint(old.scalar, rhs.scalar), name)}
+		if op == js.AddEqToken {
+			nt.scheme = old.scheme
+		}
 	}
 	if !storable(nt) {
 		delete(st.env, cv)
@@ -217,6 +220,9 @@ func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) v
 	writeVal := rhs
 	if be.Op != js.EqToken {
 		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
+		if be.Op == js.AddEqToken {
+			writeVal.scheme = old.scheme
+		}
 	}
 	a.resourceSrcSink(recv, key, writeVal, be, st)
 	a.writeField(st, recv, key, writeVal)
@@ -240,6 +246,7 @@ func (a *analysis) handleLogicalAssign(be *js.BinaryExpr, target js.IExpr, st *s
 		skipped := st.clone()
 		taken := st.clone()
 		rhs := a.evalExpr(be.Y, taken)
+		a.resourceSrcSink(recv, key, rhs, be, taken)
 		a.writeField(taken, recv, key, rhs)
 		st.replaceWith(mergeState(skipped, taken))
 		return a.readField(st, recv, key)
@@ -376,6 +383,7 @@ func (a *analysis) applyIterationBinding(init js.IExpr, elem value, st *state) {
 	switch target.(type) {
 	case *js.DotExpr, *js.IndexExpr:
 		recv, key := a.evalMemberTarget(target, st)
+		a.resourceSrcSink(recv, key, elem, target, st)
 		a.writeField(st, recv, key, elem)
 	default:
 		a.evalExpr(target, st)
@@ -604,7 +612,7 @@ func (a *analysis) evalUnary(x *js.UnaryExpr, st *state) value {
 		return value{}
 	}
 	if isUpdateOp(x.Op) {
-		return a.evalUpdate(x.X, st)
+		return a.evalUpdate(x.X, x.Op, st)
 	}
 	xt := a.evalExpr(x.X, st)
 	if x.Op == js.AwaitToken {
@@ -642,13 +650,13 @@ func (a *analysis) evalDelete(target js.IExpr, st *state) {
 	}
 }
 
-func (a *analysis) evalUpdate(target js.IExpr, st *state) value {
+func (a *analysis) evalUpdate(target js.IExpr, op js.TokenType, st *state) value {
 	target = ungroupExpr(target)
 	switch t := target.(type) {
 	case *js.Var:
 		cv := canonicalVar(t)
 		old := st.env[cv]
-		return a.assignVar(st, cv, old, value{}, js.AddEqToken)
+		return a.assignVar(st, cv, old, value{}, op)
 	case *js.DotExpr, *js.IndexExpr:
 		recv, key := a.evalMemberTarget(target, st)
 		old := a.readField(st, recv, key)
@@ -687,10 +695,15 @@ func (a *analysis) evalTemplate(x *js.TemplateExpr, st *state) value {
 		return value{}
 	}
 	var ts taintSet
+	var firstScheme schemeState
 	for i := range x.List {
-		ts = mergeTaint(ts, a.evalExpr(x.List[i].Expr, st).scalar)
+		v := a.evalExpr(x.List[i].Expr, st)
+		if i == 0 {
+			firstScheme = v.scheme
+		}
+		ts = mergeTaint(ts, v.scalar)
 	}
-	return value{scalar: ts, scheme: templateScheme(x)}
+	return value{scalar: ts, scheme: templateScheme(x, firstScheme)}
 }
 
 // evalReadIndexKey evaluates a read index expression, honoring optional-chain
