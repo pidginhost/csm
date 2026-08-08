@@ -105,10 +105,46 @@ func TestVerifyJSKeyloggerParseErrorNotChecked(t *testing.T) {
 func TestVerifyJSKeyloggerOversizeNotChecked(t *testing.T) {
 	root, _ := redirectQuarantineForFullScan(t)
 	path, hash := writeVerifyJSFixture(t, root, "big.js", strings.Repeat("+", jstaint.MaxSourceBytes+1))
+	called := false
+	prev := jsTaintAnalyze
+	jsTaintAnalyze = func(context.Context, []byte) jstaint.Report {
+		called = true
+		return jstaint.Report{Status: jstaint.StatusOversize}
+	}
+	t.Cleanup(func() { jsTaintAnalyze = prev })
 
 	res := verifyJSFinding(path, hash)
 	if res.Checked || res.Resolved {
 		t.Fatalf("oversize file = %+v, want not checked (fail closed)", res)
+	}
+	if called {
+		t.Fatal("oversize file reached the analyzer; want rejection before reading its content")
+	}
+	if !strings.Contains(res.Detail, jstaint.StatusOversize.String()) {
+		t.Fatalf("detail = %q, want oversize status", res.Detail)
+	}
+}
+
+func TestVerifyJSKeyloggerExactSizeLimitIsAnalyzed(t *testing.T) {
+	root, _ := redirectQuarantineForFullScan(t)
+	path, hash := writeVerifyJSFixture(t, root, "exact.js", strings.Repeat("+", jstaint.MaxSourceBytes))
+	called := false
+	prev := jsTaintAnalyze
+	jsTaintAnalyze = func(_ context.Context, data []byte) jstaint.Report {
+		called = true
+		if len(data) != jstaint.MaxSourceBytes {
+			t.Fatalf("analyzer received %d bytes, want %d", len(data), jstaint.MaxSourceBytes)
+		}
+		return jstaint.Report{Status: jstaint.StatusNotCandidate}
+	}
+	t.Cleanup(func() { jsTaintAnalyze = prev })
+
+	res := verifyJSFinding(path, hash)
+	if !called {
+		t.Fatal("exact-limit file did not reach the analyzer")
+	}
+	if !res.Checked || !res.Resolved {
+		t.Fatalf("exact-limit completed negative = %+v, want checked and resolved", res)
 	}
 }
 

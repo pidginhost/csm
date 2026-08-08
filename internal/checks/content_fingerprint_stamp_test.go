@@ -33,3 +33,36 @@ func TestStampContentFingerprint(t *testing.T) {
 		t.Errorf("pathless finding should not be stamped: %+v", h)
 	}
 }
+
+func TestStampContentFingerprintPreservesAnalyzedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "changed.js")
+	if err := os.WriteFile(p, []byte("replacement content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &alert.Finding{
+		Check:         "js_keylogger_dataflow",
+		FilePath:      p,
+		ContentSHA256: "analyzed-snapshot-hash",
+		DetectLogic:   "analyzed-snapshot-version",
+	}
+	StampContentFingerprint(f)
+
+	if f.ContentSHA256 != "analyzed-snapshot-hash" || f.DetectLogic != "analyzed-snapshot-version" {
+		t.Fatalf("analyzer fingerprint overwritten from reopened path: %+v", f)
+	}
+
+	withoutVersion := &alert.Finding{
+		Check:         "js_keylogger_dataflow",
+		FilePath:      p,
+		ContentSHA256: "analyzed-snapshot-hash",
+	}
+	StampContentFingerprint(withoutVersion)
+	if withoutVersion.ContentSHA256 != "analyzed-snapshot-hash" {
+		t.Fatalf("analyzer hash overwritten while adding detection version: %+v", withoutVersion)
+	}
+	if withoutVersion.DetectLogic != ContentDetectionVersion() {
+		t.Fatalf("detection version = %q, want current token", withoutVersion.DetectLogic)
+	}
+}

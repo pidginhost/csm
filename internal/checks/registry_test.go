@@ -44,6 +44,24 @@ func TestPublicCheckInfosExcludesInternal(t *testing.T) {
 	}
 }
 
+func TestJSKeyloggerChecksHaveExpectedRegistryVisibility(t *testing.T) {
+	dataflow, ok := LookupCheck("js_keylogger_dataflow")
+	if !ok {
+		t.Fatal("js_keylogger_dataflow missing from check registry")
+	}
+	if dataflow.Category != CategoryMalware || dataflow.Internal {
+		t.Fatalf("js_keylogger_dataflow registry entry = %+v, want public malware finding", dataflow)
+	}
+
+	incomplete, ok := LookupCheck("js_taint_scan_incomplete")
+	if !ok {
+		t.Fatal("js_taint_scan_incomplete missing from check registry")
+	}
+	if incomplete.Category != CategoryMalware || !incomplete.Internal {
+		t.Fatalf("js_taint_scan_incomplete registry entry = %+v, want internal malware status", incomplete)
+	}
+}
+
 // TestCheckRegistryCoversProductionCode scans the repository for every
 // pattern that emits an alert.Finding.Check name and fails if any name is
 // not present in checkRegistry. This prevents drift when a new check is

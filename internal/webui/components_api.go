@@ -105,7 +105,6 @@ var componentCheckOrigin = map[string]string{
 	"exim_frozen_realtime":                       "maillog",
 	"fanotify_overflow":                          "fanotify",
 	"htaccess_injection_realtime":                "fanotify",
-	"js_keylogger_dataflow":                      "scheduled",
 	"self_deleting_dropper_realtime":             "fanotify",
 	"self_deleting_dropper_overflow":             "fanotify",
 	"mail_account_compromised":                   "maillog",
