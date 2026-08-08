@@ -9,7 +9,8 @@ import (
 // srcValue is the abstract value of a keyboard-source read: scalar taint tagged
 // with the source occurrence and an empty laundering chain.
 func (a *analysis) srcValue(id int) value {
-	return value{scalar: taintSet{{source: id, callDepth: uint8(a.callDepth)}: taintChain{}}}
+	depth := uint8(a.callDepth) // #nosec G115 -- callDepth is 0 or 1 under the depth-1 interprocedural cap
+	return value{scalar: taintSet{{source: id, callDepth: depth}: taintChain{}}}
 }
 
 // analyzeBlock threads the state through a statement list in source order.

@@ -671,6 +671,7 @@ func (a *analysis) bindArrayRestParam(binding js.IBinding, arg value, start int,
 	if len(arg.scalar) != 0 {
 		fresh.weakElem(value{scalar: arg.scalar}, false)
 	}
+	ustart := uint64(start) // #nosec G115 -- start is a parameter index, always non-negative
 	for ref := range arg.allocs {
 		o := st.heap[ref.id]
 		if o == nil || !o.array {
@@ -681,10 +682,10 @@ func (a *analysis) bindArrayRestParam(binding js.IBinding, arg value, start int,
 				continue
 			}
 			index, err := strconv.ParseUint(name, 10, 32)
-			if err != nil || index < uint64(start) {
+			if err != nil || index < ustart {
 				continue
 			}
-			fresh.setNamed(strconv.FormatUint(index-uint64(start), 10), applyRefDepth(field, ref), false)
+			fresh.setNamed(strconv.FormatUint(index-ustart, 10), applyRefDepth(field, ref), false)
 		}
 		if o.elemMay {
 			fresh.weakElem(applyRefDepth(o.elem, ref), false)
