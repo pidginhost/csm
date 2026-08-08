@@ -100,40 +100,18 @@ func (a *analysis) checkCallSink(call *js.CallExpr, args []value, isFetch, isBea
 }
 
 // evalFetchInit records a tainted scalar body or referrer in fetch's second
-// argument, which must be a plain object literal in version 1. The last value of
-// a duplicated property wins, matching JavaScript object evaluation.
+// argument, which must be a plain object literal in version 1. Evaluating the
+// literal through the heap preserves computed, spread, and duplicate-property
+// semantics without evaluating any property twice.
 func (a *analysis) evalFetchInit(call *js.CallExpr, initExpr js.IExpr, st *state) {
-	obj, ok := ungroupExpr(initExpr).(*js.ObjectExpr)
+	_, ok := ungroupExpr(initExpr).(*js.ObjectExpr)
 	if !ok {
 		a.evalExpr(initExpr, st)
 		return
 	}
-	var body, referrer value
-	for i := range obj.List {
-		p := &obj.List[i]
-		if p.Spread {
-			a.evalExpr(p.Value, st)
-			continue
-		}
-		if p.Name != nil && p.Name.Computed != nil {
-			a.evalExpr(p.Name.Computed, st)
-		}
-		pv := a.evalExpr(p.Value, st)
-		if p.Init != nil {
-			a.evalExpr(p.Init, st)
-		}
-		if p.Name == nil || p.Name.IsComputed() {
-			continue
-		}
-		if name, ok := staticStringOrIdent(&p.Name.Literal); ok {
-			switch name {
-			case "body":
-				body = pv
-			case "referrer":
-				referrer = pv
-			}
-		}
-	}
+	init := a.evalExpr(initExpr, st)
+	body := a.readField(st, init, fieldKey{kind: fieldNamed, name: "body"})
+	referrer := a.readField(st, init, fieldKey{kind: fieldNamed, name: "referrer"})
 	a.record(body.scalar, call, 1, sinkFetchBody)
 	a.record(referrer.scalar, call, 1, sinkFetchReferrer)
 }
@@ -162,7 +140,7 @@ func (a *analysis) evalCallReturn(st *state, callee js.IExpr, args []value, recv
 	case "toString", "trim", "charAt", "slice", "substr", "substring":
 		return value{scalar: recv.scalar}
 	case "concat":
-		if isDefiniteNonString(base) {
+		if isDefiniteNonString(base) || (recv.allocOnly && len(recv.allocs) != 0) {
 			return value{}
 		}
 		return value{scalar: mergeTaint(recv.scalar, unionArgScalars(args))}
@@ -182,17 +160,21 @@ func (a *analysis) arrayPush(st *state, recv value, args []value) {
 	if len(args) == 0 {
 		return
 	}
-	var v value
-	for i := range args {
+	v := args[0]
+	for i := 1; i < len(args); i++ {
 		v = mergeValue(v, args[i])
 	}
+	a.writeArrayElements(st, recv, v, true)
+}
+
+func (a *analysis) writeArrayElements(st *state, recv value, v value, definite bool) {
+	strong := len(recv.allocs) == 1 && soleCurrent(recv.allocs)
 	for id := range recv.allocs {
 		o := st.heap[id]
-		if o == nil {
-			o = &object{}
-			st.heap[id] = o
+		if o == nil || !o.array {
+			continue
 		}
-		o.weakElem(v)
+		o.weakElem(v, definite && strong && !id.summary)
 	}
 	a.fact()
 }

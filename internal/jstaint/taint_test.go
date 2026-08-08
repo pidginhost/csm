@@ -161,6 +161,35 @@ func TestScalar_FetchInitUsesFinalDuplicateProperty(t *testing.T) {
 	}
 }
 
+func TestScalar_FetchInitComputedPropertyUsesFinalValue(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){fetch("/c",{["body"]:e.key,["body"]:""});};`)
+
+	got := analyzeSrc(t, `document.onkeydown=function(e){fetch("/c",{["body"]:"",["body"]:e.key});};`)
+	if len(got.Results) != 1 || got.Results[0].Sink != sinkFetchBody {
+		t.Fatalf("Results = %+v, want one fetch body flow", got.Results)
+	}
+}
+
+func TestScalar_FetchInitSpreadUsesFinalDefiniteProperty(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){var clean={body:""};`+
+		`fetch("/c",{body:e.key,...clean});};`)
+
+	got := analyzeSrc(t, `document.onkeydown=function(e){var tainted={body:e.key};`+
+		`fetch("/c",{body:"",...tainted});};`)
+	if len(got.Results) != 1 || got.Results[0].Sink != sinkFetchBody {
+		t.Fatalf("Results = %+v, want one fetch body flow", got.Results)
+	}
+}
+
+func TestScalar_FetchInitMaybeAbsentSpreadDoesNotClearBody(t *testing.T) {
+	src := `document.onkeydown=function(e){var patch={};if(window.p){patch.body="";}` +
+		`fetch("/c",{body:e.key,...patch});};`
+	got := analyzeSrc(t, src)
+	if len(got.Results) != 1 || got.Results[0].Sink != sinkFetchBody {
+		t.Fatalf("Results = %+v, want one fetch body flow", got.Results)
+	}
+}
+
 func TestScalar_FetchBodyAndReferrerRemainDistinctFlows(t *testing.T) {
 	src := `document.onkeydown=function(e){fetch("/c",{body:e.key,referrer:e.key});};`
 	got := analyzeSrc(t, src)

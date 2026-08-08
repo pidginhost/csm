@@ -1,6 +1,10 @@
 package jstaint
 
-import "github.com/tdewolff/parse/v2/js"
+import (
+	"strconv"
+
+	"github.com/tdewolff/parse/v2/js"
+)
 
 // srcValue is the abstract value of a keyboard-source read: scalar taint tagged
 // with the source occurrence and an empty laundering chain.
@@ -56,10 +60,10 @@ func (a *analysis) analyzeStmt(stmt js.IStmt, st *state) *state {
 		st = a.analyzeDoLoop(s.Body, s.Cond, st)
 	case *js.ForInStmt:
 		a.evalExpr(s.Value, st)
-		st = a.analyzeIterationLoop(s.Body, s.Init, value{}, st)
+		st = a.analyzeIterationLoop(s.Body, s.Init, value{}, false, st)
 	case *js.ForOfStmt:
 		iter := a.evalExpr(s.Value, st)
-		st = a.analyzeIterationLoop(s.Body, s.Init, a.iterationElement(st, iter), st)
+		st = a.analyzeIterationLoop(s.Body, s.Init, iter, true, st)
 	case *js.SwitchStmt:
 		st = a.analyzeSwitch(s, st)
 	case *js.TryStmt:
@@ -123,7 +127,7 @@ func (a *analysis) analyzeBinding(be *js.BindingElement, st *state, clearAbsent 
 // bindVar performs a strong update binding a variable to a value, appending the
 // variable name to the laundering chain and preserving aliased allocations.
 func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) value {
-	nt := value{scalar: appendVia(rhs.scalar, string(cv.Name())), allocs: rhs.allocs}
+	nt := value{scalar: appendVia(rhs.scalar, string(cv.Name())), allocs: rhs.allocs, allocOnly: rhs.allocOnly}
 	if nt.isEmpty() {
 		delete(st.env, cv)
 		return value{}
@@ -169,7 +173,7 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 	name := string(cv.Name())
 	var nt value
 	if op == js.EqToken {
-		nt = value{scalar: appendVia(rhs.scalar, name), allocs: rhs.allocs}
+		nt = value{scalar: appendVia(rhs.scalar, name), allocs: rhs.allocs, allocOnly: rhs.allocOnly}
 	} else {
 		// A compound assignment coerces to a string or number, so the result is a
 		// scalar and carries no allocation identity.
@@ -186,10 +190,15 @@ func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenT
 
 func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) value {
 	recv, key := a.evalMemberTarget(target, st)
+	var old value
+	if be.Op != js.EqToken {
+		// Compound assignment captures the current property value before the RHS
+		// runs. The RHS may overwrite the same field.
+		old = a.readField(st, recv, key)
+	}
 	rhs := a.evalExpr(be.Y, st)
 	writeVal := rhs
 	if be.Op != js.EqToken {
-		old := a.readField(st, recv, key)
 		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
 	}
 	a.writeField(st, recv, key, writeVal)
@@ -213,7 +222,7 @@ func (a *analysis) handleLogicalAssign(be *js.BinaryExpr, target js.IExpr, st *s
 		skipped := st.clone()
 		taken := st.clone()
 		rhs := a.evalExpr(be.Y, taken)
-		a.writeFieldWeak(taken, recv, key, rhs)
+		a.writeField(taken, recv, key, rhs)
 		st.replaceWith(mergeState(skipped, taken))
 		return a.readField(st, recv, key)
 	}
@@ -292,7 +301,13 @@ func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, st *state) *state
 // analyzeIterationLoop applies the implicit iteration assignment before each body
 // execution. The incoming state remains an exit alternative because an iterable
 // can be empty.
-func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, elem value, st *state) *state {
+func (a *analysis) analyzeIterationLoop(
+	body js.IStmt,
+	init js.IExpr,
+	iter value,
+	forOf bool,
+	st *state,
+) *state {
 	a.loopDepth++
 	defer func() { a.loopDepth-- }()
 	cur := st.clone()
@@ -301,6 +316,10 @@ func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, elem value
 			return cur
 		}
 		bodyIn := cur.clone()
+		elem := value{}
+		if forOf {
+			elem = a.iterationElement(bodyIn, iter)
+		}
 		a.applyIterationBinding(init, elem, bodyIn)
 		bodyOut := a.analyzeStmt(body, bodyIn)
 		merged := mergeState(cur, bodyOut)
@@ -318,7 +337,7 @@ func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, elem value
 // scalar taint from iterating a tainted string, plus the iterable's element
 // field for an array of values.
 func (a *analysis) iterationElement(st *state, iter value) value {
-	return mergeValue(value{scalar: iter.scalar}, a.readField(st, iter, fieldKey{kind: fieldElem}))
+	return a.collectArrayElements(st, iter)
 }
 
 func (a *analysis) applyIterationBinding(init js.IExpr, elem value, st *state) {
@@ -332,7 +351,14 @@ func (a *analysis) applyIterationBinding(init js.IExpr, elem value, st *state) {
 		a.bindVar(st, canonicalVar(v), elem)
 		return
 	}
-	a.evalExpr(ungroupExpr(init), st)
+	target := ungroupExpr(init)
+	switch target.(type) {
+	case *js.DotExpr, *js.IndexExpr:
+		recv, key := a.evalMemberTarget(target, st)
+		a.writeField(st, recv, key, elem)
+	default:
+		a.evalExpr(target, st)
+	}
 }
 
 func (a *analysis) assignIterationVar(binding js.IBinding, elem value, st *state) {
@@ -492,11 +518,7 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		}
 		return value{}
 	case *js.UnaryExpr:
-		xt := a.evalExpr(x.X, st)
-		if unaryOpPropagates(x.Op) {
-			return value{scalar: xt.scalar}
-		}
-		return value{}
+		return a.evalUnary(x, st)
 	case *js.CondExpr:
 		a.evalExpr(x.Cond, st)
 		thenSt := st.clone()
@@ -526,6 +548,71 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		return value{}
 	default:
 		return value{}
+	}
+}
+
+func (a *analysis) evalUnary(x *js.UnaryExpr, st *state) value {
+	if x.Op == js.DeleteToken {
+		a.evalDelete(x.X, st)
+		return value{}
+	}
+	if isUpdateOp(x.Op) {
+		return a.evalUpdate(x.X, st)
+	}
+	xt := a.evalExpr(x.X, st)
+	if x.Op == js.AwaitToken {
+		return xt
+	}
+	if unaryOpPropagates(x.Op) {
+		return value{scalar: xt.scalar}
+	}
+	return value{}
+}
+
+func (a *analysis) evalDelete(target js.IExpr, st *state) {
+	target = ungroupExpr(target)
+	switch target.(type) {
+	case *js.DotExpr, *js.IndexExpr:
+		if optionalChainMaySkip(target) {
+			skipped := st.clone()
+			taken := st.clone()
+			recv, key := a.evalMemberTarget(target, taken)
+			a.deleteField(taken, recv, key)
+			st.replaceWith(mergeState(skipped, taken))
+			return
+		}
+		recv, key := a.evalMemberTarget(target, st)
+		a.deleteField(st, recv, key)
+	default:
+		a.evalExpr(target, st)
+	}
+}
+
+func (a *analysis) evalUpdate(target js.IExpr, st *state) value {
+	target = ungroupExpr(target)
+	switch t := target.(type) {
+	case *js.Var:
+		cv := canonicalVar(t)
+		old := st.env[cv]
+		return a.assignVar(st, cv, old, value{}, js.AddEqToken)
+	case *js.DotExpr, *js.IndexExpr:
+		recv, key := a.evalMemberTarget(target, st)
+		old := a.readField(st, recv, key)
+		updated := value{scalar: old.scalar}
+		a.writeField(st, recv, key, updated)
+		return updated
+	default:
+		old := a.evalExpr(target, st)
+		return value{scalar: old.scalar}
+	}
+}
+
+func isUpdateOp(op js.TokenType) bool {
+	switch op {
+	case js.PreIncrToken, js.PreDecrToken, js.PostIncrToken, js.PostDecrToken:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -567,17 +654,36 @@ func (a *analysis) evalReadIndexKey(x *js.IndexExpr, st *state) fieldKey {
 }
 
 func (a *analysis) evalNew(x *js.NewExpr, st *state) value {
+	isArray := a.isGlobalCallee(x.X, "Array")
 	a.evalExpr(x.X, st)
+	var args []value
 	if x.Args != nil {
+		args = make([]value, len(x.Args.List))
 		for i := range x.Args.List {
-			a.evalExpr(x.Args.List[i].Value, st)
+			args[i] = a.evalExpr(x.Args.List[i].Value, st)
 		}
 	}
 	site, ok := a.sites[x]
 	if !ok {
 		return value{}
 	}
-	return a.allocate(st, site, a.loopDepth > 0)
+	if !isArray {
+		return a.allocate(st, site, a.loopDepth > 0)
+	}
+	a.promoteCurrent(st, site)
+	fresh := &object{array: true}
+	if len(args) != 1 || !isNumericLiteralExpr(x.Args.List[0].Value) {
+		for i := range args {
+			fresh.setNamed(strconv.Itoa(i), args[i], true)
+			a.fact()
+		}
+	}
+	return a.installLiteral(st, site, a.loopDepth > 0, fresh)
+}
+
+func isNumericLiteralExpr(expr js.IExpr) bool {
+	_, ok := numericPropertyNameOf(expr)
+	return ok
 }
 
 func (a *analysis) evalArray(x *js.ArrayExpr, st *state) value {
@@ -590,7 +696,9 @@ func (a *analysis) evalArray(x *js.ArrayExpr, st *state) value {
 		}
 		return value{}
 	}
-	v := a.allocate(st, site, a.loopDepth > 0)
+	a.promoteCurrent(st, site)
+	fresh := &object{array: true}
+	unknownIndex := false
 	for i := range x.List {
 		el := &x.List[i]
 		if el.Value == nil {
@@ -598,12 +706,19 @@ func (a *analysis) evalArray(x *js.ArrayExpr, st *state) value {
 		}
 		ev := a.evalExpr(el.Value, st)
 		if el.Spread {
-			a.writeField(st, v, fieldKey{kind: fieldElem}, a.spreadElements(st, ev))
+			fresh.weakElem(a.spreadElements(st, ev), false)
+			unknownIndex = true
+			a.fact()
 			continue
 		}
-		a.writeField(st, v, fieldKey{kind: fieldElem}, ev)
+		if unknownIndex {
+			fresh.weakElem(ev, true)
+		} else {
+			fresh.setNamed(strconv.Itoa(i), ev, true)
+		}
+		a.fact()
 	}
-	return v
+	return a.installLiteral(st, site, a.loopDepth > 0, fresh)
 }
 
 func (a *analysis) evalObject(x *js.ObjectExpr, st *state) value {
@@ -612,12 +727,15 @@ func (a *analysis) evalObject(x *js.ObjectExpr, st *state) value {
 		a.evalObjectSideEffects(x, st)
 		return value{}
 	}
-	v := a.allocate(st, site, a.loopDepth > 0)
+	// A literal's properties are evaluated into one fresh runtime object. Only
+	// after the final property is known is that object merged into a loop summary.
+	a.promoteCurrent(st, site)
+	fresh := &object{}
 	for i := range x.List {
 		p := &x.List[i]
 		if p.Spread {
 			sv := a.evalExpr(p.Value, st)
-			a.spreadInto(st, v, sv)
+			a.spreadInto(st, fresh, sv)
 			continue
 		}
 		if p.Name != nil && p.Name.Computed != nil {
@@ -627,17 +745,29 @@ func (a *analysis) evalObject(x *js.ObjectExpr, st *state) value {
 		if p.Init != nil {
 			a.evalExpr(p.Init, st)
 		}
-		if p.Name == nil || p.Name.IsComputed() {
-			a.writeField(st, v, fieldKey{kind: fieldWild}, pv)
-			continue
+		key := fieldKey{kind: fieldWild}
+		if p.Name != nil {
+			if p.Name.IsComputed() {
+				key = fieldKeyOf(ungroupExpr(p.Name.Computed))
+			} else {
+				key = fieldKeyOf(&p.Name.Literal)
+			}
 		}
-		if name, ok := staticStringOrIdent(&p.Name.Literal); ok {
-			a.writeField(st, v, fieldKey{kind: fieldNamed, name: name}, pv)
-		} else {
-			a.writeField(st, v, fieldKey{kind: fieldWild}, pv)
+		switch key.kind {
+		case fieldNamed:
+			fresh.setNamed(key.name, pv, true)
+		case fieldElem:
+			if key.name != "" {
+				fresh.setNamed(key.name, pv, true)
+			} else {
+				fresh.weakElem(pv, true)
+			}
+		default:
+			fresh.writeWild(pv, true)
 		}
+		a.fact()
 	}
-	return v
+	return a.installLiteral(st, site, a.loopDepth > 0, fresh)
 }
 
 // evalObjectSideEffects evaluates an object literal's expressions without
@@ -655,39 +785,107 @@ func (a *analysis) evalObjectSideEffects(x *js.ObjectExpr, st *state) {
 	}
 }
 
-// spreadElements collapses a spread source's element and field taint into one
-// value for insertion into the target array element field.
+// spreadElements collapses a spread source's element taint into one value for
+// insertion into the target array element field.
 func (a *analysis) spreadElements(st *state, src value) value {
-	out := value{scalar: src.scalar}
+	return a.collectArrayElements(st, src)
+}
+
+func (a *analysis) collectArrayElements(st *state, src value) value {
+	var out value
+	have := false
+	if len(src.scalar) != 0 {
+		out, have = mergePresentValue(out, have, value{scalar: src.scalar})
+	}
 	for id := range src.allocs {
-		if o := st.heap[id]; o != nil {
-			for _, fv := range o.fields {
-				out = mergeValue(out, fv)
-			}
-			out = mergeValue(out, o.wild)
+		o := st.heap[id]
+		if o == nil || !o.array {
+			continue
 		}
+		for name, fv := range o.fields {
+			if isArrayIndexName(name) {
+				out, have = mergePresentValue(out, have, fv)
+			}
+		}
+		if o.elemMay {
+			out, have = mergePresentValue(out, have, o.elem)
+		}
+		if o.wildMay {
+			out, have = mergePresentValue(out, have, o.wild)
+		}
+	}
+	if !have {
+		return value{}
+	}
+	if !src.allocOnly {
+		out.allocOnly = false
 	}
 	return out
 }
 
-// spreadInto copies a spread source's fields onto the target object as weak
-// updates, preserving field sensitivity through object spread.
-func (a *analysis) spreadInto(st *state, dst, src value) {
-	for did := range dst.allocs {
-		o := st.heap[did]
-		if o == nil {
+// spreadInto copies a spread source onto a fresh object literal. A named field
+// present on every possible source definitely overwrites the earlier property;
+// partial and unresolved fields remain weak updates.
+func (a *analysis) spreadInto(st *state, dst *object, src value) {
+	fields := map[string]value{}
+	definite := map[string]int{}
+	elemDefinite := 0
+	wildDefinite := 0
+	var elem, wild, wildReq value
+	elemMay := false
+	wildMay := false
+	wildReqSeen := false
+	for sid := range src.allocs {
+		so := st.heap[sid]
+		if so == nil {
 			continue
 		}
-		for sid := range src.allocs {
-			so := st.heap[sid]
-			if so == nil {
-				continue
+		for k, fv := range so.fields {
+			if old, ok := fields[k]; ok {
+				fields[k] = mergeValue(old, fv)
+			} else {
+				fields[k] = fv
 			}
-			for k, fv := range so.fields {
-				o.setNamed(k, fv, false)
+			if so.must[k] {
+				definite[k]++
 			}
-			o.wild = mergeValue(o.wild, so.wild)
 		}
+		if so.elemMay {
+			elem, elemMay = mergePresentValue(elem, elemMay, so.elem)
+		}
+		if so.wildMay {
+			wild, wildMay = mergePresentValue(wild, wildMay, so.wild)
+		}
+		if so.elemMust {
+			elemDefinite++
+		}
+		if so.wildMust {
+			wildDefinite++
+			if wildReqSeen {
+				wildReq = mergeValue(wildReq, so.wildReq)
+			} else {
+				wildReq = so.wildReq
+				wildReqSeen = true
+			}
+		}
+	}
+	// A scalar spread contributes character properties at numeric keys.
+	if len(src.scalar) != 0 {
+		elem, elemMay = mergePresentValue(elem, elemMay, value{scalar: src.scalar})
+	}
+	allSources := src.allocOnly && len(src.allocs) != 0
+	if wildMay {
+		dst.writeWild(wild, false)
+	}
+	if allSources && wildDefinite == len(src.allocs) {
+		dst.wildMust = true
+		dst.wildReq = wildReq
+	}
+	for k, fv := range fields {
+		dst.setNamed(k, fv, allSources && definite[k] == len(src.allocs))
+	}
+	if elemMay {
+		dst.weakElem(elem, allSources && elemDefinite == len(src.allocs))
 	}
 	a.fact()
 }

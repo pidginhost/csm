@@ -11,15 +11,36 @@ import "github.com/tdewolff/parse/v2/js"
 func (a *analysis) allocate(st *state, site int, inLoop bool) value {
 	a.promoteCurrent(st, site)
 	id := allocID{site: site, summary: inLoop}
+	fresh := &object{}
 	if inLoop {
-		if _, ok := st.heap[id]; !ok {
-			st.heap[id] = &object{}
+		if old, ok := st.heap[id]; ok {
+			st.heap[id] = mergeObject(old, fresh)
+		} else {
+			st.heap[id] = fresh
 		}
 	} else {
-		st.heap[id] = &object{}
+		st.heap[id] = fresh
 	}
 	a.fact()
-	return value{allocs: allocSet{id: true}}
+	return value{allocs: allocSet{id: true}, allocOnly: true}
+}
+
+// installLiteral publishes a fully evaluated object or array literal at its
+// allocation site. Building it separately preserves construction semantics
+// before loop instances are merged into a summary.
+func (a *analysis) installLiteral(st *state, site int, inLoop bool, fresh *object) value {
+	id := allocID{site: site, summary: inLoop}
+	if inLoop {
+		if old, ok := st.heap[id]; ok {
+			st.heap[id] = mergeObject(old, fresh)
+		} else {
+			st.heap[id] = fresh
+		}
+	} else {
+		st.heap[id] = fresh
+	}
+	a.fact()
+	return value{allocs: allocSet{id: true}, allocOnly: true}
 }
 
 // promoteCurrent moves any current instance at site into the summary class and
@@ -45,17 +66,32 @@ func (a *analysis) promoteCurrent(st *state, site int) {
 func rewriteAlloc(st *state, from, to allocID) {
 	for k, v := range st.env {
 		if v.allocs[from] {
-			st.env[k] = value{scalar: v.scalar, allocs: replaceAlloc(v.allocs, from, to)}
+			st.env[k] = value{scalar: v.scalar, allocs: replaceAlloc(v.allocs, from, to), allocOnly: v.allocOnly}
 		}
 	}
 	for _, o := range st.heap {
 		for fk, fv := range o.fields {
 			if fv.allocs[from] {
-				o.fields[fk] = value{scalar: fv.scalar, allocs: replaceAlloc(fv.allocs, from, to)}
+				o.fields[fk] = value{
+					scalar: fv.scalar, allocs: replaceAlloc(fv.allocs, from, to), allocOnly: fv.allocOnly,
+				}
 			}
 		}
 		if o.wild.allocs[from] {
-			o.wild = value{scalar: o.wild.scalar, allocs: replaceAlloc(o.wild.allocs, from, to)}
+			o.wild = value{
+				scalar: o.wild.scalar, allocs: replaceAlloc(o.wild.allocs, from, to), allocOnly: o.wild.allocOnly,
+			}
+		}
+		if o.wildReq.allocs[from] {
+			o.wildReq = value{
+				scalar: o.wildReq.scalar, allocs: replaceAlloc(o.wildReq.allocs, from, to),
+				allocOnly: o.wildReq.allocOnly,
+			}
+		}
+		if o.elem.allocs[from] {
+			o.elem = value{
+				scalar: o.elem.scalar, allocs: replaceAlloc(o.elem.allocs, from, to), allocOnly: o.elem.allocOnly,
+			}
 		}
 	}
 }
@@ -76,7 +112,8 @@ func replaceAlloc(s allocSet, from, to allocID) allocSet {
 // strong update (it can clear taint) only when the receiver is exactly one
 // current instance; a summary field or a receiver with several possible
 // allocations is weak-updated, so it cannot lose taint an aliased path still
-// carries. Array-element and wildcard writes are always weak.
+// carries. Statically known array indexes are distinct fields; unresolved array
+// elements and wildcard writes stay weak because they can represent many keys.
 func (a *analysis) writeField(st *state, recv value, key fieldKey, rhs value) {
 	strong := len(recv.allocs) == 1 && soleCurrent(recv.allocs)
 	for id := range recv.allocs {
@@ -89,12 +126,43 @@ func (a *analysis) writeField(st *state, recv value, key fieldKey, rhs value) {
 		case fieldNamed:
 			o.setNamed(key.name, rhs, strong && !id.summary)
 		case fieldElem:
-			o.weakElem(rhs)
+			if key.name != "" {
+				o.setNamed(key.name, rhs, strong && !id.summary)
+			} else {
+				o.weakElem(rhs, strong && !id.summary)
+			}
 		default:
-			o.wild = mergeValue(o.wild, rhs)
+			o.writeWild(rhs, strong && !id.summary)
 		}
 	}
 	a.fact()
+}
+
+// deleteField removes one statically known field when the receiver is a lone
+// current instance. A delete through a summary or ambiguous receiver is a weak
+// update, so it cannot prove that every represented runtime field disappeared.
+func (a *analysis) deleteField(st *state, recv value, key fieldKey) {
+	if len(recv.allocs) != 1 || !soleCurrent(recv.allocs) {
+		return
+	}
+	for id := range recv.allocs {
+		o := st.heap[id]
+		if o == nil {
+			return
+		}
+		switch key.kind {
+		case fieldNamed:
+			o.deleteNamed(key.name)
+		case fieldElem:
+			if key.name == "" {
+				return
+			}
+			o.deleteNamed(key.name)
+		default:
+			return
+		}
+		a.fact()
+	}
 }
 
 func soleCurrent(s allocSet) bool {
@@ -104,40 +172,32 @@ func soleCurrent(s allocSet) bool {
 	return false
 }
 
-// writeFieldWeak taints a field without ever clearing existing taint. It models a
-// write that only may execute, such as the right side of a logical assignment.
-func (a *analysis) writeFieldWeak(st *state, recv value, key fieldKey, rhs value) {
-	for id := range recv.allocs {
-		o := st.heap[id]
-		if o == nil {
-			o = &object{}
-			st.heap[id] = o
-		}
-		switch key.kind {
-		case fieldNamed:
-			o.setNamed(key.name, rhs, false)
-		case fieldElem:
-			o.weakElem(rhs)
-		default:
-			o.wild = mergeValue(o.wild, rhs)
-		}
-	}
-	a.fact()
-}
-
 // readField reads one field across every allocation the receiver may reference.
 func (a *analysis) readField(st *state, recv value, key fieldKey) value {
 	var out value
+	have := false
+	definiteAlloc := recv.allocOnly && len(recv.allocs) != 0
 	for id := range recv.allocs {
-		if o := st.heap[id]; o != nil {
-			out = mergeValue(out, getField(o, key))
+		o := st.heap[id]
+		if o == nil {
+			definiteAlloc = false
+			continue
+		}
+		fv, definite := getField(o, key)
+		out, have = mergePresentValue(out, have, fv)
+		if !definite || !fv.allocOnly {
+			definiteAlloc = false
 		}
 	}
+	if !have {
+		return value{}
+	}
+	out.allocOnly = definiteAlloc
 	return out
 }
 
 // serializeStringify returns the scalar taint JSON.stringify(v) would carry.
-// Reachable field taint is folded in by an iterative depth-first walk. An
+// Reachable field taint is folded in by an iterative graph walk. An
 // allocation whose reachable graph contains a cycle contributes no value, because
 // the runtime throws before producing output; a union that also holds an acyclic
 // alternative keeps the acyclic taint. The walk is iterative because a heap graph
@@ -153,7 +213,35 @@ func (a *analysis) serializeStringify(st *state, v value) taintSet {
 	return out
 }
 
-func allocNeighbors(o *object, addScalar func(taintSet)) []allocID {
+type stringifySlot struct {
+	value      value
+	optional   bool
+	collection bool
+}
+
+func stringifyValues(o *object) []stringifySlot {
+	values := make([]stringifySlot, 0, len(o.fields)+3)
+	for name, fv := range o.fields {
+		if !o.array || isArrayIndexName(name) {
+			values = append(values, stringifySlot{value: fv, optional: !o.must[name]})
+		}
+	}
+	if o.elemMay {
+		values = append(values, stringifySlot{value: o.elem, optional: !o.elemMust, collection: true})
+	}
+	if o.wildMay {
+		values = append(values, stringifySlot{value: o.wild, optional: true})
+	}
+	if o.wildMust && !o.array {
+		values = append(values, stringifySlot{value: o.wildReq})
+	}
+	return values
+}
+
+func arrayNeighbors(o *object, addScalar func(taintSet)) []allocID {
+	if !o.array {
+		return nil
+	}
 	var nbrs []allocID
 	collect := func(v value) {
 		addScalar(v.scalar)
@@ -161,52 +249,141 @@ func allocNeighbors(o *object, addScalar func(taintSet)) []allocID {
 			nbrs = append(nbrs, aid)
 		}
 	}
-	for _, fv := range o.fields {
-		collect(fv)
+	for name, fv := range o.fields {
+		if isArrayIndexName(name) {
+			collect(fv)
+		}
 	}
-	collect(o.wild)
+	if o.elemMay {
+		collect(o.elem)
+	}
+	if o.wildMay {
+		collect(o.wild)
+	}
 	return nbrs
 }
 
 func (a *analysis) walkStringify(st *state, root allocID) (taintSet, bool) {
-	const white, gray, black = 0, 1, 2
-	color := map[allocID]int{}
-	var out taintSet
-	cyclic := false
-	type frame struct {
-		id   allocID
-		nbrs []allocID
-		i    int
-	}
-	visit := func(id allocID) frame {
-		color[id] = gray
-		var nbrs []allocID
-		if o := st.heap[id]; o != nil {
-			nbrs = allocNeighbors(o, func(ts taintSet) { out = mergeTaint(out, ts) })
-		}
-		return frame{id: id, nbrs: nbrs}
-	}
-	stack := []frame{visit(root)}
+	// Preserve each field's allocation set as one group: its members are runtime
+	// alternatives, while separate fields and collected array elements must all
+	// serialize. Starting with leaf allocations and satisfying dependent groups
+	// computes the acyclic choices without mistaking a diamond for a cycle.
+	nodes := map[allocID][]stringifySlot{}
+	stack := []allocID{root}
 	for len(stack) > 0 {
 		if !a.alive() {
-			return out, cyclic
+			return nil, false
 		}
-		top := &stack[len(stack)-1]
-		if top.i >= len(top.nbrs) {
-			color[top.id] = black
-			stack = stack[:len(stack)-1]
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, ok := nodes[id]; ok {
 			continue
 		}
-		nb := top.nbrs[top.i]
-		top.i++
-		switch color[nb] {
-		case white:
-			stack = append(stack, visit(nb))
-		case gray:
-			cyclic = true
+		var values []stringifySlot
+		if o := st.heap[id]; o != nil {
+			values = stringifyValues(o)
+		}
+		nodes[id] = values
+		for _, slot := range values {
+			for aid := range slot.value.allocs {
+				if _, seen := nodes[aid]; !seen {
+					stack = append(stack, aid)
+				}
+			}
 		}
 	}
-	return out, cyclic
+
+	type dependencyGroup struct {
+		owner     allocID
+		satisfied bool
+	}
+	var groups []dependencyGroup
+	pending := make(map[allocID]int, len(nodes))
+	reverse := map[allocID][]int{}
+	for id, values := range nodes {
+		for _, slot := range values {
+			fv := slot.value
+			if slot.optional {
+				continue
+			}
+			if len(fv.allocs) == 0 || (!slot.collection && (!fv.allocOnly || len(fv.scalar) != 0)) {
+				continue
+			}
+			if slot.collection {
+				for aid := range fv.allocs {
+					group := len(groups)
+					groups = append(groups, dependencyGroup{owner: id})
+					pending[id]++
+					reverse[aid] = append(reverse[aid], group)
+				}
+				continue
+			}
+			group := len(groups)
+			groups = append(groups, dependencyGroup{owner: id})
+			pending[id]++
+			for aid := range fv.allocs {
+				reverse[aid] = append(reverse[aid], group)
+			}
+		}
+	}
+
+	serializable := make(map[allocID]bool, len(nodes))
+	queue := make([]allocID, 0, len(nodes))
+	for id := range nodes {
+		if pending[id] == 0 {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		if !a.alive() {
+			return nil, false
+		}
+		id := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if serializable[id] {
+			continue
+		}
+		serializable[id] = true
+		for _, group := range reverse[id] {
+			if groups[group].satisfied {
+				continue
+			}
+			groups[group].satisfied = true
+			owner := groups[group].owner
+			pending[owner]--
+			if pending[owner] == 0 {
+				queue = append(queue, owner)
+			}
+		}
+	}
+	if !serializable[root] {
+		return nil, true
+	}
+
+	var out taintSet
+	done := map[allocID]bool{}
+	stack = append(stack, root)
+	for len(stack) > 0 {
+		if !a.alive() {
+			return out, false
+		}
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if done[id] || !serializable[id] {
+			continue
+		}
+		done[id] = true
+		for _, slot := range nodes[id] {
+			fv := slot.value
+			out = mergeTaint(out, fv.scalar)
+			for aid := range fv.allocs {
+				if serializable[aid] && !done[aid] {
+					stack = append(stack, aid)
+				}
+			}
+		}
+	}
+	return out, false
 }
 
 // serializeArray returns the scalar taint a join or array serialization carries.
@@ -214,7 +391,7 @@ func (a *analysis) walkStringify(st *state, root allocID) (taintSet, bool) {
 // tainted elements still propagate and the walk always terminates. It is
 // iterative for the same stack-safety reason as serializeStringify.
 func (a *analysis) serializeArray(st *state, v value) taintSet {
-	out := v.scalar
+	var out taintSet
 	done := map[allocID]bool{}
 	stack := make([]allocID, 0, len(v.allocs))
 	for id := range v.allocs {
@@ -231,10 +408,10 @@ func (a *analysis) serializeArray(st *state, v value) taintSet {
 		}
 		done[id] = true
 		o := st.heap[id]
-		if o == nil {
+		if o == nil || !o.array {
 			continue
 		}
-		for _, aid := range allocNeighbors(o, func(ts taintSet) { out = mergeTaint(out, ts) }) {
+		for _, aid := range arrayNeighbors(o, func(ts taintSet) { out = mergeTaint(out, ts) }) {
 			if !done[aid] {
 				stack = append(stack, aid)
 			}
