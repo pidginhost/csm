@@ -1203,6 +1203,11 @@ func TestRunnerPurgeMapCoversEmittedCheckNames(t *testing.T) {
 			covered[n] = struct{}{}
 		}
 	}
+	for _, names := range logicalOwnerFindingNames {
+		for _, n := range names {
+			covered[n] = struct{}{}
+		}
+	}
 	for _, n := range latestVolatileCheckNames {
 		covered[n] = struct{}{}
 	}

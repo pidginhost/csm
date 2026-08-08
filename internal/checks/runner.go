@@ -319,6 +319,33 @@ func disabledLogicalOwners(cfg *config.Config) map[string]struct{} {
 	return out
 }
 
+// jsTaintDeepConsumerDisabled reports whether the scheduled JS taint consumer
+// hosted by yara_deep is disabled.
+func jsTaintDeepConsumerDisabled(cfg *config.Config) bool {
+	_, off := disabledLogicalOwners(cfg)[logicalOwnerJSTaintDeep]
+	return off
+}
+
+// yaraDeepConsumerDisabled reports whether the YARA consumer itself is
+// disabled; the physical wrapper may still run for the JS consumer.
+func yaraDeepConsumerDisabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, name := range cfg.DisabledChecks {
+		name = strings.TrimSpace(name)
+		if name == "yara_deep" {
+			return true
+		}
+		for _, alias := range runnerFindingNames["yara_deep"] {
+			if name == alias {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // namedCheck pairs a check function with its name for timeout reporting.
 type namedCheck struct {
 	name string
