@@ -20,10 +20,6 @@ type taintChain = []string
 // that source's value to the current point. A nil or empty set is clean.
 type taintSet map[int]taintChain
 
-// env is the per-variable scalar taint at a program point, keyed by canonical
-// variable identity. An absent key is clean.
-type env map[*js.Var]taintSet
-
 // flowKey is the identity of one source-to-sink flow: which source occurrence,
 // sink occurrence, sink kind, and argument. Multiple propagation routes to the
 // same endpoints collapse to one result with the shortest chain.
@@ -44,8 +40,10 @@ type analysis struct {
 	ctx       context.Context
 	budget    *resourceBudget
 	sources   map[js.IExpr]sourceOccurrence
+	sites     map[js.INode]int
 	display   map[int]string
 	results   map[flowKey]Result
+	loopDepth int
 	truncated bool
 	err       error
 }
@@ -73,6 +71,7 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 		ctx:     ctx,
 		budget:  budget,
 		sources: sources,
+		sites:   numberAllocSites(ast),
 		display: display,
 		results: map[flowKey]Result{},
 	}
@@ -84,13 +83,13 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 		if h.eventVar == nil {
 			continue
 		}
-		e := env{}
+		st := newState()
 		// Browser keyboard handlers receive exactly the event argument. Defaults on
 		// later parameters therefore execute before the body.
 		for i := 1; i < len(h.fn.params.List); i++ {
-			e = a.analyzeBinding(&h.fn.params.List[i], e, true)
+			a.analyzeBinding(&h.fn.params.List[i], st, true)
 		}
-		a.analyzeBlock(h.fn.body, e)
+		a.analyzeBlock(h.fn.body, st)
 		if a.err != nil {
 			return nil, false, a.err
 		}
@@ -264,59 +263,6 @@ func appendVia(ts taintSet, name string) taintSet {
 		out[id] = nc
 	}
 	return out
-}
-
-func unionArgs(args []taintSet) taintSet {
-	var out taintSet
-	for _, a := range args {
-		out = mergeTaint(out, a)
-	}
-	return out
-}
-
-func copyEnv(e env) env {
-	out := make(env, len(e))
-	for k, v := range e {
-		out[k] = v
-	}
-	return out
-}
-
-func mergeEnv(a, b env) env {
-	out := make(env, len(a)+len(b))
-	for k, v := range a {
-		out[k] = v
-	}
-	for k, v := range b {
-		if ex, ok := out[k]; ok {
-			out[k] = mergeTaint(ex, v)
-		} else {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func replaceEnv(dst, src env) {
-	for k := range dst {
-		delete(dst, k)
-	}
-	for k, v := range src {
-		dst[k] = v
-	}
-}
-
-func envEqual(a, b env) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, va := range a {
-		vb, ok := b[k]
-		if !ok || !taintEqual(va, vb) {
-			return false
-		}
-	}
-	return true
 }
 
 func taintEqual(a, b taintSet) bool {

@@ -2,217 +2,243 @@ package jstaint
 
 import "github.com/tdewolff/parse/v2/js"
 
-// analyzeBlock threads the environment through a statement list in source order.
-func (a *analysis) analyzeBlock(block *js.BlockStmt, e env) env {
+// srcValue is the abstract value of a keyboard-source read: scalar taint tagged
+// with the source occurrence and an empty laundering chain.
+func srcValue(id int) value {
+	return value{scalar: taintSet{id: taintChain{}}}
+}
+
+// analyzeBlock threads the state through a statement list in source order.
+func (a *analysis) analyzeBlock(block *js.BlockStmt, st *state) *state {
 	if block == nil {
-		return e
+		return st
 	}
 	for i := range block.List {
 		if !a.alive() {
-			return e
+			return st
 		}
-		e = a.analyzeStmt(block.List[i], e)
+		st = a.analyzeStmt(block.List[i], st)
 	}
-	return e
+	return st
 }
 
-func (a *analysis) analyzeStmt(stmt js.IStmt, e env) env {
+func (a *analysis) analyzeStmt(stmt js.IStmt, st *state) *state {
 	if !a.alive() {
-		return e
+		return st
 	}
 	switch s := stmt.(type) {
 	case *js.VarDecl:
 		for i := range s.List {
-			e = a.analyzeBinding(&s.List[i], e, s.TokenType != js.VarToken)
+			a.analyzeBinding(&s.List[i], st, s.TokenType != js.VarToken)
 		}
 	case *js.ClassDecl:
-		a.evalClass(s, e)
+		a.evalClass(s, st)
 	case *js.ExprStmt:
-		a.analyzeExprStmt(s.Value, e)
+		a.analyzeExprStmt(s.Value, st)
 	case *js.BlockStmt:
-		e = a.analyzeBlock(s, e)
+		st = a.analyzeBlock(s, st)
 	case *js.IfStmt:
-		a.evalExpr(s.Cond, e)
-		thenE := a.analyzeStmt(s.Body, copyEnv(e))
-		var elseE env
+		a.evalExpr(s.Cond, st)
+		thenSt := a.analyzeStmt(s.Body, st.clone())
+		var elseSt *state
 		if s.Else != nil {
-			elseE = a.analyzeStmt(s.Else, copyEnv(e))
+			elseSt = a.analyzeStmt(s.Else, st.clone())
 		} else {
-			elseE = copyEnv(e)
+			elseSt = st.clone()
 		}
-		e = mergeEnv(thenE, elseE)
+		st = mergeState(thenSt, elseSt)
 	case *js.ForStmt:
-		e = a.analyzeInit(s.Init, e)
-		e = a.analyzeLoop(s.Body, s.Cond, s.Post, e)
+		a.analyzeInit(s.Init, st)
+		st = a.analyzeLoop(s.Body, s.Cond, s.Post, st)
 	case *js.WhileStmt:
-		e = a.analyzeLoop(s.Body, s.Cond, nil, e)
+		st = a.analyzeLoop(s.Body, s.Cond, nil, st)
 	case *js.DoWhileStmt:
-		e = a.analyzeDoLoop(s.Body, s.Cond, e)
+		st = a.analyzeDoLoop(s.Body, s.Cond, st)
 	case *js.ForInStmt:
-		a.evalExpr(s.Value, e)
-		e = a.analyzeIterationLoop(s.Body, s.Init, nil, e)
+		a.evalExpr(s.Value, st)
+		st = a.analyzeIterationLoop(s.Body, s.Init, value{}, st)
 	case *js.ForOfStmt:
-		iterTaint := a.evalExpr(s.Value, e)
-		e = a.analyzeIterationLoop(s.Body, s.Init, iterTaint, e)
+		iter := a.evalExpr(s.Value, st)
+		st = a.analyzeIterationLoop(s.Body, s.Init, a.iterationElement(st, iter), st)
 	case *js.SwitchStmt:
-		e = a.analyzeSwitch(s, e)
+		st = a.analyzeSwitch(s, st)
 	case *js.TryStmt:
-		e = a.analyzeTry(s, e)
+		st = a.analyzeTry(s, st)
 	case *js.ReturnStmt:
 		if s.Value != nil {
-			a.evalExpr(s.Value, e)
+			a.evalExpr(s.Value, st)
 		}
 	case *js.ThrowStmt:
-		a.evalExpr(s.Value, e)
+		a.evalExpr(s.Value, st)
 	case *js.WithStmt:
-		a.evalExpr(s.Cond, e)
-		bodyE := a.analyzeStmt(s.Body, copyEnv(e))
-		e = mergeEnv(e, bodyE)
+		a.evalExpr(s.Cond, st)
+		bodySt := a.analyzeStmt(s.Body, st.clone())
+		st = mergeState(st, bodySt)
 	case *js.LabelledStmt:
-		e = a.analyzeStmt(s.Value, e)
+		st = a.analyzeStmt(s.Value, st)
 	case *js.BranchStmt:
-		// break/continue: no data effect for the scalar model.
+		// break/continue: no data effect for this model.
 	}
-	return e
+	return st
 }
 
 // analyzeInit handles a for-loop initializer, which may be a var declaration or
 // an expression.
-func (a *analysis) analyzeInit(init js.IExpr, e env) env {
+func (a *analysis) analyzeInit(init js.IExpr, st *state) {
 	if init == nil {
-		return e
+		return
 	}
 	if vd, ok := init.(*js.VarDecl); ok {
 		for i := range vd.List {
-			e = a.analyzeBinding(&vd.List[i], e, vd.TokenType != js.VarToken)
+			a.analyzeBinding(&vd.List[i], st, vd.TokenType != js.VarToken)
 		}
-		return e
+		return
 	}
-	a.evalExpr(init, e)
-	return e
+	a.evalExpr(init, st)
 }
 
 // analyzeBinding applies a declaration binding. A tainted initializer taints the
 // bound variable, while a clean initializer is a strong update. An absent lexical
 // initializer writes undefined; an absent var initializer is only a declaration.
-func (a *analysis) analyzeBinding(be *js.BindingElement, e env, clearAbsent bool) env {
+func (a *analysis) analyzeBinding(be *js.BindingElement, st *state, clearAbsent bool) {
 	v, ok := be.Binding.(*js.Var)
 	if !ok {
 		if be.Default != nil {
-			a.evalExpr(be.Default, e)
+			a.evalExpr(be.Default, st)
 		}
-		a.evalBindingPattern(be.Binding, e)
-		return e
+		a.evalBindingPattern(be.Binding, st)
+		return
 	}
 	cv := canonicalVar(v)
 	if be.Default == nil {
 		if clearAbsent {
-			delete(e, cv)
+			delete(st.env, cv)
 		}
-		return e
-	}
-	rhs := a.evalExpr(be.Default, e)
-	nt := appendVia(rhs, string(cv.Name()))
-	if len(nt) == 0 {
-		delete(e, cv)
-	} else {
-		e[cv] = nt
-		a.fact()
-	}
-	return e
-}
-
-func (a *analysis) analyzeExprStmt(expr js.IExpr, e env) {
-	expr = ungroupExpr(expr)
-	if be, ok := expr.(*js.BinaryExpr); ok && isAssignOp(be.Op) {
-		a.handleAssign(be, e)
 		return
 	}
-	a.evalExpr(expr, e)
+	rhs := a.evalExpr(be.Default, st)
+	a.bindVar(st, cv, rhs)
 }
 
-// handleAssign updates env for target = rhs. A plain assignment is a strong
+// bindVar performs a strong update binding a variable to a value, appending the
+// variable name to the laundering chain and preserving aliased allocations.
+func (a *analysis) bindVar(st *state, cv *js.Var, rhs value) value {
+	nt := value{scalar: appendVia(rhs.scalar, string(cv.Name())), allocs: rhs.allocs}
+	if nt.isEmpty() {
+		delete(st.env, cv)
+		return value{}
+	}
+	st.env[cv] = nt
+	a.fact()
+	return nt
+}
+
+func (a *analysis) analyzeExprStmt(expr js.IExpr, st *state) {
+	expr = ungroupExpr(expr)
+	if be, ok := expr.(*js.BinaryExpr); ok && isAssignOp(be.Op) {
+		a.handleAssign(be, st)
+		return
+	}
+	a.evalExpr(expr, st)
+}
+
+// handleAssign updates state for target = rhs. A plain assignment is a strong
 // update that can clear taint; a compound assignment reads the old value and
-// combines it.
-func (a *analysis) handleAssign(be *js.BinaryExpr, e env) taintSet {
+// combines it. A logical assignment writes only when its short-circuit condition
+// allows, so the write and its right side are may-state.
+func (a *analysis) handleAssign(be *js.BinaryExpr, st *state) value {
 	target := ungroupExpr(be.X)
-	v, ok := target.(*js.Var)
 	if isLogicalAssignOp(be.Op) {
-		if ok {
-			return a.handleLogicalVarAssign(v, be.Y, e)
-		}
-		lhs := a.evalAssignmentTarget(target, e, true)
-		skipped := copyEnv(e)
-		taken := copyEnv(e)
-		rhs := a.evalExpr(be.Y, taken)
-		replaceEnv(e, mergeEnv(skipped, taken))
-		return mergeTaint(lhs, rhs)
+		return a.handleLogicalAssign(be, target, st)
 	}
-	if !ok {
-		lhs := a.evalAssignmentTarget(target, e, be.Op != js.EqToken)
-		rhs := a.evalExpr(be.Y, e)
-		if be.Op != js.EqToken {
-			return mergeTaint(lhs, rhs)
-		}
-		return rhs
-	}
-	cv := canonicalVar(v)
-	name := string(cv.Name())
-	old := e[cv]
-	rhs := a.evalExpr(be.Y, e)
-	var nt taintSet
-	if be.Op == js.EqToken {
-		nt = appendVia(rhs, name)
-	} else {
-		nt = appendVia(mergeTaint(old, rhs), name)
-	}
-	if len(nt) == 0 {
-		delete(e, cv)
-	} else {
-		e[cv] = nt
-		a.fact()
-	}
-	return e[cv]
-}
-
-func (a *analysis) handleLogicalVarAssign(v *js.Var, rhsExpr js.IExpr, e env) taintSet {
-	cv := canonicalVar(v)
-	skipped := copyEnv(e)
-	taken := copyEnv(e)
-	rhs := a.evalExpr(rhsExpr, taken)
-	nt := appendVia(rhs, string(cv.Name()))
-	if len(nt) == 0 {
-		delete(taken, cv)
-	} else {
-		taken[cv] = nt
-		a.fact()
-	}
-	replaceEnv(e, mergeEnv(skipped, taken))
-	return e[cv]
-}
-
-// evalAssignmentTarget evaluates the reference-producing parts of an assignment
-// target before the right-hand side. Compound assignments also read the target's
-// current value.
-func (a *analysis) evalAssignmentTarget(target js.IExpr, e env, read bool) taintSet {
-	if read {
-		return a.evalExpr(target, e)
-	}
-	switch x := target.(type) {
-	case *js.DotExpr:
-		a.evalExpr(x.X, e)
-	case *js.IndexExpr:
-		a.evalExpr(x.X, e)
-		a.evalExpr(x.Y, e)
+	switch t := target.(type) {
+	case *js.Var:
+		cv := canonicalVar(t)
+		old := st.env[cv]
+		rhs := a.evalExpr(be.Y, st)
+		return a.assignVar(st, cv, old, rhs, be.Op)
+	case *js.DotExpr, *js.IndexExpr:
+		return a.assignMember(be, target, st)
 	default:
-		a.evalExpr(target, e)
+		a.evalExpr(target, st)
+		return a.evalExpr(be.Y, st)
 	}
-	return nil
 }
 
-// analyzeLoop iterates the body to a fixed point over its local environment.
-func (a *analysis) analyzeLoop(body js.IStmt, cond, post js.IExpr, e env) env {
-	cur := copyEnv(e)
+func (a *analysis) assignVar(st *state, cv *js.Var, old, rhs value, op js.TokenType) value {
+	name := string(cv.Name())
+	var nt value
+	if op == js.EqToken {
+		nt = value{scalar: appendVia(rhs.scalar, name), allocs: rhs.allocs}
+	} else {
+		// A compound assignment coerces to a string or number, so the result is a
+		// scalar and carries no allocation identity.
+		nt = value{scalar: appendVia(mergeTaint(old.scalar, rhs.scalar), name)}
+	}
+	if nt.isEmpty() {
+		delete(st.env, cv)
+		return value{}
+	}
+	st.env[cv] = nt
+	a.fact()
+	return nt
+}
+
+func (a *analysis) assignMember(be *js.BinaryExpr, target js.IExpr, st *state) value {
+	recv, key := a.evalMemberTarget(target, st)
+	rhs := a.evalExpr(be.Y, st)
+	writeVal := rhs
+	if be.Op != js.EqToken {
+		old := a.readField(st, recv, key)
+		writeVal = value{scalar: mergeTaint(old.scalar, rhs.scalar)}
+	}
+	a.writeField(st, recv, key, writeVal)
+	return writeVal
+}
+
+// handleLogicalAssign models &&=, ||=, and ??=, whose right side and write are
+// only reached on the short-circuit path, so both are merged as may-state.
+func (a *analysis) handleLogicalAssign(be *js.BinaryExpr, target js.IExpr, st *state) value {
+	switch t := target.(type) {
+	case *js.Var:
+		cv := canonicalVar(t)
+		skipped := st.clone()
+		taken := st.clone()
+		rhs := a.evalExpr(be.Y, taken)
+		a.assignVar(taken, cv, taken.env[cv], rhs, js.EqToken)
+		st.replaceWith(mergeState(skipped, taken))
+		return st.env[cv]
+	default:
+		recv, key := a.evalMemberTarget(target, st)
+		skipped := st.clone()
+		taken := st.clone()
+		rhs := a.evalExpr(be.Y, taken)
+		a.writeFieldWeak(taken, recv, key, rhs)
+		st.replaceWith(mergeState(skipped, taken))
+		return a.readField(st, recv, key)
+	}
+}
+
+// evalMemberTarget evaluates the receiver and key of a member assignment target
+// before the right-hand side, and returns the receiver value and field key.
+func (a *analysis) evalMemberTarget(target js.IExpr, st *state) (value, fieldKey) {
+	switch t := ungroupExpr(target).(type) {
+	case *js.DotExpr:
+		recv := a.evalExpr(t.X, st)
+		return recv, fieldKeyOf(ungroupExpr(t.Y))
+	case *js.IndexExpr:
+		recv := a.evalExpr(t.X, st)
+		a.evalExpr(t.Y, st)
+		return recv, fieldKeyOf(ungroupExpr(t.Y))
+	}
+	return value{}, fieldKey{}
+}
+
+// analyzeLoop iterates the body to a fixed point over the loop state.
+func (a *analysis) analyzeLoop(body js.IStmt, cond, post js.IExpr, st *state) *state {
+	a.loopDepth++
+	defer func() { a.loopDepth-- }()
+	cur := st.clone()
 	for {
 		if !a.alive() {
 			return cur
@@ -220,12 +246,12 @@ func (a *analysis) analyzeLoop(body js.IStmt, cond, post js.IExpr, e env) env {
 		if cond != nil {
 			a.evalExpr(cond, cur)
 		}
-		bodyOut := a.analyzeStmt(body, copyEnv(cur))
+		bodyOut := a.analyzeStmt(body, cur.clone())
 		if post != nil {
 			a.evalExpr(post, bodyOut)
 		}
-		merged := mergeEnv(cur, bodyOut)
-		if envEqual(merged, cur) {
+		merged := mergeState(cur, bodyOut)
+		if stateEqual(merged, cur) {
 			return merged
 		}
 		if !a.fact() {
@@ -235,10 +261,12 @@ func (a *analysis) analyzeLoop(body js.IStmt, cond, post js.IExpr, e env) env {
 	}
 }
 
-// analyzeDoLoop applies the first body execution as a strong update before
-// merging later iterations. A do-while body always runs at least once.
-func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, e env) env {
-	cur := a.analyzeStmt(body, copyEnv(e))
+// analyzeDoLoop applies the first body execution before merging later iterations,
+// because a do-while body always runs at least once.
+func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, st *state) *state {
+	a.loopDepth++
+	defer func() { a.loopDepth-- }()
+	cur := a.analyzeStmt(body, st.clone())
 	if cond != nil {
 		a.evalExpr(cond, cur)
 	}
@@ -246,12 +274,12 @@ func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, e env) env {
 		if !a.alive() {
 			return cur
 		}
-		bodyOut := a.analyzeStmt(body, copyEnv(cur))
+		bodyOut := a.analyzeStmt(body, cur.clone())
 		if cond != nil {
 			a.evalExpr(cond, bodyOut)
 		}
-		merged := mergeEnv(cur, bodyOut)
-		if envEqual(merged, cur) {
+		merged := mergeState(cur, bodyOut)
+		if stateEqual(merged, cur) {
 			return merged
 		}
 		if !a.fact() {
@@ -261,20 +289,22 @@ func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, e env) env {
 	}
 }
 
-// analyzeIterationLoop applies the implicit iteration assignment before each
-// body execution. The incoming state remains an exit alternative because an
-// iterable can be empty.
-func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, iterTaint taintSet, e env) env {
-	cur := copyEnv(e)
+// analyzeIterationLoop applies the implicit iteration assignment before each body
+// execution. The incoming state remains an exit alternative because an iterable
+// can be empty.
+func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, elem value, st *state) *state {
+	a.loopDepth++
+	defer func() { a.loopDepth-- }()
+	cur := st.clone()
 	for {
 		if !a.alive() {
 			return cur
 		}
-		bodyIn := copyEnv(cur)
-		a.applyIterationBinding(init, iterTaint, bodyIn)
+		bodyIn := cur.clone()
+		a.applyIterationBinding(init, elem, bodyIn)
 		bodyOut := a.analyzeStmt(body, bodyIn)
-		merged := mergeEnv(cur, bodyOut)
-		if envEqual(merged, cur) {
+		merged := mergeState(cur, bodyOut)
+		if stateEqual(merged, cur) {
 			return merged
 		}
 		if !a.fact() {
@@ -284,89 +314,85 @@ func (a *analysis) analyzeIterationLoop(body js.IStmt, init js.IExpr, iterTaint 
 	}
 }
 
-func (a *analysis) applyIterationBinding(init js.IExpr, ts taintSet, e env) {
+// iterationElement is the value each element of a for-of iterable can carry:
+// scalar taint from iterating a tainted string, plus the iterable's element
+// field for an array of values.
+func (a *analysis) iterationElement(st *state, iter value) value {
+	return mergeValue(value{scalar: iter.scalar}, a.readField(st, iter, fieldKey{kind: fieldElem}))
+}
+
+func (a *analysis) applyIterationBinding(init js.IExpr, elem value, st *state) {
 	if decl, ok := init.(*js.VarDecl); ok {
 		if len(decl.List) != 0 {
-			a.assignIterationVar(decl.List[0].Binding, ts, e)
+			a.assignIterationVar(decl.List[0].Binding, elem, st)
 		}
 		return
 	}
 	if v, ok := ungroupExpr(init).(*js.Var); ok {
-		a.assignVarTaint(v, ts, e)
+		a.bindVar(st, canonicalVar(v), elem)
 		return
 	}
-	a.evalAssignmentTarget(ungroupExpr(init), e, false)
+	a.evalExpr(ungroupExpr(init), st)
 }
 
-func (a *analysis) assignIterationVar(binding js.IBinding, ts taintSet, e env) {
+func (a *analysis) assignIterationVar(binding js.IBinding, elem value, st *state) {
 	if v, ok := binding.(*js.Var); ok {
-		a.assignVarTaint(v, ts, e)
+		a.bindVar(st, canonicalVar(v), elem)
 		return
 	}
-	a.evalBindingPattern(binding, e)
+	a.evalBindingPattern(binding, st)
 }
 
-func (a *analysis) assignVarTaint(v *js.Var, ts taintSet, e env) {
-	cv := canonicalVar(v)
-	nt := appendVia(ts, string(cv.Name()))
-	if len(nt) == 0 {
-		delete(e, cv)
-		return
-	}
-	e[cv] = nt
-	a.fact()
-}
-
-// evalBindingPattern evaluates computed property names and nested defaults. The
-// scalar-only phase does not bind values extracted from objects or arrays, but
-// these expressions still execute and can contain sinks or scalar writes.
-func (a *analysis) evalBindingPattern(binding js.IBinding, e env) {
+// evalBindingPattern evaluates computed property names and nested defaults. This
+// phase does not bind values extracted from a destructuring pattern, but the
+// pattern's expressions still execute and can contain sinks or scalar writes.
+func (a *analysis) evalBindingPattern(binding js.IBinding, st *state) {
 	switch b := binding.(type) {
 	case *js.BindingArray:
 		for i := range b.List {
-			a.evalNestedBinding(&b.List[i], e)
+			a.evalNestedBinding(&b.List[i], st)
 		}
 		if b.Rest != nil {
-			a.evalBindingPattern(b.Rest, e)
+			a.evalBindingPattern(b.Rest, st)
 		}
 	case *js.BindingObject:
 		for i := range b.List {
 			item := &b.List[i]
 			if item.Key != nil {
-				a.evalExpr(item.Key.Computed, e)
+				a.evalExpr(item.Key.Computed, st)
 			}
-			a.evalNestedBinding(&item.Value, e)
+			a.evalNestedBinding(&item.Value, st)
 		}
 	}
 }
 
-func (a *analysis) evalNestedBinding(be *js.BindingElement, e env) {
+func (a *analysis) evalNestedBinding(be *js.BindingElement, st *state) {
 	if be.Default != nil {
-		taken := copyEnv(e)
+		taken := st.clone()
 		a.evalExpr(be.Default, taken)
-		replaceEnv(e, mergeEnv(e, taken))
+		st.replaceWith(mergeState(st, taken))
 	}
-	a.evalBindingPattern(be.Binding, e)
+	a.evalBindingPattern(be.Binding, st)
 }
 
-func (a *analysis) analyzeSwitch(s *js.SwitchStmt, e env) env {
-	a.evalExpr(s.Init, e)
-	out := copyEnv(e)
-	var fall env
+func (a *analysis) analyzeSwitch(s *js.SwitchStmt, st *state) *state {
+	a.evalExpr(s.Init, st)
+	out := st.clone()
+	var fall *state
 	for i := range s.List {
 		cl := &s.List[i]
 		if cl.Cond != nil {
-			a.evalExpr(cl.Cond, e)
+			a.evalExpr(cl.Cond, st)
 		}
-		in := copyEnv(e)
+		in := st.clone()
 		if fall != nil {
-			in = mergeEnv(in, fall)
+			in = mergeState(in, fall)
 		}
 		for j := range cl.List {
 			in = a.analyzeStmt(cl.List[j], in)
 		}
 		fall = in
-		out = mergeEnv(out, in)
+		out = mergeState(out, in)
 	}
 	return out
 }
@@ -374,180 +400,296 @@ func (a *analysis) analyzeSwitch(s *js.SwitchStmt, e env) env {
 // analyzeTry models that an exception can occur anywhere in the body, so the
 // catch clause sees the pre-body state merged with taint the body may have set,
 // and the finally clause applies to every outgoing edge.
-func (a *analysis) analyzeTry(s *js.TryStmt, e env) env {
-	bodyE := a.analyzeBlock(s.Body, copyEnv(e))
-	merged := bodyE
+func (a *analysis) analyzeTry(s *js.TryStmt, st *state) *state {
+	bodySt := a.analyzeBlock(s.Body, st.clone())
+	merged := bodySt
 	if s.Catch != nil {
-		catchIn := mergeEnv(e, bodyE)
-		catchE := a.analyzeBlock(s.Catch, catchIn)
-		merged = mergeEnv(bodyE, catchE)
+		catchIn := mergeState(st, bodySt)
+		catchSt := a.analyzeBlock(s.Catch, catchIn)
+		merged = mergeState(bodySt, catchSt)
 	}
 	if s.Finally != nil {
-		merged = a.analyzeBlock(s.Finally, copyEnv(merged))
+		merged = a.analyzeBlock(s.Finally, merged.clone())
 	}
 	return merged
 }
 
-func (a *analysis) evalClass(class *js.ClassDecl, e env) {
-	a.evalExpr(class.Extends, e)
-	// Every computed key is evaluated while the class elements are defined.
-	// Static fields and blocks initialize only after all keys have been computed.
+func (a *analysis) evalClass(class *js.ClassDecl, st *state) {
+	a.evalExpr(class.Extends, st)
+	// Every computed key is evaluated while the class elements are defined. Static
+	// fields and blocks initialize only after all keys have been computed.
 	for i := range class.List {
 		item := &class.List[i]
 		if item.Method != nil {
-			a.evalExpr(item.Method.Name.Computed, e)
+			a.evalExpr(item.Method.Name.Computed, st)
 		} else if item.StaticBlock == nil {
-			a.evalExpr(item.Name.Computed, e)
+			a.evalExpr(item.Name.Computed, st)
 		}
 	}
 	for i := range class.List {
 		item := &class.List[i]
 		if item.StaticBlock != nil {
-			blockOut := a.analyzeBlock(item.StaticBlock, copyEnv(e))
-			replaceEnv(e, blockOut)
+			blockSt := a.analyzeBlock(item.StaticBlock, st.clone())
+			st.replaceWith(blockSt)
 		} else if item.Method == nil && item.Static {
-			a.evalExpr(item.Init, e)
+			a.evalExpr(item.Init, st)
 		}
 	}
 }
 
-// evalExpr returns the taint of expr and records any sink it reaches. It never
-// mutates env except through an assignment used as a value.
-func (a *analysis) evalExpr(expr js.IExpr, e env) taintSet {
+// evalExpr returns the abstract value of expr and records any sink it reaches. It
+// mutates state only through an assignment used as a value or a may-state merge.
+func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 	if !a.alive() {
-		return nil
+		return value{}
 	}
 	expr = ungroupExpr(expr)
 	switch x := expr.(type) {
 	case nil:
-		return nil
+		return value{}
 	case *js.Var:
-		return e[canonicalVar(x)]
+		return st.env[canonicalVar(x)]
 	case *js.LiteralExpr:
-		return nil
+		return value{}
 	case *js.DotExpr:
 		if occ, ok := a.sources[expr]; ok {
-			return taintSet{occ.id: taintChain{}}
+			return srcValue(occ.id)
 		}
-		a.evalExpr(x.X, e)
-		return nil
+		base := a.evalExpr(x.X, st)
+		name, ok := staticStringOrIdent(ungroupExpr(x.Y))
+		if !ok {
+			return value{}
+		}
+		return a.readField(st, base, fieldKey{kind: fieldNamed, name: name})
 	case *js.IndexExpr:
 		if occ, ok := a.sources[expr]; ok {
-			return taintSet{occ.id: taintChain{}}
+			return srcValue(occ.id)
 		}
-		a.evalExpr(x.X, e)
-		if x.Optional || optionalChainMaySkip(x.X) {
-			skipped := copyEnv(e)
-			taken := copyEnv(e)
-			a.evalExpr(x.Y, taken)
-			replaceEnv(e, mergeEnv(skipped, taken))
-		} else {
-			a.evalExpr(x.Y, e)
-		}
-		return nil
+		base := a.evalExpr(x.X, st)
+		key := a.evalReadIndexKey(x, st)
+		return a.readField(st, base, key)
 	case *js.BinaryExpr:
 		if isAssignOp(x.Op) {
-			return a.handleAssign(x, e)
+			return a.handleAssign(x, st)
 		}
-		lx := a.evalExpr(x.X, e)
-		var rx taintSet
+		lx := a.evalExpr(x.X, st)
+		var rx value
 		if isLogicalOp(x.Op) {
-			skipped := copyEnv(e)
-			taken := copyEnv(e)
+			skipped := st.clone()
+			taken := st.clone()
 			rx = a.evalExpr(x.Y, taken)
-			replaceEnv(e, mergeEnv(skipped, taken))
+			st.replaceWith(mergeState(skipped, taken))
 		} else {
-			rx = a.evalExpr(x.Y, e)
+			rx = a.evalExpr(x.Y, st)
 		}
 		if binaryOpPropagates(x.Op) {
-			return mergeTaint(lx, rx)
+			if isLogicalOp(x.Op) {
+				// ||, &&, and ?? return one operand value, so both allocations and
+				// scalars can flow through.
+				return mergeValue(lx, rx)
+			}
+			return value{scalar: mergeTaint(lx.scalar, rx.scalar)}
 		}
-		return nil
+		return value{}
 	case *js.UnaryExpr:
-		xt := a.evalExpr(x.X, e)
+		xt := a.evalExpr(x.X, st)
 		if unaryOpPropagates(x.Op) {
-			return xt
+			return value{scalar: xt.scalar}
 		}
-		return nil
+		return value{}
 	case *js.CondExpr:
-		a.evalExpr(x.Cond, e)
-		thenE := copyEnv(e)
-		elseE := copyEnv(e)
-		thenTaint := a.evalExpr(x.X, thenE)
-		elseTaint := a.evalExpr(x.Y, elseE)
-		replaceEnv(e, mergeEnv(thenE, elseE))
-		return mergeTaint(thenTaint, elseTaint)
+		a.evalExpr(x.Cond, st)
+		thenSt := st.clone()
+		elseSt := st.clone()
+		thenVal := a.evalExpr(x.X, thenSt)
+		elseVal := a.evalExpr(x.Y, elseSt)
+		st.replaceWith(mergeState(thenSt, elseSt))
+		return mergeValue(thenVal, elseVal)
 	case *js.TemplateExpr:
-		if x.Tag != nil {
-			a.evalExpr(x.Tag, e)
-			valuesE := e
-			if x.Optional {
-				valuesE = copyEnv(e)
-			}
-			for i := range x.List {
-				a.evalExpr(x.List[i].Expr, valuesE)
-			}
-			if x.Optional {
-				replaceEnv(e, mergeEnv(e, valuesE))
-			}
-			return nil
-		}
-		var ts taintSet
-		for i := range x.List {
-			ts = mergeTaint(ts, a.evalExpr(x.List[i].Expr, e))
-		}
-		return ts
+		return a.evalTemplate(x, st)
 	case *js.CommaExpr:
-		var last taintSet
+		var last value
 		for i := range x.List {
-			last = a.evalExpr(x.List[i], e)
+			last = a.evalExpr(x.List[i], st)
 		}
 		return last
 	case *js.CallExpr:
-		return a.evalCall(x, e)
+		return a.evalCall(x, st)
 	case *js.NewExpr:
-		a.evalExpr(x.X, e)
-		if x.Args != nil {
-			for i := range x.Args.List {
-				a.evalExpr(x.Args.List[i].Value, e)
-			}
-		}
-		return nil
+		return a.evalNew(x, st)
 	case *js.ArrayExpr:
-		for i := range x.List {
-			if x.List[i].Value != nil {
-				a.evalExpr(x.List[i].Value, e)
-			}
-		}
-		return nil
+		return a.evalArray(x, st)
 	case *js.ObjectExpr:
-		a.evalObjectProperties(x, e, nil)
-		return nil
+		return a.evalObject(x, st)
 	case *js.ClassDecl:
-		a.evalClass(x, e)
-		return nil
+		a.evalClass(x, st)
+		return value{}
 	default:
-		return nil
+		return value{}
 	}
 }
 
-func (a *analysis) evalObjectProperties(obj *js.ObjectExpr, e env, visit func(string, taintSet)) {
-	for i := range obj.List {
-		p := &obj.List[i]
+func (a *analysis) evalTemplate(x *js.TemplateExpr, st *state) value {
+	if x.Tag != nil {
+		a.evalExpr(x.Tag, st)
+		valuesSt := st
+		if x.Optional {
+			valuesSt = st.clone()
+		}
+		for i := range x.List {
+			a.evalExpr(x.List[i].Expr, valuesSt)
+		}
+		if x.Optional {
+			st.replaceWith(mergeState(st, valuesSt))
+		}
+		// A tag function's return value is not modeled, so the result is clean.
+		return value{}
+	}
+	var ts taintSet
+	for i := range x.List {
+		ts = mergeTaint(ts, a.evalExpr(x.List[i].Expr, st).scalar)
+	}
+	return value{scalar: ts}
+}
+
+// evalReadIndexKey evaluates a read index expression, honoring optional-chain
+// short-circuit for its side effects, and returns the field key it selects.
+func (a *analysis) evalReadIndexKey(x *js.IndexExpr, st *state) fieldKey {
+	if x.Optional || optionalChainMaySkip(x.X) {
+		skipped := st.clone()
+		taken := st.clone()
+		a.evalExpr(x.Y, taken)
+		st.replaceWith(mergeState(skipped, taken))
+	} else {
+		a.evalExpr(x.Y, st)
+	}
+	return fieldKeyOf(ungroupExpr(x.Y))
+}
+
+func (a *analysis) evalNew(x *js.NewExpr, st *state) value {
+	a.evalExpr(x.X, st)
+	if x.Args != nil {
+		for i := range x.Args.List {
+			a.evalExpr(x.Args.List[i].Value, st)
+		}
+	}
+	site, ok := a.sites[x]
+	if !ok {
+		return value{}
+	}
+	return a.allocate(st, site, a.loopDepth > 0)
+}
+
+func (a *analysis) evalArray(x *js.ArrayExpr, st *state) value {
+	site, ok := a.sites[x]
+	if !ok {
+		for i := range x.List {
+			if x.List[i].Value != nil {
+				a.evalExpr(x.List[i].Value, st)
+			}
+		}
+		return value{}
+	}
+	v := a.allocate(st, site, a.loopDepth > 0)
+	for i := range x.List {
+		el := &x.List[i]
+		if el.Value == nil {
+			continue
+		}
+		ev := a.evalExpr(el.Value, st)
+		if el.Spread {
+			a.writeField(st, v, fieldKey{kind: fieldElem}, a.spreadElements(st, ev))
+			continue
+		}
+		a.writeField(st, v, fieldKey{kind: fieldElem}, ev)
+	}
+	return v
+}
+
+func (a *analysis) evalObject(x *js.ObjectExpr, st *state) value {
+	site, ok := a.sites[x]
+	if !ok {
+		a.evalObjectSideEffects(x, st)
+		return value{}
+	}
+	v := a.allocate(st, site, a.loopDepth > 0)
+	for i := range x.List {
+		p := &x.List[i]
+		if p.Spread {
+			sv := a.evalExpr(p.Value, st)
+			a.spreadInto(st, v, sv)
+			continue
+		}
 		if p.Name != nil && p.Name.Computed != nil {
-			a.evalExpr(p.Name.Computed, e)
+			a.evalExpr(p.Name.Computed, st)
 		}
-		ts := a.evalExpr(p.Value, e)
+		pv := a.evalExpr(p.Value, st)
 		if p.Init != nil {
-			a.evalExpr(p.Init, e)
+			a.evalExpr(p.Init, st)
 		}
-		if visit == nil || p.Name == nil || p.Name.IsComputed() {
+		if p.Name == nil || p.Name.IsComputed() {
+			a.writeField(st, v, fieldKey{kind: fieldWild}, pv)
 			continue
 		}
 		if name, ok := staticStringOrIdent(&p.Name.Literal); ok {
-			visit(name, ts)
+			a.writeField(st, v, fieldKey{kind: fieldNamed, name: name}, pv)
+		} else {
+			a.writeField(st, v, fieldKey{kind: fieldWild}, pv)
 		}
 	}
+	return v
+}
+
+// evalObjectSideEffects evaluates an object literal's expressions without
+// recording fields, used only when the literal had no allocation site assigned.
+func (a *analysis) evalObjectSideEffects(x *js.ObjectExpr, st *state) {
+	for i := range x.List {
+		p := &x.List[i]
+		if p.Name != nil && p.Name.Computed != nil {
+			a.evalExpr(p.Name.Computed, st)
+		}
+		a.evalExpr(p.Value, st)
+		if p.Init != nil {
+			a.evalExpr(p.Init, st)
+		}
+	}
+}
+
+// spreadElements collapses a spread source's element and field taint into one
+// value for insertion into the target array element field.
+func (a *analysis) spreadElements(st *state, src value) value {
+	out := value{scalar: src.scalar}
+	for id := range src.allocs {
+		if o := st.heap[id]; o != nil {
+			for _, fv := range o.fields {
+				out = mergeValue(out, fv)
+			}
+			out = mergeValue(out, o.wild)
+		}
+	}
+	return out
+}
+
+// spreadInto copies a spread source's fields onto the target object as weak
+// updates, preserving field sensitivity through object spread.
+func (a *analysis) spreadInto(st *state, dst, src value) {
+	for did := range dst.allocs {
+		o := st.heap[did]
+		if o == nil {
+			continue
+		}
+		for sid := range src.allocs {
+			so := st.heap[sid]
+			if so == nil {
+				continue
+			}
+			for k, fv := range so.fields {
+				o.setNamed(k, fv, false)
+			}
+			o.wild = mergeValue(o.wild, so.wild)
+		}
+	}
+	a.fact()
 }
 
 func isLogicalOp(op js.TokenType) bool {

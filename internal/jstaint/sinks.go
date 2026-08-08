@@ -13,32 +13,32 @@ const (
 )
 
 // evalCall evaluates a call's receiver and arguments once, records any network
-// sink the call represents, and returns the taint the call propagates.
-func (a *analysis) evalCall(call *js.CallExpr, e env) taintSet {
+// sink the call represents, and returns the value the call propagates.
+func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	callee := ungroupExpr(call.X)
-	recvTaint := a.evalCallCallee(callee, e)
+	recv := a.evalCallCallee(callee, st)
 	isFetch := a.isGlobalCallee(callee, "fetch")
 	isBeacon := a.isBeaconCallee(callee)
 
-	argsEnv := e
+	argsSt := st
 	argsMayBeSkipped := call.Optional || optionalChainMaySkip(call.X)
 	if argsMayBeSkipped {
-		argsEnv = copyEnv(e)
+		argsSt = st.clone()
 	}
-	args := make([]taintSet, len(call.Args.List))
+	args := make([]value, len(call.Args.List))
 	for i := range call.Args.List {
 		if isFetch && i == 1 {
-			a.evalFetchInit(call, call.Args.List[i].Value, argsEnv)
+			a.evalFetchInit(call, call.Args.List[i].Value, argsSt)
 			continue
 		}
-		args[i] = a.evalExpr(call.Args.List[i].Value, argsEnv)
+		args[i] = a.evalExpr(call.Args.List[i].Value, argsSt)
 	}
 	if argsMayBeSkipped {
-		replaceEnv(e, mergeEnv(e, argsEnv))
+		st.replaceWith(mergeState(st, argsSt))
 	}
 
 	a.checkCallSink(call, args, isFetch, isBeacon)
-	return a.callReturn(call, args, recvTaint)
+	return a.evalCallReturn(st, callee, args, recv)
 }
 
 func optionalChainMaySkip(expr js.IExpr) bool {
@@ -56,101 +56,168 @@ func optionalChainMaySkip(expr js.IExpr) bool {
 	}
 }
 
-func (a *analysis) evalCallCallee(callee js.IExpr, e env) taintSet {
+// evalCallCallee evaluates a call's receiver and returns its value, which the
+// array-method and string-method handling consume.
+func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 	switch c := callee.(type) {
 	case *js.DotExpr:
-		return a.evalExpr(c.X, e)
+		return a.evalExpr(c.X, st)
 	case *js.IndexExpr:
-		recvTaint := a.evalExpr(c.X, e)
+		recv := a.evalExpr(c.X, st)
 		if c.Optional || optionalChainMaySkip(c.X) {
-			skipped := copyEnv(e)
-			taken := copyEnv(e)
+			skipped := st.clone()
+			taken := st.clone()
 			a.evalExpr(c.Y, taken)
-			replaceEnv(e, mergeEnv(skipped, taken))
+			st.replaceWith(mergeState(skipped, taken))
 		} else {
-			a.evalExpr(c.Y, e)
+			a.evalExpr(c.Y, st)
 		}
-		return recvTaint
+		return recv
 	default:
-		a.evalExpr(callee, e)
-		return nil
+		a.evalExpr(callee, st)
+		return value{}
 	}
 }
 
-// checkCallSink records a finding when a network-call sink receives tainted data.
-func (a *analysis) checkCallSink(call *js.CallExpr, args []taintSet, isFetch, isBeacon bool) {
+// checkCallSink records a finding when a network-call sink receives a tainted
+// scalar. Only the scalar part of an argument counts: a URL or data argument must
+// be a string, so an unserialized object never taints a sink.
+func (a *analysis) checkCallSink(call *js.CallExpr, args []value, isFetch, isBeacon bool) {
 	if isFetch {
 		if len(args) >= 1 {
-			a.record(args[0], call, 0, sinkFetchURL)
+			a.record(args[0].scalar, call, 0, sinkFetchURL)
 		}
 		return
 	}
 	if isBeacon {
 		if len(args) >= 1 {
-			a.record(args[0], call, 0, sinkBeaconURL)
+			a.record(args[0].scalar, call, 0, sinkBeaconURL)
 		}
 		if len(args) >= 2 {
-			a.record(args[1], call, 1, sinkBeaconData)
+			a.record(args[1].scalar, call, 1, sinkBeaconData)
 		}
 	}
 }
 
-// evalFetchInit looks for a tainted scalar body or referrer in fetch's second
-// argument, which must be a plain object literal in version 1.
-func (a *analysis) evalFetchInit(call *js.CallExpr, initExpr js.IExpr, e env) {
+// evalFetchInit records a tainted scalar body or referrer in fetch's second
+// argument, which must be a plain object literal in version 1. The last value of
+// a duplicated property wins, matching JavaScript object evaluation.
+func (a *analysis) evalFetchInit(call *js.CallExpr, initExpr js.IExpr, st *state) {
 	obj, ok := ungroupExpr(initExpr).(*js.ObjectExpr)
 	if !ok {
-		a.evalExpr(initExpr, e)
+		a.evalExpr(initExpr, st)
 		return
 	}
-	var body, referrer taintSet
-	a.evalObjectProperties(obj, e, func(name string, ts taintSet) {
-		switch name {
-		case "body":
-			body = ts
-		case "referrer":
-			referrer = ts
+	var body, referrer value
+	for i := range obj.List {
+		p := &obj.List[i]
+		if p.Spread {
+			a.evalExpr(p.Value, st)
+			continue
 		}
-	})
-	a.record(body, call, 1, sinkFetchBody)
-	a.record(referrer, call, 1, sinkFetchReferrer)
+		if p.Name != nil && p.Name.Computed != nil {
+			a.evalExpr(p.Name.Computed, st)
+		}
+		pv := a.evalExpr(p.Value, st)
+		if p.Init != nil {
+			a.evalExpr(p.Init, st)
+		}
+		if p.Name == nil || p.Name.IsComputed() {
+			continue
+		}
+		if name, ok := staticStringOrIdent(&p.Name.Literal); ok {
+			switch name {
+			case "body":
+				body = pv
+			case "referrer":
+				referrer = pv
+			}
+		}
+	}
+	a.record(body.scalar, call, 1, sinkFetchBody)
+	a.record(referrer.scalar, call, 1, sinkFetchReferrer)
 }
 
-// callReturn returns the taint a call propagates for the value-preserving
-// built-ins version 1 models. Any other call returns clean.
-func (a *analysis) callReturn(call *js.CallExpr, args []taintSet, recvTaint taintSet) taintSet {
-	callee := ungroupExpr(call.X)
+// evalCallReturn returns the value a call propagates for the value-preserving
+// built-ins and serializers version 1 models, and applies the array-mutating
+// effect of push. Any other call returns clean.
+func (a *analysis) evalCallReturn(st *state, callee js.IExpr, args []value, recv value) value {
 	for _, name := range []string{"String", "encodeURIComponent", "encodeURI", "escape", "btoa"} {
 		if a.isGlobalCallee(callee, name) {
-			return argTaint(args, 0)
+			return value{scalar: argScalar(args, 0)}
 		}
 	}
 
-	prop, baseExpr, ok := memberAccess(callee)
+	prop, base, ok := memberAccess(callee)
 	if !ok {
-		return nil
+		return value{}
 	}
-	if prop == "fromCharCode" && a.isGlobalCallee(baseExpr, "String") {
-		return unionArgs(args)
+	if prop == "fromCharCode" && a.isGlobalCallee(base, "String") {
+		return value{scalar: unionArgScalars(args)}
 	}
-	if prop == "stringify" && a.isGlobalCallee(baseExpr, "JSON") {
-		return argTaint(args, 0)
+	if prop == "stringify" && a.isGlobalCallee(base, "JSON") {
+		return value{scalar: a.serializeStringify(st, argValue(args, 0))}
 	}
 	switch prop {
-	case "toString", "trim":
-		return recvTaint
-	case "charAt", "slice", "substr", "substring":
-		return recvTaint
+	case "toString", "trim", "charAt", "slice", "substr", "substring":
+		return value{scalar: recv.scalar}
 	case "concat":
-		if isDefiniteNonString(baseExpr) {
-			return nil
+		if isDefiniteNonString(base) {
+			return value{}
 		}
-		return mergeTaint(recvTaint, unionArgs(args))
+		return value{scalar: mergeTaint(recv.scalar, unionArgScalars(args))}
+	case "push":
+		a.arrayPush(st, recv, args)
+		return value{}
+	case "join":
+		return value{scalar: a.serializeArray(st, recv)}
 	default:
-		return nil
+		return value{}
 	}
 }
 
+// arrayPush taints the array-element field of the receiver's allocations with the
+// pushed values.
+func (a *analysis) arrayPush(st *state, recv value, args []value) {
+	if len(args) == 0 {
+		return
+	}
+	var v value
+	for i := range args {
+		v = mergeValue(v, args[i])
+	}
+	for id := range recv.allocs {
+		o := st.heap[id]
+		if o == nil {
+			o = &object{}
+			st.heap[id] = o
+		}
+		o.weakElem(v)
+	}
+	a.fact()
+}
+
+func argValue(args []value, i int) value {
+	if i >= len(args) {
+		return value{}
+	}
+	return args[i]
+}
+
+func argScalar(args []value, i int) taintSet {
+	return argValue(args, i).scalar
+}
+
+func unionArgScalars(args []value) taintSet {
+	var out taintSet
+	for i := range args {
+		out = mergeTaint(out, args[i].scalar)
+	}
+	return out
+}
+
+// isDefiniteNonString reports whether concat's receiver is provably not a string,
+// so array concat is not treated as string laundering.
 func isDefiniteNonString(expr js.IExpr) bool {
 	switch x := ungroupExpr(expr).(type) {
 	case *js.LiteralExpr:
@@ -160,13 +227,6 @@ func isDefiniteNonString(expr js.IExpr) bool {
 	default:
 		return false
 	}
-}
-
-func argTaint(args []taintSet, index int) taintSet {
-	if index >= len(args) {
-		return nil
-	}
-	return args[index]
 }
 
 // isGlobalCallee reports whether callee is the named unshadowed global function,
