@@ -67,7 +67,6 @@ type analysis struct {
 	loopDepth   int
 	callDepth   int
 	stopAtAwait bool
-	truncated   bool
 	err         error
 }
 
