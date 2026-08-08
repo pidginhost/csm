@@ -2,7 +2,9 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,35 +17,210 @@ import (
 // ownership maps: a typo in one map silently turns "incomplete" into
 // "completed" and purges state findings the owner never re-emitted.
 func TestLogicalOwnerMapsConsistent(t *testing.T) {
-	for physical, owners := range physicalCheckLogicalOwners {
+	if problems := logicalOwnerConsistencyProblems(
+		physicalCheckLogicalOwners,
+		logicalOwnerFindingNames,
+		logicalOwnerDisableAliases,
+		perRunFindingNames,
+	); len(problems) > 0 {
+		t.Fatalf("logical owner maps are inconsistent:\n%s", strings.Join(problems, "\n"))
+	}
+}
+
+func logicalOwnerConsistencyProblems(
+	physicalOwners map[string][]string,
+	findingNames map[string][]string,
+	disableAliases map[string][]string,
+	perRunNames map[string][]string,
+) []string {
+	var problems []string
+	hosted := make(map[string]string)
+	for physical, owners := range physicalOwners {
 		if _, ok := runnerFindingNames[physical]; !ok {
-			t.Errorf("physicalCheckLogicalOwners key %q is not a runnable check", physical)
+			problems = append(problems, fmt.Sprintf("physical owner key %q is not a runnable check", physical))
 		}
 		for _, owner := range owners {
-			if _, ok := logicalOwnerFindingNames[owner]; !ok {
-				t.Errorf("logical owner %q has no finding names", owner)
-			}
-			if _, ok := logicalOwnerDisableAliases[owner]; !ok {
-				t.Errorf("logical owner %q has no disable aliases", owner)
+			if previous, exists := hosted[owner]; exists {
+				problems = append(problems, fmt.Sprintf("logical owner %q is hosted by both %q and %q", owner, previous, physical))
+			} else {
+				hosted[owner] = physical
 			}
 			if _, ok := runnerFindingNames[owner]; ok {
-				t.Errorf("logical owner %q must not be a runnerFindingNames key", owner)
-			}
-			for _, name := range perRunFindingNames[owner] {
-				if !slices.Contains(logicalOwnerFindingNames[owner], name) {
-					t.Errorf("per-run name %q of owner %q is not among its finding names", name, owner)
-				}
+				problems = append(problems, fmt.Sprintf("logical owner %q must not be a runnable check", owner))
 			}
 		}
 	}
-	for owner, aliases := range logicalOwnerDisableAliases {
+
+	for label, values := range map[string]map[string][]string{
+		"finding names":   findingNames,
+		"disable aliases": disableAliases,
+	} {
+		for owner := range hosted {
+			if _, ok := values[owner]; !ok {
+				problems = append(problems, fmt.Sprintf("logical owner %q has no %s", owner, label))
+			}
+		}
+		for owner := range values {
+			if _, ok := hosted[owner]; !ok {
+				problems = append(problems, fmt.Sprintf("%s key %q is not a hosted logical owner", label, owner))
+			}
+		}
+	}
+
+	for owner := range hosted {
+		ownedNames := findingNames[owner]
+		if len(ownedNames) == 0 {
+			problems = append(problems, fmt.Sprintf("logical owner %q has no owned finding names", owner))
+		}
+		for _, name := range ownedNames {
+			if _, ok := LookupCheck(name); !ok {
+				problems = append(problems, fmt.Sprintf("logical owner %q has unknown finding name %q", owner, name))
+			}
+		}
+		aliases := disableAliases[owner]
 		if !slices.Contains(aliases, owner) {
-			t.Errorf("owner %q disable aliases %v must include the owner ID", owner, aliases)
+			problems = append(problems, fmt.Sprintf("logical owner %q disable aliases %v omit its owner ID", owner, aliases))
 		}
 		for _, alias := range aliases {
-			if alias == "js_taint_scan_incomplete" {
-				t.Errorf("coverage diagnostic must not be a disable alias for %q", owner)
+			if alias != owner && !slices.Contains(ownedNames, alias) {
+				problems = append(problems, fmt.Sprintf("logical owner %q has unowned disable alias %q", owner, alias))
 			}
+		}
+		statusNames, ok := perRunNames[owner]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("logical owner %q has no per-run finding names", owner))
+		}
+		for _, name := range statusNames {
+			if !slices.Contains(ownedNames, name) {
+				problems = append(problems, fmt.Sprintf("per-run name %q of owner %q is not an owned finding", name, owner))
+			}
+			if slices.Contains(aliases, name) {
+				problems = append(problems, fmt.Sprintf("per-run status %q must not disable owner %q", name, owner))
+			}
+		}
+	}
+	for owner := range perRunNames {
+		if _, physical := runnerFindingNames[owner]; physical {
+			continue
+		}
+		if _, logical := hosted[owner]; !logical {
+			problems = append(problems, fmt.Sprintf("per-run key %q is neither a runnable check nor a hosted logical owner", owner))
+		}
+	}
+	return problems
+}
+
+func cloneNameMap(src map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(src))
+	for name, values := range src {
+		out[name] = slices.Clone(values)
+	}
+	return out
+}
+
+func TestLogicalOwnerMapsRejectOwnerNameTypos(t *testing.T) {
+	const misspelled = "js_taint_dee"
+	tests := map[string]func(map[string][]string, map[string][]string, map[string][]string, map[string][]string){
+		"physical owner": func(physical, _, _, _ map[string][]string) {
+			physical["yara_deep"] = []string{misspelled}
+		},
+		"finding names": func(_, findings, _, _ map[string][]string) {
+			findings[misspelled] = findings[logicalOwnerJSTaintDeep]
+			delete(findings, logicalOwnerJSTaintDeep)
+		},
+		"disable aliases": func(_, _, aliases, _ map[string][]string) {
+			aliases[misspelled] = aliases[logicalOwnerJSTaintDeep]
+			delete(aliases, logicalOwnerJSTaintDeep)
+		},
+		"per-run names": func(_, _, _, perRun map[string][]string) {
+			perRun[misspelled] = perRun[logicalOwnerJSTaintDeep]
+			delete(perRun, logicalOwnerJSTaintDeep)
+		},
+	}
+
+	for name, breakMap := range tests {
+		t.Run(name, func(t *testing.T) {
+			physical := cloneNameMap(physicalCheckLogicalOwners)
+			findings := cloneNameMap(logicalOwnerFindingNames)
+			aliases := cloneNameMap(logicalOwnerDisableAliases)
+			perRun := cloneNameMap(perRunFindingNames)
+			breakMap(physical, findings, aliases, perRun)
+
+			if problems := logicalOwnerConsistencyProblems(physical, findings, aliases, perRun); len(problems) == 0 {
+				t.Fatalf("a typo in %s passed the consistency check", name)
+			}
+		})
+	}
+}
+
+func TestSplitDisabledChecksRescuesOnlyYARADeepWrapper(t *testing.T) {
+	for _, check := range checksForTier(TierAll) {
+		if check.name == "yara_deep" {
+			continue
+		}
+		t.Run(check.name, func(t *testing.T) {
+			enabled, disabled := splitDisabledChecks(
+				&config.Config{DisabledChecks: []string{check.name}},
+				[]namedCheck{check},
+			)
+			if len(enabled) != 0 || len(disabled) != 1 || disabled[0].name != check.name {
+				t.Fatalf("disabled check %q was rescued: enabled=%v disabled=%v", check.name, enabled, disabled)
+			}
+		})
+	}
+}
+
+func TestCriticalRunDoesNotPurgeDeepLogicalOwnerNames(t *testing.T) {
+	check := namedCheck{name: "health", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
+		return nil
+	}}
+	_, runPurge := runParallelWithContext(
+		context.Background(),
+		&config.Config{DisabledChecks: []string{logicalOwnerJSTaintDeep}},
+		nil,
+		[]namedCheck{check},
+		string(TierCritical),
+		true,
+	)
+
+	for source, names := range map[string][]string{
+		"critical tier ownership": LatestPurgeCheckNamesForTier(TierCritical),
+		"critical run":            runPurge,
+	} {
+		for _, name := range append(jsOwnerPurgeNames(), runnerFindingNames["yara_deep"]...) {
+			if slices.Contains(names, name) {
+				t.Errorf("%s unexpectedly purged deep name %q: %v", source, name, names)
+			}
+		}
+	}
+}
+
+func TestRunnerHostAndLogicalOwnerIncompletePreserveStateFindings(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "prior YARA window"},
+		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "prior JS window"},
+	})
+
+	check := namedCheck{name: "yara_deep", fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+		markCheckIncomplete(ctx, "yara_deep")
+		markCheckIncomplete(ctx, logicalOwnerJSTaintDeep)
+		return []alert.Finding{
+			{Check: "yara_scan_incomplete", Severity: alert.High, Message: "YARA partial"},
+			{Check: "js_taint_scan_incomplete", Severity: alert.Warning, Message: "JS partial"},
+		}
+	}}
+	findings, purge := runParallelWithContext(context.Background(), &config.Config{}, st, []namedCheck{check}, "deep", true)
+	StoreLatestScanFindings(st, purge, findings)
+
+	got := st.LatestFindings()
+	for _, name := range []string{"yara_match_scheduled", "js_keylogger_dataflow", "yara_scan_incomplete", "js_taint_scan_incomplete"} {
+		if !containsFindingCheck(got, name) {
+			t.Errorf("incomplete owners lost %q: findings=%+v purge=%v", name, got, purge)
 		}
 	}
 }
@@ -75,7 +252,7 @@ func TestRunnerJSOwnerCompletesIndependentlyOfYARA(t *testing.T) {
 
 func TestRunnerJSOwnerIncompleteDoesNotPurgeJSFindings(t *testing.T) {
 	check := namedCheck{name: "yara_deep", fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-		markCheckIncomplete(ctx, "js_taint_deep")
+		markCheckIncomplete(ctx, logicalOwnerJSTaintDeep)
 		return []alert.Finding{{Check: "js_taint_scan_incomplete", Severity: alert.Warning}}
 	}}
 
