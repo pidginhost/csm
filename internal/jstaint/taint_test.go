@@ -489,7 +489,7 @@ func TestScalar_ResultInsertionHonorsFactLimit(t *testing.T) {
 		display: map[int]string{0: "e.key"},
 		results: map[flowKey]Result{},
 	}
-	a.record(taintSet{0: nil}, nil, 0, sinkFetchURL)
+	a.record(taintSet{{source: 0}: nil}, nil, 0, sinkFetchURL)
 	if a.err != errFactLimit {
 		t.Fatalf("error = %v, want %v", a.err, errFactLimit)
 	}

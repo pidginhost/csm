@@ -18,7 +18,15 @@ type allocID struct {
 	summary bool
 }
 
-type allocSet map[allocID]bool
+// allocRef carries the call depth of the path through which an allocation was
+// obtained. Heap objects remain keyed by allocation identity.
+type allocRef struct {
+	id       allocID
+	minDepth uint8
+	advance  uint8
+}
+
+type allocSet map[allocRef]bool
 
 // value is an abstract value at a program point: scalar taint carried directly
 // plus the set of allocation instances the value may reference. Network sinks
@@ -84,18 +92,20 @@ func (o *object) clone() *object {
 // values and the heap of allocation contents. Branch forks clone it; merges
 // union it; loop fixed points compare it.
 type state struct {
-	env  map[*js.Var]value
-	heap map[allocID]*object
+	env       map[*js.Var]value
+	heap      map[allocID]*object
+	continues bool
 }
 
 func newState() *state {
-	return &state{env: map[*js.Var]value{}, heap: map[allocID]*object{}}
+	return &state{env: map[*js.Var]value{}, heap: map[allocID]*object{}, continues: true}
 }
 
 func (s *state) clone() *state {
 	n := &state{
-		env:  make(map[*js.Var]value, len(s.env)),
-		heap: make(map[allocID]*object, len(s.heap)),
+		env:       make(map[*js.Var]value, len(s.env)),
+		heap:      make(map[allocID]*object, len(s.heap)),
+		continues: s.continues,
 	}
 	for k, v := range s.env {
 		n.env[k] = v
@@ -121,6 +131,7 @@ func (s *state) replaceWith(src *state) {
 	for k, o := range src.heap {
 		s.heap[k] = o
 	}
+	s.continues = src.continues
 }
 
 func mergeAllocs(a, b allocSet) allocSet {
@@ -146,6 +157,89 @@ func mergeValue(a, b value) value {
 		allocs:    mergeAllocs(a.allocs, b.allocs),
 		allocOnly: a.allocOnly && b.allocOnly,
 	}
+}
+
+// advanceCallValue moves a value across one user-defined call edge. Facts past
+// depth 1 are discarded. Allocation identities remain available at a blocked
+// depth so the callee can still apply object mutations without propagating taint.
+func advanceCallValue(v value) value {
+	v.scalar = applyTaintDepth(v.scalar, 0, 1)
+	if len(v.allocs) != 0 {
+		refs := make(allocSet, len(v.allocs))
+		for ref := range v.allocs {
+			if ref.advance < 2 {
+				ref.advance++
+			}
+			refs[ref] = true
+		}
+		v.allocs = refs
+	}
+	return v
+}
+
+// returnValueAtDepthOne materializes the lazy allocation constraints accumulated
+// while a depth-1 callee used an argument, then records the return edge without
+// counting the same call twice.
+func returnValueAtDepthOne(v value) value {
+	v.scalar = applyTaintDepth(v.scalar, 1, 0)
+	if len(v.allocs) == 0 {
+		return v
+	}
+	refs := make(allocSet, len(v.allocs))
+	for ref := range v.allocs {
+		refs[composeAllocRef(ref, allocRef{minDepth: 1})] = true
+	}
+	v.allocs = refs
+	return v
+}
+
+func applyRefDepth(v value, parent allocRef) value {
+	v.scalar = applyTaintDepth(v.scalar, parent.minDepth, parent.advance)
+	if len(v.allocs) != 0 && (parent.minDepth != 0 || parent.advance != 0) {
+		refs := make(allocSet, len(v.allocs))
+		for ref := range v.allocs {
+			refs[composeAllocRef(ref, parent)] = true
+		}
+		v.allocs = refs
+	}
+	return v
+}
+
+// composeAllocRef applies parent after child. Each constraint represents
+// max(depth, minDepth) + advance, so a later minimum is discounted by an
+// advance the child has already applied.
+func composeAllocRef(child, parent allocRef) allocRef {
+	requiredMin := uint8(0)
+	if parent.minDepth > child.advance {
+		requiredMin = parent.minDepth - child.advance
+	}
+	if child.minDepth < requiredMin {
+		child.minDepth = requiredMin
+	}
+	child.advance += parent.advance
+	if child.advance > 2 {
+		child.advance = 2
+	}
+	return child
+}
+
+func applyTaintDepth(ts taintSet, minDepth, advance uint8) taintSet {
+	if len(ts) == 0 || (minDepth == 0 && advance == 0) {
+		return ts
+	}
+	out := make(taintSet, len(ts))
+	for fact, chain := range ts {
+		if fact.callDepth < minDepth {
+			fact.callDepth = minDepth
+		}
+		fact.callDepth += advance
+		if fact.callDepth <= 1 {
+			if existing, ok := out[fact]; !ok || shorterChain(chain, existing) {
+				out[fact] = chain
+			}
+		}
+	}
+	return out
 }
 
 func mergePresentValue(current value, present bool, next value) (value, bool) {
@@ -209,9 +303,16 @@ func mergeObject(a, b *object) *object {
 }
 
 func mergeState(a, b *state) *state {
+	if !a.continues && b.continues {
+		return b.clone()
+	}
+	if a.continues && !b.continues {
+		return a.clone()
+	}
 	n := &state{
-		env:  make(map[*js.Var]value, len(a.env)+len(b.env)),
-		heap: make(map[allocID]*object, len(a.heap)+len(b.heap)),
+		env:       make(map[*js.Var]value, len(a.env)+len(b.env)),
+		heap:      make(map[allocID]*object, len(a.heap)+len(b.heap)),
+		continues: a.continues || b.continues,
 	}
 	for k, v := range a.env {
 		if bv, ok := b.env[k]; ok {
@@ -279,7 +380,7 @@ func objectEqual(a, b *object) bool {
 }
 
 func stateEqual(a, b *state) bool {
-	if len(a.env) != len(b.env) || len(a.heap) != len(b.heap) {
+	if a.continues != b.continues || len(a.env) != len(b.env) || len(a.heap) != len(b.heap) {
 		return false
 	}
 	for k, va := range a.env {

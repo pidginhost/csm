@@ -171,13 +171,17 @@ func (a *analysis) arrayPush(st *state, recv value, args []value) {
 }
 
 func (a *analysis) writeArrayElements(st *state, recv value, v value, definite bool) {
-	strong := len(recv.allocs) == 1 && soleCurrent(recv.allocs)
-	for id := range recv.allocs {
+	ids := uniqueAllocIDs(recv.allocs)
+	strong := len(ids) == 1 && soleCurrent(recv.allocs)
+	for id := range ids {
 		o := st.heap[id]
 		if o == nil || !o.array {
 			continue
 		}
 		o.weakElem(v, definite && strong && !id.summary)
+	}
+	if a.callDepth == 0 && allocsConstrained(recv.allocs) && valueCarriesDepthZero(st, v) {
+		resetAllocRefDepth(st, ids)
 	}
 	a.fact()
 }

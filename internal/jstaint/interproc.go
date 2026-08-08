@@ -1,6 +1,10 @@
 package jstaint
 
-import "github.com/tdewolff/parse/v2/js"
+import (
+	"strconv"
+
+	"github.com/tdewolff/parse/v2/js"
+)
 
 // rootSite is a reachable execution root: a callback whose body is analyzed with
 // callback-published shared state. eventVar is the canonical keyboard-event
@@ -9,6 +13,21 @@ import "github.com/tdewolff/parse/v2/js"
 type rootSite struct {
 	fn       *funcInfo
 	eventVar *js.Var
+	argCount int
+}
+
+type reachableFunction struct {
+	body         *js.BlockStmt
+	params       *js.Params
+	scanBody     bool
+	scanBindings bool
+	defaultFrom  int
+	defaultTo    int
+}
+
+type reachableCall struct {
+	fn       *funcInfo
+	provided int
 }
 
 // discoverReachableRoots returns the callback roots reachable from the module top
@@ -18,28 +37,63 @@ type rootSite struct {
 // so a sink reachable only inside it is never analyzed.
 func (a *analysis) discoverReachableRoots(ast *js.AST) []rootSite {
 	var roots []rootSite
-	seenRoot := map[*funcInfo]bool{}
-	scanned := map[*funcInfo]bool{}
-	queue := []*js.BlockStmt{&ast.BlockStmt}
+	seenRoot := map[*funcInfo]int{}
+	bodyScanned := map[*funcInfo]bool{}
+	bindingsScanned := map[*funcInfo]bool{}
+	defaultFrom := map[*funcInfo]int{}
+	queue := []reachableFunction{{body: &ast.BlockStmt, scanBody: true}}
+	enqueue := func(fn *funcInfo, provided int) {
+		if fn.generator || fn.body == nil {
+			return
+		}
+		job := reachableFunction{body: fn.body, params: &fn.params}
+		if !bodyScanned[fn] {
+			bodyScanned[fn] = true
+			job.scanBody = true
+		}
+		if !bindingsScanned[fn] {
+			bindingsScanned[fn] = true
+			job.scanBindings = true
+		}
+		if provided < 0 {
+			provided = 0
+		}
+		if provided > len(fn.params.List) {
+			provided = len(fn.params.List)
+		}
+		previous, ok := defaultFrom[fn]
+		if !ok {
+			previous = len(fn.params.List)
+		}
+		if provided < previous {
+			job.defaultFrom = provided
+			job.defaultTo = previous
+			defaultFrom[fn] = provided
+		}
+		if job.scanBody || job.scanBindings || job.defaultFrom < job.defaultTo {
+			queue = append(queue, job)
+		}
+	}
 	for len(queue) > 0 {
-		body := queue[len(queue)-1]
+		current := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
-		regs, calls := a.scanFunctionLevel(body)
+		regs, calls := a.scanFunctionLevel(current)
 		for _, r := range regs {
-			if !seenRoot[r.fn] {
-				seenRoot[r.fn] = true
+			if index, ok := seenRoot[r.fn]; ok {
+				if roots[index].eventVar == nil && r.eventVar != nil {
+					roots[index].eventVar = r.eventVar
+				}
+				if r.argCount < roots[index].argCount {
+					roots[index].argCount = r.argCount
+				}
+			} else {
+				seenRoot[r.fn] = len(roots)
 				roots = append(roots, r)
 			}
-			if r.fn.body != nil && !scanned[r.fn] {
-				scanned[r.fn] = true
-				queue = append(queue, r.fn.body)
-			}
+			enqueue(r.fn, r.argCount)
 		}
-		for _, fn := range calls {
-			if fn.body != nil && !scanned[fn] {
-				scanned[fn] = true
-				queue = append(queue, fn.body)
-			}
+		for _, call := range calls {
+			enqueue(call.fn, call.provided)
 		}
 	}
 	return roots
@@ -48,10 +102,20 @@ func (a *analysis) discoverReachableRoots(ast *js.AST) []rootSite {
 // scanFunctionLevel walks one function body's own code, collecting callback
 // registrations and directly called same-file functions. It does not descend
 // into nested function literals, whose bodies belong to their own reachability.
-func (a *analysis) scanFunctionLevel(body *js.BlockStmt) ([]rootSite, []*funcInfo) {
+func (a *analysis) scanFunctionLevel(fn reachableFunction) ([]rootSite, []reachableCall) {
 	s := &funcLevelScanner{a: a}
-	for i := range body.List {
-		js.Walk(s, body.List[i])
+	if fn.params != nil {
+		if fn.scanBindings {
+			s.scanParamBindings(fn.params)
+		}
+		for i := fn.defaultFrom; i < fn.defaultTo; i++ {
+			js.Walk(s, fn.params.List[i].Default)
+		}
+	}
+	if fn.scanBody {
+		for i := range fn.body.List {
+			js.Walk(s, fn.body.List[i])
+		}
 	}
 	return s.regs, s.calls
 }
@@ -59,12 +123,15 @@ func (a *analysis) scanFunctionLevel(body *js.BlockStmt) ([]rootSite, []*funcInf
 type funcLevelScanner struct {
 	a     *analysis
 	regs  []rootSite
-	calls []*funcInfo
+	calls []reachableCall
 }
 
 func (s *funcLevelScanner) Exit(js.INode) {}
 
 func (s *funcLevelScanner) Enter(n js.INode) js.IVisitor {
+	if !s.a.alive() {
+		return nil
+	}
 	if walkComputedClassName(s, n) {
 		return s
 	}
@@ -75,6 +142,12 @@ func (s *funcLevelScanner) Enter(n js.INode) js.IVisitor {
 		return nil
 	case *js.ArrowFunc:
 		return nil
+	case *js.MethodDecl:
+		js.Walk(s, e.Name.Computed)
+		return nil
+	case *js.ClassDecl:
+		s.scanClassDefinition(e)
+		return nil
 	case *js.BinaryExpr:
 		if e.Op == js.EqToken {
 			s.registerAssignment(e)
@@ -83,10 +156,64 @@ func (s *funcLevelScanner) Enter(n js.INode) js.IVisitor {
 		s.registerCall(e)
 	case *js.Property:
 		if e.Name != nil && !e.Name.IsComputed() && isReactHandlerProp(e.Name.String()) {
-			s.addRoots(e.Value, true)
+			s.addRoots(e.Value, true, 1)
 		}
 	}
 	return s
+}
+
+// scanParamBindings visits computed keys and nested defaults, which can execute
+// even when the invocation supplied the containing top-level argument.
+func (s *funcLevelScanner) scanParamBindings(params *js.Params) {
+	for i := range params.List {
+		s.scanParamBinding(params.List[i].Binding)
+	}
+	s.scanParamBinding(params.Rest)
+}
+
+func (s *funcLevelScanner) scanParamBinding(binding js.IBinding) {
+	switch b := binding.(type) {
+	case *js.BindingArray:
+		for i := range b.List {
+			element := &b.List[i]
+			js.Walk(s, element.Default)
+			s.scanParamBinding(element.Binding)
+		}
+		s.scanParamBinding(b.Rest)
+	case *js.BindingObject:
+		for i := range b.List {
+			item := &b.List[i]
+			if item.Key != nil {
+				js.Walk(s, item.Key.Computed)
+			}
+			js.Walk(s, item.Value.Default)
+			s.scanParamBinding(item.Value.Binding)
+		}
+		s.scanParamBinding(b.Rest)
+	}
+}
+
+// scanClassDefinition visits only the expressions that run while a class is
+// defined. Instance field initializers and method bodies do not execute until a
+// construction or method call that version 1 does not model.
+func (s *funcLevelScanner) scanClassDefinition(class *js.ClassDecl) {
+	js.Walk(s, class.Extends)
+	for i := range class.List {
+		item := &class.List[i]
+		if item.Method != nil {
+			js.Walk(s, item.Method.Name.Computed)
+		} else if item.StaticBlock == nil {
+			js.Walk(s, item.Name.Computed)
+		}
+	}
+	for i := range class.List {
+		item := &class.List[i]
+		if item.StaticBlock != nil {
+			js.Walk(s, item.StaticBlock)
+		} else if item.Method == nil && item.Static {
+			js.Walk(s, item.Init)
+		}
+	}
 }
 
 // registerAssignment records a callback assigned to a DOM keyboard on-property or
@@ -98,30 +225,42 @@ func (s *funcLevelScanner) registerAssignment(e *js.BinaryExpr) {
 	}
 	switch {
 	case isDOMHandlerProp(name):
-		s.addRoots(e.Y, true)
+		s.addRoots(e.Y, true, 1)
 	case isSocketCallbackProp(name):
-		s.addRoots(e.Y, false)
+		s.addRoots(e.Y, false, 1)
 	}
 }
 
 func (s *funcLevelScanner) registerCall(call *js.CallExpr) {
 	if name, fn, ok := addEventListenerHandler(call); ok {
-		s.addRoots(fn, isDOMEventName(name))
+		s.addRoots(fn, isDOMEventName(name), 1)
 		return
 	}
-	if fn, ok := scheduledCallback(call); ok {
-		s.addRoots(fn, false)
+	if fn, args, ok := scheduledCallback(call); ok {
+		s.addRoots(fn, false, args)
 		return
 	}
 	// A direct call to a same-file function makes that function reachable, so its
 	// own registrations count.
-	s.calls = append(s.calls, resolveFuncValues(ungroupExpr(call.X), s.a.funcs)...)
+	provided := definiteArgCount(call.Args.List)
+	for _, fn := range resolveFuncValues(ungroupExpr(call.X), s.a.funcs) {
+		s.calls = append(s.calls, reachableCall{fn: fn, provided: provided})
+	}
+}
+
+func definiteArgCount(args []js.Arg) int {
+	for i := range args {
+		if args[i].Rest {
+			return 0
+		}
+	}
+	return len(args)
 }
 
 // addRoots resolves an expression to its concrete callback functions and records
 // each as a root. keyHandler marks whether the first parameter is a keystroke
 // event.
-func (s *funcLevelScanner) addRoots(expr js.IExpr, keyHandler bool) {
+func (s *funcLevelScanner) addRoots(expr js.IExpr, keyHandler bool, argCount int) {
 	for _, fn := range resolveFuncValues(expr, s.a.funcs) {
 		if fn.generator {
 			continue
@@ -130,7 +269,7 @@ func (s *funcLevelScanner) addRoots(expr js.IExpr, keyHandler bool) {
 		if keyHandler {
 			ev = firstParamVar(fn.params)
 		}
-		s.regs = append(s.regs, rootSite{fn: fn, eventVar: ev})
+		s.regs = append(s.regs, rootSite{fn: fn, eventVar: ev, argCount: argCount})
 	}
 }
 
@@ -148,24 +287,46 @@ func isSocketCallbackProp(name string) bool {
 
 // scheduledCallback returns the function scheduled by a timer or microtask
 // registration whose first argument is a callback.
-func scheduledCallback(call *js.CallExpr) (js.IExpr, bool) {
-	v, ok := ungroupExpr(call.X).(*js.Var)
-	if !ok || !isGlobalRefAny(v, "setTimeout", "setInterval", "queueMicrotask", "requestAnimationFrame") {
-		return nil, false
+func scheduledCallback(call *js.CallExpr) (js.IExpr, int, bool) {
+	name, ok := scheduledCallbackName(call.X)
+	if !ok {
+		return nil, 0, false
 	}
 	if len(call.Args.List) == 0 || call.Args.List[0].Rest {
-		return nil, false
+		return nil, 0, false
 	}
-	return call.Args.List[0].Value, true
+	if name == "requestAnimationFrame" {
+		return call.Args.List[0].Value, 1, true
+	}
+	if name == "queueMicrotask" {
+		return call.Args.List[0].Value, 0, true
+	}
+	if len(call.Args.List) <= 2 {
+		return call.Args.List[0].Value, 0, true
+	}
+	return call.Args.List[0].Value, definiteArgCount(call.Args.List[2:]), true
 }
 
-func isGlobalRefAny(v *js.Var, names ...string) bool {
-	for _, n := range names {
-		if isGlobalRef(v, n) {
-			return true
-		}
+func scheduledCallbackName(expr js.IExpr) (string, bool) {
+	switch callee := ungroupExpr(expr).(type) {
+	case *js.Var:
+		name, ok := globalName(callee)
+		return name, ok && isScheduledCallbackName(name)
+	case *js.DotExpr, *js.IndexExpr:
+		name, base, ok := memberAccess(expr)
+		return name, ok && isGlobalObject(base) && isScheduledCallbackName(name)
+	default:
+		return "", false
 	}
-	return false
+}
+
+func isScheduledCallbackName(name string) bool {
+	switch name {
+	case "setTimeout", "setInterval", "queueMicrotask", "requestAnimationFrame":
+		return true
+	default:
+		return false
+	}
 }
 
 // sharedState projects a state onto its file-scope portion: the shared variables
@@ -240,7 +401,8 @@ func reachableAllocs(st *state, roots []value) []allocID {
 	var order []allocID
 	var stack []allocID
 	push := func(v value) {
-		for id := range v.allocs {
+		for ref := range v.allocs {
+			id := ref.id
 			if !seen[id] {
 				seen[id] = true
 				order = append(order, id)
@@ -282,15 +444,25 @@ func (a *analysis) evalUserCall(callee js.IExpr, args []value, st *state) (value
 	}
 	var ret value
 	handled := false
+	base := st.clone()
+	effects := base.clone()
 	for _, fn := range fns {
-		if fn.generator || fn.async || fn.body == nil || a.inProgress[fn] {
+		if fn.generator || fn.body == nil || a.inProgress[fn] {
 			continue
 		}
 		handled = true
-		ret = mergeValue(ret, a.analyzeCallee(fn, args, st))
+		branch := base.clone()
+		branchRet := a.analyzeCallee(fn, args, branch)
+		if !fn.async {
+			ret = mergeValue(ret, branchRet)
+		}
+		effects = mergeState(effects, branch)
 		if !a.alive() {
 			break
 		}
+	}
+	if handled {
+		st.replaceWith(effects)
 	}
 	return ret, handled
 }
@@ -299,44 +471,111 @@ func (a *analysis) evalUserCall(callee js.IExpr, args []value, st *state) (value
 // the argument values, then publishes its heap effects back to the caller and
 // returns the union of its return values.
 func (a *analysis) analyzeCallee(fn *funcInfo, args []value, st *state) value {
+	caller := st.clone()
 	sub := st.clone()
-	a.bindParams(fn.params, args, sub)
+	suspensionStart := len(a.suspensions)
 
+	previousDepth := a.callDepth
 	a.callDepth = 1
 	a.inProgress[fn] = true
 	a.retStack = append(a.retStack, value{})
+	a.returnExits = append(a.returnExits, nil)
+	a.bindParams(fn.params, args, sub)
 
-	a.analyzeBlock(fn.body, sub)
+	sub = a.analyzeBlock(fn.body, sub)
 
-	ret := a.retStack[len(a.retStack)-1]
+	exits := a.popReturnExits(sub)
 	a.retStack = a.retStack[:len(a.retStack)-1]
-	a.inProgress[fn] = false
-	a.callDepth = 0
+	var ret value
+	for i := range exits {
+		if exits[i].returned {
+			ret = mergeValue(ret, exits[i].ret)
+		}
+	}
 
 	// The callee shares the caller's heap identities, so its object mutations and
-	// shared-variable writes flow back by unioning its exit state.
-	st.replaceWith(mergeState(st, sub))
-	return ret
+	// outer-variable writes flow back by unioning its exit state. Invocation-local
+	// bindings are removed so they cannot seed a later call.
+	effects := mergeExitStates(exits)
+	if fn.async && len(a.suspensions) > suspensionStart {
+		// The complete exit state is callback-published because the continuation
+		// can run later. A second pass stops each path at its first await and keeps
+		// no-await alternatives, which is the state visible when the promise returns.
+		a.suspensions = append(a.suspensions, effects)
+		effects = a.analyzeAsyncPrefix(fn, args, caller)
+	}
+	a.inProgress[fn] = false
+	a.callDepth = previousDepth
+	a.removeFunctionLocals(fn, effects)
+	out := mergeState(caller, effects)
+	st.replaceWith(out)
+	return returnValueAtDepthOne(ret)
 }
 
-// bindParams binds positional parameters to argument values as strong updates. A
-// rest parameter and destructured parameters do not bind a scalar in version 1;
-// their default expressions still execute for side effects.
+func (a *analysis) analyzeAsyncPrefix(fn *funcInfo, args []value, caller *state) *state {
+	sub := caller.clone()
+	previousStop := a.stopAtAwait
+	a.stopAtAwait = true
+	a.retStack = append(a.retStack, value{})
+	a.returnExits = append(a.returnExits, nil)
+	a.bindParams(fn.params, args, sub)
+	sub = a.analyzeBlock(fn.body, sub)
+	exits := a.popReturnExits(sub)
+	a.retStack = a.retStack[:len(a.retStack)-1]
+	a.stopAtAwait = previousStop
+	return mergeExitStates(exits)
+}
+
+func mergeExitStates(exits []functionExit) *state {
+	if len(exits) == 0 {
+		return newState()
+	}
+	out := exits[0].state.clone()
+	for i := 1; i < len(exits); i++ {
+		out = mergeState(out, exits[i].state)
+	}
+	return out
+}
+
+func (a *analysis) removeFunctionLocals(fn *funcInfo, st *state) {
+	for cv := range a.functionLocals(fn) {
+		if !a.isShared(cv) {
+			delete(st.env, cv)
+		}
+	}
+}
+
+func (a *analysis) functionLocals(fn *funcInfo) map[*js.Var]bool {
+	if locals, ok := a.localCache[fn.body]; ok {
+		return locals
+	}
+	locals := collectFunctionLocals(fn.body)
+	a.localCache[fn.body] = locals
+	return locals
+}
+
+// bindParams applies positional, destructured, defaulted, and rest bindings as
+// strong invocation-local updates. Rest arguments use a bounded synthetic array
+// allocation so only explicit serialization turns their fields into a scalar.
 func (a *analysis) bindParams(params js.Params, args []value, st *state) {
 	for i := range params.List {
 		p := &params.List[i]
 		v, ok := p.Binding.(*js.Var)
 		if !ok {
-			if p.Default != nil {
-				a.evalExpr(p.Default, st)
+			switch {
+			case i < len(args):
+				a.bindParamPattern(p.Binding, advanceCallValue(args[i]), st)
+			case p.Default != nil:
+				a.bindParamPattern(p.Binding, a.evalExpr(p.Default, st), st)
+			default:
+				a.bindParamPattern(p.Binding, value{}, st)
 			}
-			a.evalBindingPattern(p.Binding, st)
 			continue
 		}
 		cv := canonicalVar(v)
 		switch {
 		case i < len(args):
-			a.bindVar(st, cv, args[i])
+			a.bindVar(st, cv, advanceCallValue(args[i]))
 		case p.Default != nil:
 			a.bindVar(st, cv, a.evalExpr(p.Default, st))
 		default:
@@ -344,6 +583,190 @@ func (a *analysis) bindParams(params js.Params, args []value, st *state) {
 		}
 	}
 	if params.Rest != nil {
-		a.evalBindingPattern(params.Rest, st)
+		start := len(params.List)
+		if start > len(args) {
+			start = len(args)
+		}
+		a.bindRestParam(params.Rest, args[start:], st)
 	}
+}
+
+func (a *analysis) bindParamPattern(binding js.IBinding, arg value, st *state) {
+	switch b := binding.(type) {
+	case *js.Var:
+		a.bindVar(st, canonicalVar(b), arg)
+	case *js.BindingArray:
+		for i := range b.List {
+			be := &b.List[i]
+			if be.Binding == nil {
+				continue
+			}
+			key := fieldKey{kind: fieldElem, name: strconv.Itoa(i)}
+			a.bindParamElement(be, a.readField(st, arg, key), fieldDefinitelyPresent(st, arg, key), st)
+		}
+		if b.Rest != nil {
+			a.bindArrayRestParam(b.Rest, arg, len(b.List), st)
+		}
+	case *js.BindingObject:
+		excluded := make(map[string]bool, len(b.List))
+		for i := range b.List {
+			item := &b.List[i]
+			key := a.bindingObjectKey(item, st)
+			if key.kind != fieldWild {
+				excluded[key.name] = true
+			}
+			a.bindParamElement(
+				&item.Value,
+				a.readField(st, arg, key),
+				fieldDefinitelyPresent(st, arg, key),
+				st,
+			)
+		}
+		if b.Rest != nil {
+			a.bindObjectRestParam(b.Rest, arg, excluded, st)
+		}
+	}
+}
+
+func (a *analysis) bindingObjectKey(item *js.BindingObjectItem, st *state) fieldKey {
+	if item.Key != nil {
+		if item.Key.Computed != nil {
+			a.evalExpr(item.Key.Computed, st)
+			return fieldKeyOf(ungroupExpr(item.Key.Computed))
+		}
+		return fieldKeyOf(&item.Key.Literal)
+	}
+	if v, ok := item.Value.Binding.(*js.Var); ok {
+		return fieldKey{kind: fieldNamed, name: string(v.Name())}
+	}
+	return fieldKey{kind: fieldWild}
+}
+
+func (a *analysis) bindParamElement(be *js.BindingElement, arg value, present bool, st *state) {
+	if be.Binding == nil {
+		return
+	}
+	if be.Default == nil || present {
+		a.bindParamPattern(be.Binding, arg, st)
+		return
+	}
+	defaultSt := st.clone()
+	a.bindParamPattern(be.Binding, a.evalExpr(be.Default, defaultSt), defaultSt)
+	argSt := st.clone()
+	a.bindParamPattern(be.Binding, arg, argSt)
+	st.replaceWith(mergeState(defaultSt, argSt))
+}
+
+func (a *analysis) bindRestParam(binding js.IBinding, args []value, st *state) {
+	fresh := &object{array: true}
+	for i := range args {
+		fresh.setNamed(strconv.Itoa(i), advanceCallValue(args[i]), true)
+		a.fact()
+	}
+	a.bindRestObject(binding, fresh, st)
+}
+
+func (a *analysis) bindArrayRestParam(binding js.IBinding, arg value, start int, st *state) {
+	fresh := &object{array: true}
+	if len(arg.scalar) != 0 {
+		fresh.weakElem(value{scalar: arg.scalar}, false)
+	}
+	for ref := range arg.allocs {
+		o := st.heap[ref.id]
+		if o == nil || !o.array {
+			continue
+		}
+		for name, field := range o.fields {
+			if !isArrayIndexName(name) {
+				continue
+			}
+			index, err := strconv.ParseUint(name, 10, 32)
+			if err != nil || index < uint64(start) {
+				continue
+			}
+			fresh.setNamed(strconv.FormatUint(index-uint64(start), 10), applyRefDepth(field, ref), false)
+		}
+		if o.elemMay {
+			fresh.weakElem(applyRefDepth(o.elem, ref), false)
+		}
+		if o.wildMay {
+			fresh.weakElem(applyRefDepth(o.wild, ref), false)
+		}
+	}
+	a.bindRestObject(binding, fresh, st)
+}
+
+func (a *analysis) bindObjectRestParam(binding js.IBinding, arg value, excluded map[string]bool, st *state) {
+	fresh := &object{}
+	if len(arg.scalar) != 0 {
+		fresh.writeWild(value{scalar: arg.scalar}, false)
+	}
+	for ref := range arg.allocs {
+		o := st.heap[ref.id]
+		if o == nil {
+			continue
+		}
+		for name, field := range o.fields {
+			if excluded[name] {
+				continue
+			}
+			fresh.setNamed(name, applyRefDepth(field, ref), false)
+		}
+		if o.elemMay {
+			fresh.weakElem(applyRefDepth(o.elem, ref), false)
+		}
+		if o.wildMay {
+			fresh.writeWild(applyRefDepth(o.wild, ref), false)
+		}
+	}
+	a.bindRestObject(binding, fresh, st)
+}
+
+func (a *analysis) bindRestObject(binding js.IBinding, fresh *object, st *state) {
+	site, ok := a.restSites[binding]
+	if !ok {
+		a.evalBindingPattern(binding, st)
+		return
+	}
+	a.promoteCurrent(st, site)
+	rest := a.installLiteral(st, site, a.loopDepth > 0, fresh)
+	a.bindParamPattern(binding, rest, st)
+}
+
+func numberRestSites(ast *js.AST) map[js.IBinding]int {
+	n := &restSiteNumberer{sites: map[js.IBinding]int{}, next: -1}
+	js.Walk(n, ast)
+	return n.sites
+}
+
+type restSiteNumberer struct {
+	sites map[js.IBinding]int
+	next  int
+}
+
+func (n *restSiteNumberer) Exit(js.INode) {}
+
+func (n *restSiteNumberer) Enter(node js.INode) js.IVisitor {
+	switch binding := node.(type) {
+	case *js.Params:
+		n.number(binding.Rest)
+	case *js.BindingArray:
+		n.number(binding.Rest)
+	case *js.BindingObject:
+		if binding.Rest != nil {
+			n.number(binding.Rest)
+		}
+	}
+	return n
+}
+
+func (n *restSiteNumberer) number(binding js.IBinding) {
+	if binding == nil {
+		return
+	}
+	if _, exists := n.sites[binding]; exists {
+		return
+	}
+	n.sites[binding] = n.next
+	n.next--
 }

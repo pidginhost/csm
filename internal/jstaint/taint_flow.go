@@ -8,8 +8,8 @@ import (
 
 // srcValue is the abstract value of a keyboard-source read: scalar taint tagged
 // with the source occurrence and an empty laundering chain.
-func srcValue(id int) value {
-	return value{scalar: taintSet{id: taintChain{}}}
+func (a *analysis) srcValue(id int) value {
+	return value{scalar: taintSet{{source: id, callDepth: uint8(a.callDepth)}: taintChain{}}}
 }
 
 // analyzeBlock threads the state through a statement list in source order.
@@ -18,7 +18,7 @@ func (a *analysis) analyzeBlock(block *js.BlockStmt, st *state) *state {
 		return st
 	}
 	for i := range block.List {
-		if !a.alive() {
+		if !a.alive() || !st.continues {
 			return st
 		}
 		st = a.analyzeStmt(block.List[i], st)
@@ -27,7 +27,7 @@ func (a *analysis) analyzeBlock(block *js.BlockStmt, st *state) *state {
 }
 
 func (a *analysis) analyzeStmt(stmt js.IStmt, st *state) *state {
-	if !a.alive() {
+	if !a.alive() || !st.continues {
 		return st
 	}
 	switch s := stmt.(type) {
@@ -69,11 +69,15 @@ func (a *analysis) analyzeStmt(stmt js.IStmt, st *state) *state {
 	case *js.TryStmt:
 		st = a.analyzeTry(s, st)
 	case *js.ReturnStmt:
+		var rv value
 		if s.Value != nil {
-			rv := a.evalExpr(s.Value, st)
-			if n := len(a.retStack); n > 0 {
-				a.retStack[n-1] = mergeValue(a.retStack[n-1], rv)
-			}
+			rv = a.evalExpr(s.Value, st)
+		}
+		if n := len(a.returnExits); n > 0 {
+			a.returnExits[n-1] = append(a.returnExits[n-1], functionExit{
+				state: st.clone(), ret: rv, returned: true,
+			})
+			st.continues = false
 		}
 	case *js.ThrowStmt:
 		a.evalExpr(s.Value, st)
@@ -279,6 +283,9 @@ func (a *analysis) analyzeDoLoop(body js.IStmt, cond js.IExpr, st *state) *state
 	a.loopDepth++
 	defer func() { a.loopDepth-- }()
 	cur := a.analyzeStmt(body, st.clone())
+	if !cur.continues {
+		return cur
+	}
 	if cond != nil {
 		a.evalExpr(cond, cur)
 	}
@@ -430,6 +437,11 @@ func (a *analysis) analyzeSwitch(s *js.SwitchStmt, st *state) *state {
 // catch clause sees the pre-body state merged with taint the body may have set,
 // and the finally clause applies to every outgoing edge.
 func (a *analysis) analyzeTry(s *js.TryStmt, st *state) *state {
+	frame := len(a.returnExits) - 1
+	returnStart := 0
+	if frame >= 0 {
+		returnStart = len(a.returnExits[frame])
+	}
 	bodySt := a.analyzeBlock(s.Body, st.clone())
 	merged := bodySt
 	if s.Catch != nil {
@@ -438,7 +450,23 @@ func (a *analysis) analyzeTry(s *js.TryStmt, st *state) *state {
 		merged = mergeState(bodySt, catchSt)
 	}
 	if s.Finally != nil {
-		merged = a.analyzeBlock(s.Finally, merged.clone())
+		var pending []functionExit
+		if frame >= 0 {
+			pending = append(pending, a.returnExits[frame][returnStart:]...)
+			a.returnExits[frame] = a.returnExits[frame][:returnStart]
+		}
+		if merged.continues {
+			merged = a.analyzeBlock(s.Finally, merged.clone())
+		}
+		if frame >= 0 {
+			for i := range pending {
+				out := a.analyzeBlock(s.Finally, pending[i].state.clone())
+				if out.continues {
+					pending[i].state = out
+					a.returnExits[frame] = append(a.returnExits[frame], pending[i])
+				}
+			}
+		}
 	}
 	return merged
 }
@@ -469,7 +497,7 @@ func (a *analysis) evalClass(class *js.ClassDecl, st *state) {
 // evalExpr returns the abstract value of expr and records any sink it reaches. It
 // mutates state only through an assignment used as a value or a may-state merge.
 func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
-	if !a.alive() {
+	if !a.alive() || !st.continues {
 		return value{}
 	}
 	expr = ungroupExpr(expr)
@@ -482,7 +510,7 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		return value{}
 	case *js.DotExpr:
 		if occ, ok := a.sources[expr]; ok {
-			return srcValue(occ.id)
+			return a.srcValue(occ.id)
 		}
 		base := a.evalExpr(x.X, st)
 		name, ok := staticStringOrIdent(ungroupExpr(x.Y))
@@ -492,7 +520,7 @@ func (a *analysis) evalExpr(expr js.IExpr, st *state) value {
 		return a.readField(st, base, fieldKey{kind: fieldNamed, name: name})
 	case *js.IndexExpr:
 		if occ, ok := a.sources[expr]; ok {
-			return srcValue(occ.id)
+			return a.srcValue(occ.id)
 		}
 		base := a.evalExpr(x.X, st)
 		key := a.evalReadIndexKey(x, st)
@@ -564,6 +592,13 @@ func (a *analysis) evalUnary(x *js.UnaryExpr, st *state) value {
 	}
 	xt := a.evalExpr(x.X, st)
 	if x.Op == js.AwaitToken {
+		if a.stopAtAwait {
+			st.continues = false
+			return xt
+		}
+		if a.suspensions != nil {
+			a.suspensions = append(a.suspensions, st.clone())
+		}
 		return xt
 	}
 	if unaryOpPropagates(x.Op) {
@@ -800,21 +835,21 @@ func (a *analysis) collectArrayElements(st *state, src value) value {
 	if len(src.scalar) != 0 {
 		out, have = mergePresentValue(out, have, value{scalar: src.scalar})
 	}
-	for id := range src.allocs {
-		o := st.heap[id]
+	for ref := range src.allocs {
+		o := st.heap[ref.id]
 		if o == nil || !o.array {
 			continue
 		}
 		for name, fv := range o.fields {
 			if isArrayIndexName(name) {
-				out, have = mergePresentValue(out, have, fv)
+				out, have = mergePresentValue(out, have, applyRefDepth(fv, ref))
 			}
 		}
 		if o.elemMay {
-			out, have = mergePresentValue(out, have, o.elem)
+			out, have = mergePresentValue(out, have, applyRefDepth(o.elem, ref))
 		}
 		if o.wildMay {
-			out, have = mergePresentValue(out, have, o.wild)
+			out, have = mergePresentValue(out, have, applyRefDepth(o.wild, ref))
 		}
 	}
 	if !have {
@@ -838,12 +873,13 @@ func (a *analysis) spreadInto(st *state, dst *object, src value) {
 	elemMay := false
 	wildMay := false
 	wildReqSeen := false
-	for sid := range src.allocs {
-		so := st.heap[sid]
+	for ref := range src.allocs {
+		so := st.heap[ref.id]
 		if so == nil {
 			continue
 		}
 		for k, fv := range so.fields {
+			fv = applyRefDepth(fv, ref)
 			if old, ok := fields[k]; ok {
 				fields[k] = mergeValue(old, fv)
 			} else {
@@ -854,10 +890,10 @@ func (a *analysis) spreadInto(st *state, dst *object, src value) {
 			}
 		}
 		if so.elemMay {
-			elem, elemMay = mergePresentValue(elem, elemMay, so.elem)
+			elem, elemMay = mergePresentValue(elem, elemMay, applyRefDepth(so.elem, ref))
 		}
 		if so.wildMay {
-			wild, wildMay = mergePresentValue(wild, wildMay, so.wild)
+			wild, wildMay = mergePresentValue(wild, wildMay, applyRefDepth(so.wild, ref))
 		}
 		if so.elemMust {
 			elemDefinite++
@@ -865,9 +901,9 @@ func (a *analysis) spreadInto(st *state, dst *object, src value) {
 		if so.wildMust {
 			wildDefinite++
 			if wildReqSeen {
-				wildReq = mergeValue(wildReq, so.wildReq)
+				wildReq = mergeValue(wildReq, applyRefDepth(so.wildReq, ref))
 			} else {
-				wildReq = so.wildReq
+				wildReq = applyRefDepth(so.wildReq, ref)
 				wildReqSeen = true
 			}
 		}
