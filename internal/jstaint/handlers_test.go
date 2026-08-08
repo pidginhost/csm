@@ -110,3 +110,11 @@ func TestDiscoverHandlers_MultipleResolvedFunctionsAreUnioned(t *testing.T) {
 		t.Fatalf("discovered %d handler functions, want 2 (union of resolved values)", len(sites))
 	}
 }
+
+func TestDiscoverHandlers_DeduplicatesRepeatedRegistration(t *testing.T) {
+	src := `function h(e){e;}document.onkeydown=h;document.onkeyup=h;` +
+		`document.addEventListener("keypress",h);`
+	if sites := discover(t, src); len(sites) != 1 {
+		t.Fatalf("discovered %d handler functions, want 1 unique function", len(sites))
+	}
+}

@@ -25,12 +25,13 @@ type taintSet map[int]taintChain
 type env map[*js.Var]taintSet
 
 // flowKey is the identity of one source-to-sink flow: which source occurrence,
-// which sink occurrence, and which sink argument. Multiple propagation routes to
-// the same endpoints collapse to one result with the shortest chain.
+// sink occurrence, sink kind, and argument. Multiple propagation routes to the
+// same endpoints collapse to one result with the shortest chain.
 type flowKey struct {
 	source int
 	sink   js.INode
 	arg    int
+	kind   string
 }
 
 type sourceOccurrence struct {
@@ -42,7 +43,6 @@ type sourceOccurrence struct {
 type analysis struct {
 	ctx       context.Context
 	budget    *resourceBudget
-	eventVar  *js.Var
 	sources   map[js.IExpr]sourceOccurrence
 	display   map[int]string
 	results   map[flowKey]Result
@@ -78,11 +78,19 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 	}
 
 	for _, h := range handlers {
+		if !a.alive() {
+			return nil, false, a.err
+		}
 		if h.eventVar == nil {
 			continue
 		}
-		a.eventVar = h.eventVar
-		a.analyzeBlock(h.fn.body, env{})
+		e := env{}
+		// Browser keyboard handlers receive exactly the event argument. Defaults on
+		// later parameters therefore execute before the body.
+		for i := 1; i < len(h.fn.params.List); i++ {
+			e = a.analyzeBinding(&h.fn.params.List[i], e, true)
+		}
+		a.analyzeBlock(h.fn.body, e)
 		if a.err != nil {
 			return nil, false, a.err
 		}
@@ -128,10 +136,19 @@ func joinChain(c []string) string {
 // the joined via names so output does not depend on map iteration order.
 func (a *analysis) record(ts taintSet, sink js.INode, arg int, sinkText string) {
 	for id, chain := range ts {
-		key := flowKey{source: id, sink: sink, arg: arg}
+		if !a.alive() {
+			return
+		}
+		key := flowKey{source: id, sink: sink, arg: arg, kind: sinkText}
 		cand := Result{Source: a.display[id], Via: append([]string(nil), chain...), Sink: sinkText}
-		if ex, ok := a.results[key]; ok && !shorterChain(cand.Via, ex.Via) {
+		if ex, ok := a.results[key]; ok {
+			if shorterChain(cand.Via, ex.Via) {
+				a.results[key] = cand
+			}
 			continue
+		}
+		if !a.fact() {
+			return
 		}
 		a.results[key] = cand
 	}
@@ -186,6 +203,9 @@ type sourceNumberer struct {
 func (n *sourceNumberer) Exit(js.INode) {}
 
 func (n *sourceNumberer) Enter(node js.INode) js.IVisitor {
+	if walkComputedClassName(n, node) {
+		return n
+	}
 	expr, ok := node.(js.IExpr)
 	if !ok {
 		return n
@@ -202,12 +222,8 @@ func (n *sourceNumberer) Enter(node js.INode) js.IVisitor {
 }
 
 func (n *sourceNumberer) resolves(base js.IExpr) bool {
-	for ev := range n.eventVars {
-		if resolvesToEventBase(base, ev) {
-			return true
-		}
-	}
-	return false
+	v := eventBaseVar(base)
+	return v != nil && n.eventVars[v]
 }
 
 // mergeTaint unions two taint sets, keeping the shortest chain per source.
@@ -279,6 +295,15 @@ func mergeEnv(a, b env) env {
 		}
 	}
 	return out
+}
+
+func replaceEnv(dst, src env) {
+	for k := range dst {
+		delete(dst, k)
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
 }
 
 func envEqual(a, b env) bool {

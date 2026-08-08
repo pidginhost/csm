@@ -26,7 +26,12 @@ type handlerSite struct {
 func discoverHandlers(ast *js.AST) []handlerSite {
 	funcs := collectFuncValues(ast)
 	var sites []handlerSite
+	seen := map[*funcInfo]bool{}
 	v := &handlerVisitor{funcs: funcs, add: func(fn *funcInfo) {
+		if seen[fn] {
+			return
+		}
+		seen[fn] = true
 		sites = append(sites, handlerSite{fn: fn, eventVar: firstParamVar(fn.params)})
 	}}
 	js.Walk(v, ast)
@@ -41,6 +46,9 @@ type handlerVisitor struct {
 func (v *handlerVisitor) Exit(js.INode) {}
 
 func (v *handlerVisitor) Enter(n js.INode) js.IVisitor {
+	if walkComputedClassName(v, n) {
+		return v
+	}
 	switch e := n.(type) {
 	case *js.BinaryExpr:
 		if e.Op == js.EqToken && isKeyHandlerProperty(e.X) {
@@ -197,6 +205,9 @@ type funcValueCollector struct {
 func (c *funcValueCollector) Exit(js.INode) {}
 
 func (c *funcValueCollector) Enter(n js.INode) js.IVisitor {
+	if walkComputedClassName(c, n) {
+		return c
+	}
 	switch e := n.(type) {
 	case *js.FuncDecl:
 		if e.Name != nil {
