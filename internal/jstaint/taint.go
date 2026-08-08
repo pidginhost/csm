@@ -16,9 +16,16 @@ const maxASTNodes = 200_000
 // passed through to reach a program point.
 type taintChain = []string
 
-// taintSet maps a source occurrence id to the shortest via chain that carries
-// that source's value to the current point. A nil or empty set is clean.
-type taintSet map[int]taintChain
+// taintFact identifies one source at one permitted user-call depth. Depth is
+// part of the fact so a returned value cannot enter a second user-defined
+// callee after control returns to a root.
+type taintFact struct {
+	source    int
+	callDepth uint8
+}
+
+// taintSet maps a source/depth fact to its shortest via chain.
+type taintSet map[taintFact]taintChain
 
 // flowKey is the identity of one source-to-sink flow: which source occurrence,
 // sink occurrence, sink kind, and argument. Multiple propagation routes to the
@@ -35,22 +42,33 @@ type sourceOccurrence struct {
 	display string
 }
 
+type functionExit struct {
+	state    *state
+	ret      value
+	returned bool
+}
+
 // analysis holds the mutable state for one Analyze call.
 type analysis struct {
-	ctx        context.Context
-	budget     *resourceBudget
-	sources    map[js.IExpr]sourceOccurrence
-	sites      map[js.INode]int
-	funcs      map[*js.Var][]*funcInfo
-	sharedVars map[*js.Var]bool
-	inProgress map[*funcInfo]bool
-	retStack   []value
-	display    map[int]string
-	results    map[flowKey]Result
-	loopDepth  int
-	callDepth  int
-	truncated  bool
-	err        error
+	ctx         context.Context
+	budget      *resourceBudget
+	sources     map[js.IExpr]sourceOccurrence
+	sites       map[js.INode]int
+	funcs       map[*js.Var][]*funcInfo
+	sharedVars  map[*js.Var]bool
+	inProgress  map[*funcInfo]bool
+	localCache  map[*js.BlockStmt]map[*js.Var]bool
+	restSites   map[js.IBinding]int
+	retStack    []value
+	returnExits [][]functionExit
+	suspensions []*state
+	display     map[int]string
+	results     map[flowKey]Result
+	loopDepth   int
+	callDepth   int
+	stopAtAwait bool
+	truncated   bool
+	err         error
 }
 
 // taintPass is the production analysis pass wired into Analyze. It first enforces
@@ -63,15 +81,6 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 		return nil, false, lv.err
 	}
 
-	handlers := discoverHandlers(ast)
-	eventVars := map[*js.Var]bool{}
-	for _, h := range handlers {
-		if h.eventVar != nil {
-			eventVars[h.eventVar] = true
-		}
-	}
-
-	sources, display := numberSources(ast, eventVars)
 	sharedVars := map[*js.Var]bool{}
 	for _, v := range ast.Declared {
 		sharedVars[canonicalVar(v)] = true
@@ -79,16 +88,24 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 	a := &analysis{
 		ctx:        ctx,
 		budget:     budget,
-		sources:    sources,
 		sites:      numberAllocSites(ast),
 		funcs:      collectFuncValues(ast),
 		sharedVars: sharedVars,
 		inProgress: map[*funcInfo]bool{},
-		display:    display,
+		localCache: map[*js.BlockStmt]map[*js.Var]bool{},
+		restSites:  numberRestSites(ast),
 		results:    map[flowKey]Result{},
 	}
+	roots := a.discoverReachableRoots(ast)
+	eventVars := map[*js.Var]bool{}
+	for _, r := range roots {
+		if r.eventVar != nil {
+			eventVars[r.eventVar] = true
+		}
+	}
+	a.sources, a.display = numberSources(ast, eventVars)
 
-	a.analyzeReachable(ast)
+	a.analyzeReachable(ast, roots)
 	if a.err != nil {
 		return nil, false, a.err
 	}
@@ -98,13 +115,11 @@ func taintPass(ctx context.Context, ast *js.AST, budget *resourceBudget) ([]Resu
 // analyzeReachable runs the top level once, then every reachable callback root to
 // a fixed point over the file-scope may-state that callbacks publish to and read
 // from one another.
-func (a *analysis) analyzeReachable(ast *js.AST) {
-	roots := a.discoverReachableRoots(ast)
-
+func (a *analysis) analyzeReachable(ast *js.AST, roots []rootSite) {
 	// The top level runs once with a clean published state, so a request that runs
 	// before any event cannot observe a taint a later handler produces.
 	top := newState()
-	a.analyzeBlock(&ast.BlockStmt, top)
+	top = a.analyzeBlock(&ast.BlockStmt, top)
 	if !a.alive() {
 		return
 	}
@@ -114,12 +129,22 @@ func (a *analysis) analyzeReachable(ast *js.AST) {
 		changed := false
 		for i := range roots {
 			st := global.clone()
+			a.suspensions = make([]*state, 0)
 			a.bindRootParams(roots[i], st)
-			a.analyzeBlock(roots[i].fn.body, st)
+			a.returnExits = append(a.returnExits, nil)
+			st = a.analyzeBlock(roots[i].fn.body, st)
+			exits := a.popReturnExits(st)
 			if !a.alive() {
 				return
 			}
-			next := a.publishShared(global, st)
+			next := global
+			for _, exit := range exits {
+				next = a.publishShared(next, exit.state)
+			}
+			for _, suspended := range a.suspensions {
+				next = a.publishShared(next, suspended)
+			}
+			a.suspensions = nil
 			if !stateEqual(next, global) {
 				global = next
 				changed = true
@@ -131,6 +156,19 @@ func (a *analysis) analyzeReachable(ast *js.AST) {
 	}
 }
 
+// popReturnExits closes the current function-flow frame. Explicit return states
+// and the normal fallthrough state are separate execution alternatives; code
+// after a return must not inherit writes from the returned path.
+func (a *analysis) popReturnExits(normalExit *state) []functionExit {
+	index := len(a.returnExits) - 1
+	exits := a.returnExits[index]
+	a.returnExits = a.returnExits[:index]
+	if normalExit.continues {
+		exits = append(exits, functionExit{state: normalExit})
+	}
+	return exits
+}
+
 // bindRootParams binds a callback's parameters before its body. A keyboard
 // handler's first parameter is the event object whose keystroke reads are the
 // numbered sources, so only its later parameters are bound here.
@@ -140,6 +178,10 @@ func (a *analysis) bindRootParams(r rootSite, st *state) {
 		start = 1
 	}
 	for i := start; i < len(r.fn.params.List); i++ {
+		if i < r.argCount {
+			a.bindParamPattern(r.fn.params.List[i].Binding, value{}, st)
+			continue
+		}
 		a.analyzeBinding(&r.fn.params.List[i], st, true)
 	}
 }
@@ -180,12 +222,12 @@ func joinChain(c []string) string {
 // route to the same endpoints already exists. Ties break lexicographically by
 // the joined via names so output does not depend on map iteration order.
 func (a *analysis) record(ts taintSet, sink js.INode, arg int, sinkText string) {
-	for id, chain := range ts {
+	for fact, chain := range ts {
 		if !a.alive() {
 			return
 		}
-		key := flowKey{source: id, sink: sink, arg: arg, kind: sinkText}
-		cand := Result{Source: a.display[id], Via: append([]string(nil), chain...), Sink: sinkText}
+		key := flowKey{source: fact.source, sink: sink, arg: arg, kind: sinkText}
+		cand := Result{Source: a.display[fact.source], Via: append([]string(nil), chain...), Sink: sinkText}
 		if ex, ok := a.results[key]; ok {
 			if shorterChain(cand.Via, ex.Via) {
 				a.results[key] = cand
@@ -280,12 +322,12 @@ func mergeTaint(a, b taintSet) taintSet {
 		return a
 	}
 	out := make(taintSet, len(a)+len(b))
-	for id, ch := range a {
-		out[id] = ch
+	for fact, ch := range a {
+		out[fact] = ch
 	}
-	for id, ch := range b {
-		if ex, ok := out[id]; !ok || shorterChain(ch, ex) {
-			out[id] = ch
+	for fact, ch := range b {
+		if ex, ok := out[fact]; !ok || shorterChain(ch, ex) {
+			out[fact] = ch
 		}
 	}
 	return out
@@ -298,15 +340,15 @@ func appendVia(ts taintSet, name string) taintSet {
 		return nil
 	}
 	out := make(taintSet, len(ts))
-	for id, ch := range ts {
+	for fact, ch := range ts {
 		if len(ch) > 0 && ch[len(ch)-1] == name {
-			out[id] = ch
+			out[fact] = ch
 			continue
 		}
 		nc := make(taintChain, len(ch)+1)
 		copy(nc, ch)
 		nc[len(ch)] = name
-		out[id] = nc
+		out[fact] = nc
 	}
 	return out
 }
@@ -315,8 +357,8 @@ func taintEqual(a, b taintSet) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for id, ca := range a {
-		cb, ok := b[id]
+	for fact, ca := range a {
+		cb, ok := b[fact]
 		if !ok || !chainEqual(ca, cb) {
 			return false
 		}

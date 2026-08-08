@@ -212,7 +212,7 @@ func (c *funcValueCollector) Enter(n js.INode) js.IVisitor {
 	switch e := n.(type) {
 	case *js.FuncDecl:
 		if e.Name != nil {
-			c.bind(e.Name, &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator, async: e.Async})
+			c.bind(e.Name, newFuncInfo(e.Params, &e.Body, e.Generator, e.Async))
 		}
 	case *js.VarDecl:
 		for i := range e.List {
@@ -256,10 +256,40 @@ func literalFuncValues(expr js.IExpr) []*funcInfo {
 func literalFuncValue(expr js.IExpr) *funcInfo {
 	switch e := expr.(type) {
 	case *js.FuncDecl:
-		return &funcInfo{params: e.Params, body: &e.Body, generator: e.Generator, async: e.Async}
+		return newFuncInfo(e.Params, &e.Body, e.Generator, e.Async)
 	case *js.ArrowFunc:
-		return &funcInfo{params: e.Params, body: &e.Body, async: e.Async}
+		return newFuncInfo(e.Params, &e.Body, false, e.Async)
 	default:
 	}
 	return nil
+}
+
+func newFuncInfo(params js.Params, body *js.BlockStmt, generator, async bool) *funcInfo {
+	return &funcInfo{params: params, body: body, generator: generator, async: async}
+}
+
+// collectFunctionLocals records bindings owned by one invocation. They must not
+// escape into the caller state when an inline callee returns.
+func collectFunctionLocals(body *js.BlockStmt) map[*js.Var]bool {
+	c := &functionLocalCollector{locals: map[*js.Var]bool{}}
+	js.Walk(c, body)
+	return c.locals
+}
+
+type functionLocalCollector struct {
+	locals map[*js.Var]bool
+}
+
+func (c *functionLocalCollector) Exit(js.INode) {}
+
+func (c *functionLocalCollector) Enter(n js.INode) js.IVisitor {
+	switch x := n.(type) {
+	case *js.BlockStmt:
+		for _, v := range x.Declared {
+			c.locals[canonicalVar(v)] = true
+		}
+	case *js.FuncDecl, *js.ArrowFunc, *js.MethodDecl:
+		return nil
+	}
+	return c
 }

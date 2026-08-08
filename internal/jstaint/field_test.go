@@ -523,10 +523,10 @@ func TestPromoteCurrentMovesEveryReferenceToSummary(t *testing.T) {
 	other := allocID{site: 9, summary: false}
 
 	st := newState()
-	st.heap[from] = &object{fields: map[string]value{"k": {scalar: taintSet{0: nil}}}}
-	st.heap[other] = &object{fields: map[string]value{"ref": {allocs: allocSet{from: true}}}}
-	st.env[va] = value{allocs: allocSet{from: true}}
-	st.env[vb] = value{allocs: allocSet{from: true}}
+	st.heap[from] = &object{fields: map[string]value{"k": {scalar: taintSet{{source: 0}: nil}}}}
+	st.heap[other] = &object{fields: map[string]value{"ref": {allocs: allocSet{{id: from}: true}}}}
+	st.env[va] = value{allocs: allocSet{{id: from}: true}}
+	st.env[vb] = value{allocs: allocSet{{id: from}: true}}
 
 	a := &analysis{}
 	a.promoteCurrent(st, site)
@@ -540,11 +540,11 @@ func TestPromoteCurrentMovesEveryReferenceToSummary(t *testing.T) {
 		t.Fatalf("summary instance missing promoted field taint: %+v", summary)
 	}
 	for name, v := range map[string]value{"va": st.env[va], "vb": st.env[vb]} {
-		if v.allocs[from] || !v.allocs[to] {
+		if hasAllocID(v.allocs, from) || !hasAllocID(v.allocs, to) {
 			t.Fatalf("%s still references the current instance: %+v", name, v.allocs)
 		}
 	}
-	if ref := st.heap[other].fields["ref"]; ref.allocs[from] || !ref.allocs[to] {
+	if ref := st.heap[other].fields["ref"]; hasAllocID(ref.allocs, from) || !hasAllocID(ref.allocs, to) {
 		t.Fatalf("heap field reference not rewritten: %+v", ref.allocs)
 	}
 }
