@@ -93,6 +93,17 @@ func splitDisabledChecks(cfg *config.Config, checks []namedCheck) (enabled, disa
 			}
 		}
 	}
+	ownerOff := disabledLogicalOwners(cfg)
+	for name := range disabledSet {
+		for _, owner := range physicalCheckLogicalOwners[name] {
+			if _, off := ownerOff[owner]; !off {
+				// An enabled hosted owner keeps the wrapper runnable; the
+				// check itself skips its disabled consumer.
+				delete(disabledSet, name)
+				break
+			}
+		}
+	}
 	if len(disabledSet) == 0 {
 		return checks, nil
 	}
@@ -117,8 +128,17 @@ func runnerNamesForFinding(finding string) []string {
 // also accepted by splitDisabledChecks for existing configs, but are not
 // exposed in the UI.
 func DisabledCheckNames() []string {
-	out := make([]string, 0, len(findingNameToRunnerNames))
+	seen := make(map[string]struct{}, len(findingNameToRunnerNames))
 	for finding := range findingNameToRunnerNames {
+		seen[finding] = struct{}{}
+	}
+	for _, aliases := range logicalOwnerDisableAliases {
+		for _, alias := range aliases {
+			seen[alias] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for finding := range seen {
 		info, ok := LookupCheck(finding)
 		if !ok || info.Internal {
 			continue
@@ -141,6 +161,14 @@ func DisabledCheckConfigNames() []string {
 	}
 	for runner := range runnerFindingNames {
 		seen[runner] = struct{}{}
+	}
+	// Logical-owner IDs and their public finding aliases are valid disable
+	// values; the coverage diagnostic stays rejected because it appears in no
+	// accepted vocabulary.
+	for _, aliases := range logicalOwnerDisableAliases {
+		for _, alias := range aliases {
+			seen[alias] = struct{}{}
+		}
 	}
 	out := make([]string, 0, len(seen))
 	for name := range seen {
@@ -240,6 +268,53 @@ var runnerFindingNames = map[string][]string{
 	"whm_access":            {"whm_account_action", "whm_password_change"},
 	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse", "http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof", "http_distributed_flood", "http_asn_crawl"},
 	"wp_core":               {"wp_core_integrity"},
+}
+
+// logicalOwnerFindingNames maps a logical finding owner hosted inside another
+// physical check to the finding names it owns. A logical owner is not a
+// runnable check, so it must never be a runnerFindingNames key; the hosting
+// check reports each owner's completion independently by calling
+// markCheckIncomplete with the owner's exact name.
+var logicalOwnerFindingNames = map[string][]string{
+	"js_taint_deep": {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
+}
+
+// logicalOwnerDisableAliases maps a logical owner to the disabled_checks
+// values that disable it. The coverage diagnostic is deliberately absent:
+// hiding a coverage warning must never silently disable detection.
+var logicalOwnerDisableAliases = map[string][]string{
+	"js_taint_deep": {"js_taint_deep", "js_keylogger_dataflow"},
+}
+
+// physicalCheckLogicalOwners maps a runnable check to the logical owners it
+// hosts. splitDisabledChecks keeps the physical wrapper runnable while any
+// hosted owner is enabled, and the runner purges each owner by its own
+// completion mark rather than the wrapper's.
+var physicalCheckLogicalOwners = map[string][]string{
+	"yara_deep": {"js_taint_deep"},
+}
+
+// disabledLogicalOwners returns the logical owners disabled by cfg.
+func disabledLogicalOwners(cfg *config.Config) map[string]struct{} {
+	out := map[string]struct{}{}
+	if cfg == nil || len(cfg.DisabledChecks) == 0 {
+		return out
+	}
+	disabled := make(map[string]struct{}, len(cfg.DisabledChecks))
+	for _, name := range cfg.DisabledChecks {
+		if name = strings.TrimSpace(name); name != "" {
+			disabled[name] = struct{}{}
+		}
+	}
+	for owner, aliases := range logicalOwnerDisableAliases {
+		for _, alias := range aliases {
+			if _, ok := disabled[alias]; ok {
+				out[owner] = struct{}{}
+				break
+			}
+		}
+	}
+	return out
 }
 
 // namedCheck pairs a check function with its name for timeout reporting.
@@ -460,13 +535,37 @@ var checkThrottleMin = map[string]int{
 // tier. The daemon uses this to replace a tier's current scan output without
 // retaining stale findings from prior runs.
 func LatestPurgeCheckNamesForTier(tier Tier) []string {
-	return latestPurgeCheckNamesForChecks(checksForTier(tier))
+	return withLogicalOwnerPurgeNames(checksForTier(tier))
 }
 
 // LatestPurgeCheckNamesForReducedDeep returns the emitted finding names owned
 // by the reduced deep set used while fanotify covers filesystem events.
 func LatestPurgeCheckNamesForReducedDeep() []string {
-	return latestPurgeCheckNamesForChecks(reducedDeepChecks())
+	return withLogicalOwnerPurgeNames(reducedDeepChecks())
+}
+
+// withLogicalOwnerPurgeNames extends the physical ownership expansion with the
+// finding names of every logical owner hosted by a check in the set. Only the
+// tier-level "everything this tier owns" views use it; the runner's per-cycle
+// purge tracks each logical owner's completion individually instead.
+func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
+	names := latestPurgeCheckNamesForChecks(toScan)
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		seen[name] = struct{}{}
+	}
+	for _, nc := range toScan {
+		for _, owner := range physicalCheckLogicalOwners[nc.name] {
+			for _, name := range logicalOwnerFindingNames[owner] {
+				if _, ok := seen[name]; !ok {
+					seen[name] = struct{}{}
+					names = append(names, name)
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // perRunFindingNames lists finding names that describe a single run's scan
@@ -478,6 +577,7 @@ func LatestPurgeCheckNamesForReducedDeep() []string {
 // completion-gated so mid-cycle windows never wipe earlier windows' finds.
 var perRunFindingNames = map[string][]string{
 	"yara_deep":          {"yara_scan_incomplete"},
+	"js_taint_deep":      {"js_taint_scan_incomplete"},
 	"php_config_changes": {"php_config_scan_incomplete"},
 }
 
@@ -668,6 +768,22 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
+	// Logical owners hosted by checks in this set: a disabled owner purges
+	// its names every cycle like a disabled check, while an enabled owner is
+	// purged only on its own completion mark, independent of its host's.
+	ownerOff := disabledLogicalOwners(cfg)
+	hostedOwners := make(map[string][]string)
+	disabledOwnerSet := make(map[string]struct{})
+	for _, nc := range checks {
+		for _, owner := range physicalCheckLogicalOwners[nc.name] {
+			if _, off := ownerOff[owner]; off {
+				disabledOwnerSet[owner] = struct{}{}
+			} else {
+				hostedOwners[nc.name] = append(hostedOwners[nc.name], owner)
+			}
+		}
+	}
+
 	scanCtx, truncations := withAccountScanTruncationCollector(parent)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
 	var mu sync.Mutex
@@ -680,6 +796,7 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// so purging its names would wipe every finding from earlier cycles
 	// while merging nothing back.
 	completedChecks := make([]namedCheck, 0, len(enabledChecks))
+	completedOwners := make([]string, 0)
 	completedThrottled := make([]string, 0)
 	// incompleteRan collects checks that returned within budget but marked
 	// themselves incomplete; their per-run status finding names still purge.
@@ -775,6 +892,17 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 					completedChecks = append(completedChecks, c)
 				} else {
 					incompleteRan = append(incompleteRan, c.name)
+				}
+				// A hosted logical owner completes or stays partial on its own
+				// mark, honored only because the physical check returned in
+				// budget without a panic; a YARA-side failure must never purge
+				// JS findings the run did not re-emit, and vice versa.
+				for _, owner := range hostedOwners[c.name] {
+					if !incompleteChecks.contains(owner) {
+						completedOwners = append(completedOwners, owner)
+					} else {
+						incompleteRan = append(incompleteRan, owner)
+					}
 				}
 				if len(results) > 0 {
 					findings = append(findings, results...)
@@ -906,6 +1034,12 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	}
 
 	purgeNames := latestPurgeCheckNamesForChecks(purgeChecks)
+	for _, owner := range completedOwners {
+		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
+	}
+	for owner := range disabledOwnerSet {
+		purgeNames = append(purgeNames, logicalOwnerFindingNames[owner]...)
+	}
 	return findings, mergePerRunPurgeNames(purgeNames, incompleteRan)
 }
 
