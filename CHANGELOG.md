@@ -20,7 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Canceled deep scans no longer reset progress for a disabled scan consumer, and JavaScript coverage gaps now retain only the newest prior finding for each affected file instead of duplicating stale variants.
 - The JavaScript keylogger rule now requires keystroke capture near a network send, avoiding false positives from Enter-key checks next to unrelated requests. Buffered, beaconed, and credential-field exfiltration stays detected in both scan engines.
 - Malware rules no longer flag a PHP bind shell in non-PHP files, a hardened or webshot-disabled TimThumb, a template's hidden social-icon bar, or a plugin that hides admin notices via a stylesheet, cutting recurring false positives on stock library and template content.
 - Reputation sightings for IPs routed to the browser challenge are no longer emailed when blocked-alert suppression is on, since the challenge either verifies the visitor or escalates to a block without operator action. On busy hosts this removes hundreds of scanner-noise alert lines per day.
