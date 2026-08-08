@@ -136,9 +136,9 @@ func TestAnalyze_CancellationPrecedesSizeGate(t *testing.T) {
 func TestAnalyze_CancellationDuringPassDiscardsResults(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	got := analyzeWithPass(ctx, []byte(candidateSrc),
-		func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error) {
+		func(context.Context, *js.AST, *resourceBudget) ([]Result, int, bool, error) {
 			cancel()
-			return []Result{{Source: "injected"}}, true, ctx.Err()
+			return []Result{{Source: "injected"}}, 1, true, ctx.Err()
 		})
 	if got.Status != StatusCanceled {
 		t.Errorf("Status = %v, want StatusCanceled", got.Status)
@@ -155,8 +155,8 @@ func TestAnalyze_CancellationDuringPassDiscardsResults(t *testing.T) {
 func TestAnalyze_CancellationReasonDoesNotExposeInternalText(t *testing.T) {
 	const attackerText = "attacker-controlled cancellation context"
 	got := analyzeWithPass(context.Background(), []byte(candidateSrc),
-		func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error) {
-			return nil, false, fmt.Errorf("%s: %w", attackerText, context.Canceled)
+		func(context.Context, *js.AST, *resourceBudget) ([]Result, int, bool, error) {
+			return nil, 0, false, fmt.Errorf("%s: %w", attackerText, context.Canceled)
 		})
 	if got.Status != StatusCanceled {
 		t.Fatalf("Status = %v, want StatusCanceled", got.Status)
@@ -226,13 +226,13 @@ func TestAnalyze_ParserDepthLimitDoesNotCrash(t *testing.T) {
 
 func TestAnalyze_FactLimitReportsResourceLimitWithoutResults(t *testing.T) {
 	got := analyzeWithPass(context.Background(), []byte(candidateSrc),
-		func(_ context.Context, _ *js.AST, budget *resourceBudget) ([]Result, bool, error) {
+		func(_ context.Context, _ *js.AST, budget *resourceBudget) ([]Result, int, bool, error) {
 			for i := 0; i < maxPropagatedFacts; i++ {
 				if err := budget.addFact(); err != nil {
 					t.Fatalf("fact %d returned an early error: %v", i+1, err)
 				}
 			}
-			return []Result{{Source: "injected"}}, true, budget.addFact()
+			return []Result{{Source: "injected"}}, 1, true, budget.addFact()
 		})
 	if got.Status != StatusResourceLimit {
 		t.Errorf("Status = %v, want StatusResourceLimit", got.Status)
@@ -248,7 +248,7 @@ func TestAnalyze_FactLimitReportsResourceLimitWithoutResults(t *testing.T) {
 
 func TestAnalyze_InternalPanicReportsPanicWithoutResults(t *testing.T) {
 	got := analyzeWithPass(context.Background(), []byte(candidateSrc),
-		func(context.Context, *js.AST, *resourceBudget) ([]Result, bool, error) {
+		func(context.Context, *js.AST, *resourceBudget) ([]Result, int, bool, error) {
 			panic("injected panic")
 		})
 	if got.Status != StatusPanic {
