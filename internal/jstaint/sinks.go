@@ -28,7 +28,7 @@ func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	args := make([]value, len(call.Args.List))
 	for i := range call.Args.List {
 		if isFetch && i == 1 {
-			a.evalFetchInit(call, call.Args.List[i].Value, argsSt)
+			a.evalFetchInit(call, args[0], call.Args.List[i].Value, argsSt)
 			continue
 		}
 		args[i] = a.evalExpr(call.Args.List[i].Value, argsSt)
@@ -38,6 +38,12 @@ func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	}
 
 	a.checkCallSink(call, args, isFetch, isBeacon)
+	if a.xhrOrWSMethod(call, recv, args, st) {
+		return value{}
+	}
+	if v, ok := a.createElementValue(call, st); ok {
+		return v
+	}
 	if ret, ok := a.evalUserCall(callee, args, st); ok {
 		return ret
 	}
@@ -88,16 +94,16 @@ func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 func (a *analysis) checkCallSink(call *js.CallExpr, args []value, isFetch, isBeacon bool) {
 	if isFetch {
 		if len(args) >= 1 {
-			a.record(args[0].scalar, call, 0, sinkFetchURL)
+			a.recordURL(args[0], call, 0, sinkFetchURL)
 		}
 		return
 	}
 	if isBeacon {
 		if len(args) >= 1 {
-			a.record(args[0].scalar, call, 0, sinkBeaconURL)
+			a.recordURL(args[0], call, 0, sinkBeaconURL)
 		}
 		if len(args) >= 2 {
-			a.record(args[1].scalar, call, 1, sinkBeaconData)
+			a.recordBody(argValue(args, 0), args[1], call, 1, sinkBeaconData)
 		}
 	}
 }
@@ -106,7 +112,7 @@ func (a *analysis) checkCallSink(call *js.CallExpr, args []value, isFetch, isBea
 // argument, which must be a plain object literal in version 1. Evaluating the
 // literal through the heap preserves computed, spread, and duplicate-property
 // semantics without evaluating any property twice.
-func (a *analysis) evalFetchInit(call *js.CallExpr, initExpr js.IExpr, st *state) {
+func (a *analysis) evalFetchInit(call *js.CallExpr, dest value, initExpr js.IExpr, st *state) {
 	_, ok := ungroupExpr(initExpr).(*js.ObjectExpr)
 	if !ok {
 		a.evalExpr(initExpr, st)
@@ -115,8 +121,8 @@ func (a *analysis) evalFetchInit(call *js.CallExpr, initExpr js.IExpr, st *state
 	init := a.evalExpr(initExpr, st)
 	body := a.readField(st, init, fieldKey{kind: fieldNamed, name: "body"})
 	referrer := a.readField(st, init, fieldKey{kind: fieldNamed, name: "referrer"})
-	a.record(body.scalar, call, 1, sinkFetchBody)
-	a.record(referrer.scalar, call, 1, sinkFetchReferrer)
+	a.recordBody(dest, body, call, 1, sinkFetchBody)
+	a.recordBody(dest, referrer, call, 1, sinkFetchReferrer)
 }
 
 // evalCallReturn returns the value a call propagates for the value-preserving

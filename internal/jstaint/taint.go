@@ -124,6 +124,9 @@ func (a *analysis) analyzeReachable(ast *js.AST, roots []rootSite) {
 		return
 	}
 	global := a.sharedState(top)
+	// A socket that survives to file-scope state can be observed open by a later
+	// callback, which is when a send on it becomes a network sink.
+	markSocketsObservable(global)
 
 	for a.alive() {
 		changed := false
@@ -145,6 +148,7 @@ func (a *analysis) analyzeReachable(ast *js.AST, roots []rootSite) {
 				next = a.publishShared(next, suspended)
 			}
 			a.suspensions = nil
+			markSocketsObservable(next)
 			if !stateEqual(next, global) {
 				global = next
 				changed = true

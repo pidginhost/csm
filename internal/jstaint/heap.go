@@ -40,10 +40,10 @@ type value struct {
 	// allocation. A branch that may instead produce an untracked clean primitive
 	// clears it, preventing an object spread or cycle check from acting definite.
 	allocOnly bool
-}
-
-func (v value) isEmpty() bool {
-	return len(v.scalar) == 0 && len(v.allocs) == 0
+	// scheme is the URL scheme this value definitely carries when used as a
+	// destination, independent of taint. It gates whether a tainted URL is a
+	// network sink.
+	scheme schemeState
 }
 
 // object is the abstract contents of one allocation: statically named fields, an
@@ -60,18 +60,36 @@ type object struct {
 	elemMust bool
 	wildMust bool
 	array    bool
+	// Receiver provenance for network-sink method calls. kind names the platform
+	// object this allocation represents; a generic object is never a sink.
+	kind objectKind
+	// XMLHttpRequest path state: whether an open has been seen on this path, and
+	// the taint remembered from that open's URL and any setRequestHeader values.
+	xhrOpened bool
+	xhrURL    taintSet
+	xhrHeader taintSet
+	// WebSocket path state: possibly open once a later callback can observe it,
+	// definitely closed only when closed on every merged path.
+	wsMaybeOpen bool
+	wsClosed    bool
 }
 
 func (o *object) clone() *object {
 	n := &object{
-		elem:     o.elem,
-		wild:     o.wild,
-		wildReq:  o.wildReq,
-		elemMay:  o.elemMay,
-		wildMay:  o.wildMay,
-		elemMust: o.elemMust,
-		wildMust: o.wildMust,
-		array:    o.array,
+		elem:        o.elem,
+		wild:        o.wild,
+		wildReq:     o.wildReq,
+		elemMay:     o.elemMay,
+		wildMay:     o.wildMay,
+		elemMust:    o.elemMust,
+		wildMust:    o.wildMust,
+		array:       o.array,
+		kind:        o.kind,
+		xhrOpened:   o.xhrOpened,
+		xhrURL:      o.xhrURL,
+		xhrHeader:   o.xhrHeader,
+		wsMaybeOpen: o.wsMaybeOpen,
+		wsClosed:    o.wsClosed,
 	}
 	if len(o.fields) != 0 {
 		n.fields = make(map[string]value, len(o.fields))
@@ -156,6 +174,7 @@ func mergeValue(a, b value) value {
 		scalar:    mergeTaint(a.scalar, b.scalar),
 		allocs:    mergeAllocs(a.allocs, b.allocs),
 		allocOnly: a.allocOnly && b.allocOnly,
+		scheme:    mergeScheme(a.scheme, b.scheme),
 	}
 }
 
@@ -256,6 +275,14 @@ func mergeObject(a, b *object) *object {
 		elemMust: a.elemMust && b.elemMust,
 		wildMust: a.wildMust && b.wildMust,
 		array:    a.array,
+		// The two operands are the same allocation site, so kind agrees; a fresh
+		// generic instance from one path defers to the provenance of the other.
+		kind:        mergeKind(a.kind, b.kind),
+		xhrOpened:   a.xhrOpened || b.xhrOpened,
+		xhrURL:      mergeTaint(a.xhrURL, b.xhrURL),
+		xhrHeader:   mergeTaint(a.xhrHeader, b.xhrHeader),
+		wsMaybeOpen: a.wsMaybeOpen || b.wsMaybeOpen,
+		wsClosed:    a.wsClosed && b.wsClosed,
 	}
 	if a.elemMay {
 		n.elem = a.elem
@@ -354,12 +381,16 @@ func allocsEqual(a, b allocSet) bool {
 }
 
 func valueEqual(a, b value) bool {
-	return a.allocOnly == b.allocOnly && taintEqual(a.scalar, b.scalar) && allocsEqual(a.allocs, b.allocs)
+	return a.allocOnly == b.allocOnly && a.scheme == b.scheme &&
+		taintEqual(a.scalar, b.scalar) && allocsEqual(a.allocs, b.allocs)
 }
 
 func objectEqual(a, b *object) bool {
 	if a.array != b.array || a.elemMay != b.elemMay || a.wildMay != b.wildMay ||
 		a.elemMust != b.elemMust || a.wildMust != b.wildMust ||
+		a.kind != b.kind || a.xhrOpened != b.xhrOpened ||
+		a.wsMaybeOpen != b.wsMaybeOpen || a.wsClosed != b.wsClosed ||
+		!taintEqual(a.xhrURL, b.xhrURL) || !taintEqual(a.xhrHeader, b.xhrHeader) ||
 		len(a.must) != len(b.must) || !valueEqual(a.elem, b.elem) ||
 		!valueEqual(a.wildReq, b.wildReq) ||
 		!valueEqual(a.wild, b.wild) || len(a.fields) != len(b.fields) {
