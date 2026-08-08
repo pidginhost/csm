@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -257,8 +258,14 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		}
 		return false, "", snap.sha256, nil
 	case "js_keylogger_dataflow":
-		snap, err := readContentSnapshotForReverify(path, info)
+		if info.Size() > jstaint.MaxSourceBytes {
+			return false, "", "", fmt.Errorf("JS taint analysis did not complete: %s", jstaint.StatusOversize)
+		}
+		snap, err := readContentSnapshotForReverifyBounded(path, info, jstaint.MaxSourceBytes)
 		if err != nil {
+			if errors.Is(err, errContentSnapshotTooLarge) {
+				return false, "", "", fmt.Errorf("JS taint analysis did not complete: %s", jstaint.StatusOversize)
+			}
 			return false, "", "", fmt.Errorf("cannot read file: %v", err)
 		}
 		rctx, cancel := context.WithTimeout(context.Background(), jsTaintReverifyTimeout)
@@ -319,14 +326,27 @@ type reverifyContentSnapshot struct {
 	sha256 string
 }
 
+var errContentSnapshotTooLarge = errors.New("content snapshot exceeds read limit")
+
 func readContentSnapshotForReverify(path string, expected os.FileInfo) (reverifyContentSnapshot, error) {
+	return readContentSnapshotForReverifyBounded(path, expected, 0)
+}
+
+func readContentSnapshotForReverifyBounded(path string, expected os.FileInfo, maxBytes int64) (reverifyContentSnapshot, error) {
 	f, info, err := openReadOnlyPreservingIdentity(path, expected)
 	if err != nil {
 		return reverifyContentSnapshot{}, err
 	}
 	defer func() { _ = f.Close() }()
 
-	data, err := io.ReadAll(f)
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return reverifyContentSnapshot{}, errContentSnapshotTooLarge
+	}
+	var reader io.Reader = f
+	if maxBytes > 0 {
+		reader = io.LimitReader(f, maxBytes+1)
+	}
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return reverifyContentSnapshot{}, err
 	}
@@ -339,6 +359,9 @@ func readContentSnapshotForReverify(path string, expected os.FileInfo) (reverify
 	}
 	if int64(len(data)) != info.Size() {
 		return reverifyContentSnapshot{}, fmt.Errorf("file changed during verification")
+	}
+	if maxBytes > 0 && int64(len(data)) > maxBytes {
+		return reverifyContentSnapshot{}, errContentSnapshotTooLarge
 	}
 
 	var digest string

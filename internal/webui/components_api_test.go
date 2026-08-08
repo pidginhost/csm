@@ -171,6 +171,7 @@ func TestAPIComponents_NonUniqueCheckFindingsDoNotAttributeToWatcher(t *testing.
 		{check: "waf_attack_blocked", watcher: "modsec"},
 		{check: "mail_queue", watcher: "maillog"},
 		{check: "php_suspicious_execution", watcher: "exec"},
+		{check: "js_keylogger_dataflow", watcher: "scheduled"},
 	}
 
 	for _, tc := range cases {

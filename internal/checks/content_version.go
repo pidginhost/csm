@@ -61,9 +61,10 @@ func IsContentReverifiable(check string) bool {
 
 // ContentDetectionVersion returns a token identifying the full content-detection
 // logic in effect: the heuristic and scanner versions, the loaded signature-set
-// version, and the loaded YARA rule count. The re-verifier always re-runs the
-// real classifier, so this token only gates the daemon sweep and enriches audit
-// detail; its precision is not security-critical.
+// version, the loaded YARA rule count, and the JavaScript taint analyzer
+// version. The re-verifier always re-runs the real classifier, so this token
+// only gates the daemon sweep and enriches audit detail; its precision is not
+// security-critical.
 func ContentDetectionVersion() string {
 	sigVer := 0
 	if s := signatures.Global(); s != nil {
@@ -108,10 +109,18 @@ func FileContentSHA256(path string) string {
 
 // StampContentFingerprint records the detection-time content fingerprint on a
 // content-reverifiable finding so the Re-check / sweep can later distinguish a
-// superseded-heuristic false positive from a file edited after detection. No-op
-// for non-content findings or findings without a file path.
+// superseded-heuristic false positive from a file edited after detection.
+// A producer that analyzed an already-open snapshot may supply its exact hash;
+// retain that fingerprint instead of reopening a path that may now name
+// different content. No-op for non-content findings or findings without a path.
 func StampContentFingerprint(f *alert.Finding) {
 	if f == nil || f.FilePath == "" || !IsContentReverifiable(f.Check) {
+		return
+	}
+	if f.ContentSHA256 != "" {
+		if f.DetectLogic == "" {
+			f.DetectLogic = ContentDetectionVersion()
+		}
 		return
 	}
 	f.ContentSHA256 = FileContentSHA256(f.FilePath)
