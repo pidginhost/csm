@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/tdewolff/parse/v2/js"
 )
@@ -73,6 +74,11 @@ type object struct {
 	// definitely closed only when closed on every merged path.
 	wsMaybeOpen bool
 	wsClosed    bool
+	// owner is the writer token of the single state allowed to mutate this
+	// object in place. Zero means frozen: every state must copy before writing.
+	// clone() leaves it zero; installers set it. It is bookkeeping, not
+	// semantic state, so objectEqual and mergeObject ignore it.
+	owner uint64
 }
 
 func (o *object) clone() *object {
@@ -108,17 +114,46 @@ func (o *object) clone() *object {
 	return n
 }
 
+// stateMutSeq issues globally unique writer tokens. Uniqueness across
+// goroutines is all that matters; the values never reach output.
+var stateMutSeq atomic.Uint64
+
+func nextMut() uint64 { return stateMutSeq.Add(1) }
+
 // state is the flow-sensitive abstract store at a program point: per-variable
 // values, transient receiver captures, and the heap of allocation contents.
 // Branch forks clone it; merges union it; loop fixed points compare it.
+//
+// Clones share the three maps copy-on-write, so clone is O(1) instead of a
+// deep heap copy at every branch fork. The shared flags mark maps another
+// state may still reach, and the per-object owner token marks objects this
+// state may mutate in place. Every write must go through setEnv/delEnv,
+// setCapture/delCapture, mutObject/installObject/shareObject/dropObject, or
+// an own* barrier; a direct map write on a shared state corrupts its siblings.
 type state struct {
 	env map[*js.Var]value
 	// captures holds transient receivers across computed keys, right-hand sides,
 	// and call arguments. It is part of state so allocation promotion rewrites
 	// captured identities on every branch before the operation uses its receiver.
-	captures  map[js.INode]value
-	heap      map[allocID]*object
-	continues bool
+	captures map[js.INode]value
+	heap     map[allocID]*object
+	// mut is this state's writer token. An object is mutable in place only
+	// when o.owner == s.mut. Cloning hands the maps to a second state, so both
+	// sides take fresh tokens and thereby abandon in-place rights on every
+	// previously owned object. Invariant: heapShared implies no object has
+	// owner == s.mut, because installing an owned object first unshares the
+	// map and cloning re-tokens s.
+	mut uint64
+	// envVer, capsVer, and heapVer identify the underlying map storage. Two
+	// states with equal versions hold the same map, so merge and equality
+	// short-circuit; own* stamps a fresh version when it copies.
+	envVer     uint64
+	capsVer    uint64
+	heapVer    uint64
+	envShared  bool
+	capsShared bool
+	heapShared bool
+	continues  bool
 }
 
 func newState() *state {
@@ -126,51 +161,140 @@ func newState() *state {
 		env:       map[*js.Var]value{},
 		captures:  map[js.INode]value{},
 		heap:      map[allocID]*object{},
+		mut:       nextMut(),
+		envVer:    nextMut(),
+		capsVer:   nextMut(),
+		heapVer:   nextMut(),
 		continues: true,
 	}
 }
 
 func (s *state) clone() *state {
-	n := &state{
-		env:       make(map[*js.Var]value, len(s.env)),
-		captures:  make(map[js.INode]value, len(s.captures)),
-		heap:      make(map[allocID]*object, len(s.heap)),
+	s.mut = nextMut()
+	s.envShared, s.capsShared, s.heapShared = true, true, true
+	return &state{
+		env: s.env, captures: s.captures, heap: s.heap,
+		mut:    nextMut(),
+		envVer: s.envVer, capsVer: s.capsVer, heapVer: s.heapVer,
+		envShared: true, capsShared: true, heapShared: true,
 		continues: s.continues,
 	}
-	for k, v := range s.env {
-		n.env[k] = v
-	}
-	for k, v := range s.captures {
-		n.captures[k] = v
-	}
-	for k, o := range s.heap {
-		n.heap[k] = o.clone()
-	}
-	return n
 }
 
-// replaceWith overwrites s in place with the contents of src. It lets callers
-// keep a stable *state identity across a may-execute merge.
+// replaceWith overwrites s with the contents of src, keeping a stable *state
+// identity across a may-execute merge. It adopts src's storage and writer
+// token, so src must be a temporary that is never used again.
 func (s *state) replaceWith(src *state) {
-	for k := range s.env {
-		delete(s.env, k)
-	}
-	for k := range s.captures {
-		delete(s.captures, k)
-	}
-	for k := range s.heap {
-		delete(s.heap, k)
-	}
-	for k, v := range src.env {
-		s.env[k] = v
-	}
-	for k, v := range src.captures {
-		s.captures[k] = v
-	}
-	for k, o := range src.heap {
-		s.heap[k] = o
-	}
+	s.env, s.captures, s.heap = src.env, src.captures, src.heap
+	s.mut = src.mut
+	s.envVer, s.capsVer, s.heapVer = src.envVer, src.capsVer, src.heapVer
+	s.envShared, s.capsShared, s.heapShared = src.envShared, src.capsShared, src.heapShared
 	s.continues = src.continues
+}
+
+func (s *state) ownEnv() {
+	if !s.envShared {
+		return
+	}
+	env := make(map[*js.Var]value, len(s.env))
+	for k, v := range s.env {
+		env[k] = v
+	}
+	s.env = env
+	s.envVer = nextMut()
+	s.envShared = false
+}
+
+func (s *state) ownCaptures() {
+	if !s.capsShared {
+		return
+	}
+	caps := make(map[js.INode]value, len(s.captures))
+	for k, v := range s.captures {
+		caps[k] = v
+	}
+	s.captures = caps
+	s.capsVer = nextMut()
+	s.capsShared = false
+}
+
+func (s *state) ownHeap() {
+	if !s.heapShared {
+		return
+	}
+	heap := make(map[allocID]*object, len(s.heap))
+	for k, o := range s.heap {
+		heap[k] = o
+	}
+	s.heap = heap
+	s.heapVer = nextMut()
+	s.heapShared = false
+}
+
+func (s *state) setEnv(cv *js.Var, v value) {
+	s.ownEnv()
+	s.env[cv] = v
+}
+
+func (s *state) delEnv(cv *js.Var) {
+	if _, ok := s.env[cv]; !ok {
+		return
+	}
+	s.ownEnv()
+	delete(s.env, cv)
+}
+
+func (s *state) setCapture(node js.INode, v value) {
+	s.ownCaptures()
+	s.captures[node] = v
+}
+
+func (s *state) delCapture(node js.INode) {
+	if _, ok := s.captures[node]; !ok {
+		return
+	}
+	s.ownCaptures()
+	delete(s.captures, node)
+}
+
+// mutObject returns the object at id with in-place write rights for s, copying
+// it first when any other state may still reach it.
+func (s *state) mutObject(id allocID) *object {
+	o := s.heap[id]
+	if o == nil {
+		return nil
+	}
+	if o.owner != s.mut {
+		o = o.clone()
+		o.owner = s.mut
+		s.ownHeap()
+		s.heap[id] = o
+	}
+	return o
+}
+
+// installObject publishes an object s built or merged exclusively for itself,
+// granting in-place write rights.
+func (s *state) installObject(id allocID, o *object) {
+	o.owner = s.mut
+	s.ownHeap()
+	s.heap[id] = o
+}
+
+// shareObject publishes an object owned elsewhere without copying. Freezing
+// the owner makes every later writer, including s, copy first.
+func (s *state) shareObject(id allocID, o *object) {
+	o.owner = 0
+	s.ownHeap()
+	s.heap[id] = o
+}
+
+func (s *state) dropObject(id allocID) {
+	if _, ok := s.heap[id]; !ok {
+		return
+	}
+	s.ownHeap()
+	delete(s.heap, id)
 }
 
 func mergeAllocs(a, b allocSet) allocSet {
@@ -380,52 +504,84 @@ func mergeState(a, b *state) *state {
 	if a.continues && !b.continues {
 		return a.clone()
 	}
-	n := &state{
-		env:       make(map[*js.Var]value, len(a.env)+len(b.env)),
-		captures:  make(map[js.INode]value, len(a.captures)+len(b.captures)),
-		heap:      make(map[allocID]*object, len(a.heap)+len(b.heap)),
-		continues: a.continues || b.continues,
-	}
-	for k, v := range a.env {
-		if bv, ok := b.env[k]; ok {
-			if merged := mergeValue(v, bv); storable(merged) {
-				n.env[k] = merged
-			}
-		} else {
-			v = widenAbsentValue(v)
-			if storable(v) {
-				n.env[k] = v
-			}
-		}
-	}
-	for k, v := range b.env {
-		if _, ok := a.env[k]; !ok {
-			v = widenAbsentValue(v)
-			if storable(v) {
-				n.env[k] = v
+	n := &state{mut: nextMut(), continues: a.continues || b.continues}
+	// Equal versions mean both sides still hold the identical shared map, so
+	// its self-merge is itself and the result becomes one more holder.
+	if a.envVer == b.envVer {
+		n.env, n.envVer = a.env, a.envVer
+		n.envShared, a.envShared, b.envShared = true, true, true
+	} else {
+		n.env = make(map[*js.Var]value, len(a.env)+len(b.env))
+		n.envVer = nextMut()
+		for k, v := range a.env {
+			if bv, ok := b.env[k]; ok {
+				if merged := mergeValue(v, bv); storable(merged) {
+					n.env[k] = merged
+				}
+			} else {
+				v = widenAbsentValue(v)
+				if storable(v) {
+					n.env[k] = v
+				}
 			}
 		}
-	}
-	for node, v := range a.captures {
-		if bv, ok := b.captures[node]; ok {
-			n.captures[node] = mergeValue(v, bv)
-		} else {
-			n.captures[node] = widenAbsentValue(v)
+		for k, v := range b.env {
+			if _, ok := a.env[k]; !ok {
+				v = widenAbsentValue(v)
+				if storable(v) {
+					n.env[k] = v
+				}
+			}
 		}
 	}
-	for node, v := range b.captures {
-		if _, ok := a.captures[node]; !ok {
-			n.captures[node] = widenAbsentValue(v)
+	if a.capsVer == b.capsVer {
+		n.captures, n.capsVer = a.captures, a.capsVer
+		n.capsShared, a.capsShared, b.capsShared = true, true, true
+	} else {
+		n.captures = make(map[js.INode]value, len(a.captures)+len(b.captures))
+		n.capsVer = nextMut()
+		for node, v := range a.captures {
+			if bv, ok := b.captures[node]; ok {
+				n.captures[node] = mergeValue(v, bv)
+			} else {
+				n.captures[node] = widenAbsentValue(v)
+			}
+		}
+		for node, v := range b.captures {
+			if _, ok := a.captures[node]; !ok {
+				n.captures[node] = widenAbsentValue(v)
+			}
 		}
 	}
-	for k, o := range a.heap {
-		n.heap[k] = o.clone()
+	if a.heapVer == b.heapVer {
+		n.heap, n.heapVer = a.heap, a.heapVer
+		n.heapShared, a.heapShared, b.heapShared = true, true, true
+		return n
 	}
-	for k, o := range b.heap {
-		if ex, ok := n.heap[k]; ok {
-			n.heap[k] = mergeObject(ex, o)
+	n.heap = make(map[allocID]*object, len(a.heap)+len(b.heap))
+	n.heapVer = nextMut()
+	// Objects present on one side, or pointer-identical on both, are shared
+	// into the merged state frozen; only genuinely diverged objects are merged
+	// into a fresh object the result owns.
+	for k, oa := range a.heap {
+		if ob, ok := b.heap[k]; ok {
+			if oa == ob {
+				oa.owner = 0
+				n.heap[k] = oa
+			} else {
+				m := mergeObject(oa, ob)
+				m.owner = n.mut
+				n.heap[k] = m
+			}
 		} else {
-			n.heap[k] = o.clone()
+			oa.owner = 0
+			n.heap[k] = oa
+		}
+	}
+	for k, ob := range b.heap {
+		if _, ok := a.heap[k]; !ok {
+			ob.owner = 0
+			n.heap[k] = ob
 		}
 	}
 	return n
@@ -479,22 +635,34 @@ func stateEqual(a, b *state) bool {
 		len(a.captures) != len(b.captures) || len(a.heap) != len(b.heap) {
 		return false
 	}
-	for k, va := range a.env {
-		vb, ok := b.env[k]
-		if !ok || !valueEqual(va, vb) {
-			return false
+	if a.envVer != b.envVer {
+		for k, va := range a.env {
+			vb, ok := b.env[k]
+			if !ok || !valueEqual(va, vb) {
+				return false
+			}
 		}
 	}
-	for node, va := range a.captures {
-		vb, ok := b.captures[node]
-		if !ok || !valueEqual(va, vb) {
-			return false
+	if a.capsVer != b.capsVer {
+		for node, va := range a.captures {
+			vb, ok := b.captures[node]
+			if !ok || !valueEqual(va, vb) {
+				return false
+			}
 		}
 	}
-	for k, oa := range a.heap {
-		ob, ok := b.heap[k]
-		if !ok || !objectEqual(oa, ob) {
-			return false
+	if a.heapVer != b.heapVer {
+		for k, oa := range a.heap {
+			ob, ok := b.heap[k]
+			if !ok {
+				return false
+			}
+			if oa == ob {
+				continue
+			}
+			if !objectEqual(oa, ob) {
+				return false
+			}
 		}
 	}
 	return true

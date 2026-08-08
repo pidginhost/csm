@@ -74,7 +74,11 @@ const MaxSourceBytes = 2 << 20
 const MaxReasonBytes = 256
 
 const (
-	maxAnalysisDepth   = 300
+	// maxAnalysisDepth must cover real minified bundles, whose parse trees
+	// reach depth 905, while staying below the parser's pinned 1000 nesting
+	// limit so a parseable fixture can still distinguish this limit from a
+	// parser error.
+	maxAnalysisDepth   = 950
 	maxPropagatedFacts = 200_000
 )
 

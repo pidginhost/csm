@@ -10,19 +10,7 @@ import "github.com/tdewolff/parse/v2/js"
 // was aliased or published.
 func (a *analysis) allocate(st *state, site int, inLoop bool) value {
 	a.promoteCurrent(st, site)
-	id := allocID{site: site, summary: inLoop}
-	fresh := &object{}
-	if inLoop {
-		if old, ok := st.heap[id]; ok {
-			st.heap[id] = mergeObject(old, fresh)
-		} else {
-			st.heap[id] = fresh
-		}
-	} else {
-		st.heap[id] = fresh
-	}
-	a.fact()
-	return value{allocs: allocSet{{id: id}: true}, allocOnly: true}
+	return a.installLiteral(st, site, inLoop, &object{})
 }
 
 // installLiteral publishes a fully evaluated object or array literal at its
@@ -32,13 +20,10 @@ func (a *analysis) installLiteral(st *state, site int, inLoop bool, fresh *objec
 	id := allocID{site: site, summary: inLoop}
 	if inLoop {
 		if old, ok := st.heap[id]; ok {
-			st.heap[id] = mergeObject(old, fresh)
-		} else {
-			st.heap[id] = fresh
+			fresh = mergeObject(old, fresh)
 		}
-	} else {
-		st.heap[id] = fresh
 	}
+	st.installObject(id, fresh)
 	a.fact()
 	return value{allocs: allocSet{{id: id}: true}, allocOnly: true}
 }
@@ -55,11 +40,14 @@ func (a *analysis) promoteCurrent(st *state, site int) {
 	}
 	to := allocID{site: site, summary: true}
 	if ex, ok := st.heap[to]; ok {
-		st.heap[to] = mergeObject(ex, cur)
+		st.installObject(to, mergeObject(ex, cur))
 	} else {
+		// A plain move within one state preserves whatever exclusivity the
+		// object already had.
+		st.ownHeap()
 		st.heap[to] = cur
 	}
-	delete(st.heap, from)
+	st.dropObject(from)
 	rewriteAlloc(st, from, to)
 }
 
@@ -67,16 +55,25 @@ func rewriteAlloc(st *state, from, to allocID) {
 	for k, v := range st.env {
 		if hasAllocID(v.allocs, from) {
 			v.allocs = replaceAlloc(v.allocs, from, to)
-			st.env[k] = v
+			st.setEnv(k, v)
 		}
 	}
 	for node, v := range st.captures {
 		if hasAllocID(v.allocs, from) {
 			v.allocs = replaceAlloc(v.allocs, from, to)
-			st.captures[node] = v
+			st.setCapture(node, v)
 		}
 	}
-	for _, o := range st.heap {
+	// Read-only scan first: mutObject may replace st.heap with an owned copy,
+	// which must not happen while ranging over the map being replaced.
+	var hit []allocID
+	for id, o := range st.heap {
+		if objectRefersToAlloc(o, from) {
+			hit = append(hit, id)
+		}
+	}
+	for _, id := range hit {
+		o := st.mutObject(id)
 		for fk, fv := range o.fields {
 			if hasAllocID(fv.allocs, from) {
 				fv.allocs = replaceAlloc(fv.allocs, from, to)
@@ -93,6 +90,16 @@ func rewriteAlloc(st *state, from, to allocID) {
 			o.elem.allocs = replaceAlloc(o.elem.allocs, from, to)
 		}
 	}
+}
+
+func objectRefersToAlloc(o *object, id allocID) bool {
+	for _, fv := range o.fields {
+		if hasAllocID(fv.allocs, id) {
+			return true
+		}
+	}
+	return hasAllocID(o.wild.allocs, id) || hasAllocID(o.wildReq.allocs, id) ||
+		hasAllocID(o.elem.allocs, id)
 }
 
 func replaceAlloc(s allocSet, from, to allocID) allocSet {
@@ -171,10 +178,15 @@ func taintCarriesDepthZero(ts taintSet) bool {
 // the current invocation. Existing field facts retain their own depth, but
 // aliases must no longer impose an older return-path barrier on the new write.
 func resetAllocRefDepth(st *state, ids map[allocID]bool) {
-	reset := func(v value) value {
-		if len(v.allocs) == 0 {
-			return v
+	needsReset := func(v value) bool {
+		for ref := range v.allocs {
+			if ids[ref.id] && (ref.minDepth != 0 || ref.advance != 0) {
+				return true
+			}
 		}
+		return false
+	}
+	reset := func(v value) value {
 		refs := make(allocSet, len(v.allocs))
 		for ref := range v.allocs {
 			if ids[ref.id] {
@@ -187,19 +199,49 @@ func resetAllocRefDepth(st *state, ids map[allocID]bool) {
 		return v
 	}
 	for cv, v := range st.env {
-		st.env[cv] = reset(v)
+		if needsReset(v) {
+			st.setEnv(cv, reset(v))
+		}
 	}
 	for node, v := range st.captures {
-		st.captures[node] = reset(v)
-	}
-	for _, o := range st.heap {
-		for name, v := range o.fields {
-			o.fields[name] = reset(v)
+		if needsReset(v) {
+			st.setCapture(node, reset(v))
 		}
-		o.elem = reset(o.elem)
-		o.wild = reset(o.wild)
-		o.wildReq = reset(o.wildReq)
 	}
+	// Read-only scan first: mutObject may replace st.heap with an owned copy,
+	// which must not happen while ranging over the map being replaced.
+	var hit []allocID
+	for id, o := range st.heap {
+		if objectNeedsDepthReset(o, needsReset) {
+			hit = append(hit, id)
+		}
+	}
+	for _, id := range hit {
+		o := st.mutObject(id)
+		for name, v := range o.fields {
+			if needsReset(v) {
+				o.fields[name] = reset(v)
+			}
+		}
+		if needsReset(o.elem) {
+			o.elem = reset(o.elem)
+		}
+		if needsReset(o.wild) {
+			o.wild = reset(o.wild)
+		}
+		if needsReset(o.wildReq) {
+			o.wildReq = reset(o.wildReq)
+		}
+	}
+}
+
+func objectNeedsDepthReset(o *object, needsReset func(value) bool) bool {
+	for _, v := range o.fields {
+		if needsReset(v) {
+			return true
+		}
+	}
+	return needsReset(o.elem) || needsReset(o.wild) || needsReset(o.wildReq)
 }
 
 func hasAllocID(s allocSet, id allocID) bool {
@@ -230,10 +272,10 @@ func (a *analysis) writeField(st *state, recv value, key fieldKey, rhs value) {
 	ids := uniqueAllocIDs(recv.allocs)
 	strong := recv.allocOnly && len(ids) == 1 && soleCurrent(recv.allocs)
 	for id := range ids {
-		o := st.heap[id]
+		o := st.mutObject(id)
 		if o == nil {
 			o = &object{}
-			st.heap[id] = o
+			st.installObject(id, o)
 		}
 		switch key.kind {
 		case fieldNamed:
@@ -263,7 +305,7 @@ func (a *analysis) deleteField(st *state, recv value, key fieldKey) {
 		return
 	}
 	for id := range ids {
-		o := st.heap[id]
+		o := st.mutObject(id)
 		if o == nil {
 			return
 		}

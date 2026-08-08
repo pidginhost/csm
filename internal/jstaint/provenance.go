@@ -238,7 +238,7 @@ func (a *analysis) xhrOrWSMethod(call *js.CallExpr, recv value, args []value, st
 	strong := recv.allocOnly && len(uniqueAllocIDs(recv.allocs)) == 1 && soleCurrent(recv.allocs)
 	handled := false
 	for id := range ids {
-		o := st.heap[id]
+		o := st.mutObject(id)
 		switch o.kind {
 		case kindXHR:
 			handled = a.applyXHRMethod(st, o, prop, call, args, recv, id, strong && !id.summary) || handled
@@ -362,10 +362,14 @@ func (a *analysis) applyWSMethod(o *object, prop string, call *js.CallExpr, args
 // possibly open. A socket published to file-scope state can be observed open by a
 // later callback, which is exactly when a send on it becomes a network sink.
 func markSocketsObservable(st *state) {
-	for _, o := range st.heap {
-		if o.kind == kindWebSocket {
-			o.wsMaybeOpen = true
+	var hit []allocID
+	for id, o := range st.heap {
+		if o.kind == kindWebSocket && !o.wsMaybeOpen {
+			hit = append(hit, id)
 		}
+	}
+	for _, id := range hit {
+		st.mutObject(id).wsMaybeOpen = true
 	}
 }
 

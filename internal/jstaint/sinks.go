@@ -17,7 +17,7 @@ const (
 func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 	callee := ungroupExpr(call.X)
 	recv := a.evalCallCallee(callee, st)
-	st.captures[call] = recv
+	st.setCapture(call, recv)
 	isFetch := a.isGlobalCallee(callee, "fetch")
 	isBeacon := a.isBeaconCallee(callee)
 
@@ -38,7 +38,7 @@ func (a *analysis) evalCall(call *js.CallExpr, st *state) value {
 		st.replaceWith(mergeState(st, argsSt))
 	}
 	recv = st.captures[call]
-	delete(st.captures, call)
+	st.delCapture(call)
 
 	a.checkCallSink(call, args, isFetch, isBeacon)
 	if a.xhrOrWSMethod(call, recv, args, st) {
@@ -76,7 +76,7 @@ func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 		return a.evalExpr(c.X, st)
 	case *js.IndexExpr:
 		recv := a.evalExpr(c.X, st)
-		st.captures[c] = recv
+		st.setCapture(c, recv)
 		if c.Optional || optionalChainMaySkip(c.X) {
 			skipped := st.clone()
 			taken := st.clone()
@@ -86,7 +86,7 @@ func (a *analysis) evalCallCallee(callee js.IExpr, st *state) value {
 			a.evalExpr(c.Y, st)
 		}
 		recv = st.captures[c]
-		delete(st.captures, c)
+		st.delCapture(c)
 		return recv
 	default:
 		a.evalExpr(callee, st)
@@ -186,11 +186,10 @@ func (a *analysis) writeArrayElements(st *state, recv value, v value, definite b
 	ids := uniqueAllocIDs(recv.allocs)
 	strong := len(ids) == 1 && soleCurrent(recv.allocs)
 	for id := range ids {
-		o := st.heap[id]
-		if o == nil || !o.array {
+		if o := st.heap[id]; o == nil || !o.array {
 			continue
 		}
-		o.weakElem(v, definite && strong && !id.summary)
+		st.mutObject(id).weakElem(v, definite && strong && !id.summary)
 	}
 	if a.callDepth == 0 && allocsConstrained(recv.allocs) && valueCarriesDepthZero(st, v) {
 		resetAllocRefDepth(st, ids)

@@ -337,7 +337,7 @@ func (a *analysis) sharedState(src *state) *state {
 	var roots []value
 	for cv, v := range src.env {
 		if a.isShared(cv) {
-			out.env[cv] = v
+			out.setEnv(cv, v)
 			roots = append(roots, v)
 		}
 	}
@@ -359,9 +359,9 @@ func (a *analysis) publishShared(global, src *state) *state {
 		}
 		v = widenAbsentValue(v)
 		if storable(v) {
-			out.env[cv] = v
+			out.setEnv(cv, v)
 		} else {
-			delete(out.env, cv)
+			out.delEnv(cv)
 		}
 	}
 	for cv, v := range src.env {
@@ -371,14 +371,14 @@ func (a *analysis) publishShared(global, src *state) *state {
 		if ex, ok := out.env[cv]; ok {
 			merged := mergeValue(ex, v)
 			if storable(merged) {
-				out.env[cv] = merged
+				out.setEnv(cv, merged)
 			} else {
-				delete(out.env, cv)
+				out.delEnv(cv)
 			}
 		} else {
 			v = widenAbsentValue(v)
 			if storable(v) {
-				out.env[cv] = v
+				out.setEnv(cv, v)
 			}
 		}
 		roots = append(roots, v)
@@ -396,7 +396,7 @@ func (a *analysis) isShared(cv *js.Var) bool {
 func copyReachableHeap(src, dst *state, roots []value) {
 	for _, id := range reachableAllocs(src, roots) {
 		if o := src.heap[id]; o != nil {
-			dst.heap[id] = o.clone()
+			dst.shareObject(id, o)
 		}
 	}
 }
@@ -410,9 +410,11 @@ func mergeReachableHeap(src, dst *state, roots []value) {
 			continue
 		}
 		if ex, ok := dst.heap[id]; ok {
-			dst.heap[id] = mergeObject(ex, o)
+			if ex != o {
+				dst.installObject(id, mergeObject(ex, o))
+			}
 		} else {
-			dst.heap[id] = o.clone()
+			dst.shareObject(id, o)
 		}
 	}
 }
@@ -575,7 +577,7 @@ func mergeExitStates(exits []functionExit) *state {
 func (a *analysis) removeFunctionLocals(fn *funcInfo, st *state) {
 	for cv := range a.functionLocals(fn) {
 		if !a.isShared(cv) {
-			delete(st.env, cv)
+			st.delEnv(cv)
 		}
 	}
 }
@@ -614,7 +616,7 @@ func (a *analysis) bindParams(params js.Params, args []value, st *state) {
 		case p.Default != nil:
 			a.bindVar(st, cv, a.evalExpr(p.Default, st))
 		default:
-			delete(st.env, cv)
+			st.delEnv(cv)
 		}
 	}
 	if params.Rest != nil {
