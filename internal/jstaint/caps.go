@@ -28,7 +28,7 @@ const (
 func (a *analysis) finalizeResults() ([]Result, int, bool) {
 	sorted := a.sortedResults()
 	total := len(sorted)
-	truncated := a.truncated
+	truncated := false
 	if total > maxEvidencePaths {
 		truncated = true
 		sorted = sorted[:maxEvidencePaths]
@@ -48,6 +48,9 @@ func (a *analysis) finalizeResults() ([]Result, int, bool) {
 // truncateVia bounds each segment and, for a chain longer than maxViaSegments,
 // retains the head and tail around one marker that names the omitted count.
 func truncateVia(via []string) ([]string, bool) {
+	if len(via) == 0 {
+		return via, false
+	}
 	truncated := false
 	bounded := make([]string, len(via))
 	for i, s := range via {
@@ -85,11 +88,24 @@ func boundSegment(s string) (string, bool) {
 // sanitizeSegment emits valid UTF-8 and replaces control bytes so evidence text
 // stays printable and searchable.
 func sanitizeSegment(s string) string {
-	s = strings.ToValidUTF8(s, "?")
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return '?'
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && size == 1) || unicode.IsControl(r) {
+			var clean strings.Builder
+			clean.Grow(len(s))
+			clean.WriteString(s[:i])
+			for i < len(s) {
+				r, size = utf8.DecodeRuneInString(s[i:])
+				if (r == utf8.RuneError && size == 1) || unicode.IsControl(r) {
+					clean.WriteByte('?')
+				} else {
+					clean.WriteString(s[i : i+size])
+				}
+				i += size
+			}
+			return clean.String()
 		}
-		return r
-	}, s)
+		i += size
+	}
+	return s
 }

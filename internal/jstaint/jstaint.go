@@ -117,7 +117,8 @@ type Report struct {
 	TotalResults int
 	// Reason carries bounded diagnostic context for a non-analyzed status.
 	Reason string
-	// EvidenceTruncated reports that more flows existed than Results holds.
+	// EvidenceTruncated reports that a flow or display segment exceeded an
+	// evidence limit.
 	EvidenceTruncated bool
 }
 
