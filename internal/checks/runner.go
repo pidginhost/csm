@@ -270,20 +270,22 @@ var runnerFindingNames = map[string][]string{
 	"wp_core":               {"wp_core_integrity"},
 }
 
+const logicalOwnerJSTaintDeep = "js_taint_deep"
+
 // logicalOwnerFindingNames maps a logical finding owner hosted inside another
 // physical check to the finding names it owns. A logical owner is not a
 // runnable check, so it must never be a runnerFindingNames key; the hosting
 // check reports each owner's completion independently by calling
 // markCheckIncomplete with the owner's exact name.
 var logicalOwnerFindingNames = map[string][]string{
-	"js_taint_deep": {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
+	logicalOwnerJSTaintDeep: {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
 }
 
 // logicalOwnerDisableAliases maps a logical owner to the disabled_checks
 // values that disable it. The coverage diagnostic is deliberately absent:
 // hiding a coverage warning must never silently disable detection.
 var logicalOwnerDisableAliases = map[string][]string{
-	"js_taint_deep": {"js_taint_deep", "js_keylogger_dataflow"},
+	logicalOwnerJSTaintDeep: {logicalOwnerJSTaintDeep, "js_keylogger_dataflow"},
 }
 
 // physicalCheckLogicalOwners maps a runnable check to the logical owners it
@@ -291,7 +293,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 // hosted owner is enabled, and the runner purges each owner by its own
 // completion mark rather than the wrapper's.
 var physicalCheckLogicalOwners = map[string][]string{
-	"yara_deep": {"js_taint_deep"},
+	"yara_deep": {logicalOwnerJSTaintDeep},
 }
 
 // disabledLogicalOwners returns the logical owners disabled by cfg.
@@ -576,9 +578,9 @@ func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
 // forever. Discovered-state names (yara_match_scheduled) stay
 // completion-gated so mid-cycle windows never wipe earlier windows' finds.
 var perRunFindingNames = map[string][]string{
-	"yara_deep":          {"yara_scan_incomplete"},
-	"js_taint_deep":      {"js_taint_scan_incomplete"},
-	"php_config_changes": {"php_config_scan_incomplete"},
+	"yara_deep":             {"yara_scan_incomplete"},
+	logicalOwnerJSTaintDeep: {"js_taint_scan_incomplete"},
+	"php_config_changes":    {"php_config_scan_incomplete"},
 }
 
 var latestVolatileCheckNames = []string{
