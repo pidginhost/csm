@@ -1,11 +1,13 @@
 package jstaint
 
-import "github.com/tdewolff/parse/v2/js"
+import (
+	"math"
+	"math/big"
+	"strconv"
+	"strings"
 
-// elemField is the synthetic field name that holds array element taint. Array
-// element writes and reads all funnel through it, so an object and an array can
-// share the object model without a separate array representation.
-const elemField = "@elem"
+	"github.com/tdewolff/parse/v2/js"
+)
 
 // allocID identifies one abstract allocation instance: a deterministic source
 // site plus a recency class. The two classes per site are the current instance
@@ -26,6 +28,10 @@ type allocSet map[allocID]bool
 type value struct {
 	scalar taintSet
 	allocs allocSet
+	// allocOnly is true only when every represented runtime alternative is an
+	// allocation. A branch that may instead produce an untracked clean primitive
+	// clears it, preventing an object spread or cycle check from acting definite.
+	allocOnly bool
 }
 
 func (v value) isEmpty() bool {
@@ -36,16 +42,39 @@ func (v value) isEmpty() bool {
 // array-element field, and a wildcard field for writes whose key is not
 // statically known.
 type object struct {
-	fields map[string]value
-	wild   value
+	fields   map[string]value
+	must     map[string]bool
+	elem     value
+	wild     value
+	wildReq  value
+	elemMay  bool
+	wildMay  bool
+	elemMust bool
+	wildMust bool
+	array    bool
 }
 
 func (o *object) clone() *object {
-	n := &object{wild: o.wild}
+	n := &object{
+		elem:     o.elem,
+		wild:     o.wild,
+		wildReq:  o.wildReq,
+		elemMay:  o.elemMay,
+		wildMay:  o.wildMay,
+		elemMust: o.elemMust,
+		wildMust: o.wildMust,
+		array:    o.array,
+	}
 	if len(o.fields) != 0 {
 		n.fields = make(map[string]value, len(o.fields))
 		for k, v := range o.fields {
 			n.fields[k] = v
+		}
+	}
+	if len(o.must) != 0 {
+		n.must = make(map[string]bool, len(o.must))
+		for k := range o.must {
+			n.must[k] = true
 		}
 	}
 	return n
@@ -112,20 +141,68 @@ func mergeAllocs(a, b allocSet) allocSet {
 }
 
 func mergeValue(a, b value) value {
-	return value{scalar: mergeTaint(a.scalar, b.scalar), allocs: mergeAllocs(a.allocs, b.allocs)}
+	return value{
+		scalar:    mergeTaint(a.scalar, b.scalar),
+		allocs:    mergeAllocs(a.allocs, b.allocs),
+		allocOnly: a.allocOnly && b.allocOnly,
+	}
+}
+
+func mergePresentValue(current value, present bool, next value) (value, bool) {
+	if !present {
+		return next, true
+	}
+	return mergeValue(current, next), true
 }
 
 func mergeObject(a, b *object) *object {
-	n := &object{wild: mergeValue(a.wild, b.wild)}
+	n := &object{
+		elemMay:  a.elemMay || b.elemMay,
+		wildMay:  a.wildMay || b.wildMay,
+		elemMust: a.elemMust && b.elemMust,
+		wildMust: a.wildMust && b.wildMust,
+		array:    a.array,
+	}
+	if a.elemMay {
+		n.elem = a.elem
+	}
+	if b.elemMay {
+		n.elem, _ = mergePresentValue(n.elem, a.elemMay, b.elem)
+	}
+	if a.wildMay {
+		n.wild = a.wild
+	}
+	if b.wildMay {
+		n.wild, _ = mergePresentValue(n.wild, a.wildMay, b.wild)
+	}
+	if n.wildMust {
+		n.wildReq = mergeValue(a.wildReq, b.wildReq)
+	}
 	n.fields = make(map[string]value, len(a.fields)+len(b.fields))
 	for k, v := range a.fields {
-		n.fields[k] = v
-	}
-	for k, v := range b.fields {
-		if ex, ok := n.fields[k]; ok {
-			n.fields[k] = mergeValue(ex, v)
+		if bv, ok := b.fields[k]; ok {
+			n.fields[k] = mergeValue(v, bv)
+		} else if b.wildMay {
+			n.fields[k] = mergeValue(v, b.wild)
 		} else {
 			n.fields[k] = v
+		}
+	}
+	for k, v := range b.fields {
+		if _, ok := n.fields[k]; !ok {
+			if a.wildMay {
+				n.fields[k] = mergeValue(a.wild, v)
+			} else {
+				n.fields[k] = v
+			}
+		}
+	}
+	for k := range a.must {
+		if b.must[k] {
+			if n.must == nil {
+				n.must = map[string]bool{}
+			}
+			n.must[k] = true
 		}
 	}
 	return n
@@ -137,12 +214,16 @@ func mergeState(a, b *state) *state {
 		heap: make(map[allocID]*object, len(a.heap)+len(b.heap)),
 	}
 	for k, v := range a.env {
-		n.env[k] = v
+		if bv, ok := b.env[k]; ok {
+			n.env[k] = mergeValue(v, bv)
+		} else {
+			v.allocOnly = false
+			n.env[k] = v
+		}
 	}
 	for k, v := range b.env {
-		if ex, ok := n.env[k]; ok {
-			n.env[k] = mergeValue(ex, v)
-		} else {
+		if _, ok := n.env[k]; !ok {
+			v.allocOnly = false
 			n.env[k] = v
 		}
 	}
@@ -172,12 +253,21 @@ func allocsEqual(a, b allocSet) bool {
 }
 
 func valueEqual(a, b value) bool {
-	return taintEqual(a.scalar, b.scalar) && allocsEqual(a.allocs, b.allocs)
+	return a.allocOnly == b.allocOnly && taintEqual(a.scalar, b.scalar) && allocsEqual(a.allocs, b.allocs)
 }
 
 func objectEqual(a, b *object) bool {
-	if !valueEqual(a.wild, b.wild) || len(a.fields) != len(b.fields) {
+	if a.array != b.array || a.elemMay != b.elemMay || a.wildMay != b.wildMay ||
+		a.elemMust != b.elemMust || a.wildMust != b.wildMust ||
+		len(a.must) != len(b.must) || !valueEqual(a.elem, b.elem) ||
+		!valueEqual(a.wildReq, b.wildReq) ||
+		!valueEqual(a.wild, b.wild) || len(a.fields) != len(b.fields) {
 		return false
+	}
+	for k := range a.must {
+		if !b.must[k] {
+			return false
+		}
 	}
 	for k, va := range a.fields {
 		vb, ok := b.fields[k]
@@ -227,26 +317,146 @@ type fieldKey struct {
 func fieldKeyOf(key js.IExpr) fieldKey {
 	key = ungroupExpr(key)
 	if name, ok := staticStringOrIdent(key); ok {
+		if isArrayIndexName(name) {
+			return fieldKey{kind: fieldElem, name: name}
+		}
 		return fieldKey{kind: fieldNamed, name: name}
 	}
-	if lit, ok := key.(*js.LiteralExpr); ok {
-		if lit.TokenType == js.IntegerToken || lit.TokenType == js.DecimalToken {
-			return fieldKey{kind: fieldElem}
+	if name, ok := numericPropertyNameOf(key); ok {
+		if isArrayIndexName(name) {
+			return fieldKey{kind: fieldElem, name: name}
 		}
+		return fieldKey{kind: fieldNamed, name: name}
 	}
 	return fieldKey{kind: fieldWild}
 }
 
+func numericPropertyNameOf(expr js.IExpr) (string, bool) {
+	negative := false
+	for {
+		u, ok := ungroupExpr(expr).(*js.UnaryExpr)
+		if !ok || (u.Op != js.PosToken && u.Op != js.NegToken) {
+			break
+		}
+		if u.Op == js.NegToken {
+			negative = !negative
+		}
+		expr = u.X
+	}
+	lit, ok := ungroupExpr(expr).(*js.LiteralExpr)
+	if !ok || (lit.TokenType != js.IntegerToken && lit.TokenType != js.DecimalToken) {
+		return "", false
+	}
+	name := numericPropertyName(lit)
+	if name == "" {
+		return "", false
+	}
+	if negative && name != "0" {
+		name = "-" + name
+	}
+	return name, true
+}
+
+func numericPropertyName(lit *js.LiteralExpr) string {
+	raw := strings.ReplaceAll(string(lit.Data), "_", "")
+	if strings.HasSuffix(raw, "n") {
+		integer := new(big.Int)
+		if _, ok := integer.SetString(strings.TrimSuffix(raw, "n"), 0); ok {
+			return integer.String()
+		}
+		return ""
+	}
+	if lit.TokenType == js.IntegerToken {
+		if n, err := strconv.ParseUint(raw, 0, 64); err == nil {
+			return jsNumberPropertyName(float64(n))
+		}
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {
+		return ""
+	}
+	return jsNumberPropertyName(n)
+}
+
+func jsNumberPropertyName(n float64) string {
+	if n == 0 {
+		return "0"
+	}
+	abs := math.Abs(n)
+	if abs >= 1e-6 && abs < 1e21 {
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	s := strconv.FormatFloat(n, 'e', -1, 64)
+	parts := strings.SplitN(s, "e", 2)
+	exponent, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return ""
+	}
+	return parts[0] + "e" + fmtSignedExponent(exponent)
+}
+
+func fmtSignedExponent(exponent int) string {
+	if exponent >= 0 {
+		return "+" + strconv.Itoa(exponent)
+	}
+	return strconv.Itoa(exponent)
+}
+
+// isArrayIndexName reports whether a string is a canonical JavaScript array
+// index. Bracket access coerces both 0 and "0" to the same property key.
+func isArrayIndexName(name string) bool {
+	if name == "" || (len(name) > 1 && name[0] == '0') {
+		return false
+	}
+	for i := range name {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	n, err := strconv.ParseUint(name, 10, 32)
+	return err == nil && n < 1<<32-1
+}
+
 // getField reads one field of an object. A static named read and a wildcard read
 // both consume the wildcard, because a wildcard write may have set any property.
-func getField(o *object, key fieldKey) value {
+func getField(o *object, key fieldKey) (value, bool) {
 	switch key.kind {
 	case fieldNamed:
-		return mergeValue(o.fields[key.name], o.wild)
+		if v, ok := o.fields[key.name]; ok {
+			return v, o.must[key.name]
+		}
+		if o.wildMay {
+			return o.wild, false
+		}
+		return value{}, false
 	case fieldElem:
-		return mergeValue(o.fields[elemField], o.wild)
+		if key.name != "" {
+			if v, ok := o.fields[key.name]; ok {
+				return v, o.must[key.name]
+			}
+		}
+		var out value
+		have := false
+		if o.elemMay {
+			out, have = mergePresentValue(out, have, o.elem)
+		}
+		if o.wildMay {
+			out, _ = mergePresentValue(out, have, o.wild)
+		}
+		return out, false
 	default:
-		return mergeValue(o.fields[elemField], o.wild)
+		var out value
+		have := false
+		if o.elemMay {
+			out, have = mergePresentValue(out, have, o.elem)
+		}
+		if o.wildMay {
+			out, have = mergePresentValue(out, have, o.wild)
+		}
+		for _, fv := range o.fields {
+			out, have = mergePresentValue(out, have, fv)
+		}
+		return out, false
 	}
 }
 
@@ -256,14 +466,65 @@ func (o *object) setNamed(name string, v value, strong bool) {
 	}
 	if strong {
 		o.fields[name] = v
+		// A preceding wildcard write may have selected this exact property, so it
+		// is no longer certain that an unresolved field remains after overwrite.
+		o.wildMust = false
+		o.wildReq = value{}
+		if o.must == nil {
+			o.must = map[string]bool{}
+		}
+		o.must[name] = true
 	} else {
-		o.fields[name] = mergeValue(o.fields[name], v)
+		if o.wildMust {
+			// The weak write may select the required unresolved property. Preserve
+			// both its old value and the overwrite as runtime alternatives.
+			o.wildReq = mergeValue(o.wildReq, v)
+		}
+		old, ok := o.fields[name]
+		if !ok {
+			old = o.wild
+		}
+		o.fields[name] = mergeValue(old, v)
 	}
 }
 
-func (o *object) weakElem(v value) {
-	if o.fields == nil {
-		o.fields = map[string]value{}
+func (o *object) deleteNamed(name string) {
+	// The required unresolved property may be the deleted name. Other unresolved
+	// properties remain possible, but none remains certain after this delete.
+	o.wildMust = false
+	o.wildReq = value{}
+	if o.wildMay {
+		// Keep a clean tombstone so the deleted property does not expose an older
+		// unresolved write. A later wildcard write folds into the tombstone again.
+		if o.fields == nil {
+			o.fields = map[string]value{}
+		}
+		o.fields[name] = value{}
+	} else {
+		delete(o.fields, name)
 	}
-	o.fields[elemField] = mergeValue(o.fields[elemField], v)
+	delete(o.must, name)
+}
+
+func (o *object) weakElem(v value, definite bool) {
+	o.elem, o.elemMay = mergePresentValue(o.elem, o.elemMay, v)
+	if definite {
+		o.elemMust = true
+	}
+}
+
+// writeWild applies a write whose key is unresolved. Existing named fields must
+// absorb it because the key may select any of them; a later strong named write
+// can then replace that field without clearing the wildcard for other names.
+func (o *object) writeWild(v value, definite bool) {
+	o.wild, o.wildMay = mergePresentValue(o.wild, o.wildMay, v)
+	if definite {
+		o.wildMust = true
+		o.wildReq = v
+	} else if o.wildMust {
+		o.wildReq = mergeValue(o.wildReq, v)
+	}
+	for k, fv := range o.fields {
+		o.fields[k] = mergeValue(fv, v)
+	}
 }

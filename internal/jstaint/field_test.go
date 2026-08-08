@@ -104,8 +104,50 @@ func TestField_ArrayPushJoinIsDetected(t *testing.T) {
 	firstResult(t, src)
 }
 
+func TestField_ForOfSeesElementsAddedByEarlierIterations(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[""];for(const ch of a){` +
+		`a.push(e.key);fetch("/c?k="+ch);}};`
+	firstResult(t, src)
+}
+
+func TestField_ForOfDoesNotTreatObjectNumericFieldsAsArrayElements(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={0:e.key};` +
+		`for(const value of o){fetch("/c?k="+value);}};`
+	mustNotDetect(t, src)
+}
+
+func TestField_ForOfAssignsElementToMemberTarget(t *testing.T) {
+	src := `document.onkeydown=function(e){var values=[e.key];var out={};` +
+		`for(out.k of values){}navigator.sendBeacon("/c",JSON.stringify(out));};`
+	firstResult(t, src)
+}
+
 func TestField_ArrayIndexWriteIsDetected(t *testing.T) {
 	src := `document.onkeydown=function(e){var a=[];a[0]=e.key;navigator.sendBeacon("/c",a.join(""));};`
+	firstResult(t, src)
+}
+
+func TestField_ArrayIndexStrongOverwriteClearsElement(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[e.key];a[0]="";` +
+		`navigator.sendBeacon("/c",JSON.stringify(a));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_ArraySpreadNumericPropertyCanBeRead(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[e.key];var out={...a};` +
+		`fetch("/c?k="+out[0]);};`
+	firstResult(t, src)
+}
+
+func TestField_NegativeArrayPropertyIsNotSerialized(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[];a[-1]=e.key;` +
+		`navigator.sendBeacon("/c",JSON.stringify(a));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_NewArrayArgumentsReachJoin(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=new Array(e.key);` +
+		`fetch("/c?k="+a.join(""));};`
 	firstResult(t, src)
 }
 
@@ -116,9 +158,222 @@ func TestField_WildcardWriteReadsBackTainted(t *testing.T) {
 	firstResult(t, src)
 }
 
+func TestField_WildcardReadIncludesNamedFields(t *testing.T) {
+	// An unresolved read can select any named property, including the tainted one.
+	src := `document.onkeydown=function(e){var s={};s.secret=e.key;` +
+		`fetch("/c?k="+s[window.k]);};`
+	firstResult(t, src)
+}
+
+func TestField_StrongNamedWriteOverridesEarlierWildcard(t *testing.T) {
+	// Whatever property the unresolved write selected, the later definite write
+	// leaves k clean.
+	src := `document.onkeydown=function(e){var s={};s[window.k]=e.key;s.k="";` +
+		`fetch("/c?k="+s.k);};`
+	mustNotDetect(t, src)
+}
+
+func TestField_CompoundAssignmentReadsFieldBeforeRHS(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={k:e.key};` +
+		`o.k+=(o.k="");fetch("/c?k="+o.k);};`
+	firstResult(t, src)
+}
+
+func TestField_LogicalAssignmentStrongUpdatesTakenPath(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={k:""};` +
+		`o.k||=(o.k=e.key,"");fetch("/c?k="+o.k);};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DeleteCurrentNamedFieldClearsTaint(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={k:e.key};delete o.k;` +
+		`navigator.sendBeacon("/c",JSON.stringify(o));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DeleteThroughAliasUpdatesCurrentObject(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={k:e.key};var alias=o;delete alias.k;` +
+		`navigator.sendBeacon("/c",JSON.stringify(o));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DeleteThroughAmbiguousReceiverStaysWeak(t *testing.T) {
+	src := `document.onkeydown=function(e){var tainted={k:e.key};var clean={};` +
+		`var recv=window.p?tainted:clean;delete recv.k;` +
+		`navigator.sendBeacon("/c",JSON.stringify(tainted));};`
+	firstResult(t, src)
+}
+
+func TestField_DeleteKeepsNamedFieldClearAfterWildcardWrite(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={};o[window.k]=e.key;` +
+		`o.safe="";delete o.safe;fetch("/c?k="+o.safe);};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DeleteKeepsSerializableWildcardAlternative(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={};o[window.k]=o;delete o.safe;` +
+		`o.k=e.key;navigator.sendBeacon("/c",JSON.stringify(o));};`
+	firstResult(t, src)
+}
+
+func TestField_UpdateReplacesCurrentAllocationFieldWithScalar(t *testing.T) {
+	src := `document.onkeydown=function(e){var child={k:e.key};var holder={child:child};` +
+		`holder.child++;navigator.sendBeacon("/c",JSON.stringify(holder));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_UpdateReplacesCurrentAllocationVariableWithScalar(t *testing.T) {
+	src := `document.onkeydown=function(e){var value={k:e.key};value++;` +
+		`navigator.sendBeacon("/c",JSON.stringify(value));};`
+	mustNotDetect(t, src)
+}
+
 func TestField_WildcardDoesNotCrossAllocations(t *testing.T) {
 	// A wildcard write on one object does not taint another object's fields.
 	src := `document.onkeydown=function(e){var s={};s[window.k]=e.key;var t={};fetch("/c?k="+t.anything);};`
+	mustNotDetect(t, src)
+}
+
+func TestField_StaticComputedPropertyUsesLastValue(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){var s={["k"]:e.key,["k"]:""};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+
+	firstResult(t, `document.onkeydown=function(e){var s={["k"]:"",["k"]:e.key};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+}
+
+func TestField_NamedObjectPropertyUsesLastValue(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){var s={k:e.key,k:""};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+
+	firstResult(t, `document.onkeydown=function(e){var s={k:"",k:e.key};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+}
+
+func TestField_NumericObjectPropertyUsesLastValue(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){var s={0:e.key,0:""};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+
+	firstResult(t, `document.onkeydown=function(e){var s={0:"",0:e.key};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+	firstResult(t, `document.onkeydown=function(e){var s={0:e.key,1:""};`+
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`)
+}
+
+func TestField_NonIndexNumericPropertyStaysNamed(t *testing.T) {
+	firstResult(t, `document.onkeydown=function(e){var o={};o[1.5]=e.key;`+
+		`fetch("/c?k="+o["1.5"]);};`)
+
+	mustNotDetect(t, `document.onkeydown=function(e){var a=[];a[1.5]=e.key;`+
+		`fetch("/c?k="+a.join(""));};`)
+}
+
+func TestField_NumericPropertyUsesJavaScriptCanonicalName(t *testing.T) {
+	for _, tc := range []struct {
+		numeric string
+		name    string
+	}{
+		{numeric: `1e20`, name: `100000000000000000000`},
+		{numeric: `1e-6`, name: `0.000001`},
+		{numeric: `1e-7`, name: `1e-7`},
+		{numeric: `9007199254740993`, name: `9007199254740992`},
+		{numeric: `1n`, name: `1`},
+	} {
+		t.Run(tc.numeric, func(t *testing.T) {
+			src := `document.onkeydown=function(e){var o={};o[` + tc.numeric + `]=e.key;` +
+				`fetch("/c?k="+o["` + tc.name + `"]);};`
+			firstResult(t, src)
+		})
+	}
+}
+
+func TestArrayIndexNameHonorsJavaScriptBoundary(t *testing.T) {
+	for name, want := range map[string]bool{
+		"0":          true,
+		"01":         false,
+		"4294967294": true,
+		"4294967295": false,
+	} {
+		if got := isArrayIndexName(name); got != want {
+			t.Errorf("isArrayIndexName(%q) = %t, want %t", name, got, want)
+		}
+	}
+}
+
+func TestField_ObjectSpreadUsesLastDefiniteProperty(t *testing.T) {
+	mustNotDetect(t, `document.onkeydown=function(e){var clean={k:""};`+
+		`var s={k:e.key,...clean};navigator.sendBeacon("/c",JSON.stringify(s));};`)
+
+	firstResult(t, `document.onkeydown=function(e){var tainted={k:e.key};`+
+		`var s={k:"",...tainted};navigator.sendBeacon("/c",JSON.stringify(s));};`)
+}
+
+func TestField_ObjectSpreadThroughDefiniteFieldUsesLastProperty(t *testing.T) {
+	src := `document.onkeydown=function(e){var clean={k:""};var holder={patch:clean};` +
+		`var out={k:e.key,...holder.patch};` +
+		`navigator.sendBeacon("/c",JSON.stringify(out));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_ObjectSpreadThroughOptionalReceiverStaysWeak(t *testing.T) {
+	src := `document.onkeydown=function(e){var clean={k:""};var holder={patch:clean};` +
+		`var maybe=window.p?holder:null;var out={k:e.key,...maybe?.patch};` +
+		`navigator.sendBeacon("/c",JSON.stringify(out));};`
+	firstResult(t, src)
+}
+
+func TestField_ObjectSpreadMaybePrimitiveDoesNotClearProperty(t *testing.T) {
+	src := `document.onkeydown=function(e){var clean={k:""};` +
+		`var patch=window.p?clean:"";var s={k:e.key,...patch};` +
+		`navigator.sendBeacon("/c",JSON.stringify(s));};`
+	firstResult(t, src)
+}
+
+func TestField_ObjectSpreadPreservesDefiniteCyclicElement(t *testing.T) {
+	src := `document.onkeydown=function(e){var source=[];source.push(source);` +
+		`var out={...source,k:e.key};` +
+		`navigator.sendBeacon("/c",JSON.stringify(out));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_ObjectSpreadPreservesDefiniteCyclicNamedField(t *testing.T) {
+	src := `document.onkeydown=function(e){var child={};child.self=child;` +
+		`var source={child:child};var out={...source,k:e.key};` +
+		`navigator.sendBeacon("/c",JSON.stringify(out));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_LoopObjectLiteralUsesFinalDuplicateProperty(t *testing.T) {
+	src := `document.onkeydown=function(e){var saved=[];for(var i=0;i<2;i++){` +
+		`var o={k:e.key,k:""};saved.push(o);}` +
+		`navigator.sendBeacon("/c",JSON.stringify(saved));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_StringArrayIndexMatchesNumericElement(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[];a[0]=e.key;fetch("/c?k="+a["0"]);};`
+	firstResult(t, src)
+}
+
+func TestField_SyntheticElementNameDoesNotAliasNumericFields(t *testing.T) {
+	src := `document.onkeydown=function(e){var o={};o["@elem"]=e.key;fetch("/c?k="+o[0]);};`
+	mustNotDetect(t, src)
+}
+
+func TestField_ArraySerializersIgnoreNamedProperties(t *testing.T) {
+	for _, sink := range []string{
+		`fetch("/c?k="+a.join(""));`,
+		`navigator.sendBeacon("/c",JSON.stringify(a));`,
+	} {
+		t.Run(sink, func(t *testing.T) {
+			src := `document.onkeydown=function(e){var a=[];a.secret=e.key;` + sink + `};`
+			mustNotDetect(t, src)
+		})
+	}
+}
+
+func TestField_ArrayAliasConcatDoesNotCreateScalarTaint(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[];fetch(a.concat(e.key));};`
 	mustNotDetect(t, src)
 }
 
@@ -128,6 +383,78 @@ func TestField_DefinitelyCyclicStringifyProducesNoValue(t *testing.T) {
 	src := `document.onkeydown=function(e){var o={};o.k=e.key;o.self=o;` +
 		`navigator.sendBeacon("/c",JSON.stringify(o));};`
 	mustNotDetect(t, src)
+}
+
+func TestField_DefiniteCycleThroughFieldReadProducesNoValue(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={k:e.key};var holder={child:root};` +
+		`var child=holder.child;child.self=child;` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DefiniteCycleThroughArrayIndexProducesNoValue(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={k:e.key};var values=[root];` +
+		`var child=values[0];child.self=child;` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DefiniteWildcardCycleProducesNoValue(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={};root.tainted=e.key;` +
+		`root[window.k]=root;` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_DefinitelyCyclicArrayStringifyProducesNoValue(t *testing.T) {
+	src := `document.onkeydown=function(e){var a=[e.key];a.push(a);` +
+		`navigator.sendBeacon("/c",JSON.stringify(a));};`
+	mustNotDetect(t, src)
+}
+
+func TestField_StringifySharedDiamondIsNotCyclic(t *testing.T) {
+	// Reaching the same child through two siblings is convergence, not a cycle.
+	src := `document.onkeydown=function(e){var shared={k:e.key};` +
+		`var root={left:shared,right:shared};` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
+}
+
+func TestField_StringifyKeepsAcyclicNestedAlternative(t *testing.T) {
+	// One runtime branch throws on a self-reference, but the other serializes the
+	// tainted child and must remain visible to the may-flow analysis.
+	src := `document.onkeydown=function(e){var child={k:e.key};var root={};` +
+		`root.value=window.p?root:child;` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
+}
+
+func TestField_StringifyKeepsBranchWithoutOptionalCycle(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={k:e.key};` +
+		`if(window.p){root.self=root;}` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
+}
+
+func TestField_StringifyKeepsPrimitiveAlternativeToCycle(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={k:e.key};` +
+		`root.value=window.p?root:"";` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
+}
+
+func TestField_StringifyKeepsWildcardCycleOverwriteAlternative(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={};root[window.k]=root;` +
+		`root.safe="";root.tainted=e.key;` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
+}
+
+func TestField_StringifyKeepsWeakWildcardOverwriteAlternative(t *testing.T) {
+	src := `document.onkeydown=function(e){var root={k:e.key};root[window.k]=root;` +
+		`var other={};var recv=window.p?root:other;recv.safe="";` +
+		`navigator.sendBeacon("/c",JSON.stringify(root));};`
+	firstResult(t, src)
 }
 
 func TestField_CyclicArrayJoinTerminatesAndPropagatesOtherElements(t *testing.T) {
@@ -142,6 +469,12 @@ func TestField_AliasPreservesFieldTaint(t *testing.T) {
 	// when a is serialized.
 	src := `document.onkeydown=function(e){var a={};var b=a;b.k=e.key;` +
 		`navigator.sendBeacon("/c",JSON.stringify(a));};`
+	firstResult(t, src)
+}
+
+func TestField_AwaitPreservesAllocationIdentity(t *testing.T) {
+	src := `document.onkeydown=async function(e){var o={k:e.key};` +
+		`navigator.sendBeacon("/c",JSON.stringify(await o));};`
 	firstResult(t, src)
 }
 
