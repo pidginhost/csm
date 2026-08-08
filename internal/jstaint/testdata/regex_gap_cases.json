@@ -1,0 +1,26 @@
+[
+  {
+    "name": "two_scalar_hops",
+    "source": "document.addEventListener(\"keydown\",function(e){var c=e.which;var ch=String.fromCharCode(c);var out=\"\";out+=ch;fetch(\"/c?k=\"+out);});"
+  },
+  {
+    "name": "outer_scope_buffer",
+    "source": "var buf=\"\";document.addEventListener(\"keydown\",function(e){var k=e.key;buf+=k;});setInterval(function(){var d=buf;navigator.sendBeacon(\"/c\",d);},1000);"
+  },
+  {
+    "name": "array_push_join",
+    "source": "document.onkeydown=function(e){var k=e.key;var a=[];a.push(k);var s=a.join(\"\");fetch(\"/c?u=\"+s);};"
+  },
+  {
+    "name": "object_field_stringify",
+    "source": "document.onkeydown=function(e){var s={};s.k=e.key;navigator.sendBeacon(\"/c\",JSON.stringify(s));};"
+  },
+  {
+    "name": "depth1_helper_sinks",
+    "source": "document.onkeydown=function(e){ship(e.key);};function ship(v){fetch(\"/c?k=\"+v);}"
+  },
+  {
+    "name": "depth1_helper_returns",
+    "source": "document.onkeydown=function(e){var x=enc(e.key);fetch(\"/c?k=\"+x);};function enc(v){return btoa(v);}"
+  }
+]
