@@ -38,6 +38,9 @@ rules:
 - `exclude_patterns` - literal patterns that suppress a match (false positive reduction)
 - `exclude_regexes` - regex patterns that suppress a match
 - `min_match` - minimum patterns that must match
+- `require_regex` - require at least one regex match in addition to `min_match`
+- `max_file_bytes` - skip this rule when the complete scanned file is larger than the byte limit; omitted or `0` is unbounded
+- `max_file_bytes_exempt_regexes` - high-confidence regexes that let the rule continue normal evaluation above `max_file_bytes`
 
 ## YARA-X Rules (Optional)
 

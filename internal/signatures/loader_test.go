@@ -304,3 +304,104 @@ rules:
 		t.Errorf("full scan: want 1 match, got %d", len(got))
 	}
 }
+
+func TestScanFileUsesCompleteSizeForRuleLimit(t *testing.T) {
+	dir := t.TempDir()
+	rulesYAML := `version: 1
+rules:
+  - name: bounded_rule
+    file_types: [".php"]
+    max_file_bytes: 32
+    patterns: ["TOKEN"]
+  - name: unbounded_rule
+    file_types: [".php"]
+    patterns: ["TOKEN"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(rulesYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "large.php")
+	if err := os.WriteFile(target, []byte("TOKEN"+string(make([]byte, 64))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	matches := NewScanner(dir).ScanFile(target, len("TOKEN"))
+	if hasRule(matches, "bounded_rule") {
+		t.Error("bounded rule matched a large file through a scanned prefix")
+	}
+	if !hasRule(matches, "unbounded_rule") {
+		t.Error("unbounded rule should still match the scanned prefix")
+	}
+}
+
+func TestNegativeMaxFileBytesRejectsRule(t *testing.T) {
+	dir := t.TempDir()
+	rulesYAML := `version: 1
+rules:
+  - name: invalid_limit
+    file_types: [".php"]
+    max_file_bytes: -1
+    patterns: ["TOKEN"]
+  - name: valid_rule
+    file_types: [".php"]
+    patterns: ["TOKEN"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(rulesYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(dir)
+	if scanner.LoadError() == nil {
+		t.Fatal("negative max_file_bytes should be reported as a rule load error")
+	}
+	matches := scanner.ScanContent([]byte("TOKEN"), ".php")
+	if hasRule(matches, "invalid_limit") {
+		t.Error("rule with negative max_file_bytes was loaded")
+	}
+	if !hasRule(matches, "valid_rule") {
+		t.Error("valid sibling rule should remain active when one rule is invalid")
+	}
+}
+
+func TestMaxFileBytesExemptionOnlyBypassesSizeCheck(t *testing.T) {
+	dir := t.TempDir()
+	rulesYAML := `version: 1
+rules:
+  - name: exempt_but_not_matched
+    file_types: [".php"]
+    max_file_bytes: 4
+    max_file_bytes_exempt_regexes: ["TOKEN"]
+    patterns: ["REQUIRED"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(rulesYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(dir)
+	if err := scanner.LoadError(); err != nil {
+		t.Fatal(err)
+	}
+	if matches := scanner.ScanContent([]byte("TOKEN padded"), ".php"); len(matches) != 0 {
+		t.Fatalf("size exemption became an independent match condition: %v", matches)
+	}
+}
+
+func TestInvalidMaxFileBytesExemptionRejectsRule(t *testing.T) {
+	dir := t.TempDir()
+	rulesYAML := `version: 1
+rules:
+  - name: invalid_exemption
+    file_types: [".php"]
+    max_file_bytes: 4
+    max_file_bytes_exempt_regexes: ["["]
+    patterns: ["TOKEN"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.yml"), []byte(rulesYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(dir)
+	if scanner.LoadError() == nil {
+		t.Fatal("invalid max_file_bytes exemption regex should be reported")
+	}
+	if scanner.RuleCount() != 0 {
+		t.Fatalf("invalid exemption regex rule loaded: count=%d", scanner.RuleCount())
+	}
+}

@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Four malware rules no longer fire on ordinary framework and library code: upload handlers that are gated by their framework or validate the upload, plugins that decode their own stored options, PDF libraries that escape their own project URL, and analytics plugins that list crawler user agents. These accounted for every malware finding on a production host except one real compromise, which they were burying.
+- Malware rule tuning now keeps indirect request execution and unsafe uploaders visible, applies size bounds to the full real-time file, and requires credential or campaign context for new exfiltration and cloaking alerts.
+- Four malware rules no longer fire on ordinary framework and library code: specific framework and image-only upload handlers, plugins that decode their own stored options, PDF libraries that escape their own project URL, and analytics plugins that list crawler user agents. These accounted for every malware finding on a production host except one real compromise, which they were burying.
 - The JavaScript keylogger rule now requires keystroke capture near a network send, avoiding false positives from Enter-key checks next to unrelated requests. Buffered, beaconed, and credential-field exfiltration stays detected in both scan engines.
 - Malware rules no longer flag a PHP bind shell in non-PHP files, a hardened or webshot-disabled TimThumb, a template's hidden social-icon bar, or a plugin that hides admin notices via a stylesheet, cutting recurring false positives on stock library and template content.
 - Reputation sightings for IPs routed to the browser challenge are no longer emailed when blocked-alert suppression is on, since the challenge either verifies the visitor or escalates to a block without operator action. On busy hosts this removes hundreds of scanner-noise alert lines per day.

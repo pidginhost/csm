@@ -28,15 +28,16 @@ type Rule struct {
 	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
 	RequireRegex    bool     `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
 	// MaxFileBytes skips the rule for content larger than this many bytes
-	// (0 = no limit). Obfuscation rules use it because a hidden payload is a
-	// small file: a multi-hundred-KB library that carries one escaped literal
-	// inside otherwise readable source is not an obfuscated dropper. It bounds
-	// by size, never by path or name.
-	MaxFileBytes int `yaml:"max_file_bytes"`
+	// (0 = no limit). MaxFileBytesExemptRegexes retain high-confidence
+	// structural matches above the bound. This bounds weak heuristics by size
+	// without making padding an escape from stronger branches.
+	MaxFileBytes              int      `yaml:"max_file_bytes"`
+	MaxFileBytesExemptRegexes []string `yaml:"max_file_bytes_exempt_regexes"`
 
 	// Compiled regexes (populated by Compile())
-	compiledRegexes        []*regexp.Regexp
-	compiledExcludeRegexes []*regexp.Regexp
+	compiledRegexes                   []*regexp.Regexp
+	compiledExcludeRegexes            []*regexp.Regexp
+	compiledMaxFileBytesExemptRegexes []*regexp.Regexp
 }
 
 // RuleFile is the top-level structure of a rules YAML file.
@@ -191,6 +192,9 @@ func (s *Scanner) setLoadErr(err error) {
 
 // compile pre-compiles regex patterns for a rule.
 func (r *Rule) compile() error {
+	if r.MaxFileBytes < 0 {
+		return fmt.Errorf("max_file_bytes must be non-negative")
+	}
 	r.compiledRegexes = nil
 	for _, pattern := range r.Regexes {
 		re, err := regexp.Compile("(?i)" + pattern) // case-insensitive
@@ -207,6 +211,14 @@ func (r *Rule) compile() error {
 		}
 		r.compiledExcludeRegexes = append(r.compiledExcludeRegexes, re)
 	}
+	r.compiledMaxFileBytesExemptRegexes = nil
+	for _, pattern := range r.MaxFileBytesExemptRegexes {
+		re, err := regexp.Compile("(?i)" + pattern)
+		if err != nil {
+			return fmt.Errorf("invalid max_file_bytes_exempt_regex '%s': %w", pattern, err)
+		}
+		r.compiledMaxFileBytesExemptRegexes = append(r.compiledMaxFileBytesExemptRegexes, re)
+	}
 	return nil
 }
 
@@ -222,6 +234,15 @@ type Match struct {
 // ScanContent scans file content against loaded rules.
 // fileExt should include the dot (e.g., ".php").
 func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
+	return s.ScanContentWithSize(content, fileExt, int64(len(content)))
+}
+
+// ScanContentWithSize scans content while using contentSize as the complete
+// snapshot size for per-rule bounds. Prefix-scanning callers should pass the
+// size of the open file represented by the prefix; ordinary callers should use
+// ScanContent. A size smaller than the supplied bytes is raised to len(content)
+// so a bad caller cannot turn a bounded rule back on for oversized content.
+func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSize int64) []Match {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -230,6 +251,9 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 	}
 	if contenttype.IsCompressedArchive(content) {
 		return nil
+	}
+	if contentSize < int64(len(content)) {
+		contentSize = int64(len(content))
 	}
 
 	contentLower := strings.ToLower(string(content))
@@ -262,8 +286,17 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 			continue
 		}
 
-		if rule.MaxFileBytes > 0 && len(content) > rule.MaxFileBytes {
-			continue
+		if rule.MaxFileBytes > 0 && contentSize > int64(rule.MaxFileBytes) {
+			exempt := false
+			for _, re := range rule.compiledMaxFileBytesExemptRegexes {
+				if re.Match(content) {
+					exempt = true
+					break
+				}
+			}
+			if !exempt {
+				continue
+			}
 		}
 
 		// Count pattern matches
@@ -329,8 +362,12 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 		return nil
 	}
 
+	contentSize := int64(len(buf))
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > contentSize {
+		contentSize = info.Size()
+	}
 	ext := filepath.Ext(path)
-	return s.ScanContent(buf, ext)
+	return s.ScanContentWithSize(buf, ext, contentSize)
 }
 
 // RuleCount returns the number of loaded rules.

