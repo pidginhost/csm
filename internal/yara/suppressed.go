@@ -21,6 +21,16 @@ var suppressedRuleNames = []string{
 	// analytics plugins and cached page assets as malware delivery.
 	// Replaced by html_smuggling_payload, which requires the encoded header.
 	"ELCEEF_HTML_Smuggling_A",
+
+	// Detects a Windows IIS native-module family, but its condition is
+	// `native_module_private and 2 of ($i*) or 5 of them`. The trailing arm
+	// drops the native-module guard, so five generic strings decide the
+	// match -- and four of them are crawler user agents (Baiduspider,
+	// 360Spider, Sogou, YisouSpider) that any PHP bot-filter table lists
+	// alongside HTTP_X_FORWARDED_FOR. Stock analytics plugins matched.
+	// Replaced by seo_cloak_group14_ioc, which keeps the campaign's own
+	// infrastructure markers and drops the user-agent arm.
+	"ESET_IIS_Group14",
 }
 
 // SuppressedRuleNames returns the built-in rule suppressions.

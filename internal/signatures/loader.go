@@ -27,6 +27,12 @@ type Rule struct {
 	ExcludeRegexes  []string `yaml:"exclude_regexes"`  // regex exclusions
 	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
 	RequireRegex    bool     `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
+	// MaxFileBytes skips the rule for content larger than this many bytes
+	// (0 = no limit). Obfuscation rules use it because a hidden payload is a
+	// small file: a multi-hundred-KB library that carries one escaped literal
+	// inside otherwise readable source is not an obfuscated dropper. It bounds
+	// by size, never by path or name.
+	MaxFileBytes int `yaml:"max_file_bytes"`
 
 	// Compiled regexes (populated by Compile())
 	compiledRegexes        []*regexp.Regexp
@@ -253,6 +259,10 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 			}
 		}
 		if excluded {
+			continue
+		}
+
+		if rule.MaxFileBytes > 0 && len(content) > rule.MaxFileBytes {
 			continue
 		}
 
