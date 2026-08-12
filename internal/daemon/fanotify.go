@@ -1677,8 +1677,15 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		return false
 	}
 
-	// External signature + YARA scanning
-	return fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
+	// External signature + YARA scanning. The YAML engine sees the complete
+	// event-file size even though realtime analysis scans a bounded prefix, so
+	// per-rule file-size limits cannot be defeated by prefix truncation.
+	contentSize := int64(len(data))
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err == nil && stat.Size > contentSize {
+		contentSize = stat.Size
+	}
+	return fm.runSignatureScanWithSize(data, contentSize, path, filepath.Ext(path), procInfo)
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
@@ -1916,8 +1923,12 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 // when a plugin directory has many files matching the same rule.
 // Critical matches (backdoors, webshells) always alert per-file.
 func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
+	return fm.runSignatureScanWithSize(data, int64(len(data)), path, ext, procInfo)
+}
+
+func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, path, ext, procInfo string) bool {
 	if scanner := signatures.Global(); scanner != nil {
-		matches := scanner.ScanContent(data, ext)
+		matches := scanner.ScanContentWithSize(data, ext, contentSize)
 		if len(matches) > 0 {
 			m := matches[0]
 			sev := alert.High

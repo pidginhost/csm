@@ -28,8 +28,9 @@ var suppressedRuleNames = []string{
 	// match -- and four of them are crawler user agents (Baiduspider,
 	// 360Spider, Sogou, YisouSpider) that any PHP bot-filter table lists
 	// alongside HTTP_X_FORWARDED_FOR. Stock analytics plugins matched.
-	// Replaced by seo_cloak_group14_ioc, which keeps the campaign's own
-	// infrastructure markers and drops the user-agent arm.
+	// Replaced by seo_cloak_group14_ioc, which binds the campaign markers to
+	// native-module or campaign-infrastructure context and drops the user-agent
+	// arm.
 	"ESET_IIS_Group14",
 }
 
