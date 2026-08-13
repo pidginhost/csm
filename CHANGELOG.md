@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Findings that record an action CSM took, or how well it can see, no longer group into incidents. Previously only the auto-block record was excluded, leaving the others one field away from letting CSM's own output trigger a further response.
 - Firewall lockout warnings now follow the effective public port policy, ignore disabled services, appear once on dashboard saves, and are included in diagnostics. Validation now covers every IPv6 and SMTP port list without rejecting working mixed-case TCP flood rules.
 - Config validation now rejects out-of-range ports, malformed country codes, bad flood rules, and unrecognised central-intelligence actions or incident block thresholds. Those values previously fell through to a silent default, so a misspelled central action quietly became a challenge policy and a misspelled block threshold turned incident blocking off entirely.
 - Setting the connection rate limit to 0 now validates as "disabled" instead of being rejected, matching what the firewall already did with that value and what the web UI told operators it meant. Negative values are still errors, while null values and their YAML aliases keep shipped firewall defaults.
