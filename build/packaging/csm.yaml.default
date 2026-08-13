@@ -445,6 +445,7 @@ firewall:
     - 2086
     - 2087
     - 2325
+    - 9443                      # CSM web UI
   passive_ftp_start: 49152
   passive_ftp_end: 65534
   conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)

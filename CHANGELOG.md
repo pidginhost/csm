@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The shipped config files now mark the web UI port infra-only, matching the built-in defaults. Installs made from those files would otherwise have published the panel the moment an operator opened its port.
 - Config validation now warns about firewall settings that would lock the operator out of the host, so hand-edited config files and `csm doctor` get the same warnings the web UI already showed before a save.
 - Each scan cycle now reads the firewall's blocked addresses once instead of once per tracked address, so hosts holding many blocks stop paying a full kernel query per entry to reconcile them. Failed or partial reads keep the cached answer instead of pruning tracked blocks.
 - Firewall block metrics are now present before the first attempt and keep unknown values in fixed buckets, so dead-engine alerts work without unbounded metric growth.
