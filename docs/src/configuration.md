@@ -599,7 +599,7 @@ firewall:
   udp6_out: []                          # if empty, uses udp_out
 
   # Restricted ports (infra IPs only)
-  restricted_tcp: [2086,2087,2325]      # WHM ports
+  restricted_tcp: [2086,2087,2325,9443] # WHM and CSM Web UI ports
 
   # Passive FTP range
   passive_ftp_start: 49152
