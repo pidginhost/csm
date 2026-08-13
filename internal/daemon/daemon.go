@@ -1862,18 +1862,7 @@ func (d *Daemon) startLogWatchers() {
 		// Authenticated deliveries prove the source can still log in, which
 		// disqualifies it from the slow-brute block (an office NAT with one
 		// stale device keeps working devices too; a walker never succeeds).
-		if d.smtpAuthTracker != nil && strings.Contains(line, " <= ") && strings.Contains(line, "A=dovecot_") {
-			if ip := extractBracketedIP(line); ip != "" {
-				if parsed := net.ParseIP(ip); parsed != nil {
-					if v4 := parsed.To4(); v4 != nil {
-						ip = v4.String()
-					}
-				}
-				if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-					d.smtpAuthTracker.RecordSuccess(ip)
-				}
-			}
-		}
+		recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
 		return findings
 	}
 
@@ -2166,6 +2155,32 @@ func (d *Daemon) startLogWatchers() {
 		if lf.name != "" {
 			d.MarkWatcher(lf.name, true)
 		}
+	}
+}
+
+// recordEximSMTPAuthSuccess feeds authenticated Exim acceptance lines to the
+// slow SMTP-brute guard. extractAuthUser verifies a real top-level A= field;
+// the IP is deliberately read only from H=, whose bracketed address is the
+// connecting client rather than a HELO/subject/forwarded-header address.
+func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAuthTracker) {
+	if tracker == nil || extractAuthUser(line) == "" {
+		return
+	}
+	hStart, hasHField := eximHFieldStart(line)
+	if !hasHField {
+		return
+	}
+	ip := firstHFieldClientIP(line[hStart:])
+	if ip == "" {
+		return
+	}
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			ip = v4.String()
+		}
+	}
+	if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+		tracker.RecordSuccess(ip)
 	}
 }
 
