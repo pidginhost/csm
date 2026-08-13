@@ -20,6 +20,24 @@ type Key struct {
 	RemoteIP string `json:"remote_ip,omitempty"`
 }
 
+// nonCorrelatingChecks names findings that record what CSM did, or how well
+// it can see, rather than what an attacker did. They are emitted and alerted
+// normally but must never key an incident.
+//
+// Correlating them lets CSM's own output re-enter its decision path. The
+// auto-block chokepoint began setting SourceIP on its findings, which was
+// enough to open an incident on the IP just blocked, which the incident
+// hand-off could then ask to block again. The response findings below carry no
+// attacker identity today and so are inert by accident; listing them makes it
+// a rule, because attaching one later looks like a harmless improvement.
+var nonCorrelatingChecks = map[string]bool{
+	"auto_block":                 true,
+	"auto_response":              true,
+	"challenge_route":            true,
+	"reputation_quota_exhausted": true,
+	"threat_feed_stale":          true,
+}
+
 // IsEmpty reports whether the key has nothing to correlate on. Such
 // findings are emitted normally but do not join an incident.
 func (k Key) IsEmpty() bool {
@@ -40,10 +58,7 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
-	// Response and coverage-health findings are not new attack signals. Giving
-	// one a remote-IP correlation key could create a synthetic incident that
-	// requests a block or attributes service degradation to an attacker.
-	if f.Check == "auto_block" || f.Check == "reputation_quota_exhausted" || f.Check == "threat_feed_stale" {
+	if nonCorrelatingChecks[f.Check] {
 		return Key{}
 	}
 	switch ClassifyKind(f) {
