@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -827,25 +828,12 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 
 		mb := mailboxFromFilterPath(path)
 		rules := parseEximFilter(string(data))
-		for _, ff := range scoreFilterRules(rules, mb, localDomains, cfg.EmailProtection.KnownForwarders) {
-			if ff.onlyIfNew && !isNew {
-				continue
-			}
-			collected = append(collected, mailFilterPending{
-				finding: alert.Finding{
-					Severity: ff.severity,
-					Check:    ff.check,
-					Message:  fmt.Sprintf("%s: %s", mb.String(), ff.reason),
-					Details:  mailFilterDetails(mb, path, ff),
-					FilePath: path,
-					Domain:   mb.domain,
-					Mailbox:  mailboxField(mb),
-				},
-				dest:    ff.dest,
-				mailbox: mb.String(),
-			})
-		}
+		collected = append(collected, mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)...)
 	}
+
+	sievePending, sieveComplete := scanSieveMailFilters(ctx, db, cfg, localDomains, maxFiles)
+	collected = append(collected, sievePending...)
+	baselineComplete = baselineComplete && sieveComplete
 
 	annotateCrossAccount(collected)
 	if ctx.Err() != nil {
@@ -860,6 +848,83 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
 	}
 	return findingsFromPending(collected)
+}
+
+// mailFilterPendings scores one parsed filter/sieve file and turns each
+// dangerous pattern into a pending finding. Shared by the Exim filter and Sieve
+// scan loops so both mechanisms report identically.
+func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, localDomains map[string]bool, known []string, isNew bool) []mailFilterPending {
+	var out []mailFilterPending
+	for _, ff := range scoreFilterRules(rules, mb, localDomains, known) {
+		if ff.onlyIfNew && !isNew {
+			continue
+		}
+		out = append(out, mailFilterPending{
+			finding: alert.Finding{
+				Severity: ff.severity,
+				Check:    ff.check,
+				Message:  fmt.Sprintf("%s: %s", mb.String(), ff.reason),
+				Details:  mailFilterDetails(mb, path, ff),
+				FilePath: path,
+				Domain:   mb.domain,
+				Mailbox:  mailboxField(mb),
+			},
+			dest:    ff.dest,
+			mailbox: mb.String(),
+		})
+	}
+	return out
+}
+
+// scanSieveMailFilters scans per-mailbox Sieve scripts (the rules webmail
+// actually executes) for the same BEC exfil patterns the Exim filter audit
+// covers. Returns the pending findings plus whether the scan saw every file it
+// meant to (a partial scan must not establish the baseline).
+func scanSieveMailFilters(ctx context.Context, db *store.DB, cfg *config.Config, localDomains map[string]bool, maxFiles int) ([]mailFilterPending, bool) {
+	complete := true
+	var files []string
+	if scripts, err := homeGlob(ctx, "mail", "*", "*", "sieve", "*.sieve"); err == nil {
+		files = append(files, scripts...)
+	} else {
+		complete = false
+	}
+	if active, err := homeGlob(ctx, "mail", "*", "*", ".dovecot.sieve"); err == nil {
+		files = append(files, active...)
+	} else {
+		complete = false
+	}
+	complete = complete && scanCoversAllFiles(files, maxFiles)
+	ranked := rankPathsByMtimeDesc(ctx, files, maxFiles)
+
+	var out []mailFilterPending
+	for _, path := range ranked {
+		if ctx.Err() != nil {
+			return out, false
+		}
+		// .dovecot.sieve is normally a symlink to the sieve/ source that is
+		// already globbed above; skip the link so one script is not reported
+		// twice. A regular-file .dovecot.sieve (attacker-dropped, no sieve/
+		// source) still gets scanned. If lstat fails, err toward scanning.
+		if strings.HasSuffix(path, "/.dovecot.sieve") {
+			if info, err := osFS.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+		}
+		data, err := osFS.ReadFile(path)
+		if err != nil {
+			complete = false
+			continue
+		}
+		currentHash := sha256Hex(data)
+		isNew := forwarderFileIsNew(db, "email:mailfilter_last_refresh", "mailsieve:"+path, currentHash)
+		if err := db.SetForwarderHash("mailsieve:"+path, currentHash); err != nil {
+			complete = false
+		}
+		mb := mailboxFromSievePath(path)
+		rules := parseSieveFilter(string(data))
+		out = append(out, mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)...)
+	}
+	return out, complete
 }
 
 func shouldReportMailFilterStoreUnavailable(st *state.Store, cfg *config.Config) bool {
