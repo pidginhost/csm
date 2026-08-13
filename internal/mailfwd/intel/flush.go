@@ -2,6 +2,8 @@ package intel
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -47,9 +49,21 @@ func NewEximQueueFlusher() *EximQueueFlusher {
 	return &EximQueueFlusher{list: runEximBp, remove: runEximRemove}
 }
 
+// survivorsListed bounds how many surviving message IDs are named in the
+// error text so a large stuck queue cannot produce an unreadable message.
+const survivorsListed = 5
+
 // FlushBackscatter removes every frozen null-sender message currently queued.
-// A failure to list or remove is returned: the operator triggered this action
-// explicitly and must know if it did not fully apply.
+//
+// The queue, not the exit status, decides the outcome. exim -Mrm has been
+// observed removing every message it was handed and still exiting non-zero,
+// which reported a failure for work that had already completed and skipped
+// the caller's audit record. Re-reading the queue afterwards establishes
+// what actually left, so a lying exit code can neither invent a failure nor
+// hide a removal that silently did nothing.
+//
+// Removed is the confirmed count and stays meaningful alongside a non-nil
+// error: a partial flush reports both what went and what survived.
 func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	out, err := f.list()
 	if err != nil {
@@ -59,10 +73,43 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	if len(ids) == 0 {
 		return FlushResult{}, nil
 	}
-	if err := f.remove(ids); err != nil {
-		return FlushResult{}, err
+	removeErr := f.remove(ids)
+
+	after, listErr := f.list()
+	if listErr != nil {
+		if removeErr != nil {
+			return FlushResult{}, removeErr
+		}
+		return FlushResult{}, fmt.Errorf("removal could not be confirmed: %w", listErr)
 	}
-	return FlushResult{Removed: len(ids)}, nil
+
+	stillQueued := make(map[string]bool, len(ids))
+	for _, id := range FrozenBackscatterIDs(string(after)) {
+		stillQueued[id] = true
+	}
+	removed := 0
+	var survived []string
+	for _, id := range ids {
+		if stillQueued[id] {
+			survived = append(survived, id)
+			continue
+		}
+		removed++
+	}
+	if len(survived) == 0 {
+		return FlushResult{Removed: removed}, nil
+	}
+
+	named := survived
+	if len(named) > survivorsListed {
+		named = named[:survivorsListed]
+	}
+	msg := fmt.Sprintf("%d of %d frozen backscatter messages still queued after removal (%s)",
+		len(survived), len(ids), strings.Join(named, " "))
+	if removeErr != nil {
+		return FlushResult{Removed: removed}, fmt.Errorf("%s: %w", msg, removeErr)
+	}
+	return FlushResult{Removed: removed}, errors.New(msg)
 }
 
 func runEximRemove(ids []string) error {
