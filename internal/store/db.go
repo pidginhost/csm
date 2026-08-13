@@ -117,6 +117,12 @@ func Open(statePath string) (*DB, error) {
 
 	// Create all buckets
 	err = bdb.Update(func(tx *bolt.Tx) error {
+		// No time-index buckets means this database cannot contain legacy
+		// wall-clock keys. Mark it canonical in the same transaction that
+		// creates the buckets, avoiding an extra startup write on new stores.
+		freshTimeKeyStore := tx.Bucket([]byte("history")) == nil &&
+			tx.Bucket([]byte("attacks:events")) == nil &&
+			tx.Bucket([]byte("attacks:events:ip")) == nil
 		for _, name := range bucketNames {
 			if _, berr := tx.CreateBucketIfNotExists([]byte(name)); berr != nil {
 				return fmt.Errorf("creating bucket %s: %w", name, berr)
@@ -129,6 +135,13 @@ func Open(statePath string) (*DB, error) {
 		if meta.Get([]byte("schema_version")) == nil {
 			if perr := meta.Put([]byte("schema_version"), []byte{0, 0, 0, 0, 0, 0, 0, 1}); perr != nil {
 				return fmt.Errorf("init phprelay schema_version: %w", perr)
+			}
+		}
+		if freshTimeKeyStore {
+			if markerErr := tx.Bucket([]byte("meta")).Put(
+				[]byte(timeKeyUTCMarker), []byte(timeKeyMigrationDone),
+			); markerErr != nil {
+				return fmt.Errorf("init UTC time-key marker: %w", markerErr)
 			}
 		}
 		return nil
@@ -146,6 +159,13 @@ func Open(statePath string) (*DB, error) {
 	if err := db.migrateIfNeeded(statePath); err != nil {
 		_ = bdb.Close()
 		return nil, fmt.Errorf("store migration: %w", err)
+	}
+
+	// Older releases formatted keys in whatever zone each producer supplied.
+	// Canonicalize those persisted keys before any key-based reads or pruning.
+	if err := db.migrateTimeKeysToUTC(); err != nil {
+		_ = bdb.Close()
+		return nil, fmt.Errorf("time-key migration: %w", err)
 	}
 
 	// One-time backfill of stats:daily from existing history. Runs on
@@ -217,12 +237,10 @@ func (db *DB) HasBucket(name string) bool {
 // Format: YYYYMMDDHHmmssNNNNNNNNN-CCCC
 // Lexicographic order equals chronological order.
 //
-// Keys use server-local wall clock. Nearly every finding is stamped with
-// time.Now() (local), so existing stores already hold local-clock keys;
-// normalizing here keeps the few UTC-stamped producers and any cutoff in a
-// foreign zone consistent with them without a key migration.
+// Keys use UTC so ordering is stable across producer zones, host timezone
+// changes, and repeated local hours during daylight-saving transitions.
 func TimeKey(t time.Time, counter int) string {
-	t = t.In(time.Local)
+	t = t.UTC()
 	return fmt.Sprintf("%04d%02d%02d%02d%02d%02d%09d-%04d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(),

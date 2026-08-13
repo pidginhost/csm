@@ -144,19 +144,27 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 
 	var fromPrefix, toPrefix string
 	if from != "" {
-		fromPrefix = ParseTimeKeyPrefix(from)
+		if fromTime, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+			fromPrefix = timeKeyLowerBound(fromTime)
+		} else {
+			fromPrefix = ParseTimeKeyPrefix(from)
+		}
 	}
 	if to != "" {
-		// toPrefix needs to match the entire day, so we use the next day's prefix
-		// by appending a high character to ensure all entries on that day are included.
-		toPrefix = ParseTimeKeyPrefix(to) + "99" // "YYYYMMDD99" is > any time on that day
+		if toTime, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
+			// Use the following local midnight as an exclusive upper bound.
+			// AddDate preserves calendar-day semantics across DST changes.
+			toPrefix = timeKeyLowerBound(toTime.AddDate(0, 0, 1))
+		} else {
+			toPrefix = ParseTimeKeyPrefix(to) + "99"
+		}
 	}
 
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))
 		c := b.Cursor()
 
-		// Seek to the first key past the upper bound, then step back so the
+		// Seek to the first key at the exclusive upper bound, then step back so the
 		// descending walk starts at the newest in-range entry. Without this the
 		// loop walked (and skipped) every entry newer than `to`, which is O(N)
 		// of the whole bucket when querying an old range on a large history.
@@ -176,7 +184,7 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 			key := string(k)
 
 			// Defensive: anything still above the upper bound is out of range.
-			if toPrefix != "" && key > toPrefix {
+			if toPrefix != "" && key >= toPrefix {
 				continue
 			}
 
