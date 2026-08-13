@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Firewall lockout warnings now follow the effective public port policy, ignore disabled services, appear once on dashboard saves, and are included in diagnostics. Validation now covers every IPv6 and SMTP port list without rejecting working mixed-case TCP flood rules.
 - Config validation now rejects out-of-range ports, malformed country codes, bad flood rules, and unrecognised central-intelligence actions or incident block thresholds. Those values previously fell through to a silent default, so a misspelled central action quietly became a challenge policy and a misspelled block threshold turned incident blocking off entirely.
 - Setting the connection rate limit to 0 now validates as "disabled" instead of being rejected, matching what the firewall already did with that value and what the web UI told operators it meant. Negative values are still errors.
 - The shipped config files now mark the web UI port infra-only, matching the built-in defaults. Installs made from those files would otherwise have published the panel the moment an operator opened its port.

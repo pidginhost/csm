@@ -42,7 +42,7 @@ func TestAPIFirewallTentativeApplyAndConfirm(t *testing.T) {
 	s.apiSettingsGet(getW, getReq)
 	etag := getW.Header().Get("ETag")
 
-	postBody := `{"changes":{"conn_limit":500},"timeout_min":2}`
+	postBody := `{"changes":{"enabled":true,"tcp_in":[80,443],"conn_limit":500},"timeout_min":2}`
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall/tentative-apply", "tok", postBody)
 	postReq.Header.Set("If-Match", etag)
 	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
@@ -50,6 +50,21 @@ func TestAPIFirewallTentativeApplyAndConfirm(t *testing.T) {
 	s.apiFirewallTentativeApply(postW, postReq)
 	if postW.Code != 200 {
 		t.Fatalf("tentative-apply code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	var applyResp struct {
+		Warnings []fieldError `json:"warnings"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &applyResp); err != nil {
+		t.Fatal(err)
+	}
+	lockoutWarnings := 0
+	for _, warning := range applyResp.Warnings {
+		if warning.Field == "tcp_in" && strings.Contains(warning.Message, "9443") {
+			lockoutWarnings++
+		}
+	}
+	if lockoutWarnings != 1 {
+		t.Fatalf("tentative apply lockout warning count = %d, want 1; warnings=%+v", lockoutWarnings, applyResp.Warnings)
 	}
 
 	st := mgr.Status()

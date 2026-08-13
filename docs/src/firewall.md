@@ -159,13 +159,16 @@ range (built-in or `reputation.verified_bots`). Precedence:
 
 Config validation warns when an enabled firewall would cut off the management
 plane. `csm doctor`, daemon startup, and the Web UI save path all run the same
-checks:
+checks, and the Web UI returns each warning once:
 
-- The Web UI port is missing from `tcp_in`, or from `tcp6_in` when IPv6 is
-  managed and that list is curated.
-- `restricted_tcp` lists ports while no `infra_ips` are configured. Restricted
-  ports accept only from `infra_ips`, so with none set they accept from
-  nowhere. When the Web UI port is one of them, the warning names it.
+- The enabled Web UI port is missing from `tcp_in`, or from an explicit
+  `tcp6_in` override when IPv6 filtering is enabled. An empty `tcp6_in`
+  inherits `tcp_in`.
+- A `restricted_tcp` entry also appears in an effective public TCP allow list,
+  but no `infra_ips` are configured. The restricted list only filters public
+  accepts; it does not open ports itself. Matching ports are therefore
+  reachable only through the port-agnostic infrastructure-IP accept rule, and
+  with no infrastructure addresses they are reachable from nowhere.
 
 These stay warnings and never block a save or a start: fronting the Web UI with
 a reverse proxy or reaching it over a VPN are legitimate reasons to leave the

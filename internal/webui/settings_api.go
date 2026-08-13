@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -292,7 +291,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if section.ID == "firewall" {
-		warnings = append(warnings, firewallLockoutWarnings(&clone)...)
+		localizeValidationFields(warnings, "firewall")
 	}
 
 	diff := config.Diff(disk, &clone)
@@ -383,6 +382,13 @@ func splitValidationResults(results []config.ValidationResult) (errs []fieldErro
 		}
 	}
 	return errs, warnings
+}
+
+func localizeValidationFields(results []fieldError, section string) {
+	prefix := section + "."
+	for i := range results {
+		results[i].Field = strings.TrimPrefix(results[i].Field, prefix)
+	}
 }
 
 func writeValidationErrors(w http.ResponseWriter, errs []fieldError) {
@@ -572,51 +578,6 @@ func resolvedOptionsForField(field *SettingsField) []string {
 		return field.Options
 	}
 	return tmp.Options
-}
-
-// firewallLockoutWarnings flags the most common ways a firewall save can lock
-// the operator out: WebUI port missing from tcp_in (or tcp6_in when IPv6 dual
-// stack is enabled), and firewall.enabled flipped on while the WebUI port is
-// not allowed inbound. Returns warnings only -- never errors -- so the UI can
-// surface a confirm modal without blocking deliberate changes.
-func firewallLockoutWarnings(cfg *config.Config) []fieldError {
-	if cfg == nil || cfg.Firewall == nil {
-		return nil
-	}
-	listen := cfg.WebUI.Listen
-	if listen == "" {
-		listen = "0.0.0.0:9443"
-	}
-	_, portStr, err := net.SplitHostPort(listen)
-	if err != nil {
-		return nil
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil
-	}
-	contains := func(ports []int, p int) bool {
-		for _, q := range ports {
-			if q == p {
-				return true
-			}
-		}
-		return false
-	}
-	var out []fieldError
-	if !contains(cfg.Firewall.TCPIn, port) {
-		out = append(out, fieldError{
-			Field:   "tcp_in",
-			Message: fmt.Sprintf("WebUI listens on %d but the port is not in tcp_in. Restart will lock you out of the WebUI.", port),
-		})
-	}
-	if cfg.Firewall.IPv6 && len(cfg.Firewall.TCP6In) > 0 && !contains(cfg.Firewall.TCP6In, port) {
-		out = append(out, fieldError{
-			Field:   "tcp6_in",
-			Message: fmt.Sprintf("IPv6 dual-stack is enabled and tcp6_in does not include WebUI port %d.", port),
-		})
-	}
-	return out
 }
 
 // normaliseIntArray parses raw as a JSON array of integers (or strings that
