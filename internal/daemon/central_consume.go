@@ -165,6 +165,13 @@ func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Ac
 }
 
 func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) (centralQueuedAction, bool) {
+	// Response findings are evidence that CSM acted, not an independent local
+	// signal. Feeding auto_block back into the consumer schedules a redundant
+	// second block after every live action and loops forever in dry-run because
+	// no firewall state exists to turn the next attempt into a no-op.
+	if f.Check == "auto_block" {
+		return centralQueuedAction{}, false
+	}
 	ip := f.SourceIP
 	if ip == "" {
 		return centralQueuedAction{}, false

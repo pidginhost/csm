@@ -273,7 +273,8 @@ Registered when `reputation.upstream.enabled: true`.
 - `csm_firewall_block_outcome_total{outcome,source}` (counter): every IP
   block attempt, labelled by firewall `outcome` (`live`, `dry_run`,
   `allowed`, `allowlisted`, `noop`, `protected` for refused
-  infrastructure IPs, `error` for engine failures) and by `source`
+  infrastructure IPs, `error` for engine failures or an unavailable
+  engine) and by `source`
   (`scan`, `challenge`, `incident`, `central_intel`, `cli`, `web_ui`).
   This is the aliveness signal for auto-response: alert when
   `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0`

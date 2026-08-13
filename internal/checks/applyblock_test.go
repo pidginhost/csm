@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -191,11 +192,22 @@ func TestApplyBlockWithoutEngineErrors(t *testing.T) {
 	SetIPBlocker(nil)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
-	if _, err := ApplyBlock(cfg, ApplyBlockRequest{
+	before := blockOutcomeMetricValue(t, "error", BlockSourceChallenge)
+	res, err := ApplyBlock(cfg, ApplyBlockRequest{
 		IP: "203.0.113.54", EngineReason: "r", Reason: "r",
 		TTL: time.Hour, Source: BlockSourceChallenge,
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("nil engine did not error")
+	}
+	if res.Outcome != firewall.BlockOutcomeNoop {
+		t.Fatalf("outcome = %q, want noop", res.Outcome)
+	}
+	if got := blockOutcomeMetricValue(t, "error", BlockSourceChallenge); got != before+1 {
+		t.Fatalf("error/challenge = %v, want %v", got, before+1)
+	}
+	if len(res.Findings) != 0 {
+		t.Fatalf("findings = %+v, want none", res.Findings)
 	}
 }
 
@@ -252,5 +264,73 @@ func TestApplyBlockCarriesCloudflareWarning(t *testing.T) {
 	}
 	if len(res.Findings) != 1 || !strings.Contains(res.Findings[0].Details, firewall.CloudflareCoverageWarning) {
 		t.Fatalf("findings = %+v, want the Cloudflare coverage warning", res.Findings)
+	}
+}
+
+type onceLiveBlocker struct {
+	mu      sync.Mutex
+	blocked bool
+}
+
+func (b *onceLiveBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
+	_, err := b.BlockIPOutcome(ip, reason, timeout)
+	return err
+}
+
+func (b *onceLiveBlocker) BlockIPOutcome(string, string, time.Duration) (firewall.BlockOutcome, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.blocked {
+		return firewall.BlockOutcomeNoop, nil
+	}
+	b.blocked = true
+	return firewall.BlockOutcomeLive, nil
+}
+
+func (b *onceLiveBlocker) UnblockIP(string) error { return nil }
+func (b *onceLiveBlocker) IsBlocked(string) bool  { return true }
+
+func TestApplyBlockConcurrentSourcesRecordOneAppliedBlock(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	blocker := &onceLiveBlocker{}
+	applyBlockTestSetup(t, blocker)
+
+	start := make(chan struct{})
+	results := make(chan ApplyBlockResult, 2)
+	errs := make(chan error, 2)
+	for _, source := range []string{BlockSourceChallenge, BlockSourceIncident} {
+		go func(source string) {
+			<-start
+			res, err := ApplyBlock(cfg, ApplyBlockRequest{
+				IP: "203.0.113.60", EngineReason: source, Reason: source,
+				TTL: time.Hour, Source: source,
+			})
+			results <- res
+			errs <- err
+		}(source)
+	}
+	close(start)
+
+	live, noop, findings := 0, 0, 0
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("ApplyBlock: %v", err)
+		}
+		res := <-results
+		findings += len(res.Findings)
+		switch res.Outcome {
+		case firewall.BlockOutcomeLive:
+			live++
+		case firewall.BlockOutcomeNoop:
+			noop++
+		default:
+			t.Fatalf("outcome = %q, want live or noop", res.Outcome)
+		}
+	}
+	if live != 1 || noop != 1 || findings != 1 {
+		t.Fatalf("live=%d noop=%d findings=%d, want 1/1/1", live, noop, findings)
+	}
+	if state := loadBlockState(cfg.StatePath); len(state.IPs) != 1 {
+		t.Fatalf("tracker entries = %+v, want one", state.IPs)
 	}
 }

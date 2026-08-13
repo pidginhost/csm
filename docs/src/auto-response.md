@@ -163,6 +163,11 @@ Challenge, central, and incident blocks are not limited by
 `auto_response.max_blocks_per_hour`; that budget applies to scan-driven
 blocks only.
 
+The resulting `auto_block` findings are output evidence, not new local
+corroboration for central intelligence or incident correlation. They are
+deduplicated before the digest, attack database, history, and alert sinks
+receive them.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services

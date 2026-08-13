@@ -43,6 +43,7 @@ func TestAutoBlockPendingRequeuedWhenEngineUnavailable(t *testing.T) {
 	SetIPBlocker(nil)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
+	before := blockOutcomeMetricValue(t, "error", BlockSourceScan)
 	AutoBlockIPs(cfg, nil)
 
 	state := loadBlockState(cfg.StatePath)
@@ -51,6 +52,9 @@ func TestAutoBlockPendingRequeuedWhenEngineUnavailable(t *testing.T) {
 	}
 	if state.Pending[0].QueuedAt.IsZero() {
 		t.Error("requeued entry must carry QueuedAt so it can age out")
+	}
+	if got := blockOutcomeMetricValue(t, "error", BlockSourceScan); got != before+1 {
+		t.Fatalf("error/scan = %v, want %v", got, before+1)
 	}
 }
 

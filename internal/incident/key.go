@@ -40,6 +40,12 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
+	// A block result is evidence that auto-response acted, not a new attack
+	// signal. Giving it the blocked IP as a correlation key would create a
+	// synthetic incident that can immediately request the same block again.
+	if f.Check == "auto_block" {
+		return Key{}
+	}
 	switch ClassifyKind(f) {
 	case KindHostIntegrityRisk:
 		return Key{Host: "host"}
