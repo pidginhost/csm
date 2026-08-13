@@ -257,14 +257,20 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "firewall.dos_exempt_ranges", e})
 		}
 		if cfg.Firewall.Enabled {
-			if cfg.Firewall.ConnRateLimit <= 0 {
-				results = append(results, ValidationResult{"error", "firewall.conn_rate_limit", "conn_rate_limit must be > 0 when firewall enabled"})
+			// 0 disables the connection meter: it is what the engine does with
+			// the value and what the web UI's own help text promises. Absent
+			// keys are filled from the shipped defaults before validation runs
+			// (see applyFirewallFieldDefaults), so a 0 reaching here is always
+			// the operator's explicit choice rather than an unset field.
+			if cfg.Firewall.ConnRateLimit < 0 {
+				results = append(results, ValidationResult{"error", "firewall.conn_rate_limit", fmt.Sprintf("conn_rate_limit must be >= 0 when firewall enabled (0 = disabled), got %d", cfg.Firewall.ConnRateLimit)})
 			}
 			if cfg.Firewall.ConnLimit < 0 {
 				results = append(results, ValidationResult{"error", "firewall.conn_limit", "conn_limit must be >= 0 when firewall enabled (0 = disabled)"})
 			}
-			if cfg.Firewall.ConnRateLimit > 0 && cfg.Firewall.ConnLimit >= 0 {
-				results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%d, conn_limit=%d", cfg.Firewall.ConnRateLimit, cfg.Firewall.ConnLimit)})
+			if cfg.Firewall.ConnRateLimit >= 0 && cfg.Firewall.ConnLimit >= 0 {
+				results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%s, conn_limit=%s",
+					limitSummary(cfg.Firewall.ConnRateLimit), limitSummary(cfg.Firewall.ConnLimit))})
 			}
 		}
 		results = append(results, firewallLockoutResults(cfg)...)
@@ -640,6 +646,16 @@ func validateWarnings(cfg *Config) []ValidationResult {
 
 // ValidateDeep performs connectivity probes against configured services.
 // It does NOT call Validate(); the caller should invoke both separately.
+// limitSummary renders a firewall limit for operator-facing output so a
+// disabled protection reads as "disabled" instead of as a bare 0 that looks
+// like a missing value.
+func limitSummary(v int) string {
+	if v == 0 {
+		return "disabled"
+	}
+	return strconv.Itoa(v)
+}
+
 // firewallLockoutResults reports the ways an enabled firewall can cut the
 // operator off from the host. The web UI runs the same checks before a save;
 // running them here covers hand-edited csm.yaml, `csm doctor`, and daemon

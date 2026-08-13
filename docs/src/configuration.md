@@ -610,7 +610,7 @@ firewall:
 
   # Rate limiting. SYN/conn-rate/UDP are dual-stack (IPv6 keyed per /64);
   # conn_limit is IPv4-only.
-  conn_rate_limit: 200                  # new connections/min per source (CGNAT-tolerant; IPv6 per /64)
+  conn_rate_limit: 200                  # new connections/min per source (CGNAT-tolerant; IPv6 per /64; 0 = disabled)
   syn_flood_protection: true            # per-source SYN flood meter (IPv6 per /64)
   conn_limit: 400                       # max concurrent connections per IPv4 source, IPv4 only (0 = disabled)
 

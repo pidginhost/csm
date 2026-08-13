@@ -106,7 +106,7 @@ otherwise it rearms the timer for the remaining window.
 firewall:
   enabled: true
   ipv6: false                  # false = ALL IPv6 traffic bypasses the firewall; CSM raises a finding on dual-stack hosts
-  conn_rate_limit: 200         # new connections per minute per source (IPv6 per /64)
+  conn_rate_limit: 200         # new connections per minute per source (IPv6 per /64; 0 = disabled)
   syn_flood_protection: true   # per-source SYN flood meter (IPv6 per /64)
   conn_limit: 400              # max concurrent connections per IPv4 source (0 = disabled)
   smtp_block: false            # restrict outbound SMTP
