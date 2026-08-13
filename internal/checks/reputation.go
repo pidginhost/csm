@@ -30,7 +30,15 @@ const (
 	abuseConfidenceThreshold = 50
 	maxQueriesPerCycle       = 5    // max AbuseIPDB API calls per 10-min cycle (~720/day, fits free tier)
 	maxCacheEntries          = 5000 // cap cache size
+	reputationHealthReminder = 24 * time.Hour
+	reputationQuotaStateKey  = "_reputation_health:quota"
+	reputationFeedStateKey   = "_reputation_health:feed_stale"
 )
+
+var reputationHealthStateKeys = map[string]string{
+	logicalOwnerReputationQuota:     reputationQuotaStateKey,
+	logicalOwnerReputationFeedStale: reputationFeedStateKey,
+}
 
 // maxDailyAbuseQueries is the store-backed daily circuit-breaker below
 // the 1000/day free-tier ceiling. The 100-slot cushion below 1000 leaves
@@ -121,19 +129,16 @@ func (c *reputationCache) changedEntries() map[string]store.ReputationEntry {
 //  2. Check local threat DB (permanent blocklist + free feeds)
 //  3. Check AbuseIPDB cache
 //  4. Query AbuseIPDB for truly unknown IPs (max 5/cycle, ~720/day)
-func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state.Store) []alert.Finding {
 	sdb := store.Global()
 	now := time.Now()
 	quotaExhausted := !abuseQuotaReady(sdb, now)
-
-	// Coverage-health findings are emitted even with no recent IPs: the
-	// degradation exists whether or not this cycle had traffic to score.
-	findings := reputationHealthFindings(cfg, sdb, now, quotaExhausted)
+	var findings []alert.Finding
 
 	supplementalAgg := newSupplementalThreatAggregator(cfg)
 	ips := collectRecentIPs(cfg)
 	if len(ips) == 0 {
-		return findings
+		return reputationHealthFindings(ctx, cfg, sdb, scanState, now, quotaExhausted)
 	}
 
 	authenticated := collectAuthenticatedIPs(cfg)
@@ -250,6 +255,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	}
 
 	results := make(map[string]queryResult, len(pendingQueries))
+	quotaErrorObserved := false
 	if len(pendingQueries) > 0 {
 		var mu sync.Mutex
 		var wg sync.WaitGroup
@@ -287,6 +293,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		}
 		if res.err != nil {
 			if strings.Contains(res.err.Error(), "429") || strings.Contains(res.err.Error(), "402") {
+				quotaErrorObserved = true
 				resetAt := nextUTCMidnight(time.Now())
 				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), pausing lookups until %s\n",
 					res.err, resetAt.Format(time.RFC3339))
@@ -294,7 +301,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				// next cycle's classifier; the cycle-local quotaExhausted
 				// flag has no further reader past this loop.
 				if sdb != nil {
-					_ = sdb.SetAbuseQuotaExhaustedUntil(resetAt)
+					if err := sdb.SetAbuseQuotaExhaustedUntil(resetAt); err != nil {
+						fmt.Fprintf(os.Stderr, "abuseipdb: persisting quota backoff: %v\n", err)
+					}
 				}
 				if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
 					appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
@@ -339,6 +348,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	// Clean and cap cache
 	cleanCache(cache)
 	saveReputationCache(cfg.StatePath, cache)
+	healthNow := time.Now()
+	quotaExhausted = quotaErrorObserved || !abuseQuotaReady(sdb, healthNow)
+	findings = append(findings, reputationHealthFindings(ctx, cfg, sdb, scanState, healthNow, quotaExhausted)...)
 
 	return findings
 }
@@ -438,35 +450,82 @@ func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provide
 // have not refreshed in over a week (stale tier-2 data). Feeds that never
 // loaded stay silent - a fresh install's first download may still be
 // pending, which is not operator-actionable.
-func reputationHealthFindings(cfg *config.Config, sdb *store.DB, now time.Time, quotaExhausted bool) []alert.Finding {
+func reputationHealthFindings(ctx context.Context, cfg *config.Config, sdb *store.DB, scanState *state.Store, now time.Time, quotaExhausted bool) []alert.Finding {
 	var out []alert.Finding
-	if cfg.Reputation.AbuseIPDBKey != "" && quotaExhausted {
-		detail := "Daily query budget reached; lookups resume at 00:00 UTC. Local threat DB and cached scores still apply."
+	disabled := disabledLogicalOwners(cfg)
+	quotaActive := cfg.Reputation.AbuseIPDBKey != "" && quotaExhausted
+	if _, off := disabled[logicalOwnerReputationQuota]; off {
+		clearReputationHealthState(scanState, reputationQuotaStateKey)
+	} else if quotaActive {
+		detail := "Daily AbuseIPDB query budget reached; uncached AbuseIPDB lookups resume at 00:00 UTC. Local threat DB, rspamd, upstream, and cached scores still apply when configured."
 		if sdb != nil {
 			if until := sdb.AbuseQuotaExhaustedUntil(); !until.IsZero() && now.Before(until) {
-				detail = fmt.Sprintf("API returned a quota error; lookups paused until %s. Local threat DB and cached scores still apply.", until.UTC().Format(time.RFC3339))
+				detail = fmt.Sprintf("API returned a quota error; uncached AbuseIPDB lookups are paused until %s. Local threat DB, rspamd, upstream, and cached scores still apply when configured.", until.UTC().Format(time.RFC3339))
 			}
 		}
-		out = append(out, alert.Finding{
+		finding := alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "reputation_quota_exhausted",
-			Message:   "AbuseIPDB quota exhausted: reputation lookups degraded to local data",
+			Message:   "AbuseIPDB quota exhausted: uncached AbuseIPDB lookups are paused",
 			Details:   detail,
 			Timestamp: now,
-		})
-	}
-	if db := GetThreatDB(); db != nil {
-		if last := db.LastFeedRefresh(); !last.IsZero() && now.Sub(last) > 7*24*time.Hour {
-			out = append(out, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "threat_feed_stale",
-				Message:   "Threat intelligence feeds stale: reputation matching runs on old data",
-				Details:   fmt.Sprintf("Last successful feed update: %s. Downloads retry on each deep-scan cycle; check outbound connectivity to the feed mirrors.", last.UTC().Format(time.RFC3339)),
-				Timestamp: now,
-			})
 		}
+		appendReputationHealthFinding(ctx, &out, scanState, logicalOwnerReputationQuota, reputationQuotaStateKey, now, finding)
+	} else {
+		clearReputationHealthState(scanState, reputationQuotaStateKey)
+	}
+	lastRefresh := time.Time{}
+	if db := GetThreatDB(); db != nil {
+		lastRefresh = db.LastFeedRefresh()
+	}
+	feedActive := feedRefreshStale(lastRefresh, now)
+	if _, off := disabled[logicalOwnerReputationFeedStale]; off {
+		clearReputationHealthState(scanState, reputationFeedStateKey)
+	} else if feedActive {
+		finding := alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "threat_feed_stale",
+			Message:   "Threat intelligence feeds stale: reputation matching runs on old data",
+			Details:   fmt.Sprintf("Last successful feed update: %s. Downloads retry on each deep-scan cycle; check outbound connectivity to the feed mirrors.", lastRefresh.UTC().Format(time.RFC3339)),
+			Timestamp: now,
+		}
+		appendReputationHealthFinding(ctx, &out, scanState, logicalOwnerReputationFeedStale, reputationFeedStateKey, now, finding)
+	} else {
+		clearReputationHealthState(scanState, reputationFeedStateKey)
 	}
 	return out
+}
+
+func appendReputationHealthFinding(ctx context.Context, out *[]alert.Finding, scanState *state.Store, owner, stateKey string, now time.Time, finding alert.Finding) {
+	if scanState != nil {
+		emit, err := scanState.ClaimRawTimestamp(stateKey, now, reputationHealthReminder)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "reputation: persisting %s reminder: %v\n", finding.Check, err)
+		}
+		if !emit {
+			markCheckIncomplete(ctx, owner)
+			return
+		}
+	}
+	*out = append(*out, finding)
+}
+
+func clearReputationHealthState(scanState *state.Store, stateKey string) {
+	if scanState == nil {
+		return
+	}
+	if err := scanState.DeleteRawAndSave(stateKey); err != nil {
+		fmt.Fprintf(os.Stderr, "reputation: clearing health reminder state %s: %v\n", stateKey, err)
+	}
+}
+
+func feedRefreshStale(lastRefresh, now time.Time) bool {
+	if lastRefresh.IsZero() {
+		return false
+	}
+	lastRefresh = lastRefresh.Round(0)
+	now = now.Round(0)
+	return !lastRefresh.After(now) && now.Sub(lastRefresh) > 7*24*time.Hour
 }
 
 // nextUTCMidnight returns 00:00 UTC on the day after now — the point at

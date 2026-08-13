@@ -454,6 +454,34 @@ func (s *Store) SetRawAndSave(key, value string) error {
 	return s.save()
 }
 
+// ClaimRawTimestamp atomically claims a persisted time window. It returns
+// true for the first claim and after interval has elapsed. A future stored
+// timestamp can result from a backward wall-clock step; rebase it to now so
+// the window does not stay suppressed until the old clock value catches up.
+func (s *Store) ClaimRawTimestamp(key string, now time.Time, interval time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now = now.Round(0)
+	if entry, ok := s.entries[key]; ok {
+		if previous, err := time.Parse(time.RFC3339Nano, entry.Hash); err == nil {
+			previous = previous.Round(0)
+			if previous.After(now) {
+				entry.Hash = now.Format(time.RFC3339Nano)
+				entry.LastSeen = now
+				s.dirty = true
+				return false, s.save()
+			}
+			if now.Sub(previous) < interval {
+				return false, nil
+			}
+		}
+	}
+
+	s.setRawLocked(key, now.Format(time.RFC3339Nano))
+	return true, s.save()
+}
+
 func (s *Store) setRawLocked(key, value string) bool {
 	entry, exists := s.entries[key]
 	if !exists {

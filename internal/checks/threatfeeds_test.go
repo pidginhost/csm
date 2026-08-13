@@ -851,6 +851,27 @@ func TestUpdateFeedsFailedFeedKeepsPreviousData(t *testing.T) {
 	}
 }
 
+func TestUpdateFeedsRetriesAfterClockMovesBeforeLastRefresh(t *testing.T) {
+	setTestThreatFeeds(t)
+	calls := 0
+	withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("203.0.113.10\n"))
+	}))
+
+	db := newTestThreatDB(t)
+	db.lastUpdate = time.Now().Add(24 * time.Hour)
+	if err := db.UpdateFeeds(); err != nil {
+		t.Fatalf("UpdateFeeds: %v", err)
+	}
+	if calls != len(threatFeeds) {
+		t.Fatalf("feed calls = %d, want %d after backward clock step", calls, len(threatFeeds))
+	}
+	if db.lastUpdate.After(time.Now().Add(time.Minute)) {
+		t.Fatalf("lastUpdate remained in the future after refresh: %v", db.lastUpdate)
+	}
+}
+
 func TestUpdateFeedsAllFailedRetainsDataAndRetries(t *testing.T) {
 	setTestThreatFeeds(t)
 	handler := &fakeFeedHandler{body: map[string]string{

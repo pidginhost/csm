@@ -40,10 +40,10 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
-	// A block result is evidence that auto-response acted, not a new attack
-	// signal. Giving it the blocked IP as a correlation key would create a
-	// synthetic incident that can immediately request the same block again.
-	if f.Check == "auto_block" {
+	// Response and coverage-health findings are not new attack signals. Giving
+	// one a remote-IP correlation key could create a synthetic incident that
+	// requests a block or attributes service degradation to an attacker.
+	if f.Check == "auto_block" || f.Check == "reputation_quota_exhausted" || f.Check == "threat_feed_stale" {
 		return Key{}
 	}
 	switch ClassifyKind(f) {

@@ -569,10 +569,11 @@ func (db *ThreatDB) LastFeedRefresh() time.Time {
 func (db *ThreatDB) FeedsStale() bool {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	if db.LastUpdated.IsZero() {
-		return db.lastUpdate.IsZero() || time.Since(db.lastUpdate) > 7*24*time.Hour
+	lastRefresh := db.LastUpdated
+	if lastRefresh.IsZero() {
+		lastRefresh = db.lastUpdate
 	}
-	return time.Since(db.LastUpdated) > 7*24*time.Hour
+	return lastRefresh.IsZero() || feedRefreshStale(lastRefresh, time.Now())
 }
 
 // UpdateFeeds downloads fresh threat intelligence feeds.
@@ -587,8 +588,12 @@ func (db *ThreatDB) UpdateFeeds() error {
 	lastUpdate := db.lastUpdate
 	db.mu.RUnlock()
 
-	// Only update once per day
-	if time.Since(lastUpdate) < 20*time.Hour {
+	// Only update once per day. Strip monotonic readings so suspend time is
+	// counted, and retry immediately if the wall clock moved behind the last
+	// refresh instead of suppressing downloads until it catches up.
+	now := time.Now().Round(0)
+	lastUpdate = lastUpdate.Round(0)
+	if !lastUpdate.IsZero() && !lastUpdate.After(now) && now.Sub(lastUpdate) < 20*time.Hour {
 		return nil
 	}
 
@@ -669,7 +674,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 		db.feedNets[name] = result.nets
 	}
 	totalIPs, totalNets := db.rebuildFeedLookup(feedNames)
-	now := time.Now()
+	now = time.Now()
 	db.lastUpdate = now
 	db.FeedIPCount = totalIPs
 	db.FeedNetCount = totalNets

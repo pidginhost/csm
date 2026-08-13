@@ -271,17 +271,18 @@ func TestApplyCentralIgnoresUnlistedIP(t *testing.T) {
 	}
 }
 
-func TestPlanCentralActionIgnoresAutoBlockFindings(t *testing.T) {
+func TestPlanCentralActionIgnoresResponseAndHealthFindings(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
 
-	for _, message := range []string{
-		"AUTO-BLOCK: 45.76.1.1 blocked (expires in 24h0m0s)",
-		"AUTO-BLOCK [dry-run]: 45.76.1.1 would be blocked (expires in 24h0m0s)",
+	for _, finding := range []alert.Finding{
+		{Check: "auto_block", Message: "AUTO-BLOCK: 45.76.1.1 blocked (expires in 24h0m0s)"},
+		{Check: "auto_block", Message: "AUTO-BLOCK [dry-run]: 45.76.1.1 would be blocked (expires in 24h0m0s)"},
+		{Check: "reputation_quota_exhausted", Message: "AbuseIPDB quota exhausted"},
+		{Check: "threat_feed_stale", Message: "Threat intelligence feeds stale"},
 	} {
-		if action, ok := d.planCentralAction(nil, reporting.ActionBlockIfLocalCorroborated, 80, nil, alert.Finding{
-			Check: "auto_block", Message: message, SourceIP: "45.76.1.1",
-		}); ok {
-			t.Fatalf("auto-response finding planned central action %+v", action)
+		finding.SourceIP = "45.76.1.1"
+		if action, ok := d.planCentralAction(nil, reporting.ActionBlockIfLocalCorroborated, 80, nil, finding); ok {
+			t.Fatalf("%s finding planned central action %+v", finding.Check, action)
 		}
 	}
 }
