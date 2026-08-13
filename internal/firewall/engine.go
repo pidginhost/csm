@@ -2738,9 +2738,11 @@ func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {
 // reconcile pass over N tracked IPs cost N dumps of the entire set; callers
 // testing more than one IP should snapshot instead.
 //
-// A nil set is left uncovered rather than reported empty. Dump failures are
-// returned so callers keep their cached view instead of erasing local state
-// on a transient netlink error.
+// A nil set is left uncovered rather than reported empty, and so is one whose
+// dump failed: the returned snapshot always describes whichever families did
+// answer, with the failures joined into the error. Callers keep their cached
+// view for uncovered families instead of erasing local state on a transient
+// netlink error, while a family that dumped cleanly stays reconciled.
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -2753,6 +2755,7 @@ func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 	}
 
 	var snap LiveBlockedSnapshot
+	var dumpErrs []error
 	for _, target := range []struct {
 		set     *nftables.Set
 		members *map[string]struct{}
@@ -2766,7 +2769,11 @@ func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 		}
 		elements, err := e.dumpBlockedSetLocked(target.set)
 		if err != nil {
-			return LiveBlockedSnapshot{}, fmt.Errorf("listing blocked set: %w", err)
+			// One family failing does not invalidate the other. Leaving this
+			// family uncovered keeps its callers on their cached answer while
+			// the family that did dump stays reconciled against the kernel.
+			dumpErrs = append(dumpErrs, fmt.Errorf("listing blocked set %s: %w", target.set.Name, err))
+			continue
 		}
 		members := make(map[string]struct{}, len(elements))
 		for _, el := range elements {
@@ -2780,7 +2787,7 @@ func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 		*target.members = members
 		*target.covered = true
 	}
-	return snap, nil
+	return snap, errors.Join(dumpErrs...)
 }
 
 func (e *Engine) dumpBlockedSetLocked(set *nftables.Set) ([]nftables.SetElement, error) {

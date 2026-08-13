@@ -679,8 +679,10 @@ func liveBlockedSnapshot(b IPBlocker) (firewall.LiveBlockedSnapshot, bool) {
 	}
 	snap, err := lister.LiveBlockedSet()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "auto-block: live blocked-set dump failed, using cached status: %v\n", err)
-		return firewall.LiveBlockedSnapshot{}, true
+		// The snapshot still describes whichever families answered, so keep
+		// it: discarding it would drop a healthy family to cached status
+		// because the other one failed.
+		fmt.Fprintf(os.Stderr, "auto-block: live blocked-set dump incomplete, using cached status for uncovered families: %v\n", err)
 	}
 	return snap, true
 }

@@ -157,6 +157,30 @@ func TestAutoBlockIPs_ReconcileTreatsMalformedIPAsAbsentAfterSnapshotFailure(t *
 	}
 }
 
+// A dump that failed for one family still carries the other family's live
+// membership. The covered family must be reconciled from it rather than
+// dropped to cached status because its sibling failed.
+func TestAutoBlockIPs_ReconcileUsesCoveredFamilyOfPartialSnapshot(t *testing.T) {
+	blocker := &snapshotBlocker{
+		cachedSays: true, // cache lags: it still claims both entries are blocked
+		snapErr:    errSnapshotUnavailable,
+		snap: firewall.LiveBlockedSnapshot{
+			V4:    map[string]struct{}{},
+			HasV4: true,
+			HasV6: false,
+		},
+	}
+
+	state := reconcileWithBlocker(t, blocker, trackedIP("192.0.2.10"), trackedIP("2001:db8::1"))
+
+	if len(state.IPs) != 1 || state.IPs[0].IP != "2001:db8::1" {
+		t.Errorf("want the v4 entry pruned from the covered family and the v6 entry kept from cache, got %+v", state.IPs)
+	}
+	if blocker.liveCalls != 0 {
+		t.Errorf("partial snapshot triggered %d per-IP live retries, want 0", blocker.liveCalls)
+	}
+}
+
 func TestAutoBlockIPs_ReconcileMatchesIPv4MappedEntryInV4Snapshot(t *testing.T) {
 	blocker := &snapshotBlocker{
 		snap: firewall.LiveBlockedSnapshot{
