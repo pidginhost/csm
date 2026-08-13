@@ -511,6 +511,47 @@ func TestSMTPAuthTracker_SlowBruteSingleMailboxStaysQuiet(t *testing.T) {
 	}
 }
 
+// A mailbox walk touches many distinct mailboxes with few attempts each and
+// can stay under the failure-count floor forever (observed live: 34 failures
+// across 26 mailboxes). Enough walked mailboxes must fire on their own.
+func TestSMTPAuthTracker_SlowBruteMailboxWalkFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+
+	firedAt := 0
+	for i := 1; i <= 30 && firedAt == 0; i++ {
+		account := fmt.Sprintf("walked-%02d@example.ro", i)
+		if _, ok := findingByCheck(tr.Record("198.51.100.31", account), "smtp_bruteforce"); ok {
+			firedAt = i
+			break
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if firedAt == 0 {
+		t.Fatal("mailbox walk never fired within 30 walked mailboxes")
+	}
+	if firedAt != slowBruteWalkAccounts {
+		t.Errorf("walk fired at mailbox %d, want %d", firedAt, slowBruteWalkAccounts)
+	}
+}
+
+// A successful SMTP auth from the source inside the slow window marks it as a
+// live legitimate client (e.g. an office NAT after a forced password reset
+// where some devices still work); the walk trigger must stay quiet then.
+func TestSMTPAuthTracker_SlowBruteWalkSuppressedByRecentSuccess(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+
+	tr.RecordSuccess("198.51.100.32")
+	for i := 1; i <= 30; i++ {
+		account := fmt.Sprintf("walked-%02d@example.ro", i)
+		if got, ok := findingByCheck(tr.Record("198.51.100.32", account), "smtp_bruteforce"); ok {
+			t.Fatalf("walk fired despite an in-window success at mailbox %d: %v", i, got)
+		}
+		clock.advance(8 * time.Minute)
+	}
+}
+
 // A backend outage fails every login regardless of password; the slow signal
 // must honor the degraded gate like the fast one.
 func TestSMTPAuthTracker_SlowBruteBackendDownSuppressed(t *testing.T) {

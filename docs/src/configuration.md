@@ -240,6 +240,9 @@ thresholds:
   smtp_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
   # Slow-brute pair: failed auths from one IP across 3+ distinct mailboxes
   # within the long window. Catches attackers pacing below the fast window.
+  # Also fires on breadth alone: 10+ distinct walked mailboxes trigger the
+  # block regardless of the failure count. A successful SMTP auth from the
+  # source inside the window disqualifies it (live office NAT, not a walker).
   smtp_bruteforce_slow_threshold: 40      # failures before block (default: 40; 3-1024; explicit 0 disables)
   smtp_bruteforce_slow_window_min: 360    # slow sliding window in minutes (default: 360; 1-10080)
 
@@ -259,7 +262,8 @@ thresholds:
   mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
   # Slow-brute pair, as above. A recent successful login from the source or
   # failures confined to mailboxes it holds established good standing for
-  # keep the source on the advisory path instead of blocking.
+  # keep the source on the advisory path instead of blocking. Also fires on
+  # breadth alone: 10+ distinct walked mailboxes trigger regardless of count.
   mail_bruteforce_slow_threshold: 40      # failures before block (default: 40; 3-1024; explicit 0 disables)
   mail_bruteforce_slow_window_min: 360    # slow sliding window in minutes (default: 360; 1-10080)
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
