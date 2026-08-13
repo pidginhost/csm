@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Firewall status now counts infra IPs from both the top-level and firewall config sections, matching what the running firewall actually uses. A host that declared them only at the top level reported "Infra IPs: 0 entries" while the live ruleset held several, which reads as an imminent lockout.
+- Firewall status now reports the effective policy across configuration sections, including merged infra IPs and challenge port adjustments. Equivalent address spellings count once, and the CLI and web UI no longer show false or inflated values.
 - Flushing frozen backscatter from the mail queue now confirms what actually left the queue instead of trusting the mail server's exit status, which was reporting a failure for a flush that had already deleted the messages. Every attempt is recorded even if its outcome cannot be verified, audit details do not attribute concurrent deliveries to the flush, later queue batches still run after command errors, and errors include a bounded underlying reason.
 - WordPress spam cleanup now confirms high-confidence keyword matches on Unicode-aware word boundaries before deleting, preventing substring hits in legitimate multilingual articles. Preview and cleanup counts are deduplicated, overlapping keyword totals are labelled, and database failures stop the command instead of reporting success.
 - Findings that record an action CSM took, or how well it can see, no longer group into incidents. Previously only the auto-block record was excluded, leaving the others one field away from letting CSM's own output trigger a further response.

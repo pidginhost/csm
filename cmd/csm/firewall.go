@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 )
@@ -591,12 +592,14 @@ func fwLookup() {
 	}
 
 	ip := args[0]
-	if net.ParseIP(ip) == nil {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
 		fmt.Fprintf(os.Stderr, "Invalid IP: %s\n", ip)
 		os.Exit(1)
 	}
 
 	cfg := loadConfigLite()
+	fwCfg := config.EffectiveFirewallConfig(cfg)
 
 	// Check block status
 	state, _ := firewall.LoadState(cfg.StatePath)
@@ -617,18 +620,17 @@ func fwLookup() {
 			fmt.Printf("ALLOWED  %s\n", a.Reason)
 		}
 	}
-	for _, infra := range cfg.Firewall.InfraIPs {
+	for _, infra := range fwCfg.InfraIPs {
 		_, network, err := net.ParseCIDR(infra)
-		if err == nil && network.Contains(net.ParseIP(ip)) {
+		if err == nil && network.Contains(parsedIP) {
 			fmt.Printf("INFRA    %s\n", infra)
-		} else if infra == ip {
+		} else if infraIP := net.ParseIP(infra); infraIP != nil && infraIP.Equal(parsedIP) {
 			fmt.Printf("INFRA    exact match\n")
 		}
 	}
 
 	// Check CF whitelist
 	cfIPv4, cfIPv6 := firewall.LoadCFState(cfg.StatePath)
-	parsedIP := net.ParseIP(ip)
 	for _, cidr := range append(cfIPv4, cfIPv6...) {
 		_, network, err := net.ParseCIDR(cidr)
 		if err == nil && network.Contains(parsedIP) {

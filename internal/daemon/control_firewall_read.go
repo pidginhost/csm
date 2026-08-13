@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 )
@@ -39,18 +40,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("loading firewall state: %w", err)
 	}
 
-	// cfg.Firewall is *firewall.FirewallConfig — nil when the operator
-	// omitted the block entirely. Return a zero-value Enabled=false
-	// result so the CLI prints "Status: DISABLED" rather than erroring.
-	if cfg.Firewall == nil {
-		return control.FirewallStatusResult{
-			Enabled:         false,
-			BlockedCount:    len(state.Blocked),
-			BlockedNetCount: len(state.BlockedNet),
-			AllowedCount:    len(state.Allowed),
-		}, nil
-	}
-	fwCfg := cfg.Firewall
+	fwCfg := config.EffectiveFirewallConfig(cfg)
 
 	result := control.FirewallStatusResult{
 		Enabled:         fwCfg.Enabled,
@@ -61,10 +51,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		Restricted:      fmtPortsSlice(fwCfg.RestrictedTCP),
 		PassiveFTPStart: fwCfg.PassiveFTPStart,
 		PassiveFTPEnd:   fwCfg.PassiveFTPEnd,
-		// The engine receives the merged list, so reporting only the
-		// firewall section shows "0 entries" on a host whose live ruleset
-		// holds several -- which reads as an imminent lockout.
-		InfraIPCount:    len(mergeInfraIPs(cfg.InfraIPs, fwCfg.InfraIPs)),
+		InfraIPCount:    len(fwCfg.InfraIPs),
 		BlockedCount:    len(state.Blocked),
 		BlockedNetCount: len(state.BlockedNet),
 		AllowedCount:    len(state.Allowed),
@@ -97,11 +84,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 func (c *ControlListener) handleFirewallPorts(_ json.RawMessage) (any, error) {
 	cfg := c.d.currentCfg()
 	var lines []string
-
-	if cfg.Firewall == nil {
-		return control.FirewallListResult{Lines: lines}, nil
-	}
-	fwCfg := cfg.Firewall
+	fwCfg := config.EffectiveFirewallConfig(cfg)
 
 	lines = append(lines, "TCP Inbound (public):")
 	lines = append(lines, "  "+joinPorts(fwCfg.TCPIn))
@@ -207,11 +190,9 @@ func (c *ControlListener) handleFirewallGrep(argsRaw json.RawMessage) (any, erro
 		}
 	}
 
-	if cfg.Firewall != nil {
-		for _, ip := range cfg.Firewall.InfraIPs {
-			if strings.Contains(strings.ToLower(ip), pattern) {
-				lines = append(lines, fmt.Sprintf("INFRA    %s", ip))
-			}
+	for _, ip := range config.EffectiveFirewallConfig(cfg).InfraIPs {
+		if strings.Contains(strings.ToLower(ip), pattern) {
+			lines = append(lines, fmt.Sprintf("INFRA    %s", ip))
 		}
 	}
 
