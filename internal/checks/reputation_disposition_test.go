@@ -153,3 +153,28 @@ func TestAutoBlockIPs_HTTPVectorReputationStillSkipsWhenChallenged(t *testing.T)
 		t.Fatalf("BlockIP called for challenge-listed HTTP-vector sighting: %v", blocker.blocked)
 	}
 }
+
+func TestReputationHealthFindingsNeverDriveBlocks(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	setAutoResponseLive(cfg)
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	for _, check := range []string{"reputation_quota_exhausted", "threat_feed_stale"} {
+		actions := AutoBlockIPs(cfg, []alert.Finding{{
+			Check: check, Severity: alert.Critical, SourceIP: "198.51.100.200",
+			Message: "reputation coverage degraded", Timestamp: time.Now(),
+		}})
+		if len(actions) != 0 {
+			t.Fatalf("%s produced block actions: %+v", check, actions)
+		}
+	}
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("health findings blocked IPs: %v", blocker.blocked)
+	}
+}

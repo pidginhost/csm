@@ -82,7 +82,7 @@ func logicalOwnerConsistencyProblems(
 			problems = append(problems, fmt.Sprintf("logical owner %q disable aliases %v omit its owner ID", owner, aliases))
 		}
 		for _, alias := range aliases {
-			if alias != owner && !slices.Contains(ownedNames, alias) {
+			if alias != owner && alias != hosted[owner] && !slices.Contains(ownedNames, alias) {
 				problems = append(problems, fmt.Sprintf("logical owner %q has unowned disable alias %q", owner, alias))
 			}
 		}
@@ -167,6 +167,26 @@ func TestSplitDisabledChecksRescuesOnlyYARADeepWrapper(t *testing.T) {
 				t.Fatalf("disabled check %q was rescued: enabled=%v disabled=%v", check.name, enabled, disabled)
 			}
 		})
+	}
+}
+
+func TestReputationHealthLogicalOwnerDisablement(t *testing.T) {
+	check := namedCheck{name: "ip_reputation", fn: CheckIPReputation}
+
+	enabled, disabled := splitDisabledChecks(
+		&config.Config{DisabledChecks: []string{"reputation_quota_exhausted"}},
+		[]namedCheck{check},
+	)
+	if len(enabled) != 1 || enabled[0].name != "ip_reputation" || len(disabled) != 0 {
+		t.Fatalf("disabling quota health disabled reputation scoring: enabled=%v disabled=%v", enabled, disabled)
+	}
+
+	enabled, disabled = splitDisabledChecks(
+		&config.Config{DisabledChecks: []string{"ip_reputation"}},
+		[]namedCheck{check},
+	)
+	if len(enabled) != 0 || len(disabled) != 1 || disabled[0].name != "ip_reputation" {
+		t.Fatalf("disabling ip_reputation left a hosted health owner running: enabled=%v disabled=%v", enabled, disabled)
 	}
 }
 

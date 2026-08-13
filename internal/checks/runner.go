@@ -224,7 +224,7 @@ var runnerFindingNames = map[string][]string{
 	"health":                {"csm_health"},
 	"htaccess":              append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
 	"exposed_files":         {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
-	"ip_reputation":         {"ip_reputation", "reputation_quota_exhausted", "threat_feed_stale"},
+	"ip_reputation":         {"ip_reputation"},
 	"kernel_modules":        {"kernel_module"},
 	"local_threat_score":    {"local_threat_score"},
 	"mail_per_account":      {"mail_per_account"},
@@ -270,7 +270,11 @@ var runnerFindingNames = map[string][]string{
 	"wp_core":               {"wp_core_integrity"},
 }
 
-const logicalOwnerJSTaintDeep = "js_taint_deep"
+const (
+	logicalOwnerJSTaintDeep         = "js_taint_deep"
+	logicalOwnerReputationQuota     = "reputation_quota_health"
+	logicalOwnerReputationFeedStale = "reputation_feed_health"
+)
 
 // logicalOwnerFindingNames maps a logical finding owner hosted inside another
 // physical check to the finding names it owns. A logical owner is not a
@@ -278,14 +282,18 @@ const logicalOwnerJSTaintDeep = "js_taint_deep"
 // check reports each owner's completion independently by calling
 // markCheckIncomplete with the owner's exact name.
 var logicalOwnerFindingNames = map[string][]string{
-	logicalOwnerJSTaintDeep: {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
+	logicalOwnerJSTaintDeep:         {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
+	logicalOwnerReputationQuota:     {"reputation_quota_exhausted"},
+	logicalOwnerReputationFeedStale: {"threat_feed_stale"},
 }
 
 // logicalOwnerDisableAliases maps a logical owner to the disabled_checks
-// values that disable it. The coverage diagnostic is deliberately absent:
-// hiding a coverage warning must never silently disable detection.
+// values that disable it. A physical host alias is included only when
+// disabling that host is also meant to disable the hosted consumer.
 var logicalOwnerDisableAliases = map[string][]string{
-	logicalOwnerJSTaintDeep: {logicalOwnerJSTaintDeep, "js_keylogger_dataflow"},
+	logicalOwnerJSTaintDeep:         {logicalOwnerJSTaintDeep, "js_keylogger_dataflow"},
+	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
+	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
 }
 
 // physicalCheckLogicalOwners maps a runnable check to the logical owners it
@@ -293,7 +301,8 @@ var logicalOwnerDisableAliases = map[string][]string{
 // hosted owner is enabled, and the runner purges each owner by its own
 // completion mark rather than the wrapper's.
 var physicalCheckLogicalOwners = map[string][]string{
-	"yara_deep": {logicalOwnerJSTaintDeep},
+	"yara_deep":     {logicalOwnerJSTaintDeep},
+	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale},
 }
 
 // disabledLogicalOwners returns the logical owners disabled by cfg.
@@ -604,10 +613,14 @@ func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
 // gating these on completion would let every run's status finding accumulate
 // forever. Discovered-state names (yara_match_scheduled) stay
 // completion-gated so mid-cycle windows never wipe earlier windows' finds.
+// An empty entry lets a stateful logical owner preserve its last finding
+// without inventing a per-run status finding.
 var perRunFindingNames = map[string][]string{
-	"yara_deep":             {"yara_scan_incomplete"},
-	logicalOwnerJSTaintDeep: {"js_taint_scan_incomplete"},
-	"php_config_changes":    {"php_config_scan_incomplete"},
+	"yara_deep":                     {"yara_scan_incomplete"},
+	logicalOwnerJSTaintDeep:         {"js_taint_scan_incomplete"},
+	logicalOwnerReputationQuota:     {},
+	logicalOwnerReputationFeedStale: {},
+	"php_config_changes":            {"php_config_scan_incomplete"},
 }
 
 var latestVolatileCheckNames = []string{
@@ -810,6 +823,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 			} else {
 				hostedOwners[nc.name] = append(hostedOwners[nc.name], owner)
 			}
+		}
+	}
+	for owner := range disabledOwnerSet {
+		if stateKey, ok := reputationHealthStateKeys[owner]; ok {
+			clearReputationHealthState(store, stateKey)
 		}
 	}
 

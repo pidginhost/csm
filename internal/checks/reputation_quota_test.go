@@ -143,7 +143,7 @@ func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 
-	_ = CheckIPReputation(context.Background(), cfg, nil)
+	findings := CheckIPReputation(context.Background(), cfg, nil)
 	first := calls.Load()
 	if first < 1 || first > 2 {
 		t.Fatalf("first cycle: want 1..2 calls (parallel fan-out across 2 pending IPs), got %d", first)
@@ -155,6 +155,11 @@ func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 	}
 	if !until.After(time.Now()) {
 		t.Fatalf("AbuseQuotaExhaustedUntil = %v, want future time", until)
+	}
+	if finding, ok := findingWithCheck(findings, "reputation_quota_exhausted"); !ok {
+		t.Fatalf("first-cycle findings = %+v, want quota exhaustion reported immediately", findings)
+	} else if !strings.Contains(finding.Message, "AbuseIPDB") {
+		t.Fatalf("quota finding attributed to the wrong source: %+v", finding)
 	}
 
 	// Second cycle: persisted AbuseQuotaExhaustedUntil short-circuits
@@ -271,6 +276,9 @@ func TestCheckIPReputationNearDailyCapReservesOnlyRemainingSlots(t *testing.T) {
 	}
 	if upstreamFindings != 3 {
 		t.Fatalf("Upstream findings = %d, want one for each pending IP; got %+v", upstreamFindings, findings)
+	}
+	if _, ok := findingWithCheck(findings, "reputation_quota_exhausted"); !ok {
+		t.Fatalf("findings = %+v, want same-cycle quota warning after reserving the final AbuseIPDB slot", findings)
 	}
 }
 
