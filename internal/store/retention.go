@@ -15,6 +15,7 @@ import (
 // earlier than t sorts before this string; any TimeKey at or after t sorts
 // at or above it. Matches the format in TimeKey().
 func timeKeyLowerBound(t time.Time) string {
+	t = t.In(time.Local)
 	return fmt.Sprintf("%04d%02d%02d%02d%02d%02d%09d-0000",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(),
