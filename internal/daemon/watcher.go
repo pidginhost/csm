@@ -252,6 +252,9 @@ func (w *LogWatcher) readNewLines() {
 				select {
 				case w.alertCh <- f:
 				default:
+					if f.Check == "exim_frozen_realtime" {
+						releaseEximFrozenDedup(line)
+					}
 					// Channel full - drop (backpressure)
 					fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropping finding from %s\n", ts(), w.path)
 				}
@@ -475,15 +478,13 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// freeze event ("Frozen (delivery error message)"); the lowercase form is
 	// exim re-logging "Message is frozen" on every queue run. Dedup by queue
 	// ID so one stuck message alerts once, and unfreeze events never do.
-	if strings.Contains(line, "frozen") || strings.Contains(line, "Frozen") {
-		if eximFrozenShouldAlert(line, time.Now()) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "exim_frozen_realtime",
-				Message:  "Exim frozen message detected",
-				Details:  truncateDaemon(line, 200),
-			})
-		}
+	if eximFrozenShouldAlert(line, time.Now()) {
+		findings = append(findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    "exim_frozen_realtime",
+			Message:  "Exim frozen message detected",
+			Details:  truncateDaemon(line, 200),
+		})
 	}
 
 	// 2. Outgoing mail hold - account is held by cPanel.
