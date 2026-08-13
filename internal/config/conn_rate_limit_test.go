@@ -140,6 +140,22 @@ func TestFirewallNullKeysKeepDefaultsAcrossFields(t *testing.T) {
 		}
 	})
 
+	t.Run("aliased null keeps defaults", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n  conn_rate_limit: &unset null\n  conn_limit: *unset\n  restricted_tcp: *unset\n"))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if cfg.Firewall.ConnRateLimit != def.ConnRateLimit {
+			t.Errorf("aliased null conn_rate_limit = %d, want shipped default %d", cfg.Firewall.ConnRateLimit, def.ConnRateLimit)
+		}
+		if cfg.Firewall.ConnLimit != def.ConnLimit {
+			t.Errorf("aliased null conn_limit = %d, want shipped default %d", cfg.Firewall.ConnLimit, def.ConnLimit)
+		}
+		if !samePortList(cfg.Firewall.RestrictedTCP, def.RestrictedTCP) {
+			t.Errorf("aliased null restricted_tcp = %v, want shipped default %v", cfg.Firewall.RestrictedTCP, def.RestrictedTCP)
+		}
+	})
+
 	t.Run("explicit zero values are kept", func(t *testing.T) {
 		cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n  conn_limit: 0\n  restricted_tcp: []\n"))
 		if err != nil {

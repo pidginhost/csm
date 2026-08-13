@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"golang.org/x/text/language"
 )
 
 // ValidationResult represents a single validation finding.
@@ -650,9 +651,10 @@ func validateWarnings(cfg *Config) []ValidationResult {
 }
 
 // firewallValueResults rejects firewall values the engine would otherwise
-// accept and quietly reinterpret: a port outside 1-65535 never produces a
-// rule, an inverted passive-FTP range opens nothing, and a port_flood proto
-// that is not "udp" is treated as TCP no matter what the operator typed.
+// accept and quietly reinterpret: a port outside 1-65535 cannot select the
+// intended service, an inverted passive-FTP range opens nothing, and a
+// port_flood proto that is not "udp" is treated as TCP no matter what the
+// operator typed.
 func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 	var results []ValidationResult
 
@@ -733,7 +735,13 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 // this package cannot import: reporting depends on alert, and alert depends
 // on config. TestCentralActionsMatchReportingConstants (external test package,
 // so it may import both) fails if the two lists ever drift.
-var centralActions = []string{"off", "challenge", "block_if_local_corroborated"}
+var centralActions = [...]string{"off", "challenge", "block_if_local_corroborated"}
+
+// ValidCentralActions returns every central-intelligence action accepted by
+// config validation.
+func ValidCentralActions() []string {
+	return append([]string(nil), centralActions[:]...)
+}
 
 // centralActionResults rejects an unrecognised central action. The consumer
 // parses it with a default branch that resolves to "challenge", so a typo
@@ -750,7 +758,7 @@ func centralActionResults(cfg *Config) []ValidationResult {
 		}
 	}
 	return []ValidationResult{{"error", "reputation.central.action",
-		fmt.Sprintf("invalid action %q: must be one of %s", action, strings.Join(centralActions, ", "))}}
+		fmt.Sprintf("invalid action %q: must be one of %s", action, strings.Join(centralActions[:], ", "))}}
 }
 
 // blockAtSeverityResults rejects an unrecognised incident block threshold.
@@ -785,12 +793,8 @@ func validCountryCode(code string) bool {
 	if len(code) != 2 {
 		return false
 	}
-	for _, r := range strings.ToUpper(code) {
-		if r < 'A' || r > 'Z' {
-			return false
-		}
-	}
-	return true
+	region, err := language.ParseRegion(code)
+	return err == nil && region.IsCountry()
 }
 
 // limitSummary renders a firewall limit for operator-facing output so a
