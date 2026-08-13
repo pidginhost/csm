@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -266,6 +267,7 @@ func Validate(cfg *Config) []ValidationResult {
 				results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%d, conn_limit=%d", cfg.Firewall.ConnRateLimit, cfg.Firewall.ConnLimit)})
 			}
 		}
+		results = append(results, firewallLockoutResults(cfg)...)
 	}
 
 	// --- Challenge ---
@@ -638,6 +640,75 @@ func validateWarnings(cfg *Config) []ValidationResult {
 
 // ValidateDeep performs connectivity probes against configured services.
 // It does NOT call Validate(); the caller should invoke both separately.
+// firewallLockoutResults reports the ways an enabled firewall can cut the
+// operator off from the host. The web UI runs the same checks before a save;
+// running them here covers hand-edited csm.yaml, `csm doctor`, and daemon
+// startup, which previously got no warning at all.
+//
+// These are warnings, never errors. Fronting the web UI with a reverse proxy
+// or reaching it over a VPN are legitimate reasons to leave the port out of
+// tcp_in, and validation must not refuse a deliberate configuration.
+func firewallLockoutResults(cfg *Config) []ValidationResult {
+	fw := cfg.Firewall
+	if fw == nil || !fw.Enabled {
+		return nil
+	}
+
+	var results []ValidationResult
+	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
+	port, portKnown := webUIListenPort(cfg.WebUI.Listen)
+
+	if portKnown && !containsPort(fw.TCPIn, port) {
+		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
+			fmt.Sprintf("web UI listens on %d but tcp_in does not allow it; the next firewall apply drops new web UI connections", port)})
+	}
+	// An empty tcp6_in means v6 inbound is unmanaged, not denied, so it only
+	// counts as a lockout when the operator is actually curating that list.
+	if portKnown && fw.IPv6 && len(fw.TCP6In) > 0 && !containsPort(fw.TCP6In, port) {
+		results = append(results, ValidationResult{"warn", "firewall.tcp6_in",
+			fmt.Sprintf("IPv6 is managed and tcp6_in does not allow web UI port %d", port)})
+	}
+
+	// restricted_tcp ports accept only from infra_ips. With no infra_ips they
+	// accept from nowhere, which reads as a working config right up until the
+	// panel stops answering.
+	if len(fw.RestrictedTCP) > 0 && !hasInfra {
+		msg := "restricted_tcp ports accept only from infra_ips, and no infra_ips are configured, so they are reachable from nowhere"
+		if portKnown && containsPort(fw.RestrictedTCP, port) {
+			msg = fmt.Sprintf("web UI port %d is in restricted_tcp but no infra_ips are configured, so the web UI is reachable from nowhere", port)
+		}
+		results = append(results, ValidationResult{"warn", "firewall.restricted_tcp", msg})
+	}
+
+	return results
+}
+
+// webUIListenPort extracts the port from a host:port listen string, falling
+// back to the shipped default when the field is unset.
+func webUIListenPort(listen string) (int, bool) {
+	if listen == "" {
+		listen = "0.0.0.0:9443"
+	}
+	_, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return 0, false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, false
+	}
+	return port, true
+}
+
+func containsPort(ports []int, want int) bool {
+	for _, p := range ports {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidateDeep(cfg *Config) []ValidationResult {
 	var results []ValidationResult
 

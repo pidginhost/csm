@@ -155,6 +155,22 @@ range (built-in or `reputation.verified_bots`). Precedence:
   (`csm firewall deny`, Web UI manual block) still applies, because operator
   commands go through `BlockIPForce` and bypass the soft-allow gate.
 
+## Lockout warnings
+
+Config validation warns when an enabled firewall would cut off the management
+plane. `csm doctor`, daemon startup, and the Web UI save path all run the same
+checks:
+
+- The Web UI port is missing from `tcp_in`, or from `tcp6_in` when IPv6 is
+  managed and that list is curated.
+- `restricted_tcp` lists ports while no `infra_ips` are configured. Restricted
+  ports accept only from `infra_ips`, so with none set they accept from
+  nowhere. When the Web UI port is one of them, the warning names it.
+
+These stay warnings and never block a save or a start: fronting the Web UI with
+a reverse proxy or reaching it over a VPN are legitimate reasons to leave the
+port out of `tcp_in`.
+
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.
