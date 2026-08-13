@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WordPress spam cleanup now confirms keyword matches on word boundaries and only deletes on high-confidence keywords, instead of matching anywhere inside a word. On a live news site the old behaviour would have deleted 314 legitimate articles, because words like "specialist" and a conference name contain spam keywords. Posts matching several keywords are also counted once, so the preview no longer overstates how much it would remove.
 - Findings that record an action CSM took, or how well it can see, no longer group into incidents. Previously only the auto-block record was excluded, leaving the others one field away from letting CSM's own output trigger a further response.
 - Firewall lockout warnings now follow the effective public port policy, ignore disabled services, appear once on dashboard saves, and are included in diagnostics. Validation now covers every IPv6 and SMTP port list without rejecting working mixed-case TCP flood rules.
 - Config validation now rejects out-of-range ports, malformed country codes, bad flood rules, and unrecognised central-intelligence actions or incident block thresholds. Those values previously fell through to a silent default, so a misspelled central action quietly became a challenge policy and a misspelled block threshold turned incident blocking off entirely.
