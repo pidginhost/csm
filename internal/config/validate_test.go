@@ -525,12 +525,23 @@ func TestValidateFirewall(t *testing.T) {
 		return cfg
 	}
 
-	t.Run("conn_rate_limit=0 error", func(t *testing.T) {
+	// 0 disables the connection meter in the engine and the web UI documents
+	// it that way, so validation must accept it exactly like conn_limit=0.
+	t.Run("conn_rate_limit=0 valid", func(t *testing.T) {
 		cfg := base()
 		cfg.Firewall.ConnRateLimit = 0
 		results := Validate(cfg)
+		if hasResult(results, "error", "firewall.conn_rate_limit") {
+			t.Errorf("conn_rate_limit=0 should be valid (disabled); results=%v", results)
+		}
+	})
+
+	t.Run("conn_rate_limit=-1 error", func(t *testing.T) {
+		cfg := base()
+		cfg.Firewall.ConnRateLimit = -1
+		results := Validate(cfg)
 		if !hasResult(results, "error", "firewall.conn_rate_limit") {
-			t.Errorf("expected error for conn_rate_limit=0; results=%v", results)
+			t.Errorf("expected error for conn_rate_limit=-1; results=%v", results)
 		}
 	})
 
