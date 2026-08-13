@@ -2,10 +2,12 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -61,13 +63,13 @@ func TestIsPHPWorkerCommandSupportsCommonHandlers(t *testing.T) {
 
 // --- CheckSwapAndOOM with actual memory data -------------------------
 
-func TestCheckSwapAndOOMWithData(t *testing.T) {
+func TestCheckSwapAndOOMHighSwapUsesStableDedupIdentity(t *testing.T) {
+	swapFree := "100000"
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
 			if name == "/proc/meminfo" {
 				tmp := t.TempDir() + "/meminfo"
-				// 90% swap used = should trigger
-				data := "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\nSwapTotal:       2048000 kB\nSwapFree:         100000 kB\n"
+				data := fmt.Sprintf("MemTotal: 16384000 kB\nMemAvailable: 8192000 kB\nSwapTotal: 2048000 kB\nSwapFree: %s kB\n", swapFree)
 				_ = os.WriteFile(tmp, []byte(data), 0644)
 				return os.Open(tmp)
 			}
@@ -83,8 +85,30 @@ func TestCheckSwapAndOOMWithData(t *testing.T) {
 		},
 	})
 
-	findings := CheckSwapAndOOM(context.Background(), &config.Config{}, nil)
-	_ = findings
+	first := highSwapFindingValue(t, CheckSwapAndOOM(context.Background(), &config.Config{}, nil))
+	swapFree = "500000"
+	second := highSwapFindingValue(t, CheckSwapAndOOM(context.Background(), &config.Config{}, nil))
+
+	if first.Details == second.Details {
+		t.Fatal("test setup did not vary the swap details")
+	}
+	if first.Key() != second.Key() {
+		t.Fatalf("high-swap key changed with usage: %q vs %q", first.Key(), second.Key())
+	}
+	if first.Fingerprint() != second.Fingerprint() {
+		t.Fatal("high-swap fingerprint changed with usage")
+	}
+}
+
+func highSwapFindingValue(t *testing.T, findings []alert.Finding) alert.Finding {
+	t.Helper()
+	for _, f := range findings {
+		if f.Check == "perf_memory" && f.Message == "High swap usage" {
+			return f
+		}
+	}
+	t.Fatalf("expected high swap usage finding, got %+v", findings)
+	return alert.Finding{}
 }
 
 func TestCheckSwapAndOOMHugeSwapUsageDoesNotOverflowDisplay(t *testing.T) {

@@ -118,6 +118,23 @@ func TestFindingDedupKeyOverridesIdentity(t *testing.T) {
 	}
 }
 
+func TestFindingDedupKeyDoesNotCollideWithMessageIdentity(t *testing.T) {
+	pinned := Finding{Check: "perf_memory", Message: "OOM killer invoked", DedupKey: "oom:lsphp"}
+	ordinary := []Finding{
+		{Check: "perf_memory", Message: "oom:lsphp"},
+		{Check: "perf_memory", Message: "dedup:oom:lsphp"},
+	}
+
+	for _, finding := range ordinary {
+		if pinned.Key() == finding.Key() {
+			t.Fatalf("explicit and message identities collided at %q", pinned.Key())
+		}
+	}
+	if got := Deduplicate(append([]Finding{pinned}, ordinary...)); len(got) != 3 {
+		t.Fatalf("dedup dropped a distinct finding: %+v", got)
+	}
+}
+
 func TestFindingKeyHTTPAbuseStableForSourceIP(t *testing.T) {
 	a := Finding{
 		Check:   "xmlrpc_abuse",
