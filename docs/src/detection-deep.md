@@ -76,7 +76,7 @@ Current scanner scope:
 |-------|-------------|
 | `email_weak_password` | Email accounts with weak passwords |
 | `email_forwarder_audit` | Forwarders redirecting to external addresses |
-| `email_mail_filters` | Exim mail filters that intercept mail (copy to an external address while keeping a local copy), forward externally, pipe to a command, or blackhole all mail |
+| `email_mail_filters` | Exim mail filters and dovecot/Roundcube Sieve scripts that intercept mail (copy to an external address while keeping a local copy), forward externally, pipe to a command, or blackhole all mail. Sieve is what webmail-managed rules actually execute, so both are scanned. |
 
 ## Performance
 

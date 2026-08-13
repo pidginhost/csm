@@ -535,7 +535,7 @@ email_protection:
   rate_warn_threshold: 50               # emails per window before warning (default: 50)
   rate_crit_threshold: 100              # emails per window before critical (default: 100)
   rate_window_min: 10                   # rate check window in minutes (default: 10)
-  known_forwarders: []                  # expected plain mail forwarders
+  known_forwarders: []                  # expected forwarders and Sieve :copy rules
 
   # PHP-relay detector (cPanel only; gated by platform.IsCPanel at startup).
   # Off by default. When enabled, the daemon spawns the inotify spool

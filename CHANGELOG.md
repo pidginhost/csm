@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The mail-filter audit now also scans dovecot/Roundcube Sieve scripts, not just Exim filters, so a webmail rule that copies every message to an external address while keeping a local copy is caught. This is the path a real year-long mailbox interception used, and it went undetected before.
 - CSM now raises a High finding when the firewall is enabled with IPv6 management off while the host has a global IPv6 address, since all IPv6 traffic bypasses the firewall in that configuration.
 - Blocking an IP that sits inside a Cloudflare allow range now warns the operator in the CLI response, the web UI, and the auto-block finding, since web ports from such an IP remain reachable through the Cloudflare accept rule.
 - CSM now reports when ModSecurity is switched off for a domain or an entire account, since virtual patches are inert and no audit record is written for that traffic. The finding is aggregated so a host with many disabled domains raises one alert, not hundreds.

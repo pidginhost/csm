@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -33,9 +34,11 @@ import (
 
 // filterAction is a single Exim filter action (deliver/save/pipe/finish/...).
 type filterAction struct {
-	verb   string
-	arg    string
-	unseen bool
+	verb              string
+	arg               string
+	unseen            bool
+	knownSuppressible bool
+	matchesAll        bool
 }
 
 // filterRule is one branch of an Exim filter: the condition that guards it and
@@ -605,7 +608,8 @@ func firstPipeCommandWord(cmd string) string {
 
 // scoreFilterRules evaluates one mailbox's parsed filter rules and returns the
 // dangerous patterns found. Suppression entries in known (format
-// "local@domain: dest") drop matching plain external destinations.
+// "local@domain: dest") drop matching expected plain destinations and Sieve
+// :copy redirects. Other stealth patterns remain non-suppressible.
 func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[string]bool, known []string) []filterFinding {
 	var out []filterFinding
 	seen := map[string]bool{}
@@ -631,27 +635,36 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 	}
 
 	type externalDelivery struct {
-		dest   string
-		unseen bool
+		dest              string
+		unseen            bool
+		knownSuppressible bool
+		matchesAll        bool
 	}
 
 	for _, r := range rules {
 		var external []externalDelivery
 		hasLocalCopy := false
 		hasDevNull := false
+		hasMatchAllDevNull := false
 
 		for _, a := range r.actions {
 			switch a.verb {
 			case "deliver":
 				switch {
 				case destIsExternal(a.arg, mb, localDomains):
-					external = append(external, externalDelivery{dest: a.arg, unseen: a.unseen})
+					external = append(external, externalDelivery{
+						dest:              a.arg,
+						unseen:            a.unseen,
+						knownSuppressible: a.knownSuppressible,
+						matchesAll:        a.matchesAll,
+					})
 				case destIsLocalSelf(a.arg, mb, localDomains):
 					hasLocalCopy = true
 				}
 			case "save":
 				if strings.TrimSpace(a.arg) == "/dev/null" {
 					hasDevNull = true
+					hasMatchAllDevNull = hasMatchAllDevNull || a.matchesAll
 				} else {
 					hasLocalCopy = true
 				}
@@ -670,8 +683,10 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 
 		if len(external) > 0 {
 			for _, delivery := range external {
-				stealth := hasLocalCopy || hasDevNull || r.matchesAll || delivery.unseen
-				if !stealth && isKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
+				matchesAll := r.matchesAll || delivery.matchesAll
+				stealth := hasLocalCopy || hasDevNull || matchesAll || delivery.unseen
+				knownAllowed := !stealth || (delivery.knownSuppressible && !hasDevNull)
+				if knownAllowed && isKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
 					continue
 				}
 				if stealth {
@@ -680,7 +695,7 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 						check:    "email_filter_exfil",
 						kind:     "exfil",
 						dest:     delivery.dest,
-						reason:   stealthReason(hasLocalCopy, hasDevNull, r.matchesAll, delivery.unseen),
+						reason:   stealthReason(hasLocalCopy, hasDevNull, matchesAll, delivery.unseen),
 					})
 				} else {
 					add(filterFinding{
@@ -696,7 +711,7 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 			continue
 		}
 
-		if hasDevNull && r.matchesAll {
+		if hasDevNull && (r.matchesAll || hasMatchAllDevNull) {
 			add(filterFinding{
 				severity: alert.High,
 				check:    "email_filter_blackhole",
@@ -769,7 +784,12 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 		}}
 	}
 
-	if !ForceAll {
+	// A host upgraded from an Exim-only release already has the shared
+	// mail-filter throttle marker but no Sieve baseline. Run once immediately
+	// so the new source is inventoried instead of waiting a full audit interval.
+	// Explicit account scans also bypass the host-wide throttle; they write only
+	// their per-file hashes and never establish either shared baseline below.
+	if !ForceAll && AccountFromContext(ctx) == "" && db.GetMetaString("email:mailsieve_last_refresh") != "" {
 		if last := db.GetMetaString("email:mailfilter_last_refresh"); last != "" {
 			if ts, err := time.Parse(time.RFC3339, last); err == nil {
 				interval := time.Duration(cfg.EmailProtection.PasswordCheckIntervalMin) * time.Minute
@@ -827,25 +847,12 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 
 		mb := mailboxFromFilterPath(path)
 		rules := parseEximFilter(string(data))
-		for _, ff := range scoreFilterRules(rules, mb, localDomains, cfg.EmailProtection.KnownForwarders) {
-			if ff.onlyIfNew && !isNew {
-				continue
-			}
-			collected = append(collected, mailFilterPending{
-				finding: alert.Finding{
-					Severity: ff.severity,
-					Check:    ff.check,
-					Message:  fmt.Sprintf("%s: %s", mb.String(), ff.reason),
-					Details:  mailFilterDetails(mb, path, ff),
-					FilePath: path,
-					Domain:   mb.domain,
-					Mailbox:  mailboxField(mb),
-				},
-				dest:    ff.dest,
-				mailbox: mb.String(),
-			})
-		}
+		collected = append(collected, mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)...)
 	}
+
+	sievePending, sieveComplete := scanSieveMailFilters(ctx, db, cfg, localDomains, maxFiles)
+	collected = append(collected, sievePending...)
+	baselineComplete = baselineComplete && sieveComplete
 
 	annotateCrossAccount(collected)
 	if ctx.Err() != nil {
@@ -856,10 +863,150 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	// complete would make the next full scan treat every other account's
 	// existing filters as newly created.
 	baselineExists := db.GetMetaString("email:mailfilter_last_refresh") != ""
+	if AccountFromContext(ctx) == "" && (sieveComplete || db.GetMetaString("email:mailsieve_last_refresh") != "") {
+		_ = db.SetMetaString("email:mailsieve_last_refresh", time.Now().Format(time.RFC3339))
+	}
 	if AccountFromContext(ctx) == "" && (baselineComplete || baselineExists) {
 		_ = db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339))
 	}
 	return findingsFromPending(collected)
+}
+
+// mailFilterPendings scores one parsed filter/sieve file and turns each
+// dangerous pattern into a pending finding. Shared by the Exim filter and Sieve
+// scan loops so both mechanisms report identically.
+func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, localDomains map[string]bool, known []string, isNew bool) []mailFilterPending {
+	var out []mailFilterPending
+	for _, ff := range scoreFilterRules(rules, mb, localDomains, known) {
+		if ff.onlyIfNew && !isNew {
+			continue
+		}
+		out = append(out, mailFilterPending{
+			finding: alert.Finding{
+				Severity: ff.severity,
+				Check:    ff.check,
+				Message:  fmt.Sprintf("%s: %s", mb.String(), ff.reason),
+				Details:  mailFilterDetails(mb, path, ff),
+				FilePath: path,
+				Domain:   mb.domain,
+				Mailbox:  mailboxField(mb),
+			},
+			dest:    ff.dest,
+			mailbox: mb.String(),
+		})
+	}
+	return out
+}
+
+// scanSieveMailFilters scans per-mailbox Sieve scripts (the rules webmail
+// actually executes) for the same BEC exfil patterns the Exim filter audit
+// covers. Returns the pending findings plus whether the scan saw every file it
+// meant to (a partial scan must not establish the baseline).
+func scanSieveMailFilters(ctx context.Context, db *store.DB, cfg *config.Config, localDomains map[string]bool, maxFiles int) ([]mailFilterPending, bool) {
+	type activePointer struct {
+		path string
+		hash string
+	}
+
+	complete := true
+	var files []string
+	seen := make(map[string]bool)
+	activePaths := make(map[string]bool)
+	activePointers := make(map[string][]activePointer)
+	addFile := func(path string) {
+		if !seen[path] {
+			seen[path] = true
+			files = append(files, path)
+		}
+	}
+	if scripts, err := homeGlob(ctx, "mail", "*", "*", "sieve", "*.sieve"); err == nil {
+		for _, path := range scripts {
+			addFile(path)
+		}
+	} else {
+		complete = false
+	}
+	if active, err := homeGlob(ctx, "mail", "*", "*", ".dovecot.sieve"); err == nil {
+		for _, path := range active {
+			// The active file normally links to a source already included by the
+			// sieve/*.sieve glob. Remove that alias before quota accounting so it
+			// cannot crowd the real source out of every capped scan. A link to an
+			// unusual target must itself be scanned; on any metadata error, retain
+			// the path and let ReadFile make the final decision.
+			if info, statErr := osFS.Lstat(path); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+				if target, linkErr := osFS.Readlink(path); linkErr == nil {
+					if !filepath.IsAbs(target) {
+						target = filepath.Join(filepath.Dir(path), target)
+					}
+					target = filepath.Clean(target)
+					if seen[target] && mailboxFromSievePath(path) == mailboxFromSievePath(target) {
+						activePaths[target] = true
+						activePointers[target] = append(activePointers[target], activePointer{
+							path: path,
+							hash: sha256Hex([]byte(target)),
+						})
+						continue
+					}
+				}
+			}
+			addFile(path)
+			activePaths[path] = true
+		}
+	} else {
+		complete = false
+	}
+	complete = complete && scanCoversAllFiles(files, maxFiles)
+	rankedByMtime := rankPathsByMtimeDesc(ctx, files, 0)
+	ranked := make([]string, 0, len(rankedByMtime))
+	for _, path := range rankedByMtime {
+		if activePaths[path] {
+			ranked = append(ranked, path)
+		}
+	}
+	for _, path := range rankedByMtime {
+		if !activePaths[path] {
+			ranked = append(ranked, path)
+		}
+	}
+	if maxFiles > 0 && len(ranked) > maxFiles {
+		recordAccountScanTruncatedPaths(ctx, ranked[maxFiles:], maxFiles)
+		ranked = ranked[:maxFiles]
+	}
+
+	var out []mailFilterPending
+	reportedContent := make(map[string]bool)
+	for _, path := range ranked {
+		if ctx.Err() != nil {
+			return out, false
+		}
+		data, err := osFS.ReadFile(path)
+		if err != nil {
+			complete = false
+			continue
+		}
+		currentHash := sha256Hex(data)
+		isNew := forwarderFileIsNew(db, "email:mailsieve_last_refresh", "mailsieve:"+path, currentHash)
+		for _, pointer := range activePointers[path] {
+			if forwarderFileIsNew(db, "email:mailsieve_last_refresh", "mailsieve-active:"+pointer.path, pointer.hash) {
+				isNew = true
+			}
+			if err := db.SetForwarderHash("mailsieve-active:"+pointer.path, pointer.hash); err != nil {
+				complete = false
+			}
+		}
+		if err := db.SetForwarderHash("mailsieve:"+path, currentHash); err != nil {
+			complete = false
+		}
+		mb := mailboxFromSievePath(path)
+		contentKey := mb.String() + "\x00" + currentHash
+		rules := parseSieveFilter(string(data))
+		pending := mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)
+		if len(pending) > 0 && !reportedContent[contentKey] {
+			reportedContent[contentKey] = true
+			out = append(out, pending...)
+		}
+	}
+	return out, complete
 }
 
 func shouldReportMailFilterStoreUnavailable(st *state.Store, cfg *config.Config) bool {
