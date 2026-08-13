@@ -983,6 +983,15 @@ func TestValidate_MailBruteForceRanges(t *testing.T) {
 		{"max_tracked=999 rejected", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 999 }, "thresholds.mail_bruteforce_max_tracked", true},
 		{"max_tracked=1000 accepted", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 1000 }, "thresholds.mail_bruteforce_max_tracked", false},
 		{"max_tracked=200001 rejected", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 200001 }, "thresholds.mail_bruteforce_max_tracked", true},
+		{"slow_threshold=0 accepted", func(c *Config) { c.Thresholds.MailBruteForceSlowThreshold = 0 }, "thresholds.mail_bruteforce_slow_threshold", false},
+		{"slow_threshold=2 rejected", func(c *Config) { c.Thresholds.MailBruteForceSlowThreshold = 2 }, "thresholds.mail_bruteforce_slow_threshold", true},
+		{"slow_threshold=min accepted", func(c *Config) { c.Thresholds.MailBruteForceSlowThreshold = SlowBruteMinThreshold }, "thresholds.mail_bruteforce_slow_threshold", false},
+		{"slow_threshold=max accepted", func(c *Config) { c.Thresholds.MailBruteForceSlowThreshold = SlowBruteMaxThreshold }, "thresholds.mail_bruteforce_slow_threshold", false},
+		{"slow_threshold=over max rejected", func(c *Config) { c.Thresholds.MailBruteForceSlowThreshold = SlowBruteMaxThreshold + 1 }, "thresholds.mail_bruteforce_slow_threshold", true},
+		{"slow_window=-1 rejected", func(c *Config) { c.Thresholds.MailBruteForceSlowWindowMin = -1 }, "thresholds.mail_bruteforce_slow_window_min", true},
+		{"slow_window=1 accepted", func(c *Config) { c.Thresholds.MailBruteForceSlowWindowMin = 1 }, "thresholds.mail_bruteforce_slow_window_min", false},
+		{"slow_window=max accepted", func(c *Config) { c.Thresholds.MailBruteForceSlowWindowMin = SlowBruteMaxWindowMin }, "thresholds.mail_bruteforce_slow_window_min", false},
+		{"slow_window=over max rejected", func(c *Config) { c.Thresholds.MailBruteForceSlowWindowMin = SlowBruteMaxWindowMin + 1 }, "thresholds.mail_bruteforce_slow_window_min", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1607,6 +1616,15 @@ func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 		{"subnet_threshold=2 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSubnetThresh = 2 }, "thresholds.smtp_bruteforce_subnet_threshold", false},
 		{"account_spray=2 accepted", func(c *Config) { c.Thresholds.SMTPAccountSprayThreshold = 2 }, "thresholds.smtp_account_spray_threshold", false},
 		{"max_tracked=1000 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceMaxTracked = 1000 }, "thresholds.smtp_bruteforce_max_tracked", false},
+		{"slow_threshold=0 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSlowThreshold = 0 }, "thresholds.smtp_bruteforce_slow_threshold", false},
+		{"slow_threshold=2 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSlowThreshold = 2 }, "thresholds.smtp_bruteforce_slow_threshold", true},
+		{"slow_threshold=min accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSlowThreshold = SlowBruteMinThreshold }, "thresholds.smtp_bruteforce_slow_threshold", false},
+		{"slow_threshold=max accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSlowThreshold = SlowBruteMaxThreshold }, "thresholds.smtp_bruteforce_slow_threshold", false},
+		{"slow_threshold=over max rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSlowThreshold = SlowBruteMaxThreshold + 1 }, "thresholds.smtp_bruteforce_slow_threshold", true},
+		{"slow_window=-1 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSlowWindowMin = -1 }, "thresholds.smtp_bruteforce_slow_window_min", true},
+		{"slow_window=1 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSlowWindowMin = 1 }, "thresholds.smtp_bruteforce_slow_window_min", false},
+		{"slow_window=max accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSlowWindowMin = SlowBruteMaxWindowMin }, "thresholds.smtp_bruteforce_slow_window_min", false},
+		{"slow_window=over max rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSlowWindowMin = SlowBruteMaxWindowMin + 1 }, "thresholds.smtp_bruteforce_slow_window_min", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

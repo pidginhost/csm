@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -62,6 +63,34 @@ func TestMailAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 	f := tr.Record(ip, "victim@example.com")
 	if !hasCheckFinding(f, "mail_bruteforce") {
 		t.Fatalf("mail_bruteforce did not fire after lowering threshold to 5; got %+v", f)
+	}
+}
+
+func TestSMTPAuthTrackerSetThresholdsAppliesSlowSignalLive(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	tr := newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
+	tr.SetThresholds(100, 100, 100, 10*time.Minute, time.Hour, 4, 6*time.Hour, 10000)
+
+	for i := 0; i < 4; i++ {
+		findings := tr.Record("203.0.113.40", fmt.Sprintf("victim-%d@example.com", i))
+		if hasCheckFinding(findings, "smtp_bruteforce") != (i == 3) {
+			t.Fatalf("slow SMTP signal firing mismatch at event %d: %+v", i+1, findings)
+		}
+	}
+}
+
+func TestMailAuthTrackerSetThresholdsAppliesSlowSignalLive(t *testing.T) {
+	now := time.Now()
+	clk := func() time.Time { return now }
+	tr := newMailAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
+	tr.SetThresholds(100, 100, 100, 10*time.Minute, time.Hour, 4, 6*time.Hour, 10000)
+
+	for i := 0; i < 4; i++ {
+		findings := tr.Record("203.0.113.41", fmt.Sprintf("victim-%d@example.com", i))
+		if hasCheckFinding(findings, "mail_bruteforce") != (i == 3) {
+			t.Fatalf("slow mail signal firing mismatch at event %d: %+v", i+1, findings)
+		}
 	}
 }
 

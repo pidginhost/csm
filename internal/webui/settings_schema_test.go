@@ -469,6 +469,40 @@ func TestThresholdsSchemaIncludesHTTPScannerProfileFields(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesSlowMailBruteFields(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	cases := []struct {
+		name      string
+		min, max  int64
+		wantGroup string
+	}{
+		{"smtp_bruteforce_slow_threshold", 0, int64(config.SlowBruteMaxThreshold), FieldGroupSMTPBruteForce},
+		{"smtp_bruteforce_slow_window_min", 1, int64(config.SlowBruteMaxWindowMin), FieldGroupSMTPBruteForce},
+		{"mail_bruteforce_slow_threshold", 0, int64(config.SlowBruteMaxThreshold), FieldGroupMailBruteForce},
+		{"mail_bruteforce_slow_window_min", 1, int64(config.SlowBruteMaxWindowMin), FieldGroupMailBruteForce},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := findSchemaField(s, tc.name)
+			if f == nil {
+				t.Fatalf("%s field missing", tc.name)
+			}
+			if f.Type != "int" {
+				t.Fatalf("%s type = %q, want int", tc.name, f.Type)
+			}
+			if f.Min == nil || *f.Min != tc.min {
+				t.Fatalf("%s min = %v, want %d", tc.name, f.Min, tc.min)
+			}
+			if f.Max == nil || *f.Max != tc.max {
+				t.Fatalf("%s max = %v, want %d", tc.name, f.Max, tc.max)
+			}
+			if f.FieldGroup != tc.wantGroup {
+				t.Fatalf("%s group = %q, want %q", tc.name, f.FieldGroup, tc.wantGroup)
+			}
+		})
+	}
+}
+
 func TestAutoResponseSchemaIncludesHTTPScannerAction(t *testing.T) {
 	s, ok := LookupSettingsSection("auto_response")
 	if !ok {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // smtpIPEntry tracks failed-auth timestamps and suppression state for one IP.
@@ -39,13 +40,15 @@ type smtpAccountEntry struct {
 // long-horizon failures must target before the slow-brute signal fires. A
 // misconfigured client with a stale saved password hammers one mailbox; a
 // mailbox walk touches several.
-const slowBruteMinAccounts = 3
+const slowBruteMinAccounts = config.SlowBruteMinThreshold
 
-// slowBruteMaxTimesPerIP bounds the long-horizon failure history kept per IP
-// so an unblocked high-rate source cannot grow the slice without limit. It
-// must stay above any sane slow threshold; detection is unaffected because
-// the threshold compares against the retained count.
-const slowBruteMaxTimesPerIP = 1024
+// Slow-brute state is nested inside a tracked IP, so maxTracked cannot bound
+// it. These caps match the largest accepted threshold and keep a high-rate
+// source or a stream of unique attacker-controlled mailbox names bounded.
+const (
+	slowBruteMaxTimesPerIP    = config.SlowBruteMaxThreshold
+	slowBruteMaxAccountsPerIP = config.SlowBruteMaxThreshold
+)
 
 // pruneSlowAccounts drops per-mailbox last-failure records older than cutoff.
 func pruneSlowAccounts(accounts map[string]time.Time, cutoff time.Time) {
@@ -54,6 +57,36 @@ func pruneSlowAccounts(accounts map[string]time.Time, cutoff time.Time) {
 			delete(accounts, acct)
 		}
 	}
+}
+
+// appendSlowFailure retains the newest bounded history. Validation caps the
+// configured threshold at the same value, so a reachable threshold is never
+// discarded. Reslicing avoids copying the full history on every event.
+func appendSlowFailure(times []time.Time, ts time.Time) []time.Time {
+	times = append(times, ts)
+	if len(times) > slowBruteMaxTimesPerIP {
+		times = times[len(times)-slowBruteMaxTimesPerIP:]
+	}
+	return times
+}
+
+// recordSlowAccount prunes before insertion and refuses new keys after the
+// per-IP cap. Three distinct live keys are sufficient for detection, so a
+// capped map preserves the signal while preventing unique-name memory growth.
+// The bool reports whether this event's account is represented in the map.
+func recordSlowAccount(accounts map[string]time.Time, account string, now, cutoff time.Time) (map[string]time.Time, bool) {
+	pruneSlowAccounts(accounts, cutoff)
+	if account == "" {
+		return accounts, false
+	}
+	if accounts == nil {
+		accounts = make(map[string]time.Time)
+	}
+	if _, exists := accounts[account]; exists || len(accounts) < slowBruteMaxAccountsPerIP {
+		accounts[account] = now
+		return accounts, true
+	}
+	return accounts, false
 }
 
 // smtpAuthTracker aggregates dovecot auth-failure events into three
@@ -194,32 +227,31 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	// saved password, which fails against a single mailbox no matter how long
 	// it runs.
 	if t.slowThreshold > 0 && t.slowWindow > 0 {
-		slowCutoff := now.Add(-t.slowWindow)
-		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
-		e.slowTimes = append(e.slowTimes, now)
-		if len(e.slowTimes) > slowBruteMaxTimesPerIP {
-			e.slowTimes = append([]time.Time(nil), e.slowTimes[len(e.slowTimes)-slowBruteMaxTimesPerIP:]...)
-		}
-		if account != "" {
-			if e.slowAccounts == nil {
-				e.slowAccounts = make(map[string]time.Time)
+		if degraded {
+			// Backend failures say nothing about credentials. Discard the
+			// long-lived evidence so outage traffic cannot trigger a delayed
+			// block as soon as the backend recovers.
+			e.slowTimes = nil
+			e.slowAccounts = nil
+		} else {
+			slowCutoff := now.Add(-t.slowWindow)
+			e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
+			e.slowTimes = appendSlowFailure(e.slowTimes, now)
+			e.slowAccounts, _ = recordSlowAccount(e.slowAccounts, normalizeMailAuthAccount(account), now, slowCutoff)
+			if len(e.slowTimes) >= t.slowThreshold &&
+				len(e.slowAccounts) >= slowBruteMinAccounts &&
+				!now.Before(e.suppressed) {
+				e.suppressed = now.Add(t.suppression)
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "smtp_bruteforce",
+					Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
+						ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+					Details:   "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
+					Timestamp: now,
+					SourceIP:  ip,
+				})
 			}
-			e.slowAccounts[account] = now
-		}
-		pruneSlowAccounts(e.slowAccounts, slowCutoff)
-		if len(e.slowTimes) >= t.slowThreshold &&
-			len(e.slowAccounts) >= slowBruteMinAccounts &&
-			!now.Before(e.suppressed) && !degraded {
-			e.suppressed = now.Add(t.suppression)
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "smtp_bruteforce",
-				Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
-					ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-				Details:   "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
-				Timestamp: now,
-				SourceIP:  ip,
-			})
 		}
 	}
 

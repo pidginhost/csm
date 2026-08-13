@@ -58,6 +58,16 @@ const (
 	// HTTPScannerMaxDistinctPaths matches the detector's per-IP path cap.
 	// Higher configured breadth thresholds can never be reached.
 	HTTPScannerMaxDistinctPaths = 512
+
+	// SlowBruteMinThreshold is the smallest useful long-horizon failure
+	// threshold: the detector also requires this many distinct mailboxes.
+	SlowBruteMinThreshold = 3
+	// SlowBruteMaxThreshold matches the detector's bounded per-IP timestamp
+	// history. A larger value could never fire and would make the knob lie.
+	SlowBruteMaxThreshold = 1024
+	// SlowBruteMaxWindowMin bounds long-lived per-IP state while still allowing
+	// operators to cover paced attacks over a full week.
+	SlowBruteMaxWindowMin = 7 * 24 * 60
 )
 
 // DefaultHTTPScannerStatusCodes returns a fresh copy of the probe-error
@@ -2122,8 +2132,12 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
-	_, presence.smtpBruteSlowThreshold = raw.Thresholds["smtp_bruteforce_slow_threshold"]
-	_, presence.mailBruteSlowThreshold = raw.Thresholds["mail_bruteforce_slow_threshold"]
+	if node, ok := raw.Thresholds["smtp_bruteforce_slow_threshold"]; ok && !yamlNodeIsNull(&node) {
+		presence.smtpBruteSlowThreshold = true
+	}
+	if node, ok := raw.Thresholds["mail_bruteforce_slow_threshold"]; ok && !yamlNodeIsNull(&node) {
+		presence.mailBruteSlowThreshold = true
+	}
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.thresholdsDropperDetection = raw.Thresholds["dropper_detection"]
 	_, presence.httpASNCrawlMinIPs = raw.Thresholds["http_asn_crawl_min_ips"]

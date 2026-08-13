@@ -184,12 +184,16 @@ thresholds:
   smtp_bruteforce_subnet_threshold: 8
   smtp_account_spray_threshold: 12
   smtp_bruteforce_max_tracked: 20000
+  smtp_bruteforce_slow_threshold: 40
+  smtp_bruteforce_slow_window_min: 360
   mail_bruteforce_threshold: 5
   mail_bruteforce_window_min: 10
   mail_bruteforce_suppress_min: 60
   mail_bruteforce_subnet_threshold: 8
   mail_account_spray_threshold: 12
   mail_bruteforce_max_tracked: 20000
+  mail_bruteforce_slow_threshold: 40
+  mail_bruteforce_slow_window_min: 360
   # ModSecurity escalation. Defaults of 3 hits / 10m miss low-and-slow
   # scanners that spread denies across hours. Raising the window to 4h
   # while keeping hits at 3 catches paced attackers without triggering
