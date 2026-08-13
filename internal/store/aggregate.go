@@ -42,8 +42,7 @@ func (db *DB) AggregateByHour() []HourBucket {
 		counts[i] = &SeverityBucket{}
 	}
 
-	seekPrefix := fmt.Sprintf("%04d%02d%02d%02d",
-		cutoff.Year(), cutoff.Month(), cutoff.Day(), cutoff.Hour())
+	seekPrefix := timeKeyLowerBound(cutoff)
 
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))

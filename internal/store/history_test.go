@@ -276,3 +276,30 @@ func TestReadHistorySinceCrossTimezoneCutoff(t *testing.T) {
 		t.Errorf("cutoff 30m before finding, expressed in UTC: got %d findings, want 1", len(got))
 	}
 }
+
+func TestReadHistoryFilteredUsesLocalCalendarDayWithUTCKeys(t *testing.T) {
+	originalLocal := time.Local
+	time.Local = time.FixedZone("UTC+3", 3*3600)
+	t.Cleanup(func() { time.Local = originalLocal })
+
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	loc := time.Local
+	findings := []alert.Finding{
+		{Severity: alert.Warning, Check: "previous-day", Timestamp: time.Date(2026, 8, 12, 23, 30, 0, 0, loc)},
+		{Severity: alert.Warning, Check: "target-day", Timestamp: time.Date(2026, 8, 13, 0, 30, 0, 0, loc)},
+		{Severity: alert.Warning, Check: "next-day", Timestamp: time.Date(2026, 8, 14, 0, 0, 0, 0, loc)},
+	}
+	if err := db.AppendHistory(findings); err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	got, total := db.ReadHistoryFiltered(10, 0, "2026-08-13", "2026-08-13", -1, "")
+	if total != 1 || len(got) != 1 || got[0].Check != "target-day" {
+		t.Fatalf("local-day filter = (%+v, %d), want only target-day", got, total)
+	}
+}

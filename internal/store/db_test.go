@@ -280,4 +280,7 @@ func TestTimeKeySameInstantDifferentZones(t *testing.T) {
 	if kUTC != kPlus3 {
 		t.Errorf("same instant produced different keys: UTC=%q +03=%q", kUTC, kPlus3)
 	}
+	if want := "20260813183000000000000-0000"; kUTC != want {
+		t.Errorf("TimeKey() = %q, want canonical UTC key %q", kUTC, want)
+	}
 }
