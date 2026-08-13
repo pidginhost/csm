@@ -1366,6 +1366,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`renderQueueComposition`,
 		`/api/v1/email/queue/flush-backscatter`,
 		`flushBackscatter`,
+		`Confirmed no longer queued after the flush request:`,
 		`/api/v1/email/held`,
 		`renderHeld`,
 	} {
