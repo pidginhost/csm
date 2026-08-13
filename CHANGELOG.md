@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Each scan cycle now reads the firewall's blocked addresses once instead of once per tracked address, so hosts holding many blocks stop paying a full kernel query per entry to reconcile them.
 - Firewall block metrics are now present before the first attempt and keep unknown values in fixed buckets, so dead-engine alerts work without unbounded metric growth.
 - Auto-block evidence now fans out once per finding, reports alert-delivery failures, and cannot feed back into central intelligence or incident correlation to repeat the same block. An unavailable firewall engine is now counted as an error outcome.
 - Malware rule tuning now keeps indirect request execution and unsafe uploaders visible, applies size bounds to the full real-time file, and requires credential or campaign context for new exfiltration and cloaking alerts.
