@@ -3,16 +3,24 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"gopkg.in/yaml.v3"
 )
+
+type firewallReference struct {
+	Firewall struct {
+		RestrictedTCP []int `yaml:"restricted_tcp"`
+	} `yaml:"firewall"`
+}
 
 // loadInstallerTemplate renders the installer's built-in config to disk and
 // parses it, which is the only way to read that template -- it is an inline
 // literal inside deployDefaultConfig, not an exported var.
-func loadInstallerTemplate(t *testing.T) *config.Config {
+func loadInstallerTemplate(t *testing.T) []int {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "csm.yaml")
 	if err := deployDefaultConfig(path); err != nil {
@@ -22,24 +30,64 @@ func loadInstallerTemplate(t *testing.T) *config.Config {
 	if err != nil {
 		t.Fatalf("read rendered template: %v", err)
 	}
-	cfg, err := config.LoadBytes(data)
-	if err != nil {
-		t.Fatalf("parse rendered template: %v", err)
-	}
-	return cfg
+	return loadRestrictedTCP(t, "rendered installer template", data)
 }
 
-func loadPackagedDefault(t *testing.T) *config.Config {
+func loadPackagedDefault(t *testing.T) []int {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "build", "packaging", "csm.yaml.default"))
+	return loadConfigFile(t, filepath.Join("..", "..", "build", "packaging", "csm.yaml.default"))
+}
+
+func loadProductionReference(t *testing.T) []int {
+	t.Helper()
+	return loadConfigFile(t, filepath.Join("..", "..", "configs", "csm.yaml.production.example"))
+}
+
+func loadConfigFile(t *testing.T, path string) []int {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- repository-owned test fixture path
 	if err != nil {
-		t.Fatalf("read packaged default: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	cfg, err := config.LoadBytes(data)
+	return loadRestrictedTCP(t, path, data)
+}
+
+func loadDocumentedReference(t *testing.T) []int {
+	t.Helper()
+	path := filepath.Join("..", "..", "docs", "src", "configuration.md")
+	data, err := os.ReadFile(path) // #nosec G304 -- repository-owned test fixture path
 	if err != nil {
-		t.Fatalf("parse packaged default: %v", err)
+		t.Fatalf("read %s: %v", path, err)
 	}
-	return cfg
+
+	const marker = "## Full Reference\n\n```yaml\n"
+	_, yamlText, ok := strings.Cut(string(data), marker)
+	if !ok {
+		t.Fatalf("%s: full reference YAML block not found", path)
+	}
+	yamlText, _, ok = strings.Cut(yamlText, "\n```\n")
+	if !ok {
+		t.Fatalf("%s: full reference YAML block is not closed", path)
+	}
+	return loadRestrictedTCP(t, "full reference in "+path, []byte(yamlText))
+}
+
+func loadRestrictedTCP(t *testing.T, name string, data []byte) []int {
+	t.Helper()
+	if _, err := config.LoadBytes(data); err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+
+	// Read the explicit source value separately. Config loading applies runtime
+	// defaults, which would make an omitted restricted_tcp key look correct.
+	var ref firewallReference
+	if err := yaml.Unmarshal(data, &ref); err != nil {
+		t.Fatalf("parse raw %s: %v", name, err)
+	}
+	if ref.Firewall.RestrictedTCP == nil {
+		t.Fatalf("%s: firewall.restricted_tcp is missing", name)
+	}
+	return ref.Firewall.RestrictedTCP
 }
 
 func samePorts(a, b []int) bool {
@@ -54,47 +102,54 @@ func samePorts(a, b []int) bool {
 	return true
 }
 
-// E2: firewall defaults live in three places -- firewall.DefaultConfig, the
-// installer template, and the packaged YAML. restricted_tcp had drifted: the
-// runtime default protects the Web UI port but neither shipped file listed it,
-// so a fresh install exposed 9443 to the internet while the documented default
-// says it is infra-only.
-func TestRestrictedTCPDefaultsAgreeAcrossAllThreeSources(t *testing.T) {
+// Firewall defaults are repeated in runtime code, deployable configs, and the
+// operator documentation. Keep the restricted ports aligned so copying any
+// complete reference config cannot publish an infra-only management port.
+func TestRestrictedTCPDefaultsAgreeAcrossReferences(t *testing.T) {
 	want := firewall.DefaultConfig().RestrictedTCP
 
-	installer := loadInstallerTemplate(t)
-	if !samePorts(installer.Firewall.RestrictedTCP, want) {
-		t.Errorf("installer template restricted_tcp = %v, want runtime default %v", installer.Firewall.RestrictedTCP, want)
-	}
-
-	packaged := loadPackagedDefault(t)
-	if !samePorts(packaged.Firewall.RestrictedTCP, want) {
-		t.Errorf("packaged default restricted_tcp = %v, want runtime default %v", packaged.Firewall.RestrictedTCP, want)
-	}
-}
-
-// The Web UI port is the one that matters most: leaving it out of
-// restricted_tcp publishes the management panel to the whole internet.
-func TestShippedDefaultsRestrictWebUIPort(t *testing.T) {
-	const webUIPort = 9443
-
 	for _, tc := range []struct {
-		name string
-		cfg  *config.Config
+		name  string
+		ports []int
 	}{
 		{"installer template", loadInstallerTemplate(t)},
 		{"packaged default", loadPackagedDefault(t)},
+		{"production reference", loadProductionReference(t)},
+		{"documented reference", loadDocumentedReference(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !samePorts(tc.ports, want) {
+				t.Errorf("restricted_tcp = %v, want runtime default %v", tc.ports, want)
+			}
+		})
+	}
+}
+
+// restricted_tcp filters matching ports out of the public allow list; it does
+// not open them. Keep the Web UI listed so adding its port to tcp_in does not
+// also publish the management panel beyond infra_ips.
+func TestDefaultReferencesRestrictWebUIPort(t *testing.T) {
+	const webUIPort = 9443
+
+	for _, tc := range []struct {
+		name  string
+		ports []int
+	}{
+		{"installer template", loadInstallerTemplate(t)},
+		{"packaged default", loadPackagedDefault(t)},
+		{"production reference", loadProductionReference(t)},
+		{"documented reference", loadDocumentedReference(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			found := false
-			for _, p := range tc.cfg.Firewall.RestrictedTCP {
+			for _, p := range tc.ports {
 				if p == webUIPort {
 					found = true
 					break
 				}
 			}
 			if !found {
-				t.Errorf("restricted_tcp = %v, missing web UI port %d", tc.cfg.Firewall.RestrictedTCP, webUIPort)
+				t.Errorf("restricted_tcp = %v, missing web UI port %d", tc.ports, webUIPort)
 			}
 		})
 	}
