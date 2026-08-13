@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Firewall block metrics are now present before the first attempt and keep unknown values in fixed buckets, so dead-engine alerts work without unbounded metric growth.
 - Auto-block evidence now fans out once per finding, reports alert-delivery failures, and cannot feed back into central intelligence or incident correlation to repeat the same block. An unavailable firewall engine is now counted as an error outcome.
 - Malware rule tuning now keeps indirect request execution and unsafe uploaders visible, applies size bounds to the full real-time file, and requires credential or campaign context for new exfiltration and cloaking alerts.
 - Four malware rules no longer fire on ordinary framework and library code: specific framework and image-only upload handlers, plugins that decode their own stored options, PDF libraries that escape their own project URL, and analytics plugins that list crawler user agents. These accounted for every malware finding on a production host except one real compromise, which they were burying.
