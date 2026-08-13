@@ -66,8 +66,18 @@ func TestParseQueueCountsFlushableBackscatter(t *testing.T) {
 
 func TestEximQueueFlusherRemovesOnlyFrozenBackscatter(t *testing.T) {
 	var removed []string
+	// The second list call is the post-removal re-read, so it must show the
+	// message gone; returning the original queue would describe a removal
+	// that did not happen.
+	calls := 0
 	f := &EximQueueFlusher{
-		list:   func() ([]byte, error) { return []byte(eximBpSample), nil },
+		list: func() ([]byte, error) {
+			calls++
+			if calls == 1 {
+				return []byte(eximBpSample), nil
+			}
+			return []byte(queueWithout(t, eximBpSample, "1rABcd-000ABC-2A")), nil
+		},
 		remove: func(ids []string) error { removed = append(removed, ids...); return nil },
 	}
 

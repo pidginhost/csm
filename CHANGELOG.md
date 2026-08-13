@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Flushing frozen backscatter from the mail queue now confirms what actually left the queue instead of trusting the mail server's exit status, which was reporting a failure for a flush that had already deleted the messages. The deletion is recorded in the audit log even when the run then reports an error, so mail is never removed without a trail, and the operator now sees the underlying reason instead of a fixed message.
 - WordPress spam cleanup now confirms high-confidence keyword matches on Unicode-aware word boundaries before deleting, preventing substring hits in legitimate multilingual articles. Preview and cleanup counts are deduplicated, overlapping keyword totals are labelled, and database failures stop the command instead of reporting success.
 - Findings that record an action CSM took, or how well it can see, no longer group into incidents. Previously only the auto-block record was excluded, leaving the others one field away from letting CSM's own output trigger a further response.
 - Firewall lockout warnings now follow the effective public port policy, ignore disabled services, appear once on dashboard saves, and are included in diagnostics. Validation now covers every IPv6 and SMTP port list without rejecting working mixed-case TCP flood rules.
