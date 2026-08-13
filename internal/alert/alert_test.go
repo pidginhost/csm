@@ -96,6 +96,28 @@ func TestFindingKeyIncludesDetailsHash(t *testing.T) {
 	}
 }
 
+// An explicit DedupKey pins the finding's identity: volatile details (pids,
+// byte counts, timestamps embedded by the producer) must not mint a new
+// dedup entry on every scan of the same ongoing condition.
+func TestFindingDedupKeyOverridesIdentity(t *testing.T) {
+	a := Finding{Check: "perf_memory", Message: "OOM killer invoked in the last hour",
+		Details: "Killed process 111 (lsphp)", DedupKey: "oom:lsphp"}
+	b := Finding{Check: "perf_memory", Message: "OOM killer invoked in the last hour",
+		Details: "Killed process 222 (lsphp)", DedupKey: "oom:lsphp"}
+	if a.Key() != b.Key() {
+		t.Errorf("same DedupKey produced different keys: %q vs %q", a.Key(), b.Key())
+	}
+	if a.Fingerprint() != b.Fingerprint() {
+		t.Errorf("same DedupKey produced different fingerprints")
+	}
+
+	c := b
+	c.DedupKey = "oom:mysqld"
+	if a.Key() == c.Key() {
+		t.Errorf("different DedupKeys must produce different keys")
+	}
+}
+
 func TestFindingKeyHTTPAbuseStableForSourceIP(t *testing.T) {
 	a := Finding{
 		Check:   "xmlrpc_abuse",

@@ -74,6 +74,38 @@ func TestCheckSwapAndOOM_NonISOFallbackReportsRecentOOM(t *testing.T) {
 	}
 }
 
+// Each OOM kill writes a fresh pid and byte counts into dmesg; the finding's
+// dedup identity must stay stable across kills of the same process or every
+// scan of an ongoing OOM loop re-alerts as a brand-new Critical.
+func TestCheckSwapAndOOM_RepeatKillsShareDedupIdentity(t *testing.T) {
+	stamp := time.Now().Add(-2 * time.Minute).Format("Mon Jan _2 15:04:05 2006")
+	first := fmt.Sprintf("[%s] Memory cgroup out of memory: Killed process 2845662 (lsphp) total-vm:796344kB", stamp)
+	withMockCmd(t, dmesgMock(first))
+	f1 := oomFindingValue(t, CheckSwapAndOOM(context.Background(), testPerfConfig(), nil))
+
+	second := fmt.Sprintf("[%s] Memory cgroup out of memory: Killed process 2999999 (lsphp) total-vm:795012kB", stamp)
+	withMockCmd(t, dmesgMock(second))
+	f2 := oomFindingValue(t, CheckSwapAndOOM(context.Background(), testPerfConfig(), nil))
+
+	if f1.Key() != f2.Key() {
+		t.Errorf("repeat kills of the same process produced different keys: %q vs %q", f1.Key(), f2.Key())
+	}
+	if f1.Fingerprint() != f2.Fingerprint() {
+		t.Errorf("repeat kills of the same process produced different fingerprints")
+	}
+}
+
+func oomFindingValue(t *testing.T, findings []alert.Finding) alert.Finding {
+	t.Helper()
+	for _, f := range findings {
+		if f.Check == "perf_memory" && strings.Contains(f.Message, "OOM") {
+			return f
+		}
+	}
+	t.Fatal("no OOM finding produced")
+	return alert.Finding{}
+}
+
 func testPerfConfig() *config.Config {
 	cfg := &config.Config{}
 	t := true

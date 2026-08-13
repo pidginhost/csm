@@ -59,13 +59,18 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity    Severity `json:"severity"`
-	Check       string   `json:"check"`
-	Message     string   `json:"message"`
-	Details     string   `json:"details,omitempty"`
-	FilePath    string   `json:"file_path,omitempty"`
-	ProcessInfo string   `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
-	PID         int      `json:"pid,omitempty"`          // structured PID for auto-response
+	Severity Severity `json:"severity"`
+	Check    string   `json:"check"`
+	Message  string   `json:"message"`
+	Details  string   `json:"details,omitempty"`
+	// DedupKey, when set, pins the finding's dedup identity (Key and
+	// Fingerprint) regardless of Message/Details content. For findings whose
+	// details embed volatile values (pids, byte counts) that would otherwise
+	// mint a new identity for the same ongoing condition on every scan.
+	DedupKey    string `json:"dedup_key,omitempty"`
+	FilePath    string `json:"file_path,omitempty"`
+	ProcessInfo string `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
+	PID         int    `json:"pid,omitempty"`          // structured PID for auto-response
 
 	// Content fingerprint for re-verifiable content findings (PHP heuristics,
 	// signature, YARA). Set at emit time by content-family checks; empty for
@@ -150,6 +155,9 @@ func (f Finding) String() string {
 
 // Key returns a unique key for deduplication.
 func (f Finding) Key() string {
+	if f.DedupKey != "" {
+		return fmt.Sprintf("%s:%s", f.Check, f.DedupKey)
+	}
 	if key := f.sourceIPKey(); key != "" {
 		return key
 	}
@@ -162,6 +170,10 @@ func (f Finding) Key() string {
 
 // Fingerprint returns the content hash used by alert-state deduplication.
 func (f Finding) Fingerprint() string {
+	if f.DedupKey != "" {
+		h := sha256.Sum256([]byte(f.Check + ":" + f.DedupKey))
+		return fmt.Sprintf("%x", h[:8])
+	}
 	if key := f.sourceIPKey(); key != "" {
 		h := sha256.Sum256([]byte(key))
 		return fmt.Sprintf("%x", h[:8])

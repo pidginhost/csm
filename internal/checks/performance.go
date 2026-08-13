@@ -397,10 +397,14 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 				continue
 			}
 			findings = append(findings, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "perf_memory",
-				Message:   "OOM killer invoked in the last hour",
-				Details:   strings.TrimSpace(line),
+				Severity: alert.Critical,
+				Check:    "perf_memory",
+				Message:  "OOM killer invoked in the last hour",
+				Details:  strings.TrimSpace(line),
+				// Every kill logs a fresh pid and byte counts; keying dedup on
+				// the victim process name keeps an ongoing OOM loop to one
+				// finding per state-expiry window instead of one per scan.
+				DedupKey:  "oom:" + oomVictimProcess(line),
 				Timestamp: time.Now(),
 			})
 			break // one finding is enough
@@ -415,16 +419,34 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 		if usagePct > 50 {
 			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "perf_memory",
-				Message:   "High swap usage",
-				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(kibToDisplayBytes(swapUsed)), humanBytes(kibToDisplayBytes(swapTotal)), usagePct),
+				Severity: alert.High,
+				Check:    "perf_memory",
+				Message:  "High swap usage",
+				Details:  fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(kibToDisplayBytes(swapUsed)), humanBytes(kibToDisplayBytes(swapTotal)), usagePct),
+				// The percentage moves every scan; without a pinned identity
+				// each drift re-alerts the same sustained condition.
+				DedupKey:  "swap_high",
 				Timestamp: time.Now(),
 			})
 		}
 	}
 
 	return findings
+}
+
+// oomVictimProcess returns the killed process name from a dmesg OOM line
+// ("... Killed process 2845662 (lsphp) ..."), or "host" when the line names
+// no victim, so the dedup identity always has a stable value.
+func oomVictimProcess(line string) string {
+	open := strings.IndexByte(line, '(')
+	if open < 0 {
+		return "host"
+	}
+	closeIdx := strings.IndexByte(line[open:], ')')
+	if closeIdx <= 1 {
+		return "host"
+	}
+	return line[open+1 : open+closeIdx]
 }
 
 // parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
