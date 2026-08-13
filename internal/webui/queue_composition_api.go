@@ -42,19 +42,24 @@ func (s *Server) apiEmailFlushBackscatter(w http.ResponseWriter, r *http.Request
 
 	res, err := s.queueFlusher.FlushBackscatter()
 
-	// A flush that deleted mail and then reported an error still deleted
-	// mail, so the audit record cannot depend on err being nil -- that left
-	// a destructive action with no forensic trail. Equally, a run that
-	// removed nothing must not write a record for a deletion that did not
-	// happen.
-	if res.Removed > 0 {
+	// The attempt must be recorded even when the verification read fails and
+	// cannot confirm a removal. A target can also leave through concurrent
+	// delivery, so the audit records observed queue state without attributing
+	// every disappearance to the removal command.
+	targeted := res.Targeted
+	if targeted > 0 {
 		s.auditLog(r, "email_flush_backscatter", "mail-queue",
-			fmt.Sprintf("removed %d frozen null-sender message(s)", res.Removed))
+			fmt.Sprintf("removal requested for %d frozen null-sender message(s); %d confirmed no longer queued afterward",
+				targeted, res.Removed))
 	}
 
 	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Flush incomplete after removing %d message(s): %v", res.Removed, err),
-			http.StatusInternalServerError)
+		message := fmt.Sprintf("Failed to flush backscatter: %v", err)
+		if targeted > 0 {
+			message = fmt.Sprintf("Flush incomplete: %d of %d targeted message(s) confirmed no longer queued: %v",
+				res.Removed, targeted, err)
+		}
+		writeJSONError(w, message, http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, res)

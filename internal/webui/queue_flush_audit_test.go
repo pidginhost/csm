@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,7 @@ import (
 func TestApiEmailFlushBackscatterAuditsPartialRemoval(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.queueFlusher = &fakeQueueFlusher{
-		res: intel.FlushResult{Removed: 2},
+		res: intel.FlushResult{Removed: 2, Targeted: 3},
 		err: errors.New("1 of 3 frozen backscatter messages still queued after removal"),
 	}
 
@@ -34,12 +35,46 @@ func TestApiEmailFlushBackscatterAuditsPartialRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit log unreadable: %v", err)
 	}
-	audit := string(data)
-	if !strings.Contains(audit, "email_flush_backscatter") {
-		t.Fatalf("deleted mail was not audit-logged; audit=%q", audit)
+	var entry UIAuditEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("audit log contains invalid JSON: %v", err)
 	}
-	if !strings.Contains(audit, "2") {
-		t.Fatalf("audit record must state how many messages were removed; audit=%q", audit)
+	if entry.Action != "email_flush_backscatter" {
+		t.Fatalf("audit action = %q, want email_flush_backscatter", entry.Action)
+	}
+	const wantDetails = "removal requested for 3 frozen null-sender message(s); 2 confirmed no longer queued afterward"
+	if entry.Details != wantDetails {
+		t.Fatalf("audit details = %q, want %q", entry.Details, wantDetails)
+	}
+}
+
+func TestApiEmailFlushBackscatterAuditsUnconfirmedRemovalAttempt(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.queueFlusher = &fakeQueueFlusher{
+		res: intel.FlushResult{Targeted: 1},
+		err: errors.New("removal could not be confirmed: queue re-read failed"),
+	}
+
+	w := httptest.NewRecorder()
+	s.apiEmailFlushBackscatter(w, httptest.NewRequest(http.MethodPost, "/api/v1/email/queue/flush-backscatter", nil))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+	data, err := os.ReadFile(filepath.Join(s.cfg.StatePath, uiAuditFile))
+	if err != nil {
+		t.Fatalf("audit log unreadable: %v", err)
+	}
+	var entry UIAuditEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("audit log contains invalid JSON: %v", err)
+	}
+	if entry.Action != "email_flush_backscatter" {
+		t.Fatalf("audit action = %q, want email_flush_backscatter", entry.Action)
+	}
+	const wantDetails = "removal requested for 1 frozen null-sender message(s); 0 confirmed no longer queued afterward"
+	if entry.Details != wantDetails {
+		t.Fatalf("audit details = %q, want %q", entry.Details, wantDetails)
 	}
 }
 

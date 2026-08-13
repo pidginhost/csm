@@ -166,3 +166,37 @@ func TestRunEximRemoveBatchesIDs(t *testing.T) {
 		t.Fatalf("batch argument counts = %v, want %v", got, want)
 	}
 }
+
+func TestRunEximRemoveContinuesAfterBatchErrors(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args.log")
+	eximPath := filepath.Join(dir, "exim")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$#\" >> \"$EXIM_ARG_LOG\"\nexit 1\n"
+	if err := os.WriteFile(eximPath, []byte(script), 0700); err != nil {
+		t.Fatalf("write fake exim: %v", err)
+	}
+	t.Setenv("EXIM_ARG_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var ids []string
+	for i := 0; i < eximRemoveBatch+1; i++ {
+		ids = append(ids, fmt.Sprintf("1r%04d-000ABC-2A", i))
+	}
+
+	err := runEximRemove(ids)
+	if err == nil {
+		t.Fatal("batch errors must be returned for queue verification")
+	}
+	if !strings.Contains(err.Error(), "2 removal batch(es)") {
+		t.Fatalf("error = %q, want bounded failed-batch count", err)
+	}
+	data, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatalf("read fake exim log: %v", readErr)
+	}
+	got := strings.Fields(string(data))
+	want := []string{"101", "2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("batch argument counts = %v, want %v; every batch must be attempted", got, want)
+	}
+}

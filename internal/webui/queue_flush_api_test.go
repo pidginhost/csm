@@ -51,7 +51,7 @@ func TestSelectQueueFlusherUsesEximOnCPanel(t *testing.T) {
 
 func TestApiEmailFlushBackscatterSuccess(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.queueFlusher = &fakeQueueFlusher{res: intel.FlushResult{Removed: 3}}
+	s.queueFlusher = &fakeQueueFlusher{res: intel.FlushResult{Removed: 3, Targeted: 3}}
 
 	w := httptest.NewRecorder()
 	s.apiEmailFlushBackscatter(w, httptest.NewRequest(http.MethodPost, "/api/v1/email/queue/flush-backscatter", nil))
@@ -113,7 +113,7 @@ func TestApiEmailFlushBackscatterNotConfigured(t *testing.T) {
 func TestApiEmailFlushBackscatterRouteRequiresCSRF(t *testing.T) {
 	const tok = "tok"
 	s := newTestServer(t, tok)
-	flusher := &fakeQueueFlusher{res: intel.FlushResult{Removed: 1}}
+	flusher := &fakeQueueFlusher{res: intel.FlushResult{Removed: 1, Targeted: 1}}
 	s.queueFlusher = flusher
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/email/queue/flush-backscatter", strings.NewReader(`{}`))
@@ -133,7 +133,7 @@ func TestApiEmailFlushBackscatterRouteRequiresCSRF(t *testing.T) {
 func TestApiEmailFlushBackscatterRouteGetDoesNotFlush(t *testing.T) {
 	const tok = "tok"
 	s := newTestServer(t, tok)
-	flusher := &fakeQueueFlusher{res: intel.FlushResult{Removed: 1}}
+	flusher := &fakeQueueFlusher{res: intel.FlushResult{Removed: 1, Targeted: 1}}
 	s.queueFlusher = flusher
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/email/queue/flush-backscatter", nil)

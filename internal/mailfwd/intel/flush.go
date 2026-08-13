@@ -9,9 +9,13 @@ import (
 	"time"
 )
 
-// FlushResult reports how many messages a flush removed.
+// FlushResult reports the observable outcome of a queue flush.
 type FlushResult struct {
 	Removed int `json:"removed"`
+	// Targeted is the number of message IDs submitted for removal. It is kept
+	// off the wire because the public response historically exposes only the
+	// post-action count, but callers need it to audit an unconfirmed outcome.
+	Targeted int `json:"-"`
 }
 
 // QueueFlusher removes safe-to-delete backscatter from the mail queue.
@@ -62,8 +66,10 @@ const survivorsListed = 5
 // what actually left, so a lying exit code can neither invent a failure nor
 // hide a removal that silently did nothing.
 //
-// Removed is the confirmed count and stays meaningful alongside a non-nil
-// error: a partial flush reports both what went and what survived.
+// Removed is the number of targeted IDs absent from the post-action queue and
+// stays meaningful alongside a non-nil error. A concurrent delivery can also
+// make an ID disappear, so audit callers must describe it as no longer queued,
+// not necessarily deleted by this command.
 func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	out, err := f.list()
 	if err != nil {
@@ -73,31 +79,38 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	if len(ids) == 0 {
 		return FlushResult{}, nil
 	}
+	result := FlushResult{Targeted: len(ids)}
 	removeErr := f.remove(ids)
 
 	after, listErr := f.list()
 	if listErr != nil {
+		confirmErr := fmt.Errorf("removal could not be confirmed: %w", listErr)
 		if removeErr != nil {
-			return FlushResult{}, removeErr
+			return result, errors.Join(fmt.Errorf("removal command failed: %w", removeErr), confirmErr)
 		}
-		return FlushResult{}, fmt.Errorf("removal could not be confirmed: %w", listErr)
+		return result, confirmErr
 	}
 
-	stillQueued := make(map[string]bool, len(ids))
-	for _, id := range FrozenBackscatterIDs(string(after)) {
-		stillQueued[id] = true
+	targeted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		targeted[id] = struct{}{}
 	}
-	removed := 0
+	stillQueued := make(map[string]struct{}, len(ids))
+	for _, line := range strings.Split(string(after), "\n") {
+		id, _, _, _, _, ok := parseQueueHeader(line)
+		if _, isTargeted := targeted[id]; ok && isTargeted {
+			stillQueued[id] = struct{}{}
+		}
+	}
 	var survived []string
 	for _, id := range ids {
-		if stillQueued[id] {
+		if _, ok := stillQueued[id]; ok {
 			survived = append(survived, id)
-			continue
 		}
-		removed++
 	}
+	result.Removed = len(ids) - len(survived)
 	if len(survived) == 0 {
-		return FlushResult{Removed: removed}, nil
+		return result, nil
 	}
 
 	named := survived
@@ -107,12 +120,14 @@ func (f *EximQueueFlusher) FlushBackscatter() (FlushResult, error) {
 	msg := fmt.Sprintf("%d of %d frozen backscatter messages still queued after removal (%s)",
 		len(survived), len(ids), strings.Join(named, " "))
 	if removeErr != nil {
-		return FlushResult{Removed: removed}, fmt.Errorf("%s: %w", msg, removeErr)
+		return result, fmt.Errorf("%s: %w", msg, removeErr)
 	}
-	return FlushResult{Removed: removed}, errors.New(msg)
+	return result, errors.New(msg)
 }
 
 func runEximRemove(ids []string) error {
+	var firstErr error
+	failedBatches := 0
 	for start := 0; start < len(ids); start += eximRemoveBatch {
 		end := start + eximRemoveBatch
 		if end > len(ids) {
@@ -125,8 +140,18 @@ func runEximRemove(ids []string) error {
 		err := exec.CommandContext(ctx, "exim", args...).Run()
 		cancel()
 		if err != nil {
-			return err
+			// Exim can remove every ID and still return non-zero. Continue so an
+			// unreliable status from one batch cannot prevent later attempts;
+			// the queue re-read decides which messages remain. Retaining only the
+			// first error keeps the eventual operator message bounded.
+			failedBatches++
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
+	}
+	if firstErr != nil {
+		return fmt.Errorf("%d removal batch(es) reported an error; first: %w", failedBatches, firstErr)
 	}
 	return nil
 }
