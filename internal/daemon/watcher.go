@@ -471,14 +471,19 @@ func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
 func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	// 1. Frozen bounces - spam indicator
-	if strings.Contains(line, "frozen") {
-		findings = append(findings, alert.Finding{
-			Severity: alert.Warning,
-			Check:    "exim_frozen_realtime",
-			Message:  "Exim frozen message detected",
-			Details:  truncateDaemon(line, 200),
-		})
+	// 1. Frozen bounces - spam indicator. The capitalized form is the initial
+	// freeze event ("Frozen (delivery error message)"); the lowercase form is
+	// exim re-logging "Message is frozen" on every queue run. Dedup by queue
+	// ID so one stuck message alerts once, and unfreeze events never do.
+	if strings.Contains(line, "frozen") || strings.Contains(line, "Frozen") {
+		if eximFrozenShouldAlert(line, time.Now()) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "exim_frozen_realtime",
+				Message:  "Exim frozen message detected",
+				Details:  truncateDaemon(line, 200),
+			})
+		}
 	}
 
 	// 2. Outgoing mail hold - account is held by cPanel.
