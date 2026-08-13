@@ -205,13 +205,14 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	}
 	result.Database = creds.dbName
 
-	// SQL LIKE narrows candidates; the word-boundary regex decides. LIKE
+	// SQL LIKE narrows candidates; the Go word-boundary check decides. LIKE
 	// alone matches "cialis" inside "specialist" and "pharma" inside a
 	// conference name, so a substring-only hit must never reach a DELETE.
 	// dbSpamPatterns is shared with the scanner so detection and deletion
 	// can never drift apart again.
 	spamIDs := make(map[string]struct{})
 	var order []string
+	var keywordCounts []string
 	for _, sp := range dbSpamPatterns {
 		if !sp.deletable {
 			continue
@@ -220,9 +221,14 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 			"posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" +
 			sp.likeFragment + "' OR post_title LIKE '" + sp.likeFragment + "')"
 		matched := 0
-		for _, line := range runMySQLQueryRoot(creds.dbName, query) {
+		rows, err := runMySQLQueryRootWithError(creds.dbName, query)
+		if err != nil {
+			result.Message = fmt.Sprintf("Failed to query spam posts for %q: %v", sp.keyword, err)
+			return result
+		}
+		for _, line := range rows {
 			id, text, ok := splitSpamCandidate(line)
-			if !ok || !sp.regex.MatchString(text) {
+			if !ok || len(spamKeywordMatchIndexes(sp, text)) == 0 {
 				continue
 			}
 			matched++
@@ -232,7 +238,8 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 			}
 		}
 		if matched > 0 {
-			result.Details = append(result.Details, fmt.Sprintf("%s: %d posts", sp.keyword, matched))
+			keywordCounts = append(keywordCounts,
+				fmt.Sprintf("%s=%s", sp.keyword, formatSpamPostCount(matched)))
 		}
 	}
 
@@ -241,9 +248,13 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 		result.Success = true
 		return result
 	}
+	result.Details = append(result.Details,
+		"Matched "+formatCountedNoun(len(order), "unique post", "unique posts"),
+		"Keyword match counts overlap when a post contains several keywords: "+
+			strings.Join(keywordCounts, ", "))
 
 	if preview {
-		result.Message = fmt.Sprintf("PREVIEW: Would delete %d spam posts", len(order))
+		result.Message = "PREVIEW: Would delete " + formatSpamPostCount(len(order))
 		result.Success = true
 		return result
 	}
@@ -257,26 +268,79 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 		}
 		idList := strings.Join(order[i:end], ",")
 
-		// Delete postmeta for these posts.
-		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-			"DELETE FROM %spostmeta WHERE post_id IN (%s)", prefix, idList))
-
-		// Delete revisions.
-		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-			"DELETE FROM %sposts WHERE post_parent IN (%s) AND post_type='revision'",
-			prefix, idList))
-
-		// Delete the posts themselves.
-		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-			"DELETE FROM %sposts WHERE ID IN (%s) AND post_type='post' AND post_status='publish'",
-			prefix, idList))
-
-		deleted += end - i
+		affected, err := deleteSpamBatch(creds.dbName, prefix, idList)
+		if err != nil {
+			result.Message = fmt.Sprintf("Spam cleanup failed after deleting %s: %v",
+				formatSpamPostCount(deleted), err)
+			result.Details = append(result.Details,
+				"Cleanup stopped at the first failed database statement; rerun it after fixing the database error.")
+			return result
+		}
+		deleted += affected
 	}
 
-	result.Message = fmt.Sprintf("Deleted %d spam posts and their metadata", deleted)
+	result.Message = fmt.Sprintf("Deleted %s and %s metadata",
+		formatSpamPostCount(deleted), spamPostPossessive(deleted))
+	if notDeleted := len(order) - deleted; notDeleted > 0 {
+		verb := "were"
+		if notDeleted == 1 {
+			verb = "was"
+		}
+		result.Message += fmt.Sprintf("; %s %s not deleted",
+			formatCountedNoun(notDeleted, "candidate", "candidates"), verb)
+	}
 	result.Success = true
 	return result
+}
+
+func deleteSpamBatch(dbName, prefix, idList string) (int, error) {
+	statements := []struct {
+		action string
+		query  string
+	}{
+		{
+			action: "delete post metadata",
+			query:  fmt.Sprintf("DELETE FROM %spostmeta WHERE post_id IN (%s)", prefix, idList),
+		},
+		{
+			action: "delete post revisions",
+			query: fmt.Sprintf(
+				"DELETE FROM %sposts WHERE post_parent IN (%s) AND post_type='revision'",
+				prefix, idList),
+		},
+	}
+	for _, statement := range statements {
+		if _, err := runMySQLExecRootAffected(dbName, statement.query); err != nil {
+			return 0, fmt.Errorf("%s: %w", statement.action, err)
+		}
+	}
+
+	affected, err := runMySQLExecRootAffected(dbName, fmt.Sprintf(
+		"DELETE FROM %sposts WHERE ID IN (%s) AND post_type='post' AND post_status='publish'",
+		prefix, idList))
+	if err != nil {
+		return 0, fmt.Errorf("delete posts: %w", err)
+	}
+	return int(affected), nil
+}
+
+func formatSpamPostCount(count int) string {
+	return formatCountedNoun(count, "spam post", "spam posts")
+}
+
+func formatCountedNoun(count int, singular, plural string) string {
+	noun := plural
+	if count == 1 {
+		noun = singular
+	}
+	return fmt.Sprintf("%d %s", count, noun)
+}
+
+func spamPostPossessive(count int) string {
+	if count == 1 {
+		return "its"
+	}
+	return "their"
 }
 
 // FormatDBCleanResult formats a DBCleanResult for terminal output.
@@ -302,9 +366,10 @@ func FormatDBCleanResult(r DBCleanResult) string {
 // --- helpers ---
 
 // splitSpamCandidate splits an "ID\ttext" row from the spam candidate
-// query. post_content may itself contain tabs, so the split is bounded to
-// two fields. A row whose ID is not numeric is dropped rather than
-// interpolated into a DELETE ... IN (...) list.
+// query. mysqlclient keeps each database row in one string and batch-escapes
+// embedded controls; the bounded split also keeps literal tabs in test or
+// alternate input from becoming extra columns. A nonnumeric ID is dropped
+// rather than interpolated into a DELETE ... IN (...) list.
 func splitSpamCandidate(line string) (id, text string, ok bool) {
 	parts := strings.SplitN(line, "\t", 2)
 	if len(parts) != 2 {
@@ -314,7 +379,7 @@ func splitSpamCandidate(line string) (id, text string, ok bool) {
 	if !spamPostIDRe.MatchString(id) {
 		return "", "", false
 	}
-	return id, parts[1], true
+	return id, mysqlclient.BatchUnescape(parts[1]), true
 }
 
 // findCredsForAccount finds WP database credentials for a cPanel account.
@@ -369,16 +434,28 @@ func resolveTablePrefix(creds wpDBCreds) (string, bool) {
 // a zero exit + empty stdout, which runMySQLQueryRoot misclassifies
 // as "no output, treat as failure".
 func runMySQLExecRoot(dbName, stmt string) error {
-	_, err := mysqlclient.RootExecSchema(context.Background(), dbName, stmt)
+	_, err := runMySQLExecRootAffected(dbName, stmt)
 	return err
+}
+
+func runMySQLExecRootAffected(dbName, stmt string) (int64, error) {
+	return mysqlclient.RootExecSchema(context.Background(), dbName, stmt)
 }
 
 // runMySQLQueryRoot runs a MySQL query using root credentials from
 // /root/.my.cnf (no explicit user/password args).
 func runMySQLQueryRoot(dbName, query string) []string {
+	rows, _ := runMySQLQueryRootWithError(dbName, query)
+	return rows
+}
+
+func runMySQLQueryRootWithError(dbName, query string) ([]string, error) {
 	rows, err := mysqlclient.RootQuerySchema(context.Background(), dbName, query)
-	if err != nil || len(rows) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
 	}
 	var lines []string
 	for _, line := range rows {
@@ -387,5 +464,5 @@ func runMySQLQueryRoot(dbName, query string) []string {
 			lines = append(lines, line)
 		}
 	}
-	return lines
+	return lines, nil
 }

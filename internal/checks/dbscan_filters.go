@@ -3,6 +3,8 @@ package checks
 import (
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // This file contains pure-function helpers used by the database content
@@ -100,13 +102,15 @@ func nonScannablePostTypesSQLList() string {
 
 // dbSpamPattern is a single spam-keyword detector. The LIKE fragment
 // is a MySQL server-side pre-filter that quickly narrows the set of
-// candidate posts; the Go regex then applies a strict word-boundary
-// test so that "specialist" does not match "cialis", "pharmacy" does
-// not match "pharma", and so on.
+// candidate posts; the Go regex finds case-insensitive occurrences and
+// spamKeywordMatchIndexes applies strict word boundaries so that
+// "specialist" does not match "cialis", "pharmacy" does not match
+// "pharma", and so on.
 //
 // Patterns that end with a non-word character (dash) already have an
 // implicit right boundary from that character and only need a left
-// word boundary. Pure-word patterns need boundaries on both sides.
+// word boundary. Patterns ending in a word character need boundaries
+// on both sides, even when they contain an internal dash.
 type dbSpamPattern struct {
 	keyword      string         // human-readable keyword used in finding messages
 	regex        *regexp.Regexp // applied Go-side to candidate rows
@@ -122,34 +126,86 @@ type dbSpamPattern struct {
 
 // dbSpamPatterns enumerates the keywords we flag as SEO/pharma/gambling
 // spam in WordPress post content. Each entry pairs a fast SQL LIKE with
-// a strict Go-side word-boundary regex.
+// a case-insensitive Go regex; spamKeywordMatchIndexes applies the strict
+// Unicode word-boundary check.
 //
 // The regexes are case-insensitive to catch CIALIS / Cialis / cialis.
 // The LIKE fragments are lowercase because MySQL LIKE is case-insensitive
 // under the default _ci collation used by cPanel MariaDB.
 var dbSpamPatterns = []dbSpamPattern{
-	{"viagra", regexp.MustCompile(`(?i)\bviagra\b`), "%viagra%", true},
-	{"cialis", regexp.MustCompile(`(?i)\bcialis\b`), "%cialis%", true},
-	{"pharma", regexp.MustCompile(`(?i)\bpharma\b`), "%pharma%", false},
-	{"betting", regexp.MustCompile(`(?i)\bbetting\b`), "%betting%", false},
+	newDBSpamPattern("viagra", "%viagra%", true),
+	newDBSpamPattern("cialis", "%cialis%", true),
+	newDBSpamPattern("pharma", "%pharma%", false),
+	newDBSpamPattern("betting", "%betting%", false),
 	// Dashed variants: the trailing dash is itself a non-word char and
 	// serves as the right boundary. Only a left word-boundary is needed.
 	// The dash makes these URL-slug shaped, which prose does not produce,
 	// so they carry enough signal to delete on.
-	{"casino-", regexp.MustCompile(`(?i)\bcasino-`), "%casino-%", true},
-	{"buy-cheap-", regexp.MustCompile(`(?i)\bbuy-cheap-`), "%buy-cheap-%", true},
-	{"free-download", regexp.MustCompile(`(?i)\bfree-download`), "%free-download%", true},
-	{"crack-serial", regexp.MustCompile(`(?i)\bcrack-serial`), "%crack-serial%", true},
+	newDBSpamPattern("casino-", "%casino-%", true),
+	newDBSpamPattern("buy-cheap-", "%buy-cheap-%", true),
+	// These slug forms end in a letter, so the matcher requires both
+	// boundaries and rejects longer words such as "free-downloadable".
+	newDBSpamPattern("free-download", "%free-download%", true),
+	newDBSpamPattern("crack-serial", "%crack-serial%", true),
 }
 
-// countSpamMatches returns the number of candidate rows whose content
-// matches pattern.regex. The caller is responsible for passing only
-// rows that were already narrowed by the pattern.likeFragment SQL
-// pre-filter; this function applies the strict word-boundary test.
+func newDBSpamPattern(keyword, likeFragment string, deletable bool) dbSpamPattern {
+	return dbSpamPattern{
+		keyword:      keyword,
+		regex:        regexp.MustCompile(`(?i)` + regexp.QuoteMeta(keyword)),
+		likeFragment: likeFragment,
+		deletable:    deletable,
+	}
+}
+
+// spamKeywordMatchIndexes returns only whole-word keyword matches. Go's \b
+// is ASCII-only, so checking adjacent runes explicitly prevents a keyword
+// surrounded by non-ASCII letters from being treated as a standalone word.
+// A keyword ending in punctuation, such as "casino-", needs no right check:
+// the punctuation is already the delimiter that makes the pattern specific.
+func spamKeywordMatchIndexes(pattern dbSpamPattern, content string) [][]int {
+	matches := pattern.regex.FindAllStringIndex(content, -1)
+	confirmed := matches[:0]
+	for _, match := range matches {
+		if hasSpamWordBoundaries(content, match[0], match[1]) {
+			confirmed = append(confirmed, match)
+		}
+	}
+	return confirmed
+}
+
+func hasSpamWordBoundaries(content string, start, end int) bool {
+	first, _ := utf8.DecodeRuneInString(content[start:end])
+	if start > 0 && isSpamWordRune(first) {
+		previous, _ := utf8.DecodeLastRuneInString(content[:start])
+		if isSpamWordRune(previous) {
+			return false
+		}
+	}
+
+	last, _ := utf8.DecodeLastRuneInString(content[start:end])
+	if end < len(content) && isSpamWordRune(last) {
+		next, _ := utf8.DecodeRuneInString(content[end:])
+		if isSpamWordRune(next) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSpamWordRune(r rune) bool {
+	return r == '_' || r == '\u200c' || r == '\u200d' ||
+		r == unicode.ReplacementChar || unicode.IsLetter(r) ||
+		unicode.IsNumber(r) || unicode.IsMark(r) || unicode.Is(unicode.Pc, r)
+}
+
+// countSpamMatches returns the number of candidate rows with a bounded
+// keyword match. The caller is responsible for passing only rows that were
+// already narrowed by the pattern.likeFragment SQL pre-filter.
 func countSpamMatches(pattern dbSpamPattern, contents []string) int {
 	n := 0
 	for _, c := range contents {
-		if pattern.regex.MatchString(c) {
+		if len(spamKeywordMatchIndexes(pattern, c)) > 0 {
 			n++
 		}
 	}
