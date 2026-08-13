@@ -1858,6 +1858,22 @@ func (d *Daemon) startLogWatchers() {
 				}
 			}
 		}
+
+		// Authenticated deliveries prove the source can still log in, which
+		// disqualifies it from the slow-brute block (an office NAT with one
+		// stale device keeps working devices too; a walker never succeeds).
+		if d.smtpAuthTracker != nil && strings.Contains(line, " <= ") && strings.Contains(line, "A=dovecot_") {
+			if ip := extractBracketedIP(line); ip != "" {
+				if parsed := net.ParseIP(ip); parsed != nil {
+					if v4 := parsed.To4(); v4 != nil {
+						ip = v4.String()
+					}
+				}
+				if !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+					d.smtpAuthTracker.RecordSuccess(ip)
+				}
+			}
+		}
 		return findings
 	}
 

@@ -787,7 +787,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 			if e.slowUnvouched.Before(slowCutoff) {
 				e.slowUnvouched = time.Time{}
 			}
-			if len(e.slowTimes) >= t.slowThreshold &&
+			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts {
 				safeSource := !e.slowLastSuccess.IsZero() || e.slowConfinedToEstablishedGood(now, t.window)
 				switch {

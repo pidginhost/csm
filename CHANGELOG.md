@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A mailbox walk probing one or two passwords against many different mailboxes stayed under the slow brute-force failure floor indefinitely. Enough distinct walked mailboxes now trigger the block on their own, and a successful login from the source inside the window keeps shared legitimate addresses exempt.
 - An ongoing out-of-memory loop re-alerted a Critical on every scan because each kill's log line carries fresh process numbers. Memory findings now keep one identity per victim process, so a sustained condition alerts once per day instead of eleven times an afternoon.
 - A stuck frozen mail message raised a warning on every queue run, unfreeze events counted as freezes, and the initial freeze line was missed entirely. Frozen findings now alert once per queued message, on the freeze event itself.
 - Mail brute-force attackers pacing below the fast per-IP window were detected as incidents but never blocked. A long-horizon signal now fires when one IP accumulates failures across several distinct mailboxes over hours, feeding the existing auto-block path; recent successful logins and established good standing keep shared devices on the advisory path.

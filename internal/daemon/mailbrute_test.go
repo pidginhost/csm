@@ -2212,3 +2212,27 @@ func TestMailAuthTracker_SlowBruteDiscardsBackendOutageHistory(t *testing.T) {
 		}
 	}
 }
+
+// A mailbox walk touches many distinct mailboxes with one or two attempts each
+// and can stay under the failure-count floor forever. Enough walked mailboxes
+// must fire on their own; the success and established-good guards still apply.
+func TestMailAuthTracker_SlowBruteMailboxWalkFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+
+	firedAt := 0
+	for i := 1; i <= 30 && firedAt == 0; i++ {
+		account := fmt.Sprintf("walked-%02d@example.ro", i)
+		if _, ok := findingByCheck(tr.Record("198.51.100.33", account), "mail_bruteforce"); ok {
+			firedAt = i
+			break
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if firedAt == 0 {
+		t.Fatal("mailbox walk never fired within 30 walked mailboxes")
+	}
+	if firedAt != slowBruteWalkAccounts {
+		t.Errorf("walk fired at mailbox %d, want %d", firedAt, slowBruteWalkAccounts)
+	}
+}

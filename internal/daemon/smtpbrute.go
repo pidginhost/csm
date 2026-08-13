@@ -18,8 +18,13 @@ type smtpIPEntry struct {
 	times        []time.Time
 	slowTimes    []time.Time
 	slowAccounts map[string]time.Time
-	suppressed   time.Time
-	lastSeen     time.Time
+	// slowLastSuccess is the most recent successful SMTP auth from this IP.
+	// A success inside the slow window marks the source as a live legitimate
+	// client (e.g. an office NAT where some devices still authenticate) and
+	// disqualifies the slow block.
+	slowLastSuccess time.Time
+	suppressed      time.Time
+	lastSeen        time.Time
 }
 
 // smtpSubnetEntry tracks unique attacker IPs within a /24.
@@ -49,6 +54,13 @@ const (
 	slowBruteMaxTimesPerIP    = config.SlowBruteMaxThreshold
 	slowBruteMaxAccountsPerIP = config.SlowBruteMaxThreshold
 )
+
+// slowBruteWalkAccounts fires the slow signal on distinct-mailbox breadth
+// alone. A walk probing one or two passwords per mailbox stays under any
+// failure-count floor forever (observed live: 34 failures across 26
+// mailboxes), but no legitimate client fails against this many distinct
+// mailboxes from one address without a single success.
+const slowBruteWalkAccounts = 10
 
 // pruneSlowAccounts drops per-mailbox last-failure records older than cutoff.
 func pruneSlowAccounts(accounts map[string]time.Time, cutoff time.Time) {
@@ -238,8 +250,12 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 			e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
 			e.slowTimes = appendSlowFailure(e.slowTimes, now)
 			e.slowAccounts, _ = recordSlowAccount(e.slowAccounts, normalizeMailAuthAccount(account), now, slowCutoff)
-			if len(e.slowTimes) >= t.slowThreshold &&
+			if e.slowLastSuccess.Before(slowCutoff) {
+				e.slowLastSuccess = time.Time{}
+			}
+			if (len(e.slowTimes) >= t.slowThreshold || len(e.slowAccounts) >= slowBruteWalkAccounts) &&
 				len(e.slowAccounts) >= slowBruteMinAccounts &&
+				e.slowLastSuccess.IsZero() &&
 				!now.Before(e.suppressed) {
 				e.suppressed = now.Add(t.suppression)
 				findings = append(findings, alert.Finding{
@@ -312,6 +328,26 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	t.enforceMaxTracked()
 	t.findingsEmitted += int64(len(findings))
 	return findings
+}
+
+// RecordSuccess notes a successful SMTP authentication from ip, disqualifying
+// the source from the slow-brute block for as long as the success stays inside
+// the slow window. Callers filter infra/private/loopback IPs first.
+func (t *smtpAuthTracker) RecordSuccess(ip string) {
+	if ip == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.ips[ip]
+	if !ok {
+		e = &smtpIPEntry{}
+		t.ips[ip] = e
+	}
+	now := t.now()
+	e.slowLastSuccess = now
+	e.lastSeen = now
+	t.enforceMaxTracked()
 }
 
 // Stats returns cumulative Record invocations and findings emitted since
