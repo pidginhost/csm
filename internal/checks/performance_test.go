@@ -95,6 +95,48 @@ func TestCheckSwapAndOOM_RepeatKillsShareDedupIdentity(t *testing.T) {
 	}
 }
 
+func TestOOMVictimProcessUsesProcessMarker(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "killed process",
+			line: "Out of memory: Killed process 2845662 (lsphp) total-vm:796344kB",
+			want: "lsphp",
+		},
+		{
+			name: "oom reaper",
+			line: "oom_reaper: reaped process 991 (mysqld), now anon-rss:0kB",
+			want: "mysqld",
+		},
+		{
+			name: "preceding OOM context",
+			line: "Out of memory (global): Killed process 42 (php-fpm) total-vm:1000kB",
+			want: "php-fpm",
+		},
+		{
+			name: "no named victim",
+			line: "Out of memory (global): no killable processes",
+			want: "host",
+		},
+		{
+			name: "invalid pid",
+			line: "Out of memory: Killed process unknown (php-fpm)",
+			want: "host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := oomVictimProcess(tt.line); got != tt.want {
+				t.Fatalf("oomVictimProcess() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func oomFindingValue(t *testing.T, findings []alert.Finding) alert.Finding {
 	t.Helper()
 	for _, f := range findings {

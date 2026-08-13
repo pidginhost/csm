@@ -156,7 +156,10 @@ func (f Finding) String() string {
 // Key returns a unique key for deduplication.
 func (f Finding) Key() string {
 	if f.DedupKey != "" {
-		return fmt.Sprintf("%s:%s", f.Check, f.DedupKey)
+		// Keep explicit identities in a leading namespace. Putting the marker
+		// after Check would still collide with an ordinary finding from that
+		// check whose Message happens to start with "dedup:".
+		return fmt.Sprintf("dedup:%s:%s", f.Check, f.DedupKey)
 	}
 	if key := f.sourceIPKey(); key != "" {
 		return key
@@ -171,7 +174,7 @@ func (f Finding) Key() string {
 // Fingerprint returns the content hash used by alert-state deduplication.
 func (f Finding) Fingerprint() string {
 	if f.DedupKey != "" {
-		h := sha256.Sum256([]byte(f.Check + ":" + f.DedupKey))
+		h := sha256.Sum256([]byte(f.Key()))
 		return fmt.Sprintf("%x", h[:8])
 	}
 	if key := f.sourceIPKey(); key != "" {

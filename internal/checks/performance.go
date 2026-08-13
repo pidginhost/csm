@@ -436,17 +436,35 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 // oomVictimProcess returns the killed process name from a dmesg OOM line
 // ("... Killed process 2845662 (lsphp) ..."), or "host" when the line names
-// no victim, so the dedup identity always has a stable value.
+// no victim, so the dedup identity always has a stable value. Parenthesized
+// OOM context before the process marker must not be mistaken for the victim.
 func oomVictimProcess(line string) string {
-	open := strings.IndexByte(line, '(')
-	if open < 0 {
-		return "host"
+	for _, marker := range []string{"Killed process ", "reaped process "} {
+		markerIdx := strings.Index(line, marker)
+		if markerIdx < 0 {
+			continue
+		}
+		rest := line[markerIdx+len(marker):]
+		pidEnd := strings.IndexAny(rest, " \t")
+		if pidEnd <= 0 {
+			continue
+		}
+		if _, err := strconv.ParseUint(rest[:pidEnd], 10, 64); err != nil {
+			continue
+		}
+		rest = strings.TrimLeft(rest[pidEnd:], " \t")
+		if len(rest) < 3 || rest[0] != '(' {
+			continue
+		}
+		closeIdx := strings.IndexByte(rest[1:], ')')
+		if closeIdx <= 0 {
+			continue
+		}
+		if process := strings.TrimSpace(rest[1 : closeIdx+1]); process != "" {
+			return process
+		}
 	}
-	closeIdx := strings.IndexByte(line[open:], ')')
-	if closeIdx <= 1 {
-		return "host"
-	}
-	return line[open+1 : open+closeIdx]
+	return "host"
 }
 
 // parseDmesgOOMTime extracts the event time from a dmesg line. ISO lines
