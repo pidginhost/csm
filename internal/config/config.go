@@ -2087,8 +2087,10 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	if raw.Firewall != nil {
 		presence.firewall = make(map[string]bool, len(raw.Firewall))
-		for key := range raw.Firewall {
-			presence.firewall[key] = true
+		for key, node := range raw.Firewall {
+			// conn_rate_limit needs a non-null value to select disabled. YAML
+			// null decodes to the same Go zero but means unset, so keep its default.
+			presence.firewall[key] = key != "conn_rate_limit" || node.Tag != "!!null"
 		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
