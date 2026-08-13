@@ -1317,8 +1317,8 @@
         CSM.confirm('Remove all frozen null-sender bounce messages from the mail queue? This deletes undeliverable backscatter only -- real mail and live retries are not touched.').then(function() {
             CSM.post('/api/v1/email/queue/flush-backscatter', {})
                 .then(function(res) {
-                    CSM.toast('Confirmed no longer queued after the flush request: ' +
-                        queueCount(res && res.removed) + ' backscatter message(s)', 'success');
+                    CSM.toast(queueCount(res && res.removed) +
+                        ' backscatter message(s) no longer queued', 'success');
                     queueCompositionLoaded = false;
                     loadQueueComposition();
                     loadEmailStats(); // refresh the queue-size chip in the status strip
