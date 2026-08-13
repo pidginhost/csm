@@ -3,7 +3,7 @@ package firewall
 import "net"
 
 // LiveBlockedSnapshot is a point-in-time membership view of the kernel's
-// blocked IP sets, taken in one netlink round trip.
+// blocked IP sets, taken by dumping each configured family set once.
 //
 // HasV4 / HasV6 record which families the snapshot actually covers. A set can
 // be absent -- firewall.ipv6 disabled leaves the v6 set nil -- and an
