@@ -20,6 +20,10 @@ thresholds:
   # Soft cap on the number of tracked entities (IPs + subnets + accounts).
   # Least-recently-seen entries are evicted when the cap is reached.
   smtp_bruteforce_max_tracked: 20000
+  # Long-horizon failures from one IP across at least three mailboxes.
+  # Set the threshold to 0 to disable the slow-brute signal.
+  smtp_bruteforce_slow_threshold: 40
+  smtp_bruteforce_slow_window_min: 360
 
   # Mail (IMAP/POP3/ManageSieve) brute-force detector (real-time, via /var/log/maillog)
   # Per-attacker-IP failed-auth threshold that triggers an immediate IP block.
@@ -38,6 +42,10 @@ thresholds:
   # Soft cap on the number of tracked entities (IPs + subnets + accounts).
   # Least-recently-seen entries are evicted when the cap is reached.
   mail_bruteforce_max_tracked: 20000
+  # Long-horizon failures from one IP across at least three mailboxes.
+  # Set the threshold to 0 to disable the slow-brute signal.
+  mail_bruteforce_slow_threshold: 40
+  mail_bruteforce_slow_window_min: 360
 
 # Email antivirus scanning
 email_av:

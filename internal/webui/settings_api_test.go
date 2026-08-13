@@ -1628,6 +1628,43 @@ thresholds:
 	}
 }
 
+func TestSettingsPOSTThresholdsSlowBruteZeroDisables(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/thresholds", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
+		`{"changes":{"smtp_bruteforce_slow_threshold":0,"mail_bruteforce_slow_threshold":0}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, want 200, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Thresholds.SMTPBruteForceSlowThreshold != 0 || loaded.Thresholds.MailBruteForceSlowThreshold != 0 {
+		t.Fatalf("slow brute thresholds = SMTP %d, mail %d; want both disabled",
+			loaded.Thresholds.SMTPBruteForceSlowThreshold, loaded.Thresholds.MailBruteForceSlowThreshold)
+	}
+}
+
 func TestSettingsPOSTThresholdsRejectsInvalidAccountExtractor(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:

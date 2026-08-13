@@ -20,13 +20,16 @@ type mailIPEntry struct {
 	succ            []time.Time
 	successAccounts map[string][]time.Time
 	failedAccounts  map[string][]time.Time
-	// Long-horizon state for the slow-brute signal: failure timestamps,
-	// per-mailbox last-failure times, and success timestamps within the slow
-	// window. Any in-window success marks the source as a live legitimate
-	// client and disqualifies the slow block.
-	slowTimes    []time.Time
-	slowAccounts map[string]time.Time
-	slowSucc     []time.Time
+	// Long-horizon state for the slow-brute signal: bounded failure timestamps,
+	// bounded per-mailbox last-failure times, the most recent success, and the
+	// most recent failure not represented in the mailbox map. Any in-window
+	// success marks the source as a live legitimate client and disqualifies the
+	// slow block. An unattributed or overflowed failure prevents the bounded
+	// named-mailbox set from exempting activity it cannot vouch for.
+	slowTimes       []time.Time
+	slowAccounts    map[string]time.Time
+	slowLastSuccess time.Time
+	slowUnvouched   time.Time
 	// goodFirst/goodLast record, per mailbox, the earliest and most recent
 	// successful auth from this IP within mailGoodSourceTTL. They outlive the
 	// short failure window so an established legitimate sender (e.g. a working
@@ -166,7 +169,7 @@ func normalizeMailAuthAccount(account string) string {
 // shared-device-with-stale-credentials shape the fast path downgrades to an
 // advisory. Caller must hold t.mu and must have pruned e.slowAccounts.
 func (e *mailIPEntry) slowConfinedToEstablishedGood(now time.Time, window time.Duration) bool {
-	if len(e.slowAccounts) == 0 {
+	if len(e.slowAccounts) == 0 || !e.slowUnvouched.IsZero() {
 		return false
 	}
 	for acct := range e.slowAccounts {
@@ -762,35 +765,56 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	// confined to mailboxes it holds established good standing for keeps the
 	// fast path's advisory treatment instead of escalating to a block.
 	if t.slowThreshold > 0 && t.slowWindow > 0 {
-		slowCutoff := now.Add(-t.slowWindow)
-		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
-		e.slowTimes = append(e.slowTimes, now)
-		if len(e.slowTimes) > slowBruteMaxTimesPerIP {
-			e.slowTimes = append([]time.Time(nil), e.slowTimes[len(e.slowTimes)-slowBruteMaxTimesPerIP:]...)
-		}
-		if account != "" {
-			if e.slowAccounts == nil {
-				e.slowAccounts = make(map[string]time.Time)
+		if degraded {
+			// Backend failures say nothing about credentials. Discard the
+			// long-lived evidence so outage traffic cannot trigger a delayed
+			// block as soon as the backend recovers.
+			e.slowTimes = nil
+			e.slowAccounts = nil
+			e.slowUnvouched = time.Time{}
+		} else {
+			slowCutoff := now.Add(-t.slowWindow)
+			e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
+			e.slowTimes = appendSlowFailure(e.slowTimes, now)
+			var trackedAccount bool
+			e.slowAccounts, trackedAccount = recordSlowAccount(e.slowAccounts, account, now, slowCutoff)
+			if !trackedAccount {
+				e.slowUnvouched = now
 			}
-			e.slowAccounts[account] = now
-		}
-		pruneSlowAccounts(e.slowAccounts, slowCutoff)
-		e.slowSucc = pruneTimes(e.slowSucc, slowCutoff)
-		if len(e.slowTimes) >= t.slowThreshold &&
-			len(e.slowAccounts) >= slowBruteMinAccounts &&
-			len(e.slowSucc) == 0 &&
-			!e.slowConfinedToEstablishedGood(now, t.window) &&
-			!now.Before(e.suppressed) && !degraded {
-			e.suppressed = now.Add(t.suppression)
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "mail_bruteforce",
-				Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths across %d mailboxes in %v",
-					ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
-				Details:   "Long-horizon detection of paced imap/pop3/managesieve auth failures that stay below the fast per-IP window",
-				Timestamp: now,
-				SourceIP:  ip,
-			})
+			if e.slowLastSuccess.Before(slowCutoff) {
+				e.slowLastSuccess = time.Time{}
+			}
+			if e.slowUnvouched.Before(slowCutoff) {
+				e.slowUnvouched = time.Time{}
+			}
+			if len(e.slowTimes) >= t.slowThreshold &&
+				len(e.slowAccounts) >= slowBruteMinAccounts {
+				safeSource := !e.slowLastSuccess.IsZero() || e.slowConfinedToEstablishedGood(now, t.window)
+				switch {
+				case safeSource && !now.Before(e.suspectedSuppressed):
+					e.suspectedSuppressed = now.Add(t.suppression)
+					findings = append(findings, alert.Finding{
+						Severity: alert.High,
+						Check:    "mail_bruteforce_suspected",
+						Message: fmt.Sprintf("Suspected mail misconfiguration from %s: %d paced auth failures across %d mailboxes in %v (not auto-blocked)",
+							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+						Details:   "Long-horizon failures came from a source with recent successful mail auth or established good standing on every named target. Visibility only - no auto-block; compromise and spray detectors remain active.",
+						Timestamp: now,
+						SourceIP:  ip,
+					})
+				case !safeSource && !now.Before(e.suppressed):
+					e.suppressed = now.Add(t.suppression)
+					findings = append(findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "mail_bruteforce",
+						Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths across %d mailboxes in %v",
+							ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+						Details:   "Long-horizon detection of paced imap/pop3/managesieve auth failures that stay below the fast per-IP window",
+						Timestamp: now,
+						SourceIP:  ip,
+					})
+				}
+			}
 		}
 	}
 
@@ -990,8 +1014,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	defer func() {
 		e.succ = append(e.succ, now)
 		e.successAccounts = appendMailAccountTime(e.successAccounts, account, now)
-		if t.slowWindow > 0 {
-			e.slowSucc = append(pruneTimes(e.slowSucc, now.Add(-t.slowWindow)), now)
+		if t.slowThreshold > 0 && t.slowWindow > 0 {
+			e.slowLastSuccess = now
 		}
 		if recordGoodSource {
 			e.recordGoodAuth(account, now)
@@ -1068,14 +1092,19 @@ func (t *mailAuthTracker) Purge() {
 		e.times = pruneTimes(e.times, windowCutoff)
 		e.succ = pruneTimes(e.succ, windowCutoff)
 		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
-		e.slowSucc = pruneTimes(e.slowSucc, slowCutoff)
 		pruneSlowAccounts(e.slowAccounts, slowCutoff)
+		if e.slowLastSuccess.Before(slowCutoff) {
+			e.slowLastSuccess = time.Time{}
+		}
+		if e.slowUnvouched.Before(slowCutoff) {
+			e.slowUnvouched = time.Time{}
+		}
 		pruneMailAccountTimes(e.successAccounts, windowCutoff)
 		pruneMailAccountTimes(e.failedAccounts, windowCutoff)
 		e.pruneGoodSource(goodCutoff)
 		if len(e.times) == 0 && len(e.succ) == 0 && len(e.successAccounts) == 0 &&
 			len(e.failedAccounts) == 0 && len(e.goodLast) == 0 &&
-			len(e.slowTimes) == 0 && len(e.slowSucc) == 0 && !e.lastSeen.After(activityCutoff) {
+			len(e.slowTimes) == 0 && e.slowLastSuccess.IsZero() && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

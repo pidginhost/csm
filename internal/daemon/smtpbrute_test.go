@@ -526,3 +526,80 @@ func TestSMTPAuthTracker_SlowBruteBackendDownSuppressed(t *testing.T) {
 		clock.advance(8 * time.Minute)
 	}
 }
+
+func TestSMTPAuthTracker_SlowBruteDiscardsBackendOutageHistory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(0, 0, 0, 10*time.Minute, time.Hour, 4, 6*time.Hour, 20000, clock.Now)
+	down := true
+	tr.SetBackendDownCheck(func() bool { return down })
+	accounts := []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"}
+
+	for i := 0; i < 4; i++ {
+		if got := tr.Record("198.51.100.13", accounts[i]); len(got) != 0 {
+			t.Fatalf("outage failure %d emitted findings: %+v", i+1, got)
+		}
+	}
+	down = false
+	for i := 0; i < 4; i++ {
+		got, fired := findingByCheck(tr.Record("198.51.100.13", accounts[i]), "smtp_bruteforce")
+		if fired != (i == 3) {
+			t.Fatalf("post-recovery slow path fired=%v at clean event %d, want %v; finding=%+v", fired, i+1, i == 3, got)
+		}
+	}
+}
+
+func TestSMTPAuthTracker_SlowBruteNormalizesMailboxDomain(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 3, 6*time.Hour, 20000, clock.Now)
+	ip := "198.51.100.10"
+
+	for _, account := range []string{"victim@example.com", "victim@EXAMPLE.COM", "victim@Example.Com"} {
+		if got, ok := findingByCheck(tr.Record(ip, account), "smtp_bruteforce"); ok {
+			t.Fatalf("domain-case variants of one mailbox counted as distinct: %+v", got)
+		}
+	}
+	if got, ok := findingByCheck(tr.Record(ip, "second@example.com"), "smtp_bruteforce"); ok {
+		t.Fatalf("slow signal fired with only two normalized mailboxes: %+v", got)
+	}
+	if got, ok := findingByCheck(tr.Record(ip, "third@example.com"), "smtp_bruteforce"); !ok {
+		t.Fatalf("three genuinely distinct normalized mailboxes did not fire slow signal: %+v", got)
+	}
+}
+
+func TestSMTPAuthTracker_FastAndSlowShareSuppressionClock(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(3, 100, 100, 10*time.Minute, time.Hour, 4, 6*time.Hour, 20000, clock.Now)
+	ip := "198.51.100.11"
+	accounts := []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"}
+
+	for i := 0; i < 3; i++ {
+		got, fired := findingByCheck(tr.Record(ip, accounts[i]), "smtp_bruteforce")
+		if fired != (i == 2) {
+			t.Fatalf("fast path fired=%v at event %d, want %v; finding=%+v", fired, i+1, i == 2, got)
+		}
+	}
+	if got, fired := findingByCheck(tr.Record(ip, accounts[3]), "smtp_bruteforce"); fired {
+		t.Fatalf("slow path bypassed fast-path suppression: %+v", got)
+	}
+
+	clock.advance(61 * time.Minute)
+	if got, fired := findingByCheck(tr.Record(ip, "e@example.com"), "smtp_bruteforce"); !fired || !strings.Contains(got.Message, "across") {
+		t.Fatalf("slow path did not fire after shared suppression expired: %+v", got)
+	}
+}
+
+func TestSMTPAuthTracker_SlowStateBoundedPerIP(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(0, 0, 0, 10*time.Minute, time.Hour, slowBruteMaxTimesPerIP, 6*time.Hour, 10000, clock.Now)
+	ip := "198.51.100.12"
+	for i := 0; i < 2*slowBruteMaxTimesPerIP; i++ {
+		tr.Record(ip, fmt.Sprintf("victim-%d@example.com", i))
+	}
+	e := tr.ips[ip]
+	if got := len(e.slowTimes); got != slowBruteMaxTimesPerIP {
+		t.Errorf("slowTimes length = %d, want cap %d", got, slowBruteMaxTimesPerIP)
+	}
+	if got := len(e.slowAccounts); got != slowBruteMaxAccountsPerIP {
+		t.Errorf("slowAccounts length = %d, want cap %d", got, slowBruteMaxAccountsPerIP)
+	}
+}

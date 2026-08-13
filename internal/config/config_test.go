@@ -407,20 +407,24 @@ func TestConfig_SMTPBruteForceDefaultsApplied(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := map[string]int{
-		"SMTPBruteForceThreshold":    5,
-		"SMTPBruteForceWindowMin":    10,
-		"SMTPBruteForceSuppressMin":  60,
-		"SMTPBruteForceSubnetThresh": 8,
-		"SMTPAccountSprayThreshold":  12,
-		"SMTPBruteForceMaxTracked":   20000,
+		"SMTPBruteForceThreshold":     5,
+		"SMTPBruteForceWindowMin":     10,
+		"SMTPBruteForceSuppressMin":   60,
+		"SMTPBruteForceSubnetThresh":  8,
+		"SMTPAccountSprayThreshold":   12,
+		"SMTPBruteForceMaxTracked":    20000,
+		"SMTPBruteForceSlowThreshold": 40,
+		"SMTPBruteForceSlowWindowMin": 360,
 	}
 	got := map[string]int{
-		"SMTPBruteForceThreshold":    cfg.Thresholds.SMTPBruteForceThreshold,
-		"SMTPBruteForceWindowMin":    cfg.Thresholds.SMTPBruteForceWindowMin,
-		"SMTPBruteForceSuppressMin":  cfg.Thresholds.SMTPBruteForceSuppressMin,
-		"SMTPBruteForceSubnetThresh": cfg.Thresholds.SMTPBruteForceSubnetThresh,
-		"SMTPAccountSprayThreshold":  cfg.Thresholds.SMTPAccountSprayThreshold,
-		"SMTPBruteForceMaxTracked":   cfg.Thresholds.SMTPBruteForceMaxTracked,
+		"SMTPBruteForceThreshold":     cfg.Thresholds.SMTPBruteForceThreshold,
+		"SMTPBruteForceWindowMin":     cfg.Thresholds.SMTPBruteForceWindowMin,
+		"SMTPBruteForceSuppressMin":   cfg.Thresholds.SMTPBruteForceSuppressMin,
+		"SMTPBruteForceSubnetThresh":  cfg.Thresholds.SMTPBruteForceSubnetThresh,
+		"SMTPAccountSprayThreshold":   cfg.Thresholds.SMTPAccountSprayThreshold,
+		"SMTPBruteForceMaxTracked":    cfg.Thresholds.SMTPBruteForceMaxTracked,
+		"SMTPBruteForceSlowThreshold": cfg.Thresholds.SMTPBruteForceSlowThreshold,
+		"SMTPBruteForceSlowWindowMin": cfg.Thresholds.SMTPBruteForceSlowWindowMin,
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -832,25 +836,55 @@ func TestConfig_MailBruteForceDefaultsApplied(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := map[string]int{
-		"MailBruteForceThreshold":    5,
-		"MailBruteForceWindowMin":    10,
-		"MailBruteForceSuppressMin":  60,
-		"MailBruteForceSubnetThresh": 8,
-		"MailAccountSprayThreshold":  12,
-		"MailBruteForceMaxTracked":   20000,
+		"MailBruteForceThreshold":     5,
+		"MailBruteForceWindowMin":     10,
+		"MailBruteForceSuppressMin":   60,
+		"MailBruteForceSubnetThresh":  8,
+		"MailAccountSprayThreshold":   12,
+		"MailBruteForceMaxTracked":    20000,
+		"MailBruteForceSlowThreshold": 40,
+		"MailBruteForceSlowWindowMin": 360,
 	}
 	got := map[string]int{
-		"MailBruteForceThreshold":    cfg.Thresholds.MailBruteForceThreshold,
-		"MailBruteForceWindowMin":    cfg.Thresholds.MailBruteForceWindowMin,
-		"MailBruteForceSuppressMin":  cfg.Thresholds.MailBruteForceSuppressMin,
-		"MailBruteForceSubnetThresh": cfg.Thresholds.MailBruteForceSubnetThresh,
-		"MailAccountSprayThreshold":  cfg.Thresholds.MailAccountSprayThreshold,
-		"MailBruteForceMaxTracked":   cfg.Thresholds.MailBruteForceMaxTracked,
+		"MailBruteForceThreshold":     cfg.Thresholds.MailBruteForceThreshold,
+		"MailBruteForceWindowMin":     cfg.Thresholds.MailBruteForceWindowMin,
+		"MailBruteForceSuppressMin":   cfg.Thresholds.MailBruteForceSuppressMin,
+		"MailBruteForceSubnetThresh":  cfg.Thresholds.MailBruteForceSubnetThresh,
+		"MailAccountSprayThreshold":   cfg.Thresholds.MailAccountSprayThreshold,
+		"MailBruteForceMaxTracked":    cfg.Thresholds.MailBruteForceMaxTracked,
+		"MailBruteForceSlowThreshold": cfg.Thresholds.MailBruteForceSlowThreshold,
+		"MailBruteForceSlowWindowMin": cfg.Thresholds.MailBruteForceSlowWindowMin,
 	}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s = %d, want %d", k, got[k], v)
 		}
+	}
+}
+
+func TestConfig_SlowBruteExplicitZeroDisables(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  smtp_bruteforce_slow_threshold: 0\n  mail_bruteforce_slow_threshold: 0\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.SMTPBruteForceSlowThreshold != 0 {
+		t.Errorf("SMTPBruteForceSlowThreshold = %d, want disabled (0)", cfg.Thresholds.SMTPBruteForceSlowThreshold)
+	}
+	if cfg.Thresholds.MailBruteForceSlowThreshold != 0 {
+		t.Errorf("MailBruteForceSlowThreshold = %d, want disabled (0)", cfg.Thresholds.MailBruteForceSlowThreshold)
+	}
+}
+
+func TestConfig_SlowBruteNullKeepsDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte("thresholds:\n  smtp_bruteforce_slow_threshold: null\n  mail_bruteforce_slow_threshold: null\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.SMTPBruteForceSlowThreshold != 40 {
+		t.Errorf("SMTPBruteForceSlowThreshold = %d, want default 40", cfg.Thresholds.SMTPBruteForceSlowThreshold)
+	}
+	if cfg.Thresholds.MailBruteForceSlowThreshold != 40 {
+		t.Errorf("MailBruteForceSlowThreshold = %d, want default 40", cfg.Thresholds.MailBruteForceSlowThreshold)
 	}
 }
 

@@ -2032,7 +2032,7 @@ func TestMailAuthTracker_SlowBruteSingleMailboxStaysQuiet(t *testing.T) {
 // Any successful login from the source inside the slow window marks it as a
 // live legitimate client (an office NAT, a busy MUA), so the long-horizon
 // failure count must not produce a block finding.
-func TestMailAuthTracker_SlowBruteSuppressedByRecentSuccess(t *testing.T) {
+func TestMailAuthTracker_SlowBruteRecentSuccessUsesAdvisory(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
@@ -2041,18 +2041,26 @@ func TestMailAuthTracker_SlowBruteSuppressedByRecentSuccess(t *testing.T) {
 	// 44 paced failures stay inside the slow window the success lives in
 	// (44 * 8m < 6h); once the success ages out the signal is armed again,
 	// which is intended -- a success only vouches while it is recent.
+	haveAdvisory := false
 	for i := 1; i <= 44; i++ {
-		if got, ok := findingByCheck(tr.Record("198.51.100.23", accounts[i%len(accounts)]), "mail_bruteforce"); ok {
+		findings := tr.Record("198.51.100.23", accounts[i%len(accounts)])
+		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
 			t.Fatalf("slow signal fired despite an in-window success at attempt %d: %v", i, got)
 		}
+		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
+			haveAdvisory = true
+		}
 		clock.advance(8 * time.Minute)
+	}
+	if !haveAdvisory {
+		t.Fatal("recent success suppressed the block but also hid the slow attack advisory")
 	}
 }
 
 // An IP with established good standing on every mailbox its paced failures
 // target is a shared device with stale credentials. The fast path downgrades
 // that shape to an advisory; the slow path must not turn it into a block.
-func TestMailAuthTracker_SlowBruteEstablishedGoodConfinedStaysQuiet(t *testing.T) {
+func TestMailAuthTracker_SlowBruteEstablishedGoodConfinedUsesAdvisory(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com"}
@@ -2064,10 +2072,143 @@ func TestMailAuthTracker_SlowBruteEstablishedGoodConfinedStaysQuiet(t *testing.T
 	// past the slow window so the successes themselves no longer disqualify.
 	clock.advance(7 * time.Hour)
 
+	haveAdvisory := false
 	for i := 1; i <= 50; i++ {
-		if got, ok := findingByCheck(tr.Record("198.51.100.24", accounts[i%len(accounts)]), "mail_bruteforce"); ok {
+		findings := tr.Record("198.51.100.24", accounts[i%len(accounts)])
+		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
 			t.Fatalf("slow signal fired for established-good confined failures at attempt %d: %v", i, got)
 		}
+		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
+			haveAdvisory = true
+		}
 		clock.advance(8 * time.Minute)
+	}
+	if !haveAdvisory {
+		t.Fatal("established good standing suppressed the block but also hid the slow attack advisory")
+	}
+	if got, ok := findingByCheck(tr.Record("198.51.100.24", "unrelated-victim@example.com"), "mail_bruteforce"); !ok {
+		t.Fatalf("slow advisory suppression prevented escalation to a block for an unvouched target: %+v", got)
+	}
+}
+
+func TestMailAuthTracker_ProductionSlowBruteVectorFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
+	const failures = 185
+	start := clock.Now()
+	var recent []time.Time
+	firstSlow := 0
+
+	for i := 0; i < failures; i++ {
+		clock.t = start.Add(time.Duration(i) * 24 * time.Hour / (failures - 1))
+		now := clock.Now()
+		recent = pruneTimes(recent, now.Add(-10*time.Minute))
+		recent = append(recent, now)
+		if len(recent) > 2 {
+			t.Fatalf("test vector exceeded two failures in 10 minutes at event %d", i+1)
+		}
+		for _, finding := range tr.Record("176.223.92.208", accounts[i%len(accounts)]) {
+			if finding.Check != "mail_bruteforce" {
+				continue
+			}
+			if !strings.Contains(finding.Message, "across") {
+				t.Fatalf("fast detector fired for production cadence at event %d: %+v", i+1, finding)
+			}
+			if firstSlow == 0 {
+				firstSlow = i + 1
+			}
+		}
+	}
+	if firstSlow != 40 {
+		t.Fatalf("first slow finding at event %d, want threshold event 40", firstSlow)
+	}
+	if elapsed := clock.Now().Sub(start); elapsed != 24*time.Hour {
+		t.Fatalf("test vector elapsed %v, want exactly 24h", elapsed)
+	}
+}
+
+func TestMailAuthTracker_SlowGoodStandingDoesNotHideUnnamedFailures(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.25"
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com"}
+	for _, account := range accounts {
+		tr.RecordSuccess(ip, account)
+	}
+	clock.advance(7 * time.Hour)
+
+	var fired alert.Finding
+	for i := 0; i < 40; i++ {
+		account := accounts[i%len(accounts)]
+		if i == 0 {
+			account = ""
+		}
+		if got, ok := findingByCheck(tr.Record(ip, account), "mail_bruteforce"); ok {
+			fired = got
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if fired.Check == "" || !strings.Contains(fired.Message, "across") {
+		t.Fatalf("unattributed failure was hidden by named-mailbox good standing: %+v", fired)
+	}
+}
+
+func TestMailAuthTracker_SlowStateBoundedPerIP(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newMailAuthTracker(0, 0, 0, 10*time.Minute, time.Hour, slowBruteMaxTimesPerIP, 6*time.Hour, 10000, clock.Now)
+	ip := "198.51.100.26"
+	for i := 0; i < 2*slowBruteMaxTimesPerIP; i++ {
+		tr.Record(ip, fmt.Sprintf("victim-%d@example.com", i))
+	}
+	e := tr.ips[ip]
+	if got := len(e.slowTimes); got != slowBruteMaxTimesPerIP {
+		t.Errorf("slowTimes length = %d, want cap %d", got, slowBruteMaxTimesPerIP)
+	}
+	if got := len(e.slowAccounts); got != slowBruteMaxAccountsPerIP {
+		t.Errorf("slowAccounts length = %d, want cap %d", got, slowBruteMaxAccountsPerIP)
+	}
+}
+
+func TestMailAuthTracker_FastAndSlowShareSuppressionClock(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newMailAuthTracker(3, 100, 100, 10*time.Minute, time.Hour, 4, 6*time.Hour, 20000, clock.Now)
+	ip := "198.51.100.27"
+	accounts := []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"}
+
+	for i := 0; i < 3; i++ {
+		got, fired := findingByCheck(tr.Record(ip, accounts[i]), "mail_bruteforce")
+		if fired != (i == 2) {
+			t.Fatalf("fast path fired=%v at event %d, want %v; finding=%+v", fired, i+1, i == 2, got)
+		}
+	}
+	if got, fired := findingByCheck(tr.Record(ip, accounts[3]), "mail_bruteforce"); fired {
+		t.Fatalf("slow path bypassed fast-path suppression: %+v", got)
+	}
+
+	clock.advance(61 * time.Minute)
+	if got, fired := findingByCheck(tr.Record(ip, "e@example.com"), "mail_bruteforce"); !fired || !strings.Contains(got.Message, "across") {
+		t.Fatalf("slow path did not fire after shared suppression expired: %+v", got)
+	}
+}
+
+func TestMailAuthTracker_SlowBruteDiscardsBackendOutageHistory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newMailAuthTracker(0, 0, 0, 10*time.Minute, time.Hour, 4, 6*time.Hour, 20000, clock.Now)
+	down := true
+	tr.SetBackendDownCheck(func() bool { return down })
+	accounts := []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"}
+
+	for i := 0; i < 4; i++ {
+		if got := tr.Record("198.51.100.28", accounts[i]); len(got) != 0 {
+			t.Fatalf("outage failure %d emitted findings: %+v", i+1, got)
+		}
+	}
+	down = false
+	for i := 0; i < 4; i++ {
+		got, fired := findingByCheck(tr.Record("198.51.100.28", accounts[i]), "mail_bruteforce")
+		if fired != (i == 3) {
+			t.Fatalf("post-recovery slow path fired=%v at clean event %d, want %v; finding=%+v", fired, i+1, i == 3, got)
+		}
 	}
 }

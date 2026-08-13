@@ -486,6 +486,12 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.SMTPBruteForceMaxTracked != 0 && (t.SMTPBruteForceMaxTracked < 1000 || t.SMTPBruteForceMaxTracked > 200000) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_max_tracked", "smtp_bruteforce_max_tracked must be between 1000 and 200000"})
 	}
+	if t.SMTPBruteForceSlowThreshold != 0 && (t.SMTPBruteForceSlowThreshold < SlowBruteMinThreshold || t.SMTPBruteForceSlowThreshold > SlowBruteMaxThreshold) {
+		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_slow_threshold", fmt.Sprintf("smtp_bruteforce_slow_threshold must be 0 (disabled) or between %d and %d", SlowBruteMinThreshold, SlowBruteMaxThreshold)})
+	}
+	if t.SMTPBruteForceSlowWindowMin != 0 && (t.SMTPBruteForceSlowWindowMin < 1 || t.SMTPBruteForceSlowWindowMin > SlowBruteMaxWindowMin) {
+		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_slow_window_min", fmt.Sprintf("smtp_bruteforce_slow_window_min must be between 1 and %d", SlowBruteMaxWindowMin)})
+	}
 	if t.SMTPProbeThreshold != 0 && (t.SMTPProbeThreshold < 10 || t.SMTPProbeThreshold > 10000) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_probe_threshold", "smtp_probe_threshold must be between 10 and 10000"})
 	}
@@ -515,6 +521,12 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	if t.MailBruteForceMaxTracked != 0 && (t.MailBruteForceMaxTracked < 1000 || t.MailBruteForceMaxTracked > 200000) {
 		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_max_tracked", "mail_bruteforce_max_tracked must be between 1000 and 200000"})
+	}
+	if t.MailBruteForceSlowThreshold != 0 && (t.MailBruteForceSlowThreshold < SlowBruteMinThreshold || t.MailBruteForceSlowThreshold > SlowBruteMaxThreshold) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_slow_threshold", fmt.Sprintf("mail_bruteforce_slow_threshold must be 0 (disabled) or between %d and %d", SlowBruteMinThreshold, SlowBruteMaxThreshold)})
+	}
+	if t.MailBruteForceSlowWindowMin != 0 && (t.MailBruteForceSlowWindowMin < 1 || t.MailBruteForceSlowWindowMin > SlowBruteMaxWindowMin) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_slow_window_min", fmt.Sprintf("mail_bruteforce_slow_window_min must be between 1 and %d", SlowBruteMaxWindowMin)})
 	}
 	if field, err := validateMailBruteAccountKeyField(cfg); err != nil {
 		results = append(results, ValidationResult{"error", field, err.Error()})
