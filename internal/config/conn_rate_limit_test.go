@@ -1,13 +1,15 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// E3: conn_rate_limit had three different meanings for 0. The engine skips
+// conn_rate_limit had three different meanings for 0. The engine skips
 // the connection meter, the web UI documents "0 disables", and validation
 // rejected it outright. An operator following the web UI's own help text got
 // a config the validator called invalid.
@@ -94,5 +96,72 @@ firewall:
 	}
 	if _, ok := findResult(Validate(cfg), "error", "firewall.conn_rate_limit"); ok {
 		t.Error("a loaded config with an explicit 0 must validate")
+	}
+}
+
+func TestConnRateLimitNullKeepsDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "implicit", value: ""},
+		{name: "null", value: "null"},
+		{name: "tilde", value: "~"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n  conn_rate_limit: " + tc.value + "\n"))
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+			if got, want := cfg.Firewall.ConnRateLimit, firewall.DefaultConfig().ConnRateLimit; got != want {
+				t.Errorf("null conn_rate_limit = %d, want shipped default %d", got, want)
+			}
+		})
+	}
+}
+
+func TestConnRateLimitExplicitZeroInDropInSurvivesLoad(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.Mkdir(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(main, []byte("firewall:\n  enabled: true\n  conn_rate_limit: 50\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-firewall.yaml"), []byte("firewall:\n  conn_rate_limit: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithDir(main, confDir)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if cfg.Firewall.ConnRateLimit != 0 {
+		t.Fatalf("explicit 0 in partial drop-in was overwritten with %d", cfg.Firewall.ConnRateLimit)
+	}
+}
+
+func TestConnRateLimitNullDropInKeepsDefault(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.Mkdir(confDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(main, []byte("firewall:\n  enabled: true\n  conn_rate_limit: 50\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-firewall.yaml"), []byte("firewall:\n  conn_rate_limit: null\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithDir(main, confDir)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if got, want := cfg.Firewall.ConnRateLimit, firewall.DefaultConfig().ConnRateLimit; got != want {
+		t.Errorf("null drop-in conn_rate_limit = %d, want shipped default %d", got, want)
 	}
 }
