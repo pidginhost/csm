@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Config validation now warns about firewall settings that would lock the operator out of the host, so hand-edited config files and `csm doctor` get the same warnings the web UI already showed before a save.
 - Each scan cycle now reads the firewall's blocked addresses once instead of once per tracked address, so hosts holding many blocks stop paying a full kernel query per entry to reconcile them. Failed or partial reads keep the cached answer instead of pruning tracked blocks.
 - Firewall block metrics are now present before the first attempt and keep unknown values in fixed buckets, so dead-engine alerts work without unbounded metric growth.
 - Auto-block evidence now fans out once per finding, reports alert-delivery failures, and cannot feed back into central intelligence or incident correlation to repeat the same block. An unavailable firewall engine is now counted as an error outcome.
