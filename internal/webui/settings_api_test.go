@@ -1880,7 +1880,7 @@ func TestSettingsPOSTFirewallLockoutWarning(t *testing.T) {
 	etag := getW.Header().Get("ETag")
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
-		`{"changes":{"tcp_in":[80, 443]}}`)
+		`{"changes":{"enabled":true,"tcp_in":[80, 443]}}`)
 	postReq.Header.Set("If-Match", etag)
 	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
 	postW := httptest.NewRecorder()
@@ -1895,15 +1895,45 @@ func TestSettingsPOSTFirewallLockoutWarning(t *testing.T) {
 	if err := json.Unmarshal(postW.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	found := 0
 	for _, w := range resp.Warnings {
 		if w.Field == "tcp_in" && strings.Contains(w.Message, "9443") {
-			found = true
-			break
+			found++
 		}
 	}
-	if !found {
-		t.Errorf("expected lockout warning for tcp_in mentioning WebUI port 9443, got %+v", resp.Warnings)
+	if found != 1 {
+		t.Errorf("lockout warning count = %d, want 1; warnings=%+v", found, resp.Warnings)
+	}
+}
+
+func TestSettingsPOSTDisabledFirewallHasNoLockoutWarning(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":[80, 443]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != 200 {
+		t.Fatalf("save should succeed: code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+
+	var resp struct {
+		Warnings []fieldError `json:"warnings"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range resp.Warnings {
+		if strings.HasSuffix(warning.Field, "tcp_in") && strings.Contains(warning.Message, "9443") {
+			t.Fatalf("disabled firewall produced a lockout warning: %+v", resp.Warnings)
+		}
 	}
 }
 

@@ -16,7 +16,9 @@ func lockoutTestConfig(fw *firewall.FirewallConfig) *Config {
 	cfg.Alerts.Email.SMTP = "localhost:25"
 	cfg.Alerts.Email.From = "csm@example.com"
 	cfg.Alerts.MaxPerHour = 10
+	cfg.WebUI.Enabled = true
 	cfg.WebUI.Listen = "0.0.0.0:9443"
+	cfg.WebUI.Tokens = []WebUIToken{{Name: "operator", Token: "test-secret", Scope: "admin"}}
 	cfg.InfraIPs = []string{"198.51.100.10"}
 	return cfg
 }
@@ -30,8 +32,7 @@ func findResult(results []ValidationResult, level, field string) (ValidationResu
 	return ValidationResult{}, false
 }
 
-// E1: the web UI already warns about this before a save, but an operator
-// editing csm.yaml by hand or running `csm doctor` got nothing.
+// Hand-edited config and csm doctor must get the same warning as a Web UI save.
 func TestValidateFirewallLockoutWebUIPort(t *testing.T) {
 	t.Run("port missing from tcp_in warns", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
@@ -68,10 +69,22 @@ func TestValidateFirewallLockoutWebUIPort(t *testing.T) {
 			t.Error("a disabled firewall cannot lock anyone out")
 		}
 	})
+
+	t.Run("disabled web UI is silent", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{22, 443},
+			ConnRateLimit: 200,
+		})
+		cfg.WebUI.Enabled = false
+		if _, ok := findResult(Validate(cfg), "warn", "firewall.tcp_in"); ok {
+			t.Error("a disabled web UI cannot be locked out")
+		}
+	})
 }
 
-// tcp6_in is only enforced when the operator actually manages v6 inbound;
-// an empty list means "not managed", not "everything denied".
+// A non-empty tcp6_in overrides tcp_in for IPv6. An empty list inherits the
+// IPv4 list, so the IPv4 check already covers the effective policy.
 func TestValidateFirewallLockoutIPv6Port(t *testing.T) {
 	t.Run("managed v6 missing the port warns", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
@@ -86,7 +99,7 @@ func TestValidateFirewallLockoutIPv6Port(t *testing.T) {
 		}
 	})
 
-	t.Run("unmanaged v6 is silent", func(t *testing.T) {
+	t.Run("inherited v6 policy is silent", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
 			Enabled:       true,
 			IPv6:          true,
@@ -94,13 +107,13 @@ func TestValidateFirewallLockoutIPv6Port(t *testing.T) {
 			ConnRateLimit: 200,
 		})
 		if _, ok := findResult(Validate(cfg), "warn", "firewall.tcp6_in"); ok {
-			t.Error("empty tcp6_in means v6 inbound is unmanaged, not denied")
+			t.Error("empty tcp6_in inherits tcp_in, which already allows the port")
 		}
 	})
 }
 
-// restricted_tcp ports are reachable only from infra_ips. With no infra_ips
-// they are reachable from nowhere, which silently bricks the panel ports.
+// restricted_tcp removes matching public accepts. With no infra_ips, an
+// overlapping allowed port becomes unreachable and can silently brick a panel.
 func TestValidateFirewallRestrictedWithoutInfra(t *testing.T) {
 	t.Run("restricted ports without infra_ips warn", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
@@ -122,7 +135,7 @@ func TestValidateFirewallRestrictedWithoutInfra(t *testing.T) {
 	t.Run("restricted ports with infra_ips are fine", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
 			Enabled:       true,
-			TCPIn:         []int{9443},
+			TCPIn:         []int{2087, 9443},
 			RestrictedTCP: []int{2087},
 			ConnRateLimit: 200,
 		})
@@ -134,7 +147,7 @@ func TestValidateFirewallRestrictedWithoutInfra(t *testing.T) {
 	t.Run("firewall-section infra_ips also counts", func(t *testing.T) {
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
 			Enabled:       true,
-			TCPIn:         []int{9443},
+			TCPIn:         []int{2087, 9443},
 			RestrictedTCP: []int{2087},
 			InfraIPs:      []string{"198.51.100.11"},
 			ConnRateLimit: 200,
@@ -142,6 +155,34 @@ func TestValidateFirewallRestrictedWithoutInfra(t *testing.T) {
 		cfg.InfraIPs = nil
 		if _, ok := findResult(Validate(cfg), "warn", "firewall.restricted_tcp"); ok {
 			t.Error("infra_ips under the firewall section is equally valid")
+		}
+	})
+
+	t.Run("restricted port absent from allow lists is silent", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{9443},
+			RestrictedTCP: []int{2087},
+			ConnRateLimit: 200,
+		})
+		cfg.InfraIPs = nil
+		if _, ok := findResult(Validate(cfg), "warn", "firewall.restricted_tcp"); ok {
+			t.Error("restricted_tcp only filters tcp_in; it does not make an absent port reachable")
+		}
+	})
+
+	t.Run("IPv6-only allowed port still warns", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{9443},
+			TCP6In:        []int{2087, 9443},
+			RestrictedTCP: []int{2087},
+			ConnRateLimit: 200,
+		})
+		cfg.InfraIPs = nil
+		if _, ok := findResult(Validate(cfg), "warn", "firewall.restricted_tcp"); !ok {
+			t.Error("restricted_tcp filters the effective IPv6 allow list too")
 		}
 	})
 }

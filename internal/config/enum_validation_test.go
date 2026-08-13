@@ -7,7 +7,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// E4: every value below is consumed by a switch whose default branch silently
+// Every value below is consumed by a switch whose default branch silently
 // picks a behaviour. A typo therefore does not fail, it quietly changes what
 // CSM does -- central.action falls open to "challenge", block_at_severity
 // falls open to "never block", and a port_flood proto typo falls open to TCP.
@@ -73,8 +73,13 @@ func TestValidateFirewallPortLists(t *testing.T) {
 		{"firewall.tcp_in", func(fw *firewall.FirewallConfig) { fw.TCPIn = []int{22, 70000} }},
 		{"firewall.tcp_out", func(fw *firewall.FirewallConfig) { fw.TCPOut = []int{0} }},
 		{"firewall.udp_in", func(fw *firewall.FirewallConfig) { fw.UDPIn = []int{-1} }},
+		{"firewall.tcp6_in", func(fw *firewall.FirewallConfig) { fw.TCP6In = []int{70000} }},
+		{"firewall.tcp6_out", func(fw *firewall.FirewallConfig) { fw.TCP6Out = []int{70000} }},
+		{"firewall.udp6_in", func(fw *firewall.FirewallConfig) { fw.UDP6In = []int{0} }},
+		{"firewall.udp6_out", func(fw *firewall.FirewallConfig) { fw.UDP6Out = []int{-1} }},
 		{"firewall.restricted_tcp", func(fw *firewall.FirewallConfig) { fw.RestrictedTCP = []int{99999} }},
 		{"firewall.drop_nolog", func(fw *firewall.FirewallConfig) { fw.DropNoLog = []int{65536} }},
+		{"firewall.smtp_ports", func(fw *firewall.FirewallConfig) { fw.SMTPPorts = []int{65536} }},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			fw := &firewall.FirewallConfig{Enabled: true, TCPIn: []int{9443}, ConnRateLimit: 200}
@@ -161,6 +166,7 @@ func TestValidatePortFloodEntries(t *testing.T) {
 	}{
 		{"bad port", firewall.PortFloodRule{Port: 0, Proto: "tcp", Hits: 10, Seconds: 60}},
 		{"bad proto", firewall.PortFloodRule{Port: 25, Proto: "ucp", Hits: 10, Seconds: 60}},
+		{"uppercase UDP is interpreted as TCP", firewall.PortFloodRule{Port: 53, Proto: "UDP", Hits: 10, Seconds: 60}},
 		{"no hits", firewall.PortFloodRule{Port: 25, Proto: "tcp", Hits: 0, Seconds: 60}},
 		{"no window", firewall.PortFloodRule{Port: 25, Proto: "tcp", Hits: 10, Seconds: 0}},
 	} {
@@ -181,5 +187,12 @@ func TestValidatePortFloodEntries(t *testing.T) {
 	}
 	if _, ok := findResult(Validate(lockoutTestConfig(fw)), "error", "firewall.port_flood"); ok {
 		t.Error("the shipped default port_flood rules must validate")
+	}
+
+	// The engine treats every spelling of TCP as TCP, including the mixed-case
+	// values supported by its mail-port exemption logic.
+	fw.PortFlood = []firewall.PortFloodRule{{Port: 25, Proto: "TCP", Hits: 10, Seconds: 60}}
+	if _, ok := findResult(Validate(lockoutTestConfig(fw)), "error", "firewall.port_flood"); ok {
+		t.Error("a case-insensitive TCP protocol that the engine handles must validate")
 	}
 }

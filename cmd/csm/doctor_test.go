@@ -11,8 +11,20 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 )
+
+func validDoctorConfig() *config.Config {
+	cfg := &config.Config{Hostname: "host.example.com"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"admin@example.com"}
+	cfg.Alerts.Email.From = "csm@example.com"
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.MaxPerHour = 10
+	cfg.InfraIPs = []string{"198.51.100.10"}
+	return cfg
+}
 
 func TestDoctor_FormatHumanIncludesSuggestions(t *testing.T) {
 	d := DoctorReport{
@@ -79,7 +91,7 @@ func TestBuildDoctorReport_ConfigErrorIsJSONFriendly(t *testing.T) {
 
 func TestBuildDoctorReport_InvalidStatusJSONFails(t *testing.T) {
 	report := buildDoctorReport(
-		func() (*config.Config, error) { return &config.Config{}, nil },
+		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return []byte("{"), nil },
 	)
 	if report.OverallStatus != "fail" {
@@ -96,7 +108,7 @@ func TestBuildDoctorReport_MissingSnapshotFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := buildDoctorReport(
-		func() (*config.Config, error) { return &config.Config{}, nil },
+		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return payload, nil },
 	)
 	if report.OverallStatus != "fail" {
@@ -115,7 +127,7 @@ func TestBuildDoctorReport_EmptyWatcherRegistryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := buildDoctorReport(
-		func() (*config.Config, error) { return &config.Config{}, nil },
+		func() (*config.Config, error) { return validDoctorConfig(), nil },
 		func() ([]byte, error) { return payload, nil },
 	)
 	if report.OverallStatus != "fail" {
@@ -123,6 +135,68 @@ func TestBuildDoctorReport_EmptyWatcherRegistryFails(t *testing.T) {
 	}
 	if !strings.Contains(report.Human(), "watchers registered") {
 		t.Fatalf("expected watcher registry failure, got %s", report.Human())
+	}
+}
+
+func TestBuildDoctorReportIncludesConfigWarnings(t *testing.T) {
+	cfg := validDoctorConfig()
+	cfg.WebUI.Enabled = true
+	cfg.WebUI.Listen = "0.0.0.0:9443"
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "operator", Token: "secret", Scope: "admin"}}
+	cfg.Firewall = &firewall.FirewallConfig{
+		Enabled:       true,
+		TCPIn:         []int{22, 443},
+		ConnRateLimit: 200,
+	}
+	snap := &health.Snapshot{
+		StartedAt:    time.Now(),
+		StoreHealthy: true,
+		Watchers:     map[string]bool{"fanotify": true},
+	}
+	payload, err := json.Marshal(control.StatusResult{Version: "test", Snapshot: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report := buildDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func() ([]byte, error) { return payload, nil },
+	)
+	if report.OverallStatus != "warn" {
+		t.Fatalf("OverallStatus = %q, want warn\n%s", report.OverallStatus, report.Human())
+	}
+	found := false
+	for _, check := range report.Checks {
+		if check.Name == "config: firewall.tcp_in" && check.Status == "warn" && strings.Contains(check.Message, "9443") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("doctor omitted firewall lockout warning: %+v", report.Checks)
+	}
+}
+
+func TestBuildDoctorReportStopsOnConfigValidationError(t *testing.T) {
+	cfg := validDoctorConfig()
+	cfg.Hostname = ""
+	report := buildDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func() ([]byte, error) {
+			t.Fatal("daemon status must not be read after config validation fails")
+			return nil, nil
+		},
+	)
+	if report.OverallStatus != "fail" {
+		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
+	}
+	found := false
+	for _, check := range report.Checks {
+		if check.Name == "config: hostname" && check.Status == "fail" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("doctor omitted validation error: %+v", report.Checks)
 	}
 }
 

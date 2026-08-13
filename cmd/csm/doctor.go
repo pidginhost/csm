@@ -76,8 +76,12 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.OverallStatus = collapseDoctor(report.Checks)
 		return report
 	}
-	report.Checks = append(report.Checks, DoctorCheck{Name: "config valid", Status: "ok"})
-	_ = cfg
+	validationChecks, invalid := doctorConfigValidation(cfg)
+	report.Checks = append(report.Checks, validationChecks...)
+	if invalid {
+		report.OverallStatus = collapseDoctor(report.Checks)
+		return report
+	}
 
 	// 2. Daemon reachable
 	resp, err := readStatus()
@@ -150,6 +154,32 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 
 	report.OverallStatus = collapseDoctor(report.Checks)
 	return report
+}
+
+func doctorConfigValidation(cfg *config.Config) ([]DoctorCheck, bool) {
+	var details []DoctorCheck
+	errors := 0
+	for _, result := range config.Validate(cfg) {
+		check := DoctorCheck{Name: "config: " + result.Field, Message: result.Message}
+		switch result.Level {
+		case "error":
+			check.Status = "fail"
+			errors++
+		case "warn":
+			check.Status = "warn"
+		default:
+			continue
+		}
+		details = append(details, check)
+	}
+
+	summary := DoctorCheck{Name: "config valid", Status: "ok"}
+	if errors > 0 {
+		summary.Status = "fail"
+		summary.Message = fmt.Sprintf("%d validation error(s)", errors)
+		summary.Fix = "edit csm.yaml or the failing conf.d fragment, then run `csm validate`"
+	}
+	return append([]DoctorCheck{summary}, details...), errors > 0
 }
 
 type challengeWebserverChecksFunc func(*config.Config) []DoctorCheck

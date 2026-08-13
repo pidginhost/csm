@@ -96,7 +96,7 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 		writeValidationErrors(w, fieldErrors)
 		return
 	}
-	warnings = append(warnings, firewallLockoutWarnings(&clone)...)
+	localizeValidationFields(warnings, "firewall")
 
 	edited, err := config.YAMLEdit(diskBytes, yamlChanges)
 	if err != nil {
