@@ -90,7 +90,10 @@ func TestEngineLiveBlockedSetPropagatesDumpError(t *testing.T) {
 	}
 }
 
-func TestEngineLiveBlockedSetDiscardsPartialSnapshotOnError(t *testing.T) {
+// One family failing must not cost the other its live answer: the healthy
+// family stays covered so its tracked blocks keep reconciling against the
+// kernel, and only the failed family falls back to the caller's cache.
+func TestEngineLiveBlockedSetKeepsHealthyFamilyOnPartialFailure(t *testing.T) {
 	wantErr := errors.New("IPv6 dump failed")
 	v4 := &nftables.Set{Name: "csm_blocked"}
 	v6 := &nftables.Set{Name: "csm_blocked6"}
@@ -109,8 +112,17 @@ func TestEngineLiveBlockedSetDiscardsPartialSnapshotOnError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want it to wrap %v", err, wantErr)
 	}
-	if snapshot.V4 != nil || snapshot.V6 != nil || snapshot.HasV4 || snapshot.HasV6 {
-		t.Errorf("partial snapshot escaped with error: %+v", snapshot)
+	if !snapshot.HasV4 {
+		t.Error("v4 dumped cleanly but was reported uncovered")
+	}
+	if snapshot.HasV6 {
+		t.Error("v6 dump failed but was reported covered")
+	}
+	if blocked, known := snapshot.Contains("203.0.113.7"); !blocked || !known {
+		t.Errorf("v4 lookup = (%v, %v), want (true, true)", blocked, known)
+	}
+	if blocked, known := snapshot.Contains("2001:db8::1"); blocked || known {
+		t.Errorf("v6 lookup = (%v, %v), want (false, false) so the caller keeps its cache", blocked, known)
 	}
 }
 
