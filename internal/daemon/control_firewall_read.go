@@ -61,7 +61,10 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		Restricted:      fmtPortsSlice(fwCfg.RestrictedTCP),
 		PassiveFTPStart: fwCfg.PassiveFTPStart,
 		PassiveFTPEnd:   fwCfg.PassiveFTPEnd,
-		InfraIPCount:    len(fwCfg.InfraIPs),
+		// The engine receives the merged list, so reporting only the
+		// firewall section shows "0 entries" on a host whose live ruleset
+		// holds several -- which reads as an imminent lockout.
+		InfraIPCount:    len(mergeInfraIPs(cfg.InfraIPs, fwCfg.InfraIPs)),
 		BlockedCount:    len(state.Blocked),
 		BlockedNetCount: len(state.BlockedNet),
 		AllowedCount:    len(state.Allowed),
