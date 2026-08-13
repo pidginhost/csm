@@ -709,9 +709,14 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 		case !validPort(pf.Port):
 			results = append(results, ValidationResult{"error", "firewall.port_flood",
 				fmt.Sprintf("entry %d: port %d is out of range (1-65535)", i, pf.Port)})
+		// The case handling is deliberately asymmetric. The engine selects UDP
+		// with an exact `Proto == "udp"` match and treats every other value as
+		// TCP, so "TCP" resolves to the protocol the operator meant and is
+		// safe to accept, while "UDP" would silently become TCP and must be
+		// rejected. Do not "tidy" this into a single case-insensitive compare.
 		case pf.Proto != "" && !strings.EqualFold(pf.Proto, "tcp") && pf.Proto != "udp":
 			results = append(results, ValidationResult{"error", "firewall.port_flood",
-				fmt.Sprintf("entry %d: proto %q must be \"tcp\" or \"udp\"", i, pf.Proto)})
+				fmt.Sprintf("entry %d: proto %q must be \"tcp\" or lowercase \"udp\"", i, pf.Proto)})
 		case pf.Hits <= 0:
 			results = append(results, ValidationResult{"error", "firewall.port_flood",
 				fmt.Sprintf("entry %d: hits must be > 0, got %d", i, pf.Hits)})
