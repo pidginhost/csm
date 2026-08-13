@@ -271,6 +271,21 @@ func TestApplyCentralIgnoresUnlistedIP(t *testing.T) {
 	}
 }
 
+func TestPlanCentralActionIgnoresAutoBlockFindings(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+
+	for _, message := range []string{
+		"AUTO-BLOCK: 45.76.1.1 blocked (expires in 24h0m0s)",
+		"AUTO-BLOCK [dry-run]: 45.76.1.1 would be blocked (expires in 24h0m0s)",
+	} {
+		if action, ok := d.planCentralAction(nil, reporting.ActionBlockIfLocalCorroborated, 80, nil, alert.Finding{
+			Check: "auto_block", Message: message, SourceIP: "45.76.1.1",
+		}); ok {
+			t.Fatalf("auto-response finding planned central action %+v", action)
+		}
+	}
+}
+
 func TestLogCentralBlockFailureSuppressesProtectedIPError(t *testing.T) {
 	prevWriter := log.Writer()
 	prevFlags := log.Flags()

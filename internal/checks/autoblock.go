@@ -499,6 +499,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(cand.Reason, 100))
 		if blocker == nil {
+			observeBlockOutcome(firewall.BlockOutcomeNoop, ErrNoIPBlocker, BlockSourceScan)
 			if requeue(cand) {
 				engineUnavailableRequeued++
 			}

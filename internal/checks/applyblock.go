@@ -59,7 +59,9 @@ var ErrNoIPBlocker = errors.New("firewall engine not available")
 func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, error) {
 	blocker := getIPBlocker()
 	if blocker == nil {
-		return ApplyBlockResult{}, ErrNoIPBlocker
+		res := ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}
+		observeBlockOutcome(res.Outcome, ErrNoIPBlocker, req.Source)
+		return res, ErrNoIPBlocker
 	}
 	blockStateMu.Lock()
 	defer blockStateMu.Unlock()

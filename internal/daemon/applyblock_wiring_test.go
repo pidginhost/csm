@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,12 +13,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/reporting"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // applyWiringBlocker lands every block live and records the calls, so tests
@@ -204,5 +209,141 @@ func TestIncidentSprayBlockRecordsEvidence(t *testing.T) {
 	}
 	if _, found := checks.GetThreatDB().Lookup("203.0.113.72"); !found {
 		t.Error("incident spray block left no threat-DB row")
+	}
+}
+
+func TestRecordAppliedBlocksDeduplicatesBeforeFanout(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	db, err := store.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	oldDB := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() { store.SetGlobal(oldDB) })
+	stateStore, err := state.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(cfg, stateStore, nil, "")
+	d.blockDigest = blockdigest.New(blockdigest.Options{
+		SendOn: "any", Interval: time.Hour, MinBlock: 1,
+		Now: func() time.Time { return time.Unix(0, 0) },
+	})
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+
+	finding := alert.Finding{
+		Severity: alert.Critical, Check: "auto_block",
+		Message: "AUTO-BLOCK: 203.0.113.75 blocked (expires in 1h0m0s)",
+		Details: "Reason: duplicate source", SourceIP: "203.0.113.75",
+		Timestamp: time.Now(),
+	}
+	d.recordAppliedBlocks([]alert.Finding{finding, finding})
+
+	if _, total := db.ReadHistory(10, 0); total != 1 {
+		t.Fatalf("history total = %d, want one deduplicated applied block", total)
+	}
+	if digest := d.blockDigest.Drain(); digest.Total != 1 {
+		t.Fatalf("digest total = %d, want one deduplicated applied block", digest.Total)
+	}
+	if dispatched != 1 {
+		t.Fatalf("dispatch hook calls = %d, want one", dispatched)
+	}
+}
+
+func TestRecordAppliedBlocksContinuesAfterHistoryFailure(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	db, err := store.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDB := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		store.SetGlobal(oldDB)
+		_ = db.Close()
+	})
+	stateStore, err := state.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(cfg, stateStore, nil, "")
+
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	d.recordAppliedBlocks([]alert.Finding{{
+		Severity: alert.Critical, Check: "auto_block",
+		Message: "AUTO-BLOCK: 203.0.113.76 blocked (expires in 1h0m0s)",
+		Details: "Reason: partial sink", SourceIP: "203.0.113.76",
+		Timestamp: time.Now(),
+	}})
+	if dispatched != 1 {
+		t.Fatalf("dispatch hook calls = %d, want one after history failure", dispatched)
+	}
+}
+
+func captureAppliedBlockStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = original }()
+	fn()
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	os.Stderr = original
+	data, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestRecordAppliedBlocksPersistsBeforeDispatchFailure(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "://invalid"
+	db, err := store.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	oldDB := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() { store.SetGlobal(oldDB) })
+	stateStore, err := state.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := New(cfg, stateStore, nil, "")
+
+	stderr := captureAppliedBlockStderr(t, func() {
+		d.recordAppliedBlocks([]alert.Finding{{
+			Severity: alert.Critical, Check: "auto_block",
+			Message: "AUTO-BLOCK: 203.0.113.77 blocked (expires in 1h0m0s)",
+			Details: "Reason: dispatch failure", SourceIP: "203.0.113.77",
+			Timestamp: time.Now(),
+		}})
+	})
+	if _, total := db.ReadHistory(10, 0); total != 1 {
+		t.Fatalf("history total = %d, want persisted finding", total)
+	}
+	if !strings.Contains(stderr, "Applied-block alert dispatch error") {
+		t.Fatalf("dispatch failure not logged: %q", stderr)
 	}
 }

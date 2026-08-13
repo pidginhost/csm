@@ -2675,8 +2675,11 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 // (challenge escalation, central intel, incident spray) through the same
 // bookkeeping dispatchBatch gives scan blocks: block digest, attack-DB
 // blocked marker, finding history, and alert dispatch, which applies the
-// standard suppression rules.
+// standard suppression rules. Deduplication happens before the fanout so every
+// sink sees the same single copy, and a failure in one sink does not skip the
+// sinks that follow it.
 func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
+	findings = alert.Deduplicate(findings)
 	if len(findings) == 0 {
 		return
 	}
@@ -2694,7 +2697,9 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	if d.store != nil {
 		d.store.AppendHistory(findings)
 	}
-	_ = alert.Dispatch(d.currentCfg(), findings)
+	if err := alert.Dispatch(d.currentCfg(), findings); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Applied-block alert dispatch error: %v\n", ts(), err)
+	}
 }
 
 // applyIncidentSprayBlock is the incident correlator's firewall hand-off,
