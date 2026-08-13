@@ -90,6 +90,30 @@ func TestEngineLiveBlockedSetPropagatesDumpError(t *testing.T) {
 	}
 }
 
+func TestEngineLiveBlockedSetDiscardsPartialSnapshotOnError(t *testing.T) {
+	wantErr := errors.New("IPv6 dump failed")
+	v4 := &nftables.Set{Name: "csm_blocked"}
+	v6 := &nftables.Set{Name: "csm_blocked6"}
+	e := &Engine{
+		setBlocked:  v4,
+		setBlocked6: v6,
+		liveBlockedDump: func(set *nftables.Set) ([]nftables.SetElement, error) {
+			if set == v4 {
+				return []nftables.SetElement{{Key: net.ParseIP("203.0.113.7").To4()}}, nil
+			}
+			return nil, wantErr
+		},
+	}
+
+	snapshot, err := e.LiveBlockedSet()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want it to wrap %v", err, wantErr)
+	}
+	if snapshot.V4 != nil || snapshot.V6 != nil || snapshot.HasV4 || snapshot.HasV6 {
+		t.Errorf("partial snapshot escaped with error: %+v", snapshot)
+	}
+}
+
 func TestEngineLiveBlockedSetErrorsWithoutSets(t *testing.T) {
 	e := &Engine{}
 	if _, err := e.LiveBlockedSet(); err == nil {

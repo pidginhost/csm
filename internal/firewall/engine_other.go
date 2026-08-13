@@ -90,8 +90,8 @@ func (e *Engine) IsBlockedLive(_ string) (bool, error)    { return false, ErrUns
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 	return LiveBlockedSnapshot{}, ErrUnsupportedPlatform
 }
-func (e *Engine) AllowIP(_ string, _ string) error        { return ErrUnsupportedPlatform }
-func (e *Engine) RemoveAllowIP(_ string) error            { return ErrUnsupportedPlatform }
+func (e *Engine) AllowIP(_ string, _ string) error { return ErrUnsupportedPlatform }
+func (e *Engine) RemoveAllowIP(_ string) error     { return ErrUnsupportedPlatform }
 func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error {
 	return ErrUnsupportedPlatform
 }

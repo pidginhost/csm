@@ -82,6 +82,17 @@ func TestNonLinuxStubIsBlockedLiveErrors(t *testing.T) {
 	}
 }
 
+func TestNonLinuxStubLiveBlockedSetErrors(t *testing.T) {
+	e := &Engine{}
+	snapshot, err := e.LiveBlockedSet()
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("LiveBlockedSet err = %v, want ErrUnsupportedPlatform", err)
+	}
+	if snapshot.V4 != nil || snapshot.V6 != nil || snapshot.HasV4 || snapshot.HasV6 {
+		t.Errorf("LiveBlockedSet snapshot = %+v, want zero value", snapshot)
+	}
+}
+
 // Read-only stubs stay inert so status paths degrade gracefully.
 func TestNonLinuxStubReadsStayInert(t *testing.T) {
 	e := &Engine{}

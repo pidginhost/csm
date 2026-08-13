@@ -69,10 +69,10 @@ type liveBlocker interface {
 	IsBlockedLive(ip string) (bool, error)
 }
 
-// liveBlockedLister is satisfied by engines that can dump their whole live
-// blocked set in one netlink round trip. The reconcile pass prefers it over
-// liveBlocker: the per-IP query dumps the entire set on every call, so
-// pruning N tracked IPs cost N full dumps of the same data.
+// liveBlockedLister is satisfied by engines that can dump their live blocked
+// sets once per cycle. The reconcile pass prefers it over liveBlocker: the
+// per-IP query dumps an entire family set on every call, so pruning N tracked
+// IPs cost N full dumps of the same data.
 type liveBlockedLister interface {
 	LiveBlockedSet() (firewall.LiveBlockedSnapshot, error)
 }
@@ -213,9 +213,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// question this cycle asks. The per-IP live query dumps the whole set, so
 	// the reconcile pass below cost one full dump per tracked IP.
 	var liveBlocked firewall.LiveBlockedSnapshot
-	var haveLiveBlocked bool
+	var useLiveBlocked bool
 	if blocker != nil {
-		liveBlocked, haveLiveBlocked = liveBlockedSnapshot(blocker)
+		liveBlocked, useLiveBlocked = liveBlockedSnapshot(blocker)
 	}
 
 	// exemptLogged deduplicates per-cycle log lines for DoS-exempt CIDR skips
@@ -237,7 +237,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
 		if blocker != nil {
-			if !blockedLiveOrCached(blocker, liveBlocked, haveLiveBlocked, b.IP) {
+			if !blockedLiveOrCached(blocker, liveBlocked, useLiveBlocked, b.IP) {
 				// Engine expired this block - clean up our state
 				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
 				continue
@@ -415,7 +415,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// Don't re-block already blocked IPs.
-		if isAlreadyBlocked(state, ip) || (blocker != nil && blockedLiveOrCached(blocker, liveBlocked, haveLiveBlocked, ip)) {
+		if isAlreadyBlocked(state, ip) || (blocker != nil && blockedLiveOrCached(blocker, liveBlocked, useLiveBlocked, ip)) {
 			continue
 		}
 
@@ -669,8 +669,9 @@ func isBlockedLiveOrCached(b IPBlocker, ip string) bool {
 }
 
 // liveBlockedSnapshot takes one bulk membership snapshot for the cycle. A
-// blocker that cannot produce one, or a dump that fails, leaves callers on
-// the per-IP path rather than on a view that would read as "nothing blocked".
+// blocker that cannot produce one leaves callers on the legacy per-IP path.
+// A failed bulk dump returns an uncovered snapshot so valid IPs use cached
+// status without issuing the same failing dump once per tracked address.
 func liveBlockedSnapshot(b IPBlocker) (firewall.LiveBlockedSnapshot, bool) {
 	lister, ok := b.(liveBlockedLister)
 	if !ok {
@@ -678,19 +679,23 @@ func liveBlockedSnapshot(b IPBlocker) (firewall.LiveBlockedSnapshot, bool) {
 	}
 	snap, err := lister.LiveBlockedSet()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "auto-block: live blocked-set dump failed, falling back to per-IP lookups: %v\n", err)
-		return firewall.LiveBlockedSnapshot{}, false
+		fmt.Fprintf(os.Stderr, "auto-block: live blocked-set dump failed, using cached status: %v\n", err)
+		return firewall.LiveBlockedSnapshot{}, true
 	}
 	return snap, true
 }
 
 // blockedLiveOrCached answers from the cycle's bulk snapshot when it covers
-// the IP's address family, and falls back to the per-IP live query otherwise.
-func blockedLiveOrCached(b IPBlocker, snap firewall.LiveBlockedSnapshot, haveSnap bool, ip string) bool {
-	if haveSnap {
+// the IP's address family. An uncovered family uses cached status; retrying a
+// live query would repeat the same set dump and could turn an unknown result
+// into a false absence. Blockers without snapshot support retain the legacy
+// per-IP live lookup.
+func blockedLiveOrCached(b IPBlocker, snap firewall.LiveBlockedSnapshot, useSnap bool, ip string) bool {
+	if useSnap {
 		if blocked, known := snap.Contains(ip); known {
 			return blocked
 		}
+		return b.IsBlocked(ip)
 	}
 	return isBlockedLiveOrCached(b, ip)
 }

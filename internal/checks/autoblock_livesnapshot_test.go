@@ -20,6 +20,7 @@ type snapshotBlocker struct {
 	snapCalls  int
 	liveCalls  int
 	cachedSays bool
+	liveSays   bool
 }
 
 func (b *snapshotBlocker) BlockIP(string, string, time.Duration) error { return nil }
@@ -28,7 +29,7 @@ func (b *snapshotBlocker) IsBlocked(string) bool                       { return 
 
 func (b *snapshotBlocker) IsBlockedLive(string) (bool, error) {
 	b.liveCalls++
-	return b.cachedSays, nil
+	return b.liveSays, nil
 }
 
 func (b *snapshotBlocker) LiveBlockedSet() (firewall.LiveBlockedSnapshot, error) {
@@ -117,8 +118,8 @@ func TestAutoBlockIPs_ReconcileKeepsUncoveredFamily(t *testing.T) {
 	if len(state.IPs) != 1 {
 		t.Errorf("v6 entry pruned despite the snapshot not covering v6: %+v", state.IPs)
 	}
-	if blocker.liveCalls == 0 {
-		t.Error("uncovered family must fall back to the per-IP path, not be assumed absent")
+	if blocker.liveCalls != 0 {
+		t.Errorf("uncovered family triggered %d live retries, want the cached answer", blocker.liveCalls)
 	}
 }
 
@@ -134,5 +135,42 @@ func TestAutoBlockIPs_ReconcileKeepsStateWhenSnapshotFails(t *testing.T) {
 
 	if len(state.IPs) != 1 {
 		t.Errorf("tracker erased on a transient dump failure: %+v", state.IPs)
+	}
+	if blocker.liveCalls != 0 {
+		t.Errorf("failed bulk dump triggered %d live retries, want the cached answer", blocker.liveCalls)
+	}
+}
+
+func TestAutoBlockIPs_ReconcileTreatsMalformedIPAsAbsentAfterSnapshotFailure(t *testing.T) {
+	blocker := &snapshotBlocker{
+		cachedSays: true,
+		snapErr:    errSnapshotUnavailable,
+	}
+
+	state := reconcileWithBlocker(t, blocker, trackedIP("not-an-ip"))
+
+	if len(state.IPs) != 0 {
+		t.Errorf("malformed tracker entry survived reconcile: %+v", state.IPs)
+	}
+	if blocker.liveCalls != 0 {
+		t.Errorf("malformed IP triggered %d live retries, want definitive absence", blocker.liveCalls)
+	}
+}
+
+func TestAutoBlockIPs_ReconcileMatchesIPv4MappedEntryInV4Snapshot(t *testing.T) {
+	blocker := &snapshotBlocker{
+		snap: firewall.LiveBlockedSnapshot{
+			V4:    map[string]struct{}{"192.0.2.10": {}},
+			HasV4: true,
+		},
+	}
+
+	state := reconcileWithBlocker(t, blocker, trackedIP("::ffff:192.0.2.10"))
+
+	if len(state.IPs) != 1 {
+		t.Errorf("IPv4-mapped tracker entry did not match the v4 snapshot: %+v", state.IPs)
+	}
+	if blocker.liveCalls != 0 {
+		t.Errorf("IPv4-mapped lookup triggered %d live retries, want snapshot match", blocker.liveCalls)
 	}
 }
