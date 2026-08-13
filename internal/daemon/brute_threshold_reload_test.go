@@ -27,7 +27,7 @@ func hasCheckFinding(findings []alert.Finding, check string) bool {
 func TestSMTPAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
-	tr := newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 10000, clk)
+	tr := newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
 
 	ip := "203.0.113.7"
 	for i := 0; i < 6; i++ {
@@ -37,7 +37,7 @@ func TestSMTPAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 	}
 
 	// Operator lowers the per-IP threshold and sends SIGHUP.
-	tr.SetThresholds(5, 100, 100, 10*time.Minute, time.Hour, 10000)
+	tr.SetThresholds(5, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000)
 
 	f := tr.Record(ip, "")
 	if !hasCheckFinding(f, "smtp_bruteforce") {
@@ -48,7 +48,7 @@ func TestSMTPAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 func TestMailAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
-	tr := newMailAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 10000, clk)
+	tr := newMailAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
 
 	ip := "203.0.113.8"
 	for i := 0; i < 6; i++ {
@@ -57,7 +57,7 @@ func TestMailAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 		}
 	}
 
-	tr.SetThresholds(5, 100, 100, 10*time.Minute, time.Hour, 10000)
+	tr.SetThresholds(5, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000)
 
 	f := tr.Record(ip, "victim@example.com")
 	if !hasCheckFinding(f, "mail_bruteforce") {
@@ -68,8 +68,8 @@ func TestMailAuthTrackerSetThresholdsAppliesLive(t *testing.T) {
 func TestSMTPAuthTrackerSetThresholdsZeroDisablesSignals(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
-	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, clk)
-	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 10000)
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
+	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 0, 0, 10000)
 
 	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
 		for i := 0; i < 3; i++ {
@@ -83,8 +83,8 @@ func TestSMTPAuthTrackerSetThresholdsZeroDisablesSignals(t *testing.T) {
 func TestMailAuthTrackerSetThresholdsZeroDisablesSignals(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
-	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, clk)
-	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 10000)
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 0, 10000, clk)
+	tr.SetThresholds(0, 0, 0, 10*time.Minute, time.Hour, 0, 0, 10000)
 
 	for _, ip := range []string{"203.0.113.4", "203.0.113.5", "203.0.113.6"} {
 		for i := 0; i < 3; i++ {
@@ -142,9 +142,9 @@ func TestReconcileBruteThresholdsPushesConfigIntoTrackers(t *testing.T) {
 	now := time.Now()
 	clk := func() time.Time { return now }
 	d := &Daemon{
-		smtpAuthTracker:  newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 10000, clk),
+		smtpAuthTracker:  newSMTPAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk),
 		smtpProbeTracker: newSMTPProbeTracker(100, 5*time.Minute, time.Hour, 10000, clk, nil),
-		mailAuthTracker:  newMailAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 10000, clk),
+		mailAuthTracker:  newMailAuthTracker(100, 100, 100, 10*time.Minute, time.Hour, 0, 0, 10000, clk),
 	}
 
 	prev := config.Active()
@@ -239,9 +239,9 @@ func TestReloadConfigPushesBruteThresholdsIntoAllTrackers(t *testing.T) {
 // serialized through each tracker's mutex.
 func TestReconcileBruteThresholdsRaceWithRecord(t *testing.T) {
 	d := &Daemon{
-		smtpAuthTracker:  newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, time.Now),
+		smtpAuthTracker:  newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 0, 10000, time.Now),
 		smtpProbeTracker: newSMTPProbeTracker(100, 5*time.Minute, time.Hour, 10000, time.Now, nil),
-		mailAuthTracker:  newMailAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 10000, time.Now),
+		mailAuthTracker:  newMailAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 0, 10000, time.Now),
 	}
 
 	prev := config.Active()
