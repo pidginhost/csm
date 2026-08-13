@@ -120,6 +120,52 @@ func TestConnRateLimitNullKeepsDefault(t *testing.T) {
 	}
 }
 
+// Null-means-unset is a property of the presence tracking itself, not a
+// special case for one key. Every field whose zero value is a real setting
+// depends on it: `x: null` keeps the shipped default, while an explicit zero,
+// empty list, or false stays the operator's choice.
+func TestFirewallNullKeysKeepDefaultsAcrossFields(t *testing.T) {
+	def := firewall.DefaultConfig()
+
+	t.Run("null keeps defaults", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n  conn_limit: null\n  restricted_tcp: null\n"))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if cfg.Firewall.ConnLimit != def.ConnLimit {
+			t.Errorf("null conn_limit = %d, want shipped default %d", cfg.Firewall.ConnLimit, def.ConnLimit)
+		}
+		if !samePortList(cfg.Firewall.RestrictedTCP, def.RestrictedTCP) {
+			t.Errorf("null restricted_tcp = %v, want shipped default %v", cfg.Firewall.RestrictedTCP, def.RestrictedTCP)
+		}
+	})
+
+	t.Run("explicit zero values are kept", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("firewall:\n  enabled: true\n  conn_limit: 0\n  restricted_tcp: []\n"))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if cfg.Firewall.ConnLimit != 0 {
+			t.Errorf("explicit conn_limit 0 was overwritten with %d", cfg.Firewall.ConnLimit)
+		}
+		if len(cfg.Firewall.RestrictedTCP) != 0 {
+			t.Errorf("explicit empty restricted_tcp was overwritten with %v", cfg.Firewall.RestrictedTCP)
+		}
+	})
+}
+
+func samePortList(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestConnRateLimitExplicitZeroInDropInSurvivesLoad(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "csm.yaml")

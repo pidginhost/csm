@@ -2088,9 +2088,12 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	if raw.Firewall != nil {
 		presence.firewall = make(map[string]bool, len(raw.Firewall))
 		for key, node := range raw.Firewall {
-			// conn_rate_limit needs a non-null value to select disabled. YAML
-			// null decodes to the same Go zero but means unset, so keep its default.
-			presence.firewall[key] = key != "conn_rate_limit" || node.Tag != "!!null"
+			// A null node means "no value", which is what an absent key means,
+			// so it must not count as present. The distinction matters for
+			// every field whose zero value is a real setting: `x: null` has to
+			// keep the shipped default while `x: 0` (or `[]`, or `false`)
+			// stays the operator's explicit choice.
+			presence.firewall[key] = node.Tag != "!!null"
 		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
