@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // ValidationResult represents a single validation finding.
@@ -274,7 +276,10 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		results = append(results, firewallLockoutResults(cfg)...)
+		results = append(results, firewallValueResults(cfg.Firewall)...)
 	}
+	results = append(results, centralActionResults(cfg)...)
+	results = append(results, blockAtSeverityResults(cfg)...)
 
 	// --- Challenge ---
 	if cfg.Challenge.Difficulty < 0 || cfg.Challenge.Difficulty > 5 {
@@ -646,6 +651,142 @@ func validateWarnings(cfg *Config) []ValidationResult {
 
 // ValidateDeep performs connectivity probes against configured services.
 // It does NOT call Validate(); the caller should invoke both separately.
+// firewallValueResults rejects firewall values the engine would otherwise
+// accept and quietly reinterpret: a port outside 1-65535 never produces a
+// rule, an inverted passive-FTP range opens nothing, and a port_flood proto
+// that is not "udp" is treated as TCP no matter what the operator typed.
+func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
+	var results []ValidationResult
+
+	for _, list := range []struct {
+		field string
+		ports []int
+	}{
+		{"firewall.tcp_in", fw.TCPIn},
+		{"firewall.tcp_out", fw.TCPOut},
+		{"firewall.udp_in", fw.UDPIn},
+		{"firewall.udp_out", fw.UDPOut},
+		{"firewall.tcp6_in", fw.TCP6In},
+		{"firewall.udp6_in", fw.UDP6In},
+		{"firewall.restricted_tcp", fw.RestrictedTCP},
+		{"firewall.drop_nolog", fw.DropNoLog},
+	} {
+		for _, port := range list.ports {
+			if !validPort(port) {
+				results = append(results, ValidationResult{"error", list.field,
+					fmt.Sprintf("port %d is out of range (1-65535)", port)})
+			}
+		}
+	}
+
+	// The engine only builds the range rule when both ends are set, so a
+	// half-configured range is silently inert rather than wrong.
+	if fw.PassiveFTPStart != 0 || fw.PassiveFTPEnd != 0 {
+		if !validPort(fw.PassiveFTPStart) {
+			results = append(results, ValidationResult{"error", "firewall.passive_ftp_start",
+				fmt.Sprintf("port %d is out of range (1-65535)", fw.PassiveFTPStart)})
+		}
+		if !validPort(fw.PassiveFTPEnd) {
+			results = append(results, ValidationResult{"error", "firewall.passive_ftp_end",
+				fmt.Sprintf("port %d is out of range (1-65535)", fw.PassiveFTPEnd)})
+		}
+		if validPort(fw.PassiveFTPStart) && validPort(fw.PassiveFTPEnd) && fw.PassiveFTPStart > fw.PassiveFTPEnd {
+			results = append(results, ValidationResult{"error", "firewall.passive_ftp_start",
+				fmt.Sprintf("passive FTP range starts at %d but ends at %d", fw.PassiveFTPStart, fw.PassiveFTPEnd)})
+		}
+	}
+
+	for _, code := range fw.CountryBlock {
+		if !validCountryCode(code) {
+			results = append(results, ValidationResult{"error", "firewall.country_block",
+				fmt.Sprintf("%q is not a two-letter ISO country code", code)})
+		}
+	}
+
+	for i, pf := range fw.PortFlood {
+		switch {
+		case !validPort(pf.Port):
+			results = append(results, ValidationResult{"error", "firewall.port_flood",
+				fmt.Sprintf("entry %d: port %d is out of range (1-65535)", i, pf.Port)})
+		case pf.Proto != "" && pf.Proto != "tcp" && pf.Proto != "udp":
+			results = append(results, ValidationResult{"error", "firewall.port_flood",
+				fmt.Sprintf("entry %d: proto %q must be \"tcp\" or \"udp\"", i, pf.Proto)})
+		case pf.Hits <= 0:
+			results = append(results, ValidationResult{"error", "firewall.port_flood",
+				fmt.Sprintf("entry %d: hits must be > 0, got %d", i, pf.Hits)})
+		case pf.Seconds <= 0:
+			results = append(results, ValidationResult{"error", "firewall.port_flood",
+				fmt.Sprintf("entry %d: seconds must be > 0, got %d", i, pf.Seconds)})
+		}
+	}
+
+	return results
+}
+
+// centralActions mirrors the action constants in internal/reporting, which
+// this package cannot import: reporting depends on alert, and alert depends
+// on config. TestCentralActionsMatchReportingConstants (external test package,
+// so it may import both) fails if the two lists ever drift.
+var centralActions = []string{"off", "challenge", "block_if_local_corroborated"}
+
+// centralActionResults rejects an unrecognised central action. The consumer
+// parses it with a default branch that resolves to "challenge", so a typo
+// silently turns a corroborated-block policy into a challenge policy and the
+// only trace is one daemon log line at startup.
+func centralActionResults(cfg *Config) []ValidationResult {
+	action := cfg.Reputation.Central.Action
+	if action == "" {
+		return nil
+	}
+	for _, valid := range centralActions {
+		if action == valid {
+			return nil
+		}
+	}
+	return []ValidationResult{{"error", "reputation.central.action",
+		fmt.Sprintf("invalid action %q: must be one of %s", action, strings.Join(centralActions, ", "))}}
+}
+
+// blockAtSeverityResults rejects an unrecognised incident block threshold.
+// The correlator matches "high" and "critical" and ignores anything else, so
+// a typo leaves the operator believing incident blocking is armed when the
+// hand-off can never fire.
+func blockAtSeverityResults(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+	for _, entry := range []struct {
+		field string
+		value string
+	}{
+		{"incidents.spray_suppression.block_at_severity", cfg.Incidents.SpraySuppression.BlockAtSeverity},
+		{"incidents.auto_block.block_at_severity", cfg.Incidents.AutoBlock.BlockAtSeverity},
+	} {
+		if entry.value == "" {
+			continue
+		}
+		switch strings.ToLower(entry.value) {
+		case "high", "critical":
+		default:
+			results = append(results, ValidationResult{"error", entry.field,
+				fmt.Sprintf("invalid severity %q: must be \"high\" or \"critical\" (empty disables blocking)", entry.value)})
+		}
+	}
+	return results
+}
+
+func validPort(p int) bool { return p >= 1 && p <= 65535 }
+
+func validCountryCode(code string) bool {
+	if len(code) != 2 {
+		return false
+	}
+	for _, r := range strings.ToUpper(code) {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
 // limitSummary renders a firewall limit for operator-facing output so a
 // disabled protection reads as "disabled" instead of as a bare 0 that looks
 // like a missing value.

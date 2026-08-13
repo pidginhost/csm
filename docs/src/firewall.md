@@ -171,6 +171,23 @@ These stay warnings and never block a save or a start: fronting the Web UI with
 a reverse proxy or reaching it over a VPN are legitimate reasons to leave the
 port out of `tcp_in`.
 
+## Value validation
+
+Unlike the warnings above, these are errors, because the value cannot do what
+the operator meant:
+
+- Ports outside 1-65535 in any port list, including `drop_nolog` and the
+  passive FTP range, and a passive FTP range that ends before it starts.
+- `country_block` entries that are not two-letter ISO codes.
+- `port_flood` entries with an out-of-range port, a protocol other than `tcp`
+  or `udp`, or a non-positive hit count or window.
+
+Two enums elsewhere get the same treatment because their consumers fall back to
+a default branch rather than failing: `reputation.central.action` (an
+unrecognised value became a challenge policy) and
+`incidents.*.block_at_severity`, which accepts only `high` or `critical` and
+silently disabled incident blocking on anything else.
+
 ## Infrastructure IP DNS guard
 
 Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.
