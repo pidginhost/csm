@@ -101,9 +101,7 @@ func (db *DB) AggregateByHour() []HourBucket {
 // ReadHistorySince returns all findings since the given time, using bbolt cursor
 // seeking for efficiency. Results are newest-first.
 func (db *DB) ReadHistorySince(since time.Time) []alert.Finding {
-	seekPrefix := fmt.Sprintf("%04d%02d%02d%02d%02d%02d",
-		since.Year(), since.Month(), since.Day(),
-		since.Hour(), since.Minute(), since.Second())
+	seekPrefix := timeKeyLowerBound(since)
 
 	var results []alert.Finding
 	_ = db.bolt.View(func(tx *bolt.Tx) error {

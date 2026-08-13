@@ -249,3 +249,30 @@ func TestHistoryPruning(t *testing.T) {
 		t.Errorf("oldest remaining timestamp = %v, want %v", results[9].Timestamp, expectedOldest)
 	}
 }
+
+func TestReadHistorySinceCrossTimezoneCutoff(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	loc := time.FixedZone("UTC+3", 3*3600)
+	ts := time.Date(2026, 8, 13, 21, 30, 0, 0, loc)
+	err = db.AppendHistory([]alert.Finding{{
+		Severity:  alert.Warning,
+		Check:     "tz-check",
+		Message:   "finding message",
+		Timestamp: ts,
+	}})
+	if err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	if got := db.ReadHistorySince(ts.Add(30 * time.Minute).UTC()); len(got) != 0 {
+		t.Errorf("cutoff 30m after finding, expressed in UTC: got %d findings, want 0", len(got))
+	}
+	if got := db.ReadHistorySince(ts.Add(-30 * time.Minute).UTC()); len(got) != 1 {
+		t.Errorf("cutoff 30m before finding, expressed in UTC: got %d findings, want 1", len(got))
+	}
+}

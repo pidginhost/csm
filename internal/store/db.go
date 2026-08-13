@@ -216,7 +216,13 @@ func (db *DB) HasBucket(name string) bool {
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.
 // Format: YYYYMMDDHHmmssNNNNNNNNN-CCCC
 // Lexicographic order equals chronological order.
+//
+// Keys use server-local wall clock. Nearly every finding is stamped with
+// time.Now() (local), so existing stores already hold local-clock keys;
+// normalizing here keeps the few UTC-stamped producers and any cutoff in a
+// foreign zone consistent with them without a key migration.
 func TimeKey(t time.Time, counter int) string {
+	t = t.In(time.Local)
 	return fmt.Sprintf("%04d%02d%02d%02d%02d%02d%09d-%04d",
 		t.Year(), t.Month(), t.Day(),
 		t.Hour(), t.Minute(), t.Second(),

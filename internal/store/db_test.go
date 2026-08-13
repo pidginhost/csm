@@ -270,3 +270,14 @@ func TestOpenCreatesMailGoodSourceBucket(t *testing.T) {
 		t.Fatalf("missing bucket %q", mailGoodSourceBucket)
 	}
 }
+
+func TestTimeKeySameInstantDifferentZones(t *testing.T) {
+	instant := time.Date(2026, 8, 13, 18, 30, 0, 0, time.UTC)
+	plus3 := instant.In(time.FixedZone("UTC+3", 3*3600))
+
+	kUTC := TimeKey(instant, 0)
+	kPlus3 := TimeKey(plus3, 0)
+	if kUTC != kPlus3 {
+		t.Errorf("same instant produced different keys: UTC=%q +03=%q", kUTC, kPlus3)
+	}
+}
