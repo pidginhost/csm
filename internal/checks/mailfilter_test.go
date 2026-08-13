@@ -773,6 +773,9 @@ func TestCheckMailFiltersThrottled(t *testing.T) {
 	if err := db.SetMetaString("email:mailfilter_last_refresh", time.Now().Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.SetMetaString("email:mailsieve_last_refresh", time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
 	called := false
 	withMockOS(t, &mockOS{
 		glob: func(string) ([]string, error) { called = true; return nil, nil },
