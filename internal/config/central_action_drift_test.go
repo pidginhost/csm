@@ -36,11 +36,7 @@ func hasCentralActionError(cfg *config.Config) bool {
 // fourth action to internal/reporting without updating the validator, this
 // fails instead of the validator silently rejecting a legitimate policy.
 func TestCentralActionsMatchReportingConstants(t *testing.T) {
-	for _, action := range []reporting.Action{
-		reporting.ActionOff,
-		reporting.ActionChallenge,
-		reporting.ActionBlockIfLocalCorroborated,
-	} {
+	for _, action := range reporting.ValidActions() {
 		if hasCentralActionError(centralActionConfig(string(action))) {
 			t.Errorf("reporting action %q is rejected by config validation", action)
 		}
@@ -51,7 +47,7 @@ func TestCentralActionsMatchReportingConstants(t *testing.T) {
 // ParseAction unchanged. A value that validates but parses to something else
 // is the exact fail-open this validation exists to prevent.
 func TestValidatedCentralActionsSurviveParsing(t *testing.T) {
-	for _, action := range []string{"off", "challenge", "block_if_local_corroborated"} {
+	for _, action := range config.ValidCentralActions() {
 		if hasCentralActionError(centralActionConfig(action)) {
 			t.Fatalf("action %q should validate", action)
 		}

@@ -13,7 +13,7 @@ import (
 // falls open to "never block", and a port_flood proto typo falls open to TCP.
 
 func TestValidateCentralAction(t *testing.T) {
-	valid := []string{"", "off", "challenge", "block_if_local_corroborated"}
+	valid := append([]string{""}, ValidCentralActions()...)
 	for _, action := range valid {
 		cfg := lockoutTestConfig(nil)
 		cfg.Reputation.Central.Enabled = true
@@ -156,6 +156,14 @@ func TestValidateCountryCodes(t *testing.T) {
 	}
 	if _, ok := findResult(Validate(lockoutTestConfig(good)), "error", "firewall.country_block"); ok {
 		t.Error("two-letter codes are valid in either case")
+	}
+
+	unknown := &firewall.FirewallConfig{
+		Enabled: true, TCPIn: []int{9443}, ConnRateLimit: 200,
+		CountryBlock: []string{"ZZ"},
+	}
+	if _, ok := findResult(Validate(lockoutTestConfig(unknown)), "error", "firewall.country_block"); !ok {
+		t.Error("an unassigned two-letter code cannot load a country range and must be rejected")
 	}
 }
 

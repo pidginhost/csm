@@ -2093,7 +2093,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			// every field whose zero value is a real setting: `x: null` has to
 			// keep the shipped default while `x: 0` (or `[]`, or `false`)
 			// stays the operator's explicit choice.
-			presence.firewall[key] = node.Tag != "!!null"
+			presence.firewall[key] = !yamlNodeIsNull(&node)
 		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
@@ -2126,6 +2126,21 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		_, presence.forwardGuard.authFail = sig["auth_fail"]
 	}
 	return presence, nil
+}
+
+func yamlNodeIsNull(node *yaml.Node) bool {
+	seen := make(map[*yaml.Node]struct{})
+	for node != nil && node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return false
+		}
+		if _, ok := seen[node.Alias]; ok {
+			return false
+		}
+		seen[node.Alias] = struct{}{}
+		node = node.Alias
+	}
+	return node != nil && node.Tag == "!!null"
 }
 
 // applyForwardGuardDefaults fills unset forward-guard fields. dry_run and every

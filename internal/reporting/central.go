@@ -19,17 +19,35 @@ const (
 	ActionBlockIfLocalCorroborated Action = "block_if_local_corroborated"
 )
 
+var validActions = [...]Action{
+	ActionOff,
+	ActionChallenge,
+	ActionBlockIfLocalCorroborated,
+}
+
+// ValidActions returns every config action ParseAction recognizes.
+func ValidActions() []Action {
+	return append([]Action(nil), validActions[:]...)
+}
+
+// IsValidAction reports whether s names a config action ParseAction recognizes.
+func IsValidAction(s string) bool {
+	action := Action(s)
+	for _, valid := range validActions {
+		if action == valid {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseAction maps a config string to an Action, defaulting to challenge for
 // any unknown value (the safe default; never silently block).
 func ParseAction(s string) Action {
-	switch Action(s) {
-	case ActionOff:
-		return ActionOff
-	case ActionBlockIfLocalCorroborated:
-		return ActionBlockIfLocalCorroborated
-	default:
-		return ActionChallenge
+	if IsValidAction(s) {
+		return Action(s)
 	}
+	return ActionChallenge
 }
 
 // Decision is what the node should do about an IP given central data.
