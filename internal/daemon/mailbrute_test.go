@@ -23,6 +23,8 @@ func newTestMailTracker(t *testing.T, clock *staticClock) *mailAuthTracker {
 		12,             // accountSprayThreshold
 		10*time.Minute, // window
 		60*time.Minute, // suppression
+		40,             // slowThreshold
+		6*time.Hour,    // slowWindow
 		20000,          // maxTracked
 		clock.Now,
 	)
@@ -1364,7 +1366,7 @@ func TestMailAuthTracker_LoadGoodSourceMergesExistingWhenSnapshotNotNewer(t *tes
 func TestMailAuthTracker_RecordSuccessRespectsMaxTracked(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	const maxTracked = 10
-	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 	// Per-IP success tracking must stay bounded: a busy server sees far more
 	// distinct successful-login IPs than failing ones, so successes cannot be
 	// allowed to grow the tracker without limit.
@@ -1580,17 +1582,26 @@ func TestMailAuthTracker_PurgeRemovesExpired(t *testing.T) {
 	if tr.Size() == 0 {
 		t.Fatalf("expected non-zero size after Record")
 	}
-	clock.advance(70 * time.Minute) // past window and suppression
+	// Past window and suppression, but inside the slow window: the per-IP
+	// entry must survive so paced attackers cannot reset their long-horizon
+	// history by idling; the per-account entry has no slow state and goes.
+	clock.advance(70 * time.Minute)
+	tr.Purge()
+	if got := tr.Size(); got != 1 {
+		t.Errorf("Size() after first Purge = %d, want 1 (slow history retained)", got)
+	}
+	// Past the slow window everything expires.
+	clock.advance(6 * time.Hour)
 	tr.Purge()
 	if got := tr.Size(); got != 0 {
-		t.Errorf("Size() after Purge = %d, want 0", got)
+		t.Errorf("Size() after slow-window Purge = %d, want 0", got)
 	}
 }
 
 func TestMailAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	const maxTracked = 100
-	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 
 	// Fill 110 IPs in the same /24 so the subnet count stays predictable
 	// (one subnet entry) and doesn't inflate Size beyond control.
@@ -1620,7 +1631,7 @@ func TestMailAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
 	const maxTracked = 100
 	// Thresholds are 50 so detection signals don't fire during the 110 inserts —
 	// only eviction logic is exercised.
-	tr := newMailAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newMailAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 
 	// Workload dominated by ACCOUNTS (one attacker IP attacking 110 mailboxes,
 	// also accidentally creates 1 subnet). This stresses the bug where the
@@ -1646,7 +1657,7 @@ func TestMailAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
 func TestMailAuthTracker_MaxTrackedKeepsActiveFailureAheadOfIdleGoodSources(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 6, 20, 6, 0, 0, 0, time.UTC)}
 	const maxTracked = 10
-	tr := newMailAuthTracker(5, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newMailAuthTracker(5, 50, 50, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 	for i := 0; i < maxTracked; i++ {
 		tr.RecordSuccess(fmt.Sprintf("203.0.113.%d", i+1), fmt.Sprintf("u%d@example.ro", i))
 		clock.advance(time.Millisecond)
@@ -1978,5 +1989,85 @@ func TestMailAuthTracker_ColdStartAnnotationSkippedWhenFailuresAccountless(t *te
 	}
 	if strings.Contains(block.Details, possibleFPNote) {
 		t.Fatalf("accountless failures must not be annotated as a possible false positive; details=%q", block.Details)
+	}
+}
+
+// A paced attacker walking several mailboxes below the fast per-IP window must
+// trip the long-horizon signal, mirroring the SMTP tracker.
+func TestMailAuthTracker_SlowBruteAcrossMailboxesFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
+
+	firedAt := 0
+	for i := 1; i <= 60 && firedAt == 0; i++ {
+		if _, ok := findingByCheck(tr.Record("198.51.100.21", accounts[i%len(accounts)]), "mail_bruteforce"); ok {
+			firedAt = i
+			break
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if firedAt == 0 {
+		t.Fatal("slow brute force never fired within 60 paced failures")
+	}
+	if firedAt != 40 {
+		t.Errorf("fired at failure %d, want 40 (slow threshold)", firedAt)
+	}
+}
+
+// The same pacing confined to one mailbox is a stale saved password, not a
+// mailbox walk. It must stay quiet.
+func TestMailAuthTracker_SlowBruteSingleMailboxStaysQuiet(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+
+	for i := 0; i < 50; i++ {
+		if got, ok := findingByCheck(tr.Record("198.51.100.22", "victim@example.ro"), "mail_bruteforce"); ok {
+			t.Fatalf("slow signal fired for single-mailbox failures at attempt %d: %v", i+1, got)
+		}
+		clock.advance(8 * time.Minute)
+	}
+}
+
+// Any successful login from the source inside the slow window marks it as a
+// live legitimate client (an office NAT, a busy MUA), so the long-horizon
+// failure count must not produce a block finding.
+func TestMailAuthTracker_SlowBruteSuppressedByRecentSuccess(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
+
+	tr.RecordSuccess("198.51.100.23", "owner@example.ro")
+	// 44 paced failures stay inside the slow window the success lives in
+	// (44 * 8m < 6h); once the success ages out the signal is armed again,
+	// which is intended -- a success only vouches while it is recent.
+	for i := 1; i <= 44; i++ {
+		if got, ok := findingByCheck(tr.Record("198.51.100.23", accounts[i%len(accounts)]), "mail_bruteforce"); ok {
+			t.Fatalf("slow signal fired despite an in-window success at attempt %d: %v", i, got)
+		}
+		clock.advance(8 * time.Minute)
+	}
+}
+
+// An IP with established good standing on every mailbox its paced failures
+// target is a shared device with stale credentials. The fast path downgrades
+// that shape to an advisory; the slow path must not turn it into a block.
+func TestMailAuthTracker_SlowBruteEstablishedGoodConfinedStaysQuiet(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com"}
+
+	for _, acct := range accounts {
+		tr.RecordSuccess("198.51.100.24", acct)
+	}
+	// Age the standing past the fast window so it counts as established, and
+	// past the slow window so the successes themselves no longer disqualify.
+	clock.advance(7 * time.Hour)
+
+	for i := 1; i <= 50; i++ {
+		if got, ok := findingByCheck(tr.Record("198.51.100.24", accounts[i%len(accounts)]), "mail_bruteforce"); ok {
+			t.Fatalf("slow signal fired for established-good confined failures at attempt %d: %v", i, got)
+		}
+		clock.advance(8 * time.Minute)
 	}
 }

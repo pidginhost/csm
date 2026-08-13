@@ -238,6 +238,10 @@ thresholds:
   smtp_bruteforce_subnet_threshold: 8     # unique IPs per /24 before subnet block (default: 8)
   smtp_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   smtp_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
+  # Slow-brute pair: failed auths from one IP across 3+ distinct mailboxes
+  # within the long window. Catches attackers pacing below the fast window.
+  smtp_bruteforce_slow_threshold: 40      # failures in the slow window before block (default: 40; explicit 0 disables)
+  smtp_bruteforce_slow_window_min: 360    # slow sliding window in minutes (default: 360)
 
   # SMTP probe-abuse tracker (raw connect-rate per IP; catches scanners that
   # never reach AUTH). Threshold sized well above any legitimate MUA usage.
@@ -253,6 +257,11 @@ thresholds:
   mail_bruteforce_subnet_threshold: 8     # unique IPs per /24 before subnet block (default: 8)
   mail_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
+  # Slow-brute pair, as above. A recent successful login from the source or
+  # failures confined to mailboxes it holds established good standing for
+  # keep the source on the advisory path instead of blocking.
+  mail_bruteforce_slow_threshold: 40      # failures in the slow window before block (default: 40; explicit 0 disables)
+  mail_bruteforce_slow_window_min: 360    # slow sliding window in minutes (default: 360)
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
   modsec_escalation_hits: 3          # denies from one IP before ModSecurity escalation (default: 3)
   modsec_escalation_window_min: 10   # ModSecurity escalation window in minutes (default: 10)

@@ -119,7 +119,7 @@ func TestSMTPProbePopulatesSourceIP(t *testing.T) {
 
 func TestSMTPAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	tracker := newSMTPAuthTracker(1, 2, 2, time.Minute, time.Hour, 10, func() time.Time {
+	tracker := newSMTPAuthTracker(1, 2, 2, time.Minute, time.Hour, 0, 0, 10, func() time.Time {
 		return now
 	})
 
@@ -162,7 +162,7 @@ func TestSMTPAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 
 func TestMailAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	tracker := newMailAuthTracker(1, 2, 2, time.Minute, time.Hour, 10, func() time.Time {
+	tracker := newMailAuthTracker(1, 2, 2, time.Minute, time.Hour, 0, 0, 10, func() time.Time {
 		return now
 	})
 

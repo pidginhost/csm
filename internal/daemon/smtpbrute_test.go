@@ -25,6 +25,8 @@ func newTestTracker(t *testing.T, clock *staticClock) *smtpAuthTracker {
 		12,             // accountSprayThreshold
 		10*time.Minute, // window
 		60*time.Minute, // suppression
+		40,             // slowThreshold
+		6*time.Hour,    // slowWindow
 		20000,          // maxTracked
 		clock.Now,
 	)
@@ -329,16 +331,25 @@ func TestSMTPAuthTracker_PurgeRemovesExpired(t *testing.T) {
 	if tr.Size() == 0 {
 		t.Fatalf("expected non-zero size after Record")
 	}
-	clock.advance(70 * time.Minute) // past window and suppression
+	// Past window and suppression, but inside the slow window: the per-IP
+	// entry must survive so paced attackers cannot reset their long-horizon
+	// history by idling; the per-account entry has no slow state and goes.
+	clock.advance(70 * time.Minute)
+	tr.Purge()
+	if got := tr.Size(); got != 1 {
+		t.Errorf("Size() after first Purge = %d, want 1 (slow history retained)", got)
+	}
+	// Past the slow window everything expires.
+	clock.advance(6 * time.Hour)
 	tr.Purge()
 	if got := tr.Size(); got != 0 {
-		t.Errorf("Size() after Purge = %d, want 0", got)
+		t.Errorf("Size() after slow-window Purge = %d, want 0", got)
 	}
 }
 
 func TestSMTPAuthTracker_MaxTrackedEviction(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 10, clock.Now)
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, 10, clock.Now)
 	for i := 0; i < 15; i++ {
 		clock.advance(1 * time.Second)
 		tr.Record(fmt.Sprintf("203.0.%d.1", i+1), "")
@@ -351,7 +362,7 @@ func TestSMTPAuthTracker_MaxTrackedEviction(t *testing.T) {
 func TestSMTPAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	const maxTracked = 100
-	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 
 	// Fill 110 unique IPs, all in one /24 so subnet entry count stays at 1.
 	// Using a single /24 keeps the total close to len(ips)+1, making
@@ -380,7 +391,7 @@ func TestSMTPAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
 	const maxTracked = 100
 	// Thresholds are 50 so detection signals don't fire during the 110 inserts —
 	// only eviction logic is exercised.
-	tr := newSMTPAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+	tr := newSMTPAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, 0, 0, maxTracked, clock.Now)
 
 	// Workload dominated by ACCOUNTS (one attacker IP attacking 110 mailboxes,
 	// also accidentally creates 1 subnet). This stresses the bug where the
@@ -440,5 +451,78 @@ func TestSMTPAuthTracker_StatsCountCallsAndEmits(t *testing.T) {
 	// Fires once at the 5th call (per-IP threshold), then suppressed.
 	if emits != 1 {
 		t.Errorf("findings emitted = %d, want 1", emits)
+	}
+}
+
+// A paced attacker walking several mailboxes below the fast per-IP window
+// (one failure every 8 minutes never reaches 5-in-10m) must still trip the
+// long-horizon signal once enough failures accumulate across distinct
+// mailboxes inside the slow window.
+func TestSMTPAuthTracker_SlowBruteAcrossMailboxesFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com", "d@example.com"}
+
+	var fired alert.Finding
+	haveFired := false
+	firedAt := 0
+	for i := 1; i <= 60 && !haveFired; i++ {
+		got, ok := findingByCheck(tr.Record("198.51.100.7", accounts[i%len(accounts)]), "smtp_bruteforce")
+		if ok {
+			fired = got
+			haveFired = true
+			firedAt = i
+			break
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if !haveFired {
+		t.Fatal("slow brute force never fired within 60 paced failures")
+	}
+	if firedAt != 40 {
+		t.Errorf("fired at failure %d, want 40 (slow threshold)", firedAt)
+	}
+	if fired.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical", fired.Severity)
+	}
+	if !strings.HasPrefix(fired.Message, "SMTP brute force from 198.51.100.7") {
+		t.Errorf("message %q must keep the canonical 'SMTP brute force from <ip>' prefix", fired.Message)
+	}
+	if fired.SourceIP != "198.51.100.7" {
+		t.Errorf("SourceIP = %q, want 198.51.100.7", fired.SourceIP)
+	}
+	// Suppression clock applies to the slow signal too.
+	if again, ok := findingByCheck(tr.Record("198.51.100.7", accounts[0]), "smtp_bruteforce"); ok {
+		t.Errorf("re-fired inside suppression window: %v", again)
+	}
+}
+
+// The same pacing confined to one mailbox is the misconfigured-client shape
+// (a stale saved password retrying), not a mailbox walk. It must stay quiet.
+func TestSMTPAuthTracker_SlowBruteSingleMailboxStaysQuiet(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+
+	for i := 0; i < 50; i++ {
+		if got, ok := findingByCheck(tr.Record("198.51.100.8", "victim@example.ro"), "smtp_bruteforce"); ok {
+			t.Fatalf("slow signal fired for single-mailbox failures at attempt %d: %v", i+1, got)
+		}
+		clock.advance(8 * time.Minute)
+	}
+}
+
+// A backend outage fails every login regardless of password; the slow signal
+// must honor the degraded gate like the fast one.
+func TestSMTPAuthTracker_SlowBruteBackendDownSuppressed(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	tr.SetBackendDownCheck(func() bool { return true })
+	accounts := []string{"a@example.ro", "b@example.ro", "c@example.com"}
+
+	for i := 0; i < 50; i++ {
+		if got, ok := findingByCheck(tr.Record("198.51.100.9", accounts[i%len(accounts)]), "smtp_bruteforce"); ok {
+			t.Fatalf("slow signal fired while backend degraded at attempt %d: %v", i+1, got)
+		}
+		clock.advance(8 * time.Minute)
 	}
 }

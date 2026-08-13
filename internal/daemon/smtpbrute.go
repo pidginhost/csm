@@ -10,10 +10,15 @@ import (
 )
 
 // smtpIPEntry tracks failed-auth timestamps and suppression state for one IP.
+// slowTimes/slowAccounts hold the long-horizon failure history that catches
+// attackers pacing below the fast window; slowAccounts maps each targeted
+// mailbox to its most recent failure so distinct-target counting can prune.
 type smtpIPEntry struct {
-	times      []time.Time
-	suppressed time.Time
-	lastSeen   time.Time
+	times        []time.Time
+	slowTimes    []time.Time
+	slowAccounts map[string]time.Time
+	suppressed   time.Time
+	lastSeen     time.Time
 }
 
 // smtpSubnetEntry tracks unique attacker IPs within a /24.
@@ -30,6 +35,27 @@ type smtpAccountEntry struct {
 	lastSeen   time.Time
 }
 
+// slowBruteMinAccounts is how many distinct mailboxes a single IP's
+// long-horizon failures must target before the slow-brute signal fires. A
+// misconfigured client with a stale saved password hammers one mailbox; a
+// mailbox walk touches several.
+const slowBruteMinAccounts = 3
+
+// slowBruteMaxTimesPerIP bounds the long-horizon failure history kept per IP
+// so an unblocked high-rate source cannot grow the slice without limit. It
+// must stay above any sane slow threshold; detection is unaffected because
+// the threshold compares against the retained count.
+const slowBruteMaxTimesPerIP = 1024
+
+// pruneSlowAccounts drops per-mailbox last-failure records older than cutoff.
+func pruneSlowAccounts(accounts map[string]time.Time, cutoff time.Time) {
+	for acct, ts := range accounts {
+		if ts.Before(cutoff) {
+			delete(accounts, acct)
+		}
+	}
+}
+
 // smtpAuthTracker aggregates dovecot auth-failure events into three
 // detection signals: per-IP brute force, per-/24 password spray, and
 // per-mailbox account spray.
@@ -43,6 +69,8 @@ type smtpAuthTracker struct {
 	accountSprayThreshold int
 	window                time.Duration
 	suppression           time.Duration
+	slowThreshold         int
+	slowWindow            time.Duration
 	maxTracked            int
 	now                   func() time.Time
 
@@ -81,6 +109,8 @@ func newSMTPAuthTracker(
 	accountSprayThreshold int,
 	window time.Duration,
 	suppression time.Duration,
+	slowThreshold int,
+	slowWindow time.Duration,
 	maxTracked int,
 	now func() time.Time,
 ) *smtpAuthTracker {
@@ -93,6 +123,8 @@ func newSMTPAuthTracker(
 		accountSprayThreshold: accountSprayThreshold,
 		window:                window,
 		suppression:           suppression,
+		slowThreshold:         slowThreshold,
+		slowWindow:            slowWindow,
 		maxTracked:            maxTracked,
 		now:                   now,
 		ips:                   make(map[string]*smtpIPEntry),
@@ -153,6 +185,42 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 			Timestamp: now,
 			SourceIP:  ip,
 		})
+	}
+
+	// --- Long-horizon slow-brute tracker ---
+	// Catches attackers pacing below the fast window (e.g. one failure every
+	// few minutes for hours). Requiring several distinct target mailboxes
+	// separates a mailbox walk from a misconfigured client retrying one stale
+	// saved password, which fails against a single mailbox no matter how long
+	// it runs.
+	if t.slowThreshold > 0 && t.slowWindow > 0 {
+		slowCutoff := now.Add(-t.slowWindow)
+		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
+		e.slowTimes = append(e.slowTimes, now)
+		if len(e.slowTimes) > slowBruteMaxTimesPerIP {
+			e.slowTimes = append([]time.Time(nil), e.slowTimes[len(e.slowTimes)-slowBruteMaxTimesPerIP:]...)
+		}
+		if account != "" {
+			if e.slowAccounts == nil {
+				e.slowAccounts = make(map[string]time.Time)
+			}
+			e.slowAccounts[account] = now
+		}
+		pruneSlowAccounts(e.slowAccounts, slowCutoff)
+		if len(e.slowTimes) >= t.slowThreshold &&
+			len(e.slowAccounts) >= slowBruteMinAccounts &&
+			!now.Before(e.suppressed) && !degraded {
+			e.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "smtp_bruteforce",
+				Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths across %d mailboxes in %v",
+					ip, len(e.slowTimes), len(e.slowAccounts), t.slowWindow),
+				Details:   "Long-horizon detection of paced dovecot_login auth failures that stay below the fast per-IP window",
+				Timestamp: now,
+				SourceIP:  ip,
+			})
+		}
 	}
 
 	// --- Per-/24 subnet tracker (IPv4 only) ---
@@ -287,7 +355,9 @@ func (t *smtpAuthTracker) Purge() {
 
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
-		if len(e.times) == 0 && !e.lastSeen.After(activityCutoff) {
+		e.slowTimes = pruneTimes(e.slowTimes, now.Add(-t.slowWindow))
+		pruneSlowAccounts(e.slowAccounts, now.Add(-t.slowWindow))
+		if len(e.times) == 0 && len(e.slowTimes) == 0 && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

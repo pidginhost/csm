@@ -296,6 +296,11 @@ type Config struct {
 		SMTPBruteForceSubnetThresh int `yaml:"smtp_bruteforce_subnet_threshold"`
 		SMTPAccountSprayThreshold  int `yaml:"smtp_account_spray_threshold"`
 		SMTPBruteForceMaxTracked   int `yaml:"smtp_bruteforce_max_tracked"`
+		// The slow pair catches attackers pacing below the fast window:
+		// SlowThreshold failures within SlowWindowMin minutes across at
+		// least three distinct mailboxes from one IP.
+		SMTPBruteForceSlowThreshold int `yaml:"smtp_bruteforce_slow_threshold"`
+		SMTPBruteForceSlowWindowMin int `yaml:"smtp_bruteforce_slow_window_min"`
 
 		// SMTP probe abuse counts raw inbound SMTP connect events per source
 		// IP (independent of AUTH outcome) so probe-and-disconnect scanners
@@ -312,6 +317,9 @@ type Config struct {
 		MailBruteForceSubnetThresh int `yaml:"mail_bruteforce_subnet_threshold"`
 		MailAccountSprayThreshold  int `yaml:"mail_account_spray_threshold"`
 		MailBruteForceMaxTracked   int `yaml:"mail_bruteforce_max_tracked"`
+		// The slow pair mirrors the SMTP one for the dovecot-native path.
+		MailBruteForceSlowThreshold int `yaml:"mail_bruteforce_slow_threshold"`
+		MailBruteForceSlowWindowMin int `yaml:"mail_bruteforce_slow_window_min"`
 
 		// MailBruteAccountKey selects how the account is extracted from a
 		// dovecot/postfix log line for per-account brute-force scoring.
@@ -1458,6 +1466,8 @@ func (c *Config) BotRangesAutoUpdate() bool {
 
 type defaultPresence struct {
 	smtpProbeThreshold         bool
+	smtpBruteSlowThreshold     bool
+	mailBruteSlowThreshold     bool
 	forwardGuard               forwardGuardPresence
 	phpRelay                   phpRelayPresence
 	retention                  retentionPresence
@@ -1684,6 +1694,13 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.SMTPBruteForceMaxTracked == 0 {
 		cfg.Thresholds.SMTPBruteForceMaxTracked = 20000
 	}
+	// Explicit 0 disables the slow-brute signal; absence gets the default.
+	if cfg.Thresholds.SMTPBruteForceSlowThreshold == 0 && !presence.smtpBruteSlowThreshold {
+		cfg.Thresholds.SMTPBruteForceSlowThreshold = 40
+	}
+	if cfg.Thresholds.SMTPBruteForceSlowWindowMin == 0 {
+		cfg.Thresholds.SMTPBruteForceSlowWindowMin = 360
+	}
 	if cfg.Thresholds.SMTPProbeThreshold == 0 && !presence.smtpProbeThreshold {
 		cfg.Thresholds.SMTPProbeThreshold = 100
 	}
@@ -1713,6 +1730,13 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.MailBruteForceMaxTracked == 0 {
 		cfg.Thresholds.MailBruteForceMaxTracked = 20000
+	}
+	// Explicit 0 disables the slow-brute signal; absence gets the default.
+	if cfg.Thresholds.MailBruteForceSlowThreshold == 0 && !presence.mailBruteSlowThreshold {
+		cfg.Thresholds.MailBruteForceSlowThreshold = 40
+	}
+	if cfg.Thresholds.MailBruteForceSlowWindowMin == 0 {
+		cfg.Thresholds.MailBruteForceSlowWindowMin = 360
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 30
@@ -2098,6 +2122,8 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
+	_, presence.smtpBruteSlowThreshold = raw.Thresholds["smtp_bruteforce_slow_threshold"]
+	_, presence.mailBruteSlowThreshold = raw.Thresholds["mail_bruteforce_slow_threshold"]
 	_, presence.thresholdsRollingCoverage = raw.Thresholds["rolling_coverage"]
 	_, presence.thresholdsDropperDetection = raw.Thresholds["dropper_detection"]
 	_, presence.httpASNCrawlMinIPs = raw.Thresholds["http_asn_crawl_min_ips"]
