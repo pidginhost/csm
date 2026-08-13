@@ -500,14 +500,11 @@ $table_prefix = 'wp_';
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "mysql" {
 				for _, a := range args {
-					if strings.Contains(a, "COUNT(*)") && strings.Contains(a, "casino") {
-						return []byte("15\n"), nil
+					if strings.Contains(a, "CONCAT_WS") && strings.Contains(a, "casino-") {
+						return []byte("15\tbest casino-bonus codes for 2026\n"), nil
 					}
-					if strings.Contains(a, "COUNT(*)") && strings.Contains(a, "viagra") {
-						return []byte("5\n"), nil
-					}
-					if strings.Contains(a, "COUNT(*)") {
-						return []byte("0\n"), nil
+					if strings.Contains(a, "CONCAT_WS") && strings.Contains(a, "viagra") {
+						return []byte("16\tgeneric viagra fast shipping\n"), nil
 					}
 				}
 			}
@@ -539,18 +536,12 @@ $table_prefix = 'wp_';
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "mysql" {
 				for _, a := range args {
-					if strings.Contains(a, "COUNT(*)") && strings.Contains(a, "cialis") {
-						return []byte("3\n"), nil
-					}
-					if strings.Contains(a, "COUNT(*)") {
-						return []byte("0\n"), nil
-					}
-					if strings.Contains(a, "SELECT ID") && strings.Contains(a, "cialis") {
-						return []byte("101\n102\n103\n"), nil
-					}
 					if strings.Contains(a, "DELETE") {
 						deleteQueries = append(deleteQueries, a)
 						return nil, nil
+					}
+					if strings.Contains(a, "CONCAT_WS") && strings.Contains(a, "cialis") {
+						return []byte("101\tbuy cialis online\n102\tcheap cialis here\n103\tcialis discount\n"), nil
 					}
 				}
 			}
@@ -585,18 +576,12 @@ $table_prefix = 'wp_';
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "mysql" {
 				for _, a := range args {
-					if strings.Contains(a, "COUNT(*)") && strings.Contains(a, "casino") {
-						return []byte("2\n"), nil
-					}
-					if strings.Contains(a, "COUNT(*)") {
-						return []byte("0\n"), nil
-					}
-					if strings.Contains(a, "SELECT ID") {
-						return []byte("NOTANUMBER\nALSOBAD\n"), nil
-					}
 					if strings.Contains(a, "DELETE") {
 						deleteQueries = append(deleteQueries, a)
 						return nil, nil
+					}
+					if strings.Contains(a, "CONCAT_WS") {
+						return []byte("NOTANUMBER\tbuy cialis online\nALSOBAD\tcheap cialis\n"), nil
 					}
 				}
 			}
@@ -611,8 +596,10 @@ $table_prefix = 'wp_';
 	if len(deleteQueries) != 0 {
 		t.Fatalf("expected no DELETE queries for nonnumeric IDs, got %d: %v", len(deleteQueries), deleteQueries)
 	}
-	if !strings.Contains(result.Message, "Deleted 0 spam posts") {
-		t.Errorf("expected zero-deletion message, got: %s", result.Message)
+	// Every candidate row was rejected, so there is nothing to delete and
+	// the run reports no spam rather than claiming a zero-count deletion.
+	if !strings.Contains(result.Message, "No spam posts found") {
+		t.Errorf("expected no-spam message when all IDs are rejected, got: %s", result.Message)
 	}
 }
 

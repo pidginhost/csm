@@ -111,6 +111,13 @@ type dbSpamPattern struct {
 	keyword      string         // human-readable keyword used in finding messages
 	regex        *regexp.Regexp // applied Go-side to candidate rows
 	likeFragment string         // SQL LIKE fragment, always bracketed with '%'
+	// deletable gates the DESTRUCTIVE path only. Scanning uses every
+	// pattern; db-clean --delete-spam uses this subset. "pharma" and
+	// "betting" are genuine spam keywords that are also ordinary words in
+	// legitimate publishing ("Health and Pharma Summit", coverage of a
+	// licensed bookmaker), and a word boundary cannot tell the two apart.
+	// Flagging those for review is useful; deleting on them is not.
+	deletable bool
 }
 
 // dbSpamPatterns enumerates the keywords we flag as SEO/pharma/gambling
@@ -121,16 +128,18 @@ type dbSpamPattern struct {
 // The LIKE fragments are lowercase because MySQL LIKE is case-insensitive
 // under the default _ci collation used by cPanel MariaDB.
 var dbSpamPatterns = []dbSpamPattern{
-	{"viagra", regexp.MustCompile(`(?i)\bviagra\b`), "%viagra%"},
-	{"cialis", regexp.MustCompile(`(?i)\bcialis\b`), "%cialis%"},
-	{"pharma", regexp.MustCompile(`(?i)\bpharma\b`), "%pharma%"},
-	{"betting", regexp.MustCompile(`(?i)\bbetting\b`), "%betting%"},
+	{"viagra", regexp.MustCompile(`(?i)\bviagra\b`), "%viagra%", true},
+	{"cialis", regexp.MustCompile(`(?i)\bcialis\b`), "%cialis%", true},
+	{"pharma", regexp.MustCompile(`(?i)\bpharma\b`), "%pharma%", false},
+	{"betting", regexp.MustCompile(`(?i)\bbetting\b`), "%betting%", false},
 	// Dashed variants: the trailing dash is itself a non-word char and
 	// serves as the right boundary. Only a left word-boundary is needed.
-	{"casino-", regexp.MustCompile(`(?i)\bcasino-`), "%casino-%"},
-	{"buy-cheap-", regexp.MustCompile(`(?i)\bbuy-cheap-`), "%buy-cheap-%"},
-	{"free-download", regexp.MustCompile(`(?i)\bfree-download`), "%free-download%"},
-	{"crack-serial", regexp.MustCompile(`(?i)\bcrack-serial`), "%crack-serial%"},
+	// The dash makes these URL-slug shaped, which prose does not produce,
+	// so they carry enough signal to delete on.
+	{"casino-", regexp.MustCompile(`(?i)\bcasino-`), "%casino-%", true},
+	{"buy-cheap-", regexp.MustCompile(`(?i)\bbuy-cheap-`), "%buy-cheap-%", true},
+	{"free-download", regexp.MustCompile(`(?i)\bfree-download`), "%free-download%", true},
+	{"crack-serial", regexp.MustCompile(`(?i)\bcrack-serial`), "%crack-serial%", true},
 }
 
 // countSpamMatches returns the number of candidate rows whose content

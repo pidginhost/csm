@@ -185,6 +185,13 @@ func DBRevokeUser(account string, userID int, demote, preview bool) DBCleanResul
 // database. Only deletes posts of type 'post' with status 'publish' to avoid
 // touching pages, attachments, or plugin data. If preview is true, reports
 // counts without deleting.
+//
+// Two restrictions keep a keyword match from destroying real content: the
+// SQL LIKE result is re-tested Go-side on a word boundary, and only the
+// patterns marked deletable are considered. Injections that live inside an
+// otherwise legitimate page are out of scope here -- deleting the page
+// would destroy the customer's own content, so those need the injected
+// markup stripped instead.
 func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	result := DBCleanResult{
 		Account: account,
@@ -198,94 +205,73 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	}
 	result.Database = creds.dbName
 
-	// Count spam posts by pattern.
-	patterns := []struct {
-		keyword string
-		sqlLike string
-	}{
-		{"casino", "%casino-%"},
-		{"betting", "%betting%"},
-		{"cialis", "%cialis%"},
-		{"viagra", "%viagra%"},
-		{"pharma", "%pharma%"},
-		{"buy-cheap", "%buy-cheap-%"},
-		{"crack-serial", "%crack-serial%"},
-		{"free-download", "%free-download%"},
-	}
-
-	totalCount := 0
-	for _, p := range patterns {
-		countQuery := "SELECT COUNT(*) FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
-		lines := runMySQLQueryRoot(creds.dbName, countQuery)
-		if len(lines) > 0 {
-			var count int
-			if _, err := fmt.Sscanf(lines[0], "%d", &count); err == nil && count > 0 {
-				result.Details = append(result.Details, fmt.Sprintf("%s: %d posts", p.keyword, count))
-				totalCount += count
+	// SQL LIKE narrows candidates; the word-boundary regex decides. LIKE
+	// alone matches "cialis" inside "specialist" and "pharma" inside a
+	// conference name, so a substring-only hit must never reach a DELETE.
+	// dbSpamPatterns is shared with the scanner so detection and deletion
+	// can never drift apart again.
+	spamIDs := make(map[string]struct{})
+	var order []string
+	for _, sp := range dbSpamPatterns {
+		if !sp.deletable {
+			continue
+		}
+		query := "SELECT ID, CONCAT_WS(' ', post_title, post_content) FROM " + prefix +
+			"posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" +
+			sp.likeFragment + "' OR post_title LIKE '" + sp.likeFragment + "')"
+		matched := 0
+		for _, line := range runMySQLQueryRoot(creds.dbName, query) {
+			id, text, ok := splitSpamCandidate(line)
+			if !ok || !sp.regex.MatchString(text) {
+				continue
 			}
+			matched++
+			if _, seen := spamIDs[id]; !seen {
+				spamIDs[id] = struct{}{}
+				order = append(order, id)
+			}
+		}
+		if matched > 0 {
+			result.Details = append(result.Details, fmt.Sprintf("%s: %d posts", sp.keyword, matched))
 		}
 	}
 
-	if totalCount == 0 {
+	if len(order) == 0 {
 		result.Message = "No spam posts found"
 		result.Success = true
 		return result
 	}
 
 	if preview {
-		result.Message = fmt.Sprintf("PREVIEW: Would delete up to %d spam posts", totalCount)
+		result.Message = fmt.Sprintf("PREVIEW: Would delete %d spam posts", len(order))
 		result.Success = true
 		return result
 	}
 
-	// Delete spam posts (and their revisions/meta).
+	// Delete spam posts (and their revisions/meta) in batches.
 	deleted := 0
-	for _, p := range patterns {
-		// Get IDs of matching posts.
-		idQuery := "SELECT ID FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
-		idLines := runMySQLQueryRoot(creds.dbName, idQuery)
-		if len(idLines) == 0 {
-			continue
+	for i := 0; i < len(order); i += 100 {
+		end := i + 100
+		if end > len(order) {
+			end = len(order)
 		}
+		idList := strings.Join(order[i:end], ",")
 
-		// Delete in batches of 100.
-		for i := 0; i < len(idLines); i += 100 {
-			end := i + 100
-			if end > len(idLines) {
-				end = len(idLines)
-			}
-			batch := idLines[i:end]
+		// Delete postmeta for these posts.
+		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
+			"DELETE FROM %spostmeta WHERE post_id IN (%s)", prefix, idList))
 
-			// Validate IDs are numeric.
-			var validIDs []string
-			for _, id := range batch {
-				id = strings.TrimSpace(id)
-				if spamPostIDRe.MatchString(id) {
-					validIDs = append(validIDs, id)
-				}
-			}
-			if len(validIDs) == 0 {
-				continue
-			}
+		// Delete revisions.
+		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
+			"DELETE FROM %sposts WHERE post_parent IN (%s) AND post_type='revision'",
+			prefix, idList))
 
-			idList := strings.Join(validIDs, ",")
+		// Delete the posts themselves.
+		runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
+			"DELETE FROM %sposts WHERE ID IN (%s) AND post_type='post' AND post_status='publish'",
+			prefix, idList))
 
-			// Delete postmeta for these posts.
-			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-				"DELETE FROM %spostmeta WHERE post_id IN (%s)", prefix, idList))
-
-			// Delete revisions.
-			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-				"DELETE FROM %sposts WHERE post_parent IN (%s) AND post_type='revision'",
-				prefix, idList))
-
-			// Delete the posts themselves.
-			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
-				"DELETE FROM %sposts WHERE ID IN (%s) AND post_type='post' AND post_status='publish'",
-				prefix, idList))
-
-			deleted += len(validIDs)
-		}
+		deleted += end - i
 	}
 
 	result.Message = fmt.Sprintf("Deleted %d spam posts and their metadata", deleted)
@@ -314,6 +300,22 @@ func FormatDBCleanResult(r DBCleanResult) string {
 }
 
 // --- helpers ---
+
+// splitSpamCandidate splits an "ID\ttext" row from the spam candidate
+// query. post_content may itself contain tabs, so the split is bounded to
+// two fields. A row whose ID is not numeric is dropped rather than
+// interpolated into a DELETE ... IN (...) list.
+func splitSpamCandidate(line string) (id, text string, ok bool) {
+	parts := strings.SplitN(line, "\t", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	id = strings.TrimSpace(parts[0])
+	if !spamPostIDRe.MatchString(id) {
+		return "", "", false
+	}
+	return id, parts[1], true
+}
 
 // findCredsForAccount finds WP database credentials for a cPanel account.
 // Returns root-authenticated credentials that use /root/.my.cnf instead of
