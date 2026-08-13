@@ -17,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -837,29 +838,7 @@ func isInfraIPDaemon(ip string, infraNets []string) bool {
 // deduplicating entries. This allows the firewall to include additional CIDRs
 // (e.g. server's own range) that need port access but shouldn't suppress alerts.
 func mergeInfraIPs(topLevel, fwSpecific []string) []string {
-	// Bound the map size hint so a malformed config cannot push the sum
-	// near max int; the lists are operator-supplied infra/firewall CIDRs
-	// and tens of entries is the realistic ceiling.
-	const infraIPHintCap = 1 << 16
-	hint := len(topLevel) + len(fwSpecific)
-	if hint < 0 || hint > infraIPHintCap {
-		hint = infraIPHintCap
-	}
-	seen := make(map[string]bool, hint)
-	var merged []string
-	for _, ip := range topLevel {
-		if !seen[ip] {
-			seen[ip] = true
-			merged = append(merged, ip)
-		}
-	}
-	for _, ip := range fwSpecific {
-		if !seen[ip] {
-			seen[ip] = true
-			merged = append(merged, ip)
-		}
-	}
-	return merged
+	return firewall.MergeInfraIPs(topLevel, fwSpecific)
 }
 
 // outgoingMailHoldUsersPath is the cPanel file listing users currently

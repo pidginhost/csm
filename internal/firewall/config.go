@@ -1,5 +1,10 @@
 package firewall
 
+import (
+	"net"
+	"strings"
+)
+
 // FirewallConfig defines the nftables firewall configuration.
 type FirewallConfig struct {
 	Enabled bool `yaml:"enabled"`
@@ -70,6 +75,54 @@ type FirewallConfig struct {
 	// such as carrier CGNAT blocks and well-known mail-provider egress.
 	DOSExemptRanges             []string `yaml:"dos_exempt_ranges"`
 	DOSExemptKnownMailProviders *bool    `yaml:"dos_exempt_known_mail_providers"`
+}
+
+// MergeInfraIPs returns the effective firewall infra list in configuration
+// order. Equivalent IP spellings share one entry because nftables enforces the
+// parsed address or network, not the operator's original text.
+func MergeInfraIPs(topLevel, firewallSpecific []string) []string {
+	const infraIPHintCap = 1 << 16
+	hint := len(topLevel) + len(firewallSpecific)
+	if hint < 0 || hint > infraIPHintCap {
+		hint = infraIPHintCap
+	}
+
+	seen := make(map[string]struct{}, hint)
+	merged := make([]string, 0, hint)
+	appendEntries := func(entries []string) {
+		for _, raw := range entries {
+			entry := strings.TrimSpace(raw)
+			if entry == "" {
+				continue
+			}
+			key := canonicalInfraIPKey(entry)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, entry)
+		}
+	}
+	appendEntries(topLevel)
+	appendEntries(firewallSpecific)
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func canonicalInfraIPKey(entry string) string {
+	if _, network, err := net.ParseCIDR(entry); err == nil {
+		return "network:" + network.String()
+	}
+	if ip := net.ParseIP(entry); ip != nil {
+		bits := net.IPv6len * 8
+		if ip.To4() != nil {
+			bits = net.IPv4len * 8
+		}
+		return "network:" + (&net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}).String()
+	}
+	return "host:" + strings.ToLower(strings.TrimSuffix(entry, "."))
 }
 
 func effectiveIPv6Ports(ipv4, ipv6 []int) []int {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/platform"
@@ -69,19 +70,13 @@ func formatRemaining(expiresAt time.Time) string {
 
 // apiFirewallStatus returns the firewall engine configuration and state summary.
 func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.cfg.Firewall
+	cfg := config.EffectiveFirewallConfig(s.cfg)
 	state, err := firewall.LoadState(s.cfg.StatePath)
 	if err != nil {
 		writeJSONError(w, "firewall state unavailable (corrupt state file)", http.StatusInternalServerError)
 		return
 	}
 	now := time.Now()
-
-	// Use top-level infra_ips if firewall.infra_ips is empty (daemon syncs at runtime)
-	infraIPs := cfg.InfraIPs
-	if len(infraIPs) == 0 {
-		infraIPs = s.cfg.InfraIPs
-	}
 
 	blockedPermanent := 0
 	blockedTemporary := 0
@@ -131,8 +126,8 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"allow_permanent":      allowPermanent,
 		"allow_temporary":      allowTemporary,
 		"port_allow_count":     len(state.PortAllowed),
-		"infra_ips":            infraIPs,
-		"infra_count":          len(infraIPs),
+		"infra_ips":            cfg.InfraIPs,
+		"infra_count":          len(cfg.InfraIPs),
 		"port_flood_rules":     len(cfg.PortFlood),
 		"country_block":        cfg.CountryBlock,
 		"dyndns_hosts":         cfg.DynDNSHosts,

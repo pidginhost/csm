@@ -2901,27 +2901,12 @@ func (d *Daemon) doGeoIPUpdate() {
 }
 
 func (d *Daemon) startFirewall() {
-	if !d.cfg.Firewall.Enabled {
+	effectiveFirewall := config.EffectiveFirewallConfig(d.cfg)
+	if effectiveFirewall == nil || !effectiveFirewall.Enabled {
 		return
 	}
 
-	// Merge top-level infra IPs into firewall's list. Top-level controls
-	// alert suppression (tight: only admin IPs), firewall may include
-	// additional CIDRs (e.g. server's own range) that need port access
-	// but should still be tracked for security alerts.
-	//
-	// Use a shallow copy rather than mutating d.cfg.Firewall in place.
-	// Mutating the live config poisons config.Diff during a SIGHUP
-	// reload: reload loads a fresh Config whose firewall.infra_ips has
-	// NOT been merged, and reflect.DeepEqual then reports the firewall
-	// subtree as changed even when nothing in csm.yaml was edited. The
-	// reload is classified restart_required and every operator reload
-	// turns into a spurious warning.
-	mergedFirewall := *d.cfg.Firewall
-	mergedFirewall.InfraIPs = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
-	ensureChallengePortGateFirewallAccess(d.cfg, &mergedFirewall)
-
-	engine, err := firewall.NewEngine(&mergedFirewall, d.cfg.StatePath)
+	engine, err := firewall.NewEngine(effectiveFirewall, d.cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall engine init error: %v\n", ts(), err)
 		return
@@ -2994,8 +2979,8 @@ func (d *Daemon) startFirewall() {
 	// DNS-refreshed into the engine's infra-block guard; otherwise the
 	// hostname entries would only protect operators whose IPs never
 	// move, which defeats the point of listing them by name.
-	infraHosts := infraHostnames(mergedFirewall.InfraIPs)
-	dynHosts := append([]string{}, d.cfg.Firewall.DynDNSHosts...)
+	infraHosts := infraHostnames(effectiveFirewall.InfraIPs)
+	dynHosts := append([]string{}, effectiveFirewall.DynDNSHosts...)
 	for _, h := range infraHosts {
 		if !containsString(dynHosts, h) {
 			dynHosts = append(dynHosts, h)
@@ -3029,60 +3014,6 @@ func (d *Daemon) startFirewall() {
 		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
 		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
-}
-
-func ensureChallengePortGateFirewallAccess(cfg *config.Config, fw *firewall.FirewallConfig) {
-	if cfg == nil || fw == nil {
-		return
-	}
-	if !cfg.Challenge.Enabled || !cfg.Challenge.PortGate.Enabled {
-		return
-	}
-	if cfg.Challenge.ListenPort <= 0 || challengeListenAddrIsLoopback(cfg.Challenge.ListenAddr) {
-		return
-	}
-	fw.TCPIn = appendUniquePort(fw.TCPIn, cfg.Challenge.ListenPort)
-	fw.RestrictedTCP = removePort(fw.RestrictedTCP, cfg.Challenge.ListenPort)
-}
-
-func challengeListenAddrIsLoopback(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		return true
-	}
-	host := addr
-	if h, _, err := net.SplitHostPort(addr); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-func appendUniquePort(ports []int, port int) []int {
-	for _, p := range ports {
-		if p == port {
-			return ports
-		}
-	}
-	out := append([]int(nil), ports...)
-	return append(out, port)
-}
-
-func removePort(ports []int, port int) []int {
-	out := make([]int, 0, len(ports))
-	for _, p := range ports {
-		if p != port {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func (d *Daemon) autoResponseDryRunEnabled() bool {

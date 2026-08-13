@@ -1251,21 +1251,61 @@ func TestAPIFirewallStatusJSON(t *testing.T) {
 	}
 }
 
-func TestAPIFirewallStatusInfraFallback(t *testing.T) {
+func TestAPIFirewallStatusMergesInfraIPs(t *testing.T) {
 	s := newTestServer(t, "token")
-	s.cfg.Firewall = &firewall.FirewallConfig{}
-	// firewall.infra_ips empty, top-level infra_ips set.
-	s.cfg.InfraIPs = []string{"10.0.0.5"}
+	s.cfg.Firewall = &firewall.FirewallConfig{
+		InfraIPs: []string{"10.0.0.5/32", "198.51.100.7", "2001:db8::1/128"},
+	}
+	s.cfg.InfraIPs = []string{"10.0.0.5", "2001:0db8:0:0::1"}
 
 	req := httptest.NewRequest("GET", "/api/v1/firewall/status", nil)
 	w := httptest.NewRecorder()
 	s.apiFirewallStatus(w, req)
 
 	var got map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
 	infra, _ := got["infra_ips"].([]any)
-	if len(infra) != 1 || infra[0] != "10.0.0.5" {
-		t.Errorf("infra_ips fallback = %v", got["infra_ips"])
+	want := []string{"10.0.0.5", "2001:0db8:0:0::1", "198.51.100.7"}
+	if len(infra) != len(want) {
+		t.Fatalf("infra_ips = %v, want %v", got["infra_ips"], want)
+	}
+	for i := range want {
+		if infra[i] != want[i] {
+			t.Errorf("infra_ips[%d] = %v, want %q", i, infra[i], want[i])
+		}
+	}
+	if got["infra_count"] != float64(len(want)) {
+		t.Errorf("infra_count = %v, want %d", got["infra_count"], len(want))
+	}
+}
+
+func TestAPIFirewallStatusReportsEffectiveChallengePort(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.cfg.Firewall = &firewall.FirewallConfig{
+		TCPIn:         []int{80},
+		RestrictedTCP: []int{8439, 9443},
+	}
+	s.cfg.Challenge.Enabled = true
+	s.cfg.Challenge.PortGate.Enabled = true
+	s.cfg.Challenge.ListenAddr = "0.0.0.0"
+	s.cfg.Challenge.ListenPort = 8439
+
+	w := httptest.NewRecorder()
+	s.apiFirewallStatus(w, httptest.NewRequest("GET", "/api/v1/firewall/status", nil))
+
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	tcpIn, _ := got["tcp_in"].([]any)
+	if len(tcpIn) != 2 || tcpIn[0] != float64(80) || tcpIn[1] != float64(8439) {
+		t.Errorf("tcp_in = %v, want [80 8439]", got["tcp_in"])
+	}
+	restricted, _ := got["restricted_tcp"].([]any)
+	if len(restricted) != 1 || restricted[0] != float64(9443) {
+		t.Errorf("restricted_tcp = %v, want [9443]", got["restricted_tcp"])
 	}
 }
 
