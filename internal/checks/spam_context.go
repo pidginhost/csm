@@ -87,7 +87,7 @@ var externalSchemeRe = regexp.MustCompile(`^(?i)(https?:)?//`)
 // every keyword hit is a bare mention without cloaking context — the
 // caller should suppress the finding in that case.
 func contentHasSpamContext(content string, pattern dbSpamPattern) bool {
-	matches := pattern.regex.FindAllStringIndex(content, -1)
+	matches := spamKeywordMatchIndexes(pattern, content)
 	for _, m := range matches {
 		if hitHasSpamContext(content, m[0], m[1], pattern.keyword) {
 			return true
