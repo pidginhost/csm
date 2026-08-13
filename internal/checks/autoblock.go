@@ -69,6 +69,14 @@ type liveBlocker interface {
 	IsBlockedLive(ip string) (bool, error)
 }
 
+// liveBlockedLister is satisfied by engines that can dump their whole live
+// blocked set in one netlink round trip. The reconcile pass prefers it over
+// liveBlocker: the per-IP query dumps the entire set on every call, so
+// pruning N tracked IPs cost N full dumps of the same data.
+type liveBlockedLister interface {
+	LiveBlockedSet() (firewall.LiveBlockedSnapshot, error)
+}
+
 type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
@@ -201,6 +209,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// global also tripped the race detector.
 	blocker := getIPBlocker()
 
+	// One bulk dump of the kernel's blocked sets answers every membership
+	// question this cycle asks. The per-IP live query dumps the whole set, so
+	// the reconcile pass below cost one full dump per tracked IP.
+	var liveBlocked firewall.LiveBlockedSnapshot
+	var haveLiveBlocked bool
+	if blocker != nil {
+		liveBlocked, haveLiveBlocked = liveBlockedSnapshot(blocker)
+	}
+
 	// exemptLogged deduplicates per-cycle log lines for DoS-exempt CIDR skips
 	// so each suppressed subnet is logged once per AutoBlockIPs call, not once
 	// per finding or per IP in the netblock counting sweep.
@@ -220,7 +237,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
 		if blocker != nil {
-			if !isBlockedLiveOrCached(blocker, b.IP) {
+			if !blockedLiveOrCached(blocker, liveBlocked, haveLiveBlocked, b.IP) {
 				// Engine expired this block - clean up our state
 				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
 				continue
@@ -398,7 +415,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// Don't re-block already blocked IPs.
-		if isAlreadyBlocked(state, ip) || (blocker != nil && isBlockedLiveOrCached(blocker, ip)) {
+		if isAlreadyBlocked(state, ip) || (blocker != nil && blockedLiveOrCached(blocker, liveBlocked, haveLiveBlocked, ip)) {
 			continue
 		}
 
@@ -649,6 +666,33 @@ func isBlockedLiveOrCached(b IPBlocker, ip string) bool {
 		}
 	}
 	return b.IsBlocked(ip)
+}
+
+// liveBlockedSnapshot takes one bulk membership snapshot for the cycle. A
+// blocker that cannot produce one, or a dump that fails, leaves callers on
+// the per-IP path rather than on a view that would read as "nothing blocked".
+func liveBlockedSnapshot(b IPBlocker) (firewall.LiveBlockedSnapshot, bool) {
+	lister, ok := b.(liveBlockedLister)
+	if !ok {
+		return firewall.LiveBlockedSnapshot{}, false
+	}
+	snap, err := lister.LiveBlockedSet()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "auto-block: live blocked-set dump failed, falling back to per-IP lookups: %v\n", err)
+		return firewall.LiveBlockedSnapshot{}, false
+	}
+	return snap, true
+}
+
+// blockedLiveOrCached answers from the cycle's bulk snapshot when it covers
+// the IP's address family, and falls back to the per-IP live query otherwise.
+func blockedLiveOrCached(b IPBlocker, snap firewall.LiveBlockedSnapshot, haveSnap bool, ip string) bool {
+	if haveSnap {
+		if blocked, known := snap.Contains(ip); known {
+			return blocked
+		}
+	}
+	return isBlockedLiveOrCached(b, ip)
 }
 
 // callBlockIP dispatches to the outcome-reporting interface when the

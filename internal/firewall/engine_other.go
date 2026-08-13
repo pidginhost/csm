@@ -87,6 +87,9 @@ func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupporte
 func (e *Engine) IsBlocked(_ string) bool                 { return false }
 func (e *Engine) IsAllowed(_ string) bool                 { return false }
 func (e *Engine) IsBlockedLive(_ string) (bool, error)    { return false, ErrUnsupportedPlatform }
+func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
+	return LiveBlockedSnapshot{}, ErrUnsupportedPlatform
+}
 func (e *Engine) AllowIP(_ string, _ string) error        { return ErrUnsupportedPlatform }
 func (e *Engine) RemoveAllowIP(_ string) error            { return ErrUnsupportedPlatform }
 func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error {

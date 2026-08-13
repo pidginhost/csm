@@ -139,6 +139,10 @@ type Engine struct {
 
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 
+	// liveBlockedDump, when non-nil, replaces the netlink dump of one
+	// blocked set. Tests inject it to avoid a real nft connection.
+	liveBlockedDump func(set *nftables.Set) ([]nftables.SetElement, error)
+
 	// liveBlockCounts, when non-nil, returns the live (perm, temp)
 	// element counts across blocked v4 + v6 sets. Tests inject this
 	// to avoid spinning up a real nft connection. Nil falls back to
@@ -2727,6 +2731,63 @@ func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// LiveBlockedSet dumps the blocked v4 and v6 sets once and returns a
+// membership snapshot. IsBlockedLive issues a full set dump per call, so a
+// reconcile pass over N tracked IPs cost N dumps of the entire set; callers
+// testing more than one IP should snapshot instead.
+//
+// A nil set is left uncovered rather than reported empty. Dump failures are
+// returned so callers keep their cached view instead of erasing local state
+// on a transient netlink error.
+func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.setBlocked == nil && e.setBlocked6 == nil {
+		return LiveBlockedSnapshot{}, fmt.Errorf("blocked sets unavailable")
+	}
+	if e.liveBlockedDump == nil && e.conn == nil {
+		return LiveBlockedSnapshot{}, fmt.Errorf("nftables connection unavailable")
+	}
+
+	var snap LiveBlockedSnapshot
+	for _, target := range []struct {
+		set     *nftables.Set
+		members *map[string]struct{}
+		covered *bool
+	}{
+		{e.setBlocked, &snap.V4, &snap.HasV4},
+		{e.setBlocked6, &snap.V6, &snap.HasV6},
+	} {
+		if target.set == nil {
+			continue
+		}
+		elements, err := e.dumpBlockedSetLocked(target.set)
+		if err != nil {
+			return LiveBlockedSnapshot{}, fmt.Errorf("listing blocked set: %w", err)
+		}
+		members := make(map[string]struct{}, len(elements))
+		for _, el := range elements {
+			// Keys come from the kernel; anything that is not an address
+			// width cannot be matched against and is not ours to interpret.
+			if len(el.Key) != net.IPv4len && len(el.Key) != net.IPv6len {
+				continue
+			}
+			members[net.IP(el.Key).String()] = struct{}{}
+		}
+		*target.members = members
+		*target.covered = true
+	}
+	return snap, nil
+}
+
+func (e *Engine) dumpBlockedSetLocked(set *nftables.Set) ([]nftables.SetElement, error) {
+	if e.liveBlockedDump != nil {
+		return e.liveBlockedDump(set)
+	}
+	return e.conn.GetSetElements(set)
 }
 
 // AllowIP adds an IP to the allowed set and persists it.
