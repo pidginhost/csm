@@ -13,11 +13,9 @@ import (
 	"github.com/pidginhost/csm/internal/metrics"
 )
 
-// blockOutcomeMetricValue reads the exported counter value for one
-// outcome/source pair from the default registry's exposition text, so the
-// test asserts exactly what a scraper sees. Returns 0 when the child has
-// not been created yet.
-func blockOutcomeMetricValue(t *testing.T, outcome, source string) float64 {
+// blockOutcomeMetricSample reads one outcome/source pair from the default
+// registry's exposition text, so the test asserts exactly what a scraper sees.
+func blockOutcomeMetricSample(t *testing.T, outcome, source string) (float64, bool) {
 	t.Helper()
 	var buf bytes.Buffer
 	if err := metrics.WriteOpenMetrics(&buf); err != nil {
@@ -30,10 +28,16 @@ func blockOutcomeMetricValue(t *testing.T, outcome, source string) float64 {
 			if err != nil {
 				t.Fatalf("parse metric line %q: %v", line, err)
 			}
-			return v
+			return v, true
 		}
 	}
-	return 0
+	return 0, false
+}
+
+func blockOutcomeMetricValue(t *testing.T, outcome, source string) float64 {
+	t.Helper()
+	v, _ := blockOutcomeMetricSample(t, outcome, source)
+	return v
 }
 
 // Every chokepoint block attempt increments
@@ -97,5 +101,60 @@ func TestObserveOperatorBlockCountsCLI(t *testing.T) {
 	ObserveOperatorBlock(errors.New("engine down"), BlockSourceWebUI)
 	if got := blockOutcomeMetricValue(t, "error", BlockSourceWebUI); got != beforeErr+1 {
 		t.Fatalf("error/web_ui = %v, want %v", got, beforeErr+1)
+	}
+
+	beforeProtected := blockOutcomeMetricValue(t, "protected", BlockSourceWebUI)
+	beforeErr = blockOutcomeMetricValue(t, "error", BlockSourceWebUI)
+	ObserveOperatorBlock(fmt.Errorf("operator guard: %w", firewall.ErrIPProtected), BlockSourceWebUI)
+	if got := blockOutcomeMetricValue(t, "protected", BlockSourceWebUI); got != beforeProtected+1 {
+		t.Fatalf("protected/web_ui = %v, want %v", got, beforeProtected+1)
+	}
+	if got := blockOutcomeMetricValue(t, "error", BlockSourceWebUI); got != beforeErr {
+		t.Fatalf("error/web_ui = %v after protected refusal, want %v", got, beforeErr)
+	}
+}
+
+func TestBlockOutcomeMetricPreinitializesClosedLabelSet(t *testing.T) {
+	outcomes := []string{"live", "dry_run", "allowed", "allowlisted", "noop", "protected", "error"}
+	sources := []string{
+		BlockSourceScan,
+		BlockSourceChallenge,
+		BlockSourceIncident,
+		BlockSourceCentral,
+		BlockSourceCLI,
+		BlockSourceWebUI,
+		"unknown",
+	}
+
+	for _, outcome := range outcomes {
+		for _, source := range sources {
+			if _, ok := blockOutcomeMetricSample(t, outcome, source); !ok {
+				t.Errorf("missing zero-value metric for outcome=%q source=%q", outcome, source)
+			}
+		}
+	}
+	if got, want := blockOutcomeCounter().ChildCount(), len(outcomes)*len(sources); got != want {
+		t.Fatalf("metric children = %d, want the %d closed label combinations", got, want)
+	}
+}
+
+func TestObserveBlockOutcomeCollapsesUnexpectedLabels(t *testing.T) {
+	counter := blockOutcomeCounter()
+	beforeChildren := counter.ChildCount()
+	before := blockOutcomeMetricValue(t, "error", "unknown")
+
+	for i := range 128 {
+		observeBlockOutcome(
+			firewall.BlockOutcome(fmt.Sprintf("203.0.113.%d", i)),
+			nil,
+			fmt.Sprintf("untrusted reason %d", i),
+		)
+	}
+
+	if got := blockOutcomeMetricValue(t, "error", "unknown"); got != before+128 {
+		t.Fatalf("error/unknown = %v, want %v", got, before+128)
+	}
+	if got := counter.ChildCount(); got != beforeChildren {
+		t.Fatalf("metric children grew from %d to %d for unexpected labels", beforeChildren, got)
 	}
 }

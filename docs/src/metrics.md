@@ -274,8 +274,11 @@ Registered when `reputation.upstream.enabled: true`.
   block attempt, labelled by firewall `outcome` (`live`, `dry_run`,
   `allowed`, `allowlisted`, `noop`, `protected` for refused
   infrastructure IPs, `error` for engine failures or an unavailable
-  engine) and by `source`
-  (`scan`, `challenge`, `incident`, `central_intel`, `cli`, `web_ui`).
+  engine) and by `source` (`scan`, `challenge`, `incident`,
+  `central_intel`, `cli`, `web_ui`, or `unknown` for an invalid internal
+  source). All combinations are exported at zero from startup, and
+  unexpected outcome or source values collapse into the fixed `error` or
+  `unknown` buckets instead of creating new labels.
   This is the aliveness signal for auto-response: alert when
   `sum(rate(csm_firewall_block_outcome_total{outcome="live",source!~"cli|web_ui"}[1h])) == 0`
   while attack findings keep coming, and watch `outcome="error"` for a
