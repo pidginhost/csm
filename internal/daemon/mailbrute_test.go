@@ -2236,3 +2236,52 @@ func TestMailAuthTracker_SlowBruteMailboxWalkFires(t *testing.T) {
 		t.Errorf("walk fired at mailbox %d, want %d", firedAt, slowBruteWalkAccounts)
 	}
 }
+
+func TestMailAuthTracker_SlowBruteMailboxWalkRecentSuccessUsesAdvisory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.36"
+	tr.RecordSuccess(ip, "owner@example.ro")
+
+	var advisory bool
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		findings := tr.Record(ip, fmt.Sprintf("walked-%02d@example.ro", i))
+		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
+			t.Fatalf("breadth walk fired despite an in-window success: %v", got)
+		}
+		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
+			advisory = true
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if !advisory {
+		t.Fatal("breadth walk with a recent success emitted neither a block nor an advisory")
+	}
+}
+
+func TestMailAuthTracker_SlowBruteMailboxWalkEstablishedGoodUsesAdvisory(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	ip := "198.51.100.37"
+	accounts := make([]string, slowBruteWalkAccounts)
+	for i := range accounts {
+		accounts[i] = fmt.Sprintf("known-%02d@example.ro", i)
+		tr.RecordSuccess(ip, accounts[i])
+	}
+	clock.advance(7 * time.Hour) // successes expire; long-lived standing remains
+
+	var advisory bool
+	for _, account := range accounts {
+		findings := tr.Record(ip, account)
+		if got, ok := findingByCheck(findings, "mail_bruteforce"); ok {
+			t.Fatalf("breadth walk fired for failures confined to established accounts: %v", got)
+		}
+		if _, ok := findingByCheck(findings, "mail_bruteforce_suspected"); ok {
+			advisory = true
+		}
+		clock.advance(8 * time.Minute)
+	}
+	if !advisory {
+		t.Fatal("established-good breadth walk emitted neither a block nor an advisory")
+	}
+}

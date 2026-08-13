@@ -1048,10 +1048,18 @@ func eximHFieldStart(line string) (int, bool) {
 }
 
 func firstHFieldClientIP(s string) string {
+	ip, _ := firstHFieldClientIPAndEnd(s)
+	return ip
+}
+
+// firstHFieldClientIPAndEnd returns the connecting address and the byte offset
+// immediately after its closing bracket. The offset lets callers discard the
+// entire attacker-controlled H= value before parsing later Exim fields.
+func firstHFieldClientIPAndEnd(s string) (string, int) {
 	parenDepth := 0
 	for i := 0; i < len(s); i++ {
 		if parenDepth == 0 && beginsNextEximField(s[i:]) {
-			return ""
+			return "", 0
 		}
 		switch s[i] {
 		case '(':
@@ -1066,17 +1074,17 @@ func firstHFieldClientIP(s string) string {
 			}
 			end := strings.IndexByte(s[i+1:], ']')
 			if end < 0 {
-				return ""
+				return "", 0
 			}
 			candidate := s[i+1 : i+1+end]
 			after := s[i+1+end+1:]
 			if net.ParseIP(candidate) != nil && hClientIPTerminated(after) {
-				return candidate
+				return candidate, i + end + 2
 			}
 			i += end + 1
 		}
 	}
-	return ""
+	return "", 0
 }
 
 func beginsNextEximField(s string) bool {
@@ -1264,28 +1272,83 @@ func (rw *rateWindow) prune(now time.Time, window time.Duration) {
 // emailRateWindows tracks per-user send rate windows.
 var emailRateWindows sync.Map // map[string]*rateWindow
 
-// extractAuthUser extracts the authenticated user from an exim <= line.
-// Looks for A=dovecot_login:{user} or A=dovecot_plain:{user}.
-// Returns empty string if not found or line is not an acceptance line.
+// extractAuthUser extracts the authenticated user from a top-level A= field on
+// an exim <= line. Parenthesized HELO text and quoted fields such as T= are
+// attacker-controlled, so an A=dovecot_* substring inside either must not be
+// accepted as proof of authentication.
 func extractAuthUser(line string) string {
-	if !strings.Contains(line, " <= ") {
+	accept := strings.Index(line, " <= ")
+	if accept < 0 {
+		return ""
+	}
+	rest := line[accept+len(" <= "):]
+	// Skip the envelope sender. It is data, not an Exim key=value field.
+	if end := strings.IndexAny(rest, " \t\n"); end >= 0 {
+		rest = rest[end:]
+	} else {
 		return ""
 	}
 
-	// Look for A=dovecot_login: or A=dovecot_plain:
-	for _, prefix := range []string{"A=dovecot_login:", "A=dovecot_plain:"} {
-		idx := strings.Index(line, prefix)
-		if idx < 0 {
-			continue
+	// H= includes attacker-controlled HELO text which can contain spaces,
+	// quotes, parentheses, and strings that resemble Exim fields. Start field
+	// parsing only after the validated connecting-client address.
+	if hStart, ok := eximHFieldStart(rest); ok {
+		_, clientEnd := firstHFieldClientIPAndEnd(rest[hStart:])
+		if clientEnd == 0 {
+			return ""
 		}
-		rest := line[idx+len(prefix):]
-		end := strings.IndexAny(rest, " \t\n")
-		if end < 0 {
-			return rest
+		rest = rest[hStart+clientEnd:]
+	}
+
+	for rest != "" {
+		rest = strings.TrimLeft(rest, " \t\n")
+		if rest == "" || strings.HasPrefix(rest, "T=") {
+			return ""
 		}
-		return rest[:end]
+		for _, prefix := range []string{"A=dovecot_login:", "A=dovecot_plain:"} {
+			if !strings.HasPrefix(rest, prefix) {
+				continue
+			}
+			user := rest[len(prefix):]
+			if end := strings.IndexAny(user, " \t\n"); end >= 0 {
+				user = user[:end]
+			}
+			return user
+		}
+		end := eximFieldEnd(rest)
+		if end >= len(rest) {
+			return ""
+		}
+		rest = rest[end:]
 	}
 	return ""
+}
+
+// eximFieldEnd returns the end of one post-H= Exim field. Quoted values are
+// consumed as one field so their contents cannot masquerade as A= metadata.
+func eximFieldEnd(s string) int {
+	eq := strings.IndexByte(s, '=')
+	space := strings.IndexAny(s, " \t\n")
+	if eq < 0 || (space >= 0 && eq > space) || eq+1 >= len(s) || (s[eq+1] != '\'' && s[eq+1] != '"') {
+		if space < 0 {
+			return len(s)
+		}
+		return space
+	}
+
+	quote := s[eq+1]
+	escaped := false
+	for i := eq + 2; i < len(s); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case s[i] == '\\':
+			escaped = true
+		case s[i] == quote:
+			return i + 1
+		}
+	}
+	return len(s)
 }
 
 // isHighVolumeSender checks if a user is in the high-volume senders allowlist.

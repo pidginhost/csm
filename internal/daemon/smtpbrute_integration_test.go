@@ -43,8 +43,16 @@ func buildEximHandler(cfg *config.Config, tr *smtpAuthTracker) LogLineHandler {
 				findings = append(findings, tr.Record(ip, account)...)
 			}
 		}
+		recordEximSMTPAuthSuccess(line, c, tr)
 		return findings
 	}
+}
+
+func makeEximDovecotSuccessLine(clientIP string) string {
+	return fmt.Sprintf(
+		`2026-04-14 12:00:00 1abc-DEF-01 <= sender@example.com H=([192.0.2.94]) [%s]:54321 P=esmtpsa A=dovecot_login:sender@example.com S=1200 T="forwarded [203.0.113.77]"`,
+		clientIP,
+	)
 }
 
 func TestEximHandler_NilTrackerSafe(t *testing.T) {
@@ -150,5 +158,50 @@ func TestEximHandler_IPv4MappedIPv6Canonicalized(t *testing.T) {
 	}
 	if !fired {
 		t.Fatalf("IPv4-mapped IPv6 must canonicalize so all five records count as one IP at threshold")
+	}
+}
+
+func TestEximHandler_SMTPAuthSuccessUsesHFieldClientIP(t *testing.T) {
+	cfg := &config.Config{}
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	h := buildEximHandler(cfg, tr)
+
+	h(makeEximDovecotSuccessLine("198.51.100.92"), cfg)
+	if _, ok := tr.ips["192.0.2.94"]; ok {
+		t.Fatal("HELO address was recorded as the authenticated client")
+	}
+	e, ok := tr.ips["198.51.100.92"]
+	if !ok || e.slowLastSuccess.IsZero() {
+		t.Fatal("H=[client] address was not recorded for authenticated delivery")
+	}
+	if _, ok := tr.ips["203.0.113.77"]; ok {
+		t.Fatal("subject/forwarded address was recorded as the authenticated client")
+	}
+}
+
+func TestEximHandler_SubjectCannotSpoofSMTPAuthSuccess(t *testing.T) {
+	cfg := &config.Config{}
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	h := buildEximHandler(cfg, tr)
+	line := `2026-04-14 12:00:00 1abc-DEF-01 <= sender@example.net H=attacker.example [198.51.100.93]:54321 P=esmtp S=1200 T="A=dovecot_login:forged@example.net"`
+
+	h(line, cfg)
+	if e, ok := tr.ips["198.51.100.93"]; ok && !e.slowLastSuccess.IsZero() {
+		t.Fatal("attacker-controlled subject was accepted as an SMTP auth success")
+	}
+}
+
+func TestEximHandler_SMTPAuthSuccessRequiresHFieldClientIP(t *testing.T) {
+	cfg := &config.Config{}
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	h := buildEximHandler(cfg, tr)
+	line := `2026-04-14 12:00:00 1abc-DEF-01 <= sender@example.net P=esmtpsa A=dovecot_login:sender@example.net S=1200 T="forwarded [198.51.100.94]"`
+
+	h(line, cfg)
+	if got := tr.Size(); got != 0 {
+		t.Fatalf("authenticated line without H=[client] recorded a subject/header address: size=%d", got)
 	}
 }

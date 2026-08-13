@@ -339,6 +339,11 @@ func (t *smtpAuthTracker) RecordSuccess(ip string) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// An explicitly disabled slow detector must not retain successful-client
+	// state for every authenticated SMTP delivery on the host.
+	if t.slowThreshold <= 0 || t.slowWindow <= 0 {
+		return
+	}
 	e, ok := t.ips[ip]
 	if !ok {
 		e = &smtpIPEntry{}
@@ -420,12 +425,17 @@ func (t *smtpAuthTracker) Purge() {
 	defer t.mu.Unlock()
 	now := t.now()
 	activityCutoff := now.Add(-(t.window + t.suppression))
+	slowCutoff := now.Add(-t.slowWindow)
 
 	for k, e := range t.ips {
 		e.times = pruneTimes(e.times, now.Add(-t.window))
-		e.slowTimes = pruneTimes(e.slowTimes, now.Add(-t.slowWindow))
-		pruneSlowAccounts(e.slowAccounts, now.Add(-t.slowWindow))
-		if len(e.times) == 0 && len(e.slowTimes) == 0 && !e.lastSeen.After(activityCutoff) {
+		e.slowTimes = pruneTimes(e.slowTimes, slowCutoff)
+		pruneSlowAccounts(e.slowAccounts, slowCutoff)
+		if e.slowLastSuccess.Before(slowCutoff) {
+			e.slowLastSuccess = time.Time{}
+		}
+		if len(e.times) == 0 && len(e.slowTimes) == 0 &&
+			e.slowLastSuccess.IsZero() && !e.lastSeen.After(activityCutoff) {
 			delete(t.ips, k)
 		}
 	}

@@ -552,6 +552,60 @@ func TestSMTPAuthTracker_SlowBruteWalkSuppressedByRecentSuccess(t *testing.T) {
 	}
 }
 
+// Purge runs every minute in production. A successful source must remain
+// vouched for the full slow window, not disappear as soon as the much shorter
+// fast window plus suppression period has elapsed.
+func TestSMTPAuthTracker_PurgeRetainsSuccessForSlowWindow(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	ip := "198.51.100.34"
+
+	tr.RecordSuccess(ip)
+	clock.advance(2 * time.Hour) // past fast window + suppression; inside 6h slow window
+	tr.Purge()
+	if e, ok := tr.ips[ip]; !ok || e.slowLastSuccess.IsZero() {
+		t.Fatal("purge discarded an SMTP success still inside the slow window")
+	}
+	for i := 0; i < slowBruteWalkAccounts; i++ {
+		if got, ok := findingByCheck(tr.Record(ip, fmt.Sprintf("walked-%02d@example.ro", i)), "smtp_bruteforce"); ok {
+			t.Fatalf("walk fired after purge discarded its success guard: %v", got)
+		}
+		clock.advance(8 * time.Minute)
+	}
+}
+
+func TestSMTPAuthTracker_RecordSuccessNoopWhenSlowDetectorDisabled(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, time.Hour, 0, 6*time.Hour, 20000, clock.Now)
+
+	tr.RecordSuccess("198.51.100.35")
+	if got := tr.Size(); got != 0 {
+		t.Fatalf("disabled slow detector retained success state: size=%d", got)
+	}
+}
+
+func TestSMTPAuthTracker_ProductionMailboxWalkVectorFires(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	const (
+		failures  = 34
+		mailboxes = 26
+	)
+	var first alert.Finding
+	for i := 0; i < failures; i++ {
+		account := fmt.Sprintf("walked-%02d@example.ro", i%mailboxes)
+		if got, ok := findingByCheck(tr.Record("213.33.204.130", account), "smtp_bruteforce"); ok && first.Check == "" {
+			first = got
+		}
+		if i+1 < failures {
+			clock.advance(10 * time.Minute)
+		}
+	}
+	if first.Check == "" || !strings.Contains(first.Message, "across") {
+		t.Fatalf("34 failures across 26 mailboxes in under 6h did not fire the breadth signal: %+v", first)
+	}
+}
+
 // A backend outage fails every login regardless of password; the slow signal
 // must honor the degraded gate like the fast one.
 func TestSMTPAuthTracker_SlowBruteBackendDownSuppressed(t *testing.T) {

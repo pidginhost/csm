@@ -42,6 +42,35 @@ func TestExtractAuthUser(t *testing.T) {
 	}
 }
 
+func TestExtractAuthUser_IgnoresAttackerControlledFields(t *testing.T) {
+	for _, line := range []string{
+		`2026-04-04 10:15:23 1abc23-000456-AB <= user@example.com H=(A=dovecot_login:forged@example.com) [203.0.113.42] P=esmtp S=1234`,
+		`2026-04-04 10:15:23 1abc23-000456-AB <= user@example.com H=mail.example.com [203.0.113.42] P=esmtp T="A=dovecot_plain:forged@example.com"`,
+	} {
+		if got := extractAuthUser(line); got != "" {
+			t.Errorf("extractAuthUser(%q) = %q, want empty", line, got)
+		}
+	}
+}
+
+func TestExtractAuthUser_AllowsQuotedHeloText(t *testing.T) {
+	for _, line := range []string{
+		`2026-04-04 10:15:23 1abc23-000456-AB <= user@example.com H=(odd"helo) [203.0.113.42] P=esmtpsa A=dovecot_login:user@example.com S=1234`,
+		`2026-04-04 10:15:23 1abc23-000456-AB <= user@example.com H=odd'helo [203.0.113.42] P=esmtpsa A=dovecot_login:user@example.com S=1234`,
+	} {
+		if got := extractAuthUser(line); got != "user@example.com" {
+			t.Errorf("extractAuthUser(%q) = %q, want user@example.com", line, got)
+		}
+	}
+}
+
+func TestExtractAuthUser_IgnoresQuotedNonSubjectField(t *testing.T) {
+	line := `2026-04-04 10:15:23 1abc23-000456-AB <= user@example.com H=mail.example [203.0.113.42] X="A=dovecot_login:forged@example.com" S=1234`
+	if got := extractAuthUser(line); got != "" {
+		t.Errorf("extractAuthUser(%q) = %q, want empty", line, got)
+	}
+}
+
 func TestRateWindow_AddAndCount(t *testing.T) {
 	rw := &rateWindow{}
 	now := time.Now()
