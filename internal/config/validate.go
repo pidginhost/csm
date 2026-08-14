@@ -651,14 +651,19 @@ func validateWarnings(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured - risk of lockout"})
 	}
 
-	// Netblock threshold too low
-	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < 2 {
-		results = append(results, ValidationResult{"warn", "auto_response.netblock_threshold", fmt.Sprintf("netblock_threshold=%d is very low (< 2), may cause excessive blocking", cfg.AutoResponse.NetBlockThreshold)})
+	// Escalation counters below 2 describe no pattern: one address is not a
+	// subnet, one temp block is not a repeat offender. The block path used to
+	// swap in its own default and carry on, so the operator's value was
+	// discarded without a word. An omitted key still gets the default, which
+	// Load fills, so anything reaching here below the minimum was written
+	// deliberately. Only flagged while the feature that reads it is on.
+	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.netblock_threshold",
+			fmt.Sprintf("netblock_threshold must be at least %d, got %d", MinBlockEscalationCount, cfg.AutoResponse.NetBlockThreshold)})
 	}
-
-	// Permblock count too low
-	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < 2 {
-		results = append(results, ValidationResult{"warn", "auto_response.permblock_count", fmt.Sprintf("permblock_count=%d is very low (< 2), may permanently block too quickly", cfg.AutoResponse.PermBlockCount)})
+	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.permblock_count",
+			fmt.Sprintf("permblock_count must be at least %d, got %d", MinBlockEscalationCount, cfg.AutoResponse.PermBlockCount)})
 	}
 
 	return results

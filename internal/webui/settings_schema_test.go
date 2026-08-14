@@ -673,3 +673,27 @@ func TestNullablePointerFieldsFlagged(t *testing.T) {
 		}
 	}
 }
+
+// The dashboard must not offer a value the daemon refuses to start with.
+func TestBlockEscalationMinimumsMatchValidation(t *testing.T) {
+	section, ok := LookupSettingsSection("auto_response")
+	if !ok {
+		t.Fatal("auto_response section not found")
+	}
+	want := int64(config.MinBlockEscalationCount)
+	found := 0
+	for _, f := range section.Fields {
+		switch f.YAMLPath {
+		case "netblock_threshold", "permblock_count":
+			found++
+			if f.Min == nil {
+				t.Errorf("%s has no minimum, want %d to match config validation", f.YAMLPath, want)
+			} else if *f.Min != want {
+				t.Errorf("%s minimum = %d, want %d to match config validation", f.YAMLPath, *f.Min, want)
+			}
+		}
+	}
+	if found != 2 {
+		t.Fatalf("checked %d escalation fields, want 2", found)
+	}
+}

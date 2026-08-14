@@ -588,9 +588,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// dry-run too so escalations that would fire (from live blocks recorded
 	// before dry-run was enabled) surface as notices.
 	if cfg.AutoResponse.NetBlock && blocker != nil {
+		// Load fills the default and validation rejects anything lower, so
+		// this only catches a Config assembled in code.
 		threshold := cfg.AutoResponse.NetBlockThreshold
-		if threshold < 2 {
-			threshold = 3
+		if threshold < config.MinBlockEscalationCount {
+			threshold = config.DefaultNetBlockThreshold
 		}
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).

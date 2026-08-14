@@ -31,6 +31,18 @@ type WebUIToken struct {
 const DefaultMaxBlocksPerHour = 50
 
 const (
+	// DefaultNetBlockThreshold is how many blocked addresses in one IPv4 /24
+	// or IPv6 /64 escalate to a subnet block when the key is unset.
+	DefaultNetBlockThreshold = 3
+	// DefaultPermBlockCount is how many temporary blocks inside the interval
+	// promote an address to a permanent block when the key is unset.
+	DefaultPermBlockCount = 4
+	// MinBlockEscalationCount is the lowest meaningful value for either
+	// counter. Below it there is no pattern to escalate from.
+	MinBlockEscalationCount = 2
+)
+
+const (
 	// DefaultExposedFileScanDepth is the number of directory levels below a
 	// document root inspected by the web-exposed-file detector.
 	DefaultExposedFileScanDepth = 2
@@ -1828,6 +1840,16 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
+	}
+	// The block path used to substitute these two itself, which left the
+	// loaded config holding a value the daemon never used. Defaulting here
+	// keeps status surfaces honest and lets validation treat anything still
+	// below the minimum as an operator decision rather than an omission.
+	if cfg.AutoResponse.NetBlockThreshold == 0 {
+		cfg.AutoResponse.NetBlockThreshold = DefaultNetBlockThreshold
+	}
+	if cfg.AutoResponse.PermBlockCount == 0 {
+		cfg.AutoResponse.PermBlockCount = DefaultPermBlockCount
 	}
 	if cfg.AutoResponse.MailAuthRecovery.DownGrace == "" {
 		cfg.AutoResponse.MailAuthRecovery.DownGrace = "10m"

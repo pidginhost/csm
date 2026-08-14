@@ -141,9 +141,11 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 	// interval. Every source counts - a challenge-timeout or central-intel
 	// block is the same repeat-offender evidence as a scan block.
 	if cfg.AutoResponse.PermBlock {
+		// Load fills the default and validation rejects anything lower, so
+		// this only catches a Config assembled in code.
 		count := cfg.AutoResponse.PermBlockCount
-		if count < 2 {
-			count = 4
+		if count < config.MinBlockEscalationCount {
+			count = config.DefaultPermBlockCount
 		}
 		interval := parseExpiry(cfg.AutoResponse.PermBlockInterval)
 		if interval == 0 {
