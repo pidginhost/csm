@@ -150,6 +150,10 @@ func newScriptState() *scriptState {
 func (s *scriptState) append(e scriptEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.appendLocked(e)
+}
+
+func (s *scriptState) appendLocked(e scriptEvent) {
 	if len(s.events) >= s.maxEvents {
 		s.events = s.events[1:]
 	}
@@ -159,12 +163,14 @@ func (s *scriptState) append(e scriptEvent) {
 	}
 }
 
-// recordRecipients folds one message's envelope recipients into this script's
-// window so Path 2 can tell notification mail from relay abuse.
-func (s *scriptState) recordRecipients(recipients []string, at time.Time) {
+// appendMessage records an event and its recipient parse result as one state
+// transition. This prevents a concurrent evaluator from counting the event
+// while still trusting recipient data from only the preceding messages.
+func (s *scriptState) appendMessage(e scriptEvent, recipients []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.rcpts.record(recipients, at, maxRecipientsPerIP)
+	s.appendLocked(e)
+	s.rcpts.record(recipients, e.At, maxTrackedRecipients)
 }
 
 // distinctRecipientsSince reports the distinct recipients this script reached
@@ -389,7 +395,11 @@ func (w *perIPWindow) append(ip string, k scriptKey, at time.Time, subject ...st
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.scripts[k]; !exists && len(s.scripts) >= w.capPerIP {
+	s.appendLocked(k, at, w.capPerIP, subject...)
+}
+
+func (s *ipState) appendLocked(k scriptKey, at time.Time, capPerIP int, subject ...string) {
+	if _, exists := s.scripts[k]; !exists && len(s.scripts) >= capPerIP {
 		var oldestK scriptKey
 		var oldest time.Time
 		first := true
@@ -423,6 +433,21 @@ func (w *perIPWindow) append(ip string, k scriptKey, at time.Time, subject ...st
 	}
 }
 
+// appendMessage records a script hit and its recipient parse result while
+// holding the same IP-state lock, keeping the Path 4 gate fail-open when
+// evaluation runs concurrently with spool processing.
+func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subject string, recipients []string) {
+	if ip == "" {
+		return
+	}
+	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendLocked(k, at, w.capPerIP, subject)
+	s.rcpts.record(recipients, at, maxTrackedRecipients)
+}
+
 func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 	v, ok := w.states.Load(ip)
 	if !ok {
@@ -440,28 +465,10 @@ func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 	return n
 }
 
-// maxRecipientsPerIP bounds the recipient set tracked per source IP. A genuine
-// high-diversity relay blows far past the gate threshold before this cap, so
-// evicting the oldest entry here never pulls the distinct count back under the
-// threshold; it only protects memory under sustained churn.
-const maxRecipientsPerIP = 256
-
-// recordRecipients accumulates the distinct envelope recipients seen from a
-// source IP. Called from the spool pipeline with the parsed -H recipients; an
-// empty list marks a recipient parse gap so Path 4 fails open for that window.
-func (w *perIPWindow) recordRecipients(ip string, recipients []string, at time.Time) {
-	if ip == "" {
-		return
-	}
-	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
-	s := v.(*ipState)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rcpts.record(recipients, at, maxRecipientsPerIP)
-	if at.After(s.lastEvent) {
-		s.lastEvent = at
-	}
-}
+// maxTrackedRecipients bounds each script or source-IP recipient set. A
+// genuine high-diversity relay crosses the gate threshold before this cap, so
+// the bound protects memory without hiding the current high diversity.
+const maxTrackedRecipients = 256
 
 // distinctRecipientsSince returns the number of distinct recipients seen from
 // ip no earlier than since, and whether any recipient data was recorded within
@@ -805,13 +812,6 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	return findings
 }
 
-// fanoutIsLowDiversityNotification reports whether a script fanout from this
-// source IP looks like WordPress notification mail (comment moderation, contact
-// forms): many distinct scripts but a small fixed recipient set. It returns
-// true only when recipient data is known AND the distinct recipient count is
-// below the configured minimum, so Path 4 still fires whenever recipients are
-// diverse (real relay) or unknown (recipient parsing gap -- fail open). A
-// non-positive threshold disables the gate and preserves the original behavior.
 // scriptIsLowDiversityNotification reports whether a script's hourly volume is
 // notification mail rather than relay abuse. A security or e-commerce plugin
 // can legitimately emit hundreds of mails an hour to the same one or two
@@ -826,6 +826,13 @@ func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.
 	return known && count < minRcpt
 }
 
+// fanoutIsLowDiversityNotification reports whether a script fanout from this
+// source IP looks like WordPress notification mail (comment moderation, contact
+// forms): many distinct scripts but a small fixed recipient set. It returns
+// true only when recipient data is known AND the distinct recipient count is
+// below the configured minimum, so Path 4 still fires whenever recipients are
+// diverse (real relay) or unknown (recipient parsing gap -- fail open). A
+// non-positive threshold disables the gate and preserves the original behavior.
 func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time) bool {
 	minRcpt := e.cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients
 	if minRcpt <= 0 || e.ips == nil {
