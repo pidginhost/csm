@@ -5,16 +5,20 @@
 #
 # A delete issued while a server is still provisioning is accepted by the API
 # but loses the race with the build: provisioning finishes afterwards and leaves
-# the server running, so the reported success is not worth trusting. Monitor the
-# full retry window and delete the server again if it reappears. A survivor
-# consumes the account's server capacity, which makes every create in the next
-# run fail.
+# the server running, so the reported success is not worth trusting. Confirm the
+# server is absent on two consecutive polls before believing it, and delete it
+# again if it reappears in between. A survivor consumes the account's server
+# capacity, which makes every create in the next run fail.
 
 set -uo pipefail
 
 PHCTL="${PHCTL:-phctl}"
 DELETE_ATTEMPTS="${CSM_DELETE_ATTEMPTS:-10}"
 DELETE_INTERVAL="${CSM_DELETE_INTERVAL:-15}"
+
+# Two consecutive sightings of an absent server end the wait, so fewer than two
+# attempts could never confirm a deletion.
+REQUIRED_GONE_POLLS=2
 
 if [[ ! "$DELETE_ATTEMPTS" =~ ^([2-9]|[1-9][0-9]+)$ ]]; then
     echo "ERROR: CSM_DELETE_ATTEMPTS must be an integer of at least 2" >&2
@@ -50,6 +54,10 @@ delete_server() {
         if [ "$state" -eq 1 ]; then
             delete_pending=false
             ((gone_polls += 1))
+            if [ "$gone_polls" -ge "$REQUIRED_GONE_POLLS" ]; then
+                echo "server $id deleted after $delete_attempts delete request(s)"
+                return 0
+            fi
         else
             # Unknown is not gone. Retry the delete after either a positive
             # sighting or a listing failure, then verify again.
@@ -61,13 +69,6 @@ delete_server() {
             sleep "$DELETE_INTERVAL"
         fi
     done
-
-    # Do not return on the first absence: an in-flight provisioner can restore
-    # the server later. It must also be absent on the next scheduled poll.
-    if [ "$state" -eq 1 ] && [ "$gone_polls" -ge 2 ]; then
-        echo "server $id deleted ($delete_attempts delete requests)"
-        return 0
-    fi
 
     if [ "$state" -eq 0 ]; then
         echo "ERROR: server $id still present after $delete_attempts delete requests -- delete it manually" >&2
