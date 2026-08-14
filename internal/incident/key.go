@@ -30,6 +30,17 @@ type Key struct {
 // hand-off could then ask to block again. The response findings below carry no
 // attacker identity today and so are inert by accident; listing them makes it
 // a rule, because attaching one later looks like a harmless improvement.
+// Posture findings report a standing weakness in installed software. Nothing
+// has happened yet, so they carry no time of occurrence and nothing to
+// contain. Left correlating, an unpatched plugin version alone opened a
+// CRITICAL account-compromise incident with a 7-day review window, which reads
+// as "this account was broken into" to every operator and dashboard consuming
+// the taxonomy. They remain findings and still alert.
+var postureChecks = map[string]bool{
+	"vulnerable_plugins": true,
+	"outdated_plugins":   true,
+}
+
 var nonCorrelatingChecks = map[string]bool{
 	"auto_block":                 true,
 	"auto_response":              true,
@@ -58,7 +69,7 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
-	if nonCorrelatingChecks[f.Check] {
+	if nonCorrelatingChecks[f.Check] || postureChecks[f.Check] {
 		return Key{}
 	}
 	switch ClassifyKind(f) {
