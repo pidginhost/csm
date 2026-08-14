@@ -55,6 +55,43 @@ func TestFPPhar_NetworkBruteForce_VendorArchive(t *testing.T) {
 	}
 }
 
+func TestFPPhar_NetworkBruteForce_UnrelatedRequestBeforeLoop(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte("<?php\n" +
+		"$passwords = $vault->all();\n" +
+		"$ch = curl_init($audit_url);\n" +
+		"$result = curl_exec($ch);\n" +
+		"foreach ($passwords as $password) {\n" +
+		"  $hashes[] = password_hash($password, PASSWORD_DEFAULT);\n" +
+		"}\n")
+	if hasYaraRule(s.ScanBytes(legit), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool FP: an earlier HTTP request is not part of a later local credential loop")
+	}
+}
+
+func TestFPPhar_NetworkBruteForce_FunctionNameIsNotLoop(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte("<?php\n" +
+		"function wait_for($passwords, $ch) {\n" +
+		"  return curl_exec($ch);\n" +
+		"}\n")
+	if hasYaraRule(s.ScanBytes(legit), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool FP: a function name ending in for is not a credential loop")
+	}
+}
+
+func TestFPPhar_NetworkBruteForce_ListDeclaredInsideOtherLoop(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	legit := []byte("<?php\n" +
+		"foreach ($accounts as $account) {\n" +
+		"  $passwords = $vault->forAccount($account);\n" +
+		"  $result = curl_exec($account->auditRequest());\n" +
+		"}\n")
+	if hasYaraRule(s.ScanBytes(legit), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool FP: declaring a password list inside another loop does not iterate that list")
+	}
+}
+
 func TestFPPhar_NetworkBruteForce_RealToolStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte("<?php\n" +
@@ -65,5 +102,18 @@ func TestFPPhar_NetworkBruteForce_RealToolStillDetected(t *testing.T) {
 		"}\n")
 	if !hasYaraRule(s.ScanBytes(mal), "network_brute_force_tool") {
 		t.Error("network_brute_force_tool regression: real credential brute-force loop not detected")
+	}
+}
+
+func TestFPPhar_NetworkBruteForce_CurlWordlistStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte("<?php\n" +
+		"$wordlist = file('list.txt');\n" +
+		"foreach ($wordlist as $candidate) {\n" +
+		"  curl_setopt($ch, CURLOPT_POSTFIELDS, 'password=' . $candidate);\n" +
+		"  $result = curl_exec($ch);\n" +
+		"}\n")
+	if !hasYaraRule(s.ScanBytes(mal), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool regression: curl credential brute-force loop not detected")
 	}
 }
