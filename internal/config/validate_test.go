@@ -851,31 +851,97 @@ func TestValidateWarningFirewallLockout(t *testing.T) {
 	}
 }
 
-func TestValidateWarningNetblockThreshold(t *testing.T) {
+// Below 2 the engine discards the operator's value and uses its own default,
+// so a warning saying the value "may cause excessive blocking" described
+// something that never happened. It is an error now, and only while the
+// feature that reads it is on.
+func TestValidateRejectsNetblockThresholdBelowMinimum(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Email.Enabled = true
 	cfg.Alerts.Email.To = []string{"a@b.com"}
 	cfg.Alerts.Email.SMTP = "localhost:25"
 	cfg.Alerts.Email.From = "csm@test.com"
 	cfg.AutoResponse.NetBlock = true
+
+	for _, threshold := range []int{1, 0, -1} {
+		cfg.AutoResponse.NetBlockThreshold = threshold
+		results := Validate(cfg)
+		if !hasResult(results, "error", "auto_response.netblock_threshold") {
+			t.Errorf("netblock_threshold=%d: expected an error; results=%v", threshold, results)
+		}
+	}
+
+	cfg.AutoResponse.NetBlockThreshold = 2
+	if results := Validate(cfg); hasResult(results, "error", "auto_response.netblock_threshold") {
+		t.Errorf("netblock_threshold=2 is the minimum and must validate; results=%v", results)
+	}
+
+	cfg.AutoResponse.NetBlock = false
 	cfg.AutoResponse.NetBlockThreshold = 1
-	results := Validate(cfg)
-	if !hasResult(results, "warn", "auto_response.netblock_threshold") {
-		t.Errorf("expected warning for netblock_threshold < 2; results=%v", results)
+	if results := Validate(cfg); hasResult(results, "error", "auto_response.netblock_threshold") {
+		t.Errorf("an inert threshold must not block startup; results=%v", results)
 	}
 }
 
-func TestValidateWarningPermblockCount(t *testing.T) {
+func TestValidateRejectsPermblockCountBelowMinimum(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Email.Enabled = true
 	cfg.Alerts.Email.To = []string{"a@b.com"}
 	cfg.Alerts.Email.SMTP = "localhost:25"
 	cfg.Alerts.Email.From = "csm@test.com"
 	cfg.AutoResponse.PermBlock = true
+
+	for _, count := range []int{1, 0, -1} {
+		cfg.AutoResponse.PermBlockCount = count
+		results := Validate(cfg)
+		if !hasResult(results, "error", "auto_response.permblock_count") {
+			t.Errorf("permblock_count=%d: expected an error; results=%v", count, results)
+		}
+	}
+
+	cfg.AutoResponse.PermBlockCount = 2
+	if results := Validate(cfg); hasResult(results, "error", "auto_response.permblock_count") {
+		t.Errorf("permblock_count=2 is the minimum and must validate; results=%v", results)
+	}
+
+	cfg.AutoResponse.PermBlock = false
 	cfg.AutoResponse.PermBlockCount = 1
-	results := Validate(cfg)
-	if !hasResult(results, "warn", "auto_response.permblock_count") {
-		t.Errorf("expected warning for permblock_count < 2; results=%v", results)
+	if results := Validate(cfg); hasResult(results, "error", "auto_response.permblock_count") {
+		t.Errorf("an inert count must not block startup; results=%v", results)
+	}
+}
+
+// An omitted key must keep working: the documented default now lands in the
+// config instead of being substituted inside the block path, so validation
+// stays quiet and status surfaces report the value actually in force.
+func TestLoadFillsBlockEscalationDefaults(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  netblock: true\n  permblock: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponse.NetBlockThreshold != 3 {
+		t.Errorf("netblock_threshold = %d, want the documented default 3", cfg.AutoResponse.NetBlockThreshold)
+	}
+	if cfg.AutoResponse.PermBlockCount != 4 {
+		t.Errorf("permblock_count = %d, want the documented default 4", cfg.AutoResponse.PermBlockCount)
+	}
+	if results := Validate(cfg); hasResult(results, "error", "auto_response.netblock_threshold") ||
+		hasResult(results, "error", "auto_response.permblock_count") {
+		t.Errorf("defaults must validate cleanly; results=%v", results)
+	}
+}
+
+// An operator-written value survives defaulting.
+func TestLoadKeepsExplicitBlockEscalationValues(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  netblock_threshold: 8\n  permblock_count: 9\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponse.NetBlockThreshold != 8 {
+		t.Errorf("netblock_threshold = %d, want 8", cfg.AutoResponse.NetBlockThreshold)
+	}
+	if cfg.AutoResponse.PermBlockCount != 9 {
+		t.Errorf("permblock_count = %d, want 9", cfg.AutoResponse.PermBlockCount)
 	}
 }
 

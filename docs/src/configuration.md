@@ -328,9 +328,9 @@ auto_response:
   http_scanner_action: "challenge"      # response for http_scanner_profile: "challenge" (default) routes to the PoW page, "block" bans the IP
   block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
   netblock: false                       # auto-block IPv4 /24 or IPv6 /64 subnets
-  netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block
+  netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2, omit for the default
   permblock: false                      # promote temp blocks to permanent
-  permblock_count: 4                    # temp blocks before promotion
+  permblock_count: 4                    # temp blocks before promotion; minimum 2, omit for the default
   permblock_interval: "24h"             # window for counting temp blocks
   clean_database: false                 # auto-drop confirmed malicious DB objects after backup
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
