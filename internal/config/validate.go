@@ -936,7 +936,7 @@ func probeSSHLockout(cfg *Config) []ValidationResult {
 		return nil
 	}
 
-	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
+	hasInfra := hasEffectiveInfraIPs(cfg)
 	var missingTCPIn, missingTCP6In []int
 	ipv4Ports, ipv6Ports := sshd.RemoteListenPorts()
 	for _, port := range ipv4Ports {
