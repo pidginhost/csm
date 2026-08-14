@@ -7,6 +7,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSH_KEY_ID="${SSH_KEY_ID:-332}"
 KEEP_ON_FAIL=false
 [ "${1:-}" = "--keep-on-fail" ] && KEEP_ON_FAIL=true
@@ -30,8 +31,13 @@ cleanup() {
         return
     fi
     echo "Cleaning up servers..."
-    [ -n "$ALMA_ID" ] && phctl compute server delete "$ALMA_ID" -f 2>/dev/null || true
-    [ -n "$UBUNTU_ID" ] && phctl compute server delete "$UBUNTU_ID" -f 2>/dev/null || true
+    # A server left behind consumes account capacity and makes the next run's
+    # creates fail, so a cleanup failure is worth reporting on its own.
+    if ! "$SCRIPT_DIR/ci-delete-server.sh" "$ALMA_ID" "$UBUNTU_ID"; then
+        if [ "$exit_code" -eq 0 ]; then
+            exit 1
+        fi
+    fi
 }
 trap cleanup EXIT
 
@@ -47,13 +53,13 @@ echo "  Built dist/csm-integ.test"
 echo ""
 echo "=== Creating test servers ==="
 ALMA_ID=$(phctl compute server create \
-    --image alma9 --package cloudv-0 \
+    --image alma9 --package cloudv-1 \
     --hostname csm-integ-alma --ssh-key-id "$SSH_KEY_ID" \
     --new-ipv4 -f 2>&1 | grep -oP 'ID: \K[0-9]+')
 echo "  AlmaLinux server: ID=$ALMA_ID"
 
 UBUNTU_ID=$(phctl compute server create \
-    --image ubuntu24 --package cloudv-0 \
+    --image ubuntu24 --package cloudv-1 \
     --hostname csm-integ-ubuntu --ssh-key-id "$SSH_KEY_ID" \
     --new-ipv4 -f 2>&1 | grep -oP 'ID: \K[0-9]+')
 echo "  Ubuntu server: ID=$UBUNTU_ID"
