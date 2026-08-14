@@ -1082,6 +1082,7 @@ func TestExtractUserFromPathVariants(t *testing.T) {
 		want string
 	}{
 		{"/home/alice/public_html", "alice"},
+		{"/home/alice/shop.example.com", "alice"},
 		{"/var/www/html", "unknown"},
 		{"/home/bob", "bob"},
 	}

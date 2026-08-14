@@ -1193,6 +1193,9 @@ func TestCheckDatabaseContent_FullFlow(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		lstat: func(string) (os.FileInfo, error) {
+			return fakeFileInfo{name: "wp-config.php"}, nil
+		},
 	})
 	queryCount := 0
 	withMockCmd(t, &mockCmd{
@@ -1236,6 +1239,9 @@ func TestCheckDatabaseContent_EmptyDBNameSkipped(t *testing.T) {
 			}
 			return nil, os.ErrNotExist
 		},
+		lstat: func(string) (os.FileInfo, error) {
+			return fakeFileInfo{name: "wp-config.php"}, nil
+		},
 	})
 	withMockCmd(t, &mockCmd{})
 	findings := CheckDatabaseContent(context.Background(), nil, nil)
@@ -1261,6 +1267,9 @@ func TestCheckDatabaseContent_SiteurlHijack(t *testing.T) {
 				return tmp, nil
 			}
 			return nil, os.ErrNotExist
+		},
+		lstat: func(string) (os.FileInfo, error) {
+			return fakeFileInfo{name: "wp-config.php"}, nil
 		},
 	})
 	withMockCmd(t, &mockCmd{
