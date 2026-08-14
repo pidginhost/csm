@@ -878,7 +878,7 @@ func (d *Daemon) Run() error {
 		for _, f := range newFindings {
 			_, _, _ = co.OnFinding(f)
 		}
-		_ = alert.Dispatch(initialCfg, newFindings)
+		_ = alert.Dispatch(initialCfg, operatorAlertableFindings(newFindings))
 	}
 
 	// Remove auto-fixed findings before storing to UI
@@ -1343,6 +1343,31 @@ func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
 	d.store.AppendHistory(batch)
 }
 
+func isOperatorAlertableCheck(check string) bool {
+	switch check {
+	case "modsec_block_realtime", "modsec_warning_realtime", "modsec_block_escalation", "modsec_csm_block_escalation":
+		return false // Fully automated and visible on the ModSecurity page.
+	case "outdated_plugins":
+		return false // Routine update posture remains on the findings page.
+	case "email_dkim_failure", "email_spf_rejection":
+		return false // Operational email authentication issues are informational.
+	case "email_auth_failure_realtime", "pam_bruteforce", "exim_frozen_realtime":
+		return false // Failed logins and frozen bounces need no operator action.
+	default:
+		return true
+	}
+}
+
+func operatorAlertableFindings(findings []alert.Finding) []alert.Finding {
+	alertable := make([]alert.Finding, 0, len(findings))
+	for _, f := range findings {
+		if isOperatorAlertableCheck(f.Check) {
+			alertable = append(alertable, f)
+		}
+	}
+	return alertable
+}
+
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Snapshot the live config once at the top of the batch. Every
 	// cfg.X read below picks up the last-reloaded value (ROADMAP
@@ -1449,20 +1474,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Dispatch via email/webhook - filter out findings that are
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
-	var alertable []alert.Finding
-	for _, f := range newFindings {
-		switch f.Check {
-		case "modsec_block_realtime", "modsec_warning_realtime", "modsec_block_escalation", "modsec_csm_block_escalation":
-			continue // ModSecurity: fully automated, visible on /modsec
-		case "outdated_plugins":
-			continue // informational, visible on findings page
-		case "email_dkim_failure", "email_spf_rejection":
-			continue // operational email auth issues - visible on findings page
-		case "email_auth_failure_realtime", "pam_bruteforce", "exim_frozen_realtime":
-			continue // failed logins and frozen bounces - informational, no action needed
-		}
-		alertable = append(alertable, f)
-	}
+	alertable := operatorAlertableFindings(newFindings)
 	if err := alert.Dispatch(cfg, alertable); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}

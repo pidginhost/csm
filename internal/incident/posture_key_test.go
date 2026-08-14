@@ -8,19 +8,29 @@ import (
 )
 
 // A known-vulnerable or outdated plugin is a standing weakness in installed
-// software, not evidence that anything happened. Production opened a CRITICAL
-// web_account_compromise incident for an account whose only signal was an
-// unpatched plugin version.
+// software, not evidence that anything happened.
 func TestCorrelatorIgnoresPostureFindings(t *testing.T) {
 	for _, check := range []string{"vulnerable_plugins", "outdated_plugins"} {
 		t.Run(check, func(t *testing.T) {
-			c := newTestCorrelator()
+			blockCalls := 0
+			c := NewCorrelator(CorrelatorConfig{
+				OpenThreshold: 1,
+				AutoBlock: IncidentAutoBlockConfig{
+					Enabled:         true,
+					BlockAtSeverity: "critical",
+				},
+				OnIncidentBlock: func(_, _ string) bool {
+					blockCalls++
+					return true
+				},
+			})
 			f := alert.Finding{
 				Check:     check,
 				Message:   "Known-vulnerable plugin ultimate-member 2.4.1 (CVE-2023-3460) on shop.example.com",
 				Severity:  alert.Critical,
 				CPUser:    "example",
 				Domain:    "shop.example.com",
+				SourceIP:  "203.0.113.7",
 				Timestamp: time.Unix(1_700_000_000, 0),
 			}
 
@@ -33,6 +43,9 @@ func TestCorrelatorIgnoresPostureFindings(t *testing.T) {
 			}
 			if c.OpenCount() != 0 || c.PendingCount() != 0 {
 				t.Fatalf("%s changed correlator state: open=%d pending=%d", check, c.OpenCount(), c.PendingCount())
+			}
+			if blockCalls != 0 {
+				t.Fatalf("%s triggered %d incident block calls", check, blockCalls)
 			}
 		})
 	}
@@ -50,10 +63,21 @@ func TestCorrelatorStillOpensIncidentForCompromiseOnSameAccount(t *testing.T) {
 		Timestamp: time.Unix(1_700_000_000, 0),
 	}
 
-	if _, _, err := c.OnFinding(f); err != nil {
+	id, created, err := c.OnFinding(f)
+	if err != nil {
 		t.Fatalf("OnFinding: %v", err)
 	}
-	if c.OpenCount()+c.PendingCount() == 0 {
-		t.Fatal("a webshell match on the account must still open an incident")
+	if !created || id == "" {
+		t.Fatalf("webshell match did not open an incident: id=%q created=%v", id, created)
+	}
+	if c.OpenCount() != 1 || c.PendingCount() != 0 {
+		t.Fatalf("correlator state after webshell: open=%d pending=%d", c.OpenCount(), c.PendingCount())
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatalf("opened incident %q not found", id)
+	}
+	if inc.Kind != KindWebAccountCompromise {
+		t.Fatalf("incident kind = %q, want %q", inc.Kind, KindWebAccountCompromise)
 	}
 }
