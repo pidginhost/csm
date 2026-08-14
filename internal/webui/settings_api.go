@@ -65,6 +65,44 @@ func cloneConfigForSettingsApply(src *config.Config) config.Config {
 	return clone
 }
 
+func copySettingsChangeValues(dst, src *config.Config, section SettingsSection, changes map[string]json.RawMessage) error {
+	for key := range changes {
+		path := []string{section.YAMLPath}
+		if key != "" {
+			path = append(path, strings.Split(key, ".")...)
+		}
+		if err := copyConfigPathValue(dst, src, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyConfigPathValue(dst, src *config.Config, path []string) error {
+	dstValue := reflect.ValueOf(dst).Elem()
+	srcValue := reflect.ValueOf(src).Elem()
+	for i, key := range path {
+		if srcValue.Kind() == reflect.Pointer {
+			if srcValue.IsNil() {
+				return fmt.Errorf("path %v: source element %d is nil", path, i)
+			}
+			if dstValue.IsNil() {
+				dstValue.Set(reflect.New(dstValue.Type().Elem()))
+			}
+			srcValue = srcValue.Elem()
+			dstValue = dstValue.Elem()
+		}
+		field, ok := fieldByYAMLTag(srcValue.Type(), key)
+		if !ok {
+			return fmt.Errorf("no yaml field %q under %s", key, strings.Join(path[:i], "."))
+		}
+		srcValue = srcValue.FieldByIndex(field.Index)
+		dstValue = dstValue.FieldByIndex(field.Index)
+	}
+	dstValue.Set(srcValue)
+	return nil
+}
+
 func (s *Server) apiSettingsSections(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -113,15 +151,21 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "read config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	disk, err := config.LoadBytes(diskBytes)
+	mergedBytes, err := config.MergeBytesWithDir(diskBytes, s.cfg.ConfigDir)
+	if err != nil {
+		writeJSONError(w, "load config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	disk, err := config.LoadBytes(mergedBytes)
 	if err != nil {
 		writeJSONError(w, "load config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	disk.ConfigFile = s.cfg.ConfigFile
+	disk.ConfigDir = s.cfg.ConfigDir
 
 	redacted := config.Redact(disk)
-	values, err := extractSectionValues(diskBytes, redacted, section)
+	values, err := extractSectionValues(mergedBytes, redacted, section)
 	if err != nil {
 		writeJSONError(w, "extract: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -275,6 +319,12 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	if rejectIfConfDirChanged(w, s.cfg.ConfigDir, disk.Integrity.ConfdHash) {
 		return
 	}
+	effectiveDisk, err := config.LoadBytesWithDir(diskBytes, s.cfg.ConfigDir)
+	if err != nil {
+		writeJSONError(w, "load merged config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	effectiveDisk.ConfigFile = s.cfg.ConfigFile
 
 	clone := cloneConfigForSettingsApply(disk)
 
@@ -283,8 +333,30 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeValidationErrors(w, errs)
 		return
 	}
+	effectiveCandidate := cloneConfigForSettingsApply(effectiveDisk)
+	if _, errs := buildChangeSet(section, &effectiveCandidate, body.Changes); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+	fieldErrors, _ := splitValidationResults(config.Validate(&effectiveCandidate))
+	if len(fieldErrors) > 0 {
+		writeValidationErrors(w, fieldErrors)
+		return
+	}
 
-	validationResults := append(config.Validate(&clone), config.ValidateDeepSection(&clone, section.ID)...)
+	edited, err := config.YAMLEdit(diskBytes, yamlChanges)
+	if err != nil {
+		writeJSONError(w, "yaml edit: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	effectiveClone, err := config.LoadBytesWithDir(edited, s.cfg.ConfigDir)
+	if err != nil {
+		writeJSONError(w, "load edited merged config: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	effectiveClone.ConfigFile = s.cfg.ConfigFile
+
+	validationResults := append(config.Validate(effectiveClone), config.ValidateDeepSection(effectiveClone, section.ID)...)
 	fieldErrors, warnings := splitValidationResults(validationResults)
 	if len(fieldErrors) > 0 {
 		writeValidationErrors(w, fieldErrors)
@@ -294,7 +366,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		localizeValidationFields(warnings, "firewall")
 	}
 
-	diff := config.Diff(disk, &clone)
+	diff := config.Diff(effectiveDisk, effectiveClone)
 	var restartFields []string
 	for _, c := range diff {
 		if c.Tag != config.TagSafe {
@@ -302,10 +374,19 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	edited, err := config.YAMLEdit(diskBytes, yamlChanges)
-	if err != nil {
-		writeJSONError(w, "yaml edit: "+err.Error(), http.StatusInternalServerError)
-		return
+	var liveCandidate *config.Config
+	if len(restartFields) == 0 {
+		if live := config.Active(); live != nil {
+			candidate := cloneConfigForSettingsApply(live)
+			if err := copySettingsChangeValues(&candidate, effectiveClone, section, body.Changes); err != nil {
+				writeJSONError(w, "prepare live config: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			liveCandidate = &candidate
+		} else {
+			candidate := cloneConfigForSettingsApply(effectiveClone)
+			liveCandidate = &candidate
+		}
 	}
 
 	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, s.cfg.ConfigDir, edited, &clone, disk.Integrity.BinaryHash); err != nil {
@@ -315,21 +396,11 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 
 	newETag := clone.Integrity.ConfigHash
 	newIntegrity := clone.Integrity
+	effectiveClone.Integrity = newIntegrity
 
-	if len(restartFields) == 0 {
-		if live := config.Active(); live != nil {
-			liveClone := cloneConfigForSettingsApply(live)
-			if _, liveErrs := buildChangeSet(section, &liveClone, body.Changes); len(liveErrs) == 0 {
-				liveClone.Integrity = newIntegrity
-				config.SetActive(&liveClone)
-			} else {
-				livePatched := *live
-				livePatched.Integrity = newIntegrity
-				config.SetActive(&livePatched)
-			}
-		} else {
-			config.SetActive(&clone)
-		}
+	if liveCandidate != nil {
+		liveCandidate.Integrity = newIntegrity
+		config.SetActive(liveCandidate)
 	} else if live := config.Active(); live != nil {
 		livePatched := *live
 		livePatched.Integrity = newIntegrity
@@ -347,7 +418,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		"applied":          applied,
 		"requires_restart": restartFields,
 		"pending_restart":  len(restartFields) > 0,
-		"pending_sections": pendingRestartSections(config.Active(), &clone),
+		"pending_sections": pendingRestartSections(config.Active(), effectiveClone),
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})

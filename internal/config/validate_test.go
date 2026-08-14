@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -931,17 +932,158 @@ func TestLoadFillsBlockEscalationDefaults(t *testing.T) {
 	}
 }
 
-// An operator-written value survives defaulting.
+// Operator-written values, including zero, must survive defaulting so invalid
+// values are rejected instead of silently turning into defaults.
 func TestLoadKeepsExplicitBlockEscalationValues(t *testing.T) {
-	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  netblock_threshold: 8\n  permblock_count: 9\n"))
+	for _, value := range []int{-1, 0, 1, 8} {
+		t.Run(fmt.Sprintf("value_%d", value), func(t *testing.T) {
+			data := fmt.Appendf(nil, "hostname: test\nauto_response:\n  netblock: true\n  netblock_threshold: %d\n  permblock: true\n  permblock_count: %d\n", value, value)
+			cfg, err := LoadBytes(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AutoResponse.NetBlockThreshold != value {
+				t.Errorf("netblock_threshold = %d, want explicit value %d", cfg.AutoResponse.NetBlockThreshold, value)
+			}
+			if cfg.AutoResponse.PermBlockCount != value {
+				t.Errorf("permblock_count = %d, want explicit value %d", cfg.AutoResponse.PermBlockCount, value)
+			}
+			results := Validate(cfg)
+			wantError := value < MinBlockEscalationCount
+			if got := hasResult(results, "error", "auto_response.netblock_threshold"); got != wantError {
+				t.Errorf("netblock validation error = %t, want %t; results=%v", got, wantError, results)
+			}
+			if got := hasResult(results, "error", "auto_response.permblock_count"); got != wantError {
+				t.Errorf("permblock validation error = %t, want %t; results=%v", got, wantError, results)
+			}
+		})
+	}
+}
+
+func TestLoadWithDirKeepsExplicitZeroBlockEscalationOverride(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.WriteFile(configPath, []byte("hostname: test\nauto_response:\n  netblock: true\n  netblock_threshold: 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-netblock.yaml"), []byte("auto_response:\n  netblock_threshold: 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithDir(configPath, confDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AutoResponse.NetBlockThreshold != 8 {
-		t.Errorf("netblock_threshold = %d, want 8", cfg.AutoResponse.NetBlockThreshold)
+	if cfg.AutoResponse.NetBlockThreshold != 0 {
+		t.Fatalf("netblock_threshold = %d, want explicit drop-in value 0", cfg.AutoResponse.NetBlockThreshold)
 	}
-	if cfg.AutoResponse.PermBlockCount != 9 {
-		t.Errorf("permblock_count = %d, want 9", cfg.AutoResponse.PermBlockCount)
+	if results := Validate(cfg); !hasResult(results, "error", "auto_response.netblock_threshold") {
+		t.Errorf("explicit zero drop-in override must fail validation; results=%v", results)
+	}
+}
+
+func TestLoadFillsAutoResponseDurationDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"omitted", "hostname: test\n"},
+		{"null", "hostname: test\nauto_response:\n  block_expiry: null\n  permblock_interval: null\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AutoResponse.BlockExpiry != DefaultBlockExpiry {
+				t.Errorf("block_expiry = %q, want %q", cfg.AutoResponse.BlockExpiry, DefaultBlockExpiry)
+			}
+			if cfg.AutoResponse.PermBlockInterval != DefaultPermBlockInterval {
+				t.Errorf("permblock_interval = %q, want %q", cfg.AutoResponse.PermBlockInterval, DefaultPermBlockInterval)
+			}
+		})
+	}
+}
+
+func TestLoadKeepsExplicitEmptyAutoResponseDurations(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: test\nauto_response:\n  enabled: true\n  block_ips: true\n  block_expiry: \"\"\n  permblock: true\n  permblock_interval: \"\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponse.BlockExpiry != "" {
+		t.Errorf("block_expiry = %q, want explicit empty value", cfg.AutoResponse.BlockExpiry)
+	}
+	if cfg.AutoResponse.PermBlockInterval != "" {
+		t.Errorf("permblock_interval = %q, want explicit empty value", cfg.AutoResponse.PermBlockInterval)
+	}
+	results := Validate(cfg)
+	if !hasResult(results, "error", "auto_response.block_expiry") {
+		t.Errorf("explicit empty block_expiry must be rejected while blocking is enabled; results=%v", results)
+	}
+	if !hasResult(results, "error", "auto_response.permblock_interval") {
+		t.Errorf("explicit empty permblock_interval must be rejected while permblock is enabled; results=%v", results)
+	}
+}
+
+func TestValidateRejectsNonPositiveAutoResponseDurations(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		field string
+		set   func(*Config, string)
+	}{
+		{"block expiry", "auto_response.block_expiry", func(cfg *Config, value string) { cfg.AutoResponse.BlockExpiry = value }},
+		{"permblock interval", "auto_response.permblock_interval", func(cfg *Config, value string) { cfg.AutoResponse.PermBlockInterval = value }},
+	} {
+		for _, value := range []string{"0s", "-1h"} {
+			t.Run(tc.name+"_"+value, func(t *testing.T) {
+				cfg := baseValidationConfig()
+				tc.set(cfg, value)
+				if results := Validate(cfg); !hasResult(results, "error", tc.field) {
+					t.Errorf("%s=%q: expected an error; results=%v", tc.field, value, results)
+				}
+			})
+		}
+	}
+}
+
+func TestBlockEscalationErrorsExplainRecovery(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 1
+	cfg.AutoResponse.PermBlock = true
+	cfg.AutoResponse.PermBlockCount = 1
+
+	wants := map[string]string{
+		"auto_response.netblock_threshold": "disable netblock",
+		"auto_response.permblock_count":    "disable permblock",
+	}
+	for _, result := range Validate(cfg) {
+		want, ok := wants[result.Field]
+		if !ok || result.Level != "error" {
+			continue
+		}
+		if !strings.Contains(result.Message, want) {
+			t.Errorf("%s message %q does not explain recovery with %q", result.Field, result.Message, want)
+		}
+		delete(wants, result.Field)
+	}
+	for field := range wants {
+		t.Errorf("missing error for %s", field)
+	}
+}
+
+func TestValidateWarningsReturnsOnlyNonFatalResults(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 1
+	for _, result := range validateWarnings(cfg) {
+		if result.Level != "warn" {
+			t.Errorf("validateWarnings returned non-warning result: %+v", result)
+		}
 	}
 }
 

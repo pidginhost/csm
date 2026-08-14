@@ -320,7 +320,7 @@ auto_response:
   kill_processes: false                 # kill malicious processes
   quarantine_files: false               # move malware to quarantine
   block_ips: false                      # block attacker IPs via firewall
-  block_expiry: "24h"                   # duration for temp blocks (e.g. "24h", "12h")
+  block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
   max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
@@ -331,7 +331,7 @@ auto_response:
   netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2, omit for the default
   permblock: false                      # promote temp blocks to permanent
   permblock_count: 4                    # temp blocks before promotion; minimum 2, omit for the default
-  permblock_interval: "24h"             # window for counting temp blocks
+  permblock_interval: "24h"             # positive counting window; omit for the 24h default
   clean_database: false                 # auto-drop confirmed malicious DB objects after backup
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
   virtual_patch_exposed_files: "off"    # off, manual CLI apply, or dry-run-gated auto apply except sample SQL

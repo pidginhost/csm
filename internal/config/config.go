@@ -26,17 +26,22 @@ type WebUIToken struct {
 	Scope string `yaml:"scope"`
 }
 
-// DefaultMaxBlocksPerHour is the safe hourly cap used when the operator
-// leaves auto_response.max_blocks_per_hour unset or sets it to 0.
-const DefaultMaxBlocksPerHour = 50
-
 const (
+	// DefaultBlockExpiry is how long an automatic temporary block lasts when
+	// auto_response.block_expiry is unset.
+	DefaultBlockExpiry = "24h"
+	// DefaultMaxBlocksPerHour is the safe hourly cap used when the operator
+	// leaves auto_response.max_blocks_per_hour unset or sets it to 0.
+	DefaultMaxBlocksPerHour = 50
 	// DefaultNetBlockThreshold is how many blocked addresses in one IPv4 /24
 	// or IPv6 /64 escalate to a subnet block when the key is unset.
 	DefaultNetBlockThreshold = 3
 	// DefaultPermBlockCount is how many temporary blocks inside the interval
 	// promote an address to a permanent block when the key is unset.
 	DefaultPermBlockCount = 4
+	// DefaultPermBlockInterval is the window used to count temporary blocks
+	// when auto_response.permblock_interval is unset.
+	DefaultPermBlockInterval = "24h"
 	// MinBlockEscalationCount is the lowest meaningful value for either
 	// counter. Below it there is no pattern to escalate from.
 	MinBlockEscalationCount = 2
@@ -1500,10 +1505,21 @@ type defaultPresence struct {
 	httpASNCrawlReverseProxy   bool
 	xmlrpcThreshold            bool
 	integrityImmutable         bool
+	autoResponse               autoResponsePresence
 	// firewall records which firewall: keys the operator wrote, so a
 	// partial block keeps the defaults for everything unlisted. nil means
 	// the whole block was absent.
 	firewall map[string]bool
+}
+
+// autoResponsePresence distinguishes omitted values from explicit zero or
+// empty values that validation must reject while the corresponding feature is
+// enabled.
+type autoResponsePresence struct {
+	blockExpiry       bool
+	netBlockThreshold bool
+	permBlockCount    bool
+	permBlockInterval bool
 }
 
 // forwardGuardPresence records which forward-guard fields were set explicitly,
@@ -1841,15 +1857,20 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
 	}
-	// The block path used to substitute these two itself, which left the
-	// loaded config holding a value the daemon never used. Defaulting here
-	// keeps status surfaces honest and lets validation treat anything still
-	// below the minimum as an operator decision rather than an omission.
-	if cfg.AutoResponse.NetBlockThreshold == 0 {
+	// The block path keeps fallbacks for Config values assembled in code.
+	// Loaded configs resolve omitted values here so status surfaces report the
+	// effective settings and validation can reject explicit invalid values.
+	if cfg.AutoResponse.BlockExpiry == "" && !presence.autoResponse.blockExpiry {
+		cfg.AutoResponse.BlockExpiry = DefaultBlockExpiry
+	}
+	if cfg.AutoResponse.NetBlockThreshold == 0 && !presence.autoResponse.netBlockThreshold {
 		cfg.AutoResponse.NetBlockThreshold = DefaultNetBlockThreshold
 	}
-	if cfg.AutoResponse.PermBlockCount == 0 {
+	if cfg.AutoResponse.PermBlockCount == 0 && !presence.autoResponse.permBlockCount {
 		cfg.AutoResponse.PermBlockCount = DefaultPermBlockCount
+	}
+	if cfg.AutoResponse.PermBlockInterval == "" && !presence.autoResponse.permBlockInterval {
+		cfg.AutoResponse.PermBlockInterval = DefaultPermBlockInterval
 	}
 	if cfg.AutoResponse.MailAuthRecovery.DownGrace == "" {
 		cfg.AutoResponse.MailAuthRecovery.DownGrace = "10m"
@@ -2134,9 +2155,10 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		Alerts struct {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
 		} `yaml:"alerts"`
-		Retention map[string]yaml.Node `yaml:"retention"`
-		Integrity map[string]yaml.Node `yaml:"integrity"`
-		Firewall  map[string]yaml.Node `yaml:"firewall"`
+		Retention    map[string]yaml.Node `yaml:"retention"`
+		Integrity    map[string]yaml.Node `yaml:"integrity"`
+		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
+		Firewall     map[string]yaml.Node `yaml:"firewall"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
@@ -2153,6 +2175,18 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		}
 	}
 	_, presence.integrityImmutable = raw.Integrity["immutable"]
+	if node, ok := raw.AutoResponse["block_expiry"]; ok && !yamlNodeIsNull(&node) {
+		presence.autoResponse.blockExpiry = true
+	}
+	if node, ok := raw.AutoResponse["netblock_threshold"]; ok && !yamlNodeIsNull(&node) {
+		presence.autoResponse.netBlockThreshold = true
+	}
+	if node, ok := raw.AutoResponse["permblock_count"]; ok && !yamlNodeIsNull(&node) {
+		presence.autoResponse.permBlockCount = true
+	}
+	if node, ok := raw.AutoResponse["permblock_interval"]; ok && !yamlNodeIsNull(&node) {
+		presence.autoResponse.permBlockInterval = true
+	}
 	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	if node, ok := raw.Thresholds["smtp_bruteforce_slow_threshold"]; ok && !yamlNodeIsNull(&node) {
 		presence.smtpBruteSlowThreshold = true
@@ -2672,14 +2706,56 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
+	cfg, err := loadBytesWithDir(mainData, confDir, path)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConfigFile = path
+	cfg.ConfigDir = confDir
+	return cfg, nil
+}
 
+// LoadBytesWithDir decodes an in-memory main config after merging the current
+// confDir fragments on top. It is used to validate an edited main file before
+// that file is committed to disk. ConfigFile is left empty.
+func LoadBytesWithDir(data []byte, confDir string) (*Config, error) {
+	mergedBytes, err := MergeBytesWithDir(data, confDir)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := LoadBytes(mergedBytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConfigDir = confDir
+	return cfg, nil
+}
+
+// MergeBytesWithDir merges an in-memory main config with the current confDir
+// fragments and returns YAML that still preserves whether fields were omitted.
+func MergeBytesWithDir(data []byte, confDir string) ([]byte, error) {
+	if len(data) > MaxConfigBytes {
+		return nil, fmt.Errorf("parsing config: input size %d exceeds %d byte cap", len(data), MaxConfigBytes)
+	}
+	return mergeBytesWithDir(data, confDir, "config input")
+}
+
+func loadBytesWithDir(mainData []byte, confDir, source string) (*Config, error) {
+	mergedBytes, err := mergeBytesWithDir(mainData, confDir, source)
+	if err != nil {
+		return nil, err
+	}
+	return LoadBytes(mergedBytes)
+}
+
+func mergeBytesWithDir(mainData []byte, confDir, source string) ([]byte, error) {
 	var merged yaml.Node
 	if unmarshalErr := yaml.Unmarshal(mainData, &merged); unmarshalErr != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, unmarshalErr)
+		return nil, fmt.Errorf("parsing %s: %w", source, unmarshalErr)
 	}
 	normalized, err := normalizeYAMLForMerge(&merged)
 	if err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, fmt.Errorf("parsing %s: %w", source, err)
 	}
 	merged = *normalized
 
@@ -2702,14 +2778,7 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshaling merged config: %w", err)
 	}
-
-	cfg, err := LoadBytes(mergedBytes)
-	if err != nil {
-		return nil, err
-	}
-	cfg.ConfigFile = path
-	cfg.ConfigDir = confDir
-	return cfg, nil
+	return mergedBytes, nil
 }
 
 func Save(cfg *Config) error {

@@ -242,6 +242,27 @@ performance:
 	}
 }
 
+func TestSettingsGETNullableFieldPreservesOmittedState(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\n")
+
+	req := settingsAuthedReq("GET", "/api/v1/settings/performance", "tok", "")
+	w := httptest.NewRecorder()
+	s.apiSettingsGet(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Values map[string]interface{} `json:"values"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v, ok := resp.Values["enabled"]; !ok || v != nil {
+		t.Errorf("values.enabled = %#v, want null for an inherited field", v)
+	}
+}
+
 func TestSettingsPOSTAppliesSafeFieldLive(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:
@@ -314,6 +335,132 @@ auto_response:
 	}
 	if loaded.Integrity.ConfigHash != resp.NewETag {
 		t.Errorf("disk config_hash = %q, new_etag = %q", loaded.Integrity.ConfigHash, resp.NewETag)
+	}
+}
+
+func TestSettingsGETShowsEffectiveBlockEscalationDefaults(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\n")
+	w := httptest.NewRecorder()
+	s.apiSettingsGet(w, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Values map[string]interface{} `json:"values"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Values["netblock_threshold"]; got != float64(config.DefaultNetBlockThreshold) {
+		t.Errorf("netblock_threshold = %#v, want %d", got, config.DefaultNetBlockThreshold)
+	}
+	if got := resp.Values["permblock_count"]; got != float64(config.DefaultPermBlockCount) {
+		t.Errorf("permblock_count = %#v, want %d", got, config.DefaultPermBlockCount)
+	}
+}
+
+func TestSettingsPOSTRejectsEnablingNetblockWithExplicitZeroThreshold(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+auto_response:
+  netblock: false
+  netblock_threshold: 0
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"netblock":true}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422; body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "auto_response.netblock_threshold") {
+		t.Errorf("response does not identify netblock_threshold: %s", postW.Body.String())
+	}
+	if config.Active().AutoResponse.NetBlock {
+		t.Error("invalid netblock setting was applied live")
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AutoResponse.NetBlock || loaded.AutoResponse.NetBlockThreshold != 0 {
+		t.Errorf("disk config changed after rejected save: netblock=%t threshold=%d", loaded.AutoResponse.NetBlock, loaded.AutoResponse.NetBlockThreshold)
+	}
+}
+
+func TestSettingsPOSTValidatesBlockEscalationAgainstDropIns(t *testing.T) {
+	mainBody := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+auto_response:
+  netblock: false
+  netblock_threshold: 3
+integrity:
+  binary_hash: ""
+  config_hash: ""
+  confd_hash: ""
+`
+	s, cfgPath, confDir := newSettingsTestServerWithConfDir(t, "tok", mainBody, map[string]string{
+		"10-netblock.yaml": "auto_response:\n  netblock_threshold: 0\n",
+	})
+	// The setup helper signs a marshaled effective config. Restore the intended
+	// main/drop-in split so this test exercises precedence instead of a copied
+	// drop-in value in the main file.
+	if err := os.WriteFile(cfgPath, []byte(mainBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := integrity.SignConfigFilePreserving(cfgPath, confDir, "sha256:testbinary"); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.SetActive(effective)
+
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
+	var getResp struct {
+		Values map[string]interface{} `json:"values"`
+	}
+	if jsonErr := json.Unmarshal(getW.Body.Bytes(), &getResp); jsonErr != nil {
+		t.Fatal(jsonErr)
+	}
+	if got := getResp.Values["netblock_threshold"]; got != float64(0) {
+		t.Errorf("GET netblock_threshold = %#v, want effective drop-in value 0", got)
+	}
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"netblock":true}}`)
+	postReq.Header.Set("If-Match", getW.Header().Get("ETag"))
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422; body = %s", postW.Code, postW.Body.String())
+	}
+	if config.Active().AutoResponse.NetBlock {
+		t.Error("drop-in-invalid netblock setting was applied live")
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AutoResponse.NetBlock {
+		t.Error("drop-in-invalid netblock setting was saved to the main config")
 	}
 }
 
