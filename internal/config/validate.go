@@ -837,13 +837,21 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
 	port, portKnown := webUIListenPort(cfg.WebUI.Listen)
 
-	if cfg.WebUI.Enabled && portKnown && !containsPort(fw.TCPIn, port) {
+	// Naming the port in restricted_tcp is how an operator asks for an
+	// infra-only service, and the infra accept rule matches before any port
+	// rule, so such a port stays reachable without appearing in tcp_in. The
+	// shipped defaults ship exactly this pair; warning about it would make
+	// every stock install report WARN. Without infra_ips there is nothing left
+	// to reach it from, so the warning still stands.
+	infraOnly := portKnown && hasInfra && containsPort(fw.RestrictedTCP, port)
+
+	if cfg.WebUI.Enabled && portKnown && !infraOnly && !containsPort(fw.TCPIn, port) {
 		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
 			fmt.Sprintf("web UI listens on %d but tcp_in does not allow it; the next firewall apply drops new web UI connections", port)})
 	}
 	// A non-empty tcp6_in overrides tcp_in. When empty, IPv6 inherits tcp_in,
 	// so the IPv4 check above already covers the effective port policy.
-	if cfg.WebUI.Enabled && portKnown && fw.IPv6 && len(fw.TCP6In) > 0 && !containsPort(fw.TCP6In, port) {
+	if cfg.WebUI.Enabled && portKnown && !infraOnly && fw.IPv6 && len(fw.TCP6In) > 0 && !containsPort(fw.TCP6In, port) {
 		results = append(results, ValidationResult{"warn", "firewall.tcp6_in",
 			fmt.Sprintf("IPv6 is managed and tcp6_in does not allow web UI port %d", port)})
 	}
