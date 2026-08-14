@@ -81,6 +81,46 @@ func TestValidateFirewallLockoutWebUIPort(t *testing.T) {
 			t.Error("a disabled web UI cannot be locked out")
 		}
 	})
+
+	// The shipped defaults keep the web UI port out of tcp_in and name it in
+	// restricted_tcp, which is the deliberate infra-only deployment. Infra IPs
+	// are accepted on every port, so the operator is not locked out.
+	t.Run("infra-only port with infra_ips is silent", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{22, 80, 443},
+			RestrictedTCP: []int{2087, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(Validate(cfg), "warn", "firewall.tcp_in"); ok {
+			t.Errorf("infra-only web UI port is reachable from infra_ips, got warning %q", res.Message)
+		}
+	})
+
+	t.Run("infra-only port without infra_ips warns", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{22, 80, 443},
+			RestrictedTCP: []int{9443},
+			ConnRateLimit: 200,
+		})
+		cfg.InfraIPs = nil
+		if _, ok := findResult(Validate(cfg), "warn", "firewall.tcp_in"); !ok {
+			t.Error("restricted_tcp without infra_ips leaves the web UI reachable from nowhere")
+		}
+	})
+
+	t.Run("port absent from both lists still warns", func(t *testing.T) {
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{22, 80, 443},
+			RestrictedTCP: []int{2087},
+			ConnRateLimit: 200,
+		})
+		if _, ok := findResult(Validate(cfg), "warn", "firewall.tcp_in"); !ok {
+			t.Error("a port in neither list is an oversight worth warning about")
+		}
+	})
 }
 
 // A non-empty tcp6_in overrides tcp_in for IPv6. An empty list inherits the
