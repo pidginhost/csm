@@ -1,12 +1,12 @@
 package checks
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/sshdconf"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -79,18 +80,7 @@ func auditRunCmd(name string, args ...string) ([]byte, error) {
 
 // --- SSH checks ---
 
-// sshdDefaults are the OpenSSH compiled defaults for settings we audit.
-var sshdDefaults = map[string]string{
-	"port":                   "22",
-	"protocol":               "2",
-	"passwordauthentication": "yes",
-	"permitrootlogin":        "prohibit-password",
-	"maxauthtries":           "6",
-	"x11forwarding":          "no",
-	"usedns":                 "no",
-}
-
-var sshdConfigPath = "/etc/ssh/sshd_config"
+var sshdConfigPath = sshdconf.DefaultPath
 
 type sshdSettings struct {
 	PasswordAuthentication string
@@ -98,96 +88,39 @@ type sshdSettings struct {
 	X11Forwarding          string
 }
 
-// parseSSHDConfig reads sshd_config + Include drop-ins with first-match-wins.
-// Match blocks are skipped entirely (audit evaluates global config only).
-func parseSSHDConfig() map[string]string {
-	effective := make(map[string]string)
-	parseSSHDFile(sshdConfigPath, effective)
-	return effective
-}
-
-func parseSSHDFile(path string, effective map[string]string) {
-	f, err := osFS.Open(path)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	inMatch := false
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Detect Match blocks — a Match block continues until the next
-		// Match keyword or EOF, regardless of indentation (per sshd_config(5)).
-		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "match ") {
-			inMatch = true
-			continue
-		}
-		if inMatch {
-			// Only another Match line (handled above) or EOF ends the block.
-			// Everything else inside is a Match-scoped directive — skip it.
-			continue
-		}
-
-		// Handle Include directives
-		if strings.HasPrefix(lower, "include ") {
-			pattern := strings.TrimSpace(line[8:])
-			if !filepath.IsAbs(pattern) {
-				pattern = filepath.Join(filepath.Dir(path), pattern)
-			}
-			matches, _ := osFS.Glob(pattern)
-			for _, m := range matches {
-				parseSSHDFile(m, effective)
-			}
-			continue
-		}
-
-		// Parse keyword=value or keyword value
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) < 2 {
-			parts = strings.SplitN(line, "=", 2)
-		}
-		if len(parts) < 2 {
-			continue
-		}
-		keyword := strings.ToLower(strings.TrimSpace(parts[0]))
-		value := strings.TrimSpace(parts[1])
-
-		// First-match-wins: only record the first occurrence
-		if _, exists := effective[keyword]; !exists {
-			effective[keyword] = value
-		}
-	}
-}
-
-func sshdEffective(parsed map[string]string, key string) string {
-	if v, ok := parsed[key]; ok {
-		return strings.ToLower(v)
-	}
-	return sshdDefaults[key]
+func parseSSHDConfig() *sshdconf.Config {
+	return sshdconf.Parse(osFS, sshdConfigPath)
 }
 
 func currentSSHDSettings() sshdSettings {
 	parsed := parseSSHDConfig()
 	return sshdSettings{
-		PasswordAuthentication: sshdEffective(parsed, "passwordauthentication"),
-		PermitRootLogin:        sshdEffective(parsed, "permitrootlogin"),
-		X11Forwarding:          sshdEffective(parsed, "x11forwarding"),
+		PasswordAuthentication: parsed.Value("passwordauthentication"),
+		PermitRootLogin:        parsed.Value("permitrootlogin"),
+		X11Forwarding:          parsed.Value("x11forwarding"),
 	}
+}
+
+// portsLabel renders a port list for operator-facing audit messages.
+func portsLabel(ports []int) string {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	if len(parts) == 1 {
+		return "port " + parts[0]
+	}
+	return "ports " + strings.Join(parts, ", ")
 }
 
 func auditSSH() []store.AuditResult {
 	parsed := parseSSHDConfig()
 	var results []store.AuditResult
 
-	// ssh_port
-	port := sshdEffective(parsed, "port")
-	if port == "22" {
+	// ssh_port. sshd binds every Port directive, so exposure on 22 counts
+	// even when the config also names an alternate port.
+	ports := parsed.ListenPorts()
+	if slices.Contains(ports, 22) {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_port", Title: "SSH Port",
 			Status: "warn", Message: "SSH is running on default port 22",
@@ -196,12 +129,12 @@ func auditSSH() []store.AuditResult {
 	} else {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_port", Title: "SSH Port",
-			Status: "pass", Message: fmt.Sprintf("SSH on non-standard port %s", port),
+			Status: "pass", Message: fmt.Sprintf("SSH on non-standard %s", portsLabel(ports)),
 		})
 	}
 
 	// ssh_protocol
-	proto := sshdEffective(parsed, "protocol")
+	proto := parsed.Value("protocol")
 	if strings.Contains(proto, "1") {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_protocol", Title: "SSH Protocol",
@@ -216,7 +149,7 @@ func auditSSH() []store.AuditResult {
 	}
 
 	// ssh_password_auth
-	passAuth := sshdEffective(parsed, "passwordauthentication")
+	passAuth := parsed.Value("passwordauthentication")
 	if passAuth != "no" {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_password_auth", Title: "SSH PasswordAuthentication",
@@ -231,7 +164,7 @@ func auditSSH() []store.AuditResult {
 	}
 
 	// ssh_root_login
-	rootLogin := sshdEffective(parsed, "permitrootlogin")
+	rootLogin := parsed.Value("permitrootlogin")
 	if rootLogin == "yes" {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_root_login", Title: "SSH PermitRootLogin",
@@ -246,7 +179,7 @@ func auditSSH() []store.AuditResult {
 	}
 
 	// ssh_max_auth_tries
-	maxTries := sshdEffective(parsed, "maxauthtries")
+	maxTries := parsed.Value("maxauthtries")
 	n, _ := strconv.Atoi(maxTries)
 	if n == 0 {
 		n = 6 // default
@@ -265,7 +198,7 @@ func auditSSH() []store.AuditResult {
 	}
 
 	// ssh_x11_forwarding
-	x11 := sshdEffective(parsed, "x11forwarding")
+	x11 := parsed.Value("x11forwarding")
 	if x11 != "no" {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_x11_forwarding", Title: "SSH X11Forwarding",
@@ -280,7 +213,7 @@ func auditSSH() []store.AuditResult {
 	}
 
 	// ssh_use_dns
-	useDNS := sshdEffective(parsed, "usedns")
+	useDNS := parsed.Value("usedns")
 	if useDNS != "no" {
 		results = append(results, store.AuditResult{
 			Category: "ssh", Name: "ssh_use_dns", Title: "SSH UseDNS",

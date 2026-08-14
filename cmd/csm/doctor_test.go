@@ -139,6 +139,10 @@ func TestBuildDoctorReport_EmptyWatcherRegistryFails(t *testing.T) {
 }
 
 func TestBuildDoctorReportIncludesConfigWarnings(t *testing.T) {
+	// Pin the SSH probe at a path with no config so this test sees only the
+	// web UI warning it is about, on any host.
+	defer config.SetSSHDConfigPath(filepath.Join(t.TempDir(), "absent"))()
+
 	cfg := validDoctorConfig()
 	cfg.WebUI.Enabled = true
 	cfg.WebUI.Listen = "0.0.0.0:9443"
@@ -174,6 +178,43 @@ func TestBuildDoctorReportIncludesConfigWarnings(t *testing.T) {
 	if !found {
 		t.Fatalf("doctor omitted firewall lockout warning: %+v", report.Checks)
 	}
+}
+
+// doctor is the tool operators run before enabling the firewall, so the SSH
+// reachability probe has to reach the report, not just `csm validate --deep`.
+func TestBuildDoctorReportIncludesSSHLockoutWarning(t *testing.T) {
+	sshdPath := filepath.Join(t.TempDir(), "sshd_config")
+	if err := os.WriteFile(sshdPath, []byte("Port 22\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer config.SetSSHDConfigPath(sshdPath)()
+
+	cfg := validDoctorConfig()
+	cfg.Firewall = &firewall.FirewallConfig{
+		Enabled:       true,
+		TCPIn:         []int{80, 443},
+		ConnRateLimit: 200,
+	}
+	snap := &health.Snapshot{
+		StartedAt:    time.Now(),
+		StoreHealthy: true,
+		Watchers:     map[string]bool{"fanotify": true},
+	}
+	payload, err := json.Marshal(control.StatusResult{Version: "test", Snapshot: snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report := buildDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func() ([]byte, error) { return payload, nil },
+	)
+	for _, check := range report.Checks {
+		if check.Name == "config: firewall.tcp_in" && check.Status == "warn" && strings.Contains(check.Message, "sshd") {
+			return
+		}
+	}
+	t.Fatalf("doctor omitted the SSH lockout warning: %+v", report.Checks)
 }
 
 func TestBuildDoctorReportStopsOnConfigValidationError(t *testing.T) {
