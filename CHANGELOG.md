@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Built with Go 1.26.6, clearing seven standard-library vulnerabilities flagged by govulncheck in reachable code paths (crypto/tls, net/http, net/url, html/template, encoding/xml, encoding/asn1).
+- Dependency updates from the GitHub mirror's Dependabot queue: compression, GeoIP reader, and Redis client libraries, plus the SHA-pinned CodeQL workflow actions. govulncheck is clean again.
+
 ### Added
 
 - The mail-filter audit now also scans dovecot/Roundcube Sieve scripts, not just Exim filters, so a webmail rule that copies every message to an external address while keeping a local copy is caught. This is the path a real year-long mailbox interception used, and it went undetected before.
