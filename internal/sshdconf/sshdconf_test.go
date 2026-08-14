@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,17 @@ func TestIncludeAcceptsMultiplePatternsOnOneLine(t *testing.T) {
 	}
 }
 
+func TestIncludeAcceptsQuotedPatternWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "drop ins/50-port.conf", "Port 2205\n")
+	path := writeConfig(t, dir, "sshd_config", "Include \"drop ins/*.conf\" # local drop-ins\n")
+
+	got := Parse(OSFS{}, path).ListenPorts()
+	if !reflect.DeepEqual(got, []int{2205}) {
+		t.Errorf("ListenPorts() = %v, want [2205]", got)
+	}
+}
+
 func TestSelfIncludingConfigTerminates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sshd_config")
@@ -99,6 +111,53 @@ func TestSelfIncludingConfigTerminates(t *testing.T) {
 	if !reflect.DeepEqual(got, []int{2222}) {
 		t.Errorf("ListenPorts() = %v, want [2222]", got)
 	}
+}
+
+type countingFS struct {
+	opens int
+}
+
+func (f *countingFS) Open(name string) (*os.File, error) {
+	f.opens++
+	return OSFS{}.Open(name)
+}
+
+func (*countingFS) Glob(pattern string) ([]string, error) {
+	return OSFS{}.Glob(pattern)
+}
+
+func TestIncludeCyclesReadEachFileOnce(t *testing.T) {
+	t.Run("glob matches parent", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeConfig(t, dir, "root.conf", "Port 2222\nInclude *.conf\n")
+		fsys := &countingFS{}
+
+		got := Parse(fsys, path).ListenPorts()
+		if !reflect.DeepEqual(got, []int{2222}) {
+			t.Errorf("ListenPorts() = %v, want [2222]", got)
+		}
+		if fsys.opens != 1 {
+			t.Errorf("Open called %d times, want 1 for a self-matching glob", fsys.opens)
+		}
+	})
+
+	t.Run("mutual include", func(t *testing.T) {
+		dir := t.TempDir()
+		aPath := filepath.Join(dir, "a.conf")
+		bPath := filepath.Join(dir, "b.conf")
+		writeConfig(t, dir, "a.conf", "Port 2201\nInclude "+bPath+"\n")
+		writeConfig(t, dir, "b.conf", "Port 2202\nInclude "+aPath+"\n")
+		fsys := &countingFS{}
+
+		got := Parse(fsys, aPath).ListenPorts()
+		want := []int{2201, 2202}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("ListenPorts() = %v, want %v", got, want)
+		}
+		if fsys.opens != 2 {
+			t.Errorf("Open called %d times, want once per file", fsys.opens)
+		}
+	})
 }
 
 func TestPortInsideMatchBlockIgnored(t *testing.T) {
@@ -119,6 +178,33 @@ func TestPortAcceptsEqualsAndTabSeparators(t *testing.T) {
 	want := []int{2222, 2223, 2224}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ListenPorts() = %v, want %v", got, want)
+	}
+}
+
+func TestArgumentsAcceptQuotesEscapesAndInlineComments(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "sshd_config",
+		"Port \"2222\" # alternate port\nPasswordAuthentication 'NO' # keys only\nPermitRootLogin prohibit\\-password\n")
+
+	cfg := Parse(OSFS{}, path)
+	if got := cfg.ListenPorts(); !reflect.DeepEqual(got, []int{2222}) {
+		t.Errorf("ListenPorts() = %v, want [2222]", got)
+	}
+	if got := cfg.Value("passwordauthentication"); got != "no" {
+		t.Errorf("Value(passwordauthentication) = %q, want no", got)
+	}
+	if got := cfg.Value("permitrootlogin"); got != `prohibit\-password` {
+		t.Errorf("Value(permitrootlogin) = %q, want the unrecognised escape preserved", got)
+	}
+}
+
+func TestPortAcceptsServiceName(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "sshd_config", "Port ssh\n")
+
+	got := Parse(OSFS{}, path).ListenPorts()
+	if !reflect.DeepEqual(got, []int{22}) {
+		t.Errorf("ListenPorts() = %v, want [22] for the ssh service", got)
 	}
 }
 
@@ -163,6 +249,56 @@ func TestListenAddressWithoutPortKeepsDefault(t *testing.T) {
 	got := Parse(OSFS{}, path).ListenPorts()
 	if !reflect.DeepEqual(got, []int{22}) {
 		t.Errorf("ListenPorts() = %v, want [22]", got)
+	}
+}
+
+func TestRemoteListenPortsHonorAddressFamily(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := []struct {
+		name    string
+		content string
+		wantV4  []int
+		wantV6  []int
+	}{
+		{name: "default is dual stack", content: "Port 2222\n", wantV4: []int{2222}, wantV6: []int{2222}},
+		{name: "IPv4 only", content: "AddressFamily inet\nPort 2222\n", wantV4: []int{2222}, wantV6: []int{}},
+		{name: "IPv6 only", content: "AddressFamily inet6\nPort 2222\n", wantV4: []int{}, wantV6: []int{2222}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, dir, strings.ReplaceAll(tt.name, " ", "-")+".conf", tt.content)
+			gotV4, gotV6 := Parse(OSFS{}, path).RemoteListenPorts()
+			if !reflect.DeepEqual(gotV4, tt.wantV4) {
+				t.Errorf("IPv4 ports = %v, want %v", gotV4, tt.wantV4)
+			}
+			if !reflect.DeepEqual(gotV6, tt.wantV6) {
+				t.Errorf("IPv6 ports = %v, want %v", gotV6, tt.wantV6)
+			}
+		})
+	}
+}
+
+func TestRemoteListenPortsFollowAddressesAndIgnoreLoopback(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "sshd_config", strings.Join([]string{
+		"Port 2222",
+		"ListenAddress 192.0.2.10",
+		"ListenAddress 198.51.100.10:2204",
+		"ListenAddress 127.0.0.1:2205",
+		"ListenAddress localhost:2208",
+		"ListenAddress 2001:db8::10",
+		"ListenAddress [2001:db8::11]:2206",
+		"ListenAddress [::1]:2207",
+	}, "\n")+"\n")
+
+	gotV4, gotV6 := Parse(OSFS{}, path).RemoteListenPorts()
+	if want := []int{2204, 2222}; !reflect.DeepEqual(gotV4, want) {
+		t.Errorf("IPv4 ports = %v, want %v", gotV4, want)
+	}
+	if want := []int{2206, 2222}; !reflect.DeepEqual(gotV6, want) {
+		t.Errorf("IPv6 ports = %v, want %v", gotV6, want)
 	}
 }
 
@@ -262,6 +398,17 @@ func TestCommentsAndBlankLinesIgnored(t *testing.T) {
 	got := Parse(OSFS{}, path).ListenPorts()
 	if !reflect.DeepEqual(got, []int{2222}) {
 		t.Errorf("ListenPorts() = %v, want [2222]", got)
+	}
+}
+
+func TestLongLineDoesNotHideFollowingDirectives(t *testing.T) {
+	dir := t.TempDir()
+	content := "# " + strings.Repeat("x", 128*1024) + "\nPort 2222\n"
+	path := writeConfig(t, dir, "sshd_config", content)
+
+	got := Parse(OSFS{}, path).ListenPorts()
+	if !reflect.DeepEqual(got, []int{2222}) {
+		t.Errorf("ListenPorts() = %v, want [2222] after a long valid line", got)
 	}
 }
 
