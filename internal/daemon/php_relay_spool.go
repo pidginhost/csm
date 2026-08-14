@@ -258,22 +258,20 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 	}
 
 	state := p.eng.scripts.getOrCreate(sig.ScriptKey)
-	state.append(scriptEvent{
+	// Path 2 includes cron-driven mail without an HTTP source IP, so every
+	// script event carries its recipient parse outcome into the script window.
+	state.appendMessage(scriptEvent{
 		At:               now,
 		MsgID:            msgID,
 		Subject:          truncateDaemon(h.Subject, phpRelayBreakdownSubjectMax),
 		FromMismatch:     sig.FromMismatch,
 		AdditionalSignal: sig.AdditionalSignal,
 		SourceIP:         sig.SourceIP,
-	})
+	}, h.Recipients)
 	state.recordActive(msgID, now)
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
-		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, now, h.Subject)
-		// Track envelope recipients so Path 4 can tell genuine relay fanout
-		// (many distinct victims) from WordPress notification mail (a fixed
-		// admin set). Unknown recipients leave the gate failing open.
-		p.eng.ips.recordRecipients(sig.SourceIP, h.Recipients, now)
+		p.eng.ips.appendMessage(sig.SourceIP, sig.ScriptKey, now, h.Subject, h.Recipients)
 	}
 
 	if p.rebuilding.Load() {

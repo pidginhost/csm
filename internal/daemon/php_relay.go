@@ -65,6 +65,58 @@ const (
 	phpRelayScriptIdleHorizon      = 25 * time.Hour //nolint:unused // consumed by Flow E in Task O2
 )
 
+// recipientTracker records the distinct envelope recipients seen in some
+// window and whether that window is safe to gate on. A window is only safe
+// when at least one recipient parse succeeded and no parse gap was seen in
+// that same window, so a caller reading it can fail open. Callers hold their
+// own lock; the tracker has none.
+type recipientTracker struct {
+	recipients    map[string]time.Time
+	lastAt        time.Time
+	lastUnknownAt time.Time
+}
+
+// record folds one message's recipients in. An empty list marks a parse gap.
+func (t *recipientTracker) record(recipients []string, at time.Time, max int) {
+	recorded := false
+	if len(recipients) > 0 {
+		if t.recipients == nil {
+			t.recipients = make(map[string]time.Time, 8)
+		}
+		for _, raw := range recipients {
+			r := normalizeRecipient(raw)
+			if r == "" {
+				continue
+			}
+			if _, exists := t.recipients[r]; !exists && len(t.recipients) >= max {
+				evictOldestRecipient(t.recipients)
+			}
+			if at.After(t.recipients[r]) {
+				t.recipients[r] = at
+			}
+			recorded = true
+		}
+	}
+	if recorded && at.After(t.lastAt) {
+		t.lastAt = at
+	}
+	if !recorded && at.After(t.lastUnknownAt) {
+		t.lastUnknownAt = at
+	}
+}
+
+// distinctSince returns how many distinct recipients were seen no earlier than
+// since, and whether that answer is trustworthy. known=false means fail open.
+func (t *recipientTracker) distinctSince(since time.Time) (count int, known bool) {
+	known = seenAtOrAfter(t.lastAt, since) && !seenAtOrAfter(t.lastUnknownAt, since)
+	for _, last := range t.recipients {
+		if !last.Before(since) {
+			count++
+		}
+	}
+	return count, known
+}
+
 // scriptState tracks one script's recent activity. All fields read or
 // written through the embedded mutex.
 type scriptState struct {
@@ -73,6 +125,7 @@ type scriptState struct {
 	events     []scriptEvent
 	rejections []rejectionEvent //nolint:unused // wired by Path 3 in Stage 2
 	firedAt    map[string]time.Time
+	rcpts      recipientTracker
 
 	activeMsgs       map[string]time.Time // msgID -> acceptedAt
 	activeMsgsCapped bool
@@ -97,6 +150,10 @@ func newScriptState() *scriptState {
 func (s *scriptState) append(e scriptEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.appendLocked(e)
+}
+
+func (s *scriptState) appendLocked(e scriptEvent) {
 	if len(s.events) >= s.maxEvents {
 		s.events = s.events[1:]
 	}
@@ -104,6 +161,24 @@ func (s *scriptState) append(e scriptEvent) {
 	if e.At.After(s.lastEvent) {
 		s.lastEvent = e.At
 	}
+}
+
+// appendMessage records an event and its recipient parse result as one state
+// transition. This prevents a concurrent evaluator from counting the event
+// while still trusting recipient data from only the preceding messages.
+func (s *scriptState) appendMessage(e scriptEvent, recipients []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendLocked(e)
+	s.rcpts.record(recipients, e.At, maxTrackedRecipients)
+}
+
+// distinctRecipientsSince reports the distinct recipients this script reached
+// no earlier than since. known=false means callers must fail open.
+func (s *scriptState) distinctRecipientsSince(since time.Time) (count int, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rcpts.distinctSince(since)
 }
 
 // qualifyingCount returns the number of events whose At is at or after
@@ -288,15 +363,10 @@ func (w *perScriptWindow) Snapshot() map[scriptKey]*scriptState {
 }
 
 type ipState struct {
-	mu      sync.Mutex
-	scripts map[scriptKey]*ipScriptState
-	// recipients maps a normalized recipient address to the last time it was
-	// seen from this source IP. A window is safe to gate only when at least one
-	// recipient parse succeeded and no parse gap was seen in that same window.
-	recipients             map[string]time.Time
-	lastRecipientAt        time.Time
-	lastRecipientUnknownAt time.Time
-	lastEvent              time.Time
+	mu        sync.Mutex
+	scripts   map[scriptKey]*ipScriptState
+	rcpts     recipientTracker
+	lastEvent time.Time
 }
 
 type ipScriptState struct {
@@ -325,7 +395,11 @@ func (w *perIPWindow) append(ip string, k scriptKey, at time.Time, subject ...st
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, exists := s.scripts[k]; !exists && len(s.scripts) >= w.capPerIP {
+	s.appendLocked(k, at, w.capPerIP, subject...)
+}
+
+func (s *ipState) appendLocked(k scriptKey, at time.Time, capPerIP int, subject ...string) {
+	if _, exists := s.scripts[k]; !exists && len(s.scripts) >= capPerIP {
 		var oldestK scriptKey
 		var oldest time.Time
 		first := true
@@ -359,6 +433,21 @@ func (w *perIPWindow) append(ip string, k scriptKey, at time.Time, subject ...st
 	}
 }
 
+// appendMessage records a script hit and its recipient parse result while
+// holding the same IP-state lock, keeping the Path 4 gate fail-open when
+// evaluation runs concurrently with spool processing.
+func (w *perIPWindow) appendMessage(ip string, k scriptKey, at time.Time, subject string, recipients []string) {
+	if ip == "" {
+		return
+	}
+	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendLocked(k, at, w.capPerIP, subject)
+	s.rcpts.record(recipients, at, maxTrackedRecipients)
+}
+
 func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 	v, ok := w.states.Load(ip)
 	if !ok {
@@ -376,52 +465,10 @@ func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
 	return n
 }
 
-// maxRecipientsPerIP bounds the recipient set tracked per source IP. A genuine
-// high-diversity relay blows far past the gate threshold before this cap, so
-// evicting the oldest entry here never pulls the distinct count back under the
-// threshold; it only protects memory under sustained churn.
-const maxRecipientsPerIP = 256
-
-// recordRecipients accumulates the distinct envelope recipients seen from a
-// source IP. Called from the spool pipeline with the parsed -H recipients; an
-// empty list marks a recipient parse gap so Path 4 fails open for that window.
-func (w *perIPWindow) recordRecipients(ip string, recipients []string, at time.Time) {
-	if ip == "" {
-		return
-	}
-	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]*ipScriptState, 8)})
-	s := v.(*ipState)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	recorded := false
-	if len(recipients) > 0 {
-		if s.recipients == nil {
-			s.recipients = make(map[string]time.Time, 8)
-		}
-		for _, raw := range recipients {
-			r := normalizeRecipient(raw)
-			if r == "" {
-				continue
-			}
-			if _, exists := s.recipients[r]; !exists && len(s.recipients) >= maxRecipientsPerIP {
-				evictOldestRecipient(s.recipients)
-			}
-			if at.After(s.recipients[r]) {
-				s.recipients[r] = at
-			}
-			recorded = true
-		}
-	}
-	if recorded && at.After(s.lastRecipientAt) {
-		s.lastRecipientAt = at
-	}
-	if !recorded && at.After(s.lastRecipientUnknownAt) {
-		s.lastRecipientUnknownAt = at
-	}
-	if at.After(s.lastEvent) {
-		s.lastEvent = at
-	}
-}
+// maxTrackedRecipients bounds each script or source-IP recipient set. A
+// genuine high-diversity relay crosses the gate threshold before this cap, so
+// the bound protects memory without hiding the current high diversity.
+const maxTrackedRecipients = 256
 
 // distinctRecipientsSince returns the number of distinct recipients seen from
 // ip no earlier than since, and whether any recipient data was recorded within
@@ -434,13 +481,7 @@ func (w *perIPWindow) distinctRecipientsSince(ip string, since time.Time) (count
 	s := v.(*ipState)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	known = seenAtOrAfter(s.lastRecipientAt, since) && !seenAtOrAfter(s.lastRecipientUnknownAt, since)
-	for _, last := range s.recipients {
-		if !last.Before(since) {
-			count++
-		}
-	}
-	return count, known
+	return s.rcpts.distinctSince(since)
 }
 
 func seenAtOrAfter(t, since time.Time) bool {
@@ -731,7 +772,8 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 
 	// Path 2: absolute volume per script in the last 60 min.
 	absVol := s.volumeCount(now.Add(-60 * time.Minute))
-	if absVol >= e.cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour {
+	if absVol >= e.cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour &&
+		!e.scriptIsLowDiversityNotification(s, now.Add(-60*time.Minute)) {
 		if s.shouldFire("volume", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
 				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol), now)
@@ -768,6 +810,20 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	}
 
 	return findings
+}
+
+// scriptIsLowDiversityNotification reports whether a script's hourly volume is
+// notification mail rather than relay abuse. A security or e-commerce plugin
+// can legitimately emit hundreds of mails an hour to the same one or two
+// admin addresses; relay abuse reaches many distinct victims. Unknown or
+// partially parsed recipients leave the gate failing open.
+func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.Time) bool {
+	minRcpt := e.cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients
+	if minRcpt <= 0 || s == nil {
+		return false
+	}
+	count, known := s.distinctRecipientsSince(since)
+	return known && count < minRcpt
 }
 
 // fanoutIsLowDiversityNotification reports whether a script fanout from this

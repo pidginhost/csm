@@ -115,7 +115,7 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 	register(func(in VerifyInput) VerifyResult { return verifyDBOptionsInjection(in.Message, in.Details) },
 		"db_options_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyDBSiteurlHijack(in.Message, in.Details) },
-		"db_siteurl_hijack")
+		"db_siteurl_hijack", "db_siteurl_invalid")
 	register(func(in VerifyInput) VerifyResult { return verifyDBPostInjection(in.Message, in.Details) },
 		"db_post_injection")
 	register(func(in VerifyInput) VerifyResult { return verifyDBSpamInjection(in.Message, in.Details) },

@@ -18,6 +18,9 @@ func withIncompleteCheckCollector(ctx context.Context) (context.Context, *incomp
 }
 
 func markCheckIncomplete(ctx context.Context, name string) {
+	if ctx == nil {
+		return
+	}
 	collector, _ := ctx.Value(incompleteCheckContextKey{}).(*incompleteCheckCollector)
 	if collector == nil {
 		return
@@ -25,6 +28,14 @@ func markCheckIncomplete(ctx context.Context, name string) {
 	collector.mu.Lock()
 	collector.names[name] = struct{}{}
 	collector.mu.Unlock()
+}
+
+func checkMarkedIncomplete(ctx context.Context, name string) bool {
+	if ctx == nil {
+		return false
+	}
+	collector, _ := ctx.Value(incompleteCheckContextKey{}).(*incompleteCheckCollector)
+	return collector != nil && collector.contains(name)
 }
 
 func (c *incompleteCheckCollector) contains(name string) bool {

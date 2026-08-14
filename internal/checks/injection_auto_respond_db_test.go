@@ -39,7 +39,7 @@ func TestAutoRespondDBMalwareCleanDatabaseOffReturnsNil(t *testing.T) {
 	}
 }
 
-func TestAutoRespondDBMalwareIgnoresNonDBChecks(t *testing.T) {
+func TestAutoRespondDBMalwareIgnoresAlertOnlyChecks(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.CleanDatabase = true
@@ -48,6 +48,7 @@ func TestAutoRespondDBMalwareIgnoresNonDBChecks(t *testing.T) {
 	got := AutoRespondDBMalware(cfg, []alert.Finding{
 		{Check: "db_spam_injection", Details: "db=wp"},
 		{Check: "db_post_injection", Details: "db=wp"},
+		{Check: "db_siteurl_invalid", Details: "Database: wp\nsiteurl = https://example.com/path?x"},
 		{Check: "webshell", FilePath: "/tmp/x.php"},
 	})
 	if len(got) != 0 {

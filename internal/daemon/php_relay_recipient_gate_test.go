@@ -14,8 +14,8 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	ip := "192.0.2.50"
 
 	// Case/bracket normalization and dedup: three logical recipients.
-	w.recordRecipients(ip, []string{"Admin@Example.com", "<admin@example.com>", "ops@example.org"}, now)
-	w.recordRecipients(ip, []string{"sales@example.net"}, now)
+	w.appendMessage(ip, "k:/", now, "", []string{"Admin@Example.com", "<admin@example.com>", "ops@example.org"})
+	w.appendMessage(ip, "k:/", now, "", []string{"sales@example.net"})
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if !known {
@@ -26,7 +26,7 @@ func TestPerIPWindow_DistinctRecipients(t *testing.T) {
 	}
 
 	// Recipients older than the window are excluded.
-	w.recordRecipients(ip, []string{"old@example.com"}, now.Add(-2*time.Hour))
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"})
 	count, _ = w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if count != 3 {
 		t.Fatalf("distinct recipients with window = %d, want 3", count)
@@ -43,7 +43,7 @@ func TestPerIPWindow_StaleRecipientsAreUnknown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.51"
 
-	w.recordRecipients(ip, []string{"old@example.com"}, now.Add(-2*time.Hour))
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", []string{"old@example.com"})
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
 	if count != 0 || known {
@@ -56,8 +56,8 @@ func TestPerIPWindow_RecipientParseGapMakesWindowUnknown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.52"
 
-	w.recordRecipients(ip, []string{"admin@example.com"}, now)
-	w.recordRecipients(ip, nil, now.Add(time.Second))
+	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"})
+	w.appendMessage(ip, "k:/", now.Add(time.Second), "", nil)
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
 	if count != 1 || known {
@@ -70,8 +70,8 @@ func TestPerIPWindow_StaleRecipientParseGapDoesNotHideFreshKnownData(t *testing.
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.53"
 
-	w.recordRecipients(ip, nil, now.Add(-2*time.Hour))
-	w.recordRecipients(ip, []string{"admin@example.com"}, now)
+	w.appendMessage(ip, "k:/", now.Add(-2*time.Hour), "", nil)
+	w.appendMessage(ip, "k:/", now, "", []string{"admin@example.com"})
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-5*time.Minute))
 	if count != 1 || !known {
@@ -84,8 +84,8 @@ func TestPerIPWindow_RecipientEvictionKeepsHighDiversityAboveGate(t *testing.T) 
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.54"
 
-	for i := 0; i < maxRecipientsPerIP+50; i++ {
-		w.recordRecipients(ip, []string{fmt.Sprintf("victim%03d@example.com", i)}, now)
+	for i := 0; i < maxTrackedRecipients+50; i++ {
+		w.appendMessage(ip, "k:/", now, "", []string{fmt.Sprintf("victim%03d@example.com", i)})
 	}
 
 	count, known := w.distinctRecipientsSince(ip, now.Add(-time.Minute))
@@ -95,18 +95,22 @@ func TestPerIPWindow_RecipientEvictionKeepsHighDiversityAboveGate(t *testing.T) 
 	if count < 5 {
 		t.Fatalf("distinct recipients after eviction = %d, want at least 5", count)
 	}
-	if count > maxRecipientsPerIP {
-		t.Fatalf("distinct recipients after eviction = %d, want capped at %d", count, maxRecipientsPerIP)
+	if count > maxTrackedRecipients {
+		t.Fatalf("distinct recipients after eviction = %d, want capped at %d", count, maxTrackedRecipients)
 	}
 }
 
-// addFanout seeds both the per-script and per-IP windows so Path 4 sees the
-// script fanout, optionally recording recipients for the per-IP window.
-func seedFanout(psw *perScriptWindow, pip *perIPWindow, ip string, now time.Time) {
+// seedFanout records complete messages in both windows so each Path 4 script
+// hit and its recipient parse outcome become visible together.
+func seedFanout(psw *perScriptWindow, pip *perIPWindow, ip string, now time.Time, recipients [][]string) {
 	for i, k := range []scriptKey{"kA:/", "kB:/", "kC:/"} {
 		at := now.Add(-time.Duration(i) * time.Minute)
-		psw.getOrCreate(k).append(scriptEvent{At: at, SourceIP: ip})
-		pip.append(ip, k, at, "subj")
+		var rcpts []string
+		if i < len(recipients) {
+			rcpts = recipients[i]
+		}
+		psw.getOrCreate(k).appendMessage(scriptEvent{At: at, SourceIP: ip}, rcpts)
+		pip.appendMessage(ip, k, at, "subj", rcpts)
 	}
 }
 
@@ -133,11 +137,12 @@ func TestEvaluatePaths_Path4_SuppressedForLowRecipientDiversity(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.99"
 
-	seedFanout(psw, pip, ip, now)
 	// Fixed admin set, three distinct recipients across all the mails.
-	pip.recordRecipients(ip, []string{"info@example.com"}, now)
-	pip.recordRecipients(ip, []string{"alex@example.org"}, now)
-	pip.recordRecipients(ip, []string{"alex@example.net"}, now)
+	seedFanout(psw, pip, ip, now, [][]string{
+		{"info@example.com"},
+		{"alex@example.org"},
+		{"alex@example.net"},
+	})
 
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if fanoutFired(findings) {
@@ -158,10 +163,11 @@ func TestEvaluatePaths_Path4_FiresOnHighRecipientDiversity(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.99"
 
-	seedFanout(psw, pip, ip, now)
-	for i := 0; i < 8; i++ {
-		pip.recordRecipients(ip, []string{fmt.Sprintf("victim%d@example.com", i)}, now)
-	}
+	seedFanout(psw, pip, ip, now, [][]string{
+		{"victim0@example.com", "victim1@example.com", "victim2@example.com"},
+		{"victim3@example.com", "victim4@example.com", "victim5@example.com"},
+		{"victim6@example.com", "victim7@example.com"},
+	})
 
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if !fanoutFired(findings) {
@@ -182,7 +188,7 @@ func TestEvaluatePaths_Path4_FiresWhenRecipientsUnknown(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.99"
 
-	seedFanout(psw, pip, ip, now) // no recordRecipients
+	seedFanout(psw, pip, ip, now, nil)
 
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if !fanoutFired(findings) {
@@ -203,9 +209,11 @@ func TestEvaluatePaths_Path4_FiresWhenRecipientWindowPartiallyUnknown(t *testing
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.99"
 
-	seedFanout(psw, pip, ip, now)
-	pip.recordRecipients(ip, []string{"info@example.com"}, now)
-	pip.recordRecipients(ip, nil, now)
+	seedFanout(psw, pip, ip, now, [][]string{
+		{"info@example.com"},
+		nil,
+		{"info@example.com"},
+	})
 
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if !fanoutFired(findings) {
@@ -227,11 +235,143 @@ func TestEvaluatePaths_Path4_GateDisabledWhenThresholdZero(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	ip := "192.0.2.99"
 
-	seedFanout(psw, pip, ip, now)
-	pip.recordRecipients(ip, []string{"info@example.com"}, now)
+	seedFanout(psw, pip, ip, now, [][]string{
+		{"info@example.com"},
+		{"info@example.com"},
+		{"info@example.com"},
+	})
 
 	findings := eng.evaluatePaths("kC:/", ip, "u", now)
 	if !fanoutFired(findings) {
 		t.Fatalf("Path 4 must fire when the recipient gate is disabled, got %+v", findings)
+	}
+}
+
+// seedVolume appends n mails from one script inside the Path 2 window.
+func seedVolume(psw *perScriptWindow, k scriptKey, n int, now time.Time) {
+	st := psw.getOrCreate(k)
+	for i := 0; i < n; i++ {
+		st.append(scriptEvent{At: now.Add(-time.Duration(i) * 15 * time.Second), MsgID: fmt.Sprintf("m%d", i)})
+	}
+}
+
+func seedVolumeWithRecipients(psw *perScriptWindow, k scriptKey, n int, now time.Time, recipients func(int) []string) {
+	st := psw.getOrCreate(k)
+	for i := 0; i < n; i++ {
+		e := scriptEvent{At: now.Add(-time.Duration(i) * 15 * time.Second), MsgID: fmt.Sprintf("m%d", i)}
+		st.appendMessage(e, recipients(i))
+	}
+}
+
+func volumeFired(findings []alert.Finding) bool {
+	for _, f := range findings {
+		if f.Path == "volume" {
+			return true
+		}
+	}
+	return false
+}
+
+// FP seen in production: a WordPress security plugin emitted 91 alert mails in
+// an hour to one admin address. Path 2 counted them as relay abuse, opened a
+// CRITICAL account-compromise incident and auto-blocked the visitor IP for 24h.
+func TestEvaluatePaths_Path2_SuppressedForLowRecipientDiversity(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolumeWithRecipients(psw, "kV:/wp-cron.php", 91, now, func(int) []string {
+		return []string{"admin@example.com"}
+	})
+	count, known := psw.getOrCreate("kV:/wp-cron.php").distinctRecipientsSince(now.Add(-time.Hour))
+	if count != 1 || !known {
+		t.Fatalf("Wordfence recipients = (%d,%v), want (1,true)", count, known)
+	}
+
+	findings := eng.evaluatePaths("kV:/wp-cron.php", "192.0.2.44", "u", now)
+	if volumeFired(findings) {
+		t.Fatalf("Path 2 must be suppressed for notification mail to one address, got %+v", findings)
+	}
+}
+
+// True positive: same volume, but spread across many distinct recipients is
+// what relay abuse actually looks like.
+func TestEvaluatePaths_Path2_FiresOnHighRecipientDiversity(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolumeWithRecipients(psw, "kV:/mailer.php", 30, now, func(i int) []string {
+		return []string{fmt.Sprintf("victim%d@example.com", i%8)}
+	})
+
+	findings := eng.evaluatePaths("kV:/mailer.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire for high recipient diversity, got %+v", findings)
+	}
+}
+
+// Fail open: no recipient data recorded must never weaken detection.
+func TestEvaluatePaths_Path2_FiresWhenRecipientsUnknown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/unknown.php", 30, now)
+
+	findings := eng.evaluatePaths("kV:/unknown.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire when recipients are unknown (fail open), got %+v", findings)
+	}
+}
+
+// A parse gap inside the window leaves the window unknown, so a real relay
+// cannot hide behind one successfully parsed notification.
+func TestEvaluatePaths_Path2_FiresWhenRecipientWindowPartiallyUnknown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolumeWithRecipients(psw, "kV:/partial.php", 30, now, func(i int) []string {
+		if i == 12 {
+			return nil
+		}
+		return []string{"admin@example.com"}
+	})
+
+	findings := eng.evaluatePaths("kV:/partial.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire when recipient data is partially unknown, got %+v", findings)
+	}
+}
+
+// Operators who set the threshold to 0 opt out of the gate entirely.
+func TestEvaluatePaths_Path2_GateDisabledWhenThresholdZero(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 0
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolumeWithRecipients(psw, "kV:/optout.php", 30, now, func(int) []string {
+		return []string{"admin@example.com"}
+	})
+
+	findings := eng.evaluatePaths("kV:/optout.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("gate disabled must leave Path 2 firing, got %+v", findings)
 	}
 }
