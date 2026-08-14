@@ -192,6 +192,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "db_malicious_trigger", Category: CategoryDatabase},
 	{Name: "db_options_injection", Category: CategoryDatabase},
 	{Name: "db_post_injection", Category: CategoryDatabase},
+	{Name: "db_content_scan_incomplete", Category: CategoryDatabase},
 	{Name: "db_unexpected_event", Category: CategoryDatabase},
 	{Name: "db_unexpected_function", Category: CategoryDatabase},
 	{Name: "db_unexpected_procedure", Category: CategoryDatabase},

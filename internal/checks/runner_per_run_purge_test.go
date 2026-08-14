@@ -71,12 +71,29 @@ func TestRunParallelPerRunPurgeCoversPhpConfigScanIncomplete(t *testing.T) {
 	}
 }
 
+func TestRunParallelPerRunPurgeCoversDatabaseScanIncomplete(t *testing.T) {
+	_, purge := runParallel(&config.Config{}, nil, []namedCheck{{
+		name: "db_content",
+		fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			markCheckIncomplete(ctx, "db_content")
+			return nil
+		},
+	}}, "test", true)
+
+	if !slices.Contains(purge, "db_content_scan_incomplete") {
+		t.Errorf("purge = %v, want db_content_scan_incomplete purged for an incomplete run", purge)
+	}
+	if slices.Contains(purge, "db_post_injection") {
+		t.Errorf("purge = %v, database findings must survive an incomplete run", purge)
+	}
+}
+
 func TestMergePerRunPurgeNamesIsSortedAndUnique(t *testing.T) {
 	got := mergePerRunPurgeNames(
 		[]string{"z_check", "php_config_scan_incomplete"},
-		[]string{"yara_deep", "php_config_changes", "unknown"},
+		[]string{"yara_deep", "php_config_changes", "db_content", "unknown"},
 	)
-	want := []string{"php_config_scan_incomplete", "yara_scan_incomplete", "z_check"}
+	want := []string{"db_content_scan_incomplete", "php_config_scan_incomplete", "yara_scan_incomplete", "z_check"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("mergePerRunPurgeNames() = %v, want %v", got, want)
 	}

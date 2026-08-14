@@ -3,12 +3,17 @@ package checks
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/netip"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -47,41 +52,114 @@ var dbMalwarePatterns = []struct {
 	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
-// nonDocRootDirs are the directories under a home that cPanel owns. An addon
-// domain never lands in one, so a wp-config found there belongs to no served
-// site and its database must not be scanned as if it did.
+// nonDocRootDirs are common account-data and alias directories that are not
+// candidate document roots in the non-cPanel fallback.
 var nonDocRootDirs = map[string]bool{
 	"mail": true, "etc": true, "logs": true, "ssl": true, "tmp": true,
 	"public_ftp": true, "cache": true, ".cagefs": true,
+	"access-logs": true, "access_logs": true, "backups": true,
+	"cgi-bin": true, "perl5": true, "spamassassin": true, "var": true,
+	"www": true,
 }
 
-// wpConfigPaths returns every wp-config.php under an account's document roots:
-// public_html plus each addon-domain directory beside it. Globbing public_html
-// alone leaves addon domains unscanned, which is where a site poisoned in the
-// database sat unreported for months.
+// wpConfigPaths returns direct wp-config.php files at account document roots.
+// cPanel's map covers addon roots in any supported layout; other panels retain
+// the one-level home-directory fallback.
 func wpConfigPaths(ctx context.Context) []string {
 	seen := make(map[string]bool)
 	var out []string
-
-	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
-	for _, p := range primary {
-		if !seen[p] {
+	add := func(missingIsIncomplete bool, paths ...string) {
+		for _, p := range paths {
+			if seen[p] {
+				continue
+			}
+			info, err := osFS.Lstat(p)
+			if err != nil {
+				if missingIsIncomplete || !errors.Is(err, fs.ErrNotExist) {
+					markCheckIncomplete(ctx, "db_content")
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				markCheckIncomplete(ctx, "db_content")
+				continue
+			}
 			seen[p] = true
 			out = append(out, p)
 		}
 	}
 
+	// cPanel publishes its actual domain-to-document-root map. Prefer it over
+	// guessing from every top-level home directory: backups and account data
+	// can contain a complete wp-config.php but are not served sites.
+	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
+	if vhostErr == nil {
+		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
+		if !complete || len(vhosts) == 0 {
+			markCheckIncomplete(ctx, "db_content")
+		}
+		accountScope := AccountFromContext(ctx)
+		for _, vh := range vhosts {
+			if accountScope != "" && vh.user != accountScope {
+				continue
+			}
+			root := filepath.Clean(vh.docroot)
+			if !docrootBelongsToCPanelUser(root, vh.user) {
+				markCheckIncomplete(ctx, "db_content")
+				continue
+			}
+			wpConfig := filepath.Join(root, "wp-config.php")
+			add(false, wpConfig)
+		}
+		return out
+	}
+	if vhostMapFailureIsIncomplete(vhostErr) {
+		markCheckIncomplete(ctx, "db_content")
+		return out
+	}
+
+	// Non-cPanel fallback for the one-level addon-domain layout. This is a
+	// denylist by necessity; cPanel hosts never take this path.
+	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
+	add(true, primary...)
 	addon, _ := homeGlob(ctx, "*", "wp-config.php")
 	for _, p := range addon {
 		dir := filepath.Base(filepath.Dir(p))
 		if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") || seen[p] {
 			continue
 		}
-		seen[p] = true
-		out = append(out, p)
+		add(true, p)
 	}
 	return out
 }
+
+func docrootBelongsToCPanelUser(root, user string) bool {
+	parts := strings.Split(filepath.Clean(root), string(filepath.Separator))
+	for i, part := range parts {
+		if !isCPanelHomeBase(part) || i+2 >= len(parts) || parts[i+1] != user {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isCPanelHomeBase(name string) bool {
+	if name == "home" {
+		return true
+	}
+	if !strings.HasPrefix(name, "home") || len(name) == len("home") {
+		return false
+	}
+	for _, r := range name[len("home"):] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+const maxWPSecondaryBlogs = 100
 
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
@@ -90,21 +168,42 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 
 	wpConfigs := wpConfigPaths(ctx)
 	if len(wpConfigs) == 0 {
-		return nil
+		return appendDatabaseScanIncompleteFinding(ctx, nil)
 	}
 
+	seenDatabases := make(map[string]struct{}, len(wpConfigs))
 	for _, wpConfig := range wpConfigs {
-		user := extractUser(filepath.Dir(wpConfig))
-		creds := parseWPConfig(wpConfig)
-		if creds.dbName == "" || creds.dbUser == "" {
+		if ctx.Err() != nil {
+			return findings
+		}
+		user := wpConfigUser(filepath.Dir(wpConfig))
+		creds, complete := parseWPConfigChecked(wpConfig)
+		if !complete {
+			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
+		if creds.dbName == "" || creds.dbUser == "" {
+			markCheckIncomplete(ctx, "db_content")
+			continue
+		}
+		creds.queryCtx = ctx
+		queryFailed := false
+		creds.queryFailed = &queryFailed
 
 		prefix, ok := resolveTablePrefix(creds)
 		if !ok {
+			markCheckIncomplete(ctx, "db_content")
 			continue
 		}
 		creds.tablePrefix = prefix
+		databaseKey := strings.Join([]string{
+			user, creds.dbHost, creds.dbName, creds.dbUser, creds.dbPass, prefix,
+			strconv.FormatBool(creds.multisite),
+		}, "\x00")
+		if _, duplicate := seenDatabases[databaseKey]; duplicate {
+			continue
+		}
+		seenDatabases[databaseKey] = struct{}{}
 
 		// Always scan the main-site (or single-site) tables. In
 		// multisite, blog ID 1 keeps the unprefixed names; in a
@@ -123,11 +222,38 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// hosts have stale ones we'd otherwise alert on
 		// indefinitely.
 		if creds.multisite {
-			findings = append(findings, scanMultisiteSecondaryBlogs(user, creds, prefix)...)
+			findings = append(findings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
 		}
 	}
 
-	return findings
+	return appendDatabaseScanIncompleteFinding(ctx, findings)
+}
+
+func wpConfigUser(path string) string {
+	parts := strings.Split(filepath.Clean(path), string(filepath.Separator))
+	for i, part := range parts {
+		if isCPanelHomeBase(part) && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return extractUser(path)
+}
+
+func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.Finding) []alert.Finding {
+	if !checkMarkedIncomplete(ctx, "db_content") {
+		return findings
+	}
+	for _, finding := range findings {
+		if finding.Check == "db_content_scan_incomplete" {
+			return findings
+		}
+	}
+	return append(findings, alert.Finding{
+		Severity: alert.Warning,
+		Check:    "db_content_scan_incomplete",
+		Message:  "WordPress database scan could not inspect every discovered install",
+		Details:  "A document-root record, wp-config.php file, or database query could not be read safely. Findings from the previous complete scan are retained.",
+	})
 }
 
 // scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs
@@ -139,14 +265,21 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 //
 // blog_id=1 is excluded because its tables are unprefixed and were
 // already scanned by the caller.
-func scanMultisiteSecondaryBlogs(user string, creds wpDBCreds, prefix string) []alert.Finding {
+func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCreds, prefix string) []alert.Finding {
 	query := fmt.Sprintf(
-		"SELECT blog_id FROM %sblogs WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1",
-		prefix,
+		"SELECT blog_id FROM %sblogs WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1 ORDER BY blog_id LIMIT %d",
+		prefix, maxWPSecondaryBlogs+1,
 	)
 	rows := runMySQLQuery(creds, query)
 	var findings []alert.Finding
+	truncated := len(rows) > maxWPSecondaryBlogs
+	if truncated {
+		rows = rows[:maxWPSecondaryBlogs]
+	}
 	for _, row := range rows {
+		if ctx.Err() != nil {
+			return findings
+		}
 		blogID := strings.TrimSpace(row)
 		if blogID == "" || blogID == "1" {
 			continue
@@ -158,6 +291,16 @@ func scanMultisiteSecondaryBlogs(user string, creds wpDBCreds, prefix string) []
 		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
 		findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
 		findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
+	}
+	if truncated {
+		markCheckIncomplete(ctx, "db_content")
+		findings = append(findings, alert.Finding{
+			Severity: alert.Warning,
+			Check:    "db_content_scan_incomplete",
+			Message:  fmt.Sprintf("WordPress multisite database scan reached its %d-site safety limit (account: %s)", maxWPSecondaryBlogs, user),
+			Details: dbContentFindingDetails(creds.dbName, prefix,
+				"The network has more active secondary sites than one scheduled scan can safely inspect."),
+		})
 	}
 	return findings
 }
@@ -180,6 +323,13 @@ type wpDBCreds struct {
 	dbPass      string
 	dbHost      string
 	tablePrefix string
+	// queryCtx ties scheduled database work to the runner's deadline. Command
+	// paths leave it nil and retain the per-query timeout below.
+	queryCtx context.Context
+	// queryFailed is shared by the sequential queries for one install. Once a
+	// connection or query fails, later checks skip redundant retries and the
+	// host-wide scan can continue with the next install.
+	queryFailed *bool
 	// multisite is set when wp-config.php declares
 	// `define('MULTISITE', true)`. In multisite, the main blog
 	// (ID 1) keeps the unprefixed table names and secondary blogs
@@ -190,16 +340,43 @@ type wpDBCreds struct {
 	multisite bool
 }
 
+const maxWPConfigBytes = 1 << 20
+
 // parseWPConfig extracts database credentials from wp-config.php.
 func parseWPConfig(path string) wpDBCreds {
-	f, err := osFS.Open(path)
-	if err != nil {
+	creds, complete := parseWPConfigChecked(path)
+	if !complete {
 		return wpDBCreds{}
 	}
+	return creds
+}
+
+// parseWPConfigChecked bounds account-controlled input so a special or very
+// large wp-config.php cannot strand the scheduled database scan.
+func parseWPConfigChecked(path string) (wpDBCreds, bool) {
+	var f *os.File
+	var err error
+	if _, productionFS := osFS.(realOS); productionFS {
+		// The account controls this path. A nonblocking, no-follow open prevents
+		// a regular-file-to-FIFO or symlink swap from stranding the worker.
+		// #nosec G304 -- read-only document-root candidate; flags reject unsafe types.
+		f, err = os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	} else {
+		f, err = osFS.Open(path)
+	}
+	if err != nil {
+		return wpDBCreds{}, false
+	}
 	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return wpDBCreds{}, false
+	}
 
 	var creds wpDBCreds
-	scanner := bufio.NewScanner(f)
+	limited := &io.LimitedReader{R: f, N: maxWPConfigBytes + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 64*1024), maxWPConfigBytes+1)
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -234,7 +411,7 @@ func parseWPConfig(path string) wpDBCreds {
 		creds.dbHost = "localhost"
 	}
 
-	return creds
+	return creds, scanner.Err() == nil && limited.N > 0
 }
 
 // extractDefine extracts the value from: define( 'KEY', 'value' );
@@ -342,7 +519,14 @@ func extractPHPString(s string) string {
 // error (the legacy implementation swallowed errors the same way).
 // Var so tests can serve canned rows without a live database.
 var runMySQLQuery = func(creds wpDBCreds, query string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if creds.queryFailed != nil && *creds.queryFailed {
+		return nil
+	}
+	parent := creds.queryCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	rows, err := mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
 		User:     creds.dbUser,
@@ -351,6 +535,12 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 		DBName:   creds.dbName,
 	}, query)
 	if err != nil {
+		if creds.queryFailed != nil {
+			*creds.queryFailed = true
+		}
+		if creds.queryCtx != nil {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+		}
 		return nil
 	}
 	out := make([]string, 0, len(rows))
@@ -570,46 +760,58 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 
 	postTypeExcl := nonScannablePostTypesSQLList()
 
-	for _, mp := range dbMalwarePatterns {
-		// Select ID and content so we can post-filter in Go for the
-		// patterns that require it. ID comes first so that if the
-		// MySQL client wraps long content across lines we can still
-		// join reliably on the first tab.
-		query := fmt.Sprintf(
-			"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 20",
-			prefix, postTypeExcl, mp.pattern, mp.pattern)
-		lines := runMySQLQuery(creds, query)
-		if len(lines) == 0 {
+	// Keep each pattern's independent LIMIT, but send the bounded selects as
+	// one UNION. On a host with hundreds of installs this avoids one database
+	// connection and round trip per signature without letting a noisy pattern
+	// consume every candidate slot for the others.
+	malwareSelects := make([]string, 0, len(dbMalwarePatterns))
+	for i, mp := range dbMalwarePatterns {
+		pattern := mysqlEscapeForLike(mp.pattern)
+		selectedContent := "'_content_not_required'"
+		if mp.requiresExternalScript {
+			selectedContent = "CONCAT_WS(CHAR(10), post_content, post_content_filtered)"
+		}
+		malwareSelects = append(malwareSelects, fmt.Sprintf(
+			"(SELECT %d AS pattern_index, ID, %s FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 20)",
+			i, selectedContent, prefix, postTypeExcl, pattern, pattern))
+	}
+	malwareRows := runMySQLQuery(creds, strings.Join(malwareSelects, " UNION ALL "))
+	confirmedByPattern := make([][]string, len(dbMalwarePatterns))
+	seenByPattern := make([]map[string]struct{}, len(dbMalwarePatterns))
+	for _, row := range malwareRows {
+		parts := strings.SplitN(row, "\t", 3)
+		if len(parts) != 3 {
 			continue
 		}
-
-		var confirmedIDs []string
-		for _, line := range lines {
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) < 2 {
-				continue
-			}
-			postID := parts[0]
-			content := parts[1]
-
-			if mp.requiresExternalScript && !hasMaliciousExternalScriptInPost(content) {
-				// All scripts in this post are inline, or point at a
-				// host that shows no structural attack marker. We use
-				// the post-specific predicate (which ignores plaintext
-				// HTTP) because legacy author embeds from the pre-TLS
-				// era are legitimate content, not injection.
-				continue
-			}
-			confirmedIDs = append(confirmedIDs, postID)
-			if len(confirmedIDs) >= 5 {
-				break
-			}
+		patternIndex, err := strconv.Atoi(parts[0])
+		if err != nil || patternIndex < 0 || patternIndex >= len(dbMalwarePatterns) {
+			continue
 		}
-
+		mp := dbMalwarePatterns[patternIndex]
+		content := mysqlclient.BatchUnescape(parts[2])
+		if mp.requiresExternalScript && !hasMaliciousExternalScriptInPost(content) {
+			continue
+		}
+		if seenByPattern[patternIndex] == nil {
+			seenByPattern[patternIndex] = make(map[string]struct{})
+		}
+		postID := strings.TrimSpace(parts[1])
+		if postID == "" {
+			continue
+		}
+		if _, duplicate := seenByPattern[patternIndex][postID]; duplicate {
+			continue
+		}
+		seenByPattern[patternIndex][postID] = struct{}{}
+		if len(confirmedByPattern[patternIndex]) < 5 {
+			confirmedByPattern[patternIndex] = append(confirmedByPattern[patternIndex], postID)
+		}
+	}
+	for i, confirmedIDs := range confirmedByPattern {
 		if len(confirmedIDs) == 0 {
 			continue
 		}
-
+		mp := dbMalwarePatterns[i]
 		findings = append(findings, alert.Finding{
 			Severity: mp.severity,
 			Check:    "db_post_injection",
@@ -636,23 +838,27 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	// off-screen div with external commercial link — while leaving
 	// legitimate content silent. See spam_context.go for the full
 	// signal catalog.
-	for _, sp := range dbSpamPatterns {
-		query := fmt.Sprintf(
-			"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200",
-			prefix, postTypeExcl, sp.likeFragment)
-		lines := runMySQLQuery(creds, query)
-		if len(lines) == 0 {
+	spamSelects := make([]string, 0, len(dbSpamPatterns))
+	for i, sp := range dbSpamPatterns {
+		spamSelects = append(spamSelects, fmt.Sprintf(
+			"(SELECT %d AS pattern_index, ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200)",
+			i, prefix, postTypeExcl, mysqlEscapeForLike(sp.likeFragment)))
+	}
+	spamRows := runMySQLQuery(creds, strings.Join(spamSelects, " UNION ALL "))
+	spamContents := make([][]string, len(dbSpamPatterns))
+	for _, row := range spamRows {
+		parts := strings.SplitN(row, "\t", 3)
+		if len(parts) != 3 {
 			continue
 		}
-		contents := make([]string, 0, len(lines))
-		for _, line := range lines {
-			parts := strings.SplitN(line, "\t", 2)
-			if len(parts) < 2 {
-				continue
-			}
-			contents = append(contents, parts[1])
+		patternIndex, err := strconv.Atoi(parts[0])
+		if err != nil || patternIndex < 0 || patternIndex >= len(dbSpamPatterns) {
+			continue
 		}
-		n := countCloakedSpamMatches(sp, contents)
+		spamContents[patternIndex] = append(spamContents[patternIndex], mysqlclient.BatchUnescape(parts[2]))
+	}
+	for i, sp := range dbSpamPatterns {
+		n := countCloakedSpamMatches(sp, spamContents[i])
 		if n == 0 {
 			continue
 		}
