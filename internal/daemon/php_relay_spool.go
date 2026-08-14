@@ -267,6 +267,10 @@ func (p *spoolPipeline) onFileAt(path string, at time.Time) {
 		SourceIP:         sig.SourceIP,
 	})
 	state.recordActive(msgID, now)
+	// Path 2 counts every mail from this script regardless of who triggered it,
+	// so its recipient window has to be fed the same way -- including mail with
+	// no HTTP source IP, such as a cron-driven notification run.
+	state.recordRecipients(h.Recipients, now)
 
 	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
 		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, now, h.Subject)

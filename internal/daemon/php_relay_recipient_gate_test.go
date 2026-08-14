@@ -235,3 +235,118 @@ func TestEvaluatePaths_Path4_GateDisabledWhenThresholdZero(t *testing.T) {
 		t.Fatalf("Path 4 must fire when the recipient gate is disabled, got %+v", findings)
 	}
 }
+
+// seedVolume appends n mails from one script inside the Path 2 window.
+func seedVolume(psw *perScriptWindow, k scriptKey, n int, now time.Time) {
+	st := psw.getOrCreate(k)
+	for i := 0; i < n; i++ {
+		st.append(scriptEvent{At: now.Add(-time.Duration(i) * 15 * time.Second), MsgID: fmt.Sprintf("m%d", i)})
+	}
+}
+
+func volumeFired(findings []alert.Finding) bool {
+	for _, f := range findings {
+		if f.Path == "volume" {
+			return true
+		}
+	}
+	return false
+}
+
+// FP seen in production: a WordPress security plugin emitted 30 alert mails in
+// an hour to one admin address. Path 2 counted them as relay abuse, opened a
+// CRITICAL account-compromise incident and auto-blocked the visitor IP for 24h.
+func TestEvaluatePaths_Path2_SuppressedForLowRecipientDiversity(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/wp-cron.php", 30, now)
+	psw.getOrCreate("kV:/wp-cron.php").recordRecipients([]string{"admin@example.com"}, now)
+
+	findings := eng.evaluatePaths("kV:/wp-cron.php", "", "u", now)
+	if volumeFired(findings) {
+		t.Fatalf("Path 2 must be suppressed for notification mail to one address, got %+v", findings)
+	}
+}
+
+// True positive: same volume, but spread across many distinct recipients is
+// what relay abuse actually looks like.
+func TestEvaluatePaths_Path2_FiresOnHighRecipientDiversity(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/mailer.php", 30, now)
+	st := psw.getOrCreate("kV:/mailer.php")
+	for i := 0; i < 8; i++ {
+		st.recordRecipients([]string{fmt.Sprintf("victim%d@example.com", i)}, now)
+	}
+
+	findings := eng.evaluatePaths("kV:/mailer.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire for high recipient diversity, got %+v", findings)
+	}
+}
+
+// Fail open: no recipient data recorded must never weaken detection.
+func TestEvaluatePaths_Path2_FiresWhenRecipientsUnknown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/unknown.php", 30, now)
+
+	findings := eng.evaluatePaths("kV:/unknown.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire when recipients are unknown (fail open), got %+v", findings)
+	}
+}
+
+// A parse gap inside the window leaves the window unknown, so a real relay
+// cannot hide behind one successfully parsed notification.
+func TestEvaluatePaths_Path2_FiresWhenRecipientWindowPartiallyUnknown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/partial.php", 30, now)
+	st := psw.getOrCreate("kV:/partial.php")
+	st.recordRecipients([]string{"admin@example.com"}, now)
+	st.recordRecipients(nil, now)
+
+	findings := eng.evaluatePaths("kV:/partial.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("Path 2 must fire when recipient data is partially unknown, got %+v", findings)
+	}
+}
+
+// Operators who set the threshold to 0 opt out of the gate entirely.
+func TestEvaluatePaths_Path2_GateDisabledWhenThresholdZero(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 0
+	psw := newPerScriptWindow()
+	eng := newEvaluator(psw, newPerIPWindow(64), nil, cfg, nil)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	seedVolume(psw, "kV:/optout.php", 30, now)
+	psw.getOrCreate("kV:/optout.php").recordRecipients([]string{"admin@example.com"}, now)
+
+	findings := eng.evaluatePaths("kV:/optout.php", "", "u", now)
+	if !volumeFired(findings) {
+		t.Fatalf("gate disabled must leave Path 2 firing, got %+v", findings)
+	}
+}
