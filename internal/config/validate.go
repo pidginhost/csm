@@ -179,11 +179,15 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "alerts.block_digest.min_block", "min_block must be >= 0"})
 	}
 
-	// --- Duration fields (only check if non-empty) ---
+	// --- Duration fields ---
 	if cfg.AutoResponse.BlockExpiry != "" {
-		if _, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry); err != nil {
+		if d, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.block_expiry", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.BlockExpiry)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.block_expiry", "block_expiry must be a positive duration"})
 		}
+	} else if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+		results = append(results, ValidationResult{"error", "auto_response.block_expiry", fmt.Sprintf("block_expiry must be a positive duration when IP blocking is enabled; omit the key to use %s", DefaultBlockExpiry)})
 	}
 	if v := strings.ToLower(strings.TrimSpace(cfg.AutoResponse.VirtualPatchExposedFiles)); v != "" &&
 		v != VirtualPatchOff && v != VirtualPatchManual && v != VirtualPatchAuto {
@@ -220,9 +224,13 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 	if cfg.AutoResponse.PermBlockInterval != "" {
-		if _, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
+		if d, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.PermBlockInterval)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", "permblock_interval must be a positive duration"})
 		}
+	} else if cfg.AutoResponse.PermBlock {
+		results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("permblock_interval must be a positive duration when permblock is enabled; omit the key to use %s", DefaultPermBlockInterval)})
 	}
 	if cfg.AutoResponse.MailAuthRecovery.DownGrace != "" {
 		if d, err := time.ParseDuration(cfg.AutoResponse.MailAuthRecovery.DownGrace); err != nil {
@@ -587,6 +595,8 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	results = append(results, blockEscalationResults(cfg)...)
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 
@@ -608,6 +618,22 @@ func webUITokenCounts(cfg *Config) (tokens, admins int) {
 		}
 	}
 	return tokens, admins
+}
+
+func blockEscalationResults(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+	// Escalation counters below 2 describe no pattern: one address is not a
+	// subnet, and one temporary block is not a repeat offender. Omitted keys
+	// get defaults during Load, so lower values here were explicit.
+	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.netblock_threshold",
+			fmt.Sprintf("netblock_threshold must be at least %d when netblock is enabled; raise the threshold or disable netblock (got %d)", MinBlockEscalationCount, cfg.AutoResponse.NetBlockThreshold)})
+	}
+	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.permblock_count",
+			fmt.Sprintf("permblock_count must be at least %d when permblock is enabled; raise the count or disable permblock (got %d)", MinBlockEscalationCount, cfg.AutoResponse.PermBlockCount)})
+	}
+	return results
 }
 
 // validateWarnings checks for non-fatal configuration issues.
@@ -649,21 +675,6 @@ func validateWarnings(cfg *Config) []ValidationResult {
 	// Firewall enabled but no infra IPs (lockout risk)
 	if cfg.Firewall != nil && cfg.Firewall.Enabled && !topInfra && !fwInfra {
 		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured - risk of lockout"})
-	}
-
-	// Escalation counters below 2 describe no pattern: one address is not a
-	// subnet, one temp block is not a repeat offender. The block path used to
-	// swap in its own default and carry on, so the operator's value was
-	// discarded without a word. An omitted key still gets the default, which
-	// Load fills, so anything reaching here below the minimum was written
-	// deliberately. Only flagged while the feature that reads it is on.
-	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < MinBlockEscalationCount {
-		results = append(results, ValidationResult{"error", "auto_response.netblock_threshold",
-			fmt.Sprintf("netblock_threshold must be at least %d, got %d", MinBlockEscalationCount, cfg.AutoResponse.NetBlockThreshold)})
-	}
-	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < MinBlockEscalationCount {
-		results = append(results, ValidationResult{"error", "auto_response.permblock_count",
-			fmt.Sprintf("permblock_count must be at least %d, got %d", MinBlockEscalationCount, cfg.AutoResponse.PermBlockCount)})
 	}
 
 	return results

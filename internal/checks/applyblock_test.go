@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
@@ -245,6 +246,30 @@ func TestApplyBlockCountsPermBlockEscalation(t *testing.T) {
 	}
 	if !sawPromotion {
 		t.Fatalf("findings = %+v, want an AUTO-PERMBLOCK promotion finding", res2.Findings)
+	}
+}
+
+func TestApplyBlockProgrammaticConfigUsesDefaultPermBlockCount(t *testing.T) {
+	cfg := pendingTestConfig(t)
+	cfg.AutoResponse.PermBlock = true
+	blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+	applyBlockTestSetup(t, blocker)
+
+	req := ApplyBlockRequest{
+		IP: "203.0.113.57", EngineReason: "r", Reason: "r",
+		TTL: time.Hour, Source: BlockSourceChallenge,
+	}
+	for attempt := 1; attempt <= config.DefaultPermBlockCount; attempt++ {
+		if _, err := ApplyBlock(cfg, req); err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		wantPromotions := 0
+		if attempt == config.DefaultPermBlockCount {
+			wantPromotions = 1
+		}
+		if len(blocker.promoted) != wantPromotions {
+			t.Fatalf("attempt %d: promoted = %v, want %d promotion(s)", attempt, blocker.promoted, wantPromotions)
+		}
 	}
 }
 

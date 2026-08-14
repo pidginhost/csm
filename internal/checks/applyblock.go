@@ -147,10 +147,7 @@ func applyBlockLocked(cfg *config.Config, blocker IPBlocker, state *blockState, 
 		if count < config.MinBlockEscalationCount {
 			count = config.DefaultPermBlockCount
 		}
-		interval := parseExpiry(cfg.AutoResponse.PermBlockInterval)
-		if interval == 0 {
-			interval = 24 * time.Hour
-		}
+		interval := parseExpiryWithDefault(cfg.AutoResponse.PermBlockInterval, config.DefaultPermBlockInterval)
 		if checkPermBlockEscalation(cfg.StatePath, req.IP, count, interval) {
 			permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
 			if promoteToPermanentBlock(blocker, req.IP, permReason) {

@@ -294,6 +294,37 @@ func TestReloadConfigBadYAMLEmitsCritical(t *testing.T) {
 	}
 }
 
+func TestReloadConfigRejectsInvalidBlockEscalationCount(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	orig := &config.Config{}
+	orig.AutoResponse.NetBlock = true
+	orig.AutoResponse.NetBlockThreshold = config.MinBlockEscalationCount
+	seedConfigAtPath(t, cfgPath, orig)
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+
+	edited := *loaded
+	edited.AutoResponse.NetBlockThreshold = 1
+	seedConfigAtPath(t, cfgPath, &edited)
+	d.reloadConfig()
+
+	if got := config.Active(); got == nil || got.AutoResponse.NetBlockThreshold != config.MinBlockEscalationCount {
+		t.Fatalf("live netblock threshold changed after rejected reload: %+v", got)
+	}
+	f := drainAlert(t, d, time.Second)
+	if f.Severity != alert.Critical || f.Check != "config_reload_error" {
+		t.Fatalf("reload finding = %+v, want Critical config_reload_error", f)
+	}
+	if !strings.Contains(f.Message, "auto_response.netblock_threshold") || !strings.Contains(f.Message, "disable netblock") {
+		t.Errorf("reload finding does not identify the invalid field and recovery: %q", f.Message)
+	}
+}
+
 // TestReloadConfigIntegrityVerifyPassesAfterReload is a regression
 // guard. Pre-fix, runPeriodicChecks called
 // integrity.Verify(d.binaryPath, d.cfg) against the startup config,

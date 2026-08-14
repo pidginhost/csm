@@ -413,6 +413,20 @@ func TestParseExpiryInvalidFallsBack(t *testing.T) {
 	}
 }
 
+func TestParseExpiryNonPositiveFallsBack(t *testing.T) {
+	for _, value := range []string{"0s", "-1h"} {
+		if got := parseExpiry(value); got != 24*time.Hour {
+			t.Errorf("parseExpiry(%q) = %v, want 24h", value, got)
+		}
+	}
+}
+
+func TestParseExpiryWithDefaultUsesRequestedFallback(t *testing.T) {
+	if got := parseExpiryWithDefault("0s", "2h"); got != 2*time.Hour {
+		t.Errorf("got %v, want 2h", got)
+	}
+}
+
 // --- subnetEscalationCIDR (autoblock.go) -------------------------------
 
 func TestSubnetEscalationCIDR(t *testing.T) {
