@@ -281,7 +281,11 @@ func verifyDBSiteurlHijack(message, details string) VerifyResult {
 
 func siteurlValueStillMalicious(value string) bool {
 	lower := strings.ToLower(value)
-	return strings.Contains(lower, "eval(") || strings.Contains(lower, "<script")
+	if strings.Contains(lower, "eval(") || strings.Contains(lower, "<script") {
+		return true
+	}
+	_, poisoned := siteURLPoisonReason(value)
+	return poisoned
 }
 
 // siteurlOptionFromDetails extracts the option name from a db_siteurl_hijack
