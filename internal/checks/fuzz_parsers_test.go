@@ -531,6 +531,25 @@ func FuzzSiteurlOptionFromDetails(f *testing.F) {
 	})
 }
 
+func FuzzSiteURLPoisonReason(f *testing.F) {
+	f.Add("https://example.com/blog")
+	f.Add("https://example.com/path?loader.js")
+	f.Add(`https://example.com/path\loader`)
+	f.Add("siteurl\\nhttps://example.com")
+	f.Add("https://:8443")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, value string) {
+		reason, poisoned := siteURLPoisonReason(value)
+		if poisoned != (reason != "") {
+			t.Fatalf("siteURLPoisonReason(%q) returned inconsistent result %q, %t", value, reason, poisoned)
+		}
+		reasonAgain, poisonedAgain := siteURLPoisonReason(value)
+		if reasonAgain != reason || poisonedAgain != poisoned {
+			t.Fatalf("siteURLPoisonReason(%q) is non-deterministic", value)
+		}
+	})
+}
+
 func FuzzDBAdminRowID(f *testing.F) {
 	f.Add("Account: bob\nRow: 42\tadmin\tx@y\nReview: confirm")
 	f.Add("Account: bob\nRow: 7 admin x")

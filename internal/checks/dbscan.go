@@ -375,12 +375,19 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 // that is not served locally is ordinary -- sites move, staging lives
 // elsewhere, and a theme demo keeps its vendor address -- so a host check
 // would report dozens of healthy installs. Shape does not have that problem:
-// a site address is an origin plus an optional subdirectory. A query string, a
-// fragment, a script for a path, or a non-web scheme cannot appear in one.
+// a site address is an origin plus an optional subdirectory. A backslash, a
+// query string, a fragment, a script for a path, or a non-web scheme cannot
+// appear in one.
 func siteURLPoisonReason(value string) (string, bool) {
-	value = strings.TrimSpace(value)
+	// MySQL query rows preserve batch-mode escaping. Parse the stored bytes,
+	// not the escaped transport form, or control characters can look like an
+	// ordinary path and evade the shape checks below.
+	value = strings.TrimSpace(mysqlclient.BatchUnescape(value))
 	if value == "" {
 		return "", false
+	}
+	if strings.ContainsRune(value, '\\') {
+		return "address carries a backslash", true
 	}
 	u, err := url.Parse(value)
 	if err != nil {
@@ -389,8 +396,14 @@ func siteURLPoisonReason(value string) (string, bool) {
 	if scheme := strings.ToLower(u.Scheme); scheme != "http" && scheme != "https" {
 		return "scheme is not http or https", true
 	}
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return "no host", true
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "port is outside the valid range", true
+		}
 	}
 	if u.RawQuery != "" || strings.Contains(value, "?") {
 		return "address carries a query string", true
@@ -404,15 +417,22 @@ func siteURLPoisonReason(value string) (string, bool) {
 	return "", false
 }
 
-// isScriptPath reports whether a URL path's final segment is a browser-executed
-// script. A site address always ends at a directory.
+// isScriptPath reports whether a URL path's final segment names a client- or
+// server-side script. A site address always ends at a directory.
 func isScriptPath(path string) bool {
 	segment := path
 	if i := strings.LastIndex(segment, "/"); i >= 0 {
 		segment = segment[i+1:]
 	}
-	switch strings.ToLower(filepath.Ext(segment)) {
-	case ".js", ".mjs", ".php", ".cgi", ".pl":
+	segment = strings.ToLower(segment)
+	if isExecutablePHPName(segment) {
+		return true
+	}
+	switch filepath.Ext(segment) {
+	case ".js", ".mjs", ".cjs",
+		".asp", ".aspx", ".ashx", ".asmx",
+		".jsp", ".jspx", ".cfm",
+		".cgi", ".pl", ".py", ".rb":
 		return true
 	default:
 		return false
@@ -434,7 +454,10 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		if len(parts) != 2 {
 			continue
 		}
-		optName := parts[0]
+		// WordPress's default option_name collation is case-insensitive, so a
+		// differently-cased row can satisfy get_option("siteurl") and this SQL
+		// query. Keep the Go-side security check consistent with that lookup.
+		optName := strings.ToLower(strings.TrimSpace(parts[0]))
 		optValue := strings.ToLower(parts[1])
 
 		if optName == "siteurl" || optName == "home" {
@@ -449,7 +472,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
-					Check:    "db_siteurl_hijack",
+					Check:    "db_siteurl_invalid",
 					Message:  fmt.Sprintf("WordPress %s is not a site address (account: %s): %s", optName, user, reason),
 					Details: dbContentFindingDetails(creds.dbName, prefix,
 						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",

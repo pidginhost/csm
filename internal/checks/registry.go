@@ -210,6 +210,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "opencart_settings_injection", Category: CategoryDatabase},
 	{Name: "db_rogue_admin", Category: CategoryDatabase},
 	{Name: "db_siteurl_hijack", Category: CategoryDatabase},
+	{Name: "db_siteurl_invalid", Category: CategoryDatabase},
 	{Name: "db_spam_cleaned", Category: CategoryDatabase},
 	{Name: "db_spam_found", Category: CategoryDatabase},
 	{Name: "db_spam_injection", Category: CategoryDatabase},

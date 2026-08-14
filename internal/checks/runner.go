@@ -202,7 +202,7 @@ var runnerFindingNames = map[string][]string{
 	"cpanel_logins":         {"cpanel_login", "cpanel_multi_ip_login", "cpanel_password_purge"},
 	"crontabs":              {"crond_change", "crontab_change", "suspicious_crontab"},
 	"database_dumps":        {"database_dump"},
-	"db_content":            {"db_options_injection", "db_post_injection", "db_rogue_admin", "db_siteurl_hijack", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
+	"db_content":            {"db_options_injection", "db_post_injection", "db_rogue_admin", "db_siteurl_hijack", "db_siteurl_invalid", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
 	"db_content_drupal":     {"drupal_admin_injection", "drupal_content_injection", "drupal_settings_injection"},
 	"db_content_joomla":     {"joomla_admin_injection", "joomla_content_injection", "joomla_extensions_injection"},
 	"db_content_magento":    {"magento_admin_injection", "magento_content_injection", "magento_settings_injection"},
