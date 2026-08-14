@@ -817,6 +817,16 @@ func TestValidateWarningInfraIPs(t *testing.T) {
 		}
 	})
 
+	t.Run("blank entries", func(t *testing.T) {
+		cfg := base()
+		cfg.InfraIPs = []string{"", " "}
+		cfg.Firewall = &firewall.FirewallConfig{InfraIPs: []string{"\t"}}
+		results := Validate(cfg)
+		if !hasResult(results, "warn", "infra_ips") {
+			t.Errorf("expected warning when infra_ips contain only blanks; results=%v", results)
+		}
+	})
+
 	t.Run("top-level set", func(t *testing.T) {
 		cfg := base()
 		cfg.InfraIPs = []string{"10.0.0.0/8"}

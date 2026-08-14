@@ -608,6 +608,14 @@ func webUITokenCounts(cfg *Config) (tokens, admins int) {
 	return tokens, admins
 }
 
+func hasEffectiveInfraIPs(cfg *Config) bool {
+	var firewallInfra []string
+	if cfg.Firewall != nil {
+		firewallInfra = cfg.Firewall.InfraIPs
+	}
+	return len(firewall.MergeInfraIPs(cfg.InfraIPs, firewallInfra)) > 0
+}
+
 // validateWarnings checks for non-fatal configuration issues.
 func validateWarnings(cfg *Config) []ValidationResult {
 	var results []ValidationResult
@@ -637,15 +645,16 @@ func validateWarnings(cfg *Config) []ValidationResult {
 		}
 	}
 
-	// Infra IPs both empty
-	fwInfra := cfg.Firewall != nil && len(cfg.Firewall.InfraIPs) > 0
-	topInfra := len(cfg.InfraIPs) > 0
-	if !topInfra && !fwInfra {
+	// The firewall trims blank entries while merging the two config sections.
+	// Validation must use that same effective list or placeholders can hide a
+	// lockout warning even though they create no kernel accept rule.
+	hasInfra := hasEffectiveInfraIPs(cfg)
+	if !hasInfra {
 		results = append(results, ValidationResult{"warn", "infra_ips", "no infra_ips configured in either top-level or firewall section"})
 	}
 
 	// Firewall enabled but no infra IPs (lockout risk)
-	if cfg.Firewall != nil && cfg.Firewall.Enabled && !topInfra && !fwInfra {
+	if cfg.Firewall != nil && cfg.Firewall.Enabled && !hasInfra {
 		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured - risk of lockout"})
 	}
 
@@ -834,7 +843,7 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	}
 
 	var results []ValidationResult
-	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
+	hasInfra := hasEffectiveInfraIPs(cfg)
 	port, portKnown := webUIListenPort(cfg.WebUI.Listen)
 
 	// Naming the port in restricted_tcp is how an operator asks for an
