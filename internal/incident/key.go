@@ -20,33 +20,21 @@ type Key struct {
 	RemoteIP string `json:"remote_ip,omitempty"`
 }
 
-// nonCorrelatingChecks names findings that record what CSM did, or how well
-// it can see, rather than what an attacker did. They are emitted and alerted
-// normally but must never key an incident.
-//
-// Correlating them lets CSM's own output re-enter its decision path. The
-// auto-block chokepoint began setting SourceIP on its findings, which was
-// enough to open an incident on the IP just blocked, which the incident
-// hand-off could then ask to block again. The response findings below carry no
-// attacker identity today and so are inert by accident; listing them makes it
-// a rule, because attaching one later looks like a harmless improvement.
-// Posture findings report a standing weakness in installed software. Nothing
-// has happened yet, so they carry no time of occurrence and nothing to
-// contain. Left correlating, an unpatched plugin version alone opened a
-// CRITICAL account-compromise incident with a 7-day review window, which reads
-// as "this account was broken into" to every operator and dashboard consuming
-// the taxonomy. They remain findings and still alert.
-var postureChecks = map[string]bool{
-	"vulnerable_plugins": true,
-	"outdated_plugins":   true,
-}
-
-var nonCorrelatingChecks = map[string]bool{
-	"auto_block":                 true,
-	"auto_response":              true,
-	"challenge_route":            true,
-	"reputation_quota_exhausted": true,
-	"threat_feed_stale":          true,
+// excludedFromIncidents reports whether a finding records posture, a response,
+// or degraded visibility rather than an event that needs containment.
+func excludedFromIncidents(check string) bool {
+	switch check {
+	case "vulnerable_plugins", "outdated_plugins":
+		// An installed weakness is not evidence that the account was entered.
+		return true
+	case "auto_block", "auto_response", "challenge_route",
+		"reputation_quota_exhausted", "threat_feed_stale":
+		// CSM output must not re-enter the incident response path. In
+		// particular, response findings may gain attacker attribution later.
+		return true
+	default:
+		return false
+	}
 }
 
 // IsEmpty reports whether the key has nothing to correlate on. Such
@@ -69,7 +57,7 @@ func (k Key) IsEmpty() bool {
 // same mailbox split into two incidents whenever the emitters use
 // different conventions.
 func KeyFor(f alert.Finding) Key {
-	if nonCorrelatingChecks[f.Check] || postureChecks[f.Check] {
+	if excludedFromIncidents(f.Check) {
 		return Key{}
 	}
 	switch ClassifyKind(f) {

@@ -31,7 +31,8 @@ record an action CSM took, or how well it can see, are excluded so CSM's own
 output cannot re-enter its decision path. Findings that report a standing
 weakness in installed software -- a known-vulnerable or outdated plugin -- are
 excluded because nothing has happened yet and there is nothing to contain.
-Both still alert and appear in the findings list.
+Known-vulnerable plugin findings remain alertable. Routine outdated-plugin
+notices remain informational, and both classes appear in the findings list.
 
 ## Lifecycle
 
