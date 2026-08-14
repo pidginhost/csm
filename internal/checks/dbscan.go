@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -329,6 +330,59 @@ var runMySQLQuery = func(creds wpDBCreds, query string) []string {
 	return out
 }
 
+// siteURLPoisonReason reports why a siteurl/home value cannot be a real site
+// address, and whether it is one at all. WordPress concatenates this value to
+// build every asset URL it emits, so an attacker who rewrites it makes the
+// address it names load on every page without touching a single file.
+//
+// The test is the URL's shape, not its host. Hosting a site under a domain
+// that is not served locally is ordinary -- sites move, staging lives
+// elsewhere, and a theme demo keeps its vendor address -- so a host check
+// would report dozens of healthy installs. Shape does not have that problem:
+// a site address is an origin plus an optional subdirectory. A query string, a
+// fragment, a script for a path, or a non-web scheme cannot appear in one.
+func siteURLPoisonReason(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return "value is not a URL", true
+	}
+	if scheme := strings.ToLower(u.Scheme); scheme != "http" && scheme != "https" {
+		return "scheme is not http or https", true
+	}
+	if u.Host == "" {
+		return "no host", true
+	}
+	if u.RawQuery != "" || strings.Contains(value, "?") {
+		return "address carries a query string", true
+	}
+	if u.Fragment != "" || strings.Contains(value, "#") {
+		return "address carries a fragment", true
+	}
+	if isScriptPath(u.Path) {
+		return "address resolves to a script", true
+	}
+	return "", false
+}
+
+// isScriptPath reports whether a URL path's final segment is a browser-executed
+// script. A site address always ends at a directory.
+func isScriptPath(path string) bool {
+	segment := path
+	if i := strings.LastIndex(segment, "/"); i >= 0 {
+		segment = segment[i+1:]
+	}
+	switch strings.ToLower(filepath.Ext(segment)) {
+	case ".js", ".mjs", ".php", ".cgi", ".pl":
+		return true
+	default:
+		return false
+	}
+}
+
 // checkWPOptions checks for siteurl/home hijacking and injected JavaScript.
 func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
@@ -347,16 +401,25 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		optName := parts[0]
 		optValue := strings.ToLower(parts[1])
 
-		// Check if siteurl/home points to a different domain
-		if (optName == "siteurl" || optName == "home") &&
-			(strings.Contains(optValue, "eval(") || strings.Contains(optValue, "<script")) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "db_siteurl_hijack",
-				Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
-				Details: dbContentFindingDetails(creds.dbName, prefix,
-					fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
-			})
+		if optName == "siteurl" || optName == "home" {
+			if strings.Contains(optValue, "eval(") || strings.Contains(optValue, "<script") {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "db_siteurl_hijack",
+					Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
+					Details: dbContentFindingDetails(creds.dbName, prefix,
+						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
+				})
+			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "db_siteurl_hijack",
+					Message:  fmt.Sprintf("WordPress %s is not a site address (account: %s): %s", optName, user, reason),
+					Details: dbContentFindingDetails(creds.dbName, prefix,
+						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
+							optName, truncateDB(parts[1], 200))),
+				})
+			}
 		}
 	}
 
