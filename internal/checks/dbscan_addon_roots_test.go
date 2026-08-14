@@ -135,13 +135,22 @@ func TestWPConfigPaths_UsesCPanelDocumentRoots(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
+	// The served map supplies alice's roots. The home walk still contributes
+	// bob's public_html, a real document root these map entries simply do not
+	// mention; backups/ stays out on the denylist.
 	got := wpConfigPaths(context.Background())
 	want := []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/alice/shop.example.com/wp-config.php",
+		"/home/bob/public_html/wp-config.php",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("wp-config paths = %v, want authoritative roots %v", got, want)
+		t.Errorf("wp-config paths = %v, want %v", got, want)
+	}
+	for _, p := range got {
+		if strings.Contains(p, "/backups/") {
+			t.Errorf("backup directory scanned as a document root: %v", got)
+		}
 	}
 }
 
@@ -164,8 +173,17 @@ func TestWPConfigPaths_RejectsCrossAccountCPanelRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	if got := wpConfigPaths(context.Background()); len(got) != 0 {
-		t.Errorf("cross-account map root discovered: %v", got)
+	// The map claims alice owns a root inside bob's home. What must not happen
+	// is that claim pulling bob's directory into alice's scope; the directory
+	// itself is bob's and is scanned as bob's, which is correct ownership.
+	if got := wpConfigPaths(ContextWithAccountScope(context.Background(), "alice")); len(got) != 0 {
+		t.Errorf("cross-account map root entered alice's scope: %v", got)
+	}
+
+	got := wpConfigPaths(context.Background())
+	want := []string{"/home/bob/shop.example.com/wp-config.php"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("host-wide scan = %v, want the root owned by bob %v", got, want)
 	}
 }
 
