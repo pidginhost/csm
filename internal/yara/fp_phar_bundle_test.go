@@ -117,3 +117,20 @@ func TestFPPhar_NetworkBruteForce_CurlWordlistStillDetected(t *testing.T) {
 		t.Error("network_brute_force_tool regression: curl credential brute-force loop not detected")
 	}
 }
+
+// Requiring the credential list in the loop header alone misses a tool that
+// consumes the list from inside the body, which iterates it just as surely.
+// The distinction that matters is consuming the list versus declaring one.
+func TestFPPhar_NetworkBruteForce_ConsumedInLoopBodyStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	for name, src := range map[string]string{
+		"array_pop": "<?php\n$passwords = file('list.txt');\nwhile (true) {\n" +
+			"  $p = array_pop($passwords);\n  if (!$p) break;\n  $fp = fsockopen($host, 21);\n}\n",
+		"array_shift": "<?php\n$wordlist = file('list.txt');\nwhile ($wordlist) {\n" +
+			"  $w = array_shift($wordlist);\n  curl_exec($ch);\n}\n",
+	} {
+		if !hasYaraRule(s.ScanBytes([]byte(src)), "network_brute_force_tool") {
+			t.Errorf("network_brute_force_tool regression (%s): credential loop consuming the list in its body not detected", name)
+		}
+	}
+}
