@@ -157,6 +157,23 @@ func TestValidateDeepSSHLockout(t *testing.T) {
 		}
 	})
 
+	// The firewall trims blank entries while merging the two infra sections,
+	// so placeholders create no accept rule and must not silence the warning.
+	t.Run("blank infra entries do not make a port infra-only", func(t *testing.T) {
+		useSSHDConfig(t, "Port 2087\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{80, 443, 9443},
+			RestrictedTCP: []int{2087},
+			ConnRateLimit: 200,
+		})
+		cfg.InfraIPs = []string{"", " "}
+		cfg.Firewall.InfraIPs = []string{"\t"}
+		if _, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp_in"); !ok {
+			t.Error("blank infra_ips leave sshd reachable from nowhere")
+		}
+	})
+
 	t.Run("infra-only sshd port without infra_ips warns", func(t *testing.T) {
 		useSSHDConfig(t, "Port 2087\n")
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{
