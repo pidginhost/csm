@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.28.0] - 2026-08-14
 
 ### Security
 
@@ -1957,7 +1957,9 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v3.26.2...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v3.28.0...HEAD
+[3.28.0]: https://github.com/pidginhost/csm/compare/v3.27.0...v3.28.0
+[3.27.0]: https://github.com/pidginhost/csm/compare/v3.26.2...v3.27.0
 [3.26.2]: https://github.com/pidginhost/csm/compare/v3.26.1...v3.26.2
 [3.26.1]: https://github.com/pidginhost/csm/compare/v3.26.0...v3.26.1
 [3.26.0]: https://github.com/pidginhost/csm/compare/v3.25.0...v3.26.0
