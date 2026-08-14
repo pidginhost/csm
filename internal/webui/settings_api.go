@@ -333,6 +333,10 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeValidationErrors(w, errs)
 		return
 	}
+	// Validate the merged result before the edited YAML goes back through
+	// Load. This looks like a duplicate of the check further down, but Load
+	// rejects some combinations itself and returns a plain error, which loses
+	// the field attribution the dashboard needs to mark the offending input.
 	effectiveCandidate := cloneConfigForSettingsApply(effectiveDisk)
 	if _, errs := buildChangeSet(section, &effectiveCandidate, body.Changes); len(errs) > 0 {
 		writeValidationErrors(w, errs)
