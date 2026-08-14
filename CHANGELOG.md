@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A site sending bulk mail to its own administrator, such as a security plugin emitting alerts, was reported as outbound relay abuse and could get the visiting address blocked for a day. Hourly volume from one script now has to reach several distinct recipients before it counts, and mail whose recipients could not be read still reports.
 - A mailbox walk probing one or two passwords against many different mailboxes stayed under the slow brute-force failure floor indefinitely. Enough distinct walked mailboxes now trigger the block on their own, and a successful login from the source inside the window keeps shared legitimate addresses exempt.
 - An ongoing out-of-memory loop re-alerted a Critical on every scan because each kill's log line carries fresh process numbers. Memory findings now keep one identity per victim process, so a sustained condition alerts once per day instead of eleven times an afternoon.
 - A stuck frozen mail message raised a warning on every queue run, unfreeze events counted as freezes, and the initial freeze line was missed entirely. Frozen findings now alert once per queued message, on the freeze event itself.
