@@ -167,3 +167,24 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+func TestFirewallCapabilitiesAlwaysPresent(t *testing.T) {
+	caps := Capabilities()
+	for _, want := range []string{"firewall.rollback.v1", "firewall.dos_exempt.v1"} {
+		if !contains(caps, want) {
+			t.Errorf("%s capability missing", want)
+		}
+	}
+}
+
+// A repeated string makes an orchestrator's feature-detect count wrong and is
+// the shape a copy-pasted entry takes.
+func TestCapabilitiesHaveNoDuplicates(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, capability := range Capabilities() {
+		if seen[capability] {
+			t.Errorf("duplicate capability %q", capability)
+		}
+		seen[capability] = true
+	}
+}
