@@ -47,12 +47,48 @@ var dbMalwarePatterns = []struct {
 	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
+// nonDocRootDirs are the directories under a home that cPanel owns. An addon
+// domain never lands in one, so a wp-config found there belongs to no served
+// site and its database must not be scanned as if it did.
+var nonDocRootDirs = map[string]bool{
+	"mail": true, "etc": true, "logs": true, "ssl": true, "tmp": true,
+	"public_ftp": true, "cache": true, ".cagefs": true,
+}
+
+// wpConfigPaths returns every wp-config.php under an account's document roots:
+// public_html plus each addon-domain directory beside it. Globbing public_html
+// alone leaves addon domains unscanned, which is where a site poisoned in the
+// database sat unreported for months.
+func wpConfigPaths(ctx context.Context) []string {
+	seen := make(map[string]bool)
+	var out []string
+
+	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
+	for _, p := range primary {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+
+	addon, _ := homeGlob(ctx, "*", "wp-config.php")
+	for _, p := range addon {
+		dir := filepath.Base(filepath.Dir(p))
+		if nonDocRootDirs[dir] || strings.HasPrefix(dir, ".") || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := homeGlob(ctx, "public_html", "wp-config.php")
+	wpConfigs := wpConfigPaths(ctx)
 	if len(wpConfigs) == 0 {
 		return nil
 	}
