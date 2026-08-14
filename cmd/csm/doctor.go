@@ -159,7 +159,11 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 func doctorConfigValidation(cfg *config.Config) ([]DoctorCheck, bool) {
 	var details []DoctorCheck
 	errors := 0
-	for _, result := range config.Validate(cfg) {
+	// The firewall deep probe compares the policy against the host's real SSH
+	// listen ports. Doctor is where an operator looks before enabling the
+	// firewall, so a pending lockout has to show up here.
+	results := append(config.Validate(cfg), config.ValidateDeepSection(cfg, "firewall")...)
+	for _, result := range results {
 		check := DoctorCheck{Name: "config: " + result.Field, Message: result.Message}
 		switch result.Level {
 		case "error":

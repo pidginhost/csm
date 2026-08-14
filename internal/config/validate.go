@@ -9,11 +9,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/sshdconf"
 	"golang.org/x/text/language"
 )
 
@@ -177,11 +179,15 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "alerts.block_digest.min_block", "min_block must be >= 0"})
 	}
 
-	// --- Duration fields (only check if non-empty) ---
+	// --- Duration fields ---
 	if cfg.AutoResponse.BlockExpiry != "" {
-		if _, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry); err != nil {
+		if d, err := time.ParseDuration(cfg.AutoResponse.BlockExpiry); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.block_expiry", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.BlockExpiry)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.block_expiry", "block_expiry must be a positive duration"})
 		}
+	} else if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+		results = append(results, ValidationResult{"error", "auto_response.block_expiry", fmt.Sprintf("block_expiry must be a positive duration when IP blocking is enabled; omit the key to use %s", DefaultBlockExpiry)})
 	}
 	if v := strings.ToLower(strings.TrimSpace(cfg.AutoResponse.VirtualPatchExposedFiles)); v != "" &&
 		v != VirtualPatchOff && v != VirtualPatchManual && v != VirtualPatchAuto {
@@ -218,9 +224,13 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 	if cfg.AutoResponse.PermBlockInterval != "" {
-		if _, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
+		if d, err := time.ParseDuration(cfg.AutoResponse.PermBlockInterval); err != nil {
 			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("unparseable duration: %s", cfg.AutoResponse.PermBlockInterval)})
+		} else if d <= 0 {
+			results = append(results, ValidationResult{"error", "auto_response.permblock_interval", "permblock_interval must be a positive duration"})
 		}
+	} else if cfg.AutoResponse.PermBlock {
+		results = append(results, ValidationResult{"error", "auto_response.permblock_interval", fmt.Sprintf("permblock_interval must be a positive duration when permblock is enabled; omit the key to use %s", DefaultPermBlockInterval)})
 	}
 	if cfg.AutoResponse.MailAuthRecovery.DownGrace != "" {
 		if d, err := time.ParseDuration(cfg.AutoResponse.MailAuthRecovery.DownGrace); err != nil {
@@ -585,6 +595,8 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	results = append(results, blockEscalationResults(cfg)...)
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 
@@ -606,6 +618,22 @@ func webUITokenCounts(cfg *Config) (tokens, admins int) {
 		}
 	}
 	return tokens, admins
+}
+
+func blockEscalationResults(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+	// Escalation counters below 2 describe no pattern: one address is not a
+	// subnet, and one temporary block is not a repeat offender. Omitted keys
+	// get defaults during Load, so lower values here were explicit.
+	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.netblock_threshold",
+			fmt.Sprintf("netblock_threshold must be at least %d when netblock is enabled; raise the threshold or disable netblock (got %d)", MinBlockEscalationCount, cfg.AutoResponse.NetBlockThreshold)})
+	}
+	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < MinBlockEscalationCount {
+		results = append(results, ValidationResult{"error", "auto_response.permblock_count",
+			fmt.Sprintf("permblock_count must be at least %d when permblock is enabled; raise the count or disable permblock (got %d)", MinBlockEscalationCount, cfg.AutoResponse.PermBlockCount)})
+	}
+	return results
 }
 
 func hasEffectiveInfraIPs(cfg *Config) bool {
@@ -656,16 +684,6 @@ func validateWarnings(cfg *Config) []ValidationResult {
 	// Firewall enabled but no infra IPs (lockout risk)
 	if cfg.Firewall != nil && cfg.Firewall.Enabled && !hasInfra {
 		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured - risk of lockout"})
-	}
-
-	// Netblock threshold too low
-	if cfg.AutoResponse.NetBlock && cfg.AutoResponse.NetBlockThreshold < 2 {
-		results = append(results, ValidationResult{"warn", "auto_response.netblock_threshold", fmt.Sprintf("netblock_threshold=%d is very low (< 2), may cause excessive blocking", cfg.AutoResponse.NetBlockThreshold)})
-	}
-
-	// Permblock count too low
-	if cfg.AutoResponse.PermBlock && cfg.AutoResponse.PermBlockCount < 2 {
-		results = append(results, ValidationResult{"warn", "auto_response.permblock_count", fmt.Sprintf("permblock_count=%d is very low (< 2), may permanently block too quickly", cfg.AutoResponse.PermBlockCount)})
 	}
 
 	return results
@@ -886,6 +904,94 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	return results
 }
 
+// sshdConfigPath is where the SSH lockout guard reads the listen ports from.
+// It is a test hook, not an operator setting: sshd's own path is fixed.
+var sshdConfigPath = sshdconf.DefaultPath
+
+// SetSSHDConfigPath points the SSH lockout guard at another sshd config and
+// returns a func restoring the previous path. Tests use it to stay hermetic;
+// production always reads sshd's own path.
+func SetSSHDConfigPath(path string) func() {
+	previous := sshdConfigPath
+	sshdConfigPath = path
+	return func() { sshdConfigPath = previous }
+}
+
+// probeSSHLockout warns when an enabled firewall would not accept the ports
+// sshd actually listens on. The shipped tcp_in leaves 22 out, so a host that
+// never moved sshd loses SSH on the next apply.
+//
+// It reads the host, which is why it is a deep probe rather than part of
+// Validate: the same csm.yaml must validate identically on any machine.
+func probeSSHLockout(cfg *Config) []ValidationResult {
+	fw := cfg.Firewall
+	if fw == nil || !fw.Enabled {
+		return nil
+	}
+
+	// No sshd config means no evidence of a listener. Falling back to the
+	// compiled default here would warn on every host that does not run sshd.
+	sshd := sshdconf.Parse(sshdconf.OSFS{}, sshdConfigPath)
+	if !sshd.Present() {
+		return nil
+	}
+
+	hasInfra := hasEffectiveInfraIPs(cfg)
+	var missingTCPIn, missingTCP6In []int
+	ipv4Ports, ipv6Ports := sshd.RemoteListenPorts()
+	for _, port := range ipv4Ports {
+		// Naming the port in restricted_tcp is how an operator asks for an
+		// infra-only listener. The infra accept rule matches before any port
+		// rule, so such a port stays reachable without appearing in tcp_in.
+		if hasInfra && containsPort(fw.RestrictedTCP, port) {
+			continue
+		}
+		if !containsPort(fw.TCPIn, port) {
+			missingTCPIn = append(missingTCPIn, port)
+		}
+	}
+	if fw.IPv6 {
+		for _, port := range ipv6Ports {
+			if hasInfra && containsPort(fw.RestrictedTCP, port) {
+				continue
+			}
+			if len(fw.TCP6In) == 0 {
+				if !containsPort(fw.TCPIn, port) && !containsPort(missingTCPIn, port) {
+					missingTCPIn = append(missingTCPIn, port)
+				}
+			} else if !containsPort(fw.TCP6In, port) {
+				missingTCP6In = append(missingTCP6In, port)
+			}
+		}
+	}
+
+	var results []ValidationResult
+	if len(missingTCPIn) > 0 {
+		subject, pronoun := portPhrase(missingTCPIn)
+		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
+			fmt.Sprintf("sshd listens on %s but tcp_in does not allow %s; the next firewall apply drops new SSH connections", subject, pronoun)})
+	}
+	if len(missingTCP6In) > 0 {
+		subject, _ := portPhrase(missingTCP6In)
+		results = append(results, ValidationResult{"warn", "firewall.tcp6_in",
+			fmt.Sprintf("IPv6 is managed and tcp6_in does not allow sshd %s", subject)})
+	}
+	return results
+}
+
+// portPhrase renders a port list plus the pronoun that agrees with it.
+func portPhrase(ports []int) (subject, pronoun string) {
+	sort.Ints(ports)
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	if len(parts) == 1 {
+		return "port " + parts[0], "it"
+	}
+	return "ports " + strings.Join(parts, ", "), "them"
+}
+
 // webUIListenPort extracts the port from a host:port listen string, falling
 // back to the shipped default when the field is unset.
 func webUIListenPort(listen string) (int, bool) {
@@ -970,6 +1076,9 @@ func ValidateDeep(cfg *Config) []ValidationResult {
 		results = append(results, probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)...)
 	}
 
+	// SSH reachability under the configured firewall policy
+	results = append(results, probeSSHLockout(cfg)...)
+
 	return results
 }
 
@@ -997,6 +1106,8 @@ func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
 		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" && len(cfg.GeoIP.Editions) > 0 {
 			return probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)
 		}
+	case "firewall":
+		return probeSSHLockout(cfg)
 	case "challenge":
 		// probeListenPortAvailable is not yet implemented in this codebase.
 		// When added, invoke it here: return probeListenPortAvailable(cfg.Challenge.ListenPort).

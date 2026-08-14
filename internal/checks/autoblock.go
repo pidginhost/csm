@@ -21,8 +21,7 @@ import (
 )
 
 const (
-	defaultBlockExpiry = "24h"
-	blockStateFile     = "blocked_ips.json"
+	blockStateFile = "blocked_ips.json"
 
 	// maxPendingBlocks bounds the retry queue. Under a sustained flood or
 	// firewall outage the daemon can accumulate more distinct attacker IPs
@@ -447,7 +446,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// already-blocked subnets; dry-run emits notices instead of blocking and
 	// consumes no budget.
 	if sb, ok := blocker.(subnetBlocker); ok {
-		tempban := parseExpiry(cfg.AutoResponse.HTTPASNCrawlTempban)
+		tempban := parseExpiryWithDefault(cfg.AutoResponse.HTTPASNCrawlTempban, config.DefaultHTTPASNCrawlTempban)
 		for _, f := range findings {
 			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
@@ -588,9 +587,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// dry-run too so escalations that would fire (from live blocks recorded
 	// before dry-run was enabled) surface as notices.
 	if cfg.AutoResponse.NetBlock && blocker != nil {
+		// Load fills the default and validation rejects anything lower, so
+		// this only catches a Config assembled in code.
 		threshold := cfg.AutoResponse.NetBlockThreshold
-		if threshold < 2 {
-			threshold = 3
+		if threshold < config.MinBlockEscalationCount {
+			threshold = config.DefaultNetBlockThreshold
 		}
 		subnetExpiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
@@ -806,13 +807,15 @@ func isAlreadyBlocked(state *blockState, ip string) bool {
 }
 
 func parseExpiry(s string) time.Duration {
-	if s == "" {
-		s = defaultBlockExpiry
-	}
+	return parseExpiryWithDefault(s, config.DefaultBlockExpiry)
+}
+
+func parseExpiryWithDefault(s, fallback string) time.Duration {
 	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 24 * time.Hour
+	if s != "" && err == nil && d > 0 {
+		return d
 	}
+	d, _ = time.ParseDuration(fallback)
 	return d
 }
 

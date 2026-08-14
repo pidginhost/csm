@@ -413,6 +413,20 @@ func TestParseExpiryInvalidFallsBack(t *testing.T) {
 	}
 }
 
+func TestParseExpiryNonPositiveFallsBack(t *testing.T) {
+	for _, value := range []string{"0s", "-1h"} {
+		if got := parseExpiry(value); got != 24*time.Hour {
+			t.Errorf("parseExpiry(%q) = %v, want 24h", value, got)
+		}
+	}
+}
+
+func TestParseExpiryWithDefaultUsesRequestedFallback(t *testing.T) {
+	if got := parseExpiryWithDefault("0s", "2h"); got != 2*time.Hour {
+		t.Errorf("got %v, want 2h", got)
+	}
+}
+
 // --- subnetEscalationCIDR (autoblock.go) -------------------------------
 
 func TestSubnetEscalationCIDR(t *testing.T) {
@@ -824,80 +838,6 @@ func TestIsPrivateOrLoopbackIPv6ULA(t *testing.T) {
 func TestIsPrivateOrLoopbackInvalidIP(t *testing.T) {
 	if isPrivateOrLoopback("not-an-ip") {
 		t.Error("invalid IP should return false")
-	}
-}
-
-// --- parseSSHDFile ------------------------------------------------------
-
-func TestParseSSHDFileWithIncludeAndMatchBlock(t *testing.T) {
-	dir := t.TempDir()
-
-	mainPath := filepath.Join(dir, "sshd_config")
-	confDir := filepath.Join(dir, "conf.d")
-	if err := os.MkdirAll(confDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	mainContent := "# Main sshd config\n" +
-		"PermitRootLogin no\n" +
-		"PasswordAuthentication yes\n" +
-		"\n" +
-		"Include " + filepath.Join(confDir, "*.conf") + "\n" +
-		"\n" +
-		"Match User admin\n" +
-		"    PasswordAuthentication yes\n" +
-		"    PermitRootLogin yes\n" +
-		"\n" +
-		"# Everything after this line is still inside the Match block\n" +
-		"X11Forwarding yes\n"
-	if err := os.WriteFile(mainPath, []byte(mainContent), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(confDir, "override.conf"), []byte("ClientAliveInterval 300\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	effective := make(map[string]string)
-	parseSSHDFile(mainPath, effective)
-
-	if effective["permitrootlogin"] != "no" {
-		t.Errorf("permitrootlogin = %q, want no (first-match-wins)", effective["permitrootlogin"])
-	}
-	if effective["passwordauthentication"] != "yes" {
-		t.Errorf("passwordauthentication = %q, want yes", effective["passwordauthentication"])
-	}
-	// X11Forwarding is inside a Match block — must NOT be recorded.
-	if _, ok := effective["x11forwarding"]; ok {
-		t.Error("X11Forwarding inside Match block should be ignored")
-	}
-	// Include should have pulled in ClientAliveInterval.
-	if effective["clientaliveinterval"] != "300" {
-		t.Errorf("clientaliveinterval = %q, want 300 (from Include)", effective["clientaliveinterval"])
-	}
-}
-
-func TestParseSSHDFileMissingFileIsNoOp(t *testing.T) {
-	effective := make(map[string]string)
-	parseSSHDFile(filepath.Join(t.TempDir(), "never"), effective)
-	if len(effective) != 0 {
-		t.Errorf("missing file should not modify effective map, got %v", effective)
-	}
-}
-
-func TestParseSSHDFileKeywordEqualsValueForm(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sshd_config")
-	if err := os.WriteFile(path, []byte("PermitRootLogin=no\nPort=2222\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	effective := make(map[string]string)
-	parseSSHDFile(path, effective)
-	if effective["permitrootlogin"] != "no" {
-		t.Errorf("permitrootlogin = %q, want no", effective["permitrootlogin"])
-	}
-	if effective["port"] != "2222" {
-		t.Errorf("port = %q, want 2222", effective["port"])
 	}
 }
 

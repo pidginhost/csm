@@ -51,7 +51,8 @@ GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`,
                                  `mail.queue.composition.v1`,
-                                 `detect.http_scanner_profile.v1`, `challenge.stats.v1`).
+                                 `detect.http_scanner_profile.v1`, `challenge.stats.v1`,
+                                 `firewall.rollback.v1`, `firewall.dos_exempt.v1` on Linux builds).
                                  Use for orchestrator feature-detect.
 GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.

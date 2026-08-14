@@ -2,6 +2,7 @@ package health
 
 import (
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/maillog"
 )
 
@@ -46,6 +47,12 @@ func Capabilities() []string {
 		"challenge.stats.v1",
 		"verified_bots.editor.v1",   // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor
 		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts
+	}
+	if firewall.Supported() {
+		caps = append(caps,
+			"firewall.rollback.v1",   // timed config rollback: apply, confirm, revert, survives a restart
+			"firewall.dos_exempt.v1", // ranges exempt from connection-rate and flood metering
+		)
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")
