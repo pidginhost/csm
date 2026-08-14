@@ -198,6 +198,104 @@ func TestValidateDeepSSHLockout(t *testing.T) {
 		}
 	})
 
+	t.Run("quoted port with inline comment is parsed", func(t *testing.T) {
+		useSSHDConfig(t, "Port \"2222\" # alternate listener\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			TCPIn:         []int{2222, 443, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp_in"); ok {
+			t.Errorf("valid quoted port should not fall back to 22, got %q", res.Message)
+		}
+	})
+
+	t.Run("IPv4-only sshd does not require tcp6_in", func(t *testing.T) {
+		useSSHDConfig(t, "AddressFamily inet\nPort 2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{2222, 443, 9443},
+			TCP6In:        []int{443, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp6_in"); ok {
+			t.Errorf("IPv4-only sshd has no IPv6 port to allow, got %q", res.Message)
+		}
+	})
+
+	t.Run("IPv6-only sshd does not require tcp_in", func(t *testing.T) {
+		useSSHDConfig(t, "AddressFamily inet6\nPort 2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{443, 9443},
+			TCP6In:        []int{2222, 443, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp_in"); ok {
+			t.Errorf("IPv6-only sshd has no IPv4 port to allow, got %q", res.Message)
+		}
+	})
+
+	t.Run("explicit IPv4 listener does not require tcp6_in", func(t *testing.T) {
+		useSSHDConfig(t, "ListenAddress 192.0.2.10:2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{2222, 443, 9443},
+			TCP6In:        []int{443, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp6_in"); ok {
+			t.Errorf("an IPv4 ListenAddress does not open an IPv6 listener, got %q", res.Message)
+		}
+	})
+
+	t.Run("explicit IPv6 listener does not require tcp_in", func(t *testing.T) {
+		useSSHDConfig(t, "ListenAddress [2001:db8::10]:2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{443, 9443},
+			TCP6In:        []int{2222, 443, 9443},
+			ConnRateLimit: 200,
+		})
+		if res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp_in"); ok {
+			t.Errorf("an IPv6 ListenAddress does not open an IPv4 listener, got %q", res.Message)
+		}
+	})
+
+	t.Run("loopback-only sshd is outside the inbound firewall", func(t *testing.T) {
+		useSSHDConfig(t, "ListenAddress 127.0.0.1:2222\nListenAddress [::1]:2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{443, 9443},
+			TCP6In:        []int{443, 9443},
+			ConnRateLimit: 200,
+		})
+		for _, result := range ValidateDeepSection(cfg, "firewall") {
+			if strings.Contains(result.Message, "sshd") {
+				t.Errorf("loopback listeners cannot be blocked by inbound policy, got %q", result.Message)
+			}
+		}
+	})
+
+	t.Run("IPv6 listener checks inherited tcp_in", func(t *testing.T) {
+		useSSHDConfig(t, "ListenAddress [2001:db8::10]:2222\n")
+		cfg := lockoutTestConfig(&firewall.FirewallConfig{
+			Enabled:       true,
+			IPv6:          true,
+			TCPIn:         []int{443, 9443},
+			ConnRateLimit: 200,
+		})
+		res, ok := findResult(ValidateDeepSection(cfg, "firewall"), "warn", "firewall.tcp_in")
+		if !ok || !strings.Contains(res.Message, "2222") {
+			t.Errorf("inherited IPv6 policy should warn about port 2222, got %+v", res)
+		}
+	})
+
 	t.Run("one warning names every unreachable port", func(t *testing.T) {
 		useSSHDConfig(t, "Port 22\nPort 2222\n")
 		cfg := lockoutTestConfig(&firewall.FirewallConfig{

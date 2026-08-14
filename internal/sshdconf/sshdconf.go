@@ -32,6 +32,7 @@ const maxIncludeDepth = 16
 
 // compiledDefaults are the OpenSSH defaults for the keywords CSM reads.
 var compiledDefaults = map[string]string{
+	"addressfamily":          "any",
 	"protocol":               "2",
 	"passwordauthentication": "yes",
 	"permitrootlogin":        "prohibit-password",
@@ -62,12 +63,13 @@ type Config struct {
 	present bool
 	values  map[string]string
 
-	ports []int
-	// listenPorts holds ports named by ListenAddress entries; listenBare
-	// records whether any ListenAddress omitted one.
-	listenPorts []int
-	listenBare  bool
-	hasListen   bool
+	ports           []int
+	listenAddresses []listenAddress
+}
+
+type listenAddress struct {
+	host string
+	port int
 }
 
 // Parse reads path and every file it includes. A missing or unreadable root
@@ -76,7 +78,7 @@ type Config struct {
 // here at all".
 func Parse(fsys FS, path string) *Config {
 	c := &Config{values: make(map[string]string)}
-	c.present = c.parseFile(fsys, path, filepath.Dir(path), 0)
+	c.present = c.parseFile(fsys, path, filepath.Dir(path), 0, make(map[string]struct{}))
 	return c
 }
 
@@ -98,23 +100,33 @@ func (c *Config) Value(keyword string) string {
 // Port applies only to ListenAddress entries that omit a port, so a config
 // where every ListenAddress carries its own port never binds the Port value.
 func (c *Config) ListenPorts() []int {
-	ports := append([]int(nil), c.listenPorts...)
-	if !c.hasListen || c.listenBare {
-		base := c.ports
-		if len(base) == 0 {
-			base = []int{defaultPort}
-		}
-		ports = append(ports, base...)
-	}
-	return sortedUnique(ports)
+	v4, v6 := c.listenPorts(false)
+	return sortedUnique(append(v4, v6...))
+}
+
+// RemoteListenPorts returns the IPv4 and IPv6 ports reachable beyond the
+// local host. It honors AddressFamily and explicit ListenAddress directives,
+// and excludes loopback-only listeners that an inbound firewall cannot cut
+// off.
+func (c *Config) RemoteListenPorts() (ipv4, ipv6 []int) {
+	return c.listenPorts(true)
 }
 
 // parseFile reads one config file, following Include directives relative to
 // rootDir. It reports whether the file was readable.
-func (c *Config) parseFile(fsys FS, path, rootDir string, depth int) bool {
+func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[string]struct{}) bool {
 	if depth > maxIncludeDepth {
 		return false
 	}
+	path = filepath.Clean(path)
+	// A glob may match its containing file, and mutually recursive globs can
+	// branch exponentially before the depth limit. Re-reading a file cannot
+	// change this parser's first-value or set-like accumulated results.
+	if _, parsed := seen[path]; parsed {
+		return false
+	}
+	seen[path] = struct{}{}
+
 	f, err := fsys.Open(path)
 	if err != nil {
 		return false
@@ -122,14 +134,18 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int) bool {
 	defer func() { _ = f.Close() }()
 
 	inMatch := false
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	reader := bufio.NewReader(f)
+	for {
+		rawLine, readErr := reader.ReadString('\n')
+		if len(rawLine) == 0 && readErr != nil {
+			break
+		}
+		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		keyword, value, ok := splitDirective(line)
+		keyword, args, ok := splitDirective(line)
 		if !ok {
 			continue
 		}
@@ -151,7 +167,7 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int) bool {
 			// sshd resolves a relative Include against its config directory,
 			// not against the including file, so nested drop-ins agree with
 			// the top-level file.
-			for _, pattern := range strings.Fields(value) {
+			for _, pattern := range args {
 				if !filepath.IsAbs(pattern) {
 					pattern = filepath.Join(rootDir, pattern)
 				}
@@ -160,68 +176,170 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int) bool {
 					continue
 				}
 				for _, m := range matches {
-					c.parseFile(fsys, m, rootDir, depth+1)
+					c.parseFile(fsys, m, rootDir, depth+1, seen)
 				}
 			}
 		case "port":
-			if port, valid := parsePort(value); valid {
+			if port, valid := parsePort(args[0]); valid {
 				c.ports = append(c.ports, port)
 			}
 		case "listenaddress":
-			c.recordListenAddress(value)
+			c.recordListenAddress(args[0])
 		default:
 			if _, exists := c.values[keyword]; !exists {
-				c.values[keyword] = value
+				c.values[keyword] = args[0]
 			}
 		}
 	}
 	return true
 }
 
-// recordListenAddress notes whether a ListenAddress binds an explicit port.
-// Forms without one ("0.0.0.0", "::", "host rdomain N") inherit Port.
+// recordListenAddress records an address and its optional explicit port.
+// Forms without a port inherit every Port directive.
 func (c *Config) recordListenAddress(value string) {
-	c.hasListen = true
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return
-	}
-	_, portStr, err := net.SplitHostPort(fields[0])
+	host, portStr, err := net.SplitHostPort(value)
 	if err != nil {
-		c.listenBare = true
+		c.listenAddresses = append(c.listenAddresses, listenAddress{host: strings.Trim(value, "[]")})
 		return
 	}
 	port, valid := parsePort(portStr)
 	if !valid {
-		c.listenBare = true
+		c.listenAddresses = append(c.listenAddresses, listenAddress{host: host})
 		return
 	}
-	c.listenPorts = append(c.listenPorts, port)
+	c.listenAddresses = append(c.listenAddresses, listenAddress{host: host, port: port})
 }
 
-// splitDirective splits "Keyword value", "Keyword=value" and tab-separated
-// forms, all of which sshd accepts.
-func splitDirective(line string) (keyword, value string, ok bool) {
+// splitDirective splits a keyword from its OpenSSH-style argument vector.
+// Quoting, basic escapes, and comments follow argv_split in OpenSSH.
+func splitDirective(line string) (keyword string, args []string, ok bool) {
 	sep := strings.IndexFunc(line, func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '='
 	})
 	if sep <= 0 {
-		return "", "", false
+		return "", nil, false
 	}
 	keyword = strings.ToLower(line[:sep])
-	value = strings.TrimSpace(strings.TrimLeft(line[sep:], " \t="))
-	if value == "" {
-		return "", "", false
+	rest := strings.TrimLeft(line[sep:], " \t")
+	if strings.HasPrefix(rest, "=") {
+		rest = strings.TrimLeft(rest[1:], " \t")
 	}
-	return keyword, value, true
+	args, ok = splitArguments(rest)
+	if !ok || len(args) == 0 {
+		return "", nil, false
+	}
+	return keyword, args, true
+}
+
+func splitArguments(s string) ([]string, bool) {
+	var args []string
+	for i := 0; i < len(s); {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i == len(s) || s[i] == '#' {
+			break
+		}
+
+		var arg strings.Builder
+		var quote byte
+		for i < len(s) {
+			ch := s[i]
+			switch {
+			case ch == '\\' && i+1 < len(s) &&
+				(s[i+1] == '\'' || s[i+1] == '"' || s[i+1] == '\\' || (quote == 0 && s[i+1] == ' ')):
+				i++
+				arg.WriteByte(s[i])
+			case quote == 0 && (ch == ' ' || ch == '\t'):
+				i++
+				goto argumentDone
+			case quote == 0 && (ch == '\'' || ch == '"'):
+				quote = ch
+			case quote != 0 && ch == quote:
+				quote = 0
+			default:
+				arg.WriteByte(ch)
+			}
+			i++
+		}
+
+	argumentDone:
+		if quote != 0 {
+			return nil, false
+		}
+		args = append(args, arg.String())
+	}
+	return args, true
 }
 
 func parsePort(s string) (int, bool) {
 	port, err := strconv.Atoi(strings.TrimSpace(s))
+	if err == nil {
+		return port, port >= 1 && port <= 65535
+	}
+	port, err = net.LookupPort("tcp", s)
 	if err != nil || port < 1 || port > 65535 {
 		return 0, false
 	}
 	return port, true
+}
+
+func (c *Config) listenPorts(remoteOnly bool) (ipv4, ipv6 []int) {
+	base := c.ports
+	if len(base) == 0 {
+		base = []int{defaultPort}
+	}
+	allowV4 := c.Value("addressfamily") != "inet6"
+	allowV6 := c.Value("addressfamily") != "inet"
+
+	if len(c.listenAddresses) == 0 {
+		if allowV4 {
+			ipv4 = append(ipv4, base...)
+		}
+		if allowV6 {
+			ipv6 = append(ipv6, base...)
+		}
+		return sortedUnique(ipv4), sortedUnique(ipv6)
+	}
+
+	for _, listener := range c.listenAddresses {
+		isV4, isV6, loopback := addressFamilies(listener.host)
+		if remoteOnly && loopback {
+			continue
+		}
+		ports := base
+		if listener.port != 0 {
+			ports = []int{listener.port}
+		}
+		if allowV4 && isV4 {
+			ipv4 = append(ipv4, ports...)
+		}
+		if allowV6 && isV6 {
+			ipv6 = append(ipv6, ports...)
+		}
+	}
+	return sortedUnique(ipv4), sortedUnique(ipv6)
+}
+
+func addressFamilies(host string) (ipv4, ipv6, loopback bool) {
+	if host == "*" {
+		return true, true, false
+	}
+	canonicalHost := strings.TrimSuffix(strings.ToLower(host), ".")
+	if canonicalHost == "localhost" || strings.HasSuffix(canonicalHost, ".localhost") {
+		return true, true, true
+	}
+	if zone := strings.LastIndex(host, "%"); zone >= 0 {
+		host = host[:zone]
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true, true, false
+	}
+	if ip.To4() != nil {
+		return true, false, ip.IsLoopback()
+	}
+	return false, true, ip.IsLoopback()
 }
 
 func sortedUnique(ports []int) []int {

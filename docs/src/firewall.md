@@ -183,7 +183,10 @@ firewall save rather than on every load:
   host that never moved it loses SSH on the first apply. Every `Port` directive
   counts, including ones in `Include`d drop-ins under `/etc/ssh/sshd_config.d/`,
   and a port named in `restricted_tcp` with `infra_ips` set is treated as a
-  deliberate infra-only listener. Hosts with no sshd config get no warning.
+  deliberate infra-only listener. `AddressFamily` and `ListenAddress` limit
+  the check to the IP families sshd exposes, and loopback-only listeners do
+  not count because the inbound firewall always accepts loopback traffic.
+  Hosts with no sshd config get no warning.
 
 ## Value validation
 

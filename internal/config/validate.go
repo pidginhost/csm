@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -911,8 +912,9 @@ func probeSSHLockout(cfg *Config) []ValidationResult {
 	}
 
 	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
-	var missingV4, missingV6 []int
-	for _, port := range sshd.ListenPorts() {
+	var missingTCPIn, missingTCP6In []int
+	ipv4Ports, ipv6Ports := sshd.RemoteListenPorts()
+	for _, port := range ipv4Ports {
 		// Naming the port in restricted_tcp is how an operator asks for an
 		// infra-only listener. The infra accept rule matches before any port
 		// rule, so such a port stays reachable without appearing in tcp_in.
@@ -920,23 +922,32 @@ func probeSSHLockout(cfg *Config) []ValidationResult {
 			continue
 		}
 		if !containsPort(fw.TCPIn, port) {
-			missingV4 = append(missingV4, port)
+			missingTCPIn = append(missingTCPIn, port)
 		}
-		// An empty tcp6_in inherits tcp_in, so only a non-empty list can
-		// diverge from the IPv4 verdict above.
-		if fw.IPv6 && len(fw.TCP6In) > 0 && !containsPort(fw.TCP6In, port) {
-			missingV6 = append(missingV6, port)
+	}
+	if fw.IPv6 {
+		for _, port := range ipv6Ports {
+			if hasInfra && containsPort(fw.RestrictedTCP, port) {
+				continue
+			}
+			if len(fw.TCP6In) == 0 {
+				if !containsPort(fw.TCPIn, port) && !containsPort(missingTCPIn, port) {
+					missingTCPIn = append(missingTCPIn, port)
+				}
+			} else if !containsPort(fw.TCP6In, port) {
+				missingTCP6In = append(missingTCP6In, port)
+			}
 		}
 	}
 
 	var results []ValidationResult
-	if len(missingV4) > 0 {
-		subject, pronoun := portPhrase(missingV4)
+	if len(missingTCPIn) > 0 {
+		subject, pronoun := portPhrase(missingTCPIn)
 		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
 			fmt.Sprintf("sshd listens on %s but tcp_in does not allow %s; the next firewall apply drops new SSH connections", subject, pronoun)})
 	}
-	if len(missingV6) > 0 {
-		subject, _ := portPhrase(missingV6)
+	if len(missingTCP6In) > 0 {
+		subject, _ := portPhrase(missingTCP6In)
 		results = append(results, ValidationResult{"warn", "firewall.tcp6_in",
 			fmt.Sprintf("IPv6 is managed and tcp6_in does not allow sshd %s", subject)})
 	}
@@ -945,6 +956,7 @@ func probeSSHLockout(cfg *Config) []ValidationResult {
 
 // portPhrase renders a port list plus the pronoun that agrees with it.
 func portPhrase(ports []int) (subject, pronoun string) {
+	sort.Ints(ports)
 	parts := make([]string, 0, len(ports))
 	for _, p := range ports {
 		parts = append(parts, strconv.Itoa(p))
