@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/sshdconf"
 	"golang.org/x/text/language"
 )
 
@@ -877,6 +878,83 @@ func firewallLockoutResults(cfg *Config) []ValidationResult {
 	return results
 }
 
+// sshdConfigPath is where the SSH lockout guard reads the listen ports from.
+// It is a test hook, not an operator setting: sshd's own path is fixed.
+var sshdConfigPath = sshdconf.DefaultPath
+
+// SetSSHDConfigPath points the SSH lockout guard at another sshd config and
+// returns a func restoring the previous path. Tests use it to stay hermetic;
+// production always reads sshd's own path.
+func SetSSHDConfigPath(path string) func() {
+	previous := sshdConfigPath
+	sshdConfigPath = path
+	return func() { sshdConfigPath = previous }
+}
+
+// probeSSHLockout warns when an enabled firewall would not accept the ports
+// sshd actually listens on. The shipped tcp_in leaves 22 out, so a host that
+// never moved sshd loses SSH on the next apply.
+//
+// It reads the host, which is why it is a deep probe rather than part of
+// Validate: the same csm.yaml must validate identically on any machine.
+func probeSSHLockout(cfg *Config) []ValidationResult {
+	fw := cfg.Firewall
+	if fw == nil || !fw.Enabled {
+		return nil
+	}
+
+	// No sshd config means no evidence of a listener. Falling back to the
+	// compiled default here would warn on every host that does not run sshd.
+	sshd := sshdconf.Parse(sshdconf.OSFS{}, sshdConfigPath)
+	if !sshd.Present() {
+		return nil
+	}
+
+	hasInfra := len(cfg.InfraIPs) > 0 || len(fw.InfraIPs) > 0
+	var missingV4, missingV6 []int
+	for _, port := range sshd.ListenPorts() {
+		// Naming the port in restricted_tcp is how an operator asks for an
+		// infra-only listener. The infra accept rule matches before any port
+		// rule, so such a port stays reachable without appearing in tcp_in.
+		if hasInfra && containsPort(fw.RestrictedTCP, port) {
+			continue
+		}
+		if !containsPort(fw.TCPIn, port) {
+			missingV4 = append(missingV4, port)
+		}
+		// An empty tcp6_in inherits tcp_in, so only a non-empty list can
+		// diverge from the IPv4 verdict above.
+		if fw.IPv6 && len(fw.TCP6In) > 0 && !containsPort(fw.TCP6In, port) {
+			missingV6 = append(missingV6, port)
+		}
+	}
+
+	var results []ValidationResult
+	if len(missingV4) > 0 {
+		subject, pronoun := portPhrase(missingV4)
+		results = append(results, ValidationResult{"warn", "firewall.tcp_in",
+			fmt.Sprintf("sshd listens on %s but tcp_in does not allow %s; the next firewall apply drops new SSH connections", subject, pronoun)})
+	}
+	if len(missingV6) > 0 {
+		subject, _ := portPhrase(missingV6)
+		results = append(results, ValidationResult{"warn", "firewall.tcp6_in",
+			fmt.Sprintf("IPv6 is managed and tcp6_in does not allow sshd %s", subject)})
+	}
+	return results
+}
+
+// portPhrase renders a port list plus the pronoun that agrees with it.
+func portPhrase(ports []int) (subject, pronoun string) {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	if len(parts) == 1 {
+		return "port " + parts[0], "it"
+	}
+	return "ports " + strings.Join(parts, ", "), "them"
+}
+
 // webUIListenPort extracts the port from a host:port listen string, falling
 // back to the shipped default when the field is unset.
 func webUIListenPort(listen string) (int, bool) {
@@ -961,6 +1039,9 @@ func ValidateDeep(cfg *Config) []ValidationResult {
 		results = append(results, probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)...)
 	}
 
+	// SSH reachability under the configured firewall policy
+	results = append(results, probeSSHLockout(cfg)...)
+
 	return results
 }
 
@@ -988,6 +1069,8 @@ func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
 		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" && len(cfg.GeoIP.Editions) > 0 {
 			return probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)
 		}
+	case "firewall":
+		return probeSSHLockout(cfg)
 	case "challenge":
 		// probeListenPortAvailable is not yet implemented in this codebase.
 		// When added, invoke it here: return probeListenPortAvailable(cfg.Challenge.ListenPort).

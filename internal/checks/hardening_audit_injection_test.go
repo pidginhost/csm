@@ -104,6 +104,32 @@ func TestAuditSSHSecure(t *testing.T) {
 	}
 }
 
+// An alternate port does not retire the default one: sshd binds both, so the
+// audit must still report the exposure on 22.
+func TestAuditSSHSecondPortOnDefault(t *testing.T) {
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == "/etc/ssh/sshd_config" {
+				tmp := t.TempDir() + "/sshd_config"
+				_ = os.WriteFile(tmp, []byte("Port 2222\nPort 22\n"), 0644)
+				return os.Open(tmp)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	for _, r := range auditSSH() {
+		if r.Name != "ssh_port" {
+			continue
+		}
+		if r.Status != "warn" {
+			t.Fatalf("ssh_port = %q (%s), want warn: sshd still listens on 22", r.Status, r.Message)
+		}
+		return
+	}
+	t.Fatal("auditSSH produced no ssh_port result")
+}
+
 // --- auditOS ---------------------------------------------------------
 
 func TestAuditOSWithMocks(t *testing.T) {
