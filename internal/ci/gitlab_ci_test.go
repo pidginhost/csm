@@ -72,6 +72,14 @@ func TestReleaseCriticalJobsAreBlocking(t *testing.T) {
 	if strings.Contains(integration, "gocovmerge $PROFILES > dist/merged-coverage.out || true") {
 		t.Fatal("integration coverage merge still suppresses failure")
 	}
+	verifiedCleanup := strings.Index(integration, `if ! ./scripts/ci-delete-server.sh "$ALMA_ID" "$UBUNTU_ID" "$CPANEL_ID"; then`)
+	afterScript := strings.Index(integration, "  after_script:")
+	if verifiedCleanup < 0 || afterScript < 0 || verifiedCleanup > afterScript {
+		t.Fatal("integration must run verified cleanup in script so a leak fails the job")
+	}
+	if strings.Contains(integration[:afterScript], "phctl compute server delete") {
+		t.Fatal("integration script still uses unverified fire-and-forget cleanup")
+	}
 	// cPanel integration runs when a cPanel image is configured; tag releases
 	// fall back to the Alma+Ubuntu matrix (with a warning) rather than blocking
 	// when no image is set. The provisioning and assertion machinery must still

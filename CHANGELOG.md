@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Integration test server cleanup now waits for cloud provisioning races to settle, verifies deletion, and fails successful jobs when servers survive. Multiple servers are cleaned concurrently so fallback cleanup completes within runner limits.
+
 ## [3.28.0] - 2026-08-14
 
 ### Security
