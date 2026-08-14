@@ -25,12 +25,13 @@ auto_response:
   kill_processes: true
   quarantine_files: true
   block_ips: true
-  block_expiry: "24h"         # default temp block duration
+  block_expiry: "24h"         # positive temp block duration; omitted defaults to 24h
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
   netblock: true              # enable subnet blocking
-  netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block
+  netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block; minimum 2
   permblock: true             # promote temp blocks to permanent
-  permblock_count: 4          # temp blocks before promotion
+  permblock_count: 4          # temp blocks before promotion; minimum 2
+  permblock_interval: "24h"   # positive counting window; omitted defaults to 24h
 
   # Response to http_scanner_profile findings: "challenge" (default)
   # routes the IP to the PoW challenge when challenge.enabled is true,

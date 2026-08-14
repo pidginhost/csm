@@ -174,6 +174,20 @@ These stay warnings and never block a save or a start: fronting the Web UI with
 a reverse proxy or reaching it over a VPN are legitimate reasons to leave the
 port out of `tcp_in`.
 
+One more warning compares the policy against the host instead of against the
+config, so it runs in `csm doctor`, `csm validate --deep`, and the Web UI
+firewall save rather than on every load:
+
+- sshd listens on a port that `tcp_in` (or an explicit `tcp6_in`) does not
+  allow. The shipped `tcp_in` leaves 22 out, because many hosts move sshd, so a
+  host that never moved it loses SSH on the first apply. Every `Port` directive
+  counts, including ones in `Include`d drop-ins under `/etc/ssh/sshd_config.d/`,
+  and a port named in `restricted_tcp` with `infra_ips` set is treated as a
+  deliberate infra-only listener. `AddressFamily` and `ListenAddress` limit
+  the check to the IP families sshd exposes, and loopback-only listeners do
+  not count because the inbound firewall always accepts loopback traffic.
+  Hosts with no sshd config get no warning.
+
 ## Value validation
 
 Unlike the warnings above, these are errors, because the value cannot do what

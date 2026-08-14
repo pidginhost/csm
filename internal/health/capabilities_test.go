@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // TestBPFCapabilityStringsAppearWhenProbed asserts that the dynamic BPF
@@ -166,4 +167,25 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestFirewallCapabilitiesMatchPlatformSupport(t *testing.T) {
+	caps := Capabilities()
+	for _, want := range []string{"firewall.rollback.v1", "firewall.dos_exempt.v1"} {
+		if got := contains(caps, want); got != firewall.Supported() {
+			t.Errorf("%s present = %t, firewall supported = %t", want, got, firewall.Supported())
+		}
+	}
+}
+
+// A repeated string makes an orchestrator's feature-detect count wrong and is
+// the shape a copy-pasted entry takes.
+func TestCapabilitiesHaveNoDuplicates(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, capability := range Capabilities() {
+		if seen[capability] {
+			t.Errorf("duplicate capability %q", capability)
+		}
+		seen[capability] = true
+	}
 }

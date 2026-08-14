@@ -429,6 +429,43 @@ func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_ProgrammaticConfigUsesDefaultNetblockThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		findingIPs []string
+		wantBlocks int
+	}{
+		{"below default", []string{"198.51.100.10", "198.51.100.20"}, 0},
+		{"at default", []string{"198.51.100.10", "198.51.100.20", "198.51.100.30"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.StatePath = t.TempDir()
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.BlockIPs = true
+			cfg.AutoResponse.NetBlock = true
+			setAutoResponseLive(cfg)
+
+			blocker := &recordingIPBlocker{}
+			oldBlocker := getIPBlocker()
+			SetIPBlocker(blocker)
+			t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+			oldChallengeList := GetChallengeIPList()
+			SetChallengeIPList(nil)
+			t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+			findings := make([]alert.Finding, 0, len(tc.findingIPs))
+			for _, ip := range tc.findingIPs {
+				findings = append(findings, alert.Finding{Check: "wp_login_bruteforce", Message: "WP brute from " + ip})
+			}
+			AutoBlockIPs(cfg, findings)
+			if len(blocker.blockedSubnet) != tc.wantBlocks {
+				t.Fatalf("blocked subnets = %v, want %d with zero-value threshold", blocker.blockedSubnet, tc.wantBlocks)
+			}
+		})
+	}
+}
+
 func TestAutoBlockIPs_NetBlockUsesConfiguredExpiry(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()
