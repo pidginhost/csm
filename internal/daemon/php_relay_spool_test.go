@@ -324,6 +324,57 @@ func TestOnFileAt_UsesModTimeAsEventTime(t *testing.T) {
 	}
 }
 
+func TestOnFileAt_RecordsDistinctScriptRecipientsWithoutSourceIP(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, newPerAccountWindow(5000), cfg, nil)
+
+	userdataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(userdataRoot, "u"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userdataRoot, "u", "main"), []byte("main_domain: example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	domains := newUserDomainsResolverWithRoot(userdataRoot, time.Minute)
+	pipeline := newSpoolPipeline(eng, domains, newTestPolicies(t), newMsgIDIndex(nil, 64), nil, func(alert.Finding) {})
+	pipeline.SetRebuilding(true)
+
+	body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nadmin@example.com\n\n037T To: admin@example.com\n132  X-PHP-Script: example.com/wp-cron.php\n"
+	eventTime := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	for _, msgID := range []string{"1aaa", "1bbb"} {
+		path := filepath.Join(sub, msgID+"-H")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		pipeline.onFileAt(path, eventTime)
+	}
+
+	state := psw.getOrCreate("example.com:/wp-cron.php")
+	if got := state.volumeCount(eventTime.Add(-time.Minute)); got != 2 {
+		t.Fatalf("script volume = %d, want 2", got)
+	}
+	count, known := state.distinctRecipientsSince(eventTime.Add(-time.Minute))
+	if count != 1 || !known {
+		t.Fatalf("script recipients = (%d,%v), want (1,true)", count, known)
+	}
+	ipStates := 0
+	pip.states.Range(func(_, _ any) bool {
+		ipStates++
+		return true
+	})
+	if ipStates != 0 {
+		t.Fatalf("per-IP states = %d, want 0 for cron-driven mail", ipStates)
+	}
+}
+
 func TestRecoveryScan_BoundedAndDedupes(t *testing.T) {
 	spoolRoot := t.TempDir()
 	sub := filepath.Join(spoolRoot, "k")

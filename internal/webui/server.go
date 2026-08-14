@@ -716,6 +716,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"perf_wp_cron":                   "WP Cron",
 			"integrity":                      "Integrity",
 			"db_siteurl_hijack":              "DB URL Hijack",
+			"db_siteurl_invalid":             "DB Invalid Site Address",
 			"db_options_injection":           "DB Options Injection",
 			"db_post_injection":              "DB Post Injection",
 			"db_spam_injection":              "DB Spam Injection",

@@ -247,8 +247,8 @@ func optionValueStillMalicious(optName, value string) bool {
 }
 
 // verifyDBSiteurlHijack re-reads the flagged siteurl/home option and resolves
-// when the option is gone or no longer carries eval()/<script> (mirrors the
-// siteurl-hijack branch of checkWPOptions).
+// when the option is gone or no longer matches either site-address check in
+// checkWPOptions.
 func verifyDBSiteurlHijack(message, details string) VerifyResult {
 	dbName := detailField(details, "Database")
 	optName := siteurlOptionFromDetails(details)
@@ -269,22 +269,26 @@ func verifyDBSiteurlHijack(message, details string) VerifyResult {
 		for _, row := range rows {
 			present = true
 			if siteurlValueStillMalicious(row) {
-				return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q still contains malicious code", optName)}
+				return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("option %q is still a poisoned site address", optName)}
 			}
 		}
 	}
 	if !present {
 		return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q is no longer present", optName)}
 	}
-	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q no longer contains malicious code", optName)}
+	return VerifyResult{Checked: true, Resolved: true, Detail: fmt.Sprintf("option %q is no longer a poisoned site address", optName)}
 }
 
 func siteurlValueStillMalicious(value string) bool {
 	lower := strings.ToLower(value)
-	return strings.Contains(lower, "eval(") || strings.Contains(lower, "<script")
+	if strings.Contains(lower, "eval(") || strings.Contains(lower, "<script") {
+		return true
+	}
+	_, poisoned := siteURLPoisonReason(value)
+	return poisoned
 }
 
-// siteurlOptionFromDetails extracts the option name from a db_siteurl_hijack
+// siteurlOptionFromDetails extracts the option name from a site-address finding
 // detail block whose body line is "<optName> = <value>". The detector only ever
 // emits siteurl or home; any other shape returns "".
 func siteurlOptionFromDetails(details string) string {

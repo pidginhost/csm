@@ -202,7 +202,7 @@ var runnerFindingNames = map[string][]string{
 	"cpanel_logins":         {"cpanel_login", "cpanel_multi_ip_login", "cpanel_password_purge"},
 	"crontabs":              {"crond_change", "crontab_change", "suspicious_crontab"},
 	"database_dumps":        {"database_dump"},
-	"db_content":            {"db_options_injection", "db_post_injection", "db_rogue_admin", "db_siteurl_hijack", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
+	"db_content":            {"db_content_scan_incomplete", "db_options_injection", "db_post_injection", "db_rogue_admin", "db_siteurl_hijack", "db_siteurl_invalid", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
 	"db_content_drupal":     {"drupal_admin_injection", "drupal_content_injection", "drupal_settings_injection"},
 	"db_content_joomla":     {"joomla_admin_injection", "joomla_content_injection", "joomla_extensions_injection"},
 	"db_content_magento":    {"magento_admin_injection", "magento_content_injection", "magento_settings_injection"},
@@ -375,14 +375,14 @@ const (
 
 const checkTimeout = 5 * time.Minute
 
-// heavyCheckTimeout applies to filesystem walks that traverse account web
-// roots. On busy shared servers these legitimately run longer than the
+// heavyCheckTimeout applies to host-wide work over account web roots or their
+// databases. On busy shared servers these legitimately run longer than the
 // default 5-minute budget, so they get a wider window to avoid noisy
 // check_timeout warnings while leaving fast checks aggressive.
 const heavyCheckTimeout = 15 * time.Minute
 
-// heavyChecks names the deep-tier checks that walk every account's
-// document roots. Keep this list short and explicit; only checks that
+// heavyChecks names the deep-tier checks that traverse every account's web
+// roots or databases. Keep this list short and explicit; only checks that
 // observably blow past 5 minutes on production hosts belong here.
 var heavyChecks = map[string]bool{
 	"filesystem":         true,
@@ -394,10 +394,11 @@ var heavyChecks = map[string]bool{
 	"phishing":           true,
 	"yara_deep":          true,
 	"php_config_changes": true,
+	"db_content":         true,
 }
 
-// timeoutFor returns the per-check execution budget. Heavy filesystem
-// scans get heavyCheckTimeout, everything else gets checkTimeout.
+// timeoutFor returns the per-check execution budget. Heavy host-wide scans
+// get heavyCheckTimeout, everything else gets checkTimeout.
 // Indirected through timeoutForFunc so tests can shrink budgets
 // without mutating the const.
 func timeoutFor(name string) time.Duration {
@@ -617,6 +618,7 @@ func withLogicalOwnerPurgeNames(toScan []namedCheck) []string {
 // without inventing a per-run status finding.
 var perRunFindingNames = map[string][]string{
 	"yara_deep":                     {"yara_scan_incomplete"},
+	"db_content":                    {"db_content_scan_incomplete"},
 	logicalOwnerJSTaintDeep:         {"js_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {},
 	logicalOwnerReputationFeedStale: {},

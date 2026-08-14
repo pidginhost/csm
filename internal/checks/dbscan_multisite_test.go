@@ -163,7 +163,7 @@ func TestScanMultisiteSecondaryBlogsIteratesActiveIDs(t *testing.T) {
 		tablePrefix: "wp_",
 		multisite:   true,
 	}
-	_ = scanMultisiteSecondaryBlogs("alice", creds, "wp_")
+	_ = scanMultisiteSecondaryBlogs(context.Background(), "alice", creds, "wp_")
 
 	// Expect: wp_blogs query exactly once.
 	wpBlogsCount := 0
@@ -212,7 +212,7 @@ func TestScanMultisiteSecondaryBlogsSkipsBlog1(t *testing.T) {
 		dbName: "wp_net", dbUser: "wpuser", dbPass: "pw", dbHost: "localhost",
 		tablePrefix: "wp_", multisite: true,
 	}
-	_ = scanMultisiteSecondaryBlogs("alice", creds, "wp_")
+	_ = scanMultisiteSecondaryBlogs(context.Background(), "alice", creds, "wp_")
 }
 
 func TestScanMultisiteSecondaryBlogsRejectsNonNumericRows(t *testing.T) {
@@ -235,7 +235,7 @@ func TestScanMultisiteSecondaryBlogsRejectsNonNumericRows(t *testing.T) {
 		dbName: "wp_net", dbUser: "wpuser", dbPass: "pw", dbHost: "localhost",
 		tablePrefix: "wp_", multisite: true,
 	}
-	_ = scanMultisiteSecondaryBlogs("alice", creds, "wp_")
+	_ = scanMultisiteSecondaryBlogs(context.Background(), "alice", creds, "wp_")
 }
 
 // --- CheckDatabaseContent: end-to-end multisite path ---------------------
@@ -252,6 +252,13 @@ func (m *fakeMSWPConfig) Glob(pattern string) ([]string, error) {
 		return []string{"/home/alice/public_html/wp-config.php"}, nil
 	}
 	return nil, nil
+}
+
+func (m *fakeMSWPConfig) Lstat(name string) (os.FileInfo, error) {
+	if name == "/home/alice/public_html/wp-config.php" {
+		return fakeFileInfo{name: "wp-config.php"}, nil
+	}
+	return nil, os.ErrNotExist
 }
 
 func (m *fakeMSWPConfig) Open(name string) (*os.File, error) {
