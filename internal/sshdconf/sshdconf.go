@@ -30,6 +30,12 @@ const defaultPort = 22
 // recover from.
 const maxIncludeDepth = 16
 
+// maxLineBytes caps how much of one line is kept. No real directive comes
+// close; the cap exists so a corrupt file cannot be read into the daemon's
+// memory whole. The remainder of an over-long line is discarded and parsing
+// continues with the next one.
+const maxLineBytes = 64 * 1024
+
 // compiledDefaults are the OpenSSH defaults for the keywords CSM reads.
 var compiledDefaults = map[string]string{
 	"addressfamily":          "any",
@@ -136,8 +142,8 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 	inMatch := false
 	reader := bufio.NewReader(f)
 	for {
-		rawLine, readErr := reader.ReadString('\n')
-		if len(rawLine) == 0 && readErr != nil {
+		rawLine, more := readLine(reader)
+		if !more {
 			break
 		}
 		line := strings.TrimSpace(rawLine)
@@ -192,6 +198,29 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 		}
 	}
 	return true
+}
+
+// readLine returns the next line without its terminator, keeping at most
+// maxLineBytes of it, and reports whether one was read. bufio.Reader.ReadLine
+// hands back the line in buffer-sized pieces, so the discarded tail of an
+// over-long line never accumulates.
+func readLine(r *bufio.Reader) (string, bool) {
+	var line strings.Builder
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if err != nil {
+			return line.String(), line.Len() > 0
+		}
+		if remaining := maxLineBytes - line.Len(); remaining > 0 {
+			if len(chunk) > remaining {
+				chunk = chunk[:remaining]
+			}
+			line.Write(chunk)
+		}
+		if !isPrefix {
+			return line.String(), true
+		}
+	}
 }
 
 // recordListenAddress records an address and its optional explicit port.

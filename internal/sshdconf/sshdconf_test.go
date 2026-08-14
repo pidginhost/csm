@@ -391,6 +391,22 @@ func TestScalarKeywordAcceptsEqualsForm(t *testing.T) {
 	}
 }
 
+// A corrupt file must not be pulled into memory whole, and one over-long line
+// must not hide the directives that follow it.
+func TestOverlongLineIsBoundedAndKeepsParsing(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "sshd_config",
+		"PermitRootLogin "+strings.Repeat("a", 4*maxLineBytes)+"\nPort 2222\n")
+
+	cfg := Parse(OSFS{}, path)
+	if got := len(cfg.Value("permitrootlogin")); got > maxLineBytes {
+		t.Errorf("kept %d bytes of an over-long directive, want at most %d", got, maxLineBytes)
+	}
+	if got := cfg.ListenPorts(); !reflect.DeepEqual(got, []int{2222}) {
+		t.Errorf("ListenPorts() = %v, want [2222]", got)
+	}
+}
+
 func TestCommentsAndBlankLinesIgnored(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, dir, "sshd_config", "# Port 9999\n\n   \nPort 2222\n")
