@@ -52,8 +52,8 @@ var dbMalwarePatterns = []struct {
 	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
-// nonDocRootDirs are common account-data and alias directories that are not
-// candidate document roots in the non-cPanel fallback.
+// nonDocRootDirs are common account-data and alias directories that are never
+// candidate document roots during the home-directory walk.
 var nonDocRootDirs = map[string]bool{
 	"mail": true, "etc": true, "logs": true, "ssl": true, "tmp": true,
 	"public_ftp": true, "cache": true, ".cagefs": true,
@@ -89,11 +89,12 @@ func wpConfigPaths(ctx context.Context) []string {
 		}
 	}
 
-	// cPanel publishes its actual domain-to-document-root map. Prefer it over
-	// guessing from every top-level home directory: backups and account data
-	// can contain a complete wp-config.php but are not served sites.
+	// cPanel publishes its actual domain-to-document-root map. It is
+	// authoritative for SERVED roots and reaches layouts the home-directory
+	// walk below cannot see, so it is consulted first.
 	vhostData, vhostErr := osFS.ReadFile(userdataDomainsPath)
-	if vhostErr == nil {
+	switch {
+	case vhostErr == nil:
 		vhosts, complete := parseUserdataDomainRootsChecked(string(vhostData))
 		if !complete || len(vhosts) == 0 {
 			markCheckIncomplete(ctx, "db_content")
@@ -108,18 +109,19 @@ func wpConfigPaths(ctx context.Context) []string {
 				markCheckIncomplete(ctx, "db_content")
 				continue
 			}
-			wpConfig := filepath.Join(root, "wp-config.php")
-			add(false, wpConfig)
+			add(false, filepath.Join(root, "wp-config.php"))
 		}
-		return out
-	}
-	if vhostMapFailureIsIncomplete(vhostErr) {
+	case vhostMapFailureIsIncomplete(vhostErr):
 		markCheckIncomplete(ctx, "db_content")
-		return out
 	}
 
-	// Non-cPanel fallback for the one-level addon-domain layout. This is a
-	// denylist by necessity; cPanel hosts never take this path.
+	// The served map is not sufficient on its own. A document root the panel
+	// has stopped serving still holds a live database, and the compromise this
+	// scan was widened for sat in exactly such a root -- absent from the domain
+	// map, from /etc/userdomains, and from vhost userdata alike. Re-pointing the
+	// domain publishes it again, so the home-directory layout is walked whatever
+	// the panel says. nonDocRootDirs keeps account-data and backup directories
+	// out of the result.
 	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
 	add(true, primary...)
 	addon, _ := homeGlob(ctx, "*", "wp-config.php")
