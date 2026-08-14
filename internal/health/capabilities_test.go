@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // TestBPFCapabilityStringsAppearWhenProbed asserts that the dynamic BPF
@@ -168,11 +169,11 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-func TestFirewallCapabilitiesAlwaysPresent(t *testing.T) {
+func TestFirewallCapabilitiesMatchPlatformSupport(t *testing.T) {
 	caps := Capabilities()
 	for _, want := range []string{"firewall.rollback.v1", "firewall.dos_exempt.v1"} {
-		if !contains(caps, want) {
-			t.Errorf("%s capability missing", want)
+		if got := contains(caps, want); got != firewall.Supported() {
+			t.Errorf("%s present = %t, firewall supported = %t", want, got, firewall.Supported())
 		}
 	}
 }
