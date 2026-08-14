@@ -1,0 +1,69 @@
+//go:build yara
+
+package yara
+
+import (
+	"bytes"
+	"testing"
+)
+
+// A PHP archive bundles hundreds of unrelated vendor files into one blob, so
+// any rule that ANDs bare substrings with no locality matches it. wp-cli.phar
+// on a production host tripped five critical rules at once; these two ask for
+// nothing but co-occurrence anywhere in the file.
+
+// gap returns filler that separates strings so no proximity window spans them.
+func gap() []byte { return bytes.Repeat([]byte("// vendor code\n"), 400) }
+
+func TestFPPhar_CGIWebshellBash_VendorArchive(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	var b bytes.Buffer
+	b.WriteString("<?php /* phar stub */ Phar::mapPhar();\n")
+	b.Write(gap())
+	b.WriteString("#!/bin/bash\n# bundled helper script\n")
+	b.Write(gap())
+	b.WriteString("$encoded = base64_encode($payload);\n")
+	b.Write(gap())
+	b.WriteString("function eval_template($tpl) { return $tpl; }\n")
+	b.Write(gap())
+	b.WriteString("header('Content-type: application/json');\n")
+	if hasYaraRule(s.ScanBytes(b.Bytes()), "cgi_webshell_bash") {
+		t.Error("cgi_webshell_bash FP: matched a PHP archive with the tokens scattered across vendor files")
+	}
+}
+
+func TestFPPhar_CGIWebshellBash_RealShellStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte("#!/bin/bash\n" +
+		"echo \"Content-type: text/html\"\n" +
+		"echo \"\"\n" +
+		"CMD=$(echo \"$QUERY_STRING\" | base64 -d)\n" +
+		"eval \"$CMD\"\n")
+	if !hasYaraRule(s.ScanBytes(mal), "cgi_webshell_bash") {
+		t.Error("cgi_webshell_bash regression: real bash CGI webshell not detected")
+	}
+}
+
+func TestFPPhar_NetworkBruteForce_VendorArchive(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	var b bytes.Buffer
+	b.WriteString("<?php\nclass Vault { private $passwords = array(); }\n")
+	b.Write(gap())
+	b.WriteString("$ch = curl_init($url);\n$body = curl_exec($ch);\n")
+	if hasYaraRule(s.ScanBytes(b.Bytes()), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool FP: a credential store and an unrelated HTTP call are not a brute-force tool")
+	}
+}
+
+func TestFPPhar_NetworkBruteForce_RealToolStillDetected(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	mal := []byte("<?php\n" +
+		"$passwords = file('list.txt');\n" +
+		"foreach ($passwords as $p) {\n" +
+		"  $fp = fsockopen($host, 21);\n" +
+		"  fwrite($fp, \"USER admin\\r\\nPASS $p\\r\\n\");\n" +
+		"}\n")
+	if !hasYaraRule(s.ScanBytes(mal), "network_brute_force_tool") {
+		t.Error("network_brute_force_tool regression: real credential brute-force loop not detected")
+	}
+}
