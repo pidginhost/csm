@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Database scans now report malformed WordPress site addresses that can redirect page assets to attacker-controlled content. These alerts do not revoke sessions or block visitor addresses.
+- Database scans now report a WordPress site address whose shape cannot be one: the scan previously looked only for markup or code inside the value, and missed a site quietly loading remote script on every page for months. These alerts do not revoke sessions or block visitor addresses.
 - The mail-filter audit now also scans dovecot/Roundcube Sieve scripts, not just Exim filters, so a webmail rule that copies every message to an external address while keeping a local copy is caught. This is the path a real year-long mailbox interception used, and it went undetected before.
 - CSM now raises a High finding when the firewall is enabled with IPv6 management off while the host has a global IPv6 address, since all IPv6 traffic bypasses the firewall in that configuration.
 - Blocking an IP that sits inside a Cloudflare allow range now warns the operator in the CLI response, the web UI, and the auto-block finding, since web ports from such an IP remain reachable through the Cloudflare accept rule.
