@@ -173,6 +173,22 @@ func deleteCount(t *testing.T, fake fakePhctl, id string) int {
 	return n
 }
 
+func listCount(t *testing.T, fake fakePhctl) int {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(fake.stateDir, "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "server list") {
+			n++
+		}
+	}
+	return n
+}
+
 func assertNoPhctlCalls(t *testing.T, fake fakePhctl) {
 	t.Helper()
 
@@ -200,14 +216,17 @@ func TestDeleteRetriesUntilServerIsGone(t *testing.T) {
 	}
 }
 
-// A server can stay absent for multiple polls and then be recreated by the
-// in-flight provisioner. Cleanup must monitor the full retry window.
+// A server that drops out of the listing can be restored by the in-flight
+// provisioner. Reappearing before the deletion is confirmed must reset the
+// count and trigger another delete, not be mistaken for a finished cleanup.
+// A server that returns after cleanup has already confirmed it gone is caught
+// by the later after_script sweep instead.
 func TestDeleteCatchesDelayedProvisioningRace(t *testing.T) {
 	fake := newFakePhctl(t, fakePhctlConfig{
 		serverIDs:         []string{"4461"},
 		deletesNeeded:     1,
 		resurrectServerID: "4461",
-		resurrectAfter:    2,
+		resurrectAfter:    1,
 	})
 
 	out, code := runCleanup(t, fake, "4461")
@@ -368,4 +387,20 @@ func TestEmptyIDsAreIgnored(t *testing.T) {
 		t.Fatalf("empty ids must be skipped, exit %d:\n%s", code, out)
 	}
 	assertNoPhctlCalls(t, fake)
+}
+
+// Cleanup stops as soon as the server is confirmed gone twice in a row. Polling
+// the full retry window regardless costs every run the entire window in sleeps,
+// on both the in-script cleanup and the after_script fallback.
+func TestDeleteStopsPollingOnceConfirmedGone(t *testing.T) {
+	fake := newFakePhctl(t, fakePhctlConfig{serverIDs: []string{"4461"}, deletesNeeded: 1})
+
+	out, code := runCleanupWithSettings(t, fake, "8", "0", "4461")
+
+	if code != 0 {
+		t.Fatalf("cleanup should succeed, exit %d:\n%s", code, out)
+	}
+	if got := listCount(t, fake); got != 2 {
+		t.Fatalf("expected cleanup to stop after 2 confirming polls, made %d:\n%s", got, out)
+	}
 }
