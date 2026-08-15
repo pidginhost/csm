@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A mail rule that forwards to an outside address while the mailbox keeps its own copy is what webmail's own forward option produces, and reporting it as a confirmed interception made every legitimate forward a Critical alert. It now reports as a Warning for review unless something corroborates it: a second forwarding mechanism on the same mailbox, mail the mailbox never receives, or the same destination across several accounts.
+- A mail rule that forwards to an outside address while the mailbox keeps its own copy is what webmail's own forward option produces, and reporting it as a confirmed interception made every legitimate forward a Critical alert. It remains available for immediate incident review but now reports as a Warning unless independent evidence corroborates it, such as another forwarding layer, mail the mailbox never receives, or coordinated forwarding across accounts.
 
 ## [3.28.0] - 2026-08-14
 

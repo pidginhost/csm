@@ -305,11 +305,13 @@ exposed via config.
 
 ## Open threshold
 
-Non-Critical findings need at least two correlated sightings inside
-the merge window before an incident opens. The first sighting is held
-in a pending bucket and counted toward the threshold; the second
-promotes both into a new incident with a two-event timeline. Stale
-pending entries are pruned by the daily retention sweep.
+Non-Critical findings normally need at least two correlated sightings inside
+the merge window before an incident opens. The first sighting is held in a
+pending bucket and counted toward the threshold; the second promotes both into
+a new incident with a two-event timeline. A mail-filter exfil finding remains a
+first-hit incident even when an uncorroborated copy-forward is graded Warning,
+so the operator review path is not lost. Stale pending entries are pruned by
+the daily retention sweep.
 
 Critical-severity findings (account compromise, cloud-relay abuse,
 modsec rule escalations) bypass the threshold and open immediately

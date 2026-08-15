@@ -27,10 +27,10 @@ import (
 // (business email compromise). This check parses those Exim filters and scores
 // the deliver/save actions for that stealth pattern.
 //
-// Unlike CheckForwarders (valiases redirects), the stealth combination here is
-// inherently malicious, so it is reported even when the filter predates CSM --
-// newness gating only applies to plain external forwards that are frequently
-// legitimate customer configuration.
+// Unlike CheckForwarders (valiases redirects), interception-shaped rules are
+// reported even when the filter predates CSM. Newness gating only applies to
+// plain external forwards that are frequently legitimate customer
+// configuration; severity for copy-forwards is assigned after corroboration.
 
 // filterAction is a single Exim filter action (deliver/save/pipe/finish/...).
 type filterAction struct {
@@ -619,6 +619,17 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 	add := func(f filterFinding) {
 		key := f.kind + "|" + f.dest
 		if seen[key] {
+			// Multiple rules in one file can target the same destination. If
+			// any occurrence prevents local delivery, keep that stronger
+			// evidence instead of letting an earlier copy-forward hide it.
+			if f.kind == "exfil" && !f.retainsLocalCopy {
+				for i := range out {
+					if out[i].kind == f.kind && out[i].dest == f.dest {
+						out[i] = f
+						break
+					}
+				}
+			}
 			return
 		}
 		if f.kind == "forwarder" && seen["exfil|"+f.dest] {
@@ -688,6 +699,10 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 			for _, delivery := range external {
 				matchesAll := r.matchesAll || delivery.matchesAll
 				stealth := hasLocalCopy || hasDevNull || matchesAll || delivery.unseen
+				// An explicit local delivery still happens alongside /dev/null.
+				// Only an implicit keep created by unseen/:copy is canceled by a
+				// destructive action in the same rule.
+				retainsLocalCopy := hasLocalCopy || (delivery.unseen && !hasDevNull)
 				knownAllowed := !stealth || (delivery.knownSuppressible && !hasDevNull)
 				if knownAllowed && isKnownForwarder(mb.localPart, mb.domain, delivery.dest, known) {
 					continue
@@ -698,8 +713,8 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 						check:            "email_filter_exfil",
 						kind:             "exfil",
 						dest:             delivery.dest,
-						reason:           stealthReason(hasLocalCopy, hasDevNull, matchesAll, delivery.unseen),
-						retainsLocalCopy: (hasLocalCopy || delivery.unseen) && !hasDevNull,
+						reason:           stealthReason(retainsLocalCopy, hasDevNull, matchesAll),
+						retainsLocalCopy: retainsLocalCopy,
 					})
 				} else {
 					add(filterFinding{
@@ -728,18 +743,18 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 	return out
 }
 
-func stealthReason(localCopy, devNull, matchAll, unseen bool) string {
+func stealthReason(retainsLocalCopy, devNull, matchAll bool) string {
 	switch {
+	case retainsLocalCopy:
+		if !matchAll {
+			return "filter sends matching mail to an external address while keeping a local copy"
+		}
+		return "filter copies every message to an external address while keeping a local copy"
 	case devNull:
 		if matchAll {
 			return "filter forwards all mail externally and discards the local copy to hide it"
 		}
 		return "filter forwards mail externally and discards the local copy to hide it"
-	case localCopy || unseen:
-		if !matchAll {
-			return "filter sends matching mail to an external address while keeping a local copy (stealth interception)"
-		}
-		return "filter copies every message to an external address while keeping a local copy (stealth interception)"
 	case matchAll:
 		return "filter forwards all mail to an external address"
 	}
@@ -835,6 +850,7 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 
 	for _, path := range ranked {
 		if ctx.Err() != nil {
+			applyMailFilterCorroboration(collected)
 			return findingsFromPending(collected)
 		}
 		data, err := osFS.ReadFile(path)
@@ -851,15 +867,14 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 
 		mb := mailboxFromFilterPath(path)
 		rules := parseEximFilter(string(data))
-		collected = append(collected, mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)...)
+		collected = append(collected, mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew, mailFilterMechanismExim)...)
 	}
 
 	sievePending, sieveComplete := scanSieveMailFilters(ctx, db, cfg, localDomains, maxFiles)
 	collected = append(collected, sievePending...)
 	baselineComplete = baselineComplete && sieveComplete
 
-	downgradeUncorroboratedCopyExfil(collected)
-	annotateCrossAccount(collected)
+	applyMailFilterCorroboration(collected)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -880,7 +895,7 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 // mailFilterPendings scores one parsed filter/sieve file and turns each
 // dangerous pattern into a pending finding. Shared by the Exim filter and Sieve
 // scan loops so both mechanisms report identically.
-func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, localDomains map[string]bool, known []string, isNew bool) []mailFilterPending {
+func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, localDomains map[string]bool, known []string, isNew bool, mechanism mailFilterMechanism) []mailFilterPending {
 	var out []mailFilterPending
 	for _, ff := range scoreFilterRules(rules, mb, localDomains, known) {
 		if ff.onlyIfNew && !isNew {
@@ -898,6 +913,7 @@ func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, local
 			},
 			dest:             ff.dest,
 			mailbox:          mb.String(),
+			mechanism:        mechanism,
 			retainsLocalCopy: ff.retainsLocalCopy,
 		})
 	}
@@ -1006,7 +1022,7 @@ func scanSieveMailFilters(ctx context.Context, db *store.DB, cfg *config.Config,
 		mb := mailboxFromSievePath(path)
 		contentKey := mb.String() + "\x00" + currentHash
 		rules := parseSieveFilter(string(data))
-		pending := mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew)
+		pending := mailFilterPendings(path, mb, rules, localDomains, cfg.EmailProtection.KnownForwarders, isNew, mailFilterMechanismSieve)
 		if len(pending) > 0 && !reportedContent[contentKey] {
 			reportedContent[contentKey] = true
 			out = append(out, pending...)
@@ -1051,15 +1067,24 @@ func sha256Hex(data []byte) string {
 	return fmt.Sprintf("%x", h[:])
 }
 
+type mailFilterMechanism string
+
+const (
+	mailFilterMechanismExim  mailFilterMechanism = "exim"
+	mailFilterMechanismSieve mailFilterMechanism = "sieve"
+)
+
 // mailFilterPending is an in-flight finding plus the fields needed for the
-// cross-account correlation pass before findings are emitted.
+// corroboration passes before findings are emitted.
 type mailFilterPending struct {
-	finding alert.Finding
-	dest    string
-	mailbox string
+	finding   alert.Finding
+	dest      string
+	mailbox   string
+	mechanism mailFilterMechanism
 	// retainsLocalCopy marks an external delivery the mailbox still receives a
 	// copy of, which is indistinguishable from a user-created forward.
-	retainsLocalCopy bool
+	retainsLocalCopy          bool
+	uncorroboratedCopyForward bool
 }
 
 // downgradeUncorroboratedCopyExfil lowers an exfil finding to Warning when its
@@ -1073,15 +1098,15 @@ func downgradeUncorroboratedCopyExfil(collected []mailFilterPending) {
 	// ordinary mail routing and cannot corroborate anything. Destinations are
 	// deliberately not part of the key, because planting redundant persistence
 	// is the signature even when each mechanism aims at a different drop.
-	mechanisms := map[string]map[string]bool{}
+	mechanisms := map[string]map[mailFilterMechanism]bool{}
 	for _, p := range collected {
 		if p.finding.Check != "email_filter_exfil" {
 			continue
 		}
 		if mechanisms[p.mailbox] == nil {
-			mechanisms[p.mailbox] = map[string]bool{}
+			mechanisms[p.mailbox] = map[mailFilterMechanism]bool{}
 		}
-		mechanisms[p.mailbox][p.finding.FilePath] = true
+		mechanisms[p.mailbox][p.mechanism] = true
 	}
 
 	for i := range collected {
@@ -1093,6 +1118,19 @@ func downgradeUncorroboratedCopyExfil(collected []mailFilterPending) {
 			continue
 		}
 		p.finding.Severity = alert.Warning
+		p.uncorroboratedCopyForward = true
+	}
+}
+
+func applyMailFilterCorroboration(collected []mailFilterPending) {
+	downgradeUncorroboratedCopyExfil(collected)
+	// Campaign evidence must run last so it can re-escalate copy-forwards.
+	annotateCrossAccount(collected)
+	for i := range collected {
+		p := &collected[i]
+		if !p.uncorroboratedCopyForward || p.finding.Severity != alert.Warning {
+			continue
+		}
 		p.finding.Details += "\nThe mailbox still receives this mail and nothing else corroborates the forward, so it is reported for review rather than as a confirmed interception. Confirm with the account owner that the forward is theirs."
 	}
 }
@@ -1102,17 +1140,21 @@ func downgradeUncorroboratedCopyExfil(collected []mailFilterPending) {
 func annotateCrossAccount(collected []mailFilterPending) {
 	byDest := map[string]map[string]bool{}
 	for _, p := range collected {
-		if p.dest == "" {
+		if p.finding.Check != "email_filter_exfil" || p.dest == "" {
 			continue
 		}
-		if byDest[p.dest] == nil {
-			byDest[p.dest] = map[string]bool{}
+		destKey := mailFilterDestinationKey(p.dest)
+		if byDest[destKey] == nil {
+			byDest[destKey] = map[string]bool{}
 		}
-		byDest[p.dest][p.mailbox] = true
+		byDest[destKey][p.mailbox] = true
 	}
 	for i := range collected {
+		if collected[i].finding.Check != "email_filter_exfil" {
+			continue
+		}
 		dest := collected[i].dest
-		boxes := byDest[dest]
+		boxes := byDest[mailFilterDestinationKey(dest)]
 		if len(boxes) < 2 {
 			continue
 		}
@@ -1128,6 +1170,14 @@ func annotateCrossAccount(collected []mailFilterPending) {
 			"\nCross-account: the same destination %s is used by %d mailboxes (also %s). This indicates a coordinated campaign.",
 			dest, len(boxes), strings.Join(others, ", "))
 	}
+}
+
+func mailFilterDestinationKey(dest string) string {
+	localPart, domain, ok := splitDeliverDest(dest)
+	if !ok {
+		return dest
+	}
+	return localPart + "@" + domain
 }
 
 func findingsFromPending(collected []mailFilterPending) []alert.Finding {

@@ -82,6 +82,28 @@ func TestParseSieveKnownCopyDoesNotSuppressDiscard(t *testing.T) {
 	if len(got) != 1 || got[0].kind != "exfil" || got[0].severity != alert.Critical {
 		t.Fatalf("copy-and-discard interception was suppressed: %+v", got)
 	}
+	if got[0].retainsLocalCopy {
+		t.Fatalf("copy-and-discard finding incorrectly retained implicit keep: %+v", got[0])
+	}
+}
+
+func TestParseSieveExplicitKeepSurvivesDiscard(t *testing.T) {
+	mb := filterMailbox{localPart: "assistant", domain: "example.com"}
+	body := `if header :contains "subject" "invoice" {
+	redirect :copy "partner@external.example";
+	keep;
+	discard;
+}`
+	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
+	if len(got) != 1 || got[0].kind != "exfil" {
+		t.Fatalf("findings = %+v, want one exfil finding", got)
+	}
+	if !got[0].retainsLocalCopy {
+		t.Fatalf("explicit keep was canceled by discard in scoring: %+v", got[0])
+	}
+	if !strings.Contains(got[0].reason, "keeping a local copy") {
+		t.Fatalf("reason = %q, want retained-copy evidence", got[0].reason)
+	}
 }
 
 func TestParseSievePlainUnconditionalRedirectIsExfil(t *testing.T) {
@@ -430,9 +452,9 @@ func TestMailboxFromSievePath(t *testing.T) {
 	}
 }
 
-// Integration: CheckMailFilters must scan sieve scripts under /home and flag
-// the stealth-copy redirect as a non-gated critical exfil on first scan, the
-// same way it treats an Exim deliver+save filter.
+// Integration: CheckMailFilters must scan sieve scripts under /home and report
+// the copy redirect on first scan, using the same uncorroborated Warning tier as
+// an Exim deliver+save filter.
 func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
@@ -525,6 +547,46 @@ func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 	}
 	if findings[0].FilePath != scriptPath {
 		t.Errorf("FilePath = %q, want the real script %q", findings[0].FilePath, scriptPath)
+	}
+}
+
+func TestCheckMailFiltersDeduplicatesRegularDovecotSieveCopy(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	scriptPath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
+	activePath := "/home/lifecontro/mail/lifecont.ro/aura/.dovecot.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
+				return []string{scriptPath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", ".dovecot.sieve"):
+				return []string{activePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{scriptPath: now, activePath: now.Add(time.Minute)}),
+		lstat: func(name string) (os.FileInfo, error) {
+			return &fakeFileInfoMtime{name: filepath.Base(name), mode: 0o644, mtime: now}, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("lifecont.ro\n"), nil
+			case scriptPath, activePath:
+				return []byte(sieveAuraStealth), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 {
+		t.Fatalf("len(findings) = %d, want one content-deduplicated finding: %+v", len(findings), findings)
+	}
+	if findings[0].Severity != alert.Warning {
+		t.Fatalf("severity = %v, want Warning for one logical Sieve rule", findings[0].Severity)
 	}
 }
 

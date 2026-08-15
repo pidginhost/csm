@@ -1362,6 +1362,13 @@ func opensIncidentImmediately(f alert.Finding) bool {
 	if f.Severity >= alert.Critical {
 		return true
 	}
+	// A copy-forward is graded Warning when its owner cannot be distinguished
+	// from an attacker by rule shape alone. It still needs first-hit incident
+	// review; otherwise lowering alert severity silently removes the existing
+	// mailbox-takeover correlation path.
+	if f.Check == "email_filter_exfil" {
+		return true
+	}
 	// Reputation severity describes the observed surface, not confidence in
 	// the threat-intel match. Preserve the pre-grading first-hit incident path.
 	if f.Check == "ip_reputation" {
