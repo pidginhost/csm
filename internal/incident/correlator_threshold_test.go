@@ -109,6 +109,35 @@ func TestCorrelatorThresholdBypassedForHighIPReputation(t *testing.T) {
 	}
 }
 
+func TestCorrelatorThresholdBypassedForWarningMailFilterExfil(t *testing.T) {
+	c := newThresholdCorrelator(2)
+	f := alert.Finding{
+		Check:     "email_filter_exfil",
+		Severity:  alert.Warning,
+		Mailbox:   "office@example.com",
+		Domain:    "example.com",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+
+	id, created, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created || id == "" {
+		t.Fatalf("mail-filter exfil must remain a first-hit incident after severity grading: id=%q created=%v", id, created)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("Get on freshly created incident returned not-found")
+	}
+	if inc.Severity != alert.Warning {
+		t.Errorf("severity = %v, want Warning", inc.Severity)
+	}
+	if inc.Kind != KindMailboxTakeover {
+		t.Errorf("kind = %s, want mailbox_takeover", inc.Kind)
+	}
+}
+
 func TestCorrelatorThresholdBypassedForHighHostIntegrity(t *testing.T) {
 	c := newThresholdCorrelator(2)
 	f := alert.Finding{
