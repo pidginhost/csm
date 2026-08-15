@@ -438,6 +438,154 @@ func TestMailboxFromFilterPath(t *testing.T) {
 	}
 }
 
+// A forward that keeps a local copy is exactly what a webmail "forward and keep
+// a copy" rule produces, so on its own it is not evidence of interception. Both
+// such rules on a production host were the owner's own forwards.
+func TestLoneCopyForwardNeedsCorroborationBeforeCritical(t *testing.T) {
+	collected := []mailFilterPending{{
+		finding: alert.Finding{
+			Severity: alert.Critical,
+			Check:    "email_filter_exfil",
+			Details:  "base",
+			FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve",
+		},
+		dest:             "owner@partner.example",
+		mailbox:          "office@example.com",
+		retainsLocalCopy: true,
+	}}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	if collected[0].finding.Severity != alert.Warning {
+		t.Fatalf("severity = %v, want Warning for an uncorroborated copy forward", collected[0].finding.Severity)
+	}
+	if !strings.HasPrefix(collected[0].finding.Details, "base\n") {
+		t.Fatalf("annotation overwrote details: %q", collected[0].finding.Details)
+	}
+}
+
+// Two mechanisms pointing the same mailbox at the same destination is the
+// redundancy a real interception plants; one of them alone is not.
+func TestCopyForwardStaysCriticalWithSecondMechanism(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
+			dest:             "drop@evil.example",
+			mailbox:          "office@example.com",
+			retainsLocalCopy: true,
+		},
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/etc/example.com/office/filter"},
+			dest:             "drop@evil.example",
+			mailbox:          "office@example.com",
+			retainsLocalCopy: true,
+		},
+	}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Critical {
+			t.Fatalf("%s severity = %v, want Critical when a second mechanism corroborates", p.finding.FilePath, p.finding.Severity)
+		}
+	}
+}
+
+// Mail the mailbox never sees is interception on its own evidence: there is no
+// benign reading of a rule that copies mail away and discards the original.
+func TestExfilDestroyingMailStaysCriticalAlone(t *testing.T) {
+	collected := []mailFilterPending{{
+		finding: alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/etc/example.com/cfo/filter"},
+		dest:    "drop@evil.example",
+		mailbox: "cfo@example.com",
+	}}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	if collected[0].finding.Severity != alert.Critical {
+		t.Fatalf("severity = %v, want Critical when the mailbox loses the mail", collected[0].finding.Severity)
+	}
+}
+
+// Downgrading must not outrank the campaign signal: the same destination across
+// two mailboxes stays Critical even though each rule keeps a local copy.
+func TestCrossAccountEscalationOutranksCopyDowngrade(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/a/mail/example.com/one/sieve/roundcube.sieve"},
+			dest:             "shared@evil.example",
+			mailbox:          "one@example.com",
+			retainsLocalCopy: true,
+		},
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/b/mail/example.com/two/sieve/roundcube.sieve"},
+			dest:             "shared@evil.example",
+			mailbox:          "two@example.com",
+			retainsLocalCopy: true,
+		},
+	}
+
+	downgradeUncorroboratedCopyExfil(collected)
+	annotateCrossAccount(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Critical {
+			t.Fatalf("%s severity = %v, want Critical for a cross-account campaign", p.mailbox, p.finding.Severity)
+		}
+	}
+}
+
+// Redundant persistence is the attacker signature, so two mechanisms on one
+// mailbox corroborate each other even when they aim at different drops.
+func TestTwoMechanismsDifferentDestinationsStayCritical(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
+			dest:             "drop1@evil.example",
+			mailbox:          "office@example.com",
+			retainsLocalCopy: true,
+		},
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/etc/example.com/office/filter"},
+			dest:             "drop2@evil.example",
+			mailbox:          "office@example.com",
+			retainsLocalCopy: true,
+		},
+	}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	for _, p := range collected {
+		if p.finding.Severity != alert.Critical {
+			t.Fatalf("%s severity = %v, want Critical for two mechanisms on one mailbox", p.dest, p.finding.Severity)
+		}
+	}
+}
+
+// A plain selective forwarder is ordinary mail routing, so it must not be
+// counted as the corroborating second mechanism.
+func TestPlainForwarderDoesNotCorroborateCopyExfil(t *testing.T) {
+	collected := []mailFilterPending{
+		{
+			finding:          alert.Finding{Severity: alert.Critical, Check: "email_filter_exfil", FilePath: "/home/u/mail/example.com/office/sieve/roundcube.sieve"},
+			dest:             "owner@partner.example",
+			mailbox:          "office@example.com",
+			retainsLocalCopy: true,
+		},
+		{
+			finding: alert.Finding{Severity: alert.High, Check: "email_filter_forwarder", FilePath: "/home/u/etc/example.com/office/filter"},
+			dest:    "billing@partner.example",
+			mailbox: "office@example.com",
+		},
+	}
+
+	downgradeUncorroboratedCopyExfil(collected)
+
+	if collected[0].finding.Severity != alert.Warning {
+		t.Fatalf("severity = %v, want Warning: a plain forwarder is not corroboration", collected[0].finding.Severity)
+	}
+}
+
 func TestAnnotateCrossAccountThreeMailboxes(t *testing.T) {
 	collected := []mailFilterPending{
 		{finding: alert.Finding{Details: "first"}, dest: "shared@gmail.com", mailbox: "a@example.com"},
@@ -496,11 +644,60 @@ func TestCheckMailFiltersFlagsStealthOnFirstScan(t *testing.T) {
 		t.Fatalf("len(findings) = %d, want 1: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Check != "email_filter_exfil" || f.Severity != alert.Critical {
-		t.Fatalf("finding = %+v, want email_filter_exfil/Critical", f)
+	// One filter that leaves the mailbox its own copy is the same shape a user
+	// gets from a webmail forward rule, so it reports for review, not as a
+	// confirmed interception. TestCheckMailFiltersCriticalWhenTwoMechanismsAgree
+	// covers the corroborated case this incident actually had.
+	if f.Check != "email_filter_exfil" || f.Severity != alert.Warning {
+		t.Fatalf("finding = %+v, want email_filter_exfil/Warning", f)
 	}
 	if f.Domain != "example.com" || f.Mailbox != "aura@example.com" {
 		t.Errorf("tenant fields = domain %q mailbox %q, want example.com / aura@example.com", f.Domain, f.Mailbox)
+	}
+}
+
+// The interception this detector exists for planted redundant persistence: an
+// Exim filter AND a Roundcube sieve on one mailbox. Either alone is shaped like
+// an owner's own forward; together they are not, and must stay Critical.
+func TestCheckMailFiltersCriticalWhenTwoMechanismsAgree(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	filterPath := "/home/lifecontro/etc/lifecont.ro/aura/filter"
+	sievePath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case filepath.Join("/home", "*", "etc", "*", "*", "filter"):
+				return []string{filterPath}, nil
+			case filepath.Join("/home", "*", "mail", "*", "*", "sieve", "*.sieve"):
+				return []string{sievePath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{filterPath: now, sievePath: now}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/etc/localdomains":
+				return []byte("lifecont.ro\n"), nil
+			case filterPath:
+				return []byte(filterAuraStealth), nil
+			case sievePath:
+				return []byte(sieveAuraStealth), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckMailFilters(context.Background(), &config.Config{}, nil)
+
+	if len(findings) != 2 {
+		t.Fatalf("len(findings) = %d, want 2: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if f.Check != "email_filter_exfil" || f.Severity != alert.Critical {
+			t.Fatalf("finding = %+v, want email_filter_exfil/Critical", f)
+		}
 	}
 }
 

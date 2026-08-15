@@ -70,6 +70,9 @@ type filterFinding struct {
 	dest      string // external destination, when applicable, for correlation
 	reason    string
 	onlyIfNew bool
+	// retainsLocalCopy marks an external delivery the mailbox still receives a
+	// copy of. Alone that is indistinguishable from a user-created forward.
+	retainsLocalCopy bool
 }
 
 // safePipeCommands are cPanel built-in pipe targets that are not attacker code.
@@ -691,11 +694,12 @@ func scoreFilterRules(rules []filterRule, mb filterMailbox, localDomains map[str
 				}
 				if stealth {
 					add(filterFinding{
-						severity: alert.Critical,
-						check:    "email_filter_exfil",
-						kind:     "exfil",
-						dest:     delivery.dest,
-						reason:   stealthReason(hasLocalCopy, hasDevNull, matchesAll, delivery.unseen),
+						severity:         alert.Critical,
+						check:            "email_filter_exfil",
+						kind:             "exfil",
+						dest:             delivery.dest,
+						reason:           stealthReason(hasLocalCopy, hasDevNull, matchesAll, delivery.unseen),
+						retainsLocalCopy: (hasLocalCopy || delivery.unseen) && !hasDevNull,
 					})
 				} else {
 					add(filterFinding{
@@ -854,6 +858,7 @@ func CheckMailFilters(ctx context.Context, cfg *config.Config, st *state.Store) 
 	collected = append(collected, sievePending...)
 	baselineComplete = baselineComplete && sieveComplete
 
+	downgradeUncorroboratedCopyExfil(collected)
 	annotateCrossAccount(collected)
 	if ctx.Err() != nil {
 		return nil
@@ -891,8 +896,9 @@ func mailFilterPendings(path string, mb filterMailbox, rules []filterRule, local
 				Domain:   mb.domain,
 				Mailbox:  mailboxField(mb),
 			},
-			dest:    ff.dest,
-			mailbox: mb.String(),
+			dest:             ff.dest,
+			mailbox:          mb.String(),
+			retainsLocalCopy: ff.retainsLocalCopy,
 		})
 	}
 	return out
@@ -1051,6 +1057,44 @@ type mailFilterPending struct {
 	finding alert.Finding
 	dest    string
 	mailbox string
+	// retainsLocalCopy marks an external delivery the mailbox still receives a
+	// copy of, which is indistinguishable from a user-created forward.
+	retainsLocalCopy bool
+}
+
+// downgradeUncorroboratedCopyExfil lowers an exfil finding to Warning when its
+// only stealth evidence is that the forward keeps a local copy. That is exactly
+// what a webmail "forward and keep a copy" rule produces, so by itself it cannot
+// tell an interception apart from the owner forwarding their own mail. A second
+// forwarding mechanism on the same mailbox keeps it Critical, as does mail the
+// mailbox never receives; cross-account reuse re-escalates separately.
+func downgradeUncorroboratedCopyExfil(collected []mailFilterPending) {
+	// Count only interception-shaped rules: a plain selective forwarder is
+	// ordinary mail routing and cannot corroborate anything. Destinations are
+	// deliberately not part of the key, because planting redundant persistence
+	// is the signature even when each mechanism aims at a different drop.
+	mechanisms := map[string]map[string]bool{}
+	for _, p := range collected {
+		if p.finding.Check != "email_filter_exfil" {
+			continue
+		}
+		if mechanisms[p.mailbox] == nil {
+			mechanisms[p.mailbox] = map[string]bool{}
+		}
+		mechanisms[p.mailbox][p.finding.FilePath] = true
+	}
+
+	for i := range collected {
+		p := &collected[i]
+		if !p.retainsLocalCopy {
+			continue
+		}
+		if len(mechanisms[p.mailbox]) > 1 {
+			continue
+		}
+		p.finding.Severity = alert.Warning
+		p.finding.Details += "\nThe mailbox still receives this mail and nothing else corroborates the forward, so it is reported for review rather than as a confirmed interception. Confirm with the account owner that the forward is theirs."
+	}
 }
 
 // annotateCrossAccount marks exfil findings whose external destination appears

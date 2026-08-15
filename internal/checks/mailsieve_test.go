@@ -462,8 +462,12 @@ func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 		t.Fatalf("len(findings) = %d, want 1: %+v", len(findings), findings)
 	}
 	f := findings[0]
-	if f.Check != "email_filter_exfil" || f.Severity != alert.Critical {
-		t.Fatalf("finding = %+v, want email_filter_exfil/Critical", f)
+	// This sieve is byte-identical to a legitimate owner-created forward except
+	// for the destination, so a lone copy of it reports for review. The real
+	// incident also planted an Exim filter, which is what makes it Critical --
+	// see TestCheckMailFiltersCriticalWhenTwoMechanismsAgree.
+	if f.Check != "email_filter_exfil" || f.Severity != alert.Warning {
+		t.Fatalf("finding = %+v, want email_filter_exfil/Warning", f)
 	}
 	if f.Domain != "lifecont.ro" || f.Mailbox != "aura@lifecont.ro" {
 		t.Errorf("tenant fields = domain %q mailbox %q, want lifecont.ro / aura@lifecont.ro", f.Domain, f.Mailbox)
