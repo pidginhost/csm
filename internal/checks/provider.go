@@ -48,6 +48,7 @@ func (realOS) ReadRegularFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G115 -- unix.Open returns a non-negative descriptor whenever err is nil.
 	file := os.NewFile(uintptr(fd), name)
 	defer file.Close()
 	info, err := file.Stat()
