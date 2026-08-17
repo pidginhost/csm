@@ -71,11 +71,11 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 	}
 
 	s := &sensitiveFileBPF{
-		objs:    objs,
-		link:    l,
-		reader:  reader,
-		alertCh: alertCh,
-		cfg:     cfg,
+		objs:         objs,
+		link:         l,
+		reader:       reader,
+		alertCh:      alertCh,
+		cfg:          cfg,
 		paths:        map[fileid]string{},
 		digests:      map[string]string{},
 		liveReported: map[string]bool{},
