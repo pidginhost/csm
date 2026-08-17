@@ -108,7 +108,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 				findings = append(findings, alert.Finding{
 					Severity: alert.Warning,
 					Check:    "waf_rules_stale",
-					Message:  fmt.Sprintf("ModSecurity rules are %d days old - update recommended", staleAge),
+					Message:  fmt.Sprintf("ModSecurity rules last updated %d days ago - update recommended", staleAge),
 					Details:  wafRulesStaleHint(info),
 				})
 			}
@@ -325,7 +325,7 @@ func wafRulesHint(info platform.Info) string {
 // ModSecurity vendor rules.
 func wafRulesStaleHint(info platform.Info) string {
 	if info.IsCPanel() {
-		return "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update"
+		return "No installed vendor has refreshed its rules in over a month. Retired vendor rule trees stay on disk and are not counted. Check: WHM > Security Center > ModSecurity Vendors > Update"
 	}
 	if info.IsDebianFamily() {
 		return "Vendor rules should be updated at least monthly. Update with: apt update && apt upgrade modsecurity-crs"
@@ -371,15 +371,24 @@ func checkEngineMode(info platform.Info) string {
 	return ""
 }
 
-// checkRuleAge returns the age in days of the oldest rule file, or 0 if rules are fresh.
-// Only alerts if rules are >30 days old.
+// checkRuleAge returns how many days ago the WAF ruleset was last refreshed,
+// or 0 when that was within the last 30 days.
+//
+// The age comes from the most recently written rule artifact, not the oldest.
+// A host keeps the rule tree of every vendor it has ever installed, and
+// switching vendors leaves the retired tree frozen on disk forever. Measuring
+// the oldest artifact reported that abandoned tree's age and named a ruleset
+// that no longer protects anything, while the vendor actually in use was being
+// updated daily. The question this answers is "has any ruleset on this host
+// been refreshed recently", so a single maintained vendor clears it and a host
+// where nothing has been refreshed still alerts.
 func checkRuleAge(ruleDirs []string) int {
-	oldestMtime, found := oldestRuleArtifact(ruleDirs)
+	newestMtime, found := newestRuleArtifact(ruleDirs)
 	if !found {
 		return 0
 	}
 
-	age := int(time.Since(oldestMtime).Hours() / 24)
+	age := int(time.Since(newestMtime).Hours() / 24)
 	if age > 30 {
 		return age
 	}
@@ -387,13 +396,27 @@ func checkRuleAge(ruleDirs []string) int {
 }
 
 func hasRuleArtifacts(ruleDirs []string) bool {
-	_, found := oldestRuleArtifact(ruleDirs)
+	_, found := newestRuleArtifact(ruleDirs)
 	return found
 }
 
-func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
-	var oldestMtime time.Time
+func newestRuleArtifact(ruleDirs []string) (time.Time, bool) {
+	var newestMtime time.Time
 	found := false
+
+	consider := func(entry os.DirEntry) {
+		if entry.IsDir() || !isRuleArtifact(entry.Name()) {
+			return
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return
+		}
+		if !found || info.ModTime().After(newestMtime) {
+			newestMtime = info.ModTime()
+			found = true
+		}
+	}
 
 	for _, dir := range ruleDirs {
 		entries, err := osFS.ReadDir(dir)
@@ -404,46 +427,22 @@ func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
 			if !entry.IsDir() {
 				// Rule file directly in the rule dir (distro CRS layout,
 				// e.g. /usr/share/modsecurity-crs/rules/REQUEST-*.conf).
-				info, err := entry.Info()
-				if err != nil {
-					continue
-				}
-				if !isRuleArtifact(entry.Name()) {
-					continue
-				}
-				if !found || info.ModTime().Before(oldestMtime) {
-					oldestMtime = info.ModTime()
-					found = true
-				}
+				consider(entry)
 				continue
 			}
 			// Subdirectory: scan one level deeper for vendor-packed rules
 			// (cPanel layout, e.g. /usr/local/apache/conf/modsec_vendor_configs/OWASP/*.conf).
-			subDir := dir + "/" + entry.Name()
-			subEntries, err := osFS.ReadDir(subDir)
+			subEntries, err := osFS.ReadDir(dir + "/" + entry.Name())
 			if err != nil {
 				continue
 			}
 			for _, subEntry := range subEntries {
-				if subEntry.IsDir() {
-					continue
-				}
-				if !isRuleArtifact(subEntry.Name()) {
-					continue
-				}
-				info, err := subEntry.Info()
-				if err != nil {
-					continue
-				}
-				if !found || info.ModTime().Before(oldestMtime) {
-					oldestMtime = info.ModTime()
-					found = true
-				}
+				consider(subEntry)
 			}
 		}
 	}
 
-	return oldestMtime, found
+	return newestMtime, found
 }
 
 // isRuleArtifact reports whether a filename looks like a ModSecurity rule
