@@ -73,12 +73,15 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, fmt.Errorf("reading file: %w", err)
 	}
-	matches, err := yara.ScanBytesChecked(backend, data)
+	// An attachment too large for one IPC frame is retried by path rather than
+	// errored: the worker can read the file itself, and refusing to scan every
+	// large attachment would route them all conservatively without ever looking
+	// inside one.
+	matches, _, err := yara.ScanContentOrPathChecked(backend, path, data, len(data))
 	if err != nil {
-		// Fail closed: a scan that could not complete (worker down, the
-		// attachment too large for one IPC frame, a transport error) must
-		// not be reported as a clean file. The orchestrator records this as
-		// an errored engine, not a clean verdict.
+		// Fail closed: a scan that could not complete (worker down, a
+		// transport error) must not be reported as a clean file. The
+		// orchestrator records this as an errored engine, not a clean verdict.
 		return Verdict{}, fmt.Errorf("yara scan failed: %w", err)
 	}
 	if len(matches) == 0 {

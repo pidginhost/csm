@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,7 +19,6 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
-	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 var activeYARABackend = yara.Active
@@ -458,23 +456,14 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				continue
 			}
 			yaraSHA256 := contentSHA256
-			matches, scanErr := yara.ScanBytesChecked(backend, data)
-			if errors.Is(scanErr, yaraipc.ErrPayloadTooLarge) {
-				// Within the deep-scan size budget but too large for one inline
-				// IPC frame once JSON base64 expands it. Scan by path instead of
-				// recording a coverage gap an attacker could hide a payload
-				// behind by padding it past the inline ceiling. The too-large
-				// error is a client-side pre-check. The checked path scan still
-				// reports a worker failure instead of treating it as clean.
-				// JS analysis is unaffected: it already consumed the in-memory
-				// snapshot above.
-				// #nosec G115 -- maxBytes is FullScanMaxFileBytes (int) widened to int64; the round-trip back to int is lossless.
-				var pathResult yara.FileScanResult
-				pathResult, scanErr = yara.ScanFileChecked(backend, path, int(maxBytes))
-				if scanErr == nil {
-					matches = pathResult.Matches
-					yaraSHA256 = pathResult.ContentSHA256
-				}
+			// Within the deep-scan size budget but possibly too large for one
+			// inline IPC frame once JSON base64 expands it; the helper retries
+			// by path so a payload cannot be hidden behind the inline ceiling.
+			// JS analysis is unaffected: it already consumed the snapshot above.
+			// #nosec G115 -- maxBytes is FullScanMaxFileBytes (int) widened to int64; the round-trip back to int is lossless.
+			matches, scannedSHA, scanErr := yara.ScanContentOrPathChecked(backend, path, data, int(maxBytes))
+			if scannedSHA != "" {
+				yaraSHA256 = scannedSHA
 			}
 			if scanErr != nil {
 				incomplete++

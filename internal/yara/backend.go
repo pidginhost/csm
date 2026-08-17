@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/contenttype"
+	"github.com/pidginhost/csm/internal/yaraipc"
 )
 
 // Backend is the consumable scanning surface shared by the in-process
@@ -122,4 +123,27 @@ func SetActive(b Backend) {
 		return
 	}
 	activeBackend.Store(&backendHolder{b: b})
+}
+
+// ScanContentOrPathChecked scans data inline and, when the payload cannot fit
+// one IPC frame, retries by asking the backend to read path itself. The frame
+// ceiling is a property of the transport, not of the file, so reporting it as a
+// scan failure leaves a file unscanned that the worker could have read directly
+// -- and lets an attacker put a payload out of reach by padding it past the
+// inline ceiling.
+//
+// The returned digest is the SHA-256 of the bytes the backend actually scanned,
+// and is empty when the inline scan succeeded: the caller already holds the
+// digest of the snapshot it passed in. Only the oversize case retries; any
+// other scan error surfaces unchanged so fail-closed callers stay fail-closed.
+func ScanContentOrPathChecked(b Backend, path string, data []byte, maxBytes int) ([]Match, string, error) {
+	matches, err := ScanBytesChecked(b, data)
+	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
+		return matches, "", err
+	}
+	res, pathErr := ScanFileChecked(b, path, maxBytes)
+	if pathErr != nil {
+		return nil, "", pathErr
+	}
+	return res.Matches, res.ContentSHA256, nil
 }
