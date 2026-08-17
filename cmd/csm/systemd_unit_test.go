@@ -77,10 +77,6 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/var/spool/cron",
 		"-/var/spool/exim/input",
 		"-/var/spool/exim4/input",
-		"-/var/log/exim_mainlog",
-		"-/var/log/exim_paniclog",
-		"-/var/log/exim_rejectlog",
-		"-/var/log/exim4",
 		// KernelCare cache dir: the af_alg Copy Fail probe runs
 		// "kcarectl --patch-info", which writes its feature-flags cache
 		// here. Without the grant kcarectl floods the journal with EROFS
@@ -91,6 +87,22 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 			t.Errorf("ReadWritePaths missing %s", want)
 		}
 	}
+	// Exim log grants must stay out. systemd 239 (EL8/CloudLinux 8) silently
+	// ignores file-scoped ReadWritePaths entries, so these read as coverage
+	// while granting nothing -- every "exim -bpc" still failed with "Cannot
+	// open main log file". Exim queries now run through systemd-run, outside
+	// this sandbox, so the grant is neither effective nor needed.
+	for _, banned := range []string{
+		"-/var/log/exim_mainlog",
+		"-/var/log/exim_paniclog",
+		"-/var/log/exim_rejectlog",
+		"-/var/log/exim4",
+	} {
+		if rwPaths[banned] {
+			t.Errorf("ReadWritePaths must not carry the ineffective exim log grant %s", banned)
+		}
+	}
+
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")
 		if cleanPath == "/root" || strings.HasPrefix(cleanPath, "/root/") {
@@ -102,11 +114,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	}
 
 	allowedVarLogWritePaths := map[string]bool{
-		"/var/log/csm":             true,
-		"-/var/log/exim_mainlog":   true,
-		"-/var/log/exim_paniclog":  true,
-		"-/var/log/exim_rejectlog": true,
-		"-/var/log/exim4":          true,
+		"/var/log/csm": true,
 	}
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // Status reports whether the guard rule is currently installed.
@@ -401,30 +402,19 @@ func writeFileAtomic(path string, data []byte) error {
 // buildEximConfScript is cPanel's exim config builder (/scripts is the standard
 // symlink to /usr/local/cpanel/scripts on cPanel hosts).
 const (
-	buildEximConfScript        = "/scripts/buildeximconf"
-	buildEximConfRuntimeMaxSec = "RuntimeMaxSec=120s"
-	buildEximConfTimeout       = 120 * time.Second
+	buildEximConfScript  = "/scripts/buildeximconf"
+	buildEximConfTimeout = 120 * time.Second
 )
 
 // buildEximConfArgv returns the argv that rebuilds exim. buildeximconf is a
 // cPanel script that writes an unbounded set of system paths (exim.conf,
-// exim.pl.local, cPanel state, etc.). When csm runs under systemd with
-// ProtectSystem=strict it cannot grant all of those, so when systemd-run is
-// available the rebuild runs as a transient service forked by PID 1. Do not use
-// --scope here: scope mode wraps a child of the sandboxed csm process, so it
-// inherits csm.service's mount namespace and seccomp filters.
+// exim.pl.local, cPanel state, etc.), which csm.service's ProtectSystem=strict
+// allow-list cannot reasonably enumerate, so the rebuild runs as a transient
+// unit forked by PID 1.
 func buildEximConfArgv(systemdRunPath string) (string, []string) {
-	if systemdRunPath != "" {
-		return systemdRunPath, []string{
-			"--quiet",
-			"--collect",
-			"--wait",
-			"--property=" + buildEximConfRuntimeMaxSec,
-			"--",
-			buildEximConfScript,
-		}
-	}
-	return buildEximConfScript, nil
+	return systemdrun.Argv(systemdRunPath, systemdrun.Options{
+		RuntimeMax: buildEximConfTimeout,
+	}, buildEximConfScript)
 }
 
 type commandRunner func(context.Context, string, ...string) ([]byte, error)
@@ -437,18 +427,15 @@ func runBuildEximConf() error {
 }
 
 func runBuildEximConfCommand(ctx context.Context, systemdRunPath string, run commandRunner) error {
-	if systemdRunPath != "" {
-		name, args := buildEximConfArgv(systemdRunPath)
-		output, err := run(ctx, name, args...)
-		if err == nil {
-			return nil
+	lookPath := func(string) (string, error) {
+		if systemdRunPath == "" {
+			return "", exec.ErrNotFound
 		}
-		if !systemdRunUnavailable(output, err) {
-			return commandFailure(name, output, err)
-		}
+		return systemdRunPath, nil
 	}
-
-	output, err := run(ctx, buildEximConfScript)
+	output, err := systemdrun.Run(ctx, lookPath, systemdrun.RunnerFunc(run), systemdrun.Options{
+		RuntimeMax: buildEximConfTimeout,
+	}, buildEximConfScript)
 	if err != nil {
 		return commandFailure(buildEximConfScript, output, err)
 	}
@@ -459,23 +446,6 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 	// #nosec G204 -- argv is built from fixed constants and the resolved
 	// systemd-run path; no attacker-controlled input.
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
-
-func systemdRunUnavailable(output []byte, err error) bool {
-	if errors.Is(err, exec.ErrNotFound) {
-		return true
-	}
-	lower := strings.ToLower(string(output))
-	for _, needle := range []string{
-		"failed to connect to bus",
-		"failed to create bus connection",
-		"system has not been booted with systemd",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 func commandFailure(name string, output []byte, err error) error {

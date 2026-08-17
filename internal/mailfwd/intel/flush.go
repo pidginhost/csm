@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -135,9 +134,7 @@ func runEximRemove(ids []string) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		args := append([]string{"-Mrm"}, ids[start:end]...)
-		// #nosec G204 -- ids are exim message IDs parsed by parseQueueHeader's
-		// fixed legacy/new-format regex; no attacker-controlled text reaches argv.
-		err := exec.CommandContext(ctx, "exim", args...).Run()
+		_, err := runEximCommand(ctx, 30*time.Second, args...)
 		cancel()
 		if err != nil {
 			// Exim can remove every ID and still return non-zero. Continue so an

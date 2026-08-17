@@ -12,20 +12,24 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/systemdrun"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
 type emailStatsResponse struct {
-	QueueSize      int              `json:"queue_size"`
-	QueueWarn      int              `json:"queue_warn"`
-	QueueCrit      int              `json:"queue_crit"`
-	FrozenCount    int              `json:"frozen_count"`
-	OldestAge      string           `json:"oldest_age"`
-	SMTPBlock      bool             `json:"smtp_block"`
-	SMTPAllowUsers []string         `json:"smtp_allow_users"`
-	SMTPPorts      []int            `json:"smtp_ports"`
-	PortFlood      []portFloodEntry `json:"port_flood"`
-	TopSenders     []senderEntry    `json:"top_senders"`
+	QueueSize int `json:"queue_size"`
+	// QueueUnavailable marks queue_size as meaningless because the depth could
+	// not be read. Without it a failed probe looks like an empty queue.
+	QueueUnavailable bool             `json:"queue_unavailable"`
+	QueueWarn        int              `json:"queue_warn"`
+	QueueCrit        int              `json:"queue_crit"`
+	FrozenCount      int              `json:"frozen_count"`
+	OldestAge        string           `json:"oldest_age"`
+	SMTPBlock        bool             `json:"smtp_block"`
+	SMTPAllowUsers   []string         `json:"smtp_allow_users"`
+	SMTPPorts        []int            `json:"smtp_ports"`
+	PortFlood        []portFloodEntry `json:"port_flood"`
+	TopSenders       []senderEntry    `json:"top_senders"`
 }
 
 type portFloodEntry struct {
@@ -47,7 +51,9 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Live queue size and frozen/oldest via exim
-	resp.QueueSize = eximQueueSize()
+	var queueKnown bool
+	resp.QueueSize, queueKnown = eximQueueSize()
+	resp.QueueUnavailable = !queueKnown
 	resp.FrozenCount, resp.OldestAge = eximQueueDetails()
 
 	// Firewall config
@@ -231,24 +237,48 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// eximQueueSize returns the current Exim mail queue count, or 0 on error.
-func eximQueueSize() int {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "exim", "-bpc").Output()
-	if err != nil {
-		return 0
+// eximLookPath and eximRun are injection points so tests can drive the queue
+// probes without a live exim.
+var (
+	eximLookPath = exec.LookPath
+	eximRun      = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- name is the resolved systemd-run path or the fixed Exim command.
+		return exec.CommandContext(ctx, name, args...).Output()
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return n
+)
+
+// runExim executes an exim query as a transient unit forked by PID 1. The web
+// server runs inside csm.service's ProtectSystem=strict sandbox, where /var/log
+// is read-only; exim opens its main log for append even for a read-only query
+// and aborts when it cannot, so a direct call returns nothing at all.
+func runExim(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return systemdrun.Run(ctx, eximLookPath, eximRun, systemdrun.Options{
+		Pipe:       true,
+		RuntimeMax: timeout,
+	}, "exim", args...)
+}
+
+// eximQueueSize returns the current Exim mail queue count. The second result is
+// false when the depth could not be read: reporting zero there is
+// indistinguishable from a healthy empty queue.
+func eximQueueSize() (int, bool) {
+	out, err := runExim(5*time.Second, "-bpc")
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // eximQueueDetails returns the frozen message count and the age of the oldest
 // message in the queue. Uses `exim -bp` which lists all queued messages.
 func eximQueueDetails() (frozen int, oldestAge string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "exim", "-bp").Output()
+	out, err := runExim(10*time.Second, "-bp")
 	if err != nil {
 		return 0, ""
 	}

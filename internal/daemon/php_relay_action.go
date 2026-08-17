@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // msgIDPattern guards exim -Mf invocations against header-injected garbage
@@ -151,15 +153,30 @@ type runner interface {
 
 type defaultRunner struct{}
 
+var (
+	defaultRunnerLookPath = exec.LookPath
+	defaultRunnerCommand  = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- name is either the resolved systemd-run path or the
+		// resolved Exim binary; args are fixed flags plus validated message IDs.
+		cmd := exec.CommandContext(ctx, name, args...)
+		// Only stderr is returned: the freeze audit log records this under
+		// "stderr" and operators read it as the failure reason. --pipe connects
+		// the transient unit's stderr to ours, so wrapping does not change what
+		// is captured.
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		return stderr.Bytes(), err
+	}
+)
+
 func (defaultRunner) Run(ctx context.Context, bin string, args []string) (string, error) {
-	// #nosec G204 -- bin is the operator-configured exim binary path
-	// (autoFreezer.eximBin, default /usr/sbin/exim); args are exim flags +
-	// validated msg-IDs from the spool. Not attacker-controlled.
-	cmd := exec.CommandContext(ctx, bin, args...)
-	var sb strings.Builder
-	cmd.Stderr = &sb
-	err := cmd.Run()
-	return sb.String(), err
+	opt := systemdrun.Options{Pipe: true}
+	if deadline, ok := ctx.Deadline(); ok {
+		opt.RuntimeMax = time.Until(deadline)
+	}
+	out, err := systemdrun.Run(ctx, defaultRunnerLookPath, defaultRunnerCommand, opt, bin, args...)
+	return string(out), err
 }
 
 // auditEntry is the per-action record written by the auditor. K6 will add a

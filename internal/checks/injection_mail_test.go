@@ -17,6 +17,7 @@ import (
 
 func TestCheckMailQueueCmdError(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return nil, fmt.Errorf("exec: not found")
 		},
@@ -25,13 +26,16 @@ func TestCheckMailQueueCmdError(t *testing.T) {
 	cfg.Thresholds.MailQueueWarn = 100
 	cfg.Thresholds.MailQueueCrit = 500
 	findings := CheckMailQueue(context.Background(), cfg, nil)
-	if len(findings) != 0 {
-		t.Errorf("cmd error should produce 0 findings, got %d", len(findings))
+	// A failed probe must never be read as a healthy queue, but it also must
+	// not invent a depth: it reports the blind spot instead.
+	if len(findings) != 1 || findings[0].Check != "mail_queue_unavailable" {
+		t.Fatalf("cmd error should report the queue as unreadable, got %v", findingChecks(findings))
 	}
 }
 
 func TestCheckMailQueueNilOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return nil, nil
 		},
@@ -40,13 +44,14 @@ func TestCheckMailQueueNilOutput(t *testing.T) {
 	cfg.Thresholds.MailQueueWarn = 100
 	cfg.Thresholds.MailQueueCrit = 500
 	findings := CheckMailQueue(context.Background(), cfg, nil)
-	if len(findings) != 0 {
-		t.Errorf("nil output should produce 0 findings, got %d", len(findings))
+	if len(findings) != 1 || findings[0].Check != "mail_queue_unavailable" {
+		t.Fatalf("empty output carries no queue depth and must be reported, got %v", findingChecks(findings))
 	}
 }
 
 func TestCheckMailQueueNonNumericOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("not-a-number\n"), nil
 		},
@@ -55,13 +60,14 @@ func TestCheckMailQueueNonNumericOutput(t *testing.T) {
 	cfg.Thresholds.MailQueueWarn = 100
 	cfg.Thresholds.MailQueueCrit = 500
 	findings := CheckMailQueue(context.Background(), cfg, nil)
-	if len(findings) != 0 {
-		t.Errorf("non-numeric output should produce 0 findings, got %d", len(findings))
+	if len(findings) != 1 || findings[0].Check != "mail_queue_unavailable" {
+		t.Fatalf("non-numeric output is not a queue depth and must be reported, got %v", findingChecks(findings))
 	}
 }
 
 func TestCheckMailQueueBelowThreshold(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "exim" && len(args) > 0 && args[0] == "-bpc" {
 				return []byte("5\n"), nil
@@ -80,6 +86,7 @@ func TestCheckMailQueueBelowThreshold(t *testing.T) {
 
 func TestCheckMailQueueWarning(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("150\n"), nil
 		},
@@ -104,6 +111,7 @@ func TestCheckMailQueueWarning(t *testing.T) {
 
 func TestCheckMailQueueCritical(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("  600  \n"), nil // whitespace-padded
 		},
@@ -128,6 +136,7 @@ func TestCheckMailQueueCritical(t *testing.T) {
 
 func TestCheckMailQueueExactWarnBoundary(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("100\n"), nil
 		},
@@ -146,6 +155,7 @@ func TestCheckMailQueueExactWarnBoundary(t *testing.T) {
 
 func TestCheckMailQueueExactCritBoundary(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("500\n"), nil
 		},
@@ -164,6 +174,7 @@ func TestCheckMailQueueExactCritBoundary(t *testing.T) {
 
 func TestCheckMailQueueZeroCount(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("0\n"), nil
 		},

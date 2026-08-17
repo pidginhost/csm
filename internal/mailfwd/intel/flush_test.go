@@ -1,6 +1,7 @@
 package intel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -198,5 +199,41 @@ func TestRunEximRemoveContinuesAfterBatchErrors(t *testing.T) {
 	want := []string{"101", "2"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("batch argument counts = %v, want %v; every batch must be attempted", got, want)
+	}
+}
+
+func TestEximQueueCommandsRunThroughTransientServices(t *testing.T) {
+	oldLookPath, oldRun := eximLookPath, eximRun
+	t.Cleanup(func() { eximLookPath, eximRun = oldLookPath, oldRun })
+	eximLookPath = func(file string) (string, error) {
+		if file == "systemd-run" {
+			return "/usr/bin/systemd-run", nil
+		}
+		return "/usr/sbin/exim", nil
+	}
+	var calls []string
+	eximRun = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		call := strings.Join(append([]string{name}, args...), " ")
+		calls = append(calls, call)
+		if strings.HasSuffix(call, "/bin/true") {
+			return nil, nil
+		}
+		if strings.HasSuffix(call, "/usr/sbin/exim -bp") {
+			return []byte("7m 1K 1rABcd-000ABC-2A <> *** frozen ***\n"), nil
+		}
+		return nil, nil
+	}
+
+	if _, err := runEximBp(); err != nil {
+		t.Fatalf("runEximBp: %v", err)
+	}
+	if err := runEximRemove([]string{"1rABcd-000ABC-2A"}); err != nil {
+		t.Fatalf("runEximRemove: %v", err)
+	}
+	logText := strings.Join(calls, "\n")
+	for _, want := range []string{"exim -bp", "exim -Mrm 1rABcd-000ABC-2A"} {
+		if !strings.Contains(logText, want) {
+			t.Errorf("systemd-run calls missing %q:\n%s", want, logText)
+		}
 	}
 }
