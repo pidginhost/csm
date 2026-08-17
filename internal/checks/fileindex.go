@@ -92,9 +92,13 @@ func releaseFileIndexLiveScan() {
 	<-fileIndexLiveScanGate
 }
 
-// suspiciousExtensions are file extensions that should never appear in web roots.
+// suspiciousExtensions are file extensions worth reading in a web root. Being
+// listed here only routes a file into content analysis; the verdict is still
+// the content scanner's. ".phps" earns its place despite a stock handler
+// rendering it as source rather than executing it: staging a dropper under that
+// extension leaves it unread until a rename makes it live.
 var suspiciousExtensions = map[string]bool{
-	".phtml": true, ".pht": true, ".php5": true,
+	".phtml": true, ".pht": true, ".php5": true, ".phps": true,
 	".haxor": true, ".cgix": true,
 }
 

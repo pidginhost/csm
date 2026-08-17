@@ -384,12 +384,26 @@ func (s *Scanner) Version() int {
 	return s.version
 }
 
+// canonicalScanExt folds extensions that carry PHP source but are not the
+// extension rules are written against. ".phps" is PHP source by definition --
+// the extension exists so a server can display it -- so a payload staged under
+// it must still be matched against the PHP rule set. Without this it is read
+// and then compared against nothing, because every PHP rule declares
+// file_types [".php"].
+func canonicalScanExt(ext string) string {
+	if ext == ".phps" {
+		return ".php"
+	}
+	return ext
+}
+
 func ruleMatchesExt(rule Rule, ext string) bool {
 	if len(rule.FileTypes) == 0 {
 		return true // no filter = match all
 	}
+	ext = canonicalScanExt(ext)
 	for _, ft := range rule.FileTypes {
-		if ft == "*" || strings.ToLower(ft) == ext {
+		if ft == "*" || canonicalScanExt(strings.ToLower(ft)) == ext {
 			return true
 		}
 	}
