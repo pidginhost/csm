@@ -46,7 +46,7 @@ func TestCheckRuleAge_FlatFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	age := checkRuleAge([]string{dir})
+	age := checkRuleAge(platform.Info{}, []string{dir})
 	if age < 30 {
 		t.Errorf("checkRuleAge on flat dir = %d, want >=30", age)
 	}
@@ -64,7 +64,7 @@ func TestCheckRuleAge_IgnoresReadme(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if age := checkRuleAge([]string{dir}); age != 0 {
+	if age := checkRuleAge(platform.Info{}, []string{dir}); age != 0 {
 		t.Errorf("non-rule files should not trigger stale alert, got age=%d", age)
 	}
 }
@@ -85,7 +85,7 @@ func TestCheckRuleAge_CPanelVendorLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	age := checkRuleAge([]string{dir})
+	age := checkRuleAge(platform.Info{}, []string{dir})
 	if age < 30 {
 		t.Errorf("cPanel vendor layout: checkRuleAge = %d, want >=30", age)
 	}
@@ -98,7 +98,7 @@ func TestCheckRuleAge_FreshRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	// File defaults to current mtime, which is <30 days.
-	if age := checkRuleAge([]string{dir}); age != 0 {
+	if age := checkRuleAge(platform.Info{}, []string{dir}); age != 0 {
 		t.Errorf("fresh rules should not be stale, got age=%d", age)
 	}
 }

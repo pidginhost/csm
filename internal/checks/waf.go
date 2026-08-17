@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ import (
 // wafRulesAssembleRetryDelay is the wait between the first negative
 // probe and the re-probe on cPanel+LiteSpeed hosts where cPanel's
 // nightly modsec_assemble briefly leaves both `whmapi1
-// modsec_get_vendors` and the vendor dir empty while it rewrites the
+// modsec_get_configs` and the vendor dir empty while it rewrites the
 // tree in place. Observed windows are <10s; 30s gives margin without
 // meaningfully delaying the surrounding deep-scan tier. Tests override
 // this to keep the suite fast.
@@ -68,7 +69,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 
 	// cPanel+LiteSpeed: cPanel's nightly modsec_assemble rewrites the
 	// vendor tree in place, so for ~6-10s both `whmapi1
-	// modsec_get_vendors` and the vendor dir return empty. A production
+	// modsec_get_configs` and the vendor dir return empty. A production
 	// false positive at 01:10:27 fired 6s after the rewrite. Re-probe
 	// once after a short delay before alerting; on a host that really
 	// has no rules, the re-probe is still negative and we alert in the
@@ -93,7 +94,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 
 	// --- Rule age check + auto-update ---
 	if hasRules {
-		staleAge := checkRuleAge(ruleDirs)
+		staleAge := checkRuleAge(info, ruleDirs)
 		if staleAge > 0 {
 			// Attempt auto-update before alerting
 			updated := false
@@ -102,7 +103,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 			}
 			if updated {
 				// Re-check age after update
-				staleAge = checkRuleAge(ruleDirs)
+				staleAge = checkRuleAge(info, ruleDirs)
 			}
 			if staleAge > 0 {
 				findings = append(findings, alert.Finding{
@@ -129,12 +130,25 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 	return findings
 }
 
-// probeWAFRules checks whether any WAF rule source — cPanel's whmapi1
-// vendor list or the on-disk vendor/CRS directories — currently
+// probeWAFRules checks whether any WAF rule source -- cPanel's whmapi1
+// active-config list or the on-disk vendor/CRS directories -- currently
 // reports rules. Used by CheckWAFStatus directly and again on retry
 // for the cPanel+LiteSpeed modsec_assemble race.
 func probeWAFRules(info platform.Info, ruleDirs []string) bool {
 	if info.IsCPanel() {
+		if activeRules, ok := cPanelActiveRules(); ok {
+			if activeRules.present {
+				return true
+			}
+			// During LiteSpeed's modsec_assemble window, the WHM config
+			// list and filesystem can become visible in either order. Keep
+			// the existing filesystem backstop so either source can end the
+			// retry without letting retired trees affect other cPanel hosts.
+			if info.WebServer != platform.WSLiteSpeed {
+				return false
+			}
+			return hasRuleArtifacts(ruleDirs)
+		}
 		if out, _ := runCmd("whmapi1", "modsec_get_vendors"); out != nil {
 			outStr := string(out)
 			if strings.Contains(outStr, "comodo") || strings.Contains(outStr, "owasp") ||
@@ -325,7 +339,7 @@ func wafRulesHint(info platform.Info) string {
 // ModSecurity vendor rules.
 func wafRulesStaleHint(info platform.Info) string {
 	if info.IsCPanel() {
-		return "No installed vendor has refreshed its rules in over a month. Retired vendor rule trees stay on disk and are not counted. Check: WHM > Security Center > ModSecurity Vendors > Update"
+		return "At least one vendor with active configuration files has not refreshed its rules in over a month. Inactive vendor trees are not counted. Check: WHM > Security Center > ModSecurity Vendors > Update"
 	}
 	if info.IsDebianFamily() {
 		return "Vendor rules should be updated at least monthly. Update with: apt update && apt upgrade modsecurity-crs"
@@ -371,24 +385,34 @@ func checkEngineMode(info platform.Info) string {
 	return ""
 }
 
-// checkRuleAge returns how many days ago the WAF ruleset was last refreshed,
-// or 0 when that was within the last 30 days.
+// checkRuleAge returns the age of the rules that protect the host, or 0 when
+// they were refreshed within the last 30 days.
 //
-// The age comes from the most recently written rule artifact, not the oldest.
-// A host keeps the rule tree of every vendor it has ever installed, and
-// switching vendors leaves the retired tree frozen on disk forever. Measuring
-// the oldest artifact reported that abandoned tree's age and named a ruleset
-// that no longer protects anything, while the vendor actually in use was being
-// updated daily. The question this answers is "has any ruleset on this host
-// been refreshed recently", so a single maintained vendor clears it and a host
-// where nothing has been refreshed still alerts.
-func checkRuleAge(ruleDirs []string) int {
-	newestMtime, found := newestRuleArtifact(ruleDirs)
+// cPanel retains inactive vendor trees indefinitely, so its active-config API
+// narrows the scan to loaded vendor paths. The newest artifact in each loaded
+// vendor tree is its refresh time; the least recently refreshed loaded vendor
+// decides the reported age. On other platforms, and when the API is
+// unavailable, retaining the former oldest-file behavior is conservative: a
+// fresh candidate tree that is not loaded must not hide stale rules in use.
+func checkRuleAge(info platform.Info, ruleDirs []string) int {
+	artifactMtime := oldestRuleArtifact
+	if info.IsCPanel() {
+		activeRules, ok := cPanelActiveRules()
+		if ok {
+			if !activeRules.present || len(activeRules.vendorDirs) == 0 {
+				return 0
+			}
+			ruleDirs = activeRules.vendorDirs
+			artifactMtime = oldestRulesetRefresh
+		}
+	}
+
+	mtime, found := artifactMtime(ruleDirs)
 	if !found {
 		return 0
 	}
 
-	age := int(time.Since(newestMtime).Hours() / 24)
+	age := int(time.Since(mtime).Hours() / 24)
 	if age > 30 {
 		return age
 	}
@@ -400,54 +424,178 @@ func hasRuleArtifacts(ruleDirs []string) bool {
 	return found
 }
 
-func newestRuleArtifact(ruleDirs []string) (time.Time, bool) {
-	var newestMtime time.Time
-	found := false
+type cPanelModSecVendor struct {
+	Path     string `json:"path"`
+	VendorID string `json:"vendor_id"`
+}
 
-	consider := func(entry os.DirEntry) {
-		if entry.IsDir() || !isRuleArtifact(entry.Name()) {
-			return
+type cPanelModSecVendorsResponse struct {
+	Data struct {
+		Vendors []cPanelModSecVendor `json:"vendors"`
+	} `json:"data"`
+	Metadata struct {
+		Result int `json:"result"`
+	} `json:"metadata"`
+}
+
+type cPanelModSecConfig struct {
+	Active   int    `json:"active"`
+	VendorID string `json:"vendor_id"`
+}
+
+type cPanelModSecConfigsResponse struct {
+	Data struct {
+		Configs []cPanelModSecConfig `json:"configs"`
+	} `json:"data"`
+	Metadata struct {
+		Result int `json:"result"`
+	} `json:"metadata"`
+}
+
+type cPanelActiveRuleState struct {
+	present    bool
+	vendorDirs []string
+}
+
+// cPanelActiveRules maps configuration files that WHM reports as active back
+// to their vendor trees. Vendor-wide enabled state is insufficient because
+// cPanel permits individual files to override it in either direction. The
+// boolean is false when WHM cannot provide an authoritative mapping, in which
+// case callers retain conservative filesystem behavior.
+func cPanelActiveRules() (cPanelActiveRuleState, bool) {
+	out, err := runCmd("whmapi1", "modsec_get_configs", "--output=json")
+	if err != nil || len(out) == 0 {
+		return cPanelActiveRuleState{}, false
+	}
+	var configsResponse cPanelModSecConfigsResponse
+	if unmarshalErr := json.Unmarshal(out, &configsResponse); unmarshalErr != nil || configsResponse.Metadata.Result != 1 {
+		return cPanelActiveRuleState{}, false
+	}
+
+	activeVendorIDs := make(map[string]struct{})
+	activeRules := cPanelActiveRuleState{}
+	for _, config := range configsResponse.Data.Configs {
+		if config.Active != 1 {
+			continue
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return
+		activeRules.present = true
+		if config.VendorID != "" {
+			activeVendorIDs[config.VendorID] = struct{}{}
 		}
-		if !found || info.ModTime().After(newestMtime) {
-			newestMtime = info.ModTime()
+	}
+	if len(activeVendorIDs) == 0 {
+		return activeRules, true
+	}
+
+	out, err = runCmd("whmapi1", "modsec_get_vendors", "--output=json")
+	if err != nil || len(out) == 0 {
+		return cPanelActiveRuleState{}, false
+	}
+	var vendorsResponse cPanelModSecVendorsResponse
+	if unmarshalErr := json.Unmarshal(out, &vendorsResponse); unmarshalErr != nil || vendorsResponse.Metadata.Result != 1 {
+		return cPanelActiveRuleState{}, false
+	}
+
+	seen := make(map[string]struct{})
+	for _, vendor := range vendorsResponse.Data.Vendors {
+		if _, active := activeVendorIDs[vendor.VendorID]; !active {
+			continue
+		}
+		if vendor.Path == "" || !filepath.IsAbs(vendor.Path) {
+			return cPanelActiveRuleState{}, false
+		}
+		path := filepath.Clean(vendor.Path)
+		if path == string(filepath.Separator) {
+			return cPanelActiveRuleState{}, false
+		}
+		if _, exists := seen[path]; exists {
+			delete(activeVendorIDs, vendor.VendorID)
+			continue
+		}
+		seen[path] = struct{}{}
+		delete(activeVendorIDs, vendor.VendorID)
+		activeRules.vendorDirs = append(activeRules.vendorDirs, path)
+	}
+	if len(activeVendorIDs) != 0 {
+		return cPanelActiveRuleState{}, false
+	}
+	return activeRules, true
+}
+
+// oldestRulesetRefresh treats each directory as one ruleset. Files within a
+// ruleset are not all rewritten by every update, so its newest artifact is the
+// useful refresh signal. Every loaded ruleset must stay current, making the
+// oldest of those per-directory refresh times the value to check.
+func oldestRulesetRefresh(ruleDirs []string) (time.Time, bool) {
+	var oldest time.Time
+	found := false
+	for _, dir := range ruleDirs {
+		newest, ok := newestRuleArtifact([]string{dir})
+		if !ok {
+			continue
+		}
+		if !found || newest.Before(oldest) {
+			oldest = newest
 			found = true
 		}
 	}
+	return oldest, found
+}
 
-	for _, dir := range ruleDirs {
+func newestRuleArtifact(ruleDirs []string) (time.Time, bool) {
+	return ruleArtifactMtime(ruleDirs, func(candidate, current time.Time) bool {
+		return candidate.After(current)
+	})
+}
+
+func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
+	return ruleArtifactMtime(ruleDirs, func(candidate, current time.Time) bool {
+		return candidate.Before(current)
+	})
+}
+
+func ruleArtifactMtime(ruleDirs []string, replace func(time.Time, time.Time) bool) (time.Time, bool) {
+	var selected time.Time
+	found := false
+	pending := append([]string(nil), ruleDirs...)
+	visited := make(map[string]struct{})
+	for len(pending) > 0 {
+		dir := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		dir = filepath.Clean(dir)
+		if _, seen := visited[dir]; seen {
+			continue
+		}
+		visited[dir] = struct{}{}
 		entries, err := osFS.ReadDir(dir)
 		if err != nil {
 			continue
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() {
-				// Rule file directly in the rule dir (distro CRS layout,
-				// e.g. /usr/share/modsecurity-crs/rules/REQUEST-*.conf).
-				consider(entry)
+			path := filepath.Join(dir, entry.Name())
+			if entry.IsDir() {
+				pending = append(pending, path)
 				continue
 			}
-			// Subdirectory: scan one level deeper for vendor-packed rules
-			// (cPanel layout, e.g. /usr/local/apache/conf/modsec_vendor_configs/OWASP/*.conf).
-			subEntries, err := osFS.ReadDir(dir + "/" + entry.Name())
+			if !isRuleArtifact(entry.Name()) {
+				continue
+			}
+			info, err := entry.Info()
 			if err != nil {
 				continue
 			}
-			for _, subEntry := range subEntries {
-				consider(subEntry)
+			if !found || replace(info.ModTime(), selected) {
+				selected = info.ModTime()
+				found = true
 			}
 		}
 	}
-
-	return newestMtime, found
+	return selected, found
 }
 
 // isRuleArtifact reports whether a filename looks like a ModSecurity rule
 // or data artifact (.conf, .data, .rules) so unrelated files like README
-// or LICENSE don't dominate the oldest-mtime calculation.
+// or LICENSE don't dominate the age calculation.
 func isRuleArtifact(name string) bool {
 	name = strings.ToLower(name)
 	return strings.HasSuffix(name, ".conf") ||

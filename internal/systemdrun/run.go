@@ -15,9 +15,10 @@ type RunnerFunc func(ctx context.Context, name string, args ...string) ([]byte, 
 // escapes the caller's service sandbox, and returns its output.
 //
 // When systemd-run cannot be used -- not installed, or a harmless probe fails
-// for any reason -- the command runs directly instead. That is no worse than
-// not having the wrapper at all, and it is the only honest option: giving up
-// would disable the command entirely on a host where it might still work.
+// while the caller's context remains active -- the command runs directly
+// instead. That is no worse than not having the wrapper at all, and it is the
+// only honest option: giving up would disable the command entirely on a host
+// where it might still work.
 //
 // The caller's command is attempted at most once. Its exit status and output
 // cannot be told apart from systemd-run's own (--wait and --pipe propagate the
@@ -26,6 +27,9 @@ type RunnerFunc func(ctx context.Context, name string, args ...string) ([]byte, 
 // would mask the real error.
 func Run(ctx context.Context, lookPath LookPathFunc, run RunnerFunc, opt Options, name string, args ...string) ([]byte, error) {
 	systemdRunPath, _ := lookPath("systemd-run")
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	if systemdRunPath == "" {
 		return run(ctx, name, args...)
 	}
@@ -33,7 +37,11 @@ func Run(ctx context.Context, lookPath LookPathFunc, run RunnerFunc, opt Options
 	// Probe with a command that has no side effects, so the decision to fall
 	// back is made before the caller's command has had a chance to run.
 	probeName, probeArgs := Argv(systemdRunPath, opt, probeCommand)
-	if _, probeErr := run(ctx, probeName, probeArgs...); probeErr != nil {
+	_, probeErr := run(ctx, probeName, probeArgs...)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if probeErr != nil {
 		return run(ctx, name, args...)
 	}
 

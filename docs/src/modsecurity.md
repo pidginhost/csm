@@ -31,7 +31,7 @@ Install (requires EPEL): dnf install -y epel-release && dnf install -y nginx-mod
 Install: WHM > Security Center > ModSecurity
 ```
 
-Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs/rules/*.conf`) used by distro packages and the per-vendor subdirectory layout used by cPanel (`/usr/local/apache/conf/modsec_vendor_configs/VENDOR/*.conf`). Update instructions are also platform-specific (`apt update && apt upgrade modsecurity-crs`, `dnf upgrade modsecurity-crs`, or WHM on cPanel).
+Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs/rules/*.conf`) used by distro packages and cPanel vendor trees, including nested layouts such as `modsec_vendor_configs/VENDOR/rules/*.conf`. On cPanel, CSM maps WHM's active configuration files to their vendor trees and checks the newest artifact in each loaded tree. This honors individual configuration overrides, keeps retired trees out of the result, and prevents a fresh unloaded vendor from hiding a stale loaded one. LiteSpeed also keeps the on-disk check as a backstop while cPanel rebuilds the active configuration list and rule tree. If WHM cannot provide the mapping, and on other platforms, the check keeps the conservative oldest-artifact behavior. Update instructions are platform-specific (`apt update && apt upgrade modsecurity-crs`, `dnf upgrade modsecurity-crs`, or WHM on cPanel).
 
 ## Features
 

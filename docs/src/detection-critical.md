@@ -61,7 +61,7 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `mail_queue_unavailable` | The queue depth could not be read, so buildup detection is inactive. Reported instead of assuming the queue is empty. |
 | `mail_per_account` | Per-account email volume spikes |
 
-All Exim queue reads and actions started by the daemon run as transient services outside its read-only filesystem sandbox. This includes queue composition, safe backscatter flushing, and PHP relay freeze or thaw actions. If `systemd-run` is unavailable, CSM runs them directly; a host without Exim skips the Exim-only queue check.
+All Exim queue reads and actions started by the daemon run as transient services outside its read-only filesystem sandbox. This includes queue composition, safe backscatter flushing, and PHP relay freeze or thaw actions. If `systemd-run` is unavailable, CSM runs them directly; a host without Exim skips the Exim-only queue check. The target command is attempted at most once, and cancellation during the wrapper probe stops it before execution.
 
 ## Data & Integrity
 
