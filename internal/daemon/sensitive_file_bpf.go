@@ -28,8 +28,17 @@ type sensitiveFileBPF struct {
 	cfg     *config.Config
 	count   atomic.Uint64
 
-	mu    sync.RWMutex
-	paths map[fileid]string
+	// paths resolves a ringbuf event's dev+inode back to a watchset path.
+	// digests tracks per-path content identity across refreshes; it is keyed
+	// by path, not inode, because an atomic rewrite gives the same path a new
+	// inode and that is a modification, not a new file.
+	// liveReported collects paths the LSM write hook reported since the last
+	// refresh so the digest diff adopts their new content without describing
+	// the same write again, less precisely.
+	mu           sync.RWMutex
+	paths        map[fileid]string
+	digests      map[string]string
+	liveReported map[string]bool
 }
 
 type fileid struct {
@@ -67,7 +76,9 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 		reader:  reader,
 		alertCh: alertCh,
 		cfg:     cfg,
-		paths:   map[fileid]string{},
+		paths:        map[fileid]string{},
+		digests:      map[string]string{},
+		liveReported: map[string]bool{},
 	}
 	if err := s.refreshWatchset(false); err != nil {
 		_ = s.link.Close()
@@ -78,15 +89,16 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 }
 
 func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
-	paths := checks.ExpandWatchset("/")
-	next := make(map[fileid]string, len(paths))
-	for _, p := range paths {
+	next := make(map[fileid]string)
+	var present []string
+	for _, p := range checks.ExpandWatchset("/") {
 		var st syscall.Stat_t
 		if err := syscall.Stat(p, &st); err != nil {
 			continue
 		}
 		id := fileid{Dev: uint64(st.Dev), Ino: st.Ino}
 		next[id] = p
+		present = append(present, p)
 	}
 
 	for id := range next {
@@ -96,18 +108,28 @@ func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
 			return fmt.Errorf("update watched map: %w", err)
 		}
 	}
-	var newFindings []alert.Finding
+
+	// Hashing reads every watchset file, so it happens outside the lock. Only
+	// this method writes s.digests and refreshes are serialised (one startup
+	// call, then one ticker goroutine), so the snapshot cannot change under us
+	// and NextSensitiveDigests never mutates what it is handed.
+	// Snapshot and reset the live-reported set together with the digests, so a
+	// write arriving while we hash is attributed to the next cycle rather than
+	// being lost.
 	s.mu.Lock()
+	prevDigests := s.digests
+	liveReported := s.liveReported
+	s.liveReported = map[string]bool{}
+	s.mu.Unlock()
+
+	digests := checks.NextSensitiveDigests(prevDigests, present)
+
+	var newFindings []alert.Finding
 	if reportNew {
-		for id, path := range next {
-			if _, ok := s.paths[id]; ok {
-				continue
-			}
-			if f, emit := checks.EvaluateSensitiveFileAppearance(path); emit {
-				newFindings = append(newFindings, f)
-			}
-		}
+		newFindings = checks.DiffSensitiveWatchset(prevDigests, digests, liveReported)
 	}
+
+	s.mu.Lock()
 	for id := range s.paths {
 		if _, ok := next[id]; !ok {
 			key := bpfprog.SensitiveFileFileid{Dev: id.Dev, Ino: id.Ino}
@@ -115,7 +137,9 @@ func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
 		}
 	}
 	s.paths = next
+	s.digests = digests
 	s.mu.Unlock()
+
 	for _, f := range newFindings {
 		s.emitFinding(f)
 	}
@@ -169,6 +193,9 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 			if !emit {
 				continue
 			}
+			s.mu.Lock()
+			s.liveReported[path] = true
+			s.mu.Unlock()
 			s.emitFinding(finding)
 		}
 	}

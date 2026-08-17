@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -119,18 +120,31 @@ func EvaluateSensitiveFileWrite(path string, uid, pid uint32, comm string) (aler
 	return rescoreSensitive(f, kind, nil, pid, time.Now()), true
 }
 
-// EvaluateSensitiveFileAppearance returns a finding when a new file appears
-// inside a sensitive glob directory between live watchset refreshes. Reads
-// the file content (when accessible) so the cron-content heuristic can veto
-// a package-window demote on obvious persistence payloads.
+// EvaluateSensitiveFileAppearance returns a finding when a path no previous
+// watchset refresh had seen shows up -- a genuinely new cron drop-in, sudoers
+// fragment, or user crontab.
 func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
+	return evaluateSensitiveWatchsetChange(path, "New sensitive system file appeared")
+}
+
+// EvaluateSensitiveFileContentChange returns a finding when a watchset path
+// that the previous refresh already knew about now holds different content.
+// This is the detector for the rewrite-then-rename pattern: the write lands on
+// a temporary inode the LSM hook never watched, so EvaluateSensitiveFileWrite
+// cannot see it and only the refresh diff can report it.
+func EvaluateSensitiveFileContentChange(path string) (alert.Finding, bool) {
+	return evaluateSensitiveWatchsetChange(path, "Content changed on sensitive system file")
+}
+
+// evaluateSensitiveWatchsetChange builds the finding both refresh-diff outcomes
+// share. Content is read up front so a CSM self-write (e.g. an installed
+// wp-cron) can be matched and suppressed, and so the cron-content heuristic can
+// veto a package-window demote on an obvious persistence payload.
+func evaluateSensitiveWatchsetChange(path, summary string) (alert.Finding, bool) {
 	kind := classifySensitive(path)
 	if kind == "" {
 		return alert.Finding{}, false
 	}
-	// Read content up front so a CSM self-write (e.g. an installed wp-cron)
-	// can be matched and suppressed. The cron-content heuristic below reuses
-	// the same bytes.
 	var content []byte
 	if data, err := osFS.ReadFile(path); err == nil {
 		content = data
@@ -145,7 +159,7 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	f := alert.Finding{
 		Severity:  alert.High,
 		Check:     "sensitive_file_modified",
-		Message:   fmt.Sprintf("New sensitive system file appeared: %s", path),
+		Message:   fmt.Sprintf("%s: %s", summary, path),
 		Details:   fmt.Sprintf("Class: %s", kind),
 		FilePath:  path,
 		Timestamp: now,
@@ -155,6 +169,73 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 		scoreContent = content
 	}
 	return rescoreSensitive(f, kind, scoreContent, 0, now), true
+}
+
+// NextSensitiveDigests builds the digest snapshot for a refresh cycle. paths
+// are the watchset entries that currently exist; prev is the previous cycle's
+// snapshot. A path whose content cannot be read keeps its previous digest so a
+// transient read error does not surface as a content change, and gets an empty
+// digest when there is nothing to carry forward. Paths absent from the supplied
+// list drop out, which is how deletions leave the snapshot.
+func NextSensitiveDigests(prev map[string]string, paths []string) map[string]string {
+	next := make(map[string]string, len(paths))
+	for _, path := range paths {
+		data, err := osFS.ReadFile(path)
+		if err != nil {
+			next[path] = prev[path]
+			continue
+		}
+		sum := sha256.Sum256(data)
+		next[path] = hex.EncodeToString(sum[:])
+	}
+	return next
+}
+
+// DiffSensitiveWatchset compares two refresh snapshots of the watchset and
+// returns the findings the newer one warrants. Both maps are keyed by
+// absolute path; the value is a content digest, or "" when the digest could
+// not be computed this cycle.
+//
+// Identity is the path, never the inode. Keying on dev+inode reported every
+// atomic rewrite (write temp, rename over) as a brand-new file, which is how
+// /etc/passwd came to "appear" 16 times in a month on a live host. A path the
+// previous snapshot knew about can only have changed, not appeared.
+//
+// Paths that vanished produce nothing: the caller unwatches the inode, and a
+// deletion is not evidence of the tampering this watchset exists to catch.
+//
+// liveReported holds paths the live write hook already reported since the last
+// refresh. Their new digest is adopted without a second finding, because the
+// hook's report carries process attribution this one cannot. An appearance is
+// still reported for those paths: the hook describes a write, not the fact that
+// the path did not exist before.
+func DiffSensitiveWatchset(prev, cur map[string]string, liveReported map[string]bool) []alert.Finding {
+	paths := make([]string, 0, len(cur))
+	for path := range cur {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	var findings []alert.Finding
+	for _, path := range paths {
+		curHash := cur[path]
+		prevHash, known := prev[path]
+		switch {
+		case !known:
+			if f, emit := EvaluateSensitiveFileAppearance(path); emit {
+				findings = append(findings, f)
+			}
+		case curHash == "" || prevHash == "" || curHash == prevHash || liveReported[path]:
+			// No digest to compare, the content is byte-identical (an inode
+			// swap that preserved content is a no-op rewrite), or the live
+			// write hook already reported this path.
+		default:
+			if f, emit := EvaluateSensitiveFileContentChange(path); emit {
+				findings = append(findings, f)
+			}
+		}
+	}
+	return findings
 }
 
 // CheckSensitiveFiles is the periodic safety-net that runs when the BPF
