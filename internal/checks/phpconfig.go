@@ -72,23 +72,44 @@ type phpIniWalkBudget struct {
 	// maxDirs is the operator-set per-root ceiling. It rides on the budget
 	// rather than on the package var so concurrent per-account scans cannot
 	// overwrite each other's limit. Zero falls back to the package default.
-	maxDirs int
+	maxDirs    int
+	maxEntries int
 
 	// limitHit distinguishes a walk stopped by one of the configured ceilings
 	// from one stopped by an unreadable directory. Both leave the scan
 	// incomplete, but only the first means coverage can be bought back by
 	// raising a setting, so the operator has to be told which happened.
-	limitHit bool
+	limitKind walkLimit
 }
+
+// walkLimit identifies the bound that stopped a walk. The two ceilings are
+// raised by two different settings, so naming the wrong one sends the
+// operator to a knob that cannot recover the lost coverage.
+type walkLimit int
+
+const (
+	walkLimitNone walkLimit = iota
+	walkLimitDirs
+	walkLimitEntries
+)
 
 // phpIniIncompleteReason explains why a walk below root did not finish. A
 // ceiling that stopped it is reported with the distance covered and the setting
 // that raises it; anything else is left as an unreadable-entry report.
 func phpIniIncompleteReason(root string, b *phpIniWalkBudget) string {
-	if b != nil && b.limitHit {
+	if b == nil {
+		return fmt.Sprintf("Could not finish scanning PHP configuration files below %s.", root)
+	}
+	switch b.limitKind {
+	case walkLimitDirs:
 		return fmt.Sprintf(
 			"Scanning below %s stopped after %d directories, the per-root limit, so the rest was not examined for PHP configuration files. Raise thresholds.php_config_walk_max_dirs to cover the whole account.",
 			root, b.dirs,
+		)
+	case walkLimitEntries:
+		return fmt.Sprintf(
+			"Scanning below %s stopped after %d entries, the per-root limit, so the rest was not examined for PHP configuration files. Raise thresholds.php_config_walk_max_entries to cover the whole account.",
+			root, b.entries,
 		)
 	}
 	return fmt.Sprintf("Could not finish scanning PHP configuration files below %s.", root)
@@ -104,11 +125,27 @@ func phpIniConfiguredMaxDirs(cfg *config.Config) int {
 	return cfg.Thresholds.PHPConfigWalkMaxDirs
 }
 
+// phpIniConfiguredMaxEntries reads the operator's per-root entry ceiling.
+func phpIniConfiguredMaxEntries(cfg *config.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Thresholds.PHPConfigWalkMaxEntries
+}
+
 func (b *phpIniWalkBudget) dirLimit() int {
 	if b.maxDirs > 0 {
 		return b.maxDirs
 	}
 	return phpIniWalkMaxDirs
+}
+
+// entryLimit is the per-root entry ceiling in force for this walk.
+func (b *phpIniWalkBudget) entryLimit() int {
+	if b.maxEntries > 0 {
+		return b.maxEntries
+	}
+	return phpIniWalkMaxEntries
 }
 
 func (b *phpIniWalkBudget) startRoot() {
@@ -285,7 +322,10 @@ func CheckPHPConfigChanges(ctx context.Context, cfg *config.Config, store *state
 		}
 
 		var iniPaths []string
-		walkBudget := &phpIniWalkBudget{maxDirs: phpIniConfiguredMaxDirs(cfg)}
+		walkBudget := &phpIniWalkBudget{
+			maxDirs:    phpIniConfiguredMaxDirs(cfg),
+			maxEntries: phpIniConfiguredMaxEntries(cfg),
+		}
 		for _, root := range roots {
 			paths, complete := collectPHPIniFilesWithBudget(ctx, root, phpIniWalkMaxDepth, walkBudget)
 			if !complete {
@@ -597,7 +637,7 @@ func collectPHPIniFilesWithBudget(
 	}
 
 	if budget.accountExhausted() {
-		budget.limitHit = true
+		budget.limitKind = walkLimitDirs
 		return nil, false
 	}
 	budget.startRoot()
@@ -614,8 +654,8 @@ func collectPHPIniFilesWithBudget(
 		queue = queue[1:]
 		visitComplete, err := forEachPHPIniDirEntry(ctx, dir.path, func(e os.DirEntry) bool {
 			budget.addEntry()
-			if budget.entries > phpIniWalkMaxEntries || budget.accountEntries > phpIniWalkAccountMaxEntries {
-				budget.limitHit = true
+			if budget.entries > budget.entryLimit() || budget.accountEntries > phpIniWalkAccountMaxEntries {
+				budget.limitKind = walkLimitEntries
 				return false
 			}
 			name := e.Name()
@@ -624,7 +664,7 @@ func collectPHPIniFilesWithBudget(
 				if maxDepth < 0 || dir.depth < maxDepth {
 					if budget.dirs >= budget.dirLimit() || budget.accountDirs >= phpIniWalkAccountMaxDirs {
 						complete = false
-						budget.limitHit = true
+						budget.limitKind = walkLimitDirs
 						return true
 					}
 					queue = append(queue, pendingDir{path: full, depth: dir.depth + 1, observed: true})

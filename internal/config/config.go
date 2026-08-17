@@ -272,6 +272,11 @@ type Config struct {
 		// than accept the gap. Default 50000.
 		PHPConfigWalkMaxDirs int `yaml:"php_config_walk_max_dirs"`
 
+		// PHPConfigWalkMaxEntries caps how many directory entries that same
+		// walk examines below one document root. A shallow tree holding very
+		// many files reaches this before the directory ceiling. Default 500000.
+		PHPConfigWalkMaxEntries int `yaml:"php_config_walk_max_entries"`
+
 		// AccountScanMaxFiles caps how many account and mail-domain paths
 		// account-scoped scanners iterate per cycle. This covers SSH keys,
 		// cPanel API tokens, Dovecot shadow files, CMS DB scans, forwarders,
@@ -1668,6 +1673,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.PHPConfigWalkMaxDirs <= 0 {
 		cfg.Thresholds.PHPConfigWalkMaxDirs = 50000
+	}
+	if cfg.Thresholds.PHPConfigWalkMaxEntries <= 0 {
+		cfg.Thresholds.PHPConfigWalkMaxEntries = 500000
 	}
 	if cfg.Thresholds.DomlogMaxFiles == 0 {
 		cfg.Thresholds.DomlogMaxFiles = 500

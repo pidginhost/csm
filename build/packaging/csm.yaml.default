@@ -116,6 +116,9 @@ thresholds:
   # configuration files. Reaching it leaves the rest of that root
   # unexamined and reports the scan as incomplete.
   php_config_walk_max_dirs: 50000
+  # Directory entries examined below one document root by the same walk.
+  # A shallow tree holding very many files reaches this one first.
+  php_config_walk_max_entries: 500000
   domlog_tail_lines: 500
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
