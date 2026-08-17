@@ -17,7 +17,7 @@ func TestBuildEximConfArgv(t *testing.T) {
 		t.Fatalf("name = %q, want /usr/bin/systemd-run", name)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--quiet", "--collect", "--wait", "--property=" + buildEximConfRuntimeMaxSec} {
+	for _, want := range []string{"--quiet", "--collect", "--wait", "--property=RuntimeMaxSec=120s"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %s: %v", want, args)
 		}

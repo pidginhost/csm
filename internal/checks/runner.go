@@ -228,7 +228,7 @@ var runnerFindingNames = map[string][]string{
 	"kernel_modules":        {"kernel_module"},
 	"local_threat_score":    {"local_threat_score"},
 	"mail_per_account":      {"mail_per_account"},
-	"mail_queue":            {"mail_queue"},
+	"mail_queue":            {"mail_queue", "mail_queue_unavailable"},
 	"modsec_audit":          {"waf_attack_blocked"},
 	"mysql_users":           {"mysql_superuser"},
 	"nulled_plugins":        {"nulled_plugin"},

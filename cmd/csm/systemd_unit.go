@@ -57,15 +57,14 @@ ReadWritePaths=/opt/csm/rules -/opt/csm/deploy.sh -/home /tmp /var/tmp -/dev/shm
 ReadWritePaths=/etc -/usr/local/apache/conf
 ReadWritePaths=-/usr/local/cpanel/whostmgr/docroot/cgi -/var/cpanel
 ReadWritePaths=-/var/spool/cron -/var/spool/exim/input -/var/spool/exim4/input
-# CSM spawns "exim -bpc" to count the mail queue (mail_queue spam-outbreak
-# check, WebUI). Exim opens its main/panic logs on startup and aborts even for
-# a read-only query, so the queue probe needs these writable under
-# ProtectSystem=strict. Keep the cPanel/RHEL grants file-scoped: when the
-# current log exists at service start, systemd pins a writable inode across
-# rename-based rotation. That is enough for the queue probe without granting
-# all of /var/log. All "-" (tolerate-absent): cPanel/RHEL use the flat
-# /var/log/exim_* files, Debian/Ubuntu use the /var/log/exim4 directory.
-ReadWritePaths=-/var/log/exim_mainlog -/var/log/exim_paniclog -/var/log/exim_rejectlog -/var/log/exim4
+# NOTE: exim log grants deliberately removed. Exim opens its main/panic logs
+# and aborts even for a read-only query like "exim -bpc", so the queue probe
+# used to need them writable. File-scoped (non-directory) ReadWritePaths
+# entries are silently ignored by systemd 239 (EL8/CloudLinux 8), which left
+# the grant a no-op and every queue probe failing with "Cannot open main log
+# file" -- unnoticed, because the check reported nothing on error. CSM now runs
+# exim queries through systemd-run as a transient unit forked by PID 1, outside
+# this sandbox, so no /var/log write access is needed here at all.
 # CSM's af_alg check runs "kcarectl --patch-info" to detect a Copy Fail
 # (CVE-2026-31431) KernelCare livepatch. kcarectl rewrites its feature-flags
 # cache under /var/cache/kcare on every run; when that write is blocked it
