@@ -57,7 +57,8 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 
 | Check | Description |
 |-------|-------------|
-| `mail_queue` | Mail queue buildup (spam outbreak indicator) |
+| `mail_queue` | Mail queue buildup (spam outbreak indicator). Exim aborts when it cannot write its own log, and the daemon's sandbox makes `/var/log` read-only, so the queue query runs as a transient unit forked by PID 1. Hosts without systemd-run query exim directly. |
+| `mail_queue_unavailable` | The queue depth could not be read, so buildup detection is inactive. Reported instead of assuming the queue is empty. |
 | `mail_per_account` | Per-account email volume spikes |
 
 ## Data & Integrity

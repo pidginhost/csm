@@ -131,8 +131,9 @@ func TestCheckMailQueueNoExim(t *testing.T) {
 	cfg.Thresholds.MailQueueWarn = 100
 	cfg.Thresholds.MailQueueCrit = 500
 	findings := CheckMailQueue(context.Background(), cfg, nil)
-	if len(findings) != 0 {
-		t.Errorf("no exim should produce 0, got %d", len(findings))
+	// A host with no exim cannot be assumed to have an empty queue.
+	if len(findings) != 1 || findings[0].Check != "mail_queue_unavailable" {
+		t.Fatalf("a missing exim must be reported, got %v", findingChecks(findings))
 	}
 }
 
