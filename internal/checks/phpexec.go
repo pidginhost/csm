@@ -26,6 +26,14 @@ func IsExecutablePHPName(nameLower string) bool {
 	return isExecutablePHPName(nameLower)
 }
 
+// IsPHPSourceName reports whether a file should receive PHP content analysis.
+// It deliberately includes .phps even though IsExecutablePHPName does not:
+// stock handlers render .phps as source, but the bytes can still hold a staged
+// payload that becomes executable after a rename.
+func IsPHPSourceName(nameLower string) bool {
+	return isExecutablePHPName(nameLower) || strings.HasSuffix(nameLower, ".phps")
+}
+
 // PHPExecutionOverlay is an immutable snapshot of inherited .htaccess PHP
 // handler mappings for one directory. Realtime monitors can cache it and test
 // arbitrary filenames without duplicating the periodic scanner's parser.

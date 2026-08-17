@@ -176,8 +176,24 @@ func TestRuleMatchesExtExplicit(t *testing.T) {
 
 func TestRuleMatchesExtCaseInsensitive(t *testing.T) {
 	r := Rule{FileTypes: []string{".PHP"}}
-	if !ruleMatchesExt(r, ".php") {
-		t.Error("extension match should be case-insensitive on the rule side")
+	for _, ext := range []string{".php", ".PHP", ".PHPS"} {
+		if !ruleMatchesExt(r, ext) {
+			t.Errorf("extension match should be case-insensitive for %q", ext)
+		}
+	}
+}
+
+func TestRuleMatchesExtPhpsAliasIsOneWay(t *testing.T) {
+	phpRule := Rule{FileTypes: []string{".php"}}
+	if !ruleMatchesExt(phpRule, ".phps") {
+		t.Error(".php rules should inspect .phps source")
+	}
+	phpsRule := Rule{FileTypes: []string{".phps"}}
+	if !ruleMatchesExt(phpsRule, ".phps") {
+		t.Error(".phps-only rules should match .phps")
+	}
+	if ruleMatchesExt(phpsRule, ".php") {
+		t.Error(".phps-only rules must not broaden to executable .php")
 	}
 }
 

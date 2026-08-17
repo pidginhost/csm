@@ -838,8 +838,10 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 
 	lower := strings.ToLower(path)
 
-	// PHP files
-	if isPHPExtension(filepath.Base(lower)) {
+	// PHP source files. This is intentionally broader than the executable-PHP
+	// predicate used by the location and dropper checks: .phps is inert under a
+	// stock handler, but still needs signature/YARA analysis while staged.
+	if isPHPSourceExtension(filepath.Base(lower)) {
 		return true
 	}
 
@@ -1213,8 +1215,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				}
 			}
 		}
-		// Fall through to PHP checks below for .php files in /tmp
-		if !isPHPExtension(nameLower) {
+		// Fall through to PHP content checks below for executable PHP and
+		// source-view .phps files in /tmp.
+		if !isPHPSourceExtension(nameLower) {
 			return
 		}
 	}
@@ -1323,7 +1326,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// .htaccess, .user.ini, and .config executable checks are handled
 	// earlier in this function (before the /tmp early-return) so specific
 	// file types take precedence over the /tmp generic block.
-	if isPHPExtension(nameLower) {
+	if isPHPSourceExtension(nameLower) {
 		if fm.checkPHPContent(event.fd, path, procInfo) {
 			markDropperContentSuspicious()
 		}
@@ -2168,6 +2171,10 @@ func isPHPExtension(nameLower string) bool {
 	// Single source of truth shared with the periodic content scanners so the
 	// realtime and batch paths never drift on which extensions execute PHP.
 	return checks.IsExecutablePHPName(nameLower)
+}
+
+func isPHPSourceExtension(nameLower string) bool {
+	return checks.IsPHPSourceName(nameLower)
 }
 
 func isCGIExtension(nameLower string) bool {

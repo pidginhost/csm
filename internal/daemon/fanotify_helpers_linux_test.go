@@ -32,7 +32,7 @@ func TestIsPHPExtension(t *testing.T) {
 	}
 }
 
-func TestFileMonitorIsInterestingExecutablePHPExtensions(t *testing.T) {
+func TestFileMonitorIsInterestingPHPSourceExtensions(t *testing.T) {
 	fm := &FileMonitor{}
 	for _, name := range []string{"evil.php2", "evil.php3", "evil.php4", "evil.php6", "evil.php7", "evil.php8"} {
 		path := "/home/alice/public_html/" + name
@@ -40,8 +40,11 @@ func TestFileMonitorIsInterestingExecutablePHPExtensions(t *testing.T) {
 			t.Errorf("%s should be interesting to realtime PHP monitoring", path)
 		}
 	}
-	if fm.isInteresting("/home/alice/public_html/source.phps") {
-		t.Error(".phps source-view files should not be treated as executable PHP")
+	if !fm.isInteresting("/home/alice/public_html/source.phps") {
+		t.Error(".phps source-view files should receive realtime content analysis")
+	}
+	if isPHPExtension("source.phps") {
+		t.Error("realtime content routing must not classify .phps as executable PHP")
 	}
 }
 

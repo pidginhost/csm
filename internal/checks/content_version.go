@@ -20,7 +20,7 @@ const ContentLogicVersion = 1
 // ContentScannerVersion identifies scanner behavior that is not represented by
 // the loaded YAML signature version or YARA rule count. Bump it when shared
 // content classification changes so the daemon re-checks stale findings.
-const ContentScannerVersion = 3
+const ContentScannerVersion = 4
 
 // JSTaintLogicVersion identifies the current semantics of the JavaScript
 // keystroke taint analyzer (internal/jstaint). BUMP IT in the same commit as
