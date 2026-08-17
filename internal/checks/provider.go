@@ -2,8 +2,12 @@ package checks
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/unix"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,12 +31,34 @@ type OS interface {
 
 type realOS struct{}
 
+var errNonRegularFile = errors.New("not a regular file")
+
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
 func (realOS) ReadFile(name string) ([]byte, error)       { return os.ReadFile(name) }
 func (realOS) ReadDir(name string) ([]os.DirEntry, error) { return os.ReadDir(name) }
 func (realOS) Stat(name string) (os.FileInfo, error)      { return os.Stat(name) }
 func (realOS) Lstat(name string) (os.FileInfo, error)     { return os.Lstat(name) }
 func (realOS) Readlink(name string) (string, error)       { return os.Readlink(name) }
+
+// ReadRegularFile opens without blocking on a path raced to a FIFO, then
+// verifies the opened object before reading from the inode bound to the fd.
+// #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
+func (realOS) ReadRegularFile(name string) ([]byte, error) {
+	fd, err := unix.Open(name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNonRegularFile
+	}
+	return io.ReadAll(file)
+}
 
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
 func (realOS) Open(name string) (*os.File, error) { return os.Open(name) }
