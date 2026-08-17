@@ -30,6 +30,16 @@ Monitors the mounts containing `/home`, `/tmp`, `/dev/shm`, `/var/tmp`, configur
 - Process info enrichment (PID, command, UID)
 - Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
 
+## Sensitive System File Watcher
+
+Tracks a fixed set of system-configuration paths: the account and credential databases, `sudoers` and its drop-in directory, the SSH daemon config and its drop-in directory, the system cron drop-in directories, and per-user crontabs. The set is not operator-configurable -- a path an attacker knows is excluded is a free landing pad.
+
+The backend is chosen by `detection.sensitive_files_backend`. The `bpf` backend attaches an LSM hook that catches writes as they happen, and re-expands the watchset every `detection.sensitive_files_poll_interval` (default 5m). The `legacy` backend content-hashes the watchset on the same interval.
+
+Both backends key on the path, not the inode. Most tools replace a config file by writing a temporary file and renaming it over the target, which gives the path a new inode and hides the write from the LSM hook. The refresh therefore compares a content digest per path: a rename-over is reported as a content change on the existing file, only a path no previous refresh had seen is reported as newly appeared, and a rewrite that leaves content byte-identical is not reported at all.
+
+Findings are `sensitive_file_modified`. A write the LSM hook already reported wins: the refresh adopts the new content without repeating it, because the hook's report names the writing process. Writes inside a package-manager window, or by a process whose ancestor is a package manager, are demoted to Warning unless a cron payload carries obvious persistence tokens. CSM's own managed writes are suppressed by content, not by path.
+
 ## inotify Log Watchers (~2 seconds)
 
 Tails auth, access, and mail logs in real-time. The exact file paths are chosen per platform at daemon startup -- see the `platform: ...` line in the daemon log.
