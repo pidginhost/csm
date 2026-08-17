@@ -352,6 +352,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "check_timeout", Category: CategoryCorrelation},
 	{Name: "config_reload_error", Category: CategoryCorrelation},
 	{Name: "config_reload_restart_required", Category: CategoryCorrelation},
+	{Name: "yara_forge_rollback", Category: CategoryCorrelation},
 	{Name: "coordinated_attack", Category: CategoryCorrelation},
 	{Name: "csm_health", Category: CategoryCorrelation},
 	{Name: "fanotify_kernel_overflow", Category: CategoryCorrelation},

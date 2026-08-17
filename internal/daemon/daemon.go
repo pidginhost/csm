@@ -3231,6 +3231,20 @@ func (d *Daemon) doSignatureUpdate() {
 	d.reloadSignatures()
 }
 
+// forgeRollbackNeeded reports whether a freshly installed Forge ruleset has to
+// be undone, given the scanner's rule total after reload and the number of
+// rules the new archive carries. A total that cannot even account for the new
+// archive means it did not compile in.
+//
+// The pre-reload total is deliberately not consulted. It includes the Forge
+// rules being replaced, so an upstream release carrying fewer rules than the
+// installed one reads as a conflict, and the recovery action then deletes the
+// entire Forge file -- discarding thousands of working rules over a decrease of
+// a few dozen.
+func forgeRollbackNeeded(newCount, forgeRuleCount int) bool {
+	return newCount < forgeRuleCount
+}
+
 func (d *Daemon) doForgeUpdate() {
 	// yara.Active() resolves to the in-process scanner or the worker
 	// supervisor depending on signatures.yara_worker_enabled; both
@@ -3267,9 +3281,6 @@ func (d *Daemon) doForgeUpdate() {
 
 	fmt.Fprintf(os.Stderr, "[%s] YARA Forge update: %d rules (version %s)\n", ts(), count, newVersion)
 
-	// Record rule count before reload to detect conflicts with existing .yar files.
-	prevCount := yaraScanner.RuleCount()
-
 	if err := yaraScanner.Reload(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA rule reload after Forge update error: %v\n", ts(), err)
 		return // don't store version - retry next cycle
@@ -3279,12 +3290,15 @@ func (d *Daemon) doForgeUpdate() {
 
 	// If rule count dropped, the Forge file likely conflicts with existing rules.
 	// Roll back: remove the Forge file, reload again, don't store version.
-	if newCount < prevCount {
+	if forgeRollbackNeeded(newCount, count) {
 		forgeFile := filepath.Join(d.cfg.Signatures.RulesDir, fmt.Sprintf("yara-forge-%s.yar", d.cfg.Signatures.YaraForge.Tier))
-		fmt.Fprintf(os.Stderr, "[%s] YARA Forge rollback: rule count dropped %d -> %d (conflict with existing rules), removing %s\n",
-			ts(), prevCount, newCount, forgeFile)
 		_ = os.Remove(forgeFile)
 		_ = yaraScanner.Reload()
+		// Losing a ruleset this size is a coverage collapse, so it has to be
+		// alertable rather than a line on stderr that the journal rotates away.
+		d.emitReloadFinding(alert.Critical, "yara_forge_rollback", fmt.Sprintf(
+			"YARA Forge update rolled back: %d rules downloaded but only %d loaded, so %s was removed. Scanning continues on the remaining rules.",
+			count, newCount, forgeFile))
 		return // don't store version
 	}
 
