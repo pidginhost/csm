@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,9 +18,14 @@ import (
 // is slower on a deep queue but never long-running.
 const eximQueueTimeout = 30 * time.Second
 
+var errEximNotInstalled = errors.New("exim is not installed")
+
 func CheckMailQueue(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	count, err := eximQueueCount(ctx)
 	if err != nil {
+		if errors.Is(err, errEximNotInstalled) {
+			return nil
+		}
 		// A queue depth CSM cannot read is a monitoring blind spot, not a
 		// clean bill of health. Reporting nothing here is what let a fully
 		// broken probe run unnoticed on a production host for months.
@@ -59,13 +65,17 @@ func CheckMailQueue(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 // sandbox. Hosts without systemd-run have no sandbox to escape and call exim
 // directly.
 func eximQueueCount(parent context.Context) (int, error) {
+	eximPath, err := cmdExec.LookPath("exim")
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", errEximNotInstalled, err)
+	}
 	ctx, cancel := context.WithTimeout(parent, eximQueueTimeout)
 	defer cancel()
 
 	out, err := systemdrun.Run(ctx, cmdExec.LookPath, cmdExec.RunContextStdout, systemdrun.Options{
 		Pipe:       true,
 		RuntimeMax: eximQueueTimeout,
-	}, "exim", "-bpc")
+	}, eximPath, "-bpc")
 	if err != nil {
 		return 0, fmt.Errorf("exim -bpc: %w", err)
 	}

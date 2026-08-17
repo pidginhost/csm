@@ -17,6 +17,7 @@ import (
 
 func TestCheckMailQueueCmdError(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return nil, fmt.Errorf("exec: not found")
 		},
@@ -34,6 +35,7 @@ func TestCheckMailQueueCmdError(t *testing.T) {
 
 func TestCheckMailQueueNilOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return nil, nil
 		},
@@ -49,6 +51,7 @@ func TestCheckMailQueueNilOutput(t *testing.T) {
 
 func TestCheckMailQueueNonNumericOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("not-a-number\n"), nil
 		},
@@ -64,6 +67,7 @@ func TestCheckMailQueueNonNumericOutput(t *testing.T) {
 
 func TestCheckMailQueueBelowThreshold(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "exim" && len(args) > 0 && args[0] == "-bpc" {
 				return []byte("5\n"), nil
@@ -82,6 +86,7 @@ func TestCheckMailQueueBelowThreshold(t *testing.T) {
 
 func TestCheckMailQueueWarning(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("150\n"), nil
 		},
@@ -106,6 +111,7 @@ func TestCheckMailQueueWarning(t *testing.T) {
 
 func TestCheckMailQueueCritical(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("  600  \n"), nil // whitespace-padded
 		},
@@ -130,6 +136,7 @@ func TestCheckMailQueueCritical(t *testing.T) {
 
 func TestCheckMailQueueExactWarnBoundary(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("100\n"), nil
 		},
@@ -148,6 +155,7 @@ func TestCheckMailQueueExactWarnBoundary(t *testing.T) {
 
 func TestCheckMailQueueExactCritBoundary(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("500\n"), nil
 		},
@@ -166,6 +174,7 @@ func TestCheckMailQueueExactCritBoundary(t *testing.T) {
 
 func TestCheckMailQueueZeroCount(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			return []byte("0\n"), nil
 		},

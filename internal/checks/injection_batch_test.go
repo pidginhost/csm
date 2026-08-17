@@ -131,9 +131,9 @@ func TestCheckMailQueueNoExim(t *testing.T) {
 	cfg.Thresholds.MailQueueWarn = 100
 	cfg.Thresholds.MailQueueCrit = 500
 	findings := CheckMailQueue(context.Background(), cfg, nil)
-	// A host with no exim cannot be assumed to have an empty queue.
-	if len(findings) != 1 || findings[0].Check != "mail_queue_unavailable" {
-		t.Fatalf("a missing exim must be reported, got %v", findingChecks(findings))
+	// Plain Linux and Postfix hosts do not have an Exim queue to inspect.
+	if len(findings) != 0 {
+		t.Fatalf("a host without exim must skip the Exim-only check, got %v", findingChecks(findings))
 	}
 }
 

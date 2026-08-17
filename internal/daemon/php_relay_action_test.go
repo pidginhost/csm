@@ -87,6 +87,24 @@ func TestFreezeErrIsAlreadyGone(t *testing.T) {
 	}
 }
 
+func TestDefaultRunnerEscapesTheDaemonSandbox(t *testing.T) {
+	oldLookPath, oldCommand := defaultRunnerLookPath, defaultRunnerCommand
+	t.Cleanup(func() { defaultRunnerLookPath, defaultRunnerCommand = oldLookPath, oldCommand })
+	defaultRunnerLookPath = func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+	var calls []string
+	defaultRunnerCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		return nil, nil
+	}
+
+	if _, err := (defaultRunner{}).Run(context.Background(), "/usr/sbin/exim", []string{"-Mf", "1wHpIU-0000000G8Fo-1FA1"}); err != nil {
+		t.Fatalf("default runner: %v", err)
+	}
+	if len(calls) != 2 || !strings.HasSuffix(calls[1], "/usr/sbin/exim -Mf 1wHpIU-0000000G8Fo-1FA1") {
+		t.Fatalf("Exim action did not run once after the transient-service probe: %v", calls)
+	}
+}
+
 func TestSpoolScanMatchingScript_ReturnsMatchingMsgIDs(t *testing.T) {
 	spoolRoot := t.TempDir()
 	sub := filepath.Join(spoolRoot, "k")
@@ -318,5 +336,22 @@ func TestStructuredAuditor_WritesJSONLines(t *testing.T) {
 	}
 	if !strings.Contains(out, `"msg_id":"id1"`) {
 		t.Errorf("missing msg_id field: %q", out)
+	}
+}
+
+// The freeze audit log records the field as "stderr", and operators read it to
+// see why an exim action failed. Capturing combined output instead would put
+// ordinary stdout into a field consumers parse as diagnostics.
+func TestDefaultRunnerCommandReturnsStderrNotStdout(t *testing.T) {
+	out, err := defaultRunnerCommand(context.Background(), "/bin/sh", "-c", "echo on-stdout; echo on-stderr >&2; exit 3")
+
+	if err == nil {
+		t.Fatal("a non-zero exit must surface an error")
+	}
+	if strings.Contains(string(out), "on-stdout") {
+		t.Errorf("runner output = %q, must not include stdout", out)
+	}
+	if !strings.Contains(string(out), "on-stderr") {
+		t.Errorf("runner output = %q, want the command's stderr", out)
 	}
 }

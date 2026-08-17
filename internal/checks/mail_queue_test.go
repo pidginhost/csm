@@ -26,6 +26,13 @@ func findingChecks(findings []alert.Finding) []string {
 	return out
 }
 
+func eximQueueLookPath(file string) (string, error) {
+	if file == "exim" {
+		return "exim", nil
+	}
+	return "", exec.ErrNotFound
+}
+
 // The daemon runs under ProtectSystem=strict, and exim aborts when it cannot
 // open its own log for append. On a live cPanel host every direct `exim -bpc`
 // failed with "Cannot open main log file", so the queue depth was never read.
@@ -38,7 +45,7 @@ func TestCheckMailQueueRunsEximOutsideTheSandbox(t *testing.T) {
 			if file == "systemd-run" {
 				return "/usr/bin/systemd-run", nil
 			}
-			return "", exec.ErrNotFound
+			return eximQueueLookPath(file)
 		},
 		runContextStdout: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			gotName, gotArgs = name, args
@@ -64,7 +71,7 @@ func TestCheckMailQueueRunsEximOutsideTheSandbox(t *testing.T) {
 func TestCheckMailQueueRunsEximDirectlyWithoutSystemdRun(t *testing.T) {
 	var gotName string
 	withMockCmd(t, &mockCmd{
-		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		lookPath: eximQueueLookPath,
 		runContextStdout: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			gotName = name
 			return []byte("7\n"), nil
@@ -86,7 +93,12 @@ func TestCheckMailQueueRunsEximDirectlyWithoutSystemdRun(t *testing.T) {
 func TestCheckMailQueueRetriesUnwrappedWhenBusUnreachable(t *testing.T) {
 	var calls []string
 	withMockCmd(t, &mockCmd{
-		lookPath: func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		lookPath: func(file string) (string, error) {
+			if file == "systemd-run" {
+				return "/usr/bin/systemd-run", nil
+			}
+			return eximQueueLookPath(file)
+		},
 		runContextStdout: func(_ context.Context, name string, args ...string) ([]byte, error) {
 			calls = append(calls, name)
 			if name == "/usr/bin/systemd-run" {
@@ -111,7 +123,7 @@ func TestCheckMailQueueRetriesUnwrappedWhenBusUnreachable(t *testing.T) {
 // to be visible.
 func TestCheckMailQueueReportsBlindSpotWhenProbeFails(t *testing.T) {
 	withMockCmd(t, &mockCmd{
-		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		lookPath: eximQueueLookPath,
 		runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("exim: Cannot open main log file"), errors.New("exit status 1")
 		},
@@ -134,7 +146,7 @@ func TestCheckMailQueueReportsBlindSpotWhenProbeFails(t *testing.T) {
 // which is the same blind spot as an outright failure.
 func TestCheckMailQueueReportsBlindSpotOnUnparseableOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
-		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		lookPath: eximQueueLookPath,
 		runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("not a number\n"), nil
 		},
@@ -149,7 +161,7 @@ func TestCheckMailQueueReportsBlindSpotOnUnparseableOutput(t *testing.T) {
 
 func TestCheckMailQueueCriticalAboveThreshold(t *testing.T) {
 	withMockCmd(t, &mockCmd{
-		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		lookPath: eximQueueLookPath,
 		runContextStdout: func(context.Context, string, ...string) ([]byte, error) {
 			return []byte("900\n"), nil
 		},

@@ -114,11 +114,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	}
 
 	allowedVarLogWritePaths := map[string]bool{
-		"/var/log/csm":             true,
-		"-/var/log/exim_mainlog":   true,
-		"-/var/log/exim_paniclog":  true,
-		"-/var/log/exim_rejectlog": true,
-		"-/var/log/exim4":          true,
+		"/var/log/csm": true,
 	}
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")

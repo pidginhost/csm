@@ -13,9 +13,7 @@
 package systemdrun
 
 import (
-	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -45,31 +43,26 @@ func Argv(systemdRunPath string, opt Options, name string, args ...string) (stri
 		flags = append(flags, "--wait")
 	}
 	if opt.RuntimeMax > 0 {
-		flags = append(flags, fmt.Sprintf("--property=RuntimeMaxSec=%ds", int(opt.RuntimeMax.Seconds())))
+		flags = append(flags, "--property=RuntimeMaxSec="+formatRuntimeMax(opt.RuntimeMax))
 	}
 	flags = append(flags, "--")
 	flags = append(flags, name)
 	return systemdRunPath, append(flags, args...)
 }
 
-// Unavailable reports whether a failed wrapped run means systemd-run itself
-// could not start the unit, in which case the caller should retry the command
-// directly. A non-zero exit from the wrapped command is a real failure and is
-// never reported here -- retrying that would run the command twice and mask the
-// error.
-func Unavailable(output []byte, err error) bool {
-	if errors.Is(err, exec.ErrNotFound) {
-		return true
+func formatRuntimeMax(d time.Duration) string {
+	// systemd time spans have microsecond granularity. Round a positive
+	// sub-microsecond duration up so it never becomes the special zero value,
+	// then render fractional seconds without float rounding.
+	microseconds := d / time.Microsecond
+	if d%time.Microsecond != 0 {
+		microseconds++
 	}
-	lower := strings.ToLower(string(output))
-	for _, needle := range []string{
-		"failed to connect to bus",
-		"failed to create bus connection",
-		"system has not been booted with systemd",
-	} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
+	seconds := microseconds / 1_000_000
+	fraction := microseconds % 1_000_000
+	if fraction == 0 {
+		return fmt.Sprintf("%ds", seconds)
 	}
-	return false
+	fractionText := strings.TrimRight(fmt.Sprintf("%06d", fraction), "0")
+	return fmt.Sprintf("%d.%ss", seconds, fractionText)
 }
