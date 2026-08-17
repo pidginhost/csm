@@ -68,6 +68,47 @@ type phpIniWalkBudget struct {
 
 	accountDirs    int
 	accountEntries int
+
+	// maxDirs is the operator-set per-root ceiling. It rides on the budget
+	// rather than on the package var so concurrent per-account scans cannot
+	// overwrite each other's limit. Zero falls back to the package default.
+	maxDirs int
+
+	// limitHit distinguishes a walk stopped by one of the configured ceilings
+	// from one stopped by an unreadable directory. Both leave the scan
+	// incomplete, but only the first means coverage can be bought back by
+	// raising a setting, so the operator has to be told which happened.
+	limitHit bool
+}
+
+// phpIniIncompleteReason explains why a walk below root did not finish. A
+// ceiling that stopped it is reported with the distance covered and the setting
+// that raises it; anything else is left as an unreadable-entry report.
+func phpIniIncompleteReason(root string, b *phpIniWalkBudget) string {
+	if b != nil && b.limitHit {
+		return fmt.Sprintf(
+			"Scanning below %s stopped after %d directories, the per-root limit, so the rest was not examined for PHP configuration files. Raise thresholds.php_config_walk_max_dirs to cover the whole account.",
+			root, b.dirs,
+		)
+	}
+	return fmt.Sprintf("Could not finish scanning PHP configuration files below %s.", root)
+}
+
+// dirLimit is the per-root directory ceiling in force for this walk.
+// phpIniConfiguredMaxDirs reads the operator's per-root ceiling, tolerating a
+// nil config so callers that scan without one keep the built-in default.
+func phpIniConfiguredMaxDirs(cfg *config.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Thresholds.PHPConfigWalkMaxDirs
+}
+
+func (b *phpIniWalkBudget) dirLimit() int {
+	if b.maxDirs > 0 {
+		return b.maxDirs
+	}
+	return phpIniWalkMaxDirs
 }
 
 func (b *phpIniWalkBudget) startRoot() {
@@ -93,7 +134,7 @@ func (b *phpIniWalkBudget) addEntry() {
 // account's document roots for settings that weaken PHP security (disable_functions
 // cleared or neutralized, allow_url_include enabled, open_basedir removed). It runs
 // as a deep check; the fanotify watcher also catches these writes in real-time.
-func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
+func CheckPHPConfigChanges(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 	accountScope := AccountFromContext(ctx)
 
@@ -244,14 +285,11 @@ func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.S
 		}
 
 		var iniPaths []string
-		walkBudget := &phpIniWalkBudget{}
+		walkBudget := &phpIniWalkBudget{maxDirs: phpIniConfiguredMaxDirs(cfg)}
 		for _, root := range roots {
 			paths, complete := collectPHPIniFilesWithBudget(ctx, root, phpIniWalkMaxDepth, walkBudget)
 			if !complete {
-				recordIncomplete(fmt.Sprintf(
-					"Could not finish scanning PHP configuration files below %s.",
-					root,
-				))
+				recordIncomplete(phpIniIncompleteReason(root, walkBudget))
 			}
 			iniPaths = append(iniPaths, paths...)
 		}
@@ -559,6 +597,7 @@ func collectPHPIniFilesWithBudget(
 	}
 
 	if budget.accountExhausted() {
+		budget.limitHit = true
 		return nil, false
 	}
 	budget.startRoot()
@@ -576,14 +615,16 @@ func collectPHPIniFilesWithBudget(
 		visitComplete, err := forEachPHPIniDirEntry(ctx, dir.path, func(e os.DirEntry) bool {
 			budget.addEntry()
 			if budget.entries > phpIniWalkMaxEntries || budget.accountEntries > phpIniWalkAccountMaxEntries {
+				budget.limitHit = true
 				return false
 			}
 			name := e.Name()
 			full := filepath.Join(dir.path, name)
 			if e.IsDir() {
 				if maxDepth < 0 || dir.depth < maxDepth {
-					if budget.dirs >= phpIniWalkMaxDirs || budget.accountDirs >= phpIniWalkAccountMaxDirs {
+					if budget.dirs >= budget.dirLimit() || budget.accountDirs >= phpIniWalkAccountMaxDirs {
 						complete = false
+						budget.limitHit = true
 						return true
 					}
 					queue = append(queue, pendingDir{path: full, depth: dir.depth + 1, observed: true})

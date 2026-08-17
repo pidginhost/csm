@@ -717,6 +717,10 @@ thresholds:
   exposed_file_scan_depth: 2
   brute_force_window: 5000
   domlog_max_files: 500
+  # Directories walked below one document root when scanning for PHP
+  # configuration files. Reaching it leaves the rest of that root
+  # unexamined and reports the scan as incomplete.
+  php_config_walk_max_dirs: 50000
   domlog_tail_lines: 500
   domlog_max_age_min: 30
   mail_log_tail_lines: 500

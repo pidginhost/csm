@@ -264,6 +264,14 @@ type Config struct {
 		// with many active domains so late-alphabet sites are not skipped.
 		DomlogMaxFiles int `yaml:"domlog_max_files"`
 
+		// PHPConfigWalkMaxDirs caps how many directories the PHP configuration
+		// scan walks below a single document root. Reaching it leaves the rest
+		// of that root unexamined, which is reported as an incomplete scan.
+		// Shared-hosting accounts routinely carry tens of thousands of
+		// directories under vendor and node_modules trees, so raise this rather
+		// than accept the gap. Default 50000.
+		PHPConfigWalkMaxDirs int `yaml:"php_config_walk_max_dirs"`
+
 		// AccountScanMaxFiles caps how many account and mail-domain paths
 		// account-scoped scanners iterate per cycle. This covers SSH keys,
 		// cPanel API tokens, Dovecot shadow files, CMS DB scans, forwarders,
@@ -1657,6 +1665,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.BruteForceWindow == 0 {
 		cfg.Thresholds.BruteForceWindow = 5000
+	}
+	if cfg.Thresholds.PHPConfigWalkMaxDirs <= 0 {
+		cfg.Thresholds.PHPConfigWalkMaxDirs = 50000
 	}
 	if cfg.Thresholds.DomlogMaxFiles == 0 {
 		cfg.Thresholds.DomlogMaxFiles = 500
