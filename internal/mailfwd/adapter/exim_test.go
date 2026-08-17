@@ -17,7 +17,7 @@ func TestBuildEximConfArgv(t *testing.T) {
 		t.Fatalf("name = %q, want /usr/bin/systemd-run", name)
 	}
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--quiet", "--collect", "--wait", "--property=" + buildEximConfRuntimeMaxSec} {
+	for _, want := range []string{"--quiet", "--collect", "--wait", "--property=RuntimeMaxSec=120s"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("args missing %s: %v", want, args)
 		}
@@ -34,8 +34,8 @@ func TestBuildEximConfArgv(t *testing.T) {
 	if name != buildEximConfScript {
 		t.Errorf("name = %q, want %q", name, buildEximConfScript)
 	}
-	if len(args) != 0 {
-		t.Errorf("direct invocation must have no args, got %v", args)
+	if args != nil {
+		t.Errorf("direct invocation must preserve the bare script with nil args, got %v", args)
 	}
 }
 
@@ -69,21 +69,24 @@ func TestRunBuildEximConfCommandFallsBackWhenSystemdBusUnavailable(t *testing.T)
 }
 
 func TestRunBuildEximConfCommandDoesNotFallbackWhenTransientServiceFails(t *testing.T) {
-	var calls int
-	run := func(_ context.Context, name string, _ ...string) ([]byte, error) {
-		calls++
+	var calls []string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
 		if name != "/usr/bin/systemd-run" {
 			t.Fatalf("unexpected fallback to %q", name)
 		}
-		return []byte("Job for run-csm.service failed because the control process exited with error code."), errors.New("exit status 1")
+		if strings.HasSuffix(calls[len(calls)-1], "/bin/true") {
+			return nil, nil
+		}
+		return []byte("Failed to connect to bus: buildeximconf dependency unavailable"), errors.New("exit status 1")
 	}
 
 	err := runBuildEximConfCommand(context.Background(), "/usr/bin/systemd-run", run)
 	if err == nil {
 		t.Fatal("expected transient service failure to be returned")
 	}
-	if calls != 1 {
-		t.Fatalf("calls = %d, want 1", calls)
+	if len(calls) != 2 {
+		t.Fatalf("calls = %v, want an availability probe and one buildeximconf invocation", calls)
 	}
 }
 

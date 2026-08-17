@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // QueueComposition is the makeup of the exim queue: how much is real mail still
@@ -43,6 +45,15 @@ var (
 	queueMsgIDRe = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A-Za-z]{2}|[0-9A-Za-z]{11}-[0-9A-Za-z]{4})$`)
 	queueAgeRe   = regexp.MustCompile(`^\d+[smhdw]$`)
 	queueSizeRe  = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmgt]?$`)
+)
+
+var (
+	eximLookPath = exec.LookPath
+	eximRun      = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- name is either the resolved systemd-run path or Exim,
+		// and args contain fixed flags plus validated Exim message IDs.
+		return exec.CommandContext(ctx, name, args...).Output()
+	}
 )
 
 // ParseQueue parses `exim -bp` output into a composition summary.
@@ -261,5 +272,16 @@ func (s *EximQueueSource) Composition() (QueueComposition, error) {
 func runEximBp() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, "exim", "-bp").Output()
+	return runEximCommand(ctx, 10*time.Second, "-bp")
+}
+
+func runEximCommand(ctx context.Context, runtimeMax time.Duration, args ...string) ([]byte, error) {
+	eximPath, err := eximLookPath("exim")
+	if err != nil {
+		return nil, err
+	}
+	return systemdrun.Run(ctx, eximLookPath, eximRun, systemdrun.Options{
+		Pipe:       true,
+		RuntimeMax: runtimeMax,
+	}, eximPath, args...)
 }

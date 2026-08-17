@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -102,11 +103,7 @@ func TestCheckWAFStatusDetectionOnlyEmitsHigh(t *testing.T) {
 		}
 	}
 	if !hasDetectionOnly {
-		// Detection of modsec via scanned config requires modsec to be
-		// "active" per modsecDetected. If our mock didn't trip the
-		// detector, the test is logically a no-op but shouldn't fail —
-		// just log so we have visibility.
-		t.Logf("modsec activation mock didn't trip detector; findings=%+v", findings)
+		t.Errorf("expected high waf_detection_only finding, got: %+v", findings)
 	}
 }
 
@@ -119,11 +116,22 @@ func TestCheckWAFStatusNoRulesEmitsHigh(t *testing.T) {
 		ApacheConfigDir: "/usr/local/apache",
 	})
 
-	// Mock cPanel modsec_get_vendors to return no vendors.
+	// ModSecurity is installed, but cPanel and the filesystem report no rules.
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
-			if name == "whmapi1" {
-				return []byte("vendors: []\n"), nil // no vendors
+			if name != "whmapi1" || len(args) == 0 {
+				return nil, nil
+			}
+			switch args[0] {
+			case "modsec_is_installed":
+				return []byte("installed: 1\n"), nil
+			case "modsec_get_configs":
+				if len(args) == 2 && args[1] == "--output=json" {
+					return []byte(`{"data":{"configs":[]},"metadata":{"result":1}}`), nil
+				}
+				return []byte(""), nil
+			case "modsec_get_vendors":
+				return []byte("vendors: []\n"), nil
 			}
 			return nil, nil
 		},
@@ -144,16 +152,80 @@ func TestCheckWAFStatusNoRulesEmitsHigh(t *testing.T) {
 	})
 
 	findings := CheckWAFStatus(context.Background(), &config.Config{}, nil)
-	// Fingerprint expected outcomes — at minimum we exercised the cPanel branch.
-	t.Logf("cPanel no-rules findings: %d", len(findings))
+	for _, finding := range findings {
+		if finding.Check == "waf_rules" && finding.Severity == alert.High {
+			return
+		}
+	}
+	t.Fatalf("expected high waf_rules finding, got: %+v", findings)
+}
+
+func TestCheckWAFStatusInactiveVendorConfigDoesNotCountAsLoaded(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		Panel:           ptrPanel(platform.PanelCPanel),
+		WebServer:       ptrWebServer(platform.WSApache),
+		ApacheConfigDir: "/usr/local/apache",
+	})
+
+	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+		if name != "whmapi1" || len(args) == 0 {
+			return nil, nil
+		}
+		switch args[0] {
+		case "modsec_is_installed":
+			return []byte("installed: 1\n"), nil
+		case "modsec_get_configs":
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte(`{"data":{"configs":[{"active":0,"config":"modsec_vendor_configs/OWASP3/rules.conf","vendor_id":"OWASP3"}]},"metadata":{"result":1}}`), nil
+			}
+			return []byte(""), nil
+		case "modsec_get_vendors":
+			if len(args) == 2 && args[1] == "--output=json" {
+				return []byte(`{"data":{"vendors":[{"enabled":1,"installed":1,"path":"/usr/local/apache/conf/modsec_vendor_configs/OWASP3","vendor_id":"OWASP3"}]},"metadata":{"result":1}}`), nil
+			}
+			return []byte("vendor_id: OWASP3\nenabled: 1\n"), nil
+		}
+		return nil, nil
+	}})
+	withMockOS(t, &mockOS{readDir: func(name string) ([]os.DirEntry, error) {
+		switch name {
+		case "/usr/local/apache/conf/modsec_vendor_configs":
+			return []os.DirEntry{testDirEntry{name: "OWASP3", isDir: true}}, nil
+		case "/usr/local/apache/conf/modsec_vendor_configs/OWASP3":
+			return []os.DirEntry{testDirEntry{name: "REQUEST-901-INITIALIZATION.conf"}}, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+
+	findings := CheckWAFStatus(context.Background(), &config.Config{}, nil)
+	for _, finding := range findings {
+		if finding.Check == "waf_rules" && finding.Severity == alert.High {
+			return
+		}
+	}
+	t.Fatalf("expected inactive vendor config to produce waf_rules finding, got: %+v", findings)
+}
+
+func TestProbeWAFRulesCountsActiveCustomConfig(t *testing.T) {
+	withMockCmd(t, &mockCmd{run: func(name string, args ...string) ([]byte, error) {
+		if name != "whmapi1" || len(args) != 2 || args[0] != "modsec_get_configs" || args[1] != "--output=json" {
+			return nil, fmt.Errorf("unexpected command: %s %v", name, args)
+		}
+		return []byte(`{"data":{"configs":[{"active":1,"config":"modsec2.custom.conf","vendor_id":""}]},"metadata":{"result":1}}`), nil
+	}})
+
+	info := platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSApache}
+	if !probeWAFRules(info, nil) {
+		t.Fatal("an active custom ModSecurity config must count as loaded rules")
+	}
 }
 
 // Regression for the cPanel+LiteSpeed false positive seen at 01:00:55 when
 // cPanel's nightly modsec_assemble job was mid-rebuild. whmapi1
-// modsec_get_vendors transiently returns empty, and before this fix
-// modsecRuleDirs had no WSLiteSpeed case, so the filesystem probe could
-// not backstop the whmapi1 result and the "no WAF rules loaded" alert
-// fired even though the vendor rules were physically present on disk.
+// modsec_get_configs transiently returns no active configs. The filesystem
+// backstop must still recognize the vendor rules already visible on disk.
 func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
@@ -170,9 +242,12 @@ func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.
 			switch args[0] {
 			case "modsec_is_installed":
 				return []byte("installed: 1\n"), nil
-			case "modsec_get_vendors":
-				// Reassembly window: cPanel hasn't re-populated the
-				// vendor list yet. Treat as "no data", not "no rules".
+			case "modsec_get_configs":
+				if len(args) == 2 && args[1] == "--output=json" {
+					// Reassembly window: WHM has not re-populated its active
+					// config list, but assembled rules are already visible.
+					return []byte(`{"data":{"configs":[]},"metadata":{"result":1}}`), nil
+				}
 				return []byte(""), nil
 			}
 			return nil, nil
@@ -181,12 +256,8 @@ func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.
 
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
-			// oldestRuleArtifact joins dir + "/" + entry.Name(), which
-			// can produce a "//" when the parent already ends in "/".
-			// Match both shapes.
-			clean := strings.ReplaceAll(name, "//", "/")
-			switch clean {
-			case "/etc/apache2/conf.d/modsec_vendor_configs/":
+			switch name {
+			case "/etc/apache2/conf.d/modsec_vendor_configs":
 				return []os.DirEntry{testDirEntry{name: "comodo_litespeed", isDir: true}}, nil
 			case "/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed":
 				return []os.DirEntry{
@@ -241,10 +312,9 @@ func TestCheckWAFStatusModsecAssembleRetryRecovers(t *testing.T) {
 		return nil, os.ErrNotExist
 	}
 
-	// First whmapi1 modsec_get_vendors call returns empty (mid-rewrite);
-	// the second returns the populated vendor list. modsec_is_installed
-	// always returns "installed".
-	getVendorsCalls := 0
+	// The first active-config call returns empty (mid-rewrite); the second reports
+	// an active vendor config. modsec_is_installed always returns "installed".
+	getConfigsCalls := 0
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
 			if name != "whmapi1" || len(args) == 0 {
@@ -253,17 +323,25 @@ func TestCheckWAFStatusModsecAssembleRetryRecovers(t *testing.T) {
 			switch args[0] {
 			case "modsec_is_installed":
 				return []byte("installed: 1\n"), nil
-			case "modsec_get_vendors":
-				getVendorsCalls++
-				if getVendorsCalls == 1 {
-					return []byte(""), nil
+			case "modsec_get_configs":
+				if len(args) == 2 && args[1] == "--output=json" {
+					getConfigsCalls++
+					if getConfigsCalls == 1 {
+						return []byte(`{"data":{"configs":[]},"metadata":{"result":1}}`), nil
+					}
+					return []byte(`{"data":{"configs":[{"active":1,"config":"modsec_vendor_configs/comodo_litespeed/rules.conf","vendor_id":"comodo_litespeed"}]},"metadata":{"result":1}}`), nil
 				}
-				return []byte("vendor_id: comodo_litespeed\n"), nil
+				return []byte(""), nil
+			case "modsec_get_vendors":
+				if len(args) == 2 && args[1] == "--output=json" {
+					return []byte(`{"data":{"vendors":[{"enabled":1,"installed":1,"path":"/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed","vendor_id":"comodo_litespeed"}]},"metadata":{"result":1}}`), nil
+				}
+				return []byte(""), nil
 			}
 			return nil, nil
 		},
 	})
-	// Filesystem stays empty across both probes — recovery comes from
+	// Filesystem stays empty across both probes -- recovery comes from
 	// the second whmapi1 call alone.
 	withMockOS(t, &mockOS{
 		open:     modsecOnFile,
@@ -278,14 +356,14 @@ func TestCheckWAFStatusModsecAssembleRetryRecovers(t *testing.T) {
 			t.Fatalf("retry recovery should suppress waf_rules; got %+v", f)
 		}
 	}
-	if getVendorsCalls != 2 {
-		t.Errorf("expected 2 whmapi1 modsec_get_vendors calls (initial + retry), got %d", getVendorsCalls)
+	if getConfigsCalls != 3 {
+		t.Errorf("active-config calls = %d, want initial probe, retry, and age check", getConfigsCalls)
 	}
 }
 
 // Real "no rules" cPanel+LiteSpeed host: both probes empty. The check
 // must still alert in the same scan (don't shift detection to the
-// next deep tier) — the retry is a debounce, not a defer.
+// next deep tier) -- the retry is a debounce, not a defer.
 func TestCheckWAFStatusModsecAssembleRetryStillAlertsWhenTrulyEmpty(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
@@ -300,8 +378,16 @@ func TestCheckWAFStatusModsecAssembleRetryStillAlertsWhenTrulyEmpty(t *testing.T
 
 	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
-			if name == "whmapi1" && len(args) > 0 && args[0] == "modsec_is_installed" {
+			if name != "whmapi1" || len(args) == 0 {
+				return nil, nil
+			}
+			switch args[0] {
+			case "modsec_is_installed":
 				return []byte("installed: 1\n"), nil
+			case "modsec_get_configs":
+				if len(args) == 2 && args[1] == "--output=json" {
+					return []byte(`{"data":{"configs":[]},"metadata":{"result":1}}`), nil
+				}
 			}
 			return []byte(""), nil
 		},

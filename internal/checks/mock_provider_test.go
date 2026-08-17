@@ -17,21 +17,29 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockOS struct {
-	readFile  func(string) ([]byte, error)
-	readDir   func(string) ([]os.DirEntry, error)
-	stat      func(string) (os.FileInfo, error)
-	lstat     func(string) (os.FileInfo, error)
-	readlink  func(string) (string, error)
-	open      func(string) (*os.File, error)
-	writeFile func(string, []byte, os.FileMode) error
-	mkdirAll  func(string, os.FileMode) error
-	remove    func(string) error
-	glob      func(string) ([]string, error)
+	readFile        func(string) ([]byte, error)
+	readRegularFile func(string) ([]byte, error)
+	readDir         func(string) ([]os.DirEntry, error)
+	stat            func(string) (os.FileInfo, error)
+	lstat           func(string) (os.FileInfo, error)
+	readlink        func(string) (string, error)
+	open            func(string) (*os.File, error)
+	writeFile       func(string, []byte, os.FileMode) error
+	mkdirAll        func(string, os.FileMode) error
+	remove          func(string) error
+	glob            func(string) ([]string, error)
 }
 
 func (m *mockOS) ReadFile(name string) ([]byte, error) {
 	if m.readFile != nil {
 		return m.readFile(name)
+	}
+	return nil, os.ErrNotExist
+}
+
+func (m *mockOS) ReadRegularFile(name string) ([]byte, error) {
+	if m.readRegularFile != nil {
+		return m.readRegularFile(name)
 	}
 	return nil, os.ErrNotExist
 }

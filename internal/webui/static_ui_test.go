@@ -1324,6 +1324,7 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 		`id="email-tab-deliverability"`,
 		`id="email-held-tbody"`,
 		`class="csm-toolbar"`,
+		`value="mail_queue_unavailable"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("email.html missing phase-8 hook %q", want)
@@ -1380,6 +1381,25 @@ func TestEmailPageUsesPhase8Primitives(t *testing.T) {
 	} {
 		if strings.Contains(jsText, banned) {
 			t.Errorf("email.js still references removed helper %q", banned)
+		}
+	}
+}
+
+func TestEmailQueueUnavailableDoesNotRenderAsZero(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(js)
+	for _, want := range []string{
+		`'mail_queue_unavailable'`,
+		`if (s.queue_unavailable)`,
+		`if (data.queue_unavailable)`,
+		`qvalue = 'unavailable'`,
+		`hv.textContent = 'unavailable'`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("email.js does not render an unreadable queue distinctly; missing %q", want)
 		}
 	}
 }

@@ -86,6 +86,7 @@ func emailKindForCheck(check string) string {
 		return "malware"
 	case "mail_per_account",
 		"mail_queue",
+		"mail_queue_unavailable",
 		"email_defer_fail_governor",
 		"exim_frozen_realtime":
 		return "queue_alert"
@@ -138,6 +139,8 @@ func emailGroupTitle(kind string, f alert.Finding) string {
 		switch f.Check {
 		case "mail_queue":
 			return "Mail queue threshold"
+		case "mail_queue_unavailable":
+			return "Mail queue unavailable"
 		case "mail_per_account":
 			return "Per-account mail volume"
 		case "exim_frozen_realtime":

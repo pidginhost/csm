@@ -266,6 +266,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "exim_frozen_realtime", Category: CategoryEmail},
 	{Name: "mail_per_account", Category: CategoryEmail},
 	{Name: "mail_queue", Category: CategoryEmail},
+	{Name: "mail_queue_unavailable", Category: CategoryEmail},
 	{Name: "phishing_credential_log", Category: CategoryEmail},
 	{Name: "phishing_directory", Category: CategoryEmail},
 	{Name: "phishing_iframe", Category: CategoryEmail},
