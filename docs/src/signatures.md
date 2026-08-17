@@ -6,6 +6,8 @@ Deep scans are rolling: each scheduled run resumes from a persisted cursor and s
 
 The same rolling walk also feeds the JavaScript keystroke taint analyzer (`js_keylogger_dataflow`, see the deep checks reference). Each consumer keeps its own cursor and completion record, so a missing or failed YARA backend does not stall JavaScript coverage and vice versa.
 
+A rule declaring `file_types: [".php"]` is also applied to `.phps` files. That extension holds PHP source a stock web server displays rather than runs, which makes it a convenient place to park a working payload until a rename brings it live, so it is scanned as PHP rather than ignored. It stays outside the set of extensions CSM treats as executable, so this does not change which files the real-time dropper tracker considers runnable.
+
 Both engines skip raw ZIP, gzip, bzip2, xz, 7z, and RAR containers. Matching compressed bytes or stored filenames produces false positives without inspecting the archived file, so content is scanned when it is extracted onto monitored storage instead. Uncompressed tar files and executable PHP archives (PHAR) remain scannable, and filename-based phishing-kit archive detection is unchanged.
 
 ## YAML Rules

@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A new malware rule catches a remote payload that is fetched and then run with an HTML-mode prefix, the shape used by a dropper that stayed on a production account for nineteen days. The rule requires corroborating evidence that the payload came off the network, so local template engines using the same idiom stay clean.
+
 ### Fixed
+
+- Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it. Attackers used it to park a working dropper one rename away from execution. Such files are now scanned as the PHP source they are, and are still not treated as executable.
 
 - The real-time sensitive-file watcher identified files by inode, so every ordinary rewrite of a system configuration file was reported as a brand-new file appearing while the write itself went unreported. It now identifies files by path and content: a rewrite is reported as a content change, and one that leaves the content identical is not reported at all.
 - A mail rule that forwards to an outside address while the mailbox keeps its own copy is what webmail's own forward option produces, and reporting it as a confirmed interception made every legitimate forward a Critical alert. It remains available for immediate incident review but now reports as a Warning unless independent evidence corroborates it, such as another forwarding layer, mail the mailbox never receives, or coordinated forwarding across accounts.
