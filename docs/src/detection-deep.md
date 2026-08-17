@@ -68,7 +68,7 @@ Current scanner scope:
 |-------|-------------|
 | `dns_zones` | Security-sensitive DNS zone changes (delegation, mail, apex, and wildcard records) |
 | `ssl_certs` | SSL certificate issuance (subdomain takeover) |
-| `waf_status` | WAF mode, staleness, bypass detection. Staleness is measured from the most recently refreshed ruleset: a host keeps the rule tree of every vendor it has ever installed, and a retired tree never changes again, so it would otherwise pin the reported age forever. The `waf_rules_stale` warning therefore means no installed vendor has updated in over a month. |
+| `waf_status` | WAF mode, staleness, bypass detection. On cPanel, staleness follows vendor configuration files that WHM reports as active and ignores retired trees that remain on disk; the warning means at least one loaded vendor has not refreshed in over a month. Other platforms keep the conservative oldest-artifact check so an unused fresh tree cannot hide stale loaded rules. |
 
 ## Email Security
 

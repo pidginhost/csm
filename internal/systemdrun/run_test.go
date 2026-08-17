@@ -38,22 +38,26 @@ func TestRunWrapsCommandWhenSystemdRunIsPresent(t *testing.T) {
 }
 
 func TestRunCallsCommandDirectlyWhenSystemdRunIsMissing(t *testing.T) {
-	var calls []recordedCall
-	lookPath := func(string) (string, error) { return "", exec.ErrNotFound }
-	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		calls = append(calls, recordedCall{name, args})
-		return []byte("29\n"), nil
-	}
+	for _, action := range []string{"-Mrm", "-Mf"} {
+		t.Run(action, func(t *testing.T) {
+			var calls []recordedCall
+			lookPath := func(string) (string, error) { return "", exec.ErrNotFound }
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				return nil, nil
+			}
 
-	if _, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", "-bpc"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(calls) != 1 || calls[0].name != "exim" {
-		t.Fatalf("calls = %+v, want a single direct invocation", calls)
+			if _, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", action, "id"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(calls) != 1 || calls[0].name != "exim" {
+				t.Fatalf("calls = %+v, want a single direct invocation", calls)
+			}
+		})
 	}
 }
 
-func TestRunRetriesUnwrappedWhenSystemdRunCannotStartTheUnit(t *testing.T) {
+func TestRunFallsBackDirectlyWhenProbeCannotStartUnit(t *testing.T) {
 	var calls []recordedCall
 	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
 	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -70,10 +74,10 @@ func TestRunRetriesUnwrappedWhenSystemdRunCannotStartTheUnit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if string(out) != "29\n" {
-		t.Errorf("output = %q, want the retry's stdout", out)
+		t.Errorf("output = %q, want the fallback's stdout", out)
 	}
 	if len(calls) != 2 || calls[1].name != "exim" {
-		t.Fatalf("calls = %+v, want a wrapped attempt then a direct retry", calls)
+		t.Fatalf("calls = %+v, want a failed probe then one direct command", calls)
 	}
 }
 
@@ -102,24 +106,28 @@ func TestRunDoesNotRetryWhenTheCommandItselfFails(t *testing.T) {
 // command has started, that text must never trigger a direct retry: mutating
 // commands such as buildeximconf and exim queue actions are not retry-safe.
 func TestRunDoesNotRetryCommandThatPrintsBusFailure(t *testing.T) {
-	var calls []recordedCall
-	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		calls = append(calls, recordedCall{name, args})
-		if strings.HasSuffix(strings.Join(args, " "), "/bin/true") {
-			return nil, nil
-		}
-		return []byte("Failed to connect to bus: application dependency unavailable"), errors.New("exit status 1")
-	}
+	for _, action := range []string{"-Mrm", "-Mf"} {
+		t.Run(action, func(t *testing.T) {
+			var calls []recordedCall
+			lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				if strings.HasSuffix(strings.Join(args, " "), "/bin/true") {
+					return nil, nil
+				}
+				return []byte("Failed to connect to bus: application dependency unavailable"), errors.New("exit status 1")
+			}
 
-	if _, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", "-Mrm", "id"); err == nil {
-		t.Fatal("the wrapped command failure must be returned")
-	}
-	if len(calls) != 2 {
-		t.Fatalf("calls = %+v, want a harmless probe and exactly one command invocation", calls)
-	}
-	if calls[0].name != "/usr/bin/systemd-run" || calls[1].name != "/usr/bin/systemd-run" {
-		t.Fatalf("calls = %+v, wrapped command must not be retried directly", calls)
+			if _, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", action, "id"); err == nil {
+				t.Fatal("the wrapped command failure must be returned")
+			}
+			if len(calls) != 2 {
+				t.Fatalf("calls = %+v, want a harmless probe and exactly one command invocation", calls)
+			}
+			if calls[0].name != "/usr/bin/systemd-run" || calls[1].name != "/usr/bin/systemd-run" {
+				t.Fatalf("calls = %+v, wrapped command must not be retried directly", calls)
+			}
+		})
 	}
 }
 
@@ -127,26 +135,59 @@ func TestRunDoesNotRetryCommandThatPrintsBusFailure(t *testing.T) {
 // image without /bin/true, or a systemd-run too old for a flag. Giving up there
 // would disable the command entirely, which is strictly worse than running it
 // directly -- the same thing that happens on a host with no systemd-run at all.
-func TestRunFallsBackWhenProbeFailsForAnyReason(t *testing.T) {
-	var calls []recordedCall
-	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
-	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
-		calls = append(calls, recordedCall{name, args})
-		if strings.HasSuffix(strings.Join(args, " "), "/bin/true") {
-			return []byte("Failed to execute /bin/true: No such file or directory"), errors.New("exit status 203")
+func TestRunFallsBackWhenProbeFailsWhileContextActive(t *testing.T) {
+	for _, action := range []string{"-Mrm", "-Mf"} {
+		t.Run(action, func(t *testing.T) {
+			var calls []recordedCall
+			lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				if strings.HasSuffix(strings.Join(args, " "), "/bin/true") {
+					return []byte("Failed to execute /bin/true: No such file or directory"), errors.New("exit status 203")
+				}
+				return []byte("done\n"), nil
+			}
+
+			out, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", action, "id")
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if string(out) != "done\n" {
+				t.Errorf("output = %q, want the direct run's stdout", out)
+			}
+			if len(calls) != 2 || calls[1].name != "exim" {
+				t.Fatalf("calls = %+v, want a failed probe then one direct run", calls)
+			}
+		})
+	}
+}
+
+func TestRunDoesNotStartCommandAfterProbeContextCancellation(t *testing.T) {
+	for _, action := range []string{"-Mrm", "-Mf"} {
+		for _, probeErr := range []error{nil, context.Canceled} {
+			name := "successful_probe"
+			if probeErr != nil {
+				name = "failed_probe"
+			}
+			t.Run(action+"/"+name, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				var calls []recordedCall
+				lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+				run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+					calls = append(calls, recordedCall{name, args})
+					cancel()
+					return nil, probeErr
+				}
+
+				_, err := Run(ctx, lookPath, run, Options{Pipe: true}, "exim", action, "id")
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+				if len(calls) != 1 {
+					t.Fatalf("calls = %+v, canceled probe must not start the command", calls)
+				}
+			})
 		}
-		return []byte("29\n"), nil
-	}
-
-	out, err := Run(context.Background(), lookPath, run, Options{Pipe: true}, "exim", "-bpc")
-
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if string(out) != "29\n" {
-		t.Errorf("output = %q, want the direct run's stdout", out)
-	}
-	if len(calls) != 2 || calls[1].name != "exim" {
-		t.Fatalf("calls = %+v, want a failed probe then a direct run", calls)
 	}
 }
