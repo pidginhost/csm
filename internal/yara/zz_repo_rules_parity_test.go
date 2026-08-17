@@ -316,6 +316,26 @@ $template = file_get_contents(__DIR__ . '/views/page.tpl');
 eval('?>' . $template);`,
 		},
 		{
+			name: "forbidden-function list is not a bind shell",
+			rule: "revshell_php_bind",
+			sample: `<?php
+return ['forbidden' => [
+    'shell_exec(' => 'Avoid shell_exec() - command injection risk.',
+    'socket_bind(' => 'Avoid socket_bind() - binds to ports.',
+    'socket_listen(' => 'Avoid socket_listen() - opens services.',
+]];`,
+		},
+		{
+			name: "socket bind shell",
+			rule: "revshell_php_bind",
+			want: true,
+			sample: `<?php
+$sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_bind($sock, '0.0.0.0', 4444);
+socket_listen($sock, 1);
+$out = shell_exec($cmd);`,
+		},
+		{
 			name:   "remote fetch without HTML-mode eval",
 			rule:   "backdoor_htmlmode_eval",
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
