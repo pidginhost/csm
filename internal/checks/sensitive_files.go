@@ -177,8 +177,6 @@ type SensitiveFileState struct {
 	PathIdentity  string
 }
 
-const sensitiveRegularPathIdentityPrefix = "type\x000"
-
 // NextSensitiveDigests builds the state snapshot for a refresh cycle and
 // returns the exact readable regular-file content behind each digest. A path
 // whose content cannot be read keeps its previous digest so a transient read

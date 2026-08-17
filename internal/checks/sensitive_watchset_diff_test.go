@@ -57,6 +57,11 @@ func findingFor(t *testing.T, findings []alert.Finding, path string) alert.Findi
 	return alert.Finding{}
 }
 
+// sensitiveRegularPathIdentityPrefix is the identity prefix sensitiveResolvedIdentity
+// emits for a regular file (mode type 0). Tests build synthetic states from it so a
+// state that stands for an ordinary file is distinguishable from a symlink one.
+const sensitiveRegularPathIdentityPrefix = "type\x000"
+
 func sensitiveStates(digests map[string]string) map[string]SensitiveFileState {
 	states := make(map[string]SensitiveFileState, len(digests))
 	for path, digest := range digests {
