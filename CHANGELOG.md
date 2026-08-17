@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A new malware rule catches PHP source that is assembled at run time and executed with an HTML-mode prefix, either fetched from a remote address or rebuilt through a decoder. It found two backdoors that had been resident on a production account since July 2024, and matched nothing among the many template engines that use the same idiom for local templates.
+- A new malware rule catches PHP source that is rebuilt at run time, through a decoder or a call resolved at run time, and then executed with an HTML-mode prefix. Template engines using the same idiom to render local templates are unaffected, since they concatenate the template as read.
 
 ### Fixed
 
-- Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it. Attackers used it to park a working dropper one rename away from execution. Such files are now scanned as the PHP source they are, in scheduled, rolling, and real-time paths alike, and are still not treated as executable.
+- Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it, which makes it a place to park a payload one rename away from execution. They are now scanned as the PHP source they are, in scheduled, rolling, and real-time paths alike, and are still not treated as executable.
 - WAF rule age now follows cPanel's active vendor configurations, ignores retired trees, and scans nested vendor layouts. A fresh ruleset that is not loaded can no longer hide a stale loaded one; other platforms keep conservative age checks when the loaded set cannot be identified.
 - Exim actions no longer start after the systemd wrapper probe has exhausted or canceled their deadline.
 - Every Exim command the daemon runs was failing on sandboxed hosts, because exim aborts when it cannot write its own log. Queue-depth monitoring reported nothing on failure and so looked healthy, while queue composition, backscatter flushing, and PHP relay freeze actions failed silently. All of them now run outside the sandbox, a queue depth CSM cannot read is reported instead of being treated as empty, and the dashboard shows it as unavailable rather than zero.
