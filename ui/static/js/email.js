@@ -7,6 +7,7 @@
     var EMAIL_FINDINGS_LIMIT = 250; // first viewport row cap from the plan
     var EMAIL_CHECKS = [
         'mail_queue',
+        'mail_queue_unavailable',
         'mail_per_account',
         'exim_frozen_realtime',
         'email_phishing_content',
@@ -101,11 +102,16 @@
         if (_strip.stats) {
             var s = _strip.stats;
             var qcls = '';
-            if (s.queue_size >= s.queue_crit) qcls = 'csm-status-strip__chip--crit';
+            var qvalue = String(s.queue_size);
+            var qtitle = 'Mail queue size (warn ' + s.queue_warn + ', crit ' + s.queue_crit + ')';
+            if (s.queue_unavailable) {
+                qcls = 'csm-status-strip__chip--warn';
+                qvalue = 'unavailable';
+                qtitle = 'Mail queue size could not be read';
+            } else if (s.queue_size >= s.queue_crit) qcls = 'csm-status-strip__chip--crit';
             else if (s.queue_size >= s.queue_warn) qcls = 'csm-status-strip__chip--warn';
             else qcls = 'csm-status-strip__chip--ok';
-            el.appendChild(chip({ icon: 'ti-mailbox', value: String(s.queue_size), label: 'queue', cls: qcls,
-                title: 'Mail queue size (warn ' + s.queue_warn + ', crit ' + s.queue_crit + ')' }));
+            el.appendChild(chip({ icon: 'ti-mailbox', value: qvalue, label: 'queue', cls: qcls, title: qtitle }));
             if ((s.frozen_count || 0) > 0) {
                 el.appendChild(chip({ icon: 'ti-snowflake', value: String(s.frozen_count), label: 'frozen',
                     cls: 'csm-status-strip__chip--warn', title: 'Frozen messages in the queue' }));
@@ -184,9 +190,10 @@
     function renderProtectionQueue(data, targetId) {
         var el = document.getElementById(targetId || 'protection-queue');
         if (!el) return;
-        var pct = Math.min(100, Math.round(data.queue_size / Math.max(1, data.queue_crit) * 100));
+        var pct = data.queue_unavailable ? 0 : Math.min(100, Math.round(data.queue_size / Math.max(1, data.queue_crit) * 100));
         var color = 'bg-green';
-        if (data.queue_size >= data.queue_crit) color = 'bg-danger';
+        if (data.queue_unavailable) color = 'bg-warning';
+        else if (data.queue_size >= data.queue_crit) color = 'bg-danger';
         else if (data.queue_size >= data.queue_warn) color = 'bg-warning';
         el.replaceChildren();
 
@@ -211,7 +218,12 @@
         hl.textContent = 'Queue size';
         var hv = document.createElement('span');
         hv.className = 'fw-bold';
-        hv.textContent = data.queue_size + ' / ' + data.queue_crit;
+        if (data.queue_unavailable) {
+            hv.className += ' text-warning';
+            hv.textContent = 'unavailable';
+        } else {
+            hv.textContent = data.queue_size + ' / ' + data.queue_crit;
+        }
         head.appendChild(hl); head.appendChild(hv);
         el.appendChild(head);
 

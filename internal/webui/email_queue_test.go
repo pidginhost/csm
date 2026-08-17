@@ -2,10 +2,14 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func withEximProbe(t *testing.T, lookPath func(string) (string, error), run func(context.Context, string, ...string) ([]byte, error)) {
@@ -70,5 +74,26 @@ func TestEximQueueDetailsRunsOutsideTheSandbox(t *testing.T) {
 
 	if !strings.HasSuffix(strings.Join(gotArgs, " "), "exim -bp") {
 		t.Errorf("argv = %v, want the wrapped exim queue listing", gotArgs)
+	}
+}
+
+func TestAPIEmailStatsSerializesUnavailableQueue(t *testing.T) {
+	withEximProbe(t,
+		func(string) (string, error) { return "", exec.ErrNotFound },
+		func(context.Context, string, ...string) ([]byte, error) {
+			return nil, errors.New("exit status 1")
+		})
+	s := newTestServer(t, "tok")
+	s.cfg.Firewall = &firewall.FirewallConfig{}
+	w := httptest.NewRecorder()
+
+	s.apiEmailStats(w, httptest.NewRequest("GET", "/api/v1/email/stats", nil))
+
+	var resp emailStatsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.QueueUnavailable {
+		t.Fatalf("failed queue probe serialized as available: %+v", resp)
 	}
 }

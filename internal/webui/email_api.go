@@ -242,6 +242,7 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 var (
 	eximLookPath = exec.LookPath
 	eximRun      = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		// #nosec G204 -- name is the resolved systemd-run path or the fixed Exim command.
 		return exec.CommandContext(ctx, name, args...).Output()
 	}
 )

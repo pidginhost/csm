@@ -175,6 +175,7 @@ func TestEmailGroupsIncludesCurrentEmailDetectorChecks(t *testing.T) {
 		kind  string
 	}{
 		{check: "exim_frozen_realtime", kind: "queue_alert"},
+		{check: "mail_queue_unavailable", kind: "queue_alert"},
 		{check: "email_av_degraded", kind: "malware"},
 		{check: "email_av_timeout", kind: "malware"},
 		{check: "email_av_parse_error", kind: "malware"},

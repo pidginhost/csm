@@ -1,8 +1,6 @@
 package systemdrun
 
 import (
-	"errors"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +48,9 @@ func TestArgvPipesOutputWhenRequested(t *testing.T) {
 	if !contains(args, "--pipe") {
 		t.Errorf("Pipe option must add --pipe so stdout reaches the caller: %v", args)
 	}
+	if contains(args, "--wait") {
+		t.Errorf("--pipe already waits, so argv must not also include --wait: %v", args)
+	}
 }
 
 // --pipe already implies waiting; without it the caller would return before the
@@ -67,6 +68,22 @@ func TestArgvSetsRuntimeMax(t *testing.T) {
 
 	if !contains(args, "--property=RuntimeMaxSec=90s") {
 		t.Errorf("RuntimeMax must become a RuntimeMaxSec property: %v", args)
+	}
+}
+
+func TestArgvPreservesFractionalRuntimeMax(t *testing.T) {
+	for _, tc := range []struct {
+		duration time.Duration
+		want     string
+	}{
+		{duration: 1500 * time.Millisecond, want: "--property=RuntimeMaxSec=1.5s"},
+		{duration: 500 * time.Millisecond, want: "--property=RuntimeMaxSec=0.5s"},
+		{duration: time.Nanosecond, want: "--property=RuntimeMaxSec=0.000001s"},
+	} {
+		_, args := Argv("/usr/bin/systemd-run", Options{RuntimeMax: tc.duration}, "/bin/true")
+		if !contains(args, tc.want) {
+			t.Errorf("RuntimeMax %s must remain a valid non-zero time span: %v", tc.duration, args)
+		}
 	}
 }
 
@@ -90,32 +107,6 @@ func TestArgvRunsCommandDirectlyWithoutSystemdRun(t *testing.T) {
 	}
 	if strings.Join(args, " ") != "-bpc" {
 		t.Errorf("args = %v, want the command's own arguments", args)
-	}
-}
-
-func TestUnavailableOnMissingBinary(t *testing.T) {
-	if !Unavailable(nil, exec.ErrNotFound) {
-		t.Error("a missing systemd-run binary means the caller must retry unwrapped")
-	}
-}
-
-func TestUnavailableOnBusFailure(t *testing.T) {
-	for _, out := range []string{
-		"Failed to connect to bus: No such file or directory",
-		"Failed to create bus connection: Permission denied",
-		"System has not been booted with systemd as init system",
-	} {
-		if !Unavailable([]byte(out), errors.New("exit status 1")) {
-			t.Errorf("bus failure must be retried unwrapped: %q", out)
-		}
-	}
-}
-
-// A non-zero exit from the wrapped command itself is a real failure. Retrying it
-// unwrapped would run the command twice and hide the error.
-func TestUnavailableIgnoresCommandFailure(t *testing.T) {
-	if Unavailable([]byte("exim: bad argument"), errors.New("exit status 2")) {
-		t.Error("the wrapped command's own failure must not be treated as systemd-run being unavailable")
 	}
 }
 

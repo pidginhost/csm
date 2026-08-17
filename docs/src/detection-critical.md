@@ -61,6 +61,8 @@ The tables below name the finding identifiers CSM emits, grouped by area. Most a
 | `mail_queue_unavailable` | The queue depth could not be read, so buildup detection is inactive. Reported instead of assuming the queue is empty. |
 | `mail_per_account` | Per-account email volume spikes |
 
+All Exim queue reads and actions started by the daemon run as transient services outside its read-only filesystem sandbox. This includes queue composition, safe backscatter flushing, and PHP relay freeze or thaw actions. If `systemd-run` is unavailable, CSM runs them directly; a host without Exim skips the Exim-only queue check.
+
 ## Data & Integrity
 
 | Check | Description |
@@ -101,10 +103,11 @@ Runs on every supported platform unless noted below. The daemon auto-detects OS 
 - `api_tokens`, `whm_access`, `cpanel_logins`, `cpanel_filemanager` -- read WHM API and cPanel session logs
 - `wp_bruteforce` -- iterates `/home/*/public_html/*/wp-login.php` and per-domain access logs. The domlog pass ranks recent logs first and honors `thresholds.domlog_max_files`, `thresholds.domlog_tail_lines`, and `thresholds.domlog_max_age_min`.
 - `webmail_logins` -- parses cPanel Roundcube/Horde logs
-- `mail_queue`, `mail_per_account` -- read Exim queue and `/var/log/exim_mainlog`
+- `mail_per_account` -- reads `/var/log/exim_mainlog`
 
 **Plain Linux equivalents** that still provide coverage:
 
+- `mail_queue` runs on any host where Exim is installed and is skipped when there is no Exim queue.
 - Access log brute-force detection (`wp_login_bruteforce`, `xmlrpc_abuse`) runs against the detected web server's access log (`/var/log/nginx/access.log` or `/var/log/httpd/access_log`), so WordPress brute-force alerts still fire on non-cPanel hosts -- they just rely on the live log watcher rather than per-domain domlog scanning.
 - `modsec_audit` runs on any host with ModSecurity installed.
 - `ssh_logins`, SSH brute force, PAM listener, firewall, kernel modules, RPM/DEB integrity, and threat intelligence all run on every supported platform.

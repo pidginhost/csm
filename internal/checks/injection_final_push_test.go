@@ -89,6 +89,7 @@ func TestCheckNulledPluginsWithPluginDir(t *testing.T) {
 
 func TestCheckMailQueueWithOutput(t *testing.T) {
 	withMockCmd(t, &mockCmd{
+		lookPath: eximQueueLookPath,
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "exim" && len(args) > 0 && args[0] == "-bpc" {
 				return []byte("250\n"), nil

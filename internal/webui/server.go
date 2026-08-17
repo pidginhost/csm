@@ -723,6 +723,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"db_rogue_admin":                 "DB Rogue Admin",
 			"db_suspicious_admin_email":      "DB Suspicious Admin",
 			"mail_queue":                     "Mail Queue",
+			"mail_queue_unavailable":         "Mail Queue Unavailable",
 			"mail_per_account":               "Mail Volume",
 			"email_phishing_content":         "Email Phishing",
 			"email_malware":                  "Email Malware",

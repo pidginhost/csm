@@ -14,22 +14,33 @@ type RunnerFunc func(ctx context.Context, name string, args ...string) ([]byte, 
 // Run executes name/args as a transient unit forked by PID 1, so the command
 // escapes the caller's service sandbox, and returns its output.
 //
-// When systemd-run is not installed there is no sandbox to escape and the
-// command runs directly. When systemd-run is installed but cannot reach the
-// system bus (a container, a chroot), the command is retried directly. A
-// non-zero exit from the command itself is returned as-is and never retried:
-// running it twice would double any side effect and hide the real error.
+// When systemd-run cannot be used -- not installed, or a harmless probe fails
+// for any reason -- the command runs directly instead. That is no worse than
+// not having the wrapper at all, and it is the only honest option: giving up
+// would disable the command entirely on a host where it might still work.
+//
+// The caller's command is attempted at most once. Its exit status and output
+// cannot be told apart from systemd-run's own (--wait and --pipe propagate the
+// unit's status and output verbatim), so a failure is never retried: running it
+// again would repeat side effects like freezing or removing queued mail, and
+// would mask the real error.
 func Run(ctx context.Context, lookPath LookPathFunc, run RunnerFunc, opt Options, name string, args ...string) ([]byte, error) {
 	systemdRunPath, _ := lookPath("systemd-run")
-	if systemdRunPath != "" {
-		wrappedName, wrappedArgs := Argv(systemdRunPath, opt, name, args...)
-		out, err := run(ctx, wrappedName, wrappedArgs...)
-		if err == nil {
-			return out, nil
-		}
-		if !Unavailable(out, err) {
-			return out, err
-		}
+	if systemdRunPath == "" {
+		return run(ctx, name, args...)
 	}
-	return run(ctx, name, args...)
+
+	// Probe with a command that has no side effects, so the decision to fall
+	// back is made before the caller's command has had a chance to run.
+	probeName, probeArgs := Argv(systemdRunPath, opt, probeCommand)
+	if _, probeErr := run(ctx, probeName, probeArgs...); probeErr != nil {
+		return run(ctx, name, args...)
+	}
+
+	wrappedName, wrappedArgs := Argv(systemdRunPath, opt, name, args...)
+	return run(ctx, wrappedName, wrappedArgs...)
 }
+
+// probeCommand is the no-op used to test whether systemd-run can start a unit.
+// /bin/true is part of coreutils, which systemd itself depends on.
+const probeCommand = "/bin/true"
