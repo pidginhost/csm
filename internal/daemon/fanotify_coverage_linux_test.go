@@ -30,6 +30,7 @@ func TestIsInterestingAllBranches(t *testing.T) {
 		{"/home/a/x.phtml", true, "phtml"},
 		{"/home/a/x.pht", true, "pht"},
 		{"/home/a/x.php5", true, "php5"},
+		{"/home/a/x.phps", true, "phps source"},
 		// Webshell extensions
 		{"/home/a/x.haxor", true, "haxor"},
 		{"/home/a/x.cgix", true, "cgix"},

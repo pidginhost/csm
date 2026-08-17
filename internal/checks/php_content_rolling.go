@@ -40,12 +40,12 @@ func rollingContentEnabled(ctx context.Context, cfg *config.Config, forcedFull b
 }
 
 // rollingContentCoverage sweeps a bounded path-sorted slice of the account's
-// full docroot PHP set, advancing the per-account cursor so every stock-PHP
-// file is eventually content-scanned over cycles. The caller guarantees the
-// gate (rolling on, host-scope periodic, not a forced/audit run). Findings
-// append to the live findings slice (rolling is part of the periodic scan, not
-// a report-only full-scan job). A canceled run leaves the prior cursor
-// untouched.
+// full docroot PHP-source set, advancing the per-account cursor so every stock
+// PHP source or source-view file is eventually content-scanned over cycles.
+// The caller guarantees the gate (rolling on, host-scope periodic, not a
+// forced/audit run). Findings append to the live findings slice (rolling is
+// part of the periodic scan, not a report-only full-scan job). A canceled run
+// leaves the prior cursor untouched.
 //
 // Limitation: rolling enumerates only stock-PHP-executable filenames across the
 // whole docroot. A file whose non-stock extension is remapped to PHP by an
@@ -143,8 +143,9 @@ func rollingDocRootFor(file string, docRoots []string) string {
 }
 
 // enumeratePHPFiles recursively collects, under each docRoot, candidate paths
-// whose name a stock PHP handler executes (empty-overlay executability). The
-// walk is bounded to rollingWalkMaxDepth, honours ctx cancellation, and
+// whose name contains stock PHP source. This includes source-view .phps files
+// without classifying them as executable. The walk is bounded to
+// rollingWalkMaxDepth, honours ctx cancellation, and
 // respects suppressions.ignore_paths exactly like scanDir when the scan is not
 // an explicit full-scan/audit. The result is ascending-sorted and de-duplicated
 // so rollingCandidatesAfter can cursor through it stably.
@@ -194,7 +195,7 @@ func walkPHPFiles(ctx context.Context, cfg *config.Config, dir string, maxDepth 
 			walkPHPFiles(ctx, cfg, fullPath, maxDepth-1, respectIgnores, seen)
 			continue
 		}
-		if (phpHandlerOverlay{}).executes(strings.ToLower(entry.Name())) {
+		if IsPHPSourceName(strings.ToLower(entry.Name())) {
 			seen[fullPath] = struct{}{}
 		}
 	}

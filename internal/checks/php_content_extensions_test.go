@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -36,6 +37,20 @@ func TestIsExecutablePHPName(t *testing.T) {
 	}
 }
 
+func TestIsPHPSourceNameIncludesPhpsWithoutMakingItExecutable(t *testing.T) {
+	for _, name := range []string{"x.php", "x.php8", "x.phtml", "x.phps"} {
+		if !IsPHPSourceName(name) {
+			t.Errorf("%q should receive PHP content analysis", name)
+		}
+	}
+	if IsExecutablePHPName("x.phps") {
+		t.Fatal(".phps must remain outside executable-PHP classification")
+	}
+	if IsPHPSourceName("x.html") {
+		t.Fatal("ordinary non-PHP content must not enter PHP content analysis")
+	}
+}
+
 func TestScanObfuscatedPHP_PhtmlWebshellDetected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "shell.phtml")
@@ -59,6 +74,22 @@ func TestScanObfuscatedPHP_Php7WebshellDetected(t *testing.T) {
 	scanDirForObfuscatedPHP(context.Background(), dir, 2, &config.Config{}, &findings)
 	if !findingForPath(findings, path) {
 		t.Fatalf(".php7 webshell must be content-analysed, got %d findings", len(findings))
+	}
+}
+
+func TestScanObfuscatedPHP_PhpsStagedWebshellDetected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shell.PHPS")
+	if err := os.WriteFile(path, []byte(evalWebshell), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var findings []alert.Finding
+	scanDirForObfuscatedPHP(context.Background(), dir, 2, &config.Config{}, &findings)
+	if !findingForPath(findings, path) {
+		t.Fatalf(".phps staged webshell must be content-analysed, got %d findings", len(findings))
+	}
+	if IsExecutablePHPName(strings.ToLower(filepath.Base(path))) {
+		t.Fatal("content-scanned .phps file must remain non-executable")
 	}
 }
 

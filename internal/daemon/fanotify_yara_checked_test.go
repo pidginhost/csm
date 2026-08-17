@@ -4,6 +4,8 @@ package daemon
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -21,6 +23,18 @@ func (failingFanotifyYARABackend) ScanBytesChecked([]byte) ([]yara.Match, error)
 func (failingFanotifyYARABackend) RuleCount() int { return 1 }
 func (failingFanotifyYARABackend) Reload() error  { return nil }
 
+type matchingFanotifyYARABackend struct{}
+
+func (matchingFanotifyYARABackend) ScanFile(string, int) []yara.Match { return nil }
+func (matchingFanotifyYARABackend) ScanBytes([]byte) []yara.Match {
+	return []yara.Match{{RuleName: "phps_test"}}
+}
+func (matchingFanotifyYARABackend) ScanBytesChecked([]byte) ([]yara.Match, error) {
+	return []yara.Match{{RuleName: "phps_test"}}, nil
+}
+func (matchingFanotifyYARABackend) RuleCount() int { return 1 }
+func (matchingFanotifyYARABackend) Reload() error  { return nil }
+
 func TestFanotifyYARAErrorIsNotTreatedAsClean(t *testing.T) {
 	alerts := make(chan alert.Finding, 1)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts}
@@ -37,5 +51,35 @@ func TestFanotifyYARAErrorIsNotTreatedAsClean(t *testing.T) {
 		}
 	default:
 		t.Fatal("scan error was silently treated as clean")
+	}
+}
+
+func TestFanotifyPhpsEventReachesContentScanner(t *testing.T) {
+	alerts := make(chan alert.Finding, 1)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: alerts}
+	yara.SetActive(matchingFanotifyYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+
+	path := filepath.Join(t.TempDir(), "staged.phps")
+	if err := os.WriteFile(path, []byte("<?php echo 'staged';"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	fm.analyzeFile(fileEvent{path: path, fd: int(file.Fd())})
+	select {
+	case finding := <-alerts:
+		if finding.Check != "yara_match_realtime" {
+			t.Fatalf("finding = %+v, want yara_match_realtime", finding)
+		}
+	default:
+		t.Fatal(".phps event did not reach realtime content scanning")
+	}
+	if isPHPExtension(filepath.Base(path)) {
+		t.Fatal("content-scanned .phps event was reclassified as executable PHP")
 	}
 }

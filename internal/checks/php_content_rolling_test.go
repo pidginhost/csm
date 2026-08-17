@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -464,5 +465,19 @@ func TestScanFileExtractionParity(t *testing.T) {
 	s.scanDir(context.Background(), dir, 4, phpHandlerOverlay{}, &findings)
 	if !findsPath(findings, path) {
 		t.Fatal("scanDir must still detect a malicious file after scanFile extraction")
+	}
+}
+
+func TestEnumeratePHPFilesIncludesPhpsSource(t *testing.T) {
+	dir := t.TempDir()
+	staged := filepath.Join(dir, "staged.PHPS")
+	writeFile(t, staged, rollingDormantPHP)
+
+	files := enumeratePHPFiles(context.Background(), &config.Config{}, []string{dir})
+	if !slices.Contains(files, staged) {
+		t.Fatalf("rolling PHP source set = %v, want %s", files, staged)
+	}
+	if IsExecutablePHPName(strings.ToLower(filepath.Base(staged))) {
+		t.Fatal("rolling inclusion must not make .phps executable")
 	}
 }

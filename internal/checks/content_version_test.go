@@ -30,6 +30,13 @@ func TestContentScannerVersionIncludesBackendArchiveGuard(t *testing.T) {
 	}
 }
 
+func TestContentScannerVersionIncludesPhpsSourceRouting(t *testing.T) {
+	const phpsSourceRoutingVersion = 4
+	if ContentScannerVersion < phpsSourceRoutingVersion {
+		t.Fatalf("ContentScannerVersion = %d, want at least %d for .phps source routing", ContentScannerVersion, phpsSourceRoutingVersion)
+	}
+}
+
 func TestFileContentSHA256MatchesStdlib(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.php")

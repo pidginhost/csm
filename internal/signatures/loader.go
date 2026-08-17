@@ -391,6 +391,7 @@ func (s *Scanner) Version() int {
 // and then compared against nothing, because every PHP rule declares
 // file_types [".php"].
 func canonicalScanExt(ext string) string {
+	ext = strings.ToLower(ext)
 	if ext == ".phps" {
 		return ".php"
 	}
@@ -401,9 +402,13 @@ func ruleMatchesExt(rule Rule, ext string) bool {
 	if len(rule.FileTypes) == 0 {
 		return true // no filter = match all
 	}
-	ext = canonicalScanExt(ext)
+	ext = strings.ToLower(ext)
+	canonicalExt := canonicalScanExt(ext)
 	for _, ft := range rule.FileTypes {
-		if ft == "*" || canonicalScanExt(strings.ToLower(ft)) == ext {
+		ft = strings.ToLower(ft)
+		// The alias is one-way: PHP rules also inspect .phps source, while a
+		// deliberately .phps-only rule must not broaden to executable .php.
+		if ft == "*" || ft == ext || ft == canonicalExt {
 			return true
 		}
 	}

@@ -1945,13 +1945,13 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 
 // scanFile content-analyses one PHP file using the same cache, size-guard, and
 // finding logic as scanDir's per-entry loop. It re-stats fullPath (it no longer
-// has the DirEntry) and decides executability under overlay. Files that produce
-// a finding are never cached, so they re-surface each cycle for the alert
-// pipeline. scanDir calls this for every non-directory entry; the rolling
-// driver calls it for each path in its bounded slice.
+// has the DirEntry) and decides whether it is PHP source or executes under the
+// overlay. Files that produce a finding are never cached, so they re-surface
+// each cycle for the alert pipeline. scanDir calls this for every non-directory
+// entry; the rolling driver calls it for each path in its bounded slice.
 func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) {
 	nameLower := strings.ToLower(filepath.Base(fullPath))
-	if !overlay.executes(nameLower) {
+	if !IsPHPSourceName(nameLower) && !overlay.executes(nameLower) {
 		return
 	}
 
@@ -1991,7 +1991,7 @@ func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay 
 		return
 	}
 
-	// Every .php file is content-analysed. No filename/path allowlist:
+	// Every PHP source file is content-analysed. No filename/path allowlist:
 	// clean files produce no finding, so there is no benefit to skipping
 	// them, and any skip is a place an attacker can hide a backdoor.
 	result := analyzePHPContent(fullPath)
