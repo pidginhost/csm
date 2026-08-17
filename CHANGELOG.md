@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The real-time sensitive-file watcher identified files by inode, so every ordinary rewrite of a system configuration file was reported as a brand-new file appearing while the write itself went unreported. It now identifies files by path and content: a rewrite is reported as a content change, and one that leaves the content identical is not reported at all.
+- The real-time sensitive-file watcher identified files by inode, so every ordinary rewrite of a system configuration file was reported as a brand-new file appearing while the write itself went unreported. It now identifies regular files by path, content, and security metadata; equivalent replacements stay quiet, while permission, ownership, and symlink target changes remain visible.
+- A sensitive-file refresh could absorb a later path replacement as already reported, lose a refresh finding when the alert queue was full, or stall while trying to hash a non-regular watchset entry. It now suppresses only the exact file state already delivered, retries undelivered refresh findings, and reads content only from regular files.
 - A mail rule that forwards to an outside address while the mailbox keeps its own copy is what webmail's own forward option produces, and reporting it as a confirmed interception made every legitimate forward a Critical alert. It remains available for immediate incident review but now reports as a Warning unless independent evidence corroborates it, such as another forwarding layer, mail the mailbox never receives, or coordinated forwarding across accounts.
 
 ## [3.28.0] - 2026-08-14
