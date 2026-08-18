@@ -26,6 +26,8 @@ The analyzer parses PHP source and tracks whether a value returned by a remote-f
 
 Only two outcomes mean a file was actually examined: **analyzed** (parsing and the data-flow pass both completed) and **not candidate** (a fast pre-check proved the file cannot contain a reportable flow, without needing to parse it). Every other outcome -- oversize, a parse failure, a parser recovery that produced only a partial tree, an internal resource limit, cancellation, or an internal error -- is a coverage gap, not a clean result, and must never be read as "nothing to see here."
 
+Separately from the outcome, an analyzed file can still report reduced precision. Constructs that defeat static variable identity -- `extract()`, `compact()`, variable variables, a call dispatched through a value, an assignment target the analyzer cannot name, or a value a closure or arrow function captures from its enclosing scope -- are recorded alongside the result. A recorded loss means tracking stopped at that point and the file may hold a flow that was not followed; it is never left implicit. The capture case is recorded only when the captured value was itself tainted, so it marks a real loss rather than the mere presence of a closure.
+
 The parser supports PHP syntax up to version 8.1. A file written against a newer PHP version may use constructs the parser does not recognize; when that happens, parsing recovers what it can but the result is incomplete, and the file is reported as reduced coverage (a partial parse) rather than analyzed, so an incomplete view is never presented as a complete one.
 
 ## WordPress
