@@ -220,7 +220,11 @@ func hasDroppedTaint(t *testing.T, src string) bool {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
 	f := collectScope(root)
-	return hasUnresolvableTaintedTarget(f, summaryTables{})
+	dropped, err := hasUnresolvableTaintedTarget(context.Background(), f, summaryTables{})
+	if err != nil {
+		t.Fatalf("dropped-taint check: %v", err)
+	}
+	return dropped
 }
 
 // TestUnresolvableTargetUntaintedValueNoMarker is fix round 3 for Task 11:
@@ -256,6 +260,29 @@ func TestUnresolvableTargetTaintedValueMarksLoss(t *testing.T) {
 		if !hasDroppedTaint(t, src) {
 			t.Errorf("%s: want the dropped-taint marker for a tainted value", src)
 		}
+	}
+}
+
+func TestUnresolvableTargetRecognizesAliasedSource(t *testing.T) {
+	src := `<?php
+use function curl_exec as fetch_remote;
+Foo::$cache = fetch_remote($u);`
+	if !hasDroppedTaint(t, src) {
+		t.Fatal("want the dropped-taint marker for an aliased source")
+	}
+}
+
+func TestUnresolvableTargetCheckHonorsCancellation(t *testing.T) {
+	f := mustParse(t, `<?php Foo::$cache = curl_exec($u);`)
+	ctx := newCancelOnErrCheck(2)
+	t.Cleanup(ctx.cancel)
+
+	dropped, err := hasUnresolvableTaintedTarget(ctx, f, summaryTables{})
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if dropped {
+		t.Fatal("dropped = true for canceled check")
 	}
 }
 

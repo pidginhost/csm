@@ -35,6 +35,7 @@ type funcBody struct {
 	name  string
 	kind  bodyKind
 	facts *scopeFacts
+	calls resolvedCallIndex
 }
 
 // functionSummaries reports which user-defined functions and methods return
@@ -104,6 +105,7 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	// already known to be within maxDeclarations here (analyze's cap check
 	// runs first).
 	tree := f.declarationTree()
+	callIndex := newResolvedCallIndex(f)
 
 	bodies := make([]funcBody, 0, summarizable)
 	for _, fn := range f.funcs {
@@ -111,7 +113,11 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 			return summaryTables{}, nil, err
 		}
 		exclude := tree.exclusionFor(fn)
-		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectOwnStmts(fn.Stmts, &exclude)})
+		facts := callIndex.apply(collectOwnStmts(fn.Stmts, &exclude))
+		bodies = append(bodies, funcBody{
+			name: calleeName(fn.Name), kind: bodyFunction, facts: facts,
+			calls: newResolvedCallIndex(facts),
+		})
 	}
 
 	for _, m := range f.methods {
@@ -125,7 +131,11 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 		// StmtClassMethod carries ONE Stmt vertex (normally a StmtStmtList),
 		// unlike StmtFunction which carries a Stmts slice.
 		exclude := tree.exclusionFor(m)
-		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectOwnStmts(methodStmts(m.Stmt), &exclude)})
+		facts := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &exclude))
+		bodies = append(bodies, funcBody{
+			name: name, kind: bodyMethod, facts: facts,
+			calls: newResolvedCallIndex(facts),
+		})
 	}
 	// Recheck every included body using its independently collected facts.
 	// The enclosing collection has one aggregate node budget, so it can stop
@@ -172,7 +182,8 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 				if ret.Expr == nil {
 					continue
 				}
-				c, tainted := exprTaint(ret.Expr, st, tables)
+				retFacts := b.calls.apply(collectScope(ret.Expr))
+				c, tainted := exprTaintFacts(retFacts, st, tables)
 				if !tainted {
 					continue
 				}

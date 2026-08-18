@@ -256,6 +256,7 @@ func analyze(ctx context.Context, src []byte) Report {
 	if err := ctx.Err(); err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
+	callIndex := newResolvedCallIndex(all)
 
 	summaries, loss, err := functionSummaries(ctx, all)
 	if err != nil {
@@ -271,7 +272,7 @@ func analyze(ctx context.Context, src []byte) Report {
 	// itself. exclusionFor derives this from tree by lookup rather than by
 	// rescanning the file's declarations for every scope.
 	topExclude := tree.exclusionFor(nil)
-	top := collectTopLevel(root, &topExclude)
+	top := callIndex.apply(collectTopLevel(root, &topExclude))
 	flows, err := findFlows(ctx, top, summaries)
 	if err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -284,8 +285,14 @@ func analyze(ctx context.Context, src []byte) Report {
 	// function, each method) using the SAME scope-isolated facts already
 	// collected here for findFlows, so "tainted" means tainted within that
 	// specific scope's own taint state -- never a same-named variable
-	// leaking taint in from an unrelated scope.
-	droppedTaint := hasUnresolvableTaintedTarget(top, summaries)
+	// leaking taint in from an unrelated scope. Direct call origins come from
+	// all so namespace-level `use function` aliases stay resolved inside
+	// separately collected declaration bodies; source positions still limit
+	// them to the exact RHS being checked.
+	droppedTaint, err := hasUnresolvableTaintedTarget(ctx, top, summaries)
+	if err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
 
 	// Sinks inside function bodies count too, each against its own state.
 	// collectOwnStmts (not collectAll) skips any function/class/method
@@ -297,13 +304,18 @@ func analyze(ctx context.Context, src []byte) Report {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 		fnExclude := tree.exclusionFor(fn)
-		body := collectOwnStmts(fn.Stmts, &fnExclude)
+		body := callIndex.apply(collectOwnStmts(fn.Stmts, &fnExclude))
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 		flows = append(flows, bodyFlows...)
-		droppedTaint = droppedTaint || hasUnresolvableTaintedTarget(body, summaries)
+		if !droppedTaint {
+			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
+			if err != nil {
+				return Report{Status: StatusCanceled, Reason: err.Error()}
+			}
+		}
 	}
 	for _, m := range all.methods {
 		if err := ctx.Err(); err != nil {
@@ -311,13 +323,18 @@ func analyze(ctx context.Context, src []byte) Report {
 		}
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
 		mExclude := tree.exclusionFor(m)
-		body := collectOwnStmts(methodStmts(m.Stmt), &mExclude)
+		body := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &mExclude))
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 		flows = append(flows, bodyFlows...)
-		droppedTaint = droppedTaint || hasUnresolvableTaintedTarget(body, summaries)
+		if !droppedTaint {
+			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
+			if err != nil {
+				return Report{Status: StatusCanceled, Reason: err.Error()}
+			}
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}

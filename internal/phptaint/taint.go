@@ -545,7 +545,10 @@ func exprTaint(e ast.Vertex, st taintState, summaries summaryTables) (Confidence
 	if e == nil {
 		return ConfidenceLow, false
 	}
-	sub := collectScope(e)
+	return exprTaintFacts(collectScope(e), st, summaries)
+}
+
+func exprTaintFacts(sub *scopeFacts, st taintState, summaries summaryTables) (Confidence, bool) {
 	best, found, origins := activeTaint(sub, st, summaries)
 	if !found {
 		return ConfidenceLow, false
@@ -614,24 +617,33 @@ type flowResult struct {
 // or a variable-variable base. This is a purely structural scan (no taint
 // fixpoint), used to cheaply decide whether hasUnresolvableTaintedTarget
 // needs to do any further work at all.
-func unresolvableAssignRHS(f *scopeFacts) []ast.Vertex {
+func unresolvableAssignRHS(ctx context.Context, f *scopeFacts) ([]ast.Vertex, error) {
 	var out []ast.Vertex
 	for _, a := range f.assigns {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if assignedTargetKey(a.Var) == "" {
 			out = append(out, a.Expr)
 		}
 	}
 	for _, a := range f.references {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if assignedTargetKey(a.Var) == "" {
 			out = append(out, a.Expr)
 		}
 	}
 	for _, a := range f.concats {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if assignedTargetKey(a.Var) == "" {
 			out = append(out, a.Expr)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // hasUnresolvableTaintedTarget reports whether f contains an assignment
@@ -655,19 +667,101 @@ func unresolvableAssignRHS(f *scopeFacts) []ast.Vertex {
 // below runs at all, so the (relatively expensive) taintedLocals call is
 // skipped entirely for the overwhelming majority of scopes that have no
 // unresolvable target -- the same early-return findFlows already uses for
-// f.sinks being empty.
-func hasUnresolvableTaintedTarget(f *scopeFacts, summaries summaryTables) bool {
-	rhs := unresolvableAssignRHS(f)
-	if len(rhs) == 0 {
-		return false
+// f.sinks being empty. Active origins are then correlated against the RHS
+// spans from f's existing facts. Besides avoiding a traversal per RHS, this
+// preserves canonical names already resolved from `use function` aliases;
+// recollecting an isolated RHS has no access to the enclosing alias imports.
+func hasUnresolvableTaintedTarget(
+	ctx context.Context, f *scopeFacts, summaries summaryTables,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	st := taintedLocals(f, summaries)
+	rhs, err := unresolvableAssignRHS(ctx, f)
+	if err != nil {
+		return false, err
+	}
+	if len(rhs) == 0 {
+		return false, nil
+	}
+
+	rhsSpans := make([]nodeSpan, 0, len(rhs))
+	var unpositioned []ast.Vertex
 	for _, expr := range rhs {
-		if _, tainted := exprTaint(expr, st, summaries); tainted {
-			return true
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if span, ok := spanOf(expr); ok {
+			rhsSpans = append(rhsSpans, span)
+		} else {
+			unpositioned = append(unpositioned, expr)
 		}
 	}
-	return false
+
+	var rhsReads []namedNodeSpan
+	if len(rhsSpans) > 0 {
+		index := newSpanIndex(rhsSpans)
+		for _, call := range f.callNodes {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			span, positioned := spanOf(call)
+			if positioned && index.contains(span) {
+				if _, source := sourceConfidence(call); source {
+					return true, nil
+				}
+			}
+		}
+		for _, call := range f.callSites {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			span, positioned := spanOf(call.node)
+			if positioned && index.contains(span) {
+				if _, summarized := summaries.lookup(call); summarized {
+					return true, nil
+				}
+			}
+		}
+		for _, variable := range f.readVarNodes() {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			span, positioned := spanOf(variable.node)
+			if positioned && index.contains(span) {
+				rhsReads = append(rhsReads, variable)
+			}
+		}
+	}
+
+	// Literal RHS values and direct source/summary calls are already decided
+	// above. Only variable-carried taint (or a synthetic positionless AST)
+	// needs the full per-scope assignment fixpoint.
+	if len(rhsReads) == 0 && len(unpositioned) == 0 {
+		return false, nil
+	}
+	st := taintedLocals(f, summaries)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	for _, variable := range rhsReads {
+		if _, tainted := st[variable.name]; tainted {
+			return true, nil
+		}
+	}
+
+	// Parser-produced nodes have positions. Keep the helper total for
+	// synthetic or future positionless ASTs without turning shape alone into
+	// a precision-loss marker.
+	for _, expr := range unpositioned {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if _, tainted := exprTaint(expr, st, summaries); tainted {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // findFlows reports each sink in a scope that receives remote content.
@@ -683,16 +777,18 @@ func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]f
 		return nil, err
 	}
 	out := make([]flowResult, 0, len(f.sinks))
+	callIndex := newResolvedCallIndex(f)
 	for _, s := range f.sinks {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		c, tainted := exprTaint(s.expr, st, summaries)
+		sub := callIndex.apply(collectScope(s.expr))
+		c, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
 			continue
 		}
-		source, sourceTruncated := sourceLabel(s.expr, st, summaries)
-		via, viaTruncated := chainFor(s.expr)
+		source, sourceTruncated := sourceLabel(sub, st, summaries)
+		via, viaTruncated := chainFor(sub)
 		out = append(out, flowResult{
 			Result: Result{
 				Source:     source,
@@ -712,8 +808,7 @@ func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]f
 // callSites (rather than the bare f.calls name set) so a summarized method
 // is matched via the same call-syntax-scoped lookup taintedLocals uses,
 // instead of guessing across the function/method namespaces.
-func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) (string, bool) {
-	sub := collectScope(e)
+func sourceLabel(sub *scopeFacts, st taintState, summaries summaryTables) (string, bool) {
 	for _, call := range sub.callNodes {
 		if _, ok := sourceConfidence(call); ok {
 			return sanitize(calleeName(call.Function), maxSegmentBytes)
@@ -758,8 +853,7 @@ func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) (string, 
 }
 
 // chainFor renders the sanitized, bounded laundering chain for evidence.
-func chainFor(e ast.Vertex) ([]string, bool) {
-	sub := collectScope(e)
+func chainFor(sub *scopeFacts) ([]string, bool) {
 	segs := make([]string, 0, len(sub.vars)+len(sub.calls))
 	for name := range sub.vars {
 		if name != "" {
