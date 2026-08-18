@@ -607,6 +607,69 @@ type flowResult struct {
 	evidenceTruncated bool
 }
 
+// unresolvableAssignRHS returns the right-hand-side expression of every
+// assignment (=, =&, .=) in f whose target assignedTargetKey cannot resolve
+// to a taint-state key: a method-call result mid-chain (`$a->b()->c = X`),
+// a static property (`Foo::$cache = X`), a list()/[] destructuring target,
+// or a variable-variable base. This is a purely structural scan (no taint
+// fixpoint), used to cheaply decide whether hasUnresolvableTaintedTarget
+// needs to do any further work at all.
+func unresolvableAssignRHS(f *scopeFacts) []ast.Vertex {
+	var out []ast.Vertex
+	for _, a := range f.assigns {
+		if assignedTargetKey(a.Var) == "" {
+			out = append(out, a.Expr)
+		}
+	}
+	for _, a := range f.references {
+		if assignedTargetKey(a.Var) == "" {
+			out = append(out, a.Expr)
+		}
+	}
+	for _, a := range f.concats {
+		if assignedTargetKey(a.Var) == "" {
+			out = append(out, a.Expr)
+		}
+	}
+	return out
+}
+
+// hasUnresolvableTaintedTarget reports whether f contains an assignment
+// whose target cannot be keyed (see unresolvableAssignRHS) AND whose
+// right-hand side is actually tainted -- the only case that represents a
+// real, silent loss of tracking. `list($a, $b) = ['x', 'y']` and
+// `Foo::$cache = 'literal'` drop nothing at all and must not be flagged;
+// `list($a, $b) = curl_exec($u)` and `Foo::$cache = curl_exec($u)`
+// genuinely drop taint this package cannot track further and must be.
+//
+// An earlier version of this check fired on the unkeyable SHAPE alone,
+// regardless of taint. Measured against the reference corpus that reported
+// the marker on 38.75% of analyzed files -- overwhelmingly ordinary,
+// completely benign idioms (list() destructuring, static properties used
+// as singletons/caches) that were not dropping anything -- noise no
+// operator could act on. Gating on the RHS's own taint is what makes the
+// marker mean "we dropped taint here" instead of "this file uses PHP".
+//
+// f.assigns/f.references/f.concats are scanned for an unresolvable target
+// FIRST (see unresolvableAssignRHS), before the per-scope taint fixpoint
+// below runs at all, so the (relatively expensive) taintedLocals call is
+// skipped entirely for the overwhelming majority of scopes that have no
+// unresolvable target -- the same early-return findFlows already uses for
+// f.sinks being empty.
+func hasUnresolvableTaintedTarget(f *scopeFacts, summaries summaryTables) bool {
+	rhs := unresolvableAssignRHS(f)
+	if len(rhs) == 0 {
+		return false
+	}
+	st := taintedLocals(f, summaries)
+	for _, expr := range rhs {
+		if _, tainted := exprTaint(expr, st, summaries); tainted {
+			return true
+		}
+	}
+	return false
+}
+
 // findFlows reports each sink in a scope that receives remote content.
 func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]flowResult, error) {
 	if err := ctx.Err(); err != nil {

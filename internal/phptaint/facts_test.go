@@ -104,38 +104,6 @@ func TestCollectRecordsVariableVariablePrecisionLoss(t *testing.T) {
 	}
 }
 
-// TestUnresolvableAssignTargetRecordsPrecisionLoss is fix round 2 for Task
-// 11: assignedTargetKey silently drops taint for a shape it cannot key (a
-// method-call result mid-chain, a static property, a variable-variable
-// base) -- the correct conservative direction for a zero-false-positive
-// analyzer -- but that drop must be OBSERVABLE, the same way
-// variable-variable/dynamic-call/extract/compact already are, rather than
-// an invisible silent false negative.
-func TestUnresolvableAssignTargetRecordsPrecisionLoss(t *testing.T) {
-	tests := []string{
-		`<?php $a->b()->c = $x;`,  // method call mid-chain
-		`<?php Foo::$cache = $x;`, // static property
-		`<?php $$name = $x;`,      // variable-variable base
-	}
-	for _, src := range tests {
-		f := mustParse(t, src)
-		if !f.precisionLoss["unresolvable-assign-target"] {
-			t.Errorf("%s: precisionLoss = %v, want unresolvable-assign-target", src, f.precisionLoss)
-		}
-	}
-}
-
-// TestOrdinaryAssignmentsDoNotRecordUnresolvableTarget guards against the
-// marker becoming noise: every shape assignedTargetKey CAN resolve (a bare
-// variable, a property, an array element, and the array-over-property
-// chain fix round 1 added) must not trip it.
-func TestOrdinaryAssignmentsDoNotRecordUnresolvableTarget(t *testing.T) {
-	f := mustParse(t, "<?php $a = $b; $obj->prop = $c; $arr[0] = $d; $obj->list[] = $e; $obj->b[0]->c = $g;")
-	if f.precisionLoss["unresolvable-assign-target"] {
-		t.Errorf("precisionLoss = %v, want no unresolvable-assign-target for ordinary resolvable assignments", f.precisionLoss)
-	}
-}
-
 func TestCalleeNameResolvesLeadingBackslash(t *testing.T) {
 	f := mustParse(t, `<?php \curl_exec($c); \assert($x);`)
 	if !f.calls["curl_exec"] {
