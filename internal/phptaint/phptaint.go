@@ -9,7 +9,10 @@
 // config, store, or process global, so callers own every I/O decision.
 package phptaint
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Status is the outcome of an analysis attempt. Callers must not infer a
 // clean file from an empty result slice. StatusAnalyzed and StatusNotCandidate
@@ -135,16 +138,21 @@ type Report struct {
 	EvidenceTruncated bool
 }
 
-// Analyze owns the pre-filter, size check, parse, and data-flow pass. It
-// recovers a panic at the package boundary so a parser or analyzer defect
-// degrades to a coverage gap instead of taking down the caller.
-func Analyze(ctx context.Context, src []byte) (report Report) {
+// recovered recovers a panic at the package boundary so a parser or analyzer
+// defect degrades to a coverage gap instead of taking down the caller.
+func recovered(fn func() Report) (report Report) {
 	defer func() {
 		if r := recover(); r != nil {
-			report = Report{Status: StatusPanic, Reason: "recovered panic during analysis"}
+			report = Report{Status: StatusPanic, Reason: sanitizeReason(fmt.Sprintf("recovered panic during analysis: %v", r))}
 		}
 	}()
-	return analyze(ctx, src)
+	return fn()
+}
+
+// Analyze owns the pre-filter, size check, parse, and data-flow pass. It
+// recovers a panic at the package boundary via the recovered helper.
+func Analyze(ctx context.Context, src []byte) Report {
+	return recovered(func() Report { return analyze(ctx, src) })
 }
 
 func analyze(ctx context.Context, src []byte) Report {
