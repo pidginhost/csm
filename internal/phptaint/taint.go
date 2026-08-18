@@ -2,6 +2,7 @@ package phptaint
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
 )
@@ -500,6 +501,115 @@ func decoderInputs(call *ast.ExprFunctionCall) []ast.Vertex {
 		}
 	}
 	return inputs
+}
+
+// findFlows reports each sink in a scope that receives remote content.
+func findFlows(f *scopeFacts, summaries summaryTables) []Result {
+	if len(f.sinks) == 0 {
+		return nil
+	}
+	st := taintedLocals(f, summaries)
+	out := make([]Result, 0, len(f.sinks))
+	for _, s := range f.sinks {
+		c, tainted := exprTaint(s.expr, st, summaries)
+		if !tainted {
+			continue
+		}
+		out = append(out, Result{
+			Source:     sourceLabel(s.expr, st, summaries),
+			Via:        chainFor(s.expr),
+			Sink:       s.kind,
+			Confidence: c,
+		})
+	}
+	return out
+}
+
+// sourceLabel names the acquiring construct for evidence. It prefers a
+// directly visible source call, then a taint-returning callee, then the
+// tainted variable that carried the value in. Resolution goes through
+// callSites (rather than the bare f.calls name set) so a summarized method
+// is matched via the same call-syntax-scoped lookup taintedLocals uses,
+// instead of guessing across the function/method namespaces.
+func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) string {
+	sub := collectScope(e)
+	for _, call := range sub.callNodes {
+		if _, ok := sourceConfidence(call); ok {
+			return sanitizeSegment(calleeName(call.Function))
+		}
+	}
+	names := make([]string, 0, len(sub.callSites))
+	for _, call := range sub.callSites {
+		if _, ok := summaries.lookup(call); ok {
+			names = append(names, call.name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) > 0 {
+		return sanitizeSegment(names[0])
+	}
+	vars := make([]string, 0, len(sub.vars))
+	for name := range sub.vars {
+		if _, ok := st[name]; ok {
+			vars = append(vars, name)
+		}
+	}
+	sort.Strings(vars)
+	if len(vars) > 0 {
+		return sanitizeSegment("$" + vars[0])
+	}
+	return "unknown"
+}
+
+// chainFor renders the sanitized, bounded laundering chain for evidence.
+func chainFor(e ast.Vertex) []string {
+	sub := collectScope(e)
+	segs := make([]string, 0, len(sub.vars)+len(sub.calls))
+	for name := range sub.vars {
+		if name != "" {
+			segs = append(segs, "$"+name)
+		}
+	}
+	for name := range sub.calls {
+		segs = append(segs, name)
+	}
+	sort.Strings(segs)
+	for i := range segs {
+		segs[i] = sanitizeSegment(segs[i])
+	}
+	out, _ := truncateChain(segs)
+	return out
+}
+
+// dedupeAndSort collapses duplicate endpoint pairs and orders results so
+// repeated runs are byte-identical. A node visited from more than one scope
+// (a nested function's body is both part of its own declaration and part of
+// findFlows over its enclosing scope's collectAll) can otherwise report the
+// same source-sink pair twice.
+func dedupeAndSort(in []Result) []Result {
+	seen := map[string]int{}
+	out := make([]Result, 0, len(in))
+	for _, r := range in {
+		key := r.Source + "\x00" + r.Sink
+		if idx, ok := seen[key]; ok {
+			if r.Confidence > out[idx].Confidence {
+				out[idx].Confidence = r.Confidence
+			}
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		if out[i].Sink != out[j].Sink {
+			return out[i].Sink < out[j].Sink
+		}
+		return strings.Join(out[i].Via, ",") < strings.Join(out[j].Via, ",")
+	})
+	return out
 }
 
 // activeTaint finds the strongest confidence among an already-collected

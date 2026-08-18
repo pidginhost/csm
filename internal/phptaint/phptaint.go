@@ -106,6 +106,9 @@ const (
 	maxCollectedNodes  = 800_000
 	maxSummarizedFuncs = 2_000
 	maxAnalysisDepth   = 256
+	// maxEvidenceResults bounds returned evidence paths; TotalResults still
+	// reports the full count.
+	maxEvidenceResults = 8
 )
 
 // Result is one remote-source-to-sink flow.
@@ -212,6 +215,52 @@ func analyze(ctx context.Context, src []byte) Report {
 	if err := ctx.Err(); err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
-	_ = root
-	return Report{Status: StatusAnalyzed}
+
+	// all: whole-file inventory, used for the declaration list and the
+	// budget. top: the file's top-level statements only, collected below via
+	// collectTopLevel. These MUST stay separate. A single flat taint map over
+	// the whole file lets a function-local variable taint an unrelated
+	// top-level variable that merely shares its name, which fires on clean
+	// code -- names like $data and $content are ubiquitous in real PHP.
+	// Function and method bodies get their own state below.
+	all := collectScope(root)
+	if all.budgetExceeded {
+		return Report{Status: StatusResourceLimit, Reason: "collection budget exceeded"}
+	}
+	if err := ctx.Err(); err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
+
+	summaries, loss := functionSummaries(all)
+	results := findFlows(collectTopLevel(root), summaries)
+
+	// Sinks inside function bodies count too, each against its own state.
+	// collectOwnStmts (not collectAll) skips any function/class/method
+	// nested inside this body, for the same reason collectTopLevel skips
+	// declarations at the file level: a nested declaration's locals must
+	// not taint an identically-named local in the enclosing body.
+	for _, fn := range all.funcs {
+		body := collectOwnStmts(fn.Stmts)
+		results = append(results, findFlows(body, summaries)...)
+	}
+	for _, m := range all.methods {
+		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
+		body := collectOwnStmts(methodStmts(m.Stmt))
+		results = append(results, findFlows(body, summaries)...)
+	}
+
+	results = dedupeAndSort(results)
+	total := len(results)
+	truncated := false
+	if len(results) > maxEvidenceResults {
+		results = results[:maxEvidenceResults]
+		truncated = true
+	}
+	return Report{
+		Status:            StatusAnalyzed,
+		Results:           results,
+		TotalResults:      total,
+		PrecisionLoss:     loss,
+		EvidenceTruncated: truncated,
+	}
 }

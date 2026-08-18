@@ -305,6 +305,59 @@ func collectAll(ns []ast.Vertex) *scopeFacts {
 	return f
 }
 
+// collectTopLevel gathers facts from the file's top-level statements only,
+// skipping declarations whose bodies are analysed separately with their own
+// taint state. Folding every scope into one flat map keyed by bare variable
+// name lets a function-local variable taint an unrelated top-level variable
+// that merely shares its name, which reports clean code as malicious: names
+// like $data, $content and $tmp recur constantly in real PHP.
+func collectTopLevel(root ast.Vertex) *scopeFacts {
+	r, ok := root.(*ast.Root)
+	if !ok {
+		return collectScope(root)
+	}
+	return collectOwnStmts(r.Stmts)
+}
+
+// collectOwnStmts gathers facts from a statement list, skipping any nested
+// function, class, interface, trait, or enum declaration. This is the same
+// cross-scope leak collectTopLevel guards against, one level deeper: a
+// function can declare another function (or an anonymous class) in its own
+// body, and that nested declaration gets its own entry in the whole-file
+// funcs/methods inventory, analysed separately with its own taint state.
+// Folding it into this scope's flat map too would let its local variables
+// taint an identically-named local in the enclosing body.
+func collectOwnStmts(stmts []ast.Vertex) *scopeFacts {
+	f := newScopeFacts()
+	t := traverser.NewTraverser(&factVisitor{f: f})
+	for _, stmt := range stmts {
+		if stmt == nil {
+			continue
+		}
+		switch stmt.(type) {
+		case *ast.StmtFunction, *ast.StmtClass, *ast.StmtInterface, *ast.StmtTrait, *ast.StmtEnum:
+			continue
+		}
+		t.Traverse(stmt)
+	}
+	return f
+}
+
+// methodStmts unwraps a class method's single body vertex into a statement
+// list, the shape collectOwnStmts and collectAll both expect. A braced
+// method body is *ast.StmtStmtList; an abstract or interface method has a
+// nil Stmt.
+func methodStmts(stmt ast.Vertex) []ast.Vertex {
+	switch v := stmt.(type) {
+	case nil:
+		return nil
+	case *ast.StmtStmtList:
+		return v.Stmts
+	default:
+		return []ast.Vertex{stmt}
+	}
+}
+
 type nodeSpan struct {
 	start int
 	end   int
