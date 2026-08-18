@@ -108,6 +108,97 @@ func TestBenignControlsReportNothing(t *testing.T) {
 	}
 }
 
+// TestPropertyWriteDoesNotPoisonUnrelatedSink reproduces the false positive
+// the corpus gate found in header-footer-elementor's
+// class-bsf-analytics-loader.php: one property ($this->analytics_version)
+// is written from remote content, and a DIFFERENT property
+// ($this->analytics_path) -- never itself tainted -- reaches require_once
+// in the same method. The write and the sink must be in one scope, or
+// scope isolation alone would already hide the bug this test targets (see
+// TestSinkInsideWrapperAtTopLevelIsDetected for that separate mechanism).
+func TestPropertyWriteDoesNotPoisonUnrelatedSink(t *testing.T) {
+	src := b64(`<?php
+class Loader {
+	private $analytics_version = '';
+	private $analytics_path = '';
+	function load($h) {
+		$raw = curl_exec($h);
+		$this->analytics_version = $raw;
+		$this->analytics_path = 'safe/local/path.php';
+		require_once $this->analytics_path;
+	}
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: a write to $this->analytics_version poisoned a read of the unrelated $this->analytics_path: %+v", rep.Results)
+	}
+}
+
+// TestPropertyWriteStillFlowsToItsOwnSink is the detection-preserving twin
+// of the test above: when the SAME property that was written from remote
+// content reaches a sink, that must still be reported.
+func TestPropertyWriteStillFlowsToItsOwnSink(t *testing.T) {
+	src := b64(`<?php
+class Loader {
+	private $code = '';
+	function load($h) {
+		$this->code = curl_exec($h);
+		eval($this->code);
+	}
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: a property flowing to its own sink was not detected")
+	}
+}
+
+// TestAssertBooleanArgumentReportsNothing reproduces the second corpus-gate
+// false positive, from SimplePie/src/File.php: assert() guarding a
+// boolean condition over remotely-sourced content is not a code-execution
+// sink on any PHP version this analyzer targets (see Fix 2 in the taint_test
+// and facts_test coverage for the mechanism).
+func TestAssertBooleanArgumentReportsNothing(t *testing.T) {
+	src := b64(`<?php
+function fetchInfo($h) {
+	$info = curl_exec($h);
+	assert(is_array($info) && $info['redirect_count'] >= 0);
+	return $info;
+}
+fetchInfo($handle);`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: boolean assert() argument reported as a sink: %+v", rep.Results)
+	}
+}
+
+// TestAssertStringArgumentStillReportsFlow guards against Fix 2
+// overcorrecting into never treating assert as a sink: a tainted variable
+// passed directly is still a real PHP 7 code-execution risk.
+func TestAssertStringArgumentStillReportsFlow(t *testing.T) {
+	src := b64(`<?php
+function fetchCode($h) {
+	$code = curl_exec($h);
+	assert($code);
+}
+fetchCode($handle);`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: assert($taintedVar) was not detected")
+	}
+}
+
 func TestFunctionLocalDoesNotTaintTopLevelSameName(t *testing.T) {
 	// A function-local variable must not taint an unrelated top-level
 	// variable that merely shares its name.

@@ -129,7 +129,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 		}
 		if index >= 0 {
 			assignments[index].origins = append(assignments[index].origins, taintOrigin{
-				variable: assignedVarName(a.Var), assignment: -1,
+				variable: assignedTargetKey(a.Var), assignment: -1,
 			})
 		}
 	}
@@ -214,8 +214,8 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 	// changes the other, so add the persistent reverse dependency after the
 	// concrete assignment expression has received its own RHS origins.
 	for _, reference := range f.references {
-		target := assignedVarName(reference.Expr)
-		source := assignedVarName(reference.Var)
+		target := assignedTargetKey(reference.Expr)
+		source := assignedTargetKey(reference.Var)
 		if target == "" || source == "" {
 			continue
 		}
@@ -230,7 +230,7 @@ func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignme
 }
 
 func appendAssignment(assignments []taintAssignment, node, target, expr ast.Vertex) ([]taintAssignment, int, bool) {
-	name := assignedVarName(target)
+	name := assignedTargetKey(target)
 	if name == "" {
 		return assignments, -1, true
 	}
@@ -402,20 +402,20 @@ func taintedLocalsFallback(f *scopeFacts, summaries summaryTables) taintState {
 		changed := false
 		for _, assignment := range f.assigns {
 			if confidence, tainted := exprTaint(assignment.Expr, st, summaries); tainted {
-				changed = st.raise(assignedVarName(assignment.Var), confidence) || changed
+				changed = st.raise(assignedTargetKey(assignment.Var), confidence) || changed
 			}
 		}
 		for _, assignment := range f.references {
 			if confidence, tainted := exprTaint(assignment.Expr, st, summaries); tainted {
-				changed = st.raise(assignedVarName(assignment.Var), confidence) || changed
+				changed = st.raise(assignedTargetKey(assignment.Var), confidence) || changed
 			}
 			if confidence, tainted := exprTaint(assignment.Var, st, summaries); tainted {
-				changed = st.raise(assignedVarName(assignment.Expr), confidence) || changed
+				changed = st.raise(assignedTargetKey(assignment.Expr), confidence) || changed
 			}
 		}
 		for _, assignment := range f.concats {
 			if confidence, tainted := exprTaint(assignment.Expr, st, summaries); tainted {
-				changed = st.raise(assignedVarName(assignment.Var), confidence) || changed
+				changed = st.raise(assignedTargetKey(assignment.Var), confidence) || changed
 			}
 		}
 		if !changed {
@@ -425,9 +425,12 @@ func taintedLocalsFallback(f *scopeFacts, summaries summaryTables) taintState {
 	return st
 }
 
-// assignedVarName returns the root local variable written by an assignment.
-// Array elements and object properties taint their containing value as a whole,
-// which is the documented version-1 precision model.
+// assignedVarName returns the root local variable written by an assignment,
+// flattening any array-element or property-fetch chain onto its base
+// variable. This remains the array-element behavior (the spec permits
+// over-approximating containers, and array keys are not tracked at all), and
+// it is also assignedTargetKey's fallback for a property chain it cannot key
+// more precisely -- see there for when that applies.
 func assignedVarName(target ast.Vertex) string {
 	for target != nil {
 		switch n := target.(type) {
@@ -442,6 +445,75 @@ func assignedVarName(target ast.Vertex) string {
 		}
 	}
 	return ""
+}
+
+// propertyFetchParts returns the base expression and the (possibly dynamic)
+// property vertex of a property fetch, regardless of whether it used the
+// regular ("->") or nullsafe ("?->") operator. Nullsafe fetches cannot
+// appear as an assignment target in valid PHP, but a property that was
+// WRITTEN through the regular operator must still be found by a later READ
+// spelled with "?->", so both node types resolve through the one path
+// assignedTargetKey uses for both directions.
+func propertyFetchParts(n ast.Vertex) (base, prop ast.Vertex, ok bool) {
+	switch v := n.(type) {
+	case *ast.ExprPropertyFetch:
+		return v.Var, v.Prop, true
+	case *ast.ExprNullsafePropertyFetch:
+		return v.Var, v.Prop, true
+	}
+	return nil, nil, false
+}
+
+// assignedTargetKey returns the taint-state key an assignment target -- or,
+// via readVarNodes, a later read of the identical expression shape --
+// resolves to. A bare variable resolves to its own name; an array element
+// still collapses onto its containing variable, unchanged from
+// assignedVarName (the spec permits over-approximating containers, and this
+// task's false positives were never about arrays).
+//
+// A property fetch is different: $this->body = <tainted> must NOT taint
+// every later use of bare $this, because $this appears in nearly every
+// method of a class and one tainted property would otherwise poison every
+// sink in it -- this is Task 11 Fix 1, and it is deliberately not special-
+// cased to the name "$this": $obj->prop = <tainted> gets exactly the same
+// treatment. The key scopes to the full static property chain (so
+// $this->a->b is distinct from both $this->a and $this->a->c), joining base
+// and property names with "->", a sequence no PHP variable name can
+// contain, so a compound key can never collide with a bare one.
+//
+// The walk is iterative, not recursive: a property-fetch chain's depth is
+// attacker-controlled PHP source ($a->b->c->...), and Go recursion over
+// unbounded attacker-controlled depth is an unrecoverable stack overflow,
+// the same hazard TestTaintHandlesDeeplyNestedAssignments guards elsewhere
+// in this package.
+//
+// A property whose name is not statically known ($obj->$name = X) has no
+// specific key to scope to, so the ENTIRE chain falls back to
+// assignedVarName's base-variable over-approximation, rather than a
+// partially-keyed name nothing else would ever match.
+func assignedTargetKey(target ast.Vertex) string {
+	var props []string
+	node := target
+	for {
+		base, prop, ok := propertyFetchParts(node)
+		if !ok {
+			break
+		}
+		name := calleeName(prop)
+		if name == "" {
+			return assignedVarName(target)
+		}
+		props = append(props, name)
+		node = base
+	}
+	base := assignedVarName(node)
+	if base == "" || len(props) == 0 {
+		return base
+	}
+	for i, j := 0, len(props)-1; i < j; i, j = i+1, j-1 {
+		props[i], props[j] = props[j], props[i]
+	}
+	return base + "->" + strings.Join(props, "->")
 }
 
 // exprTaint reports whether an expression carries remote content, and with
@@ -572,10 +644,25 @@ func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) (string, 
 	if len(names) > 0 {
 		return sanitize(names[0], maxSegmentBytes)
 	}
-	vars := make([]string, 0, len(sub.vars))
+	vars := make([]string, 0, len(sub.vars)+len(sub.propNodes))
 	for name := range sub.vars {
 		if _, ok := st[name]; ok {
 			vars = append(vars, name)
+		}
+	}
+	// A property key (e.g. "this->body") is checked separately from the
+	// bare-variable loop above: since Fix 1, the base variable's own name is
+	// no longer tainted by a property write, so a flow carried entirely by a
+	// specific property would otherwise fall through every branch above and
+	// report "unknown" instead of naming the property that actually carried
+	// it.
+	for _, n := range sub.propNodes {
+		key := assignedTargetKey(n)
+		if key == "" {
+			continue
+		}
+		if _, ok := st[key]; ok {
+			vars = append(vars, key)
 		}
 	}
 	sort.Strings(vars)

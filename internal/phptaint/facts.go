@@ -16,6 +16,34 @@ import (
 // evaluates the code in its second argument.
 var callSinks = map[string]int{"assert": 0, "create_function": 1}
 
+// assertArgumentCouldBeString reports whether e's top-level shape permits a
+// string value. This is exactly what decides whether assert(e) can execute
+// code on any PHP version this analyzer targets: PHP 7 only ever evaluated a
+// *string* argument as code, and PHP 8 removed the eval form entirely. A
+// logical, comparison, identity, or instanceof expression can only ever
+// produce a bool (or, for <=>, an int) -- never a string -- so it is not a
+// code-execution sink regardless of what it compares.
+//
+// The check is shallow by design: only e's own node type is inspected, not
+// its operands. assert($a && fetchCode()) must still be excluded, because
+// the value actually passed to assert() is the bool && produces, not the
+// string one of its operands would have produced on its own.
+func assertArgumentCouldBeString(e ast.Vertex) bool {
+	switch e.(type) {
+	case *ast.ExprBinaryBooleanAnd, *ast.ExprBinaryBooleanOr,
+		*ast.ExprBinaryLogicalAnd, *ast.ExprBinaryLogicalOr, *ast.ExprBinaryLogicalXor,
+		*ast.ExprBooleanNot,
+		*ast.ExprBinaryEqual, *ast.ExprBinaryNotEqual,
+		*ast.ExprBinaryIdentical, *ast.ExprBinaryNotIdentical,
+		*ast.ExprBinaryGreater, *ast.ExprBinaryGreaterOrEqual,
+		*ast.ExprBinarySmaller, *ast.ExprBinarySmallerOrEqual,
+		*ast.ExprBinarySpaceship,
+		*ast.ExprInstanceOf:
+		return false
+	}
+	return true
+}
+
 // sinkSite is one code-execution construct and the expression it executes.
 type sinkSite struct {
 	kind string
@@ -41,13 +69,19 @@ type scopeFacts struct {
 	// never read from here directly -- methods are already tracked in
 	// methods above -- this list exists only to supply declarationTree
 	// with the position span of the class body itself.
-	classLikes     []ast.Vertex
-	sinks          []sinkSite
-	callNodes      []*ast.ExprFunctionCall
-	callSites      []callSite
-	calls          map[string]bool
-	vars           map[string]bool
-	varNodes       []*ast.ExprVariable
+	classLikes []ast.Vertex
+	sinks      []sinkSite
+	callNodes  []*ast.ExprFunctionCall
+	callSites  []callSite
+	calls      map[string]bool
+	vars       map[string]bool
+	varNodes   []*ast.ExprVariable
+	// propNodes holds every property-fetch node (both "->" and "?->") found
+	// in this scope, whether it appears as a read or as an assignment
+	// target. readVarNodes keys each one to the specific property it fetches
+	// (see assignedTargetKey) so a write to one property never taints a read
+	// of a different one or of the bare base object -- see task 11.
+	propNodes      []ast.Vertex
 	writes         []ast.Vertex
 	precisionLoss  map[string]bool
 	visited        int
@@ -191,6 +225,27 @@ func (v *factVisitor) ExprVariable(n *ast.ExprVariable) {
 	}
 }
 
+// ExprPropertyFetch and ExprNullsafePropertyFetch record every "->"/"?->"
+// property fetch this scope contains, whether it is a read or (for the
+// non-nullsafe form; nullsafe cannot appear as a write target in valid PHP)
+// an assignment target. The traverser still visits the embedded base
+// variable (e.g. $this inside $this->body) as an ordinary ExprVariable
+// regardless of this hook, which is what lets a genuinely whole-object
+// taint keep reaching a property read -- see readVarNodes.
+func (v *factVisitor) ExprPropertyFetch(n *ast.ExprPropertyFetch) {
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	v.f.propNodes = append(v.f.propNodes, n)
+}
+
+func (v *factVisitor) ExprNullsafePropertyFetch(n *ast.ExprNullsafePropertyFetch) {
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	v.f.propNodes = append(v.f.propNodes, n)
+}
+
 func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	if !v.f.count() || v.excluded(n) {
 		return
@@ -206,10 +261,16 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	// dedicated nodes, so they are recognised here rather than by node type.
 	// The executed argument differs per sink (assert's is first,
 	// create_function's is second), so the index is looked up rather than
-	// assumed to be the last argument.
+	// assumed to be the last argument. assert() additionally requires its
+	// argument to be capable of holding a string: see
+	// assertArgumentCouldBeString for why a boolean-shaped argument (a
+	// comparison, a logical operator, instanceof, ...) is not a
+	// code-execution sink on any PHP version this analyzer targets.
 	if idx, ok := callSinks[name]; ok && len(n.Args) > idx {
 		if arg, ok := n.Args[idx].(*ast.Argument); ok {
-			v.f.sinks = append(v.f.sinks, sinkSite{kind: name, expr: arg.Expr})
+			if name != "assert" || assertArgumentCouldBeString(arg.Expr) {
+				v.f.sinks = append(v.f.sinks, sinkSite{kind: name, expr: arg.Expr})
+			}
 		}
 	}
 }
@@ -592,8 +653,8 @@ func (f *scopeFacts) readVarNodes() []namedNodeSpan {
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].start < writes[j].start })
 
-	vars := make([]namedNodeSpan, 0, len(f.varNodes))
-	reads := make([]namedNodeSpan, 0, len(f.varNodes))
+	vars := make([]namedNodeSpan, 0, len(f.varNodes)+len(f.propNodes))
+	reads := make([]namedNodeSpan, 0, len(f.varNodes)+len(f.propNodes))
 	for _, n := range f.varNodes {
 		name := varName(n.Name)
 		if name == "" {
@@ -605,6 +666,24 @@ func (f *scopeFacts) readVarNodes() []namedNodeSpan {
 			// Parsed nodes normally always have positions. If a future parser
 			// omits one, retain the conservative taint dependency.
 			reads = append(reads, namedNodeSpan{name: name, node: n})
+		}
+	}
+	// Property-fetch reads are keyed to the specific property chain (see
+	// assignedTargetKey), not the bare base variable, so a write to one
+	// property cannot leak into a read of a different one. A property whose
+	// name is not statically known is skipped here entirely rather than
+	// keyed to "": the embedded base variable visited above already carries
+	// the conservative base-variable dependency for that case, via
+	// assignedTargetKey's own fallback at write time.
+	for _, n := range f.propNodes {
+		key := assignedTargetKey(n)
+		if key == "" {
+			continue
+		}
+		if span, ok := spanOf(n); ok {
+			vars = append(vars, namedNodeSpan{nodeSpan: span, name: key, node: n})
+		} else {
+			reads = append(reads, namedNodeSpan{name: key, node: n})
 		}
 	}
 	sort.Slice(vars, func(i, j int) bool { return vars[i].start < vars[j].start })

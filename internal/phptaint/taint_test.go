@@ -104,12 +104,57 @@ func TestTaintFlowsBackThroughReferenceAlias(t *testing.T) {
 	}
 }
 
-func TestElementAndPropertyWritesTaintContainingValue(t *testing.T) {
-	st, _ := analyzeScope(t, "<?php $a['payload'] = curl_exec($c); $obj->payload = curl_exec($c);")
-	for _, name := range []string{"a", "obj"} {
-		if _, ok := st[name]; !ok {
-			t.Errorf("state = %v, want $%s tainted as a whole", st, name)
-		}
+// TestArrayElementWriteTaintsContainingValue locks in the still-accepted
+// half of the version-1 container over-approximation: an array element
+// write taints its whole containing variable, because the spec permits
+// over-approximating containers and array keys are not tracked.
+func TestArrayElementWriteTaintsContainingValue(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a['payload'] = curl_exec($c);")
+	if _, ok := st["a"]; !ok {
+		t.Errorf("state = %v, want $a tainted as a whole", st)
+	}
+}
+
+// TestPropertyWriteDoesNotTaintBaseVariable is Task 11 Fix 1's core
+// assertion: $obj->payload = curl_exec($c) must taint the specific
+// "obj->payload" key, never the bare $obj it hangs off of. Before the fix,
+// a property write flattened onto the base variable, so one tainted
+// property poisoned every later use of the object -- including an entirely
+// different property -- which is what produced both real false positives
+// this task fixes. This is deliberately NOT $this: the brief forbids
+// special-casing that name, and $obj here is the general case it must also
+// cover.
+func TestPropertyWriteDoesNotTaintBaseVariable(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $obj->payload = curl_exec($c); $obj->other = 'clean';")
+	if _, ok := st["obj"]; ok {
+		t.Errorf("state = %v, want bare $obj NOT tainted by a property write", st)
+	}
+	if _, ok := st["obj->other"]; ok {
+		t.Errorf("state = %v, want obj->other clean: a different property was written", st)
+	}
+	if _, ok := st["obj->payload"]; !ok {
+		t.Errorf("state = %v, want obj->payload tainted", st)
+	}
+}
+
+// TestPropertyReadPicksUpItsOwnWrite is the detection-preserving half of
+// Fix 1: scoping taint to the specific property must not stop a read of
+// THAT SAME property from seeing its own taint.
+func TestPropertyReadPicksUpItsOwnWrite(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $obj->payload = curl_exec($c); $b = $obj->payload;")
+	if _, ok := st["b"]; !ok {
+		t.Errorf("state = %v, want $b tainted by reading the property that was written", st)
+	}
+}
+
+// TestPropertyReadInheritsWholeObjectTaint proves the fix does not go too
+// far: reassigning the WHOLE object ($obj = ...) must still taint every
+// property read off it, because the object itself -- not one property of
+// it -- is what carries the taint in that case.
+func TestPropertyReadInheritsWholeObjectTaint(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $obj = curl_exec($c); $b = $obj->anything;")
+	if _, ok := st["b"]; !ok {
+		t.Errorf("state = %v, want $b tainted via the whole tainted object", st)
 	}
 }
 
@@ -147,6 +192,7 @@ func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
 		{"<?php $a = curl_exec($c); $b = $a;", summaryTables{}},
 		{"<?php $a = curl_exec($c); $b = ($a = 'clean');", summaryTables{}},
 		{"<?php $x = (($a = curl_exec($c)) . ($b = $a));", summaryTables{}},
+		{"<?php $obj->body = curl_exec($c); $obj->other = 'clean'; $b = $obj->body . $obj->other;", summaryTables{}},
 		{"<?php $a['x'] = fopen('https://host/x', 'r'); $b = fread($a, 10);", summaryTables{}},
 		{"<?php $b =& $a; $b = curl_exec($c);", summaryTables{}},
 		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", summaryTables{}},
