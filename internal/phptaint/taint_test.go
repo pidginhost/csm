@@ -209,6 +209,74 @@ func TestDeepMixedAccessChainKeysThePath(t *testing.T) {
 	}
 }
 
+// hasDroppedTaint parses src, collects one flat scope from it, and reports
+// whether hasUnresolvableTaintedTarget finds a real (tainted) drop --
+// exercising the fix round 3 mechanism directly, the same way analyzeScope
+// exercises taintedLocals.
+func hasDroppedTaint(t *testing.T, src string) bool {
+	t.Helper()
+	root, status, reason := parseSource([]byte(src))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	f := collectScope(root)
+	return hasUnresolvableTaintedTarget(f, summaryTables{})
+}
+
+// TestUnresolvableTargetUntaintedValueNoMarker is fix round 3 for Task 11:
+// the round-2 marker fired on the SHAPE of an unkeyable assignment target
+// alone, regardless of whether anything was actually tainted, which made it
+// fire on 38.75% of analyzed corpus files -- dominated by list()
+// destructuring and static properties, both completely ordinary and benign.
+// An unresolvable target assigned a value that carries no remote content
+// drops nothing worth flagging.
+func TestUnresolvableTargetUntaintedValueNoMarker(t *testing.T) {
+	tests := []string{
+		`<?php list($a, $b) = array('x', 'y');`, // list() destructuring
+		`<?php Foo::$cache = 'literal';`,        // static property
+		`<?php $obj->b()->c = 'literal';`,       // method call mid-chain
+	}
+	for _, src := range tests {
+		if hasDroppedTaint(t, src) {
+			t.Errorf("%s: want no dropped-taint marker for an untainted value", src)
+		}
+	}
+}
+
+// TestUnresolvableTargetTaintedValueMarksLoss is the other half: the same
+// three shapes, now assigned genuinely remote content, must be flagged --
+// this IS a real, silent loss of tracking.
+func TestUnresolvableTargetTaintedValueMarksLoss(t *testing.T) {
+	tests := []string{
+		`<?php list($a, $b) = curl_exec($u);`, // list() destructuring
+		`<?php Foo::$cache = curl_exec($u);`,  // static property
+		`<?php $obj->b()->c = curl_exec($u);`, // method call mid-chain
+	}
+	for _, src := range tests {
+		if !hasDroppedTaint(t, src) {
+			t.Errorf("%s: want the dropped-taint marker for a tainted value", src)
+		}
+	}
+}
+
+// TestResolvableTaintedTargetNeverMarksLoss guards the other direction:
+// hasUnresolvableTaintedTarget must never fire for a target it CAN key,
+// no matter how tainted the value is -- that is simply not what this
+// marker means.
+func TestResolvableTaintedTargetNeverMarksLoss(t *testing.T) {
+	tests := []string{
+		`<?php $a = curl_exec($u);`,
+		`<?php $obj->prop = curl_exec($u);`,
+		`<?php $arr[0] = curl_exec($u);`,
+		`<?php $obj->log[] = curl_exec($u);`,
+	}
+	for _, src := range tests {
+		if hasDroppedTaint(t, src) {
+			t.Errorf("%s: want no dropped-taint marker; the target is keyable", src)
+		}
+	}
+}
+
 func TestNestedAssignmentTargetDoesNotTaintItsValue(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = ($a = 'clean');")
 	if _, ok := st["b"]; ok {

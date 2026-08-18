@@ -11,6 +11,7 @@ package phptaint
 
 import (
 	"context"
+	"sort"
 )
 
 // Status is the outcome of an analysis attempt. Callers must not infer a
@@ -275,6 +276,16 @@ func analyze(ctx context.Context, src []byte) Report {
 	if err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
+	// droppedTaint tracks whether ANY scope assigns tainted content to a
+	// target this package cannot key (see hasUnresolvableTaintedTarget):
+	// method-call-chain, static-property, list()-destructuring, and
+	// variable-variable targets all silently drop the flow rather than
+	// risk a false positive by guessing. Checked per scope (top level, each
+	// function, each method) using the SAME scope-isolated facts already
+	// collected here for findFlows, so "tainted" means tainted within that
+	// specific scope's own taint state -- never a same-named variable
+	// leaking taint in from an unrelated scope.
+	droppedTaint := hasUnresolvableTaintedTarget(top, summaries)
 
 	// Sinks inside function bodies count too, each against its own state.
 	// collectOwnStmts (not collectAll) skips any function/class/method
@@ -292,6 +303,7 @@ func analyze(ctx context.Context, src []byte) Report {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 		flows = append(flows, bodyFlows...)
+		droppedTaint = droppedTaint || hasUnresolvableTaintedTarget(body, summaries)
 	}
 	for _, m := range all.methods {
 		if err := ctx.Err(); err != nil {
@@ -305,9 +317,20 @@ func analyze(ctx context.Context, src []byte) Report {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
 		flows = append(flows, bodyFlows...)
+		droppedTaint = droppedTaint || hasUnresolvableTaintedTarget(body, summaries)
 	}
 	if err := ctx.Err(); err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
+
+	if droppedTaint {
+		// loss is already sorted (functionSummaries sorts it); re-sort once
+		// after appending rather than inserting in place, so this stays a
+		// single obviously-correct call regardless of where
+		// "unresolvable-assign-target" falls alphabetically among the
+		// other markers.
+		loss = append(loss, "unresolvable-assign-target")
+		sort.Strings(loss)
 	}
 
 	flows = dedupeAndSort(flows)
