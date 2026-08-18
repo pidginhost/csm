@@ -64,10 +64,11 @@ func TestAnalyzePropagatesPartialParse(t *testing.T) {
 }
 
 // TestPreFilterGatesParsing pins down that isCandidate genuinely gates the
-// parse step in Analyze. Before this task, both branches of the isCandidate
-// check returned StatusNotCandidate, so a regression making isCandidate
-// always report true would pass every existing test unnoticed. Now a
-// candidate reaches the parser and yields a parse-derived status instead.
+// parse step in Analyze. An earlier version had both branches of the
+// isCandidate check return StatusNotCandidate, so a regression making
+// isCandidate always report true would have passed every existing test
+// unnoticed. Now a candidate reaches the parser and yields a parse-derived
+// status instead.
 func TestPreFilterGatesParsing(t *testing.T) {
 	nonCandidate := []byte("<?php function f( {")
 	rep := Analyze(context.Background(), nonCandidate)

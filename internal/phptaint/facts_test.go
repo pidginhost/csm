@@ -186,9 +186,9 @@ func TestAssertSinkCapturesFirstArgument(t *testing.T) {
 	}
 }
 
-// TestAssertBooleanExpressionIsNotASink is Task 11 Fix 2: PHP 8 removed
-// assert()'s string-eval form outright, and PHP 7 only ever evaluated a
-// *string* argument as code, so a logical/comparison/identity/instanceof
+// TestAssertBooleanExpressionIsNotASink: PHP 8 removed assert()'s
+// string-eval form outright, and PHP 7 only ever evaluated a *string*
+// argument as code, so a logical/comparison/identity/instanceof
 // expression -- which can only ever produce a bool -- is not a
 // code-execution sink on any version. This reproduces the exact shape from
 // SimplePie/src/File.php: assert(is_array($info) && $info['x'] >= 0).
@@ -220,9 +220,9 @@ func TestAssertBooleanExpressionIsNotASink(t *testing.T) {
 }
 
 // TestAssertStringCapableArgumentIsStillASink guards against
-// over-correcting Fix 2 into never treating assert as a sink: a plain
-// variable, a string literal, or a concatenation can all still carry
-// executable PHP 7 code, so they must remain sinks.
+// over-correcting the boolean-argument exclusion into never treating
+// assert as a sink: a plain variable, a string literal, or a concatenation
+// can all still carry executable PHP 7 code, so they must remain sinks.
 func TestAssertStringCapableArgumentIsStillASink(t *testing.T) {
 	tests := []string{
 		`<?php assert($code);`,

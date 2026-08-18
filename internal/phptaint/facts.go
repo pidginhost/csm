@@ -80,7 +80,7 @@ type scopeFacts struct {
 	// in this scope, whether it appears as a read or as an assignment
 	// target. readVarNodes keys each one to the specific property it fetches
 	// (see assignedTargetKey) so a write to one property never taints a read
-	// of a different one or of the bare base object -- see task 11.
+	// of a different one or of the bare base object.
 	propNodes      []ast.Vertex
 	writes         []ast.Vertex
 	precisionLoss  map[string]bool

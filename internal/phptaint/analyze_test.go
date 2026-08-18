@@ -162,8 +162,8 @@ class Loader {
 // TestAssertBooleanArgumentReportsNothing reproduces the second corpus-gate
 // false positive, from SimplePie/src/File.php: assert() guarding a
 // boolean condition over remotely-sourced content is not a code-execution
-// sink on any PHP version this analyzer targets (see Fix 2 in the taint_test
-// and facts_test coverage for the mechanism).
+// sink on any PHP version this analyzer targets (see the boolean-argument
+// sink exclusion covered in taint_test.go and facts_test.go).
 func TestAssertBooleanArgumentReportsNothing(t *testing.T) {
 	src := b64(`<?php
 function fetchInfo($h) {
@@ -181,9 +181,10 @@ fetchInfo($handle);`)
 	}
 }
 
-// TestAssertStringArgumentStillReportsFlow guards against Fix 2
-// overcorrecting into never treating assert as a sink: a tainted variable
-// passed directly is still a real PHP 7 code-execution risk.
+// TestAssertStringArgumentStillReportsFlow guards against the
+// boolean-argument exclusion overcorrecting into never treating assert as
+// a sink: a tainted variable passed directly is still a real PHP 7
+// code-execution risk.
 func TestAssertStringArgumentStillReportsFlow(t *testing.T) {
 	src := b64(`<?php
 function fetchCode($h) {
@@ -200,12 +201,11 @@ fetchCode($handle);`)
 	}
 }
 
-// TestArrayOnPropertyWriteDoesNotPoisonUnrelatedSink is fix round 1 for
-// Task 11: the review found that assignedTargetKey only unwrapped property
-// fetches, so an array-dim fetch sitting OUTERMOST over a property fetch
-// ($this->log[] = ...) fell through to the bare base-variable
-// over-approximation, reintroducing the exact false-positive class Fix 1
-// was meant to close.
+// TestArrayOnPropertyWriteDoesNotPoisonUnrelatedSink guards against
+// assignedTargetKey unwrapping only property fetches: an array-dim fetch
+// sitting OUTERMOST over a property fetch ($this->log[] = ...) must not
+// fall through to the bare base-variable over-approximation, which would
+// reintroduce a false positive across every other property on the object.
 func TestArrayOnPropertyWriteDoesNotPoisonUnrelatedSink(t *testing.T) {
 	src := b64(`<?php
 class Loader {
@@ -226,9 +226,9 @@ class Loader {
 }
 
 // TestArrayOnPropertyThroughGenericObjectDoesNotPoisonUnrelatedSink is the
-// non-$this variant of the same repro, matching the review's second
-// example exactly: a plain object variable, an array-appended property,
-// and an unrelated property reaching a sink at the top level.
+// non-$this variant of the same case: a plain object variable, an
+// array-appended property, and an unrelated property reaching a sink at
+// the top level.
 func TestArrayOnPropertyThroughGenericObjectDoesNotPoisonUnrelatedSink(t *testing.T) {
 	src := b64(`<?php
 $o->cache['x'] = curl_exec($h);
@@ -242,9 +242,9 @@ include $o->tpl;`)
 	}
 }
 
-// TestArrayOnPropertyStillFlowsToItsOwnSink is the false-negative guard for
-// the round-1 fix: reading the SAME property back through [] must still be
-// detected, not just kept out of unrelated reads.
+// TestArrayOnPropertyStillFlowsToItsOwnSink is the false-negative guard:
+// reading the SAME property back through [] must still be detected, not
+// just kept out of unrelated reads.
 func TestArrayOnPropertyStillFlowsToItsOwnSink(t *testing.T) {
 	src := b64(`<?php
 class Loader {
@@ -263,10 +263,10 @@ class Loader {
 	}
 }
 
-// TestUnresolvableAssignTargetSurfacesInReport is fix round 2 for Task 11:
-// the reviewer's own control case ($a->b()->c = <tainted>; eval($a->b()->c);
-// is NOT detected -- correctly, since a method-call-chain target is not
-// keyed, and dropping is the safe direction) must still surface
+// TestUnresolvableAssignTargetSurfacesInReport covers a control case:
+// ($a->b()->c = <tainted>; eval($a->b()->c); is NOT detected -- correctly,
+// since a method-call-chain target is not keyed, and dropping is the safe
+// direction) must still surface
 // "unresolvable-assign-target" in Report.PrecisionLoss, because the dropped
 // right-hand side (curl_exec($h)) is genuinely tainted -- the marker fires on
 // that, not on the unkeyable target shape alone. Verified through the public
