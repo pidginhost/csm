@@ -205,10 +205,13 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		}
 		exclude := tree.exclusionFor(fn)
 		facts := callIndex.apply(collectOwnStmts(fn.Stmts, &exclude))
-		calls := newResolvedCallIndex(facts)
+		returns, err := returnFacts(ctx, facts, callIndex)
+		if err != nil {
+			return nil, nil, err
+		}
 		bodies = append(bodies, funcBody{
 			name: calleeName(fn.Name), kind: bodyFunction, facts: facts,
-			returns: returnFacts(facts, calls),
+			returns: returns,
 		})
 	}
 
@@ -224,10 +227,13 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		// unlike StmtFunction which carries a Stmts slice.
 		exclude := tree.exclusionFor(m)
 		facts := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &exclude))
-		calls := newResolvedCallIndex(facts)
+		returns, err := returnFacts(ctx, facts, callIndex)
+		if err != nil {
+			return nil, nil, err
+		}
 		bodies = append(bodies, funcBody{
 			name: name, kind: bodyMethod, facts: facts,
-			returns: returnFacts(facts, calls),
+			returns: returns,
 		})
 	}
 	// Recheck every included body using its independently collected facts.
@@ -368,19 +374,26 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Con
 	return best, found, nil
 }
 
-// returnFacts collects the facts of each return expression in a body, in the
-// same resolved-call view the body itself uses so namespace-level aliases stay
-// resolved. Empty returns carry no value and are dropped here rather than
-// skipped at every use.
-func returnFacts(f *scopeFacts, calls resolvedCallIndex) []*scopeFacts {
+// returnFacts collects the facts of each return expression in a body. calls is
+// the whole-file resolved-call view, not an index rebuilt from f: f excludes
+// nested declarations, while a return expression can read through an invoked
+// closure or arrow function inside one. The whole-file view is what preserves
+// namespace-level aliases for those nested calls. Empty returns carry no value
+// and are dropped here rather than skipped at every use.
+func returnFacts(
+	ctx context.Context, f *scopeFacts, calls resolvedCallIndex,
+) ([]*scopeFacts, error) {
 	out := make([]*scopeFacts, 0, len(f.returns))
 	for _, ret := range f.returns {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if ret.Expr == nil {
 			continue
 		}
 		out = append(out, calls.apply(collectScope(ret.Expr)))
 	}
-	return out
+	return out, nil
 }
 
 // recordPrecisionLoss folds one body's precision-loss facts into the running
