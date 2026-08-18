@@ -443,17 +443,58 @@ type namedNodeSpan struct {
 	node ast.Vertex
 }
 
-// declarationSpans returns the position span of every declaration recorded
-// in f: functions, methods, and classes/interfaces/traits/enums (anonymous
-// classes included, via classLikes). f must come from an unfiltered,
-// whole-file collection (collectScope(root)) so every declaration in the
-// file is present, regardless of how deeply any of them is nested inside
-// another or wrapped in control flow.
-func (f *scopeFacts) declarationSpans() []nodeSpan {
-	out := make([]nodeSpan, 0, len(f.funcs)+len(f.methods)+len(f.classLikes))
+// declTree links each declaration in a whole-file collection to the
+// position spans of its IMMEDIATE child declarations only, plus the total
+// declaration count. Built once per file by declarationTree, it lets every
+// scope's exclusion index be produced by a map lookup instead of scanning
+// and re-sorting the whole file's declaration list once per declaration.
+type declTree struct {
+	// children maps a declaration node -- or nil, for the top-level scope --
+	// to the spans of its immediate child declarations.
+	children map[ast.Vertex][]nodeSpan
+	// count is the total number of declarations indexed, checked against
+	// maxDeclarations before any per-scope work begins.
+	count int
+}
+
+// declarationTree indexes every declaration recorded in f: functions,
+// methods, and classes/interfaces/traits/enums (anonymous classes
+// included, via classLikes). f must come from an unfiltered, whole-file
+// collection (collectScope(root)) so every declaration in the file is
+// present, regardless of how deeply any of them is nested inside another
+// or wrapped in control flow.
+//
+// Sorting happens ONCE, over all D declarations together, rather than once
+// per declaration: a per-declaration rebuild-and-sort of the whole span
+// list costs O(D) work times D declarations, O(D^2 log D) overall, which is
+// a real CPU-exhaustion surface against attacker-controlled PHP source (a
+// file of trivial one-line function declarations reaches tens of thousands
+// of them well within MaxSourceBytes and maxCollectedNodes). Declarations in
+// a legitimately parsed file nest properly -- one is either fully disjoint
+// from another or fully contained inside it, never a partial overlap -- so
+// a single stack sweep over the sorted spans (the same interval-stack
+// technique distributeOrigins already uses in taint.go) assigns each
+// declaration to its immediate parent in one pass: pop any open declaration
+// that has already closed before this one starts, and whatever remains on
+// top of the stack (if anything) is the immediate parent.
+//
+// Indexing only immediate children, not every descendant, is what keeps the
+// total cost linearithmic in D: a fact positioned inside a deeper
+// descendant is already covered by its immediate parent's span, so nothing
+// beyond direct children is ever needed to exclude an arbitrarily deep
+// nested declaration (see exclusionFor). Each declaration contributes to
+// exactly one parent's child list, so those lists sum to D across the whole
+// file, and sorting each of them once, at exclusionFor time, costs at most
+// D log D in total across every scope in the file.
+func (f *scopeFacts) declarationTree() declTree {
+	type declNode struct {
+		node ast.Vertex
+		span nodeSpan
+	}
+	nodes := make([]declNode, 0, len(f.funcs)+len(f.methods)+len(f.classLikes))
 	add := func(n ast.Vertex) {
 		if span, ok := spanOf(n); ok {
-			out = append(out, span)
+			nodes = append(nodes, declNode{node: n, span: span})
 		}
 	}
 	for _, fn := range f.funcs {
@@ -465,7 +506,36 @@ func (f *scopeFacts) declarationSpans() []nodeSpan {
 	for _, c := range f.classLikes {
 		add(c)
 	}
-	return out
+
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].span.start != nodes[j].span.start {
+			return nodes[i].span.start < nodes[j].span.start
+		}
+		return nodes[i].span.end > nodes[j].span.end
+	})
+
+	tree := declTree{children: make(map[ast.Vertex][]nodeSpan, len(nodes)+1), count: len(nodes)}
+	stack := make([]int, 0, len(nodes))
+	for i, n := range nodes {
+		for len(stack) > 0 && nodes[stack[len(stack)-1]].span.end < n.span.start {
+			stack = stack[:len(stack)-1]
+		}
+		var parent ast.Vertex // nil selects the top-level scope's own children
+		if len(stack) > 0 {
+			parent = nodes[stack[len(stack)-1]].node
+		}
+		tree.children[parent] = append(tree.children[parent], n.span)
+		stack = append(stack, i)
+	}
+	return tree
+}
+
+// exclusionFor builds the spanIndex scope self must exclude from its own
+// collection: the spans of self's immediate child declarations only (self
+// nil selects the top-level scope's own children). See declarationTree for
+// why immediate children alone are sufficient regardless of nesting depth.
+func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
+	return newSpanIndex(t.children[self])
 }
 
 // readVars returns variables whose value is read in this subtree. The parser
