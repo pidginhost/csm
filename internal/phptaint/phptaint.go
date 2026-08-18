@@ -143,5 +143,8 @@ func Analyze(ctx context.Context, src []byte) Report {
 	if ctx.Err() != nil {
 		return Report{Status: StatusCanceled, Reason: "context canceled"}
 	}
+	if !isCandidate(src) {
+		return Report{Status: StatusNotCandidate}
+	}
 	return Report{Status: StatusNotCandidate}
 }
