@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 )
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -283,37 +282,75 @@ func manyDeclSource(n int) []byte {
 	return []byte(src.String())
 }
 
-// TestLargeDeclarationFileAnalyzesCorrectly is the regression guard for the
-// quadratic declaration-exclusion bug: declarationTree must build its
-// shared index once per file, not once per declaration (which was
-// O(D^2 log D) and measured taking double-digit seconds at tens of
-// thousands of declarations). 15,000 is comfortably inside maxDeclarations,
-// so this must complete as a normal StatusAnalyzed result.
-//
-// This intentionally does NOT assert on wall-clock time -- a numeric
-// threshold is exactly the kind of thing that is flaky under shared CI
-// load. The regression guard here is twofold and both parts are
-// deterministic: (1) correctness -- the genuine flow appended after the
-// 15,000 declarations must still be found, which only happens if every
-// declaration's exclusion index was built correctly; a test that merely
-// checked "did not time out" could pass even if the algorithm silently
-// produced wrong results. (2) the test framework's own timeout is the
-// backstop against a reintroduced quadratic: at this scale the shared-index
-// approach finishes in tens of milliseconds (elapsed is logged, not
-// asserted, purely for visibility), while a reintroduced O(D^2 log D) would
-// take on the order of a second at this size and grow from there --
-// self-evidently against `go test`'s default per-package timeout if the
-// regression is severe, without this test encoding any specific duration.
-func TestLargeDeclarationFileAnalyzesCorrectly(t *testing.T) {
-	src := manyDeclSource(15_000)
-	start := time.Now()
-	rep := Analyze(context.Background(), src)
-	t.Logf("15000 declarations analyzed in %v", time.Since(start))
+// TestManyDeclarationsStillAnalyzeCorrectly is a correctness check at
+// scale, not a performance guard: the genuine flow appended after 15,000
+// declarations must still be found, which only happens if every
+// declaration's own exclusion index was built correctly. (An earlier
+// version of this test tried to double as a performance regression guard
+// by relying on go test's default timeout as an implicit backstop. That
+// was not reliable -- see TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount's
+// comment for why -- so this test now only asserts what it can actually
+// guarantee.)
+func TestManyDeclarationsStillAnalyzeCorrectly(t *testing.T) {
+	rep := Analyze(context.Background(), manyDeclSource(15_000))
 	if rep.Status != StatusAnalyzed {
 		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
 	}
 	if len(rep.Results) == 0 {
 		t.Fatal("genuine flow after 15,000 declarations was not detected")
+	}
+}
+
+// TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount is the real
+// regression guard for the quadratic declaration-exclusion bug (fixed in
+// round 2 of this feature's review). A first attempt at this guard
+// asserted correctness at 15,000 declarations and leaned on go test's
+// default per-package timeout as an implicit backstop against a
+// reintroduced per-declaration rebuild. That does not actually work: using
+// the pre-fix measurements (20,000 declarations took 1.98s under the old
+// O(D^2 log D) code), a reintroduced quadratic at 15,000 declarations would
+// finish in roughly one to two seconds -- nowhere near a default test
+// timeout, and this repo sets no `-timeout` override. That version would
+// have passed silently if the bug came back, which defeats the point of a
+// regression test.
+//
+// This test instead asserts the STRUCTURAL invariant the fix actually
+// established, via declTreeBuilds: a package-private counter, incremented
+// only inside declarationTree's actual build path (never on a cache hit),
+// that exists solely for this kind of same-package white-box observation.
+// It never influences a Report and nothing in this package branches on its
+// value, so reading it is test-only observation of internal behaviour, not
+// the mutable cross-call state this package's purity contract forbids.
+//
+// declarationTree's result is cached on the scopeFacts it was built from,
+// and analyze/functionSummaries both call it on the SAME scopeFacts within
+// one Analyze invocation, so the build count per call is a small constant
+// (1, empirically) regardless of how many declarations the file has. A
+// per-declaration rebuild -- the original bug, or any future
+// reintroduction of it -- would instead make the build count scale with
+// declaration count, and this fails the moment that happens: deterministic,
+// with no dependence on machine speed or CI load.
+func TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount(t *testing.T) {
+	buildsFor := func(n int) int64 {
+		before := declTreeBuilds.Load()
+		rep := Analyze(context.Background(), manyDeclSource(n))
+		if rep.Status != StatusAnalyzed {
+			t.Fatalf("status = %v (%s) for %d declarations", rep.Status, rep.Reason, n)
+		}
+		return declTreeBuilds.Load() - before
+	}
+
+	small := buildsFor(1_000)
+	large := buildsFor(10_000)
+
+	if small == 0 {
+		t.Fatal("build count did not move at all; instrumentation is not wired up")
+	}
+	if large != small {
+		t.Fatalf("build count grew with declaration count: %d builds at 1,000 declarations vs %d at 10,000 (want equal -- a per-declaration rebuild would scale this with N, which is exactly the bug this guards against)", small, large)
+	}
+	if large > 2 {
+		t.Fatalf("build count = %d, want a small constant independent of N", large)
 	}
 }
 

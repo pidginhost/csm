@@ -58,14 +58,16 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	// precision-loss construct.
 	recordPrecisionLoss(f, loss)
 
-	// tree indexes every declaration in f once (see declarationTree), so a
+	// tree indexes every declaration in f (see declarationTree), so a
 	// function or method nested inside another (however deeply, however
 	// many if/while/switch/try/foreach wrappers it sits behind) is excluded
 	// from its enclosing body's own facts by lookup rather than by
 	// rescanning the file's declarations for every body, and so cannot
 	// pollute that enclosing declaration's own interprocedural summary. In
-	// production this runs only after analyze's own tree.count check, so f
-	// is already known to be within maxDeclarations here.
+	// production f is the same *scopeFacts analyze already indexed, so this
+	// hits declarationTree's own cache rather than rebuilding, and is
+	// already known to be within maxDeclarations here (analyze's cap check
+	// runs first).
 	tree := f.declarationTree()
 
 	bodies := make([]funcBody, 0, len(f.funcs)+len(f.methods))
