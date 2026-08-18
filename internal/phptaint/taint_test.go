@@ -147,6 +147,42 @@ func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
 	}
 }
 
+// TestTaintedLocalsFallbackHandlesLongReverseChain proves the fallback's
+// round cap (len(assignments)+1, not a fixed constant) neither evades
+// detection nor fails to terminate on a chain far longer than the fixed cap
+// of 16 that a reverse-ordered chain could previously walk past undetected:
+// such a chain needs exactly one fixpoint round per hop.
+//
+// taintedLocals never reaches taintedLocalsFallback through real parser
+// output: every real ExprAssign/ExprVariable/ExprFunctionCall node this
+// package's test corpus and a short fuzz run against compileAssignments
+// could produce carries a valid position, so compileAssignments always
+// succeeds and taintedLocals always takes the compiled-solver branch. The
+// fallback is exercised here directly, as this file already does elsewhere
+// to use it as a reference oracle, and its result is checked against the
+// compiled solver on the same input.
+func TestTaintedLocalsFallbackHandlesLongReverseChain(t *testing.T) {
+	const hops = 30
+	src := "<?php "
+	for i := 0; i < hops; i++ {
+		src += fmt.Sprintf("$v%d = $v%d;", i, i+1)
+	}
+	src += fmt.Sprintf("$v%d = curl_exec($c);", hops)
+	root, status, reason := parseSource([]byte(src))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	facts := collectScope(root)
+	compiled := taintedLocals(facts, map[string]Confidence{})
+	fallback := taintedLocalsFallback(facts, map[string]Confidence{})
+	if !reflect.DeepEqual(compiled, fallback) {
+		t.Fatalf("compiled=%v fallback=%v, want equal", compiled, fallback)
+	}
+	if _, ok := fallback["v0"]; !ok {
+		t.Errorf("fallback state = %v, want $v0 tainted through a %d-hop reverse chain", fallback, hops)
+	}
+}
+
 func TestDecoderRaisesConfidenceToCertain(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = base64_decode($a);")
 	got, ok := st["b"]
