@@ -267,7 +267,9 @@ class Loader {
 // the reviewer's own control case ($a->b()->c = <tainted>; eval($a->b()->c);
 // is NOT detected -- correctly, since a method-call-chain target is not
 // keyed, and dropping is the safe direction) must still surface
-// "unresolvable-assign-target" in Report.PrecisionLoss through the public
+// "unresolvable-assign-target" in Report.PrecisionLoss, because the dropped
+// right-hand side (curl_exec($h)) is genuinely tainted -- the marker fires on
+// that, not on the unkeyable target shape alone. Verified through the public
 // Analyze entry point, not just in an internal scopeFacts structure.
 func TestUnresolvableAssignTargetSurfacesInReport(t *testing.T) {
 	src := []byte(`<?php
