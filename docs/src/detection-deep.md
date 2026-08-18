@@ -18,15 +18,15 @@ Deep checks run every 60 minutes and cover thorough filesystem, CMS, email, and 
 
 ## PHP Remote-Source Taint Analysis
 
+**This analyzer is not yet wired into any scan.** It exists today as a self-contained component with no caller in the scheduled deep scan, real-time detection, or any other operator-facing path, so it cannot currently produce a finding on a host.
+
 CSM includes a PHP analyzer that looks for code fetching content from a remote server and then executing it, even when the fetch and the execution happen in different functions. This is a flow that regular expressions cannot express: matching it requires binding the value a fetch returns to the value handed to execution, which is beyond what YAML pattern rules or YARA-X can do.
 
-The analyzer parses PHP source and tracks whether a value returned by a remote-fetching call (functions such as `curl_exec`, or any call whose argument carries an HTTP, HTTPS, FTP, `php://input`, or `data://` scheme) reaches a code-execution construct (`eval`, `include`, `require`, or `assert` given a string argument), following the value through variable assignment, string concatenation, decoding calls, and across function and method boundaries.
+The analyzer parses PHP source and tracks whether a value returned by a remote-fetching call (functions such as `curl_exec`, or any call whose argument carries an HTTP, HTTPS, FTP, FTPS, `php://input`, or `data://` scheme) reaches a code-execution construct (`eval`, `include`, `include_once`, `require`, `require_once`, `create_function`, or `assert` given a string argument), following the value through variable assignment, string concatenation, decoding calls, and across function and method boundaries. Not every `php://` stream counts as remote: `php://input` is request-controlled and treated as a source, while `php://memory`, `php://temp`, and a local `php://filter` resource are not -- though a filter wrapping a remote resource still carries its nested remote scheme and is classified accordingly.
 
 Only two outcomes mean a file was actually examined: **analyzed** (parsing and the data-flow pass both completed) and **not candidate** (a fast pre-check proved the file cannot contain a reportable flow, without needing to parse it). Every other outcome -- oversize, a parse failure, a parser recovery that produced only a partial tree, an internal resource limit, cancellation, or an internal error -- is a coverage gap, not a clean result, and must never be read as "nothing to see here."
 
 The parser supports PHP syntax up to version 8.1. A file written against a newer PHP version may use constructs the parser does not recognize; when that happens, parsing recovers what it can but the result is incomplete, and the file is reported as reduced coverage (a partial parse) rather than analyzed, so an incomplete view is never presented as a complete one.
-
-**This analyzer is not yet wired into any scan.** It exists today as a self-contained component with no caller in the scheduled deep scan, real-time detection, or any other operator-facing path, so it cannot currently produce a finding on a host.
 
 ## WordPress
 
