@@ -80,3 +80,44 @@ func TestTaintPropagationIsStructuralNotNamed(t *testing.T) {
 		}
 	}
 }
+
+// TestCompoundConcatTaintsPreviouslyCleanTarget exercises the concats loop
+// in taintedLocals specifically: $a starts clean and is only ever tainted
+// by the .= step, so this cannot pass by accident through the assigns loop.
+func TestCompoundConcatTaintsPreviouslyCleanTarget(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = 'x'; $a .= curl_exec($c);")
+	if _, ok := st["a"]; !ok {
+		t.Errorf("state = %v, want $a tainted via .=", st)
+	}
+}
+
+// TestDecoderOnTaintedArgumentRaisesConfidence is the correlated case: the
+// decoder is applied directly to the tainted value, so confidence must
+// still reach Certain.
+func TestDecoderOnTaintedArgumentRaisesConfidence(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = base64_decode($a);")
+	got, ok := st["b"]
+	if !ok {
+		t.Fatalf("state = %v, want $b tainted", st)
+	}
+	if got != ConfidenceCertain {
+		t.Errorf("confidence = %v, want Certain: the decoder's own argument is tainted", got)
+	}
+}
+
+// TestDecoderOnUnrelatedArgumentDoesNotRaiseConfidence is the load-bearing
+// case: a decoder call appears in the same expression as the tainted
+// value, but decodes something else ($clean) entirely. The decoder signal
+// means "the remote payload itself was decoded before execution"; a
+// decoder applied to an unrelated argument must not borrow that meaning,
+// so confidence stays at the grade the source itself earned.
+func TestDecoderOnUnrelatedArgumentDoesNotRaiseConfidence(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = some_call(base64_decode($clean), $a);")
+	got, ok := st["b"]
+	if !ok {
+		t.Fatalf("state = %v, want $b tainted via $a", st)
+	}
+	if got != ConfidenceHigh {
+		t.Errorf("confidence = %v, want High: base64_decode never touched $a, only $clean", got)
+	}
+}

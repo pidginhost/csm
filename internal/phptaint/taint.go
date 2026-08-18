@@ -71,9 +71,50 @@ func exprTaint(e ast.Vertex, st taintState, summaries map[string]Confidence) (Co
 		return ConfidenceLow, false
 	}
 	sub := collectScope(e)
+	best, found := taintOf(sub, st, summaries)
+	if !found {
+		return ConfidenceLow, false
+	}
+	// A decoder raises confidence to Certain only when the tainted value
+	// passed through THAT decoder's own argument, not merely somewhere else
+	// in the same expression: f(base64_decode($clean), $tainted) must stay
+	// at the source's own grade, because the decode never touched $tainted.
+	// subtreeTaint, not exprTaint, checks the argument so this does not
+	// repeat the decoder scan at every nesting level of a decoder chain.
+	for _, call := range sub.callNodes {
+		if !decoders[calleeName(call.Function)] {
+			continue
+		}
+		for _, argN := range call.Args {
+			arg, ok := argN.(*ast.Argument)
+			if !ok {
+				continue
+			}
+			if _, tainted := subtreeTaint(arg.Expr, st, summaries); tainted {
+				return ConfidenceCertain, true
+			}
+		}
+	}
+	return best, true
+}
+
+// subtreeTaint reports an expression's taint without the decoder upgrade.
+// exprTaint uses it to test a decoder's own argument in isolation, instead
+// of recursing into exprTaint itself, which would re-run the decoder scan
+// at every nesting level and blow up combinatorially on a deep decoder chain.
+func subtreeTaint(e ast.Vertex, st taintState, summaries map[string]Confidence) (Confidence, bool) {
+	if e == nil {
+		return ConfidenceLow, false
+	}
+	return taintOf(collectScope(e), st, summaries)
+}
+
+// taintOf finds the strongest confidence among an already-collected scope's
+// source calls, summarized user-function calls, and references to variables
+// already known tainted.
+func taintOf(sub *scopeFacts, st taintState, summaries map[string]Confidence) (Confidence, bool) {
 	best := ConfidenceLow
 	found := false
-
 	for _, call := range sub.callNodes {
 		if c, ok := sourceConfidence(call); ok {
 			found = true
@@ -98,14 +139,5 @@ func exprTaint(e ast.Vertex, st taintState, summaries map[string]Confidence) (Co
 			}
 		}
 	}
-	if !found {
-		return ConfidenceLow, false
-	}
-	// A decoder anywhere on this expression's path upgrades the grade.
-	for name := range sub.calls {
-		if decoders[name] {
-			return ConfidenceCertain, true
-		}
-	}
-	return best, true
+	return best, found
 }
