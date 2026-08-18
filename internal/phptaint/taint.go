@@ -668,7 +668,7 @@ func hasDroppedCapture(
 		// A non-static closure declared in a method binds $this implicitly,
 		// so it appears in no use() clause while still carrying whatever the
 		// enclosing object holds.
-		if body := factsByScope[cl]; body != nil && body.vars["this"] {
+		if body := factsByScope[cl]; cl.StaticTkn == nil && body != nil && body.vars["this"] {
 			names["this"] = true
 		}
 		if len(names) > 0 {
@@ -811,6 +811,12 @@ func hasDroppedCapture(
 		f := frame{end: declaration.end, previousBoundary: boundary}
 		if needed[declaration.node] {
 			if af, arrow := declaration.node.(*ast.ExprArrowFunction); arrow {
+				// A static arrow still captures ordinary outer variables, but
+				// it neither receives $this nor forwards it to a declaration
+				// nested inside the arrow.
+				if af.StaticTkn != nil {
+					push("this", false, &f.pushed)
+				}
 				// Parameters are the arrow's own bindings and shadow an
 				// identically named capture from any enclosing scope.
 				for name := range paramNames(af.Params) {
@@ -842,8 +848,9 @@ func hasDroppedCapture(
 		if err != nil {
 			return false, err
 		}
+		available := capturableNames(st)
 		for name := range names {
-			if _, tainted := st[name]; tainted {
+			if available[name] {
 				return true, nil
 			}
 		}

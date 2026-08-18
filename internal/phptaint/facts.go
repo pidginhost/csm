@@ -588,13 +588,15 @@ func paramNames(params []ast.Vertex) map[string]bool {
 // captures by value every enclosing variable its body mentions. body.vars
 // already lists every variable name the body reads, so subtracting the arrow
 // function's own parameters leaves exactly the names that must have come from
-// outside. Over-inclusive by design: a name that is not in fact tainted in the
-// enclosing scope simply produces no marker.
+// outside. Static arrows are the one exception: they still capture ordinary
+// variables, but PHP deliberately does not bind $this to them. Over-inclusive
+// by design: a name that is not in fact tainted in the enclosing scope simply
+// produces no marker.
 func arrowCaptureNames(af *ast.ExprArrowFunction, body *scopeFacts) map[string]bool {
 	params := paramNames(af.Params)
 	names := make(map[string]bool, len(body.vars))
 	for name := range body.vars {
-		if name != "" && !params[name] {
+		if name != "" && !params[name] && (name != "this" || af.StaticTkn == nil) {
 			names[name] = true
 		}
 	}
