@@ -146,5 +146,10 @@ func Analyze(ctx context.Context, src []byte) Report {
 	if !isCandidate(src) {
 		return Report{Status: StatusNotCandidate}
 	}
-	return Report{Status: StatusNotCandidate}
+	root, status, reason := parseSource(src)
+	if status != StatusAnalyzed {
+		return Report{Status: status, Reason: reason}
+	}
+	_ = root
+	return Report{Status: StatusAnalyzed}
 }

@@ -3,6 +3,7 @@ module github.com/pidginhost/csm
 go 1.26.6
 
 require (
+	github.com/VKCOM/php-parser v0.8.2
 	github.com/VirusTotal/yara-x/go v1.19.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-systemd/v22 v22.7.0
@@ -23,7 +24,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/VKCOM/php-parser v0.8.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
