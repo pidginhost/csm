@@ -2,8 +2,6 @@ package phptaint
 
 import (
 	"sort"
-
-	"github.com/VKCOM/php-parser/pkg/ast"
 )
 
 // precisionLossMarkers name calls that defeat static variable identity.
@@ -65,7 +63,7 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 		if len(bodies) >= maxSummarizedFuncs {
 			break
 		}
-		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectAll(fn.Stmts)})
+		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectOwnStmts(fn.Stmts)})
 	}
 
 	// A single class cannot legally declare the same method name twice, so
@@ -91,7 +89,7 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 		}
 		// StmtClassMethod carries ONE Stmt vertex (normally a StmtStmtList),
 		// unlike StmtFunction which carries a Stmts slice.
-		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectAll([]ast.Vertex{m.Stmt})})
+		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectOwnStmts(methodStmts(m.Stmt))})
 	}
 	// Recheck every included body using its independently collected facts.
 	// The enclosing collection has one aggregate node budget, so it can stop
