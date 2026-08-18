@@ -25,6 +25,34 @@ var decoders = map[string]bool{
 // carries remote content.
 type taintState map[string]Confidence
 
+// summaryTables holds interprocedural summaries in two namespaces so a
+// function and a method that happen to share a name can never collide: PHP
+// resolves f(), $obj->f(), and Class::f() through distinct call syntax, and
+// callSite.node retains which syntax was used, so a lookup can always pick
+// the namespace the call site itself selects. A single shared map would let
+// a tainted method anywhere in the file poison every same-named plain
+// function call site, which is false-positive-only but unacceptable given
+// this analyzer's zero-false-positive bar against real WordPress/plugin code.
+type summaryTables struct {
+	funcs   map[string]Confidence
+	methods map[string]Confidence
+}
+
+// lookup resolves a call site's summary in the namespace its call syntax
+// selects. A node shape outside the three call kinds facts.go records
+// (should not occur) resolves to nothing rather than guessing a namespace.
+func (s summaryTables) lookup(call callSite) (Confidence, bool) {
+	switch call.node.(type) {
+	case *ast.ExprFunctionCall:
+		c, ok := s.funcs[call.name]
+		return c, ok
+	case *ast.ExprMethodCall, *ast.ExprNullsafeMethodCall, *ast.ExprStaticCall:
+		c, ok := s.methods[call.name]
+		return c, ok
+	}
+	return ConfidenceLow, false
+}
+
 func (s taintState) raise(name string, c Confidence) bool {
 	if name == "" {
 		return false
@@ -66,7 +94,7 @@ type assignmentInterval struct {
 // is flow-insensitive: assignment order within the scope is not modelled. A
 // dependency worklist reaches arbitrarily long local chains without borrowing
 // the interprocedural summary-round limit or silently returning a partial state.
-func taintedLocals(f *scopeFacts, summaries map[string]Confidence) taintState {
+func taintedLocals(f *scopeFacts, summaries summaryTables) taintState {
 	assignments, ok := compileAssignments(f, summaries)
 	if !ok {
 		return taintedLocalsFallback(f, summaries)
@@ -74,7 +102,7 @@ func taintedLocals(f *scopeFacts, summaries map[string]Confidence) taintState {
 	return solveAssignments(assignments)
 }
 
-func compileAssignments(f *scopeFacts, summaries map[string]Confidence) ([]taintAssignment, bool) {
+func compileAssignments(f *scopeFacts, summaries summaryTables) ([]taintAssignment, bool) {
 	assignments := make([]taintAssignment, 0, len(f.assigns)+len(f.references)*2+len(f.concats))
 	for _, a := range f.assigns {
 		var ok bool
@@ -133,7 +161,7 @@ func compileAssignments(f *scopeFacts, summaries map[string]Confidence) ([]taint
 		}
 	}
 	for _, call := range f.callSites {
-		confidence, summarized := summaries[call.name]
+		confidence, summarized := summaries.lookup(call)
 		if !summarized {
 			continue
 		}
@@ -365,7 +393,7 @@ func solveAssignments(assignments []taintAssignment) taintState {
 // of assignment facts plus one is always enough, because no dependency chain
 // in this scope can have more hops than this scope has assignments, and it
 // still terminates because it is a fixed bound.
-func taintedLocalsFallback(f *scopeFacts, summaries map[string]Confidence) taintState {
+func taintedLocalsFallback(f *scopeFacts, summaries summaryTables) taintState {
 	st := taintState{}
 	maxRounds := len(f.assigns) + len(f.references) + len(f.concats) + 1
 	for round := 0; round < maxRounds; round++ {
@@ -417,7 +445,7 @@ func assignedVarName(target ast.Vertex) string {
 // exprTaint reports whether an expression carries remote content, and with
 // what confidence. It collects the subtree once and correlates decoder inputs
 // by source positions, without recursing over the parsed structure.
-func exprTaint(e ast.Vertex, st taintState, summaries map[string]Confidence) (Confidence, bool) {
+func exprTaint(e ast.Vertex, st taintState, summaries summaryTables) (Confidence, bool) {
 	if e == nil {
 		return ConfidenceLow, false
 	}
@@ -478,7 +506,7 @@ func decoderInputs(call *ast.ExprFunctionCall) []ast.Vertex {
 // subtree's source calls, summarized calls, and tainted variable reads. It also
 // returns source positions so decoder correlation stays linearithmic rather
 // than recursively recollecting every nested decoder argument.
-func activeTaint(sub *scopeFacts, st taintState, summaries map[string]Confidence) (Confidence, bool, []nodeSpan) {
+func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (Confidence, bool, []nodeSpan) {
 	best := ConfidenceLow
 	found := false
 	origins := make([]nodeSpan, 0)
@@ -494,7 +522,7 @@ func activeTaint(sub *scopeFacts, st taintState, summaries map[string]Confidence
 		}
 	}
 	for _, call := range sub.callSites {
-		if c, ok := summaries[call.name]; ok {
+		if c, ok := summaries.lookup(call); ok {
 			found = true
 			if c > best {
 				best = c
