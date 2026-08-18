@@ -92,3 +92,32 @@ func TestUnknownLocalityIsLowConfidenceSource(t *testing.T) {
 		t.Errorf("confidence = %v, want Low", conf)
 	}
 }
+
+func TestStreamReadersAreNotSourcesOnTheirOwn(t *testing.T) {
+	// fread, fgets and stream_get_contents take a stream resource, never a
+	// path, so their argument carries no locality signal. The acquiring
+	// call (e.g. fopen) is the source; the handle stays tainted through the
+	// variable, so these readers need no source status of their own.
+	for _, src := range []string{
+		"<?php fread($fh, 999);",
+		"<?php fgets($fh);",
+		"<?php stream_get_contents($fh);",
+	} {
+		if _, ok := sourceConfidence(firstCall(t, src)); ok {
+			t.Errorf("%s: treated as a source, want not a source", src)
+		}
+	}
+}
+
+func TestFopenRemoteURLIsHighConfidenceSource(t *testing.T) {
+	// The intended pairing: fopen() on a remote URL is the source, and a
+	// later fread($fh) detects via the tainted variable, not via its own
+	// source status.
+	conf, ok := sourceConfidence(firstCall(t, "<?php fopen('http://host/x', 'r');"))
+	if !ok {
+		t.Fatal("remote URL: want a source")
+	}
+	if conf != ConfidenceHigh {
+		t.Errorf("confidence = %v, want High", conf)
+	}
+}
