@@ -14,7 +14,7 @@ func analyzeScope(t *testing.T, src string) (taintState, *scopeFacts) {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
 	f := collectScope(root)
-	return taintedLocals(f, map[string]Confidence{}), f
+	return taintedLocals(f, summaryTables{}), f
 }
 
 func TestTaintFlowsThroughDirectAssignment(t *testing.T) {
@@ -33,15 +33,22 @@ func TestTaintFlowsThroughChainedAssignment(t *testing.T) {
 	}
 }
 
+// reverseChainHops exceeds the fixed round cap (16) a reverse-ordered chain
+// could once walk past undetected, before the fixpoint's round limit was
+// derived from input size instead. See
+// TestTaintedLocalsFallbackHandlesLongReverseChain below for the same margin
+// applied to the fallback solver directly.
+const reverseChainHops = 21
+
 func TestTaintFixpointHandlesLongReverseChain(t *testing.T) {
 	src := "<?php "
-	for i := 0; i < maxFixpointRounds+5; i++ {
+	for i := 0; i < reverseChainHops; i++ {
 		src += fmt.Sprintf("$v%d = $v%d;", i, i+1)
 	}
-	src += fmt.Sprintf("$v%d = curl_exec($c);", maxFixpointRounds+5)
+	src += fmt.Sprintf("$v%d = curl_exec($c);", reverseChainHops)
 	st, _ := analyzeScope(t, src)
 	if _, ok := st["v0"]; !ok {
-		t.Errorf("state omitted the head of a %d-hop reverse chain", maxFixpointRounds+6)
+		t.Errorf("state omitted the head of a %d-hop reverse chain", reverseChainHops+1)
 	}
 }
 
@@ -111,7 +118,7 @@ func TestMethodAndStaticSummariesPropagateTaint(t *testing.T) {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
 	f := collectScope(root)
-	st := taintedLocals(f, map[string]Confidence{"fetch": ConfidenceHigh, "load": ConfidenceLow})
+	st := taintedLocals(f, summaryTables{methods: map[string]Confidence{"fetch": ConfidenceHigh, "load": ConfidenceLow}})
 	if st["a"] != ConfidenceHigh || st["b"] != ConfidenceLow {
 		t.Errorf("state = %v, want method/static summary confidence", st)
 	}
@@ -120,18 +127,18 @@ func TestMethodAndStaticSummariesPropagateTaint(t *testing.T) {
 func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
 	tests := []struct {
 		src       string
-		summaries map[string]Confidence
+		summaries summaryTables
 	}{
-		{"<?php $a = curl_exec($c); $b = $a;", nil},
-		{"<?php $a = curl_exec($c); $b = ($a = 'clean');", nil},
-		{"<?php $x = (($a = curl_exec($c)) . ($b = $a));", nil},
-		{"<?php $a['x'] = fopen('https://host/x', 'r'); $b = fread($a, 10);", nil},
-		{"<?php $b =& $a; $b = curl_exec($c);", nil},
-		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", nil},
-		{"<?php $a = $obj->fetch(); $b = Client::load();", map[string]Confidence{
+		{"<?php $a = curl_exec($c); $b = $a;", summaryTables{}},
+		{"<?php $a = curl_exec($c); $b = ($a = 'clean');", summaryTables{}},
+		{"<?php $x = (($a = curl_exec($c)) . ($b = $a));", summaryTables{}},
+		{"<?php $a['x'] = fopen('https://host/x', 'r'); $b = fread($a, 10);", summaryTables{}},
+		{"<?php $b =& $a; $b = curl_exec($c);", summaryTables{}},
+		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", summaryTables{}},
+		{"<?php $a = $obj->fetch(); $b = Client::load();", summaryTables{methods: map[string]Confidence{
 			"fetch": ConfidenceHigh,
 			"load":  ConfidenceLow,
-		}},
+		}}},
 	}
 	for _, test := range tests {
 		root, status, reason := parseSource([]byte(test.src))
@@ -173,8 +180,8 @@ func TestTaintedLocalsFallbackHandlesLongReverseChain(t *testing.T) {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
 	facts := collectScope(root)
-	compiled := taintedLocals(facts, map[string]Confidence{})
-	fallback := taintedLocalsFallback(facts, map[string]Confidence{})
+	compiled := taintedLocals(facts, summaryTables{})
+	fallback := taintedLocalsFallback(facts, summaryTables{})
 	if !reflect.DeepEqual(compiled, fallback) {
 		t.Fatalf("compiled=%v fallback=%v, want equal", compiled, fallback)
 	}
@@ -305,7 +312,7 @@ func TestExprTaintHandlesDeepDecoderChain(t *testing.T) {
 	if len(f.assigns) != 2 {
 		t.Fatalf("assignments = %d, want 2", len(f.assigns))
 	}
-	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": ConfidenceHigh}, nil)
+	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": ConfidenceHigh}, summaryTables{})
 	if !tainted || confidence != ConfidenceCertain {
 		t.Errorf("tainted=%t confidence=%v, want true/Certain", tainted, confidence)
 	}

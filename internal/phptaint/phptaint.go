@@ -105,7 +105,6 @@ const (
 	// traversal work is separately bounded by MaxSourceBytes.
 	maxCollectedNodes  = 800_000
 	maxSummarizedFuncs = 2_000
-	maxFixpointRounds  = 16
 	maxAnalysisDepth   = 256
 )
 
