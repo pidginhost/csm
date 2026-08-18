@@ -2,9 +2,12 @@ package phptaint
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/VKCOM/php-parser/pkg/ast"
 )
 
 func summariesOf(t *testing.T, src string) (summaryTables, []string) {
@@ -162,13 +165,84 @@ function callsPlainFunction($x) {
 // first.
 func TestAmbiguousMethodNameOmittedAndRecorded(t *testing.T) {
 	got, loss := summariesOf(t, `<?php
-class C1 { function get($u) { return curl_exec($u); } }
+class C1 {
+	function get($u, $f) {
+		$n = 'x';
+		$$n = 1;
+		extract($u);
+		compact('n');
+		call_user_func($f);
+		return curl_exec($u);
+	}
+}
 class C2 { function get($u) { return $u; } }`)
 	if _, ok := got.methods["get"]; ok {
 		t.Errorf("methods = %v, want get omitted: declared by two classes", got.methods)
 	}
-	joined := strings.Join(loss, " ")
-	if !strings.Contains(joined, "ambiguous-method") {
-		t.Errorf("precision loss = %q, want ambiguous-method recorded", joined)
+	wantLoss := []string{"ambiguous-method", "compact", "dynamic-call", "extract", "variable-variable"}
+	if !slices.Equal(loss, wantLoss) {
+		t.Errorf("precision loss = %q, want %q", loss, wantLoss)
+	}
+}
+
+func TestAmbiguousMethodPastSummaryLimitIsRecorded(t *testing.T) {
+	facts := newScopeFacts()
+	for i := 0; i < maxSummarizedFuncs; i++ {
+		facts.funcs = append(facts.funcs, &ast.StmtFunction{
+			Name: &ast.Identifier{Value: []byte(fmt.Sprintf("f%d", i))},
+		})
+	}
+	for range 2 {
+		facts.methods = append(facts.methods, &ast.StmtClassMethod{
+			Name: &ast.Identifier{Value: []byte("shared")},
+		})
+	}
+
+	_, loss := functionSummaries(facts)
+	if !slices.Equal(loss, []string{"ambiguous-method"}) {
+		t.Errorf("precision loss = %q, want ambiguous-method past summary limit", loss)
+	}
+}
+
+func TestPrecisionLossPastSummaryLimitIsRecorded(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("<?php\n")
+	for i := 0; i < maxSummarizedFuncs; i++ {
+		fmt.Fprintf(&src, "function f%d() {}\n", i)
+	}
+	src.WriteString(`function skipped($a, $f) {
+	$n = 'x';
+	$$n = 1;
+	extract($a);
+	compact('n');
+	call_user_func($f);
+}`)
+
+	_, loss := summariesOf(t, src.String())
+	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
+	if !slices.Equal(loss, wantLoss) {
+		t.Errorf("precision loss = %q, want %q past summary limit", loss, wantLoss)
+	}
+}
+
+func TestPrecisionLossRecheckedInSummarizedBody(t *testing.T) {
+	root, status, reason := parseSource([]byte(`<?php function included($a, $f) {
+	$n = 'x';
+	$$n = 1;
+	extract($a);
+	compact('n');
+	call_user_func($f);
+}`))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	collected := collectScope(root)
+	facts := newScopeFacts()
+	facts.funcs = collected.funcs
+
+	_, loss := functionSummaries(facts)
+	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
+	if !slices.Equal(loss, wantLoss) {
+		t.Errorf("precision loss = %q, want %q from independently collected body", loss, wantLoss)
 	}
 }

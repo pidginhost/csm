@@ -53,6 +53,13 @@ type funcBody struct {
 // function and a sink in another, joined only by a call. Without a summary
 // for the fetching function, that flow is invisible to a single-scope pass.
 func functionSummaries(f *scopeFacts) (summaryTables, []string) {
+	loss := map[string]bool{}
+	// The enclosing facts already cover every declaration body. Record loss
+	// from them before applying the summary-body cap or omitting ambiguous
+	// methods, because either filter can exclude the only body containing a
+	// precision-loss construct.
+	recordPrecisionLoss(f, loss)
+
 	bodies := make([]funcBody, 0, len(f.funcs)+len(f.methods))
 	for _, fn := range f.funcs {
 		if len(bodies) >= maxSummarizedFuncs {
@@ -69,22 +76,27 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	for _, m := range f.methods {
 		methodCounts[calleeName(m.Name)]++
 	}
-
-	loss := map[string]bool{}
+	for _, count := range methodCounts {
+		if count > 1 {
+			loss["ambiguous-method"] = true
+		}
+	}
 	for _, m := range f.methods {
 		if len(bodies) >= maxSummarizedFuncs {
 			break
 		}
 		name := calleeName(m.Name)
 		if methodCounts[name] > 1 {
-			loss["ambiguous-method"] = true
 			continue
 		}
 		// StmtClassMethod carries ONE Stmt vertex (normally a StmtStmtList),
 		// unlike StmtFunction which carries a Stmts slice.
 		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectAll([]ast.Vertex{m.Stmt})})
 	}
-
+	// Recheck every included body using its independently collected facts.
+	// The enclosing collection has one aggregate node budget, so it can stop
+	// recording inside a declaration that was already discovered; the fresh
+	// per-body budget can still preserve that declaration's loss markers.
 	for _, b := range bodies {
 		recordPrecisionLoss(b.facts, loss)
 	}
