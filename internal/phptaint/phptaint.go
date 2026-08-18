@@ -295,10 +295,11 @@ func analyze(ctx context.Context, src []byte) Report {
 	}
 
 	// Sinks inside function bodies count too, each against its own state.
-	// collectOwnStmts (not collectAll) skips any function/class/method
-	// nested inside this body, for the same reason collectTopLevel skips
-	// declarations at the file level: a nested declaration's locals must
-	// not taint an identically-named local in the enclosing body.
+	// collectOwnStmts (not collectAll) skips any function/class/method/
+	// closure/arrow-function nested inside this body, for the same reason
+	// collectTopLevel skips declarations at the file level: a nested
+	// declaration's locals must not taint an identically-named local in the
+	// enclosing body.
 	for _, fn := range all.funcs {
 		if err := ctx.Err(); err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -324,6 +325,52 @@ func analyze(ctx context.Context, src []byte) Report {
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
 		mExclude := tree.exclusionFor(m)
 		body := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &mExclude))
+		bodyFlows, err := findFlows(ctx, body, summaries)
+		if err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		flows = append(flows, bodyFlows...)
+		if !droppedTaint {
+			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
+			if err != nil {
+				return Report{Status: StatusCanceled, Reason: err.Error()}
+			}
+		}
+	}
+	// Closures are the most common nested scope in real PHP (WordPress hooks,
+	// shutdown/callback registration, ...), so they get the exact same
+	// treatment as a named function's body: excluded from the enclosing
+	// scope above via declarationTree, analysed here in their own. Recording
+	// the span without this loop (or the reverse) would either let a closure
+	// local borrow an unrelated outer variable's taint or stop examining the
+	// closure's own sinks entirely -- see the closures field doc in facts.go.
+	for _, cl := range all.closures {
+		if err := ctx.Err(); err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		clExclude := tree.exclusionFor(cl)
+		body := callIndex.apply(collectOwnStmts(cl.Stmts, &clExclude))
+		bodyFlows, err := findFlows(ctx, body, summaries)
+		if err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		flows = append(flows, bodyFlows...)
+		if !droppedTaint {
+			droppedTaint, err = hasUnresolvableTaintedTarget(ctx, body, summaries)
+			if err != nil {
+				return Report{Status: StatusCanceled, Reason: err.Error()}
+			}
+		}
+	}
+	// An arrow function's body is a single implicit-return expression rather
+	// than a statement list (see arrowFunctionBody), but it is the same kind
+	// of nested scope as a closure and needs the same two-sided treatment.
+	for _, af := range all.arrowFuncs {
+		if err := ctx.Err(); err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		afExclude := tree.exclusionFor(af)
+		body := callIndex.apply(collectOwnStmts(arrowFunctionBody(af), &afExclude))
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
