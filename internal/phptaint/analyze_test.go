@@ -1145,6 +1145,29 @@ class K {
 	private $b = 'local.php';
 	function m($c) { $unused = curl_exec($c); include $this->b; return function() { echo $this->b; }; }
 }`)
+
+	fxCaptureThisStaticClosure = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return static function() { eval($this->b); }; }
+}`)
+
+	fxCaptureThisStaticArrow = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return static fn() => eval($this->b); }
+}`)
+
+	fxCaptureThisThroughStaticArrow = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return static fn() => fn() => eval($this->b); }
+}`)
+
+	fxCaptureOtherThroughStaticArrow = b64(`<?php
+class K {
+	function m($c) { $payload = curl_exec($c); return static fn() => eval($payload); }
+}`)
 )
 
 // TestCaptureOfPropertyPathIsRecorded covers the two ways a captured binding
@@ -1190,5 +1213,33 @@ func TestCaptureOfCleanPropertyPathIsNotRecorded(t *testing.T) {
 				t.Fatalf("precision loss = %v, want no closure-capture on a clean capture", rep.PrecisionLoss)
 			}
 		})
+	}
+}
+
+// TestStaticCaptureDoesNotReceiveThis keeps the implicit-$this extension
+// aligned with PHP's binding rules. A static closure or arrow function does
+// not receive the declaring object's $this, and a static arrow also blocks
+// that binding from reaching a declaration nested inside it. Ordinary
+// variables remain implicit captures of a static arrow.
+func TestStaticCaptureDoesNotReceiveThis(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"static closure", fxCaptureThisStaticClosure},
+		{"static arrow", fxCaptureThisStaticArrow},
+		{"nested arrow across static arrow", fxCaptureThisThroughStaticArrow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want no closure-capture: static declarations do not receive $this", rep.PrecisionLoss)
+			}
+		})
+	}
+
+	rep := run(t, fxCaptureOtherThroughStaticArrow)
+	if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want closure-capture for an ordinary variable captured by a static arrow", rep.PrecisionLoss)
 	}
 }
