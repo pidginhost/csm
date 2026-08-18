@@ -789,15 +789,15 @@ func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]f
 			continue
 		}
 		source, sourceTruncated := sourceLabel(sub, st, summaries)
-		via, viaTruncated := chainFor(sub)
+		identifiers, identifiersTruncated := identifiersFor(sub)
 		out = append(out, flowResult{
 			Result: Result{
-				Source:     source,
-				Via:        via,
-				Sink:       s.kind,
-				Confidence: c,
+				Source:      source,
+				Identifiers: identifiers,
+				Sink:        s.kind,
+				Confidence:  c,
 			},
-			evidenceTruncated: sourceTruncated || viaTruncated,
+			evidenceTruncated: sourceTruncated || identifiersTruncated,
 		})
 	}
 	return out, nil
@@ -852,8 +852,12 @@ func sourceLabel(sub *scopeFacts, st taintState, summaries summaryTables) (strin
 	return "unknown", false
 }
 
-// chainFor renders the sanitized, bounded laundering chain for evidence.
-func chainFor(sub *scopeFacts) ([]string, bool) {
+// identifiersFor renders the sanitized, bounded Identifiers list for
+// evidence: every distinct variable and call name appearing anywhere in the
+// sink's own expression, tainted or not. This is not a laundering path --
+// there is no ordering or filtering by whether a name actually carried the
+// tainted value, only alphabetical sort for deterministic output.
+func identifiersFor(sub *scopeFacts) ([]string, bool) {
 	segs := make([]string, 0, len(sub.vars)+len(sub.calls))
 	for name := range sub.vars {
 		if name != "" {
@@ -890,7 +894,7 @@ func dedupeAndSort(in []flowResult) []flowResult {
 		if out[i].Sink != out[j].Sink {
 			return out[i].Sink < out[j].Sink
 		}
-		return strings.Join(out[i].Via, ",") < strings.Join(out[j].Via, ",")
+		return strings.Join(out[i].Identifiers, ",") < strings.Join(out[j].Identifiers, ",")
 	})
 	return out
 }
