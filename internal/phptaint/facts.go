@@ -266,13 +266,25 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	// assertArgumentCouldBeString for why a boolean-shaped argument (a
 	// comparison, a logical operator, instanceof, ...) is not a
 	// code-execution sink on any PHP version this analyzer targets.
-	if idx, ok := callSinks[name]; ok && len(n.Args) > idx {
-		if arg, ok := n.Args[idx].(*ast.Argument); ok {
-			if name != "assert" || assertArgumentCouldBeString(arg.Expr) {
-				v.f.sinks = append(v.f.sinks, sinkSite{kind: name, expr: arg.Expr})
-			}
-		}
+	if sink, ok := callSinkSite(name, n); ok {
+		v.f.sinks = append(v.f.sinks, sink)
 	}
+}
+
+func callSinkSite(name string, node ast.Vertex) (sinkSite, bool) {
+	call, ok := node.(*ast.ExprFunctionCall)
+	if !ok {
+		return sinkSite{}, false
+	}
+	idx, ok := callSinks[name]
+	if !ok || len(call.Args) <= idx {
+		return sinkSite{}, false
+	}
+	arg, ok := call.Args[idx].(*ast.Argument)
+	if !ok || (name == "assert" && !assertArgumentCouldBeString(arg.Expr)) {
+		return sinkSite{}, false
+	}
+	return sinkSite{kind: name, expr: arg.Expr}, true
 }
 
 // resolveFunctionAlias resolves a call target through this scope's
@@ -512,6 +524,71 @@ type namedNodeSpan struct {
 	nodeSpan
 	name string
 	node ast.Vertex
+}
+
+// resolvedCallIndex restores the canonical call names from a whole-file
+// collection to independently collected lexical scopes. Namespace-level
+// `use function` imports are outside a function or method body, so collecting
+// that body alone cannot resolve its aliases. Exact source spans join the two
+// views without importing variables, assignments, or calls from another
+// scope.
+type resolvedCallIndex struct {
+	functions map[nodeSpan]*ast.ExprFunctionCall
+	sites     map[nodeSpan]callSite
+}
+
+func newResolvedCallIndex(f *scopeFacts) resolvedCallIndex {
+	index := resolvedCallIndex{
+		functions: make(map[nodeSpan]*ast.ExprFunctionCall, len(f.callNodes)),
+		sites:     make(map[nodeSpan]callSite, len(f.callSites)),
+	}
+	for _, call := range f.callNodes {
+		if span, ok := spanOf(call); ok {
+			index.functions[span] = call
+		}
+	}
+	for _, call := range f.callSites {
+		if span, ok := spanOf(call.node); ok {
+			index.sites[span] = call
+		}
+	}
+	return index
+}
+
+func (index resolvedCallIndex) apply(f *scopeFacts) *scopeFacts {
+	out := *f
+	out.callNodes = append([]*ast.ExprFunctionCall(nil), f.callNodes...)
+	for i, call := range out.callNodes {
+		if span, ok := spanOf(call); ok {
+			if resolved, found := index.functions[span]; found {
+				out.callNodes[i] = resolved
+			}
+		}
+	}
+	out.callSites = append([]callSite(nil), f.callSites...)
+	for i, call := range out.callSites {
+		if span, ok := spanOf(call.node); ok {
+			if resolved, found := index.sites[span]; found {
+				out.callSites[i] = resolved
+			}
+		}
+	}
+	out.calls = make(map[string]bool, len(out.callSites))
+	for _, call := range out.callSites {
+		out.calls[call.name] = true
+	}
+	out.sinks = make([]sinkSite, 0, len(f.sinks))
+	for _, sink := range f.sinks {
+		if _, callSink := callSinks[sink.kind]; !callSink {
+			out.sinks = append(out.sinks, sink)
+		}
+	}
+	for _, call := range out.callSites {
+		if sink, ok := callSinkSite(call.name, call.node); ok {
+			out.sinks = append(out.sinks, sink)
+		}
+	}
+	return &out
 }
 
 // declTree links each declaration in a whole-file collection to the

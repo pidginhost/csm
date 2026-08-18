@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -291,6 +292,123 @@ f($handle);`)
 	}
 	if !found {
 		t.Errorf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+func TestAliasedSourceDropSurfacesInReport(t *testing.T) {
+	src := []byte(`<?php
+use function curl_exec as fetch_remote;
+Foo::$cache = fetch_remote($handle);
+eval('safe literal');`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none for the safe sink", rep.Results)
+	}
+	if !slices.Contains(rep.PrecisionLoss, "unresolvable-assign-target") {
+		t.Fatalf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+func TestAliasedSourceDropInFunctionSurfacesInReport(t *testing.T) {
+	src := []byte(`<?php
+use function curl_exec as fetch_remote;
+function cache_remote($handle) {
+	Foo::$cache = fetch_remote($handle);
+	eval('safe literal');
+}`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none for the safe sink", rep.Results)
+	}
+	if !slices.Contains(rep.PrecisionLoss, "unresolvable-assign-target") {
+		t.Fatalf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+func TestAliasedSourceVariableDropInFunctionSurfacesInReport(t *testing.T) {
+	src := []byte(`<?php
+use function curl_exec as fetch_remote;
+function cache_remote($handle) {
+	$payload = fetch_remote($handle);
+	Foo::$cache = $payload;
+	eval('safe literal');
+}`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none for the safe sink", rep.Results)
+	}
+	if !slices.Contains(rep.PrecisionLoss, "unresolvable-assign-target") {
+		t.Fatalf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+func TestAliasedSourceSummaryDropSurfacesInReport(t *testing.T) {
+	src := []byte(`<?php
+use function curl_exec as fetch_remote;
+function fetch_code($handle) {
+	return fetch_remote($handle);
+}
+Foo::$cache = fetch_code($handle);
+eval('safe literal');`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none for the safe sink", rep.Results)
+	}
+	if !slices.Contains(rep.PrecisionLoss, "unresolvable-assign-target") {
+		t.Fatalf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+func TestAliasedSourceFlowsDirectlyToSink(t *testing.T) {
+	src := []byte(`<?php
+use function curl_exec as fetch_remote;
+eval(fetch_remote($handle));`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Sink != "eval" {
+		t.Fatalf("results = %+v, want one eval flow", rep.Results)
+	}
+}
+
+func TestAliasedAssertInFunctionKeepsArgumentGate(t *testing.T) {
+	tests := []struct {
+		name        string
+		argument    string
+		wantResults int
+	}{
+		{name: "string-capable", argument: "$payload", wantResults: 1},
+		{name: "boolean", argument: "$payload !== false", wantResults: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			src := fmt.Sprintf(`<?php
+use function assert as check;
+function inspect_remote($handle) {
+	$payload = curl_exec($handle);
+	check(%s);
+}`, tc.argument)
+			rep := Analyze(context.Background(), []byte(src))
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if len(rep.Results) != tc.wantResults {
+				t.Fatalf("results = %+v, want %d", rep.Results, tc.wantResults)
+			}
+		})
 	}
 }
 
