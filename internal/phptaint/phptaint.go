@@ -12,8 +12,9 @@ package phptaint
 import "context"
 
 // Status is the outcome of an analysis attempt. Callers must not infer a
-// clean file from an empty result slice: only StatusAnalyzed means the
-// content was examined end to end. Every other status is a coverage gap.
+// clean file from an empty result slice. StatusAnalyzed and StatusNotCandidate
+// are the two completed outcomes; every other status is a coverage gap and must
+// be accounted for as such rather than counted as a clean file.
 type Status uint8
 
 const (
