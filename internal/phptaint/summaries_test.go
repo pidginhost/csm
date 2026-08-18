@@ -257,6 +257,56 @@ func TestPrecisionLossRecheckedInSummarizedBody(t *testing.T) {
 	}
 }
 
+// summaryBodyEvalsFor builds a reverse-ordered call chain of n functions
+// (f0 calls f1, f1 calls f2, ..., the last reaches a source directly -- the
+// worst discovery order, since each caller only learns its callee's summary
+// after the callee itself has been evaluated) and reports how many times
+// functionSummaries evaluated a body while summarizing it.
+func summaryBodyEvalsFor(t *testing.T, n int) int64 {
+	t.Helper()
+	var src strings.Builder
+	src.WriteString("<?php\n")
+	for i := 0; i < n-1; i++ {
+		fmt.Fprintf(&src, "function f%d($u) { return f%d($u); }\n", i, i+1)
+	}
+	fmt.Fprintf(&src, "function f%d($u) { return curl_exec($u); }\n", n-1)
+
+	root, status, reason := parseSource([]byte(src.String()))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	before := summaryBodyEvals.Load()
+	_, _, err := functionSummaries(context.Background(), collectScope(root))
+	if err != nil {
+		t.Fatalf("function summaries: %v", err)
+	}
+	return summaryBodyEvals.Load() - before
+}
+
+// TestSummaryBodyEvalCountIsLinearInChainLength is the structural guard for
+// the interprocedural fixpoint's cost, the same kind of counter-based
+// invariant TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount
+// uses for declaration indexing rather than timing, which is flaky under
+// shared CI load. A round-robin sweep re-checks every body on every pass
+// until nothing changes, which costs O(n^2) body evaluations for a
+// reverse-ordered chain of n bodies (up to n passes, each visiting all n
+// bodies). A worklist keyed on the call graph only re-evaluates a body when
+// the one callee it depends on actually changed, so the same chain costs
+// O(n): one evaluation per body up front, plus at most one more per body as
+// the change propagates one hop at a time. 10x the chain length must cost
+// roughly 10x the evaluations, not roughly 100x.
+func TestSummaryBodyEvalCountIsLinearInChainLength(t *testing.T) {
+	const small, large = 40, 400
+	smallEvals := summaryBodyEvalsFor(t, small)
+	largeEvals := summaryBodyEvalsFor(t, large)
+
+	ratio := float64(largeEvals) / float64(smallEvals)
+	if ratio > 30 {
+		t.Fatalf("body evals at %d hops = %d, at %d hops = %d (ratio %.1f) - want roughly linear scaling (~10x), not quadratic (~100x)",
+			small, smallEvals, large, largeEvals, ratio)
+	}
+}
+
 func TestFunctionSummariesChecksContextBeforeEachBody(t *testing.T) {
 	facts := mustParse(t, "<?php function first() {} function second() {}")
 	ctx := newCancelOnErrCheck(2)
