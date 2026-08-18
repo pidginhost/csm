@@ -102,7 +102,9 @@ const MaxReasonBytes = 256
 // resilience: a Go stack overflow is fatal and cannot be recovered, so
 // analyzer recursion is capped explicitly.
 const (
-	maxASTNodes        = 800_000
+	// maxCollectedNodes bounds nodes of interest recorded per scope. Total
+	// traversal work is separately bounded by MaxSourceBytes.
+	maxCollectedNodes  = 800_000
 	maxSummarizedFuncs = 2_000
 	maxFixpointRounds  = 16
 	maxAnalysisDepth   = 256
