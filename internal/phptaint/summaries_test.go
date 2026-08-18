@@ -319,6 +319,37 @@ func TestFunctionSummariesChecksContextBeforeEachBody(t *testing.T) {
 	}
 }
 
+func TestReturnFactsChecksContextBetweenReturns(t *testing.T) {
+	facts := &scopeFacts{returns: []*ast.StmtReturn{
+		{Expr: &ast.ScalarString{}},
+		{Expr: &ast.ScalarString{}},
+	}}
+	ctx := newCancelOnErrCheck(2)
+	t.Cleanup(ctx.cancel)
+
+	_, err := returnFacts(ctx, facts, resolvedCallIndex{})
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestReturnNestedCallKeepsWholeFileAlias(t *testing.T) {
+	rep := Analyze(context.Background(), []byte(`<?php
+use function fetchRemote as loadRemote;
+function wrapClosure($c) {
+	return (function() use ($c) { return loadRemote($c); })();
+}
+function fetchRemote($c) { return curl_exec($c); }
+$payload = wrapClosure($c);
+eval($payload);`))
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s), want StatusAnalyzed", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Sink != "eval" {
+		t.Fatalf("results = %+v, want aliased return-nested flow to eval", rep.Results)
+	}
+}
+
 // permutations returns every ordering of items. Declaration order is
 // attacker-controlled, so a property that must hold for one ordering must hold
 // for all of them.
