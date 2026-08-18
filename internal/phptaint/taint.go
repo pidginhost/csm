@@ -638,36 +638,18 @@ func hasDroppedCapture(
 	if len(all.closures) == 0 && len(all.arrowFuncs) == 0 {
 		return false, nil
 	}
-	states := make(map[ast.Vertex]taintState, 1)
-	capturesTaint := func(node ast.Vertex, names map[string]bool) bool {
-		if len(names) == 0 {
-			return false
-		}
-		enclosing := tree.parent[node]
-		st, solved := states[enclosing]
-		if !solved {
-			// A declaration with no facts of its own, such as a class body
-			// holding a closure in a property initialiser, has no locals to
-			// capture, so it contributes no state.
-			if f := factsByScope[enclosing]; f != nil {
-				st = taintedLocals(f, summaries)
-			}
-			states[enclosing] = st
-		}
-		for name := range names {
-			if _, tainted := st[name]; tainted {
-				return true
-			}
-		}
-		return false
-	}
 
+	// Record only declarations that actually capture a name. Building this
+	// cheap structural index first preserves the important lazy path: a file
+	// containing only non-capturing declarations never solves another taint
+	// state merely to decide that there was no capture.
+	captures := make(map[ast.Vertex]map[string]bool)
 	for _, cl := range all.closures {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if capturesTaint(cl, closureCaptureNames(cl)) {
-			return true, nil
+		if names := closureCaptureNames(cl); len(names) > 0 {
+			captures[cl] = names
 		}
 	}
 	for _, af := range all.arrowFuncs {
@@ -678,9 +660,173 @@ func hasDroppedCapture(
 		if body == nil {
 			continue
 		}
-		if capturesTaint(af, arrowCaptureNames(af, body)) {
-			return true, nil
+		if names := arrowCaptureNames(af, body); len(names) > 0 {
+			captures[af] = names
 		}
+	}
+	if len(captures) == 0 {
+		return false, nil
+	}
+
+	// A capture nested directly in an arrow function also makes that arrow
+	// capture the same binding implicitly. Mark every enclosing arrow on a
+	// capture path, plus the first ordinary lexical scope that supplies the
+	// value. Stopping when an already-marked scope is reached makes the total
+	// walk linear in declaration count even for deeply nested arrow trees.
+	needed := make(map[ast.Vertex]bool, len(captures)+1)
+	for node := range captures {
+		scope := tree.parent[node]
+		for !needed[scope] {
+			needed[scope] = true
+			if _, arrow := scope.(*ast.ExprArrowFunction); !arrow {
+				break
+			}
+			scope = tree.parent[scope]
+		}
+	}
+
+	// Taint states remain lazy and are memoised by their lexical scope. A
+	// class body can enclose a declaration but has no local variable facts of
+	// its own, so its state is intentionally empty.
+	states := make(map[ast.Vertex]taintState, len(needed))
+	stateFor := func(scope ast.Vertex) (taintState, error) {
+		if st, solved := states[scope]; solved {
+			return st, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var st taintState
+		if f := factsByScope[scope]; f != nil {
+			st = taintedLocals(f, summaries)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		states[scope] = st
+		return st, nil
+	}
+
+	// active is a marker-only view of which tainted bindings are available at
+	// the current declaration boundary. It is never passed to taintedLocals or
+	// findFlows and therefore never seeds a closure or arrow body. Arrow scopes
+	// inherit the view because PHP propagates captures through nested arrows;
+	// every other declaration starts a new lexical variable scope. Boundary
+	// IDs make those resets O(1), while per-name stacks make enter/leave O(1).
+	type binding struct {
+		boundary int
+		tainted  bool
+	}
+	type frame struct {
+		end              int
+		previousBoundary int
+		pushed           []string
+	}
+	active := make(map[string][]binding)
+	boundary, nextBoundary := 0, 0
+	push := func(name string, tainted bool, pushed *[]string) {
+		active[name] = append(active[name], binding{boundary: boundary, tainted: tainted})
+		*pushed = append(*pushed, name)
+	}
+	pop := func(f frame) {
+		for i := len(f.pushed) - 1; i >= 0; i-- {
+			name := f.pushed[i]
+			stack := active[name]
+			if len(stack) == 1 {
+				delete(active, name)
+			} else {
+				active[name] = stack[:len(stack)-1]
+			}
+		}
+		boundary = f.previousBoundary
+	}
+	capturesActive := func(names map[string]bool) bool {
+		for name := range names {
+			stack := active[name]
+			if len(stack) == 0 {
+				continue
+			}
+			value := stack[len(stack)-1]
+			if value.boundary == boundary && value.tainted {
+				return true
+			}
+		}
+		return false
+	}
+
+	if needed[nil] {
+		st, err := stateFor(nil)
+		if err != nil {
+			return false, err
+		}
+		for name := range st {
+			active[name] = []binding{{boundary: boundary, tainted: true}}
+		}
+	}
+
+	frames := make([]frame, 0, 8)
+	seen := make(map[ast.Vertex]bool, len(captures))
+	for _, declaration := range tree.ordered {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		for len(frames) > 0 && frames[len(frames)-1].end < declaration.start {
+			pop(frames[len(frames)-1])
+			frames = frames[:len(frames)-1]
+		}
+
+		if names := captures[declaration.node]; len(names) > 0 {
+			seen[declaration.node] = true
+			if capturesActive(names) {
+				if err := ctx.Err(); err != nil {
+					return false, err
+				}
+				return true, nil
+			}
+		}
+
+		f := frame{end: declaration.end, previousBoundary: boundary}
+		if needed[declaration.node] {
+			if af, arrow := declaration.node.(*ast.ExprArrowFunction); arrow {
+				// Parameters are the arrow's own bindings and shadow an
+				// identically named capture from any enclosing scope.
+				for name := range paramNames(af.Params) {
+					push(name, false, &f.pushed)
+				}
+			} else {
+				nextBoundary++
+				boundary = nextBoundary
+			}
+			st, err := stateFor(declaration.node)
+			if err != nil {
+				return false, err
+			}
+			for name := range st {
+				push(name, true, &f.pushed)
+			}
+		}
+		frames = append(frames, f)
+	}
+
+	// Parser-produced declaration nodes always carry positions and therefore
+	// appear in tree.ordered. Retain the conservative direct-scope behavior if
+	// a future parser version emits an unpositioned capture node.
+	for node, names := range captures {
+		if seen[node] {
+			continue
+		}
+		st, err := stateFor(tree.parent[node])
+		if err != nil {
+			return false, err
+		}
+		for name := range names {
+			if _, tainted := st[name]; tainted {
+				return true, nil
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
 	return false, nil
 }

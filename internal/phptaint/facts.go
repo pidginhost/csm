@@ -606,6 +606,11 @@ type nodeSpan struct {
 	end   int
 }
 
+type declarationSpan struct {
+	nodeSpan
+	node ast.Vertex
+}
+
 type namedNodeSpan struct {
 	nodeSpan
 	name string
@@ -693,6 +698,11 @@ type declTree struct {
 	// answers the question children cannot: given a closure, which scope did
 	// it capture its outer bindings FROM.
 	parent map[ast.Vertex]ast.Vertex
+	// ordered holds the same declarations in source nesting order. Retaining
+	// the already-sorted sweep input lets capture analysis walk lexical scopes
+	// without rebuilding or re-sorting the attacker-controlled declaration
+	// list.
+	ordered []declarationSpan
 	// count is the total number of declarations indexed, checked against
 	// maxDeclarations before any per-scope work begins.
 	count int
@@ -751,14 +761,10 @@ func (f *scopeFacts) declarationTree() declTree {
 	}
 	declTreeBuilds.Add(1)
 
-	type declNode struct {
-		node ast.Vertex
-		span nodeSpan
-	}
-	nodes := make([]declNode, 0, len(f.funcs)+len(f.methods)+len(f.classLikes)+len(f.closures)+len(f.arrowFuncs))
+	nodes := make([]declarationSpan, 0, len(f.funcs)+len(f.methods)+len(f.classLikes)+len(f.closures)+len(f.arrowFuncs))
 	add := func(n ast.Vertex) {
 		if span, ok := spanOf(n); ok {
-			nodes = append(nodes, declNode{node: n, span: span})
+			nodes = append(nodes, declarationSpan{nodeSpan: span, node: n})
 		}
 	}
 	for _, fn := range f.funcs {
@@ -778,27 +784,28 @@ func (f *scopeFacts) declarationTree() declTree {
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].span.start != nodes[j].span.start {
-			return nodes[i].span.start < nodes[j].span.start
+		if nodes[i].start != nodes[j].start {
+			return nodes[i].start < nodes[j].start
 		}
-		return nodes[i].span.end > nodes[j].span.end
+		return nodes[i].end > nodes[j].end
 	})
 
 	tree := declTree{
 		children: make(map[ast.Vertex][]nodeSpan, len(nodes)+1),
 		parent:   make(map[ast.Vertex]ast.Vertex, len(nodes)),
+		ordered:  nodes,
 		count:    len(nodes),
 	}
 	stack := make([]int, 0, len(nodes))
 	for i, n := range nodes {
-		for len(stack) > 0 && nodes[stack[len(stack)-1]].span.end < n.span.start {
+		for len(stack) > 0 && nodes[stack[len(stack)-1]].end < n.start {
 			stack = stack[:len(stack)-1]
 		}
 		var parent ast.Vertex // nil selects the top-level scope's own children
 		if len(stack) > 0 {
 			parent = nodes[stack[len(stack)-1]].node
 		}
-		tree.children[parent] = append(tree.children[parent], n.span)
+		tree.children[parent] = append(tree.children[parent], n.nodeSpan)
 		tree.parent[n.node] = parent
 		stack = append(stack, i)
 	}

