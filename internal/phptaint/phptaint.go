@@ -240,10 +240,11 @@ func analyze(ctx context.Context, src []byte) Report {
 
 	// tree indexes every declaration in the file once (see declarationTree
 	// for why this must happen exactly once, not once per declaration), so
-	// each scope below can derive its own exclusion index by lookup. Check
-	// the defence-in-depth cap before any further work, and before
-	// functionSummaries -- which builds its own tree over the same
-	// declarations -- so a file that trips it does no summarization work
+	// each scope below can derive its own exclusion index by lookup.
+	// functionSummaries calls f.declarationTree() again on this same all;
+	// that hits scopeFacts' own cache rather than rebuilding. Check the
+	// defence-in-depth cap before any further work, including
+	// functionSummaries, so a file that trips it does no summarization work
 	// either. This is a coverage gap, not a silent skip: StatusResourceLimit
 	// means the file was not examined, matching the same contract already
 	// used for a collection-budget overrun above.

@@ -3,6 +3,7 @@ package phptaint
 import (
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
 	"github.com/VKCOM/php-parser/pkg/visitor"
@@ -38,7 +39,7 @@ type scopeFacts struct {
 	// classLikes holds every class, interface, trait, and enum declaration
 	// (named or anonymous) found in this scope. Their own contents are
 	// never read from here directly -- methods are already tracked in
-	// methods above -- this list exists only to supply declarationSpans
+	// methods above -- this list exists only to supply declarationTree
 	// with the position span of the class body itself.
 	classLikes     []ast.Vertex
 	sinks          []sinkSite
@@ -51,6 +52,15 @@ type scopeFacts struct {
 	precisionLoss  map[string]bool
 	visited        int
 	budgetExceeded bool
+	// declTreeCache memoizes declarationTree's result for this scopeFacts
+	// instance. Safe to cache: a scopeFacts is fully populated by the
+	// traversal in collectScope/collectAll/collectOwnStmts before any
+	// caller can reach it and is never mutated afterward, and each
+	// instance is freshly allocated per collection call, so nothing here
+	// carries state across separate Analyze invocations. This is what lets
+	// functionSummaries call f.declarationTree() again on the same f
+	// analyze already indexed without repeating the O(D log D) build.
+	declTreeCache *declTree
 }
 
 func newScopeFacts() *scopeFacts {
@@ -373,9 +383,9 @@ func collectAll(ns []ast.Vertex) *scopeFacts {
 // unrelated top-level variable that merely shares its name, which reports
 // clean code as malicious: names like $data, $content and $tmp recur
 // constantly in real PHP. exclude is normally built by
-// excludingSpanIndex(decls, nil) over the whole file's declarationSpans, so
-// every declaration in the file is excluded (there is no declaration whose
-// own statements this call needs to keep).
+// declarationTree(...).exclusionFor(nil) over the whole file, so every
+// declaration in the file is excluded (there is no declaration whose own
+// statements this call needs to keep).
 func collectTopLevel(root ast.Vertex, exclude *spanIndex) *scopeFacts {
 	r, ok := root.(*ast.Root)
 	if !ok {
@@ -457,12 +467,30 @@ type declTree struct {
 	count int
 }
 
+// declTreeBuilds counts how many times declarationTree has actually
+// performed the O(D log D) sort-and-sweep build, as opposed to returning an
+// already-cached result. It exists solely so a same-package white-box test
+// can observe that this count stays a small constant as declaration count
+// grows -- the structural invariant this whole file's design establishes --
+// rather than asserting elapsed wall-clock time, which is flaky under
+// shared CI load and, worse, would not fail reliably if a per-declaration
+// rebuild were reintroduced at a scale too small to visibly stall a test
+// run. It is read-only from every caller's perspective (nothing in this
+// package branches on its value, and it never influences a Report), so it
+// is test-only observation of internal behaviour, not the kind of mutable
+// process-global configuration or cross-call state this package's purity
+// contract forbids.
+var declTreeBuilds atomic.Int64
+
 // declarationTree indexes every declaration recorded in f: functions,
 // methods, and classes/interfaces/traits/enums (anonymous classes
 // included, via classLikes). f must come from an unfiltered, whole-file
 // collection (collectScope(root)) so every declaration in the file is
 // present, regardless of how deeply any of them is nested inside another
-// or wrapped in control flow.
+// or wrapped in control flow. The result is cached on f (see
+// scopeFacts.declTreeCache), so calling this more than once on the same f
+// -- analyze and functionSummaries both do, independently -- costs one
+// build, not two.
 //
 // Sorting happens ONCE, over all D declarations together, rather than once
 // per declaration: a per-declaration rebuild-and-sort of the whole span
@@ -487,6 +515,11 @@ type declTree struct {
 // file, and sorting each of them once, at exclusionFor time, costs at most
 // D log D in total across every scope in the file.
 func (f *scopeFacts) declarationTree() declTree {
+	if f.declTreeCache != nil {
+		return *f.declTreeCache
+	}
+	declTreeBuilds.Add(1)
+
 	type declNode struct {
 		node ast.Vertex
 		span nodeSpan
@@ -527,6 +560,7 @@ func (f *scopeFacts) declarationTree() declTree {
 		tree.children[parent] = append(tree.children[parent], n.span)
 		stack = append(stack, i)
 	}
+	f.declTreeCache = &tree
 	return tree
 }
 
