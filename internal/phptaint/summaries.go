@@ -69,7 +69,39 @@ type funcBody struct {
 	name  string
 	kind  bodyKind
 	facts *scopeFacts
-	calls resolvedCallIndex
+	// returns holds the facts of each non-empty return expression, collected
+	// once here rather than per evaluation. Collecting them up front is what
+	// lets the dependency edges below be built from the SAME facts the
+	// evaluation reads: a call reachable only through a return expression
+	// (one written inside a closure, say) is invisible to facts, which
+	// excludes nested declarations, but is visible to a scope collection of
+	// the return expression itself, which does not.
+	returns []*scopeFacts
+}
+
+// dependencyKeys names every summary a single evaluation of this body can
+// read: those reachable from its own statements, consulted while computing
+// its local taint state, plus those reachable from each return expression,
+// consulted while grading what it returns. The worklist's correctness rests
+// on this being a SUPERSET of what an evaluation actually reads. If a body
+// can read a summary it has no edge on, a later rise in that summary never
+// wakes it, and the fixpoint's answer starts depending on the order bodies
+// were queued in -- which is the order they were declared in, which an
+// attacker writing the file chooses.
+func (b funcBody) dependencyKeys() []summaryKey {
+	keys := make([]summaryKey, 0, len(b.facts.callSites))
+	appendFrom := func(f *scopeFacts) {
+		for _, call := range f.callSites {
+			if key, ok := callSiteSummaryKey(call); ok {
+				keys = append(keys, key)
+			}
+		}
+	}
+	appendFrom(b.facts)
+	for _, ret := range b.returns {
+		appendFrom(ret)
+	}
+	return keys
 }
 
 // functionSummaries reports which user-defined functions and methods return
@@ -90,8 +122,33 @@ type funcBody struct {
 // function and a sink in another, joined only by a call. Without a summary
 // for the fetching function, that flow is invisible to a single-scope pass.
 func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []string, error) {
+	bodies, loss, err := summaryBodies(ctx, f)
+	if err != nil {
+		return summaryTables{}, nil, err
+	}
+	tables, err := solveSummaries(ctx, bodies)
+	if err != nil {
+		return summaryTables{}, nil, err
+	}
+	names := make([]string, 0, len(loss))
+	for name := range loss {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	if err := ctx.Err(); err != nil {
 		return summaryTables{}, nil, err
+	}
+	return tables, names, nil
+}
+
+// summaryBodies collects every summarizable function and method body, with
+// the precision loss observed while collecting them. Separated from the
+// fixpoint below so the two can be exercised apart: a test can build the
+// bodies for a file and then run its own reference fixpoint over them, which
+// is what pins the worklist to the answer an exhaustive sweep would give.
+func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 
 	loss := map[string]bool{}
@@ -109,14 +166,14 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	methodCounts := make(map[string]int, len(f.methods))
 	for _, m := range f.methods {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return nil, nil, err
 		}
 		methodCounts[calleeName(m.Name)]++
 	}
 	summarizable := len(f.funcs)
 	for _, count := range methodCounts {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return nil, nil, err
 		}
 		if count > 1 {
 			loss["ambiguous-method"] = true
@@ -125,7 +182,7 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 		summarizable++
 	}
 	if summarizable > maxSummarizedFuncs {
-		return summaryTables{}, nil, errSummaryLimit
+		return nil, nil, errSummaryLimit
 	}
 
 	// tree indexes every declaration in f (see declarationTree), so a
@@ -144,19 +201,20 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	bodies := make([]funcBody, 0, summarizable)
 	for _, fn := range f.funcs {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return nil, nil, err
 		}
 		exclude := tree.exclusionFor(fn)
 		facts := callIndex.apply(collectOwnStmts(fn.Stmts, &exclude))
+		calls := newResolvedCallIndex(facts)
 		bodies = append(bodies, funcBody{
 			name: calleeName(fn.Name), kind: bodyFunction, facts: facts,
-			calls: newResolvedCallIndex(facts),
+			returns: returnFacts(facts, calls),
 		})
 	}
 
 	for _, m := range f.methods {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return nil, nil, err
 		}
 		name := calleeName(m.Name)
 		if methodCounts[name] > 1 {
@@ -166,9 +224,10 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 		// unlike StmtFunction which carries a Stmts slice.
 		exclude := tree.exclusionFor(m)
 		facts := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &exclude))
+		calls := newResolvedCallIndex(facts)
 		bodies = append(bodies, funcBody{
 			name: name, kind: bodyMethod, facts: facts,
-			calls: newResolvedCallIndex(facts),
+			returns: returnFacts(facts, calls),
 		})
 	}
 	// Recheck every included body using its independently collected facts.
@@ -177,11 +236,16 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	// per-body budget can still preserve that declaration's loss markers.
 	for _, b := range bodies {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return nil, nil, err
 		}
 		recordPrecisionLoss(b.facts, loss)
 	}
 
+	return bodies, loss, nil
+}
+
+// solveSummaries runs the interprocedural fixpoint over prebuilt bodies.
+func solveSummaries(ctx context.Context, bodies []funcBody) (summaryTables, error) {
 	// Summaries only ever move from absent to present, or to a higher
 	// confidence, so this is a monotone fixpoint over a finite lattice
 	// (three confidence levels) whose result does not depend on the order
@@ -191,7 +255,15 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	// so a worklist keyed on that call graph re-evaluates a body only when a
 	// callee it actually references just changed, instead of re-sweeping
 	// every body on every pass regardless of whether anything it depends on
-	// moved. This is the same dependency-worklist shape solveAssignments
+	// moved. Which summaries a body depends on is exactly what
+	// dependencyKeys reports, and that must stay a superset of what an
+	// evaluation reads, or the order-independence claimed above is simply
+	// false: edges drawn from a body's own statements alone miss a callee
+	// invoked from inside a closure within a return, because a body's facts
+	// exclude nested declarations while the collection used to grade its
+	// return expression does not.
+	//
+	// This is the same dependency-worklist shape solveAssignments
 	// already runs intraprocedurally in taint.go, applied one level up: a
 	// body here plays the role an assignment plays there, and a produced
 	// summary name plays the role a variable plays there. Termination
@@ -217,14 +289,13 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	queued := make([]bool, len(bodies))
 	for i, b := range bodies {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return summaryTables{}, err
 		}
 		if b.name == "" {
 			continue
 		}
-		for _, call := range b.facts.callSites {
-			key, ok := callSiteSummaryKey(call)
-			if !ok || !produced[key] {
+		for _, key := range b.dependencyKeys() {
+			if !produced[key] {
 				continue
 			}
 			dependents[key] = append(dependents[key], i)
@@ -244,32 +315,15 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	tables := summaryTables{funcs: map[string]Confidence{}, methods: map[string]Confidence{}}
 	for head := 0; head < len(queue); head++ {
 		if err := ctx.Err(); err != nil {
-			return summaryTables{}, nil, err
+			return summaryTables{}, err
 		}
 		i := queue[head]
 		queued[i] = false
 		b := bodies[i]
 
-		summaryBodyEvals.Add(1)
-		st := taintedLocals(b.facts, tables)
-		best := ConfidenceLow
-		found := false
-		for _, ret := range b.facts.returns {
-			if err := ctx.Err(); err != nil {
-				return summaryTables{}, nil, err
-			}
-			if ret.Expr == nil {
-				continue
-			}
-			retFacts := b.calls.apply(collectScope(ret.Expr))
-			c, tainted := exprTaintFacts(retFacts, st, tables)
-			if !tainted {
-				continue
-			}
-			found = true
-			if c > best {
-				best = c
-			}
+		best, found, err := evalBodySummary(ctx, b, tables)
+		if err != nil {
+			return summaryTables{}, err
 		}
 		if !found {
 			continue
@@ -286,15 +340,47 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 		enqueue(dependents[summaryKey{kind: b.kind, name: b.name}])
 	}
 
-	names := make([]string, 0, len(loss))
-	for name := range loss {
-		names = append(names, name)
+	return tables, nil
+}
+
+// evalBodySummary grades what one body returns against the summaries known so
+// far: Low..Certain plus whether anything tainted is returned at all. It reads
+// only the summaries dependencyKeys reports, which is what lets the worklist
+// wake exactly the bodies an update can affect.
+func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Confidence, bool, error) {
+	summaryBodyEvals.Add(1)
+	st := taintedLocals(b.facts, tables)
+	best := ConfidenceLow
+	found := false
+	for _, retFacts := range b.returns {
+		if err := ctx.Err(); err != nil {
+			return ConfidenceLow, false, err
+		}
+		c, tainted := exprTaintFacts(retFacts, st, tables)
+		if !tainted {
+			continue
+		}
+		found = true
+		if c > best {
+			best = c
+		}
 	}
-	sort.Strings(names)
-	if err := ctx.Err(); err != nil {
-		return summaryTables{}, nil, err
+	return best, found, nil
+}
+
+// returnFacts collects the facts of each return expression in a body, in the
+// same resolved-call view the body itself uses so namespace-level aliases stay
+// resolved. Empty returns carry no value and are dropped here rather than
+// skipped at every use.
+func returnFacts(f *scopeFacts, calls resolvedCallIndex) []*scopeFacts {
+	out := make([]*scopeFacts, 0, len(f.returns))
+	for _, ret := range f.returns {
+		if ret.Expr == nil {
+			continue
+		}
+		out = append(out, calls.apply(collectScope(ret.Expr)))
 	}
-	return tables, names, nil
+	return out
 }
 
 // recordPrecisionLoss folds one body's precision-loss facts into the running
