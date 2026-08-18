@@ -64,3 +64,19 @@ func TestStreamReaderInheritsHandleTaint(t *testing.T) {
 		t.Errorf("state = %v, want $c tainted via handle $fh", st)
 	}
 }
+
+// TestTaintPropagationIsStructuralNotNamed locks in that any expression
+// referencing a tainted variable is tainted, regardless of what function
+// wraps it. There is deliberately no allowlist of "passthrough" function
+// names: trim($a) is covered by the same structural rule as an entirely
+// unlisted some_helper($a), so a name list would add nothing and could only
+// ever be narrower. The unlisted-helper case is the load-bearing half of
+// this test; it is what proves the rule is structural rather than name-based.
+func TestTaintPropagationIsStructuralNotNamed(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = trim($a); $d = some_helper($a);")
+	for _, name := range []string{"b", "d"} {
+		if _, ok := st[name]; !ok {
+			t.Errorf("state = %v, want $%s tainted", st, name)
+		}
+	}
+}

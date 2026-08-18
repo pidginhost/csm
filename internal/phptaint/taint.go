@@ -11,13 +11,11 @@ var decoders = map[string]bool{
 	"convert_uudecode": true, "unserialize": true, "pack": true,
 }
 
-// passthrough transforms preserve taint without changing confidence.
-var passthrough = map[string]bool{
-	"trim": true, "ltrim": true, "rtrim": true, "str_replace": true,
-	"substr": true, "sprintf": true, "implode": true, "join": true,
-	"strval": true, "stripslashes": true, "html_entity_decode": true,
-	"preg_replace": true, "str_repeat": true, "strrev": true,
-}
+// There is no passthrough allowlist: taint propagation is structural, not
+// name-based. exprTaint marks any expression tainted if it references a
+// tainted variable anywhere in its subtree, so trim($a), sprintf($a), and an
+// unlisted some_helper($a) are all already covered without naming a single
+// one of them. A name list here could only ever be narrower than that rule.
 
 // taintState maps a variable name to the strongest confidence with which it
 // carries remote content.
