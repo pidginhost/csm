@@ -540,6 +540,67 @@ func arrowFunctionBody(n *ast.ExprArrowFunction) []ast.Vertex {
 	return []ast.Vertex{n.Expr}
 }
 
+// closureCaptureNames names the outer bindings a closure's use() clause
+// receives. Only Uses is consulted, never Params: a parameter that happens to
+// share an outer variable's name is the closure's own binding and receives
+// nothing from the enclosing scope, which is the shadowing case that scoping a
+// closure's body exists to keep clean.
+func closureCaptureNames(cl *ast.ExprClosure) map[string]bool {
+	names := make(map[string]bool, len(cl.Uses))
+	for _, u := range cl.Uses {
+		use, ok := u.(*ast.ExprClosureUse)
+		if !ok {
+			continue
+		}
+		v, ok := use.Var.(*ast.ExprVariable)
+		if !ok {
+			continue
+		}
+		if name := varName(v.Name); name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// paramNames names the plain-variable parameters of a parameter list. A
+// parameter with any other shape is skipped rather than guessed at.
+func paramNames(params []ast.Vertex) map[string]bool {
+	names := make(map[string]bool, len(params))
+	for _, p := range params {
+		param, ok := p.(*ast.Parameter)
+		if !ok {
+			continue
+		}
+		v, ok := param.Var.(*ast.ExprVariable)
+		if !ok {
+			continue
+		}
+		if name := varName(v.Name); name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// arrowCaptureNames names the outer bindings an arrow function receives.
+// Unlike a closure, which lists them in a use() clause, fn(...) => expr
+// captures by value every enclosing variable its body mentions. body.vars
+// already lists every variable name the body reads, so subtracting the arrow
+// function's own parameters leaves exactly the names that must have come from
+// outside. Over-inclusive by design: a name that is not in fact tainted in the
+// enclosing scope simply produces no marker.
+func arrowCaptureNames(af *ast.ExprArrowFunction, body *scopeFacts) map[string]bool {
+	params := paramNames(af.Params)
+	names := make(map[string]bool, len(body.vars))
+	for name := range body.vars {
+		if name != "" && !params[name] {
+			names[name] = true
+		}
+	}
+	return names
+}
+
 type nodeSpan struct {
 	start int
 	end   int
@@ -625,6 +686,13 @@ type declTree struct {
 	// children maps a declaration node -- or nil, for the top-level scope --
 	// to the spans of its immediate child declarations.
 	children map[ast.Vertex][]nodeSpan
+	// parent is the reverse: each indexed declaration to the declaration
+	// immediately enclosing it, or the nil interface when the top-level
+	// scope encloses it. Captured during the same sweep that builds
+	// children, since the sweep already knows both ends of the edge. It
+	// answers the question children cannot: given a closure, which scope did
+	// it capture its outer bindings FROM.
+	parent map[ast.Vertex]ast.Vertex
 	// count is the total number of declarations indexed, checked against
 	// maxDeclarations before any per-scope work begins.
 	count int
@@ -716,7 +784,11 @@ func (f *scopeFacts) declarationTree() declTree {
 		return nodes[i].span.end > nodes[j].span.end
 	})
 
-	tree := declTree{children: make(map[ast.Vertex][]nodeSpan, len(nodes)+1), count: len(nodes)}
+	tree := declTree{
+		children: make(map[ast.Vertex][]nodeSpan, len(nodes)+1),
+		parent:   make(map[ast.Vertex]ast.Vertex, len(nodes)),
+		count:    len(nodes),
+	}
 	stack := make([]int, 0, len(nodes))
 	for i, n := range nodes {
 		for len(stack) > 0 && nodes[stack[len(stack)-1]].span.end < n.span.start {
@@ -727,6 +799,7 @@ func (f *scopeFacts) declarationTree() declTree {
 			parent = nodes[stack[len(stack)-1]].node
 		}
 		tree.children[parent] = append(tree.children[parent], n.span)
+		tree.parent[n.node] = parent
 		stack = append(stack, i)
 	}
 	f.declTreeCache = &tree

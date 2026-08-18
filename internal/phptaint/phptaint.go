@@ -15,6 +15,8 @@ package phptaint
 import (
 	"context"
 	"sort"
+
+	"github.com/VKCOM/php-parser/pkg/ast"
 )
 
 // Status is the outcome of an analysis attempt. Callers must not infer a
@@ -280,6 +282,11 @@ func analyze(ctx context.Context, src []byte) Report {
 	// rescanning the file's declarations for every scope.
 	topExclude := tree.exclusionFor(nil)
 	top := callIndex.apply(collectTopLevel(root, &topExclude))
+	// factsByScope keeps the facts each loop below already builds, keyed by the
+	// declaration they belong to (nil for the top level). Nothing here
+	// re-collects: this only retains what would otherwise be discarded, so a
+	// closure can later ask what its enclosing scope held.
+	factsByScope := map[ast.Vertex]*scopeFacts{nil: top}
 	flows, err := findFlows(ctx, top, summaries)
 	if err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -313,6 +320,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		}
 		fnExclude := tree.exclusionFor(fn)
 		body := callIndex.apply(collectOwnStmts(fn.Stmts, &fnExclude))
+		factsByScope[fn] = body
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -332,6 +340,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
 		mExclude := tree.exclusionFor(m)
 		body := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &mExclude))
+		factsByScope[m] = body
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -357,6 +366,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		}
 		clExclude := tree.exclusionFor(cl)
 		body := callIndex.apply(collectOwnStmts(cl.Stmts, &clExclude))
+		factsByScope[cl] = body
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -378,6 +388,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		}
 		afExclude := tree.exclusionFor(af)
 		body := callIndex.apply(collectOwnStmts(arrowFunctionBody(af), &afExclude))
+		factsByScope[af] = body
 		bodyFlows, err := findFlows(ctx, body, summaries)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
@@ -394,13 +405,21 @@ func analyze(ctx context.Context, src []byte) Report {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
 
+	capturedTaint, captureErr := hasDroppedCapture(ctx, all, tree, factsByScope, summaries)
+	if captureErr != nil {
+		return Report{Status: StatusCanceled, Reason: captureErr.Error()}
+	}
 	if droppedTaint {
+		loss = append(loss, "unresolvable-assign-target")
+	}
+	if capturedTaint {
+		loss = append(loss, "closure-capture")
+	}
+	if droppedTaint || capturedTaint {
 		// loss is already sorted (functionSummaries sorts it); re-sort once
 		// after appending rather than inserting in place, so this stays a
-		// single obviously-correct call regardless of where
-		// "unresolvable-assign-target" falls alphabetically among the
-		// other markers.
-		loss = append(loss, "unresolvable-assign-target")
+		// single obviously-correct call regardless of where the appended
+		// markers fall alphabetically among the other markers.
 		sort.Strings(loss)
 	}
 

@@ -611,6 +611,80 @@ type flowResult struct {
 	evidenceTruncated bool
 }
 
+// hasDroppedCapture reports whether any closure or arrow function receives an
+// outer binding that was tainted in the scope it captured from.
+//
+// A closure's body is analysed as its own scope, which is what stops an
+// unrelated same-named outer variable from firing on clean code. The cost is
+// that a value the closure genuinely does receive through use(), or that an
+// arrow function picks up implicitly, stops being tracked at the boundary.
+// This package's contract is that a reduction in coverage is recorded rather
+// than passed over, so the drop is reported as precision loss.
+//
+// The check is deliberately gated on the captured value ACTUALLY being
+// tainted. Capturing is ordinary PHP and appears in roughly one in seven of
+// the files this analyzer examines, so a marker raised on the shape alone
+// would be noise an operator cannot act on. Gated this way it means exactly
+// one thing: taint was dropped here.
+//
+// Enclosing states are computed lazily and memoised, so a file with no
+// capturing closure pays nothing and a scope with several capturing children
+// is solved once. Nothing is seeded INTO a closure: taint deliberately does
+// not cross the boundary, it is only reported as lost.
+func hasDroppedCapture(
+	ctx context.Context, all *scopeFacts, tree declTree,
+	factsByScope map[ast.Vertex]*scopeFacts, summaries summaryTables,
+) (bool, error) {
+	if len(all.closures) == 0 && len(all.arrowFuncs) == 0 {
+		return false, nil
+	}
+	states := make(map[ast.Vertex]taintState, 1)
+	capturesTaint := func(node ast.Vertex, names map[string]bool) bool {
+		if len(names) == 0 {
+			return false
+		}
+		enclosing := tree.parent[node]
+		st, solved := states[enclosing]
+		if !solved {
+			// A declaration with no facts of its own, such as a class body
+			// holding a closure in a property initialiser, has no locals to
+			// capture, so it contributes no state.
+			if f := factsByScope[enclosing]; f != nil {
+				st = taintedLocals(f, summaries)
+			}
+			states[enclosing] = st
+		}
+		for name := range names {
+			if _, tainted := st[name]; tainted {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, cl := range all.closures {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if capturesTaint(cl, closureCaptureNames(cl)) {
+			return true, nil
+		}
+	}
+	for _, af := range all.arrowFuncs {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		body := factsByScope[af]
+		if body == nil {
+			continue
+		}
+		if capturesTaint(af, arrowCaptureNames(af, body)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // unresolvableAssignRHS returns the right-hand-side expression of every
 // assignment (=, =&, .=) in f whose target assignedTargetKey cannot resolve
 // to a taint-state key: a method-call result mid-chain (`$a->b()->c = X`),
