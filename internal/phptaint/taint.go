@@ -309,34 +309,6 @@ func (index spanIndex) contains(span nodeSpan) bool {
 	return i >= 0 && index.maxEnds[i] >= span.end
 }
 
-// excludingSpanIndex builds a spanIndex scoped to self's own body: every
-// declaration properly nested inside self is kept, so its facts are still
-// excluded from self's own collection, while self's own span AND every
-// ancestor of self (a declaration whose span contains self's -- a method's
-// enclosing class, say) are dropped. Dropping only self and not its
-// ancestors would leave the enclosing class's span in the index, and since
-// a method's entire body necessarily falls inside its class's span, every
-// fact in the method would then match that still-present ancestor span and
-// be wrongly excluded from the method's own collection.
-//
-// self is nil for the top-level scope, which has no span of its own to
-// protect and so keeps every declaration in decls (nothing in decls could
-// be an ancestor of a scope with no span).
-func excludingSpanIndex(decls []nodeSpan, self ast.Vertex) spanIndex {
-	selfSpan, haveSelf := nodeSpan{}, false
-	if self != nil {
-		selfSpan, haveSelf = spanOf(self)
-	}
-	spans := make([]nodeSpan, 0, len(decls))
-	for _, d := range decls {
-		if haveSelf && d.start <= selfSpan.start && d.end >= selfSpan.end {
-			continue
-		}
-		spans = append(spans, d)
-	}
-	return newSpanIndex(spans)
-}
-
 func solveAssignments(assignments []taintAssignment) taintState {
 	st := taintState{}
 	variableDependents := make(map[string][]int)

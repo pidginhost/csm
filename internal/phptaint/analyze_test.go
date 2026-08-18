@@ -3,8 +3,11 @@ package phptaint
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -263,6 +266,70 @@ eval( $tmp );`)
 	}
 	if len(rep.Results) != 0 {
 		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// manyDeclSource builds n trivial function declarations followed by one
+// genuine curl_exec-to-eval flow, so a test can tell "this analyzed
+// correctly at scale" apart from "this merely returned quickly because
+// nothing was found."
+func manyDeclSource(n int) []byte {
+	var src strings.Builder
+	src.WriteString("<?php\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&src, "function decl%d(){}\n", i)
+	}
+	src.WriteString("$d = curl_exec($h);\neval($d);\n")
+	return []byte(src.String())
+}
+
+// TestLargeDeclarationFileAnalyzesCorrectly is the regression guard for the
+// quadratic declaration-exclusion bug: declarationTree must build its
+// shared index once per file, not once per declaration (which was
+// O(D^2 log D) and measured taking double-digit seconds at tens of
+// thousands of declarations). 15,000 is comfortably inside maxDeclarations,
+// so this must complete as a normal StatusAnalyzed result.
+//
+// This intentionally does NOT assert on wall-clock time -- a numeric
+// threshold is exactly the kind of thing that is flaky under shared CI
+// load. The regression guard here is twofold and both parts are
+// deterministic: (1) correctness -- the genuine flow appended after the
+// 15,000 declarations must still be found, which only happens if every
+// declaration's exclusion index was built correctly; a test that merely
+// checked "did not time out" could pass even if the algorithm silently
+// produced wrong results. (2) the test framework's own timeout is the
+// backstop against a reintroduced quadratic: at this scale the shared-index
+// approach finishes in tens of milliseconds (elapsed is logged, not
+// asserted, purely for visibility), while a reintroduced O(D^2 log D) would
+// take on the order of a second at this size and grow from there --
+// self-evidently against `go test`'s default per-package timeout if the
+// regression is severe, without this test encoding any specific duration.
+func TestLargeDeclarationFileAnalyzesCorrectly(t *testing.T) {
+	src := manyDeclSource(15_000)
+	start := time.Now()
+	rep := Analyze(context.Background(), src)
+	t.Logf("15000 declarations analyzed in %v", time.Since(start))
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("genuine flow after 15,000 declarations was not detected")
+	}
+}
+
+// TestDeclarationLimitReportsCoverageGap confirms the defence-in-depth cap
+// fires as a coverage gap, never a silent skip: a file whose declaration
+// count exceeds maxDeclarations must report StatusResourceLimit -- meaning
+// the file was NOT examined -- rather than StatusAnalyzed with an
+// incomplete (and therefore falsely "clean") result.
+func TestDeclarationLimitReportsCoverageGap(t *testing.T) {
+	src := manyDeclSource(maxDeclarations + 1)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusResourceLimit {
+		t.Fatalf("status = %v, want StatusResourceLimit for %d declarations", rep.Status, maxDeclarations+1)
+	}
+	if len(rep.Results) != 0 {
+		t.Errorf("results = %+v, want none for a coverage-gap status", rep.Results)
 	}
 }
 

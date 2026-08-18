@@ -109,6 +109,13 @@ const (
 	// maxEvidenceResults bounds returned evidence paths; TotalResults still
 	// reports the full count.
 	maxEvidenceResults = 8
+	// maxDeclarations bounds how many functions/methods/classes one file's
+	// declaration tree is built from. declarationTree is linearithmic in
+	// this count (not quadratic -- see its doc comment), so this exists as
+	// defence in depth against a future regression rather than as the
+	// primary complexity fix, and is set far above any real single PHP
+	// file's declaration count.
+	maxDeclarations = 20_000
 )
 
 // Result is one remote-source-to-sink flow.
@@ -231,17 +238,28 @@ func analyze(ctx context.Context, src []byte) Report {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
 
+	// tree indexes every declaration in the file once (see declarationTree
+	// for why this must happen exactly once, not once per declaration), so
+	// each scope below can derive its own exclusion index by lookup. Check
+	// the defence-in-depth cap before any further work, and before
+	// functionSummaries -- which builds its own tree over the same
+	// declarations -- so a file that trips it does no summarization work
+	// either. This is a coverage gap, not a silent skip: StatusResourceLimit
+	// means the file was not examined, matching the same contract already
+	// used for a collection-budget overrun above.
+	tree := all.declarationTree()
+	if tree.count > maxDeclarations {
+		return Report{Status: StatusResourceLimit, Reason: "too many declarations to analyze"}
+	}
+
 	summaries, loss := functionSummaries(all)
 
-	// decls spans every declaration in the file, regardless of nesting
-	// depth or how many if/while/switch/try/foreach wrappers separate it
-	// from its enclosing scope (see collectOwnStmts). Each scope below
-	// excludes every declaration except, when the scope IS a declaration's
-	// own body, that declaration's own span -- otherwise a function would
-	// exclude its own statements from itself.
-	decls := all.declarationSpans()
-
-	topExclude := excludingSpanIndex(decls, nil)
+	// Each scope below excludes every declaration nested inside it except,
+	// when the scope IS a declaration's own body, that declaration's own
+	// span -- otherwise a function would exclude its own statements from
+	// itself. exclusionFor derives this from tree by lookup rather than by
+	// rescanning the file's declarations for every scope.
+	topExclude := tree.exclusionFor(nil)
 	results := findFlows(collectTopLevel(root, &topExclude), summaries)
 
 	// Sinks inside function bodies count too, each against its own state.
@@ -250,13 +268,13 @@ func analyze(ctx context.Context, src []byte) Report {
 	// declarations at the file level: a nested declaration's locals must
 	// not taint an identically-named local in the enclosing body.
 	for _, fn := range all.funcs {
-		fnExclude := excludingSpanIndex(decls, fn)
+		fnExclude := tree.exclusionFor(fn)
 		body := collectOwnStmts(fn.Stmts, &fnExclude)
 		results = append(results, findFlows(body, summaries)...)
 	}
 	for _, m := range all.methods {
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
-		mExclude := excludingSpanIndex(decls, m)
+		mExclude := tree.exclusionFor(m)
 		body := collectOwnStmts(methodStmts(m.Stmt), &mExclude)
 		results = append(results, findFlows(body, summaries)...)
 	}
