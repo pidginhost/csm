@@ -135,8 +135,19 @@ type Report struct {
 	EvidenceTruncated bool
 }
 
-// Analyze owns the pre-filter, size check, parse, and data-flow pass.
-func Analyze(ctx context.Context, src []byte) Report {
+// Analyze owns the pre-filter, size check, parse, and data-flow pass. It
+// recovers a panic at the package boundary so a parser or analyzer defect
+// degrades to a coverage gap instead of taking down the caller.
+func Analyze(ctx context.Context, src []byte) (report Report) {
+	defer func() {
+		if r := recover(); r != nil {
+			report = Report{Status: StatusPanic, Reason: "recovered panic during analysis"}
+		}
+	}()
+	return analyze(ctx, src)
+}
+
+func analyze(ctx context.Context, src []byte) Report {
 	if len(src) > MaxSourceBytes {
 		return Report{Status: StatusOversize, Reason: "source exceeds maximum analyzed size"}
 	}
