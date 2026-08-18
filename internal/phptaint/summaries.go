@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync/atomic"
+
+	"github.com/VKCOM/php-parser/pkg/ast"
 )
 
 // precisionLossMarkers name calls that defeat static variable identity.
@@ -26,6 +29,37 @@ const (
 	bodyFunction bodyKind = iota
 	bodyMethod
 )
+
+// summaryKey names one entry in a summaryTables namespace: which of the two
+// tables it lives in, plus the bare name within that table.
+type summaryKey struct {
+	kind bodyKind
+	name string
+}
+
+// callSiteSummaryKey reports the summaryKey a call site would resolve
+// against, mirroring the node-type switch summaryTables.lookup uses. A call
+// shape outside the three kinds facts.go records resolves to nothing, same
+// as lookup itself.
+func callSiteSummaryKey(call callSite) (summaryKey, bool) {
+	switch call.node.(type) {
+	case *ast.ExprFunctionCall:
+		return summaryKey{kind: bodyFunction, name: call.name}, true
+	case *ast.ExprMethodCall, *ast.ExprNullsafeMethodCall, *ast.ExprStaticCall:
+		return summaryKey{kind: bodyMethod, name: call.name}, true
+	}
+	return summaryKey{}, false
+}
+
+// summaryBodyEvals counts how many times the interprocedural worklist below
+// actually re-evaluated a body (taintedLocals plus its return expressions),
+// as opposed to a body sitting untouched in the queue. It exists so a
+// same-package white-box test can observe that this count grows with the
+// call graph's edge count, not with (declaration count) x (declaration
+// count), which is the structural invariant a dependency worklist is
+// supposed to buy over a round-robin sweep. Nothing in this package branches
+// on its value, so this is test-only observation, not shared process state.
+var summaryBodyEvals atomic.Int64
 
 // funcBody pairs a summarizable function or method with its collected facts
 // and which summary namespace its name belongs to. Facts are collected once
@@ -149,53 +183,107 @@ func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []str
 	}
 
 	// Summaries only ever move from absent to present, or to a higher
-	// confidence, so this is a monotone fixpoint over a finite lattice and
-	// terminates on its own merit. The round cap below exists only to bound
-	// worst-case work, not to decide correctness - so it must be sized to the
-	// input rather than fixed. A chain of N summarized functions/methods can
-	// need up to N rounds to propagate taint from the deepest callee back to
-	// the outermost caller (one hop converges per round in the worst
-	// discovery order), so a cap smaller than len(bodies) can stop before a
-	// long enough chain converges and silently miss the flow. This mirrors
-	// the fix already applied to the intraprocedural fixpoint in
-	// taintedLocalsFallback.
+	// confidence, so this is a monotone fixpoint over a finite lattice
+	// (three confidence levels) whose result does not depend on the order
+	// bodies are (re)evaluated in - only on eventually evaluating every body
+	// whose inputs changed since it was last evaluated. A body's inputs are
+	// exactly the summaries of the functions and methods its own facts call,
+	// so a worklist keyed on that call graph re-evaluates a body only when a
+	// callee it actually references just changed, instead of re-sweeping
+	// every body on every pass regardless of whether anything it depends on
+	// moved. This is the same dependency-worklist shape solveAssignments
+	// already runs intraprocedurally in taint.go, applied one level up: a
+	// body here plays the role an assignment plays there, and a produced
+	// summary name plays the role a variable plays there. Termination
+	// follows from the lattice being finite - at most one entry per body
+	// name, each raised at most twice - rather than from any iteration
+	// count, so it needs no cap sized to the input the way a round-robin
+	// sweep would.
+	produced := make(map[summaryKey]bool, len(bodies))
+	for _, b := range bodies {
+		if b.name == "" {
+			continue
+		}
+		produced[summaryKey{kind: b.kind, name: b.name}] = true
+	}
+
+	// dependents maps a produced key to the bodies whose own facts call it,
+	// i.e. the bodies to wake when that key's confidence rises. Built once
+	// from each body's already-collected call sites, so this costs one pass
+	// over the call sites this file already gathered rather than a rescan
+	// per round.
+	dependents := make(map[summaryKey][]int)
+	queue := make([]int, 0, len(bodies))
+	queued := make([]bool, len(bodies))
+	for i, b := range bodies {
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
+		}
+		if b.name == "" {
+			continue
+		}
+		for _, call := range b.facts.callSites {
+			key, ok := callSiteSummaryKey(call)
+			if !ok || !produced[key] {
+				continue
+			}
+			dependents[key] = append(dependents[key], i)
+		}
+		queue = append(queue, i)
+		queued[i] = true
+	}
+	enqueue := func(indices []int) {
+		for _, i := range indices {
+			if !queued[i] {
+				queued[i] = true
+				queue = append(queue, i)
+			}
+		}
+	}
+
 	tables := summaryTables{funcs: map[string]Confidence{}, methods: map[string]Confidence{}}
-	maxRounds := len(bodies) + 1
-	for round := 0; round < maxRounds; round++ {
-		changed := false
-		for _, b := range bodies {
+	for head := 0; head < len(queue); head++ {
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
+		}
+		i := queue[head]
+		queued[i] = false
+		b := bodies[i]
+
+		summaryBodyEvals.Add(1)
+		st := taintedLocals(b.facts, tables)
+		best := ConfidenceLow
+		found := false
+		for _, ret := range b.facts.returns {
 			if err := ctx.Err(); err != nil {
 				return summaryTables{}, nil, err
 			}
-			if b.name == "" {
+			if ret.Expr == nil {
 				continue
 			}
-			target := tables.funcs
-			if b.kind == bodyMethod {
-				target = tables.methods
+			retFacts := b.calls.apply(collectScope(ret.Expr))
+			c, tainted := exprTaintFacts(retFacts, st, tables)
+			if !tainted {
+				continue
 			}
-			st := taintedLocals(b.facts, tables)
-			for _, ret := range b.facts.returns {
-				if err := ctx.Err(); err != nil {
-					return summaryTables{}, nil, err
-				}
-				if ret.Expr == nil {
-					continue
-				}
-				retFacts := b.calls.apply(collectScope(ret.Expr))
-				c, tainted := exprTaintFacts(retFacts, st, tables)
-				if !tainted {
-					continue
-				}
-				if cur, ok := target[b.name]; !ok || c > cur {
-					target[b.name] = c
-					changed = true
-				}
+			found = true
+			if c > best {
+				best = c
 			}
 		}
-		if !changed {
-			break
+		if !found {
+			continue
 		}
+
+		target := tables.funcs
+		if b.kind == bodyMethod {
+			target = tables.methods
+		}
+		if cur, ok := target[b.name]; ok && cur >= best {
+			continue
+		}
+		target[b.name] = best
+		enqueue(dependents[summaryKey{kind: b.kind, name: b.name}])
 	}
 
 	names := make([]string, 0, len(loss))
