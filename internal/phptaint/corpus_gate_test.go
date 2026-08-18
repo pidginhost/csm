@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+// minCorpusFiles is the floor TestCorpusGate requires PHPTAINT_CORPUS to
+// have actually scanned. Without it, a typo'd or empty path walks zero
+// files, finds zero offenders, and passes -- reporting success for a gate
+// that never ran, which is worse than no gate at all. 100 is comfortably
+// below every real corpus this gate has been run against (the smallest
+// single plugin in the reference corpus has 2 files; the reference corpus
+// as a whole has 8,630), so it will not go brittle as the corpus's plugin
+// mix changes over time, while still being far too high for an empty or
+// wrong directory (which scans 0) to pass by accident.
+const minCorpusFiles = 100
+
 // TestCorpusGate asserts zero findings across real benign PHP. Point
 // PHPTAINT_CORPUS at a tree of unpacked WordPress core and plugins:
 //
@@ -55,6 +66,10 @@ func TestCorpusGate(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 	t.Logf("analyzed %d file(s), %d coverage gap(s)", scanned, gaps)
+	if scanned < minCorpusFiles {
+		t.Fatalf("only %d file(s) scanned under PHPTAINT_CORPUS=%s, want at least %d: "+
+			"the gate cannot prove anything against a near-empty or wrong directory", scanned, root, minCorpusFiles)
+	}
 	if len(offenders) > 0 {
 		limit := len(offenders)
 		if limit > 20 {

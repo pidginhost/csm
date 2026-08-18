@@ -466,26 +466,44 @@ func propertyFetchParts(n ast.Vertex) (base, prop ast.Vertex, ok bool) {
 
 // assignedTargetKey returns the taint-state key an assignment target -- or,
 // via readVarNodes, a later read of the identical expression shape --
-// resolves to. A bare variable resolves to its own name; an array element
-// still collapses onto its containing variable, unchanged from
-// assignedVarName (the spec permits over-approximating containers, and this
-// task's false positives were never about arrays).
+// resolves to. A bare variable resolves to its own name.
 //
-// A property fetch is different: $this->body = <tainted> must NOT taint
-// every later use of bare $this, because $this appears in nearly every
-// method of a class and one tainted property would otherwise poison every
-// sink in it -- this is Task 11 Fix 1, and it is deliberately not special-
-// cased to the name "$this": $obj->prop = <tainted> gets exactly the same
-// treatment. The key scopes to the full static property chain (so
-// $this->a->b is distinct from both $this->a and $this->a->c), joining base
-// and property names with "->", a sequence no PHP variable name can
-// contain, so a compound key can never collide with a bare one.
+// The WHOLE access chain is walked, in whatever order property fetches
+// ("->"/"?->") and array-dim fetches ("[...]") appear and however deeply
+// nested: each property fetch contributes its name to the compound key, and
+// each array-dim fetch is transparent, unwrapped without contributing a
+// segment of its own. That is what keeps array indices over-approximated
+// (the spec permits over-approximating containers: $a->log[] = X and
+// $a->log[3] = Y both key to "a->log" as a whole -- array keys are not
+// tracked) while still scoping precisely to the property chain around them.
 //
-// The walk is iterative, not recursive: a property-fetch chain's depth is
-// attacker-controlled PHP source ($a->b->c->...), and Go recursion over
-// unbounded attacker-controlled depth is an unrecoverable stack overflow,
-// the same hazard TestTaintHandlesDeeplyNestedAssignments guards elsewhere
-// in this package.
+// This generality is load-bearing, not incidental: a first version of this
+// fix only unwrapped property fetches, so an array-dim fetch sitting
+// OUTERMOST over a property fetch ($this->log[] = <tainted>, one of the
+// most common idioms in OO PHP -- logs, queues, error collections, caches)
+// broke the walk immediately and fell back to the bare base variable,
+// reintroducing the exact wholesale-$this false-positive class Fix 1 exists
+// to close. Handling only that one shape and stopping would leave the same
+// gap for every other ordering ($a[0]->b, $a->b[0]->c[1], ...), so the loop
+// below handles both access kinds generically, in any order, rather than
+// adding a case for the reported shape and calling it done.
+//
+// A property fetch is different from a bare variable or array element:
+// $this->body = <tainted> must NOT taint every later use of bare $this,
+// because $this appears in nearly every method of a class and one tainted
+// property would otherwise poison every sink in it -- this is Task 11 Fix
+// 1, and it is deliberately not special-cased to the name "$this":
+// $obj->prop = <tainted> gets exactly the same treatment. The key scopes to
+// the full static property path (so $this->a->b is distinct from both
+// $this->a and $this->a->c), joining base and property names with "->", a
+// sequence no PHP variable name can contain, so a compound key can never
+// collide with a bare one.
+//
+// The walk is iterative, not recursive: an access chain's depth is
+// attacker-controlled PHP source ($a->b->c->... or $a[0][0][0]...), and Go
+// recursion over unbounded attacker-controlled depth is an unrecoverable
+// stack overflow, the same hazard TestTaintHandlesDeeplyNestedAssignments
+// guards elsewhere in this package.
 //
 // A property whose name is not statically known ($obj->$name = X) has no
 // specific key to scope to, so the ENTIRE chain falls back to
@@ -495,16 +513,20 @@ func assignedTargetKey(target ast.Vertex) string {
 	var props []string
 	node := target
 	for {
-		base, prop, ok := propertyFetchParts(node)
-		if !ok {
-			break
+		if base, prop, ok := propertyFetchParts(node); ok {
+			name := calleeName(prop)
+			if name == "" {
+				return assignedVarName(target)
+			}
+			props = append(props, name)
+			node = base
+			continue
 		}
-		name := calleeName(prop)
-		if name == "" {
-			return assignedVarName(target)
+		if dim, ok := node.(*ast.ExprArrayDimFetch); ok {
+			node = dim.Var
+			continue
 		}
-		props = append(props, name)
-		node = base
+		break
 	}
 	base := assignedVarName(node)
 	if base == "" || len(props) == 0 {

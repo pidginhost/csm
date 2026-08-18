@@ -158,6 +158,57 @@ func TestPropertyReadInheritsWholeObjectTaint(t *testing.T) {
 	}
 }
 
+// TestArrayOverPropertyKeysToTheProperty is the fix-round-1 regression: an
+// array-dim fetch OUTERMOST over a property fetch ($obj->log[] = ...) must
+// still key to the property ("obj->log"), not fall through to the bare
+// base variable. assignedTargetKey originally only unwrapped
+// ExprPropertyFetch/ExprNullsafePropertyFetch, so an ExprArrayDimFetch
+// sitting on top broke the chain walk immediately and fell back to
+// assignedVarName, which flattens straight to "obj" -- reintroducing the
+// exact false-positive class Fix 1 was meant to close. $obj->prop[] = ...
+// is one of the most common idioms in OO PHP (logs, queues, error
+// collections, caches).
+func TestArrayOverPropertyKeysToTheProperty(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $obj->log[] = curl_exec($c); $obj->other = 'clean';")
+	if _, ok := st["obj"]; ok {
+		t.Errorf("state = %v, want bare $obj NOT tainted", st)
+	}
+	if _, ok := st["obj->other"]; ok {
+		t.Errorf("state = %v, want obj->other clean: a different property was written", st)
+	}
+	if _, ok := st["obj->log"]; !ok {
+		t.Errorf("state = %v, want obj->log tainted", st)
+	}
+}
+
+// TestArrayOverPropertyReadStillDetects is the false-negative guard for the
+// round-1 fix: reading the same property back through [] must still pick
+// up the taint the write recorded under the compound key.
+func TestArrayOverPropertyReadStillDetects(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $obj->log[] = curl_exec($c); $b = $obj->log[0];")
+	if _, ok := st["b"]; !ok {
+		t.Errorf("state = %v, want $b tainted by reading the property that was written through []", st)
+	}
+}
+
+// TestDeepMixedAccessChainKeysThePath proves the fix is general, not a
+// one-off "array directly over property" special case: property and
+// array-dim fetches interleaved at any depth ($a->b[0]->c) must key to the
+// full static path, so a different path off the same base stays clean
+// while the same path still detects.
+func TestDeepMixedAccessChainKeysThePath(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a->b[0]->c = curl_exec($h); $a->b[0]->d = 'clean';")
+	if _, ok := st["a"]; ok {
+		t.Errorf("state = %v, want bare $a NOT tainted", st)
+	}
+	if _, ok := st["a->b->d"]; ok {
+		t.Errorf("state = %v, want a->b->d clean: a different path was written", st)
+	}
+	if _, ok := st["a->b->c"]; !ok {
+		t.Errorf("state = %v, want a->b->c tainted", st)
+	}
+}
+
 func TestNestedAssignmentTargetDoesNotTaintItsValue(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = ($a = 'clean');")
 	if _, ok := st["b"]; ok {
