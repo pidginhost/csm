@@ -232,7 +232,17 @@ func analyze(ctx context.Context, src []byte) Report {
 	}
 
 	summaries, loss := functionSummaries(all)
-	results := findFlows(collectTopLevel(root), summaries)
+
+	// decls spans every declaration in the file, regardless of nesting
+	// depth or how many if/while/switch/try/foreach wrappers separate it
+	// from its enclosing scope (see collectOwnStmts). Each scope below
+	// excludes every declaration except, when the scope IS a declaration's
+	// own body, that declaration's own span -- otherwise a function would
+	// exclude its own statements from itself.
+	decls := all.declarationSpans()
+
+	topExclude := excludingSpanIndex(decls, nil)
+	results := findFlows(collectTopLevel(root, &topExclude), summaries)
 
 	// Sinks inside function bodies count too, each against its own state.
 	// collectOwnStmts (not collectAll) skips any function/class/method
@@ -240,12 +250,14 @@ func analyze(ctx context.Context, src []byte) Report {
 	// declarations at the file level: a nested declaration's locals must
 	// not taint an identically-named local in the enclosing body.
 	for _, fn := range all.funcs {
-		body := collectOwnStmts(fn.Stmts)
+		fnExclude := excludingSpanIndex(decls, fn)
+		body := collectOwnStmts(fn.Stmts, &fnExclude)
 		results = append(results, findFlows(body, summaries)...)
 	}
 	for _, m := range all.methods {
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
-		body := collectOwnStmts(methodStmts(m.Stmt))
+		mExclude := excludingSpanIndex(decls, m)
+		body := collectOwnStmts(methodStmts(m.Stmt), &mExclude)
 		results = append(results, findFlows(body, summaries)...)
 	}
 

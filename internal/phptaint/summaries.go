@@ -58,12 +58,20 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	// precision-loss construct.
 	recordPrecisionLoss(f, loss)
 
+	// decls spans every declaration in f, so a function or method nested
+	// inside another (however deeply, however many if/while/switch/try/
+	// foreach wrappers it sits behind) is excluded from its enclosing
+	// body's own facts, and so cannot pollute that enclosing declaration's
+	// own interprocedural summary.
+	decls := f.declarationSpans()
+
 	bodies := make([]funcBody, 0, len(f.funcs)+len(f.methods))
 	for _, fn := range f.funcs {
 		if len(bodies) >= maxSummarizedFuncs {
 			break
 		}
-		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectOwnStmts(fn.Stmts)})
+		exclude := excludingSpanIndex(decls, fn)
+		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectOwnStmts(fn.Stmts, &exclude)})
 	}
 
 	// A single class cannot legally declare the same method name twice, so
@@ -89,7 +97,8 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 		}
 		// StmtClassMethod carries ONE Stmt vertex (normally a StmtStmtList),
 		// unlike StmtFunction which carries a Stmts slice.
-		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectOwnStmts(methodStmts(m.Stmt))})
+		exclude := excludingSpanIndex(decls, m)
+		bodies = append(bodies, funcBody{name: name, kind: bodyMethod, facts: collectOwnStmts(methodStmts(m.Stmt), &exclude)})
 	}
 	// Recheck every included body using its independently collected facts.
 	// The enclosing collection has one aggregate node budget, so it can stop

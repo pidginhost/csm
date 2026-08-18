@@ -29,12 +29,18 @@ type callSite struct {
 // scopeFacts is everything the taint pass needs from one lexical scope.
 // Collection is one pass; the analysis reads it repeatedly.
 type scopeFacts struct {
-	assigns        []*ast.ExprAssign
-	references     []*ast.ExprAssignReference
-	concats        []*ast.ExprAssignConcat
-	returns        []*ast.StmtReturn
-	funcs          []*ast.StmtFunction
-	methods        []*ast.StmtClassMethod
+	assigns    []*ast.ExprAssign
+	references []*ast.ExprAssignReference
+	concats    []*ast.ExprAssignConcat
+	returns    []*ast.StmtReturn
+	funcs      []*ast.StmtFunction
+	methods    []*ast.StmtClassMethod
+	// classLikes holds every class, interface, trait, and enum declaration
+	// (named or anonymous) found in this scope. Their own contents are
+	// never read from here directly -- methods are already tracked in
+	// methods above -- this list exists only to supply declarationSpans
+	// with the position span of the class body itself.
+	classLikes     []ast.Vertex
 	sinks          []sinkSite
 	callNodes      []*ast.ExprFunctionCall
 	callSites      []callSite
@@ -75,6 +81,35 @@ type factVisitor struct {
 	visitor.Null
 	f               *scopeFacts
 	functionAliases map[string]string
+	// exclude, when set, marks the position spans of nested declarations
+	// this scope must not absorb facts from. The library traverser recurses
+	// unconditionally through control-flow wrappers (if/while/switch/try/
+	// foreach/...), so a declaration nested inside one of those -- the
+	// WordPress `if (!function_exists(...))` guard is the common case -- is
+	// still reached by this same traversal even though it belongs to a
+	// separately analysed scope. Position-based exclusion catches it
+	// regardless of which wrapper (or how many, nested how deep) sits
+	// between this scope and the declaration; a filter keyed on the direct
+	// statement type of the top of the list cannot, because it only ever
+	// sees the wrapper, never what the wrapper contains.
+	exclude *spanIndex
+}
+
+// excluded reports whether n's position falls inside a nested declaration
+// this scope must not record facts from. A node without a determinable
+// position is not excluded: parsed nodes normally always have positions,
+// and failing open (keep, don't drop) matches the conservative choice
+// already made in readVarNodes for the same edge case -- an unrecordable
+// position must never cost the enclosing scope one of its own facts.
+func (v *factVisitor) excluded(n ast.Vertex) bool {
+	if v.exclude == nil {
+		return false
+	}
+	span, ok := spanOf(n)
+	if !ok {
+		return false
+	}
+	return v.exclude.contains(span)
 }
 
 func (v *factVisitor) StmtNamespace(*ast.StmtNamespace) {
@@ -135,18 +170,19 @@ func (v *factVisitor) addFunctionAlias(listType ast.Vertex, prefix *ast.Name, us
 }
 
 func (v *factVisitor) ExprVariable(n *ast.ExprVariable) {
-	if v.f.count() {
-		name := varName(n.Name)
-		v.f.vars[name] = true
-		v.f.varNodes = append(v.f.varNodes, n)
-		if name == "" {
-			v.f.precisionLoss["variable-variable"] = true
-		}
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	name := varName(n.Name)
+	v.f.vars[name] = true
+	v.f.varNodes = append(v.f.varNodes, n)
+	if name == "" {
+		v.f.precisionLoss["variable-variable"] = true
 	}
 }
 
 func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
-	if !v.f.count() {
+	if !v.f.count() || v.excluded(n) {
 		return
 	}
 	name, resolved := v.resolveFunctionAlias(n)
@@ -211,7 +247,7 @@ func (v *factVisitor) ExprStaticCall(n *ast.ExprStaticCall) {
 }
 
 func (v *factVisitor) call(name string, node ast.Vertex) {
-	if !v.f.count() {
+	if !v.f.count() || v.excluded(node) {
 		return
 	}
 	v.f.calls[name] = true
@@ -222,41 +258,66 @@ func (v *factVisitor) call(name string, node ast.Vertex) {
 }
 
 func (v *factVisitor) ExprAssign(n *ast.ExprAssign) {
-	if v.f.count() {
-		v.f.assigns = append(v.f.assigns, n)
-		v.f.writes = append(v.f.writes, n.Var)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.assigns = append(v.f.assigns, n)
+	v.f.writes = append(v.f.writes, n.Var)
 }
 
 func (v *factVisitor) ExprAssignReference(n *ast.ExprAssignReference) {
-	if v.f.count() {
-		v.f.references = append(v.f.references, n)
-		v.f.writes = append(v.f.writes, n.Var)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.references = append(v.f.references, n)
+	v.f.writes = append(v.f.writes, n.Var)
 }
 
 func (v *factVisitor) ExprAssignConcat(n *ast.ExprAssignConcat) {
-	if v.f.count() {
-		v.f.concats = append(v.f.concats, n)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.concats = append(v.f.concats, n)
 }
 
 func (v *factVisitor) StmtReturn(n *ast.StmtReturn) {
-	if v.f.count() {
-		v.f.returns = append(v.f.returns, n)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.returns = append(v.f.returns, n)
 }
 
 func (v *factVisitor) StmtFunction(n *ast.StmtFunction) {
-	if v.f.count() {
-		v.f.funcs = append(v.f.funcs, n)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.funcs = append(v.f.funcs, n)
 }
 
 func (v *factVisitor) StmtClassMethod(n *ast.StmtClassMethod) {
-	if v.f.count() {
-		v.f.methods = append(v.f.methods, n)
+	if !v.f.count() || v.excluded(n) {
+		return
 	}
+	v.f.methods = append(v.f.methods, n)
+}
+
+func (v *factVisitor) StmtClass(n *ast.StmtClass) { v.classLike(n) }
+
+func (v *factVisitor) StmtInterface(n *ast.StmtInterface) { v.classLike(n) }
+
+func (v *factVisitor) StmtTrait(n *ast.StmtTrait) { v.classLike(n) }
+
+func (v *factVisitor) StmtEnum(n *ast.StmtEnum) { v.classLike(n) }
+
+// classLike records a class, interface, trait, or enum declaration's span.
+// n's Name is nil for an anonymous class (`new class { ... }`); the node
+// itself still carries a real position, so anonymous classes are covered by
+// the same declaration-span exclusion as named ones, with no separate case.
+func (v *factVisitor) classLike(n ast.Vertex) {
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	v.f.classLikes = append(v.f.classLikes, n)
 }
 
 func (v *factVisitor) ExprEval(n *ast.ExprEval) { v.sink("eval", n.Expr) }
@@ -270,9 +331,10 @@ func (v *factVisitor) ExprRequire(n *ast.ExprRequire) { v.sink("require", n.Expr
 func (v *factVisitor) ExprRequireOnce(n *ast.ExprRequireOnce) { v.sink("require_once", n.Expr) }
 
 func (v *factVisitor) sink(kind string, expr ast.Vertex) {
-	if v.f.count() {
-		v.f.sinks = append(v.f.sinks, sinkSite{kind: kind, expr: expr})
+	if !v.f.count() || v.excluded(expr) {
+		return
 	}
+	v.f.sinks = append(v.f.sinks, sinkSite{kind: kind, expr: expr})
 }
 
 // collectScope gathers facts from one subtree using the parser library's own
@@ -305,40 +367,52 @@ func collectAll(ns []ast.Vertex) *scopeFacts {
 	return f
 }
 
-// collectTopLevel gathers facts from the file's top-level statements only,
-// skipping declarations whose bodies are analysed separately with their own
-// taint state. Folding every scope into one flat map keyed by bare variable
-// name lets a function-local variable taint an unrelated top-level variable
-// that merely shares its name, which reports clean code as malicious: names
-// like $data, $content and $tmp recur constantly in real PHP.
-func collectTopLevel(root ast.Vertex) *scopeFacts {
+// collectTopLevel gathers facts from the whole file, excluding anything
+// positioned inside a declaration named in exclude. Folding a declaration's
+// body into the flat top-level map lets a variable local to it taint an
+// unrelated top-level variable that merely shares its name, which reports
+// clean code as malicious: names like $data, $content and $tmp recur
+// constantly in real PHP. exclude is normally built by
+// excludingSpanIndex(decls, nil) over the whole file's declarationSpans, so
+// every declaration in the file is excluded (there is no declaration whose
+// own statements this call needs to keep).
+func collectTopLevel(root ast.Vertex, exclude *spanIndex) *scopeFacts {
 	r, ok := root.(*ast.Root)
 	if !ok {
 		return collectScope(root)
 	}
-	return collectOwnStmts(r.Stmts)
+	return collectOwnStmts(r.Stmts, exclude)
 }
 
-// collectOwnStmts gathers facts from a statement list, skipping any nested
-// function, class, interface, trait, or enum declaration. This is the same
+// collectOwnStmts gathers facts from a statement list -- a function body, a
+// method body, or the file's top-level statements -- excluding anything
+// positioned inside a nested declaration named in exclude. This is the same
 // cross-scope leak collectTopLevel guards against, one level deeper: a
-// function can declare another function (or an anonymous class) in its own
-// body, and that nested declaration gets its own entry in the whole-file
-// funcs/methods inventory, analysed separately with its own taint state.
-// Folding it into this scope's flat map too would let its local variables
-// taint an identically-named local in the enclosing body.
-func collectOwnStmts(stmts []ast.Vertex) *scopeFacts {
+// function can declare another function (or a class, including an
+// anonymous one) in its own body, and that nested declaration gets its own
+// entry in the whole-file funcs/methods inventory, analysed separately with
+// its own taint state. Folding it into this scope's flat map too would let
+// its local variables taint an identically-named local in the enclosing
+// body.
+//
+// Filtering happens by position, not by skipping statements of a
+// declaration type at the top of stmts, because the library traverser
+// recurses unconditionally through control-flow wrappers: a function
+// declared inside `if (!function_exists('f')) { function f() {...} }` --
+// the standard WordPress conditional-declaration guard -- is not a direct
+// member of stmts, so a type-based filter on stmts itself would miss it
+// (and miss it again for every layer of if/while/switch/try/foreach it is
+// wrapped in). Every statement is traversed unconditionally here; exclude,
+// consulted per node inside factVisitor, is what actually drops facts whose
+// position falls inside one of those nested declarations, regardless of
+// how they are reached.
+func collectOwnStmts(stmts []ast.Vertex, exclude *spanIndex) *scopeFacts {
 	f := newScopeFacts()
-	t := traverser.NewTraverser(&factVisitor{f: f})
+	t := traverser.NewTraverser(&factVisitor{f: f, exclude: exclude})
 	for _, stmt := range stmts {
-		if stmt == nil {
-			continue
+		if stmt != nil {
+			t.Traverse(stmt)
 		}
-		switch stmt.(type) {
-		case *ast.StmtFunction, *ast.StmtClass, *ast.StmtInterface, *ast.StmtTrait, *ast.StmtEnum:
-			continue
-		}
-		t.Traverse(stmt)
 	}
 	return f
 }
@@ -367,6 +441,31 @@ type namedNodeSpan struct {
 	nodeSpan
 	name string
 	node ast.Vertex
+}
+
+// declarationSpans returns the position span of every declaration recorded
+// in f: functions, methods, and classes/interfaces/traits/enums (anonymous
+// classes included, via classLikes). f must come from an unfiltered,
+// whole-file collection (collectScope(root)) so every declaration in the
+// file is present, regardless of how deeply any of them is nested inside
+// another or wrapped in control flow.
+func (f *scopeFacts) declarationSpans() []nodeSpan {
+	out := make([]nodeSpan, 0, len(f.funcs)+len(f.methods)+len(f.classLikes))
+	add := func(n ast.Vertex) {
+		if span, ok := spanOf(n); ok {
+			out = append(out, span)
+		}
+	}
+	for _, fn := range f.funcs {
+		add(fn)
+	}
+	for _, m := range f.methods {
+		add(m)
+	}
+	for _, c := range f.classLikes {
+		add(c)
+	}
+	return out
 }
 
 // readVars returns variables whose value is read in this subtree. The parser
