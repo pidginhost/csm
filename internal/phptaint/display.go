@@ -17,41 +17,56 @@ const (
 )
 
 // sanitizeSegment renders one untrusted display segment: valid UTF-8,
-// control and invalid bytes become '?', truncation happens at a rune
+// non-printing and invalid bytes become '?', truncation happens at a rune
 // boundary and the marker counts into the cap.
-func sanitizeSegment(s string) string { return sanitize(s, maxSegmentBytes) }
+func sanitizeSegment(s string) string {
+	clean, _ := sanitize(s, maxSegmentBytes)
+	return clean
+}
 
 // sanitizeReason bounds Report.Reason the same way.
-func sanitizeReason(s string) string { return sanitize(s, MaxReasonBytes) }
+func sanitizeReason(s string) string {
+	clean, _ := sanitize(s, MaxReasonBytes)
+	return clean
+}
 
-func sanitize(s string, maxBytes int) string {
+func sanitize(s string, maxBytes int) (string, bool) {
 	s = strings.ToValidUTF8(s, "?")
 	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		// IsPrint excludes format controls (including bidi overrides) and the
+		// Unicode line/paragraph separators as well as ordinary control bytes.
+		if !unicode.IsPrint(r) {
 			return '?'
 		}
 		return r
 	}, s)
 	if len(s) <= maxBytes {
-		return s
+		return s, false
 	}
 	cut := maxBytes - 3
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "..."
+	return s[:cut] + "...", true
 }
 
-// truncateChain keeps a bounded head and tail with one marker naming the
-// omitted count, so a long laundering chain cannot blow the display budget.
+// truncateChain sanitizes and bounds every segment, then keeps a bounded head
+// and tail with one marker naming any omitted segments.
 func truncateChain(via []string) ([]string, bool) {
-	if len(via) <= maxChainSegments {
-		return via, false
+	bounded := make([]string, len(via))
+	truncated := false
+	for i, segment := range via {
+		var cut bool
+		bounded[i], cut = sanitize(segment, maxSegmentBytes)
+		truncated = truncated || cut
 	}
-	omitted := len(via) - chainHeadKeep - chainTailKeep
+	if len(bounded) <= maxChainSegments {
+		return bounded, truncated
+	}
+	omitted := len(bounded) - chainHeadKeep - chainTailKeep
 	out := make([]string, 0, maxChainSegments)
-	out = append(out, via[:chainHeadKeep]...)
+	out = append(out, bounded[:chainHeadKeep]...)
 	out = append(out, fmt.Sprintf("... %d segment(s) omitted ...", omitted))
-	out = append(out, via[len(via)-chainTailKeep:]...)
+	out = append(out, bounded[len(bounded)-chainTailKeep:]...)
 	return out, true
 }

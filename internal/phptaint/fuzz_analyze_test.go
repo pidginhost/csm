@@ -47,12 +47,7 @@ func TestAnalyzeSurvivesHostileInput(t *testing.T) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 		rep := Analyze(context.Background(), src)
-		if rep.Status == StatusAnalyzed && len(rep.Results) > 0 {
-			t.Errorf("seed %d reported a flow in non-flow input", i)
-		}
-		if rep.Status != StatusAnalyzed && len(rep.Results) != 0 {
-			t.Errorf("seed %d: coverage gap carried %d results", i, len(rep.Results))
-		}
+		assertReportInvariants(t, rep)
 		// Track whether any seed passed the pre-filter and reached parseSource.
 		if rep.Status != StatusNotCandidate {
 			reachedParser = true
@@ -70,17 +65,29 @@ func TestRecoveredCatchesPanic(t *testing.T) {
 	if rep.Status != StatusPanic {
 		t.Errorf("recovered panic produced status %v, want StatusPanic", rep.Status)
 	}
-	if len(rep.Results) != 0 {
-		t.Errorf("recovered panic report carried %d results, want 0", len(rep.Results))
+	assertReportInvariants(t, rep)
+	if strings.Contains(rep.Reason, "test panic value") {
+		t.Errorf("recovered panic Reason leaked the panic value: %q", rep.Reason)
 	}
-	if len(rep.Reason) == 0 {
-		t.Errorf("recovered panic report has empty Reason, want non-empty")
+}
+
+func assertReportInvariants(t *testing.T, rep Report) {
+	t.Helper()
+	if rep.Status != StatusAnalyzed {
+		if len(rep.Results) != 0 || rep.TotalResults != 0 || rep.EvidenceTruncated {
+			t.Errorf("status %v carried Results=%d TotalResults=%d EvidenceTruncated=%t",
+				rep.Status, len(rep.Results), rep.TotalResults, rep.EvidenceTruncated)
+		}
+	}
+	if rep.Status == StatusAnalyzed || rep.Status == StatusNotCandidate {
+		if rep.Reason != "" {
+			t.Errorf("completed status %v carried Reason %q", rep.Status, rep.Reason)
+		}
+	} else if rep.Reason == "" {
+		t.Errorf("coverage-gap status %v has an empty Reason", rep.Status)
 	}
 	if len(rep.Reason) > MaxReasonBytes {
-		t.Errorf("recovered panic Reason %d bytes exceeds MaxReasonBytes %d", len(rep.Reason), MaxReasonBytes)
-	}
-	if !strings.Contains(rep.Reason, "test panic value") {
-		t.Errorf("recovered panic Reason %q does not contain panic value", rep.Reason)
+		t.Errorf("Reason %d bytes exceeds MaxReasonBytes %d", len(rep.Reason), MaxReasonBytes)
 	}
 }
 
@@ -94,11 +101,6 @@ func FuzzAnalyze(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
 		rep := Analyze(context.Background(), src)
-		if rep.Status != StatusAnalyzed && len(rep.Results) != 0 {
-			t.Fatalf("status %v carried %d results", rep.Status, len(rep.Results))
-		}
-		if len(rep.Reason) > MaxReasonBytes {
-			t.Fatalf("reason %d bytes exceeds cap", len(rep.Reason))
-		}
+		assertReportInvariants(t, rep)
 	})
 }

@@ -40,6 +40,18 @@ func TestReasonIsBoundedAndHasNoSourceExcerpt(t *testing.T) {
 	}
 }
 
+func TestPartialParseReasonDoesNotExposeUnexpectedInput(t *testing.T) {
+	const attackerText = "ATTACKER_SOURCE_EXCERPT"
+	src := []byte("<?php $x = " + attackerText + " @@@; curl_exec($c); eval($x);")
+	_, status, reason := parseSource(src)
+	if status == StatusAnalyzed {
+		t.Fatal("malformed source unexpectedly parsed cleanly")
+	}
+	if strings.Contains(reason, attackerText) {
+		t.Errorf("reason leaked source text: %q", reason)
+	}
+}
+
 func TestAnalyzePropagatesPartialParse(t *testing.T) {
 	src := []byte("<?php $d = curl_exec($c); eval($d); class C { const string F = 'a'; }")
 	rep := Analyze(context.Background(), src)

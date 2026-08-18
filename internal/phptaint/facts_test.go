@@ -1,6 +1,7 @@
 package phptaint
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
@@ -22,6 +23,33 @@ func TestCollectFindsAssignmentsAndCalls(t *testing.T) {
 	}
 	if !f.calls["curl_exec"] {
 		t.Errorf("calls = %v, want curl_exec present", f.calls)
+	}
+}
+
+func TestCollectFindsMethodAndStaticCalls(t *testing.T) {
+	f := mustParse(t, "<?php $a = $obj->fetch(); $b = Client::load(); $c = $obj?->read();")
+	for _, name := range []string{"fetch", "load", "read"} {
+		if !f.calls[name] {
+			t.Errorf("calls = %v, want %q present", f.calls, name)
+		}
+	}
+}
+
+func TestCollectRecordsDynamicCallPrecisionLoss(t *testing.T) {
+	f := mustParse(t, "<?php $fn(); $obj->$method();")
+	if !f.precisionLoss["dynamic-call"] {
+		t.Errorf("precisionLoss = %v, want dynamic-call", f.precisionLoss)
+	}
+}
+
+func TestCollectSeparatesAssignmentWritesFromReads(t *testing.T) {
+	f := mustParse(t, "<?php $result = ($target = $input);")
+	reads := f.readVars()
+	if reads["target"] {
+		t.Errorf("reads = %v, assignment target is not a value read", reads)
+	}
+	if !reads["input"] {
+		t.Errorf("reads = %v, want input present", reads)
 	}
 }
 
@@ -69,6 +97,13 @@ func TestCollectRecordsVariableNames(t *testing.T) {
 	}
 }
 
+func TestCollectRecordsVariableVariablePrecisionLoss(t *testing.T) {
+	f := mustParse(t, "<?php $$name = 1;")
+	if !f.precisionLoss["variable-variable"] {
+		t.Errorf("precisionLoss = %v, want variable-variable", f.precisionLoss)
+	}
+}
+
 func TestCalleeNameResolvesLeadingBackslash(t *testing.T) {
 	f := mustParse(t, `<?php \curl_exec($c); \assert($x);`)
 	if !f.calls["curl_exec"] {
@@ -90,6 +125,43 @@ func TestCalleeNameKeepsNamespaceQualifiedDistinct(t *testing.T) {
 	}
 	if !f.calls["foo\\curl_exec"] {
 		t.Errorf("calls = %v, want foo\\curl_exec present", f.calls)
+	}
+}
+
+func TestFunctionAliasResolvesToCanonicalCall(t *testing.T) {
+	f := mustParse(t, `<?php use function curl_exec as fetch_remote; fetch_remote($c);`)
+	if !f.calls["curl_exec"] {
+		t.Errorf("calls = %v, want canonical curl_exec", f.calls)
+	}
+	if _, ok := sourceConfidence(f.callNodes[0]); !ok {
+		t.Error("aliased curl_exec call was not recognized as a source")
+	}
+}
+
+func TestFunctionAliasResolvesCallSink(t *testing.T) {
+	f := mustParse(t, `<?php use function assert as check; check($code);`)
+	if _, ok := sinkOfKind(f, "assert"); !ok {
+		t.Errorf("sinks = %v, want aliased assert sink", f.sinks)
+	}
+}
+
+func TestFunctionAliasDoesNotCollapseNamespacedTarget(t *testing.T) {
+	f := mustParse(t, `<?php use function Vendor\curl_exec; curl_exec($c);`)
+	if f.calls["curl_exec"] {
+		t.Errorf("calls = %v, imported Vendor\\curl_exec was treated as the builtin", f.calls)
+	}
+	if !f.calls["vendor\\curl_exec"] {
+		t.Errorf("calls = %v, want vendor\\curl_exec", f.calls)
+	}
+	if _, ok := sourceConfidence(f.callNodes[0]); ok {
+		t.Error("namespaced function alias was treated as a remote source")
+	}
+}
+
+func TestGroupFunctionAliasResolvesCanonicalTarget(t *testing.T) {
+	f := mustParse(t, `<?php use function Vendor\{fetch as load}; load($arg);`)
+	if !f.calls["vendor\\fetch"] {
+		t.Errorf("calls = %v, want vendor\\fetch", f.calls)
 	}
 }
 
@@ -155,6 +227,22 @@ func TestCollectStopsAtNodeBudget(t *testing.T) {
 	f := collectScope(root)
 	if !f.budgetExceeded {
 		t.Error("budgetExceeded = false, want true past the node budget")
+	}
+}
+
+func TestCollectWalksDeepTreesWithoutRecursion(t *testing.T) {
+	const depth = 100_000
+	src := "<?php $a = " + strings.Repeat("!", depth) + "curl_exec($c);"
+	root, status, reason := parseSource([]byte(src))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	f := collectScope(root)
+	if !f.calls["curl_exec"] {
+		t.Errorf("deep tree lost curl_exec call: calls=%v", f.calls)
+	}
+	if f.budgetExceeded {
+		t.Errorf("deep tree unexpectedly exceeded %d-node budget", maxCollectedNodes)
 	}
 }
 
