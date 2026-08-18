@@ -13,7 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- PHP data-flow analysis now reports summary-budget exhaustion as incomplete coverage instead of returning a partial clean result, observes cancellation throughout the expensive flow pass, and marks shortened evidence as truncated.
 - Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it, which makes it a place to park a payload one rename away from execution. They are now scanned as the PHP source they are, in scheduled, rolling, and real-time paths alike, and are still not treated as executable.
 - A file too large to hand the scanner in one message was reported as a failed scan by the attachment scanner and by finding re-check, so large attachments were always routed conservatively without being looked at, and a finding on a large file could never be confirmed or cleared. Both now ask the scanner to read the file directly, which the scheduled scan already did.
 - A YARA Forge update that carried fewer rules than the installed one was treated as a conflict with the local rules, and the recovery step deleted the downloaded set entirely. A release a few dozen rules smaller could therefore drop several thousand working rules, leaving the host on its local rules alone until the next restart, and it was only reported on standard error. The check now asks whether the new rules loaded at all, and a rollback raises an alert.
