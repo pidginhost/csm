@@ -8,10 +8,11 @@ import (
 	"github.com/VKCOM/php-parser/pkg/visitor/traverser"
 )
 
-// callSinks are code-execution sinks that appear as ordinary function calls.
-// create_function evaluates its body; assert evaluates a string argument on
-// PHP 7, which hosts still run.
-var callSinks = map[string]bool{"assert": true, "create_function": true}
+// callSinks are code-execution sinks that appear as ordinary function calls,
+// mapped to the index of the argument that gets executed. assert() evaluates
+// its first argument on PHP 7, which hosts still run; create_function()
+// evaluates the code in its second argument.
+var callSinks = map[string]int{"assert": 0, "create_function": 1}
 
 // sinkSite is one code-execution construct and the expression it executes.
 type sinkSite struct {
@@ -80,8 +81,11 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	v.f.callNodes = append(v.f.callNodes, n)
 	// assert() and create_function() are ordinary calls in the grammar, not
 	// dedicated nodes, so they are recognised here rather than by node type.
-	if callSinks[name] && len(n.Args) > 0 {
-		if arg, ok := n.Args[len(n.Args)-1].(*ast.Argument); ok {
+	// The executed argument differs per sink (assert's is first,
+	// create_function's is second), so the index is looked up rather than
+	// assumed to be the last argument.
+	if idx, ok := callSinks[name]; ok && len(n.Args) > idx {
+		if arg, ok := n.Args[idx].(*ast.Argument); ok {
 			v.f.sinks = append(v.f.sinks, sinkSite{kind: name, expr: arg.Expr})
 		}
 	}
@@ -158,20 +162,33 @@ func collectAll(ns []ast.Vertex) *scopeFacts {
 
 // calleeName renders a call target as a lowercase name. PHP function names
 // are case-insensitive; variable and dynamic targets yield "".
+//
+// Multi-part names, including *ast.NameRelative (a "namespace\name" call),
+// are never collapsed onto their last segment: PHP resolves an unqualified
+// call in the current namespace before falling back to the global one, so
+// treating "Foo\curl_exec" as global curl_exec would invent false
+// positives. *ast.NameRelative is therefore left unhandled and yields "";
+// missing an explicitly namespaced wrapper is the accepted trade.
 func calleeName(n ast.Vertex) string {
 	switch v := n.(type) {
 	case *ast.Name:
-		parts := make([]string, 0, len(v.Parts))
-		for _, p := range v.Parts {
-			if np, ok := p.(*ast.NamePart); ok {
-				parts = append(parts, string(np.Value))
-			}
-		}
-		return strings.ToLower(strings.Join(parts, "\\"))
+		return joinNameParts(v.Parts)
+	case *ast.NameFullyQualified:
+		return joinNameParts(v.Parts)
 	case *ast.Identifier:
 		return strings.ToLower(string(v.Value))
 	}
 	return ""
+}
+
+func joinNameParts(parts []ast.Vertex) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if np, ok := p.(*ast.NamePart); ok {
+			out = append(out, string(np.Value))
+		}
+	}
+	return strings.ToLower(strings.Join(out, "\\"))
 }
 
 // varName renders a variable's name. The parser's T_VARIABLE token includes
