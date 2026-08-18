@@ -115,15 +115,12 @@ func TestArrayElementWriteTaintsContainingValue(t *testing.T) {
 	}
 }
 
-// TestPropertyWriteDoesNotTaintBaseVariable is Task 11 Fix 1's core
-// assertion: $obj->payload = curl_exec($c) must taint the specific
-// "obj->payload" key, never the bare $obj it hangs off of. Before the fix,
-// a property write flattened onto the base variable, so one tainted
-// property poisoned every later use of the object -- including an entirely
-// different property -- which is what produced both real false positives
-// this task fixes. This is deliberately NOT $this: the brief forbids
-// special-casing that name, and $obj here is the general case it must also
-// cover.
+// TestPropertyWriteDoesNotTaintBaseVariable: $obj->payload = curl_exec($c)
+// must taint the specific "obj->payload" key, never the bare $obj it hangs
+// off of. A property write that flattened onto the base variable would let
+// one tainted property poison every later use of the object -- including
+// an entirely different property. This is deliberately not special-cased
+// to $this: $obj here is the general case that must also be covered.
 func TestPropertyWriteDoesNotTaintBaseVariable(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $obj->payload = curl_exec($c); $obj->other = 'clean';")
 	if _, ok := st["obj"]; ok {
@@ -138,8 +135,8 @@ func TestPropertyWriteDoesNotTaintBaseVariable(t *testing.T) {
 }
 
 // TestPropertyReadPicksUpItsOwnWrite is the detection-preserving half of
-// Fix 1: scoping taint to the specific property must not stop a read of
-// THAT SAME property from seeing its own taint.
+// property-scoped taint: scoping taint to the specific property must not
+// stop a read of THAT SAME property from seeing its own taint.
 func TestPropertyReadPicksUpItsOwnWrite(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $obj->payload = curl_exec($c); $b = $obj->payload;")
 	if _, ok := st["b"]; !ok {
@@ -158,16 +155,16 @@ func TestPropertyReadInheritsWholeObjectTaint(t *testing.T) {
 	}
 }
 
-// TestArrayOverPropertyKeysToTheProperty is the fix-round-1 regression: an
+// TestArrayOverPropertyKeysToTheProperty is a regression guard: an
 // array-dim fetch OUTERMOST over a property fetch ($obj->log[] = ...) must
 // still key to the property ("obj->log"), not fall through to the bare
 // base variable. assignedTargetKey originally only unwrapped
 // ExprPropertyFetch/ExprNullsafePropertyFetch, so an ExprArrayDimFetch
 // sitting on top broke the chain walk immediately and fell back to
 // assignedVarName, which flattens straight to "obj" -- reintroducing the
-// exact false-positive class Fix 1 was meant to close. $obj->prop[] = ...
-// is one of the most common idioms in OO PHP (logs, queues, error
-// collections, caches).
+// exact false-positive class property-scoped taint was meant to close.
+// $obj->prop[] = ... is one of the most common idioms in OO PHP (logs,
+// queues, error collections, caches).
 func TestArrayOverPropertyKeysToTheProperty(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $obj->log[] = curl_exec($c); $obj->other = 'clean';")
 	if _, ok := st["obj"]; ok {
@@ -181,9 +178,9 @@ func TestArrayOverPropertyKeysToTheProperty(t *testing.T) {
 	}
 }
 
-// TestArrayOverPropertyReadStillDetects is the false-negative guard for the
-// round-1 fix: reading the same property back through [] must still pick
-// up the taint the write recorded under the compound key.
+// TestArrayOverPropertyReadStillDetects is the false-negative guard:
+// reading the same property back through [] must still pick up the taint
+// the write recorded under the compound key.
 func TestArrayOverPropertyReadStillDetects(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $obj->log[] = curl_exec($c); $b = $obj->log[0];")
 	if _, ok := st["b"]; !ok {
@@ -211,7 +208,7 @@ func TestDeepMixedAccessChainKeysThePath(t *testing.T) {
 
 // hasDroppedTaint parses src, collects one flat scope from it, and reports
 // whether hasUnresolvableTaintedTarget finds a real (tainted) drop --
-// exercising the fix round 3 mechanism directly, the same way analyzeScope
+// exercising the dropped-taint marker directly, the same way analyzeScope
 // exercises taintedLocals.
 func hasDroppedTaint(t *testing.T, src string) bool {
 	t.Helper()
@@ -227,12 +224,12 @@ func hasDroppedTaint(t *testing.T, src string) bool {
 	return dropped
 }
 
-// TestUnresolvableTargetUntaintedValueNoMarker is fix round 3 for Task 11:
-// the round-2 marker fired on the SHAPE of an unkeyable assignment target
-// alone, regardless of whether anything was actually tainted, which made it
-// fire on 38.75% of analyzed corpus files -- dominated by list()
-// destructuring and static properties, both completely ordinary and benign.
-// An unresolvable target assigned a value that carries no remote content
+// TestUnresolvableTargetUntaintedValueNoMarker: an earlier version of the
+// marker fired on the SHAPE of an unkeyable assignment target alone,
+// regardless of whether anything was actually tainted, which made it fire
+// on 38.75% of analyzed corpus files -- dominated by list() destructuring
+// and static properties, both completely ordinary and benign. An
+// unresolvable target assigned a value that carries no remote content
 // drops nothing worth flagging.
 func TestUnresolvableTargetUntaintedValueNoMarker(t *testing.T) {
 	tests := []string{
@@ -415,11 +412,12 @@ func TestUntaintedVariablesStayClean(t *testing.T) {
 	}
 }
 
-// TestStreamReaderInheritsHandleTaint proves the Task 7 ruling that dropped
-// fread/fgets/stream_get_contents from the source set is safe: the acquiring
-// call (fopen on a remote URL) is the source, and the handle variable it
-// taints carries that taint into any expression that references it,
-// including a call to a function that is not itself a recognised source.
+// TestStreamReaderInheritsHandleTaint: fread/fgets/stream_get_contents are
+// not sources themselves -- they take a stream resource, not a path, so
+// their argument carries no locality signal. The acquiring call (fopen on a
+// remote URL) is the source, and the handle variable it taints carries that
+// taint into any expression that references it, including a call to a
+// function that is not itself a recognised source.
 func TestStreamReaderInheritsHandleTaint(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $fh = fopen('http://host/x'); $c = fread($fh, 999);")
 	if _, ok := st["c"]; !ok {

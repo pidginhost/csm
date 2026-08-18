@@ -477,23 +477,24 @@ func propertyFetchParts(n ast.Vertex) (base, prop ast.Vertex, ok bool) {
 // $a->log[3] = Y both key to "a->log" as a whole -- array keys are not
 // tracked) while still scoping precisely to the property chain around them.
 //
-// This generality is load-bearing, not incidental: a first version of this
-// fix only unwrapped property fetches, so an array-dim fetch sitting
+// This generality is load-bearing, not incidental: an earlier version
+// only unwrapped property fetches, so an array-dim fetch sitting
 // OUTERMOST over a property fetch ($this->log[] = <tainted>, one of the
 // most common idioms in OO PHP -- logs, queues, error collections, caches)
 // broke the walk immediately and fell back to the bare base variable,
-// reintroducing the exact wholesale-$this false-positive class Fix 1 exists
-// to close. Handling only that one shape and stopping would leave the same
-// gap for every other ordering ($a[0]->b, $a->b[0]->c[1], ...), so the loop
-// below handles both access kinds generically, in any order, rather than
-// adding a case for the reported shape and calling it done.
+// reintroducing the exact wholesale-$this false-positive class this key
+// scoping exists to close. Handling only that one shape and stopping would
+// leave the same gap for every other ordering ($a[0]->b, $a->b[0]->c[1],
+// ...), so the loop below handles both access kinds generically, in any
+// order, rather than adding a case for the reported shape and calling it
+// done.
 //
 // A property fetch is different from a bare variable or array element:
 // $this->body = <tainted> must NOT taint every later use of bare $this,
 // because $this appears in nearly every method of a class and one tainted
-// property would otherwise poison every sink in it -- this is Task 11 Fix
-// 1, and it is deliberately not special-cased to the name "$this":
-// $obj->prop = <tainted> gets exactly the same treatment. The key scopes to
+// property would otherwise poison every sink in it. This is deliberately
+// not special-cased to the name "$this": $obj->prop = <tainted> gets
+// exactly the same treatment. The key scopes to
 // the full static property path (so $this->a->b is distinct from both
 // $this->a and $this->a->c), joining base and property names with "->", a
 // sequence no PHP variable name can contain, so a compound key can never
@@ -831,11 +832,10 @@ func sourceLabel(sub *scopeFacts, st taintState, summaries summaryTables) (strin
 		}
 	}
 	// A property key (e.g. "this->body") is checked separately from the
-	// bare-variable loop above: since Fix 1, the base variable's own name is
-	// no longer tainted by a property write, so a flow carried entirely by a
-	// specific property would otherwise fall through every branch above and
-	// report "unknown" instead of naming the property that actually carried
-	// it.
+	// bare-variable loop above: the base variable's own name is not tainted
+	// by a property write, so a flow carried entirely by a specific property
+	// would otherwise fall through every branch above and report "unknown"
+	// instead of naming the property that actually carried it.
 	for _, n := range sub.propNodes {
 		key := assignedTargetKey(n)
 		if key == "" {

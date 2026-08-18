@@ -162,12 +162,11 @@ function callsPlainFunction($x) {
 	}
 }
 
-// TestAmbiguousMethodNameOmittedAndRecorded covers part (b) of the ambiguity
-// ruling: two unrelated classes declaring the same method name must not
-// resolve to either one's definition (that would be an arbitrary guess), so
-// the name is dropped from the method table entirely and the gap is
-// recorded rather than silently favoring whichever class collectScope saw
-// first.
+// TestAmbiguousMethodNameOmittedAndRecorded: two unrelated classes
+// declaring the same method name must not resolve to either one's
+// definition (that would be an arbitrary guess), so the name is dropped
+// from the method table entirely and the gap is recorded rather than
+// silently favoring whichever class collectScope saw first.
 func TestAmbiguousMethodNameOmittedAndRecorded(t *testing.T) {
 	got, loss := summariesOf(t, `<?php
 class C1 {
