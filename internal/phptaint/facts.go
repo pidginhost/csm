@@ -64,6 +64,18 @@ type scopeFacts struct {
 	returns    []*ast.StmtReturn
 	funcs      []*ast.StmtFunction
 	methods    []*ast.StmtClassMethod
+	// closures and arrowFuncs hold every closure and arrow function found in
+	// this scope. Both are declarations in the same sense funcs and methods
+	// are: each gets its own entry in declarationTree (so its span is
+	// excluded from the enclosing scope) and its own per-scope analysis in
+	// analyze, exactly like a named function's body. Without both halves, a
+	// closure parameter or local reassignment that merely shares a name with
+	// an outer variable would either borrow that outer variable's taint (if
+	// only excluded, never analysed) or stop being examined for its own
+	// sinks (if only analysed, never excluded) -- see analyze's closure and
+	// arrow-function loops for the second half.
+	closures   []*ast.ExprClosure
+	arrowFuncs []*ast.ExprArrowFunction
 	// classLikes holds every class, interface, trait, and enum declaration
 	// (named or anonymous) found in this scope. Their own contents are
 	// never read from here directly -- methods are already tracked in
@@ -384,6 +396,20 @@ func (v *factVisitor) StmtClassMethod(n *ast.StmtClassMethod) {
 	v.f.methods = append(v.f.methods, n)
 }
 
+func (v *factVisitor) ExprClosure(n *ast.ExprClosure) {
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	v.f.closures = append(v.f.closures, n)
+}
+
+func (v *factVisitor) ExprArrowFunction(n *ast.ExprArrowFunction) {
+	if !v.f.count() || v.excluded(n) {
+		return
+	}
+	v.f.arrowFuncs = append(v.f.arrowFuncs, n)
+}
+
 func (v *factVisitor) StmtClass(n *ast.StmtClass) { v.classLike(n) }
 
 func (v *factVisitor) StmtInterface(n *ast.StmtInterface) { v.classLike(n) }
@@ -515,6 +541,18 @@ func methodStmts(stmt ast.Vertex) []ast.Vertex {
 	}
 }
 
+// arrowFunctionBody wraps an arrow function's single implicit-return
+// expression into the one-element statement list collectOwnStmts expects,
+// the same shape methodStmts gives a method body. Unlike a closure (whose
+// Stmts is already a real statement list), `fn($x) => expr` has no braces or
+// statements to unwrap -- expr itself is both the body and the return value.
+func arrowFunctionBody(n *ast.ExprArrowFunction) []ast.Vertex {
+	if n.Expr == nil {
+		return nil
+	}
+	return []ast.Vertex{n.Expr}
+}
+
 type nodeSpan struct {
 	start int
 	end   int
@@ -621,14 +659,14 @@ type declTree struct {
 var declTreeBuilds atomic.Int64
 
 // declarationTree indexes every declaration recorded in f: functions,
-// methods, and classes/interfaces/traits/enums (anonymous classes
-// included, via classLikes). f must come from an unfiltered, whole-file
-// collection (collectScope(root)) so every declaration in the file is
-// present, regardless of how deeply any of them is nested inside another
-// or wrapped in control flow. The result is cached on f (see
-// scopeFacts.declTreeCache), so calling this more than once on the same f
-// -- analyze and functionSummaries both do, independently -- costs one
-// build, not two.
+// methods, classes/interfaces/traits/enums (anonymous classes included, via
+// classLikes), closures, and arrow functions. f must come from an
+// unfiltered, whole-file collection (collectScope(root)) so every
+// declaration in the file is present, regardless of how deeply any of them
+// is nested inside another or wrapped in control flow. The result is cached
+// on f (see scopeFacts.declTreeCache), so calling this more than once on the
+// same f -- analyze and functionSummaries both do, independently -- costs
+// one build, not two.
 //
 // Sorting happens ONCE, over all D declarations together, rather than once
 // per declaration: a per-declaration rebuild-and-sort of the whole span
@@ -662,7 +700,7 @@ func (f *scopeFacts) declarationTree() declTree {
 		node ast.Vertex
 		span nodeSpan
 	}
-	nodes := make([]declNode, 0, len(f.funcs)+len(f.methods)+len(f.classLikes))
+	nodes := make([]declNode, 0, len(f.funcs)+len(f.methods)+len(f.classLikes)+len(f.closures)+len(f.arrowFuncs))
 	add := func(n ast.Vertex) {
 		if span, ok := spanOf(n); ok {
 			nodes = append(nodes, declNode{node: n, span: span})
@@ -676,6 +714,12 @@ func (f *scopeFacts) declarationTree() declTree {
 	}
 	for _, c := range f.classLikes {
 		add(c)
+	}
+	for _, cl := range f.closures {
+		add(cl)
+	}
+	for _, af := range f.arrowFuncs {
+		add(af)
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {

