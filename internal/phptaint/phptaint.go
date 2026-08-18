@@ -6,7 +6,10 @@
 // docs/superpowers/specs/2026-08-18-php-remote-source-taint-analyzer-design.md.
 //
 // The package is pure: bytes in, report out. It touches no filesystem,
-// config, store, or process global, so callers own every I/O decision.
+// config, store, or process global that any caller can observe or that
+// carries state across calls -- the one exception is declTreeBuilds, a
+// package-level counter incremented on every Analyze purely so a same-package
+// test can assert a structural invariant; see its doc comment.
 package phptaint
 
 import (
@@ -123,8 +126,12 @@ const (
 type Result struct {
 	// Source is the acquiring call, such as "curl_exec".
 	Source string
-	// Via lists the canonical names the value passed through, in order.
-	Via []string
+	// Identifiers lists every distinct variable and call name that appears
+	// in the sink's own expression, sorted alphabetically. This is context
+	// for a reviewer reading the report, not a laundering path: it includes
+	// names that never carried the tainted value, and carries no ordering
+	// information about how the value actually moved.
+	Identifiers []string
 	// Sink names the executing construct, such as "eval".
 	Sink string
 	// Confidence grades how firmly the source was shown to be remote.
@@ -170,11 +177,11 @@ func finalizeReport(report Report) Report {
 	if report.Status == StatusAnalyzed {
 		report.Reason = ""
 		for i := range report.Results {
-			var cutSource, cutSink, cutVia bool
+			var cutSource, cutSink, cutIdentifiers bool
 			report.Results[i].Source, cutSource = sanitize(report.Results[i].Source, maxSegmentBytes)
 			report.Results[i].Sink, cutSink = sanitize(report.Results[i].Sink, maxSegmentBytes)
-			report.Results[i].Via, cutVia = truncateChain(report.Results[i].Via)
-			report.EvidenceTruncated = report.EvidenceTruncated || cutSource || cutSink || cutVia
+			report.Results[i].Identifiers, cutIdentifiers = truncateChain(report.Results[i].Identifiers)
+			report.EvidenceTruncated = report.EvidenceTruncated || cutSource || cutSink || cutIdentifiers
 		}
 		for i := range report.PrecisionLoss {
 			report.PrecisionLoss[i] = sanitizeSegment(report.PrecisionLoss[i])
@@ -200,7 +207,7 @@ func finalizeReport(report Report) Report {
 	return report
 }
 
-// Analyze owns the pre-filter, size check, parse, and data-flow pass. It
+// Analyze owns the size check, pre-filter, parse, and data-flow pass. It
 // recovers a panic at the package boundary via the recovered helper.
 func Analyze(ctx context.Context, src []byte) Report {
 	return recovered(func() Report { return analyze(ctx, src) })

@@ -75,9 +75,9 @@ func TestRecoveredSanitizesAnalyzedEvidence(t *testing.T) {
 		return Report{
 			Status: StatusAnalyzed,
 			Results: []Result{{
-				Source: strings.Repeat("s", maxSegmentBytes*2),
-				Via:    []string{"bad\nsegment"},
-				Sink:   "ev\u202eal",
+				Source:      strings.Repeat("s", maxSegmentBytes*2),
+				Identifiers: []string{"bad\nsegment"},
+				Sink:        "ev\u202eal",
 			}},
 		}
 	})
@@ -85,10 +85,10 @@ func TestRecoveredSanitizesAnalyzedEvidence(t *testing.T) {
 		t.Fatal("EvidenceTruncated = false, want true for a shortened source")
 	}
 	result := rep.Results[0]
-	if len(result.Source) > maxSegmentBytes || strings.ContainsAny(strings.Join(result.Via, "")+result.Sink, "\n\u202e") {
+	if len(result.Source) > maxSegmentBytes || strings.ContainsAny(strings.Join(result.Identifiers, "")+result.Sink, "\n\u202e") {
 		t.Errorf("unsafe evidence escaped finalization: %+v", result)
 	}
-	if !utf8.ValidString(result.Source + strings.Join(result.Via, "") + result.Sink) {
+	if !utf8.ValidString(result.Source + strings.Join(result.Identifiers, "") + result.Sink) {
 		t.Errorf("evidence is not valid UTF-8: %+v", result)
 	}
 }

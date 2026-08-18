@@ -826,7 +826,10 @@ func TestAnalyzeReportsPreboundedEvidenceTruncation(t *testing.T) {
 		}
 	})
 
-	t.Run("via chain", func(t *testing.T) {
+	t.Run("identifiers", func(t *testing.T) {
+		// Identifiers lists every name in the sink expression, not just the
+		// ones that carried taint -- these $cleanN variables never carry
+		// $tainted's value, but they still count toward the truncation cap.
 		var src strings.Builder
 		src.WriteString("<?php $tainted = curl_exec($h); eval($tainted")
 		for i := 0; i < maxChainSegments; i++ {
@@ -842,10 +845,10 @@ func TestAnalyzeReportsPreboundedEvidenceTruncation(t *testing.T) {
 			t.Fatalf("results = %+v, want one flow", rep.Results)
 		}
 		if !rep.EvidenceTruncated {
-			t.Fatal("EvidenceTruncated = false for a shortened via chain")
+			t.Fatal("EvidenceTruncated = false for a shortened identifiers list")
 		}
-		if len(rep.Results[0].Via) != maxChainSegments {
-			t.Fatalf("via length = %d, want %d", len(rep.Results[0].Via), maxChainSegments)
+		if len(rep.Results[0].Identifiers) != maxChainSegments {
+			t.Fatalf("identifiers length = %d, want %d", len(rep.Results[0].Identifiers), maxChainSegments)
 		}
 	})
 }
@@ -874,7 +877,7 @@ func TestResultsAreDeterministic(t *testing.T) {
 			t.Fatalf("run %d: result count changed", i)
 		}
 		for j := range first.Results {
-			// Result.Via is a []string, so Result is not comparable with !=;
+			// Result.Identifiers is a []string, so Result is not comparable with !=;
 			// reflect.DeepEqual preserves the same byte-identical intent.
 			if !reflect.DeepEqual(again.Results[j], first.Results[j]) {
 				t.Fatalf("run %d result %d differs", i, j)

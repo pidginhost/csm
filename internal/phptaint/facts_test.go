@@ -1,6 +1,7 @@
 package phptaint
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -44,7 +45,10 @@ func TestCollectRecordsDynamicCallPrecisionLoss(t *testing.T) {
 
 func TestCollectSeparatesAssignmentWritesFromReads(t *testing.T) {
 	f := mustParse(t, "<?php $result = ($target = $input);")
-	reads := f.readVars()
+	reads := map[string]bool{}
+	for _, variable := range f.readVarNodes() {
+		reads[variable.name] = true
+	}
 	if reads["target"] {
 		t.Errorf("reads = %v, assignment target is not a value read", reads)
 	}
@@ -84,7 +88,7 @@ func TestCollectFindsFunctionsAndReturns(t *testing.T) {
 	if len(f.funcs) != 1 {
 		t.Fatalf("funcs = %d, want 1", len(f.funcs))
 	}
-	body := collectAll(f.funcs[0].Stmts)
+	body := collectOwnStmts(f.funcs[0].Stmts, nil)
 	if len(body.returns) != 1 {
 		t.Errorf("returns = %d, want 1", len(body.returns))
 	}
@@ -260,7 +264,7 @@ func TestCollectFindsClassMethod(t *testing.T) {
 	if !ok {
 		t.Fatalf("method body = %T, want *ast.StmtStmtList", f.methods[0].Stmt)
 	}
-	body := collectAll(block.Stmts)
+	body := collectOwnStmts(block.Stmts, nil)
 	if len(body.returns) != 1 {
 		t.Errorf("returns = %d, want 1", len(body.returns))
 	}
@@ -269,16 +273,41 @@ func TestCollectFindsClassMethod(t *testing.T) {
 	}
 }
 
-func TestCollectStopsAtNodeBudget(t *testing.T) {
-	src := "<?php " + repeatStmt(maxCollectedNodes/2+10)
-	root, status, _ := parseSource([]byte(src))
-	if status != StatusAnalyzed {
-		t.Skip("generator produced unparseable source")
+// TestCollectionBudgetReachableThroughAnalyze proves the node budget is a
+// real production guard, not just a property of collectScope in isolation.
+// A source bigger than MaxSourceBytes could never reach this guard through
+// the public API -- Analyze rejects it on the size check first, before any
+// collection begins -- so the fixture here stays under MaxSourceBytes and
+// still trips the budget on variable-read volume alone.
+func TestCollectionBudgetReachableThroughAnalyze(t *testing.T) {
+	src := manyInterpolatedVarsSource(1_000_000)
+	if len(src) >= MaxSourceBytes {
+		t.Fatalf("fixture is %d bytes, want under MaxSourceBytes (%d)", len(src), MaxSourceBytes)
 	}
-	f := collectScope(root)
-	if !f.budgetExceeded {
-		t.Error("budgetExceeded = false, want true past the node budget")
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusResourceLimit {
+		t.Fatalf("status = %v, want StatusResourceLimit", rep.Status)
 	}
+	if rep.Reason != "resource_limit: collection budget exceeded" {
+		t.Errorf("reason = %q, want the collection-budget detail", rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Errorf("results = %+v, want none for a coverage-gap status", rep.Results)
+	}
+}
+
+// manyInterpolatedVarsSource builds a source that stays under MaxSourceBytes
+// while still packing far more than maxCollectedNodes variable reads into one
+// interpolated string -- the shape a hostile upload could actually submit,
+// unlike a source larger than MaxSourceBytes ever could.
+func manyInterpolatedVarsSource(n int) []byte {
+	var b strings.Builder
+	b.WriteString(`<?php eval($x); file_get_contents($u); $s = "`)
+	for i := 0; i < n; i++ {
+		b.WriteString("$a")
+	}
+	b.WriteString(`";`)
+	return []byte(b.String())
 }
 
 func TestCollectWalksDeepTreesWithoutRecursion(t *testing.T) {
@@ -295,12 +324,4 @@ func TestCollectWalksDeepTreesWithoutRecursion(t *testing.T) {
 	if f.budgetExceeded {
 		t.Errorf("deep tree unexpectedly exceeded %d-node budget", maxCollectedNodes)
 	}
-}
-
-func repeatStmt(n int) string {
-	out := make([]byte, 0, n*8)
-	for i := 0; i < n; i++ {
-		out = append(out, "$a = 1;"...)
-	}
-	return string(out)
 }

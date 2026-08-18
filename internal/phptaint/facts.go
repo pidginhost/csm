@@ -463,19 +463,6 @@ func collectScope(n ast.Vertex) *scopeFacts {
 	return f
 }
 
-// collectAll gathers facts from a statement list, such as a function body.
-func collectAll(ns []ast.Vertex) *scopeFacts {
-	f := newScopeFacts()
-	v := &factVisitor{f: f}
-	t := traverser.NewTraverser(v)
-	for _, n := range ns {
-		if n != nil {
-			t.Traverse(n)
-		}
-	}
-	return f
-}
-
 // collectTopLevel gathers facts from the whole file, excluding anything
 // positioned inside a declaration named in exclude. Folding a declaration's
 // body into the flat top-level map lets a variable local to it taint an
@@ -754,17 +741,10 @@ func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
 	return newSpanIndex(t.children[self])
 }
 
-// readVars returns variables whose value is read in this subtree. The parser
-// visitor also visits assignment targets; those are writes, not inputs to the
-// assignment expression, and must not borrow taint from an earlier assignment.
-func (f *scopeFacts) readVars() map[string]bool {
-	reads := make(map[string]bool, len(f.varNodes))
-	for _, variable := range f.readVarNodes() {
-		reads[variable.name] = true
-	}
-	return reads
-}
-
+// readVarNodes returns variables whose value is read in this subtree. The
+// parser visitor also visits assignment targets; those are writes, not
+// inputs to the assignment expression, and must not borrow taint from an
+// earlier assignment.
 func (f *scopeFacts) readVarNodes() []namedNodeSpan {
 	writes := make([]nodeSpan, 0, len(f.writes))
 	for _, n := range f.writes {
