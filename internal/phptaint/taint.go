@@ -357,9 +357,18 @@ func solveAssignments(assignments []taintAssignment) taintState {
 	return st
 }
 
+// taintedLocalsFallback is the oracle path: no compiled solver, just direct
+// fixpoint iteration over the raw facts. Its round cap must terminate AND
+// stay complete. A fixed cap (the original defect) is neither: a reverse-
+// ordered assignment chain propagates taint exactly one hop per round, so a
+// chain longer than the cap evades detection entirely. Capping at the number
+// of assignment facts plus one is always enough, because no dependency chain
+// in this scope can have more hops than this scope has assignments, and it
+// still terminates because it is a fixed bound.
 func taintedLocalsFallback(f *scopeFacts, summaries map[string]Confidence) taintState {
 	st := taintState{}
-	for {
+	maxRounds := len(f.assigns) + len(f.references) + len(f.concats) + 1
+	for round := 0; round < maxRounds; round++ {
 		changed := false
 		for _, assignment := range f.assigns {
 			if confidence, tainted := exprTaint(assignment.Expr, st, summaries); tainted {
@@ -383,6 +392,7 @@ func taintedLocalsFallback(f *scopeFacts, summaries map[string]Confidence) taint
 			return st
 		}
 	}
+	return st
 }
 
 // assignedVarName returns the root local variable written by an assignment.

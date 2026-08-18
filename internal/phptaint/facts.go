@@ -1,12 +1,12 @@
 package phptaint
 
 import (
-	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
 	"github.com/VKCOM/php-parser/pkg/visitor"
+	"github.com/VKCOM/php-parser/pkg/visitor/traverser"
 )
 
 // callSinks are code-execution sinks that appear as ordinary function calls,
@@ -149,9 +149,9 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	if !v.f.count() {
 		return
 	}
-	name := v.resolveFunctionAlias(n)
+	name, resolved := v.resolveFunctionAlias(n)
 	v.f.calls[name] = true
-	v.f.callNodes = append(v.f.callNodes, n)
+	v.f.callNodes = append(v.f.callNodes, resolved)
 	v.f.callSites = append(v.f.callSites, callSite{name: name, node: n})
 	if name == "" {
 		v.f.precisionLoss["dynamic-call"] = true
@@ -168,23 +168,34 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	}
 }
 
-func (v *factVisitor) resolveFunctionAlias(call *ast.ExprFunctionCall) string {
+// resolveFunctionAlias resolves a call target through this scope's
+// function-alias table (populated from `use function` imports) and reports
+// the canonical name. When the call is aliased, it returns a detached copy
+// of the call node whose Function names the canonical target, so downstream
+// name lookups (sourceConfidence, decoder checks) see the resolved name
+// without the parsed tree itself ever being rewritten mid-traversal: the
+// traverser reads call.Function right after visiting call, so mutating it in
+// place would orphan the original alias-name subtree from the walk in
+// progress. The copy shares Args and Position with the original node, so
+// argument inspection and source-span correlation are unaffected.
+func (v *factVisitor) resolveFunctionAlias(call *ast.ExprFunctionCall) (string, *ast.ExprFunctionCall) {
 	name := calleeName(call.Function)
 	plain, ok := call.Function.(*ast.Name)
 	if !ok || len(plain.Parts) != 1 {
-		return name
+		return name, call
 	}
 	target, ok := v.functionAliases[name]
 	if !ok {
-		return name
+		return name, call
 	}
 	parts := strings.Split(target, "\\")
 	canonical := make([]ast.Vertex, 0, len(parts))
 	for _, part := range parts {
 		canonical = append(canonical, &ast.NamePart{Value: []byte(part)})
 	}
-	call.Function = &ast.NameFullyQualified{Parts: canonical}
-	return target
+	resolved := *call
+	resolved.Function = &ast.NameFullyQualified{Parts: canonical}
+	return target, &resolved
 }
 
 func (v *factVisitor) ExprMethodCall(n *ast.ExprMethodCall) {
@@ -264,84 +275,34 @@ func (v *factVisitor) sink(kind string, expr ast.Vertex) {
 	}
 }
 
-// collectScope gathers facts from one subtree.
+// collectScope gathers facts from one subtree using the parser library's own
+// traverser. The library traverser cannot be stopped mid-walk, so it visits
+// every node in the subtree regardless of budget; scopeFacts.count() bounds
+// the actual cost by making every visitor method a no-op once the budget is
+// exceeded, so an over-budget file does no further per-node work beyond the
+// traversal dispatch itself. That traverser was measured surviving 2,000,000
+// levels of nesting without a Go stack overflow, so a hand-rolled iterative
+// walker is not needed to protect against attacker-controlled AST depth.
 func collectScope(n ast.Vertex) *scopeFacts {
 	f := newScopeFacts()
-	walkFacts(f, []ast.Vertex{n})
+	if n == nil {
+		return f
+	}
+	traverser.NewTraverser(&factVisitor{f: f}).Traverse(n)
 	return f
 }
 
 // collectAll gathers facts from a statement list, such as a function body.
 func collectAll(ns []ast.Vertex) *scopeFacts {
 	f := newScopeFacts()
-	walkFacts(f, ns)
-	return f
-}
-
-// walkFacts performs a pre-order depth-first walk without using the parser
-// library's recursive traverser. PHP input controls AST depth, and a Go stack
-// overflow is fatal rather than recoverable, so the explicit heap stack and
-// node budget are part of the detector's security boundary.
-func walkFacts(f *scopeFacts, roots []ast.Vertex) {
 	v := &factVisitor{f: f}
-	stack := make([]ast.Vertex, 0, len(roots))
-	for i := len(roots) - 1; i >= 0; i-- {
-		if roots[i] != nil {
-			stack = append(stack, roots[i])
+	t := traverser.NewTraverser(v)
+	for _, n := range ns {
+		if n != nil {
+			t.Traverse(n)
 		}
 	}
-	for len(stack) > 0 && !f.budgetExceeded {
-		last := len(stack) - 1
-		node := stack[last]
-		stack = stack[:last]
-		node.Accept(v)
-
-		stack = appendChildVerticesReverse(stack, node)
-	}
-}
-
-// appendChildVerticesReverse extracts direct AST children from the parser's
-// generated node structs. Reversed insertion preserves source-order traversal
-// when the caller pops from the end, without allocating once per AST node.
-func appendChildVerticesReverse(stack []ast.Vertex, node ast.Vertex) []ast.Vertex {
-	value := reflect.ValueOf(node)
-	if !value.IsValid() || value.Kind() != reflect.Ptr || value.IsNil() {
-		return stack
-	}
-	value = value.Elem()
-	if value.Kind() != reflect.Struct {
-		return stack
-	}
-
-	for i := value.NumField() - 1; i >= 0; i-- {
-		field := value.Field(i)
-		if !field.CanInterface() {
-			continue
-		}
-		if child, ok := field.Interface().(ast.Vertex); ok {
-			if !isNilVertex(child) {
-				stack = append(stack, child)
-			}
-			continue
-		}
-		if field.Kind() != reflect.Slice && field.Kind() != reflect.Array {
-			continue
-		}
-		for j := field.Len() - 1; j >= 0; j-- {
-			element := field.Index(j)
-			if element.CanInterface() {
-				if child, ok := element.Interface().(ast.Vertex); ok && !isNilVertex(child) {
-					stack = append(stack, child)
-				}
-			}
-		}
-	}
-	return stack
-}
-
-func isNilVertex(node ast.Vertex) bool {
-	value := reflect.ValueOf(node)
-	return !value.IsValid() || (value.Kind() == reflect.Ptr && value.IsNil())
+	return f
 }
 
 type nodeSpan struct {
