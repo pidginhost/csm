@@ -184,7 +184,9 @@ class C2 { function get($u) { return $u; } }`)
 	if _, ok := got.methods["get"]; ok {
 		t.Errorf("methods = %v, want get omitted: declared by two classes", got.methods)
 	}
-	wantLoss := []string{"ambiguous-method", "compact", "dynamic-call", "extract", "variable-variable"}
+	// $$n = 1 is both a variable-variable AND (Task 11 fix round 2) an
+	// unresolvable assignment target, so it legitimately trips both markers.
+	wantLoss := []string{"ambiguous-method", "compact", "dynamic-call", "extract", "unresolvable-assign-target", "variable-variable"}
 	if !slices.Equal(loss, wantLoss) {
 		t.Errorf("precision loss = %q, want %q", loss, wantLoss)
 	}
@@ -227,7 +229,9 @@ func TestPrecisionLossAtSummaryLimitIsRecorded(t *testing.T) {
 }`)
 
 	_, loss := summariesOf(t, src.String())
-	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
+	// $$n = 1 is both a variable-variable AND (Task 11 fix round 2) an
+	// unresolvable assignment target.
+	wantLoss := []string{"compact", "dynamic-call", "extract", "unresolvable-assign-target", "variable-variable"}
 	if !slices.Equal(loss, wantLoss) {
 		t.Errorf("precision loss = %q, want %q at summary limit", loss, wantLoss)
 	}
@@ -252,7 +256,7 @@ func TestPrecisionLossRecheckedInSummarizedBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("function summaries: %v", err)
 	}
-	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
+	wantLoss := []string{"compact", "dynamic-call", "extract", "unresolvable-assign-target", "variable-variable"}
 	if !slices.Equal(loss, wantLoss) {
 		t.Errorf("precision loss = %q, want %q from independently collected body", loss, wantLoss)
 	}
