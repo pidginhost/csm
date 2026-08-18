@@ -3,6 +3,7 @@ package phptaint
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -315,5 +316,185 @@ func TestFunctionSummariesChecksContextBeforeEachBody(t *testing.T) {
 	_, _, err := functionSummaries(ctx, facts)
 	if err != context.Canceled {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+// permutations returns every ordering of items. Declaration order is
+// attacker-controlled, so a property that must hold for one ordering must hold
+// for all of them.
+func permutations(items []string) [][]string {
+	if len(items) <= 1 {
+		return [][]string{append([]string(nil), items...)}
+	}
+	var out [][]string
+	for i := range items {
+		rest := make([]string, 0, len(items)-1)
+		rest = append(rest, items[:i]...)
+		rest = append(rest, items[i+1:]...)
+		for _, tail := range permutations(rest) {
+			out = append(out, append([]string{items[i]}, tail...))
+		}
+	}
+	return out
+}
+
+// reportFingerprint renders the parts of a Report a caller acts on, in a form
+// that is stable across orderings so two runs can be compared directly.
+func reportFingerprint(r Report) string {
+	results := make([]string, 0, len(r.Results))
+	for _, res := range r.Results {
+		results = append(results, fmt.Sprintf("%s->%s[%d]%v", res.Source, res.Sink, res.Confidence, res.Identifiers))
+	}
+	sort.Strings(results)
+	loss := append([]string(nil), r.PrecisionLoss...)
+	sort.Strings(loss)
+	return fmt.Sprintf("status=%d total=%d results=%v loss=%v truncated=%t",
+		r.Status, r.TotalResults, results, loss, r.EvidenceTruncated)
+}
+
+// TestAnalysisIsIndependentOfDeclarationOrder pins the property the
+// interprocedural fixpoint exists to provide: a monotone fixpoint's result is
+// determined by the call graph, never by the order the bodies happen to be
+// written in. An attacker chooses that order freely, so any dependence on it
+// is an evasion -- moving one function above another would be enough to go
+// dark. The wrapper here reaches its callee from inside a closure within a
+// return, which is the shape where the body's own facts and the facts consulted
+// when evaluating its return expression disagree about which calls exist.
+func TestAnalysisIsIndependentOfDeclarationOrder(t *testing.T) {
+	decls := []string{
+		"function fetchRemote($c){ return curl_exec($c); }\n",
+		"function wrapClosure($c){ return (function() use ($c) { return fetchRemote($c); })(); }\n",
+		"function passThrough($c){ return wrapClosure($c); }\n",
+	}
+	tail := "$payload = passThrough($c);\neval($payload);\n"
+
+	var want string
+	for i, order := range permutations(decls) {
+		src := "<?php\n"
+		for _, d := range order {
+			src += d
+		}
+		src += tail
+		got := reportFingerprint(Analyze(context.Background(), []byte(src)))
+		if i == 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Fatalf("declaration order changed the result:\n first order: %s\n this  order: %s\n source:\n%s", want, got, src)
+		}
+	}
+	if !strings.Contains(want, "eval") {
+		t.Fatalf("expected the flow to be detected in every order, got %s", want)
+	}
+}
+
+// sweepSummaries is a reference fixpoint that ignores the call graph
+// entirely: it re-evaluates EVERY body until a full pass changes nothing.
+// It is deliberately the naive, obviously-correct implementation, so that
+// comparing the production worklist against it tests the thing a worklist can
+// actually get wrong -- not whether it terminates or how fast it is, but
+// whether its edges wake every body an update can affect. Any missing edge
+// shows up here as a lower summary than the sweep reaches.
+func sweepSummaries(t *testing.T, bodies []funcBody) summaryTables {
+	t.Helper()
+	tables := summaryTables{funcs: map[string]Confidence{}, methods: map[string]Confidence{}}
+	for pass := 0; ; pass++ {
+		if pass > len(bodies)+2 {
+			t.Fatalf("reference sweep failed to settle after %d passes", pass)
+		}
+		changed := false
+		for _, b := range bodies {
+			if b.name == "" {
+				continue
+			}
+			best, found, err := evalBodySummary(context.Background(), b, tables)
+			if err != nil {
+				t.Fatalf("reference sweep: %v", err)
+			}
+			if !found {
+				continue
+			}
+			target := tables.funcs
+			if b.kind == bodyMethod {
+				target = tables.methods
+			}
+			if cur, ok := target[b.name]; ok && cur >= best {
+				continue
+			}
+			target[b.name] = best
+			changed = true
+		}
+		if !changed {
+			return tables
+		}
+	}
+}
+
+// TestWorklistMatchesExhaustiveSweep is the equivalence gate. The worklist
+// replaced a round-robin sweep purely to bound work, so it must reach the
+// SAME fixpoint; anything less is a silent false negative rather than an
+// optimisation. Each case is also run in every declaration order, because a
+// missing edge can be masked by an order that happens to evaluate callees
+// before their callers.
+func TestWorklistMatchesExhaustiveSweep(t *testing.T) {
+	cases := []struct {
+		name  string
+		decls []string
+	}{
+		{"callee inside a closure in a return", []string{
+			"function fetchRemote($c){ return curl_exec($c); }\n",
+			"function wrapClosure($c){ return (function() use ($c) { return fetchRemote($c); })(); }\n",
+		}},
+		{"callee inside an arrow function in a return", []string{
+			"function fetchRemote($c){ return curl_exec($c); }\n",
+			"function wrapArrow($c){ return array_map(fn($x) => fetchRemote($c), [1]); }\n",
+		}},
+		{"callee inside a nested function declaration in a return", []string{
+			"function fetchRemote($c){ return curl_exec($c); }\n",
+			"function wrapNested($c){ if (!function_exists('inner')) { function inner($c){ return fetchRemote($c); } } return inner($c); }\n",
+		}},
+		{"chain through a method call", []string{
+			"class Loader { public function grab($c){ return curl_exec($c); } }\n",
+			"function useLoader($l, $c){ return (function() use ($l, $c) { return $l->grab($c); })(); }\n",
+		}},
+		{"mutual recursion with a closure hop", []string{
+			"function alpha($c){ return (function() use ($c) { return beta($c); })(); }\n",
+			"function beta($c){ if ($c) { return alpha($c); } return curl_exec($c); }\n",
+		}},
+		{"plain chain, no nesting", []string{
+			"function fetchRemote($c){ return curl_exec($c); }\n",
+			"function middle($c){ return fetchRemote($c); }\n",
+			"function outer($c){ return middle($c); }\n",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, order := range permutations(tc.decls) {
+				src := "<?php\n"
+				for _, d := range order {
+					src += d
+				}
+				root, status, reason := parseSource([]byte(src))
+				if status != StatusAnalyzed {
+					t.Fatalf("parse status %v: %s", status, reason)
+				}
+				facts := collectScope(root)
+				bodies, _, err := summaryBodies(context.Background(), facts)
+				if err != nil {
+					t.Fatalf("summaryBodies: %v", err)
+				}
+				want := sweepSummaries(t, bodies)
+				got, err := solveSummaries(context.Background(), bodies)
+				if err != nil {
+					t.Fatalf("solveSummaries: %v", err)
+				}
+				if !maps.Equal(want.funcs, got.funcs) || !maps.Equal(want.methods, got.methods) {
+					t.Fatalf("worklist disagrees with exhaustive sweep\n sweep:    funcs=%v methods=%v\n worklist: funcs=%v methods=%v\n source:\n%s",
+						want.funcs, want.methods, got.funcs, got.methods, src)
+				}
+			}
+		})
 	}
 }
