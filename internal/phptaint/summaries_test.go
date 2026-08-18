@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -319,7 +320,7 @@ func TestFunctionSummariesChecksContextBeforeEachBody(t *testing.T) {
 	}
 }
 
-func TestReturnFactsChecksContextBetweenReturns(t *testing.T) {
+func TestReturnSummaryKeysChecksContextBetweenReturns(t *testing.T) {
 	facts := &scopeFacts{returns: []*ast.StmtReturn{
 		{Expr: &ast.ScalarString{}},
 		{Expr: &ast.ScalarString{}},
@@ -327,7 +328,7 @@ func TestReturnFactsChecksContextBetweenReturns(t *testing.T) {
 	ctx := newCancelOnErrCheck(2)
 	t.Cleanup(ctx.cancel)
 
-	_, err := returnFacts(ctx, facts, resolvedCallIndex{})
+	_, err := returnSummaryKeys(ctx, facts, resolvedCallIndex{})
 	if err != context.Canceled {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
@@ -527,5 +528,75 @@ func TestWorklistMatchesExhaustiveSweep(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// nestedBodiesSource builds n named functions, each declared inside the
+// previous one's returned closure. A closure body is a statement list, so a
+// function declaration can legally sit inside a return expression -- which
+// means every one of these n functions is a summarizable body whose return
+// expression lexically contains all the deeper ones.
+func nestedBodiesSource(n int) []byte {
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "function g%d($c){ return function() use ($c){ ", i)
+	}
+	b.WriteString("return eval(curl_exec($c));")
+	for i := 0; i < n; i++ {
+		b.WriteString("}; }")
+	}
+	return []byte(b.String())
+}
+
+// TestSummaryBodiesRetentionStaysLinear guards a memory amplification that a
+// previous version of this code shipped: holding each body's collected return
+// facts for the life of the fixpoint. A return expression is collected WITHOUT
+// excluding nested declarations -- deliberately, since that is how a callee
+// invoked inside a closure gets a dependency edge -- so for bodies nested this
+// way each retained collection covers the whole remaining subtree, and the
+// total is quadratic in nesting depth. A 165 KB file reached 872 MB of live
+// heap, against 46 MB before, with allocation volume unchanged: the cost was
+// pure retention.
+//
+// Retention per body must therefore stay bounded rather than grow with the
+// file. The measured figures are ~1.2 KB per body when only the summary keys
+// are kept and ~36 KB per body when the collections are kept, so the bound
+// below sits far from both and is not sensitive to allocator noise.
+func TestSummaryBodiesRetentionStaysLinear(t *testing.T) {
+	const (
+		bodies          = 1000
+		maxBytesPerBody = 8 << 10
+	)
+	src := nestedBodiesSource(bodies)
+	root, status, reason := parseSource(src)
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	all := collectScope(root)
+
+	runtime.GC()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	built, _, err := summaryBodies(context.Background(), all)
+	if err != nil {
+		t.Fatalf("summaryBodies: %v", err)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+
+	retained := int64(after.HeapInuse) - int64(before.HeapInuse)
+	runtime.KeepAlive(built)
+
+	if len(built) != bodies {
+		t.Fatalf("bodies = %d, want %d", len(built), bodies)
+	}
+	if perBody := retained / int64(len(built)); perBody > maxBytesPerBody {
+		t.Fatalf("summaryBodies retains %d bytes per body (%d KB total for a %d byte file); "+
+			"want under %d. Retaining each body's collected return facts makes this quadratic "+
+			"in nesting depth -- keep only the summary keys",
+			perBody, retained/1024, len(src), maxBytesPerBody)
 	}
 }

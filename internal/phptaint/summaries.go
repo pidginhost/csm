@@ -69,14 +69,19 @@ type funcBody struct {
 	name  string
 	kind  bodyKind
 	facts *scopeFacts
-	// returns holds the facts of each non-empty return expression, collected
-	// once here rather than per evaluation. Collecting them up front is what
-	// lets the dependency edges below be built from the SAME facts the
-	// evaluation reads: a call reachable only through a return expression
-	// (one written inside a closure, say) is invisible to facts, which
-	// excludes nested declarations, but is visible to a scope collection of
-	// the return expression itself, which does not.
-	returns []*scopeFacts
+	// calls is the whole-file resolved-call view, kept so each evaluation can
+	// re-collect the return expressions with namespace-level aliases intact.
+	calls resolvedCallIndex
+	// returnKeys names the summaries reachable from this body's return
+	// expressions. Only the KEYS are kept, never the collected facts: a
+	// return expression is collected without excluding nested declarations,
+	// so for a body whose return lexically contains further declarations
+	// those facts cover the whole remaining subtree, and retaining one per
+	// body across the fixpoint is quadratic in nesting depth. Attacker-
+	// written input reaches a gigabyte of live heap that way for a few
+	// hundred KB of source. The keys are a few bytes each and are all the
+	// dependency edges need.
+	returnKeys []summaryKey
 }
 
 // dependencyKeys names every summary a single evaluation of this body can
@@ -89,19 +94,13 @@ type funcBody struct {
 // were queued in -- which is the order they were declared in, which an
 // attacker writing the file chooses.
 func (b funcBody) dependencyKeys() []summaryKey {
-	keys := make([]summaryKey, 0, len(b.facts.callSites))
-	appendFrom := func(f *scopeFacts) {
-		for _, call := range f.callSites {
-			if key, ok := callSiteSummaryKey(call); ok {
-				keys = append(keys, key)
-			}
+	keys := make([]summaryKey, 0, len(b.facts.callSites)+len(b.returnKeys))
+	for _, call := range b.facts.callSites {
+		if key, ok := callSiteSummaryKey(call); ok {
+			keys = append(keys, key)
 		}
 	}
-	appendFrom(b.facts)
-	for _, ret := range b.returns {
-		appendFrom(ret)
-	}
-	return keys
+	return append(keys, b.returnKeys...)
 }
 
 // functionSummaries reports which user-defined functions and methods return
@@ -205,13 +204,13 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		}
 		exclude := tree.exclusionFor(fn)
 		facts := callIndex.apply(collectOwnStmts(fn.Stmts, &exclude))
-		returns, err := returnFacts(ctx, facts, callIndex)
+		returnKeys, err := returnSummaryKeys(ctx, facts, callIndex)
 		if err != nil {
 			return nil, nil, err
 		}
 		bodies = append(bodies, funcBody{
 			name: calleeName(fn.Name), kind: bodyFunction, facts: facts,
-			returns: returns,
+			calls: callIndex, returnKeys: returnKeys,
 		})
 	}
 
@@ -227,13 +226,13 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		// unlike StmtFunction which carries a Stmts slice.
 		exclude := tree.exclusionFor(m)
 		facts := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &exclude))
-		returns, err := returnFacts(ctx, facts, callIndex)
+		returnKeys, err := returnSummaryKeys(ctx, facts, callIndex)
 		if err != nil {
 			return nil, nil, err
 		}
 		bodies = append(bodies, funcBody{
 			name: name, kind: bodyMethod, facts: facts,
-			returns: returns,
+			calls: callIndex, returnKeys: returnKeys,
 		})
 	}
 	// Recheck every included body using its independently collected facts.
@@ -358,11 +357,14 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Con
 	st := taintedLocals(b.facts, tables)
 	best := ConfidenceLow
 	found := false
-	for _, retFacts := range b.returns {
+	for _, ret := range b.facts.returns {
 		if err := ctx.Err(); err != nil {
 			return ConfidenceLow, false, err
 		}
-		c, tainted := exprTaintFacts(retFacts, st, tables)
+		if ret.Expr == nil {
+			continue
+		}
+		c, tainted := exprTaintFacts(b.calls.apply(collectScope(ret.Expr)), st, tables)
 		if !tainted {
 			continue
 		}
@@ -374,16 +376,21 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Con
 	return best, found, nil
 }
 
-// returnFacts collects the facts of each return expression in a body. calls is
-// the whole-file resolved-call view, not an index rebuilt from f: f excludes
-// nested declarations, while a return expression can read through an invoked
-// closure or arrow function inside one. The whole-file view is what preserves
-// namespace-level aliases for those nested calls. Empty returns carry no value
-// and are dropped here rather than skipped at every use.
-func returnFacts(
+// returnSummaryKeys names every summary reachable from a body's return
+// expressions. calls is the whole-file resolved-call view, not an index
+// rebuilt from f: f excludes nested declarations, while a return expression
+// can read through an invoked closure or arrow function inside one. The
+// whole-file view is what preserves namespace-level aliases for those nested
+// calls.
+//
+// Each collection is transient. Only the keys survive, because the collected
+// facts of a return expression cover every declaration nested inside it, and
+// holding one per body for the life of the fixpoint costs memory quadratic in
+// nesting depth on input an attacker writes.
+func returnSummaryKeys(
 	ctx context.Context, f *scopeFacts, calls resolvedCallIndex,
-) ([]*scopeFacts, error) {
-	out := make([]*scopeFacts, 0, len(f.returns))
+) ([]summaryKey, error) {
+	var keys []summaryKey
 	for _, ret := range f.returns {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -391,9 +398,13 @@ func returnFacts(
 		if ret.Expr == nil {
 			continue
 		}
-		out = append(out, calls.apply(collectScope(ret.Expr)))
+		for _, call := range calls.apply(collectScope(ret.Expr)).callSites {
+			if key, ok := callSiteSummaryKey(call); ok {
+				keys = append(keys, key)
+			}
+		}
 	}
-	return out, nil
+	return keys, nil
 }
 
 // recordPrecisionLoss folds one body's precision-loss facts into the running
