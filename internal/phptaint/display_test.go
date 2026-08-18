@@ -7,9 +7,9 @@ import (
 )
 
 func TestSanitizeReplacesControlAndInvalidBytes(t *testing.T) {
-	got := sanitizeSegment("a\x00b\x1bc\xffd")
-	if strings.ContainsAny(got, "\x00\x1b") {
-		t.Errorf("control bytes survived: %q", got)
+	got := sanitizeSegment("a\x00b\x1bc\xffd\u2028e\u202ef")
+	if strings.ContainsAny(got, "\x00\x1b\u2028\u202e") {
+		t.Errorf("non-printing bytes survived: %q", got)
 	}
 	if !utf8.ValidString(got) {
 		t.Errorf("output is not valid UTF-8: %q", got)
@@ -56,5 +56,19 @@ func TestTruncateChainLeavesShortChainsAlone(t *testing.T) {
 	got, truncated := truncateChain(via)
 	if truncated || len(got) != 3 {
 		t.Errorf("short chain was altered: %v truncated=%v", got, truncated)
+	}
+}
+
+func TestTruncateChainSanitizesAndReportsLongSegments(t *testing.T) {
+	via := []string{"safe", "bad\n" + strings.Repeat("x", maxSegmentBytes*2)}
+	got, truncated := truncateChain(via)
+	if !truncated {
+		t.Fatal("truncated = false, want true for a shortened segment")
+	}
+	if len(got) != len(via) || len(got[1]) > maxSegmentBytes {
+		t.Fatalf("bounded chain = %#v", got)
+	}
+	if strings.ContainsRune(got[1], '\n') {
+		t.Errorf("control byte survived in %q", got[1])
 	}
 }

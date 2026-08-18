@@ -1,11 +1,12 @@
 package phptaint
 
 import (
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/VKCOM/php-parser/pkg/ast"
 	"github.com/VKCOM/php-parser/pkg/visitor"
-	"github.com/VKCOM/php-parser/pkg/visitor/traverser"
 )
 
 // callSinks are code-execution sinks that appear as ordinary function calls,
@@ -20,18 +21,27 @@ type sinkSite struct {
 	expr ast.Vertex
 }
 
+type callSite struct {
+	name string
+	node ast.Vertex
+}
+
 // scopeFacts is everything the taint pass needs from one lexical scope.
 // Collection is one pass; the analysis reads it repeatedly.
 type scopeFacts struct {
 	assigns        []*ast.ExprAssign
+	references     []*ast.ExprAssignReference
 	concats        []*ast.ExprAssignConcat
 	returns        []*ast.StmtReturn
 	funcs          []*ast.StmtFunction
 	methods        []*ast.StmtClassMethod
 	sinks          []sinkSite
 	callNodes      []*ast.ExprFunctionCall
+	callSites      []callSite
 	calls          map[string]bool
 	vars           map[string]bool
+	varNodes       []*ast.ExprVariable
+	writes         []ast.Vertex
 	precisionLoss  map[string]bool
 	visited        int
 	budgetExceeded bool
@@ -63,12 +73,75 @@ func (f *scopeFacts) count() bool {
 // node type is a no-op inherited from visitor.Null.
 type factVisitor struct {
 	visitor.Null
-	f *scopeFacts
+	f               *scopeFacts
+	functionAliases map[string]string
+}
+
+func (v *factVisitor) StmtNamespace(*ast.StmtNamespace) {
+	v.functionAliases = nil
+}
+
+func (v *factVisitor) StmtUse(n *ast.StmtUseList) {
+	for _, useNode := range n.Uses {
+		use, ok := useNode.(*ast.StmtUse)
+		if ok {
+			v.addFunctionAlias(n.Type, nil, use)
+		}
+	}
+}
+
+func (v *factVisitor) StmtGroupUse(n *ast.StmtGroupUseList) {
+	prefix, _ := n.Prefix.(*ast.Name)
+	for _, useNode := range n.Uses {
+		use, ok := useNode.(*ast.StmtUse)
+		if ok {
+			v.addFunctionAlias(n.Type, prefix, use)
+		}
+	}
+}
+
+func (v *factVisitor) addFunctionAlias(listType ast.Vertex, prefix *ast.Name, use *ast.StmtUse) {
+	useType := listType
+	if use.Type != nil {
+		useType = use.Type
+	}
+	id, ok := useType.(*ast.Identifier)
+	if !ok || !strings.EqualFold(string(id.Value), "function") {
+		return
+	}
+	name, ok := use.Use.(*ast.Name)
+	if !ok || len(name.Parts) == 0 {
+		return
+	}
+	parts := make([]ast.Vertex, 0, len(name.Parts)+4)
+	if prefix != nil {
+		parts = append(parts, prefix.Parts...)
+	}
+	parts = append(parts, name.Parts...)
+	target := joinNameParts(parts)
+	alias := ""
+	if use.Alias != nil {
+		alias = calleeName(use.Alias)
+	} else if last, ok := name.Parts[len(name.Parts)-1].(*ast.NamePart); ok {
+		alias = strings.ToLower(string(last.Value))
+	}
+	if alias == "" || target == "" {
+		return
+	}
+	if v.functionAliases == nil {
+		v.functionAliases = map[string]string{}
+	}
+	v.functionAliases[alias] = target
 }
 
 func (v *factVisitor) ExprVariable(n *ast.ExprVariable) {
 	if v.f.count() {
-		v.f.vars[varName(n.Name)] = true
+		name := varName(n.Name)
+		v.f.vars[name] = true
+		v.f.varNodes = append(v.f.varNodes, n)
+		if name == "" {
+			v.f.precisionLoss["variable-variable"] = true
+		}
 	}
 }
 
@@ -76,9 +149,13 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	if !v.f.count() {
 		return
 	}
-	name := calleeName(n.Function)
+	name := v.resolveFunctionAlias(n)
 	v.f.calls[name] = true
 	v.f.callNodes = append(v.f.callNodes, n)
+	v.f.callSites = append(v.f.callSites, callSite{name: name, node: n})
+	if name == "" {
+		v.f.precisionLoss["dynamic-call"] = true
+	}
 	// assert() and create_function() are ordinary calls in the grammar, not
 	// dedicated nodes, so they are recognised here rather than by node type.
 	// The executed argument differs per sink (assert's is first,
@@ -91,9 +168,59 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	}
 }
 
+func (v *factVisitor) resolveFunctionAlias(call *ast.ExprFunctionCall) string {
+	name := calleeName(call.Function)
+	plain, ok := call.Function.(*ast.Name)
+	if !ok || len(plain.Parts) != 1 {
+		return name
+	}
+	target, ok := v.functionAliases[name]
+	if !ok {
+		return name
+	}
+	parts := strings.Split(target, "\\")
+	canonical := make([]ast.Vertex, 0, len(parts))
+	for _, part := range parts {
+		canonical = append(canonical, &ast.NamePart{Value: []byte(part)})
+	}
+	call.Function = &ast.NameFullyQualified{Parts: canonical}
+	return target
+}
+
+func (v *factVisitor) ExprMethodCall(n *ast.ExprMethodCall) {
+	v.call(calleeName(n.Method), n)
+}
+
+func (v *factVisitor) ExprNullsafeMethodCall(n *ast.ExprNullsafeMethodCall) {
+	v.call(calleeName(n.Method), n)
+}
+
+func (v *factVisitor) ExprStaticCall(n *ast.ExprStaticCall) {
+	v.call(calleeName(n.Call), n)
+}
+
+func (v *factVisitor) call(name string, node ast.Vertex) {
+	if !v.f.count() {
+		return
+	}
+	v.f.calls[name] = true
+	v.f.callSites = append(v.f.callSites, callSite{name: name, node: node})
+	if name == "" {
+		v.f.precisionLoss["dynamic-call"] = true
+	}
+}
+
 func (v *factVisitor) ExprAssign(n *ast.ExprAssign) {
 	if v.f.count() {
 		v.f.assigns = append(v.f.assigns, n)
+		v.f.writes = append(v.f.writes, n.Var)
+	}
+}
+
+func (v *factVisitor) ExprAssignReference(n *ast.ExprAssignReference) {
+	if v.f.count() {
+		v.f.references = append(v.f.references, n)
+		v.f.writes = append(v.f.writes, n.Var)
 	}
 }
 
@@ -140,24 +267,157 @@ func (v *factVisitor) sink(kind string, expr ast.Vertex) {
 // collectScope gathers facts from one subtree.
 func collectScope(n ast.Vertex) *scopeFacts {
 	f := newScopeFacts()
-	if n == nil {
-		return f
-	}
-	traverser.NewTraverser(&factVisitor{f: f}).Traverse(n)
+	walkFacts(f, []ast.Vertex{n})
 	return f
 }
 
 // collectAll gathers facts from a statement list, such as a function body.
 func collectAll(ns []ast.Vertex) *scopeFacts {
 	f := newScopeFacts()
+	walkFacts(f, ns)
+	return f
+}
+
+// walkFacts performs a pre-order depth-first walk without using the parser
+// library's recursive traverser. PHP input controls AST depth, and a Go stack
+// overflow is fatal rather than recoverable, so the explicit heap stack and
+// node budget are part of the detector's security boundary.
+func walkFacts(f *scopeFacts, roots []ast.Vertex) {
 	v := &factVisitor{f: f}
-	t := traverser.NewTraverser(v)
-	for _, n := range ns {
-		if n != nil {
-			t.Traverse(n)
+	stack := make([]ast.Vertex, 0, len(roots))
+	for i := len(roots) - 1; i >= 0; i-- {
+		if roots[i] != nil {
+			stack = append(stack, roots[i])
 		}
 	}
-	return f
+	for len(stack) > 0 && !f.budgetExceeded {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		node.Accept(v)
+
+		stack = appendChildVerticesReverse(stack, node)
+	}
+}
+
+// appendChildVerticesReverse extracts direct AST children from the parser's
+// generated node structs. Reversed insertion preserves source-order traversal
+// when the caller pops from the end, without allocating once per AST node.
+func appendChildVerticesReverse(stack []ast.Vertex, node ast.Vertex) []ast.Vertex {
+	value := reflect.ValueOf(node)
+	if !value.IsValid() || value.Kind() != reflect.Ptr || value.IsNil() {
+		return stack
+	}
+	value = value.Elem()
+	if value.Kind() != reflect.Struct {
+		return stack
+	}
+
+	for i := value.NumField() - 1; i >= 0; i-- {
+		field := value.Field(i)
+		if !field.CanInterface() {
+			continue
+		}
+		if child, ok := field.Interface().(ast.Vertex); ok {
+			if !isNilVertex(child) {
+				stack = append(stack, child)
+			}
+			continue
+		}
+		if field.Kind() != reflect.Slice && field.Kind() != reflect.Array {
+			continue
+		}
+		for j := field.Len() - 1; j >= 0; j-- {
+			element := field.Index(j)
+			if element.CanInterface() {
+				if child, ok := element.Interface().(ast.Vertex); ok && !isNilVertex(child) {
+					stack = append(stack, child)
+				}
+			}
+		}
+	}
+	return stack
+}
+
+func isNilVertex(node ast.Vertex) bool {
+	value := reflect.ValueOf(node)
+	return !value.IsValid() || (value.Kind() == reflect.Ptr && value.IsNil())
+}
+
+type nodeSpan struct {
+	start int
+	end   int
+}
+
+type namedNodeSpan struct {
+	nodeSpan
+	name string
+	node ast.Vertex
+}
+
+// readVars returns variables whose value is read in this subtree. The parser
+// visitor also visits assignment targets; those are writes, not inputs to the
+// assignment expression, and must not borrow taint from an earlier assignment.
+func (f *scopeFacts) readVars() map[string]bool {
+	reads := make(map[string]bool, len(f.varNodes))
+	for _, variable := range f.readVarNodes() {
+		reads[variable.name] = true
+	}
+	return reads
+}
+
+func (f *scopeFacts) readVarNodes() []namedNodeSpan {
+	writes := make([]nodeSpan, 0, len(f.writes))
+	for _, n := range f.writes {
+		if span, ok := spanOf(n); ok {
+			writes = append(writes, span)
+		}
+	}
+	sort.Slice(writes, func(i, j int) bool { return writes[i].start < writes[j].start })
+
+	vars := make([]namedNodeSpan, 0, len(f.varNodes))
+	reads := make([]namedNodeSpan, 0, len(f.varNodes))
+	for _, n := range f.varNodes {
+		name := varName(n.Name)
+		if name == "" {
+			continue
+		}
+		if span, ok := spanOf(n); ok {
+			vars = append(vars, namedNodeSpan{nodeSpan: span, name: name, node: n})
+		} else {
+			// Parsed nodes normally always have positions. If a future parser
+			// omits one, retain the conservative taint dependency.
+			reads = append(reads, namedNodeSpan{name: name, node: n})
+		}
+	}
+	sort.Slice(vars, func(i, j int) bool { return vars[i].start < vars[j].start })
+
+	writeIndex := 0
+	maxWriteEnd := -1
+	for _, variable := range vars {
+		for writeIndex < len(writes) && writes[writeIndex].start <= variable.start {
+			if writes[writeIndex].end > maxWriteEnd {
+				maxWriteEnd = writes[writeIndex].end
+			}
+			writeIndex++
+		}
+		if maxWriteEnd >= variable.end {
+			continue
+		}
+		reads = append(reads, variable)
+	}
+	return reads
+}
+
+func spanOf(n ast.Vertex) (nodeSpan, bool) {
+	if n == nil || n.GetPosition() == nil {
+		return nodeSpan{}, false
+	}
+	pos := n.GetPosition()
+	if pos.StartPos < 0 || pos.EndPos < pos.StartPos {
+		return nodeSpan{}, false
+	}
+	return nodeSpan{start: pos.StartPos, end: pos.EndPos}, true
 }
 
 // calleeName renders a call target as a lowercase name. PHP function names

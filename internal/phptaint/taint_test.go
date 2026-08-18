@@ -1,6 +1,11 @@
 package phptaint
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func analyzeScope(t *testing.T, src string) (taintState, *scopeFacts) {
 	t.Helper()
@@ -28,10 +33,117 @@ func TestTaintFlowsThroughChainedAssignment(t *testing.T) {
 	}
 }
 
+func TestTaintFixpointHandlesLongReverseChain(t *testing.T) {
+	src := "<?php "
+	for i := 0; i < maxFixpointRounds+5; i++ {
+		src += fmt.Sprintf("$v%d = $v%d;", i, i+1)
+	}
+	src += fmt.Sprintf("$v%d = curl_exec($c);", maxFixpointRounds+5)
+	st, _ := analyzeScope(t, src)
+	if _, ok := st["v0"]; !ok {
+		t.Errorf("state omitted the head of a %d-hop reverse chain", maxFixpointRounds+6)
+	}
+}
+
+func TestTaintHandlesDeeplyNestedAssignments(t *testing.T) {
+	const depth = 5000
+	var src strings.Builder
+	src.WriteString("<?php ")
+	for i := 0; i < depth; i++ {
+		fmt.Fprintf(&src, "$v%d = (", i)
+	}
+	src.WriteString("curl_exec($c)")
+	src.WriteString(strings.Repeat(")", depth))
+	src.WriteByte(';')
+	st, _ := analyzeScope(t, src.String())
+	if len(st) != depth {
+		t.Errorf("state has %d variables, want %d", len(st), depth)
+	}
+}
+
 func TestTaintFlowsThroughConcatenation(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = 'x' . $a . 'y';")
 	if _, ok := st["b"]; !ok {
 		t.Errorf("state = %v, want $b tainted through concat", st)
+	}
+}
+
+func TestTaintFlowsThroughReferenceAssignment(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b =& $a;")
+	if _, ok := st["b"]; !ok {
+		t.Errorf("state = %v, want $b tainted through reference assignment", st)
+	}
+}
+
+func TestTaintFlowsBackThroughReferenceAlias(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $b =& $a; $b = curl_exec($c);")
+	if _, ok := st["a"]; !ok {
+		t.Errorf("state = %v, want $a tainted by a later write through $b", st)
+	}
+}
+
+func TestElementAndPropertyWritesTaintContainingValue(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a['payload'] = curl_exec($c); $obj->payload = curl_exec($c);")
+	for _, name := range []string{"a", "obj"} {
+		if _, ok := st[name]; !ok {
+			t.Errorf("state = %v, want $%s tainted as a whole", st, name)
+		}
+	}
+}
+
+func TestNestedAssignmentTargetDoesNotTaintItsValue(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = ($a = 'clean');")
+	if _, ok := st["b"]; ok {
+		t.Errorf("state = %v, nested assignment target was mistaken for a read", st)
+	}
+}
+
+func TestNestedAssignmentValueKeepsDecoderCorrelation(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $b = base64_decode($a = curl_exec($c));")
+	if got := st["b"]; got != ConfidenceCertain {
+		t.Errorf("confidence = %v, want Certain", got)
+	}
+}
+
+func TestMethodAndStaticSummariesPropagateTaint(t *testing.T) {
+	root, status, reason := parseSource([]byte("<?php $a = $obj->fetch(); $b = Client::load();"))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	f := collectScope(root)
+	st := taintedLocals(f, map[string]Confidence{"fetch": ConfidenceHigh, "load": ConfidenceLow})
+	if st["a"] != ConfidenceHigh || st["b"] != ConfidenceLow {
+		t.Errorf("state = %v, want method/static summary confidence", st)
+	}
+}
+
+func TestCompiledTaintMatchesReferenceEvaluation(t *testing.T) {
+	tests := []struct {
+		src       string
+		summaries map[string]Confidence
+	}{
+		{"<?php $a = curl_exec($c); $b = $a;", nil},
+		{"<?php $a = curl_exec($c); $b = ($a = 'clean');", nil},
+		{"<?php $x = (($a = curl_exec($c)) . ($b = $a));", nil},
+		{"<?php $a['x'] = fopen('https://host/x', 'r'); $b = fread($a, 10);", nil},
+		{"<?php $b =& $a; $b = curl_exec($c);", nil},
+		{"<?php $a = curl_exec($c); $b = base64_decode($clean, $a);", nil},
+		{"<?php $a = $obj->fetch(); $b = Client::load();", map[string]Confidence{
+			"fetch": ConfidenceHigh,
+			"load":  ConfidenceLow,
+		}},
+	}
+	for _, test := range tests {
+		root, status, reason := parseSource([]byte(test.src))
+		if status != StatusAnalyzed {
+			t.Fatalf("parse status %v: %s", status, reason)
+		}
+		facts := collectScope(root)
+		got := taintedLocals(facts, test.summaries)
+		want := taintedLocalsFallback(facts, test.summaries)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: compiled=%v fallback=%v", test.src, got, want)
+		}
 	}
 }
 
@@ -62,6 +174,13 @@ func TestStreamReaderInheritsHandleTaint(t *testing.T) {
 	st, _ := analyzeScope(t, "<?php $fh = fopen('http://host/x'); $c = fread($fh, 999);")
 	if _, ok := st["c"]; !ok {
 		t.Errorf("state = %v, want $c tainted via handle $fh", st)
+	}
+}
+
+func TestWordPressResponseBodyInheritsRequestTaint(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $response = wp_remote_get($url); $body = $response['body'];")
+	if _, ok := st["body"]; !ok {
+		t.Errorf("state = %v, want response body tainted from wp_remote_get", st)
 	}
 }
 
@@ -119,5 +238,39 @@ func TestDecoderOnUnrelatedArgumentDoesNotRaiseConfidence(t *testing.T) {
 	}
 	if got != ConfidenceHigh {
 		t.Errorf("confidence = %v, want High: base64_decode never touched $a, only $clean", got)
+	}
+}
+
+func TestDecoderOptionDoesNotRaiseConfidence(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $b = base64_decode($clean, $a);")
+	if got := st["b"]; got != ConfidenceHigh {
+		t.Errorf("confidence = %v, want High: the tainted value is only the strict option", got)
+	}
+}
+
+func TestPackRaisesConfidenceForValueNotFormat(t *testing.T) {
+	st, _ := analyzeScope(t, "<?php $a = curl_exec($c); $value = pack('H*', $a); $format = pack($a, 1);")
+	if got := st["value"]; got != ConfidenceCertain {
+		t.Errorf("value confidence = %v, want Certain", got)
+	}
+	if got := st["format"]; got != ConfidenceHigh {
+		t.Errorf("format confidence = %v, want High", got)
+	}
+}
+
+func TestExprTaintHandlesDeepDecoderChain(t *testing.T) {
+	const depth = 5000
+	src := "<?php $a = curl_exec($c); $b = " + strings.Repeat("base64_decode(", depth) + "$a" + strings.Repeat(")", depth) + ";"
+	root, status, reason := parseSource([]byte(src))
+	if status != StatusAnalyzed {
+		t.Fatalf("parse status %v: %s", status, reason)
+	}
+	f := collectScope(root)
+	if len(f.assigns) != 2 {
+		t.Fatalf("assignments = %d, want 2", len(f.assigns))
+	}
+	confidence, tainted := exprTaint(f.assigns[1].Expr, taintState{"a": ConfidenceHigh}, nil)
+	if !tainted || confidence != ConfidenceCertain {
+		t.Errorf("tainted=%t confidence=%v, want true/Certain", tainted, confidence)
 	}
 }

@@ -11,7 +11,6 @@ package phptaint
 
 import (
 	"context"
-	"fmt"
 )
 
 // Status is the outcome of an analysis attempt. Callers must not infer a
@@ -145,10 +144,50 @@ type Report struct {
 func recovered(fn func() Report) (report Report) {
 	defer func() {
 		if r := recover(); r != nil {
-			report = Report{Status: StatusPanic, Reason: sanitizeReason(fmt.Sprintf("recovered panic during analysis: %v", r))}
+			// A panic value may contain parser tokens or source text. The status
+			// is actionable without reflecting that attacker-controlled value.
+			report = Report{Status: StatusPanic, Reason: "recovered panic during analysis"}
 		}
+		report = finalizeReport(report)
 	}()
 	return fn()
+}
+
+// finalizeReport enforces the package boundary invariants in one place. Only a
+// completed analysis may carry findings; every evidence segment leaving the
+// package is printable and bounded even if an internal producer misses a cap.
+func finalizeReport(report Report) Report {
+	if report.Status == StatusAnalyzed {
+		report.Reason = ""
+		for i := range report.Results {
+			var cutSource, cutSink, cutVia bool
+			report.Results[i].Source, cutSource = sanitize(report.Results[i].Source, maxSegmentBytes)
+			report.Results[i].Sink, cutSink = sanitize(report.Results[i].Sink, maxSegmentBytes)
+			report.Results[i].Via, cutVia = truncateChain(report.Results[i].Via)
+			report.EvidenceTruncated = report.EvidenceTruncated || cutSource || cutSink || cutVia
+		}
+		for i := range report.PrecisionLoss {
+			report.PrecisionLoss[i] = sanitizeSegment(report.PrecisionLoss[i])
+		}
+		return report
+	}
+
+	report.Results = nil
+	report.TotalResults = 0
+	report.PrecisionLoss = nil
+	report.EvidenceTruncated = false
+	if report.Status == StatusNotCandidate {
+		report.Reason = ""
+		return report
+	}
+
+	detail := sanitizeReason(report.Reason)
+	report.Reason = report.Status.String()
+	if detail != "" {
+		report.Reason += ": " + detail
+	}
+	report.Reason = sanitizeReason(report.Reason)
+	return report
 }
 
 // Analyze owns the pre-filter, size check, parse, and data-flow pass. It
@@ -161,8 +200,8 @@ func analyze(ctx context.Context, src []byte) Report {
 	if len(src) > MaxSourceBytes {
 		return Report{Status: StatusOversize, Reason: "source exceeds maximum analyzed size"}
 	}
-	if ctx.Err() != nil {
-		return Report{Status: StatusCanceled, Reason: "context canceled"}
+	if err := ctx.Err(); err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
 	if !isCandidate(src) {
 		return Report{Status: StatusNotCandidate}
@@ -170,6 +209,9 @@ func analyze(ctx context.Context, src []byte) Report {
 	root, status, reason := parseSource(src)
 	if status != StatusAnalyzed {
 		return Report{Status: status, Reason: reason}
+	}
+	if err := ctx.Err(); err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
 	_ = root
 	return Report{Status: StatusAnalyzed}

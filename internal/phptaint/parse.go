@@ -23,24 +23,29 @@ func parseSource(src []byte) (ast.Vertex, Status, string) {
 		return nil, StatusParseError, "parser version unavailable"
 	}
 	var syntaxErrs int
-	var firstMsg string
+	var firstLine int
 	root, err := parser.Parse(src, conf.Config{
 		Version: ver,
 		ErrorHandlerFunc: func(e *errors.Error) {
 			syntaxErrs++
-			if firstMsg == "" {
-				firstMsg = e.Msg
+			if firstLine == 0 && e != nil && e.Pos != nil {
+				firstLine = e.Pos.StartLine
 			}
 		},
 	})
 	switch {
 	case err != nil:
-		return nil, StatusParseError, sanitizeReason("parse failed: " + err.Error())
+		// parser.Parse currently returns only configuration errors here. Keep
+		// this diagnostic generic so a future parser error cannot expose input.
+		return nil, StatusParseError, "parser failed"
 	case root == nil:
 		return nil, StatusParseError, "parser produced no tree"
 	case syntaxErrs > 0:
-		return root, StatusPartialParse, sanitizeReason(
-			fmt.Sprintf("recovered from %d syntax error(s): %s", syntaxErrs, firstMsg))
+		reason := fmt.Sprintf("recovered from %d syntax error(s)", syntaxErrs)
+		if firstLine > 0 {
+			reason += fmt.Sprintf(" starting at line %d", firstLine)
+		}
+		return root, StatusPartialParse, sanitizeReason(reason)
 	}
 	return root, StatusAnalyzed, ""
 }
