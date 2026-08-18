@@ -334,6 +334,7 @@ func (v *factVisitor) ExprAssign(n *ast.ExprAssign) {
 	}
 	v.f.assigns = append(v.f.assigns, n)
 	v.f.writes = append(v.f.writes, n.Var)
+	v.recordUnresolvableTarget(n.Var)
 }
 
 func (v *factVisitor) ExprAssignReference(n *ast.ExprAssignReference) {
@@ -342,6 +343,7 @@ func (v *factVisitor) ExprAssignReference(n *ast.ExprAssignReference) {
 	}
 	v.f.references = append(v.f.references, n)
 	v.f.writes = append(v.f.writes, n.Var)
+	v.recordUnresolvableTarget(n.Var)
 }
 
 func (v *factVisitor) ExprAssignConcat(n *ast.ExprAssignConcat) {
@@ -349,6 +351,26 @@ func (v *factVisitor) ExprAssignConcat(n *ast.ExprAssignConcat) {
 		return
 	}
 	v.f.concats = append(v.f.concats, n)
+	v.recordUnresolvableTarget(n.Var)
+}
+
+// recordUnresolvableTarget flags an assignment whose target
+// assignedTargetKey cannot resolve to any taint-state key: a method-call
+// result (`$a->b()->c = X`), a static property (`Foo::$cache = X`), a
+// list()/[] destructuring target, or (redundantly with the
+// "variable-variable" marker, which is fine -- both are true) a
+// variable-variable base. taintedLocals already drops these silently and
+// conservatively -- dropping is the correct direction for a
+// zero-false-positive analyzer, and this is not the place to add
+// method-call-chain or static-property key support -- but an unrecorded
+// precision loss is exactly the silent-false-negative failure mode this
+// package's other markers (ambiguous-method, variable-variable, extract,
+// compact) all exist to avoid. This makes the gap observable without
+// changing the taint behaviour itself.
+func (v *factVisitor) recordUnresolvableTarget(target ast.Vertex) {
+	if assignedTargetKey(target) == "" {
+		v.f.precisionLoss["unresolvable-assign-target"] = true
+	}
 }
 
 func (v *factVisitor) StmtReturn(n *ast.StmtReturn) {

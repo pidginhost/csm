@@ -262,6 +262,51 @@ class Loader {
 	}
 }
 
+// TestUnresolvableAssignTargetSurfacesInReport is fix round 2 for Task 11:
+// the reviewer's own control case ($a->b()->c = <tainted>; eval($a->b()->c);
+// is NOT detected -- correctly, since a method-call-chain target is not
+// keyed, and dropping is the safe direction) must still surface
+// "unresolvable-assign-target" in Report.PrecisionLoss through the public
+// Analyze entry point, not just in an internal scopeFacts structure.
+func TestUnresolvableAssignTargetSurfacesInReport(t *testing.T) {
+	src := []byte(`<?php
+function f($h) {
+	$a = new stdClass();
+	$a->b()->c = curl_exec($h);
+	eval($a->b()->c);
+}
+f($handle);`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none: a method-call-chain target is not keyed, so the flow is dropped (safe direction), not detected", rep.Results)
+	}
+	found := false
+	for _, m := range rep.PrecisionLoss {
+		if m == "unresolvable-assign-target" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("PrecisionLoss = %v, want unresolvable-assign-target", rep.PrecisionLoss)
+	}
+}
+
+// TestOrdinaryFileDoesNotReportUnresolvableAssignTarget is the noise guard,
+// end to end: a file with only ordinary resolvable assignments (the
+// existing motivating-sample fixture) must not carry the marker, or it
+// would tell an operator nothing.
+func TestOrdinaryFileDoesNotReportUnresolvableAssignTarget(t *testing.T) {
+	rep := run(t, fxMotivating)
+	for _, m := range rep.PrecisionLoss {
+		if m == "unresolvable-assign-target" {
+			t.Fatalf("PrecisionLoss = %v, want no unresolvable-assign-target for an ordinary file", rep.PrecisionLoss)
+		}
+	}
+}
+
 func TestFunctionLocalDoesNotTaintTopLevelSameName(t *testing.T) {
 	// A function-local variable must not taint an unrelated top-level
 	// variable that merely shares its name.
