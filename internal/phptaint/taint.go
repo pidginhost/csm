@@ -611,6 +611,22 @@ type flowResult struct {
 	evidenceTruncated bool
 }
 
+// capturableNames expands a scope's taint keys into the binding names a
+// capture can actually spell. Taint on a property is keyed by its whole access
+// path ("o->body"), but a closure captures the base variable ($o) and receives
+// the property along with it, so the base name has to be markable too or a
+// genuinely dropped capture is never recorded.
+func capturableNames(st taintState) map[string]bool {
+	names := make(map[string]bool, len(st))
+	for key := range st {
+		names[key] = true
+		if base, _, found := strings.Cut(key, "->"); found {
+			names[base] = true
+		}
+	}
+	return names
+}
+
 // hasDroppedCapture reports whether any closure or arrow function receives an
 // outer binding that was tainted in the scope it captured from.
 //
@@ -648,7 +664,14 @@ func hasDroppedCapture(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if names := closureCaptureNames(cl); len(names) > 0 {
+		names := closureCaptureNames(cl)
+		// A non-static closure declared in a method binds $this implicitly,
+		// so it appears in no use() clause while still carrying whatever the
+		// enclosing object holds.
+		if body := factsByScope[cl]; body != nil && body.vars["this"] {
+			names["this"] = true
+		}
+		if len(names) > 0 {
 			captures[cl] = names
 		}
 	}
@@ -759,7 +782,7 @@ func hasDroppedCapture(
 		if err != nil {
 			return false, err
 		}
-		for name := range st {
+		for name := range capturableNames(st) {
 			active[name] = []binding{{boundary: boundary, tainted: true}}
 		}
 	}
@@ -801,7 +824,7 @@ func hasDroppedCapture(
 			if err != nil {
 				return false, err
 			}
-			for name := range st {
+			for name := range capturableNames(st) {
 				push(name, true, &f.pushed)
 			}
 		}
