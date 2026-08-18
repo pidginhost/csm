@@ -1,6 +1,7 @@
 package phptaint
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -15,6 +16,20 @@ func analyzeScope(t *testing.T, src string) (taintState, *scopeFacts) {
 	}
 	f := collectScope(root)
 	return taintedLocals(f, summaryTables{}), f
+}
+
+func TestFindFlowsDiscardsPartialResultsOnCancellation(t *testing.T) {
+	facts := mustParse(t, "<?php $d = curl_exec($h); eval($d); include $d;")
+	ctx := newCancelOnErrCheck(4)
+	t.Cleanup(ctx.cancel)
+
+	results, err := findFlows(ctx, facts, summaryTables{})
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results = %+v, want no partial results", results)
+	}
 }
 
 func TestTaintFlowsThroughDirectAssignment(t *testing.T) {

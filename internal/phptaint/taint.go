@@ -1,6 +1,7 @@
 package phptaint
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -503,26 +504,49 @@ func decoderInputs(call *ast.ExprFunctionCall) []ast.Vertex {
 	return inputs
 }
 
+// flowResult retains whether its already-bounded display evidence was
+// shortened. Keeping this beside the Result until deduplication is complete
+// lets Analyze report truncation only for evidence that actually survives to
+// the returned result slice.
+type flowResult struct {
+	Result
+	evidenceTruncated bool
+}
+
 // findFlows reports each sink in a scope that receives remote content.
-func findFlows(f *scopeFacts, summaries summaryTables) []Result {
+func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]flowResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(f.sinks) == 0 {
-		return nil
+		return nil, nil
 	}
 	st := taintedLocals(f, summaries)
-	out := make([]Result, 0, len(f.sinks))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]flowResult, 0, len(f.sinks))
 	for _, s := range f.sinks {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		c, tainted := exprTaint(s.expr, st, summaries)
 		if !tainted {
 			continue
 		}
-		out = append(out, Result{
-			Source:     sourceLabel(s.expr, st, summaries),
-			Via:        chainFor(s.expr),
-			Sink:       s.kind,
-			Confidence: c,
+		source, sourceTruncated := sourceLabel(s.expr, st, summaries)
+		via, viaTruncated := chainFor(s.expr)
+		out = append(out, flowResult{
+			Result: Result{
+				Source:     source,
+				Via:        via,
+				Sink:       s.kind,
+				Confidence: c,
+			},
+			evidenceTruncated: sourceTruncated || viaTruncated,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // sourceLabel names the acquiring construct for evidence. It prefers a
@@ -531,11 +555,11 @@ func findFlows(f *scopeFacts, summaries summaryTables) []Result {
 // callSites (rather than the bare f.calls name set) so a summarized method
 // is matched via the same call-syntax-scoped lookup taintedLocals uses,
 // instead of guessing across the function/method namespaces.
-func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) string {
+func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) (string, bool) {
 	sub := collectScope(e)
 	for _, call := range sub.callNodes {
 		if _, ok := sourceConfidence(call); ok {
-			return sanitizeSegment(calleeName(call.Function))
+			return sanitize(calleeName(call.Function), maxSegmentBytes)
 		}
 	}
 	names := make([]string, 0, len(sub.callSites))
@@ -546,7 +570,7 @@ func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) string {
 	}
 	sort.Strings(names)
 	if len(names) > 0 {
-		return sanitizeSegment(names[0])
+		return sanitize(names[0], maxSegmentBytes)
 	}
 	vars := make([]string, 0, len(sub.vars))
 	for name := range sub.vars {
@@ -556,13 +580,13 @@ func sourceLabel(e ast.Vertex, st taintState, summaries summaryTables) string {
 	}
 	sort.Strings(vars)
 	if len(vars) > 0 {
-		return sanitizeSegment("$" + vars[0])
+		return sanitize("$"+vars[0], maxSegmentBytes)
 	}
-	return "unknown"
+	return "unknown", false
 }
 
 // chainFor renders the sanitized, bounded laundering chain for evidence.
-func chainFor(e ast.Vertex) []string {
+func chainFor(e ast.Vertex) ([]string, bool) {
 	sub := collectScope(e)
 	segs := make([]string, 0, len(sub.vars)+len(sub.calls))
 	for name := range sub.vars {
@@ -574,21 +598,14 @@ func chainFor(e ast.Vertex) []string {
 		segs = append(segs, name)
 	}
 	sort.Strings(segs)
-	for i := range segs {
-		segs[i] = sanitizeSegment(segs[i])
-	}
-	out, _ := truncateChain(segs)
-	return out
+	return truncateChain(segs)
 }
 
-// dedupeAndSort collapses duplicate endpoint pairs and orders results so
-// repeated runs are byte-identical. A node visited from more than one scope
-// (a nested function's body is both part of its own declaration and part of
-// findFlows over its enclosing scope's collectAll) can otherwise report the
-// same source-sink pair twice.
-func dedupeAndSort(in []Result) []Result {
+// dedupeAndSort collapses flows that render the same display endpoint pair
+// and orders results so repeated runs are byte-identical.
+func dedupeAndSort(in []flowResult) []flowResult {
 	seen := map[string]int{}
-	out := make([]Result, 0, len(in))
+	out := make([]flowResult, 0, len(in))
 	for _, r := range in {
 		key := r.Source + "\x00" + r.Sink
 		if idx, ok := seen[key]; ok {

@@ -1,6 +1,7 @@
 package phptaint
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -16,7 +17,11 @@ func summariesOf(t *testing.T, src string) (summaryTables, []string) {
 	if status != StatusAnalyzed {
 		t.Fatalf("parse status %v: %s", status, reason)
 	}
-	return functionSummaries(collectScope(root))
+	tables, loss, err := functionSummaries(context.Background(), collectScope(root))
+	if err != nil {
+		t.Fatalf("function summaries: %v", err)
+	}
+	return tables, loss
 }
 
 func TestSummaryMarksDirectlyReturningFunction(t *testing.T) {
@@ -198,19 +203,22 @@ func TestAmbiguousMethodPastSummaryLimitIsRecorded(t *testing.T) {
 		})
 	}
 
-	_, loss := functionSummaries(facts)
+	_, loss, err := functionSummaries(context.Background(), facts)
+	if err != nil {
+		t.Fatalf("function summaries: %v", err)
+	}
 	if !slices.Equal(loss, []string{"ambiguous-method"}) {
 		t.Errorf("precision loss = %q, want ambiguous-method past summary limit", loss)
 	}
 }
 
-func TestPrecisionLossPastSummaryLimitIsRecorded(t *testing.T) {
+func TestPrecisionLossAtSummaryLimitIsRecorded(t *testing.T) {
 	var src strings.Builder
 	src.WriteString("<?php\n")
-	for i := 0; i < maxSummarizedFuncs; i++ {
+	for i := 0; i < maxSummarizedFuncs-1; i++ {
 		fmt.Fprintf(&src, "function f%d() {}\n", i)
 	}
-	src.WriteString(`function skipped($a, $f) {
+	src.WriteString(`function included($a, $f) {
 	$n = 'x';
 	$$n = 1;
 	extract($a);
@@ -221,7 +229,7 @@ func TestPrecisionLossPastSummaryLimitIsRecorded(t *testing.T) {
 	_, loss := summariesOf(t, src.String())
 	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
 	if !slices.Equal(loss, wantLoss) {
-		t.Errorf("precision loss = %q, want %q past summary limit", loss, wantLoss)
+		t.Errorf("precision loss = %q, want %q at summary limit", loss, wantLoss)
 	}
 }
 
@@ -240,9 +248,23 @@ func TestPrecisionLossRecheckedInSummarizedBody(t *testing.T) {
 	facts := newScopeFacts()
 	facts.funcs = collected.funcs
 
-	_, loss := functionSummaries(facts)
+	_, loss, err := functionSummaries(context.Background(), facts)
+	if err != nil {
+		t.Fatalf("function summaries: %v", err)
+	}
 	wantLoss := []string{"compact", "dynamic-call", "extract", "variable-variable"}
 	if !slices.Equal(loss, wantLoss) {
 		t.Errorf("precision loss = %q, want %q from independently collected body", loss, wantLoss)
+	}
+}
+
+func TestFunctionSummariesChecksContextBeforeEachBody(t *testing.T) {
+	facts := mustParse(t, "<?php function first() {} function second() {}")
+	ctx := newCancelOnErrCheck(2)
+	t.Cleanup(ctx.cancel)
+
+	_, _, err := functionSummaries(ctx, facts)
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
