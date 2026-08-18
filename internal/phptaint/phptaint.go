@@ -7,9 +7,11 @@
 //
 // The package is pure: bytes in, report out. It touches no filesystem,
 // config, store, or process global that any caller can observe or that
-// carries state across calls -- the one exception is declTreeBuilds, a
-// package-level counter incremented on every Analyze purely so a same-package
-// test can assert a structural invariant; see its doc comment.
+// carries state across calls. The exceptions are declTreeBuilds and
+// summaryBodyEvals, package-level counters incremented during analysis purely
+// so same-package tests can assert structural invariants. Nothing in this
+// package branches on either, so neither is observable to a caller; see their
+// own doc comments.
 package phptaint
 
 import (
