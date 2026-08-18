@@ -15,14 +15,16 @@ var alwaysRemote = map[string]bool{
 }
 
 // dualUse functions read either a local path or a remote URL, so their
-// argument decides.
+// argument decides. fread, fgets and stream_get_contents are deliberately
+// excluded: they take a stream resource, never a path, so their argument
+// carries no locality signal. When the handle came from a remote fopen(),
+// fopen is already the source and the tainted variable carries that
+// through to the reader; scoring the reader too would only add false
+// positives for handles opened on local paths.
 var dualUse = map[string]bool{
-	"file_get_contents":   true,
-	"fopen":               true,
-	"readfile":            true,
-	"stream_get_contents": true,
-	"fread":               true,
-	"fgets":               true,
+	"file_get_contents": true,
+	"fopen":             true,
+	"readfile":          true,
 }
 
 // remoteSchemes mark an argument as remote. php:// and data:// are included
