@@ -123,6 +123,149 @@ eval($tmp);`)
 	}
 }
 
+// TestConditionalFunctionDeclarationDoesNotLeak is the real WordPress
+// idiom: guarding a function declaration with function_exists so a plugin
+// can be included more than once. The declaration is not a direct
+// top-level statement -- it is wrapped in an if -- so a filter keyed on
+// the direct statement type at the top of a scope would miss it and let
+// the inner $content taint the unrelated top-level $content.
+func TestConditionalFunctionDeclarationDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+if ( ! function_exists( 'theme_fetch' ) ) {
+	function theme_fetch( $url ) {
+		$content = curl_exec( $url );
+		return $content;
+	}
+}
+$content = 'safe literal from options';
+eval( $content );`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestConditionalClassDeclarationDoesNotLeak is the class_exists sibling of
+// the function_exists guard: a class (and its method) declared inside an
+// if must not leak the method's local into an identically-named top-level
+// variable either.
+func TestConditionalClassDeclarationDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+if ( ! class_exists( 'Theme_Fetcher' ) ) {
+	class Theme_Fetcher {
+		function fetch( $url ) {
+			$content = curl_exec( $url );
+			return $content;
+		}
+	}
+}
+$content = 'safe literal from options';
+eval( $content );`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestTryWrappedDeclarationDoesNotLeak checks a different wrapper (try) to
+// confirm the fix is not a special case for if: the library traverser
+// recurses through every control-flow construct the same way, so the
+// exclusion must be wrapper-agnostic.
+func TestTryWrappedDeclarationDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+try {
+	function theme_fetch( $url ) {
+		$content = curl_exec( $url );
+		return $content;
+	}
+} catch ( Throwable $e ) {
+}
+$content = 'safe literal from options';
+eval( $content );`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestDoublyWrappedDeclarationDoesNotLeak nests a declaration two wrappers
+// deep. Exclusion is position-based, not keyed to any particular wrapper
+// depth, so this must hold regardless of how many layers separate the
+// declaration from the top level.
+func TestDoublyWrappedDeclarationDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+if ( true ) {
+	foreach ( array( 1 ) as $i ) {
+		function theme_fetch( $url ) {
+			$content = curl_exec( $url );
+			return $content;
+		}
+	}
+}
+$content = 'safe literal from options';
+eval( $content );`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
+// TestSinkInsideWrapperAtTopLevelIsDetected is the false-negative guard: a
+// sink that genuinely belongs to the top-level scope, merely sitting
+// inside an if, must still be detected. Excluding a declaration's own span
+// must never over-narrow into excluding ordinary control flow that isn't a
+// declaration at all.
+func TestSinkInsideWrapperAtTopLevelIsDetected(t *testing.T) {
+	src := b64(`<?php
+$tainted = curl_exec($h);
+if ($tainted) {
+	eval($tainted);
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: sink genuinely at top level, wrapped in if, was not detected")
+	}
+}
+
+// TestAnonymousClassMethodDoesNotLeak closes the same leak for an anonymous
+// class assigned to a top-level variable. Its method is not a direct
+// top-level statement either -- it is nested inside an ExprNew inside an
+// assignment -- so this is covered by the same position-based exclusion as
+// the named-declaration cases above, with no special case required.
+func TestAnonymousClassMethodDoesNotLeak(t *testing.T) {
+	src := b64(`<?php
+$obj = new class {
+	function get( $c ) {
+		$tmp = curl_exec( $c );
+		return $tmp;
+	}
+};
+$tmp = 'safe literal';
+eval( $tmp );`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: %+v", rep.Results)
+	}
+}
+
 func TestResultsAreDeterministic(t *testing.T) {
 	first := run(t, fxMotivating)
 	for i := 0; i < 5; i++ {
