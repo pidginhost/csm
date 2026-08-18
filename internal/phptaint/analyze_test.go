@@ -199,6 +199,69 @@ fetchCode($handle);`)
 	}
 }
 
+// TestArrayOnPropertyWriteDoesNotPoisonUnrelatedSink is fix round 1 for
+// Task 11: the review found that assignedTargetKey only unwrapped property
+// fetches, so an array-dim fetch sitting OUTERMOST over a property fetch
+// ($this->log[] = ...) fell through to the bare base-variable
+// over-approximation, reintroducing the exact false-positive class Fix 1
+// was meant to close.
+func TestArrayOnPropertyWriteDoesNotPoisonUnrelatedSink(t *testing.T) {
+	src := b64(`<?php
+class Loader {
+	private $log = array();
+	private $path = 'safe/local.php';
+	function load($h) {
+		$this->log[] = curl_exec($h);
+		require_once $this->path;
+	}
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: $this->log[] = ... poisoned an unrelated $this->path read: %+v", rep.Results)
+	}
+}
+
+// TestArrayOnPropertyThroughGenericObjectDoesNotPoisonUnrelatedSink is the
+// non-$this variant of the same repro, matching the review's second
+// example exactly: a plain object variable, an array-appended property,
+// and an unrelated property reaching a sink at the top level.
+func TestArrayOnPropertyThroughGenericObjectDoesNotPoisonUnrelatedSink(t *testing.T) {
+	src := b64(`<?php
+$o->cache['x'] = curl_exec($h);
+include $o->tpl;`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("false positive: $o->cache['x'] = ... poisoned an unrelated $o->tpl read: %+v", rep.Results)
+	}
+}
+
+// TestArrayOnPropertyStillFlowsToItsOwnSink is the false-negative guard for
+// the round-1 fix: reading the SAME property back through [] must still be
+// detected, not just kept out of unrelated reads.
+func TestArrayOnPropertyStillFlowsToItsOwnSink(t *testing.T) {
+	src := b64(`<?php
+class Loader {
+	private $log = array();
+	function load($h) {
+		$this->log[] = curl_exec($h);
+		eval($this->log[0]);
+	}
+}`)
+	rep := run(t, src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) == 0 {
+		t.Fatal("false negative: $this->log[] flowing to eval($this->log[0]) was not detected")
+	}
+}
+
 func TestFunctionLocalDoesNotTaintTopLevelSameName(t *testing.T) {
 	// A function-local variable must not taint an unrelated top-level
 	// variable that merely shares its name.
