@@ -34,3 +34,15 @@ func TestAnalyzeRejectsOversizeBeforeParsing(t *testing.T) {
 		t.Errorf("Results = %d, want 0 for a non-analyzed status", len(rep.Results))
 	}
 }
+
+func TestAnalyzeHandlesCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep := Analyze(ctx, []byte("<?php eval($x);"))
+	if rep.Status != StatusCanceled {
+		t.Fatalf("Status = %v, want StatusCanceled", rep.Status)
+	}
+	if len(rep.Results) != 0 {
+		t.Errorf("Results = %d, want 0 for a non-analyzed status", len(rep.Results))
+	}
+}
