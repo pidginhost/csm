@@ -252,8 +252,17 @@ func analyze(ctx context.Context, src []byte) Report {
 	if tree.count > maxDeclarations {
 		return Report{Status: StatusResourceLimit, Reason: "too many declarations to analyze"}
 	}
+	if err := ctx.Err(); err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
 
-	summaries, loss := functionSummaries(all)
+	summaries, loss, err := functionSummaries(ctx, all)
+	if err != nil {
+		if err == errSummaryLimit {
+			return Report{Status: StatusResourceLimit, Reason: err.Error()}
+		}
+		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
 
 	// Each scope below excludes every declaration nested inside it except,
 	// when the scope IS a declaration's own body, that declaration's own
@@ -261,7 +270,11 @@ func analyze(ctx context.Context, src []byte) Report {
 	// itself. exclusionFor derives this from tree by lookup rather than by
 	// rescanning the file's declarations for every scope.
 	topExclude := tree.exclusionFor(nil)
-	results := findFlows(collectTopLevel(root, &topExclude), summaries)
+	top := collectTopLevel(root, &topExclude)
+	flows, err := findFlows(ctx, top, summaries)
+	if err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
+	}
 
 	// Sinks inside function bodies count too, each against its own state.
 	// collectOwnStmts (not collectAll) skips any function/class/method
@@ -269,23 +282,45 @@ func analyze(ctx context.Context, src []byte) Report {
 	// declarations at the file level: a nested declaration's locals must
 	// not taint an identically-named local in the enclosing body.
 	for _, fn := range all.funcs {
+		if err := ctx.Err(); err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
 		fnExclude := tree.exclusionFor(fn)
 		body := collectOwnStmts(fn.Stmts, &fnExclude)
-		results = append(results, findFlows(body, summaries)...)
+		bodyFlows, err := findFlows(ctx, body, summaries)
+		if err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		flows = append(flows, bodyFlows...)
 	}
 	for _, m := range all.methods {
+		if err := ctx.Err(); err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
 		// StmtClassMethod carries ONE Stmt vertex, not a Stmts slice.
 		mExclude := tree.exclusionFor(m)
 		body := collectOwnStmts(methodStmts(m.Stmt), &mExclude)
-		results = append(results, findFlows(body, summaries)...)
+		bodyFlows, err := findFlows(ctx, body, summaries)
+		if err != nil {
+			return Report{Status: StatusCanceled, Reason: err.Error()}
+		}
+		flows = append(flows, bodyFlows...)
+	}
+	if err := ctx.Err(); err != nil {
+		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
 
-	results = dedupeAndSort(results)
-	total := len(results)
+	flows = dedupeAndSort(flows)
+	total := len(flows)
 	truncated := false
-	if len(results) > maxEvidenceResults {
-		results = results[:maxEvidenceResults]
+	if len(flows) > maxEvidenceResults {
+		flows = flows[:maxEvidenceResults]
 		truncated = true
+	}
+	results := make([]Result, len(flows))
+	for i, flow := range flows {
+		results[i] = flow.Result
+		truncated = truncated || flow.evidenceTruncated
 	}
 	return Report{
 		Status:            StatusAnalyzed,

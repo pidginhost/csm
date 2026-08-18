@@ -1,6 +1,8 @@
 package phptaint
 
 import (
+	"context"
+	"errors"
 	"sort"
 )
 
@@ -15,6 +17,8 @@ var precisionLossMarkers = map[string]string{
 	"call_user_func":       "dynamic-call",
 	"call_user_func_array": "dynamic-call",
 }
+
+var errSummaryLimit = errors.New("too many function summaries to analyze")
 
 type bodyKind uint8
 
@@ -50,13 +54,44 @@ type funcBody struct {
 // This is what lets the analyzer see the motivating shape: a fetch in one
 // function and a sink in another, joined only by a call. Without a summary
 // for the fetching function, that flow is invisible to a single-scope pass.
-func functionSummaries(f *scopeFacts) (summaryTables, []string) {
+func functionSummaries(ctx context.Context, f *scopeFacts) (summaryTables, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return summaryTables{}, nil, err
+	}
+
 	loss := map[string]bool{}
 	// The enclosing facts already cover every declaration body. Record loss
-	// from them before applying the summary-body cap or omitting ambiguous
-	// methods, because either filter can exclude the only body containing a
-	// precision-loss construct.
+	// from them before omitting ambiguous methods, because that filter can
+	// exclude the only body containing a precision-loss construct.
 	recordPrecisionLoss(f, loss)
+
+	// A single class cannot legally declare the same method name twice, so
+	// any name appearing more than once in this flat, whole-file list was
+	// declared by more than one class - ambiguous, without needing to track
+	// which class owns which method. Ambiguous methods do not consume the
+	// summary-body budget because they are deliberately omitted from the
+	// summary table regardless of that budget.
+	methodCounts := make(map[string]int, len(f.methods))
+	for _, m := range f.methods {
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
+		}
+		methodCounts[calleeName(m.Name)]++
+	}
+	summarizable := len(f.funcs)
+	for _, count := range methodCounts {
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
+		}
+		if count > 1 {
+			loss["ambiguous-method"] = true
+			continue
+		}
+		summarizable++
+	}
+	if summarizable > maxSummarizedFuncs {
+		return summaryTables{}, nil, errSummaryLimit
+	}
 
 	// tree indexes every declaration in f (see declarationTree), so a
 	// function or method nested inside another (however deeply, however
@@ -70,31 +105,18 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	// runs first).
 	tree := f.declarationTree()
 
-	bodies := make([]funcBody, 0, len(f.funcs)+len(f.methods))
+	bodies := make([]funcBody, 0, summarizable)
 	for _, fn := range f.funcs {
-		if len(bodies) >= maxSummarizedFuncs {
-			break
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
 		}
 		exclude := tree.exclusionFor(fn)
 		bodies = append(bodies, funcBody{name: calleeName(fn.Name), kind: bodyFunction, facts: collectOwnStmts(fn.Stmts, &exclude)})
 	}
 
-	// A single class cannot legally declare the same method name twice, so
-	// any name appearing more than once in this flat, whole-file list was
-	// declared by more than one class - ambiguous, without needing to track
-	// which class owns which method.
-	methodCounts := make(map[string]int, len(f.methods))
 	for _, m := range f.methods {
-		methodCounts[calleeName(m.Name)]++
-	}
-	for _, count := range methodCounts {
-		if count > 1 {
-			loss["ambiguous-method"] = true
-		}
-	}
-	for _, m := range f.methods {
-		if len(bodies) >= maxSummarizedFuncs {
-			break
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
 		}
 		name := calleeName(m.Name)
 		if methodCounts[name] > 1 {
@@ -110,6 +132,9 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	// recording inside a declaration that was already discovered; the fresh
 	// per-body budget can still preserve that declaration's loss markers.
 	for _, b := range bodies {
+		if err := ctx.Err(); err != nil {
+			return summaryTables{}, nil, err
+		}
 		recordPrecisionLoss(b.facts, loss)
 	}
 
@@ -129,6 +154,9 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 	for round := 0; round < maxRounds; round++ {
 		changed := false
 		for _, b := range bodies {
+			if err := ctx.Err(); err != nil {
+				return summaryTables{}, nil, err
+			}
 			if b.name == "" {
 				continue
 			}
@@ -138,6 +166,9 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 			}
 			st := taintedLocals(b.facts, tables)
 			for _, ret := range b.facts.returns {
+				if err := ctx.Err(); err != nil {
+					return summaryTables{}, nil, err
+				}
 				if ret.Expr == nil {
 					continue
 				}
@@ -161,7 +192,10 @@ func functionSummaries(f *scopeFacts) (summaryTables, []string) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return tables, names
+	if err := ctx.Err(); err != nil {
+		return summaryTables{}, nil, err
+	}
+	return tables, names, nil
 }
 
 // recordPrecisionLoss folds one body's precision-loss facts into the running

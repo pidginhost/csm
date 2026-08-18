@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -268,7 +269,7 @@ eval( $tmp );`)
 	}
 }
 
-// manyDeclSource builds n trivial function declarations followed by one
+// manyDeclSource builds n trivial class declarations followed by one
 // genuine curl_exec-to-eval flow, so a test can tell "this analyzed
 // correctly at scale" apart from "this merely returned quickly because
 // nothing was found."
@@ -276,10 +277,41 @@ func manyDeclSource(n int) []byte {
 	var src strings.Builder
 	src.WriteString("<?php\n")
 	for i := 0; i < n; i++ {
-		fmt.Fprintf(&src, "function decl%d(){}\n", i)
+		fmt.Fprintf(&src, "class decl%d{}\n", i)
 	}
 	src.WriteString("$d = curl_exec($h);\neval($d);\n")
 	return []byte(src.String())
+}
+
+func summaryLimitSource() []byte {
+	var src strings.Builder
+	src.WriteString("<?php\n")
+	for i := 0; i < maxSummarizedFuncs; i++ {
+		fmt.Fprintf(&src, "function summary%d(){}\n", i)
+	}
+	src.WriteString("function over_limit($h){return curl_exec($h);}\n")
+	src.WriteString("$d = over_limit($h); eval($d);\n")
+	return []byte(src.String())
+}
+
+type cancelOnErrCheck struct {
+	context.Context
+	cancel    context.CancelFunc
+	remaining atomic.Int32
+}
+
+func newCancelOnErrCheck(check int32) *cancelOnErrCheck {
+	ctx, cancel := context.WithCancel(context.Background())
+	out := &cancelOnErrCheck{Context: ctx, cancel: cancel}
+	out.remaining.Store(check)
+	return out
+}
+
+func (c *cancelOnErrCheck) Err() error {
+	if c.remaining.Add(-1) == 0 {
+		c.cancel()
+	}
+	return c.Context.Err()
 }
 
 // TestManyDeclarationsStillAnalyzeCorrectly is a correctness check at
@@ -301,35 +333,11 @@ func TestManyDeclarationsStillAnalyzeCorrectly(t *testing.T) {
 	}
 }
 
-// TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount is the real
-// regression guard for the quadratic declaration-exclusion bug (fixed in
-// round 2 of this feature's review). A first attempt at this guard
-// asserted correctness at 15,000 declarations and leaned on go test's
-// default per-package timeout as an implicit backstop against a
-// reintroduced per-declaration rebuild. That does not actually work: using
-// the pre-fix measurements (20,000 declarations took 1.98s under the old
-// O(D^2 log D) code), a reintroduced quadratic at 15,000 declarations would
-// finish in roughly one to two seconds -- nowhere near a default test
-// timeout, and this repo sets no `-timeout` override. That version would
-// have passed silently if the bug came back, which defeats the point of a
-// regression test.
-//
-// This test instead asserts the STRUCTURAL invariant the fix actually
-// established, via declTreeBuilds: a package-private counter, incremented
-// only inside declarationTree's actual build path (never on a cache hit),
-// that exists solely for this kind of same-package white-box observation.
-// It never influences a Report and nothing in this package branches on its
-// value, so reading it is test-only observation of internal behaviour, not
-// the mutable cross-call state this package's purity contract forbids.
-//
-// declarationTree's result is cached on the scopeFacts it was built from,
-// and analyze/functionSummaries both call it on the SAME scopeFacts within
-// one Analyze invocation, so the build count per call is a small constant
-// (1, empirically) regardless of how many declarations the file has. A
-// per-declaration rebuild -- the original bug, or any future
-// reintroduction of it -- would instead make the build count scale with
-// declaration count, and this fails the moment that happens: deterministic,
-// with no dependence on machine speed or CI load.
+// TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount asserts the
+// structural performance invariant directly. analyze and functionSummaries
+// share one scopeFacts, so its declaration tree must be built exactly once
+// regardless of declaration count. The counter observes builds without
+// making the assertion depend on machine speed or CI load.
 func TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount(t *testing.T) {
 	buildsFor := func(n int) int64 {
 		before := declTreeBuilds.Load()
@@ -343,15 +351,75 @@ func TestDeclarationTreeBuildCountIsIndependentOfDeclarationCount(t *testing.T) 
 	small := buildsFor(1_000)
 	large := buildsFor(10_000)
 
-	if small == 0 {
-		t.Fatal("build count did not move at all; instrumentation is not wired up")
+	if small != 1 || large != 1 {
+		t.Fatalf("build count = %d at 1,000 declarations and %d at 10,000, want exactly one per analysis", small, large)
 	}
-	if large != small {
-		t.Fatalf("build count grew with declaration count: %d builds at 1,000 declarations vs %d at 10,000 (want equal -- a per-declaration rebuild would scale this with N, which is exactly the bug this guards against)", small, large)
+}
+
+func TestSummaryLimitReportsCoverageGap(t *testing.T) {
+	rep := Analyze(context.Background(), summaryLimitSource())
+	if rep.Status != StatusResourceLimit {
+		t.Fatalf("status = %v, want StatusResourceLimit past %d summaries", rep.Status, maxSummarizedFuncs)
 	}
-	if large > 2 {
-		t.Fatalf("build count = %d, want a small constant independent of N", large)
+	if len(rep.Results) != 0 {
+		t.Errorf("results = %+v, want none for a coverage-gap status", rep.Results)
 	}
+}
+
+func TestAnalyzeChecksContextAfterDeclarationIndex(t *testing.T) {
+	ctx := newCancelOnErrCheck(4)
+	t.Cleanup(ctx.cancel)
+
+	rep := Analyze(ctx, manyDeclSource(1_000))
+	if rep.Status != StatusCanceled {
+		t.Fatalf("status = %v, want StatusCanceled", rep.Status)
+	}
+	if len(rep.Results) != 0 {
+		t.Errorf("results = %+v, want none for a canceled analysis", rep.Results)
+	}
+}
+
+func TestAnalyzeReportsPreboundedEvidenceTruncation(t *testing.T) {
+	t.Run("source label", func(t *testing.T) {
+		name := strings.Repeat("fetch", maxSegmentBytes)
+		src := fmt.Sprintf("<?php function %s(){return curl_exec($h);} eval(%s());", name, name)
+		rep := Analyze(context.Background(), []byte(src))
+		if rep.Status != StatusAnalyzed {
+			t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+		}
+		if len(rep.Results) != 1 {
+			t.Fatalf("results = %+v, want one flow", rep.Results)
+		}
+		if !rep.EvidenceTruncated {
+			t.Fatal("EvidenceTruncated = false for a shortened source label")
+		}
+		if len(rep.Results[0].Source) > maxSegmentBytes {
+			t.Fatalf("source length = %d, want at most %d", len(rep.Results[0].Source), maxSegmentBytes)
+		}
+	})
+
+	t.Run("via chain", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString("<?php $tainted = curl_exec($h); eval($tainted")
+		for i := 0; i < maxChainSegments; i++ {
+			fmt.Fprintf(&src, " . $clean%d", i)
+		}
+		src.WriteString(");")
+
+		rep := Analyze(context.Background(), []byte(src.String()))
+		if rep.Status != StatusAnalyzed {
+			t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+		}
+		if len(rep.Results) != 1 {
+			t.Fatalf("results = %+v, want one flow", rep.Results)
+		}
+		if !rep.EvidenceTruncated {
+			t.Fatal("EvidenceTruncated = false for a shortened via chain")
+		}
+		if len(rep.Results[0].Via) != maxChainSegments {
+			t.Fatalf("via length = %d, want %d", len(rep.Results[0].Via), maxChainSegments)
+		}
+	})
 }
 
 // TestDeclarationLimitReportsCoverageGap confirms the defence-in-depth cap
