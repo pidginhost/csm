@@ -39,6 +39,10 @@ const reapTimeout = 10 * time.Second
 // would believe it was running. One trial per cooldown keeps the storm bounded
 // (a hostile account costs one timeout per cooldown, not one per file) while
 // letting a host recover without an operator having to notice and restart.
+//
+// The cost of each retry lands on the shared deep-scan budget, which the YARA
+// and JavaScript consumers walk too, so a longer cooldown buys their coverage
+// back on a host that stays broken.
 const breakerCooldown = 60 * time.Second
 
 // SupervisorConfig describes how to start the worker process.
@@ -176,13 +180,17 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 				"analysis exceeded %s; worker killed", s.cfg.Timeout))
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// The caller withdrew, so this is not a worker fault and must not
+			// count toward the breaker. It did consume the trial, though: the
+			// cooldown has to be re-armed or a caller that cancels can spend
+			// one spawn per file while the breaker is nominally open.
+			s.rearmBreakerLocked()
 			return gap(phptaint.StatusCanceled, err.Error())
 		}
 		s.recordFailureLocked()
 		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 	s.consecutive = 0
-	s.openedAt = time.Time{}
 	return report
 }
 
@@ -194,6 +202,14 @@ var errDeadline = errors.New("phptaintworker: analysis deadline exceeded")
 // persistently broken host retry once per cooldown instead of once per file.
 func (s *Supervisor) recordFailureLocked() {
 	s.consecutive++
+	s.rearmBreakerLocked()
+}
+
+// rearmBreakerLocked restarts the cooldown when the breaker is at or past its
+// limit. openedAt is never cleared on success: breakerOpenLocked reads it only
+// once consecutive has reached the limit, and every path that reaches the limit
+// stamps it first, so a stale value cannot be observed.
+func (s *Supervisor) rearmBreakerLocked() {
 	if s.consecutive >= ConsecutiveFailureLimit {
 		s.openedAt = s.now()
 	}

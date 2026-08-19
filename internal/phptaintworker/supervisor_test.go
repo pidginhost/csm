@@ -435,3 +435,55 @@ func TestSupervisorBreakerRetriesOncePerCooldown(t *testing.T) {
 		t.Fatalf("spawned %d workers after a failed trial, want 0 until the next cooldown", s.SpawnCount()-(spawns+1))
 	}
 }
+
+// TestSupervisorCancelledTrialDoesNotFreeASpawn closes the one route by which a
+// caller could spend a spawn per file while the breaker is open. A cancellation
+// is the caller withdrawing, so it must not count as a worker failure -- but it
+// did consume the trial, and without re-arming the cooldown the breaker sits
+// half-open and every subsequent request forks again. No current caller cancels
+// a per-file context, so this is a bound being kept rather than a bug being
+// fixed; it becomes reachable the moment one does.
+func TestSupervisorCancelledTrialDoesNotFreeASpawn(t *testing.T) {
+	cfg := helperChild(t, "hang")
+	cfg.Timeout = 5 * time.Second
+	s, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+
+	shortCfg := 200 * time.Millisecond
+	s.cfg.Timeout = shortCfg
+	for i := 0; i < ConsecutiveFailureLimit; i++ {
+		s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	}
+	s.cfg.Timeout = 5 * time.Second // ctx must win the race, not the deadline
+	clock = clock.Add(breakerCooldown + time.Second)
+
+	spawns := s.SpawnCount()
+	canceled, refused := 0, 0
+	for i := 0; i < 10; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		got := s.Analyze(ctx, []byte("<?php eval(curl_exec($c));"))
+		cancel()
+		switch got.Status {
+		case phptaint.StatusCanceled:
+			canceled++
+		case phptaint.StatusWorkerFailure:
+			refused++
+		default:
+			t.Fatalf("request %d status = %v, want canceled or refused", i, got.Status)
+		}
+	}
+	// The first cancellation consumes the trial and re-arms the cooldown; the
+	// rest are refused without forking, which is the whole point.
+	if canceled != 1 || refused != 9 {
+		t.Fatalf("canceled=%d refused=%d, want 1 and 9", canceled, refused)
+	}
+	if delta := s.SpawnCount() - spawns; delta > 1 {
+		t.Fatalf("cancelled requests spawned %d workers, want at most the one trial", delta)
+	}
+}
