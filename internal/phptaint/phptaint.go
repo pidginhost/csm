@@ -449,11 +449,8 @@ func analyze(ctx context.Context, src []byte) Report {
 
 	flows = dedupeAndSort(flows)
 	total := len(flows)
-	truncated := false
-	if len(flows) > MaxEvidenceResults {
-		flows = flows[:MaxEvidenceResults]
-		truncated = true
-	}
+	truncated := total > MaxEvidenceResults
+	flows = retainStrongestEvidence(flows)
 	results := make([]Result, len(flows))
 	for i, flow := range flows {
 		results[i] = flow.Result

@@ -1204,6 +1204,27 @@ func dedupeAndSort(in []flowResult) []flowResult {
 	return out
 }
 
+// retainStrongestEvidence applies the display cap without hiding the grade
+// that downstream alerting must use. The input is endpoint-sorted, so when the
+// first strongest flow falls beyond the cap, replacing the last retained flow
+// with it keeps the returned evidence deterministic and sorted.
+func retainStrongestEvidence(flows []flowResult) []flowResult {
+	if len(flows) <= MaxEvidenceResults {
+		return flows
+	}
+	strongest := 0
+	for i := 1; i < len(flows); i++ {
+		if flows[i].Confidence > flows[strongest].Confidence {
+			strongest = i
+		}
+	}
+	retained := append([]flowResult(nil), flows[:MaxEvidenceResults]...)
+	if strongest >= MaxEvidenceResults {
+		retained[len(retained)-1] = flows[strongest]
+	}
+	return retained
+}
+
 // activeTaint finds the strongest confidence among an already-collected
 // subtree's source calls, summarized calls, and tainted variable reads. It also
 // returns source positions so decoder correlation stays linearithmic rather

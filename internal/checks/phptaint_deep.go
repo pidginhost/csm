@@ -213,13 +213,44 @@ func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) ale
 		details += "; reduced precision: " + strings.Join(report.PrecisionLoss, ", ")
 	}
 	return alert.Finding{
-		Severity:      alert.Critical,
+		Severity:      phpTaintSeverity(report.Results),
 		Check:         "php_remote_taint",
 		Message:       "PHP remote-source code execution data flow: " + sanitizeJSTaintDisplay(path, phpTaintMessageMaxBytes),
 		Details:       sanitizeJSTaintDisplay(details, phpTaintDetailsMaxBytes),
 		FilePath:      path,
 		ContentSHA256: contentSHA256,
 		DetectLogic:   ContentDetectionVersion(),
+	}
+}
+
+// phpTaintSeverity grades a finding by the strongest flow it contains.
+//
+// Confidence is what separates a fetch this analyzer PROVED was remote from
+// one it merely could not rule out, and on real hosts that distinction is the
+// whole signal. Measured over 1,104,790 files on a production cPanel server:
+// 30,276 analyzed, 33 findings, every one of them ConfidenceLow and every one
+// a third-party library that legitimately reads a file and evaluates it --
+// template compilers, cache layers, SDK bootstrap code. Nothing graded High or
+// Certain. Reporting all of them at one severity would bury a genuine remote
+// code-execution flow among library noise on its first scan.
+//
+// Low is downgraded, not dropped: a real cross-function flow whose URL sits at
+// the caller grades Low too, because the acquiring call cannot see it. The
+// finding stays for review; it just does not page anyone.
+func phpTaintSeverity(results []phptaint.Result) alert.Severity {
+	strongest := phptaint.ConfidenceLow
+	for _, res := range results {
+		if res.Confidence > strongest {
+			strongest = res.Confidence
+		}
+	}
+	switch strongest {
+	case phptaint.ConfidenceCertain:
+		return alert.Critical
+	case phptaint.ConfidenceHigh:
+		return alert.High
+	default:
+		return alert.Warning
 	}
 }
 
