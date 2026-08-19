@@ -88,8 +88,16 @@ build-pam:
 	cp build/pam/pam_csm.so dist/pam_csm.so
 
 # Run tests with race detector
+# Tests write PHP malware fixtures into t.TempDir(). On developer machines
+# running endpoint antivirus, the default macOS TMPDIR is scanned and those
+# fixtures are quarantined mid-run, which shows up as unrelated flaky failures.
+# Redirect Go's temp into a directory that can be excluded from scanning once,
+# instead of excluding the whole per-user temp.
+TEST_TMPDIR ?= /private/tmp/csm-gotest
+
 test:
-	go test -v -race -short ./...
+	@mkdir -p $(TEST_TMPDIR)
+	TMPDIR=$(TEST_TMPDIR) go test -v -race -short ./...
 
 # Run linter
 lint:
