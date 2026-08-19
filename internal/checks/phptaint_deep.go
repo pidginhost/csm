@@ -264,3 +264,30 @@ func phpTaintConfidence(c phptaint.Confidence) string {
 		return "low"
 	}
 }
+
+// phpTaintOversizePeekBytes bounds the prefix read to decide whether an
+// oversize file could be PHP. An open tag in a PHP file is at the top; a
+// larger peek would only buy false positives from binary content that happens
+// to contain the byte sequence.
+const phpTaintOversizePeekBytes = 64 << 10
+
+// phpFileMayBePHP reports whether a file too large to analyze nonetheless
+// looks like PHP source, judged only by its leading bytes.
+//
+// A read error answers yes: an unreadable file is a file this scan could not
+// examine, and reporting it is the honest outcome. The failure direction that
+// matters is the other one -- silently deciding a file was not PHP and
+// dropping it from the coverage report.
+func phpFileMayBePHP(path string) bool {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = f.Close() }()
+	prefix := make([]byte, phpTaintOversizePeekBytes)
+	n, err := f.Read(prefix)
+	if n <= 0 && err != nil {
+		return true
+	}
+	return phptaint.MayBePHPSource(prefix[:n])
+}
