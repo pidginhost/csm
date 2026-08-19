@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The scheduled deep scan now includes a PHP analyzer that detects remotely fetched content reaching code execution, even across functions. It runs in a separate supervised process so one file can never stall the daemon, and any file it could not examine is reported as reduced coverage rather than passed as clean.
+- The scheduled deep scan now includes a PHP analyzer that detects remotely fetched content reaching code execution, even across functions. It runs in a separate supervised process so one file can never stall the daemon, and any file it could not examine is reported as reduced coverage rather than passed as clean Findings are graded by how firmly the fetch was shown to be remote, so a proven remote source reaching execution stands out from a dual-use call a library uses legitimately.
 - A new malware rule catches PHP source that is rebuilt at run time, through a decoder or a call resolved at run time, and then executed with an HTML-mode prefix. Template engines using the same idiom to render local templates are unaffected, since they concatenate the template as read.
 
 ### Fixed
