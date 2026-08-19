@@ -853,6 +853,46 @@ func TestAnalyzeReportsPreboundedEvidenceTruncation(t *testing.T) {
 	})
 }
 
+// TestAnalyzeRetainsStrongestFlowPastEvidenceCap keeps alert grading tied to
+// the whole file. Alphabetical truncation alone would omit the final Certain
+// result and let the returned Low evidence downgrade the finding to Warning.
+func TestAnalyzeRetainsStrongestFlowPastEvidenceCap(t *testing.T) {
+	src := []byte(`<?php
+eval(file_get_contents($u));
+include file_get_contents($u);
+include_once file_get_contents($u);
+require file_get_contents($u);
+require_once file_get_contents($u);
+assert(file_get_contents($u));
+create_function('', file_get_contents($u));
+eval(fopen($u, 'r'));
+eval(base64_decode(wp_remote_get($u)));
+`)
+	rep := Analyze(context.Background(), src)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s), want StatusAnalyzed", rep.Status, rep.Reason)
+	}
+	if rep.TotalResults != MaxEvidenceResults+1 || len(rep.Results) != MaxEvidenceResults {
+		t.Fatalf("results = %d of %d, want %d of %d", len(rep.Results), rep.TotalResults, MaxEvidenceResults, MaxEvidenceResults+1)
+	}
+	if !rep.EvidenceTruncated {
+		t.Fatal("EvidenceTruncated = false, want true past the evidence cap")
+	}
+	last := rep.Results[len(rep.Results)-1]
+	if last.Source != "wp_remote_get" || last.Confidence != ConfidenceCertain {
+		t.Fatalf("last retained result = %+v, want the strongest alphabetically-late flow", last)
+	}
+	strongest := ConfidenceLow
+	for _, result := range rep.Results {
+		if result.Confidence > strongest {
+			strongest = result.Confidence
+		}
+	}
+	if strongest != ConfidenceCertain {
+		t.Fatalf("strongest returned confidence = %v, want ConfidenceCertain", strongest)
+	}
+}
+
 // TestDeclarationLimitReportsCoverageGap confirms the defence-in-depth cap
 // fires as a coverage gap, never a silent skip: a file whose declaration
 // count exceeds maxDeclarations must report StatusResourceLimit -- meaning
