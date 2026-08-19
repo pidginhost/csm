@@ -232,10 +232,10 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	var firstIncomplete string
 	jsGaps := newJSTaintGapCollector()
 	phpGaps := newPHPTaintGapCollector()
-	// Set when a walk error makes the unscanned range unknowable (a failed
-	// Lstat may hide a directory). Shared by every path-based consumer,
-	// because none of them can bound what they missed after one.
-	unknownRangeGap := false
+	// Set when a walk error makes the JS consumer's unscanned range unknowable
+	// (a failed Lstat may hide a directory). PHP tracks the same condition in
+	// its gap collector so it can also report the lost range.
+	jsUnknownRangeGap := false
 	stoppedEarly := false
 	sep := string(filepath.Separator)
 	subtreePrefix := func(path string) string {
@@ -258,9 +258,15 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	// would wrongly skip siblings like "ab/" when the cursor sits at "ab.zz"
 	// ('/' sorts after '.'). An exact prefix cursor records a subtree already
 	// accounted for this cycle, including an empty or unreadable directory.
-	subtreeCovered := func(dir string) bool {
+	subtreeCoveredAfter := func(resume, dir string) bool {
 		prefix := subtreePrefix(dir)
-		return walkResume != "" && (walkResume == prefix || (!strings.HasPrefix(walkResume, prefix) && prefix < walkResume))
+		return resume != "" && (resume == prefix || (!strings.HasPrefix(resume, prefix) && prefix < resume))
+	}
+	subtreeCovered := func(dir string) bool {
+		return subtreeCoveredAfter(walkResume, dir)
+	}
+	consumerWantsSubtree := func(c *deepScanConsumer, dir string) bool {
+		return c.dispatch && !subtreeCoveredAfter(c.resume, dir)
 	}
 
 	var scanDir func(string)
@@ -274,18 +280,21 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		}
 		entries, err := osFS.ReadDir(dir)
 		if err != nil {
-			// The affected paths are unknowable, so every dispatchable
-			// consumer records the gap check-wide.
-			if yaraConsumer.dispatch {
+			// The affected paths are unknowable, but a consumer that already
+			// covered this subtree must not inherit another consumer's gap.
+			yaraWants := consumerWantsSubtree(yaraConsumer, dir)
+			jsWants := consumerWantsSubtree(jsConsumer, dir)
+			phpWants := consumerWantsSubtree(phpConsumer, dir)
+			if yaraWants {
 				incomplete++
 				if firstIncomplete == "" {
 					firstIncomplete = fmt.Sprintf("reading %s: %v", dir, err)
 				}
 			}
-			if jsConsumer.dispatch || phpConsumer.dispatch {
-				unknownRangeGap = true
+			if jsWants {
+				jsUnknownRangeGap = true
 			}
-			if phpConsumer.dispatch {
+			if phpWants {
 				phpGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
 			}
 			advanceAll(subtreePrefix(dir))
@@ -354,8 +363,8 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 						firstIncomplete = fmt.Sprintf("inspecting %s: %v", path, item.err)
 					}
 				}
-				if jsWants || phpWants {
-					unknownRangeGap = true
+				if jsWants {
+					jsUnknownRangeGap = true
 				}
 				if phpWants {
 					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
@@ -633,7 +642,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	if phpConsumer.dispatch {
-		phpPartial := stoppedEarly || phpConsumer.resume != "" || unknownRangeGap || phpGaps.pathsIncomplete()
+		phpPartial := stoppedEarly || phpConsumer.resume != "" || phpGaps.pathsIncomplete()
 		if phpPartial {
 			// Only a partial or unknown-range window suppresses the normal
 			// purge; a known-path gap is handled by the carry-forward below.
@@ -652,7 +661,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	if jsConsumer.dispatch {
-		jsPartial := stoppedEarly || jsConsumer.resume != "" || unknownRangeGap
+		jsPartial := stoppedEarly || jsConsumer.resume != "" || jsUnknownRangeGap
 		if jsPartial {
 			// Only a partial or unknown-range window suppresses the normal JS
 			// purge; a known-path gap is handled by the carry-forward below.
