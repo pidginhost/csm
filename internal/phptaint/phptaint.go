@@ -289,7 +289,7 @@ func analyze(ctx context.Context, src []byte) Report {
 	// re-collects: this only retains what would otherwise be discarded, so a
 	// closure can later ask what its enclosing scope held.
 	factsByScope := map[ast.Vertex]*scopeFacts{nil: top}
-	flows, err := findFlows(ctx, top, summaries, &topExclude)
+	flows, err := findFlows(ctx, top, summaries, callIndex, &topExclude)
 	if err != nil {
 		return Report{Status: StatusCanceled, Reason: err.Error()}
 	}
@@ -323,7 +323,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		fnExclude := tree.exclusionFor(fn)
 		body := callIndex.apply(collectOwnStmts(fn.Stmts, &fnExclude))
 		factsByScope[fn] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, &fnExclude)
+		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &fnExclude)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
@@ -343,7 +343,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		mExclude := tree.exclusionFor(m)
 		body := callIndex.apply(collectOwnStmts(methodStmts(m.Stmt), &mExclude))
 		factsByScope[m] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, &mExclude)
+		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &mExclude)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
@@ -369,7 +369,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		clExclude := tree.exclusionFor(cl)
 		body := callIndex.apply(collectOwnStmts(cl.Stmts, &clExclude))
 		factsByScope[cl] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, &clExclude)
+		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &clExclude)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}
@@ -391,7 +391,7 @@ func analyze(ctx context.Context, src []byte) Report {
 		afExclude := tree.exclusionFor(af)
 		body := callIndex.apply(collectOwnStmts(arrowFunctionBody(af), &afExclude))
 		factsByScope[af] = body
-		bodyFlows, err := findFlows(ctx, body, summaries, &afExclude)
+		bodyFlows, err := findFlows(ctx, body, summaries, callIndex, &afExclude)
 		if err != nil {
 			return Report{Status: StatusCanceled, Reason: err.Error()}
 		}

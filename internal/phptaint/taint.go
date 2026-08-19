@@ -1065,8 +1065,13 @@ func hasUnresolvableTaintedTarget(
 // filtered THROUGH it, because they are graded against this scope's taint
 // state and a nested declaration's own parameter or local was never part of
 // it. Same split, and same reason, as the return expressions in summaries.go.
+// wholeCalls is the resolved-call index built from the unfiltered whole-file
+// facts: the enclosing f correctly excludes nested declarations, so an index
+// rebuilt from f cannot resolve namespace-level aliases on the calls
+// deliberately kept from those declarations.
 func findFlows(
-	ctx context.Context, f *scopeFacts, summaries summaryTables, exclude *spanIndex,
+	ctx context.Context, f *scopeFacts, summaries summaryTables,
+	wholeCalls resolvedCallIndex, exclude *spanIndex,
 ) ([]flowResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1079,12 +1084,11 @@ func findFlows(
 		return nil, err
 	}
 	out := make([]flowResult, 0, len(f.sinks))
-	callIndex := newResolvedCallIndex(f)
 	for _, s := range f.sinks {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		sub := callIndex.apply(collectScope(s.expr)).withoutNestedDeclarationVars(exclude)
+		sub := wholeCalls.apply(collectScope(s.expr)).withoutNestedDeclarationVars(exclude)
 		c, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
 			continue
