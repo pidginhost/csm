@@ -1434,6 +1434,12 @@ function fetch($c){ return curl_exec($c); }
 $rows = [];
 include array_map(function() use ($c) { return fetch($c); }, $rows)[0];`)
 
+	fxSinkAliasedCalleeInClosure = b64(`<?php
+use function fetchRemote as loadRemote;
+function fetchRemote($c){ return curl_exec($c); }
+$rows = [];
+include array_map(function() use ($c) { return loadRemote($c); }, $rows)[0];`)
+
 	fxSummaryPropertyCollision = b64(`<?php
 function f($c, $rows) {
 	$o = new stdClass();
@@ -1489,6 +1495,21 @@ func TestNestedDeclarationLocalsDoNotTaintASink(t *testing.T) {
 	rep := run(t, fxSinkCalleeInClosure)
 	if len(rep.Results) != 1 {
 		t.Fatalf("results = %+v, want the call inside the closure still followed", rep.Results)
+	}
+}
+
+// TestSinkNestedCallKeepsWholeFileAlias covers the resolved-call half of the
+// deliberate split above. The sink expression is recollected without scope
+// exclusion so the call inside its closure remains visible, but resolving that
+// call still needs the whole-file alias index: the enclosing scope's facts
+// correctly excluded the closure and therefore cannot provide its call site.
+func TestSinkNestedCallKeepsWholeFileAlias(t *testing.T) {
+	rep := run(t, fxSinkAliasedCalleeInClosure)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s), want StatusAnalyzed", rep.Status, rep.Reason)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Sink != "include" {
+		t.Fatalf("results = %+v, want aliased closure-nested flow to include", rep.Results)
 	}
 }
 
