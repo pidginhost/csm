@@ -179,3 +179,74 @@ func TestSupervisorNeverReportsCleanOnFailure(t *testing.T) {
 }
 
 var _ = exec.Command
+
+// TestSupervisorContainsRealParserHangs is the end-to-end proof. These are not
+// synthetic stand-ins: both inputs make the real parser loop forever inside a
+// real worker running the real analyzer. Before isolation, either one pinned a
+// core for the life of the daemon and no timeout could stop it, because the
+// loop never returns to a point where a deadline or a cancelled context is
+// checked.
+//
+// Each must come back as a coverage gap, promptly, with the worker gone.
+func TestSupervisorContainsRealParserHangs(t *testing.T) {
+	hangs := map[string]string{
+		"unterminated heredoc with a variable variable": "<?php eval curl_exec <<<A\n$$b",
+		"terminated heredoc with a variable variable":   "<?php eval curl_exec <<<A\n$$b\nA;",
+		"input ending in a less-than":                   "<?php eval(curl_exec($c)); ?><",
+	}
+	for name, src := range hangs {
+		t.Run(name, func(t *testing.T) {
+			cfg := helperChild(t, "ok") // a REAL worker running the REAL analyzer
+			cfg.Timeout = 3 * time.Second
+			s, err := NewSupervisor(cfg)
+			if err != nil {
+				t.Fatalf("new: %v", err)
+			}
+			defer func() { _ = s.Stop() }()
+
+			start := time.Now()
+			rep := s.Analyze(context.Background(), []byte(src))
+			elapsed := time.Since(start)
+
+			if rep.Status != phptaint.StatusTimeout {
+				t.Fatalf("status = %v (%s), want StatusTimeout", rep.Status, rep.Reason)
+			}
+			if elapsed > 30*time.Second {
+				t.Fatalf("took %s to contain a hang; the deadline did not bound it", elapsed)
+			}
+			pid := s.LastChildPID()
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if err := syscall.Kill(pid, 0); err != nil {
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Fatalf("worker %d survived a real parser hang", pid)
+		})
+	}
+}
+
+// TestRealHangIsStillUnstoppableInProcess documents why the process boundary is
+// not optional. If this ever stops timing out, the parser was fixed and the
+// isolation could in principle be revisited -- but not before.
+func TestRealHangIsStillUnstoppableInProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spins a core for the duration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Deliberately in-process: a cancelled context does NOT stop this.
+		_ = phptaint.Analyze(ctx, []byte("<?php eval curl_exec <<<A\n$$b"))
+	}()
+	select {
+	case <-done:
+		t.Fatal("the parser hang is gone; revisit whether isolation is still required")
+	case <-time.After(5 * time.Second):
+		// Expected: still spinning. The goroutine is abandoned, which is
+		// precisely the leak a separate process converts into a killable one.
+	}
+}
