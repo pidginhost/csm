@@ -13,11 +13,11 @@ require (
 	github.com/mdlayher/netlink v1.11.2
 	github.com/oschwald/maxminddb-golang/v2 v2.5.0
 	github.com/redis/go-redis/v9 v9.22.0
-	github.com/tdewolff/parse/v2 v2.8.15
+	github.com/tdewolff/parse/v2 v2.8.16
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/net v0.57.0
+	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
