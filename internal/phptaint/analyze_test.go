@@ -1521,3 +1521,54 @@ func TestAdjacentScopesDoNotShareCaptures(t *testing.T) {
 		t.Fatalf("precision loss = %v, want none: the tainted local belongs to the adjacent function", rep.PrecisionLoss)
 	}
 }
+
+var (
+	fxEvidenceExcludesNestedLocal = b64(`<?php
+function fetchit($c){ return curl_exec($c); }
+$rows = [];
+include array_map(function() use ($c) { $secretlocal = 'unrelated'; return fetchit($c); }, $rows)[0];`)
+
+	fxThisWalkStopsAtNamedFunction = b64(`<?php
+class K {
+	private $b;
+	function m($c) {
+		$this->b = curl_exec($c);
+		return function() {
+			if (!function_exists('kg')) { function kg(){ return function(){ eval($this->b); }; } }
+			return kg();
+		};
+	}
+}`)
+)
+
+// TestEvidenceOmitsNestedDeclarationLocals keeps the reported identifiers
+// aligned with what was actually graded. A nested declaration's locals are
+// excluded from the taint decision, so naming them in the evidence invites a
+// reviewer to trace a variable the analyzer deliberately never followed. Calls
+// stay listed because calls genuinely were part of the decision.
+func TestEvidenceOmitsNestedDeclarationLocals(t *testing.T) {
+	rep := run(t, fxEvidenceExcludesNestedLocal)
+	if len(rep.Results) != 1 {
+		t.Fatalf("results = %+v, want the call inside the closure reported", rep.Results)
+	}
+	if slices.Contains(rep.Results[0].Identifiers, "$secretlocal") {
+		t.Fatalf("identifiers = %v, want no closure-local that was excluded from grading", rep.Results[0].Identifiers)
+	}
+}
+
+// TestThisCaptureWalkStopsAtANamedFunction pins where the implicit-$this walk
+// gives up. PHP does bind $this to the outer closure here, so continuing the
+// walk would not be factually wrong -- it would raise the marker on a closure
+// that never mentions $this itself, which is the fire-on-the-shape-alone noise
+// the taint gate exists to suppress. The named function between them is a
+// scope PHP does not forward $this through, and stopping there is what keeps
+// the marker meaning "taint was dropped here".
+func TestThisCaptureWalkStopsAtANamedFunction(t *testing.T) {
+	rep := run(t, fxThisWalkStopsAtNamedFunction)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want none: the closure never receives $this itself", rep.PrecisionLoss)
+	}
+}
