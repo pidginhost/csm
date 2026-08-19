@@ -391,7 +391,18 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				yaraWants = false
 			}
 			if phpWants && info.Size() > phpMaxBytes {
-				phpGaps.record(path, phptaint.StatusOversize.String())
+				// An oversize file is only a PHP coverage gap if it could have
+				// been PHP. The deep walk hands every readable file to this
+				// consumer and the analyzer's own pre-filter normally rejects
+				// the rest instantly -- but that pre-filter never runs on a
+				// file too large to send, so without this check every large
+				// error_log, JSON blob and media file on the host is reported
+				// as PHP content we failed to examine. Measured on a live
+				// host: 617 of 660 recorded gaps in one scan, which buries the
+				// handful that are real.
+				if phpFileMayBePHP(path, info) {
+					phpGaps.record(path, phptaint.StatusOversize.String())
+				}
 				phpConsumer.advance(path)
 				phpWants = false
 			}
