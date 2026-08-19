@@ -1164,6 +1164,30 @@ class K {
 	function m($c) { $this->b = curl_exec($c); return static fn() => fn() => eval($this->b); }
 }`)
 
+	fxCaptureThisThroughClosureArrow = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return function() { return fn() => eval($this->b); }; }
+}`)
+
+	fxCaptureThisThroughNestedClosure = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return function() { return function() { eval($this->b); }; }; }
+}`)
+
+	fxCaptureThisThroughStaticClosure = b64(`<?php
+class K {
+	private $b;
+	function m($c) { $this->b = curl_exec($c); return static function() { return fn() => eval($this->b); }; }
+}`)
+
+	fxCaptureThisThroughClosureClean = b64(`<?php
+class K {
+	private $b = 'local.php';
+	function m($c) { $unused = curl_exec($c); include $this->b; return function() { return fn() => $this->b; }; }
+}`)
+
 	fxCaptureOtherThroughStaticArrow = b64(`<?php
 class K {
 	function m($c) { $payload = curl_exec($c); return static fn() => eval($payload); }
@@ -1226,6 +1250,7 @@ func TestStaticCaptureDoesNotReceiveThis(t *testing.T) {
 		{"static closure", fxCaptureThisStaticClosure},
 		{"static arrow", fxCaptureThisStaticArrow},
 		{"nested arrow across static arrow", fxCaptureThisThroughStaticArrow},
+		{"nested arrow across static closure", fxCaptureThisThroughStaticClosure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rep := run(t, tc.fixture)
@@ -1241,6 +1266,33 @@ func TestStaticCaptureDoesNotReceiveThis(t *testing.T) {
 	rep := run(t, fxCaptureOtherThroughStaticArrow)
 	if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
 		t.Fatalf("precision loss = %v, want closure-capture for an ordinary variable captured by a static arrow", rep.PrecisionLoss)
+	}
+}
+
+// TestThisCapturePropagatesThroughClosureParents covers $this's exception to
+// the ordinary-closure boundary rule. A non-static closure is automatically
+// bound to the current object, so a nested declaration can receive $this from
+// it even when the enclosing closure's own facts contain no direct $this read.
+// A static closure remains a hard boundary, as the control above asserts.
+func TestThisCapturePropagatesThroughClosureParents(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"arrow", fxCaptureThisThroughClosureArrow},
+		{"closure", fxCaptureThisThroughNestedClosure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if !slices.Contains(rep.PrecisionLoss, "closure-capture") {
+				t.Fatalf("precision loss = %v, want closure-capture through non-static closure", rep.PrecisionLoss)
+			}
+		})
+	}
+
+	rep := run(t, fxCaptureThisThroughClosureClean)
+	if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want no closure-capture through a clean non-static closure", rep.PrecisionLoss)
 	}
 }
 

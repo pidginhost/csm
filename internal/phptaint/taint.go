@@ -665,9 +665,9 @@ func hasDroppedCapture(
 			return false, err
 		}
 		names := closureCaptureNames(cl)
-		// A non-static closure declared in a method binds $this implicitly,
-		// so it appears in no use() clause while still carrying whatever the
-		// enclosing object holds.
+		// A non-static closure created in object context binds $this
+		// implicitly, so it appears in no use() clause while still carrying
+		// whatever the enclosing object holds.
 		if body := factsByScope[cl]; cl.StaticTkn == nil && body != nil && body.vars["this"] {
 			names["this"] = true
 		}
@@ -685,6 +685,46 @@ func hasDroppedCapture(
 		}
 		if names := arrowCaptureNames(af, body); len(names) > 0 {
 			captures[af] = names
+		}
+	}
+
+	// $this is the exception to an ordinary closure being a hard capture
+	// boundary. Every non-static closure created in object context is bound to
+	// that object, even when only a declaration nested inside the closure reads
+	// $this. The independently collected closure facts exclude that nested
+	// declaration, so surface the implicit capture on every non-static
+	// closure/arrow along the path. Static declarations and named lexical
+	// scopes remain hard boundaries. Stopping at an already surfaced node keeps
+	// the total walk linear when many captures share a deeply nested path.
+	thisForwarded := make(map[ast.Vertex]bool)
+	var thisSeeds []ast.Vertex
+	for node, names := range captures {
+		if names["this"] {
+			thisSeeds = append(thisSeeds, node)
+		}
+	}
+	for _, node := range thisSeeds {
+		for scope := tree.parent[node]; scope != nil && !thisForwarded[scope]; scope = tree.parent[scope] {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			forwards := false
+			switch declaration := scope.(type) {
+			case *ast.ExprClosure:
+				forwards = declaration.StaticTkn == nil
+			case *ast.ExprArrowFunction:
+				forwards = declaration.StaticTkn == nil
+			}
+			if !forwards {
+				break
+			}
+			thisForwarded[scope] = true
+			names := captures[scope]
+			if names == nil {
+				names = map[string]bool{}
+				captures[scope] = names
+			}
+			names["this"] = true
 		}
 	}
 	if len(captures) == 0 {
