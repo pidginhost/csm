@@ -50,13 +50,6 @@ func longestNeedle(groups ...[][]byte) int {
 	return max
 }
 
-// isCandidate is a cheap byte scan run before parsing. It is intentionally
-// over-inclusive; the AST pass decides whether a real flow exists. PHP
-// function names and language constructs are case-insensitive (EVAL, Eval
-// and eval all execute the same construct), so admission matches
-// case-insensitively too, on pain of a false negative admitting less than
-// the AST rules would. The open-tag check runs first so a file that never
-// looks like PHP never pays for the sink/source keyword scans either.
 // MayBePHPSource reports whether content could be PHP at all, judged only by
 // the presence of an open tag. It exists for callers that must decide
 // something about a file they cannot analyze in full -- an oversize file, say
@@ -71,6 +64,13 @@ func MayBePHPSource(prefix []byte) bool {
 	return containsAnyFold(prefix, phpOpenTags)
 }
 
+// isCandidate is a cheap byte scan run before parsing. It is intentionally
+// over-inclusive; the AST pass decides whether a real flow exists. PHP
+// function names and language constructs are case-insensitive (EVAL, Eval
+// and eval all execute the same construct), so admission matches
+// case-insensitively too, on pain of a false negative admitting less than
+// the AST rules would. The open-tag check runs first so a file that never
+// looks like PHP never pays for the sink/source keyword scans either.
 func isCandidate(src []byte) bool {
 	if !containsAnyFold(src, phpOpenTags) {
 		return false

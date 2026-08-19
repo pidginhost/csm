@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 func withPHPTaintAnalyzer(t *testing.T, fn func(context.Context, []byte) phptaint.Report) {
@@ -510,19 +511,138 @@ func TestOversizeGapRequiresPHPLookingContent(t *testing.T) {
 	if err := os.WriteFile(blob, []byte(`{"cities":["a","b"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !phpFileMayBePHP(php) {
+	phpInfo, err := os.Lstat(php)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logInfo, err := os.Lstat(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobInfo, err := os.Lstat(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !phpFileMayBePHP(php, phpInfo) {
 		t.Error("a file opening with <?php was not treated as PHP")
 	}
-	if phpFileMayBePHP(log) {
+	if phpFileMayBePHP(log, logInfo) {
 		t.Error("an error_log was treated as PHP content")
 	}
-	if phpFileMayBePHP(blob) {
+	if phpFileMayBePHP(blob, blobInfo) {
 		t.Error("a JSON blob was treated as PHP content")
 	}
 	// Unreadable answers yes: a file this scan could not examine is exactly
 	// what the coverage report exists to name.
-	if !phpFileMayBePHP(filepath.Join(dir, "does-not-exist")) {
+	if !phpFileMayBePHP(filepath.Join(dir, "does-not-exist"), nil) {
 		t.Error("an unreadable file was silently dropped from coverage")
+	}
+}
+
+func TestPHPFileMayBePHPDoesNotBlockOnFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raced-pipe")
+	if err := os.WriteFile(path, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	done := make(chan bool, 1)
+	go func() { done <- phpFileMayBePHP(path, expected) }()
+
+	select {
+	case mayBePHP := <-done:
+		if !mayBePHP {
+			t.Fatal("a path raced to a FIFO was silently dropped from coverage")
+		}
+	case <-time.After(time.Second):
+		fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		t.Fatal("PHP prefix read blocked on a path raced to a FIFO")
+	}
+}
+
+func TestPHPFileMayBePHPFailsClosedOnSymlinkSwap(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "plain-target")
+	if err := os.WriteFile(target, []byte("not PHP"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "raced-link")
+	if err := os.WriteFile(link, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP(link, expected) {
+		t.Fatal("a path raced to a symlink was silently dropped from coverage")
+	}
+}
+
+func TestPHPFileMayBePHPFailsClosedOnRegularFileSwap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raced-file")
+	if err := os.WriteFile(path, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := path + ".replacement"
+	if err := os.WriteFile(replacement, []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP(path, expected) {
+		t.Fatal("a path raced to another regular file was silently dropped from coverage")
+	}
+}
+
+type failingPHPPrefixOS struct {
+	OS
+}
+
+func (failingPHPPrefixOS) ReadRegularFilePrefix(string, os.FileInfo, int64) ([]byte, error) {
+	return []byte("plain prefix"), errors.New("forced read failure")
+}
+
+func TestPHPFileMayBePHPFailsClosedOnReadError(t *testing.T) {
+	old := osFS
+	osFS = failingPHPPrefixOS{OS: realOS{}}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP("ignored", nil) {
+		t.Fatal("a partial prefix returned with a read error was silently dropped from coverage")
 	}
 }
 

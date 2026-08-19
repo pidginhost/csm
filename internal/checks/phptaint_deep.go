@@ -3,6 +3,8 @@ package checks
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -271,6 +273,10 @@ func phpTaintConfidence(c phptaint.Confidence) string {
 // to contain the byte sequence.
 const phpTaintOversizePeekBytes = 64 << 10
 
+type phpRegularFilePrefixReader interface {
+	ReadRegularFilePrefix(string, os.FileInfo, int64) ([]byte, error)
+}
+
 // phpFileMayBePHP reports whether a file too large to analyze nonetheless
 // looks like PHP source, judged only by its leading bytes.
 //
@@ -278,16 +284,31 @@ const phpTaintOversizePeekBytes = 64 << 10
 // examine, and reporting it is the honest outcome. The failure direction that
 // matters is the other one -- silently deciding a file was not PHP and
 // dropping it from the coverage report.
-func phpFileMayBePHP(path string) bool {
+func phpFileMayBePHP(path string, expected os.FileInfo) bool {
+	if reader, ok := osFS.(phpRegularFilePrefixReader); ok {
+		prefix, err := reader.ReadRegularFilePrefix(path, expected, phpTaintOversizePeekBytes)
+		if err != nil {
+			return true
+		}
+		return phptaint.MayBePHPSource(prefix)
+	}
+
 	f, err := osFS.Open(path)
 	if err != nil {
 		return true
 	}
 	defer func() { _ = f.Close() }()
-	prefix := make([]byte, phpTaintOversizePeekBytes)
-	n, err := f.Read(prefix)
-	if n <= 0 && err != nil {
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !sameFileSnapshot(expected, opened) {
 		return true
 	}
-	return phptaint.MayBePHPSource(prefix[:n])
+	prefix, err := io.ReadAll(io.LimitReader(f, phpTaintOversizePeekBytes))
+	if err != nil {
+		return true
+	}
+	after, err := f.Stat()
+	if err != nil || !sameFileSnapshot(opened, after) {
+		return true
+	}
+	return phptaint.MayBePHPSource(prefix)
 }
