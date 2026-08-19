@@ -828,10 +828,6 @@ func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
 	return newSpanIndex(t.children[self])
 }
 
-// readVarNodes returns variables whose value is read in this subtree. The
-// parser visitor also visits assignment targets; those are writes, not
-// inputs to the assignment expression, and must not borrow taint from an
-// earlier assignment.
 // withoutNestedDeclarationVars returns a view of f whose VARIABLE facts drop
 // anything positioned inside one of the excluded declaration spans, leaving
 // its CALL facts whole.
@@ -849,7 +845,10 @@ func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
 // package: an unplaceable fact fails open, toward keeping a dependency rather
 // than silently dropping one.
 func (f *scopeFacts) withoutNestedDeclarationVars(exclude *spanIndex) *scopeFacts {
-	if exclude == nil {
+	// Most functions have no nested declarations. Avoid copying three fact
+	// slices on every return evaluation when the exclusion index cannot
+	// possibly remove anything.
+	if exclude == nil || len(exclude.spans) == 0 {
 		return f
 	}
 	keep := func(n ast.Vertex) bool {
@@ -878,6 +877,10 @@ func (f *scopeFacts) withoutNestedDeclarationVars(exclude *spanIndex) *scopeFact
 	return &out
 }
 
+// readVarNodes returns variables whose value is read in this subtree. The
+// parser visitor also visits assignment targets; those are writes, not
+// inputs to the assignment expression, and must not borrow taint from an
+// earlier assignment.
 func (f *scopeFacts) readVarNodes() []namedNodeSpan {
 	writes := make([]nodeSpan, 0, len(f.writes))
 	for _, n := range f.writes {
