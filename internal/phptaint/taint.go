@@ -1204,6 +1204,33 @@ func dedupeAndSort(in []flowResult) []flowResult {
 // subtree's source calls, summarized calls, and tainted variable reads. It also
 // returns source positions so decoder correlation stays linearithmic rather
 // than recursively recollecting every nested decoder argument.
+// A variable name is looked up in a taintState in exactly five places in this
+// package, and every one of them must be fed by facts collected WITH
+// declaration exclusion, or a nested declaration's own parameter or local
+// borrows an identically named outer variable's taint and reports a flow on
+// clean code. Names like $data, $content and $url recur constantly in real
+// PHP, so a bare collision is enough. The five, and what keeps each scoped:
+//
+//	solveAssignments             origins built from the scope's own facts
+//	hasUnresolvableTaintedTarget the scope's own facts
+//	sourceLabel                  a filtered sub (vars rebuilt to match)
+//	stateFor                     taintedLocals over a per-scope facts value
+//	activeTaint (below)          see the three feeders named next
+//
+// activeTaint is reached only through exprTaintFacts, which has three
+// feeders: evalBodySummary and findFlows, both of which collect their
+// expression WITHOUT exclusion so that a call reached only through a nested
+// closure is still followed, and then filter its variable side back through
+// the scope's exclusion index; and exprTaint, whose two callers are both
+// reachable only for an AST node carrying no position, which this parser does
+// not produce.
+//
+// Anything new that grades an expression against a scope's taint state joins
+// this list and needs the same treatment. Fixing one instance at a time does
+// not work here: this defect was found and fixed three separate times -- in
+// the summaries path, in the sink path, and in the capture walk -- before the
+// enumeration above made it possible to say the class was closed rather than
+// merely that no more instances had turned up.
 func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (Confidence, bool, []nodeSpan) {
 	best := ConfidenceLow
 	found := false
