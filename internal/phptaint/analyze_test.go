@@ -1360,3 +1360,112 @@ func TestNestedDeclarationLocalsDoNotTaintTheReturn(t *testing.T) {
 		})
 	}
 }
+
+var (
+	fxSinkArrowParamCollision = b64(`<?php
+$data = curl_exec($c);
+$rows = [];
+include array_map(fn($data) => $data->tpl, $rows)[0];`)
+
+	fxSinkClosureLocalCollision = b64(`<?php
+$data = curl_exec($c);
+$rows = [];
+include array_map(function($x){ $data = 'safe.php'; return $data; }, $rows)[0];`)
+
+	fxSinkCollisionInMethod = b64(`<?php
+class K {
+	function m($c, $rows) { $data = curl_exec($c); include array_map(fn($data) => $data->tpl, $rows)[0]; }
+}`)
+
+	fxSinkCalleeInClosure = b64(`<?php
+function fetch($c){ return curl_exec($c); }
+$rows = [];
+include array_map(function() use ($c) { return fetch($c); }, $rows)[0];`)
+
+	fxSummaryPropertyCollision = b64(`<?php
+function f($c, $rows) {
+	$o = new stdClass();
+	$o->name = curl_exec($c);
+	return array_map(fn($o) => $o->name, $rows);
+}
+$tpl = f($c, $rows);
+include $tpl;`)
+
+	fxSummaryPropertyDirect = b64(`<?php
+function f($c) {
+	$o = new stdClass();
+	$o->name = curl_exec($c);
+	return $o->name;
+}
+$tpl = f($c);
+include $tpl;`)
+
+	// The arrow function starts at the function's closing brace with nothing
+	// between, which is what makes the two declarations adjacent rather than
+	// nested.
+	fxAdjacentCaptureScopes = b64(`<?php
+function a($c){ $p = curl_exec($c); return function() use ($k) { include $k; }; }fn() => function() use ($p) { include $p; };`)
+)
+
+// TestNestedDeclarationLocalsDoNotTaintASink is the sink-expression twin of
+// TestNestedDeclarationLocalsDoNotTaintTheReturn. A sink's argument is
+// collected without excluding nested declarations for the same reason a return
+// expression is -- a call reached only through a closure there must still be
+// followed -- so it needs the same variable-side filtering, or an arrow
+// parameter sharing a name with an outer tainted variable reports a flow that
+// does not exist.
+func TestNestedDeclarationLocalsDoNotTaintASink(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"arrow parameter", fxSinkArrowParamCollision},
+		{"closure local", fxSinkClosureLocalCollision},
+		{"inside a method", fxSinkCollisionInMethod},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if len(rep.Results) != 0 {
+				t.Fatalf("results = %+v, want none: the value is the nested declaration's own", rep.Results)
+			}
+		})
+	}
+
+	// Control: a callee reached only through a closure inside the sink
+	// expression must still be followed, which is why the calls are not
+	// filtered alongside the variables.
+	rep := run(t, fxSinkCalleeInClosure)
+	if len(rep.Results) != 1 {
+		t.Fatalf("results = %+v, want the call inside the closure still followed", rep.Results)
+	}
+}
+
+// TestNestedDeclarationPropertyReadsAreFiltered covers the property-path form
+// of the same collision. Property reads are keyed by their whole access path
+// rather than the bare base variable, so they travel a different field than
+// plain variables and need filtering of their own; without it this fires while
+// the plain-variable version stays clean.
+func TestNestedDeclarationPropertyReadsAreFiltered(t *testing.T) {
+	if rep := run(t, fxSummaryPropertyCollision); len(rep.Results) != 0 {
+		t.Fatalf("results = %+v, want none: $o is the arrow function's own parameter", rep.Results)
+	}
+	if rep := run(t, fxSummaryPropertyDirect); len(rep.Results) != 1 {
+		t.Fatalf("results = %+v, want the direct property read still reported", rep.Results)
+	}
+}
+
+// TestAdjacentScopesDoNotShareCaptures is the capture-analysis half of the
+// exclusive-end-position rule. TestAdjacentDeclarationsAreSiblings asserts on
+// results and so only exercises the declaration sweep; the capture walk keeps
+// its own nesting stack and moves precision loss rather than results, so it
+// needs its own case. Here the arrow function begins at the function's closing
+// brace, so treating it as nested would let it borrow that function's local.
+func TestAdjacentScopesDoNotShareCaptures(t *testing.T) {
+	rep := run(t, fxAdjacentCaptureScopes)
+	if rep.Status != StatusAnalyzed {
+		t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+	}
+	if slices.Contains(rep.PrecisionLoss, "closure-capture") {
+		t.Fatalf("precision loss = %v, want none: the tainted local belongs to the adjacent function", rep.PrecisionLoss)
+	}
+}
