@@ -3,6 +3,8 @@ package checks
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -263,4 +265,50 @@ func phpTaintConfidence(c phptaint.Confidence) string {
 	default:
 		return "low"
 	}
+}
+
+// phpTaintOversizePeekBytes bounds the prefix read to decide whether an
+// oversize file could be PHP. An open tag in a PHP file is at the top; a
+// larger peek would only buy false positives from binary content that happens
+// to contain the byte sequence.
+const phpTaintOversizePeekBytes = 64 << 10
+
+type phpRegularFilePrefixReader interface {
+	ReadRegularFilePrefix(string, os.FileInfo, int64) ([]byte, error)
+}
+
+// phpFileMayBePHP reports whether a file too large to analyze nonetheless
+// looks like PHP source, judged only by its leading bytes.
+//
+// A read error answers yes: an unreadable file is a file this scan could not
+// examine, and reporting it is the honest outcome. The failure direction that
+// matters is the other one -- silently deciding a file was not PHP and
+// dropping it from the coverage report.
+func phpFileMayBePHP(path string, expected os.FileInfo) bool {
+	if reader, ok := osFS.(phpRegularFilePrefixReader); ok {
+		prefix, err := reader.ReadRegularFilePrefix(path, expected, phpTaintOversizePeekBytes)
+		if err != nil {
+			return true
+		}
+		return phptaint.MayBePHPSource(prefix)
+	}
+
+	f, err := osFS.Open(path)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !sameFileSnapshot(expected, opened) {
+		return true
+	}
+	prefix, err := io.ReadAll(io.LimitReader(f, phpTaintOversizePeekBytes))
+	if err != nil {
+		return true
+	}
+	after, err := f.Stat()
+	if err != nil || !sameFileSnapshot(opened, after) {
+		return true
+	}
+	return phptaint.MayBePHPSource(prefix)
 }

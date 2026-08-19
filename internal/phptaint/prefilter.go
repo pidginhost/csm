@@ -50,6 +50,20 @@ func longestNeedle(groups ...[][]byte) int {
 	return max
 }
 
+// MayBePHPSource reports whether content could be PHP at all, judged only by
+// the presence of an open tag. It exists for callers that must decide
+// something about a file they cannot analyze in full -- an oversize file, say
+// -- and would otherwise have to guess.
+//
+// It is deliberately weaker than isCandidate: no sink or source keyword is
+// required, because a caller holding only a prefix cannot conclude anything
+// from their absence. Judging by content rather than by name or extension is
+// the point; a scanner that decided what to examine from a path would be
+// telling an attacker where to hide.
+func MayBePHPSource(prefix []byte) bool {
+	return containsAnyFold(prefix, phpOpenTags)
+}
+
 // isCandidate is a cheap byte scan run before parsing. It is intentionally
 // over-inclusive; the AST pass decides whether a real flow exists. PHP
 // function names and language constructs are case-insensitive (EVAL, Eval

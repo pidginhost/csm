@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"golang.org/x/sys/unix"
 )
 
 func withPHPTaintAnalyzer(t *testing.T, fn func(context.Context, []byte) phptaint.Report) {
@@ -487,5 +488,201 @@ func TestPHPTaintSeverityUsesTheStrongestResult(t *testing.T) {
 	}
 	if got := phpTaintDeepFinding("/x.php", "sha", report); got.Severity != alert.Critical {
 		t.Fatalf("severity = %v, want Critical from the strongest result", got.Severity)
+	}
+}
+
+// TestOversizeGapRequiresPHPLookingContent keeps the coverage report readable.
+// The deep walk hands every readable file to this consumer; the analyzer's own
+// pre-filter rejects non-PHP instantly, but it never runs on a file too large
+// to send. Without a content check, every big error_log, JSON blob and media
+// file becomes "PHP content we failed to examine" -- measured at 617 of 660
+// gaps in a single scan on a live host.
+func TestOversizeGapRequiresPHPLookingContent(t *testing.T) {
+	dir := t.TempDir()
+	php := filepath.Join(dir, "big.php")
+	if err := os.WriteFile(php, append([]byte("<?php\n"), make([]byte, 4096)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "error_log")
+	if err := os.WriteFile(log, []byte("[19-Aug-2026] PHP Warning: something\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blob := filepath.Join(dir, "cities.json")
+	if err := os.WriteFile(blob, []byte(`{"cities":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	phpInfo, err := os.Lstat(php)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logInfo, err := os.Lstat(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobInfo, err := os.Lstat(blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !phpFileMayBePHP(php, phpInfo) {
+		t.Error("a file opening with <?php was not treated as PHP")
+	}
+	if phpFileMayBePHP(log, logInfo) {
+		t.Error("an error_log was treated as PHP content")
+	}
+	if phpFileMayBePHP(blob, blobInfo) {
+		t.Error("a JSON blob was treated as PHP content")
+	}
+	// Unreadable answers yes: a file this scan could not examine is exactly
+	// what the coverage report exists to name.
+	if !phpFileMayBePHP(filepath.Join(dir, "does-not-exist"), nil) {
+		t.Error("an unreadable file was silently dropped from coverage")
+	}
+}
+
+func TestPHPFileMayBePHPDoesNotBlockOnFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raced-pipe")
+	if err := os.WriteFile(path, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	done := make(chan bool, 1)
+	go func() { done <- phpFileMayBePHP(path, expected) }()
+
+	select {
+	case mayBePHP := <-done:
+		if !mayBePHP {
+			t.Fatal("a path raced to a FIFO was silently dropped from coverage")
+		}
+	case <-time.After(time.Second):
+		fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+		if err == nil {
+			_ = unix.Close(fd)
+		}
+		t.Fatal("PHP prefix read blocked on a path raced to a FIFO")
+	}
+}
+
+func TestPHPFileMayBePHPFailsClosedOnSymlinkSwap(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "plain-target")
+	if err := os.WriteFile(target, []byte("not PHP"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "raced-link")
+	if err := os.WriteFile(link, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP(link, expected) {
+		t.Fatal("a path raced to a symlink was silently dropped from coverage")
+	}
+}
+
+func TestPHPFileMayBePHPFailsClosedOnRegularFileSwap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raced-file")
+	if err := os.WriteFile(path, []byte("<?php"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := path + ".replacement"
+	if err := os.WriteFile(replacement, []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	old := osFS
+	osFS = realOS{}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP(path, expected) {
+		t.Fatal("a path raced to another regular file was silently dropped from coverage")
+	}
+}
+
+type failingPHPPrefixOS struct {
+	OS
+}
+
+func (failingPHPPrefixOS) ReadRegularFilePrefix(string, os.FileInfo, int64) ([]byte, error) {
+	return []byte("plain prefix"), errors.New("forced read failure")
+}
+
+func TestPHPFileMayBePHPFailsClosedOnReadError(t *testing.T) {
+	old := osFS
+	osFS = failingPHPPrefixOS{OS: realOS{}}
+	t.Cleanup(func() { osFS = old })
+	if !phpFileMayBePHP("ignored", nil) {
+		t.Fatal("a partial prefix returned with a read error was silently dropped from coverage")
+	}
+}
+
+// TestOversizeNonPHPIsNotAPHPCoverageGap is the walk-level half of the same
+// property: it is the call site, not the helper, that decides what an operator
+// reads. On a live host 617 of 660 recorded gaps in one scan were oversize
+// files that were never PHP -- error logs, JSON, media -- which buries the
+// handful that are real.
+func TestOversizeNonPHPIsNotAPHPCoverageGap(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+
+	big := make([]byte, phptaint.MaxSourceBytes+1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	writeYARADeepFile(t, root, "error_log", string(big))
+	phpPath := writeYARADeepFile(t, root, "huge.php", "<?php\n"+string(big))
+
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		t.Fatal("an oversize file must never reach the analyzer")
+		return phptaint.Report{}
+	})
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}, nil)
+
+	gaps := jsFindingsByCheck(findings, "php_taint_scan_incomplete")
+	if len(gaps) != 1 {
+		t.Fatalf("gap findings = %d, want exactly one aggregate: %+v", len(gaps), findings)
+	}
+	// Only the PHP-looking file counts, so the total must be 1 and the example
+	// must name it rather than the error_log.
+	if !strings.Contains(gaps[0].Message, "1 file") {
+		t.Fatalf("message = %q, want a count of 1 (the error_log must not count)", gaps[0].Message)
+	}
+	if !strings.Contains(gaps[0].Details, filepath.Base(phpPath)) {
+		t.Fatalf("details = %q, want the oversize PHP file named", gaps[0].Details)
 	}
 }
