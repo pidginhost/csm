@@ -425,4 +425,13 @@ func TestSupervisorBreakerRetriesOncePerCooldown(t *testing.T) {
 	if s.SpawnCount() != spawns+1 {
 		t.Fatalf("spawns after cooldown = %d, want exactly one trial", s.SpawnCount()-spawns)
 	}
+
+	// The failed trial restarts the cooldown. More files arriving immediately
+	// must not turn the half-open state into an unbounded respawn loop.
+	for i := 0; i < 25; i++ {
+		s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	}
+	if s.SpawnCount() != spawns+1 {
+		t.Fatalf("spawned %d workers after a failed trial, want 0 until the next cooldown", s.SpawnCount()-(spawns+1))
+	}
 }

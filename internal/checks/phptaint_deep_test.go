@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func withPHPTaintAnalyzer(t *testing.T, fn func(context.Context, []byte) phptaint.Report) {
@@ -311,6 +313,44 @@ func TestCheckYARADeepUnknownRangesPreservePHPTaintState(t *testing.T) {
 	}
 }
 
+func TestCheckYARADeepDoesNotAssignEarlierWalkGapToPHP(t *testing.T) {
+	db := useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	badDir := filepath.Join(root, "a-hidden")
+	writeYARADeepFile(t, root, "a-hidden/unreadable.php", "candidate")
+	phpCursor := writeYARADeepFile(t, root, "z-covered.php", "candidate")
+	seed := store.ScanCursorRecord{
+		Check:     phpTaintDeepCursorCheck,
+		LastPath:  phpCursor,
+		WrappedAt: time.Now().UTC(),
+	}
+	if err := db.PutScanCursor(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.readDir = func(path string) ([]os.DirEntry, error) {
+		if path == badDir {
+			return nil, errors.New("forced read failure")
+		}
+		return fs.OS.ReadDir(path)
+	}
+	withMockOS(t, fs)
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		t.Fatal("PHP analyzer called for a path its cursor already covered")
+		return phptaint.Report{}
+	})
+
+	findings := CheckYARADeep(context.Background(), &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep"},
+	}, nil)
+	if got := jsFindingsByCheck(findings, "php_taint_scan_incomplete"); len(got) != 0 {
+		t.Fatalf("earlier JS walk gap leaked into PHP coverage: %+v", got)
+	}
+}
+
 func TestCheckYARADeepInactivePHPConsumerPreservesStateSilently(t *testing.T) {
 	useRollingStore(t)
 	SetPHPTaintAnalyzer(nil)
@@ -346,17 +386,24 @@ func TestCheckYARADeepInactivePHPConsumerPreservesStateSilently(t *testing.T) {
 // megabytes on a real cPanel box for the length of a scan.
 func TestPHPTaintGapPathsAreBounded(t *testing.T) {
 	gaps := newPHPTaintGapCollector()
-	for i := 0; i < maxPHPTaintGapPaths+1000; i++ {
+	for i := 0; i < maxPHPTaintGapPaths; i++ {
 		gaps.record(fmt.Sprintf("/home/u/public_html/f%d.php", i), phptaint.StatusWorkerFailure.String())
 	}
-	if len(gaps.paths) > maxPHPTaintGapPaths {
-		t.Fatalf("retained %d paths, want at most %d", len(gaps.paths), maxPHPTaintGapPaths)
+	// Seeing a retained path again still leaves the exact set authoritative.
+	gaps.record("/home/u/public_html/f0.php", phptaint.StatusWorkerFailure.String())
+	if gaps.pathsIncomplete() {
+		t.Fatal("duplicate retained path falsely reported the exact set as incomplete")
 	}
+	// One new path beyond the bound is enough to make carry-forward unsafe.
+	gaps.record("/home/u/public_html/overflow.php", phptaint.StatusWorkerFailure.String())
 	if !gaps.pathsIncomplete() {
 		t.Fatal("hit the bound without reporting the path set as incomplete")
 	}
+	if len(gaps.paths) != maxPHPTaintGapPaths {
+		t.Fatalf("retained %d paths, want exactly %d", len(gaps.paths), maxPHPTaintGapPaths)
+	}
 	// The count must stay honest even though the paths stopped.
-	if !strings.Contains(gaps.finding().Message, fmt.Sprint(maxPHPTaintGapPaths+1000)) {
+	if !strings.Contains(gaps.finding().Message, fmt.Sprint(maxPHPTaintGapPaths+2)) {
 		t.Fatalf("message = %q, want the full count", gaps.finding().Message)
 	}
 	if !strings.Contains(gaps.finding().Details, "retained for only the first") {
@@ -376,6 +423,9 @@ func TestPHPTaintUnknownRangeIsReported(t *testing.T) {
 	gaps.recordUnknownRange("reading /home/u/secret: permission denied")
 	if gaps.empty() {
 		t.Fatal("an unreadable range left the collector empty, so no finding would fire")
+	}
+	if !gaps.pathsIncomplete() {
+		t.Fatal("an unreadable range left the exact path set authoritative")
 	}
 	f := gaps.finding()
 	if f.Check != "php_taint_scan_incomplete" {

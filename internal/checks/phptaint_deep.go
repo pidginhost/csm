@@ -74,12 +74,14 @@ func newPHPTaintGapCollector() *phpTaintGapCollector {
 }
 
 func (g *phpTaintGapCollector) record(path, status string) {
-	if len(g.paths) < maxPHPTaintGapPaths {
-		g.paths[path] = struct{}{}
-	} else {
-		// Stop retaining paths, but never stop counting: the count is what
-		// tells an operator how much of the host went unexamined.
-		g.pathsTruncated = true
+	if _, retained := g.paths[path]; !retained {
+		if len(g.paths) < maxPHPTaintGapPaths {
+			g.paths[path] = struct{}{}
+		} else {
+			// Stop retaining paths, but never stop counting: the count is what
+			// tells an operator how much of the host went unexamined.
+			g.pathsTruncated = true
+		}
 	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
@@ -88,9 +90,12 @@ func (g *phpTaintGapCollector) record(path, status string) {
 }
 
 // pathsIncomplete reports that this run could not enumerate every gapped path,
-// so its carry-forward set is not authoritative and the purge must be
-// suppressed for the whole owner.
-func (g *phpTaintGapCollector) pathsIncomplete() bool { return g.pathsTruncated }
+// either because retention hit its bound or because the walk lost an unknown
+// range. Its carry-forward set is therefore not authoritative and the purge
+// must be suppressed for the whole owner.
+func (g *phpTaintGapCollector) pathsIncomplete() bool {
+	return g.pathsTruncated || g.unknown > 0
+}
 
 // recordUnknownRange notes coverage lost over a range this walk cannot
 // enumerate. It deliberately does not add to paths: claiming specific paths

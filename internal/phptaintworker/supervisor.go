@@ -14,7 +14,7 @@ import (
 )
 
 // ConsecutiveFailureLimit is how many failed workers in a row are tolerated
-// before the supervisor stops spawning replacements.
+// before the supervisor pauses spawning replacements for one cooldown.
 //
 // It is a constant rather than a setting because nothing an operator can
 // observe would tell them a better value: the right number depends on how the
