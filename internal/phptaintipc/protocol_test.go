@@ -3,6 +3,7 @@ package phptaintipc
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -79,6 +80,16 @@ func TestEncodeDecodeAnalyzeArgs(t *testing.T) {
 	}
 }
 
+func TestEncodePayloadNilOmitsPayload(t *testing.T) {
+	frame, err := EncodePayload(OpPing, nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if frame.Op != OpPing || len(frame.Payload) != 0 {
+		t.Fatalf("frame = %+v, want ping without a payload", frame)
+	}
+}
+
 // TestAnalyzeArgsRejectsOversizeSource keeps the size decision in one place.
 // phptaint already refuses to analyze a source above its own ceiling and
 // reports that as a coverage gap; the wire must refuse the same input rather
@@ -90,6 +101,44 @@ func TestAnalyzeArgsRejectsOversizeSource(t *testing.T) {
 	}
 }
 
+func TestAnalyzeArgsAtSourceLimitFitsFrame(t *testing.T) {
+	frame, err := EncodePayload(OpAnalyze, AnalyzeArgs{Source: make([]byte, phptaint.MaxSourceBytes)})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if err := WriteFrame(io.Discard, frame); err != nil {
+		t.Fatalf("write exact-limit source: %v", err)
+	}
+}
+
+func TestAnalyzeArgsPointerRejectsOversizeSource(t *testing.T) {
+	_, err := EncodePayload(OpAnalyze, &AnalyzeArgs{Source: make([]byte, phptaint.MaxSourceBytes+1)})
+	if !errors.Is(err, ErrSourceTooLarge) {
+		t.Fatalf("error = %v, want ErrSourceTooLarge", err)
+	}
+}
+
+func TestDecodeAnalyzeArgsRejectsOversizeSource(t *testing.T) {
+	raw, err := json.Marshal(AnalyzeArgs{Source: make([]byte, phptaint.MaxSourceBytes+1)})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	var got AnalyzeArgs
+	if err := DecodePayload(Frame{Payload: raw}, &got); !errors.Is(err, ErrSourceTooLarge) {
+		t.Fatalf("error = %v, want ErrSourceTooLarge", err)
+	}
+}
+
+func TestDecodeAnalyzeArgsRejectsMissingSource(t *testing.T) {
+	got := AnalyzeArgs{Source: []byte("previous request")}
+	if err := DecodePayload(Frame{Payload: []byte(`{}`)}, &got); err == nil {
+		t.Fatal("payload without source accepted, want error")
+	}
+	if string(got.Source) != "previous request" {
+		t.Fatalf("failed decode changed target to %q", got.Source)
+	}
+}
+
 // TestAnalyzeResultCarriesReportVerbatim guards the reason this package shares
 // phptaint's own Report type instead of restating it: worker and daemon are the
 // same binary, so a translation layer could only add drift, and a status this
@@ -97,8 +146,7 @@ func TestAnalyzeArgsRejectsOversizeSource(t *testing.T) {
 // which means "clean". A coverage gap must never decay into a clean result.
 func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 	want := phptaint.Report{
-		Status:            phptaint.StatusPartialParse,
-		Reason:            "recovered from syntax errors",
+		Status:            phptaint.StatusAnalyzed,
 		PrecisionLoss:     []string{"closure-capture"},
 		TotalResults:      3,
 		EvidenceTruncated: true,
@@ -106,7 +154,7 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"}},
 		},
 	}
-	frame, err := EncodePayload(OpAnalyze, AnalyzeResult{Report: want})
+	frame, err := EncodePayload("", AnalyzeResult{Report: want})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -115,10 +163,69 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if got.Report.Status != want.Status || got.Report.TotalResults != want.TotalResults ||
-		got.Report.Reason != want.Reason || !got.Report.EvidenceTruncated ||
+		got.Report.Reason != "" || !got.Report.EvidenceTruncated ||
 		len(got.Report.Results) != 1 || got.Report.Results[0].Sink != "eval" ||
 		got.Report.Results[0].Confidence != phptaint.ConfidenceCertain ||
 		len(got.Report.PrecisionLoss) != 1 {
 		t.Fatalf("report round trip lost data: %+v", got.Report)
+	}
+}
+
+func TestAnalyzeResultCarriesCoverageGapVerbatim(t *testing.T) {
+	want := phptaint.Report{Status: phptaint.StatusPartialParse, Reason: "partial_parse: recovered syntax error"}
+	frame, err := EncodePayload("", AnalyzeResult{Report: want})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(frame, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Report.Status != want.Status || got.Report.Reason != want.Reason {
+		t.Fatalf("report round trip = %+v, want %+v", got.Report, want)
+	}
+}
+
+func TestAnalyzeResultCarriesExplicitNotCandidateStatus(t *testing.T) {
+	frame, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{Status: phptaint.StatusNotCandidate}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(frame, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Report.Status != phptaint.StatusNotCandidate {
+		t.Fatalf("status = %v, want StatusNotCandidate", got.Report.Status)
+	}
+}
+
+func TestAnalyzeResultRejectsMissingStatus(t *testing.T) {
+	got := AnalyzeResult{Report: phptaint.Report{Status: phptaint.StatusAnalyzed}}
+	if err := DecodePayload(Frame{Payload: []byte(`{"report":{}}`)}, &got); err == nil {
+		t.Fatal("report without status accepted, want error")
+	}
+	if got.Report.Status != phptaint.StatusAnalyzed {
+		t.Fatalf("failed decode changed status to %v", got.Report.Status)
+	}
+}
+
+func TestAnalyzeResultRejectsUnknownStatus(t *testing.T) {
+	var got AnalyzeResult
+	err := DecodePayload(Frame{Payload: []byte(`{"report":{"Status":255}}`)}, &got)
+	if err == nil {
+		t.Fatal("unknown report status accepted, want error")
+	}
+}
+
+func TestAnalyzeResultRejectsEvidenceOnCoverageGap(t *testing.T) {
+	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+		Status:       phptaint.StatusPartialParse,
+		Reason:       "partial_parse",
+		Results:      []phptaint.Result{{Source: "curl_exec", Sink: "eval"}},
+		TotalResults: 1,
+	}})
+	if err == nil {
+		t.Fatal("coverage-gap report with evidence accepted, want error")
 	}
 }
