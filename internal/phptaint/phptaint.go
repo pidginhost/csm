@@ -44,6 +44,16 @@ const (
 	StatusResourceLimit
 	StatusCanceled
 	StatusPanic
+	// StatusTimeout means analysis was still running when its deadline
+	// expired and the process running it was killed. It is distinct from
+	// StatusCanceled, which is the caller withdrawing: a timeout means the
+	// analyzer did not stop on its own, which for this package is the
+	// expected outcome of a parser loop rather than a surprise.
+	StatusTimeout
+	// StatusWorkerFailure means analysis could not be carried out because the
+	// isolated process failed -- it exited unexpectedly, could not be
+	// started, or its reply was unusable. The content was never examined.
+	StatusWorkerFailure
 )
 
 // String names the status for metrics labels and operator-facing text.
@@ -65,6 +75,10 @@ func (s Status) String() string {
 		return "canceled"
 	case StatusPanic:
 		return "panic"
+	case StatusTimeout:
+		return "timeout"
+	case StatusWorkerFailure:
+		return "worker_failure"
 	}
 	return "unknown"
 }
