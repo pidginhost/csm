@@ -22,6 +22,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -79,6 +80,8 @@ func main() {
 		runDaemon()
 	case "yara-worker":
 		runYaraWorker()
+	case "phptaint-worker":
+		runPHPTaintWorker()
 	case "install":
 		runInstall()
 	case "uninstall":
@@ -421,6 +424,16 @@ func runYaraWorker() {
 	obs.Flush()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
+		os.Exit(1)
+	}
+}
+
+// runPHPTaintWorker is the isolated child entry point for PHP taint analysis.
+// Stdout is reserved for framed replies; diagnostics go to stderr so a parser
+// failure cannot corrupt the supervisor protocol.
+func runPHPTaintWorker() {
+	if err := phptaintworker.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "phptaint-worker:", err)
 		os.Exit(1)
 	}
 }

@@ -29,6 +29,13 @@ const ContentScannerVersion = 4
 // are re-verified under the new one.
 const JSTaintLogicVersion = 1
 
+// PHPTaintLogicVersion identifies the current semantics of the PHP remote-
+// source taint analyzer (internal/phptaint). BUMP IT in the same commit as any
+// change to its parser, pre-filter, propagation, sinks, resource limits, or
+// evidence semantics so existing findings are re-verified by the isolated
+// worker under the new logic.
+const PHPTaintLogicVersion = 1
+
 // contentReverifiableChecks are content findings whose condition can be
 // re-evaluated here by re-running the classifier that produced them on the
 // file's current bytes. Unlike presenceVerifiableChecks, a still-present file
@@ -42,6 +49,7 @@ var contentReverifiableChecks = []string{
 	"obfuscated_php",
 	"signature_match_realtime", "yara_match_realtime", "yara_match_scheduled",
 	"js_keylogger_dataflow",
+	"php_remote_taint",
 }
 
 var contentReverifiableSet = func() map[string]struct{} {
@@ -61,10 +69,9 @@ func IsContentReverifiable(check string) bool {
 
 // ContentDetectionVersion returns a token identifying the full content-detection
 // logic in effect: the heuristic and scanner versions, the loaded signature-set
-// version, the loaded YARA rule count, and the JavaScript taint analyzer
-// version. The re-verifier always re-runs the real classifier, so this token
-// only gates the daemon sweep and enriches audit detail; its precision is not
-// security-critical.
+// version, the loaded YARA rule count, and both taint analyzer versions. The
+// re-verifier always re-runs the real classifier, so this token only gates the
+// daemon sweep and enriches audit detail; its precision is not security-critical.
 func ContentDetectionVersion() string {
 	sigVer := 0
 	if s := signatures.Global(); s != nil {
@@ -74,13 +81,23 @@ func ContentDetectionVersion() string {
 	if y := yara.Active(); y != nil {
 		yaraRules = y.RuleCount()
 	}
-	return contentDetectionVersionToken(ContentLogicVersion, ContentScannerVersion, sigVer, yaraRules, JSTaintLogicVersion)
+	return contentDetectionVersionToken(
+		ContentLogicVersion,
+		ContentScannerVersion,
+		sigVer,
+		yaraRules,
+		JSTaintLogicVersion,
+		PHPTaintLogicVersion,
+	)
 }
 
 // contentDetectionVersionToken renders the version components. Pure so a test
 // can pass two different component values and prove the tokens differ.
-func contentDetectionVersionToken(phpVer, scanVer, sigVer, yaraRules, jsTaintVer int) string {
-	return fmt.Sprintf("php=%d;scan=%d;sig=%d;yara=%d;jstaint=%d", phpVer, scanVer, sigVer, yaraRules, jsTaintVer)
+func contentDetectionVersionToken(phpVer, scanVer, sigVer, yaraRules, jsTaintVer, phpTaintVer int) string {
+	return fmt.Sprintf(
+		"php=%d;scan=%d;sig=%d;yara=%d;jstaint=%d;phptaint=%d",
+		phpVer, scanVer, sigVer, yaraRules, jsTaintVer, phpTaintVer,
+	)
 }
 
 // contentFingerprintMaxBytes caps the file size hashed for a finding's

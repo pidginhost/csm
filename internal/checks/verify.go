@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/jstaint"
+	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -288,6 +289,32 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 			// resource limit, cancellation, panic) must not auto-clear a
 			// still-infected finding as a superseded false positive.
 			return false, "", "", fmt.Errorf("JS taint analysis did not complete: %s", report.Status)
+		}
+	case "php_remote_taint":
+		if info.Size() > phptaint.MaxSourceBytes {
+			return false, "", "", fmt.Errorf("PHP taint analysis did not complete: %s", phptaint.StatusOversize)
+		}
+		snap, err := readContentSnapshotForReverifyBounded(path, info, phptaint.MaxSourceBytes)
+		if err != nil {
+			if errors.Is(err, errContentSnapshotTooLarge) {
+				return false, "", "", fmt.Errorf("PHP taint analysis did not complete: %s", phptaint.StatusOversize)
+			}
+			return false, "", "", fmt.Errorf("cannot read file: %v", err)
+		}
+		rctx, cancel := context.WithTimeout(context.Background(), phpTaintDeepPerFileTimeout)
+		defer cancel()
+		report := runPHPTaintAnalysis(rctx, snap.data)
+		switch report.Status {
+		case phptaint.StatusAnalyzed, phptaint.StatusNotCandidate:
+			if len(report.Results) > 0 {
+				return true, fmt.Sprintf("%d remote-source code execution flow(s)", report.TotalResults), snap.sha256, nil
+			}
+			return false, "", snap.sha256, nil
+		default:
+			// The isolated worker is mandatory here too. Any incomplete status
+			// leaves the finding unresolved instead of falling through to the
+			// unrelated PHP heuristic classifier and clearing it.
+			return false, "", "", fmt.Errorf("PHP taint analysis did not complete: %s", report.Status)
 		}
 	default: // PHP heuristic content family
 		res, currentHash, err := analyzePHPContentForReverify(path, info)

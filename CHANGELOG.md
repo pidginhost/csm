@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A new PHP analyzer detects code that fetches content from a remote server and then executes it, even when the fetch and the execution happen in different functions -- a pattern regular expressions cannot express. It is not yet wired into any scan, so it produces no findings on a live host.
+- The scheduled deep scan now includes a PHP analyzer that detects remotely fetched content reaching code execution, even across functions. It runs in a separate supervised process so one file can never stall the daemon, and any file it could not examine is reported as reduced coverage rather than passed as clean.
 - A new malware rule catches PHP source that is rebuilt at run time, through a decoder or a call resolved at run time, and then executed with an HTML-mode prefix. Template engines using the same idiom to render local templates are unaffected, since they concatenate the template as read.
 
 ### Fixed

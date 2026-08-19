@@ -44,6 +44,16 @@ const (
 	StatusResourceLimit
 	StatusCanceled
 	StatusPanic
+	// StatusTimeout means analysis was still running when its deadline
+	// expired and the process running it was killed. It is distinct from
+	// StatusCanceled, which is the caller withdrawing: a timeout means the
+	// analyzer did not stop on its own, which for this package is the
+	// expected outcome of a parser loop rather than a surprise.
+	StatusTimeout
+	// StatusWorkerFailure means analysis could not be carried out because the
+	// isolated process failed -- it exited unexpectedly, could not be
+	// started, or its reply was unusable. The content was never examined.
+	StatusWorkerFailure
 )
 
 // String names the status for metrics labels and operator-facing text.
@@ -65,6 +75,10 @@ func (s Status) String() string {
 		return "canceled"
 	case StatusPanic:
 		return "panic"
+	case StatusTimeout:
+		return "timeout"
+	case StatusWorkerFailure:
+		return "worker_failure"
 	}
 	return "unknown"
 }
@@ -114,9 +128,10 @@ const (
 	maxCollectedNodes  = 800_000
 	maxSummarizedFuncs = 2_000
 	maxAnalysisDepth   = 256
-	// maxEvidenceResults bounds returned evidence paths; TotalResults still
-	// reports the full count.
-	maxEvidenceResults = 8
+	// MaxEvidenceResults bounds returned evidence paths; TotalResults still
+	// reports the full count. It is exported so the worker protocol can reject
+	// a clean reply that silently omits evidence.
+	MaxEvidenceResults = 8
 	// maxDeclarations bounds how many functions/methods/classes one file's
 	// declaration tree is built from. declarationTree is linearithmic in
 	// this count (not quadratic -- see its doc comment), so this exists as
@@ -158,6 +173,13 @@ type Report struct {
 	PrecisionLoss []string
 	// EvidenceTruncated reports that displayed evidence was shortened.
 	EvidenceTruncated bool
+}
+
+// CoverageGap constructs an incomplete report through the same boundary used
+// by Analyze. Supervisors use it for failures that happen outside the analyzer
+// so error text cannot bypass the report's sanitizing and size bounds.
+func CoverageGap(status Status, reason string) Report {
+	return finalizeReport(Report{Status: status, Reason: reason})
 }
 
 // recovered recovers a panic at the package boundary so a parser or analyzer
@@ -428,8 +450,8 @@ func analyze(ctx context.Context, src []byte) Report {
 	flows = dedupeAndSort(flows)
 	total := len(flows)
 	truncated := false
-	if len(flows) > maxEvidenceResults {
-		flows = flows[:maxEvidenceResults]
+	if len(flows) > MaxEvidenceResults {
+		flows = flows[:MaxEvidenceResults]
 		truncated = true
 	}
 	results := make([]Result, len(flows))

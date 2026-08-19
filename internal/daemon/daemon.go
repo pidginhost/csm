@@ -38,6 +38,7 @@ import (
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/phptaintworker"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -101,6 +102,10 @@ type Daemon struct {
 	yaraSup            *yaraworker.Supervisor
 	yaraCrashMu        sync.Mutex
 	yaraLastCrashAlert time.Time
+
+	// phpTaintSup is the mandatory process boundary around the PHP taint
+	// parser. It starts its child lazily on the first admitted source.
+	phpTaintSup *phptaintworker.Supervisor
 
 	// forceFullRescan is armed by the signature watcher
 	// (sig_watch.go) when any tracked rule file's mtime advances.
@@ -679,6 +684,11 @@ func (d *Daemon) Run() error {
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
+	if err := d.initPHPTaintAnalyzer(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] PHP taint worker init: %v\n", ts(), err)
+	} else {
+		defer d.stopPHPTaintAnalyzer()
+	}
 	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
 
 	if db := checks.GetThreatDB(); db != nil {
@@ -1199,6 +1209,7 @@ func (d *Daemon) Run() error {
 		d.scanJobs.Stop()
 	}
 	d.stopYaraBackend()
+	d.stopPHPTaintAnalyzer()
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
