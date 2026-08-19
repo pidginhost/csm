@@ -55,7 +55,9 @@ func TestPHPTaintSnapshotReportsAFlow(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("findings = %d, want 1", len(got))
 	}
-	if got[0].Check != "php_remote_taint" || got[0].Severity != alert.Critical {
+	// ConfidenceHigh, so High: severity tracks the strongest flow, and only a
+	// decoder-confirmed remote source reaches Critical.
+	if got[0].Check != "php_remote_taint" || got[0].Severity != alert.High {
 		t.Fatalf("finding = %+v", got[0])
 	}
 	if !gaps.empty() {
@@ -437,5 +439,53 @@ func TestPHPTaintUnknownRangeIsReported(t *testing.T) {
 	// An unknown range claims no exact paths: carry-forward must not invent any.
 	if len(gaps.paths) != 0 {
 		t.Fatalf("unknown range recorded %d exact paths, want 0", len(gaps.paths))
+	}
+}
+
+// TestPHPTaintSeverityFollowsConfidence keeps a real host's alert list usable.
+//
+// Measured on a production cPanel box: of 1,104,790 files, 30,276 were
+// analyzed and 33 produced a finding -- and all 33 were ConfidenceLow, all in
+// third-party libraries that legitimately read a file and evaluate it (Smarty,
+// Symfony's cache, google/gax, the WordPress SEO SDK). Zero graded High or
+// Certain. Emitting Critical regardless of confidence would have opened this
+// feature with 33 wrong Criticals on its first scheduled scan.
+//
+// Low is downgraded rather than dropped: a genuine cross-function flow whose
+// URL sits at the call site also grades Low, so suppressing it would lose real
+// detections along with the noise.
+func TestPHPTaintSeverityFollowsConfidence(t *testing.T) {
+	for _, tc := range []struct {
+		confidence phptaint.Confidence
+		want       alert.Severity
+	}{
+		{phptaint.ConfidenceLow, alert.Warning},
+		{phptaint.ConfidenceHigh, alert.High},
+		{phptaint.ConfidenceCertain, alert.Critical},
+	} {
+		report := phptaint.Report{
+			Status: phptaint.StatusAnalyzed, TotalResults: 1,
+			Results: []phptaint.Result{{Source: "curl_exec", Sink: "eval", Confidence: tc.confidence}},
+		}
+		got := phpTaintDeepFinding("/x.php", "sha", report)
+		if got.Severity != tc.want {
+			t.Fatalf("confidence %v gave severity %v, want %v", tc.confidence, got.Severity, tc.want)
+		}
+	}
+}
+
+// TestPHPTaintSeverityUsesTheStrongestResult stops a single low-confidence
+// result in the evidence list from masking a certain one in the same file.
+func TestPHPTaintSeverityUsesTheStrongestResult(t *testing.T) {
+	report := phptaint.Report{
+		Status: phptaint.StatusAnalyzed, TotalResults: 3,
+		Results: []phptaint.Result{
+			{Source: "curl_exec", Sink: "include", Confidence: phptaint.ConfidenceLow},
+			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain},
+			{Source: "curl_exec", Sink: "require", Confidence: phptaint.ConfidenceLow},
+		},
+	}
+	if got := phpTaintDeepFinding("/x.php", "sha", report); got.Severity != alert.Critical {
+		t.Fatalf("severity = %v, want Critical from the strongest result", got.Severity)
 	}
 }
