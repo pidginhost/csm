@@ -29,6 +29,18 @@ const ConsecutiveFailureLimit = 3
 // holding the supervisor lock.
 const reapTimeout = 10 * time.Second
 
+// breakerCooldown is how long the supervisor refuses to spawn replacements
+// after ConsecutiveFailureLimit failures in a row, before it tries once more.
+//
+// The breaker bounds an exec storm; it must not switch the detector off. With
+// no way back it would be a kill switch any tenant could throw with a handful
+// of crafted files, disabling PHP analysis across a shared host for the life of
+// the daemon -- worse than not deploying the detector, because an operator
+// would believe it was running. One trial per cooldown keeps the storm bounded
+// (a hostile account costs one timeout per cooldown, not one per file) while
+// letting a host recover without an operator having to notice and restart.
+const breakerCooldown = 60 * time.Second
+
 // SupervisorConfig describes how to start the worker process.
 type SupervisorConfig struct {
 	// Command and Args start the worker. In production this is the CSM binary
@@ -65,8 +77,13 @@ type Supervisor struct {
 	lastPID     int
 	spawns      int
 	consecutive int
-	mode        string
-	stopped     bool
+	// openedAt is when the breaker last opened; the zero value means closed.
+	openedAt time.Time
+	mode     string
+	stopped  bool
+
+	// now is a seam so the cooldown can be exercised without sleeping.
+	now func() time.Time
 }
 
 type child struct {
@@ -85,7 +102,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if cfg.Timeout <= 0 {
 		return nil, errors.New("phptaintworker: timeout must be positive")
 	}
-	return &Supervisor{cfg: cfg}, nil
+	return &Supervisor{cfg: cfg, now: time.Now}, nil
 }
 
 // SetMode is a test seam for the helper child, which selects its behaviour
@@ -128,9 +145,10 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 	if s.stopped {
 		return gap(phptaint.StatusWorkerFailure, "supervisor stopped")
 	}
-	if s.consecutive >= ConsecutiveFailureLimit {
+	if s.breakerOpenLocked() {
 		return gap(phptaint.StatusWorkerFailure, fmt.Sprintf(
-			"worker failed %d times in a row; not analyzed", s.consecutive))
+			"worker failed %d times in a row; not analyzed, next attempt after %s",
+			s.consecutive, breakerCooldown))
 	}
 	req, err := phptaintipc.EncodePayload(phptaintipc.OpAnalyze, phptaintipc.AnalyzeArgs{Source: src})
 	if err != nil {
@@ -142,7 +160,7 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		return gap(phptaint.StatusCanceled, ctxErr.Error())
 	}
 	if startErr := s.ensureChildLocked(); startErr != nil {
-		s.consecutive++
+		s.recordFailureLocked()
 		return gap(phptaint.StatusWorkerFailure, startErr.Error())
 	}
 
@@ -153,21 +171,44 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		// desynchronise every later request.
 		s.killLocked()
 		if errors.Is(err, errDeadline) {
-			s.consecutive++
+			s.recordFailureLocked()
 			return gap(phptaint.StatusTimeout, fmt.Sprintf(
 				"analysis exceeded %s; worker killed", s.cfg.Timeout))
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return gap(phptaint.StatusCanceled, err.Error())
 		}
-		s.consecutive++
+		s.recordFailureLocked()
 		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 	s.consecutive = 0
+	s.openedAt = time.Time{}
 	return report
 }
 
 var errDeadline = errors.New("phptaintworker: analysis deadline exceeded")
+
+// recordFailureLocked counts a worker failure and, once the run of failures
+// reaches the limit, restarts the cooldown. Stamping on every failure at or
+// past the limit -- a failed trial request included -- is what makes a
+// persistently broken host retry once per cooldown instead of once per file.
+func (s *Supervisor) recordFailureLocked() {
+	s.consecutive++
+	if s.consecutive >= ConsecutiveFailureLimit {
+		s.openedAt = s.now()
+	}
+}
+
+// breakerOpenLocked reports whether this request must be refused without
+// spawning. Once the cooldown elapses the breaker goes half-open: the request
+// is let through as a trial, which either resets the counter on success or
+// restarts the cooldown on failure.
+func (s *Supervisor) breakerOpenLocked() bool {
+	if s.consecutive < ConsecutiveFailureLimit {
+		return false
+	}
+	return s.now().Sub(s.openedAt) < breakerCooldown
+}
 
 // roundTripLocked writes one request and waits for its reply, bounded by the
 // configured timeout. The pipe round trip runs on its own goroutine because the

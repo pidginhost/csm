@@ -344,3 +344,85 @@ func TestRealHangIsStillUnstoppableInProcess(t *testing.T) {
 		// precisely the leak a separate process converts into a killable one.
 	}
 }
+
+// TestSupervisorBreakerRecoversAfterCooldown is the difference between a
+// circuit breaker and a kill switch. Without a way back, a tenant on a shared
+// host disables PHP analysis for every account on that host, permanently, with
+// a handful of crafted files -- and an operator still believes the detector is
+// running. The breaker must bound the storm and then let the host recover on
+// its own.
+func TestSupervisorBreakerRecoversAfterCooldown(t *testing.T) {
+	cfg := helperChild(t, "hang")
+	cfg.Timeout = 200 * time.Millisecond
+	s, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+
+	for i := 0; i < ConsecutiveFailureLimit; i++ {
+		if got := s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));")); got.Status != phptaint.StatusTimeout {
+			t.Fatalf("request %d status = %v, want StatusTimeout", i, got.Status)
+		}
+	}
+
+	// Still inside the cooldown: refused without spawning.
+	spawns := s.SpawnCount()
+	if got := s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));")); got.Status != phptaint.StatusWorkerFailure {
+		t.Fatalf("status during cooldown = %v, want StatusWorkerFailure", got.Status)
+	}
+	if s.SpawnCount() != spawns {
+		t.Fatal("spawned a worker while the breaker was open")
+	}
+
+	// Past the cooldown, with a healthy worker, the host recovers.
+	clock = clock.Add(breakerCooldown + time.Second)
+	s.SetMode("ok")
+	got := s.Analyze(context.Background(), []byte("<?php $p = curl_exec($c); eval($p);"))
+	if got.Status != phptaint.StatusAnalyzed {
+		t.Fatalf("status after cooldown = %v (%s), want StatusAnalyzed", got.Status, got.Reason)
+	}
+
+	// And the counter is genuinely reset, not merely bypassed once.
+	for i := 0; i < ConsecutiveFailureLimit+2; i++ {
+		if r := s.Analyze(context.Background(), []byte("<?php $p = curl_exec($c); eval($p);")); r.Status != phptaint.StatusAnalyzed {
+			t.Fatalf("post-recovery request %d status = %v, want StatusAnalyzed", i, r.Status)
+		}
+	}
+}
+
+// TestSupervisorBreakerRetriesOncePerCooldown pins the storm bound that makes
+// recovery affordable: a host that stays broken must cost one trial per
+// cooldown, not one per file.
+func TestSupervisorBreakerRetriesOncePerCooldown(t *testing.T) {
+	cfg := helperChild(t, "hang")
+	cfg.Timeout = 200 * time.Millisecond
+	s, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	for i := 0; i < ConsecutiveFailureLimit; i++ {
+		s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	}
+
+	spawns := s.SpawnCount()
+	for i := 0; i < 25; i++ {
+		s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	}
+	if s.SpawnCount() != spawns {
+		t.Fatalf("spawned %d workers during one cooldown, want 0", s.SpawnCount()-spawns)
+	}
+
+	clock = clock.Add(breakerCooldown + time.Second)
+	s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	if s.SpawnCount() != spawns+1 {
+		t.Fatalf("spawns after cooldown = %d, want exactly one trial", s.SpawnCount()-spawns)
+	}
+}
