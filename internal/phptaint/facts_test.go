@@ -57,6 +57,15 @@ func TestCollectSeparatesAssignmentWritesFromReads(t *testing.T) {
 	}
 }
 
+func TestNestedDeclarationFilterReusesFactsWithoutExclusions(t *testing.T) {
+	f := mustParse(t, "<?php $result = $input;")
+	exclude := spanIndex{}
+
+	if got := f.withoutNestedDeclarationVars(&exclude); got != f {
+		t.Fatal("empty exclusion index copied facts, want the original collection")
+	}
+}
+
 func TestCollectFindsEverySinkKind(t *testing.T) {
 	f := mustParse(t, `<?php eval($a); include $b; include_once $c; require $d; require_once $e;`)
 	got := map[string]bool{}
