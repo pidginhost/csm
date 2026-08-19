@@ -272,6 +272,7 @@ var runnerFindingNames = map[string][]string{
 
 const (
 	logicalOwnerJSTaintDeep         = "js_taint_deep"
+	logicalOwnerPHPTaintDeep        = "php_taint_deep"
 	logicalOwnerReputationQuota     = "reputation_quota_health"
 	logicalOwnerReputationFeedStale = "reputation_feed_health"
 )
@@ -283,6 +284,7 @@ const (
 // markCheckIncomplete with the owner's exact name.
 var logicalOwnerFindingNames = map[string][]string{
 	logicalOwnerJSTaintDeep:         {"js_keylogger_dataflow", "js_taint_scan_incomplete"},
+	logicalOwnerPHPTaintDeep:        {"php_remote_taint", "php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {"reputation_quota_exhausted"},
 	logicalOwnerReputationFeedStale: {"threat_feed_stale"},
 }
@@ -292,6 +294,7 @@ var logicalOwnerFindingNames = map[string][]string{
 // disabling that host is also meant to disable the hosted consumer.
 var logicalOwnerDisableAliases = map[string][]string{
 	logicalOwnerJSTaintDeep:         {logicalOwnerJSTaintDeep, "js_keylogger_dataflow"},
+	logicalOwnerPHPTaintDeep:        {logicalOwnerPHPTaintDeep, "php_remote_taint"},
 	logicalOwnerReputationQuota:     {logicalOwnerReputationQuota, "reputation_quota_exhausted", "ip_reputation"},
 	logicalOwnerReputationFeedStale: {logicalOwnerReputationFeedStale, "threat_feed_stale", "ip_reputation"},
 }
@@ -301,7 +304,7 @@ var logicalOwnerDisableAliases = map[string][]string{
 // hosted owner is enabled, and the runner purges each owner by its own
 // completion mark rather than the wrapper's.
 var physicalCheckLogicalOwners = map[string][]string{
-	"yara_deep":     {logicalOwnerJSTaintDeep},
+	"yara_deep":     {logicalOwnerJSTaintDeep, logicalOwnerPHPTaintDeep},
 	"ip_reputation": {logicalOwnerReputationQuota, logicalOwnerReputationFeedStale},
 }
 
@@ -332,6 +335,13 @@ func disabledLogicalOwners(cfg *config.Config) map[string]struct{} {
 // hosted by yara_deep is disabled.
 func jsTaintDeepConsumerDisabled(cfg *config.Config) bool {
 	_, off := disabledLogicalOwners(cfg)[logicalOwnerJSTaintDeep]
+	return off
+}
+
+// phpTaintDeepConsumerDisabled reports whether the PHP taint consumer is
+// disabled; the physical wrapper may still run for the other consumers.
+func phpTaintDeepConsumerDisabled(cfg *config.Config) bool {
+	_, off := disabledLogicalOwners(cfg)[logicalOwnerPHPTaintDeep]
 	return off
 }
 
@@ -620,6 +630,7 @@ var perRunFindingNames = map[string][]string{
 	"yara_deep":                     {"yara_scan_incomplete"},
 	"db_content":                    {"db_content_scan_incomplete"},
 	logicalOwnerJSTaintDeep:         {"js_taint_scan_incomplete"},
+	logicalOwnerPHPTaintDeep:        {"php_taint_scan_incomplete"},
 	logicalOwnerReputationQuota:     {},
 	logicalOwnerReputationFeedStale: {},
 	"php_config_changes":            {"php_config_scan_incomplete"},

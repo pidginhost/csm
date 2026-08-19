@@ -4,7 +4,7 @@ CSM uses YAML and YARA-X rules for malware detection. Rules are stored in `/opt/
 
 Deep scans are rolling: each scheduled run resumes from a persisted cursor and scans as much as fits in its time budget, so the whole content set is covered across runs even when a single run cannot finish it. A warning finding is raised if no full pass has completed within 30 days.
 
-The same rolling walk also feeds the JavaScript keystroke taint analyzer (`js_keylogger_dataflow`, see the deep checks reference). Each consumer keeps its own cursor and completion record, so a missing or failed YARA backend does not stall JavaScript coverage and vice versa.
+The same rolling walk also feeds the JavaScript keystroke taint analyzer (`js_keylogger_dataflow`) and the PHP remote-source taint analyzer (`php_remote_taint`); see the deep checks reference for both. Each consumer keeps its own cursor and completion record, so none of them stalls the others: a missing or failed YARA backend does not hold up either taint analyzer, and the PHP analyzer being unavailable does not affect YARA or JavaScript coverage.
 
 A rule declaring `file_types: [".php"]` is also applied to `.phps` files, because that source-view extension still contains PHP source. It stays outside the set of extensions CSM treats as executable, so this does not change which files the real-time dropper tracker considers runnable.
 

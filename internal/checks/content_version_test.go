@@ -101,6 +101,9 @@ func TestIsContentReverifiable(t *testing.T) {
 	if !IsContentReverifiable("js_keylogger_dataflow") {
 		t.Error("js_keylogger_dataflow should be content-reverifiable")
 	}
+	if !IsContentReverifiable("php_remote_taint") {
+		t.Error("php_remote_taint should be content-reverifiable")
+	}
 	if IsContentReverifiable("uid0_account") {
 		t.Error("uid0_account is not content-reverifiable")
 	}
@@ -116,16 +119,34 @@ func TestContentDetectionVersionIncludesJSTaintComponent(t *testing.T) {
 	}
 }
 
+func TestContentDetectionVersionIncludesPHPTaintComponent(t *testing.T) {
+	v := ContentDetectionVersion()
+	if !strings.Contains(v, fmt.Sprintf("phptaint=%d", PHPTaintLogicVersion)) {
+		t.Errorf("token %q missing phptaint=%d component", v, PHPTaintLogicVersion)
+	}
+}
+
 // TestContentDetectionVersionTokenJSTaintSensitivity proves the token actually
 // depends on the JS analyzer version: two different values must produce two
 // different tokens, so a version bump forces the daemon sweep to re-verify.
 func TestContentDetectionVersionTokenJSTaintSensitivity(t *testing.T) {
-	a := contentDetectionVersionToken(1, 2, 3, 4, 1)
-	b := contentDetectionVersionToken(1, 2, 3, 4, 2)
+	a := contentDetectionVersionToken(1, 2, 3, 4, 1, 1)
+	b := contentDetectionVersionToken(1, 2, 3, 4, 2, 1)
 	if a == b {
 		t.Fatalf("tokens identical for different jstaint versions: %q", a)
 	}
 	if !strings.Contains(a, "jstaint=1") || !strings.Contains(b, "jstaint=2") {
 		t.Fatalf("tokens %q / %q do not carry their jstaint component", a, b)
+	}
+}
+
+func TestContentDetectionVersionTokenPHPTaintSensitivity(t *testing.T) {
+	a := contentDetectionVersionToken(1, 2, 3, 4, 1, 1)
+	b := contentDetectionVersionToken(1, 2, 3, 4, 1, 2)
+	if a == b {
+		t.Fatalf("tokens identical for different phptaint versions: %q", a)
+	}
+	if !strings.Contains(a, "phptaint=1") || !strings.Contains(b, "phptaint=2") {
+		t.Fatalf("tokens %q / %q do not carry their phptaint component", a, b)
 	}
 }

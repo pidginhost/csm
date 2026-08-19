@@ -17,6 +17,8 @@ func TestStatusStringsAreStable(t *testing.T) {
 		StatusResourceLimit: "resource_limit",
 		StatusCanceled:      "canceled",
 		StatusPanic:         "panic",
+		StatusTimeout:       "timeout",
+		StatusWorkerFailure: "worker_failure",
 	}
 	for status, name := range want {
 		if got := status.String(); got != name {
@@ -52,7 +54,8 @@ func TestAnalyzeHandlesCanceledContext(t *testing.T) {
 func TestRecoveredClearsEvidenceFromEveryIncompleteStatus(t *testing.T) {
 	for _, status := range []Status{
 		StatusNotCandidate, StatusOversize, StatusParseError, StatusPartialParse,
-		StatusResourceLimit, StatusCanceled, StatusPanic, Status(255),
+		StatusResourceLimit, StatusCanceled, StatusPanic, StatusTimeout,
+		StatusWorkerFailure, Status(255),
 	} {
 		rep := recovered(func() Report {
 			return Report{
@@ -66,6 +69,21 @@ func TestRecoveredClearsEvidenceFromEveryIncompleteStatus(t *testing.T) {
 		})
 		if len(rep.Results) != 0 || rep.TotalResults != 0 || len(rep.PrecisionLoss) != 0 || rep.EvidenceTruncated {
 			t.Errorf("status %v retained analysis evidence: %+v", status, rep)
+		}
+	}
+}
+
+func TestCoverageGapFinalizesSupervisorFailures(t *testing.T) {
+	for _, status := range []Status{StatusTimeout, StatusWorkerFailure} {
+		rep := CoverageGap(status, "bad\n"+strings.Repeat("x", MaxReasonBytes*2))
+		if rep.Status != status {
+			t.Fatalf("status = %v, want %v", rep.Status, status)
+		}
+		if !strings.HasPrefix(rep.Reason, status.String()+": ") {
+			t.Errorf("reason = %q, want stable status prefix", rep.Reason)
+		}
+		if len(rep.Reason) > MaxReasonBytes || strings.Contains(rep.Reason, "\n") {
+			t.Errorf("unsafe supervisor reason escaped finalization: %q", rep.Reason)
 		}
 	}
 }
