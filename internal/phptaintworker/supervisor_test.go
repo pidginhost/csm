@@ -3,12 +3,13 @@ package phptaintworker
 import (
 	"context"
 	"os"
-	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/phptaintipc"
 )
 
 // helperChild lets a test stand in for the real `csm phptaint-worker`. Mode
@@ -46,6 +47,19 @@ func TestHelperWorkerProcess(t *testing.T) {
 		}
 	case "exit":
 		os.Exit(3)
+	case "reply-op":
+		if _, err := phptaintipc.ReadFrame(os.Stdin); err != nil {
+			t.Fatalf("read helper request: %v", err)
+		}
+		resp, err := phptaintipc.EncodePayload(phptaintipc.OpAnalyze, phptaintipc.AnalyzeResult{
+			Report: phptaint.Report{Status: phptaint.StatusNotCandidate},
+		})
+		if err != nil {
+			t.Fatalf("encode helper response: %v", err)
+		}
+		if err := phptaintipc.WriteFrame(os.Stdout, resp); err != nil {
+			t.Fatalf("write helper response: %v", err)
+		}
 	default:
 		_ = Serve(context.Background(), os.Stdin, os.Stdout)
 	}
@@ -178,8 +192,6 @@ func TestSupervisorNeverReportsCleanOnFailure(t *testing.T) {
 	}
 }
 
-var _ = exec.Command
-
 // TestSupervisorContainsRealParserHangs is the end-to-end proof. These are not
 // synthetic stand-ins: both inputs make the real parser loop forever inside a
 // real worker running the real analyzer. Before isolation, either one pinned a
@@ -224,6 +236,88 @@ func TestSupervisorContainsRealParserHangs(t *testing.T) {
 			}
 			t.Fatalf("worker %d survived a real parser hang", pid)
 		})
+	}
+}
+
+func TestSupervisorBoundsAWriteToAnUnresponsiveWorker(t *testing.T) {
+	cfg := helperChild(t, "hang")
+	cfg.Timeout = 300 * time.Millisecond
+	s, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	start := time.Now()
+	rep := s.Analyze(context.Background(), make([]byte, phptaint.MaxSourceBytes))
+	if rep.Status != phptaint.StatusTimeout {
+		t.Fatalf("status = %v (%s), want StatusTimeout", rep.Status, rep.Reason)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("blocked pipe write escaped the request deadline: %s", elapsed)
+	}
+	if pid := s.LastChildPID(); pid <= 0 {
+		t.Fatal("no worker was started")
+	} else if err := syscall.Kill(pid, 0); err == nil {
+		t.Fatalf("worker %d survived a timed-out pipe write", pid)
+	}
+}
+
+func TestSupervisorDoesNotStartForCanceledContext(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "ok"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rep := s.Analyze(ctx, []byte("<?php eval(curl_exec($c));"))
+	if rep.Status != phptaint.StatusCanceled {
+		t.Fatalf("status = %v (%s), want StatusCanceled", rep.Status, rep.Reason)
+	}
+	if s.SpawnCount() != 0 {
+		t.Fatalf("spawn count = %d, want 0 for an already-canceled request", s.SpawnCount())
+	}
+}
+
+func TestSupervisorCanceledRequestsDoNotOpenBreaker(t *testing.T) {
+	cfg := helperChild(t, "hang")
+	cfg.Timeout = 2 * time.Second
+	s, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	for i := 0; i < ConsecutiveFailureLimit; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		rep := s.Analyze(ctx, []byte("<?php eval(curl_exec($c));"))
+		cancel()
+		if rep.Status != phptaint.StatusCanceled {
+			t.Fatalf("request %d status = %v (%s), want StatusCanceled", i, rep.Status, rep.Reason)
+		}
+	}
+	s.SetMode("ok")
+	rep := s.Analyze(context.Background(), []byte("<?php $p = curl_exec($c); eval($p);"))
+	if rep.Status != phptaint.StatusAnalyzed {
+		t.Fatalf("status after caller cancellations = %v (%s), want StatusAnalyzed", rep.Status, rep.Reason)
+	}
+}
+
+func TestSupervisorRejectsResponseWithAnOp(t *testing.T) {
+	s, err := NewSupervisor(helperChild(t, "reply-op"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer func() { _ = s.Stop() }()
+
+	rep := s.Analyze(context.Background(), []byte("<?php eval(curl_exec($c));"))
+	if rep.Status != phptaint.StatusWorkerFailure {
+		t.Fatalf("status = %v (%s), want StatusWorkerFailure", rep.Status, rep.Reason)
+	}
+	if !strings.Contains(rep.Reason, "response carries op") {
+		t.Fatalf("reason = %q, want response-op protocol error", rep.Reason)
 	}
 }
 

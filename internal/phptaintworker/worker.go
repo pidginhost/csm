@@ -28,14 +28,15 @@ import (
 	"github.com/pidginhost/csm/internal/phptaintipc"
 )
 
-// Serve reads request frames from r and writes response frames to w until r is
-// exhausted or ctx is cancelled. It is the whole worker: one request at a time,
-// no concurrency, no state carried between requests.
+// Serve reads request frames from r and writes response frames to w. It checks
+// ctx between frames, not from inside the parser; the parent process remains
+// the sole liveness boundary. It is the whole worker: one request at a time, no
+// concurrency, no state carried between requests.
 //
-// A malformed request is answered with an error frame and the loop continues.
-// Dropping the process on a bad frame would hand a peer a cheap way to make the
-// parent replace its worker repeatedly, which is the cost this design spends
-// real effort avoiding.
+// A valid frame with a bad operation or payload is answered with an error and
+// the loop continues. Dropping the process for that peer mistake would make the
+// parent replace its worker repeatedly. Broken framing ends the loop because a
+// trustworthy boundary for the next request no longer exists.
 func Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -43,7 +44,7 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 		req, err := phptaintipc.ReadFrame(r)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

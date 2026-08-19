@@ -138,6 +138,9 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 		// so it must not count toward the breaker.
 		return gap(phptaint.StatusOversize, err.Error())
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return gap(phptaint.StatusCanceled, ctxErr.Error())
+	}
 	if startErr := s.ensureChildLocked(); startErr != nil {
 		s.consecutive++
 		return gap(phptaint.StatusWorkerFailure, startErr.Error())
@@ -145,18 +148,19 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 
 	report, err := s.roundTripLocked(ctx, req)
 	if err != nil {
-		s.consecutive++
 		// The child is not trusted after any failure: it may be mid-parse and
 		// spinning, or it may have left a partial frame in the pipe that would
 		// desynchronise every later request.
 		s.killLocked()
 		if errors.Is(err, errDeadline) {
+			s.consecutive++
 			return gap(phptaint.StatusTimeout, fmt.Sprintf(
 				"analysis exceeded %s; worker killed", s.cfg.Timeout))
 		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return gap(phptaint.StatusCanceled, ctxErr.Error())
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return gap(phptaint.StatusCanceled, err.Error())
 		}
+		s.consecutive++
 		return gap(phptaint.StatusWorkerFailure, err.Error())
 	}
 	s.consecutive = 0
@@ -166,26 +170,27 @@ func (s *Supervisor) Analyze(ctx context.Context, src []byte) phptaint.Report {
 var errDeadline = errors.New("phptaintworker: analysis deadline exceeded")
 
 // roundTripLocked writes one request and waits for its reply, bounded by the
-// configured timeout. The read runs on its own goroutine because the child may
-// never answer; the goroutine ends when killLocked closes the pipes.
+// configured timeout. The pipe round trip runs on its own goroutine because the
+// child may stop before reading the complete request or never answer. The
+// goroutine ends when killLocked closes the pipes.
 func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame) (phptaint.Report, error) {
 	c := s.child
-	if err := phptaintipc.WriteFrame(c.stdin, req); err != nil {
-		return phptaint.Report{}, fmt.Errorf("phptaintworker: write request: %w", err)
-	}
-
 	type result struct {
 		frame phptaintipc.Frame
 		err   error
 	}
+	timer := time.NewTimer(s.cfg.Timeout)
+	defer timer.Stop()
+
 	done := make(chan result, 1)
 	go func() {
+		if err := phptaintipc.WriteFrame(c.stdin, req); err != nil {
+			done <- result{err: fmt.Errorf("phptaintworker: write request: %w", err)}
+			return
+		}
 		f, err := phptaintipc.ReadFrame(c.stdout)
 		done <- result{frame: f, err: err}
 	}()
-
-	timer := time.NewTimer(s.cfg.Timeout)
-	defer timer.Stop()
 
 	select {
 	case <-timer.C:
@@ -198,6 +203,9 @@ func (s *Supervisor) roundTripLocked(ctx context.Context, req phptaintipc.Frame)
 		}
 		if res.frame.Error != "" {
 			return phptaint.Report{}, fmt.Errorf("phptaintworker: worker: %s", res.frame.Error)
+		}
+		if res.frame.Op != "" {
+			return phptaint.Report{}, fmt.Errorf("phptaintworker: response carries op %q", res.frame.Op)
 		}
 		var out phptaintipc.AnalyzeResult
 		if err := phptaintipc.DecodePayload(res.frame, &out); err != nil {
@@ -243,8 +251,8 @@ func (s *Supervisor) ensureChildLocked() error {
 //
 // SIGKILL, not SIGTERM: the process this exists to stop is spinning inside a
 // parser loop and never returns to a point where a catchable signal would be
-// handled. Closing the pipes first unblocks the reader goroutine so it cannot
-// outlive the child.
+// handled. Closing the pipes around the kill unblocks the round-trip goroutine
+// so it cannot outlive the child.
 func (s *Supervisor) killLocked() {
 	c := s.child
 	if c == nil {
@@ -277,5 +285,5 @@ func (s *Supervisor) killLocked() {
 }
 
 func gap(status phptaint.Status, reason string) phptaint.Report {
-	return phptaint.Report{Status: status, Reason: reason}
+	return phptaint.CoverageGap(status, reason)
 }

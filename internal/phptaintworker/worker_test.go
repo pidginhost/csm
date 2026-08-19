@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -128,5 +129,12 @@ func TestWorkerStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not return on a cancelled context")
+	}
+}
+
+func TestWorkerRejectsTruncatedFrame(t *testing.T) {
+	err := Serve(context.Background(), bytes.NewReader([]byte{0, 0}), io.Discard)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("error = %v, want io.ErrUnexpectedEOF", err)
 	}
 }
