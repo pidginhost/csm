@@ -400,7 +400,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				// as PHP content we failed to examine. Measured on a live
 				// host: 617 of 660 recorded gaps in one scan, which buries the
 				// handful that are real.
-				if phpFileMayBePHP(path) {
+				if phpFileMayBePHP(path, info) {
 					phpGaps.record(path, phptaint.StatusOversize.String())
 				}
 				phpConsumer.advance(path)

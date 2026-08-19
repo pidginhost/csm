@@ -25,6 +25,26 @@ func BenchmarkIsCandidateReject(b *testing.B) {
 	}
 }
 
+func TestMayBePHPSourceRequiresOnlyAnOpenTag(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{name: "full tag without flow keywords", src: "#!/usr/bin/php\n<?php echo 'ok';", want: true},
+		{name: "echo tag", src: "HTML before <?= $value ?>", want: true},
+		{name: "short tag", src: "<? echo 'ok'; ?>", want: true},
+		{name: "flow keywords without tag", src: "curl_exec then eval", want: false},
+		{name: "plain content", src: "PHP Warning: eval failed", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MayBePHPSource([]byte(tc.src)); got != tc.want {
+				t.Fatalf("MayBePHPSource() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrefilterAdmitsSourceAndSinkTogether(t *testing.T) {
 	admit := []struct{ name, src string }{
 		{"plain", "<?php $d = curl_exec($c); eval($d);"},
