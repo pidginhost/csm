@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A file too large for the PHP analyzer is now reported as unexamined only when it looks like PHP, so large logs, data files and media no longer fill the coverage report with content that was never PHP to begin with.
+
 - The test suite now writes its temporary files to a dedicated directory instead of the system default, so endpoint antivirus on a developer machine can be pointed at one path rather than the whole user temp area. Override with `TEST_TMPDIR`.
 
 - Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it, which makes it a place to park a payload one rename away from execution. They are now scanned as the PHP source they are, in scheduled, rolling, and real-time paths alike, and are still not treated as executable.
