@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/phptaint"
 )
@@ -78,11 +79,14 @@ type PingResult struct {
 	OK bool `json:"ok"`
 }
 
-// EncodePayload marshals v into a frame under op. AnalyzeArgs is size-checked
-// here so an oversize source fails before it is ever encoded.
+// EncodePayload validates and marshals v into a frame under op. AnalyzeArgs is
+// size-checked here so an oversize source fails before it is ever encoded.
 func EncodePayload(op string, v any) (Frame, error) {
-	if args, ok := v.(AnalyzeArgs); ok && len(args.Source) > phptaint.MaxSourceBytes {
-		return Frame{}, fmt.Errorf("%w (%d > %d bytes)", ErrSourceTooLarge, len(args.Source), phptaint.MaxSourceBytes)
+	if v == nil {
+		return Frame{Op: op}, nil
+	}
+	if err := validatePayload(v); err != nil {
+		return Frame{}, err
 	}
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -91,15 +95,150 @@ func EncodePayload(op string, v any) (Frame, error) {
 	return Frame{Op: op, Payload: raw}, nil
 }
 
-// DecodePayload unmarshals a frame's payload into v.
+// DecodePayload unmarshals and validates a frame's payload into v.
 func DecodePayload(f Frame, v any) error {
 	if len(f.Payload) == 0 {
 		return errors.New("phptaintipc: frame has no payload")
 	}
+
+	// Decode the security-sensitive payloads into fresh values. A missing JSON
+	// field must not retain a prior request's source or a prior response's clean
+	// status when a caller reuses storage across frames.
+	switch out := v.(type) {
+	case *AnalyzeArgs:
+		if out == nil {
+			return errors.New("phptaintipc: nil AnalyzeArgs decode target")
+		}
+		if _, err := requiredJSONField(f.Payload, "source"); err != nil {
+			return err
+		}
+		var decoded AnalyzeArgs
+		if err := json.Unmarshal(f.Payload, &decoded); err != nil {
+			return fmt.Errorf("phptaintipc: unmarshal payload: %w", err)
+		}
+		if err := validatePayload(decoded); err != nil {
+			return err
+		}
+		*out = decoded
+		return nil
+	case *AnalyzeResult:
+		if out == nil {
+			return errors.New("phptaintipc: nil AnalyzeResult decode target")
+		}
+		reportJSON, err := requiredJSONField(f.Payload, "report")
+		if err != nil {
+			return err
+		}
+		statusJSON, err := requiredJSONField(reportJSON, "status")
+		if err != nil {
+			return err
+		}
+		var status *phptaint.Status
+		if err := json.Unmarshal(statusJSON, &status); err != nil {
+			return fmt.Errorf("phptaintipc: unmarshal report status: %w", err)
+		}
+		if status == nil {
+			return errors.New("phptaintipc: report status is null")
+		}
+		var decoded AnalyzeResult
+		if err := json.Unmarshal(f.Payload, &decoded); err != nil {
+			return fmt.Errorf("phptaintipc: unmarshal payload: %w", err)
+		}
+		if decoded.Report.Status != *status {
+			return errors.New("phptaintipc: ambiguous report status")
+		}
+		if err := validatePayload(decoded); err != nil {
+			return err
+		}
+		*out = decoded
+		return nil
+	}
+
 	if err := json.Unmarshal(f.Payload, v); err != nil {
 		return fmt.Errorf("phptaintipc: unmarshal payload: %w", err)
 	}
 	return nil
+}
+
+func validatePayload(v any) error {
+	switch payload := v.(type) {
+	case AnalyzeArgs:
+		return validateSourceSize(payload.Source)
+	case *AnalyzeArgs:
+		if payload == nil {
+			return errors.New("phptaintipc: nil AnalyzeArgs payload")
+		}
+		return validateSourceSize(payload.Source)
+	case AnalyzeResult:
+		return validateReport(payload.Report)
+	case *AnalyzeResult:
+		if payload == nil {
+			return errors.New("phptaintipc: nil AnalyzeResult payload")
+		}
+		return validateReport(payload.Report)
+	}
+	return nil
+}
+
+func validateSourceSize(source []byte) error {
+	if len(source) > phptaint.MaxSourceBytes {
+		return fmt.Errorf("%w (%d > %d bytes)", ErrSourceTooLarge, len(source), phptaint.MaxSourceBytes)
+	}
+	return nil
+}
+
+func validateReport(report phptaint.Report) error {
+	if report.Status.String() == "unknown" {
+		return fmt.Errorf("phptaintipc: unknown report status %d", report.Status)
+	}
+
+	hasEvidence := len(report.Results) != 0 || report.TotalResults != 0 ||
+		len(report.PrecisionLoss) != 0 || report.EvidenceTruncated
+	switch report.Status {
+	case phptaint.StatusNotCandidate:
+		if hasEvidence || report.Reason != "" {
+			return errors.New("phptaintipc: not-candidate report carries analysis data")
+		}
+	case phptaint.StatusAnalyzed:
+		if report.Reason != "" {
+			return errors.New("phptaintipc: analyzed report carries an error reason")
+		}
+		if report.TotalResults < 0 || report.TotalResults < len(report.Results) {
+			return errors.New("phptaintipc: analyzed report has inconsistent result counts")
+		}
+	default:
+		if hasEvidence {
+			return errors.New("phptaintipc: incomplete report carries analysis data")
+		}
+		if report.Reason == "" {
+			return errors.New("phptaintipc: incomplete report has no reason")
+		}
+	}
+	if len(report.Reason) > phptaint.MaxReasonBytes {
+		return fmt.Errorf("phptaintipc: report reason is %d bytes, exceeds cap %d", len(report.Reason), phptaint.MaxReasonBytes)
+	}
+	return nil
+}
+
+func requiredJSONField(raw []byte, name string) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("phptaintipc: inspect %s field: %w", name, err)
+	}
+	var found json.RawMessage
+	for field, value := range fields {
+		if !strings.EqualFold(field, name) {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("phptaintipc: payload has ambiguous %s fields", name)
+		}
+		found = value
+	}
+	if found == nil {
+		return nil, fmt.Errorf("phptaintipc: payload has no %s field", name)
+	}
+	return found, nil
 }
 
 // WriteFrame writes one length-prefixed frame.
