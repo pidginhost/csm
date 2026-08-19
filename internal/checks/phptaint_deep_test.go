@@ -2,11 +2,16 @@ package checks
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/phptaint"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func withPHPTaintAnalyzer(t *testing.T, fn func(context.Context, []byte) phptaint.Report) {
@@ -166,4 +171,170 @@ type stubPHPAnalyzer struct{}
 
 func (stubPHPAnalyzer) Analyze(context.Context, []byte) phptaint.Report {
 	return phptaint.Report{Status: phptaint.StatusAnalyzed}
+}
+
+func enablePHPTaintConsumer(t *testing.T) {
+	t.Helper()
+	SetPHPTaintAnalyzer(stubPHPAnalyzer{})
+	t.Cleanup(func() { SetPHPTaintAnalyzer(nil) })
+}
+
+func TestCheckYARADeepRunsPHPAsTheOnlyConsumer(t *testing.T) {
+	db := useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "payload.dat", "unfiltered source")
+	var analyzed int
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		analyzed++
+		return phptaint.Report{
+			Status:       phptaint.StatusAnalyzed,
+			TotalResults: 1,
+			Results: []phptaint.Result{{
+				Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceHigh,
+			}},
+		}
+	})
+
+	ctx, collector := withIncompleteCheckCollector(context.Background())
+	findings := CheckYARADeep(ctx, &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}, nil)
+
+	if analyzed != 1 {
+		t.Fatalf("PHP analyses = %d, want the non-PHP extension admitted exactly once", analyzed)
+	}
+	got := jsFindingsByCheck(findings, "php_remote_taint")
+	if len(got) != 1 || got[0].FilePath != path {
+		t.Fatalf("findings = %+v, want PHP taint finding for %s", findings, path)
+	}
+	if !strings.Contains(got[0].DetectLogic, "phptaint=") {
+		t.Fatalf("DetectLogic = %q, want PHP taint version", got[0].DetectLogic)
+	}
+	if collector.contains(logicalOwnerPHPTaintDeep) {
+		t.Fatal("full PHP-only cycle was marked incomplete")
+	}
+	cur, ok, err := db.GetScanCursor("", phpTaintDeepCursorCheck)
+	if err != nil || !ok || cur.LastPath != "" || cur.LastFullCycleTS.IsZero() {
+		t.Fatalf("PHP cursor after full cycle = %+v, ok=%v err=%v", cur, ok, err)
+	}
+	if _, ok, _ := db.GetScanCursor("", jsTaintDeepCursorCheck); ok {
+		t.Fatal("PHP-only progress leaked into the JS cursor")
+	}
+}
+
+func TestCheckYARADeepRecordsPHPFileTypeChangeAsGap(t *testing.T) {
+	useRollingStore(t)
+	enablePHPTaintConsumer(t)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "changed.dat", "candidate")
+	fs := &faultingYARADeepOS{OS: realOS{}}
+	fs.lstat = func(gotPath string) (os.FileInfo, error) {
+		info, err := fs.OS.Lstat(gotPath)
+		if gotPath == path && err == nil {
+			if removeErr := os.Remove(gotPath); removeErr != nil {
+				t.Fatal(removeErr)
+			}
+			if mkdirErr := os.Mkdir(gotPath, 0o700); mkdirErr != nil {
+				t.Fatal(mkdirErr)
+			}
+		}
+		return info, err
+	}
+	withMockOS(t, fs)
+	withPHPTaintAnalyzer(t, func(context.Context, []byte) phptaint.Report {
+		t.Fatal("analyzer called after the opened path changed file type")
+		return phptaint.Report{}
+	})
+
+	findings := CheckYARADeep(context.Background(), &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}, nil)
+	incomplete := jsFindingsByCheck(findings, "php_taint_scan_incomplete")
+	if len(incomplete) != 1 || !strings.Contains(incomplete[0].Details, "changed_during_read=1") {
+		t.Fatalf("findings = %+v, want one PHP changed_during_read gap", findings)
+	}
+}
+
+func TestCheckYARADeepUnknownRangesPreservePHPTaintState(t *testing.T) {
+	for _, fault := range []string{"lstat", "read-dir"} {
+		t.Run(fault, func(t *testing.T) {
+			useRollingStore(t)
+			enablePHPTaintConsumer(t)
+			root := t.TempDir()
+			badDir := filepath.Join(root, "hidden")
+			badPath := writeYARADeepFile(t, root, "hidden/prior.php", "candidate")
+			st, err := state.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			st.SetLatestFindings([]alert.Finding{{
+				Check: "php_remote_taint", FilePath: badPath, Message: "prior PHP finding",
+			}})
+
+			fs := &faultingYARADeepOS{OS: realOS{}}
+			switch fault {
+			case "lstat":
+				fs.lstat = func(path string) (os.FileInfo, error) {
+					if path == badDir {
+						return nil, errors.New("forced lstat failure")
+					}
+					return fs.OS.Lstat(path)
+				}
+			case "read-dir":
+				fs.readDir = func(path string) ([]os.DirEntry, error) {
+					if path == badDir {
+						return nil, errors.New("forced read failure")
+					}
+					return fs.OS.ReadDir(path)
+				}
+			}
+			withMockOS(t, fs)
+
+			cfg := &config.Config{
+				AccountRoots:   []string{root},
+				DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+			}
+			check := namedCheck{name: "yara_deep", fn: CheckYARADeep}
+			findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "deep", true)
+			StoreLatestScanFindings(st, purge, findings)
+
+			got := jsFindingsByCheck(st.LatestFindings(), "php_remote_taint")
+			if len(got) != 1 || got[0].FilePath != badPath {
+				t.Fatalf("unknown %s range purged prior PHP state: findings=%+v purge=%v", fault, st.LatestFindings(), purge)
+			}
+		})
+	}
+}
+
+func TestCheckYARADeepInactivePHPConsumerPreservesStateSilently(t *testing.T) {
+	useRollingStore(t)
+	SetPHPTaintAnalyzer(nil)
+	root := t.TempDir()
+	path := writeYARADeepFile(t, root, "prior.php", "candidate")
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	st.SetLatestFindings([]alert.Finding{{
+		Check: "php_remote_taint", FilePath: path, Message: "prior PHP finding",
+	}})
+
+	cfg := &config.Config{
+		AccountRoots:   []string{root},
+		DisabledChecks: []string{"yara_deep", logicalOwnerJSTaintDeep},
+	}
+	check := namedCheck{name: "yara_deep", fn: CheckYARADeep}
+	findings, purge := runParallelWithContext(context.Background(), cfg, st, []namedCheck{check}, "deep", true)
+	if len(findings) != 0 {
+		t.Fatalf("inactive PHP consumer emitted findings: %+v", findings)
+	}
+	StoreLatestScanFindings(st, purge, findings)
+	if got := jsFindingsByCheck(st.LatestFindings(), "php_remote_taint"); len(got) != 1 {
+		t.Fatalf("inactive PHP consumer purged prior state: findings=%+v purge=%v", st.LatestFindings(), purge)
+	}
 }

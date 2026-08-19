@@ -207,7 +207,8 @@ func TestCriticalRunDoesNotPurgeDeepLogicalOwnerNames(t *testing.T) {
 		"critical tier ownership": LatestPurgeCheckNamesForTier(TierCritical),
 		"critical run":            runPurge,
 	} {
-		for _, name := range append(jsOwnerPurgeNames(), runnerFindingNames["yara_deep"]...) {
+		deepNames := append(append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...), runnerFindingNames["yara_deep"]...)
+		for _, name := range deepNames {
 			if slices.Contains(names, name) {
 				t.Errorf("%s unexpectedly purged deep name %q: %v", source, name, names)
 			}
@@ -224,21 +225,27 @@ func TestRunnerHostAndLogicalOwnerIncompletePreserveStateFindings(t *testing.T) 
 	st.SetLatestFindings([]alert.Finding{
 		{Check: "yara_match_scheduled", Severity: alert.Critical, Message: "prior YARA window"},
 		{Check: "js_keylogger_dataflow", Severity: alert.Critical, Message: "prior JS window"},
+		{Check: "php_remote_taint", Severity: alert.Critical, Message: "prior PHP window"},
 	})
 
 	check := namedCheck{name: "yara_deep", fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 		markCheckIncomplete(ctx, "yara_deep")
 		markCheckIncomplete(ctx, logicalOwnerJSTaintDeep)
+		markCheckIncomplete(ctx, logicalOwnerPHPTaintDeep)
 		return []alert.Finding{
 			{Check: "yara_scan_incomplete", Severity: alert.High, Message: "YARA partial"},
 			{Check: "js_taint_scan_incomplete", Severity: alert.Warning, Message: "JS partial"},
+			{Check: "php_taint_scan_incomplete", Severity: alert.Warning, Message: "PHP partial"},
 		}
 	}}
 	findings, purge := runParallelWithContext(context.Background(), &config.Config{}, st, []namedCheck{check}, "deep", true)
 	StoreLatestScanFindings(st, purge, findings)
 
 	got := st.LatestFindings()
-	for _, name := range []string{"yara_match_scheduled", "js_keylogger_dataflow", "yara_scan_incomplete", "js_taint_scan_incomplete"} {
+	for _, name := range []string{
+		"yara_match_scheduled", "js_keylogger_dataflow", "php_remote_taint",
+		"yara_scan_incomplete", "js_taint_scan_incomplete", "php_taint_scan_incomplete",
+	} {
 		if !containsFindingCheck(got, name) {
 			t.Errorf("incomplete owners lost %q: findings=%+v purge=%v", name, got, purge)
 		}
@@ -247,6 +254,10 @@ func TestRunnerHostAndLogicalOwnerIncompletePreserveStateFindings(t *testing.T) 
 
 func jsOwnerPurgeNames() []string {
 	return []string{"js_keylogger_dataflow", "js_taint_scan_incomplete"}
+}
+
+func phpOwnerPurgeNames() []string {
+	return []string{"php_remote_taint", "php_taint_scan_incomplete"}
 }
 
 func TestRunnerJSOwnerCompletesIndependentlyOfYARA(t *testing.T) {
@@ -301,7 +312,8 @@ func TestRunnerLogicalOwnerTimeoutPurgesNothing(t *testing.T) {
 
 	findings, purge := runParallelWithContext(context.Background(), &config.Config{}, nil, []namedCheck{check}, "deep", true)
 
-	for _, name := range append(jsOwnerPurgeNames(), "yara_match_scheduled", "yara_scan_incomplete") {
+	allOwned := append(append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...), "yara_match_scheduled", "yara_scan_incomplete")
+	for _, name := range allOwned {
 		if slices.Contains(purge, name) {
 			t.Errorf("timed-out physical check purged %q: %v", name, purge)
 		}
@@ -318,7 +330,8 @@ func TestRunnerLogicalOwnerPanicPurgesNothing(t *testing.T) {
 
 	findings, purge := runParallelWithContext(context.Background(), &config.Config{}, nil, []namedCheck{check}, "deep", true)
 
-	for _, name := range append(jsOwnerPurgeNames(), "yara_match_scheduled", "yara_scan_incomplete") {
+	allOwned := append(append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...), "yara_match_scheduled", "yara_scan_incomplete")
+	for _, name := range allOwned {
 		if slices.Contains(purge, name) {
 			t.Errorf("panicked physical check purged %q: %v", name, purge)
 		}
@@ -424,7 +437,8 @@ func TestRunnerAllConsumersDisabledSkipsWrapper(t *testing.T) {
 	if ran {
 		t.Fatal("wrapper must be skipped when every consumer is disabled")
 	}
-	for _, name := range append(jsOwnerPurgeNames(), "yara_match_scheduled", "yara_scan_incomplete") {
+	allOwned := append(append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...), "yara_match_scheduled", "yara_scan_incomplete")
+	for _, name := range allOwned {
 		if !slices.Contains(purge, name) {
 			t.Errorf("all-disabled purge list missing %q: %v", name, purge)
 		}
@@ -454,12 +468,35 @@ func TestDisabledCheckVocabularyJSTaint(t *testing.T) {
 	}
 }
 
-func TestLatestPurgeNamesForDeepTiersIncludeJSOwner(t *testing.T) {
+func TestDisabledCheckVocabularyPHPTaint(t *testing.T) {
+	configNames := DisabledCheckConfigNames()
+	for _, want := range []string{"php_taint_deep", "php_remote_taint"} {
+		if !slices.Contains(configNames, want) {
+			t.Errorf("DisabledCheckConfigNames missing %q", want)
+		}
+	}
+	if slices.Contains(configNames, "php_taint_scan_incomplete") {
+		t.Error("php_taint_scan_incomplete must be rejected as a disable value")
+	}
+
+	uiNames := DisabledCheckNames()
+	if !slices.Contains(uiNames, "php_remote_taint") {
+		t.Error("DisabledCheckNames missing public alias php_remote_taint")
+	}
+	if slices.Contains(uiNames, "php_taint_deep") {
+		t.Error("owner ID php_taint_deep must stay out of the UI vocabulary")
+	}
+	if slices.Contains(uiNames, "php_taint_scan_incomplete") {
+		t.Error("php_taint_scan_incomplete must stay out of the UI vocabulary")
+	}
+}
+
+func TestLatestPurgeNamesForDeepTiersIncludeTaintOwners(t *testing.T) {
 	for name, names := range map[string][]string{
 		"deep":         LatestPurgeCheckNamesForTier(TierDeep),
 		"reduced-deep": LatestPurgeCheckNamesForReducedDeep(),
 	} {
-		for _, want := range jsOwnerPurgeNames() {
+		for _, want := range append(jsOwnerPurgeNames(), phpOwnerPurgeNames()...) {
 			if !slices.Contains(names, want) {
 				t.Errorf("%s purge names missing %q", name, want)
 			}

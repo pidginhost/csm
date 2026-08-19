@@ -49,8 +49,8 @@ const yaraDeepCursorCheck = "yara_deep"
 
 // deepScanConsumer is one consumer of the shared ordered deep-content walk.
 // Each consumer resumes from its own persisted cursor and advances it
-// independently, so a missing YARA backend cannot stall JS coverage and a JS
-// coverage gap cannot move YARA's resume point.
+// independently, so a missing backend cannot stall another analyzer's
+// coverage and one analyzer's gap cannot move another's resume point.
 type deepScanConsumer struct {
 	name        string
 	dispatch    bool
@@ -116,10 +116,10 @@ func (h *yaraDeepScanHeap) Pop() any {
 }
 
 // CheckYARADeep is the shared rolling deep-content walk. It reads each file
-// once and dispatches the same in-memory snapshot to two consumers with
-// independent cursors and completion records: the YARA backend and the JS
-// keystroke taint analyzer. A missing, disabled, or failed YARA backend
-// neither prevents nor controls JS progress, and vice versa.
+// once and dispatches the same in-memory snapshot to three consumers with
+// independent cursors and completion records: the YARA backend and the JS and
+// PHP taint analyzers. A missing, disabled, or failed consumer neither prevents
+// nor controls another consumer's progress.
 func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []alert.Finding {
 	yaraDeepScanMu.Lock()
 	defer yaraDeepScanMu.Unlock()
@@ -137,13 +137,19 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	jsOff := jsTaintDeepConsumerDisabled(cfg)
 	jsConsumer.dispatch = !jsOff
 	phpOff := phpTaintDeepConsumerDisabled(cfg)
+	phpReady := phpTaintAnalyzerReady()
 	// An absent isolated analyzer is not a coverage gap: it means the feature
 	// is not active on this host. Dispatching anyway would record every
 	// candidate as unexamined on every scan.
-	phpConsumer.dispatch = !phpOff && phpTaintAnalyzerReady()
+	phpConsumer.dispatch = !phpOff && phpReady
+	if !phpOff && !phpReady {
+		// Keep prior state while the feature is inactive. Treating an inactive
+		// owner as completed would purge findings without examining their files.
+		markCheckIncomplete(ctx, logicalOwnerPHPTaintDeep)
+	}
 	// Disabled-consumer resets are persistent scan progress too. Commit them
 	// only on a normal return path so a hard-canceled shared walk writes no
-	// cursor state for either consumer.
+	// cursor state for any consumer.
 	resetDisabledCursors := func() {
 		if yaraOff {
 			resetDeepScanCursor(db, yaraDeepCursorCheck)
@@ -276,7 +282,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 					firstIncomplete = fmt.Sprintf("reading %s: %v", dir, err)
 				}
 			}
-			if jsConsumer.dispatch {
+			if jsConsumer.dispatch || phpConsumer.dispatch {
 				unknownRangeGap = true
 			}
 			advanceAll(subtreePrefix(dir))
@@ -338,14 +344,14 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			}
 			if item.err != nil {
 				// A failed Lstat may hide a directory, so the gap range is
-				// unknowable for the JS carry-forward.
+				// unknowable for either path-based carry-forward.
 				if yaraWants {
 					incomplete++
 					if firstIncomplete == "" {
 						firstIncomplete = fmt.Sprintf("inspecting %s: %v", path, item.err)
 					}
 				}
-				if jsWants {
+				if jsWants || phpWants {
 					unknownRangeGap = true
 				}
 				advanceAll(path)
@@ -381,7 +387,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				jsConsumer.advance(path)
 				jsWants = false
 			}
-			if !yaraWants && !jsWants {
+			if !yaraWants && !jsWants && !phpWants {
 				continue
 			}
 			if outOfTime() {
@@ -420,6 +426,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				if jsWants {
 					jsGaps.record(path, "changed_during_read")
 				}
+				if phpWants {
+					phpGaps.record(path, "changed_during_read")
+				}
 				continue
 			}
 			if yaraWants && openedInfo.Size() > maxBytes {
@@ -437,7 +446,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				jsGaps.record(path, "changed_during_read")
 				jsWants = false
 			}
-			if !yaraWants && !jsWants {
+			if !yaraWants && !jsWants && !phpWants {
 				_ = file.Close()
 				continue
 			}
@@ -561,7 +570,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 	if ctx.Err() != nil {
 		// The runner drops every finding a check returns after its budget
-		// expired, so there is nothing worth reporting; leave both cursors
+		// expired, so there is nothing worth reporting; leave every cursor
 		// untouched and let the next run redo this window.
 		return nil
 	}
