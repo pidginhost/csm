@@ -832,6 +832,52 @@ func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
 // parser visitor also visits assignment targets; those are writes, not
 // inputs to the assignment expression, and must not borrow taint from an
 // earlier assignment.
+// withoutNestedDeclarationVars returns a view of f whose VARIABLE facts drop
+// anything positioned inside one of the excluded declaration spans, leaving
+// its CALL facts whole.
+//
+// A return expression is collected without excluding nested declarations, and
+// deliberately so: that is what lets a callee invoked inside a closure within
+// the return contribute a dependency edge and a summary. But the taint state
+// that expression is graded against belongs to the ENCLOSING body, and a
+// variable belonging to a nested declaration -- a closure's own local, an
+// arrow function's parameter -- was never that state's variable. Names like
+// $data and $content recur constantly in real PHP, so a bare name collision
+// is otherwise enough to report a flow on a file where the two never meet.
+//
+// Nodes without position information are retained, matching the rest of this
+// package: an unplaceable fact fails open, toward keeping a dependency rather
+// than silently dropping one.
+func (f *scopeFacts) withoutNestedDeclarationVars(exclude *spanIndex) *scopeFacts {
+	if exclude == nil {
+		return f
+	}
+	keep := func(n ast.Vertex) bool {
+		span, ok := spanOf(n)
+		return !ok || !exclude.contains(span)
+	}
+	out := *f
+	out.varNodes = make([]*ast.ExprVariable, 0, len(f.varNodes))
+	for _, n := range f.varNodes {
+		if keep(n) {
+			out.varNodes = append(out.varNodes, n)
+		}
+	}
+	out.propNodes = make([]ast.Vertex, 0, len(f.propNodes))
+	for _, n := range f.propNodes {
+		if keep(n) {
+			out.propNodes = append(out.propNodes, n)
+		}
+	}
+	out.writes = make([]ast.Vertex, 0, len(f.writes))
+	for _, n := range f.writes {
+		if keep(n) {
+			out.writes = append(out.writes, n)
+		}
+	}
+	return &out
+}
+
 func (f *scopeFacts) readVarNodes() []namedNodeSpan {
 	writes := make([]nodeSpan, 0, len(f.writes))
 	for _, n := range f.writes {

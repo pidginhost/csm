@@ -1290,3 +1290,73 @@ func TestAdjacentDeclarationsAreSiblings(t *testing.T) {
 		})
 	}
 }
+
+var (
+	fxNestedParamCollision = b64(`<?php
+function f($c, $rows) {
+	$data = curl_exec($c);
+	return array_map(fn($data) => $data->name, $rows);
+}
+$tpl = f($c, $rows);
+include $tpl;`)
+
+	fxNestedLocalCollision = b64(`<?php
+function f($c, $rows) {
+	$data = curl_exec($c);
+	return array_map(function($x) { $data = 'safe.php'; return $data; }, $rows);
+}
+$tpl = f($c, $rows);
+include $tpl;`)
+
+	fxReturnsTaintedLocal = b64(`<?php
+function f($c) { $data = curl_exec($c); return $data; }
+$tpl = f($c);
+include $tpl;`)
+
+	fxReturnsCalleeInClosure = b64(`<?php
+function a($c){ return curl_exec($c); }
+function b($c){ return (function() use ($c) { return a($c); })(); }
+$y = b($c);
+eval($y);`)
+)
+
+// TestNestedDeclarationLocalsDoNotTaintTheReturn separates the two things a
+// return expression is read for. Its CALLS are collected without excluding
+// nested declarations, which is what lets a callee invoked inside a closure
+// there contribute a summary; its VARIABLES must still be confined to the
+// enclosing body, because that is whose taint state they are graded against.
+// Without that split, an arrow parameter or closure local merely sharing a
+// name with a tainted variable outside reports a flow on a file where the two
+// never meet -- and $data, $content and $url are everywhere in real PHP.
+func TestNestedDeclarationLocalsDoNotTaintTheReturn(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"arrow parameter", fxNestedParamCollision},
+		{"closure local", fxNestedLocalCollision},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if len(rep.Results) != 0 {
+				t.Fatalf("results = %+v, want none: the returned value is the nested declaration's own", rep.Results)
+			}
+		})
+	}
+
+	// The controls are what keep the fix from being "stop grading returns".
+	// A body's own tainted local must still be seen, and so must a callee
+	// reached only through a closure inside the return -- the latter is the
+	// exact flow the summaries worklist exists to follow.
+	for _, tc := range []struct{ name, fixture, sink string }{
+		{"body's own local", fxReturnsTaintedLocal, "include"},
+		{"callee inside a closure", fxReturnsCalleeInClosure, "eval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if len(rep.Results) != 1 || rep.Results[0].Sink != tc.sink {
+				t.Fatalf("results = %+v, want one flow to %s", rep.Results, tc.sink)
+			}
+		})
+	}
+}

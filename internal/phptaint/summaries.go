@@ -72,6 +72,12 @@ type funcBody struct {
 	// calls is the whole-file resolved-call view, kept so each evaluation can
 	// re-collect the return expressions with namespace-level aliases intact.
 	calls resolvedCallIndex
+	// exclude holds the spans of the declarations nested inside this body,
+	// the same index its own facts were collected with. A return expression
+	// is collected WITHOUT it, so its calls still reach nested declarations,
+	// and then its variables are filtered THROUGH it, so a nested
+	// declaration's locals are never graded against this body's taint state.
+	exclude spanIndex
 	// returnKeys names the summaries reachable from this body's return
 	// expressions. Only the KEYS are kept, never the collected facts: a
 	// return expression is collected without excluding nested declarations,
@@ -210,7 +216,7 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		}
 		bodies = append(bodies, funcBody{
 			name: calleeName(fn.Name), kind: bodyFunction, facts: facts,
-			calls: callIndex, returnKeys: returnKeys,
+			calls: callIndex, exclude: exclude, returnKeys: returnKeys,
 		})
 	}
 
@@ -232,7 +238,7 @@ func summaryBodies(ctx context.Context, f *scopeFacts) ([]funcBody, map[string]b
 		}
 		bodies = append(bodies, funcBody{
 			name: name, kind: bodyMethod, facts: facts,
-			calls: callIndex, returnKeys: returnKeys,
+			calls: callIndex, exclude: exclude, returnKeys: returnKeys,
 		})
 	}
 	// Recheck every included body using its independently collected facts.
@@ -364,7 +370,8 @@ func evalBodySummary(ctx context.Context, b funcBody, tables summaryTables) (Con
 		if ret.Expr == nil {
 			continue
 		}
-		c, tainted := exprTaintFacts(b.calls.apply(collectScope(ret.Expr)), st, tables)
+		retFacts := b.calls.apply(collectScope(ret.Expr)).withoutNestedDeclarationVars(&b.exclude)
+		c, tainted := exprTaintFacts(retFacts, st, tables)
 		if !tainted {
 			continue
 		}
