@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/phptaintipc"
@@ -83,4 +85,11 @@ func reply(op string, v any) phptaintipc.Frame {
 	// match on it instead.
 	frame.Op = ""
 	return frame
+}
+
+// signalIgnore makes a signal a no-op for this process. The supervisor tests
+// use it to build a child that a catchable signal cannot stop, which is what a
+// parser loop behaves like.
+func signalIgnore(sig os.Signal) {
+	signal.Ignore(sig)
 }
