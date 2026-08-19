@@ -42,6 +42,7 @@ var contentReverifiableChecks = []string{
 	"obfuscated_php",
 	"signature_match_realtime", "yara_match_realtime", "yara_match_scheduled",
 	"js_keylogger_dataflow",
+	"php_remote_taint",
 }
 
 var contentReverifiableSet = func() map[string]struct{} {

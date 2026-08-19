@@ -118,6 +118,8 @@ var checkRegistry = []CheckInfo{
 	{Name: "group_writable_php", Category: CategoryMalware},
 	{Name: "js_keylogger_dataflow", Category: CategoryMalware},
 	{Name: "js_taint_scan_incomplete", Category: CategoryMalware, Internal: true},
+	{Name: "php_remote_taint", Category: CategoryMalware},
+	{Name: "php_taint_scan_incomplete", Category: CategoryMalware, Internal: true},
 	{Name: "new_executable_in_config", Category: CategoryMalware},
 	{Name: "new_php_in_sensitive_dir", Category: CategoryMalware},
 	{Name: "new_php_in_sensitive_dir_clean", Category: CategoryMalware},

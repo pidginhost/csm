@@ -1,0 +1,175 @@
+package checks
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/phptaint"
+)
+
+// phpTaintDeepCursorCheck is the host-scope scan-cursor key for the scheduled
+// PHP taint consumer of the shared deep-content walk. It is distinct from the
+// JS consumer's key so the two advance independently: they admit different
+// files, so a shared cursor would let one consumer's progress hide the other's
+// unscanned remainder.
+const phpTaintDeepCursorCheck = logicalOwnerPHPTaintDeep
+
+// phpTaintDeepPerFileTimeout bounds one file's analysis as seen by this
+// consumer. The supervised worker applies its own, shorter deadline and kills
+// the process when it expires; this outer bound only covers the case where the
+// worker layer itself becomes unresponsive.
+const phpTaintDeepPerFileTimeout = 30 * time.Second
+
+// Display bounds mirror the JS consumer's: message, details, and diagnostic
+// example paths.
+const (
+	phpTaintMessageMaxBytes = 512
+	phpTaintDetailsMaxBytes = 2048
+	phpTaintExampleMaxBytes = 256
+)
+
+// phpTaintGapCollector aggregates per-path PHP coverage gaps for one deep run:
+// exact paths feed the carry-forward, counts and one example per status feed
+// the php_taint_scan_incomplete diagnostic. A non-completed status is never
+// counted as a clean file.
+type phpTaintGapCollector struct {
+	paths    map[string]struct{}
+	byStatus map[string]int
+	example  map[string]string
+}
+
+func newPHPTaintGapCollector() *phpTaintGapCollector {
+	return &phpTaintGapCollector{
+		paths:    map[string]struct{}{},
+		byStatus: map[string]int{},
+		example:  map[string]string{},
+	}
+}
+
+func (g *phpTaintGapCollector) record(path, status string) {
+	g.paths[path] = struct{}{}
+	g.byStatus[status]++
+	if _, ok := g.example[status]; !ok {
+		g.example[status] = sanitizeJSTaintDisplay(path, phpTaintExampleMaxBytes)
+	}
+}
+
+func (g *phpTaintGapCollector) empty() bool { return len(g.byStatus) == 0 }
+
+func (g *phpTaintGapCollector) hasPath(path string) bool {
+	_, ok := g.paths[path]
+	return ok
+}
+
+func (g *phpTaintGapCollector) finding() alert.Finding {
+	total := 0
+	statuses := make([]string, 0, len(g.byStatus))
+	for status, n := range g.byStatus {
+		total += n
+		statuses = append(statuses, status)
+	}
+	sort.Strings(statuses)
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
+	}
+	return alert.Finding{
+		Severity: alert.Warning,
+		Check:    "php_taint_scan_incomplete",
+		Message:  fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total),
+		Details:  strings.Join(parts, "; "),
+	}
+}
+
+// carryForwardPHPTaintFindings keeps at most one prior state finding for each
+// path the current full cycle could not analyze, so a file that goes from
+// analyzed to unexaminable does not silently lose its existing finding.
+func carryForwardPHPTaintFindings(prior []alert.Finding, gaps *phpTaintGapCollector) []alert.Finding {
+	byPath := make(map[string]alert.Finding)
+	for _, finding := range prior {
+		if finding.Check != "php_remote_taint" || !gaps.hasPath(finding.FilePath) {
+			continue
+		}
+		current, exists := byPath[finding.FilePath]
+		if !exists || finding.Timestamp.After(current.Timestamp) ||
+			(finding.Timestamp.Equal(current.Timestamp) && finding.Key() < current.Key()) {
+			byPath[finding.FilePath] = finding
+		}
+	}
+	paths := make([]string, 0, len(byPath))
+	for path := range byPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	carried := make([]alert.Finding, 0, len(paths))
+	for _, path := range paths {
+		carried = append(carried, byPath[path])
+	}
+	return carried
+}
+
+// analyzePHPTaintSnapshot runs the PHP consumer on one complete in-memory
+// snapshot and converts the result into at most one finding. Only StatusAnalyzed
+// and StatusNotCandidate mean the file was examined; every other status is
+// recorded as a known-path coverage gap.
+func analyzePHPTaintSnapshot(ctx context.Context, path, contentSHA256 string, data []byte, gaps *phpTaintGapCollector) []alert.Finding {
+	fileCtx, cancel := context.WithTimeout(ctx, phpTaintDeepPerFileTimeout)
+	report := runPHPTaintAnalysis(fileCtx, data)
+	cancel()
+	switch report.Status {
+	case phptaint.StatusAnalyzed:
+		if len(report.Results) == 0 {
+			return nil
+		}
+		return []alert.Finding{phpTaintDeepFinding(path, contentSHA256, report)}
+	case phptaint.StatusNotCandidate:
+		return nil
+	default:
+		gaps.record(path, report.Status.String())
+		return nil
+	}
+}
+
+// phpTaintDeepFinding renders the single finding for one analyzed file. Every
+// display field is sanitized and bounded; FilePath keeps the exact live path
+// for remediation while only its display copy is sanitized.
+func phpTaintDeepFinding(path, contentSHA256 string, report phptaint.Report) alert.Finding {
+	flows := make([]string, 0, len(report.Results))
+	for _, res := range report.Results {
+		flows = append(flows, fmt.Sprintf("%s -> %s (%s)", res.Source, res.Sink, phpTaintConfidence(res.Confidence)))
+	}
+	details := "Remotely fetched content reaches a code-execution construct. Evidence: " + strings.Join(flows, "; ")
+	if extra := report.TotalResults - len(report.Results); extra > 0 {
+		details += fmt.Sprintf("; %d additional flow(s) beyond returned evidence", extra)
+	}
+	if report.EvidenceTruncated {
+		details += " [evidence truncated]"
+	}
+	if len(report.PrecisionLoss) > 0 {
+		details += "; reduced precision: " + strings.Join(report.PrecisionLoss, ", ")
+	}
+	return alert.Finding{
+		Severity:      alert.Critical,
+		Check:         "php_remote_taint",
+		Message:       "PHP remote-source code execution data flow: " + sanitizeJSTaintDisplay(path, phpTaintMessageMaxBytes),
+		Details:       sanitizeJSTaintDisplay(details, phpTaintDetailsMaxBytes),
+		FilePath:      path,
+		ContentSHA256: contentSHA256,
+		DetectLogic:   ContentDetectionVersion(),
+	}
+}
+
+func phpTaintConfidence(c phptaint.Confidence) string {
+	switch c {
+	case phptaint.ConfidenceCertain:
+		return "certain"
+	case phptaint.ConfidenceHigh:
+		return "high"
+	default:
+		return "low"
+	}
+}

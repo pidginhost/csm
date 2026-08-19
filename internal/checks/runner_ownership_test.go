@@ -411,22 +411,22 @@ func TestRunnerYARAAliasDisablementKeepsJSRunning(t *testing.T) {
 	}
 }
 
-func TestRunnerBothConsumersDisabledSkipsWrapper(t *testing.T) {
+func TestRunnerAllConsumersDisabledSkipsWrapper(t *testing.T) {
 	ran := false
 	check := namedCheck{name: "yara_deep", fn: func(context.Context, *config.Config, *state.Store) []alert.Finding {
 		ran = true
 		return nil
 	}}
 
-	cfg := &config.Config{DisabledChecks: []string{"yara_deep", "js_taint_deep"}}
+	cfg := &config.Config{DisabledChecks: []string{"yara_deep", "js_taint_deep", "php_taint_deep"}}
 	_, purge := runParallelWithContext(context.Background(), cfg, nil, []namedCheck{check}, "deep", true)
 
 	if ran {
-		t.Fatal("wrapper must be skipped when both consumers are disabled")
+		t.Fatal("wrapper must be skipped when every consumer is disabled")
 	}
 	for _, name := range append(jsOwnerPurgeNames(), "yara_match_scheduled", "yara_scan_incomplete") {
 		if !slices.Contains(purge, name) {
-			t.Errorf("both-disabled purge list missing %q: %v", name, purge)
+			t.Errorf("all-disabled purge list missing %q: %v", name, purge)
 		}
 	}
 }
