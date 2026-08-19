@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,5 +337,55 @@ func TestCheckYARADeepInactivePHPConsumerPreservesStateSilently(t *testing.T) {
 	StoreLatestScanFindings(st, purge, findings)
 	if got := jsFindingsByCheck(st.LatestFindings(), "php_remote_taint"); len(got) != 1 {
 		t.Fatalf("inactive PHP consumer purged prior state: findings=%+v purge=%v", st.LatestFindings(), purge)
+	}
+}
+
+// TestPHPTaintGapPathsAreBounded pins the memory bound. The PHP pre-filter runs
+// inside the worker, so when the worker is unavailable every readable file on
+// the host becomes a gap. Retaining one string per file would cost hundreds of
+// megabytes on a real cPanel box for the length of a scan.
+func TestPHPTaintGapPathsAreBounded(t *testing.T) {
+	gaps := newPHPTaintGapCollector()
+	for i := 0; i < maxPHPTaintGapPaths+1000; i++ {
+		gaps.record(fmt.Sprintf("/home/u/public_html/f%d.php", i), phptaint.StatusWorkerFailure.String())
+	}
+	if len(gaps.paths) > maxPHPTaintGapPaths {
+		t.Fatalf("retained %d paths, want at most %d", len(gaps.paths), maxPHPTaintGapPaths)
+	}
+	if !gaps.pathsIncomplete() {
+		t.Fatal("hit the bound without reporting the path set as incomplete")
+	}
+	// The count must stay honest even though the paths stopped.
+	if !strings.Contains(gaps.finding().Message, fmt.Sprint(maxPHPTaintGapPaths+1000)) {
+		t.Fatalf("message = %q, want the full count", gaps.finding().Message)
+	}
+	if !strings.Contains(gaps.finding().Details, "retained for only the first") {
+		t.Fatalf("details = %q, want the truncation stated", gaps.finding().Details)
+	}
+}
+
+// TestPHPTaintUnknownRangeIsReported covers coverage lost over a range this
+// walk cannot enumerate. Recording it only in a boolean that suppresses the
+// purge leaves an operator with no signal at all when the YARA consumer -- the
+// only one that used to report walk errors -- is disabled.
+func TestPHPTaintUnknownRangeIsReported(t *testing.T) {
+	gaps := newPHPTaintGapCollector()
+	if !gaps.empty() {
+		t.Fatal("fresh collector is not empty")
+	}
+	gaps.recordUnknownRange("reading /home/u/secret: permission denied")
+	if gaps.empty() {
+		t.Fatal("an unreadable range left the collector empty, so no finding would fire")
+	}
+	f := gaps.finding()
+	if f.Check != "php_taint_scan_incomplete" {
+		t.Fatalf("check = %s", f.Check)
+	}
+	if !strings.Contains(f.Details, "unreadable-range=1") {
+		t.Fatalf("details = %q, want the unreadable range named", f.Details)
+	}
+	// An unknown range claims no exact paths: carry-forward must not invent any.
+	if len(gaps.paths) != 0 {
+		t.Fatalf("unknown range recorded %d exact paths, want 0", len(gaps.paths))
 	}
 }

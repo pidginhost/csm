@@ -26,6 +26,18 @@ const phpTaintDeepPerFileTimeout = 30 * time.Second
 
 // Display bounds mirror the JS consumer's: message, details, and diagnostic
 // example paths.
+// maxPHPTaintGapPaths bounds the exact paths one run retains for carry-forward.
+//
+// The bound matters here in a way it does not for the JS consumer. That
+// analyzer runs in-process and answers StatusNotCandidate for non-JS content,
+// so a gap needs a genuinely failing JS file. PHP analysis happens in a
+// separate process, and its pre-filter lives THERE, so when the worker is
+// unavailable every readable file on the host becomes a gap -- millions of
+// retained path strings for the length of a scan. Past the bound the run stops
+// enumerating and reports itself as unable to enumerate, which suppresses the
+// purge wholesale rather than carrying forward an arbitrary prefix.
+const maxPHPTaintGapPaths = 50_000
+
 const (
 	phpTaintMessageMaxBytes = 512
 	phpTaintDetailsMaxBytes = 2048
@@ -40,6 +52,17 @@ type phpTaintGapCollector struct {
 	paths    map[string]struct{}
 	byStatus map[string]int
 	example  map[string]string
+	// unknown counts walk failures whose affected paths cannot be enumerated
+	// (an unreadable directory, a failed Lstat that may hide one). They are
+	// kept apart from paths because carry-forward needs exact paths, but they
+	// must still reach the operator: without this the loss is recorded only in
+	// a boolean that suppresses the purge, and a host running the PHP consumer
+	// without the YARA one is told nothing at all.
+	unknown        int
+	unknownExample string
+	// pathsTruncated records that the exact-path set hit its bound, so the
+	// carry-forward can no longer be trusted to cover every gapped path.
+	pathsTruncated bool
 }
 
 func newPHPTaintGapCollector() *phpTaintGapCollector {
@@ -51,14 +74,36 @@ func newPHPTaintGapCollector() *phpTaintGapCollector {
 }
 
 func (g *phpTaintGapCollector) record(path, status string) {
-	g.paths[path] = struct{}{}
+	if len(g.paths) < maxPHPTaintGapPaths {
+		g.paths[path] = struct{}{}
+	} else {
+		// Stop retaining paths, but never stop counting: the count is what
+		// tells an operator how much of the host went unexamined.
+		g.pathsTruncated = true
+	}
 	g.byStatus[status]++
 	if _, ok := g.example[status]; !ok {
 		g.example[status] = sanitizeJSTaintDisplay(path, phpTaintExampleMaxBytes)
 	}
 }
 
-func (g *phpTaintGapCollector) empty() bool { return len(g.byStatus) == 0 }
+// pathsIncomplete reports that this run could not enumerate every gapped path,
+// so its carry-forward set is not authoritative and the purge must be
+// suppressed for the whole owner.
+func (g *phpTaintGapCollector) pathsIncomplete() bool { return g.pathsTruncated }
+
+// recordUnknownRange notes coverage lost over a range this walk cannot
+// enumerate. It deliberately does not add to paths: claiming specific paths
+// would be false, and the unknown range already forces a partial run, which
+// suppresses the purge for every prior finding.
+func (g *phpTaintGapCollector) recordUnknownRange(detail string) {
+	g.unknown++
+	if g.unknownExample == "" {
+		g.unknownExample = sanitizeJSTaintDisplay(detail, phpTaintExampleMaxBytes)
+	}
+}
+
+func (g *phpTaintGapCollector) empty() bool { return len(g.byStatus) == 0 && g.unknown == 0 }
 
 func (g *phpTaintGapCollector) hasPath(path string) bool {
 	_, ok := g.paths[path]
@@ -77,10 +122,20 @@ func (g *phpTaintGapCollector) finding() alert.Finding {
 	for _, status := range statuses {
 		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
 	}
+	if g.unknown > 0 {
+		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
+	}
+	if g.pathsTruncated {
+		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
+	}
+	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
+	if total == 0 {
+		message = fmt.Sprintf("PHP taint deep scan could not cover %d location(s)", g.unknown)
+	}
 	return alert.Finding{
 		Severity: alert.Warning,
 		Check:    "php_taint_scan_incomplete",
-		Message:  fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total),
+		Message:  message,
 		Details:  strings.Join(parts, "; "),
 	}
 }

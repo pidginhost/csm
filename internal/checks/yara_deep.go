@@ -285,6 +285,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			if jsConsumer.dispatch || phpConsumer.dispatch {
 				unknownRangeGap = true
 			}
+			if phpConsumer.dispatch {
+				phpGaps.recordUnknownRange(fmt.Sprintf("reading %s: %v", dir, err))
+			}
 			advanceAll(subtreePrefix(dir))
 			return
 		}
@@ -353,6 +356,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 				}
 				if jsWants || phpWants {
 					unknownRangeGap = true
+				}
+				if phpWants {
+					phpGaps.recordUnknownRange(fmt.Sprintf("inspecting %s: %v", path, item.err))
 				}
 				advanceAll(path)
 				continue
@@ -627,7 +633,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	if phpConsumer.dispatch {
-		phpPartial := stoppedEarly || phpConsumer.resume != "" || unknownRangeGap
+		phpPartial := stoppedEarly || phpConsumer.resume != "" || unknownRangeGap || phpGaps.pathsIncomplete()
 		if phpPartial {
 			// Only a partial or unknown-range window suppresses the normal
 			// purge; a known-path gap is handled by the carry-forward below.
