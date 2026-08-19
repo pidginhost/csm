@@ -1243,3 +1243,50 @@ func TestStaticCaptureDoesNotReceiveThis(t *testing.T) {
 		t.Fatalf("precision loss = %v, want closure-capture for an ordinary variable captured by a static arrow", rep.PrecisionLoss)
 	}
 }
+
+var (
+	// The two declarations are separated by zero bytes. PHP allows it and
+	// minifiers emit it routinely, so it must not change how the file is
+	// scoped.
+	fxAdjacentFunctions = b64(`<?php
+$payload = 'header.php';
+include $payload;
+function a(){}function b($c){ $payload = curl_exec($c); }`)
+
+	fxAdjacentClasses = b64(`<?php
+$payload = 'header.php';
+include $payload;
+class A{}class B{ function m($c){ $payload = curl_exec($c); } }`)
+
+	// Identical but for one space, which is the control: if the spaced form
+	// is also dirty the fixture proves nothing about adjacency.
+	fxSpacedFunctions = b64(`<?php
+$payload = 'header.php';
+include $payload;
+function a(){} function b($c){ $payload = curl_exec($c); }`)
+)
+
+// TestAdjacentDeclarationsAreSiblings pins the boundary arithmetic of the
+// declaration sweep. A declaration's end position is exclusive, so a
+// declaration starting exactly where the previous one ends is its SIBLING, not
+// its child. Treating it as a child leaves it out of the enclosing scope's
+// exclusion set, and its locals then leak into that scope and collide with an
+// identically named variable there -- reporting a flow on a file where the two
+// never meet.
+func TestAdjacentDeclarationsAreSiblings(t *testing.T) {
+	for _, tc := range []struct{ name, fixture string }{
+		{"functions", fxAdjacentFunctions},
+		{"classes", fxAdjacentClasses},
+		{"spaced control", fxSpacedFunctions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := run(t, tc.fixture)
+			if rep.Status != StatusAnalyzed {
+				t.Fatalf("status = %v (%s)", rep.Status, rep.Reason)
+			}
+			if len(rep.Results) != 0 {
+				t.Fatalf("results = %+v, want none: the tainted local belongs to another declaration", rep.Results)
+			}
+		})
+	}
+}

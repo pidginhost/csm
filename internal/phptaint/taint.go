@@ -793,7 +793,9 @@ func hasDroppedCapture(
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		for len(frames) > 0 && frames[len(frames)-1].end < declaration.start {
+		// Exclusive end position, matching declarationTree's sweep: a
+		// declaration starting exactly where a frame ends is outside it.
+		for len(frames) > 0 && frames[len(frames)-1].end <= declaration.start {
 			pop(frames[len(frames)-1])
 			frames = frames[:len(frames)-1]
 		}

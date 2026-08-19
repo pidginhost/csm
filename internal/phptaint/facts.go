@@ -800,7 +800,12 @@ func (f *scopeFacts) declarationTree() declTree {
 	}
 	stack := make([]int, 0, len(nodes))
 	for i, n := range nodes {
-		for len(stack) > 0 && nodes[stack[len(stack)-1]].end < n.start {
+		// A declaration's end position is EXCLUSIVE, so a declaration
+		// starting exactly where the previous one ends is its sibling, not
+		// its child. PHP allows `}function` with nothing between, and
+		// minifiers emit it, so `<` here would silently reparent every such
+		// pair and leak the second one's locals into the enclosing scope.
+		for len(stack) > 0 && nodes[stack[len(stack)-1]].end <= n.start {
 			stack = stack[:len(stack)-1]
 		}
 		var parent ast.Vertex // nil selects the top-level scope's own children
