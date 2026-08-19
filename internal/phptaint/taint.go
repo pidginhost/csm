@@ -1018,7 +1018,16 @@ func hasUnresolvableTaintedTarget(
 }
 
 // findFlows reports each sink in a scope that receives remote content.
-func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]flowResult, error) {
+// exclude names the declarations nested inside this scope. A sink's argument
+// expression is collected WITHOUT it, so a call reached only through a closure
+// there is still followed -- `include array_map(function(){ return fetch(); },
+// $r)[0]` really does receive what that closure returns. Its variables are then
+// filtered THROUGH it, because they are graded against this scope's taint
+// state and a nested declaration's own parameter or local was never part of
+// it. Same split, and same reason, as the return expressions in summaries.go.
+func findFlows(
+	ctx context.Context, f *scopeFacts, summaries summaryTables, exclude *spanIndex,
+) ([]flowResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1035,7 +1044,7 @@ func findFlows(ctx context.Context, f *scopeFacts, summaries summaryTables) ([]f
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		sub := callIndex.apply(collectScope(s.expr))
+		sub := callIndex.apply(collectScope(s.expr)).withoutNestedDeclarationVars(exclude)
 		c, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
 			continue

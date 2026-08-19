@@ -23,7 +23,7 @@ func TestFindFlowsDiscardsPartialResultsOnCancellation(t *testing.T) {
 	ctx := newCancelOnErrCheck(4)
 	t.Cleanup(ctx.cancel)
 
-	results, err := findFlows(ctx, facts, summaryTables{})
+	results, err := findFlows(ctx, facts, summaryTables{}, nil)
 	if err != context.Canceled {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}

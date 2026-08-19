@@ -844,6 +844,16 @@ func (t declTree) exclusionFor(self ast.Vertex) spanIndex {
 // Nodes without position information are retained, matching the rest of this
 // package: an unplaceable fact fails open, toward keeping a dependency rather
 // than silently dropping one.
+//
+// This is a trade, not a pure win, and the losing side is worth naming. A
+// closure that is immediately invoked really does yield what it captured, so
+// `return (function() use ($tainted) { return $tainted; })();` stops being
+// reported. Taint the closure PRODUCES by calling a source inside itself is
+// still followed, because calls are not filtered; only taint carried IN by a
+// capture is lost. Every such case still records closure-capture precision
+// loss, so the reduction is reported rather than silent, and it buys the
+// removal of a false positive that fires whenever a nested declaration's
+// parameter merely shares a name with a tainted variable outside it.
 func (f *scopeFacts) withoutNestedDeclarationVars(exclude *spanIndex) *scopeFacts {
 	// Most functions have no nested declarations. Avoid copying three fact
 	// slices on every return evaluation when the exclusion index cannot
@@ -872,6 +882,16 @@ func (f *scopeFacts) withoutNestedDeclarationVars(exclude *spanIndex) *scopeFact
 	for _, n := range f.writes {
 		if keep(n) {
 			out.writes = append(out.writes, n)
+		}
+	}
+	// vars feeds the evidence strings only, never a taint decision, but it is
+	// rebuilt from the surviving nodes anyway so a report never names a
+	// variable that belongs to a nested declaration and was excluded from the
+	// grading that produced the report.
+	out.vars = make(map[string]bool, len(out.varNodes))
+	for _, n := range out.varNodes {
+		if name := varName(n.Name); name != "" {
+			out.vars[name] = true
 		}
 	}
 	return &out
