@@ -3,6 +3,7 @@ module github.com/pidginhost/csm
 go 1.26.6
 
 require (
+	github.com/VKCOM/php-parser v0.8.2
 	github.com/VirusTotal/yara-x/go v1.19.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-systemd/v22 v22.7.0
