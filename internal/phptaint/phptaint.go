@@ -128,9 +128,10 @@ const (
 	maxCollectedNodes  = 800_000
 	maxSummarizedFuncs = 2_000
 	maxAnalysisDepth   = 256
-	// maxEvidenceResults bounds returned evidence paths; TotalResults still
-	// reports the full count.
-	maxEvidenceResults = 8
+	// MaxEvidenceResults bounds returned evidence paths; TotalResults still
+	// reports the full count. It is exported so the worker protocol can reject
+	// a clean reply that silently omits evidence.
+	MaxEvidenceResults = 8
 	// maxDeclarations bounds how many functions/methods/classes one file's
 	// declaration tree is built from. declarationTree is linearithmic in
 	// this count (not quadratic -- see its doc comment), so this exists as
@@ -172,6 +173,13 @@ type Report struct {
 	PrecisionLoss []string
 	// EvidenceTruncated reports that displayed evidence was shortened.
 	EvidenceTruncated bool
+}
+
+// CoverageGap constructs an incomplete report through the same boundary used
+// by Analyze. Supervisors use it for failures that happen outside the analyzer
+// so error text cannot bypass the report's sanitizing and size bounds.
+func CoverageGap(status Status, reason string) Report {
+	return finalizeReport(Report{Status: status, Reason: reason})
 }
 
 // recovered recovers a panic at the package boundary so a parser or analyzer
@@ -442,8 +450,8 @@ func analyze(ctx context.Context, src []byte) Report {
 	flows = dedupeAndSort(flows)
 	total := len(flows)
 	truncated := false
-	if len(flows) > maxEvidenceResults {
-		flows = flows[:maxEvidenceResults]
+	if len(flows) > MaxEvidenceResults {
+		flows = flows[:MaxEvidenceResults]
 		truncated = true
 	}
 	results := make([]Result, len(flows))

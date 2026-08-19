@@ -195,6 +195,10 @@ func validateReport(report phptaint.Report) error {
 	hasEvidence := len(report.Results) != 0 || report.TotalResults != 0 ||
 		len(report.PrecisionLoss) != 0 || report.EvidenceTruncated
 	switch report.Status {
+	case phptaint.StatusTimeout, phptaint.StatusWorkerFailure:
+		// These describe what the parent did to, or could not do with, the
+		// worker. A process that returned a reply cannot report either one.
+		return errors.New("phptaintipc: worker reply carries a supervisor-only status")
 	case phptaint.StatusNotCandidate:
 		if hasEvidence || report.Reason != "" {
 			return errors.New("phptaintipc: not-candidate report carries analysis data")
@@ -203,8 +207,23 @@ func validateReport(report phptaint.Report) error {
 		if report.Reason != "" {
 			return errors.New("phptaintipc: analyzed report carries an error reason")
 		}
-		if report.TotalResults < 0 || report.TotalResults < len(report.Results) {
+		if report.TotalResults < 0 {
 			return errors.New("phptaintipc: analyzed report has inconsistent result counts")
+		}
+		expectedResults := report.TotalResults
+		if expectedResults > phptaint.MaxEvidenceResults {
+			expectedResults = phptaint.MaxEvidenceResults
+		}
+		if len(report.Results) != expectedResults {
+			return errors.New("phptaintipc: analyzed report has inconsistent result counts")
+		}
+		if report.TotalResults > len(report.Results) && !report.EvidenceTruncated {
+			return errors.New("phptaintipc: analyzed report omitted evidence without marking truncation")
+		}
+		for _, result := range report.Results {
+			if result.Confidence.String() == "unknown" {
+				return errors.New("phptaintipc: analyzed report has unknown confidence")
+			}
 		}
 	default:
 		if hasEvidence {
@@ -253,11 +272,25 @@ func WriteFrame(w io.Writer, f Frame) error {
 	var hdr [4]byte
 	// #nosec G115 -- len(body) is bounded above by MaxFrameBytes, which fits in uint32.
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(body)))
-	if _, err := w.Write(hdr[:]); err != nil {
+	if err := writeFull(w, hdr[:]); err != nil {
 		return fmt.Errorf("phptaintipc: write header: %w", err)
 	}
-	if _, err := w.Write(body); err != nil {
+	if err := writeFull(w, body); err != nil {
 		return fmt.Errorf("phptaintipc: write body: %w", err)
+	}
+	return nil
+}
+
+func writeFull(w io.Writer, p []byte) error {
+	for len(p) != 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		if n <= 0 || n > len(p) {
+			return io.ErrShortWrite
+		}
+		p = p[n:]
 	}
 	return nil
 }

@@ -27,6 +27,34 @@ func TestFrameRoundTrip(t *testing.T) {
 	}
 }
 
+type chunkWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	if len(p) > w.max {
+		p = p[:w.max]
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestWriteFrameCompletesShortWrites(t *testing.T) {
+	var wire chunkWriter
+	wire.max = 2
+	want := Frame{Op: OpPing}
+	if err := WriteFrame(&wire, want); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := ReadFrame(&wire.Buffer)
+	if err != nil {
+		t.Fatalf("read frame written in short chunks: %v", err)
+	}
+	if got.Op != want.Op {
+		t.Fatalf("op = %q, want %q", got.Op, want.Op)
+	}
+}
+
 // TestReadFrameRejectsOversizeHeaderWithoutAllocating is the one that matters
 // for a hostile peer: the length prefix is attacker-influenced, so a frame
 // claiming 4 GiB must be refused from the header alone. Allocating first and
@@ -148,7 +176,7 @@ func TestAnalyzeResultCarriesReportVerbatim(t *testing.T) {
 	want := phptaint.Report{
 		Status:            phptaint.StatusAnalyzed,
 		PrecisionLoss:     []string{"closure-capture"},
-		TotalResults:      3,
+		TotalResults:      1,
 		EvidenceTruncated: true,
 		Results: []phptaint.Result{
 			{Source: "curl_exec", Sink: "eval", Confidence: phptaint.ConfidenceCertain, Identifiers: []string{"$p"}},
@@ -227,5 +255,71 @@ func TestAnalyzeResultRejectsEvidenceOnCoverageGap(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("coverage-gap report with evidence accepted, want error")
+	}
+}
+
+func TestAnalyzeResultRejectsMissingEvidence(t *testing.T) {
+	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+		Status:       phptaint.StatusAnalyzed,
+		TotalResults: 1,
+	}})
+	if err == nil {
+		t.Fatal("analyzed report that omitted a finding was accepted")
+	}
+}
+
+func TestAnalyzeResultCarriesBoundedEvidence(t *testing.T) {
+	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	frame, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+		Status:            phptaint.StatusAnalyzed,
+		Results:           results,
+		TotalResults:      phptaint.MaxEvidenceResults + 1,
+		EvidenceTruncated: true,
+	}})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var got AnalyzeResult
+	if err := DecodePayload(frame, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestAnalyzeResultRejectsUnmarkedEvidenceTruncation(t *testing.T) {
+	results := make([]phptaint.Result, phptaint.MaxEvidenceResults)
+	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+		Status:       phptaint.StatusAnalyzed,
+		Results:      results,
+		TotalResults: phptaint.MaxEvidenceResults + 1,
+	}})
+	if err == nil {
+		t.Fatal("analyzed report with unmarked evidence truncation was accepted")
+	}
+}
+
+func TestAnalyzeResultRejectsUnknownConfidence(t *testing.T) {
+	_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+		Status: phptaint.StatusAnalyzed,
+		Results: []phptaint.Result{{
+			Source:     "curl_exec",
+			Sink:       "eval",
+			Confidence: phptaint.Confidence(255),
+		}},
+		TotalResults: 1,
+	}})
+	if err == nil {
+		t.Fatal("analyzed report with unknown confidence was accepted")
+	}
+}
+
+func TestAnalyzeResultRejectsSupervisorOnlyStatuses(t *testing.T) {
+	for _, status := range []phptaint.Status{phptaint.StatusTimeout, phptaint.StatusWorkerFailure} {
+		_, err := EncodePayload("", AnalyzeResult{Report: phptaint.Report{
+			Status: status,
+			Reason: status.String(),
+		}})
+		if err == nil {
+			t.Errorf("worker reply with status %v was accepted", status)
+		}
 	}
 }
