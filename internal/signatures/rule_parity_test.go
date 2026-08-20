@@ -58,7 +58,7 @@ var realtimeOnlyRules = map[string]string{
 	"phishing_onedrive":                "Tier 1: port adds no new hits, but the rule already fires in realtime on live data; worth fixing separately",
 	"phishing_webmail":                 "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"phishing_workers_dev_exfil":       "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
-	"php_dropper_gist":                 "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
+	"php_dropper_gist":                 "Covered and HARDENED under another name: php_dropper_github_gist requires the gist URL plus an execution sink, while this .yml form fires on the bare URL at min_match 1. Porting it by name would weaken the shipped rule and double-report",
 	"php_dropper_raw_github":           "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_eval_decode_chain":            "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_hex_string_obfuscation":       "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
@@ -98,6 +98,14 @@ var realtimeOnlyRules = map[string]string{
 // renamedYARARules records the scheduled-scan rule that covers a differently
 // named YAML rule. Keeping aliases machine-readable makes a deleted or renamed
 // YARA counterpart fail instead of silently turning a rename into a real gap.
+// coveredByAnotherRule reports whether a backlog reason claims the detection
+// already ships under a different name. Two shapes qualify: a plain rename, and
+// a .yar twin that is strictly stronger than the .yml form. Both must name the
+// covering rule in renamedYARARules so the claim is checked rather than trusted.
+func coveredByAnotherRule(reason string) bool {
+	return strings.HasPrefix(reason, "Rename") || strings.HasPrefix(reason, "Covered")
+}
+
 var renamedYARARules = map[string]string{
 	"backdoor_cron_reverse_shell": "backdoor_cron_downloader",
 	"backdoor_wp_muplugin_loader": "backdoor_wp_muplugin",
@@ -106,6 +114,7 @@ var renamedYARARules = map[string]string{
 	"gsocket_persistence":         "gsocket_cron_persistence",
 	"miner_coinhive_js":           "miner_coinhive",
 	"obfuscation_assert_string":   "obfuscation_assert_exec",
+	"php_dropper_gist":            "php_dropper_github_gist",
 	"php_open_basedir_override":   "exploit_open_basedir_escape",
 	"webshell_litespeed_backdoor": "webshell_litespeed_disguise",
 	"wp_core_file_modify":         "exploit_wp_core_modification",
@@ -267,13 +276,13 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 		if !yamlNames[name] || yaraNames[name] {
 			staleBacklog = append(staleBacklog, name)
 		}
-		if strings.HasPrefix(reason, "Rename") && renamedYARARules[name] == "" {
+		if coveredByAnotherRule(reason) && renamedYARARules[name] == "" {
 			invalidRenames = append(invalidRenames, name+"->missing alias")
 		}
 	}
 	for yamlName, yaraName := range renamedYARARules {
 		reason := realtimeOnlyRules[yamlName]
-		if yamlName == yaraName || !yamlNames[yamlName] || !yaraNames[yaraName] || !strings.HasPrefix(reason, "Rename") {
+		if yamlName == yaraName || !yamlNames[yamlName] || !yaraNames[yaraName] || !coveredByAnotherRule(reason) {
 			invalidRenames = append(invalidRenames, yamlName+"->"+yaraName)
 		}
 	}
