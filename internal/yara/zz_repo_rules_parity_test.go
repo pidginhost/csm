@@ -342,6 +342,77 @@ $out = shell_exec($cmd);`,
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
 		{
+			name:   "payload staged under an icon cache name",
+			rule:   "backdoor_iconcache",
+			want:   true,
+			sample: "<?php\n$f = 'iconcache.ico';\neval(base64_decode($payload));\n",
+		},
+		{
+			name:   "theme serving its own favicon",
+			rule:   "backdoor_iconcache",
+			sample: "<?php\nheader('Content-Type: image/x-icon');\nreadfile(__DIR__ . '/favicon.ico');\n",
+		},
+		{
+			name:   "decoding input without executing it",
+			rule:   "backdoor_iconcache",
+			sample: "<?php\n$data = base64_decode($input);\necho htmlspecialchars($data);\n",
+		},
+		{
+			name:   "mu-plugin loader including a decoded path",
+			rule:   "backdoor_wp_muplugin_loader",
+			want:   true,
+			sample: "<?php\n@include(base64_decode('L3RtcC94'));\n$dir = WPMU_PLUGIN_DIR . '/mu-plugins';\n",
+		},
+		{
+			name:   "mu-plugin loader including its own directory",
+			rule:   "backdoor_wp_muplugin_loader",
+			sample: "<?php\nforeach (glob(WPMU_PLUGIN_DIR . '/mu-plugins/*.php') as $f) { include_once $f; }\n",
+		},
+		{
+			name:   "gsocket persistence disguising its process name",
+			rule:   "gsocket_persistence",
+			want:   true,
+			sample: "#!/bin/sh\n# SEED PRNG\nexec -a '[defunct-kernel]' ./gs-netcat\n",
+		},
+		{
+			name:   "script seeding a PRNG for reproducible output",
+			rule:   "gsocket_persistence",
+			sample: "#!/bin/sh\n# SEED PRNG for reproducible test vectors\nopenssl rand -hex 16\n",
+		},
+		{
+			name:   "assert used to execute request input",
+			rule:   "obfuscation_assert_string",
+			want:   true,
+			sample: "<?php\nassert(base64_decode($_POST['x']));\n",
+		},
+		{
+			name:   "assert used as an ordinary invariant check",
+			rule:   "obfuscation_assert_string",
+			sample: "<?php\nassert(is_array($config), 'config must be an array');\n",
+		},
+		{
+			name:   "hex unpack feeding execution",
+			rule:   "obfuscation_compact_unpack",
+			want:   true,
+			sample: "<?php\n$h = unpack(\"H*\", $blob);\neval($h[1]);\n",
+		},
+		{
+			name:   "hex unpack used for a checksum",
+			rule:   "obfuscation_compact_unpack",
+			sample: "<?php\n$hex = unpack(\"H*\", $binary);\nprintf('checksum: %s', $hex[1]);\n",
+		},
+		{
+			name:   "open_basedir reset to empty",
+			rule:   "php_open_basedir_override",
+			want:   true,
+			sample: "<?php\nini_set('open_basedir', '');\n",
+		},
+		{
+			name:   "open_basedir narrowed to real paths",
+			rule:   "php_open_basedir_override",
+			sample: "<?php\nini_set('open_basedir', '/home/u:/tmp');\nini_set('memory_limit', '256M');\n",
+		},
+		{
 			// Stock theme and plugin code names dispensary demo content and a
 			// cannabis icon. The bare word must never be a critical webshell.
 			name:   "theme demo import listing a dispensary category",
