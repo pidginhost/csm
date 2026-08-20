@@ -366,6 +366,18 @@ $out = shell_exec($cmd);`,
 			sample: `<?php $t = "MarijuanaShell"; eval($_REQUEST['c']);`,
 		},
 		{
+			name:   "PHP-qualified shell banner",
+			rule:   "webshell_marijuana",
+			want:   true,
+			sample: `<?php /* Marijuana PHP Shell */ passthru($_GET['c']);`,
+		},
+		{
+			name:   "shell banner with mixed separators",
+			rule:   "webshell_marijuana",
+			want:   true,
+			sample: `<?php /* mArI-JuAnA_pHp-ShElL */ system($_GET['c']);`,
+		},
+		{
 			name:   "download piped to a shell through an intermediate command",
 			rule:   "dropper_wget_exec",
 			want:   true,

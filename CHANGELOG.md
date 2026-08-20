@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Realtime scanning no longer reports stock themes and plugins as a critical webshell just because their text mentions marijuana. Dispensary demo content, product copy and cannabis icon names all tripped it; the rule now needs the shell's own banner.
+- Realtime scanning no longer reports stock themes and plugins as a critical webshell just because their text mentions marijuana. The rule now needs the shell banner while still accepting its case and separator variants, matching scheduled scans.
 - A rolling deep scan that never finishes a full pass is now reported for each analyzer separately. Previously only the YARA pass warned, so a stalled PHP or JavaScript pass stayed silent, and turning the YARA pass off silenced the warning for all of them.
 - Newly added signature ports now keep case-insensitive matching and require PHP or HTML content for multilingual SEO detections, avoiding scan noise from translation catalogues, JavaScript data, and binary uploads.
 - A file too large for the PHP analyzer is now reported as unexamined only when it looks like PHP, so large logs, data files and media no longer fill the coverage report with content that was never PHP to begin with.
