@@ -69,6 +69,18 @@ Without the `yara` build tag, YARA rules are not loaded or evaluated.
 
 ## Updating Rules
 
+Before merging bundled YARA changes, run the rules against an unpacked corpus
+of clean WordPress core and plugin files:
+
+```bash
+YARA_FP_CORPUS=/path/to/corpus go test -tags yara ./internal/yara/ -run TestRepositoryRulesAgainstCleanCorpus -v
+```
+
+The gate requires at least 5,000 non-empty files within the default scheduled
+scan size limit to reach the rule engine. Traversal, read, and scan failures
+fail the run instead of counting as clean. The measured baseline is empty;
+tighten a noisy rule rather than excluding paths or filenames.
+
 ```bash
 csm update-rules          # download latest rules and reload the running daemon
 ```
