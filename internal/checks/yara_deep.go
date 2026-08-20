@@ -638,15 +638,28 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	// yara_deep was disabled -- a supported configuration.
 	//
 	// Enumerated once so the shape is not rediscovered one field at a time.
-	// Per-consumer state, and who reads it:
-	//   cur.WrappedAt              each consumer, here (was YARA-only)
-	//   cur.LastPath / resume      each consumer, via wants and advance
-	//   dispatch                   each consumer, gates its own block below
-	//   gap collectors             PHP and JS each own theirs
-	//   incomplete, firstIncomplete YARA-only counters, reported only in the
-	//                              YARA block, which is correct
-	// Genuinely shared, and correctly shared:
-	//   stoppedEarly               describes the walk, not any one consumer
+	// Persisted per-consumer state:
+	//   cur.LastPath becomes resume and lastScanned. walkResume is the minimum
+	//   active resume; wants and consumerWantsSubtree still gate each consumer,
+	//   and advance plus the cursor write update only that consumer's progress.
+	//   cur.WrappedAt starts that consumer's partial cycle and drives only its
+	//   staleCheck/label warning here.
+	//   cur.LastFullCycleTS is preserved or stamped in that consumer's record.
+	// Runtime per-consumer state:
+	//   dispatch comes from that consumer's disable/readiness gates and controls
+	//   its cursor, analysis, completion mark, status finding, and carry-forward.
+	//   yaraWants/jsWants/phpWants and the three size limits govern only the
+	//   matching consumer. The shared read cap is their maximum, so no sibling
+	//   can reduce another's snapshot.
+	//   incomplete/firstIncomplete belong only to YARA; jsGaps plus
+	//   jsUnknownRangeGap belong only to JS; phpGaps belongs only to PHP. Each is
+	//   reported and used for completion/carry-forward only in its owner block.
+	// Genuinely shared state:
+	//   roots, path order, the context/soft deadline, opened snapshots, and
+	//   stoppedEarly describe the one walk. After a consumer's resume point all
+	//   active consumers have the same remaining ordered path space, so a walk
+	//   that stops early cannot have completed one active consumer's cycle while
+	//   leaving another active consumer's cycle unfinished.
 	// Known and deliberately out of scope: php_content_rolling.go writes
 	// WrappedAt for its per-account cursor and nothing reads it, so that scan
 	// has no staleness warning of its own.
