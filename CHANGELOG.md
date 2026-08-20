@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Newly added signature ports now keep case-insensitive matching and require PHP or HTML content for multilingual SEO detections, avoiding scan noise from translation catalogues, JavaScript data, and binary uploads.
 - A file too large for the PHP analyzer is now reported as unexamined only when it looks like PHP, so large logs, data files and media no longer fill the coverage report with content that was never PHP to begin with.
 
 - The test suite now writes its temporary files to a dedicated directory instead of the system default, so endpoint antivirus on a developer machine can be pointed at one path rather than the whole user temp area. Override with `TEST_TMPDIR`.

