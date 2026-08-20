@@ -342,6 +342,30 @@ $out = shell_exec($cmd);`,
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
 		{
+			// Stock theme and plugin code names dispensary demo content and a
+			// cannabis icon. The bare word must never be a critical webshell.
+			name:   "theme demo import listing a dispensary category",
+			rule:   "webshell_marijuana",
+			sample: `<?php return array('demos' => array('medical-marijuana' => array('name' => 'Medical Marijuana')));`,
+		},
+		{
+			name:   "icon picker naming a cannabis glyph",
+			rule:   "webshell_marijuana",
+			sample: `<?php $icons = array('fa-cannabis' => 'Marijuana', 'fa-leaf' => 'Leaf');`,
+		},
+		{
+			name:   "Marijuana Shell banner",
+			rule:   "webshell_marijuana",
+			want:   true,
+			sample: `<?php /* MaRiJuAnA ShElL v2 */ if(isset($_POST['cmd'])) { system($_POST['cmd']); }`,
+		},
+		{
+			name:   "compact shell brand without separators",
+			rule:   "webshell_marijuana",
+			want:   true,
+			sample: `<?php $t = "MarijuanaShell"; eval($_REQUEST['c']);`,
+		},
+		{
 			name:   "download piped to a shell through an intermediate command",
 			rule:   "dropper_wget_exec",
 			want:   true,
