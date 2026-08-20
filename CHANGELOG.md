@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The clean-corpus YARA gate now fails on unreadable input and scanner errors, and skipped content cannot satisfy its minimum coverage floor.
 - Newly added signature ports now keep case-insensitive matching and require PHP or HTML content for multilingual SEO detections, avoiding scan noise from translation catalogues, JavaScript data, and binary uploads.
 - A file too large for the PHP analyzer is now reported as unexamined only when it looks like PHP, so large logs, data files and media no longer fill the coverage report with content that was never PHP to begin with.
 
