@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -99,6 +101,92 @@ var realtimeOnlyRules = map[string]string{
 	"wp_woocommerce_card_skimmer":      "Tier 2: unbounded gap between a card-field name and a network call matches clean minified bundles; already a live realtime false positive",
 }
 
+// realtimeOnlyRuleBaseline freezes the initial burn-down membership. Keep
+// ported names here after removing them from realtimeOnlyRules: this permanent
+// baseline is what makes any new exception fail instead of letting the list
+// grow to hide a parity regression.
+const realtimeOnlyRuleBaseline = `
+backdoor_cron_reverse_shell
+backdoor_iconcache
+backdoor_php_auto_append
+backdoor_systemd_service
+backdoor_wp_muplugin_loader
+cgi_bash_webshell
+cgi_haxor_extension
+credential_logger
+credential_mailer
+dropper_php_stream_wrapper
+dropper_wget_exec
+dropper_wp_plugin_installer
+exfil_wp_config_reader
+exploit_cpanel_api_abuse
+exploit_htaccess_handler
+exploit_php_fpm_rce
+exploit_wp_fake_plugin_installer
+exploit_wp_options_inject
+exploit_wp_rest_api
+exploit_wp_xmlrpc
+gsocket_persistence
+mailer_bombermail
+mailer_exim_exploit
+mailer_phpmailer_abuse
+miner_coinhive_js
+miner_cryptoloot_js
+miner_monero_wallet
+miner_shell_script
+network_brute_force
+network_http_tunnel
+obfuscation_assert_string
+obfuscation_compact_unpack
+obfuscation_create_function
+obfuscation_ionCube_fake
+phishing_dhl_fedex
+phishing_google_drive
+phishing_onedrive
+phishing_webmail
+phishing_workers_dev_exfil
+php_dropper_gist
+php_dropper_raw_github
+php_eval_decode_chain
+php_hex_string_obfuscation
+php_open_basedir_bypass
+php_open_basedir_override
+revshell_weevely_agent
+spam_base64_links
+spam_chinese_seo
+spam_comment_injector
+spam_hidden_div_links
+spam_japanese_seo
+spam_link_injector
+spam_pharma_generic
+spam_redirect_chain
+spam_seo_link_injection
+spam_sitemap_hijack
+spam_wp_options_inject
+spam_wp_post_injector
+webshell_adminer_abuse
+webshell_generic_eval_request
+webshell_generic_shell_exec
+webshell_hex_function_name
+webshell_litespeed_backdoor
+webshell_net2ftp_shell
+webshell_phpfilemanager
+webshell_tiny_file_manager
+webshell_wp_fake_theme
+wp_core_file_modify
+wp_cron_backdoor
+wp_db_credential_dump
+wp_fake_plugin_eval
+wp_fake_plugin_upload
+wp_login_bruteforce
+wp_plugin_backdoor_contact_form
+wp_theme_editor_rce
+wp_user_enum
+wp_woocommerce_card_skimmer
+`
+
+var yaraRuleDeclaration = regexp.MustCompile(`(?m)^[\t ]*(?:(?:private|global)[\t ]+)*rule[\t ]+([A-Za-z_][A-Za-z0-9_]*)\b`)
+
 func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	configsDir := filepath.Join("..", "..", "configs")
 
@@ -108,8 +196,7 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	}
 	var doc struct {
 		Rules []struct {
-			Name     string `yaml:"name"`
-			Severity string `yaml:"severity"`
+			Name string `yaml:"name"`
 		} `yaml:"rules"`
 	}
 	if unmarshalErr := yaml.Unmarshal(yamlData, &doc); unmarshalErr != nil {
@@ -118,39 +205,206 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	if len(doc.Rules) == 0 {
 		t.Fatal("malware.yml parsed to zero rules")
 	}
+	yamlNames := make(map[string]bool, len(doc.Rules))
+	var duplicateYAMLNames []string
+	for _, rule := range doc.Rules {
+		if yamlNames[rule.Name] {
+			duplicateYAMLNames = append(duplicateYAMLNames, rule.Name)
+		}
+		yamlNames[rule.Name] = true
+	}
+	if len(duplicateYAMLNames) > 0 {
+		sort.Strings(duplicateYAMLNames)
+		t.Errorf("malware.yml contains duplicate rule names: %v", duplicateYAMLNames)
+	}
 
 	yaraData, err := os.ReadFile(filepath.Join(configsDir, "malware.yar"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	yaraNames := make(map[string]bool)
-	for _, m := range regexp.MustCompile(`(?m)^rule\s+(\w+)`).FindAllStringSubmatch(string(yaraData), -1) {
-		yaraNames[m[1]] = true
+	var duplicateYARANames []string
+	for _, name := range extractYARARuleNames(yaraData) {
+		if yaraNames[name] {
+			duplicateYARANames = append(duplicateYARANames, name)
+		}
+		yaraNames[name] = true
 	}
 	if len(yaraNames) == 0 {
 		t.Fatal("malware.yar parsed to zero rules")
 	}
+	if len(duplicateYARANames) > 0 {
+		sort.Strings(duplicateYARANames)
+		t.Errorf("malware.yar contains duplicate rule names: %v", duplicateYARANames)
+	}
 
-	var unported, staleAllowlist []string
-	for _, r := range doc.Rules {
-		_, listed := realtimeOnlyRules[r.Name]
-		if yaraNames[r.Name] {
-			if listed {
-				staleAllowlist = append(staleAllowlist, r.Name)
-			}
-			continue
+	baselineNames := make(map[string]bool)
+	for _, name := range strings.Fields(realtimeOnlyRuleBaseline) {
+		if baselineNames[name] {
+			t.Fatalf("realtime-only baseline contains duplicate rule %q", name)
 		}
-		if !listed {
-			unported = append(unported, r.Name)
+		baselineNames[name] = true
+	}
+
+	var grownBacklog, missingReasons, staleBacklog []string
+	for name, reason := range realtimeOnlyRules {
+		if !baselineNames[name] {
+			grownBacklog = append(grownBacklog, name)
+		}
+		if strings.TrimSpace(reason) == "" {
+			missingReasons = append(missingReasons, name)
+		}
+		if !yamlNames[name] || yaraNames[name] {
+			staleBacklog = append(staleBacklog, name)
 		}
 	}
 
+	var unported []string
+	for name := range yamlNames {
+		if !yaraNames[name] && realtimeOnlyRules[name] == "" {
+			unported = append(unported, name)
+		}
+	}
+
+	sort.Strings(grownBacklog)
+	sort.Strings(missingReasons)
+	sort.Strings(staleBacklog)
 	sort.Strings(unported)
-	sort.Strings(staleAllowlist)
+	if len(grownBacklog) > 0 {
+		t.Errorf("realtimeOnlyRules is a burn-down list and may not grow; port these new exceptions instead: %v", grownBacklog)
+	}
+	if len(missingReasons) > 0 {
+		t.Errorf("realtimeOnlyRules entries require a non-empty porting reason: %v", missingReasons)
+	}
 	if len(unported) > 0 {
 		t.Errorf("%d rules exist in malware.yml with no malware.yar counterpart, so on-demand and scheduled scans cannot fire them: %v", len(unported), unported)
 	}
-	if len(staleAllowlist) > 0 {
-		t.Errorf("realtimeOnlyRules names %d rules that are now in malware.yar; delete these entries: %v", len(staleAllowlist), staleAllowlist)
+	if len(staleBacklog) > 0 {
+		t.Errorf("realtimeOnlyRules contains %d stale entries no longer exclusive to malware.yml; delete them: %v", len(staleBacklog), staleBacklog)
 	}
+}
+
+func TestExtractYARARuleNames(t *testing.T) {
+	source := []byte(`
+/*
+rule block_comment { condition: true }
+*/
+// rule line_comment { condition: true }
+rule plain { condition: true }
+    private rule indented_private { condition: true }
+global rule global_rule { condition: true }
+private global rule both_modifiers {
+    strings:
+        $quoted = "rule quoted_string { condition: true }"
+        $regex = /rule regex_literal \/\* not_a_comment \*\//
+    condition:
+        true
+}
+`)
+	want := []string{"plain", "indented_private", "global_rule", "both_modifiers"}
+	if got := extractYARARuleNames(source); !slices.Equal(got, want) {
+		t.Fatalf("rule names = %v, want %v", got, want)
+	}
+}
+
+func extractYARARuleNames(source []byte) []string {
+	code := maskYARACommentsAndLiterals(source)
+	matches := yaraRuleDeclaration.FindAllSubmatch(code, -1)
+	names := make([]string, 0, len(matches))
+	for _, match := range matches {
+		names = append(names, string(match[1]))
+	}
+	return names
+}
+
+func maskYARACommentsAndLiterals(source []byte) []byte {
+	const (
+		codeState = iota
+		lineCommentState
+		blockCommentState
+		stringState
+		regexState
+	)
+
+	masked := append([]byte(nil), source...)
+	state := codeState
+	escaped := false
+	var previousSignificant byte
+	for i := 0; i < len(source); i++ {
+		ch := source[i]
+		switch state {
+		case codeState:
+			switch {
+			case ch == '/' && i+1 < len(source) && source[i+1] == '/':
+				masked[i], masked[i+1] = ' ', ' '
+				i++
+				state = lineCommentState
+			case ch == '/' && i+1 < len(source) && source[i+1] == '*':
+				masked[i], masked[i+1] = ' ', ' '
+				i++
+				state = blockCommentState
+			case ch == '"':
+				masked[i] = ' '
+				escaped = false
+				state = stringState
+			case ch == '/' && previousSignificant == '=':
+				masked[i] = ' '
+				escaped = false
+				state = regexState
+			case ch == '\n':
+				previousSignificant = 0
+			case ch != ' ' && ch != '\t' && ch != '\r':
+				previousSignificant = ch
+			}
+
+		case lineCommentState:
+			if ch == '\n' {
+				state = codeState
+				previousSignificant = 0
+			} else {
+				masked[i] = ' '
+			}
+
+		case blockCommentState:
+			switch {
+			case ch == '*' && i+1 < len(source) && source[i+1] == '/':
+				masked[i], masked[i+1] = ' ', ' '
+				i++
+				state = codeState
+			case ch != '\n':
+				masked[i] = ' '
+			default:
+				previousSignificant = 0
+			}
+
+		case stringState:
+			if ch != '\n' {
+				masked[i] = ' '
+			}
+			switch {
+			case escaped:
+				escaped = false
+			case ch == '\\':
+				escaped = true
+			case ch == '"':
+				state = codeState
+				previousSignificant = '"'
+			}
+
+		case regexState:
+			if ch != '\n' {
+				masked[i] = ' '
+			}
+			switch {
+			case escaped:
+				escaped = false
+			case ch == '\\':
+				escaped = true
+			case ch == '/':
+				state = codeState
+				previousSignificant = '/'
+			}
+		}
+	}
+	return masked
 }
