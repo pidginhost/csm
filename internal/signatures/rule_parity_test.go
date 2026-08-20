@@ -16,15 +16,16 @@ import (
 // same-name rule in malware.yar, together with why it has not been ported.
 //
 // Scans run YARA-X only; the pure-Go .yml engine is reachable from realtime
-// fanotify and finding re-check alone. An entry here is therefore a rule that
-// can only ever fire while the daemon watches the write -- invisible to
-// `csm scan`, and to every file already sitting on disk.
+// fanotify and finding re-check alone. Most entries are therefore invisible to
+// `csm scan` and to files already sitting on disk. Entries marked as renames
+// already run under another YARA rule ID and stay here to prevent double ports.
 //
 // This map may only shrink.
 var realtimeOnlyRules = map[string]string{
 	"backdoor_cron_reverse_shell":      "Rename, not a gap: byte-identical regex already ships as backdoor_cron_downloader, so the detection runs on every scan. Porting it would double-report",
 	"backdoor_php_auto_append":         "Tier 2: htaccess-scoped; the directive also appears as a string literal in security-plugin PHP, giving 7 port-induced live hits",
 	"backdoor_systemd_service":         "Tier 2: min_match 1 with a single generic literal (the ExecStart directive) and require_regex false, so the regex is decorative and ANY systemd unit satisfies the rule. Caught by a benign-unit control sample, not by corpus measurement",
+	"backdoor_wp_muplugin_loader":      "Rename, not a gap: the decoded-include arm already ships under backdoor_wp_muplugin. The narrower case-insensitive variant belongs in that rule to avoid double-reporting",
 	"cgi_bash_webshell":                "Rename, and the .yar side is the HARDENED one: cgi_webshell_bash requires the bash shebang at offset 0, which is what keeps the four bare substrings from matching any large bundle. Porting this .yml version by name would replace a hardened rule with the weak original",
 	"cgi_haxor_extension":              "Tier 2: content signal is the literal shebang, which occurs by chance in binary; 473 live hits across 22 file types including .jpg, .pdf, .zip and fonts. Real detection is the .haxor filename and belongs in internal/checks",
 	"credential_logger":                "Tier 1: port adds no new hits, but the rule is already a live realtime false positive on security-plugin login code; worth fixing separately",
@@ -39,6 +40,7 @@ var realtimeOnlyRules = map[string]string{
 	"exploit_wp_options_inject":        "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"exploit_wp_rest_api":              "Tier 2: 29 port-induced live hits, every one on a .mo translation catalogue",
 	"exploit_wp_xmlrpc":                "Rename, not a gap: identical regexes already ship as exploit_wp_xmlrpc_abuse",
+	"gsocket_persistence":              "Rename, not a gap: the same two persistence markers already ship as gsocket_cron_persistence",
 	"mailer_bombermail":                "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"mailer_exim_exploit":              "Tier 2: 268 port-induced live hits, almost all on plugin .js assets; also already a live realtime false positive on the PHPMailer SMTP class in WordPress core",
 	"mailer_phpmailer_abuse":           "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
@@ -48,6 +50,7 @@ var realtimeOnlyRules = map[string]string{
 	"miner_shell_script":               "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"network_brute_force":              "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"network_http_tunnel":              "Tier 2: port-induced hit on plugin .js; also already a live realtime false positive on the FTP sockets class in WordPress core",
+	"obfuscation_assert_string":        "Rename, not a gap: the same three assert input forms already ship as obfuscation_assert_exec",
 	"obfuscation_create_function":      "Tier 2: 4 port-induced live hits on plugin readme .txt; also already a live realtime false positive",
 	"obfuscation_ionCube_fake":         "Tier 2: min_match 2 with two ionCube brand literals, so a legitimate loader stub fires it without the regex ever matching. Commercial encoded PHP is absent from the corpus, so measurement alone missed this",
 	"phishing_dhl_fedex":               "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
@@ -55,11 +58,12 @@ var realtimeOnlyRules = map[string]string{
 	"phishing_onedrive":                "Tier 1: port adds no new hits, but the rule already fires in realtime on live data; worth fixing separately",
 	"phishing_webmail":                 "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"phishing_workers_dev_exfil":       "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
-	"php_dropper_gist":                 "Rename, not a gap: identical literals already ship as php_dropper_github_gist",
+	"php_dropper_gist":                 "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_dropper_raw_github":           "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_eval_decode_chain":            "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_hex_string_obfuscation":       "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"php_open_basedir_bypass":          "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
+	"php_open_basedir_override":        "Rename, not a gap: the same open_basedir reset already ships as exploit_open_basedir_escape",
 	"revshell_weevely_agent":           "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"spam_base64_links":                "Tier 1: port adds no new hits, but the rule already fires in realtime on live data; worth fixing separately",
 	"spam_comment_injector":            "Tier 2: 15 port-induced live hits on WordPress core .js; also already a live realtime false positive on core comment handling",
@@ -89,6 +93,22 @@ var realtimeOnlyRules = map[string]string{
 	"wp_theme_editor_rce":              "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"wp_user_enum":                     "Tier 1: silent on the clean corpus and on a 291k-file live sample; ready to port",
 	"wp_woocommerce_card_skimmer":      "Tier 2: unbounded gap between a card-field name and a network call; port-induced hits on .map files, and already a live realtime false positive at scale",
+}
+
+// renamedYARARules records the scheduled-scan rule that covers a differently
+// named YAML rule. Keeping aliases machine-readable makes a deleted or renamed
+// YARA counterpart fail instead of silently turning a rename into a real gap.
+var renamedYARARules = map[string]string{
+	"backdoor_cron_reverse_shell": "backdoor_cron_downloader",
+	"backdoor_wp_muplugin_loader": "backdoor_wp_muplugin",
+	"cgi_bash_webshell":           "cgi_webshell_bash",
+	"exploit_wp_xmlrpc":           "exploit_wp_xmlrpc_abuse",
+	"gsocket_persistence":         "gsocket_cron_persistence",
+	"miner_coinhive_js":           "miner_coinhive",
+	"obfuscation_assert_string":   "obfuscation_assert_exec",
+	"php_open_basedir_override":   "exploit_open_basedir_escape",
+	"webshell_litespeed_backdoor": "webshell_litespeed_disguise",
+	"wp_core_file_modify":         "exploit_wp_core_modification",
 }
 
 // realtimeOnlyRuleBaseline freezes the initial burn-down membership. Keep
@@ -236,7 +256,7 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 		baselineNames[name] = true
 	}
 
-	var grownBacklog, missingReasons, staleBacklog []string
+	var grownBacklog, invalidRenames, missingReasons, staleBacklog []string
 	for name, reason := range realtimeOnlyRules {
 		if !baselineNames[name] {
 			grownBacklog = append(grownBacklog, name)
@@ -246,6 +266,15 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 		}
 		if !yamlNames[name] || yaraNames[name] {
 			staleBacklog = append(staleBacklog, name)
+		}
+		if strings.HasPrefix(reason, "Rename") && renamedYARARules[name] == "" {
+			invalidRenames = append(invalidRenames, name+"->missing alias")
+		}
+	}
+	for yamlName, yaraName := range renamedYARARules {
+		reason := realtimeOnlyRules[yamlName]
+		if yamlName == yaraName || !yamlNames[yamlName] || !yaraNames[yaraName] || !strings.HasPrefix(reason, "Rename") {
+			invalidRenames = append(invalidRenames, yamlName+"->"+yaraName)
 		}
 	}
 
@@ -257,6 +286,7 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	}
 
 	sort.Strings(grownBacklog)
+	sort.Strings(invalidRenames)
 	sort.Strings(missingReasons)
 	sort.Strings(staleBacklog)
 	sort.Strings(unported)
@@ -265,6 +295,9 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	}
 	if len(missingReasons) > 0 {
 		t.Errorf("realtimeOnlyRules entries require a non-empty porting reason: %v", missingReasons)
+	}
+	if len(invalidRenames) > 0 {
+		t.Errorf("renamed YAML rules require a live, differently named YARA counterpart: %v", invalidRenames)
 	}
 	if len(unported) > 0 {
 		t.Errorf("%d rules exist in malware.yml with no malware.yar counterpart, so on-demand and scheduled scans cannot fire them: %v", len(unported), unported)

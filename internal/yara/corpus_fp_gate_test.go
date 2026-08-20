@@ -27,8 +27,8 @@ const minCorpusFiles = 5000
 const corpusMaxFileBytes int64 = 16 * 1024 * 1024
 
 // corpusBaseline records rules known to fire on clean third-party code, with
-// the observed hit count. Measured 2026-08-20 over 16,001 files of unpacked
-// WordPress core and popular plugins: the shipped 150-rule set fires on NONE
+// the observed hit count. Measured 2026-08-21 over 15,992 files of unpacked
+// WordPress core and popular plugins: the shipped 152-rule set fires on NONE
 // of them, so the baseline is empty and must stay that way.
 //
 // Adding an entry here is an admission that a rule matches clean vendor code.

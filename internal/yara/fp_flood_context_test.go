@@ -17,9 +17,21 @@ func TestFPFlood_BackdoorWpMuplugin_Doubleval(t *testing.T) {
 	if hasYaraRule(s.ScanBytes(legit), "backdoor_wp_muplugin") {
 		t.Error("backdoor_wp_muplugin FP: doubleval() substring matched as eval")
 	}
-	mal := []byte("<?php eval($_POST['x']); // mu-plugin backdoor")
+	mal := []byte("<?php // wp-content/mu-plugins/x.php\neval($_POST['x']);")
 	if !hasYaraRule(s.ScanBytes(mal), "backdoor_wp_muplugin") {
 		t.Error("backdoor_wp_muplugin regression: real eval($_POST) not detected")
+	}
+	standalone := []byte("<?php eval($_POST['x']); // ordinary plugin")
+	standaloneMatches := s.ScanBytes(standalone)
+	if hasYaraRule(standaloneMatches, "backdoor_wp_muplugin") {
+		t.Error("backdoor_wp_muplugin FP: standalone eval labeled as a mu-plugin backdoor")
+	}
+	if !hasYaraRule(standaloneMatches, "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru regression: standalone eval of request input not detected")
+	}
+	documented := []byte(`const blocked = 'eval($_POST["x"])';`)
+	if hasYaraRule(s.ScanBytes(documented), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru FP: JavaScript documentation labeled as a PHP webshell")
 	}
 }
 

