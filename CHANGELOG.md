@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- On-demand and scheduled scans now detect six more threats that previously could only be caught as the file was written: backdoors staged as icon or favicon files, obfuscated must-use plugin loaders, a socket-tool persistence marker, assert() used to run request input, hex-unpacked payloads, and open_basedir being reset at runtime to escape the account sandbox.
 - The scheduled deep scan now includes a PHP analyzer that detects remotely fetched content reaching code execution, even across functions. It runs in a separate supervised process so one file can never stall the daemon, and any file it could not examine is reported as reduced coverage rather than passed as clean. Findings are graded by how firmly the fetch was shown to be remote, so a proven remote source reaching execution stands out from a dual-use call a library uses legitimately.
 - A new malware rule catches PHP source that is rebuilt at run time, through a decoder or a call resolved at run time, and then executed with an HTML-mode prefix. Template engines using the same idiom to render local templates are unaffected, since they concatenate the template as read.
 - On-demand and scheduled scans now detect remote-payload shell droppers, WordPress cron backdoors, and Chinese and Japanese SEO spam injection. These four could previously only be caught in the instant they were written, so an affected file already sitting on disk was reported clean.
