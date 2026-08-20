@@ -57,6 +57,11 @@ type deepScanConsumer struct {
 	resume      string
 	lastScanned string
 	cur         store.ScanCursorRecord
+	// staleCheck and label name this consumer in its own staleness finding.
+	// Coverage degradation must be reported under the consumer that actually
+	// degraded, never under a sibling's identity.
+	staleCheck string
+	label      string
 }
 
 // wants reports whether this consumer still needs the given path this cycle.
@@ -128,9 +133,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 	}
 
 	db := store.Global()
-	yaraConsumer := &deepScanConsumer{name: yaraDeepCursorCheck}
-	jsConsumer := &deepScanConsumer{name: jsTaintDeepCursorCheck}
-	phpConsumer := &deepScanConsumer{name: phpTaintDeepCursorCheck}
+	yaraConsumer := &deepScanConsumer{name: yaraDeepCursorCheck, staleCheck: "yara_scan_incomplete", label: "YARA"}
+	jsConsumer := &deepScanConsumer{name: jsTaintDeepCursorCheck, staleCheck: "js_taint_scan_incomplete", label: "JS taint"}
+	phpConsumer := &deepScanConsumer{name: phpTaintDeepCursorCheck, staleCheck: "php_taint_scan_incomplete", label: "PHP taint"}
 	consumers := []*deepScanConsumer{yaraConsumer, jsConsumer, phpConsumer}
 
 	yaraOff := yaraDeepConsumerDisabled(cfg)
@@ -626,20 +631,45 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		}
 	}
 
+	// Rolling-cycle staleness is per consumer. All three keep their own cursor
+	// and their own WrappedAt, so the warning belongs to whichever cycle
+	// actually stalled. This was read from the YARA cursor alone, which left a
+	// stalled PHP or JS cycle silent, and silenced the warning entirely when
+	// yara_deep was disabled -- a supported configuration.
+	//
+	// Enumerated once so the shape is not rediscovered one field at a time.
+	// Per-consumer state, and who reads it:
+	//   cur.WrappedAt              each consumer, here (was YARA-only)
+	//   cur.LastPath / resume      each consumer, via wants and advance
+	//   dispatch                   each consumer, gates its own block below
+	//   gap collectors             PHP and JS each own theirs
+	//   incomplete, firstIncomplete YARA-only counters, reported only in the
+	//                              YARA block, which is correct
+	// Genuinely shared, and correctly shared:
+	//   stoppedEarly               describes the walk, not any one consumer
+	// Known and deliberately out of scope: php_content_rolling.go writes
+	// WrappedAt for its per-account cursor and nothing reads it, so that scan
+	// has no staleness warning of its own.
+	if stoppedEarly {
+		for _, c := range consumers {
+			if !c.dispatch || c.cur.WrappedAt.IsZero() || now.Sub(c.cur.WrappedAt) <= yaraDeepFullCycleStale {
+				continue
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    c.staleCheck,
+				Message:  fmt.Sprintf("Rolling %s deep scan has not completed a full pass since %s", c.label, c.cur.WrappedAt.Format("2006-01-02")),
+				Details:  "Each run advances the cursor inside its time budget; a pass this stale means the budget is too small for the content volume.",
+			})
+		}
+	}
+
 	if yaraConsumer.dispatch {
 		// A run that resumed mid-cycle or stopped at the soft deadline saw
 		// only a window of the space; completing it would purge findings
 		// discovered by the other windows of this cycle.
 		if stoppedEarly || yaraConsumer.resume != "" {
 			markCheckIncomplete(ctx, "yara_deep")
-		}
-		if stoppedEarly && !yaraConsumer.cur.WrappedAt.IsZero() && now.Sub(yaraConsumer.cur.WrappedAt) > yaraDeepFullCycleStale {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "yara_scan_incomplete",
-				Message:  fmt.Sprintf("Rolling YARA deep scan has not completed a full pass since %s", yaraConsumer.cur.WrappedAt.Format("2006-01-02")),
-				Details:  "Each run advances the cursor inside its time budget; a pass this stale means the budget is too small for the content volume.",
-			})
 		}
 		if incomplete > 0 {
 			markCheckIncomplete(ctx, "yara_deep")
