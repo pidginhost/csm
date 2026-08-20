@@ -349,6 +349,24 @@ $out = shell_exec($cmd);`,
 			sample: `<?php return array('demos' => array('medical-marijuana' => array('name' => 'Medical Marijuana')));`,
 		},
 		{
+			// A separator class including newlines would let one list item ending
+			// in the word bridge to the next item starting with "shell".
+			name:   "data list with a dispensary entry above a shell entry",
+			rule:   "webshell_marijuana",
+			sample: "demos:\n  - medical-marijuana\n  - shell-theme\n",
+		},
+		{
+			name:   "json list with a dispensary entry above a shell entry",
+			rule:   "webshell_marijuana",
+			sample: "[\"medical-marijuana\",\n \"shell\"]",
+		},
+		{
+			name:   "banner with no space before shell",
+			rule:   "webshell_marijuana",
+			want:   true,
+			sample: `<?php /* MarijuanaPHPShell */ system($_GET['c']);`,
+		},
+		{
 			name:   "icon picker naming a cannabis glyph",
 			rule:   "webshell_marijuana",
 			sample: `<?php $icons = array('fa-cannabis' => 'Marijuana', 'fa-leaf' => 'Leaf');`,
