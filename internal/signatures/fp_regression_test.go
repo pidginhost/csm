@@ -868,6 +868,36 @@ echo "<title>MarijuanaShell</title>";
 	}
 }
 
+func TestWebshellMarijuana_BannerVariants(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	tests := []string{
+		`<?php /* MarijuanaShell */ system($_GET['cmd']);`,
+		`<?php /* MaRiJuAnA ShElL */ system($_GET['cmd']);`,
+		`<?php /* Marijuana PHP Shell */ system($_GET['cmd']);`,
+		`<?php /* mArI-JuAnA_pHp-ShElL */ system($_GET['cmd']);`,
+	}
+
+	for _, sample := range tests {
+		if !hasRule(scanner.ScanContent([]byte(sample), ".php"), "webshell_marijuana") {
+			t.Errorf("webshell_marijuana regression: banner variant was not detected: %q", sample)
+		}
+	}
+}
+
+func TestWebshellMarijuana_BareTerm(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	tests := []string{
+		`<?php return ['medical-marijuana' => ['name' => 'Medical Marijuana']];`,
+		`<?php $icons = ['fa-cannabis' => 'Marijuana', 'fa-leaf' => 'Leaf'];`,
+	}
+
+	for _, sample := range tests {
+		if hasRule(scanner.ScanContent([]byte(sample), ".php"), "webshell_marijuana") {
+			t.Errorf("webshell_marijuana FP: bare term matched without the shell banner: %q", sample)
+		}
+	}
+}
+
 func TestExfilWpDbDumper_UpdraftPlusBootstrapFile(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
