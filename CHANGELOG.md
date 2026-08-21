@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.29.0] - 2026-08-21
 
 ### Added
 
@@ -21,9 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A rolling deep scan that never finishes a full pass is now reported for each analyzer separately. Previously only the YARA pass warned, so a stalled PHP or JavaScript pass stayed silent, and turning the YARA pass off silenced the warning for all of them.
 - Newly added signature ports now keep case-insensitive matching and require PHP or HTML content for multilingual SEO detections, avoiding scan noise from translation catalogues, JavaScript data, and binary uploads.
 - A file too large for the PHP analyzer is now reported as unexamined only when it looks like PHP, so large logs, data files and media no longer fill the coverage report with content that was never PHP to begin with.
-
 - The test suite now writes its temporary files to a dedicated directory instead of the system default, so endpoint antivirus on a developer machine can be pointed at one path rather than the whole user temp area. Override with `TEST_TMPDIR`.
-
 - Files ending in `.phps` were never read by content scanning, because a stock web server shows that extension as source instead of running it, which makes it a place to park a payload one rename away from execution. They are now scanned as the PHP source they are, in scheduled, rolling, and real-time paths alike, and are still not treated as executable.
 - A file too large to hand the scanner in one message was reported as a failed scan by the attachment scanner and by finding re-check, so large attachments were always routed conservatively without being looked at, and a finding on a large file could never be confirmed or cleared. Both now ask the scanner to read the file directly, which the scheduled scan already did.
 - A YARA Forge update that carried fewer rules than the installed one was treated as a conflict with the local rules, and the recovery step deleted the downloaded set entirely. A release a few dozen rules smaller could therefore drop several thousand working rules, leaving the host on its local rules alone until the next restart, and it was only reported on standard error. The check now asks whether the new rules loaded at all, and a rollback raises an alert.
