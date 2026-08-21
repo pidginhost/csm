@@ -117,30 +117,35 @@ func (g *phpTaintGapCollector) hasPath(path string) bool {
 	return ok
 }
 
-// phpTaintParserDefeatStatus is the gap status recorded when content that
-// passed the PHP pre-filter made the parser panic. It is reported on its own
-// because it means something quite different from the other gap statuses: the
-// content looked like PHP and defeated the analyzer, which is either the known
-// upstream parser defect or a deliberate attempt to avoid analysis. Folded in
-// with the benign statuses it is invisible -- one real scan recorded
-// oversize=617 next to panic=3.
-const phpTaintParserDefeatStatus = "panic"
+// isPHPTaintAnalyzerDefeatStatus identifies per-file hard failures.
+// StatusPanic covers defects anywhere in the analyzer stack, including the
+// known upstream lexer defect. StatusTimeout means the isolated worker had to
+// be killed after analysis stopped making progress. Neither may be attributed
+// solely to the parser, but both need to remain visible instead of being buried
+// under routine coverage gaps.
+func isPHPTaintAnalyzerDefeatStatus(status string) bool {
+	return status == phptaint.StatusPanic.String() || status == phptaint.StatusTimeout.String()
+}
 
-// findings splits the collected gaps into the benign coverage report and, when
-// present, a separate report for content that defeated the parser.
+// findings splits routine coverage gaps from content that crashed or stalled
+// the analyzer. Collector-wide range-loss facts are attached exactly once.
 func (g *phpTaintGapCollector) findings() []alert.Finding {
 	var out []alert.Finding
-	benign := make(map[string]int, len(g.byStatus))
+	routine := make(map[string]int, len(g.byStatus))
+	defeats := make(map[string]int, 2)
 	for status, n := range g.byStatus {
-		if status != phpTaintParserDefeatStatus {
-			benign[status] = n
+		if isPHPTaintAnalyzerDefeatStatus(status) {
+			defeats[status] = n
+		} else {
+			routine[status] = n
 		}
 	}
-	if len(benign) > 0 || g.unknown > 0 {
-		out = append(out, g.buildFinding(benign, true))
+	hasRoutineFinding := len(routine) > 0 || g.unknown > 0
+	if hasRoutineFinding {
+		out = append(out, g.buildFinding(routine, true, false))
 	}
-	if n := g.byStatus[phpTaintParserDefeatStatus]; n > 0 {
-		out = append(out, g.buildFinding(map[string]int{phpTaintParserDefeatStatus: n}, false))
+	if len(defeats) > 0 {
+		out = append(out, g.buildFinding(defeats, !hasRoutineFinding, true))
 	}
 	return out
 }
@@ -148,10 +153,10 @@ func (g *phpTaintGapCollector) findings() []alert.Finding {
 // finding reports every gap in one alert. Retained for callers that do not
 // need the split.
 func (g *phpTaintGapCollector) finding() alert.Finding {
-	return g.buildFinding(g.byStatus, true)
+	return g.buildFinding(g.byStatus, true, false)
 }
 
-func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRangeLoss bool) alert.Finding {
+func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRangeLoss, analyzerDefeat bool) alert.Finding {
 	total := 0
 	statuses := make([]string, 0, len(byStatus))
 	for status, n := range byStatus {
@@ -166,12 +171,12 @@ func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRang
 	if includeRangeLoss && g.unknown > 0 {
 		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
 	}
-	if g.pathsTruncated {
+	if includeRangeLoss && g.pathsTruncated {
 		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
 	}
 	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
-	if !includeRangeLoss {
-		message = fmt.Sprintf("PHP taint deep scan was defeated by %d file(s) that parse as PHP but crash the parser", total)
+	if analyzerDefeat {
+		message = fmt.Sprintf("PHP taint deep scan was defeated by %d file(s) that crashed or stalled the analyzer", total)
 	} else if total == 0 {
 		message = fmt.Sprintf("PHP taint deep scan could not cover %d location(s)", g.unknown)
 	}
