@@ -583,6 +583,7 @@ func TestAuditMailEximLoggingSkippedWithoutExim(t *testing.T) {
 
 func TestAuditMailSecureAuth_Disabled(t *testing.T) {
 	withMockMTA(t, platform.MTAExim)
+	withMockCPanel(t, true)
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 		readFile: func(name string) ([]byte, error) {

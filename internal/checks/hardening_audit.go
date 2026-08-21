@@ -3,8 +3,10 @@ package checks
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1561,22 +1563,52 @@ func parsePHPVersion(ver string) (int, int) {
 
 func auditWebServer() []store.AuditResult {
 	var results []store.AuditResult
-	if configPath := findWebServerConfigPath(); configPath != "" {
+	if configPath := findWebServerConfigPath(platform.Detect()); configPath != "" {
 		results = append(results, auditApacheDirectives(configPath)...)
 	}
 	return append(results, auditWebTLS()...)
 }
 
-// findWebServerConfigPath returns the main web server configuration file,
-// or "" when none of the known locations exist.
-func findWebServerConfigPath() string {
-	for _, p := range []string{
-		"/etc/apache2/conf/httpd.conf",          // cPanel EA4
-		"/usr/local/lsws/conf/httpd_config.xml", // LiteSpeed
-		"/etc/httpd/conf/httpd.conf",            // RHEL/CentOS bare
-		"/etc/apache2/apache2.conf",             // Debian/Ubuntu bare
-	} {
+// findWebServerConfigPath returns the active Apache-compatible main file.
+// Native LiteSpeed XML uses different syntax; cPanel LiteSpeed consumes the
+// EA4 Apache tree and is the only LiteSpeed case this audit can inspect.
+func findWebServerConfigPath(info platform.Info) string {
+	if info.WebServer == platform.WSLiteSpeed && !info.IsCPanel() {
+		return ""
+	}
+
+	var candidates []string
+	if info.IsCPanel() {
+		candidates = append(candidates, "/etc/apache2/conf/httpd.conf")
+	}
+	if info.ApacheConfigDir != "" {
+		switch {
+		case info.IsDebianFamily() && !info.IsCPanel():
+			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "apache2.conf"))
+		case info.IsRHELFamily() && !info.IsCPanel():
+			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "conf", "httpd.conf"))
+		default:
+			candidates = append(candidates, filepath.Join(info.ApacheConfigDir, "httpd.conf"))
+		}
+	}
+	switch {
+	case info.IsDebianFamily():
+		candidates = append(candidates, "/etc/apache2/apache2.conf")
+	case info.IsRHELFamily():
+		candidates = append(candidates, "/etc/httpd/conf/httpd.conf")
+	case len(candidates) == 0:
+		candidates = append(candidates, "/etc/httpd/conf/httpd.conf", "/etc/apache2/apache2.conf")
+	}
+
+	seen := make(map[string]bool)
+	for _, p := range candidates {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
 		if _, err := osFS.Stat(p); err == nil {
+			return p
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return p
 		}
 	}
@@ -1588,40 +1620,67 @@ func findWebServerConfigPath() string {
 // message.
 const auditApacheDirectivesMaxScopes = 5
 
-// auditApacheDirectives checks the hardening directives that apply at
-// server scope. Include and IncludeOptional are followed, so directives
-// kept in a snippet directory count the same as ones written into the
-// distro's main config.
+// auditApacheDirectives checks the effective Apache configuration after
+// Include and IncludeOptional targets have been spliced into place.
 func auditApacheDirectives(configPath string) []store.AuditResult {
 	var results []store.AuditResult
 
-	lines := assembleApacheConfig(configPath)
-	serverScope := apacheServerScopeLines(lines)
+	lines, assemblyComplete := assembleApacheConfigWithStatus(configPath)
 
 	type directiveCheck struct {
 		id, title, directive string
 		goodValues           []string
+		allowScoped          bool
 	}
 	dirChecks := []directiveCheck{
-		{"web_server_tokens", "ServerTokens", "ServerTokens", []string{"prod", "productonly"}},
-		{"web_server_signature", "ServerSignature", "ServerSignature", []string{"off"}},
-		{"web_trace_enable", "TraceEnable", "TraceEnable", []string{"off"}},
-		{"web_file_etag", "FileETag", "FileETag", []string{"none"}},
+		{"web_server_tokens", "ServerTokens", "ServerTokens", []string{"prod", "productonly"}, false},
+		{"web_server_signature", "ServerSignature", "ServerSignature", []string{"off"}, true},
+		{"web_trace_enable", "TraceEnable", "TraceEnable", []string{"off"}, false},
+		{"web_file_etag", "FileETag", "FileETag", []string{"none"}, true},
 	}
 
 	for _, dc := range dirChecks {
-		// Last value at server scope wins, matching how Apache resolves
-		// a directive repeated across the main config and its snippets.
-		var foundVal, foundFile string
-		for _, l := range serverScope {
-			fields := strings.Fields(strings.TrimSpace(l.Text))
-			if len(fields) >= 2 && strings.EqualFold(fields[0], dc.directive) {
-				foundVal = unquoteApacheArg(fields[1])
-				foundFile = l.File
+		values, configValid := apacheDirectiveValues(lines, dc.directive)
+		var serverValue *apacheDirectiveValue
+		var unsafeValue *apacheDirectiveValue
+		var unsafeConditional *apacheDirectiveValue
+		for i := range values {
+			value := &values[i]
+			if value.Scope == "server config" && !value.Conditional {
+				serverValue = value
+			}
+			if value.Scope != "server config" && !dc.allowScoped {
+				configValid = false
+				continue
+			}
+			if apacheDirectiveValueIsGood(value.Value, dc.goodValues) {
+				continue
+			}
+			if value.Conditional {
+				unsafeConditional = value
+			} else {
+				unsafeValue = value
+				break
 			}
 		}
 
-		if foundVal == "" {
+		if unsafeValue != nil {
+			results = append(results, store.AuditResult{
+				Category: "webserver", Name: dc.id, Title: dc.title,
+				Status: "fail", Message: fmt.Sprintf("%s = %s in %s (%s)", dc.directive, unsafeValue.Value, unsafeValue.Scope, unsafeValue.File),
+				Fix: fmt.Sprintf("Set '%s %s' in %s", dc.directive, dc.goodValues[0], unsafeValue.File),
+			})
+			continue
+		}
+		if unsafeConditional != nil {
+			results = append(results, store.AuditResult{
+				Category: "webserver", Name: dc.id, Title: dc.title,
+				Status: "warn", Message: fmt.Sprintf("%s may be %s in conditional %s scope (%s)", dc.directive, unsafeConditional.Value, unsafeConditional.Scope, unsafeConditional.File),
+				Fix: fmt.Sprintf("Set '%s %s' in %s", dc.directive, dc.goodValues[0], unsafeConditional.File),
+			})
+			continue
+		}
+		if serverValue == nil {
 			results = append(results, store.AuditResult{
 				Category: "webserver", Name: dc.id, Title: dc.title,
 				Status: "warn", Message: fmt.Sprintf("%s not set in %s or its included snippets", dc.directive, configPath),
@@ -1629,30 +1688,28 @@ func auditApacheDirectives(configPath string) []store.AuditResult {
 			})
 			continue
 		}
-
-		isGood := false
-		for _, gv := range dc.goodValues {
-			if strings.EqualFold(foundVal, gv) {
-				isGood = true
-				break
-			}
-		}
-		if isGood {
+		if assemblyComplete && configValid {
 			results = append(results, store.AuditResult{
 				Category: "webserver", Name: dc.id, Title: dc.title,
-				Status: "pass", Message: fmt.Sprintf("%s = %s (%s)", dc.directive, foundVal, foundFile),
+				Status: "pass", Message: fmt.Sprintf("%s = %s (%s)", dc.directive, serverValue.Value, serverValue.File),
 			})
 			continue
 		}
 		results = append(results, store.AuditResult{
 			Category: "webserver", Name: dc.id, Title: dc.title,
-			Status: "fail", Message: fmt.Sprintf("%s = %s (%s)", dc.directive, foundVal, foundFile),
-			Fix: fmt.Sprintf("Set '%s %s' in %s", dc.directive, dc.goodValues[0], foundFile),
+			Status: "warn", Message: fmt.Sprintf("%s appears secure, but the Apache configuration could not be fully evaluated", dc.directive),
 		})
 	}
 
-	scopes := apacheIndexesScopes(lines)
+	scopes, optionsValid := apacheIndexesScopesWithStatus(lines)
 	if len(scopes) == 0 {
+		if !assemblyComplete || !optionsValid {
+			results = append(results, store.AuditResult{
+				Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
+				Status: "warn", Message: "Apache Options could not be fully evaluated",
+			})
+			return results
+		}
 		results = append(results, store.AuditResult{
 			Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
 			Status: "pass", Message: "No configured scope enables directory listing",
@@ -1673,6 +1730,15 @@ func auditApacheDirectives(configPath string) []store.AuditResult {
 		Fix:     "Replace 'Indexes' with '-Indexes' in the Options directive of each scope listed.",
 	})
 	return results
+}
+
+func apacheDirectiveValueIsGood(value string, goodValues []string) bool {
+	for _, good := range goodValues {
+		if strings.EqualFold(value, good) {
+			return true
+		}
+	}
+	return false
 }
 
 // auditWebTLS probes the local HTTPS listener for legacy TLS versions.
@@ -1708,6 +1774,7 @@ func auditWebTLS() []store.AuditResult {
 
 // detectMTA is a seam so tests can pin the host's mail stack.
 var detectMTA = platform.DetectMTA
+var isCPanelHost = func() bool { return platform.Detect().IsCPanel() }
 
 func auditMail() []store.AuditResult {
 	var results []store.AuditResult
@@ -1784,28 +1851,47 @@ func auditMail() []store.AuditResult {
 					Status: "pass", Message: "SSLv2 is disabled in exim TLS configuration",
 				})
 			}
+		} else {
+			results = append(results, store.AuditResult{
+				Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
+				Status: "warn", Message: "Cannot query exim TLS configuration",
+			})
 		}
 
-		// mail_secure_auth: check /etc/exim.conf.localopts
-		if data, err := osFS.ReadFile("/etc/exim.conf.localopts"); err == nil {
-			content := string(data)
-			if strings.Contains(content, "require_secure_auth=0") {
+		// require_secure_auth is a cPanel-managed Exim setting. Other Exim
+		// packages do not use this file or option.
+		if isCPanelHost() {
+			if data, err := osFS.ReadFile("/etc/exim.conf.localopts"); err == nil {
+				disabled, valid := cpanelSecureAuthDisabled(data)
+				switch {
+				case !valid:
+					results = append(results, store.AuditResult{
+						Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+						Status: "warn", Message: "Cannot evaluate require_secure_auth in /etc/exim.conf.localopts",
+					})
+				case disabled:
+					results = append(results, store.AuditResult{
+						Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+						Status: "fail", Message: "require_secure_auth is disabled in /etc/exim.conf.localopts",
+						Fix: "Remove or set require_secure_auth=1 in /etc/exim.conf.localopts.",
+					})
+				default:
+					results = append(results, store.AuditResult{
+						Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+						Status: "pass", Message: "Secure authentication is not disabled",
+					})
+				}
+			} else if errors.Is(err, os.ErrNotExist) {
 				results = append(results, store.AuditResult{
 					Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-					Status: "fail", Message: "require_secure_auth is disabled in /etc/exim.conf.localopts",
-					Fix: "Remove or set require_secure_auth=1 in /etc/exim.conf.localopts.",
+					Status: "pass", Message: "No local exim overrides file found (default is secure)",
 				})
 			} else {
 				results = append(results, store.AuditResult{
 					Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-					Status: "pass", Message: "Secure authentication is not disabled",
+					Status: "warn", Message: "Cannot read /etc/exim.conf.localopts",
 				})
 			}
-		} else {
-			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-				Status: "pass", Message: "No local exim overrides file found (default is secure)",
-			})
 		}
 	}
 
@@ -1868,4 +1954,28 @@ func auditMail() []store.AuditResult {
 	}
 
 	return results
+}
+
+func cpanelSecureAuthDisabled(data []byte) (disabled, valid bool) {
+	valid = true
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		assignment, _, _ := strings.Cut(line, "#")
+		key, value, found := strings.Cut(assignment, "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(key), "require_secure_auth") {
+			continue
+		}
+		switch strings.TrimSpace(value) {
+		case "0":
+			disabled, valid = true, true
+		case "1":
+			disabled, valid = false, true
+		default:
+			disabled, valid = false, false
+		}
+	}
+	return disabled, valid
 }

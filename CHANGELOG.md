@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The server hardening audit now follows Apache include directives, so hardening settings kept in a snippet directory count as applied instead of being reported as missing. Directory listing is reported per configuration scope and names the block that enables it, rather than treating anything in the main file as global.
-- Exim checks in the server hardening audit now run only where Exim is installed. A Postfix host previously collected phantom Exim warnings plus a pass for a cPanel-only setting it never had.
+- The server hardening audit now follows Apache include directives in precedence order, so snippet settings count as applied and incomplete or conditional trees are not reported clean. Directory listing is reported per configuration scope and names the block that enables it.
+- Exim checks in the server hardening audit now run only when Exim is the detected delivery agent, and its cPanel-only override check stays limited to cPanel. A Postfix host previously collected phantom Exim warnings plus a pass for a setting it never had.
 
 ## [3.29.0] - 2026-08-21
 

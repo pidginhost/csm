@@ -1,26 +1,30 @@
 package checks
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
-// apacheIncludeMaxDepth bounds Include recursion and directory descent.
-// Apache rejects include cycles outright; the audit just stops descending.
-const apacheIncludeMaxDepth = 16
+// A running Apache rejects recursive includes. The audit still bounds descent
+// so a changed-on-disk configuration cannot recurse forever before the next
+// config test or reload notices the error.
+const apacheIncludeMaxDepth = 32
 
-// apacheConfigLine is one line of an assembled Apache configuration,
-// tagged with the file it came from so findings can name the snippet that
-// actually set a directive.
+// apacheConfigLine is one line of an assembled Apache configuration, tagged
+// with its source so findings can name the file that set a directive.
 type apacheConfigLine struct {
 	File string
 	Text string
 }
 
-// apacheConditionalContainers are blocks that gate whether the enclosed
-// directives apply, without changing the scope they apply to.
 var apacheConditionalContainers = map[string]bool{
+	"if":          true,
+	"else":        true,
+	"elseif":      true,
 	"ifmodule":    true,
 	"ifdefine":    true,
 	"ifversion":   true,
@@ -29,245 +33,585 @@ var apacheConditionalContainers = map[string]bool{
 	"ifdirective": true,
 }
 
-// assembleApacheConfig reads path and splices Include / IncludeOptional
-// targets in at the position of the directive. Apache applies later
-// directives over earlier ones, so appending snippets at the end instead
-// of splicing them in place would invert precedence.
+// assembleApacheConfig reads path and splices Include and IncludeOptional
+// targets at the directive position. Apache applies later directives over
+// earlier ones, so appending snippets would invert precedence.
 func assembleApacheConfig(path string) []apacheConfigLine {
-	serverRoot := apacheServerRoot(path)
-	return appendApachePath(nil, path, serverRoot, map[string]bool{}, 0)
+	lines, _ := assembleApacheConfigWithStatus(path)
+	return lines
 }
 
-// apacheServerRoot resolves the ServerRoot that relative Include paths are
-// taken against. Debian leaves it to the compiled-in default, which always
-// matches the directory holding the main config.
-func apacheServerRoot(path string) string {
-	data, err := osFS.ReadFile(path)
-	if err != nil {
-		return filepath.Dir(path)
+func assembleApacheConfigWithStatus(path string) ([]apacheConfigLine, bool) {
+	assembler := apacheConfigAssembler{
+		serverRoot:  defaultApacheServerRoot(path),
+		activePaths: make(map[string]bool),
+		complete:    true,
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "ServerRoot") {
-			if root := unquoteApacheArg(fields[1]); root != "" {
-				return root
-			}
-		}
+	lines := assembler.appendPath(nil, path, false, 0)
+	if len(assembler.containers) != 0 {
+		assembler.complete = false
 	}
-	return filepath.Dir(path)
+	return lines, assembler.complete
 }
 
-func appendApachePath(dst []apacheConfigLine, path, serverRoot string, visited map[string]bool, depth int) []apacheConfigLine {
+// defaultApacheServerRoot covers the compiled-in layouts used by supported
+// distributions when the main file does not set ServerRoot.
+func defaultApacheServerRoot(path string) string {
+	dir := filepath.Dir(path)
+	if strings.EqualFold(filepath.Base(path), "httpd.conf") &&
+		strings.EqualFold(filepath.Base(dir), "conf") {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
+
+type apacheConfigAssembler struct {
+	serverRoot  string
+	activePaths map[string]bool
+	containers  []string
+	complete    bool
+}
+
+func (a *apacheConfigAssembler) appendPath(dst []apacheConfigLine, path string, optional bool, depth int) []apacheConfigLine {
 	if depth > apacheIncludeMaxDepth {
+		a.complete = false
 		return dst
 	}
+
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		abs = path
+		abs = filepath.Clean(path)
 	}
-	if visited[abs] {
+	if a.activePaths[abs] {
+		a.complete = false
 		return dst
 	}
-	visited[abs] = true
+	a.activePaths[abs] = true
+	defer delete(a.activePaths, abs)
 
 	if info, statErr := osFS.Stat(path); statErr == nil && info.IsDir() {
-		entries, _ := osFS.Glob(filepath.Join(path, "*"))
+		entries, globErr := osFS.Glob(filepath.Join(path, "*"))
+		if globErr != nil {
+			a.complete = false
+			return dst
+		}
 		sort.Strings(entries)
-		for _, e := range entries {
-			dst = appendApachePath(dst, e, serverRoot, visited, depth+1)
+		for _, entry := range entries {
+			dst = a.appendPath(dst, entry, false, depth+1)
 		}
 		return dst
 	}
 
 	data, err := osFS.ReadFile(path)
 	if err != nil {
+		if !optional || !errors.Is(err, os.ErrNotExist) {
+			a.complete = false
+		}
 		return dst
 	}
+
 	lines := strings.Split(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
-	for _, line := range lines {
-		target, ok := apacheIncludeTarget(line)
-		if !ok {
+
+	continued := ""
+	for _, physical := range lines {
+		line := continued + physical
+		if prefix, continues := apacheContinuationPrefix(line); continues {
+			continued = prefix + " "
+			continue
+		}
+		continued = ""
+
+		fields, valid := parseApacheDirectiveFields(stripApacheComment(line))
+		if !valid {
+			a.complete = false
 			dst = append(dst, apacheConfigLine{File: path, Text: line})
 			continue
 		}
-		for _, p := range expandApacheInclude(target, serverRoot) {
-			dst = appendApachePath(dst, p, serverRoot, visited, depth+1)
+		if len(fields) == 0 {
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+			continue
 		}
+		if tag, isContainer, tagValid := parseApacheContainerTag(line); isContainer {
+			switch {
+			case !tagValid:
+				a.complete = false
+			case tag.closing:
+				last := len(a.containers) - 1
+				if last < 0 || !strings.EqualFold(a.containers[last], tag.name) {
+					a.complete = false
+				} else {
+					a.containers = a.containers[:last]
+				}
+			default:
+				a.containers = append(a.containers, tag.name)
+			}
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+			continue
+		}
+
+		switch {
+		case strings.EqualFold(fields[0], "ServerRoot"):
+			if len(a.containers) != 0 || len(fields) != 2 || fields[1] == "" || apacheArgumentHasVariable(fields[1]) || !filepath.IsAbs(fields[1]) {
+				a.complete = false
+			} else {
+				a.serverRoot = filepath.Clean(fields[1])
+			}
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+		case strings.EqualFold(fields[0], "Include"), strings.EqualFold(fields[0], "IncludeOptional"):
+			optionalInclude := strings.EqualFold(fields[0], "IncludeOptional")
+			if len(fields) != 2 || fields[1] == "" || apacheArgumentHasVariable(fields[1]) {
+				a.complete = false
+				continue
+			}
+			paths, expanded := expandApacheInclude(fields[1], a.serverRoot)
+			if !expanded || (!optionalInclude && len(paths) == 0) {
+				a.complete = false
+			}
+			for _, included := range paths {
+				dst = a.appendPath(dst, included, optionalInclude, depth+1)
+			}
+		default:
+			dst = append(dst, apacheConfigLine{File: path, Text: line})
+		}
+	}
+	if continued != "" {
+		a.complete = false
 	}
 	return dst
 }
 
-// apacheIncludeTarget returns the argument of an Include / IncludeOptional
-// directive.
-func apacheIncludeTarget(line string) (string, bool) {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) < 2 {
-		return "", false
-	}
-	if !strings.EqualFold(fields[0], "Include") && !strings.EqualFold(fields[0], "IncludeOptional") {
-		return "", false
-	}
-	return unquoteApacheArg(fields[1]), true
+func apacheArgumentHasVariable(arg string) bool {
+	return strings.Contains(arg, "${")
 }
 
-// expandApacheInclude turns one Include argument into the concrete paths it
-// names, sorted the way Apache reads glob matches.
-func expandApacheInclude(target, serverRoot string) []string {
-	if target == "" {
-		return nil
-	}
+func expandApacheInclude(target, serverRoot string) ([]string, bool) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(serverRoot, target)
 	}
 	if !strings.ContainsAny(target, "*?[") {
-		return []string{target}
+		return []string{target}, true
 	}
 	matches, err := osFS.Glob(target)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	sort.Strings(matches)
-	return matches
+	return matches, true
 }
 
-func unquoteApacheArg(arg string) string {
-	return strings.Trim(arg, `"'`)
+func apacheContinuationPrefix(line string) (string, bool) {
+	line = strings.TrimRight(line, " \t\r")
+	backslashes := 0
+	for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
+		backslashes++
+	}
+	if backslashes%2 == 0 {
+		return line, false
+	}
+	return line[:len(line)-1], true
 }
 
-// walkApacheLines calls fn for every directive line, passing the stack of
-// scope-defining containers the line sits in. Comments, blank lines and the
-// container tags themselves are skipped.
-func walkApacheLines(lines []apacheConfigLine, fn func(line apacheConfigLine, fields []string, scope []string)) {
+func stripApacheComment(line string) string {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			continue
+		}
+		if c == '#' {
+			return line[:i]
+		}
+	}
+	return line
+}
+
+// parseApacheDirectiveFields handles the quoting and escapes accepted in
+// include paths and container arguments.
+func parseApacheDirectiveFields(line string) ([]string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, true
+	}
+
+	var fields []string
+	var field strings.Builder
+	var quote byte
+	escaped := false
+	inField := false
+	flush := func() {
+		if !inField {
+			return
+		}
+		fields = append(fields, field.String())
+		field.Reset()
+		inField = false
+	}
+
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			field.WriteByte(c)
+			inField = true
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			inField = true
+			continue
+		}
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			} else {
+				field.WriteByte(c)
+			}
+			inField = true
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+			inField = true
+			continue
+		}
+		if c == ' ' || c == '\t' || c == '\r' {
+			flush()
+			continue
+		}
+		field.WriteByte(c)
+		inField = true
+	}
+	flush()
+	return fields, quote == 0 && !escaped
+}
+
+type apacheParsedContainerTag struct {
+	name    string
+	label   string
+	closing bool
+}
+
+func parseApacheContainerTag(line string) (apacheParsedContainerTag, bool, bool) {
+	text := strings.TrimSpace(stripApacheComment(line))
+	if !strings.HasPrefix(text, "<") {
+		return apacheParsedContainerTag{}, false, true
+	}
+	if !strings.HasSuffix(text, ">") {
+		return apacheParsedContainerTag{}, true, false
+	}
+
+	closing := strings.HasPrefix(text, "</")
+	prefix := "<"
+	if closing {
+		prefix = "</"
+	}
+	label := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, prefix), ">"))
+	fields, valid := parseApacheDirectiveFields(label)
+	if !valid || len(fields) == 0 || (closing && len(fields) != 1) {
+		return apacheParsedContainerTag{}, true, false
+	}
+	return apacheParsedContainerTag{name: fields[0], label: label, closing: closing}, true, true
+}
+
+type apacheLineContext struct {
+	Scope         []string
+	ScopeKey      []string
+	Condition     string
+	LateCondition bool
+}
+
+// walkApacheLines calls fn for directive lines and validates the container
+// stack. A mismatched close never pops an unrelated scope.
+func walkApacheLines(lines []apacheConfigLine, fn func(apacheConfigLine, []string, apacheLineContext)) bool {
 	type container struct {
-		label  string
-		scoped bool
-	}
-	var stack []container
-	scope := func() []string {
-		var out []string
-		for _, c := range stack {
-			if c.scoped {
-				out = append(out, c.label)
-			}
-		}
-		return out
+		name            string
+		label           string
+		key             string
+		scoped          bool
+		conditional     bool
+		lateConditional bool
 	}
 
-	for _, l := range lines {
-		text := strings.TrimSpace(l.Text)
-		if text == "" || strings.HasPrefix(text, "#") {
-			continue
-		}
-		if strings.HasPrefix(text, "</") {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
+	var stack []container
+	valid := true
+	serial := 0
+
+	context := func() apacheLineContext {
+		var ctx apacheLineContext
+		var conditions []string
+		for _, item := range stack {
+			if item.scoped {
+				ctx.Scope = append(ctx.Scope, item.label)
+				ctx.ScopeKey = append(ctx.ScopeKey, item.key)
 			}
+			if item.conditional {
+				conditions = append(conditions, item.key)
+			}
+			if item.lateConditional {
+				ctx.LateCondition = true
+			}
+		}
+		ctx.Condition = strings.Join(conditions, "\x1e")
+		return ctx
+	}
+
+	for _, line := range lines {
+		text := strings.TrimSpace(stripApacheComment(line.Text))
+		if text == "" {
 			continue
 		}
-		if strings.HasPrefix(text, "<") {
-			label := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "<"), ">"))
-			name := label
-			if i := strings.IndexAny(label, " \t"); i >= 0 {
-				name = label[:i]
+		tag, isContainer, tagValid := parseApacheContainerTag(text)
+		if isContainer {
+			if !tagValid {
+				valid = false
+				continue
+			}
+			if tag.closing {
+				if len(stack) == 0 || !strings.EqualFold(stack[len(stack)-1].name, tag.name) {
+					valid = false
+					continue
+				}
+				stack = stack[:len(stack)-1]
+				continue
+			}
+
+			serial++
+			lowerName := strings.ToLower(tag.name)
+			conditional := apacheConditionalContainers[lowerName]
+			key := canonicalApacheContainerKey(tag.label)
+			if conditional || lowerName == "virtualhost" {
+				key += "\x00" + strconv.Itoa(serial)
 			}
 			stack = append(stack, container{
-				label:  normalizeApacheContainerLabel(label),
-				scoped: !apacheConditionalContainers[strings.ToLower(name)],
+				name:            tag.name,
+				label:           normalizeApacheContainerLabel(tag.label),
+				key:             key,
+				scoped:          !conditional,
+				conditional:     conditional,
+				lateConditional: lowerName == "if" || lowerName == "else" || lowerName == "elseif",
 			})
 			continue
 		}
-		fields := strings.Fields(text)
-		if len(fields) == 0 {
+
+		fields, fieldsValid := parseApacheDirectiveFields(text)
+		if !fieldsValid {
+			valid = false
 			continue
 		}
-		fn(l, fields, scope())
+		if len(fields) > 0 {
+			fn(line, fields, context())
+		}
 	}
+	return valid && len(stack) == 0
 }
 
-// normalizeApacheContainerLabel renders a container tag as a readable scope
-// label: `<Directory "/var/www/">` becomes `Directory /var/www/`.
+func canonicalApacheContainerKey(label string) string {
+	fields, valid := parseApacheDirectiveFields(label)
+	if !valid || len(fields) == 0 {
+		return strings.ToLower(strings.TrimSpace(label))
+	}
+	fields[0] = strings.ToLower(fields[0])
+	return strings.Join(fields, "\x1f")
+}
+
 func normalizeApacheContainerLabel(label string) string {
-	fields := strings.Fields(label)
-	for i, f := range fields {
-		fields[i] = unquoteApacheArg(f)
+	fields, valid := parseApacheDirectiveFields(label)
+	if !valid {
+		return strings.TrimSpace(label)
 	}
 	return strings.Join(fields, " ")
 }
 
-// apacheServerScopeLines returns the directive lines that apply at server
-// scope. Directives inside <Directory>, <VirtualHost> and friends are
-// scoped to those containers and must not be read as the global setting.
-func apacheServerScopeLines(lines []apacheConfigLine) []apacheConfigLine {
-	var out []apacheConfigLine
-	walkApacheLines(lines, func(line apacheConfigLine, _ []string, scope []string) {
-		if len(scope) == 0 {
-			out = append(out, line)
-		}
-	})
-	return out
+type apacheDirectiveValue struct {
+	File            string
+	Scope           string
+	Value           string
+	Conditional     bool
+	lateConditional bool
+	scopeKey        string
 }
 
-// apacheIndexesScopes returns the scopes whose effective Options grant
-// directory indexing, in the order they first appear. Only scopes that set
-// Options themselves are considered; inherited values are not modelled, so
-// the result never invents a finding for a container that stays silent.
-func apacheIndexesScopes(lines []apacheConfigLine) []string {
+// apacheDirectiveValues returns the last explicit value in each scope and
+// keeps conditional branches separate from the unconditional default.
+func apacheDirectiveValues(lines []apacheConfigLine, directive string) ([]apacheDirectiveValue, bool) {
 	const serverScope = "server config"
-	effective := map[string]bool{}
+	values := make(map[string]apacheDirectiveValue)
 	var order []string
+	conditionalValues := make(map[string]apacheDirectiveValue)
+	var conditionalOrder []string
+	directiveValid := true
 
-	walkApacheLines(lines, func(_ apacheConfigLine, fields []string, scope []string) {
-		if !strings.EqualFold(fields[0], "Options") || len(fields) < 2 {
+	containersValid := walkApacheLines(lines, func(line apacheConfigLine, fields []string, ctx apacheLineContext) {
+		if !strings.EqualFold(fields[0], directive) {
 			return
 		}
-		key := serverScope
-		if len(scope) > 0 {
-			key = strings.Join(scope, " > ")
+		if len(fields) < 2 {
+			directiveValid = false
+			return
 		}
-		if _, seen := effective[key]; !seen {
+
+		key := serverScope
+		displayScope := serverScope
+		if len(ctx.Scope) > 0 {
+			key = strings.Join(ctx.ScopeKey, "\x1d")
+			displayScope = strings.Join(ctx.Scope, " > ")
+		}
+		value := apacheDirectiveValue{
+			File:            line.File,
+			Scope:           displayScope,
+			Value:           strings.Join(fields[1:], " "),
+			Conditional:     ctx.Condition != "",
+			lateConditional: ctx.LateCondition,
+			scopeKey:        key,
+		}
+		if value.Conditional {
+			conditionalKey := key + "\x00" + ctx.Condition
+			if _, seen := conditionalValues[conditionalKey]; !seen {
+				conditionalOrder = append(conditionalOrder, conditionalKey)
+			}
+			conditionalValues[conditionalKey] = value
+			return
+		}
+
+		if _, seen := values[key]; !seen {
 			order = append(order, key)
 		}
+		values[key] = value
+		for conditionalKey, conditionalValue := range conditionalValues {
+			if conditionalValue.scopeKey == key && !conditionalValue.lateConditional {
+				conditionalValue.File = value.File
+				conditionalValue.Value = value.Value
+				conditionalValues[conditionalKey] = conditionalValue
+			}
+		}
+	})
+
+	out := make([]apacheDirectiveValue, 0, len(values)+len(conditionalValues))
+	for _, key := range order {
+		out = append(out, values[key])
+	}
+	for _, key := range conditionalOrder {
+		out = append(out, conditionalValues[key])
+	}
+	return out, containersValid && directiveValid
+}
+
+func apacheIndexesScopes(lines []apacheConfigLine) []string {
+	scopes, _ := apacheIndexesScopesWithStatus(lines)
+	return scopes
+}
+
+func apacheIndexesScopesWithStatus(lines []apacheConfigLine) ([]string, bool) {
+	const serverScope = "server config"
+	effective := make(map[string]bool)
+	conditionalEffective := make(map[string]bool)
+	conditionalScopes := make(map[string]string)
+	lateConditional := make(map[string]bool)
+	displayScopes := make(map[string]string)
+	seen := make(map[string]bool)
+	var order []string
+	optionsValid := true
+
+	containersValid := walkApacheLines(lines, func(_ apacheConfigLine, fields []string, ctx apacheLineContext) {
+		if !strings.EqualFold(fields[0], "Options") {
+			return
+		}
+		if len(fields) < 2 {
+			optionsValid = false
+			return
+		}
+
+		key := serverScope
+		displayScope := serverScope
+		if len(ctx.Scope) > 0 {
+			key = strings.Join(ctx.ScopeKey, "\x1d")
+			displayScope = strings.Join(ctx.Scope, " > ")
+		}
+		if !seen[key] {
+			seen[key] = true
+			order = append(order, key)
+			displayScopes[key] = displayScope
+		}
+
+		if ctx.Condition != "" {
+			conditionalKey := key + "\x00" + ctx.Condition
+			current, exists := conditionalEffective[conditionalKey]
+			if !exists {
+				current = effective[key]
+			}
+			conditionalEffective[conditionalKey] = optionsEnableIndexes(fields[1:], current)
+			conditionalScopes[conditionalKey] = key
+			lateConditional[conditionalKey] = ctx.LateCondition
+			return
+		}
+
 		effective[key] = optionsEnableIndexes(fields[1:], effective[key])
+		for conditionalKey, conditionalValue := range conditionalEffective {
+			if conditionalScopes[conditionalKey] == key && !lateConditional[conditionalKey] {
+				conditionalEffective[conditionalKey] = optionsEnableIndexes(fields[1:], conditionalValue)
+			}
+		}
 	})
 
 	var out []string
-	for _, k := range order {
-		if effective[k] {
-			out = append(out, k)
+	for _, key := range order {
+		enabled := effective[key]
+		for conditionalKey, conditionalValue := range conditionalEffective {
+			if conditionalScopes[conditionalKey] == key && conditionalValue {
+				enabled = true
+				break
+			}
+		}
+		if enabled {
+			out = append(out, displayScopes[key])
 		}
 	}
-	return out
+	return out, containersValid && optionsValid
 }
 
 // optionsEnableIndexes applies one Options directive to the scope's current
-// indexing state. Tokens carrying + or - merge with what is already set;
-// bare tokens replace the whole set, so `Options FollowSymLinks` turns
-// indexing off even though it never names Indexes.
+// state. Signed tokens merge; bare tokens replace the option set.
 func optionsEnableIndexes(tokens []string, current bool) bool {
 	merge := false
-	for _, tok := range tokens {
-		if strings.HasPrefix(tok, "+") || strings.HasPrefix(tok, "-") {
+	for _, token := range tokens {
+		if strings.HasPrefix(token, "+") || strings.HasPrefix(token, "-") {
 			merge = true
 			break
 		}
 	}
 	if !merge {
-		for _, tok := range tokens {
-			if strings.EqualFold(tok, "Indexes") || strings.EqualFold(tok, "All") {
+		for _, token := range tokens {
+			if strings.EqualFold(token, "Indexes") || strings.EqualFold(token, "All") {
 				return true
 			}
 		}
 		return false
 	}
-	for _, tok := range tokens {
-		name := strings.TrimLeft(tok, "+-")
+	for _, token := range tokens {
+		name := strings.TrimLeft(token, "+-")
 		if !strings.EqualFold(name, "Indexes") && !strings.EqualFold(name, "All") {
 			continue
 		}
-		current = strings.HasPrefix(tok, "+")
+		current = strings.HasPrefix(token, "+")
 	}
 	return current
 }

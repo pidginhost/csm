@@ -244,6 +244,7 @@ func TestAuditFirewall_TelnetNotListeningIPv6Inactive(t *testing.T) {
 
 func TestAuditMail_SecureAuthFileExistsNotDisabled(t *testing.T) {
 	withMockMTA(t, platform.MTAExim)
+	withMockCPanel(t, true)
 	withMockOS(t, &mockOS{
 		readFile: func(name string) ([]byte, error) {
 			if name == "/etc/exim.conf.localopts" {
