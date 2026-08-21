@@ -703,7 +703,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			markCheckIncomplete(ctx, logicalOwnerPHPTaintDeep)
 		}
 		if !phpGaps.empty() {
-			findings = append(findings, phpGaps.finding())
+			findings = append(findings, phpGaps.findings()...)
 		}
 		if !phpPartial && st != nil {
 			// Path-specific carry-forward: this run is eligible to replace the

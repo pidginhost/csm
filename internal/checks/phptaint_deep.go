@@ -117,26 +117,62 @@ func (g *phpTaintGapCollector) hasPath(path string) bool {
 	return ok
 }
 
-func (g *phpTaintGapCollector) finding() alert.Finding {
-	total := 0
-	statuses := make([]string, 0, len(g.byStatus))
+// phpTaintParserDefeatStatus is the gap status recorded when content that
+// passed the PHP pre-filter made the parser panic. It is reported on its own
+// because it means something quite different from the other gap statuses: the
+// content looked like PHP and defeated the analyzer, which is either the known
+// upstream parser defect or a deliberate attempt to avoid analysis. Folded in
+// with the benign statuses it is invisible -- one real scan recorded
+// oversize=617 next to panic=3.
+const phpTaintParserDefeatStatus = "panic"
+
+// findings splits the collected gaps into the benign coverage report and, when
+// present, a separate report for content that defeated the parser.
+func (g *phpTaintGapCollector) findings() []alert.Finding {
+	var out []alert.Finding
+	benign := make(map[string]int, len(g.byStatus))
 	for status, n := range g.byStatus {
+		if status != phpTaintParserDefeatStatus {
+			benign[status] = n
+		}
+	}
+	if len(benign) > 0 || g.unknown > 0 {
+		out = append(out, g.buildFinding(benign, true))
+	}
+	if n := g.byStatus[phpTaintParserDefeatStatus]; n > 0 {
+		out = append(out, g.buildFinding(map[string]int{phpTaintParserDefeatStatus: n}, false))
+	}
+	return out
+}
+
+// finding reports every gap in one alert. Retained for callers that do not
+// need the split.
+func (g *phpTaintGapCollector) finding() alert.Finding {
+	return g.buildFinding(g.byStatus, true)
+}
+
+func (g *phpTaintGapCollector) buildFinding(byStatus map[string]int, includeRangeLoss bool) alert.Finding {
+	total := 0
+	statuses := make([]string, 0, len(byStatus))
+	for status, n := range byStatus {
 		total += n
 		statuses = append(statuses, status)
 	}
 	sort.Strings(statuses)
 	parts := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, g.byStatus[status], g.example[status]))
+		parts = append(parts, fmt.Sprintf("%s=%d (example: %s)", status, byStatus[status], g.example[status]))
 	}
-	if g.unknown > 0 {
+	if includeRangeLoss && g.unknown > 0 {
 		parts = append(parts, fmt.Sprintf("unreadable-range=%d (example: %s)", g.unknown, g.unknownExample))
 	}
 	if g.pathsTruncated {
 		parts = append(parts, fmt.Sprintf("exact paths retained for only the first %d", maxPHPTaintGapPaths))
 	}
 	message := fmt.Sprintf("PHP taint deep scan could not analyze %d file(s)", total)
-	if total == 0 {
+	if !includeRangeLoss {
+		message = fmt.Sprintf("PHP taint deep scan was defeated by %d file(s) that parse as PHP but crash the parser", total)
+	} else if total == 0 {
 		message = fmt.Sprintf("PHP taint deep scan could not cover %d location(s)", g.unknown)
 	}
 	return alert.Finding{
