@@ -2,7 +2,6 @@ package phptaint
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
@@ -67,8 +66,10 @@ func TestAnalyzeContainsTheUpstreamPanic(t *testing.T) {
 	if len(report.Results) != 0 {
 		t.Errorf("a contained panic must carry no findings, got %d", len(report.Results))
 	}
-	// The panic value can quote source text, so it must not reach the report.
-	if strings.Contains(report.Reason, "curl_exec") || strings.Contains(report.Reason, "index out of range") {
-		t.Errorf("report reason leaks panic or source detail: %q", report.Reason)
+	// Exact equality proves that neither the panic value nor any source excerpt
+	// can be reflected through this boundary.
+	wantReason := StatusPanic.String() + ": recovered panic during analysis"
+	if report.Reason != wantReason {
+		t.Errorf("report reason = %q, want fixed text %q", report.Reason, wantReason)
 	}
 }
