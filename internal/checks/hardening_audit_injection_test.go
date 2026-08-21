@@ -192,7 +192,7 @@ func TestAuditWebServerWithMocks(t *testing.T) {
 		},
 	})
 
-	results := auditWebServer("standalone")
+	results := auditWebServer()
 	_ = results
 }
 

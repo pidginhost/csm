@@ -1,5 +1,10 @@
 package platform
 
+import (
+	"os"
+	"os/exec"
+)
+
 // MTAIdents lists local users and process basenames belonging to the
 // host's Mail Transfer Agent stack. Direct SMTP egress detection uses
 // this allowlist to skip legitimate local MTA traffic instead of
@@ -63,4 +68,48 @@ func LocalMTAIdentities(info Info) MTAIdents {
 		processes = append(processes, "exim", "exim4")
 	}
 	return MTAIdents{Users: users, Processes: processes}
+}
+
+// MTAKind identifies the Mail Transfer Agent installed on the host.
+type MTAKind string
+
+const (
+	MTAUnknown MTAKind = ""
+	MTAExim    MTAKind = "exim"
+	MTAPostfix MTAKind = "postfix"
+)
+
+var (
+	mtaLookPath = exec.LookPath
+	mtaStat     = os.Stat
+)
+
+// DetectMTA reports which MTA is installed. Exim wins when both are
+// present: cPanel ships exim as the delivery agent and leaves postfix
+// binaries on disk.
+func DetectMTA() MTAKind {
+	if mtaInstalled([]string{"exim", "exim4"}, []string{"/usr/sbin/exim", "/usr/sbin/exim4"}) {
+		return MTAExim
+	}
+	if mtaInstalled([]string{"postfix"}, []string{"/usr/sbin/postfix", "/usr/libexec/postfix/master"}) {
+		return MTAPostfix
+	}
+	return MTAUnknown
+}
+
+// mtaInstalled reports whether any of the named binaries is on PATH or at
+// one of the absolute locations. The daemon runs with a minimal PATH, so
+// the absolute probes carry most installs.
+func mtaInstalled(binaries, paths []string) bool {
+	for _, b := range binaries {
+		if _, err := mtaLookPath(b); err == nil {
+			return true
+		}
+	}
+	for _, p := range paths {
+		if _, err := mtaStat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }

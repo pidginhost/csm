@@ -567,28 +567,22 @@ func TestAuditMailRootForwardConfigured(t *testing.T) {
 	}
 }
 
-func TestAuditMailEximLoggingNoExim(t *testing.T) {
-	// auditMail calls auditRunCmd (exec.CommandContext) for exim, not cmdExec.
-	// On non-exim hosts, the exim command fails and we get a warn for logging.
+func TestAuditMailEximLoggingSkippedWithoutExim(t *testing.T) {
+	withMockMTA(t, platform.MTAPostfix)
 	withMockOS(t, &mockOS{
 		stat:     func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 		readFile: func(name string) ([]byte, error) { return nil, os.ErrNotExist },
 	})
 	withMockCmd(t, &mockCmd{})
-	results := auditMail()
-	for _, r := range results {
+	for _, r := range auditMail() {
 		if r.Name == "mail_exim_logging" {
-			// Without exim binary, expect warn
-			if r.Status != "warn" {
-				t.Errorf("no exim should warn, got %q", r.Status)
-			}
-			return
+			t.Errorf("mail_exim_logging reported without exim installed: %q", r.Status)
 		}
 	}
-	t.Error("mail_exim_logging result not found")
 }
 
 func TestAuditMailSecureAuth_Disabled(t *testing.T) {
+	withMockMTA(t, platform.MTAExim)
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 		readFile: func(name string) ([]byte, error) {
