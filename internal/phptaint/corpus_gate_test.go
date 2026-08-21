@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -31,7 +30,7 @@ func TestCorpusGate(t *testing.T) {
 		t.Skip("PHPTAINT_CORPUS not set")
 	}
 	var scanned, gaps int
-	var offenders []string
+	var offenders, panics []string
 	err := filepath.Walk(root, func(path string, fi os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			// A single unreadable directory entry (permissions, a removed
@@ -39,7 +38,12 @@ func TestCorpusGate(t *testing.T) {
 			// and keep walking the rest of the corpus.
 			return nil //nolint:nilerr
 		}
-		if !fi.Mode().IsRegular() || !strings.HasSuffix(path, ".php") {
+		// Deliberately NOT restricted to .php. The deep scan applies no
+		// extension filter (internal/checks/yara_deep.go walks every readable
+		// file under the size cap), so a .php-only corpus tests an input space
+		// the analyzer never actually sees. Translation catalogues, compiled
+		// binaries and minified bundles all reach it in production.
+		if !fi.Mode().IsRegular() || fi.Size() > int64(MaxSourceBytes) {
 			return nil
 		}
 		src, readErr := os.ReadFile(path)
@@ -57,6 +61,9 @@ func TestCorpusGate(t *testing.T) {
 			}
 		case StatusNotCandidate:
 			scanned++
+		case StatusPanic:
+			scanned++
+			panics = append(panics, path)
 		default:
 			gaps++
 		}
@@ -69,6 +76,13 @@ func TestCorpusGate(t *testing.T) {
 	if scanned < minCorpusFiles {
 		t.Fatalf("only %d file(s) scanned under PHPTAINT_CORPUS=%s, want at least %d: "+
 			"the gate cannot prove anything against a near-empty or wrong directory", scanned, root, minCorpusFiles)
+	}
+	if len(panics) > 0 {
+		limit := len(panics)
+		if limit > 10 {
+			limit = 10
+		}
+		t.Errorf("analyzer panicked on %d corpus file(s); first %d: %v", len(panics), limit, panics[:limit])
 	}
 	if len(offenders) > 0 {
 		limit := len(offenders)
