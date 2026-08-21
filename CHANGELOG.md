@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Files that look like PHP but crash the parser are now reported on their own instead of being counted alongside files that were merely too large to read. One real scan buried three of them under six hundred oversized logs. A known defect in the PHP parser makes any file carrying an unmatched closing brace crash it, so these can be ordinary translation catalogues, but they can also be content shaped to avoid analysis.
 - Realtime scanning no longer reports stock themes and plugins as a critical webshell just because their text mentions marijuana. The rule now needs the shell banner while still accepting its case and separator variants, matching scheduled scans.
 - A rolling deep scan that never finishes a full pass is now reported for each analyzer separately. Previously only the YARA pass warned, so a stalled PHP or JavaScript pass stayed silent, and turning the YARA pass off silenced the warning for all of them.
 - Newly added signature ports now keep case-insensitive matching and require PHP or HTML content for multilingual SEO detections, avoiding scan noise from translation catalogues, JavaScript data, and binary uploads.
