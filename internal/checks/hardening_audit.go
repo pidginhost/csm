@@ -30,7 +30,7 @@ func RunHardeningAudit(cfg *config.Config) *store.AuditReport {
 	var results []store.AuditResult
 	results = append(results, auditSSH()...)
 	results = append(results, auditPHP(serverType)...)
-	results = append(results, auditWebServer(serverType)...)
+	results = append(results, auditWebServer()...)
 	results = append(results, auditMail()...)
 	if serverType != "bare" {
 		results = append(results, auditCPanel(serverType)...)
@@ -1559,117 +1559,125 @@ func parsePHPVersion(ver string) (int, int) {
 
 // --- Web server checks ---
 
-func auditWebServer(serverType string) []store.AuditResult {
+func auditWebServer() []store.AuditResult {
 	var results []store.AuditResult
+	if configPath := findWebServerConfigPath(); configPath != "" {
+		results = append(results, auditApacheDirectives(configPath)...)
+	}
+	return append(results, auditWebTLS()...)
+}
 
-	// Find main config file
-	var configPath string
-	configPaths := []string{
+// findWebServerConfigPath returns the main web server configuration file,
+// or "" when none of the known locations exist.
+func findWebServerConfigPath() string {
+	for _, p := range []string{
 		"/etc/apache2/conf/httpd.conf",          // cPanel EA4
 		"/usr/local/lsws/conf/httpd_config.xml", // LiteSpeed
 		"/etc/httpd/conf/httpd.conf",            // RHEL/CentOS bare
 		"/etc/apache2/apache2.conf",             // Debian/Ubuntu bare
-	}
-	for _, p := range configPaths {
+	} {
 		if _, err := osFS.Stat(p); err == nil {
-			configPath = p
-			break
+			return p
 		}
 	}
+	return ""
+}
 
-	if configPath != "" {
-		configData, err := osFS.ReadFile(configPath)
-		if err == nil {
-			configContent := string(configData)
+// auditApacheDirectivesMaxScopes caps how many indexing scopes a single
+// finding names, so a host with hundreds of vhosts still gets a readable
+// message.
+const auditApacheDirectivesMaxScopes = 5
 
-			// Table-driven directive checks
-			type directiveCheck struct {
-				id, title, directive string
-				goodValues           []string
-			}
-			dirChecks := []directiveCheck{
-				{"web_server_tokens", "ServerTokens", "ServerTokens", []string{"prod", "productonly"}},
-				{"web_server_signature", "ServerSignature", "ServerSignature", []string{"off"}},
-				{"web_trace_enable", "TraceEnable", "TraceEnable", []string{"off"}},
-				{"web_file_etag", "FileETag", "FileETag", []string{"none"}},
-			}
+// auditApacheDirectives checks the hardening directives that apply at
+// server scope. Include and IncludeOptional are followed, so directives
+// kept in a snippet directory count the same as ones written into the
+// distro's main config.
+func auditApacheDirectives(configPath string) []store.AuditResult {
+	var results []store.AuditResult
 
-			for _, dc := range dirChecks {
-				found := false
-				var foundVal string
-				for _, line := range strings.Split(configContent, "\n") {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "#") {
-						continue
-					}
-					if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(dc.directive)+" ") {
-						parts := strings.Fields(trimmed)
-						if len(parts) >= 2 {
-							foundVal = parts[1]
-							found = true
-						}
-					}
-				}
+	lines := assembleApacheConfig(configPath)
+	serverScope := apacheServerScopeLines(lines)
 
-				if !found {
-					results = append(results, store.AuditResult{
-						Category: "webserver", Name: dc.id, Title: dc.title,
-						Status: "warn", Message: fmt.Sprintf("%s not set in %s", dc.directive, configPath),
-						Fix: fmt.Sprintf("Add '%s %s' to %s", dc.directive, dc.goodValues[0], configPath),
-					})
-					continue
-				}
-
-				isGood := false
-				for _, gv := range dc.goodValues {
-					if strings.EqualFold(foundVal, gv) {
-						isGood = true
-						break
-					}
-				}
-				if isGood {
-					results = append(results, store.AuditResult{
-						Category: "webserver", Name: dc.id, Title: dc.title,
-						Status: "pass", Message: fmt.Sprintf("%s = %s", dc.directive, foundVal),
-					})
-				} else {
-					results = append(results, store.AuditResult{
-						Category: "webserver", Name: dc.id, Title: dc.title,
-						Status: "fail", Message: fmt.Sprintf("%s = %s", dc.directive, foundVal),
-						Fix: fmt.Sprintf("Set '%s %s' in %s", dc.directive, dc.goodValues[0], configPath),
-					})
-				}
-			}
-
-			// Directory listing check
-			hasIndexes := false
-			for _, line := range strings.Split(configContent, "\n") {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "#") {
-					continue
-				}
-				lower := strings.ToLower(trimmed)
-				if strings.Contains(lower, "options") && strings.Contains(lower, "indexes") && !strings.Contains(lower, "-indexes") {
-					hasIndexes = true
-					break
-				}
-			}
-			if hasIndexes {
-				results = append(results, store.AuditResult{
-					Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
-					Status: "warn", Message: "Global config enables directory listing (Options Indexes)",
-					Fix: "Replace 'Indexes' with '-Indexes' in Options directives.",
-				})
-			} else {
-				results = append(results, store.AuditResult{
-					Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
-					Status: "pass", Message: "No global directory listing enabled",
-				})
-			}
-		}
+	type directiveCheck struct {
+		id, title, directive string
+		goodValues           []string
+	}
+	dirChecks := []directiveCheck{
+		{"web_server_tokens", "ServerTokens", "ServerTokens", []string{"prod", "productonly"}},
+		{"web_server_signature", "ServerSignature", "ServerSignature", []string{"off"}},
+		{"web_trace_enable", "TraceEnable", "TraceEnable", []string{"off"}},
+		{"web_file_etag", "FileETag", "FileETag", []string{"none"}},
 	}
 
-	// TLS version checks: probe with openssl
+	for _, dc := range dirChecks {
+		// Last value at server scope wins, matching how Apache resolves
+		// a directive repeated across the main config and its snippets.
+		var foundVal, foundFile string
+		for _, l := range serverScope {
+			fields := strings.Fields(strings.TrimSpace(l.Text))
+			if len(fields) >= 2 && strings.EqualFold(fields[0], dc.directive) {
+				foundVal = unquoteApacheArg(fields[1])
+				foundFile = l.File
+			}
+		}
+
+		if foundVal == "" {
+			results = append(results, store.AuditResult{
+				Category: "webserver", Name: dc.id, Title: dc.title,
+				Status: "warn", Message: fmt.Sprintf("%s not set in %s or its included snippets", dc.directive, configPath),
+				Fix: fmt.Sprintf("Add '%s %s' to %s", dc.directive, dc.goodValues[0], configPath),
+			})
+			continue
+		}
+
+		isGood := false
+		for _, gv := range dc.goodValues {
+			if strings.EqualFold(foundVal, gv) {
+				isGood = true
+				break
+			}
+		}
+		if isGood {
+			results = append(results, store.AuditResult{
+				Category: "webserver", Name: dc.id, Title: dc.title,
+				Status: "pass", Message: fmt.Sprintf("%s = %s (%s)", dc.directive, foundVal, foundFile),
+			})
+			continue
+		}
+		results = append(results, store.AuditResult{
+			Category: "webserver", Name: dc.id, Title: dc.title,
+			Status: "fail", Message: fmt.Sprintf("%s = %s (%s)", dc.directive, foundVal, foundFile),
+			Fix: fmt.Sprintf("Set '%s %s' in %s", dc.directive, dc.goodValues[0], foundFile),
+		})
+	}
+
+	scopes := apacheIndexesScopes(lines)
+	if len(scopes) == 0 {
+		results = append(results, store.AuditResult{
+			Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
+			Status: "pass", Message: "No configured scope enables directory listing",
+		})
+		return results
+	}
+
+	shown := scopes
+	suffix := ""
+	if len(shown) > auditApacheDirectivesMaxScopes {
+		suffix = fmt.Sprintf(" (+%d more)", len(shown)-auditApacheDirectivesMaxScopes)
+		shown = shown[:auditApacheDirectivesMaxScopes]
+	}
+	results = append(results, store.AuditResult{
+		Category: "webserver", Name: "web_directory_listing", Title: "Directory Listing",
+		Status:  "warn",
+		Message: fmt.Sprintf("Directory listing enabled in: %s%s", strings.Join(shown, ", "), suffix),
+		Fix:     "Replace 'Indexes' with '-Indexes' in the Options directive of each scope listed.",
+	})
+	return results
+}
+
+// auditWebTLS probes the local HTTPS listener for legacy TLS versions.
+func auditWebTLS() []store.AuditResult {
+	var results []store.AuditResult
 	for _, tc := range []struct {
 		id, title, flag, version string
 	}{
@@ -1693,11 +1701,13 @@ func auditWebServer(serverType string) []store.AuditResult {
 			})
 		}
 	}
-
 	return results
 }
 
 // --- Mail checks ---
+
+// detectMTA is a seam so tests can pin the host's mail stack.
+var detectMTA = platform.DetectMTA
 
 func auditMail() []store.AuditResult {
 	var results []store.AuditResult
@@ -1722,76 +1732,81 @@ func auditMail() []store.AuditResult {
 		})
 	}
 
-	// Get exim config for multiple checks
-	eximOut, eximErr := auditRunCmd("exim", "-bP")
-	eximConfig := ""
-	if eximErr == nil {
-		eximConfig = string(eximOut)
-	}
+	// Exim-specific checks only run where exim is the delivery agent.
+	// Reporting them on a postfix host produced both phantom warnings
+	// and a fabricated pass for a cPanel-only override file.
+	if detectMTA() == platform.MTAExim {
+		// Get exim config for multiple checks
+		eximOut, eximErr := auditRunCmd("exim", "-bP")
+		eximConfig := ""
+		if eximErr == nil {
+			eximConfig = string(eximOut)
+		}
 
-	// mail_exim_logging
-	if eximConfig != "" {
-		lower := strings.ToLower(eximConfig)
-		if strings.Contains(lower, "+arguments") || strings.Contains(lower, "+all") {
-			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_exim_logging", Title: "Exim Argument Logging",
-				Status: "pass", Message: "Exim logs include +arguments",
-			})
+		// mail_exim_logging
+		if eximConfig != "" {
+			lower := strings.ToLower(eximConfig)
+			if strings.Contains(lower, "+arguments") || strings.Contains(lower, "+all") {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_exim_logging", Title: "Exim Argument Logging",
+					Status: "pass", Message: "Exim logs include +arguments",
+				})
+			} else {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_exim_logging", Title: "Exim Argument Logging",
+					Status: "warn", Message: "Exim log_selector does not include +arguments",
+					Fix: "Add '+arguments' to log_selector in exim configuration for better forensics.",
+				})
+			}
 		} else {
 			results = append(results, store.AuditResult{
 				Category: "mail", Name: "mail_exim_logging", Title: "Exim Argument Logging",
-				Status: "warn", Message: "Exim log_selector does not include +arguments",
-				Fix: "Add '+arguments' to log_selector in exim configuration for better forensics.",
+				Status: "warn", Message: "Cannot query exim configuration",
 			})
 		}
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "mail", Name: "mail_exim_logging", Title: "Exim Argument Logging",
-			Status: "warn", Message: "Cannot query exim configuration",
-		})
-	}
 
-	// mail_exim_tls: check for SSLv2 in tls_require_ciphers
-	// +no_sslv2 in openssl_options means SSLv2 is DISABLED (good).
-	// Only flag if SSLv2 is referenced WITHOUT +no_ prefix.
-	if eximConfig != "" {
-		lower := strings.ToLower(eximConfig)
-		hasSslv2 := strings.Contains(lower, "sslv2")
-		isDisabled := strings.Contains(lower, "+no_sslv2") || strings.Contains(lower, "no_sslv2")
-		if hasSslv2 && !isDisabled {
-			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
-				Status: "fail", Message: "Exim allows SSLv2 connections",
-				Fix: "Add '+no_sslv2' to openssl_options in exim configuration.",
-			})
+		// mail_exim_tls: check for SSLv2 in tls_require_ciphers
+		// +no_sslv2 in openssl_options means SSLv2 is DISABLED (good).
+		// Only flag if SSLv2 is referenced WITHOUT +no_ prefix.
+		if eximConfig != "" {
+			lower := strings.ToLower(eximConfig)
+			hasSslv2 := strings.Contains(lower, "sslv2")
+			isDisabled := strings.Contains(lower, "+no_sslv2") || strings.Contains(lower, "no_sslv2")
+			if hasSslv2 && !isDisabled {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
+					Status: "fail", Message: "Exim allows SSLv2 connections",
+					Fix: "Add '+no_sslv2' to openssl_options in exim configuration.",
+				})
+			} else {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
+					Status: "pass", Message: "SSLv2 is disabled in exim TLS configuration",
+				})
+			}
+		}
+
+		// mail_secure_auth: check /etc/exim.conf.localopts
+		if data, err := osFS.ReadFile("/etc/exim.conf.localopts"); err == nil {
+			content := string(data)
+			if strings.Contains(content, "require_secure_auth=0") {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+					Status: "fail", Message: "require_secure_auth is disabled in /etc/exim.conf.localopts",
+					Fix: "Remove or set require_secure_auth=1 in /etc/exim.conf.localopts.",
+				})
+			} else {
+				results = append(results, store.AuditResult{
+					Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+					Status: "pass", Message: "Secure authentication is not disabled",
+				})
+			}
 		} else {
 			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
-				Status: "pass", Message: "SSLv2 is disabled in exim TLS configuration",
+				Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
+				Status: "pass", Message: "No local exim overrides file found (default is secure)",
 			})
 		}
-	}
-
-	// mail_secure_auth: check /etc/exim.conf.localopts
-	if data, err := osFS.ReadFile("/etc/exim.conf.localopts"); err == nil {
-		content := string(data)
-		if strings.Contains(content, "require_secure_auth=0") {
-			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-				Status: "fail", Message: "require_secure_auth is disabled in /etc/exim.conf.localopts",
-				Fix: "Remove or set require_secure_auth=1 in /etc/exim.conf.localopts.",
-			})
-		} else {
-			results = append(results, store.AuditResult{
-				Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-				Status: "pass", Message: "Secure authentication is not disabled",
-			})
-		}
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "mail", Name: "mail_secure_auth", Title: "Exim Secure Authentication",
-			Status: "pass", Message: "No local exim overrides file found (default is secure)",
-		})
 	}
 
 	// mail_dovecot_tls: check ssl_min_protocol
