@@ -1,8 +1,10 @@
 package platform
 
 import (
+	"context"
 	"os"
 	"os/exec"
+	"time"
 )
 
 // MTAIdents lists local users and process basenames belonging to the
@@ -70,7 +72,7 @@ func LocalMTAIdentities(info Info) MTAIdents {
 	return MTAIdents{Users: users, Processes: processes}
 }
 
-// MTAKind identifies the Mail Transfer Agent installed on the host.
+// MTAKind identifies the host's Mail Transfer Agent.
 type MTAKind string
 
 const (
@@ -80,21 +82,57 @@ const (
 )
 
 var (
-	mtaLookPath = exec.LookPath
-	mtaStat     = os.Stat
+	mtaLookPath      = exec.LookPath
+	mtaStat          = os.Stat
+	mtaServiceActive = systemdMTAServiceActive
 )
 
-// DetectMTA reports which MTA is installed. Exim wins when both are
-// present: cPanel ships exim as the delivery agent and leaves postfix
-// binaries on disk.
+// DetectMTA reports the delivery agent rather than whichever package happens
+// to leave a binary on disk. cPanel is authoritative because it runs Exim
+// while retaining Postfix binaries; elsewhere an active service wins.
 func DetectMTA() MTAKind {
-	if mtaInstalled([]string{"exim", "exim4"}, []string{"/usr/sbin/exim", "/usr/sbin/exim4"}) {
+	if mtaPathExists("/usr/local/cpanel/version") {
 		return MTAExim
 	}
-	if mtaInstalled([]string{"postfix"}, []string{"/usr/sbin/postfix", "/usr/libexec/postfix/master"}) {
+	eximActive := mtaServiceActive("exim") || mtaServiceActive("exim4")
+	postfixActive := mtaServiceActive("postfix")
+	// When both are active, keep Exim-specific weaknesses visible instead of
+	// dropping the checks behind an ambiguous result.
+	if eximActive {
+		return MTAExim
+	}
+	if postfixActive {
 		return MTAPostfix
 	}
-	return MTAUnknown
+
+	eximInstalled := mtaInstalled([]string{"exim", "exim4"}, []string{
+		"/usr/sbin/exim",
+		"/usr/sbin/exim4",
+	})
+	postfixInstalled := mtaInstalled([]string{"postfix"}, []string{
+		"/usr/sbin/postfix",
+		"/usr/libexec/postfix/master",
+		"/usr/lib/postfix/sbin/master",
+	})
+	if eximInstalled == postfixInstalled {
+		return MTAUnknown
+	}
+	if eximInstalled {
+		return MTAExim
+	}
+	return MTAPostfix
+}
+
+func mtaPathExists(path string) bool {
+	_, err := mtaStat(path)
+	return err == nil
+}
+
+func systemdMTAServiceActive(unit string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// #nosec G204 -- callers pass only the literal MTA unit names above.
+	return exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run() == nil
 }
 
 // mtaInstalled reports whether any of the named binaries is on PATH or at
@@ -107,7 +145,8 @@ func mtaInstalled(binaries, paths []string) bool {
 		}
 	}
 	for _, p := range paths {
-		if _, err := mtaStat(p); err == nil {
+		info, err := mtaStat(p)
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 			return true
 		}
 	}

@@ -83,6 +83,43 @@ func TestAssembleApacheConfigResolvesIncludesAgainstServerRoot(t *testing.T) {
 	}
 }
 
+func TestAssembleApacheConfigAppliesServerRootInDirectiveOrder(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	secondRoot := filepath.Join(root, "second")
+	writeApacheConf(t, main, "Include before/*.conf\nServerRoot \""+secondRoot+"\"\nInclude after/*.conf\n")
+	writeApacheConf(t, filepath.Join(root, "before", "first.conf"), "ServerTokens Full\n")
+	writeApacheConf(t, filepath.Join(secondRoot, "after", "second.conf"), "ServerTokens Prod\n")
+
+	got := joined(assembledText(assembleApacheConfig(main)))
+	want := "ServerTokens Full|ServerRoot \"" + secondRoot + "\"|ServerTokens Prod"
+	if got != want {
+		t.Errorf("assembled order = %q, want %q", got, want)
+	}
+}
+
+func TestAssembleApacheConfigReadsQuotedIncludePath(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "IncludeOptional \"conf enabled/*.conf\"\n")
+	writeApacheConf(t, filepath.Join(root, "conf enabled", "hardening.conf"), "TraceEnable Off\n")
+
+	if got := joined(assembledText(assembleApacheConfig(main))); got != "TraceEnable Off" {
+		t.Errorf("quoted include output = %q, want TraceEnable Off", got)
+	}
+}
+
+func TestAssembleApacheConfigFollowsContinuedIncludeDirective(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "IncludeOptional \\\n  conf-enabled/*.conf\n")
+	writeApacheConf(t, filepath.Join(root, "conf-enabled", "hardening.conf"), "TraceEnable Off\n")
+
+	if got := joined(assembledText(assembleApacheConfig(main))); got != "TraceEnable Off" {
+		t.Errorf("continued include output = %q, want TraceEnable Off", got)
+	}
+}
+
 func TestAssembleApacheConfigDefaultsServerRootToConfigDir(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "apache2.conf")
@@ -92,6 +129,18 @@ func TestAssembleApacheConfigDefaultsServerRootToConfigDir(t *testing.T) {
 	got := joined(assembledText(assembleApacheConfig(main)))
 	if !strings.Contains(got, "TraceEnable Off") {
 		t.Errorf("include not resolved against config dir: %q", got)
+	}
+}
+
+func TestAssembleApacheConfigDefaultsServerRootAboveConfDirectory(t *testing.T) {
+	root := t.TempDir()
+	serverRoot := filepath.Join(root, "etc", "apache2")
+	main := filepath.Join(serverRoot, "conf", "httpd.conf")
+	writeApacheConf(t, main, "IncludeOptional conf.d/*.conf\n")
+	writeApacheConf(t, filepath.Join(serverRoot, "conf.d", "hardening.conf"), "FileETag None\n")
+
+	if got := joined(assembledText(assembleApacheConfig(main))); got != "FileETag None" {
+		t.Errorf("EA4 fallback output = %q, want FileETag None", got)
 	}
 }
 
@@ -131,6 +180,22 @@ func TestAssembleApacheConfigBreaksIncludeCycle(t *testing.T) {
 	if strings.Count(got, "MarkerA") != 1 || strings.Count(got, "MarkerB") != 1 {
 		t.Errorf("cycle not broken cleanly: %q", got)
 	}
+	if _, complete := assembleApacheConfigWithStatus(a); complete {
+		t.Error("recursive include reported as a complete traversal")
+	}
+}
+
+func TestAssembleApacheConfigPreservesRepeatedIncludes(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	snippet := filepath.Join(root, "shared.conf")
+	writeApacheConf(t, main, "Include shared.conf\nServerTokens Full\nInclude shared.conf\n")
+	writeApacheConf(t, snippet, "ServerTokens Prod\n")
+
+	got := joined(assembledText(assembleApacheConfig(main)))
+	if got != "ServerTokens Prod|ServerTokens Full|ServerTokens Prod" {
+		t.Errorf("repeated include output = %q", got)
+	}
 }
 
 func TestAssembleApacheConfigIgnoresCommentedInclude(t *testing.T) {
@@ -152,6 +217,42 @@ func TestAssembleApacheConfigToleratesMissingInclude(t *testing.T) {
 	want := "ServerTokens Prod"
 	if got := joined(assembledText(assembleApacheConfig(main))); got != want {
 		t.Errorf("missing include changed output: %q, want %q", got, want)
+	}
+	if _, complete := assembleApacheConfigWithStatus(main); complete {
+		t.Error("missing required Include reported as complete")
+	}
+}
+
+func TestAssembleApacheConfigAllowsMissingOptionalInclude(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "IncludeOptional missing/*.conf\nServerTokens Prod\n")
+
+	if _, complete := assembleApacheConfigWithStatus(main); !complete {
+		t.Error("missing IncludeOptional reported as incomplete")
+	}
+}
+
+func TestAssembleApacheConfigDoesNotIgnoreOptionalIncludeReadError(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	child := filepath.Join(root, "private.conf")
+	withMockOS(t, &mockOS{
+		stat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case main:
+				return []byte("IncludeOptional private.conf\nServerTokens Prod\n"), nil
+			case child:
+				return nil, os.ErrPermission
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
+
+	if _, complete := assembleApacheConfigWithStatus(main); complete {
+		t.Error("unreadable IncludeOptional target reported a complete traversal")
 	}
 }
 
@@ -192,6 +293,13 @@ func TestApacheIndexesScopesTreatsConditionalBlockAsServerScope(t *testing.T) {
 	}
 }
 
+func TestApacheIndexesScopesConditionalDisableDoesNotHideGlobalGrant(t *testing.T) {
+	got := apacheIndexesScopes(linesFrom("apache2.conf", "Options Indexes\n<IfDefine HARDENED>\nOptions -Indexes\n</IfDefine>\n"))
+	if len(got) != 1 || got[0] != "server config" {
+		t.Errorf("scopes = %v, want [server config]", got)
+	}
+}
+
 func TestApacheIndexesScopesServerScopeDoesNotClearDirectoryScope(t *testing.T) {
 	// The reported case: a hardening snippet sets server-scope Options
 	// -Indexes, but <Directory /var/www/> still grants Indexes and wins
@@ -199,6 +307,13 @@ func TestApacheIndexesScopesServerScopeDoesNotClearDirectoryScope(t *testing.T) 
 	got := apacheIndexesScopes(linesFrom("apache2.conf", "<Directory /var/www/>\n\tOptions Indexes FollowSymLinks\n</Directory>\nOptions -Indexes\n"))
 	if len(got) != 1 || got[0] != "Directory /var/www/" {
 		t.Errorf("scopes = %v, want [Directory /var/www/]", got)
+	}
+}
+
+func TestApacheIndexesScopesDoesNotInventInheritedChildGrant(t *testing.T) {
+	got := apacheIndexesScopes(linesFrom("apache2.conf", "Options -Indexes\n<Directory /var/www/>\n\tOptions +FollowSymLinks\n</Directory>\n"))
+	if len(got) != 0 {
+		t.Errorf("scopes = %v, want none when the child only merges a non-Indexes option", got)
 	}
 }
 
@@ -269,14 +384,129 @@ func TestAuditApacheDirectivesLastServerScopeValueWins(t *testing.T) {
 	}
 }
 
-func TestAuditApacheDirectivesIgnoresVirtualHostScopedValue(t *testing.T) {
+func TestAuditApacheDirectivesMainDirectiveAfterIncludeWins(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "IncludeOptional conf-enabled/*.conf\nServerTokens Full\n")
+	writeApacheConf(t, filepath.Join(root, "conf-enabled", "hardening.conf"), "ServerTokens Prod\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status != "fail" {
+		t.Errorf("web_server_tokens = %s (%s), want later main-file directive to win", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesConditionalGoodValueDoesNotHideBadDefault(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerTokens Full\n<IfDefine HARDENED>\nServerTokens Prod\n</IfDefine>\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status != "fail" {
+		t.Errorf("web_server_tokens = %s (%s), want fail", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesWarnsOnConditionalBadValue(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerTokens Prod\n<IfDefine VERBOSE>\nServerTokens Full\n</IfDefine>\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status != "warn" {
+		t.Errorf("web_server_tokens = %s (%s), want warn", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesKeepsSeparateElseBranches(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerTokens Prod\n<IfDefine A>\nServerTokens Prod\n</IfDefine>\n<Else>\nServerTokens Full\n</Else>\n<IfDefine B>\nServerTokens Prod\n</IfDefine>\n<Else>\nServerTokens Prod\n</Else>\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status == "pass" {
+		t.Errorf("insecure first Else branch was overwritten by a later Else: %s", result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesLaterGlobalValueOverridesConditional(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "<IfDefine VERBOSE>\nServerTokens Full\n</IfDefine>\nServerTokens Prod\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status != "pass" {
+		t.Errorf("web_server_tokens = %s (%s), want pass from later unconditional value", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesRuntimeIfAppliesAfterGlobalDirectives(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "<If \"true\">\nServerSignature On\n</If>\nServerSignature Off\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_signature")
+	if result.Status == "pass" {
+		t.Errorf("runtime If override was cleared by a later global directive: %s", result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesDoesNotGuessConditionalServerRoot(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	alternateRoot := filepath.Join(root, "alternate")
+	writeApacheConf(t, main, "<IfDefine ALT>\nServerRoot \""+alternateRoot+"\"\n</IfDefine>\nIncludeOptional conf.d/*.conf\n")
+	writeApacheConf(t, filepath.Join(root, "conf.d", "tokens.conf"), "ServerTokens Full\n")
+	writeApacheConf(t, filepath.Join(alternateRoot, "conf.d", "tokens.conf"), "ServerTokens Prod\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status == "pass" {
+		t.Errorf("conditional ServerRoot was assumed active: %s", result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesReportsVirtualHostScopedValue(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "apache2.conf")
 	writeApacheConf(t, main, "ServerSignature Off\n<VirtualHost *:80>\n\tServerSignature On\n</VirtualHost>\n")
 
 	r, _ := auditByName(auditApacheDirectives(main), "web_server_signature")
-	if r.Status != "pass" {
-		t.Errorf("web_server_signature = %s (%s), want pass -- vhost scope is not the global value", r.Status, r.Message)
+	if r.Status != "fail" {
+		t.Errorf("web_server_signature = %s (%s), want fail for vhost override", r.Status, r.Message)
+	}
+}
+
+func TestAuditApacheDirectivesKeepsSameAddressVirtualHostsSeparate(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerSignature Off\n<VirtualHost *:80>\nServerSignature On\n</VirtualHost>\n<VirtualHost *:80>\nServerSignature Off\n</VirtualHost>\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_signature")
+	if result.Status != "fail" {
+		t.Errorf("web_server_signature = %s (%s), want fail for the first vhost", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesDoesNotPopMismatchedContainer(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerTokens Full\n<Directory /srv>\n</VirtualHost>\nServerTokens Prod\n")
+
+	result, _ := auditByName(auditApacheDirectives(main), "web_server_tokens")
+	if result.Status != "fail" {
+		t.Errorf("web_server_tokens = %s (%s), want fail for unsafe server scope", result.Status, result.Message)
+	}
+}
+
+func TestAuditApacheDirectivesDoesNotPassIncompleteTraversal(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "apache2.conf")
+	writeApacheConf(t, main, "ServerTokens Prod\nServerSignature Off\nTraceEnable Off\nFileETag None\nInclude missing.conf\nOptions -Indexes\n")
+
+	for _, result := range auditApacheDirectives(main) {
+		if result.Status == "pass" {
+			t.Errorf("%s passed after required include was not read", result.Name)
+		}
 	}
 }
 
