@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // --- RunHardeningAudit with mocks ------------------------------------
@@ -192,8 +193,47 @@ func TestAuditWebServerWithMocks(t *testing.T) {
 		},
 	})
 
-	results := auditWebServer("standalone")
+	results := auditWebServer()
 	_ = results
+}
+
+func TestFindWebServerConfigPathSkipsNativeLiteSpeedXML(t *testing.T) {
+	withMockOS(t, &mockOS{stat: func(string) (os.FileInfo, error) {
+		t.Fatal("native LiteSpeed should not probe Apache paths")
+		return nil, os.ErrNotExist
+	}})
+
+	if got := findWebServerConfigPath(platform.Info{WebServer: platform.WSLiteSpeed}); got != "" {
+		t.Errorf("native LiteSpeed config = %q, want no Apache audit", got)
+	}
+}
+
+func TestFindWebServerConfigPathUsesEA4ForCPanelLiteSpeed(t *testing.T) {
+	withMockOS(t, &mockOS{stat: func(name string) (os.FileInfo, error) {
+		if name == "/etc/apache2/conf/httpd.conf" {
+			return fakeFileInfo{name: "httpd.conf"}, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+
+	info := platform.Info{Panel: platform.PanelCPanel, WebServer: platform.WSLiteSpeed}
+	if got := findWebServerConfigPath(info); got != "/etc/apache2/conf/httpd.conf" {
+		t.Errorf("cPanel LiteSpeed config = %q, want EA4 main config", got)
+	}
+}
+
+func TestFindWebServerConfigPathUsesDebianMainConfig(t *testing.T) {
+	withMockOS(t, &mockOS{stat: func(name string) (os.FileInfo, error) {
+		if name == "/etc/apache2/apache2.conf" {
+			return fakeFileInfo{name: "apache2.conf"}, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if got := findWebServerConfigPath(info); got != "/etc/apache2/apache2.conf" {
+		t.Errorf("Ubuntu Apache config = %q, want distro main config", got)
+	}
 }
 
 // --- auditMail -------------------------------------------------------

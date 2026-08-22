@@ -111,7 +111,7 @@ func TestAuditWebServerWithConfig(t *testing.T) {
 		},
 	})
 
-	results := auditWebServer("cpanel")
+	results := auditWebServer()
 	_ = results
 }
 
