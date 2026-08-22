@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
 	"time"
+
+	"github.com/pidginhost/csm/internal/platform"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -178,6 +181,8 @@ func TestAuditMailRootForwardEmpty(t *testing.T) {
 }
 
 func TestAuditMailSecureAuthDisabled(t *testing.T) {
+	withMockMTA(t, platform.MTAExim)
+	withMockCPanel(t, true)
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
 			return nil, os.ErrNotExist
@@ -202,6 +207,8 @@ func TestAuditMailSecureAuthDisabled(t *testing.T) {
 }
 
 func TestAuditMailSecureAuthEnabled(t *testing.T) {
+	withMockMTA(t, platform.MTAExim)
+	withMockCPanel(t, true)
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
 			return nil, os.ErrNotExist

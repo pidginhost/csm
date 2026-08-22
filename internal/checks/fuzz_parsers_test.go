@@ -626,3 +626,29 @@ func FuzzParseVhostPHPVersion(f *testing.F) {
 		}
 	})
 }
+
+func FuzzApacheConfigParsers(f *testing.F) {
+	f.Add("IncludeOptional \"conf enabled/*.conf\"")
+	f.Add("<Directory /var/www/>\nOptions -Indexes\n</Directory>")
+	f.Add("<IfDefine VERBOSE>\nServerTokens Full\n</IfModule>")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, input string) {
+		firstLine, _, _ := strings.Cut(input, "\n")
+		fields, valid := parseApacheDirectiveFields(firstLine)
+		if valid {
+			for _, field := range fields {
+				if strings.ContainsAny(field, "\r\n") {
+					t.Fatalf("parser returned a field containing a line break: %q", field)
+				}
+			}
+		}
+
+		physical := strings.Split(input, "\n")
+		lines := make([]apacheConfigLine, 0, len(physical))
+		for _, line := range physical {
+			lines = append(lines, apacheConfigLine{File: "fuzz.conf", Text: line})
+		}
+		_, _ = apacheDirectiveValues(lines, "ServerTokens")
+		_, _ = apacheIndexesScopesWithStatus(lines)
+	})
+}
