@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The server hardening audit now inspects Postfix hosts, covering open relaying, missing inbound TLS, obsolete SSL versions still being accepted, authentication offered without encryption, and address harvesting through the VRFY command.
+
 ### Fixed
 
 - The server hardening audit now follows Apache include directives in precedence order, so snippet settings count as applied and incomplete or conditional trees are not reported clean. Directory listing is reported per configuration scope and names the block that enables it.
