@@ -1,6 +1,6 @@
 module github.com/pidginhost/csm
 
-go 1.26.6
+go 1.26.7
 
 require (
 	github.com/VKCOM/php-parser v0.8.2
