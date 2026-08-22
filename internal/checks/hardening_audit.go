@@ -1895,6 +1895,10 @@ func auditMail() []store.AuditResult {
 		}
 	}
 
+	if detectMTA() == platform.MTAPostfix {
+		results = append(results, auditPostfix()...)
+	}
+
 	// mail_dovecot_tls: check ssl_min_protocol
 	// Use 'doveconf -a' for the effective config — cPanel manages Dovecot
 	// settings outside the standard config files, so file parsing misses
