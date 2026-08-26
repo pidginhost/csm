@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Backup archives inside plugin-owned directories are now also denied one level up, where the plugin cannot overwrite the rule. All-in-One WP Migration rewrites its own access rules on every run, which left the archives downloadable until the next scan noticed and re-applied the block.
-- A denial that has to be written again because something removed it is now reported as such, instead of looking like a fresh one each time. Repeated identical rollback copies are no longer stored, so the quarantine list stops filling with the same file.
+- A denial that has to be written again because something removed or damaged it is now reported as such, instead of looking like a fresh one each time. Equivalent rollback states share one archived copy without losing it after a failed re-apply, while ownership or permission changes keep a separate rollback point.
 
 ## [3.30.0] - 2026-08-22
 

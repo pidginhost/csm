@@ -74,6 +74,12 @@ auto_response:
     max_actions_per_minute: 60         # rolling 60s window cap on exim -Mf invocations
 ```
 
+### Exposed-file virtual patches
+
+Each applied deny keeps a rollback copy under `/opt/csm/quarantine/pre_clean/`. Re-applying the same rollback state reuses that copy; content, ownership, permissions, or remove-versus-replace changes keep separate restore points.
+
+All-in-One WP Migration rewrites the access file inside `wp-content/ai1wm-backups`, so CSM also denies only `.wpress` filenames from the parent `wp-content` access file. It does not add parent-wide `.zip` or `.gz` rules because those extensions can be legitimate downloads elsewhere under `wp-content`.
+
 ### Dry-run safety default
 
 `auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.

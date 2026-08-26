@@ -39,8 +39,8 @@ type RemediationResult struct {
 	Description string `json:"description"` // what fix was applied
 	Error       string `json:"error,omitempty"`
 	// Reverted marks a virtual patch that had to be written again because
-	// something removed CSM's earlier block -- typically a backup plugin
-	// rewriting the .htaccess it owns.
+	// something removed or damaged CSM's earlier block -- typically a backup
+	// plugin rewriting the .htaccess it owns.
 	Reverted bool `json:"reverted,omitempty"`
 }
 

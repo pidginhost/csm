@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,44 @@ func countPrePatchBackups(t *testing.T) int {
 		}
 	}
 	return n
+}
+
+type prePatchBackupRecord struct {
+	itemPath string
+	meta     QuarantineMeta
+}
+
+func prePatchBackupsForPath(t *testing.T, originalPath string) []prePatchBackupRecord {
+	t.Helper()
+	entries, err := os.ReadDir(htaccessBackupDirRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read backup dir: %v", err)
+	}
+	var records []prePatchBackupRecord
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		metaPath := filepath.Join(htaccessBackupDirRoot, entry.Name())
+		var meta QuarantineMeta
+		data, readErr := os.ReadFile(metaPath)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", metaPath, readErr)
+		}
+		if err := json.Unmarshal(data, &meta); err != nil {
+			t.Fatalf("decode %s: %v", metaPath, err)
+		}
+		if meta.OriginalPath == originalPath {
+			records = append(records, prePatchBackupRecord{
+				itemPath: strings.TrimSuffix(metaPath, ".meta"),
+				meta:     meta,
+			})
+		}
+	}
+	return records
 }
 
 // ai1wmSite lays out a plugin backup directory holding one archive and
@@ -98,6 +137,168 @@ func TestVirtualPatchExposedFile_ArchivesChangedPrePatchContent(t *testing.T) {
 	}
 }
 
+func TestVirtualPatchExposedFile_ArchivesIdenticalContentAfterModeChange(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, htaccess := ai1wmSite(t, root)
+
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("first patch: %+v", res)
+	}
+	before := prePatchBackupsForPath(t, htaccess)
+	if len(before) != 1 {
+		t.Fatalf("plugin backups after first patch = %d, want 1", len(before))
+	}
+
+	// The bytes match the old rollback point, but restoring this patch must
+	// preserve the customer's newer permissions as well.
+	mustWrite(t, htaccess, ai1wmPluginHtaccess)
+	if err := os.Chmod(htaccess, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("re-patch after mode change: %+v", res)
+	}
+
+	records := prePatchBackupsForPath(t, htaccess)
+	if len(records) != 2 {
+		t.Fatalf("plugin backups after mode change = %d, want 2 distinct rollback states", len(records))
+	}
+	for _, record := range records {
+		if record.meta.Mode != "-rw-------" {
+			continue
+		}
+		if err := RestoreVirtualPatchBackup(record.itemPath, htaccess, record.meta); err != nil {
+			t.Fatalf("restore mode-specific backup: %v", err)
+		}
+		info, err := os.Stat(htaccess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("restored mode = %o, want 600", got)
+		}
+		if got := readFile(t, htaccess); got != ai1wmPluginHtaccess {
+			t.Fatalf("restored content differs from plugin file:\n%s", got)
+		}
+		return
+	}
+	t.Fatal("mode-specific rollback metadata was not stored")
+}
+
+func TestFindExistingPrePatchBackup_RejectsOversizedMetadata(t *testing.T) {
+	root := vpTestEnv(t)
+	if err := os.MkdirAll(htaccessBackupDirRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	htaccess := filepath.Join(root, "site", ".htaccess")
+	state := htaccessState{
+		content: []byte("customer rules\n"),
+		existed: true,
+		uid:     os.Getuid(),
+		gid:     os.Getgid(),
+		mode:    0o644,
+	}
+	block := buildDenyBlock("dump.sql", false)
+	patched := append(append([]byte(nil), state.content...), block...)
+	metaData, err := json.Marshal(QuarantineMeta{
+		OriginalPath:          htaccess,
+		Owner:                 state.uid,
+		Group:                 state.gid,
+		Mode:                  state.mode.String(),
+		Size:                  int64(len(state.content)),
+		RestoreAction:         QuarantineRestoreReplaceIfUnchanged,
+		ExpectedCurrentSHA256: virtualPatchSHA256(patched),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metaData) >= maxVirtualPatchHtaccessSize {
+		t.Fatal("test metadata unexpectedly exceeds the read limit")
+	}
+	metaData = append(metaData, strings.Repeat(" ", maxVirtualPatchHtaccessSize-len(metaData))...)
+	metaData = append(metaData, 'x')
+	itemPath := filepath.Join(htaccessBackupDirRoot, "candidate")
+	if err := os.WriteFile(itemPath, state.content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(itemPath+".meta", metaData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if backup, found := findExistingPrePatchBackup(htaccess, state, patched); found {
+		t.Fatalf("oversized metadata was accepted as rollback point: %+v", backup)
+	}
+}
+
+func TestFindExistingPrePatchBackup_RejectsSymlinkedArchive(t *testing.T) {
+	root := vpTestEnv(t)
+	if err := os.MkdirAll(htaccessBackupDirRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	htaccess := filepath.Join(root, "site", ".htaccess")
+	state := htaccessState{
+		content: []byte("customer rules\n"),
+		existed: true,
+		uid:     os.Getuid(),
+		gid:     os.Getgid(),
+		mode:    0o644,
+	}
+	block := buildDenyBlock("dump.sql", false)
+	patched := patchedHtaccessContent(state.content, state.existed, block)
+	metaData, err := json.Marshal(QuarantineMeta{
+		OriginalPath:          htaccess,
+		Owner:                 state.uid,
+		Group:                 state.gid,
+		Mode:                  state.mode.String(),
+		Size:                  int64(len(state.content)),
+		RestoreAction:         QuarantineRestoreReplaceIfUnchanged,
+		ExpectedCurrentSHA256: virtualPatchSHA256(patched),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realItem := filepath.Join(htaccessBackupDirRoot, "real-item")
+	if err := os.WriteFile(realItem, state.content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	itemPath := filepath.Join(htaccessBackupDirRoot, "candidate")
+	if err := os.Symlink(filepath.Base(realItem), itemPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(itemPath+".meta", metaData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if backup, found := findExistingPrePatchBackup(htaccess, state, patched); found {
+		t.Fatalf("symlinked archive cannot be a restorable rollback point: %+v", backup)
+	}
+}
+
+func TestEachPrePatchBackup_DoesNotFollowMetadataOutsideRoot(t *testing.T) {
+	root := vpTestEnv(t)
+	if err := os.MkdirAll(htaccessBackupDirRoot, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	outsideMeta := filepath.Join(root, "outside.meta")
+	if err := os.WriteFile(outsideMeta, []byte(`{"original_path":"/outside"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideMeta, filepath.Join(htaccessBackupDirRoot, "escape.meta")); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	eachPrePatchBackup(func(QuarantineMeta, string, func(string) ([]byte, error)) bool {
+		called = true
+		return true
+	})
+	if called {
+		t.Fatal("backup enumeration followed metadata outside its os.Root")
+	}
+}
+
 // --- revert detection ------------------------------------------------
 
 func TestVirtualPatchExposedFile_ReportsRepatchAfterRevert(t *testing.T) {
@@ -120,6 +321,26 @@ func TestVirtualPatchExposedFile_ReportsRepatchAfterRevert(t *testing.T) {
 	}
 	if !res.Reverted {
 		t.Error("re-patching a previously patched .htaccess must report a revert")
+	}
+}
+
+func TestVirtualPatchExposedFile_DoesNotReportFirstPatchForSecondFileAsRevert(t *testing.T) {
+	root := vpTestEnv(t)
+	dir := filepath.Join(root, "site")
+	first := filepath.Join(dir, "first.sql")
+	second := filepath.Join(dir, "second.sql")
+	mustWrite(t, first, "first\n")
+	mustWrite(t, second, "second\n")
+
+	if res := VirtualPatchExposedFile(first); !res.Success {
+		t.Fatalf("first file: %+v", res)
+	}
+	res := VirtualPatchExposedFile(second)
+	if !res.Success {
+		t.Fatalf("second file: %+v", res)
+	}
+	if res.Reverted {
+		t.Fatal("a different file's earlier deny must not make a new patch look reverted")
 	}
 }
 
@@ -165,8 +386,99 @@ func TestVirtualPatchExposedFile_DeniesArchiveExtensionFromParent(t *testing.T) 
 
 	parent := filepath.Join(root, "site", "wp-content", ".htaccess")
 	got := readFile(t, parent)
-	if !strings.Contains(got, `\.wpress$`) || !strings.Contains(got, "Require all denied") {
-		t.Errorf("parent .htaccess must deny the archive extension:\n%s", got)
+	want := string(buildParentExtensionDenyBlock(".wpress"))
+	if got != want {
+		t.Errorf("parent .htaccess must contain only the verified .wpress deny:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(got, ".zip") || strings.Contains(got, ".gz") {
+		t.Errorf("parent .htaccess must not deny legitimate wp-content archives:\n%s", got)
+	}
+}
+
+func TestVirtualPatchExposedFile_AddsParentDenyWhenDirectoryDenyAlreadyExists(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, htaccess := ai1wmSite(t, root)
+	existing := append([]byte(ai1wmPluginHtaccess), buildDenyBlock(filepath.Base(archive), true)...)
+	if err := os.WriteFile(htaccess, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := VirtualPatchExposedFile(archive)
+	if !res.Success {
+		t.Fatalf("missing durable parent deny must still be applied: %+v", res)
+	}
+	parent := filepath.Join(root, "site", "wp-content", ".htaccess")
+	if got, want := readFile(t, parent), string(buildParentExtensionDenyBlock(".wpress")); got != want {
+		t.Fatalf("parent deny after existing directory patch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestVirtualPatchExposedFile_ReportsParentDenyReapplication(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, _ := ai1wmSite(t, root)
+	parent := filepath.Join(root, "site", "wp-content", ".htaccess")
+
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("first patch: %+v", res)
+	}
+	mustWrite(t, parent, "# customer replacement\n")
+
+	res := VirtualPatchExposedFile(archive)
+	if !res.Success {
+		t.Fatalf("parent re-patch: %+v", res)
+	}
+	if res.Reverted {
+		t.Fatal("the surviving plugin-directory deny means HTTP protection was not reverted")
+	}
+	if !strings.Contains(res.Description, "re-applied the durable .wpress deny") {
+		t.Fatalf("parent re-apply missing from description: %q", res.Description)
+	}
+	if got := readFile(t, parent); !strings.Contains(got, string(buildParentExtensionDenyBlock(".wpress"))) {
+		t.Fatalf("parent deny was not restored:\n%s", got)
+	}
+}
+
+func TestVirtualPatchExposedFile_RepairsModifiedParentDeny(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, _ := ai1wmSite(t, root)
+	parent := filepath.Join(root, "site", "wp-content", ".htaccess")
+
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("first patch: %+v", res)
+	}
+	damaged := strings.Replace(readFile(t, parent), "Require all denied", "Require all granted", 1)
+	mustWrite(t, parent, damaged)
+
+	res := VirtualPatchExposedFile(archive)
+	if !res.Success {
+		t.Fatalf("repair modified parent deny: %+v", res)
+	}
+	if res.Reverted {
+		t.Fatal("the surviving plugin-directory deny means HTTP protection was not reverted")
+	}
+	if !strings.Contains(res.Description, "re-applied the durable .wpress deny") {
+		t.Fatalf("parent repair missing from description: %q", res.Description)
+	}
+	if got := readFile(t, parent); !strings.Contains(got, string(buildParentExtensionDenyBlock(".wpress"))) {
+		t.Fatalf("valid parent deny was not restored:\n%s", got)
+	}
+}
+
+func TestVirtualPatchExposedFile_DoesNotDenyParentOutsideKnownPluginPath(t *testing.T) {
+	root := vpTestEnv(t)
+	dir := filepath.Join(root, "site", "custom", "ai1wm-backups")
+	archive := filepath.Join(dir, "customer-download.wpress")
+	mustWrite(t, archive, "customer archive\n")
+
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("single-file patch: %+v", res)
+	}
+	if got := readFile(t, filepath.Join(dir, ".htaccess")); !strings.Contains(got, `<Files "customer-download.wpress">`) {
+		t.Fatalf("single-file deny missing:\n%s", got)
+	}
+	parent := filepath.Join(root, "site", "custom", ".htaccess")
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
+		t.Fatalf("unverified plugin path created a parent-wide .wpress deny: %v", err)
 	}
 }
 
@@ -249,6 +561,75 @@ func TestVirtualPatchExposedFile_ParentDenyFailureDoesNotBlockDirectoryDeny(t *t
 	dirHtaccess := filepath.Join(filepath.Dir(archive), ".htaccess")
 	if got := readFile(t, dirHtaccess); !strings.Contains(got, "Require all denied") {
 		t.Errorf("directory deny missing:\n%s", got)
+	}
+}
+
+func TestVirtualPatchExposedFile_ReportsParentFailureWithExistingDirectoryDeny(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, pluginHtaccess := ai1wmSite(t, root)
+	existing := append([]byte(ai1wmPluginHtaccess), buildDenyBlock(filepath.Base(archive), true)...)
+	if err := os.WriteFile(pluginHtaccess, existing, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(root, "site", "wp-content", ".htaccess")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := VirtualPatchExposedFile(archive)
+	if !res.Success {
+		t.Fatalf("existing directory deny must remain a successful partial remediation: %+v", res)
+	}
+	if !strings.Contains(res.Description, "could not be written") {
+		t.Fatalf("parent failure missing from description: %q", res.Description)
+	}
+	if got := readFile(t, pluginHtaccess); got != string(existing) {
+		t.Fatalf("existing plugin-directory deny changed:\n%s", got)
+	}
+}
+
+func TestVirtualPatchExposedFile_FailedParentRepatchKeepsSharedBackups(t *testing.T) {
+	root := vpTestEnv(t)
+	archive, pluginHtaccess := ai1wmSite(t, root)
+	parentHtaccess := filepath.Join(root, "site", "wp-content", ".htaccess")
+	const parentRules = "# customer parent rules\nOptions -Indexes\n"
+	mustWrite(t, parentHtaccess, parentRules)
+
+	if res := VirtualPatchExposedFile(archive); !res.Success {
+		t.Fatalf("first patch: %+v", res)
+	}
+	pluginBackups := prePatchBackupsForPath(t, pluginHtaccess)
+	parentBackups := prePatchBackupsForPath(t, parentHtaccess)
+	if len(pluginBackups) != 1 || len(parentBackups) != 1 {
+		t.Fatalf("initial backups: plugin=%d parent=%d, want one each", len(pluginBackups), len(parentBackups))
+	}
+
+	mustWrite(t, pluginHtaccess, ai1wmPluginHtaccess)
+	mustWrite(t, parentHtaccess, parentRules)
+	chownCalls := 0
+	chownFunc = func(*os.File, int, int) error {
+		chownCalls++
+		if chownCalls == 2 {
+			return errors.New("parent write denied")
+		}
+		return nil
+	}
+
+	res := VirtualPatchExposedFile(archive)
+	if !res.Success {
+		t.Fatalf("directory re-patch must survive parent failure: %+v", res)
+	}
+	if !strings.Contains(res.Description, "could not be written") {
+		t.Fatalf("parent failure missing from description: %q", res.Description)
+	}
+	if got := readFile(t, pluginHtaccess); !strings.Contains(got, "Require all denied") {
+		t.Fatalf("failed parent write removed plugin-directory deny:\n%s", got)
+	}
+	if got := len(prePatchBackupsForPath(t, pluginHtaccess)); got != len(pluginBackups) {
+		t.Fatalf("plugin backups after parent failure = %d, want %d", got, len(pluginBackups))
+	}
+	if got := len(prePatchBackupsForPath(t, parentHtaccess)); got != len(parentBackups) {
+		t.Fatalf("parent backups after failed reuse = %d, want %d", got, len(parentBackups))
 	}
 }
 
