@@ -58,16 +58,16 @@ func ensurePHPShieldCageFSMount() (retErr error) {
 	}
 	defer func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		if err := f.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("closing CageFS mount points: %w", err)
+		if closeErr := f.Close(); closeErr != nil && retErr == nil {
+			retErr = fmt.Errorf("closing CageFS mount points: %w", closeErr)
 		}
 	}()
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("locking CageFS mount points: %w", err)
+	if lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); lockErr != nil {
+		return fmt.Errorf("locking CageFS mount points: %w", lockErr)
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seeking CageFS mount points: %w", err)
+	if _, seekErr := f.Seek(0, io.SeekStart); seekErr != nil {
+		return fmt.Errorf("seeking CageFS mount points: %w", seekErr)
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {

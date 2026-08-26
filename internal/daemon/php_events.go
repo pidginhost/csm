@@ -68,8 +68,8 @@ func listenPHPShieldEventSocket(path string) (phpEventPacketListener, error) {
 				return nil, fmt.Errorf("PHP Shield event socket is already active")
 			}
 		}
-		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("removing stale PHP Shield event socket: %w", err)
+		if removeErr := os.Remove(path); removeErr != nil {
+			return nil, fmt.Errorf("removing stale PHP Shield event socket: %w", removeErr)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("checking PHP Shield event socket: %w", err)
@@ -79,10 +79,10 @@ func listenPHPShieldEventSocket(path string) (phpEventPacketListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listening on PHP Shield event socket: %w", err)
 	}
-	if err := os.Chmod(path, phpEventSocketMode); err != nil {
+	if chmodErr := os.Chmod(path, phpEventSocketMode); chmodErr != nil {
 		_ = conn.Close()
 		_ = os.Remove(path)
-		return nil, fmt.Errorf("setting PHP Shield event socket mode: %w", err)
+		return nil, fmt.Errorf("setting PHP Shield event socket mode: %w", chmodErr)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

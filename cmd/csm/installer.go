@@ -1402,8 +1402,8 @@ func ensurePHPShieldDirectory(path string, mode os.FileMode) error {
 	switch {
 	case os.IsNotExist(err):
 		// #nosec G301 -- the fixed mode grants traversal but no directory writes.
-		if err := os.Mkdir(path, mode); err != nil {
-			return err
+		if mkErr := os.Mkdir(path, mode); mkErr != nil {
+			return mkErr
 		}
 	case err != nil:
 		return err
