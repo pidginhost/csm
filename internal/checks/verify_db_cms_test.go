@@ -62,10 +62,10 @@ define('DB_PREFIX', 'oc_');
 
 func drupalFiles() (map[string]string, map[string]bool) {
 	return map[string]string{
-		"/home/bob/public_html/sites/default/settings.php": drupalSettings,
-	}, map[string]bool{
-		"/home/bob/public_html/core/lib/Drupal.php": true,
-	}
+			"/home/bob/public_html/sites/default/settings.php": drupalSettings,
+		}, map[string]bool{
+			"/home/bob/public_html/core/lib/Drupal.php": true,
+		}
 }
 
 func joomlaFiles() map[string]string {
