@@ -1981,12 +1981,13 @@ func (d *Daemon) startLogWatchers() {
 		}
 	}
 
-	// Only watch PHP Shield events if enabled AND actually installed. A stale
+	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
-	// otherwise spin the missing-file log-watcher retry forever; warn once with
+	// otherwise spin the missing-socket retry forever; warn once with
 	// a remediation hint instead.
 	if watch, warnNotInstalled := phpShieldWatchDecision(d.cfg.PHPShield.Enabled, phpShieldInstalled()); watch {
-		logFiles = append(logFiles, logFile{"php_shield", phpEventsLogPath, parsePHPShieldLogLine})
+		d.wg.Add(1)
+		obs.Go("php-shield-events", d.watchPHPShieldEvents)
 	} else if warnNotInstalled {
 		csmlog.Warn(phpShieldMissingScriptWarning, "shield", phpShieldScriptPath)
 		d.MarkWatcher("php_shield", false)

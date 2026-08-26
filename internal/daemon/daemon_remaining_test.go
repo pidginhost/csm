@@ -890,7 +890,22 @@ func TestStartLogWatchers_PHPShieldEnabledMissingScriptMarksWatcherDown(t *testi
 	d.wg.Wait()
 }
 
-func TestStartLogWatchers_PHPShieldInstalledWatchesEventLog(t *testing.T) {
+type phpEventTestTimeout struct{}
+
+func (phpEventTestTimeout) Error() string   { return "timeout" }
+func (phpEventTestTimeout) Timeout() bool   { return true }
+func (phpEventTestTimeout) Temporary() bool { return true }
+
+type idlePHPEventListener struct{}
+
+func (*idlePHPEventListener) Read([]byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	return 0, phpEventTestTimeout{}
+}
+func (*idlePHPEventListener) SetReadDeadline(time.Time) error { return nil }
+func (*idlePHPEventListener) Close() error                    { return nil }
+
+func TestStartLogWatchers_PHPShieldInstalledWatchesEventSocket(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
 	panel := platform.PanelNone
@@ -899,19 +914,19 @@ func TestStartLogWatchers_PHPShieldInstalledWatchesEventLog(t *testing.T) {
 		t.Fatal("platform override must install before Detect")
 	}
 
-	path := filepath.Join(t.TempDir(), "events.log")
-	if err := os.WriteFile(path, nil, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	oldPath := phpEventsLogPath
+	oldSocket := phpEventsSocketPath
+	oldListener := phpShieldEventListener
 	oldStat := phpShieldStat
-	phpEventsLogPath = path
+	phpEventsSocketPath = filepath.Join(t.TempDir(), "events.sock")
+	phpShieldEventListener = func(string) (phpEventPacketListener, error) {
+		return &idlePHPEventListener{}, nil
+	}
 	phpShieldStat = func(string) (os.FileInfo, error) {
-		return os.Stat(path)
+		return os.Stat(os.Args[0])
 	}
 	t.Cleanup(func() {
-		phpEventsLogPath = oldPath
+		phpEventsSocketPath = oldSocket
+		phpShieldEventListener = oldListener
 		phpShieldStat = oldStat
 	})
 
@@ -921,9 +936,16 @@ func TestStartLogWatchers_PHPShieldInstalledWatchesEventLog(t *testing.T) {
 	d.hijackDetector = NewPasswordHijackDetector(cfg, d.alertCh, d.stopCh)
 	d.startLogWatchers()
 
-	statuses := d.WatcherStatuses()
-	if attached, ok := statuses["php_shield"]; !ok || !attached {
-		t.Fatalf("php_shield watcher status = %v (present=%v), want attached", attached, ok)
+	deadline := time.Now().Add(time.Second)
+	for {
+		statuses := d.WatcherStatuses()
+		if attached, ok := statuses["php_shield"]; ok && attached {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("php_shield watcher did not attach: %v", statuses)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	close(d.stopCh)

@@ -856,6 +856,13 @@ func runRehash() {
 	if err := ensureCommandSymlink(commandPath, binaryPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: could not install command at %s: %v\n", commandPath, err)
 	}
+	// Standalone upgrades also rely on rehash to refresh the service sandbox.
+	// Without this, an older unit keeps /var/log/csm-php-shield read-only and
+	// the upgraded daemon cannot bind its event socket or archive detections.
+	if err := deploySystemdTimer(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error updating systemd service: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)

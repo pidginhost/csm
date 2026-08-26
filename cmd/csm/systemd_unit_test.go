@@ -62,6 +62,7 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"-/opt/csm/state",
 		"/etc",
 		"/var/log/csm",
+		"-/var/log/csm-php-shield",
 		"/etc/csm",
 		"/opt/csm/quarantine",
 		"/opt/csm/policies",
@@ -114,7 +115,8 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 	}
 
 	allowedVarLogWritePaths := map[string]bool{
-		"/var/log/csm": true,
+		"/var/log/csm":             true,
+		"-/var/log/csm-php-shield": true,
 	}
 	for path := range rwPaths {
 		cleanPath := strings.TrimPrefix(path, "-")

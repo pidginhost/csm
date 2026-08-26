@@ -434,10 +434,11 @@ challenge:
 # --- PHP Shield ---
 php_shield:
   # On CloudLinux, PHP runs inside a CageFS cage that cannot see the Shield
-  # event directory. Installing or upgrading the Shield adds that directory to
-  # /etc/cagefs/cagefs.mp and remounts the cages, otherwise the Shield detects
-  # attacks but cannot record them. An entry you wrote yourself is left alone.
-  enabled: false                        # watch the PHP Shield event log for alerts
+  # event socket. Installing or upgrading the Shield registers its root-owned,
+  # non-writable directory in /etc/cagefs/cagefs.mp. Existing cages must be
+  # remounted during a maintenance window; CageFS documents that --remount-all
+  # terminates their current processes. A conflicting mount is left unchanged.
+  enabled: false                        # receive PHP Shield events and emit alerts
 
 # --- Reputation ---
 reputation:

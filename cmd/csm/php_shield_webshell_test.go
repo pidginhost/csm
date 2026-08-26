@@ -19,6 +19,28 @@ func TestShieldDropsPathAllowlist(t *testing.T) {
 	}
 }
 
+func TestShieldUsesNonblockingDatagramEventTransport(t *testing.T) {
+	reference, err := os.ReadFile(filepath.Join("..", "..", "configs", "php_shield.php"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"deployed":  shieldContent,
+		"reference": string(reference),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, want := range []string{"udg://", "stream_set_blocking($socket, false)", "str_replace(array(\"\\r\", \"\\n\")"} {
+				if !strings.Contains(content, want) {
+					t.Errorf("shield event transport missing %q", want)
+				}
+			}
+			if strings.Contains(content, "file_put_contents($f") {
+				t.Error("shield still appends directly to the shared event archive")
+			}
+		})
+	}
+}
+
 // TestShieldBlocksDirectWebshellExecution runs the shield as a real PHP
 // auto_prepend against fake webshells, normal front-controller traffic, and
 // legitimate direct-entry scripts. It exercises both the deployed shield and
@@ -114,11 +136,7 @@ require getenv('CSM_SHIELD_TEST_FILE');
 				t.Run(tc.name, func(t *testing.T) {
 					caseDir := filepath.Join(base, shieldCase.name, tc.name)
 					logPath := filepath.Join(caseDir, "events.log")
-					content := strings.ReplaceAll(
-						shieldCase.content,
-						"/var/log/csm-php-shield/events.log",
-						filepath.ToSlash(logPath),
-					)
+					content := phpShieldWithFileTransport(t, shieldCase.content, logPath)
 					shield := filepath.Join(caseDir, "php_shield.php")
 					script := filepath.Join(caseDir, tc.rel)
 					if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
@@ -161,4 +179,21 @@ require getenv('CSM_SHIELD_TEST_FILE');
 			}
 		})
 	}
+}
+
+func phpShieldWithFileTransport(t *testing.T, content, logPath string) string {
+	t.Helper()
+	start := strings.Index(content, "$socket = @stream_socket_client")
+	if start < 0 {
+		t.Fatal("PHP Shield socket transport start not found")
+	}
+	const endMarker = "@fclose($socket);"
+	end := strings.Index(content[start:], endMarker)
+	if end < 0 {
+		t.Fatal("PHP Shield socket transport end not found")
+	}
+	end += start + len(endMarker)
+	phpPath := strings.ReplaceAll(filepath.ToSlash(logPath), "'", "\\'")
+	replacement := "$sent = @file_put_contents('" + phpPath + "', $line, FILE_APPEND);"
+	return content[:start] + replacement + content[end:]
 }

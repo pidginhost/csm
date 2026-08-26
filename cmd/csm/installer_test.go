@@ -310,6 +310,9 @@ func TestRehashMaintainsCommandSymlink(t *testing.T) {
 	if !strings.Contains(rehash[start:start+end], "ensureCommandSymlink(commandPath, binaryPath)") {
 		t.Error("runRehash must maintain the command symlink for standalone upgrades")
 	}
+	if !strings.Contains(rehash[start:start+end], "deploySystemdTimer()") {
+		t.Error("runRehash must refresh the service sandbox for standalone upgrades")
+	}
 }
 
 func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {
@@ -340,13 +343,16 @@ func TestDiscoverPHPShieldIniDirsFindsEveryEAPHPVersion(t *testing.T) {
 	}
 }
 
-func TestEnsurePHPShieldEventLogCreatesReachableWriteOnlyPath(t *testing.T) {
+func TestEnsurePHPShieldEventLogCreatesRootOwnedSocketDirAndArchive(t *testing.T) {
 	oldDir := phpShieldEventDir
+	oldSocket := phpShieldEventSocketPath
 	oldLog := phpShieldEventLogPath
 	phpShieldEventDir = filepath.Join(t.TempDir(), "php-shield")
+	phpShieldEventSocketPath = filepath.Join(phpShieldEventDir, "events.sock")
 	phpShieldEventLogPath = filepath.Join(phpShieldEventDir, "events.log")
 	t.Cleanup(func() {
 		phpShieldEventDir = oldDir
+		phpShieldEventSocketPath = oldSocket
 		phpShieldEventLogPath = oldLog
 	})
 
@@ -358,19 +364,73 @@ func TestEnsurePHPShieldEventLogCreatesReachableWriteOnlyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dirInfo.Mode().Perm(); got != 0733 {
-		t.Fatalf("event dir permissions = %v, want 0733", got)
+	if got := dirInfo.Mode().Perm(); got != 0711 {
+		t.Fatalf("event dir permissions = %v, want 0711", got)
 	}
-	if dirInfo.Mode()&os.ModeSticky == 0 {
-		t.Fatal("event dir must have sticky bit set")
+	if dirInfo.Mode()&os.ModeSticky != 0 {
+		t.Fatal("event parent must not be tenant-writable")
 	}
 
 	logInfo, err := os.Stat(phpShieldEventLogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := logInfo.Mode().Perm(); got != 0622 {
-		t.Fatalf("event log permissions = %v, want 0622", got)
+	if got := logInfo.Mode().Perm(); got != 0600 {
+		t.Fatalf("event log permissions = %v, want 0600", got)
+	}
+}
+
+func TestEnsurePHPShieldEventLogHardensExistingRuntimePaths(t *testing.T) {
+	oldDir := phpShieldEventDir
+	oldSocket := phpShieldEventSocketPath
+	oldLog := phpShieldEventLogPath
+	phpShieldEventDir = filepath.Join(t.TempDir(), "php-shield")
+	phpShieldEventSocketPath = filepath.Join(phpShieldEventDir, "events.sock")
+	phpShieldEventLogPath = filepath.Join(phpShieldEventDir, "events.log")
+	t.Cleanup(func() {
+		phpShieldEventDir = oldDir
+		phpShieldEventSocketPath = oldSocket
+		phpShieldEventLogPath = oldLog
+	})
+
+	if err := os.Mkdir(phpShieldEventDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(phpShieldEventDir, 0o733|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(phpShieldEventLogPath, []byte("existing\n"), 0o622); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(phpShieldEventLogPath, 0o622); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensurePHPShieldEventLog(); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		path   string
+		perm   os.FileMode
+		sticky bool
+	}{
+		{path: phpShieldEventDir, perm: 0o711},
+		{path: phpShieldEventLogPath, perm: 0o600},
+	} {
+		info, err := os.Stat(check.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != check.perm || (info.Mode()&os.ModeSticky != 0) != check.sticky {
+			t.Errorf("%s mode = %v, want perm %o sticky=%t", check.path, info.Mode(), check.perm, check.sticky)
+		}
+	}
+	data, err := os.ReadFile(phpShieldEventLogPath) // #nosec G304 -- test temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "existing\n" {
+		t.Fatalf("existing archive contents changed: %q", data)
 	}
 }
 

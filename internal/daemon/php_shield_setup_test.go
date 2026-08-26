@@ -66,19 +66,19 @@ func TestPHPShieldMissingScriptWarningUsesSupportedCommand(t *testing.T) {
 	}
 }
 
-func TestRetryLogWatcherNamedMarksPHPShieldAttachedAfterEventLogAppears(t *testing.T) {
+func TestRetryLogWatcherNamedMarksWatcherAttachedAfterLogAppears(t *testing.T) {
 	oldInterval := logWatcherRetryInterval
 	logWatcherRetryInterval = 10 * time.Millisecond
 	t.Cleanup(func() { logWatcherRetryInterval = oldInterval })
 
 	path := filepath.Join(t.TempDir(), "events.log")
 	d := New(&config.Config{}, nil, nil, "")
-	d.MarkWatcher("php_shield", false)
+	d.MarkWatcher("test_log", false)
 
 	d.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
-		d.retryLogWatcherNamed(path, parsePHPShieldLogLine, "php_shield")
+		d.retryLogWatcherNamed(path, parsePHPShieldLogLine, "test_log")
 		close(done)
 	}()
 
@@ -95,8 +95,8 @@ func TestRetryLogWatcherNamedMarksPHPShieldAttachedAfterEventLogAppears(t *testi
 	}
 
 	statuses := d.WatcherStatuses()
-	if attached, ok := statuses["php_shield"]; !ok || !attached {
-		t.Fatalf("php_shield watcher status = %v (present=%v), want attached", attached, ok)
+	if attached, ok := statuses["test_log"]; !ok || !attached {
+		t.Fatalf("test_log watcher status = %v (present=%v), want attached", attached, ok)
 	}
 
 	close(d.stopCh)

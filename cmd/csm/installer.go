@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/checks"
@@ -1014,7 +1015,7 @@ func deployLogrotate() error {
     compress
     missingok
     notifempty
-    create 0622 root root
+    create 0600 root root
     maxsize 5M
 }
 `
@@ -1161,11 +1162,12 @@ const phpShieldPath = phpshield.ScriptPath
 const phpShieldConfPath = phpshield.ConfPath
 
 var (
-	phpShieldEventDirMode = os.FileMode(0733) | os.ModeSticky
-	phpShieldEventLogMode = os.FileMode(0622)
-	phpShieldEventDir     = phpshield.EventDir
-	phpShieldEventLogPath = phpshield.EventLogPath
-	phpShieldIniDirGlobs  = []string{
+	phpShieldEventDirMode    = os.FileMode(0711)
+	phpShieldEventLogMode    = os.FileMode(0600)
+	phpShieldEventDir        = phpshield.EventDir
+	phpShieldEventSocketPath = phpshield.EventSocketPath
+	phpShieldEventLogPath    = phpshield.EventLogPath
+	phpShieldIniDirGlobs     = []string{
 		"/opt/cpanel/ea-php*/root/etc/php.d",
 		"/opt/alt/php*/etc/php.d",
 		"/usr/local/lsws/lsphp*/etc/php.d",
@@ -1178,9 +1180,8 @@ var shieldContent = `<?php
 // Fails open: errors don't break sites. See configs/php_shield.php for docs.
 try {
     define('CSM_SHIELD_VERSION', '2.1.0');
-    define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
+    define('CSM_SHIELD_SOCKET', '/var/log/csm-php-shield/events.sock');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
-    define('CSM_SHIELD_MAX_LOG_BYTES', 10485760);
     $csm_script = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : '';
     if ($csm_script === '' || $csm_script === __FILE__) return;
     // Per-account disable
@@ -1309,44 +1310,113 @@ function csm_deny() {
     exit;
 }
 function csm_log_event($type, $script, $details) {
-    $f = CSM_SHIELD_LOG; $dir = dirname($f);
-    if (!is_dir($dir)) @mkdir($dir, 01733, true);
-    @chmod($dir, 01733);
-    if (!is_writable($dir)) { if (!defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: cannot write to ' . $dir); } return; }
-    $sz = @filesize($f); if ($sz !== false && $sz > CSM_SHIELD_MAX_LOG_BYTES) return;
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
     $uri = isset($_SERVER['REQUEST_URI']) ? substr($_SERVER['REQUEST_URI'], 0, 200) : '-';
     $ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 100) : '-';
-    @file_put_contents($f, sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $type, $ip, $script, $uri, $ua, $details), FILE_APPEND|LOCK_EX);
+    $clean = function($value) { return str_replace(array("\r", "\n"), ' ', $value); };
+    $line = sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $clean($type), $clean($ip), $clean($script), $clean($uri), $clean($ua), $clean($details));
+    $socket = @stream_socket_client('udg://' . CSM_SHIELD_SOCKET, $errno, $errstr, 0.05);
+    if ($socket === false) { if (!defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: event socket unavailable'); } return; }
+    @stream_set_blocking($socket, false);
+    $sent = @fwrite($socket, $line);
+    @fclose($socket);
+    if ($sent !== strlen($line) && !defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: event socket write failed'); }
 }
 `
 
 func ensurePHPShieldEventLog() error {
-	// PHP runs as per-account users. Keep this separate from /var/log/csm so
-	// tenants can append Shield events without access to daemon logs.
-	// #nosec G301 -- sticky write-only event drop directory for PHP pool users.
-	if err := os.MkdirAll(phpShieldEventDir, phpShieldEventDirMode); err != nil {
-		return fmt.Errorf("creating PHP Shield event dir: %w", err)
+	// The shared CageFS directory is traversable but never tenant-writable. PHP
+	// pools can send datagrams to the daemon-owned socket, while the daemon is
+	// the only process that can create, truncate, or append events.log.
+	if err := ensurePHPShieldDirectory(phpShieldEventDir, phpShieldEventDirMode); err != nil {
+		return fmt.Errorf("preparing PHP Shield event dir: %w", err)
 	}
-	// #nosec G302 -- preserve sticky write-only mode if the directory already existed.
-	if err := os.Chmod(phpShieldEventDir, phpShieldEventDirMode); err != nil {
-		return fmt.Errorf("setting PHP Shield event dir mode: %w", err)
+	if err := securePHPShieldEventSocketPath(); err != nil {
+		return err
 	}
-
-	// #nosec G304 G302 -- fixed event log path; write-only for tenant users,
-	// readable by root for the daemon and logrotate.
-	f, err := os.OpenFile(phpShieldEventLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, phpShieldEventLogMode)
+	// #nosec G304 G302 -- fixed archive path; O_NOFOLLOW rejects a planted
+	// symlink left from the older world-writable event-directory layout.
+	f, err := os.OpenFile(phpShieldEventLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, phpShieldEventLogMode)
 	if err != nil {
 		return fmt.Errorf("creating PHP Shield event log: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return fmt.Errorf("checking PHP Shield event log: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return fmt.Errorf("PHP Shield event log is not a regular file")
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &stat); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("checking PHP Shield event log links: %w", err)
+	}
+	if stat.Nlink != 1 {
+		_ = f.Close()
+		return fmt.Errorf("PHP Shield event log has multiple hard links")
+	}
+	if os.Geteuid() == 0 {
+		if err := f.Chown(0, 0); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("setting root ownership on PHP Shield event log: %w", err)
+		}
+	}
+	if err := f.Chmod(phpShieldEventLogMode); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("setting PHP Shield event log mode: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing PHP Shield event log: %w", err)
 	}
-	// #nosec G302 -- PHP users must be able to append runtime events.
-	if err := os.Chmod(phpShieldEventLogPath, phpShieldEventLogMode); err != nil {
-		return fmt.Errorf("setting PHP Shield event log mode: %w", err)
+	return nil
+}
+
+func securePHPShieldEventSocketPath() error {
+	info, err := os.Lstat(phpShieldEventSocketPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking PHP Shield event socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("PHP Shield event socket path is not a socket")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if os.Geteuid() != 0 || !ok || stat.Uid == 0 {
+		return nil
+	}
+	// The previous runtime directory was tenant-writable. Remove a socket left
+	// by a tenant before the new Shield can deliver security events to it.
+	if err := os.Remove(phpShieldEventSocketPath); err != nil {
+		return fmt.Errorf("removing foreign PHP Shield event socket: %w", err)
 	}
 	return nil
+}
+
+func ensurePHPShieldDirectory(path string, mode os.FileMode) error {
+	info, err := os.Lstat(path)
+	switch {
+	case os.IsNotExist(err):
+		// #nosec G301 -- the fixed mode grants traversal but no directory writes.
+		if err := os.Mkdir(path, mode); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case !info.IsDir() || info.Mode()&os.ModeSymlink != 0:
+		return fmt.Errorf("%s is not a real directory", path)
+	}
+	if os.Geteuid() == 0 {
+		if err := os.Chown(path, 0, 0); err != nil {
+			return fmt.Errorf("setting root ownership on %s: %w", path, err)
+		}
+	}
+	// #nosec G302 -- fixed root-owned runtime directory mode.
+	return os.Chmod(path, mode)
 }
 
 func discoverPHPShieldIniDirs() []string {
@@ -1403,17 +1473,16 @@ func (inst *Installer) InstallPHPShield() error {
 	}
 	// #nosec G306 -- Loaded via auto_prepend_file by every PHP pool, all
 	// of which run as different users. Must be world-readable.
-	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+	if err := writeFileAtomic(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
 	fmt.Printf("  Deployed: %s\n", phpShieldPath)
-
-	// Generate shield config with allowed IPs from main config
-	inst.deployShieldConfig()
-
 	if err := ensurePHPShieldRuntimePaths(); err != nil {
 		return err
 	}
+
+	// Generate shield config with allowed IPs from main config
+	inst.deployShieldConfig()
 
 	deployed := writePHPShieldIniFiles()
 
@@ -1439,9 +1508,8 @@ func (inst *Installer) RedeployPHPShield() error {
 	if _, err := os.Stat(phpShieldPath); os.IsNotExist(err) {
 		return fmt.Errorf("PHP Shield not installed (missing %s)", phpShieldPath)
 	}
-
 	// #nosec G306 -- PHP Shield; see note in InstallPHPShield.
-	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+	if err := writeFileAtomic(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
 	if err := ensurePHPShieldRuntimePaths(); err != nil {
@@ -1456,23 +1524,22 @@ func (inst *Installer) EnablePHPShield() error {
 	if os.Getuid() != 0 {
 		return fmt.Errorf("must be run as root")
 	}
-
-	// Ensure shield PHP file exists
-	if _, err := os.Stat(phpShieldPath); os.IsNotExist(err) {
-		// #nosec G301 -- /opt/csm root, consistent with other install paths.
-		if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
-			return fmt.Errorf("creating shield directory: %w", err)
-		}
-		// #nosec G306 -- PHP Shield; see note in InstallPHPShield.
-		if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
-			return fmt.Errorf("writing shield file: %w", err)
-		}
+	// Reinstall the current Shield even when an older copy exists. This keeps
+	// its event transport in sync with the daemon before runtime paths are
+	// hardened for the socket-only protocol.
+	// #nosec G301 -- /opt/csm root, consistent with other install paths.
+	if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
+		return fmt.Errorf("creating shield directory: %w", err)
 	}
-
-	inst.deployShieldConfig()
+	// #nosec G306 -- PHP Shield; see note in InstallPHPShield.
+	if err := writeFileAtomic(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+		return fmt.Errorf("writing shield file: %w", err)
+	}
 	if err := ensurePHPShieldRuntimePaths(); err != nil {
 		return err
 	}
+
+	inst.deployShieldConfig()
 	deployed := writePHPShieldIniFiles()
 
 	if err := inst.patchConfigPHPShield(true); err != nil {
@@ -1481,6 +1548,7 @@ func (inst *Installer) EnablePHPShield() error {
 
 	fmt.Printf("PHP Shield enabled for %d PHP versions\n", deployed)
 	fmt.Println("Restart PHP: systemctl restart lsws || apachectl graceful")
+	fmt.Println("Restart CSM: systemctl restart csm.service")
 	return nil
 }
 

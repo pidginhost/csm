@@ -20,12 +20,12 @@ func phpShieldInstalled() bool {
 }
 
 // phpShieldWatchDecision decides, from the config flag and whether the shield
-// script is installed, whether the daemon should tail the shield event log and
-// whether it should warn that the shield is enabled but not installed.
+// script is installed, whether the daemon should receive Shield event
+// datagrams and whether it should warn that the Shield is enabled but absent.
 //
 // When php_shield.enabled is true but the shield was never installed (or an
-// upgrade wiped /opt/csm), tailing the event log spins the missing-file log
-// watcher retry forever. Instead we warn once with a remediation hint, so the
+// upgrade wiped /opt/csm), opening the event socket would retry forever. Instead
+// we warn once with a remediation hint, so the
 // misprovision is surfaced rather than masked or spammed.
 func phpShieldWatchDecision(enabled, scriptExists bool) (watch, warnNotInstalled bool) {
 	if !enabled {

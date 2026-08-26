@@ -495,7 +495,9 @@ do_upgrade() {
 
     if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
         echo "Updating PHP Shield..."
-        "$BINARY_PATH" install --php-shield-only 2>/dev/null || true
+        if ! "$BINARY_PATH" install --php-shield-only; then
+            echo "WARNING: PHP Shield update failed; runtime protection events may be unavailable" >&2
+        fi
     fi
 
     if ! "$BINARY_PATH" rehash 2>&1; then

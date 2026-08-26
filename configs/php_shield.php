@@ -13,7 +13,7 @@
  * 4. Detects eval() abuse at runtime via shutdown handler
  * 5. Per-account disable via .csm-shield-disable file
  * 6. IP allowlisting from shield.conf.php
- * 7. Rate limiting via log file size cap
+ * 7. Cross-account event isolation via a daemon-owned datagram socket
  *
  * This reference copy is kept in sync with the deployed shield embedded in
  * cmd/csm/installer.go (shieldContent). Behaviour must match; only the naming
@@ -26,9 +26,8 @@
 try {
 
     define('CSM_SHIELD_VERSION', '2.1.0');
-    define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
+    define('CSM_SHIELD_SOCKET', '/var/log/csm-php-shield/events.sock');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
-    define('CSM_SHIELD_MAX_LOG_BYTES', 10485760); // 10MB
 
     $csm_script = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : '';
     if ($csm_script === '' || $csm_script === __FILE__) return;
@@ -311,42 +310,40 @@ function csm_shield_load_config() {
 }
 
 /**
- * Log a security event to the CSM event log.
- * The daemon watches this file for real-time alerting.
- * Rate-limited by log file size (stops writing at CSM_SHIELD_MAX_LOG_BYTES).
+ * Send one bounded datagram to the root daemon. The shared CageFS directory is
+ * not tenant-writable; only the socket accepts writes, and the archive remains
+ * root-only.
  */
 function csm_shield_log($event_type, $script, $details) {
-    $log_file = CSM_SHIELD_LOG;
-    $dir = dirname($log_file);
-    if (!is_dir($dir)) {
-        @mkdir($dir, 01733, true);
-    }
-    @chmod($dir, 01733);
-
-    if (!is_writable($dir)) {
-        if (!defined('CSM_SHIELD_LOG_WARNED')) {
-            define('CSM_SHIELD_LOG_WARNED', true);
-            error_log('CSM PHP Shield: cannot write to ' . $dir . ' -- events will not be logged');
-        }
-        return;
-    }
-
-    $size = @filesize($log_file);
-    if ($size !== false && $size > CSM_SHIELD_MAX_LOG_BYTES) return;
-
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
     $uri = isset($_SERVER['REQUEST_URI']) ? substr($_SERVER['REQUEST_URI'], 0, 200) : '-';
     $ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 100) : '-';
+    $clean = function($value) { return str_replace(array("\r", "\n"), ' ', $value); };
 
     $line = sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n",
         date('Y-m-d H:i:s'),
-        $event_type,
-        $ip,
-        $script,
-        $uri,
-        $ua,
-        $details
+        $clean($event_type),
+        $clean($ip),
+        $clean($script),
+        $clean($uri),
+        $clean($ua),
+        $clean($details)
     );
 
-    @file_put_contents($log_file, $line, FILE_APPEND | LOCK_EX);
+    $socket = @stream_socket_client('udg://' . CSM_SHIELD_SOCKET, $errno, $errstr, 0.05);
+    if ($socket === false) {
+        if (!defined('CSM_SHIELD_LOG_WARNED')) {
+            define('CSM_SHIELD_LOG_WARNED', true);
+            error_log('CSM PHP Shield: event socket unavailable');
+        }
+        return;
+    }
+    // A full daemon receive queue must never stall another tenant's request.
+    @stream_set_blocking($socket, false);
+    $sent = @fwrite($socket, $line);
+    @fclose($socket);
+    if ($sent !== strlen($line) && !defined('CSM_SHIELD_LOG_WARNED')) {
+        define('CSM_SHIELD_LOG_WARNED', true);
+        error_log('CSM PHP Shield: event socket write failed');
+    }
 }
