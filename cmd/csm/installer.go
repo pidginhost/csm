@@ -1350,6 +1350,7 @@ func ensurePHPShieldEventLog() error {
 		return fmt.Errorf("PHP Shield event log is not a regular file")
 	}
 	var stat syscall.Stat_t
+	// #nosec G115 -- Fd() of a successfully opened file is a small non-negative descriptor.
 	if err := syscall.Fstat(int(f.Fd()), &stat); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("checking PHP Shield event log links: %w", err)

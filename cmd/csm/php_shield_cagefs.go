@@ -58,12 +58,14 @@ func ensurePHPShieldCageFSMount() (retErr error) {
 		return fmt.Errorf("CageFS mount-points file is not a regular file")
 	}
 	defer func() {
+		// #nosec G115 -- Fd() of a successfully opened file is a small non-negative descriptor.
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		if closeErr := f.Close(); closeErr != nil && retErr == nil {
 			retErr = fmt.Errorf("closing CageFS mount points: %w", closeErr)
 		}
 	}()
 
+	// #nosec G115 -- Fd() of a successfully opened file is a small non-negative descriptor.
 	if lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); lockErr != nil {
 		return fmt.Errorf("locking CageFS mount points: %w", lockErr)
 	}
