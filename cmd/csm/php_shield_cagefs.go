@@ -26,9 +26,10 @@ func ensurePHPShieldRuntimePaths() error {
 // mount. The directory is not tenant-writable; PHP processes can only send to
 // the daemon-owned datagram socket, and the archive remains root-only.
 //
-// This function deliberately does not run cagefsctl --remount-all. CloudLinux
-// documents that command as killing every current process in every cage, which
-// is an unacceptable side effect for csm install/enable on a busy shared host.
+// This function deliberately does not run cagefsctl --remount-all. That command
+// runs "lvectl destroy-and-recreate-all" and lazily unmounts the CageFS
+// skeleton, so it disrupts every running cage on the host -- not something an
+// install or upgrade may do unannounced on a busy shared server.
 // The operator can apply the new mount during a maintenance window. If CageFS
 // is disabled, leaving the configuration ready for its next enable is harmless.
 func ensurePHPShieldCageFSMount() (retErr error) {
