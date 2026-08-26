@@ -1411,7 +1411,7 @@ func (inst *Installer) InstallPHPShield() error {
 	// Generate shield config with allowed IPs from main config
 	inst.deployShieldConfig()
 
-	if err := ensurePHPShieldEventLog(); err != nil {
+	if err := ensurePHPShieldRuntimePaths(); err != nil {
 		return err
 	}
 
@@ -1444,7 +1444,7 @@ func (inst *Installer) RedeployPHPShield() error {
 	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
-	if err := ensurePHPShieldEventLog(); err != nil {
+	if err := ensurePHPShieldRuntimePaths(); err != nil {
 		return err
 	}
 	fmt.Printf("PHP Shield updated: %s\n", phpShieldPath)
@@ -1470,7 +1470,7 @@ func (inst *Installer) EnablePHPShield() error {
 	}
 
 	inst.deployShieldConfig()
-	if err := ensurePHPShieldEventLog(); err != nil {
+	if err := ensurePHPShieldRuntimePaths(); err != nil {
 		return err
 	}
 	deployed := writePHPShieldIniFiles()
