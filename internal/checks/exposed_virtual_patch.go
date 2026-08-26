@@ -50,9 +50,19 @@ const (
 	vpEndFile   = "# END CSM exposed-file virtual-patch"
 	vpBeginDir  = "# BEGIN CSM exposed-file virtual-patch: deny directory"
 	vpEndDir    = "# END CSM exposed-file virtual-patch: deny directory"
+	// The parent block lives one directory up, outside anything a backup
+	// plugin owns, so it survives the plugin rewriting its own .htaccess.
+	vpBeginParent = "# BEGIN CSM exposed-file virtual-patch: deny archive extension"
+	vpEndParent   = "# END CSM exposed-file virtual-patch: deny archive extension"
 )
 
 const virtualPatchAlreadyApplied = "already virtual-patched"
+
+// virtualPatchRevertedPrefix marks the finding raised when CSM has to write a
+// deny block it already wrote once. Backup plugins own the .htaccess inside
+// their own directory and rewrite it on every run, so the deny disappears and
+// the archives are downloadable again until the next scan.
+const virtualPatchRevertedPrefix = "VIRTUAL-PATCH re-applied after revert:"
 
 var ErrVirtualPatchRestoreConflict = errors.New("virtual-patch restore conflicts with current .htaccess")
 
@@ -108,35 +118,59 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 		}
 	}
 
-	htaccess := filepath.Join(dir, ".htaccess")
-	if _, sanitizeErr := sanitizeFixPath(htaccess, fixHtaccessAllowedRoots); sanitizeErr != nil {
-		return RemediationResult{Error: sanitizeErr.Error()}
-	}
-
-	state, err := readHtaccessState(htaccess, dir)
-	if err != nil {
-		return RemediationResult{Error: err.Error()}
-	}
 	marker := vpBeginFile + " " + name
 	if dirDeny {
 		marker = vpBeginDir
 	}
-	if state.existed && containsLine(state.content, marker) {
-		return RemediationResult{Error: virtualPatchAlreadyApplied}
+	reverted, err := applyHtaccessDeny(dir, marker, buildDenyBlock(name, dirDeny))
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
 	}
 
-	block := buildDenyBlock(name, dirDeny)
+	target := name
+	if dirDeny {
+		target = filepath.Base(dir) + "/ (whole directory)"
+	}
+	description := fmt.Sprintf("Wrote Require all denied for %s in %s", target, filepath.Join(dir, ".htaccess"))
+	if note := denyArchiveExtensionInParent(dir); note != "" {
+		description += "; " + note
+	}
+	return RemediationResult{
+		Success:     true,
+		Action:      fmt.Sprintf("denied HTTP access to %s", target),
+		Description: description,
+		Reverted:    reverted,
+	}
+}
+
+// applyHtaccessDeny appends block to the .htaccess in dir unless marker is
+// already present, keeping a restorable pre-patch copy. It reports whether an
+// earlier CSM block had been removed from that file.
+func applyHtaccessDeny(dir, marker string, block []byte) (bool, error) {
+	htaccess := filepath.Join(dir, ".htaccess")
+	if _, err := sanitizeFixPath(htaccess, fixHtaccessAllowedRoots); err != nil {
+		return false, err
+	}
+	state, err := readHtaccessState(htaccess, dir)
+	if err != nil {
+		return false, err
+	}
+	if state.existed && containsLine(state.content, marker) {
+		return false, errors.New(virtualPatchAlreadyApplied)
+	}
+	reverted := priorPrePatchBackupExists(htaccess)
+
 	newContent := block
 	if state.existed {
 		newContent = append(ensureTrailingNewline(state.content), block...)
 	}
 	if len(newContent) > maxVirtualPatchHtaccessSize {
-		return RemediationResult{Error: fmt.Sprintf("refusing patched .htaccess larger than %d bytes", maxVirtualPatchHtaccessSize)}
+		return false, fmt.Errorf("refusing patched .htaccess larger than %d bytes", maxVirtualPatchHtaccessSize)
 	}
 
 	backup, err := backupHtaccessBeforePatch(htaccess, state, newContent)
 	if err != nil {
-		return RemediationResult{Error: err.Error()}
+		return false, err
 	}
 	keepBackup := false
 	defer func() {
@@ -147,7 +181,7 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 
 	tmp, tempState, err := writeVirtualPatchTemp(dir, newContent, state)
 	if err != nil {
-		return RemediationResult{Error: err.Error()}
+		return false, err
 	}
 	if virtualPatchBeforeCommitForTest != nil {
 		virtualPatchBeforeCommitForTest(htaccess, tmp)
@@ -157,19 +191,60 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 		if errors.Is(err, errVirtualPatchRollbackIncomplete) {
 			keepBackup = true
 		}
-		return RemediationResult{Error: err.Error()}
+		return false, err
 	}
 	keepBackup = true
+	return reverted, nil
+}
 
-	target := name
-	if dirDeny {
-		target = filepath.Base(dir) + "/ (whole directory)"
+// backupPluginArchiveExt maps a backup-plugin directory to the archive
+// extension that can safely be denied from the parent directory. Plugins
+// writing .zip or .gz are absent on purpose: wp-content serves those
+// legitimately, so a parent-level deny would break working downloads. The
+// plugin-directory deny still covers them.
+var backupPluginArchiveExt = map[string]string{
+	"ai1wm-backups": ".wpress",
+}
+
+// denyArchiveExtensionInParent writes the durable half of the protection into
+// the parent directory, which the plugin does not own. It never fails the
+// caller: the plugin-directory deny is the immediate protection and must not
+// be given up because the parent could not be written.
+func denyArchiveExtensionInParent(dir string) string {
+	ext, ok := backupPluginArchiveExt[strings.ToLower(filepath.Base(dir))]
+	if !ok {
+		return ""
 	}
-	return RemediationResult{
-		Success:     true,
-		Action:      fmt.Sprintf("denied HTTP access to %s", target),
-		Description: fmt.Sprintf("Wrote Require all denied for %s in %s", target, htaccess),
+	parent := filepath.Dir(dir)
+	_, err := applyHtaccessDeny(parent, vpBeginParent+" "+ext, buildParentExtensionDenyBlock(ext))
+	switch {
+	case err == nil:
+		return fmt.Sprintf("also denied %s under %s", ext, parent)
+	case err.Error() == virtualPatchAlreadyApplied:
+		return ""
+	default:
+		return fmt.Sprintf("durable %s deny in %s could not be written: %v", ext, filepath.Join(parent, ".htaccess"), err)
 	}
+}
+
+func buildParentExtensionDenyBlock(ext string) []byte {
+	return []byte(fmt.Sprintf("%s %s\n<FilesMatch \"\\%s$\">\nRequire all denied\n</FilesMatch>\n%s %s\n",
+		vpBeginParent, ext, ext, vpEndParent, ext))
+}
+
+// priorPrePatchBackupExists reports whether CSM has already archived a
+// pre-patch copy of this .htaccess. Its own patch is idempotent, so reaching
+// the write path a second time means the earlier block was removed.
+func priorPrePatchBackupExists(htaccess string) bool {
+	found := false
+	eachPrePatchBackup(func(meta QuarantineMeta, _ string, _ func(string) ([]byte, error)) bool {
+		if meta.OriginalPath == htaccess {
+			found = true
+			return true
+		}
+		return false
+	})
+	return found
 }
 
 // validDenyName rejects file names that could break out of the quoted
@@ -390,6 +465,85 @@ func removeVirtualPatchTemp(path string, state htaccessState) {
 	}
 }
 
+// eachPrePatchBackup calls fn for every archived pre-patch backup, stopping
+// when fn returns true. Reads go through an os.Root scoped to the backup
+// directory, so a swapped entry cannot redirect them outside it.
+func eachPrePatchBackup(fn func(meta QuarantineMeta, name string, read func(string) ([]byte, error)) bool) {
+	root, err := os.OpenRoot(htaccessBackupDirRoot)
+	if err != nil {
+		return
+	}
+	defer func() { _ = root.Close() }()
+
+	entries, err := os.ReadDir(htaccessBackupDirRoot)
+	if err != nil {
+		return
+	}
+	read := func(name string) ([]byte, error) {
+		file, openErr := root.Open(name)
+		if openErr != nil {
+			return nil, openErr
+		}
+		defer func() { _ = file.Close() }()
+		return io.ReadAll(io.LimitReader(file, maxVirtualPatchHtaccessSize))
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta") {
+			continue
+		}
+		metaData, readErr := read(entry.Name())
+		if readErr != nil {
+			continue
+		}
+		var meta QuarantineMeta
+		if json.Unmarshal(metaData, &meta) != nil {
+			continue
+		}
+		if fn(meta, entry.Name(), read) {
+			return
+		}
+	}
+}
+
+// findExistingPrePatchBackup returns an archived pre-patch backup for this
+// .htaccess whose stored content and expected post-patch hash both match what
+// this patch would produce. Both must match, so a backup recorded for a
+// different patch is never reused as this one's rollback point.
+func findExistingPrePatchBackup(htaccess string, state htaccessState, patched []byte) (virtualPatchBackup, bool) {
+	wantPatched := virtualPatchSHA256(patched)
+	// Rolling back a file CSM created means deleting it; rolling back one it
+	// appended to means restoring the original bytes. An empty .htaccess and
+	// no .htaccess hold the same content, so without this the reused backup
+	// could delete a file the customer owns.
+	wantAction := QuarantineRestoreReplaceIfUnchanged
+	if !state.existed {
+		wantAction = QuarantineRestoreRemoveIfUnchanged
+	}
+
+	var found virtualPatchBackup
+	ok := false
+	eachPrePatchBackup(func(meta QuarantineMeta, name string, read func(string) ([]byte, error)) bool {
+		if meta.OriginalPath != htaccess ||
+			meta.ExpectedCurrentSHA256 != wantPatched ||
+			meta.RestoreAction != wantAction {
+			return false
+		}
+		itemName := strings.TrimSuffix(name, ".meta")
+		archived, readErr := read(itemName)
+		if readErr != nil || !bytes.Equal(archived, state.content) {
+			return false
+		}
+		found = virtualPatchBackup{
+			itemPath: filepath.Join(htaccessBackupDirRoot, itemName),
+			metaPath: filepath.Join(htaccessBackupDirRoot, name),
+		}
+		ok = true
+		return true
+	})
+	return found, ok
+}
+
 // backupHtaccessBeforePatch records both the pre-patch content and the exact
 // expected post-patch hash. Restore can then replace or remove .htaccess only
 // while it still matches the version CSM wrote, preserving later user edits.
@@ -397,6 +551,14 @@ func backupHtaccessBeforePatch(htaccess string, state htaccessState, patched []b
 	if err := os.MkdirAll(htaccessBackupDirRoot, 0750); err != nil {
 		return virtualPatchBackup{}, fmt.Errorf("creating backup dir: %v", err)
 	}
+	// A backup plugin that rewrites its own .htaccess sends CSM back here on
+	// every scan with byte-identical pre-patch content. Reuse the archived
+	// copy instead of stacking another one; the operator gains nothing from
+	// the duplicate and the quarantine list becomes unreadable.
+	if existing, found := findExistingPrePatchBackup(htaccess, state, patched); found {
+		return existing, nil
+	}
+
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	pathSum := sha256.Sum256([]byte(htaccess))
 	backupFile, err := os.CreateTemp(htaccessBackupDirRoot, fmt.Sprintf("%s_vpatch_%x_", stamp, pathSum[:6]))
@@ -607,6 +769,16 @@ func VirtualPatchExposedFindings(_ *config.Config, findings []alert.Finding, app
 
 		res := VirtualPatchExposedFile(path)
 		switch {
+		case res.Success && res.Reverted:
+			actions = append(actions, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "auto_response",
+				Message:  fmt.Sprintf("%s %s", virtualPatchRevertedPrefix, path),
+				Details: fmt.Sprintf("%s. CSM had already denied this path; something rewrote the .htaccess and the file was downloadable until this scan. "+
+					"Backup plugins own the .htaccess in their own directory and restore it on every run, so the deny belongs somewhere the plugin does not overwrite.",
+					res.Description),
+				Timestamp: time.Now(),
+			})
 		case res.Success:
 			actions = append(actions, alert.Finding{
 				Severity:  alert.Critical,

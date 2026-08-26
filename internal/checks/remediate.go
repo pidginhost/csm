@@ -38,6 +38,10 @@ type RemediationResult struct {
 	Action      string `json:"action"`      // human-readable description of what was done
 	Description string `json:"description"` // what fix was applied
 	Error       string `json:"error,omitempty"`
+	// Reverted marks a virtual patch that had to be written again because
+	// something removed CSM's earlier block -- typically a backup plugin
+	// rewriting the .htaccess it owns.
+	Reverted bool `json:"reverted,omitempty"`
 }
 
 // FixDescription returns a human-readable description of what the fix will do
