@@ -460,9 +460,12 @@ func classifySensitiveDirPHPWithFingerprint(path, name string) (alert.Severity, 
 		return alert.High, "new_php_in_sensitive_dir",
 			fmt.Sprintf("New unreadable PHP file in %s: %s", locLabel, path), ""
 	}
+	// A zero-byte body reaching here was verified stable across the read (a
+	// truncation under the scanner fails the post-read stat and is handled
+	// above), so it holds no code and is visibility, not an attack.
 	if result.empty {
-		return alert.High, "new_php_in_sensitive_dir",
-			fmt.Sprintf("New empty PHP file in %s: %s", locLabel, path), ""
+		return alert.Warning, "new_php_in_sensitive_dir_clean",
+			fmt.Sprintf("New empty PHP file in %s (no content): %s", locLabel, path), ""
 	}
 	// Content-verified inert stub (e.g. the "silence is golden" index.php) is
 	// suppressed; any real code surfaces as a non-actionable visibility Warning.

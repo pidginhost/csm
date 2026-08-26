@@ -421,7 +421,9 @@ func TestClassifySensitiveDirPHP_UnreadableFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClassifySensitiveDirPHP_EmptyFailsClosed(t *testing.T) {
+// Mirrors the uploads classifier: a zero-byte body verified stable across the
+// read holds no code, so it surfaces as visibility rather than High.
+func TestClassifySensitiveDirPHP_StableEmptyIsVisibilityWarning(t *testing.T) {
 	dir := t.TempDir()
 	langDir := filepath.Join(dir, "wp-content", "languages")
 	if err := os.MkdirAll(langDir, 0o755); err != nil {
@@ -432,8 +434,11 @@ func TestClassifySensitiveDirPHP_EmptyFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	sev, check, _ := classifySensitiveDirPHP(path, "empty.php")
-	if sev < alert.High || check != "new_php_in_sensitive_dir" {
-		t.Errorf("empty PHP must fail closed at High, got sev=%v check=%q", sev, check)
+	if sev != alert.Warning {
+		t.Errorf("stable empty PHP -> severity %v, want Warning", sev)
+	}
+	if check != "new_php_in_sensitive_dir_clean" {
+		t.Errorf("stable empty PHP -> check %q, want new_php_in_sensitive_dir_clean", check)
 	}
 }
 

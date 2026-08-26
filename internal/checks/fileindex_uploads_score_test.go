@@ -78,10 +78,36 @@ func TestClassifyUploadPHPUnreadableFailsClosed(t *testing.T) {
 	}
 }
 
-func TestClassifyUploadPHPEmptyFileFailsClosed(t *testing.T) {
+// A zero-byte PHP file that was verified stable across the read window holds
+// no code and cannot execute, so it is visibility, not an incident. The
+// fail-closed High is reserved for bodies we could not read (see
+// TestClassifyUploadPHPUnreadableFailsClosed) -- a file truncated under the
+// scanner fails the post-read stat and lands there instead.
+func TestClassifyUploadPHPStableEmptyIsVisibilityWarning(t *testing.T) {
 	target := writeUploadPHP(t, "empty.php", "")
-	sev, _, _ := classifyUploadPHP(target)
-	if sev != alert.High {
-		t.Errorf("empty file -> severity %v, want High (fail-closed)", sev)
+	sev, check, _ := classifyUploadPHP(target)
+	if sev != alert.Warning {
+		t.Errorf("stable empty file -> severity %v, want Warning", sev)
+	}
+	if check != "new_php_in_uploads_clean" {
+		t.Errorf("stable empty file -> check %q, want new_php_in_uploads_clean", check)
+	}
+}
+
+// The demote above is only safe because an empty result carries proof the read
+// completed; a body we could not read must never report itself as empty.
+func TestAnalyzePHPEmptyResultImpliesVerifiedRead(t *testing.T) {
+	empty := writeUploadPHP(t, "empty.php", "")
+	got, _ := analyzePHPContentWithFingerprint(empty)
+	if !got.empty || !got.readOK {
+		t.Errorf("zero-byte file -> empty=%v readOK=%v, want both true", got.empty, got.readOK)
+	}
+
+	gone, _ := analyzePHPContentWithFingerprint("/nonexistent/wp-content/uploads/gone.php")
+	if gone.empty {
+		t.Error("unreadable file must not report empty=true")
+	}
+	if gone.readOK {
+		t.Error("unreadable file must report readOK=false")
 	}
 }

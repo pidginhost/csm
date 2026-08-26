@@ -17,11 +17,14 @@ import (
 // a file because it sits under /cache/ or is named index.php is exactly how an
 // attacker hides a webshell in a "safe" location.
 //
-// Unreadable or zero-byte bodies fail closed at High: an attacker who races
-// the scanner with `rm` or chmod 000 must not earn a demote. A content-clean
-// real-code file surfaces as a non-actionable Warning under a check name that
-// is intentionally absent from the correlation and auto-response maps -- a
-// clean file is visibility, not an attack.
+// An unreadable body fails closed at High: an attacker who races the scanner
+// with `rm` or chmod 000 must not earn a demote. A body truncated mid-read
+// fails the post-read stat comparison and lands in that same branch, so a
+// zero-byte result carries proof the file really was empty for the whole read.
+// Empty means no code, which cannot execute, so it joins content-clean
+// real-code files as a non-actionable Warning under a check name that is
+// intentionally absent from the correlation and auto-response maps -- neither
+// is an attack, and rating them High buries the findings that are.
 func classifyUploadPHP(path string) (alert.Severity, string, string) {
 	sev, check, message, _ := classifyUploadPHPWithFingerprint(path)
 	return sev, check, message
@@ -36,7 +39,7 @@ func classifyUploadPHPWithFingerprint(path string) (alert.Severity, string, stri
 		return alert.High, "new_php_in_uploads", fmt.Sprintf("New unreadable PHP file in uploads: %s", path), ""
 	}
 	if r.empty {
-		return alert.High, "new_php_in_uploads", fmt.Sprintf("New empty PHP file in uploads: %s", path), ""
+		return alert.Warning, "new_php_in_uploads_clean", fmt.Sprintf("New empty PHP file in uploads (no content): %s", path), ""
 	}
 	if IsBenignPHPStub(path) {
 		return -1, "", "", ""
