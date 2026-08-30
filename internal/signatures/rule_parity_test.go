@@ -34,7 +34,7 @@ var realtimeOnlyRules = map[string]string{
 	"backdoor_wp_muplugin_loader":      "Rename, not a gap: the decoded-include arm already ships under backdoor_wp_muplugin. The narrower case-insensitive variant belongs in that rule to avoid double-reporting",
 	"cgi_bash_webshell":                "Rename, and the .yar side is the HARDENED one: cgi_webshell_bash requires the bash shebang at offset 0, which is what keeps the four bare substrings from matching any large bundle. Porting this .yml version by name would replace a hardened rule with the weak original",
 	"cgi_haxor_extension":              "Tier 2: content signal is the literal shebang, which occurs by chance in binary; 473 live hits across 22 file types including .jpg, .pdf, .zip and fonts. Real detection is the .haxor filename and belongs in internal/checks",
-	"credential_logger":                "Tier 2: silent on the corpus and on a 291k-file live sample, yet fires on a newsletter opt-in handler writing a sanitized posted address to a log file, and on security-plugin login code at 1 hit on the clean corpus. Redesign before porting",
+	"credential_logger":                "Tier 2: measured at 1 hit on the clean corpus and silent on a 291k-file live sample; it also fires on a newsletter opt-in handler writing a sanitized posted address to a log file. Redesign before porting",
 	"credential_mailer":                "Tier 2: already a live realtime false positive on Elementor and WooCommerce registration mail, measured at 4 hits on the clean corpus. credential_harvester_php covers the shape, but its variable-name proximity arm is evaded by short names; harden that rule instead of porting this one",
 	"dropper_php_stream_wrapper":       "Rename, not a gap: dropper_stream_wrapper_abuse carries the same three wrapper arms and still fires on a require/zip:// variant sharing no literal with the sample that first matched",
 	"dropper_wp_plugin_installer":      "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a plugin writing its own compiled template cache). Ready to port",
@@ -51,16 +51,16 @@ var realtimeOnlyRules = map[string]string{
 	"mailer_exim_exploit":              "Tier 2: 268 port-induced live hits, almost all on plugin .js assets; also already a live realtime false positive on the PHPMailer SMTP class in WordPress core",
 	"mailer_phpmailer_abuse":           "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a mailer addressed from a stored option). Ready to port",
 	"miner_coinhive_js":                "Rename, not a gap: identical regexes already ship as miner_coinhive",
-	"miner_cryptoloot_js":              "Rename, not a gap: miner_cryptoloot matches the same three brand tokens and is strictly broader",
+	"miner_cryptoloot_js":              "Rename, not a gap: miner_cryptoloot covers the same case-insensitive brand token and hyphenated domain; the Anonymous arm is subsumed by the brand token in both engines",
 	"miner_monero_wallet":              "Tier 2: silent on both samples, yet fires on a project support page showing a donation address. Redesign before porting",
 	"miner_shell_script":               "Rename, not a gap: miner_shell_downloader matches the same downloader-to-miner span in either case now that its case gap is closed",
-	"network_brute_force":              "Covered and HARDENED under another name: network_brute_force_tool requires the credential list in the loop header and the connection in the same span. This .yml form is bare co-occurrence and fires on a stored-password option read beside an unrelated ping helper",
+	"network_brute_force":              "Covered and HARDENED under another name: network_brute_force_tool requires the connection in the same loop span as either the credential-list header or a list-consuming operation. This .yml form is bare co-occurrence and fires on a stored-password option read beside an unrelated ping helper",
 	"network_http_tunnel":              "Tier 2: port-induced hit on plugin .js; also already a live realtime false positive on the FTP sockets class in WordPress core",
 	"obfuscation_assert_string":        "Rename, not a gap: the same three assert input forms already ship as obfuscation_assert_exec",
 	"obfuscation_create_function":      "Tier 2: 4 port-induced live hits on plugin readme .txt; also already a live realtime false positive",
 	"obfuscation_ionCube_fake":         "Tier 2: min_match 2 with two ionCube brand literals, so a legitimate loader stub fires it without the regex ever matching. Commercial encoded PHP is absent from the corpus, so measurement alone missed this",
 	"phishing_dhl_fedex":               "Tier 2: silent on both samples, yet fires on a courier tracking form that also asks for an account PIN. Redesign before porting",
-	"phishing_google_drive":            "Tier 2: silent on both samples, yet fires on a genuine Google sign-in page used for a Drive import. Redesign before porting",
+	"phishing_google_drive":            "Tier 2: silent on both samples, yet fires on a legitimate Drive integration screen that links to accounts.google.com beside a local email preference. Redesign before porting",
 	"phishing_onedrive":                "Tier 2: phishing_sharepoint covers the brand but requires a form action attribute, so a kit submitting through JavaScript evades it. Harden that rule; this .yml form asks only for two brand words beside any typed input",
 	"phishing_webmail":                 "Tier 2: silent on both samples, yet fires on a stock Roundcube login page, which ships on every cPanel host. Redesign before porting",
 	"phishing_workers_dev_exfil":       "Tier 2: silent on both samples, yet fires on a site whose own API is hosted on Cloudflare Workers. Redesign before porting",
@@ -75,7 +75,7 @@ var realtimeOnlyRules = map[string]string{
 	"spam_comment_injector":            "Tier 2: 15 port-induced live hits on WordPress core .js; also already a live realtime false positive on core comment handling",
 	"spam_hidden_div_links":            "Tier 1: silent everywhere, and silent by construction: the {3,} anchor repetition cannot cross the closing tag of each link, so three consecutive links in ordinary markup never satisfy it. Repair the regex before porting",
 	"spam_link_injector":               "Covered and HARDENED under another name: spam_wp_footer_injection requires the hide directive inside an inline style attribute, which is what keeps a plugin echoing a style block beside a visible link from matching. This .yml form has no such requirement",
-	"spam_pharma_generic":              "Tier 1: spam_pharma covers the same three-signal proximity but its drug list omits pharmacy, pharmacie and ambien. Widen that list rather than ship a second rule. A benign control also fires: a hidden div advertising cheap pharmacy deals is indistinguishable from the injection this describes",
+	"spam_pharma_generic":              "Tier 1: spam_pharma covers the same three-signal proximity but its drug list omits pharmacy, pharmacie and ambien. Widen that list rather than ship a second rule",
 	"spam_redirect_chain":              "Tier 2: silent on both samples, yet fires on a mobile and desktop redirect keyed on the user agent. Redesign before porting",
 	"spam_seo_link_injection":          "Tier 2: silent on both samples, yet fires on documentation linking to a slot machine API, because the keyword list treats slot as a gambling term. Redesign before porting",
 	"spam_sitemap_hijack":              "Tier 2: silent on both samples, yet fires on a sitemap listing a legitimate .xyz URL. Redesign before porting",
@@ -92,8 +92,8 @@ var realtimeOnlyRules = map[string]string{
 	"webshell_wp_fake_theme":           "Tier 2: a fake-theme shell with a direct superglobal sink already reaches webshell_generic_passthru; with a one-hop local it reaches nothing, because webshell_wp_fake_plugin's local-sink arms require a plugin header. Extend that rule to accept a theme header rather than port this co-occurrence form",
 	"wp_core_file_modify":              "Rename, not a gap: identical regexes already ship as exploit_wp_core_modification",
 	"wp_db_credential_dump":            "Tier 2: already fires in realtime on live data, and fires on a backup plugin recording database coordinates in its manifest. Redesign before porting",
-	"wp_fake_plugin_eval":              "Covered and HARDENED under another name: webshell_wp_fake_plugin requires the sink to consume request input or an encoded blob. This .yml form fires on any plugin calling exec on a stored command within six lines of its header",
-	"wp_fake_plugin_upload":            "Covered and HARDENED under another name: dropper_uploader_no_auth suppresses on session and capability checks and bounds file size. This .yml form is bare co-occurrence of the plugin header and move_uploaded_file, which every media plugin satisfies",
+	"wp_fake_plugin_eval":              "Covered and HARDENED under another name: webshell_wp_fake_plugin requires the sink to consume request input or an encoded blob. This .yml form fires on any execution-sink call within six lines of a plugin header, regardless of its input",
+	"wp_fake_plugin_upload":            "Covered and HARDENED under another name: dropper_uploader_no_auth bounds file size and suppresses authenticated, validated, and mail-only upload handlers. This .yml form is bare co-occurrence of a plugin header and move_uploaded_file, which ordinary upload plugins can satisfy",
 	"wp_login_bruteforce":              "Tier 2: 20 port-induced live hits on clean plugin .js bundles",
 	"wp_plugin_backdoor_contact_form":  "Tier 2: port-induced hits on .pot translation catalogues",
 	"wp_theme_editor_rce":              "Tier 2: uncovered, but the rule keys on wp_update_theme, which is not a WordPress function and matches core's wp_update_themes as a substring. Establish the intended signal before porting",
@@ -304,7 +304,7 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 	}
 	for yamlName, yaraName := range renamedYARARules {
 		reason := realtimeOnlyRules[yamlName]
-		if yamlName == yaraName || !yamlNames[yamlName] || !yaraNames[yaraName] || !coveredByAnotherRule(reason) {
+		if yamlName == yaraName || !yamlNames[yamlName] || !yaraNames[yaraName] || !coveredByAnotherRule(reason) || !reasonMentionsRule(reason, yaraName) {
 			invalidRenames = append(invalidRenames, yamlName+"->"+yaraName)
 		}
 	}
@@ -328,13 +328,47 @@ func TestEveryYAMLRuleHasYARACounterpart(t *testing.T) {
 		t.Errorf("realtimeOnlyRules entries require a non-empty porting reason: %v", missingReasons)
 	}
 	if len(invalidRenames) > 0 {
-		t.Errorf("renamed YAML rules require a live, differently named YARA counterpart: %v", invalidRenames)
+		t.Errorf("renamed YAML rules must name a live, differently named YARA counterpart in their reason: %v", invalidRenames)
 	}
 	if len(unported) > 0 {
 		t.Errorf("%d rules exist in malware.yml with no malware.yar counterpart, so on-demand and scheduled scans cannot fire them: %v", len(unported), unported)
 	}
 	if len(staleBacklog) > 0 {
 		t.Errorf("realtimeOnlyRules contains %d stale entries no longer exclusive to malware.yml; delete them: %v", len(staleBacklog), staleBacklog)
+	}
+}
+
+func reasonMentionsRule(reason, ruleName string) bool {
+	for _, token := range strings.FieldsFunc(reason, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_'
+	}) {
+		if token == ruleName {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReasonMentionsRule(t *testing.T) {
+	tests := []struct {
+		name     string
+		reason   string
+		ruleName string
+		want     bool
+	}{
+		{name: "standalone target", reason: "Rename: scheduled_rule covers it", ruleName: "scheduled_rule", want: true},
+		{name: "target before punctuation", reason: "Covered by scheduled_rule.", ruleName: "scheduled_rule", want: true},
+		{name: "target prefix", reason: "Rename: scheduled_rule_extra covers it", ruleName: "scheduled_rule"},
+		{name: "target suffix", reason: "Rename: old_scheduled_rule covers it", ruleName: "scheduled_rule"},
+		{name: "missing target", reason: "Rename: another_rule covers it", ruleName: "scheduled_rule"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reasonMentionsRule(tc.reason, tc.ruleName); got != tc.want {
+				t.Errorf("reasonMentionsRule(%q, %q) = %t, want %t", tc.reason, tc.ruleName, got, tc.want)
+			}
+		})
 	}
 }
 
