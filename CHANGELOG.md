@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - An .htaccess line that maps a non-PHP extension onto the PHP interpreter is now judged by which extension it maps. The stock mapping for .php that hosting panels write is no longer reported, and the .phtml, .pht and .phps forms an attacker actually uses are no longer skipped.
-- A shell script that downloads a crypto miner is now detected regardless of the case it is written in. Scheduled scans previously missed an uppercase downloader that real-time scanning already caught.
+- A shell script that downloads a crypto miner is now detected regardless of the case it is written in. Scheduled scans previously missed uppercase downloaders, while real-time scans could flag identifiers that merely joined downloader and miner names.
+- PHP handler abuse rules now inspect every mapped extension and recognize quoted, dotless, continued, EasyApache, and CloudLinux forms. Stock multi-extension cPanel mappings remain quiet.
 - Backup archives inside plugin-owned directories are now also denied one level up, where the plugin cannot overwrite the rule. All-in-One WP Migration rewrites its own access rules on every run, which left the archives downloadable until the next scan noticed and re-applied the block.
 - A denial that has to be written again because something removed or damaged it is now reported as such, instead of looking like a fresh one each time. Equivalent rollback states share one archived copy without losing it after a failed re-apply, while ownership or permission changes keep a separate rollback point.
 - PHP Shield can now record events from CloudLinux CageFS through a daemon-owned socket without exposing tenant-writable shared storage. Installation registers the mount safely and leaves the disruptive live-cage remount to an operator maintenance window.
