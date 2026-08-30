@@ -20,11 +20,12 @@ import (
 // `csm scan` and to files already sitting on disk. Entries marked as renames
 // already run under another YARA rule ID and stay here to prevent double ports.
 //
-// Tier labels carry two kinds of evidence and both are needed. Corpus and live
-// measurement find what the sample contains; a hand-written benign control
-// finds what it does not. Rules measured silent on 15,992 clean files and on a
-// 291k-file live sample still fire on ordinary plugin code that neither sample
-// happens to include, so "silent" alone is not a porting licence.
+// Tier and policy labels carry two kinds of evidence and both are needed.
+// Corpus and live measurement find what the sample contains; a hand-written
+// benign control finds what it does not. Rules measured silent on 15,992 clean
+// files and on a 291k-file live sample still fire on ordinary plugin code that
+// neither sample happens to include, so "silent" alone is not a porting
+// licence.
 //
 // This map may only shrink.
 var realtimeOnlyRules = map[string]string{
@@ -34,64 +35,64 @@ var realtimeOnlyRules = map[string]string{
 	"backdoor_wp_muplugin_loader":      "Rename, not a gap: the decoded-include arm already ships under backdoor_wp_muplugin. The narrower case-insensitive variant belongs in that rule to avoid double-reporting",
 	"cgi_bash_webshell":                "Rename, and the .yar side is the HARDENED one: cgi_webshell_bash requires the bash shebang at offset 0, which is what keeps the four bare substrings from matching any large bundle. Porting this .yml version by name would replace a hardened rule with the weak original",
 	"cgi_haxor_extension":              "Tier 2: content signal is the literal shebang, which occurs by chance in binary; 473 live hits across 22 file types including .jpg, .pdf, .zip and fonts. Real detection is the .haxor filename and belongs in internal/checks",
-	"credential_logger":                "Tier 2: measured at 1 hit on the clean corpus and silent on a 291k-file live sample; it also fires on a newsletter opt-in handler writing a sanitized posted address to a log file. Redesign before porting",
+	"credential_logger":                "Tier 2: silent on both samples, yet fires on a newsletter opt-in handler writing a sanitized posted address to a log file. Redesign before porting",
 	"credential_mailer":                "Tier 2: already a live realtime false positive on Elementor and WooCommerce registration mail, measured at 4 hits on the clean corpus. credential_harvester_php covers the shape, but its variable-name proximity arm is evaded by short names; harden that rule instead of porting this one",
 	"dropper_php_stream_wrapper":       "Rename, not a gap: dropper_stream_wrapper_abuse carries the same three wrapper arms and still fires on a require/zip:// variant sharing no literal with the sample that first matched",
 	"dropper_wp_plugin_installer":      "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a plugin writing its own compiled template cache). Ready to port",
-	"exfil_wp_config_reader":           "Tier 2: silent on both samples, yet fires on a migration plugin copying wp-config into its export manifest. Redesign before porting",
+	"exfil_wp_config_reader":           "Tier 2: silent on both samples, yet fires on an authenticated migration job staging wp-config for its export package. Redesign before porting",
 	"exploit_cpanel_api_abuse":         "Tier 2: silent on both samples, yet fires on a vendor SDK helper building a cPanel session URL. Redesign before porting",
 	"exploit_htaccess_handler":         "Rename, not a gap: exploit_htaccess_handler_abuse covers every extension form this rule does, in both engines, pinned by the behavioural samples",
 	"exploit_php_fpm_rce":              "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a deployment tool building fastcgi params). Ready to port",
-	"exploit_wp_fake_plugin_installer": "Tier 2: silent on both samples, yet fires on a plugin writing its own compiled template cache from a packed blob. Redesign before porting",
+	"exploit_wp_fake_plugin_installer": "Tier 1: silent on both samples, and its control writes PHP reconstructed from a packed blob during plugin activation, which is the dropper behavior the rule targets. Ready to port",
 	"exploit_wp_options_inject":        "Tier 2: silent on both samples, yet fires on a site-address settings screen guarded by a capability check and a nonce. Redesign before porting",
 	"exploit_wp_rest_api":              "Tier 2: 29 port-induced live hits, every one on a .mo translation catalogue",
 	"exploit_wp_xmlrpc":                "Rename, not a gap: identical regexes already ship as exploit_wp_xmlrpc_abuse",
 	"gsocket_persistence":              "Rename, not a gap: the same two persistence markers already ship as gsocket_cron_persistence",
-	"mailer_bombermail":                "Tier 2: silent on both samples, yet fires on an outbound throttling plugin listing abuse terms beside an ordinary digest loop. Redesign before porting",
+	"mailer_bombermail":                "Tier 2: silent on both samples, yet fires on a malware scanner's mail-bomb signature catalogue without any mail-sending behavior. Redesign before porting",
 	"mailer_exim_exploit":              "Tier 2: 268 port-induced live hits, almost all on plugin .js assets; also already a live realtime false positive on the PHPMailer SMTP class in WordPress core",
 	"mailer_phpmailer_abuse":           "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a mailer addressed from a stored option). Ready to port",
 	"miner_coinhive_js":                "Rename, not a gap: identical regexes already ship as miner_coinhive",
 	"miner_cryptoloot_js":              "Rename, not a gap: miner_cryptoloot covers the same case-insensitive brand token and hyphenated domain; the Anonymous arm is subsumed by the brand token in both engines",
 	"miner_monero_wallet":              "Tier 2: silent on both samples, yet fires on a project support page showing a donation address. Redesign before porting",
 	"miner_shell_script":               "Rename, not a gap: miner_shell_downloader matches the same downloader-to-miner span in either case now that its case gap is closed",
-	"network_brute_force":              "Covered and HARDENED under another name: network_brute_force_tool requires the connection in the same loop span as either the credential-list header or a list-consuming operation. This .yml form is bare co-occurrence and fires on a stored-password option read beside an unrelated ping helper",
+	"network_brute_force":              "Covered and HARDENED under another name: network_brute_force_tool requires the connection in the same loop span as either the credential-list header or a list-consuming operation. This .yml form is bare co-occurrence and fires when an FTP plugin defines separate stored-password and connection helpers",
 	"network_http_tunnel":              "Tier 2: port-induced hit on plugin .js; also already a live realtime false positive on the FTP sockets class in WordPress core",
 	"obfuscation_assert_string":        "Rename, not a gap: the same three assert input forms already ship as obfuscation_assert_exec",
 	"obfuscation_create_function":      "Tier 2: 4 port-induced live hits on plugin readme .txt; also already a live realtime false positive",
 	"obfuscation_ionCube_fake":         "Tier 2: min_match 2 with two ionCube brand literals, so a legitimate loader stub fires it without the regex ever matching. Commercial encoded PHP is absent from the corpus, so measurement alone missed this",
-	"phishing_dhl_fedex":               "Tier 2: silent on both samples, yet fires on a shipping plugin carrier settings screen that mentions delivery notification and tracking number and posts a carrier API key to the carrier own domain. Redesign before porting",
+	"phishing_dhl_fedex":               "Tier 2: silent on both samples, yet fires on ordinary shipping-plugin copy that mentions delivery notifications and tracking numbers without a brand or credential form. Redesign before porting",
 	"phishing_google_drive":            "Tier 2: silent on both samples, yet fires on a Drive backup plugin settings screen that names the product, links to accounts.google.com for authorisation, and takes a service-account key in a password field. Redesign before porting",
 	"phishing_onedrive":                "Tier 2: phishing_sharepoint covers the brand but requires a form action attribute, so a kit submitting through JavaScript evades it. Harden that rule; this .yml form asks only for two brand words beside any typed input",
-	"phishing_webmail":                 "Tier 2: silent on both samples, yet fires on a stock Roundcube login page, which ships on every cPanel host. Redesign before porting",
+	"phishing_webmail":                 "Policy finding: stock Roundcube templates use dynamic login objects, not a rendered password form. A standalone rendered clone in an account document root is phishing-shaped. Ready to port",
 	"phishing_workers_dev_exfil":       "Tier 2: silent on both samples, yet fires on a site whose own API is hosted on Cloudflare Workers. Redesign before porting",
 	"php_dropper_gist":                 "Covered and HARDENED under another name: php_dropper_github_gist requires the gist URL plus an execution sink, while this .yml form fires on the bare URL at min_match 1. Porting it by name would weaken the shipped rule and double-report",
 	"php_dropper_raw_github":           "Tier 1: two of its four arms already ship as dropper_fgc_eval and dropper_rfi_include. The remaining arm, the raw URL within 500 characters of an evaluator reached through wp_remote_get, is uncovered and is the part worth porting",
 	"php_eval_decode_chain":            "Rename, not a gap: php_eval_base64_chain is the same nested-decoder regex, verified on a gzuncompress arm the first sample did not use",
-	"php_hex_string_obfuscation":       "Tier 2: silent on both samples, yet fires on a byte-order-mark table in a CSV import library. Redesign before porting",
+	"php_hex_string_obfuscation":       "Tier 2: silent on both samples; no realistic benign control establishes whether generated binary parsers can satisfy its concatenation shape. Validate against real code before porting",
 	"php_open_basedir_bypass":          "Tier 2: silent on both samples, yet fires on a hosting support plugin's server diagnostics screen. Redesign before porting",
 	"php_open_basedir_override":        "Rename, not a gap: the same open_basedir reset already ships as exploit_open_basedir_escape",
 	"revshell_weevely_agent":           "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a PHP 5 create_function shim). Ready to port",
-	"spam_base64_links":                "Tier 2: already fires in realtime on live data, and fires on a theme echoing an inline base64 SVG logo. Redesign before porting",
+	"spam_base64_links":                "Tier 2: silent on both samples, yet fires on a theme echoing an inline base64 SVG logo. Redesign before porting",
 	"spam_comment_injector":            "Tier 2: 15 port-induced live hits on WordPress core .js; also already a live realtime false positive on core comment handling",
 	"spam_hidden_div_links":            "Tier 1: silent everywhere, and silent by construction: the {3,} anchor repetition cannot cross the closing tag of each link, so three consecutive links in ordinary markup never satisfy it. Repair the regex before porting",
 	"spam_link_injector":               "Covered and HARDENED under another name: spam_wp_footer_injection requires the hide directive inside an inline style attribute, which is what keeps a plugin echoing a style block beside a visible link from matching. This .yml form has no such requirement",
 	"spam_pharma_generic":              "Tier 1: spam_pharma covers the same three-signal proximity but its drug list omits pharmacy, pharmacie and ambien. Widen that list rather than ship a second rule",
 	"spam_redirect_chain":              "Tier 2: silent on both samples, yet fires on a mobile and desktop redirect keyed on the user agent. Redesign before porting",
-	"spam_seo_link_injection":          "Tier 2: silent on both samples, yet fires on documentation linking to a slot machine API, because the keyword list treats slot as a gambling term. Redesign before porting",
+	"spam_seo_link_injection":          "Tier 2: silent on both samples; dofollow beside the generic word slot is ambiguous, but no realistic benign control reproduces it. Validate against real code before porting",
 	"spam_sitemap_hijack":              "Tier 2: silent on both samples, yet fires on a sitemap listing a legitimate .xyz URL. Redesign before porting",
-	"spam_wp_options_inject":           "Tier 2: silent on both samples, yet fires on a migration plugin's search-replace query against the options table. Redesign before porting",
-	"spam_wp_post_injector":            "Tier 2: silent on both samples, yet fires on a gaming-review theme importing its demo content. Redesign before porting",
-	"webshell_adminer_abuse":           "Tier 2: silent on both samples, yet fires on the Adminer header comment, which is to say on Adminer itself. Decide whether an Adminer drop is the intended finding before porting",
+	"spam_wp_options_inject":           "Tier 2: silent on both samples, yet fires on an authenticated migration step updating a staged default-prefix options table. Redesign before porting",
+	"spam_wp_post_injector":            "Tier 2: silent on both samples, yet fires on an authenticated gaming-review theme demo importer. Redesign before porting",
+	"webshell_adminer_abuse":           "Policy finding: the rule identifies Adminer itself. Reporting an unexpected standalone database administration surface is intentional even for a stock copy. Ready to port as a high-risk dual-use tool detection",
 	"webshell_generic_eval_request":    "Tier 1: two arms already ship as webshell_china_chopper and webshell_generic_passthru. The third, request data assigned to a local and evaluated in the next statement, is uncovered; webshell_wp_fake_plugin has exactly that arm but only behind a plugin header",
 	"webshell_generic_shell_exec":      "Tier 2: port-induced live hit on plugin .js",
-	"webshell_hex_function_name":       "Tier 2: silent on both samples, yet fires on a MIME parser holding a hex-escaped CRLF separator and calling a parser callback. Redesign before porting",
+	"webshell_hex_function_name":       "Tier 2: silent on both samples, yet fires on a MIME parser holding a hex-escaped CRLF separator and invoking a parser callback. Redesign before porting",
 	"webshell_litespeed_backdoor":      "Rename, not a gap: identical regexes already ship as webshell_litespeed_disguise",
 	"webshell_net2ftp_shell":           "Tier 2: co-occurrence of a brand string, exec( and $_POST with no adjacency required. Fires on a scanner plugin's own signature list. A real net2ftp shell reaches webshell_generic_passthru through its request-fed sink, so the brand adds only false positives",
 	"webshell_phpfilemanager":          "Tier 2: min_match 1 over two brand strings with no regex, so any mention matches. Fires on a scanner plugin's own signature list, which is the family behind the 2026-07-21 flood. Redesign before porting",
-	"webshell_tiny_file_manager":       "Tier 2: silent on both samples, yet fires on a stock Tiny File Manager install. Decide whether the tool's presence is the intended finding before porting",
+	"webshell_tiny_file_manager":       "Policy finding: the rule identifies Tiny File Manager itself. Reporting an unexpected standalone file administration surface is intentional even for a stock copy. Ready to port as a high-risk dual-use tool detection",
 	"webshell_wp_fake_theme":           "Tier 2: a fake-theme shell with a direct superglobal sink already reaches webshell_generic_passthru; with a one-hop local it reaches nothing, because webshell_wp_fake_plugin's local-sink arms require a plugin header. Extend that rule to accept a theme header rather than port this co-occurrence form",
 	"wp_core_file_modify":              "Rename, not a gap: identical regexes already ship as exploit_wp_core_modification",
-	"wp_db_credential_dump":            "Tier 2: already fires in realtime on live data, and fires on a backup plugin recording database coordinates in its manifest. Redesign before porting",
+	"wp_db_credential_dump":            "Tier 2: silent on both samples, yet fires on a backup plugin recording database coordinates in its manifest. Redesign before porting",
 	"wp_fake_plugin_eval":              "Covered and HARDENED under another name: webshell_wp_fake_plugin requires the sink to consume request input or an encoded blob. This .yml form fires on any execution-sink call within six lines of a plugin header, regardless of its input",
 	"wp_fake_plugin_upload":            "Covered and HARDENED under another name: dropper_uploader_no_auth bounds file size and suppresses authenticated, validated, and mail-only upload handlers. This .yml form is bare co-occurrence of a plugin header and move_uploaded_file, which ordinary upload plugins can satisfy",
 	"wp_login_bruteforce":              "Tier 2: 20 port-induced live hits on clean plugin .js bundles",

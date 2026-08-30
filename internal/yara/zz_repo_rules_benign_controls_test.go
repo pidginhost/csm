@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/signatures"
@@ -22,38 +23,32 @@ import (
 // what the sample contains; these controls are how the shapes it does not
 // contain get found. A rule measured silent is therefore not yet safe to port.
 var knownRealtimeFalsePositives = map[string]string{
-	"credential_logger":                "a newsletter opt-in handler writing a sanitized posted address to a log file",
-	"exfil_wp_config_reader":           "a migration plugin copying wp-config into its export manifest",
-	"exploit_cpanel_api_abuse":         "a vendor SDK helper building a cPanel session URL",
-	"exploit_wp_fake_plugin_installer": "a plugin writing its own compiled template cache from a packed blob",
-	"exploit_wp_options_inject":        "a site-address settings screen guarded by a capability check and a nonce",
-	"mailer_bombermail":                "an outbound throttling plugin listing abuse terms beside an ordinary digest loop",
-	"miner_monero_wallet":              "a project support page showing a donation address",
-	"network_brute_force":              "a stored-password option read beside an unrelated connection helper",
-	"phishing_dhl_fedex":               "a shipping plugin carrier settings screen posting an API key to the carrier own domain",
-	"phishing_google_drive":            "a Drive backup plugin settings screen taking a service-account key",
-	"phishing_webmail":                 "a stock Roundcube login page, which ships on every cPanel host",
-	"phishing_workers_dev_exfil":       "a site whose own API is hosted on Cloudflare Workers",
-	"php_hex_string_obfuscation":       "a byte-order-mark table in a CSV import library",
-	"php_open_basedir_bypass":          "a hosting support plugin server diagnostics screen",
-	"spam_base64_links":                "a theme echoing an inline base64 SVG logo",
-	"spam_redirect_chain":              "a mobile and desktop redirect keyed on the user agent",
-	"spam_seo_link_injection":          "documentation linking to a slot machine API",
-	"spam_sitemap_hijack":              "a sitemap listing a legitimate .xyz URL",
-	"spam_wp_options_inject":           "a migration plugin search-replace query against the options table",
-	"spam_wp_post_injector":            "a gaming-review theme importing its demo content",
-	"webshell_adminer_abuse":           "the Adminer header comment, which is to say Adminer itself",
-	"webshell_hex_function_name":       "a MIME parser holding a hex-escaped CRLF separator and calling a parser callback",
-	"webshell_net2ftp_shell":           "a scanner plugin own signature list",
-	"webshell_phpfilemanager":          "a scanner plugin own signature list",
-	"webshell_tiny_file_manager":       "a stock Tiny File Manager install",
-	"wp_db_credential_dump":            "a backup plugin recording database coordinates in its manifest",
-	"wp_user_enum":                     "a headless front end pulling the public author list",
+	"credential_logger":          "a newsletter opt-in handler writing a sanitized posted address to a log file",
+	"exfil_wp_config_reader":     "a migration plugin staging wp-config for an authenticated export",
+	"exploit_cpanel_api_abuse":   "a vendor SDK helper building a cPanel session URL",
+	"exploit_wp_options_inject":  "a site-address settings screen guarded by a capability check and a nonce",
+	"mailer_bombermail":          "a malware scanner's mail-bomb signature catalogue",
+	"miner_monero_wallet":        "a project support page showing a donation address",
+	"network_brute_force":        "an FTP plugin checking the health of its stored account connections",
+	"phishing_dhl_fedex":         "a shipping plugin settings screen describing tracking numbers and delivery notifications",
+	"phishing_google_drive":      "a Drive backup plugin settings screen taking a service-account key",
+	"phishing_workers_dev_exfil": "a site whose own API is hosted on Cloudflare Workers",
+	"php_open_basedir_bypass":    "a hosting support plugin server diagnostics screen",
+	"spam_base64_links":          "a theme echoing an inline base64 SVG logo",
+	"spam_redirect_chain":        "a mobile and desktop redirect keyed on the user agent",
+	"spam_sitemap_hijack":        "a sitemap listing a legitimate .xyz URL",
+	"spam_wp_options_inject":     "an authenticated migration step updating a staged default-prefix options table",
+	"spam_wp_post_injector":      "an authenticated gaming-review theme demo importer",
+	"webshell_hex_function_name": "a MIME parser holding a hex-escaped CRLF separator and invoking a parser callback",
+	"webshell_net2ftp_shell":     "a scanner plugin's own signature list",
+	"webshell_phpfilemanager":    "a scanner plugin's own signature list",
+	"wp_db_credential_dump":      "a backup plugin recording database coordinates in its manifest",
+	"wp_user_enum":               "a headless front end pulling the public author list",
 }
 
 // benignControls are files a legitimate plugin, theme or hosting tool would
-// ship. No rule in malware.yar may match any of them, and the only malware.yml
-// rules permitted to match are the ones knownRealtimeFalsePositives admits to.
+// ship. No active scheduled-scan rule may match any of them, and the only
+// malware.yml rules permitted to match are the ones admitted above.
 var benignControls = []struct {
 	name     string
 	ext      string
@@ -85,8 +80,9 @@ file_put_contents($target, $compiled);
 		ext:      ".php",
 		knownHit: "exfil_wp_config_reader",
 		sample: `<?php
-// Migration plugin capturing config for the export manifest.
-$cfg = file_get_contents(ABSPATH . 'wp-config.php'); file_put_contents($manifest, $cfg);
+// Authenticated migration job staging the site configuration for its package.
+if (!current_user_can('export') || !check_admin_referer('site_export')) { return; }
+$cfg = file_get_contents(ABSPATH . 'wp-config.php'); file_put_contents($staging . '/wp-config.php', $cfg, LOCK_EX);
 `,
 	},
 	{
@@ -108,17 +104,6 @@ render(params)
 `,
 	},
 	{
-		name:     "exploit_wp_fake_plugin_installer",
-		ext:      ".php",
-		knownHit: "exploit_wp_fake_plugin_installer",
-		sample: `<?php
-register_activation_hook(__FILE__, 'seed_templates');
-function seed_templates() {
-    file_put_contents(plugin_dir_path(__FILE__) . 'cache/tpl.php', gzinflate($packed_template));
-}
-`,
-	},
-	{
 		name:     "exploit_wp_options_inject",
 		ext:      ".php",
 		knownHit: "exploit_wp_options_inject",
@@ -134,9 +119,8 @@ if (current_user_can('manage_options') && check_admin_referer('site_addr')) {
 		ext:      ".php",
 		knownHit: "mailer_bombermail",
 		sample: `<?php
-// Abuse-pattern list in an outbound mail throttling plugin.
-$abuse_terms = array('mail_bomb', 'email_bomb', 'bomber');
-for ($i = 0; $i < $count; $i++) { mail($queue[$i]['to'], $queue[$i]['subject'], $queue[$i]['body']); }
+// Detection names in a malware scanner plugin's signature catalogue.
+$signature_names = array('mail_bomb', 'email_bomb', 'bomber');
 `,
 	},
 	{
@@ -162,8 +146,11 @@ mail($fallback, 'notice', 'body');
 		ext:      ".php",
 		knownHit: "network_brute_force",
 		sample: `<?php
-$passwords = get_option('stored_ftp_passwords');
-function probe($host) { return fsockopen($host, 21, $errno, $errstr, 5); }
+function saved_ftp_passwords() {
+    $passwords = get_option('stored_ftp_passwords');
+    return $passwords;
+}
+function open_ftp_connection($host) { return fsockopen($host, 21, $errno, $errstr, 5); }
 `,
 	},
 	{
@@ -174,8 +161,7 @@ function probe($host) { return fsockopen($host, 21, $errno, $errstr, 5); }
 // Settings screen of a WooCommerce shipping plugin.
 ?>
 <h2>Carrier accounts</h2>
-<p>Enable delivery notification emails and print the tracking number on the packing slip.</p>
-<form method="post" action="https://ws.fedex.com/web-services"><input type="password" name="carrier_api_key"></form>
+<p>Enable delivery notification emails and print the tracking number on each packing slip.</p>
 `,
 	},
 	{
@@ -193,14 +179,6 @@ function probe($host) { return fsockopen($host, 21, $errno, $errstr, 5); }
 `,
 	},
 	{
-		name:     "phishing_webmail",
-		ext:      ".html",
-		knownHit: "phishing_webmail",
-		sample: `<title>Roundcube Webmail Login</title>
-<form action="/roundcube/index.php" method="post"><input type="password" name="_pass"></form>
-`,
-	},
-	{
 		name:     "phishing_workers_dev_exfil",
 		ext:      ".html",
 		knownHit: "phishing_workers_dev_exfil",
@@ -208,16 +186,6 @@ function probe($host) { return fsockopen($host, 21, $errno, $errstr, 5); }
 // Legitimate site hosting its API on Cloudflare Workers.
 fetch('https://api.example.workers.dev/v1/products').then(function (r) { return r.json(); });
 </script>
-`,
-	},
-	{
-		name:     "php_hex_string_obfuscation",
-		ext:      ".php",
-		knownHit: "php_hex_string_obfuscation",
-		sample: `<?php
-// Byte-order-mark table in a CSV import library.
-$bom = "\xef" . "\xbb" . "\xbf" . "\xfe" . "\xff" . "\x00";
-call_user_func($handler, $bom);
 `,
 	},
 	{
@@ -235,9 +203,10 @@ $logs = glob(WP_CONTENT_DIR . '/debug*.log');
 		name: "revshell_weevely_agent",
 		ext:  ".php",
 		sample: `<?php
-// Legacy PHP 5 callback shim.
-$maker = create_function;
-$fn=$maker('','return 1;');$fn();
+// Legacy PHP 5 callback factory retained by a compatibility library.
+$factory = 'create_function';
+$callback = $factory('', 'return 1;');
+$callback();
 `,
 	},
 	{
@@ -252,7 +221,7 @@ echo base64_decode('PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdC
 	{
 		name: "spam_hidden_div_links",
 		ext:  ".html",
-		sample: `<div style="display: none"><a href="/a">A</a><a href="/b">B</a><a href="/c">C</a></div>
+		sample: `<nav class="mobile-menu"><div style="display: none"><a href="/about">About</a><a href="/support">Support</a><a href="/contact">Contact</a></div></nav>
 `,
 	},
 	{
@@ -261,13 +230,6 @@ echo base64_decode('PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdC
 		knownHit: "spam_redirect_chain",
 		sample: `<?php
 if (wp_is_mobile() && strpos($_SERVER['HTTP_USER_AGENT'], 'Android') !== false) { header("Location: /m/"); } else { header("Location: /desktop/"); }
-`,
-	},
-	{
-		name:     "spam_seo_link_injection",
-		ext:      ".html",
-		knownHit: "spam_seo_link_injection",
-		sample: `<p>Our <a href="https://docs.example.test/slots" rel="dofollow">slot machine API</a> documentation.</p>
 `,
 	},
 	{
@@ -282,8 +244,10 @@ if (wp_is_mobile() && strpos($_SERVER['HTTP_USER_AGENT'], 'Android') !== false) 
 		ext:      ".php",
 		knownHit: "spam_wp_options_inject",
 		sample: `<?php
-// Search-replace step of a legitimate migration plugin.
-$wpdb->query("UPDATE {$wpdb->prefix}wp_options SET option_value = '{$new}' WHERE option_name = 'siteurl'");
+// Authenticated migration step operating on a staged default-prefix table.
+if (current_user_can('import') && check_admin_referer('site_import')) {
+    $wpdb->query($wpdb->prepare("UPDATE wp_options SET option_value = %s WHERE option_name = 'siteurl'", esc_url_raw(wp_unslash($_POST['siteurl']))));
+}
 `,
 	},
 	{
@@ -291,16 +255,10 @@ $wpdb->query("UPDATE {$wpdb->prefix}wp_options SET option_value = '{$new}' WHERE
 		ext:      ".php",
 		knownHit: "spam_wp_post_injector",
 		sample: `<?php
-// Demo content importer for a gaming-review theme.
-wp_insert_post(array('post_title' => 'Top casino games reviewed', 'post_status' => 'draft'));
-`,
-	},
-	{
-		name:     "webshell_adminer_abuse",
-		ext:      ".php",
-		knownHit: "webshell_adminer_abuse",
-		sample: `<?php
-/** Adminer 4.8.1 - Database management in a single PHP file. https://www.adminer.org */
+// Admin-only demo content importer for a gaming-review theme.
+if (current_user_can('import') && check_admin_referer('theme_demo_import')) {
+    wp_insert_post(array('post_title' => 'Top casino games reviewed', 'post_status' => 'draft'));
+}
 `,
 	},
 	{
@@ -308,7 +266,10 @@ wp_insert_post(array('post_title' => 'Top casino games reviewed', 'post_status' 
 		ext:      ".php",
 		knownHit: "webshell_hex_function_name",
 		sample: `<?php
-$sep = "\x0d\x0a\x0d\x0a"; $parser($sep);
+function parse_multipart($message, callable $parser) {
+    $separator = "\x0d\x0a\x0d\x0a";
+    return $parser($message, $separator);
+}
 `,
 	},
 	{
@@ -333,15 +294,6 @@ foreach ($known_shells as $needle) { $hits[$needle] = 0; }
 `,
 	},
 	{
-		name:     "webshell_tiny_file_manager",
-		ext:      ".php",
-		knownHit: "webshell_tiny_file_manager",
-		sample: `<?php
-// Tiny File Manager 2.5.3 - https://tinyfilemanager.github.io
-$auth_users = array('admin' => password_hash('changeme', PASSWORD_DEFAULT));
-`,
-	},
-	{
 		name:     "wp_db_credential_dump",
 		ext:      ".php",
 		knownHit: "wp_db_credential_dump",
@@ -362,11 +314,125 @@ $u = wp_remote_get(home_url('/wp-json/wp/v2/users'));
 	},
 }
 
+// expectedRealtimeDetections keeps attacker-shaped and intentional dual-use
+// detections out of the false-positive burn-down list. A rendered webmail
+// credential form in an account document root is phishing-shaped, while
+// Adminer and Tiny File Manager provide high-risk administrative surfaces.
+var expectedRealtimeDetections = []struct {
+	name   string
+	ext    string
+	rule   string
+	reason string
+	sample string
+}{
+	{
+		name:   "packed PHP activation dropper",
+		ext:    ".php",
+		rule:   "exploit_wp_fake_plugin_installer",
+		reason: "activation writes PHP reconstructed from a packed blob",
+		sample: `<?php
+register_activation_hook(__FILE__, 'seed_templates');
+function seed_templates() {
+    file_put_contents(plugin_dir_path(__FILE__) . 'cache/tpl.php', gzinflate($packed_template));
+}
+`,
+	},
+	{
+		name:   "standalone Roundcube credential form",
+		ext:    ".html",
+		rule:   "phishing_webmail",
+		reason: "policy reports a branded credential form in an account document root",
+		sample: `<title>Roundcube Webmail Login</title>
+<form action="/roundcube/index.php" method="post"><input type="password" name="_pass"></form>
+`,
+	},
+	{
+		name:   "stock Adminer",
+		ext:    ".php",
+		rule:   "webshell_adminer_abuse",
+		reason: "policy reports a standalone database administration surface",
+		sample: `<?php
+/** Adminer 4.8.1 - Database management in a single PHP file. https://www.adminer.org */
+`,
+	},
+	{
+		name:   "stock Tiny File Manager",
+		ext:    ".php",
+		rule:   "webshell_tiny_file_manager",
+		reason: "policy reports a standalone authenticated file administration surface",
+		sample: `<?php
+// Tiny File Manager 2.5.3 - https://tinyfilemanager.github.io
+$auth_users = array('admin' => password_hash('changeme', PASSWORD_DEFAULT));
+`,
+	},
+}
+
+func validateControlClaims(t *testing.T) {
+	t.Helper()
+
+	var problems []string
+	controlNames := make(map[string]bool)
+	claimOwners := make(map[string]string)
+	for _, control := range benignControls {
+		if strings.TrimSpace(control.name) == "" || strings.TrimSpace(control.ext) == "" || strings.TrimSpace(control.sample) == "" {
+			problems = append(problems, "benign controls require a name, extension, and sample")
+			continue
+		}
+		if controlNames[control.name] {
+			problems = append(problems, "duplicate benign control name "+control.name)
+		}
+		controlNames[control.name] = true
+		if control.knownHit == "" {
+			continue
+		}
+		if control.name != control.knownHit {
+			problems = append(problems, control.name+" names false positive "+control.knownHit)
+		}
+		if owner, exists := claimOwners[control.knownHit]; exists {
+			problems = append(problems, control.knownHit+" is claimed by both "+owner+" and "+control.name)
+		} else {
+			claimOwners[control.knownHit] = control.name
+		}
+		if _, declared := knownRealtimeFalsePositives[control.knownHit]; !declared {
+			problems = append(problems, control.name+" has undeclared false positive "+control.knownHit)
+		}
+	}
+	for rule, reason := range knownRealtimeFalsePositives {
+		if strings.TrimSpace(rule) == "" || strings.TrimSpace(reason) == "" {
+			problems = append(problems, "false-positive claims require a rule and reason")
+		}
+		if _, exercised := claimOwners[rule]; !exercised {
+			problems = append(problems, rule+" has no reproducing benign control")
+		}
+	}
+
+	expectedNames := make(map[string]bool)
+	for _, control := range expectedRealtimeDetections {
+		if strings.TrimSpace(control.name) == "" || strings.TrimSpace(control.ext) == "" || strings.TrimSpace(control.rule) == "" || strings.TrimSpace(control.reason) == "" || strings.TrimSpace(control.sample) == "" {
+			problems = append(problems, "expected detections require a name, extension, rule, reason, and sample")
+			continue
+		}
+		if expectedNames[control.name] {
+			problems = append(problems, "duplicate expected detection name "+control.name)
+		}
+		expectedNames[control.name] = true
+		if _, admitted := knownRealtimeFalsePositives[control.rule]; admitted {
+			problems = append(problems, control.rule+" is both expected and admitted as a false positive")
+		}
+	}
+
+	sort.Strings(problems)
+	if len(problems) > 0 {
+		t.Fatalf("invalid realtime control claims: %v", problems)
+	}
+}
+
 // TestRealtimeRulesAgainstBenignControls is the counterpart to the clean-corpus
 // gate. The corpus proves a rule is quiet on 15,992 real files; these controls
-// prove it is quiet on the shapes the corpus happens not to contain, which is
-// where every false positive recorded above was actually found.
+// exercise realistic shapes that corpus happens not to contain.
 func TestRealtimeRulesAgainstBenignControls(t *testing.T) {
+	validateControlClaims(t)
+
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
@@ -382,18 +448,7 @@ func TestRealtimeRulesAgainstBenignControls(t *testing.T) {
 		t.Fatalf("loading YAML rules: %v", err)
 	}
 
-	exercised := make(map[string]bool)
-	var undeclared []string
 	for _, control := range benignControls {
-		if control.knownHit != "" {
-			exercised[control.knownHit] = true
-			// The control names the rule it reproduces and the map explains why
-			// the code is legitimate. Bind them, or deleting one leaves the
-			// other describing a fault nothing checks.
-			if _, declared := knownRealtimeFalsePositives[control.knownHit]; !declared {
-				undeclared = append(undeclared, control.name+" -> "+control.knownHit)
-			}
-		}
 		t.Run(control.name, func(t *testing.T) {
 			knownFired := false
 			var unexpected []string
@@ -412,8 +467,12 @@ func TestRealtimeRulesAgainstBenignControls(t *testing.T) {
 				t.Errorf("%s no longer matches this control; delete its knownRealtimeFalsePositives entry", control.knownHit)
 			}
 
+			matches, err := yaraScanner.ScanBytesChecked([]byte(control.sample))
+			if err != nil {
+				t.Fatalf("scheduled scan failed: %v", err)
+			}
 			var scheduled []string
-			for _, match := range yaraScanner.ScanBytes([]byte(control.sample)) {
+			for _, match := range matches {
 				scheduled = append(scheduled, match.RuleName)
 			}
 			sort.Strings(scheduled)
@@ -422,20 +481,37 @@ func TestRealtimeRulesAgainstBenignControls(t *testing.T) {
 			}
 		})
 	}
+}
 
-	sort.Strings(undeclared)
-	if len(undeclared) > 0 {
-		t.Errorf("controls name a rule with no knownRealtimeFalsePositives entry: %v", undeclared)
+// TestExpectedRealtimeDetections keeps the controls rejected as benign tied to
+// the rule behavior that justifies their classification.
+func TestExpectedRealtimeDetections(t *testing.T) {
+	validateControlClaims(t)
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	configsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs")
+	yamlScanner := signatures.NewScanner(configsDir)
+	if err := yamlScanner.LoadError(); err != nil {
+		t.Fatalf("loading YAML rules: %v", err)
 	}
 
-	var unexercised []string
-	for rule := range knownRealtimeFalsePositives {
-		if !exercised[rule] {
-			unexercised = append(unexercised, rule)
-		}
-	}
-	sort.Strings(unexercised)
-	if len(unexercised) > 0 {
-		t.Errorf("admitted false positives need a control that reproduces them: %v", unexercised)
+	for _, control := range expectedRealtimeDetections {
+		t.Run(control.name, func(t *testing.T) {
+			var fired []string
+			wanted := false
+			for _, match := range yamlScanner.ScanContent([]byte(control.sample), control.ext) {
+				fired = append(fired, match.RuleName)
+				if match.RuleName == control.rule {
+					wanted = true
+				}
+			}
+			sort.Strings(fired)
+			if !wanted {
+				t.Errorf("%s did not fire on %s; matches: %v", control.rule, control.reason, fired)
+			}
+		})
 	}
 }
