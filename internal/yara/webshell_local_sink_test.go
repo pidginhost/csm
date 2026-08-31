@@ -30,9 +30,17 @@ func TestWebshellGenericPassthru_RequestThroughLocal(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	// The rule required the superglobal to be the direct argument, so one
 	// assignment defeated it.
-	mal := []byte("<?php $x = $_REQUEST['code']; eval($x);")
-	if !hasYaraRule(s.ScanBytes(mal), "webshell_generic_passthru") {
-		t.Errorf("webshell_generic_passthru gap: request input evaluated through a local not detected: %s", mal)
+	// The key carries no meaning: a shell names it whatever it likes, and the
+	// .yml rule this one covers accepts any key. Requiring a command-looking
+	// name would leave the covering rule narrower than the rule it covers.
+	for _, mal := range [][]byte{
+		[]byte("<?php $x = $_REQUEST['a']; eval($x);"),
+		[]byte("<?php $x = $_REQUEST['code']; eval($x);"),
+		[]byte("<?php\n$q = $_POST['q'];\n// staged\nassert($q);\n"),
+	} {
+		if !hasYaraRule(s.ScanBytes(mal), "webshell_generic_passthru") {
+			t.Errorf("webshell_generic_passthru gap: request input evaluated through a local not detected: %s", mal)
+		}
 	}
 	decoded := []byte("<?php\n$code = base64_decode($_POST['p']);\neval($code);\n")
 	if !hasYaraRule(s.ScanBytes(decoded), "webshell_request_decoded_exec") {
@@ -61,5 +69,19 @@ $payload = base64_decode($_POST['template']);
 eval($compiledTemplate);`)
 	if hasYaraRule(s.ScanBytes(decodedTemplate), "webshell_generic_passthru") {
 		t.Error("webshell_generic_passthru FP: decoded template input and unrelated eval matched")
+	}
+}
+
+// A hidden link farm does not have to sit in a div. The scheduled rule read any
+// hidden container before its bounds were aligned with the realtime twin.
+func TestSpamHiddenLinks_NonDivContainer(t *testing.T) {
+	s := loadRepoYaraScanner(t)
+	var links string
+	for i := 0; i < 8; i++ {
+		links += `<a href="https://cheap-pills.example.test/x">buy cheap pills online today</a>`
+	}
+	span := []byte(`<span style="display:none">` + links + `</span>`)
+	if !hasYaraRule(s.ScanBytes(span), "spam_hidden_links") {
+		t.Error("spam_hidden_links regression: link farm in a hidden span not detected")
 	}
 }

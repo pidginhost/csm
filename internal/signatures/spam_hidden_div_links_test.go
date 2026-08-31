@@ -74,9 +74,11 @@ func TestSpamHiddenDivLinks_RequiresEightLinks(t *testing.T) {
 	if hasRule(s.ScanContent(seven, ".html"), "spam_hidden_div_links") {
 		t.Error("spam_hidden_div_links FP: seven links crossed the shared eight-link threshold")
 	}
+	// The rule's name is historical. A link farm is a link farm whatever
+	// element hides it, and the scheduled twin has always read any container.
 	nonDiv := []byte(`<section style="display:none">` + strings.Repeat(
 		`<a href="https://spam.example.test/">buy</a>`, 8) + `</section>`)
-	if hasRule(s.ScanContent(nonDiv, ".html"), "spam_hidden_div_links") {
-		t.Error("spam_hidden_div_links FP: a hidden non-div container matched the div rule")
+	if !hasRule(s.ScanContent(nonDiv, ".html"), "spam_hidden_div_links") {
+		t.Error("spam_hidden_div_links gap: a link farm hidden in a section was not detected")
 	}
 }
