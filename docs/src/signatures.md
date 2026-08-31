@@ -76,6 +76,18 @@ of clean WordPress core and plugin files:
 YARA_FP_CORPUS=/path/to/corpus go test -tags yara ./internal/yara/ -run TestRepositoryRulesAgainstCleanCorpus -v
 ```
 
+The same corpus measures the YAML rules that only realtime and finding re-check
+run:
+
+```bash
+YARA_FP_CORPUS=/path/to/corpus go test ./internal/signatures/ -run TestRepositoryYAMLRulesAgainstCleanCorpus -v
+```
+
+That engine lowercases every file it scans, so the run is far slower than the
+YARA one. Its baseline is not empty: six rules fire on clean plugin and core
+code, each one already recorded in the porting backlog as a realtime false
+positive.
+
 The gate requires at least 5,000 non-empty files within the default scheduled
 scan size limit to reach the rule engine. Traversal, read, and scan failures
 fail the run instead of counting as clean. The measured baseline is empty;
