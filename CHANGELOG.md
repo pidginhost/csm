@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A standalone Adminer or Tiny File Manager copy is now reported by scheduled and on-demand scans, not only in the moment it is written. Security plugins that merely name those tools in their blocklists stay quiet.
+- A page cloning a webmail login is now reported by scans as well as realtime. Stock Roundcube templates, which build their login form dynamically, stay quiet.
+- A mailer script that takes its recipient straight from the request is now reported by scans as well as realtime. Contact forms that pass only a sender name through stay quiet.
+- A fake plugin that decodes a shell into a PHP file when it is activated, and a script that writes PHP straight into the plugins directory, are now reported by scans as well as realtime. A plugin writing its own template cache stays quiet.
+- A dropper that fetches its payload from raw GitHub and runs it is now reported by scans as well as realtime, including when the fetch goes through the WordPress HTTP API. Plugin updaters that read a release manifest from the same host stay quiet.
+- The Weevely backdoor agent and the PHP-FPM path underflow exploit are now reported by scans as well as realtime. A compatibility shim for the function Weevely abuses stays quiet.
 - A script that pushes PHP into a theme through the WordPress theme editor is now reported by scans as well as realtime. The old rule read a function name that does not exist and matched ordinary core update code instead.
 - Realtime detection of a hidden block stuffed with off-site links now works at all. The pattern could never match real page markup, so link farms injected into pages went unreported until the next scan.
 - Credential phishing pages that send submitted form data with JavaScript are now reported, including kits that use extensionless collector endpoints. Legitimate plugin integrations for those brands stay quiet.

