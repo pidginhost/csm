@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Scheduled rules now require webmail credential markup, a PHP file shape for mailer relays, and a second PHP-FPM exploit marker. Bare UI strings, non-PHP examples, and lone encoded FastCGI settings stay quiet.
 - A standalone Adminer or Tiny File Manager copy is now reported by scheduled and on-demand scans, not only in the moment it is written. Security plugins that merely name those tools in their blocklists stay quiet.
 - A page cloning a webmail login is now reported by scans as well as realtime. Stock Roundcube templates, which build their login form dynamically, stay quiet.
 - A mailer script that takes its recipient straight from the request is now reported by scans as well as realtime. Contact forms that pass only a sender name through stay quiet.
