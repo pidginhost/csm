@@ -1606,6 +1606,14 @@ $double = create_function('$x', 'return $x * 2;');
 echo $double(21);
 `,
 		},
+		{
+			name: "error log quoting a failed plugin file write",
+			rule: "dropper_wp_plugin_installer",
+			ext:  ".log",
+			sample: `[21-Aug-2023 16:37:55 UTC] PHP Warning:  file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream: Permission denied in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 88
+[21-Aug-2023 16:37:56 UTC] PHP Notice:  Undefined index: mode in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 91
+`,
+		},
 	}
 
 	for _, tc := range tests {
