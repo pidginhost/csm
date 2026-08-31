@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hidden pharma spam is now reported when it advertises a pharmacy or a sleep aid, not only the handful of drug names the rule used to know.
 - A shell that stores request input in a variable before running it through eval is now reported by scheduled scans, not only in realtime. One assignment used to be enough to hide it.
 - A backdoor planted in a theme is now detected the same way as one planted in a plugin. The rule only opened on a plugin header, so the same shell in a theme file went unreported.
 - An .htaccess line that maps an extension onto the PHP interpreter is now judged by which extensions it maps, in every form Apache accepts: quoted, without the leading dot, split across a line continuation, and the versioned handler names EasyApache and CloudLinux generate. The stock mapping hosting panels write stays quiet, while .phtml, .pht, .phps and anything appended to a stock line are reported.
