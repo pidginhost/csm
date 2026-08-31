@@ -1,6 +1,8 @@
 # Signature Rules
 
-CSM uses YAML and YARA-X rules for malware detection. Rules are stored in `/opt/csm/rules/` and scanned both in real-time (fanotify) and during deep scans.
+CSM uses YAML rules for real-time scanning and finding re-checks. Optional
+YARA-X rules also run during deep scans and email attachment scanning. Rules
+are stored in `/opt/csm/rules/`.
 
 Deep scans are rolling: each scheduled run resumes from a persisted cursor and scans as much as fits in its time budget, so the whole content set is covered across runs even when a single run cannot finish it. A warning finding is raised if no full pass has completed within 30 days.
 
@@ -83,15 +85,14 @@ run:
 YARA_FP_CORPUS=/path/to/corpus go test ./internal/signatures/ -run TestRepositoryYAMLRulesAgainstCleanCorpus -v
 ```
 
-That engine lowercases every file it scans, so the run is far slower than the
-YARA one. Its baseline is not empty: six rules fire on clean plugin and core
-code, each one already recorded in the porting backlog as a realtime false
-positive.
+The YAML engine lowercases every file it scans, so its run is far slower than
+the YARA one. Both gates require at least 5,000 non-empty files within the
+default scheduled scan size limit. Rule-load, traversal, and read failures fail
+the relevant run instead of counting as clean; YARA backend errors do too.
 
-The gate requires at least 5,000 non-empty files within the default scheduled
-scan size limit to reach the rule engine. Traversal, read, and scan failures
-fail the run instead of counting as clean. The measured baseline is empty;
-tighten a noisy rule rather than excluding paths or filenames.
+The measured YARA baseline is empty. The YAML baseline records six rules that
+already fire on clean plugin and core code and are named in the realtime-rule
+porting backlog. Tighten a noisy rule rather than excluding paths or filenames.
 
 ```bash
 csm update-rules          # download latest rules and reload the running daemon

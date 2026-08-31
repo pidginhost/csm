@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // The shipped corpus gate compiles malware.yar only, so the rules that run in
@@ -79,6 +81,29 @@ func TestRepositoryYAMLRulesAgainstCleanCorpus(t *testing.T) {
 	t.Logf("scanned %d files; %d rules fired", scanned, len(hits))
 }
 
+func TestScanCleanCorpusYAMLReturnsWalkError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	_, _, _, err := scanCleanCorpusYAML(t, missing, &Scanner{})
+	if err == nil {
+		t.Fatal("walk error was swallowed after workers observed the closed path channel")
+	}
+}
+
+func TestScanCleanCorpusYAMLSkipsCompressedArchives(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "plugin.zip"), []byte("PK\x03\x04payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, scanned, err := scanCleanCorpusYAML(t, root, &Scanner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scanned != 0 {
+		t.Fatalf("compressed archives counted toward corpus floor: scanned = %d, want 0", scanned)
+	}
+}
+
 func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[string]int, map[string]string, int, error) {
 	t.Helper()
 
@@ -118,6 +143,9 @@ func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[strin
 						scanErr = err
 					}
 					mu.Unlock()
+					continue
+				}
+				if contenttype.IsCompressedArchive(data) {
 					continue
 				}
 				matches := scanner.ScanContent(data, filepath.Ext(path))

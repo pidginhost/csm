@@ -1,6 +1,9 @@
 package signatures
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The rule claims a hidden div packed with spam links. Its anchor repetition
 // could not cross the closing tag of a link, so no real markup ever satisfied
@@ -61,5 +64,19 @@ func TestSpamHiddenDivLinks_HiddenMenus(t *testing.T) {
 </div>`)
 	if hasRule(s.ScanContent(sharebar, ".html"), "spam_hidden_div_links") {
 		t.Error("spam_hidden_div_links FP: hidden social share bar matched")
+	}
+}
+
+func TestSpamHiddenDivLinks_RequiresEightLinks(t *testing.T) {
+	s := loadRepoScanner(t)
+	seven := []byte(`<div style="display:none">` + strings.Repeat(
+		`<a href="https://spam.example.test/">buy</a>`, 7) + `</div>`)
+	if hasRule(s.ScanContent(seven, ".html"), "spam_hidden_div_links") {
+		t.Error("spam_hidden_div_links FP: seven links crossed the shared eight-link threshold")
+	}
+	nonDiv := []byte(`<section style="display:none">` + strings.Repeat(
+		`<a href="https://spam.example.test/">buy</a>`, 8) + `</section>`)
+	if hasRule(s.ScanContent(nonDiv, ".html"), "spam_hidden_div_links") {
+		t.Error("spam_hidden_div_links FP: a hidden non-div container matched the div rule")
 	}
 }

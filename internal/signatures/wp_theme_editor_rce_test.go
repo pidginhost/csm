@@ -42,4 +42,13 @@ wp_redirect(admin_url('theme-editor.php?file=' . $file . '&updated=true'));
 	if hasRule(s.ScanContent(screen, ".php"), "wp_theme_editor_rce") {
 		t.Error("wp_theme_editor_rce FP: the editor screen's own request handling matched")
 	}
+	client := []byte(`<?php
+$fields = http_build_query(array('action' => 'update', 'newcontent' => $css));
+$ch = curl_init(admin_url('theme-editor.php'));
+curl_setopt($ch, CURLOPT_POSTFIELDS, $fields);
+curl_exec($ch);
+`)
+	if hasRule(s.ScanContent(client, ".php"), "wp_theme_editor_rce") {
+		t.Error("wp_theme_editor_rce FP: client submitting non-PHP theme content matched")
+	}
 }

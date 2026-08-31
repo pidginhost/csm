@@ -30,16 +30,36 @@ func TestWebshellGenericPassthru_RequestThroughLocal(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	// The rule required the superglobal to be the direct argument, so one
 	// assignment defeated it.
-	for _, mal := range [][]byte{
-		[]byte("<?php $x = $_REQUEST['a']; eval($x);"),
-		[]byte("<?php\n$code = base64_decode($_POST['p']);\neval($code);\n"),
-	} {
-		if !hasYaraRule(s.ScanBytes(mal), "webshell_generic_passthru") {
-			t.Errorf("webshell_generic_passthru gap: request input evaluated through a local not detected: %s", mal)
-		}
+	mal := []byte("<?php $x = $_REQUEST['code']; eval($x);")
+	if !hasYaraRule(s.ScanBytes(mal), "webshell_generic_passthru") {
+		t.Errorf("webshell_generic_passthru gap: request input evaluated through a local not detected: %s", mal)
+	}
+	decoded := []byte("<?php\n$code = base64_decode($_POST['p']);\neval($code);\n")
+	if !hasYaraRule(s.ScanBytes(decoded), "webshell_request_decoded_exec") {
+		t.Error("webshell_request_decoded_exec gap: decoded request input evaluated through a local not detected")
 	}
 	legit := []byte("<?php $id = $_GET['id']; echo esc_html(get_the_title(intval($id)));")
 	if hasYaraRule(s.ScanBytes(legit), "webshell_generic_passthru") {
 		t.Error("webshell_generic_passthru FP: ordinary request handling matched")
+	}
+	template := []byte(`<?php
+$template = $_GET['template'];
+$source = load_template_source($template);
+$compiledTemplate = compile_template($source);
+eval($compiledTemplate);`)
+	if hasYaraRule(s.ScanBytes(template), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru FP: request-selected template and separately compiled eval matched")
+	}
+	immediateTemplate := []byte(`<?php
+$template = trim($_GET['template']);
+eval($compiledTemplate);`)
+	if hasYaraRule(s.ScanBytes(immediateTemplate), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru FP: sanitized template selection and unrelated eval matched")
+	}
+	decodedTemplate := []byte(`<?php
+$payload = base64_decode($_POST['template']);
+eval($compiledTemplate);`)
+	if hasYaraRule(s.ScanBytes(decodedTemplate), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru FP: decoded template input and unrelated eval matched")
 	}
 }
