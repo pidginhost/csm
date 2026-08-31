@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A shell that stores request input in a variable before running it through eval is now reported by scheduled scans, not only in realtime. One assignment used to be enough to hide it.
+- A backdoor planted in a theme is now detected the same way as one planted in a plugin. The rule only opened on a plugin header, so the same shell in a theme file went unreported.
 - An .htaccess line that maps an extension onto the PHP interpreter is now judged by which extensions it maps, in every form Apache accepts: quoted, without the leading dot, split across a line continuation, and the versioned handler names EasyApache and CloudLinux generate. The stock mapping hosting panels write stays quiet, while .phtml, .pht, .phps and anything appended to a stock line are reported.
 - A shell script that downloads a crypto miner is now detected whatever case it is written in, and still when the space after the command is hidden behind a shell variable. Scheduled scans previously missed uppercase downloaders, and a name that merely joins the download and miner words is no longer reported on its own.
 - Backup archives inside plugin-owned directories are now also denied one level up, where the plugin cannot overwrite the rule. All-in-One WP Migration rewrites its own access rules on every run, which left the archives downloadable until the next scan noticed and re-applied the block.

