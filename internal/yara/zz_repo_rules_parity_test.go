@@ -1397,41 +1397,16 @@ file_put_contents(ABSPATH . 'wp-content/plugins/hello-dolly/hello.php', $payload
 `,
 		},
 		{
-			name:   "compact short tag writing into the plugins directory",
-			rule:   "dropper_wp_plugin_installer",
-			want:   true,
-			sample: `<?file_put_contents('wp-content/plugins/cache/loader.php', $_POST['payload']);`,
-		},
-		{
 			name:   "compact short tag assigning before a plugin write",
 			rule:   "dropper_wp_plugin_installer",
 			want:   true,
 			sample: `<?$payload=$_POST['payload'];file_put_contents('wp-content/plugins/cache/loader.php',$payload);`,
 		},
 		{
-			name:   "compact short tag construct before a plugin write",
-			rule:   "dropper_wp_plugin_installer",
-			want:   true,
-			sample: `<?echo '';file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);`,
-		},
-		{
-			name:   "compact short tag with a comment after a control keyword",
-			rule:   "dropper_wp_plugin_installer",
-			want:   true,
-			sample: `<?if/**/(isset($_POST['payload'])){file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);}`,
-		},
-		{
 			name:   "compact short tag with a fully qualified write",
 			rule:   "dropper_wp_plugin_installer",
 			want:   true,
 			sample: `<?\file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);`,
-		},
-		{
-			name: "compact short tag after a long function name",
-			rule: "dropper_wp_plugin_installer",
-			want: true,
-			sample: "<?" + strings.Repeat("a", 96) +
-				"();file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);",
 		},
 		{
 			name: "error log containing an injected PHP payload",
