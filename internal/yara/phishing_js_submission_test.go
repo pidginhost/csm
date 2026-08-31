@@ -60,6 +60,16 @@ func TestPhishingBrandFamily_JavaScriptSubmission(t *testing.T) {
 		}
 	}
 
+	// A mail plugin's settings screen carries the brand's own OAuth endpoint in
+	// its script. An absolute URL is not a collector on its own; a kit posts to
+	// a script that stores what it receives.
+	oauth := []byte(`<div class="wrap"><h1>Office 365 mailer</h1>
+<form method="post"><input type="password" name="o365_client_secret"></form>
+<script>var cfg = {url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize', client: id};</script></div>`)
+	if hasYaraRule(s.ScanBytes(oauth), "phishing_office365") {
+		t.Error("phishing_office365 FP: plugin settings screen naming the brand OAuth endpoint matched")
+	}
+
 	// An SMTP plugin settings screen names the brand, takes a password, and
 	// talks to its own site.
 	legit := []byte(`<div class="wrap"><h1>Office 365 SMTP</h1>

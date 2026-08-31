@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A script that pushes PHP into a theme through the WordPress theme editor is now reported by scans as well as realtime. The old rule read a function name that does not exist and matched ordinary core update code instead.
 - Realtime detection of a hidden block stuffed with off-site links now works at all. The pattern could never match real page markup, so link farms injected into pages went unreported until the next scan.
-- Credential phishing pages that send the stolen fields with JavaScript instead of a form are now reported. Plugin settings screens that name the same brands and talk only to their own site stay quiet.
+- Credential phishing pages that send the stolen fields with JavaScript instead of a form are now reported. Plugin settings screens that name the same brands, and the sign-in endpoints those brands publish, stay quiet.
 - A phishing page that mails stolen logins to an address written into the file is now reported even when it copies the fields into one-letter variables. A site's own signup notice, which mails the site address, stays quiet.
 - Hidden pharma spam is now reported when it advertises a pharmacy or a sleep aid, not only the handful of drug names the rule used to know.
 - A shell that stores request input in a variable before running it through eval is now reported by scheduled scans, not only in realtime. One assignment used to be enough to hide it.
