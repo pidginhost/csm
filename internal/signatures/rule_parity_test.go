@@ -97,7 +97,6 @@ var realtimeOnlyRules = map[string]string{
 	"wp_fake_plugin_upload":            "Covered and HARDENED under another name: dropper_uploader_no_auth bounds file size and suppresses authenticated, validated, and mail-only upload handlers. This .yml form is bare co-occurrence of a plugin header and move_uploaded_file, which ordinary upload plugins can satisfy, and it already fires in realtime on live data",
 	"wp_login_bruteforce":              "Tier 2: 20 port-induced live hits on clean plugin .js bundles",
 	"wp_plugin_backdoor_contact_form":  "Tier 2: port-induced hits on .pot translation catalogues",
-	"wp_theme_editor_rce":              "Tier 2: uncovered, but the rule keys on wp_update_theme, which is not a WordPress function and matches core's wp_update_themes as a substring. Establish the intended signal before porting",
 	"wp_user_enum":                     "Tier 2: silent on both samples, yet fires on a headless front end pulling the public author list. Redesign before porting",
 	"wp_woocommerce_card_skimmer":      "Tier 2: unbounded gap between a card-field name and a network call; port-induced hits on .map files, and already a live realtime false positive at scale",
 }
