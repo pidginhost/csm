@@ -1505,6 +1505,24 @@ eval($_POST['c']);`,
 			wantYARAHit: true,
 		},
 		{
+			name:     "hidden container link farm",
+			yamlRule: "spam_hidden_div_links",
+			yaraRule: "spam_hidden_links",
+			ext:      ".html",
+			sample: `<div style="display:none">
+<a href="https://cheap-pills.example.test/1">buy</a>
+<a href="https://cheap-pills.example.test/2">buy</a>
+<a href="https://cheap-pills.example.test/3">buy</a>
+<a href="https://cheap-pills.example.test/4">buy</a>
+<a href="https://cheap-pills.example.test/5">buy</a>
+<a href="https://cheap-pills.example.test/6">buy</a>
+<a href="https://cheap-pills.example.test/7">buy</a>
+<a href="https://cheap-pills.example.test/8">buy</a>
+</div>`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
 			name:     "OneDrive kit posting off-site with script",
 			yamlRule: "phishing_onedrive",
 			yaraRule: "phishing_sharepoint",

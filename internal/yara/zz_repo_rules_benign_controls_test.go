@@ -225,6 +225,19 @@ echo base64_decode('PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdC
 `,
 	},
 	{
+		name: "spam_hidden_share_bar",
+		ext:  ".html",
+		sample: `<div class="share" style="display:none">
+<a href="https://facebook.example.test/share?u=https%3A%2F%2Fexample.test">facebook</a>
+<a href="https://twitter.example.test/share?u=https%3A%2F%2Fexample.test">twitter</a>
+<a href="https://linkedin.example.test/share?u=https%3A%2F%2Fexample.test">linkedin</a>
+<a href="https://pinterest.example.test/share?u=https%3A%2F%2Fexample.test">pinterest</a>
+<a href="https://whatsapp.example.test/share?u=https%3A%2F%2Fexample.test">whatsapp</a>
+<a href="https://telegram.example.test/share?u=https%3A%2F%2Fexample.test">telegram</a>
+</div>
+`,
+	},
+	{
 		name:     "spam_redirect_chain",
 		ext:      ".php",
 		knownHit: "spam_redirect_chain",
