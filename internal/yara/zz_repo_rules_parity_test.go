@@ -1397,6 +1397,50 @@ file_put_contents(ABSPATH . 'wp-content/plugins/hello-dolly/hello.php', $payload
 `,
 		},
 		{
+			name:   "compact short tag writing into the plugins directory",
+			rule:   "dropper_wp_plugin_installer",
+			want:   true,
+			sample: `<?file_put_contents('wp-content/plugins/cache/loader.php', $_POST['payload']);`,
+		},
+		{
+			name:   "compact short tag assigning before a plugin write",
+			rule:   "dropper_wp_plugin_installer",
+			want:   true,
+			sample: `<?$payload=$_POST['payload'];file_put_contents('wp-content/plugins/cache/loader.php',$payload);`,
+		},
+		{
+			name:   "compact short tag construct before a plugin write",
+			rule:   "dropper_wp_plugin_installer",
+			want:   true,
+			sample: `<?echo '';file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);`,
+		},
+		{
+			name:   "compact short tag with a comment after a control keyword",
+			rule:   "dropper_wp_plugin_installer",
+			want:   true,
+			sample: `<?if/**/(isset($_POST['payload'])){file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);}`,
+		},
+		{
+			name:   "compact short tag with a fully qualified write",
+			rule:   "dropper_wp_plugin_installer",
+			want:   true,
+			sample: `<?\file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);`,
+		},
+		{
+			name: "compact short tag after a long function name",
+			rule: "dropper_wp_plugin_installer",
+			want: true,
+			sample: "<?" + strings.Repeat("a", 96) +
+				"();file_put_contents('wp-content/plugins/cache/loader.php',$_POST['payload']);",
+		},
+		{
+			name: "error log containing an injected PHP payload",
+			rule: "dropper_wp_plugin_installer",
+			want: true,
+			sample: `[31-Aug-2026 12:40:03 UTC] SQL error near UNION SELECT '<?php error_reporting(0); file_put_contents("wp-content/plugins/cache/loader.php", $_POST["payload"]); ?>'
+`,
+		},
+		{
 			name: "plugin writing its own compiled template cache",
 			rule: "dropper_wp_plugin_installer",
 			sample: `<?php
@@ -1612,6 +1656,30 @@ echo $double(21);
 			ext:  ".log",
 			sample: `[21-Aug-2023 16:37:55 UTC] PHP Warning:  file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream: Permission denied in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 88
 [21-Aug-2023 16:37:56 UTC] PHP Notice:  Undefined index: mode in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 91
+`,
+		},
+		{
+			name: "PHP-named error log quoting a failed plugin file write",
+			rule: "dropper_wp_plugin_installer",
+			ext:  ".php",
+			sample: `[21-Aug-2023 16:37:55 UTC] PHP Warning:  file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream: Permission denied in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 88
+[21-Aug-2023 16:37:56 UTC] PHP Notice:  Undefined index: mode in /home/example/public_html/wp-content/plugins/wp-cache/loader.php on line 91
+`,
+		},
+		{
+			name: "XML document quoting a failed plugin file write",
+			rule: "dropper_wp_plugin_installer",
+			ext:  ".php",
+			sample: `<?xml version="1.0"?>
+<error>file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream</error>
+`,
+		},
+		{
+			name: "XML stylesheet instruction quoting a failed plugin file write",
+			rule: "dropper_wp_plugin_installer",
+			ext:  ".php",
+			sample: `<?xml-stylesheet type="text/xsl" href="errors.xsl"?>
+<error>file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream</error>
 `,
 		},
 	}
