@@ -36,7 +36,7 @@ var realtimeOnlyRules = map[string]string{
 	"cgi_bash_webshell":                "Rename, and the .yar side is the HARDENED one: cgi_webshell_bash requires the bash shebang at offset 0, which is what keeps the four bare substrings from matching any large bundle. Porting this .yml version by name would replace a hardened rule with the weak original",
 	"cgi_haxor_extension":              "Tier 2: content signal is the literal shebang, which occurs by chance in binary; 473 live hits across 22 file types including .jpg, .pdf, .zip and fonts. Real detection is the .haxor filename and belongs in internal/checks",
 	"credential_logger":                "Tier 2: measured at 1 hit on the clean corpus, on security-plugin login code, and it also fires on a newsletter opt-in handler writing a sanitized posted address to a log file. Redesign before porting",
-	"credential_mailer":                "Tier 2: already a live realtime false positive on Elementor and WooCommerce registration mail, measured at 4 hits on the clean corpus. credential_harvester_php covers the shape, but its variable-name proximity arm is evaded by short names; harden that rule instead of porting this one",
+	"credential_mailer":                "Covered and HARDENED under another name: credential_harvester_php now also reads the hardcoded drop address that short-name kits cannot hide, while this .yml form is bare co-occurrence of mail( and the two field names, measured at 4 hits on the clean corpus and already a live realtime false positive on Elementor and WooCommerce registration mail",
 	"dropper_php_stream_wrapper":       "Rename, not a gap: dropper_stream_wrapper_abuse carries the same three wrapper arms and still fires on a require/zip:// variant sharing no literal with the sample that first matched",
 	"dropper_wp_plugin_installer":      "Tier 1: silent on the corpus, on a 291k-file live sample, and on a benign control (a plugin writing its own compiled template cache). Ready to port",
 	"exfil_wp_config_reader":           "Tier 2: silent on both samples, yet fires on an authenticated migration job staging wp-config for its export package. Redesign before porting",
@@ -123,6 +123,7 @@ func coveredByAnotherRule(reason string) bool {
 var renamedYARARules = map[string]string{
 	"backdoor_cron_reverse_shell":   "backdoor_cron_downloader",
 	"backdoor_wp_muplugin_loader":   "backdoor_wp_muplugin",
+	"credential_mailer":             "credential_harvester_php",
 	"cgi_bash_webshell":             "cgi_webshell_bash",
 	"dropper_php_stream_wrapper":    "dropper_stream_wrapper_abuse",
 	"exploit_htaccess_handler":      "exploit_htaccess_handler_abuse",

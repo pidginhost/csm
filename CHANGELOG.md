@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A phishing page that mails stolen logins to an address written into the file is now reported even when it copies the fields into one-letter variables. A site's own signup notice, which mails the site address, stays quiet.
 - Hidden pharma spam is now reported when it advertises a pharmacy or a sleep aid, not only the handful of drug names the rule used to know.
 - A shell that stores request input in a variable before running it through eval is now reported by scheduled scans, not only in realtime. One assignment used to be enough to hide it.
 - A backdoor planted in a theme is now detected the same way as one planted in a plugin. The rule only opened on a plugin header, so the same shell in a theme file went unreported.

