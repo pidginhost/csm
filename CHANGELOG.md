@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- An SMTP client that announces itself with a bracketed IP address in its HELO can no longer steer the brute-force tracker, and with it the firewall, at an address of its choosing. Failed logins are now attributed to the connecting address, so the attacker is the one who gets blocked.
 - PHP Shield alerts now name the request URI and user agent, so an event identifies the scanner that sent it instead of showing only a parameter name. A command parameter that was merely observed is no longer rated the same as an execution the Shield actually blocked, and one scanner sweeping many accounts now raises a single alert per source address rather than one per site.
 - WordPress database scans now inspect server-executed WPCode snippets and spam taxonomy on every active multisite blog, bound finding evidence, and report incomplete row or byte samples.
 

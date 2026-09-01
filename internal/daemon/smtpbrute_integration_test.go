@@ -12,10 +12,12 @@ import (
 )
 
 // makeEximDovecotFailLine returns a synthetic exim mainlog line with the
-// dovecot_login authenticator-failed format.
+// dovecot_login authenticator-failed format. Exim emits it via
+// host_and_ident(FALSE), so there is no H= prefix: the HELO sits in
+// parentheses directly before the connecting client.
 func makeEximDovecotFailLine(ip, account string) string {
 	return fmt.Sprintf(
-		"2026-04-14 12:00:00 dovecot_login authenticator failed for H=(bot.example) [%s]:54321: 535 Incorrect authentication data (set_id=%s)",
+		"2026-04-14 12:00:00 dovecot_login authenticator failed for (bot.example) [%s]:54321: 535 Incorrect authentication data (set_id=%s)",
 		ip, account,
 	)
 }
