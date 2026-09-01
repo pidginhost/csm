@@ -152,6 +152,10 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		report.Checks = append(report.Checks, DoctorCheck{Name: "bbolt store healthy", Status: "ok"})
 	}
 
+	if cfg.PHPShield.Enabled {
+		report.Checks = append(report.Checks, phpShieldCageFSDoctorChecks()...)
+	}
+
 	report.OverallStatus = collapseDoctor(report.Checks)
 	return report
 }

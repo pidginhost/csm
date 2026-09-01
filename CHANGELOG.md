@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `csm doctor` now reports how many CageFS cages are missing PHP Shield's event mount. Registering the mount is not enough: until each cage is remounted, PHP there cannot reach the event socket and every detection is dropped, which until now looked exactly like a quiet server.
+
 ### Changed
 
 - Bumped Go module dependencies: `tdewolff/parse/v2` 2.8.15 -> 2.8.16, `golang.org/x/net` 0.57.0 -> 0.58.0, `golang.org/x/text` 0.40.0 -> 0.41.0.
