@@ -213,6 +213,9 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// single-site install these are the only tables.
 		installFindings = append(installFindings, checkWPOptions(user, creds, prefix)...)
 		installFindings = append(installFindings, checkWPPosts(user, creds, prefix)...)
+		// Code stored in the database is executed by snippet plugins and is
+		// invisible to every filesystem scan.
+		installFindings = append(installFindings, checkWPStoredCode(user, creds, prefix)...)
 		installFindings = append(installFindings,
 			checkWPPhantomAuthors(user, creds, prefix, prefix, maxPhantomAuthorsReported)...)
 
