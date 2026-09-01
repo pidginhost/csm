@@ -274,8 +274,10 @@ func parsePHPShieldLine(line string) *alert.Finding {
 	}
 	eventType := fields[0]
 
-	// Extract key=value pairs
-	var ip, script, details string
+	// Extract key=value pairs. The URI and user agent are what identify the
+	// request: "/alfacgiapi/perl.alfa" from a "Mozlila" agent names the scanner,
+	// where the bare parameter name does not. Both were parsed and discarded.
+	var ip, script, uri, ua, details string
 	if len(fields) > 1 {
 		kvPart := fields[1]
 		for _, kv := range splitKV(kvPart) {
@@ -284,44 +286,83 @@ func parsePHPShieldLine(line string) *alert.Finding {
 				ip = kv[1]
 			case "script":
 				script = kv[1]
+			case "uri":
+				uri = kv[1]
+			case "ua":
+				ua = kv[1]
 			case "details":
 				details = kv[1]
 			}
 		}
 	}
+	context := phpShieldDetails(ip, uri, ua, details)
 
 	switch eventType {
 	case "BLOCK_PATH":
 		return &alert.Finding{
 			Severity: alert.Critical,
 			Check:    "php_shield_block",
+			SourceIP: ip,
 			Message:  fmt.Sprintf("PHP Shield blocked execution from dangerous path: %s", script),
-			Details:  fmt.Sprintf("IP: %s\n%s", ip, details),
+			Details:  context,
 		}
 	case "WEBSHELL_PARAM":
+		// Observation, not a denial: for a document-root script the Shield never
+		// reaches its deny branch, so nothing was blocked. Every public site
+		// receives these daily, and rating them Critical buries the real blocks.
 		return &alert.Finding{
-			Severity: alert.Critical,
+			Severity: alert.Warning,
 			Check:    "php_shield_webshell",
-			Message:  fmt.Sprintf("PHP Shield detected webshell command parameter: %s", script),
-			Details:  fmt.Sprintf("IP: %s\n%s", ip, details),
+			SourceIP: ip,
+			Message:  fmt.Sprintf("PHP Shield observed a webshell command parameter: %s", script),
+			Details:  context,
 		}
 	case "BLOCK_WEBSHELL":
 		return &alert.Finding{
 			Severity: alert.Critical,
 			Check:    "php_shield_webshell",
+			SourceIP: ip,
 			Message:  fmt.Sprintf("PHP Shield blocked a webshell signature: %s", script),
-			Details:  fmt.Sprintf("IP: %s\n%s", ip, details),
+			Details:  context,
 		}
 	case "EVAL_FATAL":
 		return &alert.Finding{
 			Severity: alert.High,
 			Check:    "php_shield_eval",
+			SourceIP: ip,
 			Message:  fmt.Sprintf("PHP Shield detected eval() chain failure: %s", script),
-			Details:  details,
+			Details:  context,
 		}
 	}
 
 	return nil
+}
+
+// phpShieldDetails renders the context an operator needs to judge a Shield
+// event: who sent it, what they asked for, and what they claimed to be. Empty
+// fields are omitted rather than printed as blanks.
+func phpShieldDetails(ip, uri, ua, details string) string {
+	var b strings.Builder
+	for _, field := range [][2]string{
+		{"IP", ip},
+		{"URI", uri},
+		{"User-Agent", ua},
+	} {
+		if field[1] == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "%s: %s", field[0], field[1])
+	}
+	if details != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(details)
+	}
+	return b.String()
 }
 
 // splitKV splits "key1=val1 key2=val2" respecting values with spaces.
