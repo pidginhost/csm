@@ -27,6 +27,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/geoip"
@@ -1862,7 +1863,7 @@ func (d *Daemon) startLogWatchers() {
 		}
 
 		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-			ip := extractBracketedIP(line)
+			ip := eximlog.ClientIP(line)
 			account := extractSetID(line)
 
 			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
@@ -2190,11 +2191,11 @@ func recordEximSMTPAuthSuccess(line string, cfg *config.Config, tracker *smtpAut
 	if tracker == nil || extractAuthUser(line) == "" {
 		return
 	}
-	hStart, hasHField := eximHFieldStart(line)
+	hStart, hasHField := eximlog.HFieldStart(line)
 	if !hasHField {
 		return
 	}
-	ip := firstHFieldClientIP(line[hStart:])
+	ip := eximlog.HFieldClientIP(line[hStart:])
 	if ip == "" {
 		return
 	}

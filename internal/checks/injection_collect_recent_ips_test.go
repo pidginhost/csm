@@ -65,8 +65,7 @@ func TestCollectRecentIPsSSHLogins(t *testing.T) {
 func TestCollectRecentIPsEximSMTPAuthFailure(t *testing.T) {
 	// cPanel hosts always check exim_mainlog, even before the file exists.
 	forceCPanelPlatform(t)
-	// Real exim lines: the first bracketed group in the line is the
-	// client IP, which is what extractBracketedIP picks up.
+	// The connecting client is the bracketed address inside the H= field.
 	content := "2026-04-14 10:00:00 H=client [198.51.100.9]:1234 F=<spam@x> rejected RCPT <victim@host>: relay not permitted\n" +
 		"2026-04-14 10:00:01 H=client [203.0.113.50]:2222 authenticator failed for bad: 535 Auth failed\n"
 	withMockOS(t, writeMockLog(t, "/var/log/exim_mainlog", content))

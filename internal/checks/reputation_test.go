@@ -111,33 +111,6 @@ func TestExtractIPAfterKeywordNotIP(t *testing.T) {
 	}
 }
 
-// --- extractBracketedIP -----------------------------------------------
-
-func TestExtractBracketedIP(t *testing.T) {
-	line := "SMTP connection from [203.0.113.5]:12345"
-	if got := extractBracketedIP(line); got != "203.0.113.5" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractBracketedIPv6(t *testing.T) {
-	if got := extractBracketedIP("from [2001:db8::1]"); got != "2001:db8::1" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractBracketedIPNoBrackets(t *testing.T) {
-	if got := extractBracketedIP("no brackets here"); got != "" {
-		t.Errorf("no brackets should return empty, got %q", got)
-	}
-}
-
-func TestExtractBracketedIPNotIP(t *testing.T) {
-	if got := extractBracketedIP("[hostname]"); got != "" {
-		t.Errorf("hostname in brackets should return empty, got %q", got)
-	}
-}
-
 // --- addIfNotInfra ----------------------------------------------------
 
 func TestAddIfNotInfra(t *testing.T) {

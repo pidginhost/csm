@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -199,7 +200,7 @@ func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time,
 	if !isCloudProviderPTR(ptr) {
 		return
 	}
-	ip := extractBracketedIP(line)
+	ip := eximlog.ClientIP(line)
 	if ip == "" {
 		return
 	}

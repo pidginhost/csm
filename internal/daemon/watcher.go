@@ -17,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
@@ -639,9 +640,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// 6. Dovecot auth failure - brute force indicator
-	// Format: "dovecot_login authenticator failed for H=(hostname) [IP]:port: 535 ... (set_id=user@domain)"
+	// Format: "dovecot_login authenticator failed for (HELO) [IP]:port: 535 ... (set_id=user@domain)"
 	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-		ip := extractBracketedIP(line)
+		ip := eximlog.ClientIP(line)
 		account := extractSetID(line)
 		msg := "Email authentication failure"
 		if account != "" {
@@ -1019,107 +1020,6 @@ func recentOutgoingMailHold(domain string) bool {
 	return stored != "" && !isDedupExpired(stored, recentOutgoingMailHoldWindow)
 }
 
-// extractBracketedIP returns the connecting client's IP from an exim log line.
-// It prefers the `[IP]:port` token inside the H= field (the connecting client,
-// not the hostname) and validates every candidate with net.ParseIP, so a HELO
-// string or a message Subject that contains square brackets -- e.g.
-// T="Order [20260701-123]" -- can no longer be mistaken for the source IP.
-func extractBracketedIP(line string) string {
-	if start, ok := eximHFieldStart(line); ok {
-		return firstHFieldClientIP(line[start:])
-	}
-	if strings.HasPrefix(line, "H=") || strings.Contains(line, " H=") {
-		return ""
-	}
-	return firstBracketedIP(line)
-}
-
-func eximHFieldStart(line string) (int, bool) {
-	if strings.HasPrefix(line, "H=") {
-		return len("H="), true
-	}
-	if h := strings.Index(line, " H="); h >= 0 {
-		if t := strings.Index(line, " T="); t >= 0 && t < h {
-			return 0, false
-		}
-		return h + len(" H="), true
-	}
-	return 0, false
-}
-
-func firstHFieldClientIP(s string) string {
-	ip, _ := firstHFieldClientIPAndEnd(s)
-	return ip
-}
-
-// firstHFieldClientIPAndEnd returns the connecting address and the byte offset
-// immediately after its closing bracket. The offset lets callers discard the
-// entire attacker-controlled H= value before parsing later Exim fields.
-func firstHFieldClientIPAndEnd(s string) (string, int) {
-	parenDepth := 0
-	for i := 0; i < len(s); i++ {
-		if parenDepth == 0 && beginsNextEximField(s[i:]) {
-			return "", 0
-		}
-		switch s[i] {
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
-		case '[':
-			if parenDepth > 0 {
-				continue
-			}
-			end := strings.IndexByte(s[i+1:], ']')
-			if end < 0 {
-				return "", 0
-			}
-			candidate := s[i+1 : i+1+end]
-			after := s[i+1+end+1:]
-			if net.ParseIP(candidate) != nil && hClientIPTerminated(after) {
-				return candidate, i + end + 2
-			}
-			i += end + 1
-		}
-	}
-	return "", 0
-}
-
-func beginsNextEximField(s string) bool {
-	if len(s) == 0 || (s[0] != ' ' && s[0] != '\t') {
-		return false
-	}
-	rest := strings.TrimLeft(s, " \t")
-	if strings.HasPrefix(rest, "for ") {
-		return true
-	}
-	eq := strings.IndexByte(rest, '=')
-	if eq <= 0 || eq > 3 {
-		return false
-	}
-	for i := 0; i < eq; i++ {
-		c := rest[i]
-		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
-			return false
-		}
-	}
-	return true
-}
-
-func hClientIPTerminated(s string) bool {
-	if s == "" {
-		return true
-	}
-	switch s[0] {
-	case ':', ' ', '\t', '\n':
-		return true
-	default:
-		return false
-	}
-}
-
 // extractSetID extracts the account from "(set_id=user@domain)" or "(set_id=user)" in exim logs.
 func extractSetID(line string) string {
 	const prefix = "set_id="
@@ -1292,8 +1192,8 @@ func extractAuthUser(line string) string {
 	// H= includes attacker-controlled HELO text which can contain spaces,
 	// quotes, parentheses, and strings that resemble Exim fields. Start field
 	// parsing only after the validated connecting-client address.
-	if hStart, ok := eximHFieldStart(rest); ok {
-		_, clientEnd := firstHFieldClientIPAndEnd(rest[hStart:])
+	if hStart, ok := eximlog.HFieldStart(rest); ok {
+		_, clientEnd := eximlog.HFieldClientIPAndEnd(rest[hStart:])
 		if clientEnd == 0 {
 			return ""
 		}

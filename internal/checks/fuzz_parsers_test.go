@@ -101,18 +101,6 @@ func FuzzParseFTPLoginAccount(f *testing.F) {
 	})
 }
 
-func FuzzExtractBracketedIP(f *testing.F) {
-	f.Add("H=client [203.0.113.50]:2222 auth failed")
-	f.Add("no bracket here")
-	f.Add("[1.2.3.4]")
-	f.Add("[")
-	f.Add("[unclosed bracket")
-	f.Add("[][][][]")
-	f.Fuzz(func(t *testing.T, line string) {
-		_ = extractBracketedIP(line)
-	})
-}
-
 func FuzzFirstField(f *testing.F) {
 	f.Add("203.0.113.5 - - [14/Apr/2026:10:00:00 +0000] \"GET /\"")
 	f.Add("2001:db8::1 rest of line")

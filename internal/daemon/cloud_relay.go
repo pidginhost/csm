@@ -2,13 +2,13 @@ package daemon
 
 import (
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/obs"
 )
 
@@ -139,40 +139,6 @@ func extractEximHostname(line string) string {
 	return strings.TrimSpace(rest[:end])
 }
 
-// firstBracketedIP returns the contents of the first `[...]` token in s that
-// parses as an IP address and sits outside any parenthesised group, or "" if
-// none. Exim writes the connecting client as `[IP]:port` and the HELO string
-// in parentheses before it; a HELO may legally be an RFC 5321 address literal
-// such as `[203.0.113.9]`, so a bracketed IP inside parentheses is the
-// attacker's text, never the client. Validating each remaining candidate with
-// net.ParseIP also skips bracketed non-IP tokens such as a message Subject
-// that happens to contain square brackets (e.g. T="Order [20260701-123]").
-func firstBracketedIP(s string) string {
-	parenDepth := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
-		case '[':
-			end := strings.IndexByte(s[i+1:], ']')
-			if end < 0 {
-				return ""
-			}
-			if parenDepth == 0 {
-				if candidate := s[i+1 : i+1+end]; net.ParseIP(candidate) != nil {
-					return candidate
-				}
-			}
-			i += end + 1
-		}
-	}
-	return ""
-}
-
 // cloudRelayWindow tracks authenticated sends from cloud IPs for one user.
 // Bounded so memory can't grow unbounded from a misbehaving log stream.
 type cloudRelayWindow struct {
@@ -263,7 +229,7 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 	if !isCloudProviderPTR(ptr) {
 		return nil
 	}
-	ip := extractBracketedIP(line)
+	ip := eximlog.ClientIP(line)
 	if ip == "" {
 		// Without an IP we can't dedup distinct sources; bail silently
 		// so we don't count half-parsed records toward the threshold.

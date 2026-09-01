@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
@@ -608,7 +609,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 	if shouldCollectEximMainlog(info) {
 		for _, line := range tailFile(reputationEximMainlog, 50) {
 			if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
-				if ip := extractBracketedIP(line); ip != "" {
+				if ip := eximlog.ClientIP(line); ip != "" {
 					addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
 				}
 			}
@@ -723,23 +724,6 @@ func extractIPAfterKeyword(line, keyword string) string {
 		return ""
 	}
 	ip := strings.TrimRight(fields[0], ",:;)([]")
-	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
-		return ip
-	}
-	return ""
-}
-
-func extractBracketedIP(line string) string {
-	// Extract IP from [1.2.3.4] format common in exim logs
-	start := strings.Index(line, "[")
-	if start < 0 {
-		return ""
-	}
-	end := strings.Index(line[start:], "]")
-	if end < 0 {
-		return ""
-	}
-	ip := line[start+1 : start+end]
 	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
 		return ip
 	}

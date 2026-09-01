@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 // makeEximDovecotFailLine returns a synthetic exim mainlog line with the
@@ -28,7 +29,7 @@ func buildEximHandler(cfg *config.Config, tr *smtpAuthTracker) LogLineHandler {
 	return func(line string, c *config.Config) []alert.Finding {
 		findings := parseEximLogLine(line, c)
 		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-			ip := extractBracketedIP(line)
+			ip := eximlog.ClientIP(line)
 			account := extractSetID(line)
 
 			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the

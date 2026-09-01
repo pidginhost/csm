@@ -699,52 +699,6 @@ func TestParsePurgeDaemon_WhitespaceAfterPurge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// extractBracketedIP edge cases
-// ---------------------------------------------------------------------------
-
-func TestExtractBracketedIP_IPv6Full(t *testing.T) {
-	line := "H=hostname [2001:db8::1]:25"
-	got := extractBracketedIP(line)
-	// Starts with a digit? No, starts with '2'. len >= 7? "2001:db8::1" is 11 chars. Should match.
-	if got != "2001:db8::1" {
-		t.Errorf("got %q, want 2001:db8::1", got)
-	}
-}
-
-func TestExtractBracketedIP_IPv6Loopback(t *testing.T) {
-	// "::1" is a valid IP: net.ParseIP accepts it, so it is returned. Any
-	// loopback/private filtering is the caller's job (isPrivateOrLoopback),
-	// not the bracket extractor's.
-	line := "H=hostname [::1]:25"
-	if got := extractBracketedIP(line); got != "::1" {
-		t.Errorf("valid IPv6 loopback should be returned, got %q", got)
-	}
-}
-
-func TestExtractBracketedIP_UnclosedBracket(t *testing.T) {
-	if got := extractBracketedIP("[203.0.113.5"); got != "" {
-		t.Errorf("unclosed bracket should return empty, got %q", got)
-	}
-}
-
-func TestExtractBracketedIP_ShortContent(t *testing.T) {
-	// Content too short to be an IP (less than 7 chars).
-	if got := extractBracketedIP("[ab]"); got != "" {
-		t.Errorf("short content should return empty, got %q", got)
-	}
-}
-
-func TestExtractBracketedIP_PrefersHFieldClient(t *testing.T) {
-	// The connecting client sits in the H= field. A later bracketed IP (here a
-	// contrived trailing token) must not win over the H= client.
-	line := "x <= s@example.com H=hostname [203.0.113.5]:1234 for r@example.net T=[10.0.0.1]"
-	got := extractBracketedIP(line)
-	if got != "203.0.113.5" {
-		t.Errorf("should select the H= client IP, got %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // extractMailHoldSender edge cases
 // ---------------------------------------------------------------------------
 
