@@ -15,6 +15,23 @@ import (
 // `go test -fuzz=FuzzFoo -fuzztime=30s ./internal/checks/` during
 // investigation.
 
+func FuzzArchiveEntrySignalsSiteBackup(f *testing.F) {
+	f.Add("mysite-2024-01-01/wp-config.php")
+	f.Add("site/sites/default/settings.php")
+	f.Add("../wp-config.php")
+	f.Add(`C:\public_html\index.php`)
+	f.Add("some-plugin/settings.php")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, name string) {
+		_ = archiveEntrySignalsSiteBackup(name)
+		for _, unsafe := range []string{"../" + name, "/" + name, `C:\` + name} {
+			if archiveEntrySignalsSiteBackup(unsafe) {
+				t.Fatalf("unsafe archive path %q was classified", unsafe)
+			}
+		}
+	})
+}
+
 func FuzzIsSampleSQLPath(f *testing.F) {
 	f.Add("/ajaxCRUD/examples/example.sql")
 	f.Add("/crud-php-simple-master/database.sql")

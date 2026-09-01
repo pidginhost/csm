@@ -142,7 +142,11 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			if class == classNone {
 				// An archive named after the site it holds carries no backup
 				// token, so the name tells us nothing. Its entry list does.
-				if archiveHoldsSiteBackup(path) {
+				holdsSite, complete := archiveSiteBackupStatus(ctx, path)
+				if !complete {
+					markCheckIncomplete(ctx, "exposed_files")
+				}
+				if holdsSite {
 					class = classBackupArchive
 				}
 			}

@@ -206,20 +206,19 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 		seenDatabases[databaseKey] = struct{}{}
+		var installFindings []alert.Finding
 
 		// Always scan the main-site (or single-site) tables. In
 		// multisite, blog ID 1 keeps the unprefixed names; in a
 		// single-site install these are the only tables.
-		findings = append(findings, checkWPOptions(user, creds, prefix)...)
-		findings = append(findings, checkWPPosts(user, creds, prefix)...)
-		// Runs on the primary blog only: in multisite the users table is
-		// network-wide and unprefixed, so a per-blog prefix would name a table
-		// that does not exist.
-		findings = append(findings, checkWPPhantomAuthors(user, creds, prefix)...)
+		installFindings = append(installFindings, checkWPOptions(user, creds, prefix)...)
+		installFindings = append(installFindings, checkWPPosts(user, creds, prefix)...)
+		installFindings = append(installFindings,
+			checkWPPhantomAuthors(user, creds, prefix, prefix, maxPhantomAuthorsReported)...)
 
 		// wp_users / wp_usermeta are network-wide in multisite, so
 		// the user-table scan runs once regardless of the layout.
-		findings = append(findings, checkWPUsers(user, creds, prefix)...)
+		installFindings = append(installFindings, checkWPUsers(user, creds, prefix)...)
 
 		// Multisite: enumerate active secondary blog IDs and scan
 		// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
@@ -228,8 +227,10 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// hosts have stale ones we'd otherwise alert on
 		// indefinitely.
 		if creds.multisite {
-			findings = append(findings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
+			installFindings = append(installFindings, scanMultisiteSecondaryBlogs(ctx, user, creds, prefix)...)
 		}
+		findings = append(findings,
+			capPhantomAuthorFindings(installFindings, maxPhantomAuthorsReported)...)
 	}
 
 	return appendDatabaseScanIncompleteFinding(ctx, findings)
@@ -267,7 +268,8 @@ func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.F
 // each. The user-table scan does NOT iterate -- WP shares
 // wp_users / wp_usermeta across the entire network by default; a
 // site-specific user table only exists on configurations that
-// override that, which we ignore here for v1.
+// override that, which we ignore here for v1. The phantom-author scan does
+// iterate each posts table, but joins it to that shared users table.
 //
 // blog_id=1 is excluded because its tables are unprefixed and were
 // already scanned by the caller.
@@ -297,6 +299,8 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
 		findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
 		findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
+		findings = append(findings,
+			checkWPPhantomAuthors(user, creds, sitePrefix, prefix, maxPhantomAuthorsReported)...)
 	}
 	if truncated {
 		markCheckIncomplete(ctx, "db_content")

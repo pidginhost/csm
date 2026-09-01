@@ -217,6 +217,13 @@ func TestCheckDatabaseContentReportsUnusableConfig(t *testing.T) {
 					return os.Stat(configFile)
 				},
 			})
+			previous := runMySQLQuery
+			queryCalls := 0
+			runMySQLQuery = func(_ wpDBCreds, _ string) []string {
+				queryCalls++
+				return nil
+			}
+			t.Cleanup(func() { runMySQLQuery = previous })
 
 			ctx, incomplete := withIncompleteCheckCollector(context.Background())
 			findings := CheckDatabaseContent(ctx, nil, nil)
@@ -225,6 +232,9 @@ func TestCheckDatabaseContentReportsUnusableConfig(t *testing.T) {
 			}
 			if len(findings) != 1 || findings[0].Check != "db_content_scan_incomplete" {
 				t.Fatalf("unusable wp-config.php findings = %+v, want incomplete warning", findings)
+			}
+			if queryCalls != 0 {
+				t.Fatalf("unusable wp-config.php reached SQL construction %d times", queryCalls)
 			}
 		})
 	}
