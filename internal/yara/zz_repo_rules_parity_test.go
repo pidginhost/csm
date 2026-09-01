@@ -1661,6 +1661,13 @@ echo $double(21);
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case only reads the two scanners: the YAML scanner guards
+			// its rules with an RWMutex, and yara-x builds a throwaway scanner
+			// per Scan call over immutable compiled rules. Scanning hundreds of
+			// small samples one at a time is what made this the slowest test in
+			// the suite.
+			t.Parallel()
+
 			ext := tc.ext
 			if ext == "" {
 				ext = ".php"
