@@ -55,6 +55,7 @@ func TestQuarantineFindingFile_WebshellEligible(t *testing.T) {
 	}
 
 	f := alert.Finding{
+		Severity: alert.Critical,
 		Check:    "webshell",
 		FilePath: src,
 	}

@@ -71,6 +71,11 @@ type scanJobRequest struct {
 	quarantine bool               // when true, annotateQuarantine runs on each finding
 	cancelCtx  context.Context    // per-job cancellable context
 	cancelFn   context.CancelFunc // allows Cancel() to stop the runner
+	// quarantined records the action taken per file path within this job, so
+	// a second check flagging the same file reports the move already made
+	// instead of a failed attempt on a file that is no longer there. Shared
+	// by every copy of the request; only the worker goroutine touches it.
+	quarantined map[string]string
 }
 
 // ScanJobManager runs full-scan jobs as background work in the daemon.
@@ -218,11 +223,12 @@ func (m *ScanJobManager) Enqueue(scope, target string, opts checks.AccountScanOp
 	m.cancelFns[id] = jobCancel
 
 	req := scanJobRequest{
-		id:         id,
-		opts:       opts,
-		quarantine: quarantine,
-		cancelCtx:  jobCtx,
-		cancelFn:   jobCancel,
+		id:          id,
+		opts:        opts,
+		quarantine:  quarantine,
+		quarantined: make(map[string]string),
+		cancelCtx:   jobCtx,
+		cancelFn:    jobCancel,
 	}
 
 	select {
@@ -609,6 +615,11 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 	if !req.quarantine {
 		return f
 	}
+	if action, done := req.quarantined[f.FilePath]; done && f.FilePath != "" {
+		f.RemediationStatus = "quarantined"
+		f.RemediationDetail = action
+		return f
+	}
 	result, eligible := m.quarantineFile(f)
 	if !eligible {
 		f.RemediationStatus = "left_for_review"
@@ -617,6 +628,9 @@ func (m *ScanJobManager) annotateQuarantine(req scanJobRequest, f alert.Finding)
 	if result.Success {
 		f.RemediationStatus = "quarantined"
 		f.RemediationDetail = result.Action
+		if req.quarantined != nil {
+			req.quarantined[f.FilePath] = result.Action
+		}
 	} else {
 		f.RemediationStatus = "failed"
 		f.RemediationDetail = result.Error

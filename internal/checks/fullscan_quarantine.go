@@ -1,6 +1,12 @@
 package checks
 
-import "github.com/pidginhost/csm/internal/alert"
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/pidginhost/csm/internal/alert"
+)
 
 // eligibleFullScanChecks is the set of check types that map to a pure file
 // quarantine (fixQuarantine) in ApplyFix. These are the only checks eligible
@@ -31,12 +37,36 @@ var eligibleFullScanChecks = map[string]bool{
 // touches the firewall. Returns eligible=false for any finding that is not a
 // quarantinable malware/webshell FILE finding (caller marks those
 // "left_for_review").
+//
+// The job runs unattended, so it gets the same bar the scheduled auto-response
+// applies: only a Critical finding (two converging indicators) may act, only on
+// a regular file that is not a symlink, never on a whole directory, and a
+// WordPress core, plugin or theme file is cleaned in place rather than moved,
+// because moving it takes the site down while only the injected code had to go.
 func QuarantineFindingFile(f alert.Finding) (RemediationResult, bool) {
-	if !eligibleFullScanChecks[f.Check] {
+	if !eligibleFullScanChecks[f.Check] || f.FilePath == "" || f.Severity != alert.Critical {
 		return RemediationResult{}, false
 	}
-	if f.FilePath == "" {
+	info, err := osFS.Lstat(f.FilePath)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
 		return RemediationResult{}, false
+	}
+	if ShouldCleanInsteadOfQuarantine(f.FilePath) {
+		clean := CleanInfectedFile(f.FilePath)
+		switch {
+		case clean.Cleaned:
+			return RemediationResult{
+				Success:     true,
+				Action:      fmt.Sprintf("cleaned %s in place", f.FilePath),
+				Description: fmt.Sprintf("Removed: %s (backup: %s)", strings.Join(clean.Removals, "; "), clean.BackupPath),
+			}, true
+		case clean.Error == "":
+			// Nothing the cleaner recognises: a core file with no removable
+			// injection is an operator decision, not a move.
+			return RemediationResult{}, false
+		}
+		// The cleaner could not do its job (unreadable, too large): the
+		// scheduled path falls back to quarantine here too.
 	}
 	return fixQuarantine(f.FilePath), true
 }
