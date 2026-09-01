@@ -1,25 +1,47 @@
 package signatures
 
 import (
+	"errors"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 )
 
 // loadRepoScanner loads the production rules from configs/ so regression tests
 // run against the same YAML the daemon ships.
+// The compiled rule set is shared: over 160 tests ask for it, and compiling
+// every production rule for each one was most of this package's runtime.
+// Scanning only takes the scanner's read lock, so sharing is safe -- but the
+// returned scanner MUST be treated as read-only. A test that needs to Reload,
+// or wants a different rule directory, builds its own Scanner instead (see the
+// Reload cases in coverage_test.go).
+var (
+	repoScannerOnce sync.Once
+	repoScanner     *Scanner
+	repoScannerErr  error
+)
+
 func loadRepoScanner(t *testing.T) *Scanner {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
+	repoScannerOnce.Do(func() {
+		_, thisFile, _, ok := runtime.Caller(0)
+		if !ok {
+			repoScannerErr = errors.New("runtime.Caller failed")
+			return
+		}
+		configsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs")
+		scanner := NewScanner(configsDir)
+		if scanner.RuleCount() == 0 {
+			repoScannerErr = errors.New("expected repository rules to load")
+			return
+		}
+		repoScanner = scanner
+	})
+	if repoScannerErr != nil {
+		t.Fatal(repoScannerErr)
 	}
-	configsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs")
-	scanner := NewScanner(configsDir)
-	if scanner.RuleCount() == 0 {
-		t.Fatal("expected repository rules to load")
-	}
-	return scanner
+	return repoScanner
 }
 
 // FP reconstructions for the 2026-04-17 production unzip event.
