@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -17,6 +18,17 @@ const (
 	geoMinLoginCount  = 5                 // minimum logins before alerting on new country
 	geoAlertCooldownH = 24                // hours between alerts per account
 )
+
+// geoLookup resolves an IP through the daemon's GeoIP database, returning an
+// empty Info when no database is loaded. A variable so tests can drive the geo
+// detector without an mmdb file.
+var geoLookup = func(ip string) geoip.Info {
+	db := getGeoIPDB()
+	if db == nil {
+		return geoip.Info{}
+	}
+	return db.Lookup(ip)
+}
 
 // parseDovecotLogLine handles Dovecot login lines from /var/log/maillog.
 // It tracks per-mailbox login countries and alerts on new-country logins.
@@ -44,21 +56,22 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
-	// GeoIP lookup
-	db := getGeoIPDB()
-	if db == nil {
-		return nil
-	}
-	info := db.Lookup(ip)
+	info := geoLookup(ip)
 	country := info.Country
 	if country == "" {
 		return nil
 	}
 
-	// Skip trusted countries
+	// A trusted country suppresses the alert, not the login: the logins from
+	// home are what carry a mailbox past the login floor and teach its
+	// baseline. Returning before the history update left every mailbox whose
+	// owner lives in a trusted country stuck at zero logins, so its first
+	// foreign login was recorded as a known country and never alerted.
+	trusted := false
 	for _, tc := range cfg.Suppressions.TrustedCountries {
 		if strings.EqualFold(country, tc) {
-			return nil
+			trusted = true
+			break
 		}
 	}
 
@@ -83,7 +96,7 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// Check if this is a new country
 	_, countryKnown := history.Countries[country]
-	isNewCountry := !countryKnown && history.LoginCount >= geoMinLoginCount
+	isNewCountry := !trusted && !countryKnown && history.LoginCount >= geoMinLoginCount
 
 	// Update country timestamp
 	history.Countries[country] = now
