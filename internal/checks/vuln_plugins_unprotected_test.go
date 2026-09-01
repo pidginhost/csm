@@ -63,8 +63,8 @@ func TestAnnotateUnprotected_DisabledScopeIsAnAlias(t *testing.T) {
 			Source: "/var/cpanel/userdata/acme/shop.example.acme-host.example",
 		}},
 		aliases: vhostAliasSets("" +
-			"shop.example: acme==acme==addon==acme.example==/home/acme/public_html/shop==1.2.3.4==1.2.3.4\n" +
-			"shop.example.acme-host.example: acme==acme==sub==acme.example==/home/acme/public_html/shop==1.2.3.4==1.2.3.4\n"),
+			"shop.example: acme==acme==addon==acme-host.example==/home/acme/public_html/shop==1.2.3.4==1.2.3.4\n" +
+			"shop.example.acme-host.example: acme==acme==sub==acme-host.example==/home/acme/public_html/shop==1.2.3.4==1.2.3.4\n"),
 	}
 
 	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
@@ -75,8 +75,8 @@ func TestAnnotateUnprotected_DisabledScopeIsAnAlias(t *testing.T) {
 	if !strings.Contains(got[0].Message, "shop.example.acme-host.example") {
 		t.Errorf("message must name the vhost that carries the disabled flag; got %q", got[0].Message)
 	}
-	if !strings.Contains(got[0].Details, "alias") {
-		t.Errorf("details must explain the alias relationship; got:\n%s", got[0].Details)
+	if !strings.Contains(got[0].Details, "associated subdomain") {
+		t.Errorf("details must explain the associated-subdomain relationship; got:\n%s", got[0].Details)
 	}
 }
 
@@ -144,6 +144,58 @@ func TestAnnotateUnprotected_IgnoresUnrelatedScopes(t *testing.T) {
 	}
 }
 
+// Domain names are only unique inside an account. A stale userdata record for
+// another tenant can carry the same hostname and must not expose this tenant.
+func TestAnnotateUnprotected_IgnoresSameDomainInAnotherAccount(t *testing.T) {
+	cov := vpCoverage{
+		engineMode: "on",
+		disabled: []modsecDisabledScope{{
+			User:   "other",
+			Domain: "shop.example",
+			Source: "/var/cpanel/userdata/other/shop.example",
+		}},
+	}
+
+	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
+
+	if strings.Contains(got[0].Message, "unprotected") {
+		t.Errorf("another account's same-named domain must not annotate this finding; got %q", got[0].Message)
+	}
+}
+
+// A broad account scope is the setting an operator must fix first. Without
+// one, the finding's exact vhost is more actionable than an associated subdomain,
+// regardless of the disabled-scope sort order.
+func TestInertReason_PrefersActionableScope(t *testing.T) {
+	aliases := vhostAliasSets("" +
+		"shop.example: acme==acme==addon==acme.example==/home/acme/shop==1.2.3.4==1.2.3.4\n" +
+		"shop.example.acme.example: acme==acme==sub==acme.example==/home/acme/shop==1.2.3.4==1.2.3.4\n")
+	exact := modsecDisabledScope{User: "acme", Domain: "shop.example", Source: "/exact"}
+	alias := modsecDisabledScope{User: "acme", Domain: "shop.example.acme.example", Source: "/alias"}
+	account := modsecDisabledScope{User: "acme", Source: "/account"}
+
+	reason, source := (vpCoverage{disabled: []modsecDisabledScope{alias, exact}, aliases: aliases}).inertReason("acme", "shop.example")
+	if source != "/exact" || !strings.Contains(reason, "shop.example") {
+		t.Fatalf("exact scope = %q / %q, want /exact", reason, source)
+	}
+	reason, source = (vpCoverage{disabled: []modsecDisabledScope{alias, exact, account}, aliases: aliases}).inertReason("acme", "shop.example")
+	if source != "/account" || !strings.Contains(reason, "all domains") {
+		t.Fatalf("account scope = %q / %q, want /account", reason, source)
+	}
+}
+
+func TestAnnotateUnprotected_IsIdempotent(t *testing.T) {
+	cov := vpCoverage{disabled: []modsecDisabledScope{{User: "acme", Source: "/account"}}}
+	findings := []alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}
+
+	once := annotateUnprotected(findings, cov)[0]
+	twice := annotateUnprotected(findings, cov)[0]
+
+	if twice.Message != once.Message || twice.Details != once.Details {
+		t.Fatalf("second annotation changed finding:\nonce:  %q / %q\ntwice: %q / %q", once.Message, once.Details, twice.Message, twice.Details)
+	}
+}
+
 // Two accounts can legitimately name the same docroot path; they are not
 // aliases of one another and one's disabled flag must not cover the other.
 func TestVhostAliasSets_ScopedToOneAccount(t *testing.T) {
@@ -155,6 +207,73 @@ func TestVhostAliasSets_ScopedToOneAccount(t *testing.T) {
 	for _, p := range peers {
 		if p == "b.example" {
 			t.Fatalf("alias set for alice/a.example leaked another account's domain: %v", peers)
+		}
+	}
+}
+
+// Same-account docroot reuse is common and does not make independent vhosts
+// aliases. In particular, parked piles and an addon left on public_html must
+// not inherit another domain's disabled flag.
+func TestVhostAliasSets_RejectsAmbiguousSharedDocroots(t *testing.T) {
+	sets := vhostAliasSets("" +
+		"main.example: acme==acme==main==main.example==/home/acme/public_html==1.2.3.4==1.2.3.4\n" +
+		"parked.example: acme==acme==parked==main.example==/home/acme/public_html==1.2.3.4==1.2.3.4\n" +
+		"addon.example: acme==acme==addon==main.example==/home/acme/public_html==1.2.3.4==1.2.3.4\n")
+	if peers := sets[aliasKey("acme", "addon.example")]; len(peers) != 0 {
+		t.Fatalf("ambiguous shared docroot produced aliases: %v", peers)
+	}
+
+	cov := vpCoverage{
+		disabled: []modsecDisabledScope{{User: "acme", Domain: "main.example", Source: "/main"}},
+		aliases:  sets,
+	}
+	got := annotateUnprotected([]alert.Finding{vulnFinding("addon.example", "acme", alert.Critical)}, cov)
+	if strings.Contains(got[0].Message, "unprotected") {
+		t.Fatalf("disabled main domain leaked across ambiguous docroot: %q", got[0].Message)
+	}
+
+	sets = vhostAliasSets("" +
+		"shop.example: acme==acme==addon==main.example==/home/acme/shared==1.2.3.4==1.2.3.4\n" +
+		"shop.main.example: acme==acme==sub==main.example==/home/acme/shared==1.2.3.4==1.2.3.4\n")
+	if peers := sets[aliasKey("acme", "shop.example")]; len(peers) != 0 {
+		t.Fatalf("unrelated addon/subdomain pair produced aliases: %v", peers)
+	}
+}
+
+func TestVhostAliasSets_RejectsIncompleteDomainMap(t *testing.T) {
+	sets := vhostAliasSets("" +
+		"shop.example: acme==acme==addon==acme.example==/home/acme/shop==1.2.3.4==1.2.3.4\n" +
+		"shop.example.acme.example: acme==acme==sub==acme.example==/home/acme/shop==1.2.3.4==1.2.3.4\n" +
+		"truncated-row-without-fields\n")
+
+	if len(sets) != 0 {
+		t.Fatalf("incomplete domain map produced aliases: %+v", sets)
+	}
+}
+
+func TestModsecDisabledScopesForFindings_ReadsOnlyCandidateSites(t *testing.T) {
+	fs := newGlobFS(map[string]string{
+		"/var/cpanel/userdata/acme/shop.acme.example": "secruleengineoff: 1\n",
+		"/var/cpanel/userdata/other/other.example":    "secruleengineoff: 1\n",
+	})
+	fs.glob = func(pattern string) ([]string, error) {
+		t.Fatalf("targeted correlation must not glob the host: %s", pattern)
+		return nil, nil
+	}
+	withMockOS(t, fs)
+
+	scopes := modsecDisabledScopesForFindings(cpanelInfo(), []alert.Finding{
+		vulnFinding("shop.example", "acme", alert.Critical),
+	}, map[string][]string{
+		aliasKey("acme", "shop.example"): {"shop.example", "shop.acme.example"},
+	})
+
+	if len(scopes) != 1 || scopes[0].User != "acme" || scopes[0].Domain != "shop.acme.example" {
+		t.Fatalf("targeted scopes = %+v, want only acme/shop.acme.example", scopes)
+	}
+	for _, path := range fs.readPaths {
+		if strings.Contains(path, "/other/") {
+			t.Fatalf("correlation read unrelated vhost %s", path)
 		}
 	}
 }
@@ -186,7 +305,7 @@ func TestCheckVulnerablePluginsAnnotatesUnprotectedSites(t *testing.T) {
 
 	restore := vpCoverageForHost
 	t.Cleanup(func() { vpCoverageForHost = restore })
-	vpCoverageForHost = func() vpCoverage {
+	vpCoverageForHost = func([]alert.Finding) vpCoverage {
 		return vpCoverage{
 			engineMode: "on",
 			disabled:   []modsecDisabledScope{{User: "alice", Source: "/src/alice/modsec.conf"}},
@@ -203,5 +322,47 @@ func TestCheckVulnerablePluginsAnnotatesUnprotectedSites(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "unprotected") {
 		t.Fatalf("detector did not apply the coverage correlation: %q", findings[0].Message)
+	}
+}
+
+func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testing.T) {
+	db := setupPluginStore(t)
+	wpConfig := "/home/alice/public_html/wp-config.php"
+	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
+		if pattern == "/home/*/public_html/wp-config.php" {
+			return []string{wpConfig}, nil
+		}
+		return nil, nil
+	}})
+	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		if strings.Contains(command, "plugin list") {
+			return []byte(`[{"name":"duplicator","status":"active","version":"1.3.20","update_version":"1.5.0"}]`), nil
+		}
+		if strings.Contains(command, "option get siteurl") {
+			return []byte("https://alice.example\n"), nil
+		}
+		return nil, nil
+	}})
+	if err := db.SetPluginInfo("duplicator", store.PluginInfo{LastChecked: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := vpCoverageForHost
+	t.Cleanup(func() { vpCoverageForHost = restore })
+	vpCoverageForHost = func([]alert.Finding) vpCoverage {
+		t.Fatal("coverage must not be read for a CVE with no shipped virtual patch")
+		return vpCoverage{}
+	}
+
+	cfg := &config.Config{}
+	cfg.Thresholds.PluginCheckIntervalMin = 1440
+	findings := CheckVulnerablePlugins(context.Background(), cfg, nil)
+
+	if len(findings) != 1 {
+		t.Fatalf("want 1 duplicator finding, got %+v", findings)
+	}
+	if strings.Contains(findings[0].Message, "unprotected") || strings.Contains(findings[0].Details, "virtual patches never run") {
+		t.Fatalf("uncovered CVE claimed a missing virtual patch: %+v", findings[0])
 	}
 }

@@ -45,6 +45,81 @@ func modsecDisabledScopes(info platform.Info) []modsecDisabledScope {
 	return dedupeScopes(scopes)
 }
 
+// modsecDisabledScopesForFindings reads only the cPanel paths that can affect
+// the supplied vulnerable-plugin findings. The normal WAF audit already does
+// the exhaustive /var/cpanel/userdata/*/* walk; repeating it for correlation
+// makes a deep scan do thousands of redundant reads on a large shared host.
+func modsecDisabledScopesForFindings(info platform.Info, findings []alert.Finding, aliases map[string][]string) []modsecDisabledScope {
+	if !info.IsCPanel() {
+		return nil
+	}
+
+	domainsByAccount := make(map[string]map[string]bool)
+	for _, finding := range findings {
+		account := strings.TrimSpace(finding.TenantID)
+		if !validAccountName.MatchString(account) {
+			continue
+		}
+		if domainsByAccount[account] == nil {
+			domainsByAccount[account] = make(map[string]bool)
+		}
+		domain := cleanDomlogDomain(finding.Domain)
+		if domain == "" {
+			continue
+		}
+		domainsByAccount[account][domain] = true
+		for _, peer := range aliases[aliasKey(account, domain)] {
+			if peer = cleanDomlogDomain(peer); peer != "" {
+				domainsByAccount[account][peer] = true
+			}
+		}
+	}
+
+	var scopes []modsecDisabledScope
+	for account, domains := range domainsByAccount {
+		scopes = append(scopes, targetedUserdataDisabledScopes(account, domains)...)
+		scopes = append(scopes, targetedConfTreeDisabledScopes(info, account, domains)...)
+	}
+	return dedupeScopes(scopes)
+}
+
+func targetedUserdataDisabledScopes(account string, domains map[string]bool) []modsecDisabledScope {
+	var scopes []modsecDisabledScope
+	for domain := range domains {
+		for _, name := range []string{domain, domain + "_SSL"} {
+			path := filepath.Join("/var/cpanel/userdata", account, name)
+			data, err := osFS.ReadFile(path)
+			if err != nil || !userdataSecRuleEngineOff(string(data)) {
+				continue
+			}
+			scopes = append(scopes, modsecDisabledScope{User: account, Domain: domain, Source: path})
+		}
+	}
+	return scopes
+}
+
+func targetedConfTreeDisabledScopes(info platform.Info, account string, domains map[string]bool) []modsecDisabledScope {
+	configDir := info.ApacheCompatibleConfigDir()
+	if configDir == "" {
+		return nil
+	}
+
+	var scopes []modsecDisabledScope
+	for _, base := range userdataTreeBases(configDir) {
+		accountPath := filepath.Join(base, account, "modsec.conf")
+		if confSecRuleEngineOff(accountPath) {
+			scopes = append(scopes, modsecDisabledScope{User: account, Source: accountPath})
+		}
+		for domain := range domains {
+			path := filepath.Join(base, account, domain, "modsec.conf")
+			if confSecRuleEngineOff(path) {
+				scopes = append(scopes, modsecDisabledScope{User: account, Domain: domain, Source: path})
+			}
+		}
+	}
+	return scopes
+}
+
 // userdataDisabledScopes walks the per-domain userdata flag. cPanel keeps
 // <domain>, <domain>_SSL and <domain>.cache copies of the same record, so
 // the domain name is normalised and duplicates collapse later.

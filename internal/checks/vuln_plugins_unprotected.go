@@ -28,11 +28,9 @@ type vpCoverage struct {
 	engineMode string
 	// disabled lists the accounts and vhosts with ModSecurity switched off.
 	disabled []modsecDisabledScope
-	// aliases maps an account's domain to every other domain of that account
-	// served from the same docroot. A per-vhost disabled flag is recorded
-	// against the servername, while the plugin inventory knows the site by
-	// whichever name resolves to its docroot, so the two rarely match by
-	// string.
+	// aliases maps an account's addon domain to its unambiguous cPanel-associated
+	// subdomain (and vice versa). A per-vhost disabled flag can be recorded
+	// against that servername while the plugin inventory knows the public name.
 	aliases map[string][]string
 }
 
@@ -43,18 +41,47 @@ func aliasKey(user, domain string) string {
 	return strings.ToLower(strings.TrimSpace(user)) + "\x00" + strings.ToLower(strings.TrimSpace(domain))
 }
 
-// vhostAliasSets groups every domain of an account by the docroot it serves,
-// so a name can be resolved to all the other names the same site answers to.
+// vhostAliasSets links only an unambiguous addon/subdomain pair: the docroot
+// group must contain exactly those two records and the subdomain must be the
+// exact cPanel association <addon-domain>.<main-domain>. A shared docroot is
+// not itself proof that two hostnames are aliases: parked domains, a main
+// domain, and an addon can all intentionally route different sites from
+// /home/<user>/public_html.
 func vhostAliasSets(userdataDomains string) map[string][]string {
-	vhosts, _ := parseUserdataDomainRootsChecked(userdataDomains)
-	byRoot := make(map[string][]string, len(vhosts))
+	vhosts, complete := parseUserdataDomainRootsChecked(userdataDomains)
+	if !complete {
+		return nil
+	}
+	byRoot := make(map[string][]vhost, len(vhosts))
 	for _, vh := range vhosts {
 		root := aliasKey(vh.user, vh.docroot)
-		byRoot[root] = append(byRoot[root], vh.domain)
+		byRoot[root] = append(byRoot[root], vh)
 	}
 	sets := make(map[string][]string, len(vhosts))
-	for _, vh := range vhosts {
-		sets[aliasKey(vh.user, vh.domain)] = byRoot[aliasKey(vh.user, vh.docroot)]
+	for _, group := range byRoot {
+		if len(group) != 2 {
+			continue
+		}
+		firstType := strings.ToLower(strings.TrimSpace(group[0].typ))
+		secondType := strings.ToLower(strings.TrimSpace(group[1].typ))
+		var addon, sub vhost
+		switch {
+		case firstType == "addon" && secondType == "sub":
+			addon, sub = group[0], group[1]
+		case firstType == "sub" && secondType == "addon":
+			addon, sub = group[1], group[0]
+		default:
+			continue
+		}
+		mainDomain := cleanDomlogDomain(addon.mainDomain)
+		if mainDomain == "" ||
+			!strings.EqualFold(cleanDomlogDomain(sub.mainDomain), mainDomain) ||
+			!strings.EqualFold(sub.domain, addon.domain+"."+mainDomain) {
+			continue
+		}
+		for _, vh := range group {
+			sets[aliasKey(vh.user, vh.domain)] = []string{group[0].domain, group[1].domain}
+		}
 	}
 	return sets
 }
@@ -80,11 +107,19 @@ func (c vpCoverage) inertReason(account, domain string) (reason, source string) 
 		return "the ModSecurity engine runs in DetectionOnly mode host-wide", ""
 	}
 
+	if strings.TrimSpace(account) == "" {
+		return "", ""
+	}
 	names := c.siteNames(account, domain)
+	var accountWide, exact, alias *modsecDisabledScope
 	for _, s := range c.disabled {
+		if !strings.EqualFold(strings.TrimSpace(s.User), strings.TrimSpace(account)) {
+			continue
+		}
 		if s.Domain == "" {
-			if account != "" && strings.EqualFold(s.User, account) {
-				return "ModSecurity is disabled for account " + s.User + " (all domains)", s.Source
+			if accountWide == nil {
+				scope := s
+				accountWide = &scope
 			}
 			continue
 		}
@@ -92,9 +127,25 @@ func (c vpCoverage) inertReason(account, domain string) (reason, source string) 
 			continue
 		}
 		if strings.EqualFold(s.Domain, domain) {
-			return "ModSecurity is disabled for " + s.Domain, s.Source
+			if exact == nil {
+				scope := s
+				exact = &scope
+			}
+			continue
 		}
-		return fmt.Sprintf("ModSecurity is disabled for %s, an alias of %s serving the same docroot", s.Domain, domain), s.Source
+		if alias == nil {
+			scope := s
+			alias = &scope
+		}
+	}
+	if accountWide != nil {
+		return "ModSecurity is disabled for account " + accountWide.User + " (all domains)", accountWide.Source
+	}
+	if exact != nil {
+		return "ModSecurity is disabled for " + exact.Domain, exact.Source
+	}
+	if alias != nil {
+		return fmt.Sprintf("ModSecurity is disabled for %s, the cPanel-associated subdomain of %s", alias.Domain, domain), alias.Source
 	}
 	return "", ""
 }
@@ -104,6 +155,13 @@ func (c vpCoverage) inertReason(account, domain string) (reason, source string) 
 // nothing stands between the vulnerability and the internet.
 func annotateUnprotected(findings []alert.Finding, cov vpCoverage) []alert.Finding {
 	for i := range findings {
+		// The production caller passes freshly built findings, but keeping this
+		// helper idempotent prevents a retrying caller from changing the alert
+		// identity and appending the same operator guidance repeatedly.
+		if strings.Contains(findings[i].Message, " -- unprotected: ") ||
+			strings.Contains(findings[i].Details, "\n\nUnprotected: ") {
+			continue
+		}
 		reason, source := cov.inertReason(findings[i].TenantID, findings[i].Domain)
 		if reason == "" {
 			continue
@@ -132,17 +190,19 @@ var vpCoverageForHost = currentVPCoverage
 // CSM's virtual patches and only cPanel expresses per-vhost ModSecurity
 // state, so on every other platform the question has no answer and the
 // findings are left untouched.
-func currentVPCoverage() vpCoverage {
+func currentVPCoverage(findings []alert.Finding) vpCoverage {
 	info := platform.Detect()
 	if !info.IsCPanel() {
 		return vpCoverage{}
 	}
-	cov := vpCoverage{
-		engineMode: checkEngineMode(info),
-		disabled:   modsecDisabledScopes(info),
-	}
+	cov := vpCoverage{engineMode: checkEngineMode(info)}
 	if data, err := osFS.ReadFile(userdataDomainsPath); err == nil {
 		cov.aliases = vhostAliasSets(string(data))
 	}
+	// CheckWAFStatus already walks every userdata record in this scan tier.
+	// Correlation needs only the vulnerable sites, so read their account,
+	// domain, and unambiguous associated-subdomain paths instead of repeating the
+	// host-wide O(number of vhosts) traversal.
+	cov.disabled = modsecDisabledScopesForFindings(info, findings, cov.aliases)
 	return cov
 }

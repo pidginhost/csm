@@ -31,14 +31,15 @@ var pluginVulnFeedData []byte
 
 // pluginVuln is one known-vulnerable version range for a plugin slug.
 type pluginVuln struct {
-	Slug        string `yaml:"slug"`
-	CVE         string `yaml:"cve"`
-	Title       string `yaml:"title"`
-	FixedIn     string `yaml:"fixed_in"`
-	MinAffected string `yaml:"min_affected"` // optional lower bound
-	KEV         bool   `yaml:"kev"`
-	Severity    string `yaml:"severity"`
-	Reference   string `yaml:"reference"`
+	Slug         string `yaml:"slug"`
+	CVE          string `yaml:"cve"`
+	Title        string `yaml:"title"`
+	FixedIn      string `yaml:"fixed_in"`
+	MinAffected  string `yaml:"min_affected"`  // optional lower bound
+	VirtualPatch bool   `yaml:"virtual_patch"` // CSM ships a ModSecurity rule for this CVE
+	KEV          bool   `yaml:"kev"`
+	Severity     string `yaml:"severity"`
+	Reference    string `yaml:"reference"`
 }
 
 type pluginVulnFeed struct {
@@ -188,8 +189,10 @@ func vulnAllowKey(slug, version string) string {
 
 // evaluatePluginVulns matches the cached per-site plugin inventory against the
 // feed and returns one finding per confirmed vulnerable install, skipping any
-// slug@version the operator has explicitly accepted via the allowlist.
-func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, allow map[string]bool) []alert.Finding {
+// slug@version the operator has explicitly accepted via the allowlist. The
+// parallel boolean slice identifies active findings covered by a shipped
+// virtual patch and therefore eligible for WAF-coverage correlation.
+func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, allow map[string]bool) ([]alert.Finding, []bool) {
 	bySlug := make(map[string][]pluginVuln, len(feed))
 	for _, v := range feed {
 		key := strings.ToLower(strings.TrimSpace(v.Slug))
@@ -197,6 +200,7 @@ func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, 
 	}
 
 	var findings []alert.Finding
+	var coverageCandidates []bool
 	for wpPath, site := range sites {
 		for _, p := range site.Plugins {
 			for _, v := range bySlug[strings.ToLower(strings.TrimSpace(p.Slug))] {
@@ -207,16 +211,20 @@ func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, 
 					continue
 				}
 				findings = append(findings, buildVulnPluginFinding(wpPath, site, p, v))
+				// An inactive plugin remains an inventory finding because some
+				// plugins expose directly callable files, but that alone does not
+				// establish that this CVE is reachable without WordPress loading it.
+				// Do not claim a missing request filter makes it directly reachable.
+				coverageCandidates = append(coverageCandidates, v.VirtualPatch && vulnPluginActive(p.Status))
 			}
 		}
 	}
-	return findings
+	return findings, coverageCandidates
 }
 
 func buildVulnPluginFinding(wpPath string, site store.SitePlugins, p store.SitePluginEntry, v pluginVuln) alert.Finding {
 	activeNote := "inactive"
-	switch strings.ToLower(strings.TrimSpace(p.Status)) {
-	case "active", "active-network", "must-use":
+	if vulnPluginActive(p.Status) {
 		activeNote = "active"
 	}
 	kevNote := ""
@@ -240,6 +248,15 @@ func buildVulnPluginFinding(wpPath string, site store.SitePlugins, p store.SiteP
 	}
 }
 
+func vulnPluginActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "active", "active-network", "must-use":
+		return true
+	default:
+		return false
+	}
+}
+
 // CheckVulnerablePlugins matches the shared WordPress plugin inventory against
 // the curated known-vulnerable feed. It participates in the same serialized
 // refresh as CheckOutdatedPlugins and only reports -- it never disables a
@@ -259,11 +276,26 @@ func CheckVulnerablePlugins(ctx context.Context, cfg *config.Config, _ *state.St
 	if err != nil || len(feed) == 0 {
 		return nil
 	}
-	findings := evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
+	findings, coverageCandidates := evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
 	if len(findings) == 0 {
 		return nil
 	}
-	return annotateUnprotected(findings, vpCoverageForHost())
+	var candidates []alert.Finding
+	for i, covered := range coverageCandidates {
+		if covered {
+			candidates = append(candidates, findings[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return findings
+	}
+	cov := vpCoverageForHost(candidates)
+	for i, covered := range coverageCandidates {
+		if covered {
+			annotateUnprotected(findings[i:i+1], cov)
+		}
+	}
+	return findings
 }
 
 func vulnPluginAllowSet(cfg *config.Config) map[string]bool {

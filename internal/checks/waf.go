@@ -350,9 +350,16 @@ func wafRulesStaleHint(info platform.Info) string {
 	return "Vendor rules should be updated at least monthly."
 }
 
-// checkEngineMode reads ModSecurity config files to determine the SecRuleEngine setting.
-// Returns "on", "detectiononly", "off", or "" if unknown.
+// checkEngineMode determines the host-wide SecRuleEngine setting. cPanel's
+// generated global configuration is authoritative there: choosing the first
+// directive from a mixture of cPanel and distro-package files can report an
+// inactive file as the effective host setting. Returns "on", "detectiononly",
+// "off", or "" if unknown.
 func checkEngineMode(info platform.Info) string {
+	if info.IsCPanel() {
+		return cPanelEngineMode(info)
+	}
+
 	configPaths := modsecConfigCandidates(info)
 	// Also include the top-level modsecurity.conf installed by distro packages.
 	configPaths = append(configPaths,
@@ -361,28 +368,52 @@ func checkEngineMode(info platform.Info) string {
 	)
 
 	for _, path := range configPaths {
-		f, err := osFS.Open(path)
-		if err != nil {
-			continue
+		if mode := engineModeInFile(path); mode != "" {
+			return mode
 		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, "#") {
-				continue
-			}
-			lineLower := strings.ToLower(line)
-			if strings.HasPrefix(lineLower, "secruleengine") {
-				parts := strings.Fields(lineLower)
-				if len(parts) >= 2 {
-					_ = f.Close()
-					return parts[1]
-				}
-			}
-		}
-		_ = f.Close()
 	}
 	return ""
+}
+
+func cPanelEngineMode(info platform.Info) string {
+	configDir := filepath.Clean(info.ApacheCompatibleConfigDir())
+	if configDir == "." || configDir == string(filepath.Separator) {
+		return ""
+	}
+	path := filepath.Join(configDir, "conf.d", "modsec", "modsec2.cpanel.conf")
+	if filepath.Base(configDir) == "conf" {
+		path = filepath.Join(configDir, "modsec2.cpanel.conf")
+	}
+	return engineModeInFile(path)
+}
+
+func engineModeInFile(path string) string {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	mode := ""
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") ||
+			!strings.EqualFold(fields[0], "SecRuleEngine") {
+			continue
+		}
+		value := strings.ToLower(fields[1])
+		switch value {
+		case "on", "detectiononly", "off":
+			mode = value
+		default:
+			return ""
+		}
+	}
+	if scanner.Err() != nil {
+		return ""
+	}
+	return mode
 }
 
 // checkRuleAge returns the age of the rules that protect the host, or 0 when

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A spam finding whose sample hit the per-pattern row limit now says the count is a lower bound instead of reporting it as the total. An exact-looking small number reads as trivial, which is how a site with hundreds of spam posts was deprioritised.
 - PHP snippets stored in the database by WPCode are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
 - Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
-- A known-vulnerable plugin on traffic ModSecurity does not filter is now reported as unprotected and raised to Critical, because the shipped virtual patch for that CVE cannot run there. The disabled scope is matched through every domain the site answers to, so a flag recorded against a vhost's own name still covers the addon domain the plugin inventory reported.
+- An active known-vulnerable plugin covered by a shipped virtual patch is now reported as unprotected when ModSecurity does not filter its traffic. cPanel addon domains are matched to their unambiguous associated subdomain without treating every same-docroot vhost as the same site.
 
 ### Changed
 

@@ -13,6 +13,7 @@ plugins:
     cve: CVE-2023-3460
     title: "Unauthenticated privilege escalation to administrator"
     fixed_in: "2.6.7"
+    virtual_patch: true
     kev: true
     severity: critical
     reference: "https://nvd.nist.gov/vuln/detail/CVE-2023-3460"
