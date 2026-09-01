@@ -16,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped Go module dependencies: `tdewolff/parse/v2` 2.8.15 -> 2.8.16, `golang.org/x/net` 0.57.0 -> 0.58.0, `golang.org/x/text` 0.40.0 -> 0.41.0.
 - Pinned `github/codeql-action` to v4.37.8 in the CodeQL and Scorecard workflows.
 
-### Added
-
+- A site that suddenly publishes far more than it ever has is now reported. Spam floods are found by the change in publishing rate rather than by a word list, so the detection does not depend on which language the spam is written in.
 - Categories, tags and other taxonomy terms created by spam kits are now reported. Removing spam posts leaves the taxonomy behind and a category archive is a public page, so a site can keep serving spam links after every spam post is gone.
 - A spam finding whose sample hit the per-pattern row limit now says the count is a lower bound instead of reporting it as the total. An exact-looking small number reads as trivial, which is how a site with hundreds of spam posts was deprioritised.
 - PHP snippets stored in the database by WPCode are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
