@@ -259,7 +259,11 @@ func CheckVulnerablePlugins(ctx context.Context, cfg *config.Config, _ *state.St
 	if err != nil || len(feed) == 0 {
 		return nil
 	}
-	return evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
+	findings := evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
+	if len(findings) == 0 {
+		return nil
+	}
+	return annotateUnprotected(findings, vpCoverageForHost())
 }
 
 func vulnPluginAllowSet(cfg *config.Config) map[string]bool {
