@@ -2276,6 +2276,13 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 	}
 
 	priorState := e.loadStateFile()
+	// A forced block over an address that is already blocked changes the
+	// timeout (deny over an auto-block, tempban over a permanent deny).
+	// nf_tables treats NEWSETELEM without NLM_F_EXCL on an existing key as
+	// an acknowledged no-op that keeps the old timeout, so the element must be
+	// deleted and re-added in the same batch, as PromoteToPermanentBlock does;
+	// otherwise state.json and every CSM surface disagree with the kernel.
+	replaceExisting := !skipExisting && firewallStateHasBlocked(priorState, ip)
 	nextState := copyFirewallState(priorState)
 	if evictTempIP != "" {
 		removeBlockedIPFromState(&nextState, evictTempIP)
@@ -2286,6 +2293,14 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
+	if replaceExisting {
+		if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
+			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+				return false, fmt.Errorf("replacing blocked element: %w (state restore failed: %v)", err, restoreErr)
+			}
+			return false, fmt.Errorf("replacing blocked element: %w", err)
+		}
+	}
 	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
 		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
 			return false, fmt.Errorf("adding to blocked set: %w (state restore failed: %v)", err, restoreErr)
@@ -2301,10 +2316,18 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 		}
 	}
 	if err := e.conn.Flush(); err != nil {
-		if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
-			return false, fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+		if replaceExisting && isNftNotFound(err) {
+			// state.json said blocked but the kernel had already expired the
+			// element, so the whole batch was rejected on the delete. Nothing
+			// to replace: add the new element on its own.
+			err = e.retryBlockAddAfterMissingElement(targetSet, elem, evictSet, evictKey)
 		}
-		return false, fmt.Errorf("flushing: %w", err)
+		if err != nil {
+			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
+				return false, fmt.Errorf("flushing: %w (state restore failed: %v)", err, restoreErr)
+			}
+			return false, fmt.Errorf("flushing: %w", err)
+		}
 	}
 	if evictTempIP != "" {
 		AppendAudit(e.statePath, "evict_temp", evictTempIP, "temp deny limit reached; evicted soonest-expiring entry", SourceSystem, 0)
@@ -2312,6 +2335,23 @@ func (e *Engine) blockIPLockedMaybeSoftAllowed(ip string, reason string, timeout
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 
 	return false, nil
+}
+
+// retryBlockAddAfterMissingElement re-queues a block batch without the
+// delete of an element the kernel no longer holds. Caller must hold e.mu.
+func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem []nftables.SetElement, evictSet *nftables.Set, evictKey []byte) error {
+	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
+		return fmt.Errorf("retry adding to blocked set: %w", err)
+	}
+	if evictSet != nil {
+		if err := e.conn.SetDeleteElements(evictSet, []nftables.SetElement{{Key: evictKey}}); err != nil {
+			return fmt.Errorf("retry evicting temp block: %w", err)
+		}
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("retry flushing block: %w", err)
+	}
+	return nil
 }
 
 func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
