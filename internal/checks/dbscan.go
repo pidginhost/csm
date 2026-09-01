@@ -163,6 +163,17 @@ func isCPanelHomeBase(name string) bool {
 
 const maxWPSecondaryBlogs = 100
 
+// dbSpamSampleLimit bounds the rows pulled back per spam pattern. When a
+// pattern fills it, the reported count is a floor rather than a total.
+const dbSpamSampleLimit = 200
+
+func spamCountLabel(n int, truncated bool) string {
+	if truncated {
+		return fmt.Sprintf("at least %d", n)
+	}
+	return strconv.Itoa(n)
+}
+
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
@@ -854,11 +865,12 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	spamSelects := make([]string, 0, len(dbSpamPatterns))
 	for i, sp := range dbSpamPatterns {
 		spamSelects = append(spamSelects, fmt.Sprintf(
-			"(SELECT %d AS pattern_index, ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200)",
-			i, prefix, postTypeExcl, mysqlEscapeForLike(sp.likeFragment)))
+			"(SELECT %d AS pattern_index, ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT %d)",
+			i, prefix, postTypeExcl, mysqlEscapeForLike(sp.likeFragment), dbSpamSampleLimit))
 	}
 	spamRows := runMySQLQuery(creds, strings.Join(spamSelects, " UNION ALL "))
 	spamContents := make([][]string, len(dbSpamPatterns))
+	spamSampled := make([]int, len(dbSpamPatterns))
 	for _, row := range spamRows {
 		parts := strings.SplitN(row, "\t", 3)
 		if len(parts) != 3 {
@@ -869,6 +881,7 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			continue
 		}
 		spamContents[patternIndex] = append(spamContents[patternIndex], mysqlclient.BatchUnescape(parts[2]))
+		spamSampled[patternIndex]++
 	}
 	for i, sp := range dbSpamPatterns {
 		n := countCloakedSpamMatches(sp, spamContents[i])
@@ -878,8 +891,12 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "db_spam_injection",
-			Message:  fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%d posts, account: %s)", sp.keyword, n, user),
-			Details:  dbContentFindingDetails(creds.dbName, prefix),
+			// The per-pattern LIMIT bounds the sample, so a full sample means
+			// the real figure is larger. Reporting it as exact understates the
+			// scale, and scale is what decides whether an operator looks.
+			Message: fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%s posts, account: %s)",
+				sp.keyword, spamCountLabel(n, spamSampled[i] >= dbSpamSampleLimit), user),
+			Details: dbContentFindingDetails(creds.dbName, prefix),
 		})
 	}
 
