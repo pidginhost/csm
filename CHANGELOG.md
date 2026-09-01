@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped Go module dependencies: `tdewolff/parse/v2` 2.8.15 -> 2.8.16, `golang.org/x/net` 0.57.0 -> 0.58.0, `golang.org/x/text` 0.40.0 -> 0.41.0.
 - Pinned `github/codeql-action` to v4.37.8 in the CodeQL and Scorecard workflows.
 
+### Added
+
+- Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
+
 ## [3.31.0] - 2026-09-01
 
 ### Added
