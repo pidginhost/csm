@@ -13,6 +13,7 @@ plugins:
     cve: CVE-2023-3460
     title: "Unauthenticated privilege escalation to administrator"
     fixed_in: "2.6.7"
+    virtual_patch: true
     kev: true
     severity: critical
     reference: "https://nvd.nist.gov/vuln/detail/CVE-2023-3460"
@@ -35,6 +36,7 @@ plugins:
 
   - slug: wp-file-manager
     cve: CVE-2020-25213
+    virtual_patch: true
     title: "Unauthenticated remote code execution via arbitrary file upload"
     fixed_in: "6.9"
     min_affected: "6.0"

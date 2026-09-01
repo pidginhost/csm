@@ -631,10 +631,11 @@ func (c exposedClass) findingName() string {
 // the docroot it serves. Parsed from /etc/userdatadomains, which -- unlike the
 // /home/*/public_html glob -- covers addon and subdomain docroots too.
 type vhost struct {
-	domain  string
-	user    string
-	typ     string
-	docroot string
+	domain     string
+	user       string
+	typ        string
+	mainDomain string
+	docroot    string
 	// ip is the vhost's serving address (from the ip:443/ip:80 columns). The
 	// reachability probe dials this rather than 127.0.0.1: LiteSpeed returns
 	// 403 to loopback-originated requests even for files it serves (HTTP 200)
@@ -703,6 +704,7 @@ func parseUserdataDomainsForUse(content string, requireServingIP bool) ([]vhost,
 			domain:     domain,
 			user:       user,
 			typ:        strings.TrimSpace(fields[2]),
+			mainDomain: strings.ToLower(strings.TrimSpace(fields[3])),
 			docroot:    docroot,
 			ip:         servingIP,
 			phpVersion: parseVhostPHPVersion(fields),

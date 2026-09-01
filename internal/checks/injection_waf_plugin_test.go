@@ -74,6 +74,88 @@ func TestCheckEngineMode_SkipsComments(t *testing.T) {
 	}
 }
 
+func TestCheckEngineMode_LastDirectiveInFileWins(t *testing.T) {
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) {
+		tmp := t.TempDir() + "/modsec.conf"
+		if err := os.WriteFile(tmp, []byte("SecRuleEngine On\nSecRuleEngine DetectionOnly\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return os.Open(tmp)
+	}})
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "detectiononly" {
+		t.Fatalf("mode = %q, want last directive detectiononly", mode)
+	}
+}
+
+func TestCheckEngineMode_RejectsDirectiveNamePrefix(t *testing.T) {
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) {
+		tmp := t.TempDir() + "/modsec.conf"
+		if err := os.WriteFile(tmp, []byte("SecRuleEngineOverride Off\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return os.Open(tmp)
+	}})
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "" {
+		t.Fatalf("mode = %q from a different directive name, want unknown", mode)
+	}
+}
+
+func TestCheckEngineMode_CPanelUsesGeneratedGlobalConfig(t *testing.T) {
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		if name != "/etc/apache2/conf.d/modsec/modsec2.cpanel.conf" {
+			t.Fatalf("cPanel engine mode read unexpected candidate %s", name)
+		}
+		tmp := t.TempDir() + "/modsec.conf"
+		if err := os.WriteFile(tmp, []byte("SecRuleEngine DetectionOnly\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return os.Open(tmp)
+	}})
+
+	if mode := checkEngineMode(cpanelInfo()); mode != "detectiononly" {
+		t.Fatalf("mode = %q, want detectiononly from cPanel global config", mode)
+	}
+}
+
+// cPanel spells the modsec include directory both ways across EA4 and the
+// older /usr/local/apache layout, and CSM already writes virtual patches to
+// both. Betting on one spelling would silently stop reporting the engine mode
+// on the other.
+func TestCheckEngineMode_CPanelAcceptsEitherIncludeSpelling(t *testing.T) {
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		if name != "/etc/apache2/conf.d/modsec2.cpanel.conf" {
+			return nil, os.ErrNotExist
+		}
+		tmp := t.TempDir() + "/modsec.conf"
+		if err := os.WriteFile(tmp, []byte("SecRuleEngine Off\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return os.Open(tmp)
+	}})
+
+	if mode := checkEngineMode(cpanelInfo()); mode != "off" {
+		t.Fatalf("mode = %q, want off from the flat conf.d spelling", mode)
+	}
+}
+
+func TestCheckEngineMode_CPanelGlobalConfigFailureStaysUnknown(t *testing.T) {
+	// A distro file can coexist with cPanel's generated configuration. If
+	// cPanel's effective file cannot be read, treating a distro candidate as
+	// host-wide would create a false unprotected Critical.
+	withMockOS(t, &mockOS{open: func(name string) (*os.File, error) {
+		if !strings.HasSuffix(name, "modsec2.cpanel.conf") {
+			t.Fatalf("cPanel engine mode fell through to candidate file %s", name)
+		}
+		return nil, os.ErrPermission
+	}})
+
+	if mode := checkEngineMode(cpanelInfo()); mode != "" {
+		t.Fatalf("mode = %q, want unknown when authoritative cPanel state is unavailable", mode)
+	}
+}
+
 // --- deployVirtualPatches (waf.go:498, 0%) --------------------------------
 
 func TestDeployVirtualPatches_NoSource(t *testing.T) {
