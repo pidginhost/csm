@@ -189,7 +189,10 @@ func (f Finding) sourceIPKey() string {
 	switch f.Check {
 	case "admin_panel_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse",
 		"http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof",
-		"ftp_bruteforce":
+		"ftp_bruteforce",
+		// One scanner sweeping a shared host hits every account in the same
+		// second, which produced one alert per site instead of one per scanner.
+		"php_shield_webshell", "php_shield_block", "php_shield_eval":
 	default:
 		return ""
 	}

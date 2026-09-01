@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- PHP Shield alerts now name the request URI and user agent, so an event identifies the scanner that sent it instead of showing only a parameter name. A command parameter that was merely observed is no longer rated the same as an execution the Shield actually blocked, and one scanner sweeping many accounts now raises a single alert per source address rather than one per site.
+
 ### Added
 
 - `csm doctor` now reports how many CageFS cages are missing PHP Shield's event mount. Registering the mount is not enough: until each cage is remounted, PHP there cannot reach the event socket and every detection is dropped, which until now looked exactly like a quiet server.
