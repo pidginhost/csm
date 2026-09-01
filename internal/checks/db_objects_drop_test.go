@@ -84,7 +84,9 @@ func TestDBDropObjectPreviewDoesNotDropOrBackup(t *testing.T) {
 		run: func(name string, args ...string) ([]byte, error) {
 			joined := strings.Join(args, " ")
 			if strings.Contains(joined, "SHOW CREATE") {
-				return []byte("CREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\n"), nil
+				// One batch-mode SHOW CREATE TRIGGER row: name, sql_mode,
+				// statement, charsets, collation, created.
+				return []byte("trg_audit\tSTRICT_TRANS_TABLES\tCREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\tutf8mb4\tutf8mb4_0900_ai_ci\tutf8mb4_0900_ai_ci\t2026-01-01 00:00:00.00\n"), nil
 			}
 			if strings.Contains(joined, "DROP") {
 				t.Errorf("DROP issued in preview mode (args=%v)", args)
@@ -121,7 +123,9 @@ func TestDBDropObjectCommitWritesBackupAndIssuesDrop(t *testing.T) {
 			joined := strings.Join(args, " ")
 			switch {
 			case strings.Contains(joined, "SHOW CREATE"):
-				return []byte("CREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\n"), nil
+				// One batch-mode SHOW CREATE TRIGGER row: name, sql_mode,
+				// statement, charsets, collation, created.
+				return []byte("trg_audit\tSTRICT_TRANS_TABLES\tCREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\tutf8mb4\tutf8mb4_0900_ai_ci\tutf8mb4_0900_ai_ci\t2026-01-01 00:00:00.00\n"), nil
 			case strings.Contains(joined, "DROP"):
 				dropCalled = true
 				return []byte("OK\n"), nil
@@ -309,7 +313,9 @@ func TestDBDropObjectDropEmptyMySQLOutputStillSucceeds(t *testing.T) {
 			joined := strings.Join(args, " ")
 			switch {
 			case strings.Contains(joined, "SHOW CREATE"):
-				return []byte("CREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\n"), nil
+				// One batch-mode SHOW CREATE TRIGGER row: name, sql_mode,
+				// statement, charsets, collation, created.
+				return []byte("trg_audit\tSTRICT_TRANS_TABLES\tCREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\tutf8mb4\tutf8mb4_0900_ai_ci\tutf8mb4_0900_ai_ci\t2026-01-01 00:00:00.00\n"), nil
 			case strings.Contains(joined, "DROP "):
 				// MySQL's DROP IF EXISTS prints nothing on success.
 				// The previous bug treated this as failure; we now

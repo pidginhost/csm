@@ -7,8 +7,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// showCreateStatement extracts the CREATE statement from one batch-mode SHOW
+// CREATE row. The client returns a row as tab-joined columns with newlines
+// escaped, so the statement is one column, not the row: TRIGGER, PROCEDURE and
+// FUNCTION put it third after the name and sql_mode, EVENT inserts time_zone
+// before it. Replaying the whole row would fail with a syntax error every
+// time, after the object is already gone, so anything else is rejected.
+func showCreateStatement(kind, row string) (string, error) {
+	cols := strings.Split(row, "\t")
+	idx := 2
+	if strings.EqualFold(kind, "event") {
+		idx = 3
+	}
+	if len(cols) <= idx {
+		return "", fmt.Errorf("expected at least %d columns, got %d", idx+1, len(cols))
+	}
+	stmt := mysqlclient.BatchUnescape(cols[idx])
+	if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(stmt)), "CREATE") {
+		return "", errors.New("statement column does not hold a CREATE statement")
+	}
+	return stmt, nil
+}
 
 // reAccountName matches the cPanel-username shape we accept from
 // operator CLI input. Constrained on purpose: anything outside this
@@ -87,7 +110,12 @@ func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResul
 			kind, schema, name)
 		return result
 	}
-	createSQL := strings.Join(createOutput, "\n")
+	createSQL, err := showCreateStatement(kind, createOutput[0])
+	if err != nil {
+		result.Message = fmt.Sprintf("SHOW CREATE for %s %s.%s did not yield a restorable statement (refusing to drop): %v",
+			kind, schema, name, err)
+		return result
+	}
 
 	if preview {
 		result.Message = fmt.Sprintf("PREVIEW: would drop %s %s.%s", kind, schema, name)
