@@ -25,6 +25,10 @@ const (
 	zipDirectory64LocLen  = 20
 	zipMaxCommentLen      = 1<<16 - 1
 
+	// A site backup names its document root at or just below the archive
+	// root. Past that a configuration file needs corroboration.
+	shallowSiteConfigDepth = 2
+
 	zipDirectoryHeaderSignature = 0x02014b50
 	zipDirectoryEndSignature    = 0x06054b50
 	zipDirectory64EndSignature  = 0x06064b50
@@ -261,6 +265,11 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 	var header [zipDirectoryHeaderLen]byte
 	var records uint64
 	holdsSite := false
+	// A wp-config.php nested past the shallow bound only counts alongside a
+	// WordPress runtime file, so both are accumulated across the whole
+	// directory rather than decided per entry.
+	deepConfig := false
+	wpRuntime := false
 	for {
 		if records%256 == 0 {
 			if err := ctx.Err(); err != nil {
@@ -290,15 +299,22 @@ func scanZipDirectory(ctx context.Context, f *os.File, dir zipDirectory) (bool, 
 		if _, err := io.CopyN(io.Discard, reader, extraLen+commentLen); err != nil {
 			return holdsSite, archiveDirectoryReadError(err)
 		}
-		if archiveEntrySignalsSiteBackup(string(name)) {
+		if entry := string(name); archiveEntrySignalsSiteBackup(entry) {
 			holdsSite = true
+		} else {
+			if archiveEntryIsDeepWPConfig(entry) {
+				deepConfig = true
+			}
+			if archiveEntryIsWPRuntime(entry) {
+				wpRuntime = true
+			}
 		}
 		records++
 	}
 	if records != dir.records {
 		return false, errArchiveFormat
 	}
-	return holdsSite, nil
+	return holdsSite || (deepConfig && wpRuntime), nil
 }
 
 func archiveDirectoryReadError(err error) error {
@@ -308,17 +324,28 @@ func archiveDirectoryReadError(err error) error {
 	return err
 }
 
-func archiveEntrySignalsSiteBackup(rawName string) bool {
+// archiveEntryPath normalises a raw zip entry name and rejects the shapes that
+// must never be read as a marker: absolute, drive-qualified, and traversal
+// names. It returns nil for anything unusable.
+func archiveEntryPath(rawName string) []string {
 	name := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(rawName, `\`, "/")))
 	if name == "" || strings.HasPrefix(name, "/") ||
 		(len(name) >= 3 && name[0] >= 'a' && name[0] <= 'z' && name[1] == ':' && name[2] == '/') {
-		return false
+		return nil
 	}
 	name = path.Clean(name)
 	if name == "." || name == ".." || strings.HasPrefix(name, "../") {
-		return false
+		return nil
 	}
 	parts := strings.Split(strings.Trim(name, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return nil
+	}
+	return parts
+}
+
+func archiveEntrySignalsSiteBackup(rawName string) bool {
+	parts := archiveEntryPath(rawName)
 	if len(parts) == 0 {
 		return false
 	}
@@ -334,7 +361,11 @@ func archiveEntrySignalsSiteBackup(rawName string) bool {
 
 	switch parts[len(parts)-1] {
 	case "wp-config.php":
-		return len(parts) <= 2
+		// A configuration file this close to the archive root is the archive's
+		// own subject. Deeper ones are ambiguous -- plugins ship fixtures at
+		// arbitrary depth -- so those are paired with a runtime marker instead,
+		// via archiveEntryIsDeepWPConfig.
+		return len(parts) <= shallowSiteConfigDepth
 	case "configuration.php":
 		return len(parts) == 1
 	case "settings.php":
@@ -342,6 +373,33 @@ func archiveEntrySignalsSiteBackup(rawName string) bool {
 	default:
 		return false
 	}
+}
+
+// archiveEntryIsDeepWPConfig reports a wp-config.php nested past the depth the
+// shallow rule accepts on its own.
+func archiveEntryIsDeepWPConfig(rawName string) bool {
+	parts := archiveEntryPath(rawName)
+	return len(parts) > shallowSiteConfigDepth && parts[len(parts)-1] == "wp-config.php"
+}
+
+// archiveEntryIsWPRuntime reports a file only a WordPress installation carries.
+// A plugin or theme bundle shipping a configuration fixture has none of these,
+// which is what separates a nested backup from a nested fixture.
+func archiveEntryIsWPRuntime(rawName string) bool {
+	parts := archiveEntryPath(rawName)
+	if len(parts) == 0 {
+		return false
+	}
+	switch parts[len(parts)-1] {
+	case "wp-load.php", "wp-settings.php", "wp-blog-header.php":
+		return true
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if part == "wp-includes" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasArchivePathSuffix(parts []string, suffix ...string) bool {

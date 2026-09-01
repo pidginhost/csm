@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A publicly reachable archive is now judged by what it holds, not only by its name. ZIP entry lists are scanned within a fixed metadata budget instead of an entry cutoff, so large sites stay detectable without letting crafted archives consume unbounded resources.
+- A publicly reachable archive is now judged by what it holds, not only by its name. ZIP entry lists are scanned within a fixed metadata budget instead of an entry cutoff, so large sites stay detectable without letting crafted archives consume unbounded resources. A backup that nests its document root several directories deep is recognised by the WordPress files beside its configuration, while plugin bundles shipping a configuration fixture stay quiet.
 - A script writing PHP into the plugins directory is now reported only when the content is PHP source, so scans no longer flag PHP error logs that quote a failed write on one line. Short-tag openers that start with a sigil, a backslash or a comment count as PHP too.
 - Webmail phishing pages, mailer relays and the PHP-FPM exploit are now judged on a rendered credential field, on PHP source, and on a second exploit marker, in realtime as well as in scans. Interface text in scripts, documentation examples, and a lone encoded server setting stay quiet.
 - A standalone Adminer or Tiny File Manager copy is now reported by scheduled and on-demand scans, not only in the moment it is written. Security plugins that merely name those tools in their blocklists stay quiet.
