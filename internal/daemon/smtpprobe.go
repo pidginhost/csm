@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlog"
 )
 
 // smtpProbeBlockExpiryString returns the configured block expiry string when
@@ -197,36 +198,16 @@ func (t *smtpProbeTracker) enforceMaxTracked() {
 //	SMTP connection from ([helo-as-ip]) [1.2.3.4]:38294 lost D=15s
 //	SMTP connection from ([192.168.0.94]) [1.2.3.4]:64547 D=5s closed by QUIT
 //
-// The connecting peer is always the LAST `[ip]:port` token before flags.
+// Client attribution is delegated to eximlog so HELO address literals and
+// malformed bracketed tokens follow the same rules as every other consumer.
 func parseEximSMTPConnectIP(line string) string {
 	const marker = "SMTP connection from "
-	idx := strings.Index(line, marker)
-	if idx < 0 {
+	markerStart := strings.Index(line, marker)
+	if markerStart < 0 {
 		return ""
 	}
-	rest := line[idx+len(marker):]
-
-	// Walk all `[...]` tokens; remember the last one whose `:port` follows.
-	var last string
-	for {
-		open := strings.Index(rest, "[")
-		if open < 0 {
-			break
-		}
-		close := strings.Index(rest[open:], "]")
-		if close < 0 {
-			break
-		}
-		candidate := rest[open+1 : open+close]
-		afterClose := rest[open+close+1:]
-		if strings.HasPrefix(afterClose, ":") {
-			// Confirm digits follow the colon; that is the source port.
-			tail := afterClose[1:]
-			if len(tail) > 0 && tail[0] >= '0' && tail[0] <= '9' {
-				last = candidate
-			}
-		}
-		rest = afterClose
+	if hStart, ok := eximlog.HFieldStart(line); ok && hStart-len(" H=") < markerStart {
+		return ""
 	}
-	return last
+	return eximlog.ClientIP(line)
 }

@@ -2,12 +2,12 @@
 //
 // Exim renders the peer as `hostname (HELO) [IP]:port`, prefixed with `H=`
 // in most records but bare in a few (authenticator failures, TLS errors).
-// Everything before the bracketed address is attacker-influenced: the HELO
-// is free text and may itself be an RFC 5321 address literal such as
-// `[203.0.113.9]`, and the message Subject can carry brackets too. Every
-// consumer that turns a log line into an IP for blocking or reputation
-// scoring must therefore go through this package rather than grabbing the
-// first bracketed token.
+// Everything before the bracketed address is attacker-influenced. The HELO
+// may be an RFC 5321 address literal such as `[203.0.113.9]`, and servers that
+// accept junk HELO values can log delimiter-like text there. The message
+// Subject can carry brackets too. Every consumer that turns a log line into
+// an IP for blocking or reputation scoring must therefore go through this
+// package rather than grabbing the first bracketed token.
 package eximlog
 
 import (
@@ -16,17 +16,49 @@ import (
 )
 
 // ClientIP returns the connecting client's IP from an Exim log line, or ""
-// when the line carries none. It prefers the `[IP]:port` token inside the H=
-// field; on lines without H= it takes the first bracketed IP outside any
-// parenthesised group, which is where Exim keeps the HELO.
+// when the line carries none. It reads either a real H= field or one of the
+// known records that Exim writes through host_and_ident without an H= prefix.
 func ClientIP(line string) string {
-	if start, ok := HFieldStart(line); ok {
-		return HFieldClientIP(line[start:])
+	hStart, hasHField := HFieldStart(line)
+	bareStart, bareMarker := unprefixedClientStart(line)
+	if bareMarker >= 0 && (!hasHField || bareMarker < hFieldMarkerStart(line, hStart)) {
+		return hostAndIdentClientIP(line[bareStart:])
 	}
-	if strings.HasPrefix(line, "H=") || strings.Contains(line, " H=") {
-		return ""
+	if hasHField {
+		return HFieldClientIP(line[hStart:])
 	}
-	return firstBracketedIP(line)
+	return ""
+}
+
+func hFieldMarkerStart(line string, valueStart int) int {
+	if strings.HasPrefix(line, "H=") {
+		return 0
+	}
+	return valueStart - len(" H=")
+}
+
+// unprefixedClientStart recognizes the Exim records that render
+// host_and_ident(FALSE) directly. A marker inside T= is message data, not a
+// peer field. markerStart is returned separately so ClientIP can prefer a
+// genuine H= field that occurs earlier on the line.
+func unprefixedClientStart(line string) (start, markerStart int) {
+	markerStart = -1
+	t := strings.Index(line, " T=")
+	for _, marker := range []string{
+		"authenticator failed for ",
+		"TLS error on connection from ",
+		"SMTP connection from ",
+	} {
+		idx := strings.Index(line, marker)
+		if idx < 0 || (t >= 0 && t < idx) {
+			continue
+		}
+		if markerStart < 0 || idx < markerStart {
+			markerStart = idx
+			start = idx + len(marker)
+		}
+	}
+	return start, markerStart
 }
 
 // HFieldStart returns the offset just past the H= marker and true when the
@@ -53,37 +85,60 @@ func HFieldClientIP(s string) string {
 
 // HFieldClientIPAndEnd returns the connecting address and the byte offset
 // immediately after its closing bracket. The offset lets callers discard the
-// entire attacker-controlled H= value before parsing later Exim fields.
+// entire attacker-controlled H= value before parsing later Exim fields. A
+// candidate must be followed by a real H= boundary, and a second plausible
+// candidate makes the field ambiguous instead of letting junk HELO text win.
 func HFieldClientIPAndEnd(s string) (string, int) {
 	parenDepth := 0
+	quoted := false
+	client := ""
+	clientEnd := 0
 	for i := 0; i < len(s); i++ {
-		if parenDepth == 0 && beginsNextField(s[i:]) {
-			return "", 0
+		if quoted {
+			if s[i] == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if s[i] == '"' {
+				quoted = false
+			}
+			continue
 		}
 		switch s[i] {
 		case '(':
 			parenDepth++
 		case ')':
-			if parenDepth > 0 {
-				parenDepth--
+			if parenDepth == 0 {
+				return "", 0
+			}
+			parenDepth--
+		case '"':
+			if parenDepth == 0 {
+				quoted = true
 			}
 		case '[':
-			if parenDepth > 0 {
-				continue
-			}
 			end := strings.IndexByte(s[i+1:], ']')
 			if end < 0 {
 				return "", 0
 			}
-			candidate := s[i+1 : i+1+end]
-			after := s[i+1+end+1:]
-			if net.ParseIP(candidate) != nil && clientIPTerminated(after) {
-				return candidate, i + end + 2
+			if parenDepth == 0 && !interfaceAddressAt(s, i) {
+				candidate := s[i+1 : i+1+end]
+				after := s[i+1+end+1:]
+				if net.ParseIP(candidate) != nil && hFieldClientIPTerminated(after) {
+					if client != "" {
+						return "", 0
+					}
+					client = candidate
+					clientEnd = i + end + 2
+				}
 			}
 			i += end + 1
 		}
 	}
-	return "", 0
+	if parenDepth != 0 || quoted {
+		return "", 0
+	}
+	return client, clientEnd
 }
 
 func beginsNextField(s string) bool {
@@ -107,46 +162,93 @@ func beginsNextField(s string) bool {
 	return true
 }
 
-func clientIPTerminated(s string) bool {
-	if s == "" {
-		return true
-	}
-	switch s[0] {
-	case ':', ' ', '\t', '\n':
-		return true
-	default:
-		return false
-	}
+func hFieldClientIPTerminated(s string) bool {
+	rest := withoutLoggedPort(s)
+	return rest == "" || beginsNextField(rest) ||
+		strings.HasPrefix(rest, " authenticator failed") ||
+		strings.HasPrefix(rest, " rejected RCPT")
 }
 
-// firstBracketedIP returns the contents of the first `[...]` token in s that
-// parses as an IP address and sits outside any parenthesised group, or "" if
-// none. A bracketed IP inside parentheses is the HELO the peer announced,
-// never the client. Validating each remaining candidate with net.ParseIP also
-// skips bracketed non-IP tokens such as a Subject that happens to contain
-// square brackets (e.g. T="Order [20260701-123]").
-func firstBracketedIP(s string) string {
+func hostAndIdentClientIPTerminated(s string) bool {
+	rest := withoutLoggedPort(s)
+	if rest == "" || beginsNextField(rest) || strings.HasPrefix(rest, ": ") {
+		return true
+	}
+	for _, suffix := range []string{" (", " lost", " D=", " closed"} {
+		if strings.HasPrefix(rest, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutLoggedPort(s string) string {
+	if len(s) < 2 || s[0] != ':' || s[1] < '0' || s[1] > '9' {
+		return s
+	}
+	i := 2
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return s[i:]
+}
+
+// hostAndIdentClientIP returns the connecting address from Exim's unprefixed
+// host_and_ident output. Exim encloses the HELO in parentheses before the
+// client, so an address literal inside that group is attacker text. More than
+// one plausible peer or malformed parentheses are rejected; otherwise a junk
+// HELO could make CSM block an address supplied by the peer.
+func hostAndIdentClientIP(s string) string {
 	parenDepth := 0
+	quoted := false
+	client := ""
 	for i := 0; i < len(s); i++ {
+		if quoted {
+			if s[i] == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if s[i] == '"' {
+				quoted = false
+			}
+			continue
+		}
 		switch s[i] {
 		case '(':
 			parenDepth++
 		case ')':
-			if parenDepth > 0 {
-				parenDepth--
+			if parenDepth == 0 {
+				return ""
+			}
+			parenDepth--
+		case '"':
+			if parenDepth == 0 {
+				quoted = true
 			}
 		case '[':
 			end := strings.IndexByte(s[i+1:], ']')
 			if end < 0 {
 				return ""
 			}
-			if parenDepth == 0 {
-				if candidate := s[i+1 : i+1+end]; net.ParseIP(candidate) != nil {
-					return candidate
+			if parenDepth == 0 && !interfaceAddressAt(s, i) {
+				candidate := s[i+1 : i+1+end]
+				after := s[i+1+end+1:]
+				if net.ParseIP(candidate) != nil && hostAndIdentClientIPTerminated(after) {
+					if client != "" {
+						return ""
+					}
+					client = candidate
 				}
 			}
 			i += end + 1
 		}
 	}
-	return ""
+	if parenDepth != 0 || quoted {
+		return ""
+	}
+	return client
+}
+
+func interfaceAddressAt(s string, bracket int) bool {
+	return bracket >= len(" I=") && s[bracket-len(" I="):bracket] == " I="
 }

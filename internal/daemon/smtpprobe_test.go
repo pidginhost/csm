@@ -306,7 +306,17 @@ func TestParseEximSMTPConnectIP(t *testing.T) {
 			`2026-05-06 11:34:19 SMTP connection from ([192.0.2.94]) [198.51.100.92]:64547 D=5s closed by QUIT`,
 			"198.51.100.92",
 		},
+		{
+			"malformed client token",
+			`2026-05-06 11:34:19 SMTP connection from ([192.0.2.94]) [not-an-ip]:64547 D=5s closed by QUIT`,
+			"",
+		},
 		{"queue line", `2026-05-06 11:34:14 1wKXhu-00000001j9B-2oEv <= info@example.test H=([192.0.2.94]) [198.51.100.92]:64547 P=esmtpsa`, ""},
+		{
+			"connection marker inside subject",
+			`2026-05-06 11:34:14 1wKXhu-00000001j9B-2oEv <= info@example.test H=mail.example [198.51.100.92]:64547 P=esmtpsa T="SMTP connection from [192.0.2.94]:25"`,
+			"",
+		},
 		{"empty", "", ""},
 		{"different log type", `2026-05-06 01:03:27 1wKNrT-0000000EfsC-45eC malware acl condition: clamd /var/clamd : unable to connect`, ""},
 	}
