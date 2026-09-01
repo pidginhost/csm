@@ -1,11 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 
 	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integration/webserver"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // challengeConfSrc / challengeConfDest locate the legacy Apache/LSWS
@@ -16,6 +21,37 @@ var challengeConfDest = "/etc/apache2/conf.d/csm_challenge.conf"
 
 var ensureChallengeMapFile = func() error {
 	return challenge.EnsureMapFile(challenge.DefaultMapPath)
+}
+
+// newWebserverIntegration builds the integration installer for the detected
+// webserver. Var so tests can supply one wired to a temp tree.
+var newWebserverIntegration = func(cfg *config.Config) (*webserver.Installer, error) {
+	return webserver.New(platform.Detect(), cfg)
+}
+
+// ensureRuntimeChallengeMap keeps a runtime-directory map present for a
+// snippet that still references it. Var so tests can observe the paths.
+var ensureRuntimeChallengeMap = challenge.EnsureMapFile
+
+// runtimeChallengeMapRef matches the map paths CSM used to keep under the
+// service's runtime directory, which systemd deletes on every stop.
+var runtimeChallengeMapRef = regexp.MustCompile(`(?:/var)?/run/csm/challenge_ips(?:\.nginx\.map|\.txt)\b`)
+
+// runtimeChallengeMapPaths returns, sorted and de-duplicated, every
+// runtime-directory map path the snippets still reference.
+func runtimeChallengeMapPaths(snippets ...[]byte) []string {
+	seen := make(map[string]struct{})
+	for _, data := range snippets {
+		for _, m := range runtimeChallengeMapRef.FindAll(data, -1) {
+			seen[string(m)] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for p := range seen {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 var challengeMapDirective = regexp.MustCompile(`(?m)^[\t ]*(?i:RewriteMap)(?:[\t ]|\\\r?\n)+csm_challenge(?:[\t ]|\\\r?\n)+(?:"txt:([^"\r\n]+)"|'txt:([^'\r\n]+)'|txt:([^\t \r\n]+))(?:[\t \r]|$)`)
@@ -36,11 +72,101 @@ func challengeMapPaths(data []byte) []string {
 	return paths
 }
 
-func prepareChallengeConf() (bool, error) {
-	if err := ensureChallengeMapFile(); err != nil {
-		return false, fmt.Errorf("ensure daemon map %s: %w", challenge.DefaultMapPath, err)
+// prepareChallengeConf makes the webserver's challenge configuration
+// consistent with this binary at daemon start: the daemon maps exist, the
+// legacy installer snippet points at them, a CSM-managed integration snippet
+// from an older template is refreshed, and any snippet that still references
+// a runtime-directory map keeps that file present until it is refreshed.
+// Reports whether a snippet was rewritten. Errors are joined so one failing
+// step never skips the fallback that keeps the webserver validating.
+func prepareChallengeConf(cfg *config.Config) (bool, error) {
+	var errs []error
+	inst, err := newWebserverIntegration(cfg)
+	if err != nil {
+		inst = nil
+		if !errors.Is(err, webserver.ErrUnknownWebserver) {
+			errs = append(errs, fmt.Errorf("webserver integration: %w", err))
+		}
 	}
-	return reconcileChallengeConf()
+	snippetPath := ""
+	if inst != nil {
+		snippetPath = inst.Handler.SnippetPath()
+	}
+
+	rewritten := false
+	if err := ensureChallengeMapFile(); err != nil {
+		// A snippet must never be pointed at a map that does not exist.
+		errs = append(errs, fmt.Errorf("ensure daemon map %s: %w", challenge.DefaultMapPath, err))
+	} else {
+		repinned, err := reconcileChallengeConf()
+		if err != nil {
+			errs = append(errs, err)
+		}
+		rewritten = repinned
+		if inst != nil {
+			refreshed, err := refreshWebserverIntegration(inst)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			rewritten = rewritten || refreshed
+		}
+	}
+	if err := keepRuntimeChallengeMaps(challengeConfDest, snippetPath); err != nil {
+		errs = append(errs, err)
+	}
+	return rewritten, errors.Join(errs...)
+}
+
+// refreshWebserverIntegration rewrites the integration snippet when it is
+// CSM-managed and older than the shipped template, through the installer's
+// own configtest-then-reload flow. Missing, current and operator-edited
+// snippets are left alone.
+func refreshWebserverIntegration(inst *webserver.Installer) (bool, error) {
+	path := inst.Handler.SnippetPath()
+	status, err := inst.Status()
+	if err != nil {
+		return false, fmt.Errorf("webserver integration status %s: %w", path, err)
+	}
+	if status.Status != "stale" {
+		return false, nil
+	}
+	res, err := inst.Upgrade()
+	if err != nil {
+		return false, fmt.Errorf("webserver integration upgrade %s: %s (fix the cause, then run `csm webserver-integration upgrade`)", path, res.Message)
+	}
+	fmt.Fprintf(os.Stderr, "challenge: %s %s\n", path, res.Message)
+	return true, nil
+}
+
+// keepRuntimeChallengeMaps creates, for every snippet that still references a
+// map under the runtime directory, that map file. Such a snippet survives when
+// it was operator-edited or when refreshing it failed; without the file the
+// webserver fails its configtest host-wide.
+func keepRuntimeChallengeMaps(snippetPaths ...string) error {
+	var bodies [][]byte
+	for _, p := range snippetPaths {
+		if p == "" {
+			continue
+		}
+		// #nosec G304 -- p is one of the two fixed snippet paths.
+		data, err := os.ReadFile(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read snippet %s: %w", p, err)
+		}
+		bodies = append(bodies, data)
+	}
+	var errs []error
+	for _, path := range runtimeChallengeMapPaths(bodies...) {
+		if err := ensureRuntimeChallengeMap(path); err != nil {
+			errs = append(errs, fmt.Errorf("keep runtime map %s: %w", path, err))
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "challenge: a webserver snippet still references %s; keeping it until the snippet is refreshed (csm webserver-integration upgrade)\n", path)
+	}
+	return errors.Join(errs...)
 }
 
 // reconcileChallengeConf re-deploys the legacy challenge snippet when its

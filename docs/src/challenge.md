@@ -173,20 +173,33 @@ The installer auto-detects the active webserver via
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
 
 The snippets are rendered from the effective CSM config. Apache and LSWS
-read their RewriteMap from `/run/csm/challenge_ips.txt`; Nginx reads a
-native map include from `/run/csm/challenge_ips.nginx.map`. Both live
-outside the private state directory so the webserver user can read them.
-CSM rewrites the Nginx include on challenge-list changes and reloads
-Nginx only when the file content changes.
+read their RewriteMap from `/var/cache/csm/challenge_ips.txt`; Nginx reads
+a native map include from `/var/cache/csm/challenge_ips.nginx.map`. The
+directory is the service's systemd cache directory: it is world-readable so
+the webserver user can read the maps, and unlike the runtime directory it
+survives `systemctl stop csm`, package upgrades and reboots. That matters
+because Apache and LSWS validate the map at config-parse time and Nginx
+fails on a missing include, so a map that vanished with the daemon would
+take every site down at the next webserver reload. CSM rewrites the Nginx
+include on challenge-list changes and reloads Nginx only when the file
+content changes.
 
-At startup the daemon creates the default Apache/LSWS map if it is absent,
+At startup the daemon creates the default maps if they are absent,
 including when challenge mode is disabled. It also checks the legacy
 installer-deployed snippet (`/etc/apache2/conf.d/csm_challenge.conf`). If
 its RewriteMap points at a map file the daemon does not maintain -- which
 makes webserver config validation fail host-wide once that file goes
-missing -- the daemon re-deploys the shipped template. Files without the
-directive, or already pointing at the daemon map, are never touched, so
-operator edits survive.
+missing -- the daemon re-deploys the shipped template. A CSM-managed
+integration snippet from an older template version is refreshed the same
+way, through the configtest-then-reload flow below. Files without the
+directive, operator-edited snippets, and snippets already pointing at the
+daemon maps are never touched. While such a snippet still references a map
+under the old runtime directory, the daemon keeps that file present until
+the snippet is refreshed with `csm webserver-integration upgrade`.
+
+`csm uninstall` and the package post-removal hook remove the snippets
+before the maps, and keep the maps whenever a snippet cannot be removed
+(for example an Nginx `server {}` block that still uses `$csm_challenged`).
 
 On every run, the installer:
 

@@ -317,10 +317,10 @@ func runDaemon() {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
-	// Binary-swap upgrades never re-run the installer, so a stale legacy
-	// challenge snippet survives until it breaks webserver reloads host-wide.
-	if _, err := prepareChallengeConf(); err != nil {
-		fmt.Fprintf(os.Stderr, "[WARN] challenge config reconciliation skipped: %v\n", err)
+	// Binary-swap upgrades never re-run the installer, so a stale challenge
+	// snippet survives until it breaks webserver reloads host-wide.
+	if _, err := prepareChallengeConf(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "[WARN] challenge config reconciliation incomplete: %v\n", err)
 	}
 
 	// Initialize signature scanner. A corrupt rules file that disables

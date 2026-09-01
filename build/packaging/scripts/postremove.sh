@@ -39,6 +39,28 @@ remove_csm_modsec_sections() {
     fi
 }
 
+# Remove the challenge snippets before the map files they reference. A
+# snippet left pointing at a deleted map fails the web server's configtest
+# host-wide, so the maps stay whenever a snippet has to stay.
+remove_challenge_snippets() {
+    local nginx_snippet=/etc/nginx/conf.d/csm-challenge.conf
+    rm -f /etc/apache2/conf.d/csm_challenge.conf \
+          /etc/apache2/conf.d/csm-challenge.conf \
+          /etc/apache2/conf-enabled/csm-challenge.conf \
+          /etc/httpd/conf.d/csm-challenge.conf \
+          /usr/local/lsws/conf/templates/csm-challenge.conf 2>/dev/null || true
+    if [ -f "$nginx_snippet" ]; then
+        # server{} blocks that include the documented if-block use the map's
+        # variable; nginx refuses to start without its definition.
+        if grep -rlq --exclude=csm-challenge.conf 'csm_challenged' /etc/nginx 2>/dev/null; then
+            echo "WARNING: nginx server blocks still use \$csm_challenged; leaving $nginx_snippet and /var/cache/csm in place" >&2
+            return 1
+        fi
+        rm -f "$nginx_snippet" 2>/dev/null || true
+    fi
+    return 0
+}
+
 systemctl daemon-reload 2>/dev/null || true
 
 # Reload auditd (rules file already removed by package manager)
@@ -63,7 +85,9 @@ for user_conf in /etc/apache2/conf.d/modsec/modsec2.user.conf /usr/local/apache/
     fi
 done
 rm -f /etc/apache2/conf.d/modsec/csm_modsec_custom.conf 2>/dev/null || true
-rm -f /etc/apache2/conf.d/csm_challenge.conf 2>/dev/null || true
+if remove_challenge_snippets; then
+    rm -rf /var/cache/csm 2>/dev/null || true
+fi
 
 # Remove PHP Shield ini files
 rm -f /opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini 2>/dev/null || true

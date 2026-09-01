@@ -124,7 +124,7 @@ func TestReconcileChallengeConfRewritesStaleMapPath(t *testing.T) {
 		return nil
 	}
 
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestReconcileChallengeConfLeavesCorrectPathAlone(t *testing.T) {
 		ensured++
 		return nil
 	}
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestReconcileChallengeConfIgnoresMissingDest(t *testing.T) {
 		ensured++
 		return nil
 	}
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestReconcileChallengeConfIgnoresFileWithoutDirective(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestReconcileChallengeConfRefusesStaleSourceTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err == nil {
 		t.Fatal("stale source template must return an error")
 	}
@@ -271,7 +271,7 @@ func TestReconcileChallengeConfReportsMissingSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err == nil {
 		t.Fatal("missing source template must return an error")
 	}
@@ -297,7 +297,7 @@ func TestReconcileChallengeConfDoesNotRewriteWhenMapEnsureFails(t *testing.T) {
 	}
 	ensureChallengeMapFile = func() error { return errors.New("read-only runtime dir") }
 
-	changed, err := prepareChallengeConf()
+	changed, err := prepareChallengeConf(nil)
 	if err == nil {
 		t.Fatal("map ensure failure must return an error")
 	}

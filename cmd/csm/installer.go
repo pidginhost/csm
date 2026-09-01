@@ -14,11 +14,14 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/auditd"
+	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integration/webserver"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/phpshield"
+	"github.com/pidginhost/csm/internal/platform"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,24 +52,49 @@ type installerOperations struct {
 	deployLogrotate   func() error
 	daemonLive        func() bool
 	acquireStateLock  func(string) (func(), error)
+	// removeWebserverIntegration removes the webserver integration snippet
+	// through its configtest-then-reload flow.
+	removeWebserverIntegration func() error
+}
+
+// challengeMapDir holds the webserver-readable challenge maps.
+var challengeMapDir = filepath.Dir(challenge.DefaultMapPath)
+
+// removeWebserverIntegrationSnippet removes the integration snippet for the
+// detected webserver. Hosts without a supported webserver have nothing to
+// remove.
+func removeWebserverIntegrationSnippet() error {
+	inst, err := webserver.New(platform.Detect(), nil)
+	if err != nil {
+		if errors.Is(err, webserver.ErrUnknownWebserver) {
+			return nil
+		}
+		return err
+	}
+	res, err := inst.Remove()
+	if err != nil {
+		return fmt.Errorf("%s: %s", res.SnippetPath, res.Message)
+	}
+	return nil
 }
 
 func (inst *Installer) ops() installerOperations {
 	ops := installerOperations{
 		getuid: os.Getuid,
 		// #nosec G204 -- uninstall passes only fixed system commands and literal arguments.
-		runCommand:        func(name string, args ...string) error { return exec.Command(name, args...).Run() },
-		remove:            os.Remove,
-		removeAll:         os.RemoveAll,
-		glob:              filepath.Glob,
-		setImmutable:      setBinaryImmutable,
-		removeCommandLink: removeCommandSymlink,
-		deployAuditd:      auditd.Deploy,
-		removeAuditd:      auditd.Remove,
-		removeModSecRules: removeInstalledModSecRules,
-		deploySystemd:     deploySystemdTimer,
-		deployLogrotate:   deployLogrotate,
-		daemonLive:        isDaemonLive,
+		runCommand:                 func(name string, args ...string) error { return exec.Command(name, args...).Run() },
+		remove:                     os.Remove,
+		removeAll:                  os.RemoveAll,
+		glob:                       filepath.Glob,
+		setImmutable:               setBinaryImmutable,
+		removeCommandLink:          removeCommandSymlink,
+		deployAuditd:               auditd.Deploy,
+		removeAuditd:               auditd.Remove,
+		removeModSecRules:          removeInstalledModSecRules,
+		deploySystemd:              deploySystemdTimer,
+		deployLogrotate:            deployLogrotate,
+		daemonLive:                 isDaemonLive,
+		removeWebserverIntegration: removeWebserverIntegrationSnippet,
 		acquireStateLock: func(statePath string) (func(), error) {
 			lock, err := acquireStoppedDaemonStateLock(statePath)
 			if err != nil {
@@ -90,6 +118,9 @@ func (inst *Installer) ops() installerOperations {
 	}
 	if custom.remove != nil {
 		ops.remove = custom.remove
+	}
+	if custom.removeWebserverIntegration != nil {
+		ops.removeWebserverIntegration = custom.removeWebserverIntegration
 	}
 	if custom.removeAll != nil {
 		ops.removeAll = custom.removeAll
@@ -338,8 +369,25 @@ func (inst *Installer) Uninstall(purge bool) error {
 	if err := ops.removeModSecRules(); err != nil {
 		return err
 	}
-	if err := removeInstallerPath(ops.remove, "/etc/apache2/conf.d/csm_challenge.conf"); err != nil {
+
+	// The challenge snippets reference the map files. A snippet left pointing
+	// at a deleted map fails the webserver's configtest host-wide, so remove
+	// every snippet first and keep the maps whenever one could not be removed.
+	snippetsGone := true
+	if err := ops.removeWebserverIntegration(); err != nil {
+		snippetsGone = false
+		fmt.Printf("  Warning: webserver integration snippet left in place: %v\n", err)
+	}
+	if err := removeInstallerPath(ops.remove, challengeConfDest); err != nil {
 		return err
+	}
+	if snippetsGone {
+		if err := ops.removeAll(challengeMapDir); err != nil {
+			return fmt.Errorf("removing challenge maps: %w", err)
+		}
+		fmt.Println("  challenge snippets and maps removed")
+	} else {
+		fmt.Printf("  challenge maps kept at %s until the remaining snippet is removed\n", challengeMapDir)
 	}
 
 	// Remove PHP Shield
@@ -1138,7 +1186,9 @@ func (inst *Installer) DeployModSecRules() {
 	}
 }
 
-// DeployChallengeConfig copies the Apache challenge redirect config.
+// DeployChallengeConfig copies the Apache challenge redirect config. The
+// snippet makes Apache validate the map file at every config parse, so the
+// map is created first and the snippet is skipped when that fails.
 func (inst *Installer) DeployChallengeConfig() {
 	src := challengeConfSrc
 	if _, err := os.Stat(src); os.IsNotExist(err) {
@@ -1147,6 +1197,11 @@ func (inst *Installer) DeployChallengeConfig() {
 
 	dest := challengeConfDest
 	if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
+		return
+	}
+
+	if err := ensureChallengeMapFile(); err != nil {
+		fmt.Printf("  Warning: challenge page config not deployed, map %s: %v\n", challenge.DefaultMapPath, err)
 		return
 	}
 

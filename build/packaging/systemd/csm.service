@@ -16,6 +16,14 @@ StateDirectory=csm
 StateDirectoryMode=0700
 RuntimeDirectory=csm
 RuntimeDirectoryMode=0755
+# The challenge maps the web servers read (Apache/LSWS RewriteMap, nginx map
+# include) are part of the web server's configuration: Apache validates them
+# at parse time and nginx fails on a missing include. They must outlive
+# csm.service (package upgrades, restores, reboots), so they live in the cache
+# directory, which systemd keeps across stops, not the runtime directory it
+# deletes on every stop.
+CacheDirectory=csm
+CacheDirectoryMode=0755
 ConfigurationDirectory=csm
 ConfigurationDirectoryMode=0750
 LogsDirectory=csm

@@ -15,12 +15,17 @@ import (
 )
 
 // DefaultMapPath is the webserver-readable Apache / LSWS RewriteMap.
-// It lives under /run rather than state_path because state_path is mode
-// 0700 and must stay private to CSM's bbolt database.
-const DefaultMapPath = "/run/csm/challenge_ips.txt"
+// It lives in the service's cache directory rather than state_path
+// (mode 0700, private to CSM's bbolt database) or the runtime directory:
+// Apache and LSWS validate a txt: RewriteMap at config-parse time and Nginx
+// fails on a missing include, so the maps are part of the webserver's
+// configuration and must exist while CSM is stopped -- package upgrades,
+// restores, reboots. systemd deletes the runtime directory on every stop
+// and keeps the cache directory.
+const DefaultMapPath = "/var/cache/csm/challenge_ips.txt"
 
 // DefaultNginxMapPath is the webserver-readable Nginx map include.
-const DefaultNginxMapPath = "/run/csm/challenge_ips.nginx.map"
+const DefaultNginxMapPath = "/var/cache/csm/challenge_ips.nginx.map"
 
 // challengeEntry stores the challenge metadata for a single IP.
 type challengeEntry struct {
