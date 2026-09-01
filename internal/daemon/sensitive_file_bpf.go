@@ -95,7 +95,7 @@ func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
 		if err := syscall.Stat(p, &st); err != nil {
 			continue
 		}
-		id := fileid{Dev: uint64(st.Dev), Ino: st.Ino}
+		id := fileid{Dev: kernelDeviceID(uint64(st.Dev)), Ino: st.Ino}
 		next[id] = p
 		present = append(present, p)
 	}
@@ -235,7 +235,7 @@ func sensitivePathMatchesFileID(path string, want fileid) bool {
 	if err := syscall.Stat(path, &st); err != nil {
 		return false
 	}
-	return fileid{Dev: uint64(st.Dev), Ino: st.Ino} == want
+	return fileid{Dev: kernelDeviceID(uint64(st.Dev)), Ino: st.Ino} == want
 }
 
 func (s *sensitiveFileBPF) emitFinding(f alert.Finding) bool {
