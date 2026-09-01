@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -292,7 +293,15 @@ func fixHtaccess(path, message string) RemediationResult {
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
-	data, err := osFS.ReadFile(path)
+	// Same pinned-inode read and atomic replace as CleanHtaccessFile: the
+	// directory belongs to the account, so nothing here may follow a path
+	// the owner can redirect between the check and the write.
+	target, err := openCleanTarget(path)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
+	}
+	defer target.Close()
+	data, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
@@ -362,9 +371,7 @@ func fixHtaccess(path, message string) RemediationResult {
 		return RemediationResult{Error: "no malicious directives found to remove"}
 	}
 
-	// #nosec G306 -- .htaccess rewritten for a user's public_html; 0644 is
-	// the mode the webserver expects for static content.
-	if err := os.WriteFile(path, []byte(strings.Join(cleaned, "\n")), 0644); err != nil {
+	if err := writeCleanedFileAtomic(target, []byte(strings.Join(cleaned, "\n"))); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("write failed: %v", err)}
 	}
 	return RemediationResult{

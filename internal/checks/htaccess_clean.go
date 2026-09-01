@@ -3,6 +3,7 @@ package checks
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -702,13 +703,21 @@ func CleanHtaccessFile(path string) RemediationResult {
 		return RemediationResult{Error: err.Error()}
 	}
 
-	// #nosec G304 -- resolved path verified inside the allowed roots.
-	original, err := os.ReadFile(resolved)
+	// The account owner controls this directory and we run as root, so the
+	// file is pinned by inode and replaced through a random O_EXCL name under
+	// the pinned parent fd. A guessable staging name would let the owner
+	// plant a symlink there and have the cleaned bytes written anywhere.
+	target, err := openCleanTarget(resolved)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("cannot open: %v", err)}
+	}
+	defer target.Close()
+	original, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
 
-	_, ranges := AuditHtaccessFile(resolved)
+	_, ranges := AuditHtaccessContent(resolved, original)
 	if len(ranges) == 0 {
 		return RemediationResult{Error: "no malicious directives found to remove"}
 	}
@@ -749,14 +758,8 @@ func CleanHtaccessFile(path string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("writing backup meta: %v", err)}
 	}
 
-	tmp := resolved + ".csm-clean.tmp"
-	// #nosec G306 G703 -- 0644 is what the webserver expects for static content. tmp = resolved + ".csm-clean.tmp"; resolved was validated by resolveExistingFixPath against fixHtaccessAllowedRoots so path traversal is impossible.
-	if err := os.WriteFile(tmp, cleaned, 0644); err != nil {
-		return RemediationResult{Error: fmt.Sprintf("writing cleaned tmp: %v", err)}
-	}
-	if err := os.Rename(tmp, resolved); err != nil {
-		_ = os.Remove(tmp)
-		return RemediationResult{Error: fmt.Sprintf("atomic rename: %v", err)}
+	if err := writeCleanedFileAtomic(target, cleaned); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("atomic replace: %v", err)}
 	}
 
 	bytesRemoved := len(original) - len(cleaned)
