@@ -140,6 +140,13 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			}
 			class := classifyExposedFile(filepath.Base(path))
 			if class == classNone {
+				// An archive named after the site it holds carries no backup
+				// token, so the name tells us nothing. Its entry list does.
+				if archiveHoldsSiteBackup(path) {
+					class = classBackupArchive
+				}
+			}
+			if class == classNone {
 				continue
 			}
 			rel := relURLPath(vh.docroot, path)

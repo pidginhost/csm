@@ -212,6 +212,10 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// single-site install these are the only tables.
 		findings = append(findings, checkWPOptions(user, creds, prefix)...)
 		findings = append(findings, checkWPPosts(user, creds, prefix)...)
+		// Runs on the primary blog only: in multisite the users table is
+		// network-wide and unprefixed, so a per-blog prefix would name a table
+		// that does not exist.
+		findings = append(findings, checkWPPhantomAuthors(user, creds, prefix)...)
 
 		// wp_users / wp_usermeta are network-wide in multisite, so
 		// the user-table scan runs once regardless of the layout.
