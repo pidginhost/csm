@@ -91,14 +91,68 @@ var htaccessNonScriptDirHints = []string{
 	"/files/", "/media/",
 }
 
-// htaccessSuspiciousAutoPrependPaths are filesystem locations that
-// auto_prepend_file should never reference. Anything in /tmp/,
-// /dev/shm/, /var/tmp/ or pointing at an image extension is
-// always-malicious.
+// htaccessSuspiciousAutoPrependPaths are scratch locations that a prelude
+// script is never legitimately served from.
 var htaccessSuspiciousAutoPrependPaths = []string{
 	"/tmp/", "/dev/shm/", "/var/tmp/",
 }
-var htaccessImageExtensions = []string{".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico"}
+
+// reAutoPrependTarget captures the argument of either prelude directive in
+// any of the forms .htaccess and php.ini fragments use.
+var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file\s*=?\s*(\S+)`)
+
+// autoPrependTargetIsKnownPrelude reports whether target names a prelude
+// script shipped by a security plugin. Only the basename is consulted: every
+// other byte of the directive is text the account owner types, so a
+// substring test anywhere else on the line is an exemption the attacker
+// controls.
+func autoPrependTargetIsKnownPrelude(target string) bool {
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(target, `\`, "/")))
+	switch base {
+	case "wordfence-waf.php", "advanced-headers.php", "malcare-waf.php":
+		return true
+	}
+	return strings.HasPrefix(base, "sucuri") && strings.HasSuffix(base, ".php")
+}
+
+// autoPrependTargetSuspicious reports whether an auto_prepend_file or
+// auto_append_file target can point at code the account owner controls.
+// htaccessPath is the file carrying the directive. Unless the target is a
+// known plugin prelude, it is suspicious when it sits in a scratch location,
+// is not a PHP file at all, is relative (it resolves inside the docroot),
+// lives under any home directory, or shares the .htaccess file's own account
+// tree. A root-owned path elsewhere (/etc, /opt, /usr) needs root to write
+// and is left alone; "none" merely disables an inherited prelude.
+func autoPrependTargetSuspicious(target, htaccessPath string) bool {
+	target = strings.Trim(strings.TrimSpace(target), `"'`)
+	lower := strings.ToLower(target)
+	if lower == "" || lower == "none" || autoPrependTargetIsKnownPrelude(lower) {
+		return false
+	}
+	for _, p := range htaccessSuspiciousAutoPrependPaths {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	if !strings.HasSuffix(lower, ".php") || !strings.HasPrefix(lower, "/") || strings.HasPrefix(lower, "/home/") {
+		return true
+	}
+	if tree := htaccessAccountTree(htaccessPath); tree != "" && strings.HasPrefix(lower, strings.ToLower(tree)+"/") {
+		return true
+	}
+	return false
+}
+
+// htaccessAccountTree returns the first two path components of the .htaccess
+// location (/home/<user>, /var/www/<vhosts>), which is the tree the account
+// can write to under every supported panel layout.
+func htaccessAccountTree(htaccessPath string) string {
+	parts := strings.Split(filepath.Clean(htaccessPath), "/")
+	if len(parts) < 4 || parts[0] != "" {
+		return ""
+	}
+	return "/" + parts[1] + "/" + parts[2]
+}
 
 // htaccessTrackingHeaders is a small allowlist of header *names*
 // known to be used in injection campaigns. Scoped intentionally;
@@ -922,10 +976,9 @@ func pathInNonScriptDir(path string) bool {
 	return false
 }
 
-// detectAutoPrepend flags PHP auto_prepend_file directives that
-// point at filesystem locations known not to host legitimate prelude
-// scripts.
-func detectAutoPrepend(content []byte, _ string) []htaccessMatch {
+// detectAutoPrepend flags PHP auto_prepend_file directives whose target the
+// account owner can write to (see autoPrependTargetSuspicious).
+func detectAutoPrepend(content []byte, path string) []htaccessMatch {
 	idxs := reAutoPrepend.FindAllSubmatchIndex(content, -1)
 	var out []htaccessMatch
 	for _, idx := range idxs {
@@ -933,7 +986,7 @@ func detectAutoPrepend(content []byte, _ string) []htaccessMatch {
 			continue
 		}
 		target := string(content[idx[2]:idx[3]])
-		if !autoPrependTargetSuspicious(target) {
+		if !autoPrependTargetSuspicious(target, path) {
 			continue
 		}
 		out = append(out, htaccessMatch{
@@ -942,22 +995,6 @@ func detectAutoPrepend(content []byte, _ string) []htaccessMatch {
 		})
 	}
 	return out
-}
-
-func autoPrependTargetSuspicious(target string) bool {
-	target = strings.Trim(strings.TrimSpace(target), `"'`)
-	lower := strings.ToLower(target)
-	for _, p := range htaccessSuspiciousAutoPrependPaths {
-		if strings.HasPrefix(lower, p) {
-			return true
-		}
-	}
-	for _, ext := range htaccessImageExtensions {
-		if strings.HasSuffix(lower, ext) {
-			return true
-		}
-	}
-	return false
 }
 
 // reUARewriteRuleLine captures the substitution and flag list of a single

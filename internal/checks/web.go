@@ -301,16 +301,26 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 				continue
 			}
 
-			// Check per-line safe patterns
-			isSafe := false
-			for _, sp := range safe {
-				if strings.Contains(lineLower, strings.ToLower(sp)) {
-					isSafe = true
-					break
+			// A prelude directive is judged by its target file alone. The
+			// line-wide safe list below would let a target such as
+			// ".../uploads/fonts/x.ttf" or ".../litespeed/x.php" exempt itself
+			// with a word the attacker chose.
+			if m := reAutoPrependTarget.FindStringSubmatch(trimmed); m != nil {
+				if !autoPrependTargetSuspicious(m[1], path) {
+					continue
 				}
-			}
-			if isSafe {
-				continue
+			} else {
+				// Check per-line safe patterns
+				isSafe := false
+				for _, sp := range safe {
+					if strings.Contains(lineLower, strings.ToLower(sp)) {
+						isSafe = true
+						break
+					}
+				}
+				if isSafe {
+					continue
+				}
 			}
 
 			patternLower := strings.ToLower(pattern)
