@@ -38,14 +38,14 @@ func resolveDefaultConfigPath(preferred, legacy string) (string, error) {
 				return "", err
 			}
 			if !same {
-				hashOnly, hashErr := divergesOnlyByBinaryHash(preferred, legacy)
+				hashOnly, hashErr := divergesOnlyByIntegrityHashes(preferred, legacy)
 				if hashErr != nil {
 					return "", hashErr
 				}
 				if !hashOnly {
 					return "", fmt.Errorf("both %s and %s exist with different content; move one aside or pass --config <path>", preferred, legacy)
 				}
-				fmt.Fprintf(os.Stderr, "warning: %s and %s differ only by binary_hash; using %s. Re-sync the copies to silence this.\n",
+				fmt.Fprintf(os.Stderr, "warning: %s and %s differ only by CSM-written integrity hashes; using %s. Run `csm rehash` to converge the copies.\n",
 					preferred, legacy, preferred)
 			}
 		} else if legacyErr != nil && !os.IsNotExist(legacyErr) {
@@ -70,6 +70,29 @@ func migrateDefaultConfigPaths(preferred, legacy string) error {
 		return err
 	}
 	return ensureLegacyConfigSymlink(preferred, legacy)
+}
+
+// convergeDefaultConfigCopies runs the default-path migration after a
+// rehash. Rehash re-signs one copy only, so two real copies drift apart in
+// CSM-written hashes with every upgrade or drop-in edit; folding the legacy
+// path into the compatibility link here keeps them from ever diverging
+// further. An explicit --config or a non-default path is left alone.
+func convergeDefaultConfigCopies(cfgPath string, explicit bool, preferred, legacy string) error {
+	if explicit || cfgPath != preferred {
+		return nil
+	}
+	return migrateDefaultConfigPaths(preferred, legacy)
+}
+
+// sameOperatorConfig reports whether two config copies carry the same
+// operator configuration: byte-identical, or differing only in the
+// integrity hashes CSM rewrites itself.
+func sameOperatorConfig(preferred, legacy string) (bool, error) {
+	same, err := filesEqual(preferred, legacy)
+	if err != nil || same {
+		return same, err
+	}
+	return divergesOnlyByIntegrityHashes(preferred, legacy)
 }
 
 func copyLegacyConfigIfNeeded(preferred, legacy string) error {
@@ -101,7 +124,7 @@ func copyLegacyConfigIfNeeded(preferred, legacy string) error {
 		return nil
 	}
 
-	same, err := filesEqual(preferred, legacy)
+	same, err := sameOperatorConfig(preferred, legacy)
 	if err != nil {
 		return err
 	}
@@ -151,7 +174,7 @@ func ensureLegacyConfigSymlink(preferred, legacy string) error {
 		return os.Symlink(preferred, legacy)
 	}
 
-	same, err := filesEqual(preferred, legacy)
+	same, err := sameOperatorConfig(preferred, legacy)
 	if err != nil {
 		return err
 	}
@@ -225,14 +248,15 @@ func copyFilePreserveMeta(src, dst string) error {
 	return os.Chmod(dst, mode)
 }
 
-// divergesOnlyByBinaryHash reports whether two config copies differ solely
-// in the integrity binary_hash value.
+// divergesOnlyByIntegrityHashes reports whether two config copies differ
+// solely in the integrity binary_hash, config_hash and confd_hash values.
 //
-// `csm rehash` rewrites that field in one copy only, so after every
-// upgrade the two default paths disagree by exactly this line. Refusing to
-// start on that difference takes the daemon down for a value CSM itself
-// rewrote, while any real setting divergence must still be surfaced.
-func divergesOnlyByBinaryHash(preferred, legacy string) (bool, error) {
+// `csm rehash` rewrites those fields in one copy only, so after every
+// upgrade or drop-in edit the two default paths disagree by exactly these
+// lines. Refusing to start on that difference takes the daemon down for
+// values CSM itself rewrote, while any real setting divergence must still
+// be surfaced.
+func divergesOnlyByIntegrityHashes(preferred, legacy string) (bool, error) {
 	preferredData, err := os.ReadFile(preferred) // #nosec G304 -- operator-owned config paths
 	if err != nil {
 		return false, err
@@ -254,7 +278,7 @@ func divergesOnlyByBinaryHash(preferred, legacy string) (bool, error) {
 		if preferredLines[i] == legacyLines[i] {
 			continue
 		}
-		if !isBinaryHashLine(preferredLines[i]) || !isBinaryHashLine(legacyLines[i]) {
+		if !isIntegrityHashLine(preferredLines[i]) || !isIntegrityHashLine(legacyLines[i]) {
 			return false, nil
 		}
 		sawHashDifference = true
@@ -262,7 +286,14 @@ func divergesOnlyByBinaryHash(preferred, legacy string) (bool, error) {
 	return sawHashDifference, nil
 }
 
-func isBinaryHashLine(line string) bool {
+func isIntegrityHashLine(line string) bool {
 	key, _, found := strings.Cut(strings.TrimSpace(line), ":")
-	return found && strings.TrimSpace(key) == "binary_hash"
+	if !found {
+		return false
+	}
+	switch strings.TrimSpace(key) {
+	case "binary_hash", "config_hash", "confd_hash":
+		return true
+	}
+	return false
 }

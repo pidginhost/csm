@@ -59,7 +59,7 @@ Current packages use FHS paths for state, config, drop-ins, and shipped profiles
 | Main config | `/opt/csm/csm.yaml` | `/etc/csm/csm.yaml` |
 | Legacy config path | n/a | `/opt/csm/csm.yaml` symlink |
 
-The package postinstall creates the FHS directories with the right ownership. If `/opt/csm/csm.yaml` is a real file and `/etc/csm/csm.yaml` is absent or still the shipped placeholder, the package copies the legacy config into `/etc/csm/csm.yaml` and then replaces the old path with a symlink. If both paths are real files with different operator content, CSM refuses the implicit default path until you move one aside or pass `--config <path>`.
+The package postinstall creates the FHS directories with the right ownership. If `/opt/csm/csm.yaml` is a real file and `/etc/csm/csm.yaml` is absent or still the shipped placeholder, the package copies the legacy config into `/etc/csm/csm.yaml` and then replaces the old path with a symlink. If both paths are real files with different operator content, CSM refuses the implicit default path until you move one aside or pass `--config <path>`. Copies that differ only in the `integrity` hashes CSM writes itself (`binary_hash`, `config_hash`, `confd_hash`) are treated as the same configuration: the daemon starts from `/etc/csm/csm.yaml`, and the next `csm rehash` replaces the legacy copy with the symlink.
 
 The daemon copies a non-empty legacy `/opt/csm/state/` into the new state directory on first start, but only when the new directory is empty (so a partial migration cannot corrupt it). The legacy directory is left in place; remove it after you have verified the new install.
 

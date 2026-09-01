@@ -848,6 +848,13 @@ func runRehash() {
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
 	cfg.Integrity.ConfdHash = confdHash
+	// Only one copy was re-signed. Fold the legacy default path into the
+	// compatibility link now, or the two copies drift with every rehash
+	// until the daemon refuses the default path.
+	_, explicit := configPathFromArgs(os.Args)
+	if err := convergeDefaultConfigCopies(cfg.ConfigFile, explicit, preferredConfigPath, legacyConfigPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: default config copies not converged: %v\n", err)
+	}
 	if err := setBinaryImmutable(binaryPath, cfg.Integrity.Immutable); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: updating binary immutable flag: %v\n", err)
 	}
