@@ -299,10 +299,10 @@ func TestVerifyWPCoreOtherChecksumIssueNotConfirmed(t *testing.T) {
 	tmp := t.TempDir()
 	withWPVerifyAllowedRoots(t, tmp)
 	dir := makeWPInstall(t, tmp, "carol")
-	// Non-zero exit, but no "should not exist" line (e.g. a modified file). The
-	// finding's specific condition (extra files) can't be confirmed gone, and
-	// the output might be a wp-cli error, so we must NOT resolve.
-	wpCoreVerifyMock(t, []byte("Warning: wp-includes/x.php doesn't verify against checksum.\n"), errors.New("exit status 1"))
+	// Non-zero exit that names neither an extraneous nor a modified file: a
+	// wp-cli problem we cannot interpret. The finding's condition can't be
+	// confirmed gone, so we must NOT resolve.
+	wpCoreVerifyMock(t, []byte("Warning: Couldn't get download URL for checksums.\n"), errors.New("exit status 1"))
 
 	res := VerifyFinding("wp_core_integrity", "WordPress core integrity failure for carol", "Path: "+dir)
 	if res.Resolved {

@@ -471,6 +471,21 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 							Details:  fmt.Sprintf("Path: %s\n%s", wpPath, line),
 						})
 						mu.Unlock()
+						continue
+					}
+					// A shipped core file whose bytes changed is where backdoors
+					// are appended; that is worse than an extra file, and the
+					// path lets Re-check and the operator go straight to it.
+					if rel := wpChecksumModifiedCoreFile(line); rel != "" {
+						mu.Lock()
+						findings = append(findings, alert.Finding{
+							Severity: alert.Critical,
+							Check:    "wp_core_integrity",
+							Message:  fmt.Sprintf("WordPress core file modified for %s", user),
+							Details:  fmt.Sprintf("Path: %s\nFile: %s\n%s", wpPath, rel, line),
+							FilePath: wpCoreFilePathWithin(wpPath, rel),
+						})
+						mu.Unlock()
 					}
 				}
 			}

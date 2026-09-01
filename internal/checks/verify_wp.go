@@ -34,6 +34,45 @@ func wpChecksumLineHasExtraneousCoreFile(line string) bool {
 	return strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log")
 }
 
+// The two per-file shapes wp-cli has used. The closing summary line
+// ("WordPress installation doesn't verify against checksums.") matches
+// neither: the current shape needs the colon and the legacy one the singular
+// "checksum." directly after the file name.
+const (
+	wpChecksumMismatchCurrent = "doesn't verify against checksum: "
+	wpChecksumMismatchLegacy  = " doesn't verify against checksum."
+)
+
+// wpChecksumModifiedCoreFile returns the install-relative path of a core file
+// that wp-cli reports as changed, or "" when the line is not such a report.
+// Localised packages legitimately ship their own root readme and license,
+// which carry no code, so those two are not reported.
+func wpChecksumModifiedCoreFile(line string) string {
+	var rel string
+	if idx := strings.Index(line, wpChecksumMismatchCurrent); idx >= 0 {
+		rel = strings.TrimSpace(line[idx+len(wpChecksumMismatchCurrent):])
+	} else if idx := strings.Index(line, wpChecksumMismatchLegacy); idx >= 0 {
+		if fields := strings.Fields(line[:idx]); len(fields) > 0 {
+			rel = fields[len(fields)-1]
+		}
+	}
+	if rel == "" || rel == "readme.html" || rel == "license.txt" {
+		return ""
+	}
+	return rel
+}
+
+// wpCoreFilePathWithin joins a wp-cli reported relative path onto the install
+// only when it stays inside it; wp-cli output is not a path oracle for the
+// remediation and Re-check code that consumes FilePath.
+func wpCoreFilePathWithin(wpPath, rel string) string {
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return filepath.Join(wpPath, clean)
+}
+
 // verifyOutdatedPlugins re-inventories a single WordPress site with wp-cli (run
 // as the site owner) and resolves the finding when no active plugin still has
 // an available update. It is heavier than the file re-checks but read-only and
@@ -121,8 +160,11 @@ func verifyWPCoreIntegrity(details string) VerifyResult {
 		if wpChecksumLineHasExtraneousCoreFile(line) {
 			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has extraneous files"}
 		}
+		if wpChecksumModifiedCoreFile(line) != "" {
+			return VerifyResult{Checked: true, Resolved: false, Detail: "WordPress core still has modified files"}
+		}
 	}
-	// Non-zero exit with no remaining "should not exist" line: could be a
-	// modified-file note or a wp-cli error we cannot tell apart. Do not resolve.
+	// Non-zero exit with neither an extraneous nor a modified file named: a
+	// wp-cli error we cannot interpret. Do not resolve.
 	return VerifyResult{Checked: false, Detail: "could not confirm core integrity (verify-checksums reported other issues); re-run or use an account scan"}
 }
