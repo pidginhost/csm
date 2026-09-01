@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -24,6 +25,11 @@ type SyslogConfig struct {
 	Hostname  string // typically cfg.Hostname; falls back to os.Hostname()
 	TLSCAFile string // optional CA cert path for tls; empty = system roots
 }
+
+const (
+	syslogDialTimeout  = 5 * time.Second
+	syslogWriteTimeout = 2 * time.Second
+)
 
 // SyslogSink is an RFC 5424 syslog client. The wire payload is the
 // AuditEvent JSON so SIEMs that parse our JSONL file have a single
@@ -107,6 +113,15 @@ func (s *SyslogSink) Emit(event AuditEvent) error {
 			return redialErr
 		}
 	}
+	// Emit runs on the single alert-dispatch goroutine. A receiver that stops
+	// reading fills the socket buffer, and a write with no deadline would then
+	// hold this mutex forever and stall every alert on the host. Give up and
+	// drop the connection instead; the next Emit redials.
+	if err := s.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout)); err != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+		return fmt.Errorf("syslog sink: set write deadline: %w", err)
+	}
 	if _, err := s.conn.Write(line); err != nil {
 		_ = s.conn.Close()
 		s.conn = nil
@@ -140,14 +155,20 @@ func (s *SyslogSink) dialLocked() error {
 		if err != nil {
 			return err
 		}
-		conn, err := tls.Dial("tcp", s.cfg.Address, tlsCfg)
+		// The context bounds the TLS handshake as well as the TCP connect; a
+		// blackholed receiver would otherwise hold the dispatch goroutine for
+		// the kernel's SYN retry budget on every redial.
+		ctx, cancel := context.WithTimeout(context.Background(), syslogDialTimeout)
+		defer cancel()
+		dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: syslogDialTimeout}, Config: tlsCfg}
+		conn, err := dialer.DialContext(ctx, "tcp", s.cfg.Address)
 		if err != nil {
 			return fmt.Errorf("syslog sink: tls dial %s: %w", s.cfg.Address, err)
 		}
 		s.conn = conn
 		return nil
 	}
-	conn, err := net.DialTimeout(s.cfg.Network, s.cfg.Address, 5*time.Second)
+	conn, err := net.DialTimeout(s.cfg.Network, s.cfg.Address, syslogDialTimeout)
 	if err != nil {
 		return fmt.Errorf("syslog sink: %s dial %s: %w", s.cfg.Network, s.cfg.Address, err)
 	}
