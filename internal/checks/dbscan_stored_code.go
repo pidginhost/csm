@@ -3,6 +3,7 @@ package checks
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -16,10 +17,43 @@ const (
 	maxStoredCodeRows  = 200
 )
 
-// checkWPStoredCode scans PHP that lives in the database rather than in a file.
+type storedCodeRow struct {
+	id          string
+	status      string
+	contentSize int64
+	code        []byte
+}
+
+// parseStoredCodeRow decodes one tab-separated query row. ok remains true for
+// a decoded prefix when the query or transport truncates it; complete tells the
+// caller not to present that partial row as a complete scan.
+func parseStoredCodeRow(line string) (row storedCodeRow, ok, complete bool) {
+	parts := strings.SplitN(strings.TrimSpace(line), "\t", 4)
+	if len(parts) != 4 {
+		return row, false, false
+	}
+	contentSize, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+	if err != nil || contentSize < 0 {
+		return row, false, false
+	}
+	encodedCode := strings.TrimSpace(parts[3])
+	code, decodeErr := hex.DecodeString(encodedCode)
+	if len(code) == 0 {
+		return row, false, false
+	}
+	return storedCodeRow{
+		id:          strings.TrimSpace(parts[0]),
+		status:      strings.TrimSpace(parts[1]),
+		contentSize: contentSize,
+		code:        code,
+	}, true, decodeErr == nil && int64(len(code)) == contentSize
+}
+
+// checkWPStoredCode scans WPCode PHP that lives in the database rather than in
+// a file.
 //
-// Snippet-manager plugins execute stored code by design, which makes the posts
-// table an executable surface that no filesystem scan covers. On a live
+// WPCode executes stored code by design, which makes the posts table an
+// executable surface that no filesystem scan covers. On a live
 // compromise a 17KB obfuscated backdoor ran on every request from a WPCode row
 // while a full file sweep of the same account -- core checksums, eval chains,
 // upload shells -- came back clean.
@@ -35,28 +69,37 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 	// WPCode / Insert Headers and Footers. Code Snippets keeps its code in its
 	// own table and is the next surface worth adding here.
 	query := fmt.Sprintf(
-		"SELECT ID, post_status, HEX(LEFT(post_content, %d)) FROM %sposts "+
-			"WHERE post_type = 'wpcode' AND post_content <> '' "+
-			"ORDER BY FIELD(post_status,'publish','draft','trash'), ID LIMIT %d",
-		maxStoredCodeBytes, prefix, maxStoredCodeRows)
+		"SELECT p.ID, p.post_status, OCTET_LENGTH(p.post_content), "+
+			"HEX(LEFT(CAST(p.post_content AS BINARY), %d)) FROM %sposts p "+
+			"WHERE p.post_type = 'wpcode' AND p.post_content <> '' "+
+			"AND EXISTS (SELECT 1 FROM %sterm_relationships tr "+
+			"JOIN %sterm_taxonomy tt ON tt.term_taxonomy_id = tr.term_taxonomy_id "+
+			"JOIN %sterms t ON t.term_id = tt.term_id "+
+			"WHERE tr.object_id = p.ID AND tt.taxonomy = 'wpcode_type' "+
+			"AND t.slug IN ('php', 'universal')) "+
+			"ORDER BY CASE p.post_status WHEN 'publish' THEN 0 WHEN 'draft' THEN 1 "+
+			"WHEN 'trash' THEN 2 ELSE 3 END, p.ID LIMIT %d",
+		maxStoredCodeBytes, prefix, prefix, prefix, prefix, maxStoredCodeRows+1)
 
 	var findings []alert.Finding
-	for _, line := range runMySQLQuery(creds, query) {
-		parts := strings.SplitN(strings.TrimSpace(line), "\t", 3)
-		if len(parts) != 3 {
+	rows := runMySQLQuery(creds, query)
+	if len(rows) > maxStoredCodeRows {
+		markCheckIncomplete(creds.queryCtx, "db_content")
+		rows = rows[:maxStoredCodeRows]
+	}
+	for _, line := range rows {
+		row, ok, complete := parseStoredCodeRow(line)
+		if !complete {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+		}
+		if !ok {
 			continue
 		}
-		id, status := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 		// MySQL HEX() always emits valid hex, so a decode error means the row
 		// was truncated in transport. Scan whatever decoded rather than
 		// dropping the row: a partially recovered payload still identifies a
 		// backdoor, and silence here would read as "clean".
-		code, _ := hex.DecodeString(strings.TrimSpace(parts[2]))
-		if len(code) == 0 {
-			continue
-		}
-
-		hits := scanner.ScanContent(code, ".php")
+		hits := scanner.ScanContentWithSize(row.code, ".php", row.contentSize)
 		if len(hits) == 0 {
 			continue
 		}
@@ -64,7 +107,7 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 		// Only a published snippet runs. A draft is one click from running; a
 		// trashed one is evidence of what was run before.
 		severity := alert.Warning
-		switch status {
+		switch row.status {
 		case "publish":
 			severity = alert.Critical
 		case "draft":
@@ -79,11 +122,11 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 			Severity: severity,
 			Check:    "db_stored_code_execution",
 			Message: fmt.Sprintf("Stored PHP snippet %s (%s) matches %s (account: %s)",
-				id, status, strings.Join(names, ", "), user),
+				row.id, row.status, strings.Join(names, ", "), user),
 			Details: dbContentFindingDetails(creds.dbName, prefix,
-				fmt.Sprintf("Snippet %s is stored in %sposts and executed by the snippet plugin, "+
+				fmt.Sprintf("Snippet %s is stored in %sposts for WPCode, "+
 					"so it is not visible to any filesystem scan.\nMatched: %s",
-					id, prefix, strings.Join(names, ", "))),
+					row.id, prefix, strings.Join(names, ", "))),
 		})
 	}
 	return findings

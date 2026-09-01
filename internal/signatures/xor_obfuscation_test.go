@@ -1,6 +1,9 @@
 package signatures
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The realtime engine must fire on the same shape the scan engine does. A
 // stored snippet is written to disk by nothing, but realtime sees theme and
@@ -20,6 +23,10 @@ if (!defined("\xf3\x69\x6d\xf9\x7b\x1a\x56\xbb" ^ "\xa4\x39\x32\xba\x3a\x59\x1e\
 	// any file type is still caught.
 	if !hasRule(scanner.ScanContent(mal, ".txt"), "php_xor_string_obfuscation") {
 		t.Error("php_xor_string_obfuscation: realtime engine skipped non-.php content")
+	}
+	longPair := []byte(`"` + strings.Repeat(`\x41`, 40) + `" ^ "` + strings.Repeat(`\x42`, 40) + `"`)
+	if !hasRule(scanner.ScanContent(longPair, ".txt"), "php_xor_string_obfuscation") {
+		t.Error("php_xor_string_obfuscation: realtime engine missed a long XOR literal pair")
 	}
 
 	for name, body := range map[string]string{

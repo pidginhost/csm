@@ -388,6 +388,35 @@ func FuzzParseDBFindingDetails(f *testing.F) {
 	})
 }
 
+func FuzzParseStoredCodeRow(f *testing.F) {
+	f.Add("4052\tpublish\t17\t69662028646566696E6564282278222929")
+	f.Add("4052\tpublish\t17\t69662028ZZ")
+	f.Add("")
+	f.Add("1\tpublish\tnot-a-size\t00")
+	f.Fuzz(func(t *testing.T, line string) {
+		row, ok, complete := parseStoredCodeRow(line)
+		if ok && (len(row.code) == 0 || row.contentSize < 0) {
+			t.Fatalf("valid row has invalid shape: %+v", row)
+		}
+		if complete && !ok {
+			t.Fatal("complete stored-code row was rejected")
+		}
+	})
+}
+
+func FuzzParseSpamTaxonomyRow(f *testing.F) {
+	f.Add("48\tpost_tag\t1\thttps://example.test")
+	f.Add("48\tpost_tag\t1\t\\nhttps://example.test")
+	f.Add("")
+	f.Add("1\tcategory")
+	f.Fuzz(func(t *testing.T, line string) {
+		row, ok := parseSpamTaxonomyRow(line)
+		if ok && strings.TrimSpace(row.name) == "" {
+			t.Fatal("valid taxonomy row has an empty name")
+		}
+	})
+}
+
 func FuzzParseAccessLogRecord(f *testing.F) {
 	// Baseline Combined Log Format line (RFC 5737 IPs).
 	f.Add(`192.0.2.1 - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 123 "-" "curl/8"`)

@@ -222,16 +222,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// Always scan the main-site (or single-site) tables. In
 		// multisite, blog ID 1 keeps the unprefixed names; in a
 		// single-site install these are the only tables.
-		installFindings = append(installFindings, checkWPOptions(user, creds, prefix)...)
-		installFindings = append(installFindings, checkWPPosts(user, creds, prefix)...)
-		// Code stored in the database is executed by snippet plugins and is
-		// invisible to every filesystem scan.
-		installFindings = append(installFindings, checkWPStoredCode(user, creds, prefix)...)
-		// Spam terms outlive the posts filed under them, and a category archive
-		// is a public page.
-		installFindings = append(installFindings, checkWPSpamTaxonomy(user, creds, prefix)...)
-		installFindings = append(installFindings,
-			checkWPPhantomAuthors(user, creds, prefix, prefix, maxPhantomAuthorsReported)...)
+		installFindings = append(installFindings, scanWPBlog(user, creds, prefix, prefix)...)
 
 		// wp_users / wp_usermeta are network-wide in multisite, so
 		// the user-table scan runs once regardless of the layout.
@@ -251,6 +242,19 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 	}
 
 	return appendDatabaseScanIncompleteFinding(ctx, findings)
+}
+
+// scanWPBlog runs checks whose tables belong to one blog. usersPrefix stays
+// separate because multisite blogs share the network-wide users table.
+func scanWPBlog(user string, creds wpDBCreds, sitePrefix, usersPrefix string) []alert.Finding {
+	var findings []alert.Finding
+	findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPStoredCode(user, creds, sitePrefix)...)
+	findings = append(findings, checkWPSpamTaxonomy(user, creds, sitePrefix)...)
+	findings = append(findings,
+		checkWPPhantomAuthors(user, creds, sitePrefix, usersPrefix, maxPhantomAuthorsReported)...)
+	return findings
 }
 
 func wpConfigUser(path string) string {
@@ -280,11 +284,10 @@ func appendDatabaseScanIncompleteFinding(ctx context.Context, findings []alert.F
 	})
 }
 
-// scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs
-// other than 1 and runs the standard options + posts scan against
-// each. The user-table scan does NOT iterate -- WP shares
-// wp_users / wp_usermeta across the entire network by default; a
-// site-specific user table only exists on configurations that
+// scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs other than 1
+// and runs the per-blog scans against each. The user-table scan does not
+// iterate because WP shares wp_users / wp_usermeta across the entire network
+// by default. A site-specific user table only exists on configurations that
 // override that, which we ignore here for v1. The phantom-author scan does
 // iterate each posts table, but joins it to that shared users table.
 //
@@ -314,10 +317,7 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 			continue
 		}
 		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
-		findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
-		findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
-		findings = append(findings,
-			checkWPPhantomAuthors(user, creds, sitePrefix, prefix, maxPhantomAuthorsReported)...)
+		findings = append(findings, scanWPBlog(user, creds, sitePrefix, prefix)...)
 	}
 	if truncated {
 		markCheckIncomplete(ctx, "db_content")
@@ -876,15 +876,17 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	spamSampled := make([]int, len(dbSpamPatterns))
 	for _, row := range spamRows {
 		parts := strings.SplitN(row, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
 		patternIndex, err := strconv.Atoi(parts[0])
 		if err != nil || patternIndex < 0 || patternIndex >= len(dbSpamPatterns) {
+			markCheckIncomplete(creds.queryCtx, "db_content")
+			continue
+		}
+		spamSampled[patternIndex]++
+		if len(parts) != 3 {
+			markCheckIncomplete(creds.queryCtx, "db_content")
 			continue
 		}
 		spamContents[patternIndex] = append(spamContents[patternIndex], mysqlclient.BatchUnescape(parts[2]))
-		spamSampled[patternIndex]++
 	}
 	for i, sp := range dbSpamPatterns {
 		n := countCloakedSpamMatches(sp, spamContents[i])
@@ -895,7 +897,7 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: alert.High,
 			Check:    "db_spam_injection",
 			// The per-pattern LIMIT bounds the sample, so a full sample means
-			// the real figure is larger. Reporting it as exact understates the
+			// the real figure may be larger. Reporting it as exact understates the
 			// scale, and scale is what decides whether an operator looks.
 			Message: fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%s posts, account: %s)",
 				sp.keyword, spamCountLabel(n, spamSampled[i] >= dbSpamSampleLimit), user),

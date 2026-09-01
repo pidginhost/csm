@@ -2,7 +2,10 @@
 
 package yara
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // XOR-constructed identifiers hide every literal a keyword rule looks for. The
 // live sample is WPCode snippet 4052 on infiltratiizero.ro (2026-07-27): 17KB
@@ -31,6 +34,10 @@ func TestXorObfuscation_SinglePair(t *testing.T) {
 	mal := []byte(`<?php $f = "\x8f\x44\x51\xe6\x61\x0b" ^ "\xcb\x0b\x1f\xa9\x35\x48"; $f();`)
 	if !hasYaraRule(s.ScanBytes(mal), "php_xor_string_obfuscation") {
 		t.Error("php_xor_string_obfuscation: single XOR literal pair not detected")
+	}
+	longPair := []byte(`"` + strings.Repeat(`\x41`, 40) + `" ^ "` + strings.Repeat(`\x42`, 40) + `"`)
+	if !hasYaraRule(s.ScanBytes(longPair), "php_xor_string_obfuscation") {
+		t.Error("php_xor_string_obfuscation: long XOR literal pair not detected")
 	}
 }
 

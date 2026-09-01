@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/signatures"
 )
 
 // The addon-domain expansion turns this cost into a host-wide multiplier.
@@ -292,10 +293,14 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 		return nil
 	}
 	t.Cleanup(func() { runMySQLQuery = previous })
+	previousScanner := contentSignatureScanner
+	emptyScanner := signatures.NewScanner("")
+	contentSignatureScanner = func() *signatures.Scanner { return emptyScanner }
+	t.Cleanup(func() { contentSignatureScanner = previousScanner })
 
 	CheckDatabaseContent(context.Background(), nil, nil)
-	if queries != 9 {
-		t.Errorf("queries for two paths sharing one database = %d, want 9 for one scan", queries)
+	if queries != 10 {
+		t.Errorf("queries for two paths sharing one database = %d, want 10 for one scan", queries)
 	}
 }
 
