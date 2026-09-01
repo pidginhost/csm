@@ -227,6 +227,9 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		// Code stored in the database is executed by snippet plugins and is
 		// invisible to every filesystem scan.
 		installFindings = append(installFindings, checkWPStoredCode(user, creds, prefix)...)
+		// Spam terms outlive the posts filed under them, and a category archive
+		// is a public page.
+		installFindings = append(installFindings, checkWPSpamTaxonomy(user, creds, prefix)...)
 		installFindings = append(installFindings,
 			checkWPPhantomAuthors(user, creds, prefix, prefix, maxPhantomAuthorsReported)...)
 

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Categories, tags and menu entries created by spam kits are now reported. Removing spam posts leaves the taxonomy behind and a category archive is a public page, so a site can keep serving spam links after every spam post is gone.
 - A spam finding whose sample hit the per-pattern row limit now says the count is a lower bound instead of reporting it as the total. An exact-looking small number reads as trivial, which is how a site with hundreds of spam posts was deprioritised.
 - PHP snippets stored in the database and executed by snippet plugins are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
 - Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.

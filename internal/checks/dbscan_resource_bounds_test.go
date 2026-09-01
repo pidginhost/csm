@@ -294,8 +294,8 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 	t.Cleanup(func() { runMySQLQuery = previous })
 
 	CheckDatabaseContent(context.Background(), nil, nil)
-	if queries != 8 {
-		t.Errorf("queries for two paths sharing one database = %d, want 8 for one scan", queries)
+	if queries != 9 {
+		t.Errorf("queries for two paths sharing one database = %d, want 9 for one scan", queries)
 	}
 }
 
