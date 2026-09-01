@@ -186,13 +186,19 @@ func (f Finding) Fingerprint() string {
 }
 
 func (f Finding) sourceIPKey() string {
+	severityScoped := false
 	switch f.Check {
 	case "admin_panel_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse",
 		"http_request_flood", "http_scanner_profile", "http_claimed_bot_unverified", "http_ua_spoof",
-		"ftp_bruteforce",
+		"ftp_bruteforce":
+	case "php_shield_webshell", "php_shield_block", "php_shield_eval":
 		// One scanner sweeping a shared host hits every account in the same
 		// second, which produced one alert per site instead of one per scanner.
-		"php_shield_webshell", "php_shield_block", "php_shield_eval":
+		// The collapse is per severity: the same check name carries both the
+		// Warning "observed a parameter" and the Critical "blocked a webshell",
+		// and a block from an address that was merely observed earlier is a new
+		// event, not a repeat, or it is never alerted, stored or correlated.
+		severityScoped = true
 	default:
 		return ""
 	}
@@ -203,6 +209,9 @@ func (f Finding) sourceIPKey() string {
 	}
 	if ip == "" {
 		return ""
+	}
+	if severityScoped {
+		return fmt.Sprintf("%s:ip:%s:%s", f.Check, ip, f.Severity)
 	}
 	return fmt.Sprintf("%s:ip:%s", f.Check, ip)
 }
