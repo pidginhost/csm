@@ -7,30 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- PHP Shield alerts now name the request URI and user agent, so an event identifies the scanner that sent it instead of showing only a parameter name. A command parameter that was merely observed is no longer rated the same as an execution the Shield actually blocked, and one scanner sweeping many accounts now raises a single alert per source address rather than one per site.
-
 ### Added
 
 - `csm doctor` now reports how many CageFS cages are missing PHP Shield's event mount. Registering the mount is not enough: until each cage is remounted, PHP there cannot reach the event socket and every detection is dropped, which until now looked exactly like a quiet server.
+- Categories, tags and other taxonomy terms created by spam kits are now reported. Removing spam posts leaves the taxonomy behind and a category archive is a public page, so a site can keep serving spam links after every spam post is gone.
+- A spam finding whose sample hit the per-pattern row limit now says the count is a lower bound instead of reporting it as the total. An exact-looking small number reads as trivial, which is how a site with hundreds of spam posts was deprioritised.
+- PHP snippets stored in the database by WPCode are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
+- Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
 
 ### Changed
 
 - Bumped Go module dependencies: `tdewolff/parse/v2` 2.8.15 -> 2.8.16, `golang.org/x/net` 0.57.0 -> 0.58.0, `golang.org/x/text` 0.40.0 -> 0.41.0.
 - Pinned `github/codeql-action` to v4.37.8 in the CodeQL and Scorecard workflows.
 
-### Added
-
-- Categories, tags and other taxonomy terms created by spam kits are now reported. Removing spam posts leaves the taxonomy behind and a category archive is a public page, so a site can keep serving spam links after every spam post is gone.
-- A spam finding whose sample hit the per-pattern row limit now says the count is a lower bound instead of reporting it as the total. An exact-looking small number reads as trivial, which is how a site with hundreds of spam posts was deprioritised.
-- PHP snippets stored in the database by WPCode are now scanned. Code kept in a database row is invisible to every filesystem scan, and an active backdoor was running from one while a full file sweep of the same site came back clean.
-- Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
-
 ### Fixed
 
+- PHP Shield alerts now name the request URI and user agent, so an event identifies the scanner that sent it instead of showing only a parameter name. A command parameter that was merely observed is no longer rated the same as an execution the Shield actually blocked, and one scanner sweeping many accounts now raises a single alert per source address rather than one per site.
 - WordPress database scans now inspect server-executed WPCode snippets and spam taxonomy on every active multisite blog, bound finding evidence, and report incomplete row or byte samples.
-
 ## [3.31.0] - 2026-09-01
 
 ### Added
