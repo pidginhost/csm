@@ -2602,18 +2602,16 @@ func (d *Daemon) startChallengeServer() {
 	}
 
 	if d.fwEngine == nil {
-		fmt.Fprintf(os.Stderr, "[%s] Challenge server requires firewall to be enabled (for escalation and allow). Skipping.\n", ts())
+		fmt.Fprintf(os.Stderr, "[%s] Challenge server requires firewall to be enabled (for escalation). Skipping.\n", ts())
 		return
 	}
-
-	unblocker := challenge.IPUnblocker(d.fwEngine)
 
 	d.ipList = challenge.NewIPListWithMapPath(d.cfg.StatePath, challenge.DefaultMapPath)
 	if platform.Detect().WebServer == platform.WSNginx {
 		d.ipList.SetNginxMap(challenge.DefaultNginxMapPath, d.reloadChallengeNginxMap)
 	}
 	d.attachChallengePortGate()
-	srv := challenge.New(d.cfg, unblocker, d.ipList)
+	srv := challenge.New(d.cfg, d.ipList)
 	listener, err := srv.Listen()
 	if err != nil {
 		if d.challengeGate != nil {

@@ -135,10 +135,16 @@ Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 ### Successful Verification
 
 When a client passes the challenge:
-1. The IP is temporarily allowed through the firewall for 4 hours
-2. A verification cookie is set
-3. The IP is removed from the challenge list so the webserver stops
+1. The IP is removed from the challenge list so the webserver stops
    sending that visitor to the challenge flow
+2. A verification cookie is set, so a visitor who is challenged again
+   within its lifetime passes without seeing the puzzle
+
+Passing the challenge changes nothing in the firewall. The visitor is
+treated like any other client from then on: normal rate limits and blocks
+still apply, and a later attack signal can list the IP again. The
+challenge page, the verify endpoint and the CAPTCHA fallback answer only
+for IPs currently on the challenge list; anyone else gets 404.
 
 ## Webserver Integration
 

@@ -21,17 +21,15 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// IPUnblocker is the interface for temporarily allowing an IP.
-type IPUnblocker interface {
-	TempAllowIP(ip string, reason string, timeout time.Duration) error
-}
-
-// Server serves challenge pages to gray-listed IPs.
-// When an IP passes the challenge, it gets a temporary allow.
+// Server serves challenge pages to gray-listed IPs. Passing the challenge
+// only takes the IP off the challenge list and hands the browser a bypass
+// cookie; it grants nothing in the firewall. The list is the sole source of
+// truth for who has a challenge pending, so every handler answers only for
+// IPs on it -- serving the puzzle to anyone else would let an arbitrary
+// client turn one cheap hash search into a verified session.
 type Server struct {
 	cfg            *config.Config
 	secret         []byte
-	unblocker      IPUnblocker
 	ipList         *IPList
 	srv            *http.Server
 	trustedProxies map[string]bool
@@ -66,13 +64,13 @@ type Server struct {
 const (
 	adminFailureWindow       = 5 * time.Minute
 	adminMaxFailuresInWindow = 5
-	// verifyCookieTTL is the lifetime of the csm_verified bypass cookie. It
-	// matches the firewall allow window applied in markVerified.
+	// verifyCookieTTL is the lifetime of the csm_verified bypass cookie: how
+	// long a visitor who passed once is waved through if listed again.
 	verifyCookieTTL = 4 * time.Hour
 )
 
 // New creates a challenge server.
-func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
+func New(cfg *config.Config, ipList *IPList) *Server {
 	secret := []byte(cfg.Challenge.Secret)
 	if len(secret) == 0 {
 		secret = make([]byte, 32)
@@ -91,7 +89,6 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	s := &Server{
 		cfg:            cfg,
 		secret:         secret,
-		unblocker:      unblocker,
 		ipList:         ipList,
 		trustedProxies: trusted,
 		verified:       make(map[string]time.Time),
@@ -99,7 +96,7 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	}
 
 	// The verify-cookie signer is always on (independent of the optional
-	// admin-session feature). TTL matches the markVerified allow window.
+	// admin-session feature).
 	if vs, err := NewAdminSessionSigner(verifyCookieTTL); err != nil {
 		fmt.Fprintf(os.Stderr, "[challenge] verify-cookie signing disabled: %v\n", err)
 	} else {
@@ -240,20 +237,16 @@ func (s *Server) Shutdown() {
 
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	ip := s.extractIP(r)
+	if !s.challengePending(ip) {
+		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
+		return
+	}
 
 	// Bypass paths run before the PoW page is generated. Each
 	// short-circuits to the same markVerified flow, so a passing
 	// visitor never sees the challenge UI even once.
-	if s.bypassByAdminCookie(r, ip) {
-		s.markVerified(w, r, ip, "admin session", "")
-		return
-	}
-	if s.bypassByVerifiedCrawler(r.Context(), ip) {
-		s.markVerified(w, r, ip, "verified crawler", "")
-		return
-	}
-	if s.bypassByVerifyCookie(r, ip) {
-		s.markVerified(w, r, ip, "verified cookie", "")
+	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) || s.bypassByVerifyCookie(r, ip) {
+		s.markVerified(w, r, ip, "")
 		return
 	}
 
@@ -332,6 +325,10 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := s.extractIP(r)
+	if !s.challengePending(ip) {
+		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
+		return
+	}
 	nonce := r.FormValue("nonce")
 	token := r.FormValue("token")
 	solution := r.FormValue("solution")
@@ -359,7 +356,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	s.verified[nonce] = time.Now()
 	s.verifiedMu.Unlock()
 
-	s.markVerified(w, r, ip, "passed challenge", r.FormValue("dest"))
+	s.markVerified(w, r, ip, r.FormValue("dest"))
 }
 
 // handleCaptchaVerify accepts a provider token, validates it
@@ -377,6 +374,10 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := s.extractIP(r)
+	if !s.challengePending(ip) {
+		http.Error(w, "No challenge pending for this address", http.StatusNotFound)
+		return
+	}
 	nonce := r.FormValue("nonce")
 	token := r.FormValue("token")
 	captchaToken := r.FormValue("captcha-token")
@@ -411,7 +412,7 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	s.verified[nonce] = time.Now()
 	s.verifiedMu.Unlock()
 
-	s.markVerified(w, r, ip, "passed captcha", r.FormValue("dest"))
+	s.markVerified(w, r, ip, r.FormValue("dest"))
 }
 
 // handleAdminToken issues a signed-session cookie when the operator
@@ -494,33 +495,33 @@ func (s *Server) clearAdminFailures(ip string) {
 	delete(s.adminFailures, ip)
 }
 
+// challengePending reports whether ip currently has a challenge to answer.
+// Without a list nobody does.
+func (s *Server) challengePending(ip string) bool {
+	return s.ipList != nil && s.ipList.Contains(ip)
+}
+
 // markVerified is the shared post-success path used by handleVerify,
 // handleCaptchaVerify, and the bypass shortcuts in handleChallenge.
-// Centralising the side effects (firewall tempallow, ipList removal,
-// verification cookie, redirect render) keeps all four paths in sync;
-// the alternative -- copy-pasting four times -- is the easiest way to
-// drift the behaviour of one path away from the others over time.
-func (s *Server) markVerified(w http.ResponseWriter, r *http.Request, ip, reason, destOverride string) {
-	allowDuration := 4 * time.Hour
-	if s.unblocker != nil {
-		if err := s.unblocker.TempAllowIP(ip, reason, allowDuration); err != nil {
-			fmt.Fprintf(os.Stderr, "[challenge] failed to allow %s: %v\n", ip, err)
-		}
-	}
-	if s.ipList != nil {
-		s.ipList.Remove(ip)
-	}
+// Centralising the side effects (ipList removal, verification cookie,
+// redirect render) keeps all four paths in sync; the alternative --
+// copy-pasting four times -- is the easiest way to drift the behaviour of
+// one path away from the others over time. Nothing here touches the
+// firewall: a passed challenge proves a browser, not a trustworthy client,
+// so the visitor goes back to the ordinary rules like everyone else.
+func (s *Server) markVerified(w http.ResponseWriter, r *http.Request, ip, destOverride string) {
+	s.ipList.Remove(ip)
 
-	// Set verification cookie so the visitor skips the gate until the allow
-	// window expires. Secure is always on: CSM is designed to run behind
-	// HTTPS and the cookie grants a multi-hour bypass of the PoW gate, so
-	// leaking it over plaintext is never acceptable.
+	// Set verification cookie so a visitor who is listed again inside the
+	// window skips the puzzle. Secure is always on: CSM is designed to run
+	// behind HTTPS and the cookie grants a multi-hour bypass of the PoW
+	// gate, so leaking it over plaintext is never acceptable.
 	if s.verifySigner != nil {
 		http.SetCookie(w, &http.Cookie{
 			Name:     "csm_verified",
 			Value:    s.verifySigner.Issue(ip),
 			Path:     "/",
-			MaxAge:   int(allowDuration.Seconds()),
+			MaxAge:   int(verifyCookieTTL.Seconds()),
 			Secure:   true,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,

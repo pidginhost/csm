@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -247,28 +246,11 @@ func TestGenerateNonceUnique(t *testing.T) {
 
 // --- Server constructor + handlers ------------------------------------
 
-type stubUnblocker struct {
-	mu      sync.Mutex
-	called  int
-	lastIP  string
-	lastRsn string
-}
-
-func (u *stubUnblocker) TempAllowIP(ip, reason string, _ time.Duration) error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	u.called++
-	u.lastIP = ip
-	u.lastRsn = reason
-	return nil
-}
-
-func newTestServer(t *testing.T, cfg *config.Config) (*Server, *stubUnblocker, *IPList) {
+func newTestServer(t *testing.T, cfg *config.Config) (*Server, *IPList) {
 	t.Helper()
-	u := &stubUnblocker{}
 	l := NewIPList(t.TempDir())
-	s := New(cfg, u, l)
-	return s, u, l
+	s := New(cfg, l)
+	return s, l
 }
 
 func baseCfg() *config.Config {
@@ -282,7 +264,7 @@ func baseCfg() *config.Config {
 func TestNewRandomSecretWhenEmpty(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.Secret = "" // force random generation
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 	if len(s.secret) != 32 {
 		t.Errorf("random secret length = %d, want 32", len(s.secret))
 	}
@@ -291,7 +273,7 @@ func TestNewRandomSecretWhenEmpty(t *testing.T) {
 func TestNewWiresTrustedProxies(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1", "  10.0.0.2  ", "::ffff:10.0.0.3", ""}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 	if !s.trustedProxies["10.0.0.1"] {
 		t.Error("10.0.0.1 should be trusted")
 	}
@@ -307,7 +289,8 @@ func TestNewWiresTrustedProxies(t *testing.T) {
 }
 
 func TestHandleChallengeRendersPageWithIP(t *testing.T) {
-	s, _, _ := newTestServer(t, baseCfg())
+	s, list := newTestServer(t, baseCfg())
+	list.Add("203.0.113.5", "test", time.Hour)
 
 	req := httptest.NewRequest("GET", "/challenge", nil)
 	req.RemoteAddr = "203.0.113.5:12345"
@@ -332,7 +315,7 @@ func TestHandleChallengeRendersPageWithIP(t *testing.T) {
 }
 
 func TestHandleVerifyRejectsGET(t *testing.T) {
-	s, _, _ := newTestServer(t, baseCfg())
+	s, _ := newTestServer(t, baseCfg())
 	req := httptest.NewRequest("GET", "/challenge/verify", nil)
 	req.RemoteAddr = "1.2.3.4:1"
 	w := httptest.NewRecorder()
@@ -343,7 +326,8 @@ func TestHandleVerifyRejectsGET(t *testing.T) {
 }
 
 func TestHandleVerifyRejectsBadToken(t *testing.T) {
-	s, _, _ := newTestServer(t, baseCfg())
+	s, list := newTestServer(t, baseCfg())
+	list.Add("1.2.3.4", "test", time.Hour)
 	form := url.Values{
 		"nonce":    {"xxx"},
 		"token":    {"wrong"},
@@ -362,10 +346,11 @@ func TestHandleVerifyRejectsBadToken(t *testing.T) {
 func TestHandleVerifyRejectsBadSolution(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.Difficulty = 4 // force a real PoW check
-	s, _, _ := newTestServer(t, cfg)
+	s, list := newTestServer(t, cfg)
 
 	nonce := "fixed-nonce"
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	token := s.makeToken(ip, nonce)
 
 	form := url.Values{
@@ -385,8 +370,8 @@ func TestHandleVerifyRejectsBadSolution(t *testing.T) {
 
 func TestHandleVerifySuccessPath(t *testing.T) {
 	// Difficulty 0 so any solution validates — lets us focus on the
-	// unblocker + replay + cookie + redirect logic.
-	s, unblocker, list := newTestServer(t, baseCfg())
+	// list removal + replay + cookie + redirect logic.
+	s, list := newTestServer(t, baseCfg())
 	ip := "1.2.3.4"
 	list.Add(ip, "test", time.Hour)
 
@@ -407,12 +392,6 @@ func TestHandleVerifySuccessPath(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("success path = %d, want 200", w.Code)
-	}
-	if unblocker.called != 1 {
-		t.Errorf("unblocker.called = %d, want 1", unblocker.called)
-	}
-	if unblocker.lastIP != ip {
-		t.Errorf("unblocker.lastIP = %q", unblocker.lastIP)
 	}
 	if list.Contains(ip) {
 		t.Error("IP should be removed from challenge list after verify")
@@ -443,8 +422,9 @@ func TestHandleVerifyCookieHasSecurityAttributes(t *testing.T) {
 	// (no JS access), SameSite (no cross-site attachment), and Secure (no
 	// leakage over plaintext links). CSM is designed to run behind HTTPS;
 	// plaintext deployments are not supported.
-	s, _, _ := newTestServer(t, baseCfg())
+	s, list := newTestServer(t, baseCfg())
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := "fresh-nonce-secure"
 	token := s.makeToken(ip, nonce)
 
@@ -486,8 +466,9 @@ func TestHandleVerifyCookieHasSecurityAttributes(t *testing.T) {
 }
 
 func TestHandleVerifyReplayIsRejected(t *testing.T) {
-	s, _, _ := newTestServer(t, baseCfg())
+	s, list := newTestServer(t, baseCfg())
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := "replay-nonce"
 	token := s.makeToken(ip, nonce)
 
@@ -510,6 +491,9 @@ func TestHandleVerifyReplayIsRejected(t *testing.T) {
 		t.Fatalf("first call = %d, want 200", w1.Code)
 	}
 
+	// Passing removed the IP from the list; a later signal lists it again and
+	// the attacker replays the spent nonce instead of solving a new puzzle.
+	list.Add(ip, "test", time.Hour)
 	w2 := httptest.NewRecorder()
 	s.handleVerify(w2, mkReq())
 	if w2.Code != http.StatusForbidden {
@@ -517,12 +501,14 @@ func TestHandleVerifyReplayIsRejected(t *testing.T) {
 	}
 }
 
-func TestHandleVerifyUnblockerNilIsTolerated(t *testing.T) {
+// A server without a challenge list has nobody with a challenge pending, so a
+// valid solution from anyone is refused rather than treated as verified.
+func TestHandleVerifyWithoutListIsNotFound(t *testing.T) {
 	cfg := baseCfg()
-	s := New(cfg, nil, nil) // no unblocker, no list
+	s := New(cfg, nil)
 
 	ip := "1.2.3.4"
-	nonce := "nonce-nil-unblocker"
+	nonce := "nonce-no-list"
 	token := s.makeToken(ip, nonce)
 
 	form := url.Values{
@@ -536,15 +522,15 @@ func TestHandleVerifyUnblockerNilIsTolerated(t *testing.T) {
 	req.RemoteAddr = ip + ":1"
 	w := httptest.NewRecorder()
 	s.handleVerify(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("nil unblocker should not fail the request: got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("verify without a challenge list = %d, want 404", w.Code)
 	}
 }
 
 // --- extractIP trusted-proxy handling ---------------------------------
 
 func TestExtractIPNoTrustedProxyUsesRemoteAddr(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.1") // should be ignored
@@ -556,7 +542,7 @@ func TestExtractIPNoTrustedProxyUsesRemoteAddr(t *testing.T) {
 func TestExtractIPTrustedProxyUsesRightmostXFF(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
@@ -570,7 +556,7 @@ func TestExtractIPTrustedProxyUsesRightmostXFF(t *testing.T) {
 func TestExtractIPTrustedProxyCanonicalizesPeerBeforeLookup(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "[::ffff:10.0.0.1]:1234"
@@ -583,7 +569,7 @@ func TestExtractIPTrustedProxyCanonicalizesPeerBeforeLookup(t *testing.T) {
 func TestExtractIPTrustedProxyNoXFFFallsBackToRemote(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	if got := s.extractIP(req); got != "10.0.0.1" {
@@ -594,7 +580,7 @@ func TestExtractIPTrustedProxyNoXFFFallsBackToRemote(t *testing.T) {
 func TestExtractIPTrustedProxyBogusXFFFallsBackToRemote(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234"
 	req.Header.Set("X-Forwarded-For", "not-an-ip, garbage")
@@ -607,7 +593,7 @@ func TestExtractIPTrustedProxyBogusXFFFallsBackToRemote(t *testing.T) {
 // ("::ffff:1.2.3.4"). extractIP must canonicalize it to the plain IPv4 form
 // so a block stored as "1.2.3.4" is matched, not bypassed.
 func TestExtractIPCanonicalizesIPv4MappedIPv6(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "[::ffff:203.0.113.10]:1234"
 	if got := s.extractIP(req); got != "203.0.113.10" {
@@ -623,7 +609,7 @@ func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
 	// net.ParseIP-validated XFF entry — never attacker-controlled HTML.
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 
 	payloads := []string{
 		"<script>alert(1)</script>",
@@ -647,7 +633,7 @@ func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
 func TestExtractIPUntrustedPeerIgnoresXFF(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
-	s := New(cfg, nil, nil)
+	s := New(cfg, nil)
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "5.5.5.5:1" // NOT the trusted proxy
 	req.Header.Set("X-Forwarded-For", "8.8.8.8")
@@ -661,7 +647,7 @@ func TestHandleGateReflectsChallengeList(t *testing.T) {
 	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
 	l := NewIPList(t.TempDir())
 	l.Add("203.0.113.44", "test", time.Hour)
-	s := New(cfg, nil, l)
+	s := New(cfg, l)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge/gate", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
@@ -683,7 +669,7 @@ func TestHandleGateReflectsChallengeList(t *testing.T) {
 // --- CleanExpired on Server.verified map -----------------------------
 
 func TestServerCleanExpired(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	s.verifiedMu.Lock()
 	s.verified["old"] = time.Now().Add(-5 * time.Hour)
 	s.verified["recent"] = time.Now()
@@ -707,7 +693,7 @@ func TestServerCleanExpired(t *testing.T) {
 // --- makeToken / verify cookie ----------------------------------------
 
 func TestMakeTokenDeterministicAndIPBound(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	t1 := s.makeToken("1.2.3.4", "n1")
 	t2 := s.makeToken("1.2.3.4", "n1")
 	if t1 != t2 {
@@ -720,7 +706,7 @@ func TestMakeTokenDeterministicAndIPBound(t *testing.T) {
 }
 
 func TestVerifyCookieIsSignedAndIPBound(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	if s.verifySigner == nil {
 		t.Fatal("verifySigner must always be constructed")
 	}
@@ -736,7 +722,7 @@ func TestVerifyCookieIsSignedAndIPBound(t *testing.T) {
 // --- Shutdown doesn't panic when srv hasn't been Start'ed ------------
 
 func TestServerShutdownIdempotent(t *testing.T) {
-	s := New(baseCfg(), nil, nil)
+	s := New(baseCfg(), nil)
 	s.Shutdown()
 	// Second call — http.Server.Close is idempotent.
 	s.Shutdown()

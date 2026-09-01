@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,37 +15,18 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// fakeUnblocker records every TempAllowIP call so tests can assert
-// that the verification flow reached the firewall step.
-type fakeUnblocker struct {
-	mu   sync.Mutex
-	last struct {
-		ip      string
-		reason  string
-		timeout time.Duration
-	}
-	calls int
-}
-
-func (f *fakeUnblocker) TempAllowIP(ip, reason string, timeout time.Duration) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls++
-	f.last.ip = ip
-	f.last.reason = reason
-	f.last.timeout = timeout
-	return nil
-}
-
-func newServerForTest(t *testing.T) (*Server, *fakeUnblocker) {
+// newServerForTest returns a server and its challenge list. A verification
+// flow that completes takes the IP off the list, which is what the tests
+// below assert; nothing else is observable from a pass.
+func newServerForTest(t *testing.T) (*Server, *IPList) {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Challenge.Secret = "test-secret-for-hmac"
 	cfg.Challenge.ListenPort = 0
 	cfg.Challenge.Difficulty = 1
-	unblocker := &fakeUnblocker{}
-	s := New(cfg, unblocker, NewIPList(t.TempDir()))
-	return s, unblocker
+	list := NewIPList(t.TempDir())
+	s := New(cfg, list)
+	return s, list
 }
 
 // configureCaptcha enables the CAPTCHA fallback by pointing it at a
@@ -76,7 +56,7 @@ func configureCaptcha(t *testing.T, s *Server, success bool) string {
 }
 
 func TestHandleChallengeBypassesViaAdminCookie(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	signer, err := NewAdminSessionSigner(time.Hour)
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -84,6 +64,7 @@ func TestHandleChallengeBypassesViaAdminCookie(t *testing.T) {
 	s.sessionSigner = signer
 	s.cfg.Challenge.VerifiedSession.Enabled = true
 	s.cfg.Challenge.VerifiedSession.CookieName = "csm_admin_session"
+	list.Add("1.2.3.4", "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "1.2.3.4:55000"
@@ -94,11 +75,8 @@ func TestHandleChallengeBypassesViaAdminCookie(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if unblocker.calls != 1 {
-		t.Fatalf("unblocker calls = %d, want 1", unblocker.calls)
-	}
-	if !strings.Contains(unblocker.last.reason, "admin") {
-		t.Errorf("reason = %q, want contains 'admin'", unblocker.last.reason)
+	if list.Contains("1.2.3.4") {
+		t.Fatal("admin-cookie bypass did not clear the pending challenge")
 	}
 	body, _ := io.ReadAll(rr.Body)
 	if !strings.Contains(string(body), "Verified") {
@@ -107,7 +85,7 @@ func TestHandleChallengeBypassesViaAdminCookie(t *testing.T) {
 }
 
 func TestHandleChallengeNoBypassWhenCookieIPMismatch(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	signer, err := NewAdminSessionSigner(time.Hour)
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -115,6 +93,7 @@ func TestHandleChallengeNoBypassWhenCookieIPMismatch(t *testing.T) {
 	s.sessionSigner = signer
 	s.cfg.Challenge.VerifiedSession.Enabled = true
 	s.cfg.Challenge.VerifiedSession.CookieName = "csm_admin_session"
+	list.Add("9.9.9.9", "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "9.9.9.9:55000" // different IP
@@ -122,8 +101,8 @@ func TestHandleChallengeNoBypassWhenCookieIPMismatch(t *testing.T) {
 	rr := httptest.NewRecorder()
 	s.handleChallenge(rr, req)
 
-	if unblocker.calls != 0 {
-		t.Errorf("unblocker called despite IP mismatch (%d times)", unblocker.calls)
+	if !list.Contains("9.9.9.9") {
+		t.Error("cookie for another IP must not clear this IP's pending challenge")
 	}
 	body, _ := io.ReadAll(rr.Body)
 	// Should be the regular challenge page, not the verified page.
@@ -133,48 +112,51 @@ func TestHandleChallengeNoBypassWhenCookieIPMismatch(t *testing.T) {
 }
 
 func TestHandleChallengeBypassesViaVerifiedCrawler(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	r := &fakeResolver{
 		addr: map[string][]string{"66.249.66.1": {"crawl.googlebot.com."}},
 		host: map[string][]string{"crawl.googlebot.com": {"66.249.66.1"}},
 	}
 	s.crawlers = NewCrawlerVerifier([]string{"googlebot"}, time.Minute, r)
+	list.Add("66.249.66.1", "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "66.249.66.1:55000"
 	rr := httptest.NewRecorder()
 	s.handleChallenge(rr, req)
 
-	if unblocker.calls != 1 {
-		t.Fatalf("unblocker calls = %d, want 1", unblocker.calls)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if !strings.Contains(unblocker.last.reason, "crawler") {
-		t.Errorf("reason = %q, want contains 'crawler'", unblocker.last.reason)
+	if list.Contains("66.249.66.1") {
+		t.Fatal("verified-crawler bypass did not clear the pending challenge")
 	}
 }
 
 func TestHandleChallengeNoBypassForSpoofedCrawler(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	// PTR matches the suffix but the forward resolves to a different IP.
 	r := &fakeResolver{
 		addr: map[string][]string{"6.6.6.6": {"fake.googlebot.com."}},
 		host: map[string][]string{"fake.googlebot.com": {"66.249.66.1"}},
 	}
 	s.crawlers = NewCrawlerVerifier([]string{"googlebot"}, time.Minute, r)
+	list.Add("6.6.6.6", "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "6.6.6.6:55000"
 	rr := httptest.NewRecorder()
 	s.handleChallenge(rr, req)
 
-	if unblocker.calls != 0 {
-		t.Errorf("unblocker called for spoofed crawler (%d times)", unblocker.calls)
+	if !list.Contains("6.6.6.6") {
+		t.Error("spoofed crawler must keep its pending challenge")
 	}
 }
 
 func TestHandleChallengeServesCaptchaNoscriptWhenConfigured(t *testing.T) {
-	s, _ := newServerForTest(t)
+	s, list := newServerForTest(t)
 	configureCaptcha(t, s, true)
+	list.Add("1.2.3.4", "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "1.2.3.4:55000"
@@ -197,7 +179,8 @@ func TestHandleChallengeServesCaptchaNoscriptWhenConfigured(t *testing.T) {
 }
 
 func TestHandleChallengeOmitsCaptchaWhenNoProvider(t *testing.T) {
-	s, _ := newServerForTest(t)
+	s, list := newServerForTest(t)
+	list.Add("1.2.3.4", "test", time.Hour)
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "1.2.3.4:55000"
 	rr := httptest.NewRecorder()
@@ -209,10 +192,11 @@ func TestHandleChallengeOmitsCaptchaWhenNoProvider(t *testing.T) {
 }
 
 func TestHandleCaptchaVerifySuccess(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	configureCaptcha(t, s, true)
 
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := generateNonce()
 	token := s.makeToken(ip, nonce)
 
@@ -231,19 +215,17 @@ func TestHandleCaptchaVerifySuccess(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	if unblocker.calls != 1 {
-		t.Errorf("unblocker calls = %d, want 1", unblocker.calls)
-	}
-	if !strings.Contains(unblocker.last.reason, "captcha") {
-		t.Errorf("reason = %q, want contains 'captcha'", unblocker.last.reason)
+	if list.Contains(ip) {
+		t.Error("accepted CAPTCHA did not clear the pending challenge")
 	}
 }
 
 func TestHandleCaptchaVerifyProviderRejectsToken(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	configureCaptcha(t, s, false) // provider returns success: false
 
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := generateNonce()
 	token := s.makeToken(ip, nonce)
 
@@ -261,13 +243,13 @@ func TestHandleCaptchaVerifyProviderRejectsToken(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rr.Code)
 	}
-	if unblocker.calls != 0 {
-		t.Errorf("unblocker called for failed CAPTCHA (%d times)", unblocker.calls)
+	if !list.Contains(ip) {
+		t.Error("rejected CAPTCHA must keep the pending challenge")
 	}
 }
 
 func TestHandleCaptchaVerifyProviderRejectDoesNotConsumeNonce(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	var success atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -289,6 +271,7 @@ func TestHandleCaptchaVerifyProviderRejectDoesNotConsumeNonce(t *testing.T) {
 	s.captcha = p
 
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := generateNonce()
 	token := s.makeToken(ip, nonce)
 	post := func(captchaToken string) *httptest.ResponseRecorder {
@@ -307,16 +290,16 @@ func TestHandleCaptchaVerifyProviderRejectDoesNotConsumeNonce(t *testing.T) {
 	if rr := post("bad-token"); rr.Code != http.StatusForbidden {
 		t.Fatalf("failed CAPTCHA status = %d, want 403", rr.Code)
 	}
-	if unblocker.calls != 0 {
-		t.Fatalf("unblocker calls after failed CAPTCHA = %d, want 0", unblocker.calls)
+	if !list.Contains(ip) {
+		t.Fatal("failed CAPTCHA must keep the pending challenge")
 	}
 
 	success.Store(true)
 	if rr := post("visitor-token"); rr.Code != http.StatusOK {
 		t.Fatalf("retry after failed CAPTCHA status = %d, body=%s", rr.Code, rr.Body.String())
 	}
-	if unblocker.calls != 1 {
-		t.Fatalf("unblocker calls after retry = %d, want 1", unblocker.calls)
+	if list.Contains(ip) {
+		t.Fatal("retry that passed did not clear the pending challenge")
 	}
 }
 
@@ -333,10 +316,11 @@ func TestHandleCaptchaVerifyNotFoundWhenDisabled(t *testing.T) {
 }
 
 func TestHandleCaptchaVerifyReplayRejected(t *testing.T) {
-	s, _ := newServerForTest(t)
+	s, list := newServerForTest(t)
 	configureCaptcha(t, s, true)
 
 	ip := "1.2.3.4"
+	list.Add(ip, "test", time.Hour)
 	nonce := generateNonce()
 	token := s.makeToken(ip, nonce)
 	form := url.Values{}
@@ -353,6 +337,8 @@ func TestHandleCaptchaVerifyReplayRejected(t *testing.T) {
 		t.Fatalf("first status = %d", rr1.Code)
 	}
 
+	// Listed again by a later signal, the visitor replays the spent nonce.
+	list.Add(ip, "test", time.Hour)
 	second := httptest.NewRequest(http.MethodPost, "/challenge/captcha-verify", strings.NewReader(form.Encode()))
 	second.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	second.RemoteAddr = ip + ":55000"

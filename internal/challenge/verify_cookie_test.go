@@ -19,6 +19,7 @@ func mintVerifyCookie(t *testing.T, s *Server, ip string) *http.Cookie {
 	s.sessionSigner = signer
 	s.cfg.Challenge.VerifiedSession.Enabled = true
 	s.cfg.Challenge.VerifiedSession.CookieName = "csm_admin_session"
+	s.ipList.Add(ip, "test", time.Hour)
 
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = ip + ":55000"
@@ -38,14 +39,15 @@ func mintVerifyCookie(t *testing.T, s *Server, ip string) *http.Cookie {
 // A visitor who already passed the challenge presents the csm_verified cookie
 // on the next request and must bypass the PoW gate, not solve it again.
 func TestHandleChallengeBypassesViaVerifyCookie(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	ip := "1.2.3.4"
 	verifyCookie := mintVerifyCookie(t, s, ip)
 
-	// Strip the admin session so only the verify cookie can drive the bypass.
+	// Strip the admin session so only the verify cookie can drive the bypass,
+	// and list the IP again as a fresh signal would.
 	s.sessionSigner = nil
+	list.Add(ip, "test", time.Hour)
 
-	callsBefore := unblocker.calls
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = ip + ":55000"
 	req.AddCookie(verifyCookie)
@@ -59,27 +61,27 @@ func TestHandleChallengeBypassesViaVerifyCookie(t *testing.T) {
 	if !strings.Contains(body, "Verified") {
 		t.Fatalf("verify cookie did not bypass PoW; body=%q", body[:min(240, len(body))])
 	}
-	if unblocker.calls != callsBefore+1 {
-		t.Fatalf("bypass did not re-allow IP; calls=%d want %d", unblocker.calls, callsBefore+1)
+	if list.Contains(ip) {
+		t.Fatal("verify-cookie bypass did not clear the pending challenge")
 	}
 }
 
 // A verify cookie is bound to one IP. Presenting it from a different IP must
 // fall through to the PoW page (stolen-cookie / different-network protection).
 func TestHandleChallengeVerifyCookieIPMismatchNoBypass(t *testing.T) {
-	s, unblocker := newServerForTest(t)
+	s, list := newServerForTest(t)
 	verifyCookie := mintVerifyCookie(t, s, "1.2.3.4")
 	s.sessionSigner = nil
+	list.Add("9.9.9.9", "test", time.Hour)
 
-	callsBefore := unblocker.calls
 	req := httptest.NewRequest(http.MethodGet, "/challenge", nil)
 	req.RemoteAddr = "9.9.9.9:55000" // different IP than the cookie was issued for
 	req.AddCookie(verifyCookie)
 	rr := httptest.NewRecorder()
 	s.handleChallenge(rr, req)
 
-	if unblocker.calls != callsBefore {
-		t.Errorf("verify cookie bypassed for mismatched IP (calls %d -> %d)", callsBefore, unblocker.calls)
+	if !list.Contains("9.9.9.9") {
+		t.Error("verify cookie for another IP must not clear this IP's pending challenge")
 	}
 	if !strings.Contains(rr.Body.String(), "Checking your connection") {
 		t.Errorf("expected PoW page on IP mismatch, got %q", rr.Body.String()[:min(240, rr.Body.Len())])
