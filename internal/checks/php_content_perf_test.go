@@ -36,11 +36,20 @@ func runCodeEvalPrimitiveWithTimeout(t *testing.T, code string) bool {
 		done <- hasCodeEvalPrimitiveWithRequest(code)
 	}()
 
+	// The budget separates linear peeling from a runaway scan, and the gap is
+	// enormous: a quadratic pass over 100k nesting levels is minutes of work and
+	// unbounded recursion dies on the stack. It is deliberately not tight.
+	// Wall clock here also pays for the harness, not just the function --
+	// measured 0.01s bare against 0.52s under -race with -coverpkg=./internal/...,
+	// which instruments the package under test -- and CI runs several package
+	// binaries at once, so a few seconds of scheduling delay says nothing about
+	// the algorithm.
+	const budget = 60 * time.Second
 	select {
 	case flagged := <-done:
 		return flagged
-	case <-time.After(5 * time.Second):
-		t.Fatal("hasCodeEvalPrimitiveWithRequest did not finish within 5s on deeply nested parens (quadratic scan / unbounded recursion)")
+	case <-time.After(budget):
+		t.Fatalf("hasCodeEvalPrimitiveWithRequest did not finish within %s on deeply nested parens (quadratic scan / unbounded recursion)", budget)
 	}
 	return false
 }
