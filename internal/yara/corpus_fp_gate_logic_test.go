@@ -36,7 +36,7 @@ func TestScanCleanCorpusDoesNotCountSkippedArchives(t *testing.T) {
 	writeCorpusFile(t, root, "two.zip", "PK\x03\x04more stored content")
 
 	scanCalls := 0
-	_, err := scanCleanCorpus(root, 2, corpusMaxFileBytes, func([]byte) ([]csmyara.Match, error) {
+	_, err := scanCleanCorpus(root, 2, corpusMaxFileBytes, func(string, []byte) ([]csmyara.Match, error) {
 		scanCalls++
 		return nil, nil
 	})
@@ -52,7 +52,7 @@ func TestScanCleanCorpusSurfacesScannerError(t *testing.T) {
 	root := t.TempDir()
 	path := writeCorpusFile(t, root, "clean.php", "<?php echo 'clean';")
 
-	_, err := scanCleanCorpus(root, 1, corpusMaxFileBytes, func([]byte) ([]csmyara.Match, error) {
+	_, err := scanCleanCorpus(root, 1, corpusMaxFileBytes, func(string, []byte) ([]csmyara.Match, error) {
 		return nil, errors.New("engine stopped")
 	})
 	if err == nil || !strings.Contains(err.Error(), "scanning "+path) || !strings.Contains(err.Error(), "engine stopped") {
@@ -75,7 +75,7 @@ func TestScanCleanCorpusRecordsHitsAndExamples(t *testing.T) {
 	first := writeCorpusFile(t, root, "a.php", "first")
 	writeCorpusFile(t, root, "b.php", "second")
 
-	result, err := scanCleanCorpus(root, 2, corpusMaxFileBytes, func([]byte) ([]csmyara.Match, error) {
+	result, err := scanCleanCorpus(root, 2, corpusMaxFileBytes, func(string, []byte) ([]csmyara.Match, error) {
 		return []csmyara.Match{{RuleName: "test_rule"}}, nil
 	})
 	if err != nil {
@@ -125,7 +125,7 @@ func TestScanCleanCorpusSurfacesWalkErrorAfterFloor(t *testing.T) {
 	}
 }
 
-func cleanCorpusScan([]byte) ([]csmyara.Match, error) {
+func cleanCorpusScan(string, []byte) ([]csmyara.Match, error) {
 	return nil, nil
 }
 

@@ -48,7 +48,7 @@ func TestExtractedZIPMemberYARAScanPreservesOffsetZero(t *testing.T) {
 		if !bytes.HasPrefix(data, []byte("#!/bin/bash")) {
 			t.Fatalf("extracted archive member does not start at its own offset zero: %q", data)
 		}
-		matches, scanErr := csmyara.ScanBytesChecked(scanner, data)
+		matches, scanErr := csmyara.ScanBytesChecked(scanner, part.Filename, data)
 		if scanErr != nil {
 			t.Fatalf("scanning extracted member: %v", scanErr)
 		}

@@ -8,9 +8,9 @@ Deep scans are rolling: each scheduled run resumes from a persisted cursor and s
 
 The same rolling walk also feeds the JavaScript keystroke taint analyzer (`js_keylogger_dataflow`) and the PHP remote-source taint analyzer (`php_remote_taint`); see the deep checks reference for both. Each consumer keeps its own cursor and completion record, so none of them stalls the others: a missing or failed YARA backend does not hold up either taint analyzer, and the PHP analyzer being unavailable does not affect YARA or JavaScript coverage.
 
-A rule declaring `file_types: [".php"]` is also applied to `.phps` files, because that source-view extension still contains PHP source. It stays outside the set of extensions CSM treats as executable, so this does not change which files the real-time dropper tracker considers runnable.
+A rule declaring `file_types: [".php"]` is applied to every extension a stock PHP handler executes (`.php2` through `.php8`, `.phtml`, `.pht`) and to `.phps`, because that source-view extension still contains PHP source. `.phps` stays outside the set of extensions CSM treats as executable, so this does not change which files the real-time dropper tracker considers runnable.
 
-Both engines skip raw ZIP, gzip, bzip2, xz, 7z, and RAR containers. Matching compressed bytes or stored filenames produces false positives without inspecting the archived file, so content is scanned when it is extracted onto monitored storage instead. Uncompressed tar files and executable PHP archives (PHAR) remain scannable, and filename-based phishing-kit archive detection is unchanged.
+Both engines skip ZIP, gzip, bzip2, xz, 7z, and RAR containers, but only when the file name carries an archive extension as well as the archive signature. Matching compressed bytes or stored filenames produces false positives without inspecting the archived file, so real containers are scanned when they are extracted onto monitored storage instead. A file whose name a web server would execute is always scanned whatever its first bytes look like, because PHP echoes any leading bytes and runs the rest. Uncompressed tar files and executable PHP archives (PHAR) remain scannable, and filename-based phishing-kit archive detection is unchanged.
 
 ## YAML Rules
 

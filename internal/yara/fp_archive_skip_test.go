@@ -10,7 +10,9 @@ import (
 
 // Raw-byte scanning of compressed containers finds spurious tokens in stored
 // entries and filenames. The real payload is scanned when the archive is
-// extracted to disk, so the scanner treats raw archive content as non-scannable.
+// extracted to disk, so a file that is an archive by name and by magic is not
+// presented to the rules. The engine itself has no such policy (the worker
+// process only sees bytes); it lives at the ScanBytesChecked boundary.
 func TestArchiveContentIsNotScanned(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 
@@ -18,25 +20,34 @@ func TestArchiveContentIsNotScanned(t *testing.T) {
 	payload := []byte("<?php eval($_POST['x']); system($_GET['c']); // c99shell b374k AnonymousFox")
 	for _, tt := range []struct {
 		name  string
+		file  string
 		magic []byte
 	}{
-		{name: "zip", magic: []byte{'P', 'K', 0x03, 0x04}},
-		{name: "zip_empty", magic: []byte{'P', 'K', 0x05, 0x06}},
-		{name: "zip_descriptor", magic: []byte{'P', 'K', 0x07, 0x08}},
-		{name: "gzip", magic: []byte{0x1f, 0x8b, 0x08, 0x00}},
-		{name: "bzip2", magic: []byte{'B', 'Z', 'h', '9'}},
-		{name: "xz", magic: []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}},
-		{name: "7z", magic: []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}},
-		{name: "rar4", magic: []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00}},
-		{name: "rar5", magic: []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00}},
+		{name: "zip", file: "backup.zip", magic: []byte{'P', 'K', 0x03, 0x04}},
+		{name: "zip_empty", file: "backup.zip", magic: []byte{'P', 'K', 0x05, 0x06}},
+		{name: "zip_descriptor", file: "backup.zip", magic: []byte{'P', 'K', 0x07, 0x08}},
+		{name: "gzip", file: "site.tar.gz", magic: []byte{0x1f, 0x8b, 0x08, 0x00}},
+		{name: "bzip2", file: "site.tar.bz2", magic: []byte{'B', 'Z', 'h', '9'}},
+		{name: "xz", file: "site.tar.xz", magic: []byte{0xfd, '7', 'z', 'X', 'Z', 0x00}},
+		{name: "7z", file: "backup.7z", magic: []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}},
+		{name: "rar4", file: "backup.rar", magic: []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00}},
+		{name: "rar5", file: "backup.rar", magic: []byte{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00}},
 	} {
 		buf := append(append([]byte{}, tt.magic...), payload...)
-		hits, err := s.ScanBytesChecked(buf)
+		hits, err := ScanBytesChecked(s, tt.file, buf)
 		if err != nil {
 			t.Fatalf("%s archive scan: %v", tt.name, err)
 		}
 		if len(hits) > 0 {
 			t.Errorf("%s archive: expected no matches, got %v", tt.name, ruleNames(hits))
+		}
+		// The identical bytes under an executable name are a polyglot webshell.
+		hits, err = ScanBytesChecked(s, "shell.php", buf)
+		if err != nil {
+			t.Fatalf("%s-prefixed php scan: %v", tt.name, err)
+		}
+		if len(hits) == 0 {
+			t.Errorf("%s magic in front of a .php webshell suppressed every rule", tt.name)
 		}
 	}
 }

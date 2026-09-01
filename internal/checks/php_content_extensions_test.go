@@ -37,20 +37,6 @@ func TestIsExecutablePHPName(t *testing.T) {
 	}
 }
 
-func TestIsPHPSourceNameIncludesPhpsWithoutMakingItExecutable(t *testing.T) {
-	for _, name := range []string{"x.php", "x.php8", "x.phtml", "x.phps"} {
-		if !IsPHPSourceName(name) {
-			t.Errorf("%q should receive PHP content analysis", name)
-		}
-	}
-	if IsExecutablePHPName("x.phps") {
-		t.Fatal(".phps must remain outside executable-PHP classification")
-	}
-	if IsPHPSourceName("x.html") {
-		t.Fatal("ordinary non-PHP content must not enter PHP content analysis")
-	}
-}
-
 func TestScanObfuscatedPHP_PhtmlWebshellDetected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "shell.phtml")
@@ -88,7 +74,7 @@ func TestScanObfuscatedPHP_PhpsStagedWebshellDetected(t *testing.T) {
 	if !findingForPath(findings, path) {
 		t.Fatalf(".phps staged webshell must be content-analysed, got %d findings", len(findings))
 	}
-	if IsExecutablePHPName(strings.ToLower(filepath.Base(path))) {
+	if isExecutablePHPName(strings.ToLower(filepath.Base(path))) {
 		t.Fatal("content-scanned .phps file must remain non-executable")
 	}
 }

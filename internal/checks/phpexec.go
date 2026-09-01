@@ -3,36 +3,9 @@ package checks
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/contenttype"
 )
-
-// executablePHPExtensions are the extensions a stock PHP-capable web server
-// (Apache mod_php / PHP-FPM via EasyApache4, LiteSpeed LSAPI, Nginx + php-fpm)
-// routes to the PHP interpreter by default. Any file with one of these names
-// can execute PHP, so a content scan that skipped them would let a webshell
-// hide behind a non-".php" name. ".phps" is deliberately excluded: the stock
-// handler renders it as highlighted source, it does not execute. Lowercase,
-// leading dot.
-var executablePHPExtensions = []string{
-	".php", ".php2", ".php3", ".php4", ".php5", ".php6", ".php7", ".php8",
-	".phtml", ".pht",
-}
-
-// IsExecutablePHPName reports whether a (lowercased) filename has an extension
-// that a stock PHP handler executes. Shared by the realtime fanotify path and
-// the periodic content scanners so the two never drift apart. It is a coarse,
-// default-deny gate for content analysis only; per-directory .htaccess handler
-// remappings are layered on top via phpHandlerOverlay.
-func IsExecutablePHPName(nameLower string) bool {
-	return isExecutablePHPName(nameLower)
-}
-
-// IsPHPSourceName reports whether a file should receive PHP content analysis.
-// It deliberately includes .phps even though IsExecutablePHPName does not:
-// stock handlers render .phps as source, but the bytes can still hold a staged
-// payload that becomes executable after a rename.
-func IsPHPSourceName(nameLower string) bool {
-	return isExecutablePHPName(nameLower) || strings.HasSuffix(nameLower, ".phps")
-}
 
 // PHPExecutionOverlay is an immutable snapshot of inherited .htaccess PHP
 // handler mappings for one directory. Realtime monitors can cache it and test
@@ -52,13 +25,10 @@ func (o PHPExecutionOverlay) Executes(nameLower string) bool {
 	return o.overlay.executes(nameLower)
 }
 
+// isExecutablePHPName is the stock-handler extension gate; per-directory
+// .htaccess handler remappings are layered on top via phpHandlerOverlay.
 func isExecutablePHPName(nameLower string) bool {
-	for _, ext := range executablePHPExtensions {
-		if strings.HasSuffix(nameLower, ext) {
-			return true
-		}
-	}
-	return false
+	return contenttype.IsExecutablePHPName(nameLower)
 }
 
 // phpHandlerOverlay carries the extra PHP execution mappings discovered from

@@ -145,7 +145,7 @@ func scanCleanCorpusYAML(t *testing.T, root string, scanner *Scanner) (map[strin
 					mu.Unlock()
 					continue
 				}
-				if contenttype.IsCompressedArchive(data) {
+				if contenttype.IsArchiveFile(path, data) {
 					continue
 				}
 				matches := scanner.ScanContent(data, filepath.Ext(path))

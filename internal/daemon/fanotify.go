@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -1978,7 +1979,7 @@ func (fm *FileMonitor) runSignatureScanWithSize(data []byte, contentSize int64, 
 	}
 
 	if yaraScanner := yara.Active(); yaraScanner != nil {
-		matches, err := yara.ScanBytesChecked(yaraScanner, data)
+		matches, err := yara.ScanBytesChecked(yaraScanner, path, data)
 		if err != nil {
 			fm.reportYARAScanError(path, err)
 			return false
@@ -2168,13 +2169,13 @@ func containsFunc(content, funcCall string) bool {
 }
 
 func isPHPExtension(nameLower string) bool {
-	// Single source of truth shared with the periodic content scanners so the
-	// realtime and batch paths never drift on which extensions execute PHP.
-	return checks.IsExecutablePHPName(nameLower)
+	// Single source of truth shared with the periodic content scanners and the
+	// rule engines so no path drifts on which extensions execute PHP.
+	return contenttype.IsExecutablePHPName(nameLower)
 }
 
 func isPHPSourceExtension(nameLower string) bool {
-	return checks.IsPHPSourceName(nameLower)
+	return contenttype.IsPHPSourceName(nameLower)
 }
 
 func isCGIExtension(nameLower string) bool {

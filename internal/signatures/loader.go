@@ -249,7 +249,11 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 	if len(s.rules) == 0 {
 		return nil
 	}
-	if contenttype.IsCompressedArchive(content) {
+	extLower := strings.ToLower(fileExt)
+	// Only a file that is an archive by name as well as by magic is left to the
+	// extraction-time scan; PHP executes past any leading bytes, so magic alone
+	// must never switch the rules off for an executable name.
+	if contenttype.IsArchiveExt(extLower) && contenttype.IsCompressedArchive(content) {
 		return nil
 	}
 	if contentSize < int64(len(content)) {
@@ -257,7 +261,6 @@ func (s *Scanner) ScanContentWithSize(content []byte, fileExt string, contentSiz
 	}
 
 	contentLower := strings.ToLower(string(content))
-	extLower := strings.ToLower(fileExt)
 	var matches []Match
 
 	for _, rule := range s.rules {
@@ -385,14 +388,15 @@ func (s *Scanner) Version() int {
 }
 
 // canonicalScanExt folds extensions that carry PHP source but are not the
-// extension rules are written against. ".phps" is PHP source by definition --
-// the extension exists so a server can display it -- so a payload staged under
-// it must still be matched against the PHP rule set. Without this it is read
-// and then compared against nothing, because every PHP rule declares
-// file_types [".php"].
+// extension rules are written against. Every extension a stock PHP handler
+// executes (.phtml, .pht, .php5 ...) must meet the same rules as .php, and so
+// must ".phps": it is PHP source by definition -- the extension exists so a
+// server can display it -- so a payload staged under it is still matched.
+// Without this fold such a file is read and then compared against nothing,
+// because every PHP rule declares file_types [".php"].
 func canonicalScanExt(ext string) string {
 	ext = strings.ToLower(ext)
-	if ext == ".phps" {
+	if ext == ".phps" || contenttype.IsExecutablePHPExt(ext) {
 		return ".php"
 	}
 	return ext

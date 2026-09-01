@@ -143,15 +143,10 @@ func (s *Scanner) ScanBytesChecked(data []byte) ([]Match, error) {
 		return nil, nil
 	}
 
-	// Raw bytes of a compressed archive are not meaningfully scannable: a
-	// deflated body cannot be pattern-matched, and stored entries plus the
-	// central-directory filenames trip rules with spurious tokens (plugin
-	// backup .zip archives flagged as webshells/phishing). The real payload is
-	// scanned when the archive is extracted to disk, so skip the container.
-	if contenttype.IsCompressedArchive(data) {
-		return nil, nil
-	}
-
+	// No content policy here: the engine scans whatever it is handed. Whether
+	// a payload should reach it (the archive skip) is decided at the daemon
+	// boundary in ScanBytesChecked, which knows the file name; the worker
+	// process behind the IPC backend only ever sees bytes.
 	results, err := rules.Scan(data)
 	if err != nil {
 		return nil, fmt.Errorf("yara scan: %w", err)
@@ -208,6 +203,11 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 	if err != nil || len(buf) == 0 {
 		return nil
 	}
+	// Path scans see both the name and the bytes, so they apply the same
+	// archive policy the daemon boundary applies to inline scans.
+	if contenttype.IsArchiveFile(path, buf) {
+		return nil
+	}
 	return s.ScanBytes(buf)
 }
 
@@ -248,12 +248,15 @@ func (s *Scanner) ScanFileChecked(path string, maxBytes int) (FileScanResult, er
 	if limitErr != nil {
 		return FileScanResult{}, limitErr
 	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(buf))
+	if contenttype.IsArchiveFile(path, buf) {
+		return FileScanResult{ContentSHA256: digest}, nil
+	}
 	matches, err := s.ScanBytesChecked(buf)
 	if err != nil {
 		return FileScanResult{}, err
 	}
-	digest := sha256.Sum256(buf)
-	return FileScanResult{Matches: matches, ContentSHA256: fmt.Sprintf("%x", digest)}, nil
+	return FileScanResult{Matches: matches, ContentSHA256: digest}, nil
 }
 
 // RuleCount returns the number of compiled rule files.

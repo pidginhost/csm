@@ -1,7 +1,11 @@
 // Package contenttype classifies file content shared by the malware scanners.
 package contenttype
 
-import "bytes"
+import (
+	"bytes"
+	"path/filepath"
+	"strings"
+)
 
 var compressedArchiveMagics = [][]byte{
 	{'P', 'K', 0x03, 0x04},                       // ZIP local file header
@@ -28,4 +32,35 @@ func IsCompressedArchive(data []byte) bool {
 		}
 	}
 	return false
+}
+
+// archiveExtensions are the names under which a compressed container is
+// stored on a web host: plain archives plus the zip-based document, package
+// and extension formats. Lowercase, leading dot.
+var archiveExtensions = map[string]struct{}{
+	".zip": {}, ".zipx": {}, ".jar": {}, ".war": {}, ".ear": {}, ".apk": {},
+	".docx": {}, ".xlsx": {}, ".pptx": {}, ".odt": {}, ".ods": {}, ".odp": {},
+	".epub": {}, ".whl": {}, ".egg": {}, ".crx": {}, ".xpi": {}, ".ipa": {},
+	".nupkg": {}, ".vsix": {},
+	".gz": {}, ".tgz": {}, ".svgz": {},
+	".bz2": {}, ".tbz": {}, ".tbz2": {},
+	".xz": {}, ".txz": {},
+	".7z":  {},
+	".rar": {},
+}
+
+// IsArchiveExt reports whether ext (leading dot, any case) names a compressed
+// container format.
+func IsArchiveExt(ext string) bool {
+	_, ok := archiveExtensions[strings.ToLower(ext)]
+	return ok
+}
+
+// IsArchiveFile reports whether both the name and the leading bytes identify a
+// compressed container. Bytes alone are not enough: PHP echoes whatever
+// precedes its open tag and runs the rest, so any interpreted file can start
+// with archive magic and still execute. Only a file that also carries an
+// archive extension is left to the extraction-time scan.
+func IsArchiveFile(name string, data []byte) bool {
+	return IsArchiveExt(filepath.Ext(name)) && IsCompressedArchive(data)
 }

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // dropperCandidate captures the fstat/read state of a file at close-write
@@ -59,7 +59,7 @@ func shouldTrackDropper(c dropperCandidate, selfPID int32, freshFor time.Duratio
 		return false
 	}
 	name := strings.ToLower(filepath.Base(c.Path))
-	if !checks.IsExecutablePHPName(name) && !c.PHPExecutable && c.Mode&0o111 == 0 {
+	if !contenttype.IsExecutablePHPName(name) && !c.PHPExecutable && c.Mode&0o111 == 0 {
 		return false
 	}
 	if !c.Created {

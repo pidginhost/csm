@@ -477,7 +477,7 @@ func TestEnumeratePHPFilesIncludesPhpsSource(t *testing.T) {
 	if !slices.Contains(files, staged) {
 		t.Fatalf("rolling PHP source set = %v, want %s", files, staged)
 	}
-	if IsExecutablePHPName(strings.ToLower(filepath.Base(staged))) {
+	if isExecutablePHPName(strings.ToLower(filepath.Base(staged))) {
 		t.Fatal("rolling inclusion must not make .phps executable")
 	}
 }

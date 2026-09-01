@@ -61,11 +61,11 @@ func TestRepositoryRulesAgainstCleanCorpus(t *testing.T) {
 		t.Fatal("scanner loaded zero rules")
 	}
 
-	result, err := scanCleanCorpus(root, minCorpusFiles, corpusMaxFileBytes, func(data []byte) ([]csmyara.Match, error) {
+	result, err := scanCleanCorpus(root, minCorpusFiles, corpusMaxFileBytes, func(path string, data []byte) ([]csmyara.Match, error) {
 		// Use the same checked, backend-agnostic boundary as the scheduled
 		// deep scan. Plain Scanner.ScanBytes flattens an engine failure into a
 		// clean result and would let the corpus gate measure the wrong outcome.
-		return csmyara.ScanBytesChecked(scanner, data)
+		return csmyara.ScanBytesChecked(scanner, path, data)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ type cleanCorpusResult struct {
 	scanned  int
 }
 
-type cleanCorpusScanFunc func([]byte) ([]csmyara.Match, error)
+type cleanCorpusScanFunc func(string, []byte) ([]csmyara.Match, error)
 type cleanCorpusWalkFunc func(string, filepath.WalkFunc) error
 type cleanCorpusReadFileFunc func(string, int64) ([]byte, error)
 
@@ -125,13 +125,13 @@ func scanCleanCorpusWith(
 		if int64(len(data)) > maxFileBytes {
 			return fmt.Errorf("reading %s: file grew beyond the %d-byte scan limit", path, maxFileBytes)
 		}
-		// Production intentionally does not present raw compressed archive
-		// bytes to YARA. Do not let skipped containers satisfy a floor meant
+		// Production does not present a file that is an archive by name and
+		// by magic to YARA. Do not let skipped containers satisfy a floor meant
 		// to prove that enough files actually reached the rule engine.
-		if contenttype.IsCompressedArchive(data) {
+		if contenttype.IsArchiveFile(path, data) {
 			return nil
 		}
-		matches, err := scan(data)
+		matches, err := scan(path, data)
 		if err != nil {
 			return fmt.Errorf("scanning %s: %w", path, err)
 		}

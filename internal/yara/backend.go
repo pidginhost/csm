@@ -50,20 +50,22 @@ type CheckedFileScanner interface {
 	ScanFileChecked(path string, maxBytes int) (FileScanResult, error)
 }
 
-// ScanBytesChecked scans data via b, surfacing a scan error when b supports
-// the CheckedScanner capability. Backends without it fall back to the
-// error-free ScanBytes. Callers that must fail closed on an unscannable
-// payload should use this instead of Backend.ScanBytes.
-func ScanBytesChecked(b Backend, data []byte) ([]Match, error) {
+// ScanBytesChecked scans data, read from the file called name, via b,
+// surfacing a scan error when b supports the CheckedScanner capability.
+// Backends without it fall back to the error-free ScanBytes. Callers that must
+// fail closed on an unscannable payload should use this instead of
+// Backend.ScanBytes.
+//
+// The archive policy lives here, at the backend-agnostic boundary, because it
+// needs the name: raw archive bytes are not scannable and their stored entries
+// trip rules with spurious tokens, so a file that is an archive by name and by
+// magic is left to the extraction-time scan. Magic alone is not enough -- PHP
+// executes past any leading bytes -- so an executable name is always scanned.
+func ScanBytesChecked(b Backend, name string, data []byte) ([]Match, error) {
 	if b == nil {
 		return nil, errors.New("yara: backend unavailable")
 	}
-	// Keep the archive policy at the backend-agnostic boundary used by daemon
-	// content scans. Active may resolve to the IPC supervisor instead of the
-	// in-process Scanner, so dispatching first would bypass Scanner's guard. Raw
-	// archive bytes are not scannable and their stored entries trip rules with
-	// spurious tokens; the real payload is scanned when the archive is extracted.
-	if contenttype.IsCompressedArchive(data) {
+	if contenttype.IsArchiveFile(name, data) {
 		return nil, nil
 	}
 	if cs, ok := b.(CheckedScanner); ok {
@@ -137,7 +139,7 @@ func SetActive(b Backend) {
 // digest of the snapshot it passed in. Only the oversize case retries; any
 // other scan error surfaces unchanged so fail-closed callers stay fail-closed.
 func ScanContentOrPathChecked(b Backend, path string, data []byte, maxBytes int) ([]Match, string, error) {
-	matches, err := ScanBytesChecked(b, data)
+	matches, err := ScanBytesChecked(b, path, data)
 	if !errors.Is(err, yaraipc.ErrPayloadTooLarge) {
 		return matches, "", err
 	}

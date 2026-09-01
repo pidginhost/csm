@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -195,7 +196,7 @@ func walkPHPFiles(ctx context.Context, cfg *config.Config, dir string, maxDepth 
 			walkPHPFiles(ctx, cfg, fullPath, maxDepth-1, respectIgnores, seen)
 			continue
 		}
-		if IsPHPSourceName(strings.ToLower(entry.Name())) {
+		if contenttype.IsPHPSourceName(strings.ToLower(entry.Name())) {
 			seen[fullPath] = struct{}{}
 		}
 	}

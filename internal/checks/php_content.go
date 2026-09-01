@@ -16,6 +16,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -1951,7 +1952,7 @@ func (s *phpContentScan) scanDir(ctx context.Context, dir string, maxDepth int, 
 // entry; the rolling driver calls it for each path in its bounded slice.
 func (s *phpContentScan) scanFile(ctx context.Context, fullPath string, overlay phpHandlerOverlay, findings *[]alert.Finding) {
 	nameLower := strings.ToLower(filepath.Base(fullPath))
-	if !IsPHPSourceName(nameLower) && !overlay.executes(nameLower) {
+	if !contenttype.IsPHPSourceName(nameLower) && !overlay.executes(nameLower) {
 		return
 	}
 

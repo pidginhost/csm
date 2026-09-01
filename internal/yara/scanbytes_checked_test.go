@@ -9,14 +9,14 @@ import (
 // so callers can distinguish "scan failed" from "file is clean".
 func TestScanBytesCheckedSurfacesCheckedScannerError(t *testing.T) {
 	eb := &errCheckedBackend{err: errors.New("frame length exceeds cap")}
-	_, err := ScanBytesChecked(eb, []byte("x"))
+	_, err := ScanBytesChecked(eb, "x.php", []byte("x"))
 	if err == nil {
 		t.Fatal("ScanBytesChecked must surface a CheckedScanner error")
 	}
 }
 
 func TestScanBytesCheckedNilBackendErrors(t *testing.T) {
-	_, err := ScanBytesChecked(nil, []byte("x"))
+	_, err := ScanBytesChecked(nil, "x.php", []byte("x"))
 	if err == nil {
 		t.Fatal("nil backend must return an error, not panic or report clean")
 	}
@@ -54,7 +54,7 @@ func TestScanFileCheckedRejectsMissingContentHash(t *testing.T) {
 // A backend that predates the capability falls back to the error-free
 // ScanBytes and returns its matches with a nil error.
 func TestScanBytesCheckedFallsBackForPlainBackend(t *testing.T) {
-	m, err := ScanBytesChecked(&mockBackend{}, []byte("x"))
+	m, err := ScanBytesChecked(&mockBackend{}, "x.php", []byte("x"))
 	if err != nil {
 		t.Fatalf("plain backend fallback must not error: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/contenttype"
 )
 
 // dropperDigestMax bounds how many bytes the admission hash covers. A
@@ -96,7 +97,7 @@ func (fm *FileMonitor) isDropperInteresting(path string, fd int) (interesting, p
 		return false, false
 	}
 	name := strings.ToLower(filepath.Base(path))
-	if checks.IsExecutablePHPName(name) {
+	if contenttype.IsExecutablePHPName(name) {
 		return true, false
 	}
 	var st unix.Stat_t
@@ -186,7 +187,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	// analyzer, but they are not dropper candidates.
 	name := strings.ToLower(filepath.Base(event.path))
 	if c.Mode&unix.S_IFMT != unix.S_IFREG ||
-		(!checks.IsExecutablePHPName(name) && !c.PHPExecutable && c.Mode&0o111 == 0) ||
+		(!contenttype.IsExecutablePHPName(name) && !c.PHPExecutable && c.Mode&0o111 == 0) ||
 		c.PID == fm.dropper.selfPID {
 		return nil
 	}
