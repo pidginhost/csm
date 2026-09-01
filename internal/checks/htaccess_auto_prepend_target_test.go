@@ -28,6 +28,9 @@ func TestDetectorAutoPrependFlagsAccountTargets(t *testing.T) {
 		{"really simple ssl prelude", "/home/u/public_html/wp-content/advanced-headers.php", 0},
 		{"disabling an inherited prelude", "none", 0},
 		{"root-owned system prelude", "/etc/csm-prelude.php", 0},
+		{"quoted root-owned system prelude", `"/etc/csm/prelude file.php"`, 0},
+		{"single-quoted root-owned system prelude", `'/etc/csm/prelude file.php'`, 0},
+		{"quoted traversal into home", `"/etc/../home/alice/prelude file.php"`, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,6 +44,31 @@ func TestDetectorAutoPrependFlagsAccountTargets(t *testing.T) {
 	}
 }
 
+// Apache accepts quoted directive arguments. The legacy scanner must parse
+// the complete target, including spaces, before deciding whether its location
+// is account-controlled.
+func TestCheckHtaccessFileAutoPrependParsesQuotedTarget(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		{`"/etc/csm/prelude file.php"`, 0},
+		{`"/home/victim/prelude file.php"`, 1},
+	} {
+		tmp := t.TempDir() + "/.htaccess"
+		if err := os.WriteFile(tmp, []byte("php_value auto_prepend_file "+tc.target+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
+
+		var findings []alert.Finding
+		checkHtaccessFile(tmp, []string{"auto_prepend_file"}, nil, &findings)
+		if len(findings) != tc.want {
+			t.Errorf("target %q: findings = %d, want %d", tc.target, len(findings), tc.want)
+		}
+	}
+}
+
 // The same account-tree rule applies when the .htaccess itself lives outside
 // /home (Plesk, custom account roots): a target in the same tree as the file
 // is attacker-reachable.
@@ -50,6 +78,22 @@ func TestDetectorAutoPrependFlagsSameTreeTarget(t *testing.T) {
 	findings, _ := AuditHtaccessFile(path)
 	if got := countByCheck(findings, "htaccess_auto_prepend"); got != 1 {
 		t.Errorf("same-tree target: htaccess_auto_prepend = %d, want 1", got)
+	}
+}
+
+// PHP resolves dot segments before opening the target. Classification must do
+// the same or an account-controlled file can be spelled through an apparently
+// root-owned prefix and evade the home, scratch, and account-tree checks.
+func TestAutoPrependTargetNormalizesBeforeClassification(t *testing.T) {
+	htaccessPath := "/srv/accounts/alice/public/.htaccess"
+	for _, target := range []string{
+		"/etc/../home/alice/prelude.php",
+		"/etc/../tmp/prelude.php",
+		"/opt/../srv/accounts/alice/prelude.php",
+	} {
+		if !autoPrependTargetSuspicious(target, htaccessPath) {
+			t.Errorf("normalized account-controlled target %q was treated as safe", target)
+		}
 	}
 }
 

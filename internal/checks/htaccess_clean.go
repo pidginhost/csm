@@ -97,9 +97,14 @@ var htaccessSuspiciousAutoPrependPaths = []string{
 	"/tmp/", "/dev/shm/", "/var/tmp/",
 }
 
+// Apache accepts quoted directive arguments, including paths with spaces.
+// Keep the quotes in the capture; autoPrependTargetSuspicious removes them
+// after the parser has found the complete target.
+const htaccessPreludeTargetPattern = `("[^"\r\n]*"|'[^'\r\n]*'|\S+)`
+
 // reAutoPrependTarget captures the argument of either prelude directive in
 // any of the forms .htaccess and php.ini fragments use.
-var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file\s*=?\s*(\S+)`)
+var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file\s*=?\s*` + htaccessPreludeTargetPattern)
 
 // autoPrependTargetIsKnownPrelude reports whether target names a prelude
 // script shipped by a security plugin. Only the basename is consulted: every
@@ -129,6 +134,10 @@ func autoPrependTargetSuspicious(target, htaccessPath string) bool {
 	if lower == "" || lower == "none" || autoPrependTargetIsKnownPrelude(lower) {
 		return false
 	}
+	// PHP resolves lexical dot segments before opening the file. Classify the
+	// same normalized path so an account-controlled target cannot hide behind
+	// an apparently root-owned prefix such as /etc/../home/user/prelude.php.
+	lower = strings.ToLower(filepath.Clean(target))
 	for _, p := range htaccessSuspiciousAutoPrependPaths {
 		if strings.HasPrefix(lower, p) {
 			return true
@@ -172,7 +181,7 @@ var (
 	rePHPHandlerMap = regexp.MustCompile(`(?im)^\s*(?:(?:SetHandler|ForceType)\s+\S*php\S*(?:\s+\S[^\n]*)?|AddHandler\s+\S*php\S*\s+\S[^\n]*)\s*$`)
 	// Match both forms because mod_php and some LSAPI builds honor either
 	// directive in .htaccess.
-	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+(\S+)`)
+	reAutoPrepend     = regexp.MustCompile(`(?im)^\s*php(?:_admin)?_value\s+auto_prepend_file\s+` + htaccessPreludeTargetPattern)
 	reUACloakCond     = regexp.MustCompile(`(?im)^\s*RewriteCond\s+%\{HTTP_USER_AGENT\}\s+([^\n]+)`)
 	reSpamRedirect    = regexp.MustCompile(`(?im)^\s*RewriteRule\s+\S+\s+(https?://[^\s\[]+)`)
 	reFilesMatchOpen  = regexp.MustCompile(`(?im)^\s*<FilesMatch\s+["']?[^"'>]*\\\.(php|phtml|ph[2-7])[^"'>]*["']?\s*>`)

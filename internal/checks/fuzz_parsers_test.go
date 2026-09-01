@@ -2,6 +2,7 @@ package checks
 
 import (
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -716,5 +717,62 @@ func FuzzApacheConfigParsers(f *testing.F) {
 		}
 		_, _ = apacheDirectiveValues(lines, "ServerTokens")
 		_, _ = apacheIndexesScopesWithStatus(lines)
+	})
+}
+
+func FuzzAutoPrependTarget(f *testing.F) {
+	f.Add("/etc/../home/alice/prelude.php", "/srv/accounts/alice/public/.htaccess")
+	f.Add(`"/etc/../home/alice/prelude file.php"`, "/srv/accounts/alice/public/.htaccess")
+	f.Add("wordfence-waf.php", "/home/alice/public_html/.htaccess")
+	f.Add("none", "/var/www/html/.htaccess")
+	f.Add("", "")
+	f.Fuzz(func(t *testing.T, target, htaccessPath string) {
+		got := autoPrependTargetSuspicious(target, htaccessPath)
+		if got != autoPrependTargetSuspicious(target, htaccessPath) {
+			t.Fatalf("autoPrependTargetSuspicious(%q, %q) is non-deterministic", target, htaccessPath)
+		}
+
+		trimmed := strings.Trim(strings.TrimSpace(target), `"'`)
+		lower := strings.ToLower(trimmed)
+		if lower == "" || lower == "none" || autoPrependTargetIsKnownPrelude(lower) {
+			return
+		}
+		clean := strings.ToLower(filepath.Clean(trimmed))
+		tree := strings.ToLower(htaccessAccountTree(htaccessPath))
+		insideControlledTree := strings.HasPrefix(clean, "/tmp/") ||
+			strings.HasPrefix(clean, "/dev/shm/") ||
+			strings.HasPrefix(clean, "/var/tmp/") ||
+			strings.HasPrefix(clean, "/home/") ||
+			(tree != "" && strings.HasPrefix(clean, tree+"/"))
+		if insideControlledTree && !got {
+			t.Fatalf("normalized controlled target %q from %q was treated as safe", clean, target)
+		}
+	})
+}
+
+func FuzzWordPressCoreChecksumLine(f *testing.F) {
+	f.Add("Warning: File doesn't verify against checksum: wp-includes/version.php")
+	f.Add("Warning: wp-admin/admin.php doesn't verify against checksum.")
+	f.Add("Error: WordPress installation doesn't verify against checksums.")
+	f.Add("Warning: File doesn't verify against checksum: ../../etc/passwd")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		rel := wpChecksumModifiedCoreFile(line)
+		if rel != wpChecksumModifiedCoreFile(line) {
+			t.Fatalf("wpChecksumModifiedCoreFile(%q) is non-deterministic", line)
+		}
+		if rel == "" {
+			return
+		}
+
+		const install = "/home/alice/public_html"
+		path := wpCoreFilePathWithin(install, rel)
+		if path == "" {
+			return
+		}
+		within, err := filepath.Rel(install, path)
+		if err != nil || within == ".." || strings.HasPrefix(within, "../") {
+			t.Fatalf("reported path %q escaped install %q as %q", rel, install, path)
+		}
 	})
 }
