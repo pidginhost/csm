@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -51,15 +52,15 @@ func TestLoadPluginVulnFeed_Embedded(t *testing.T) {
 	}
 	foundUltimateMember := false
 	foundFileManager := false
-	virtualPatches := 0
+	patched := make(map[string]bool)
 	for _, v := range feed {
 		if v.VirtualPatch {
-			virtualPatches++
+			patched[v.CVE] = true
 		}
 		if v.Slug == "ultimate-member" && v.FixedIn == "2.6.7" && v.KEV && v.VirtualPatch {
 			foundUltimateMember = true
 		}
-		if v.Slug == "wp-file-manager" && v.MinAffected == "6.0" && v.FixedIn == "6.9" && v.KEV {
+		if v.Slug == "wp-file-manager" && v.MinAffected == "6.0" && v.FixedIn == "6.9" && v.KEV && v.VirtualPatch {
 			foundFileManager = true
 		}
 	}
@@ -69,8 +70,14 @@ func TestLoadPluginVulnFeed_Embedded(t *testing.T) {
 	if !foundFileManager {
 		t.Fatal("embedded feed missing the bounded wp-file-manager CVE-2020-25213 KEV entry")
 	}
-	if virtualPatches != 1 {
-		t.Fatalf("embedded feed marks %d CVEs as virtually patched, want only CVE-2023-3460", virtualPatches)
+	// virtual_patch drives what the unprotected annotation claims, so it must
+	// name exactly the CVEs configs/csm_modsec_custom.conf actually blocks:
+	// the Ultimate Member privilege escalation and the wp-file-manager
+	// connector.minimal.php upload. Marking one CSM does not patch overstates
+	// the gap; leaving one unmarked understates it.
+	want := map[string]bool{"CVE-2023-3460": true, "CVE-2020-25213": true}
+	if !maps.Equal(patched, want) {
+		t.Fatalf("feed marks %v as virtually patched, want %v", patched, want)
 	}
 }
 
@@ -170,14 +177,24 @@ func TestEvaluatePluginVulns_CorrelatesVirtualPatchOnlyWhenActive(t *testing.T) 
 		},
 	}
 
-	findings, coverageCandidates := evaluatePluginVulns(sites, feed, nil)
+	matches := evaluatePluginVulns(sites, feed, nil)
 
-	if len(findings) != 1 || len(coverageCandidates) != 1 {
-		t.Fatalf("evaluation lengths = %d/%d, want 1/1", len(findings), len(coverageCandidates))
+	if len(matches) != 1 {
+		t.Fatalf("evaluation produced %d matches, want 1", len(matches))
 	}
-	if coverageCandidates[0] {
+	if matches[0].active {
 		t.Fatal("inactive plugin must not be claimed directly reachable because its request filter is absent")
 	}
+}
+
+// vulnFindingsOf drops the correlation metadata a caller under test does not
+// assert on.
+func vulnFindingsOf(matches []vulnMatch) []alert.Finding {
+	out := make([]alert.Finding, 0, len(matches))
+	for _, m := range matches {
+		out = append(out, m.finding)
+	}
+	return out
 }
 
 func TestEvaluatePluginVulns(t *testing.T) {
@@ -196,7 +213,7 @@ func TestEvaluatePluginVulns(t *testing.T) {
 		}},
 	}
 
-	findings, _ := evaluatePluginVulns(sites, feed, nil)
+	findings := vulnFindingsOf(evaluatePluginVulns(sites, feed, nil))
 	if len(findings) != 2 {
 		t.Fatalf("want 2 findings (um on a, duplicator on b), got %d: %+v", len(findings), findings)
 	}
@@ -217,7 +234,7 @@ func TestEvaluatePluginVulns(t *testing.T) {
 
 	// Allowlist suppresses the ultimate-member@2.4.1 acceptance.
 	allow := map[string]bool{"ultimate-member@2.4.1": true}
-	suppressed, _ := evaluatePluginVulns(sites, feed, allow)
+	suppressed := vulnFindingsOf(evaluatePluginVulns(sites, feed, allow))
 	if len(suppressed) != 1 {
 		t.Fatalf("allowlist should suppress one finding, got %d", len(suppressed))
 	}
@@ -239,7 +256,7 @@ func TestVulnPluginAllowlistIsCaseInsensitiveAndVersionSpecific(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Detection.VulnerablePluginAllow = []string{"ULTIMATE-MEMBER@2.4.1-rc1"}
 
-	findings, _ := evaluatePluginVulns(sites, feed, vulnPluginAllowSet(cfg))
+	findings := vulnFindingsOf(evaluatePluginVulns(sites, feed, vulnPluginAllowSet(cfg)))
 	if len(findings) != 1 {
 		t.Fatalf("allowlist must suppress exactly one slug@version, got %d: %+v", len(findings), findings)
 	}

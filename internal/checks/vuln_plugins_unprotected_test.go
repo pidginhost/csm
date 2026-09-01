@@ -24,6 +24,20 @@ func vulnFinding(domain, account string, sev alert.Severity) alert.Finding {
 	}
 }
 
+// activeMatch is an active install of a virtual-patched CVE -- the case the
+// correlation is built for.
+func activeMatch(domain, account string, sev alert.Severity) vulnMatch {
+	return vulnMatch{finding: vulnFinding(domain, account, sev), active: true, vpCovered: true}
+}
+
+// annotateOne runs the correlation over a single match and returns the
+// resulting finding.
+func annotateOne(m vulnMatch, cov vpCoverage) alert.Finding {
+	matches := []vulnMatch{m}
+	annotateUnprotected(matches, cov)
+	return matches[0].finding
+}
+
 // The incident shape: ModSecurity switched off account-wide, so the CVE's
 // shipped virtual patch never executes for any domain the account owns.
 func TestAnnotateUnprotected_AccountWideModsecOff(t *testing.T) {
@@ -35,19 +49,16 @@ func TestAnnotateUnprotected_AccountWideModsecOff(t *testing.T) {
 		}},
 	}
 
-	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
+	got := annotateOne(activeMatch("shop.example", "acme", alert.Critical), cov)
 
-	if len(got) != 1 {
-		t.Fatalf("want 1 finding, got %d", len(got))
+	if !strings.Contains(got.Message, "unprotected") {
+		t.Errorf("message must say the finding is unprotected; got %q", got.Message)
 	}
-	if !strings.Contains(got[0].Message, "unprotected") {
-		t.Errorf("message must say the finding is unprotected; got %q", got[0].Message)
+	if !strings.Contains(got.Message, "account acme") {
+		t.Errorf("message must name the disabled account scope; got %q", got.Message)
 	}
-	if !strings.Contains(got[0].Message, "account acme") {
-		t.Errorf("message must name the disabled account scope; got %q", got[0].Message)
-	}
-	if !strings.Contains(got[0].Details, "/etc/apache2/conf.d/userdata/std/2_4/acme/modsec.conf") {
-		t.Errorf("details must name the source that disabled filtering; got:\n%s", got[0].Details)
+	if !strings.Contains(got.Details, "/etc/apache2/conf.d/userdata/std/2_4/acme/modsec.conf") {
+		t.Errorf("details must name the source that disabled filtering; got:\n%s", got.Details)
 	}
 }
 
@@ -67,16 +78,16 @@ func TestAnnotateUnprotected_DisabledScopeIsAnAlias(t *testing.T) {
 			"shop.example.acme-host.example: acme==acme==sub==acme-host.example==/home/acme/public_html/shop==1.2.3.4==1.2.3.4\n"),
 	}
 
-	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
+	got := annotateOne(activeMatch("shop.example", "acme", alert.Critical), cov)
 
-	if !strings.Contains(got[0].Message, "unprotected") {
-		t.Fatalf("alias of a disabled vhost must be reported unprotected; got %q", got[0].Message)
+	if !strings.Contains(got.Message, "unprotected") {
+		t.Fatalf("alias of a disabled vhost must be reported unprotected; got %q", got.Message)
 	}
-	if !strings.Contains(got[0].Message, "shop.example.acme-host.example") {
-		t.Errorf("message must name the vhost that carries the disabled flag; got %q", got[0].Message)
+	if !strings.Contains(got.Message, "shop.example.acme-host.example") {
+		t.Errorf("message must name the vhost that carries the disabled flag; got %q", got.Message)
 	}
-	if !strings.Contains(got[0].Details, "associated subdomain") {
-		t.Errorf("details must explain the associated-subdomain relationship; got:\n%s", got[0].Details)
+	if !strings.Contains(got.Details, "associated subdomain") {
+		t.Errorf("details must explain the associated-subdomain relationship; got:\n%s", got.Details)
 	}
 }
 
@@ -88,10 +99,10 @@ func TestAnnotateUnprotected_EscalatesHighToCritical(t *testing.T) {
 		disabled:   []modsecDisabledScope{{User: "acme", Source: "/src/modsec.conf"}},
 	}
 
-	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.High)}, cov)
+	got := annotateOne(activeMatch("shop.example", "acme", alert.High), cov)
 
-	if got[0].Severity != alert.Critical {
-		t.Errorf("severity = %v, want Critical once the virtual patch is inert", got[0].Severity)
+	if got.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical once the virtual patch is inert", got.Severity)
 	}
 }
 
@@ -100,13 +111,32 @@ func TestAnnotateUnprotected_SilentWhenFilteringApplies(t *testing.T) {
 	in := vulnFinding("shop.example", "acme", alert.High)
 	cov := vpCoverage{engineMode: "on"}
 
-	got := annotateUnprotected([]alert.Finding{in}, cov)
+	got := annotateOne(vulnMatch{finding: in, active: true, vpCovered: true}, cov)
 
-	if got[0].Message != in.Message || got[0].Details != in.Details {
-		t.Errorf("protected finding must not be rewritten; got %q / %q", got[0].Message, got[0].Details)
+	if got.Message != in.Message || got.Details != in.Details {
+		t.Errorf("protected finding must not be rewritten; got %q / %q", got.Message, got.Details)
 	}
-	if got[0].Severity != alert.High {
-		t.Errorf("severity = %v, want the detector's own High", got[0].Severity)
+	if got.Severity != alert.High {
+		t.Errorf("severity = %v, want the detector's own High", got.Severity)
+	}
+}
+
+// One unfiltered account can hold both an active and an inactive vulnerable
+// install. Only the active one is described as left open by the missing filter.
+func TestAnnotateUnprotected_SkipsInactiveInstallInAMixedSlice(t *testing.T) {
+	cov := vpCoverage{disabled: []modsecDisabledScope{{User: "acme", Source: "/src/modsec.conf"}}}
+	matches := []vulnMatch{
+		activeMatch("shop.example", "acme", alert.Critical),
+		{finding: vulnFinding("blog.example", "acme", alert.Critical), active: false, vpCovered: true},
+	}
+
+	annotateUnprotected(matches, cov)
+
+	if !strings.Contains(matches[0].finding.Message, "unprotected") {
+		t.Errorf("active install was not annotated: %q", matches[0].finding.Message)
+	}
+	if strings.Contains(matches[1].finding.Message, "unprotected") {
+		t.Errorf("inactive install was annotated: %q", matches[1].finding.Message)
 	}
 }
 
@@ -117,12 +147,9 @@ func TestAnnotateUnprotected_HostWideEngineMode(t *testing.T) {
 		{"off", "off host-wide"},
 		{"detectiononly", "DetectionOnly"},
 	} {
-		got := annotateUnprotected(
-			[]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)},
-			vpCoverage{engineMode: tc.mode},
-		)
-		if !strings.Contains(got[0].Message, tc.want) {
-			t.Errorf("engine %q: message = %q, want it to mention %q", tc.mode, got[0].Message, tc.want)
+		got := annotateOne(activeMatch("shop.example", "acme", alert.Critical), vpCoverage{engineMode: tc.mode})
+		if !strings.Contains(got.Message, tc.want) {
+			t.Errorf("engine %q: message = %q, want it to mention %q", tc.mode, got.Message, tc.want)
 		}
 	}
 }
@@ -137,10 +164,10 @@ func TestAnnotateUnprotected_IgnoresUnrelatedScopes(t *testing.T) {
 		},
 	}
 
-	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
+	got := annotateOne(activeMatch("shop.example", "acme", alert.Critical), cov)
 
-	if strings.Contains(got[0].Message, "unprotected") {
-		t.Errorf("another account's disabled scope must not annotate this finding; got %q", got[0].Message)
+	if strings.Contains(got.Message, "unprotected") {
+		t.Errorf("another account's disabled scope must not annotate this finding; got %q", got.Message)
 	}
 }
 
@@ -156,10 +183,10 @@ func TestAnnotateUnprotected_IgnoresSameDomainInAnotherAccount(t *testing.T) {
 		}},
 	}
 
-	got := annotateUnprotected([]alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}, cov)
+	got := annotateOne(activeMatch("shop.example", "acme", alert.Critical), cov)
 
-	if strings.Contains(got[0].Message, "unprotected") {
-		t.Errorf("another account's same-named domain must not annotate this finding; got %q", got[0].Message)
+	if strings.Contains(got.Message, "unprotected") {
+		t.Errorf("another account's same-named domain must not annotate this finding; got %q", got.Message)
 	}
 }
 
@@ -186,10 +213,12 @@ func TestInertReason_PrefersActionableScope(t *testing.T) {
 
 func TestAnnotateUnprotected_IsIdempotent(t *testing.T) {
 	cov := vpCoverage{disabled: []modsecDisabledScope{{User: "acme", Source: "/account"}}}
-	findings := []alert.Finding{vulnFinding("shop.example", "acme", alert.Critical)}
+	matches := []vulnMatch{activeMatch("shop.example", "acme", alert.Critical)}
 
-	once := annotateUnprotected(findings, cov)[0]
-	twice := annotateUnprotected(findings, cov)[0]
+	annotateUnprotected(matches, cov)
+	once := matches[0].finding
+	annotateUnprotected(matches, cov)
+	twice := matches[0].finding
 
 	if twice.Message != once.Message || twice.Details != once.Details {
 		t.Fatalf("second annotation changed finding:\nonce:  %q / %q\ntwice: %q / %q", once.Message, once.Details, twice.Message, twice.Details)
@@ -227,9 +256,9 @@ func TestVhostAliasSets_RejectsAmbiguousSharedDocroots(t *testing.T) {
 		disabled: []modsecDisabledScope{{User: "acme", Domain: "main.example", Source: "/main"}},
 		aliases:  sets,
 	}
-	got := annotateUnprotected([]alert.Finding{vulnFinding("addon.example", "acme", alert.Critical)}, cov)
-	if strings.Contains(got[0].Message, "unprotected") {
-		t.Fatalf("disabled main domain leaked across ambiguous docroot: %q", got[0].Message)
+	got := annotateOne(activeMatch("addon.example", "acme", alert.Critical), cov)
+	if strings.Contains(got.Message, "unprotected") {
+		t.Fatalf("disabled main domain leaked across ambiguous docroot: %q", got.Message)
 	}
 
 	sets = vhostAliasSets("" +
@@ -325,6 +354,9 @@ func TestCheckVulnerablePluginsAnnotatesUnprotectedSites(t *testing.T) {
 	}
 }
 
+// A CVE CSM ships no virtual patch for is still unprotected when nothing
+// filters the traffic -- vendor rules are off too and no audit record is
+// written -- but the alert must not claim a CSM patch that was never written.
 func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testing.T) {
 	db := setupPluginStore(t)
 	wpConfig := "/home/alice/public_html/wp-config.php"
@@ -351,8 +383,7 @@ func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testin
 	restore := vpCoverageForHost
 	t.Cleanup(func() { vpCoverageForHost = restore })
 	vpCoverageForHost = func([]alert.Finding) vpCoverage {
-		t.Fatal("coverage must not be read for a CVE with no shipped virtual patch")
-		return vpCoverage{}
+		return vpCoverage{disabled: []modsecDisabledScope{{User: "alice", Source: "/src/alice/modsec.conf"}}}
 	}
 
 	cfg := &config.Config{}
@@ -362,7 +393,57 @@ func TestCheckVulnerablePluginsDoesNotClaimMissingPatchForUncoveredCVE(t *testin
 	if len(findings) != 1 {
 		t.Fatalf("want 1 duplicator finding, got %+v", findings)
 	}
-	if strings.Contains(findings[0].Message, "unprotected") || strings.Contains(findings[0].Details, "virtual patches never run") {
-		t.Fatalf("uncovered CVE claimed a missing virtual patch: %+v", findings[0])
+	if !strings.Contains(findings[0].Message, "unprotected") {
+		t.Fatalf("unfiltered traffic must still be reported unprotected: %q", findings[0].Message)
+	}
+	if strings.Contains(findings[0].Details, "CSM ships a virtual patch") {
+		t.Fatalf("uncovered CVE claimed a shipped virtual patch: %s", findings[0].Details)
+	}
+	if !strings.Contains(findings[0].Details, "No ModSecurity rule filters this traffic") {
+		t.Fatalf("uncovered CVE must still name the filtering gap: %s", findings[0].Details)
+	}
+}
+
+// An inactive install is an inventory finding, not a reachable code path: a
+// missing request filter says nothing about whether it can be exploited.
+func TestCheckVulnerablePluginsLeavesInactiveInstallsAlone(t *testing.T) {
+	db := setupPluginStore(t)
+	wpConfig := "/home/alice/public_html/wp-config.php"
+	withMockOS(t, &mockOS{glob: func(pattern string) ([]string, error) {
+		if pattern == "/home/*/public_html/wp-config.php" {
+			return []string{wpConfig}, nil
+		}
+		return nil, nil
+	}})
+	withMockCmd(t, &mockCmd{runContextStdout: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		command := strings.Join(args, " ")
+		if strings.Contains(command, "plugin list") {
+			return []byte(`[{"name":"ultimate-member","status":"inactive","version":"2.4.1","update_version":"2.9.1"}]`), nil
+		}
+		if strings.Contains(command, "option get siteurl") {
+			return []byte("https://alice.example\n"), nil
+		}
+		return nil, nil
+	}})
+	if err := db.SetPluginInfo("ultimate-member", store.PluginInfo{LastChecked: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+
+	restore := vpCoverageForHost
+	t.Cleanup(func() { vpCoverageForHost = restore })
+	vpCoverageForHost = func([]alert.Finding) vpCoverage {
+		t.Fatal("coverage must not be read when no active install could use it")
+		return vpCoverage{}
+	}
+
+	cfg := &config.Config{}
+	cfg.Thresholds.PluginCheckIntervalMin = 1440
+	findings := CheckVulnerablePlugins(context.Background(), cfg, nil)
+
+	if len(findings) != 1 {
+		t.Fatalf("want 1 inactive finding, got %+v", findings)
+	}
+	if strings.Contains(findings[0].Message, "unprotected") {
+		t.Fatalf("inactive install was annotated: %q", findings[0].Message)
 	}
 }

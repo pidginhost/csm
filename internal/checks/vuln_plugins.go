@@ -189,18 +189,17 @@ func vulnAllowKey(slug, version string) string {
 
 // evaluatePluginVulns matches the cached per-site plugin inventory against the
 // feed and returns one finding per confirmed vulnerable install, skipping any
-// slug@version the operator has explicitly accepted via the allowlist. The
-// parallel boolean slice identifies active findings covered by a shipped
-// virtual patch and therefore eligible for WAF-coverage correlation.
-func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, allow map[string]bool) ([]alert.Finding, []bool) {
+// slug@version the operator has explicitly accepted via the allowlist. Each
+// match carries the facts the WAF-coverage correlation needs and the finding
+// itself does not record.
+func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, allow map[string]bool) []vulnMatch {
 	bySlug := make(map[string][]pluginVuln, len(feed))
 	for _, v := range feed {
 		key := strings.ToLower(strings.TrimSpace(v.Slug))
 		bySlug[key] = append(bySlug[key], v)
 	}
 
-	var findings []alert.Finding
-	var coverageCandidates []bool
+	var matches []vulnMatch
 	for wpPath, site := range sites {
 		for _, p := range site.Plugins {
 			for _, v := range bySlug[strings.ToLower(strings.TrimSpace(p.Slug))] {
@@ -210,16 +209,29 @@ func evaluatePluginVulns(sites map[string]store.SitePlugins, feed []pluginVuln, 
 				if allow[vulnAllowKey(p.Slug, p.InstalledVersion)] {
 					continue
 				}
-				findings = append(findings, buildVulnPluginFinding(wpPath, site, p, v))
-				// An inactive plugin remains an inventory finding because some
-				// plugins expose directly callable files, but that alone does not
-				// establish that this CVE is reachable without WordPress loading it.
-				// Do not claim a missing request filter makes it directly reachable.
-				coverageCandidates = append(coverageCandidates, v.VirtualPatch && vulnPluginActive(p.Status))
+				matches = append(matches, vulnMatch{
+					finding:   buildVulnPluginFinding(wpPath, site, p, v),
+					active:    vulnPluginActive(p.Status),
+					vpCovered: v.VirtualPatch,
+				})
 			}
 		}
 	}
-	return findings, coverageCandidates
+	return matches
+}
+
+// vulnMatch is one confirmed vulnerable install: the finding the detector
+// built, plus whether WordPress actually loads the plugin and whether CSM
+// ships a ModSecurity virtual patch for the CVE.
+//
+// An inactive plugin still earns an inventory finding because some plugins
+// expose directly callable files, but that alone does not establish that this
+// CVE is reachable without WordPress loading it, so it is never described as
+// left open by a missing request filter.
+type vulnMatch struct {
+	finding   alert.Finding
+	active    bool
+	vpCovered bool
 }
 
 func buildVulnPluginFinding(wpPath string, site store.SitePlugins, p store.SitePluginEntry, v pluginVuln) alert.Finding {
@@ -276,24 +288,22 @@ func CheckVulnerablePlugins(ctx context.Context, cfg *config.Config, _ *state.St
 	if err != nil || len(feed) == 0 {
 		return nil
 	}
-	findings, coverageCandidates := evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
-	if len(findings) == 0 {
+	matches := evaluatePluginVulns(db.AllSitePlugins(), feed, vulnPluginAllowSet(cfg))
+	if len(matches) == 0 {
 		return nil
 	}
 	var candidates []alert.Finding
-	for i, covered := range coverageCandidates {
-		if covered {
-			candidates = append(candidates, findings[i])
+	for _, m := range matches {
+		if m.active {
+			candidates = append(candidates, m.finding)
 		}
 	}
-	if len(candidates) == 0 {
-		return findings
+	if len(candidates) > 0 {
+		annotateUnprotected(matches, vpCoverageForHost(candidates))
 	}
-	cov := vpCoverageForHost(candidates)
-	for i, covered := range coverageCandidates {
-		if covered {
-			annotateUnprotected(findings[i:i+1], cov)
-		}
+	findings := make([]alert.Finding, 0, len(matches))
+	for _, m := range matches {
+		findings = append(findings, m.finding)
 	}
 	return findings
 }

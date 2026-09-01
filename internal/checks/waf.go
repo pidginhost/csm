@@ -375,16 +375,28 @@ func checkEngineMode(info platform.Info) string {
 	return ""
 }
 
+// cPanelEngineMode reads the engine setting from cPanel's own generated
+// configuration. EA4 and the older /usr/local/apache layout disagree on where
+// that file sits and the modsec include directory is spelled both ways on
+// hosts CSM already writes virtual patches to, so every known spelling is
+// tried. When none of them can be read the answer is unknown rather than a
+// distro package's file: an inactive file reported as the host setting would
+// manufacture a false unprotected Critical.
 func cPanelEngineMode(info platform.Info) string {
 	configDir := filepath.Clean(info.ApacheCompatibleConfigDir())
 	if configDir == "." || configDir == string(filepath.Separator) {
 		return ""
 	}
-	path := filepath.Join(configDir, "conf.d", "modsec", "modsec2.cpanel.conf")
-	if filepath.Base(configDir) == "conf" {
-		path = filepath.Join(configDir, "modsec2.cpanel.conf")
+	for _, path := range []string{
+		filepath.Join(configDir, "conf.d", "modsec", "modsec2.cpanel.conf"),
+		filepath.Join(configDir, "conf.d", "modsec2.cpanel.conf"),
+		filepath.Join(configDir, "modsec2.cpanel.conf"),
+	} {
+		if mode := engineModeInFile(path); mode != "" {
+			return mode
+		}
 	}
-	return engineModeInFile(path)
+	return ""
 }
 
 func engineModeInFile(path string) string {

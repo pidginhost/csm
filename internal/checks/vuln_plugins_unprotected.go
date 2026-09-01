@@ -153,32 +153,46 @@ func (c vpCoverage) inertReason(account, domain string) (reason, source string) 
 // annotateUnprotected rewrites vulnerable-plugin findings whose traffic no
 // longer passes through ModSecurity, so the alert itself carries the fact that
 // nothing stands between the vulnerability and the internet.
-func annotateUnprotected(findings []alert.Finding, cov vpCoverage) []alert.Finding {
-	for i := range findings {
+//
+// Only an active install is rewritten: an inactive plugin is a finding because
+// its files sit in the docroot, not because WordPress will run the vulnerable
+// code path, so a missing request filter says nothing about its reachability.
+// What the annotation claims depends on whether CSM ships a virtual patch for
+// the CVE -- naming a patch that was never written would misdescribe the gap.
+func annotateUnprotected(matches []vulnMatch, cov vpCoverage) {
+	for i := range matches {
+		if !matches[i].active {
+			continue
+		}
+		f := &matches[i].finding
 		// The production caller passes freshly built findings, but keeping this
 		// helper idempotent prevents a retrying caller from changing the alert
 		// identity and appending the same operator guidance repeatedly.
-		if strings.Contains(findings[i].Message, " -- unprotected: ") ||
-			strings.Contains(findings[i].Details, "\n\nUnprotected: ") {
+		if strings.Contains(f.Message, " -- unprotected: ") ||
+			strings.Contains(f.Details, "\n\nUnprotected: ") {
 			continue
 		}
-		reason, source := cov.inertReason(findings[i].TenantID, findings[i].Domain)
+		reason, source := cov.inertReason(f.TenantID, f.Domain)
 		if reason == "" {
 			continue
 		}
-		findings[i].Severity = alert.Critical
-		findings[i].Message += " -- unprotected: " + reason
+		f.Severity = alert.Critical
+		f.Message += " -- unprotected: " + reason
 		located := reason
 		if source != "" {
 			located += " (" + source + ")"
 		}
-		findings[i].Details += "\n\nUnprotected: " + located + ".\n" +
-			"CSM's shipped virtual patches never run on this traffic and no modsec\n" +
-			"audit record is written for it, so this vulnerability is directly\n" +
-			"reachable and an attempt to exploit it leaves no WAF evidence.\n" +
+		gap := "No ModSecurity rule filters this traffic and no modsec audit record\n" +
+			"is written for it, so an attempt to exploit this leaves no WAF evidence.\n"
+		if matches[i].vpCovered {
+			gap = "CSM ships a virtual patch for this CVE and it cannot run here, and no\n" +
+				"modsec audit record is written for this traffic either, so the\n" +
+				"vulnerability is directly reachable and an attempt to exploit it\n" +
+				"leaves no WAF evidence.\n"
+		}
+		f.Details += "\n\nUnprotected: " + located + ".\n" + gap +
 			"Patch the plugin now, or restore filtering for this scope first."
 	}
-	return findings
 }
 
 // vpCoverageForHost is the seam the wiring is tested through: the snapshot it

@@ -36,6 +36,7 @@ plugins:
 
   - slug: wp-file-manager
     cve: CVE-2020-25213
+    virtual_patch: true
     title: "Unauthenticated remote code execution via arbitrary file upload"
     fixed_in: "6.9"
     min_affected: "6.0"
