@@ -14,9 +14,9 @@ import (
 )
 
 // withCageFSDoctorPaths points the doctor check at a temporary CageFS layout.
-// mountPoints is written only when non-empty; skeletonEntry creates the
-// skeleton directory that proves the mount was actually applied.
-func withCageFSDoctorPaths(t *testing.T, mountPoints string, skeletonEntry bool) {
+// mountPoints is written only when non-empty; applied decides whether the
+// sampled cages report the event mount.
+func withCageFSDoctorPaths(t *testing.T, mountPoints string, applied bool) {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -26,17 +26,15 @@ func withCageFSDoctorPaths(t *testing.T, mountPoints string, skeletonEntry bool)
 			t.Fatal(err)
 		}
 	}
-	skeleton := filepath.Join(dir, "cagefs-skeleton")
-	if skeletonEntry {
-		if err := os.MkdirAll(filepath.Join(skeleton, phpShieldEventDir), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	oldMP, oldSample := cagefsMountPointsPath, cagefsCageMountSample
+	cagefsMountPointsPath = mpPath
+	if applied {
+		cagefsCageMountSample = func() (int, int, error) { return 0, 12, nil }
+	} else {
+		cagefsCageMountSample = func() (int, int, error) { return 11, 12, nil }
 	}
-
-	oldMP, oldSkel := cagefsMountPointsPath, cagefsSkeletonPath
-	cagefsMountPointsPath, cagefsSkeletonPath = mpPath, skeleton
 	t.Cleanup(func() {
-		cagefsMountPointsPath, cagefsSkeletonPath = oldMP, oldSkel
+		cagefsMountPointsPath, cagefsCageMountSample = oldMP, oldSample
 	})
 }
 

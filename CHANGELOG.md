@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `csm doctor` now reports when PHP Shield's event mount is registered with CageFS but has not been applied to the cages yet. Until an operator remounts, PHP cannot reach the event socket and every detection is dropped, which until now looked exactly like a quiet server.
+- `csm doctor` now reports how many CageFS cages are missing PHP Shield's event mount. Registering the mount is not enough: until each cage is remounted, PHP there cannot reach the event socket and every detection is dropped, which until now looked exactly like a quiet server.
 
 ### Changed
 
