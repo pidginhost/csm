@@ -166,6 +166,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "htaccess_security_disabled", Category: CategoryWeb},
 	{Name: "web_exposed_backup_archive", Category: CategoryWeb},
 	{Name: "web_exposed_config_leak", Category: CategoryWeb},
+	{Name: "web_exposed_repo_metadata", Category: CategoryWeb},
 	{Name: "web_exposed_db_dump", Category: CategoryWeb},
 	{Name: "web_exposed_phpinfo", Category: CategoryWeb},
 	{Name: "web_exposed_sample_sql", Category: CategoryWeb},

@@ -114,7 +114,7 @@ func (db *DB) CleanExpiredReputation(maxAge time.Duration) int {
 	var removed int
 	cutoff := time.Now().Add(-maxAge)
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	updateErr := boltUpdate(db.bolt, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("reputation"))
 
 		// Collect keys to delete.
@@ -143,7 +143,7 @@ func (db *DB) CleanExpiredReputation(maxAge time.Duration) int {
 		return nil
 	})
 
-	return removed
+	return committedCount("reputation", updateErr, removed)
 }
 
 // AllReputation returns all reputation entries keyed by IP.
@@ -279,7 +279,7 @@ func (db *DB) AbuseQueryCount(utcDate string) int {
 func (db *DB) EnforceReputationCap(max int) int {
 	var removed int
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	updateErr := boltUpdate(db.bolt, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("reputation"))
 
 		// Collect all entries with their keys.
@@ -321,5 +321,5 @@ func (db *DB) EnforceReputationCap(max int) int {
 		return nil
 	})
 
-	return removed
+	return committedCount("reputation cap", updateErr, removed)
 }

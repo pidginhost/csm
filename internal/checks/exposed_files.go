@@ -138,7 +138,7 @@ func scanVhostsForExposure(ctx context.Context, vhosts []vhost, cfg *config.Conf
 			if ctx.Err() != nil {
 				return findings
 			}
-			class := classifyExposedFile(filepath.Base(path))
+			class := classifyExposedPath(path)
 			if class == classNone {
 				// An archive named after the site it holds carries no backup
 				// token, so the name tells us nothing. Its entry list does.
@@ -239,6 +239,16 @@ func walkExposureCandidatesLimit(ctx context.Context, docroot string, maxDepth, 
 				break
 			}
 			if e.IsDir() {
+				// A checked-out repository is never descended (thousands of
+				// objects), but its marker file is a candidate in its own
+				// right: a web-served .git/ or .svn/ hands out the site's
+				// source and, routinely, its credentials.
+				for _, marker := range repoMetadataMarkers(e.Name()) {
+					markerPath := filepath.Join(dir.path, e.Name(), marker)
+					if info, statErr := osFS.Stat(markerPath); statErr == nil && info.Mode().IsRegular() {
+						out = append(out, markerPath)
+					}
+				}
 				if dir.depth < maxDepth && !walkSkipDirs[e.Name()] {
 					if queuedDirs >= exposureMaxDirsPerRoot {
 						complete = false
@@ -294,6 +304,8 @@ func buildExposedFinding(vh vhost, path, rel string, class exposedClass, pr prob
 
 func exposureLabel(class exposedClass) string {
 	switch class {
+	case classRepoMetadata:
+		return "version-control repository (source and history)"
 	case classConfigLeak:
 		return "configuration/credentials file"
 	case classDBDump:
@@ -582,6 +594,9 @@ type exposedClass int
 
 const (
 	classNone exposedClass = iota
+	// classRepoMetadata is a web-served version-control directory (.git,
+	// .svn): the site's source, its history and, routinely, credentials.
+	classRepoMetadata
 	classConfigLeak
 	classDBDump
 	classBackupArchive
@@ -598,7 +613,7 @@ const (
 // a phpinfo dump is Warning (information disclosure only).
 func (c exposedClass) severity() alert.Severity {
 	switch c {
-	case classConfigLeak, classDBDump, classBackupArchive:
+	case classConfigLeak, classDBDump, classBackupArchive, classRepoMetadata:
 		return alert.Critical
 	case classSourceBackup:
 		return alert.High
@@ -610,6 +625,8 @@ func (c exposedClass) severity() alert.Severity {
 // findingName is the stable registry key / audit-log check name per class.
 func (c exposedClass) findingName() string {
 	switch c {
+	case classRepoMetadata:
+		return "web_exposed_repo_metadata"
 	case classConfigLeak:
 		return "web_exposed_config_leak"
 	case classDBDump:

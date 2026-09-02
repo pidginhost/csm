@@ -166,7 +166,7 @@ func (db *DB) PruneExpiredThreats() int {
 	var removed int
 	now := time.Now()
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	updateErr := boltUpdate(db.bolt, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))
 
 		var toDelete [][]byte
@@ -207,7 +207,7 @@ func (db *DB) PruneExpiredThreats() int {
 		return setCounter(tx, "threats:count", newCount)
 	})
 
-	return removed
+	return committedCount("threats", updateErr, removed)
 }
 
 // RemovePermanentBlock removes an IP from the permanent block list and decrements the count.
@@ -372,7 +372,7 @@ func (db *DB) PruneExpiredWhitelist() int {
 	var removed int
 	now := time.Now()
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	updateErr := boltUpdate(db.bolt, func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats:whitelist"))
 
 		// Collect keys to delete.
@@ -401,5 +401,5 @@ func (db *DB) PruneExpiredWhitelist() int {
 		return nil
 	})
 
-	return removed
+	return committedCount("whitelist", updateErr, removed)
 }

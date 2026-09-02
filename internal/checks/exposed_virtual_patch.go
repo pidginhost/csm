@@ -88,6 +88,7 @@ type virtualPatchBackup struct {
 // vpExposedChecks are the web_exposed_* finding names eligible for virtual
 // patching -- every web-reachable file class the detector reports.
 var vpExposedChecks = map[string]bool{
+	"web_exposed_repo_metadata":  true,
 	"web_exposed_config_leak":    true,
 	"web_exposed_db_dump":        true,
 	"web_exposed_sample_sql":     true,
@@ -113,7 +114,9 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 	}
 	name := filepath.Base(resolved)
 	dir := filepath.Dir(resolved)
-	dirDeny := isKnownBackupPluginDir(dir)
+	// A repository directory is denied whole: denying only the marker file
+	// would leave objects, refs and config downloadable.
+	dirDeny := isKnownBackupPluginDir(dir) || isRepoMetadataDir(dir)
 
 	if !dirDeny {
 		if nameErr := validDenyName(name); nameErr != nil {
@@ -134,7 +137,7 @@ func VirtualPatchExposedFile(filePath string) RemediationResult {
 	}
 	parentChanged := false
 	parentNote := ""
-	if dirDeny {
+	if dirDeny && isKnownBackupPluginDir(dir) {
 		parentChanged, parentNote = denyArchiveExtensionInParent(dir)
 	}
 	if !primaryChanged && !parentChanged && parentNote == "" {
