@@ -94,8 +94,7 @@ func parseSSHDConfig() *sshdconf.Config {
 	return sshdconf.Parse(osFS, sshdConfigPath)
 }
 
-func currentSSHDSettings() sshdSettings {
-	parsed := parseSSHDConfig()
+func settingsFromSSHDConfig(parsed *sshdconf.Config) sshdSettings {
 	return sshdSettings{
 		PasswordAuthentication: parsed.Value("passwordauthentication"),
 		PermitRootLogin:        parsed.Value("permitrootlogin"),
@@ -748,37 +747,7 @@ func auditFirewall() []store.AuditResult {
 		})
 	}
 
-	// fw_default_policy
-	defaultDeny := false
-	if hasNft {
-		lower := strings.ToLower(nftRules)
-		if strings.Contains(lower, "policy drop") || strings.Contains(lower, "policy reject") {
-			defaultDeny = true
-		}
-	}
-	if !defaultDeny && hasIpt {
-		for _, line := range strings.Split(iptRules, "\n") {
-			if strings.HasPrefix(line, "Chain INPUT") {
-				upper := strings.ToUpper(line)
-				if strings.Contains(upper, "POLICY DROP") || strings.Contains(upper, "POLICY REJECT") {
-					defaultDeny = true
-				}
-				break
-			}
-		}
-	}
-	if defaultDeny {
-		results = append(results, store.AuditResult{
-			Category: "firewall", Name: "fw_default_policy", Title: "Default INPUT Policy",
-			Status: "pass", Message: "INPUT chain has default-deny policy",
-		})
-	} else {
-		results = append(results, store.AuditResult{
-			Category: "firewall", Name: "fw_default_policy", Title: "Default INPUT Policy",
-			Status: "fail", Message: "INPUT chain does not have a DROP/REJECT policy",
-			Fix: "Set the default INPUT policy to DROP: iptables -P INPUT DROP (or nft equivalent).",
-		})
-	}
+	results = append(results, checkFirewallDefaultPolicy(hasNft, nftRules, hasIpt, iptRules))
 
 	// fw_mysql_exposed
 	results = append(results, checkMySQLExposed(hasNft, nftRules, hasIpt, iptRules)...)
@@ -944,14 +913,9 @@ func checkMySQLExposed(hasNft bool, nftRules string, hasIpt bool, iptRules strin
 	}
 
 	// Wildcard or public bind — check if firewall blocks 3306
-	fwBlocks3306 := false
-	if hasNft && !strings.Contains(nftRules, "3306") {
-		// If nft has rules but doesn't mention 3306 and has default deny, it's blocked
-		lower := strings.ToLower(nftRules)
-		if strings.Contains(lower, "policy drop") || strings.Contains(lower, "policy reject") {
-			fwBlocks3306 = true
-		}
-	}
+	// nft has rules, none mention 3306, and the input hook denies by
+	// default: the port is blocked.
+	fwBlocks3306 := hasNft && !strings.Contains(nftRules, "3306") && nftInputDefaultDeny(nftRules)
 	if !fwBlocks3306 && hasIpt && !strings.Contains(iptRules, "3306") {
 		for _, line := range strings.Split(iptRules, "\n") {
 			if strings.HasPrefix(line, "Chain INPUT") {
@@ -1983,4 +1947,57 @@ func cpanelSecureAuthDisabled(data []byte) (disabled, valid bool) {
 		}
 	}
 	return disabled, valid
+}
+
+// checkFirewallDefaultPolicy audits the default policy of the chain that
+// filters inbound traffic. Only an nft chain on the input hook counts: a
+// Docker host carries "policy drop" on its FORWARD chain while INPUT stays
+// at accept, and that used to pass this audit.
+func checkFirewallDefaultPolicy(hasNft bool, nftRules string, hasIpt bool, iptRules string) store.AuditResult {
+	defaultDeny := hasNft && nftInputDefaultDeny(nftRules)
+	if !defaultDeny && hasIpt {
+		for _, line := range strings.Split(iptRules, "\n") {
+			if strings.HasPrefix(line, "Chain INPUT") {
+				upper := strings.ToUpper(line)
+				if strings.Contains(upper, "POLICY DROP") || strings.Contains(upper, "POLICY REJECT") {
+					defaultDeny = true
+				}
+				break
+			}
+		}
+	}
+	if defaultDeny {
+		return store.AuditResult{
+			Category: "firewall", Name: "fw_default_policy", Title: "Default INPUT Policy",
+			Status: "pass", Message: "INPUT chain has default-deny policy",
+		}
+	}
+	return store.AuditResult{
+		Category: "firewall", Name: "fw_default_policy", Title: "Default INPUT Policy",
+		Status: "fail", Message: "INPUT chain does not have a DROP/REJECT policy",
+		Fix: "Set the default INPUT policy to DROP: iptables -P INPUT DROP (or nft equivalent).",
+	}
+}
+
+// nftInputDefaultDeny reports whether an nft ruleset has a drop or reject
+// policy on a chain hooked at input. nft prints the hook and the policy on
+// one line; a policy on a following line inside the same chain also counts.
+func nftInputDefaultDeny(nftRules string) bool {
+	inInputChain := false
+	for _, raw := range strings.Split(nftRules, "\n") {
+		line := strings.ToLower(strings.TrimSpace(raw))
+		switch {
+		case strings.HasPrefix(line, "chain "):
+			inInputChain = false
+		case line == "}":
+			inInputChain = false
+		}
+		if strings.Contains(line, "hook input") {
+			inInputChain = true
+		}
+		if inInputChain && (strings.Contains(line, "policy drop") || strings.Contains(line, "policy reject")) {
+			return true
+		}
+	}
+	return false
 }

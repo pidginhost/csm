@@ -68,6 +68,7 @@ func (OSFS) Glob(pattern string) ([]string, error) { return filepath.Glob(patter
 type Config struct {
 	present bool
 	values  map[string]string
+	files   []string
 
 	ports           []int
 	listenAddresses []listenAddress
@@ -90,6 +91,13 @@ func Parse(fsys FS, path string) *Config {
 
 // Present reports whether the root config file was readable.
 func (c *Config) Present() bool { return c.present }
+
+// Files lists every file the parse read, root first then Includes in the
+// order sshd would read them. Change detection has to cover all of them:
+// a drop-in can flip a setting without touching the root file.
+func (c *Config) Files() []string {
+	return append([]string(nil), c.files...)
+}
 
 // Value returns the effective value of keyword, lowercased, falling back to
 // the OpenSSH compiled default. Keywords with no shipped default return "".
@@ -138,6 +146,7 @@ func (c *Config) parseFile(fsys FS, path, rootDir string, depth int, seen map[st
 		return false
 	}
 	defer func() { _ = f.Close() }()
+	c.files = append(c.files, path)
 
 	inMatch := false
 	reader := bufio.NewReader(f)

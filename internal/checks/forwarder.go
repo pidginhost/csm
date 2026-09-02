@@ -27,8 +27,47 @@ func parseValiasLine(line string) (localPart, dest string) {
 		return "", ""
 	}
 	localPart = strings.TrimSpace(line[:idx])
-	dest = strings.TrimSpace(line[idx+1:])
+	dest = unquoteValiasDest(strings.TrimSpace(line[idx+1:]))
 	return localPart, dest
+}
+
+// unquoteValiasDest strips one layer of matching double or single quotes.
+// cPanel writes pipe and command destinations quoted ("|/path args"), and
+// the pipe detector keys on the leading "|".
+func unquoteValiasDest(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
+		return strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
+}
+
+// splitValiasDests splits a comma-separated destination list, keeping
+// commas inside quotes with their destination, and unquotes each item.
+func splitValiasDests(dest string) []string {
+	var out []string
+	var cur strings.Builder
+	var quote byte
+	for i := 0; i < len(dest); i++ {
+		c := dest[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+		case c == '"' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == ',':
+			out = append(out, unquoteValiasDest(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	out = append(out, unquoteValiasDest(cur.String()))
+	return out
 }
 
 // isPipeForwarder returns true if the destination is a pipe forwarder,
@@ -300,10 +339,10 @@ func auditValiasFileWithStatus(path, domain string, localDomains map[string]bool
 			continue
 		}
 
-		// Check each destination (may be comma-separated)
-		dests := strings.Split(dest, ",")
+		// Check each destination (may be comma-separated; quoted items keep
+		// their commas and lose their quotes)
+		dests := splitValiasDests(dest)
 		for _, d := range dests {
-			d = strings.TrimSpace(d)
 			if d == "" {
 				continue
 			}

@@ -118,36 +118,59 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 	if ctx.Err() != nil {
 		return findings
 	}
-	cronDFiles, _ := osFS.Glob("/etc/cron.d/*")
+	cronDFiles, globErr := osFS.Glob("/etc/cron.d/*")
 	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, 0)
 	if ctx.Err() != nil {
 		return findings
 	}
+	// Before the first complete pass every file is install backlog and
+	// only gets baselined; afterwards a file with no stored hash appeared
+	// since the last run and is reported, not silently absorbed.
+	_, cronDBaselined := store.GetRaw(cronDBaselineKey)
 	for _, path := range rankedCronDFiles {
 		if ctx.Err() != nil {
 			return findings
 		}
-		hash, err := hashFileContent(path)
+		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
 		}
 		if ctx.Err() != nil {
 			return findings
 		}
+		hash := hashBytes(data)
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))
 		prev, exists := store.GetRaw(key)
-		if exists && prev != hash {
+		switch {
+		case exists && prev != hash:
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
 				Message:  fmt.Sprintf("Cron.d file modified: %s", path),
 			})
+		case !exists && cronDBaselined:
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "crond_change",
+				Message:  fmt.Sprintf("Cron.d file added: %s", path),
+				Details:  fmt.Sprintf("File: %s\nContent: %s", path, alert.RedactCommandLine(truncate(strings.TrimSpace(string(data)), cronDExcerptLen))),
+			})
 		}
 		store.SetRaw(key, hash)
+	}
+	if globErr == nil && ctx.Err() == nil {
+		store.SetRaw(cronDBaselineKey, "1")
 	}
 
 	return findings
 }
+
+// cronDBaselineKey marks that /etc/cron.d was fully enumerated once; from
+// then on an unknown file is new rather than backlog.
+const cronDBaselineKey = "_crond:_baseline_complete"
+
+// cronDExcerptLen bounds the content quoted for a new cron.d file.
+const cronDExcerptLen = 300
 
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {

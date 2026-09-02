@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The sshd configuration change detector now hashes every file sshd reads, so a drop-in under an Include that flips PermitRootLogin or PasswordAuthentication is reported instead of being baselined silently.
+- Quoted pipe destinations in cPanel valiases files are now recognised as pipe forwarders; the quotes hid every one of them from the detector.
+- The hardening audit's default-deny check and the MySQL exposure check now look for a drop or reject policy on the nft input hook only; a Docker FORWARD chain used to satisfy both.
+- A file that appears in /etc/cron.d after the first complete scan is now reported as added, with a redacted excerpt of its content.
 - Process findings now redact credential-bearing command-line arguments before they reach the finding store or an alert channel, so a mysqldump -pSECRET, a PGPASSWORD= assignment, a --password value, a user:password pair or a URL with embedded credentials no longer leaks the secret.
 - Webhook, heartbeat, callback and reputation URLs are shown as scheme and host only by validate, config show and hot-reload logging; the path, query and userinfo carry the credential for Slack, Discord and healthcheck endpoints.
 - The mail and SMTP brute-force trackers now give attacker-chosen account names their own budget and evict source entries that hold good-source standing or slow-brute evidence last; a flood of unique mailbox names used to push those entries out of the shared cap and strip a legitimate client of its auto-block exemption.
