@@ -6,7 +6,15 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/yara"
 )
+
+type emptyRealtimeYARABackend struct{}
+
+func (emptyRealtimeYARABackend) ScanFile(string, int) []yara.Match { return nil }
+func (emptyRealtimeYARABackend) ScanBytes([]byte) []yara.Match     { return nil }
+func (emptyRealtimeYARABackend) RuleCount() int                    { return 0 }
+func (emptyRealtimeYARABackend) Reload() error                     { return nil }
 
 func drainRealtimeRuleFinding(t *testing.T, d *Daemon) (alert.Finding, bool) {
 	t.Helper()
@@ -61,5 +69,39 @@ func TestRealtimeRuleCoverageStaysQuietWhenRulesLoaded(t *testing.T) {
 	d.reportRealtimeRuleCoverage(114, 0, false)
 	if f, ok := drainRealtimeRuleFinding(t, d); ok {
 		t.Fatalf("unexpected finding %s when the YARA backend is simply absent", f.Check)
+	}
+}
+
+// Startup and reload can observe the same empty ruleset repeatedly. One
+// finding is enough until the engine recovers; emitting another on every
+// reload turns a persistent configuration problem into alert spam.
+func TestRealtimeRuleCoverageReportsEachOutageOnce(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+
+	d.reportRealtimeRuleCoverage(0, 0, false)
+	if _, ok := drainRealtimeRuleFinding(t, d); !ok {
+		t.Fatal("first empty-rules observation emitted no finding")
+	}
+	d.reportRealtimeRuleCoverage(0, 0, false)
+	if f, ok := drainRealtimeRuleFinding(t, d); ok {
+		t.Fatalf("unchanged empty ruleset emitted a duplicate finding: %+v", f)
+	}
+
+	d.reportRealtimeRuleCoverage(1, 0, false)
+	d.reportRealtimeRuleCoverage(0, 0, false)
+	if _, ok := drainRealtimeRuleFinding(t, d); !ok {
+		t.Fatal("a new outage after recovery emitted no finding")
+	}
+}
+
+func TestRealtimeRuleCoverageNowUsesInProcessBackend(t *testing.T) {
+	yara.SetActive(emptyRealtimeYARABackend{})
+	t.Cleanup(func() { yara.SetActive(nil) })
+	d := New(&config.Config{}, nil, nil, "")
+
+	d.reportRealtimeRuleCoverageNow()
+	f, ok := drainRealtimeRuleFinding(t, d)
+	if !ok || !strings.Contains(f.Message, "YARA") {
+		t.Fatalf("in-process backend with no rules was not reported: %+v", f)
 	}
 }

@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Quarantine captures now remain private when the source has other names, incomplete forensic snapshots are removed, and persistent missing-rule states no longer repeat the same alert on every reload.
+- The cPanel credential-phishing rule now accepts normal whitespace and quote variations in password and form-action attributes without weakening its three-part match.
+- Pending findings are dispatched only after their saved batch clears, database injection re-checks page through every candidate, cancelled scans do not start more checks, and successful PAM logins subtract that account's failures.
+- Firewall rollback operations now share the configuration writer lock and stale requests cannot overwrite or confirm a later change. Live-config responses use one reload generation, and promoting an incident no longer reports it as newly created.
 - The active findings file is now written once per scan cycle, only when its content changed, in a stable order by severity and recency, so the cap keeps the most important findings instead of a random subset.
 - Store export now stages the archive under the daemon's state directory and the CLI moves it to the requested path, copying and verifying the digest across filesystems, so destinations outside the daemon's sandbox such as /var/backups work again.
 - Validate's deep probes now read the installed service unit and reject a state path outside its ReadWritePaths grants, which used to pass validation and then crash-loop the daemon under ProtectSystem=strict.

@@ -517,7 +517,7 @@ signatures:
 # signatures.signing_key is mandatory whenever either signatures.update_url
 # is set or signatures.yara_forge.enabled is true. It must be the hex
 # Ed25519 public key used to verify detached .sig files for rule bundles.
-# Remote update URLs must use HTTP or HTTPS and must not point at localhost,
+# Remote update URLs must use HTTPS and must not point at localhost,
 # loopback, link-local, unspecified, or RFC1918 / ULA private addresses.
 #
 # YARA Forge upstream GitHub releases do not publish CSM detached signatures.

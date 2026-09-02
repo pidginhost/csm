@@ -1,6 +1,7 @@
 package yaraworker
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -39,5 +40,19 @@ func TestListenPrivateUnixCreatesSocketUnderPrivateUmask(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestListenPrivateUnixRestoresUmaskWhenListenFails(t *testing.T) {
+	prev := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(prev) })
+
+	if _, err := listenPrivateUnix("unused", func(string) (net.Listener, error) {
+		return nil, errors.New("bind failed")
+	}); err == nil {
+		t.Fatal("listen failure was not returned")
+	}
+	if got := syscall.Umask(0o022); got != 0o022 {
+		t.Fatalf("process umask left at %04o after listen failure, want restored 0022", got)
 	}
 }

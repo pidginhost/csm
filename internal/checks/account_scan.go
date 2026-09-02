@@ -203,6 +203,9 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 				return
 			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 
 			results := runAccountScanCheck(ctx, c, cfg, store, timeoutFor(c.name))
 			if len(results) > 0 {
@@ -222,6 +225,9 @@ func runAccountChecksBounded(ctx context.Context, cfg *config.Config, store *sta
 // that is not a timeout, and the warning would be persisted with the partial
 // results the cancel keeps.
 func runAccountScanCheck(ctx context.Context, c namedCheck, cfg *config.Config, store *state.Store, timeout time.Duration) []alert.Finding {
+	if ctx.Err() != nil {
+		return nil
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

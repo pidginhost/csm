@@ -1,10 +1,27 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 )
+
+type quarantineCompletedWarning struct {
+	message string
+}
+
+func (w *quarantineCompletedWarning) Error() string {
+	return w.message
+}
+
+func completedQuarantineWarning(err error) (string, bool) {
+	var warning *quarantineCompletedWarning
+	if !errors.As(err, &warning) {
+		return "", false
+	}
+	return warning.Error(), true
+}
 
 // sameContentShape verifies that two stats describe a file with the same
 // size and modification time. Used as a defence-in-depth check after

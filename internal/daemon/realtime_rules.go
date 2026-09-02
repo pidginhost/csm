@@ -25,15 +25,26 @@ func (d *Daemon) reportRealtimeRuleCoverage(yamlRules, yaraRules int, yaraActive
 		empty = append(empty, "YARA")
 	}
 	if len(empty) == 0 {
+		d.realtimeRulesMu.Lock()
+		d.realtimeRulesState = ""
+		d.realtimeRulesMu.Unlock()
 		return
 	}
 	rulesDir := "the configured rules directory"
 	if cfg := d.currentCfg(); cfg != nil && cfg.Signatures.RulesDir != "" {
 		rulesDir = cfg.Signatures.RulesDir
 	}
-	d.emitYaraFinding(alert.High, "realtime_rules_missing",
+	state := strings.Join(empty, ",") + "\x00" + rulesDir
+	d.realtimeRulesMu.Lock()
+	defer d.realtimeRulesMu.Unlock()
+	if d.realtimeRulesState == state {
+		return
+	}
+	if d.emitYaraFinding(alert.High, "realtime_rules_missing",
 		fmt.Sprintf("Real-time file scanning has no %s rules loaded from %s; every file write is scanned against nothing until rules are installed and reloaded.",
-			strings.Join(empty, " or "), rulesDir))
+			strings.Join(empty, " or "), rulesDir)) {
+		d.realtimeRulesState = state
+	}
 }
 
 // reportRealtimeRuleCoverageNow reads the live engines and reports on them.

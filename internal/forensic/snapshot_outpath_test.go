@@ -56,3 +56,26 @@ func TestSnapshot_Write_RefusesExistingOrSymlinkedOutPath(t *testing.T) {
 		t.Fatalf("existing archive clobbered: %q", got)
 	}
 }
+
+// The archive is created before its checksum sidecar. If the sidecar path is
+// already occupied, returning an error while leaving a complete-looking
+// archive behind gives an operator evidence with no integrity record and
+// prevents a clean retry at the same path.
+func TestSnapshot_Write_RemovesArchiveWhenSidecarCreationFails(t *testing.T) {
+	tmp := t.TempDir()
+	out := filepath.Join(tmp, "snap.tar.gz")
+	sidecar := out + ".sha256"
+	if err := os.WriteFile(sidecar, []byte("existing integrity record"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := minimalSnapshot(out).Write(); err == nil {
+		t.Fatal("snapshot succeeded despite an occupied sidecar path")
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatalf("archive left behind after sidecar failure: %v", err)
+	}
+	if got, err := os.ReadFile(sidecar); err != nil || string(got) != "existing integrity record" {
+		t.Fatalf("existing sidecar changed: data=%q err=%v", got, err)
+	}
+}

@@ -110,6 +110,8 @@ type Daemon struct {
 	yaraSup            *yaraworker.Supervisor
 	yaraCrashMu        sync.Mutex
 	yaraLastCrashAlert time.Time
+	realtimeRulesMu    sync.Mutex
+	realtimeRulesState string
 
 	// phpTaintSup is the mandatory process boundary around the PHP taint
 	// parser. It starts its child lazily on the first admitted source.

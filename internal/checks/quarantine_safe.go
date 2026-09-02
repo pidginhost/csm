@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"os"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
-// var (not const) so Linux tests can force EXDEV without depending on
-// the host's filesystem layout.
-var quarantineLinkByFD = linkQuarantineFileByFD
+// var so Linux tests can interleave a source-path mutation after the verified
+// fd is open without racing the test process itself.
+var quarantineCopyByFD = copyQuarantineFileByFD
 
 // quarantineFileTOCTOUSafe moves a single regular file into quarantine in
 // a way that defends against the classic detect-then-quarantine race: an
@@ -25,10 +23,9 @@ var quarantineLinkByFD = linkQuarantineFileByFD
 //     open time.
 //  2. Fstat the fd and verify it still matches the inode we detected
 //     earlier (sameFileIdentity). A late swap loses here.
-//  3. linkat(/proc/self/fd/N, qPath, AT_SYMLINK_FOLLOW) creates a
-//     hardlink to the inode we opened, by file descriptor, not by
-//     path. If hardlinking is unavailable, copy from the same open
-//     fd instead of reopening by path.
+//  3. Copy from that verified fd into a private, independent quarantine
+//     inode. A hardlink is never used: the account could add another name
+//     after the initial fstat and keep the quarantine inode writable.
 //  4. Unlink the source path only if it still resolves to the inode
 //     we quarantined. If an attacker swapped in a replacement after
 //     step 2, leave that replacement alone.
@@ -79,26 +76,22 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
 	}
 
-	// A multi-link inode cannot be moved out of the account's reach: linking
-	// it into quarantine would share the account-owned inode, still live and
-	// still writable through its other names. Copy the content instead (the
-	// copy is root-owned) and report the names that survive.
-	links := fileLinkCount(cur)
-	if links > 1 {
-		if err := copyQuarantineFileByFD(fd, qPath); err != nil {
-			return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
-		}
-	} else if err := quarantineLinkByFD(fd, qPath); err != nil {
-		if err := copyQuarantineFileByFD(fd, qPath); err != nil {
-			return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
-		}
+	// Always create an independent root-owned copy. Checking st_nlink before a
+	// hardlink is not sufficient: the account can add another name after the
+	// check and retain write access to the inode placed in quarantine.
+	if err := quarantineCopyByFD(fd, qPath); err != nil {
+		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 	}
 
 	if err := removeQuarantinedSource(path, qPath, cur); err != nil {
 		return err
 	}
-	if links > 1 {
-		return fmt.Errorf("quarantine: copied %s to %s and removed that name, but %d other hard link(s) to the same content remain reachable elsewhere", path, qPath, links-1)
+	remaining, err := fd.Stat()
+	if err != nil {
+		return &quarantineCompletedWarning{message: fmt.Sprintf("quarantine: copied %s to %s and removed that name, but could not count surviving hard links: %v", path, qPath, err)}
+	}
+	if links := fileLinkCount(remaining); links > 0 {
+		return &quarantineCompletedWarning{message: fmt.Sprintf("quarantine: copied %s to %s and removed that name, but at least %d other hard link(s) to the same content remain reachable elsewhere", path, qPath, links)}
 	}
 	return nil
 }
@@ -110,9 +103,4 @@ func fileLinkCount(info os.FileInfo) uint64 {
 		return uint64(st.Nlink) // #nosec G115 -- link count, never negative.
 	}
 	return 1
-}
-
-func linkQuarantineFileByFD(fd *os.File, qPath string) error {
-	procLink := fmt.Sprintf("/proc/self/fd/%d", fd.Fd())
-	return unix.Linkat(unix.AT_FDCWD, procLink, unix.AT_FDCWD, qPath, unix.AT_SYMLINK_FOLLOW)
 }

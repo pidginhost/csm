@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,33 +325,40 @@ func verifyDBPostInjection(message, details string) VerifyResult {
 		return dbVerifyNotLocatable("WordPress site")
 	}
 	like := likeContains(pattern)
-	stillInjected := 0
 	for _, prefix := range prefixes {
-		rows, err := runDBVerifyQueryRoot(dbName,
-			fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE ? OR post_content_filtered LIKE ?) LIMIT %d",
-				prefix, nonScannablePostTypesSQLList(), dbVerifyPostSearchLimit),
-			like, like)
-		if err != nil {
-			return dbVerifyQueryError()
-		}
-		for _, row := range rows {
-			parts := strings.SplitN(row, "\t", 3)
-			var content string
-			if len(parts) >= 2 {
-				content = parts[1]
+		var afterID uint64
+		for {
+			rows, err := runDBVerifyQueryRoot(dbName,
+				fmt.Sprintf("SELECT ID, post_content, post_content_filtered FROM `%sposts` WHERE ID > ? AND post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE ? OR post_content_filtered LIKE ?) ORDER BY ID LIMIT %d",
+					prefix, nonScannablePostTypesSQLList(), dbVerifyPostSearchLimit),
+				afterID, like, like)
+			if err != nil {
+				return dbVerifyQueryError()
 			}
-			if len(parts) >= 3 {
-				content += "\n" + parts[2]
+			for _, row := range rows {
+				parts := strings.SplitN(row, "\t", 3)
+				if len(parts) < 2 {
+					return VerifyResult{Checked: false, Detail: "database returned an unexpected post row; finding was not resolved"}
+				}
+				id, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
+				if err != nil || id <= afterID {
+					return VerifyResult{Checked: false, Detail: "database returned an invalid post ID; finding was not resolved"}
+				}
+				afterID = id
+				content := parts[1]
+				if len(parts) == 3 {
+					content += "\n" + parts[2]
+				}
+				if postContentMatchesPattern(pattern, requiresExternalScript, content) {
+					return VerifyResult{Checked: true, Resolved: false, Detail: "an affected post still contains the injected pattern"}
+				}
 			}
-			if postContentMatchesPattern(pattern, requiresExternalScript, content) {
-				stillInjected++
+			if len(rows) < dbVerifyPostSearchLimit {
+				break
 			}
 		}
 	}
-	if stillInjected == 0 {
-		return VerifyResult{Checked: true, Resolved: true, Detail: "no affected post still contains the injected pattern"}
-	}
-	return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("%d affected post(s) still contain the injected pattern", stillInjected)}
+	return VerifyResult{Checked: true, Resolved: true, Detail: "no affected post still contains the injected pattern"}
 }
 
 func postContentMatchesPattern(pattern string, requiresExternalScript bool, content string) bool {

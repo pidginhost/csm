@@ -118,19 +118,13 @@ type Server struct {
 	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
-	loginMu       sync.Mutex
-	loginAttempts map[string][]time.Time
-	apiMu         sync.Mutex
-	apiRequests   map[string][]time.Time // per-IP API rate limiting
-	scanMu        sync.Mutex
-	scanRunning   bool       // only one scan at a time
-	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
-	// configWriteMu serializes every read-ETag-edit-write of csm.yaml
-	// (settings save, verified-bots save, tentative firewall apply). One
-	// lock, because If-Match only detects a lost update between requests
-	// that share it: three writers on three locks let two operators on
-	// different pages interleave and one change vanish.
-	configWriteMu    sync.Mutex
+	loginMu          sync.Mutex
+	loginAttempts    map[string][]time.Time
+	apiMu            sync.Mutex
+	apiRequests      map[string][]time.Time // per-IP API rate limiting
+	scanMu           sync.Mutex
+	scanRunning      bool       // only one scan at a time
+	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
 
@@ -745,14 +739,15 @@ func (s *Server) csmConfigJSON() string {
 // rendering goes through jsonForScript; the csmConfigJSON wrapper exists
 // for code paths that need a pre-marshaled JSON string.
 func (s *Server) csmConfig() map[string]interface{} {
+	cfg := s.liveCfg()
 	return map[string]interface{}{
 		"version":      s.version,
-		"emailAV":      s.liveCfg().EmailAV.Enabled,
-		"firewall":     s.liveCfg().Firewall != nil && s.liveCfg().Firewall.Enabled,
-		"autoResponse": s.liveCfg().AutoResponse.Enabled,
-		"threatIntel":  s.liveCfg().Reputation.AbuseIPDBKey != "",
-		"signatures":   s.liveCfg().Signatures.RulesDir != "",
-		"challenge":    s.liveCfg().Challenge.Difficulty > 0,
+		"emailAV":      cfg.EmailAV.Enabled,
+		"firewall":     cfg.Firewall != nil && cfg.Firewall.Enabled,
+		"autoResponse": cfg.AutoResponse.Enabled,
+		"threatIntel":  cfg.Reputation.AbuseIPDBKey != "",
+		"signatures":   cfg.Signatures.RulesDir != "",
+		"challenge":    cfg.Challenge.Difficulty > 0,
 		"fanotify":     s.fanotifyActive,
 		"hostname":     s.cfg.Hostname,
 		"authScope":    "admin",

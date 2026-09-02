@@ -17,9 +17,10 @@ import (
 func TestRunAccountScanCheckCancelledParentEmitsNoTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	started := make(chan struct{}, 1)
 	slow := namedCheck{"slow", func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+		started <- struct{}{}
 		<-ctx.Done()
-		time.Sleep(50 * time.Millisecond)
 		return nil
 	}}
 	got := runAccountScanCheck(ctx, slow, &config.Config{}, nil, time.Minute)
@@ -27,6 +28,11 @@ func TestRunAccountScanCheckCancelledParentEmitsNoTimeout(t *testing.T) {
 		if f.Check == "check_timeout" {
 			t.Fatalf("cancelled scan reported %q as a timeout", f.Message)
 		}
+	}
+	select {
+	case <-started:
+		t.Fatal("check function started after its parent context was already canceled")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

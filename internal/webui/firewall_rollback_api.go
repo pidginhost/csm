@@ -29,8 +29,9 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 	}
 	// This handler rewrites csm.yaml like the settings and verified-bots
 	// saves do; it shares their lock so a concurrent save cannot be lost.
-	s.configWriteMu.Lock()
-	defer s.configWriteMu.Unlock()
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
 
 	mgr := rollback.Global()
 	if mgr == nil {
@@ -124,7 +125,7 @@ func (s *Server) apiFirewallTentativeApply(w http.ResponseWriter, r *http.Reques
 		// Best-effort cleanup: the snapshot is now misleading because
 		// the on-disk file never changed. Drop it so the operator does
 		// not see a phantom pending rollback in the UI.
-		_ = mgr.Confirm()
+		_ = mgr.AbortApplyIfCurrent(st)
 		writeJSONError(w, "save: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -176,6 +177,15 @@ func (s *Server) apiFirewallRollbackStatus(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, mgr.Status())
 }
 
+func rejectConfigWriteDuringRollback(w http.ResponseWriter) bool {
+	mgr := rollback.Global()
+	if mgr == nil || !mgr.Status().Pending {
+		return false
+	}
+	writeJSONError(w, "a firewall rollback is pending; confirm or revert it before saving other settings", http.StatusConflict)
+	return true
+}
+
 // apiFirewallRollbackConfirm handles POST .../confirm. Drops the snapshot;
 // the new config stays.
 func (s *Server) apiFirewallRollbackConfirm(w http.ResponseWriter, r *http.Request) {
@@ -188,11 +198,12 @@ func (s *Server) apiFirewallRollbackConfirm(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, "rollback manager not available", http.StatusServiceUnavailable)
 		return
 	}
-	if !mgr.Status().Pending {
+	st := mgr.Status()
+	if !st.Pending {
 		writeJSONError(w, "no pending rollback", http.StatusConflict)
 		return
 	}
-	if err := mgr.Confirm(); err != nil {
+	if err := mgr.ConfirmIfCurrent(st); err != nil {
 		writeJSONError(w, "confirm: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -214,11 +225,12 @@ func (s *Server) apiFirewallRollbackRevert(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, "rollback manager not available", http.StatusServiceUnavailable)
 		return
 	}
-	if !mgr.Status().Pending {
+	st := mgr.Status()
+	if !st.Pending {
 		writeJSONError(w, "no pending rollback", http.StatusConflict)
 		return
 	}
-	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	s.scheduleRollbackRevert(mgr, st, 30*time.Second)
 	s.auditLog(r, "settings-rollback-revert", "firewall", "")
 	writeJSON(w, map[string]string{"status": "revert issued"})
 }
@@ -244,7 +256,7 @@ func (s *Server) scheduleDaemonRestart(delay time.Duration) {
 // a hard timeout. If shutdown already started before the worker runs, it
 // does not begin a new revert; once started, the revert owns its restart
 // context so the restart it triggers cannot cancel itself via Shutdown.
-func (s *Server) scheduleRollbackRevert(mgr *rollback.Manager, timeout time.Duration) {
+func (s *Server) scheduleRollbackRevert(mgr *rollback.Manager, expected rollback.Status, timeout time.Duration) {
 	obs.SafeGo("webui-rollback-revert", func() {
 		select {
 		case <-s.pruneDone:
@@ -253,7 +265,7 @@ func (s *Server) scheduleRollbackRevert(mgr *rollback.Manager, timeout time.Dura
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		if err := mgr.Revert(ctx); err != nil {
+		if err := mgr.RevertIfCurrent(ctx, expected); err != nil {
 			fmt.Fprintf(os.Stderr, "webui: rollback revert failed: %v\n", err)
 		}
 	})

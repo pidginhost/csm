@@ -807,7 +807,7 @@ func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.F
 //
 // Skipped (fanotify handles these in real-time):
 //
-//	filesystem, webshells, htaccess, file_index, php_content, phishing
+//	filesystem, webshells, htaccess, file_index, phishing
 //
 // php_config_changes remains scheduled because fanotify sees only writes and
 // cannot find a planted configuration that predates daemon startup.

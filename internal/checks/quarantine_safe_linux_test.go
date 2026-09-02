@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -120,61 +119,53 @@ func TestQuarantineFileTOCTOUSafe_DetectsFileSwap(t *testing.T) {
 	}
 }
 
-func TestQuarantineFileTOCTOUSafe_LinkFallbackUsesOpenFD(t *testing.T) {
-	for name, linkErr := range map[string]error{
-		"cross_device": syscall.EXDEV,
-		"link_denied":  syscall.EPERM,
-	} {
-		t.Run(name, func(t *testing.T) {
-			tmp := t.TempDir()
-			src := filepath.Join(tmp, "drop.php")
-			original := []byte("<?php /* original malware */")
-			if err := os.WriteFile(src, original, 0644); err != nil {
-				t.Fatalf("write src: %v", err)
-			}
-			info, err := os.Lstat(src)
-			if err != nil {
-				t.Fatalf("lstat: %v", err)
-			}
-			dst := filepath.Join(tmp, "q", "out.php")
-			if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
-				t.Fatalf("mkdir: %v", mkErr)
-			}
+func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "drop.php")
+	original := []byte("<?php /* original malware */")
+	if err := os.WriteFile(src, original, 0644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	dst := filepath.Join(tmp, "q", "out.php")
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
+	}
 
-			oldLink := quarantineLinkByFD
-			quarantineLinkByFD = func(_ *os.File, _ string) error {
-				if rmErr := os.Remove(src); rmErr != nil {
-					return rmErr
-				}
-				if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
-					return wrErr
-				}
-				return linkErr
-			}
-			t.Cleanup(func() { quarantineLinkByFD = oldLink })
+	oldCopy := quarantineCopyByFD
+	quarantineCopyByFD = func(fd *os.File, qPath string) error {
+		if rmErr := os.Remove(src); rmErr != nil {
+			return rmErr
+		}
+		if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
+			return wrErr
+		}
+		return oldCopy(fd, qPath)
+	}
+	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 
-			// The hook swapped a replacement into the source path after the
-			// fd was opened: the copy must still come from the open fd, and
-			// the swap is reported rather than passed off as a completed
-			// quarantine.
-			qErr := quarantineFileTOCTOUSafe(src, dst, info)
-			if qErr == nil || !strings.Contains(qErr.Error(), "replaced before unlink") {
-				t.Fatalf("swap after open not reported: %v", qErr)
-			}
-			got, err := os.ReadFile(dst)
-			if err != nil {
-				t.Fatalf("read dst: %v", err)
-			}
-			if string(got) != string(original) {
-				t.Fatalf("dst content = %q, want original malware", got)
-			}
-			replacement, err := os.ReadFile(src)
-			if err != nil {
-				t.Fatalf("replacement path should be left alone: %v", err)
-			}
-			if string(replacement) != "replacement" {
-				t.Fatalf("source replacement = %q, want replacement", replacement)
-			}
-		})
+	// The hook swapped a replacement into the source path after the fd was
+	// opened: the copy must still come from the open fd, and the swap is
+	// reported rather than passed off as a completed quarantine.
+	qErr := quarantineFileTOCTOUSafe(src, dst, info)
+	if qErr == nil || !strings.Contains(qErr.Error(), "replaced before unlink") {
+		t.Fatalf("swap after open not reported: %v", qErr)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("dst content = %q, want original malware", got)
+	}
+	replacement, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("replacement path should be left alone: %v", err)
+	}
+	if string(replacement) != "replacement" {
+		t.Fatalf("source replacement = %q, want replacement", replacement)
 	}
 }

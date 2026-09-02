@@ -3,13 +3,16 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall/rollback"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -201,7 +204,7 @@ func TestScheduleRollbackRevertKeepsOwnRestartContextOnShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	s.scheduleRollbackRevert(mgr, mgr.Status(), 30*time.Second)
 	select {
 	case err := <-restartErr:
 		if err != nil {
@@ -239,7 +242,7 @@ func TestScheduleRollbackRevertDoesNotStartAfterShutdown(t *testing.T) {
 		t.Logf("Shutdown returned: %v", err)
 	}
 
-	s.scheduleRollbackRevert(mgr, 30*time.Second)
+	s.scheduleRollbackRevert(mgr, mgr.Status(), 30*time.Second)
 	time.Sleep(200 * time.Millisecond)
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Errorf("revert restart called %d times after shutdown, want 0", got)
@@ -280,5 +283,75 @@ func TestAPIFirewallRollbackConfirmWithNoneReturns409(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "no pending") {
 		t.Errorf("expected 'no pending' in body, got %s", w.Body.String())
+	}
+}
+
+// Timer and explicit rollback restoration rewrite the same csm.yaml as the
+// settings endpoints. They must take the shared writer lock too or a revert
+// can interleave with an ETag-protected save and silently clobber it.
+func TestFirewallRollbackRevertSharesConfigWriterLock(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	mgr := installRollbackManager(t, s.cfg.StatePath, cfgPath)
+	previous, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Apply(previous, []byte("hostname: changed\n"), time.Minute, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- mgr.Revert(context.Background()) }()
+	select {
+	case err := <-done:
+		configMu.Unlock()
+		t.Fatalf("rollback bypassed the shared config writer lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	configMu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("rollback after releasing config writer lock: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("rollback did not proceed after releasing config writer lock")
+	}
+}
+
+func TestConfigWritersRejectSavesWhileFirewallRollbackIsPending(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	mgr := installRollbackManager(t, s.cfg.StatePath, cfgPath)
+	previous, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Apply(previous, []byte("changed"), time.Minute, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]func(*httptest.ResponseRecorder){
+		"settings": func(w *httptest.ResponseRecorder) {
+			req := httptest.NewRequest("POST", settingsURLPrefix+"thresholds", strings.NewReader(`{"changes":{}}`))
+			req.Header.Set("If-Match", "irrelevant")
+			s.apiSettingsPost(w, req)
+		},
+		"verified_bots": func(w *httptest.ResponseRecorder) {
+			req := httptest.NewRequest("POST", "/api/v1/verified-bots/apply", strings.NewReader(`{"bots":[]}`))
+			req.Header.Set("If-Match", "irrelevant")
+			s.apiVerifiedBotsApply(w, req)
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			run(w)
+			if w.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409 while rollback is pending: %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }

@@ -13,7 +13,11 @@ func (d *Daemon) replayPendingFindings() {
 	if d.store == nil {
 		return
 	}
-	pending := d.store.TakePendingFindings()
+	pending, err := d.store.TakePendingFindings()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Cannot replay pending findings: %v\n", ts(), err)
+		return
+	}
 	if len(pending) == 0 {
 		return
 	}

@@ -262,13 +262,13 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		switch decision {
 		case sprayDecisionOpen:
 			sprayKey := Key{RemoteIP: f.SourceIP}
-			id := c.promoteOrCreateSprayLocked(sprayKey, f, now, hits)
+			id, created := c.promoteOrCreateSprayLocked(sprayKey, f, now, hits)
 			c.spray.BindIncident(f.SourceIP, id)
 			c.counters.sprayOpenedTotal.Add(1)
 			if cb := c.maybeBlockSprayLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened"); cb != nil {
 				afterUnlock = cb
 			}
-			return id, true, nil
+			return id, created, nil
 		case sprayDecisionSuppress:
 			id := c.spray.IncidentForIP(f.SourceIP)
 			inc, ok := c.incidents[id]
@@ -369,26 +369,35 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 // incident Open with nothing able to merge into or close it. An active
 // incident already holding the key is promoted in place, keeping its
 // findings and timeline. Caller must hold c.mu.
-func (c *Correlator) promoteOrCreateSprayLocked(key Key, f alert.Finding, now time.Time, hits int) string {
+func (c *Correlator) promoteOrCreateSprayLocked(key Key, f alert.Finding, now time.Time, hits int) (string, bool) {
 	if existingID, ok := c.byKey[keyString(key)]; ok {
 		if inc, live := c.incidents[existingID]; live && incidentStatusActive(inc.Status) {
+			fromKind := inc.Kind
 			inc.Kind = KindCredentialSpray
 			if inc.Severity < alert.High {
+				fromSeverity := inc.Severity
 				inc.Severity = alert.High
+				c.counters.severityChangedTotal.Add(1)
+				inc.Actions = append(inc.Actions, IncidentAction{
+					Time:    now,
+					Action:  "incident_severity_changed",
+					Result:  "ok",
+					Details: fromSeverity.String() + " -> HIGH: promoted to credential spray",
+				})
 			}
 			inc.Actions = append(inc.Actions, IncidentAction{
 				Time:    now,
 				Action:  "credential_spray_opened",
 				Result:  "ok",
-				Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(KindMailboxBruteforce),
+				Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(fromKind),
 			})
 			// A kind change must be durable, not left to the bookkeeping
 			// debounce.
 			c.mergeAndPersistLocked(inc, f, now, true)
-			return existingID
+			return existingID, false
 		}
 	}
-	return c.createSprayIncidentLocked(key, f, now, hits)
+	return c.createSprayIncidentLocked(key, f, now, hits), true
 }
 
 // createSprayIncidentLocked builds a credential_spray incident keyed on

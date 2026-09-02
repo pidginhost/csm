@@ -486,7 +486,13 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
-	res := checks.FixDisableWPCronInRoots(req.Path, s.wpCronFixAllowedRoots(), s.wpCronFixOptions())
+	cfg := s.liveCfg()
+	options := checks.WPCronFixOptions{}
+	if cfg != nil {
+		options.IntervalMinutes = cfg.Performance.WPCronFix.IntervalMinutes
+		options.PHPBin = cfg.Performance.WPCronFix.PHPBin
+	}
+	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveWPCronRoots(cfg), options)
 	if !res.Success {
 		writeJSON(w, res)
 		return
@@ -496,25 +502,12 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, res)
 }
 
-func (s *Server) wpCronFixOptions() checks.WPCronFixOptions {
-	if s.liveCfg() == nil {
-		return checks.WPCronFixOptions{}
-	}
-	return checks.WPCronFixOptions{
-		IntervalMinutes: s.liveCfg().Performance.WPCronFix.IntervalMinutes,
-		PHPBin:          s.liveCfg().Performance.WPCronFix.PHPBin,
-	}
-}
-
 func (s *Server) perfFixAllowedRoots() []string {
-	if s.liveCfg() == nil {
+	cfg := s.liveCfg()
+	if cfg == nil {
 		return []string{"/home"}
 	}
-	return checks.ResolveWebRoots(s.liveCfg())
-}
-
-func (s *Server) wpCronFixAllowedRoots() []string {
-	return checks.ResolveWPCronRoots(s.liveCfg())
+	return checks.ResolveWebRoots(cfg)
 }
 
 func (s *Server) dismissPerfFinding(key string) {

@@ -20,6 +20,7 @@ func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {
 
 // GET /api/v1/rules/status
 func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
+	cfg := s.liveCfg()
 	yamlCount := 0
 	yamlVersion := 0
 	if scanner := signatures.Global(); scanner != nil {
@@ -37,10 +38,10 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 		"yara_rules":      yaraCount,
 		"yara_available":  yara.Available(),
 		"yaml_version":    yamlVersion,
-		"rules_dir":       s.liveCfg().Signatures.RulesDir,
-		"auto_update":     s.liveCfg().Signatures.UpdateURL != "",
-		"update_url":      s.liveCfg().Signatures.UpdateURL,
-		"update_interval": s.liveCfg().Signatures.UpdateInterval,
+		"rules_dir":       cfg.Signatures.RulesDir,
+		"auto_update":     cfg.Signatures.UpdateURL != "",
+		"update_url":      cfg.Signatures.UpdateURL,
+		"update_interval": cfg.Signatures.UpdateInterval,
 	}
 	writeJSON(w, result)
 }

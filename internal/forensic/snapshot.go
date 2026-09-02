@@ -251,6 +251,9 @@ func (s Snapshot) Write() (string, string, error) {
 	sidecar := s.OutPath + ".sha256"
 	sidecarBody := fmt.Sprintf("%s  %s\n", hexSum, filepath.Base(s.OutPath))
 	if err := writeNewFile(sidecar, []byte(sidecarBody)); err != nil {
+		if removeErr := os.Remove(s.OutPath); removeErr != nil {
+			return "", "", fmt.Errorf("writing sidecar: %w; removing incomplete archive: %v", err, removeErr)
+		}
 		return "", "", fmt.Errorf("writing sidecar: %w", err)
 	}
 	return s.OutPath, hexSum, nil

@@ -5,9 +5,19 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/pidginhost/csm/internal/config"
 )
+
+var configWriteMu sync.Mutex
+
+// ConfigWriteMutex serializes complete read-validate-write transactions for
+// the main configuration. Callers must take it before reading csm.yaml, not
+// only around the final rename, or an ETag check can race another writer.
+func ConfigWriteMutex() *sync.Mutex {
+	return &configWriteMu
+}
 
 // WriteConfigBytesAtomic writes data to path with the same atomic-rename
 // semantics SignAndSaveAtomic uses. Intended for paths that ship pre-signed

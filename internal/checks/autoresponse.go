@@ -194,6 +194,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		safeName := quarantineSafeName(path)
 		ts := time.Now().Format("20060102-150405")
 		qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+		var quarantineWarning string
 
 		// Get file ownership
 		var uid, gid int
@@ -209,12 +210,17 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 				continue
 			}
 		} else {
-			// Move file to quarantine via the TOCTOU-safe path: fd open,
-			// fstat-verify, hardlink-by-fd, unlink. If hardlinking is
-			// unavailable, copy from the same verified fd.
+			// Move file to quarantine via the TOCTOU-safe path: open and
+			// verify the source fd, copy it into a private inode, then unlink
+			// the detected name only while it still identifies that source.
 			if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-				fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
-				continue
+				var completed bool
+				quarantineWarning, completed = completedQuarantineWarning(err)
+				if !completed {
+					fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "autoresponse: %s\n", quarantineWarning)
 			}
 		}
 
@@ -231,11 +237,15 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		metaData, _ := json.MarshalIndent(meta, "", "  ")
 		_ = os.WriteFile(qPath+".meta", metaData, 0600)
 
+		details := fmt.Sprintf("Quarantined to: %s\nOriginal finding: %s", qPath, f.Message)
+		if quarantineWarning != "" {
+			details += "\nWarning: " + quarantineWarning
+		}
 		actions = append(actions, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "auto_response",
 			Message:  fmt.Sprintf("AUTO-QUARANTINE: %s moved to quarantine", path),
-			Details:  fmt.Sprintf("Quarantined to: %s\nOriginal finding: %s", qPath, f.Message),
+			Details:  details,
 		})
 	}
 
@@ -682,8 +692,12 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 		// AutoQuarantineFiles dispatcher, so a late inode/symlink swap fails
 		// closed instead of relocating an attacker-chosen file.
 		if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-			fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
-			return "", false
+			if warning, completed := completedQuarantineWarning(err); completed {
+				fmt.Fprintf(os.Stderr, "autoresponse: %s\n", warning)
+			} else {
+				fmt.Fprintf(os.Stderr, "autoresponse: refused inline quarantine of %s: %v\n", path, err)
+				return "", false
+			}
 		}
 	}
 

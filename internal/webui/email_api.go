@@ -45,9 +45,10 @@ type senderEntry struct {
 }
 
 func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
+	cfg := s.liveCfg()
 	resp := emailStatsResponse{
-		QueueWarn: s.liveCfg().Thresholds.MailQueueWarn,
-		QueueCrit: s.liveCfg().Thresholds.MailQueueCrit,
+		QueueWarn: cfg.Thresholds.MailQueueWarn,
+		QueueCrit: cfg.Thresholds.MailQueueCrit,
 	}
 
 	// Live queue size and frozen/oldest via exim
@@ -57,7 +58,7 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 	resp.FrozenCount, resp.OldestAge = eximQueueDetails()
 
 	// Firewall config
-	fw := s.liveCfg().Firewall
+	fw := cfg.Firewall
 	resp.SMTPBlock = fw.SMTPBlock
 	resp.SMTPAllowUsers = fw.SMTPAllowUsers
 	if resp.SMTPAllowUsers == nil {
@@ -200,12 +201,13 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg := s.liveCfg()
 	resp := emailAVStatusResponse{
-		Enabled: s.liveCfg().EmailAV.Enabled,
+		Enabled: cfg.EmailAV.Enabled,
 	}
 
 	// ClamAV availability - probe the configured socket.
-	clamdSocket := s.liveCfg().EmailAV.ClamdSocket
+	clamdSocket := cfg.EmailAV.ClamdSocket
 	if clamdSocket == "" {
 		clamdSocket = "/var/run/clamd.scan/clamd.sock"
 	}

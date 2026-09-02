@@ -216,6 +216,7 @@ func fixQuarantine(path string) RemediationResult {
 	safeName := quarantineSafeName(path)
 	ts := time.Now().Format("20060102-150405")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+	var quarantineWarning string
 
 	// Directories use the standard rename (they're rare in quarantine
 	// remediation and harder to TOCTOU-swap atomically). Regular files
@@ -226,7 +227,11 @@ func fixQuarantine(path string) RemediationResult {
 			return RemediationResult{Error: fmt.Sprintf("cannot quarantine directory: %v", err)}
 		}
 	} else if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-		return RemediationResult{Error: err.Error()}
+		var completed bool
+		quarantineWarning, completed = completedQuarantineWarning(err)
+		if !completed {
+			return RemediationResult{Error: err.Error()}
+		}
 	}
 
 	// Write metadata sidecar for restore
@@ -249,10 +254,14 @@ func fixQuarantine(path string) RemediationResult {
 		fmt.Fprintf(os.Stderr, "remediate: error writing quarantine metadata %s: %v\n", qPath+".meta", err)
 	}
 
+	description := fmt.Sprintf("Moved to quarantine: %s", qPath)
+	if quarantineWarning != "" {
+		description += ". Warning: " + quarantineWarning
+	}
 	return RemediationResult{
 		Success:     true,
 		Action:      fmt.Sprintf("quarantined %s → %s", path, qPath),
-		Description: fmt.Sprintf("Moved to quarantine: %s", qPath),
+		Description: description,
 	}
 }
 

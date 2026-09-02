@@ -18,7 +18,7 @@ func TestPAMSuccessClearsOnlyThatUsersFailures(t *testing.T) {
 	cfg.Thresholds.CredStuffingDistinctAccounts = 3
 	p := &PAMListener{cfg: cfg, failures: map[string]*pamFailureTracker{}}
 	const ip = "198.51.100.40"
-	for _, user := range []string{"alice", "bob", "carol"} {
+	for _, user := range []string{"alice", "bob", "carol", "carol", "carol"} {
 		p.recordFailure(ip, user, "sshd")
 	}
 
@@ -30,6 +30,9 @@ func TestPAMSuccessClearsOnlyThatUsersFailures(t *testing.T) {
 	}
 	if tracker.users["carol"] || !tracker.users["alice"] || !tracker.users["bob"] {
 		t.Fatalf("users after carol's success = %v, want alice and bob only", tracker.users)
+	}
+	if tracker.count != 2 {
+		t.Fatalf("failure count after clearing carol = %d, want the two failures against alice and bob", tracker.count)
 	}
 	accounts, _ := p.stuffing.Record(ip, "dave")
 	if len(accounts) < 3 {

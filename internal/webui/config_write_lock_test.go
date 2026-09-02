@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/integrity"
 )
 
 // Three endpoints rewrite csm.yaml (settings save, verified-bots save, the
@@ -15,7 +17,8 @@ import (
 // with matching If-Match headers. Every csm.yaml writer takes the same lock.
 func TestConfigWritersShareOneLock(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.configWriteMu.Lock()
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
 
 	handlers := map[string]func(chan struct{}){
 		"settings": func(done chan struct{}) {
@@ -50,7 +53,7 @@ func TestConfigWritersShareOneLock(t *testing.T) {
 		}
 	}
 
-	s.configWriteMu.Unlock()
+	configMu.Unlock()
 	for name, done := range dones {
 		select {
 		case <-done:

@@ -47,7 +47,11 @@ func TestPendingFindingsAtShutdownAreDispatchedAtNextStart(t *testing.T) {
 	if n := dispatched.Load(); n != 1 {
 		t.Fatalf("dispatched %d findings from the parked shutdown batch, want 1", n)
 	}
-	if left := reopened.TakePendingFindings(); len(left) != 0 {
+	left, err := reopened.TakePendingFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
 		t.Fatalf("%d findings still parked after replay", len(left))
 	}
 }

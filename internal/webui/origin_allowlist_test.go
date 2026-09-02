@@ -33,12 +33,12 @@ func TestSecurityHeadersAcceptsLoopbackAndListedOrigins(t *testing.T) {
 	s.cfg.Hostname = "myhost.example.com"
 	s.cfg.WebUI.AllowedOrigins = []string{"https://ops.example.net:9443"}
 
-	for _, origin := range []string{"https://localhost:9443", "https://127.0.0.1:9443", "https://[::1]:9443", "https://ops.example.net:9443", "https://myhost.example.com:9443"} {
+	for _, origin := range []string{"https://localhost:9443", "https://127.0.0.1:9443", "https://[::1]:9443", "https://[::ffff:127.0.0.1]:9443", "https://ops.example.net:9443", "https://myhost.example.com:9443"} {
 		if code := originProbe(t, s, origin); code != http.StatusOK {
 			t.Fatalf("origin %s rejected with %d", origin, code)
 		}
 	}
-	for _, origin := range []string{"https://evil.example.com", "https://ops.example.net", "http://localhost:9443", "https://localhost.evil.example:9443"} {
+	for _, origin := range []string{"https://evil.example.com", "https://ops.example.net", "http://localhost:9443", "https://localhost.evil.example:9443", "https://127.0.0.1.evil:9443"} {
 		if code := originProbe(t, s, origin); code != http.StatusForbidden {
 			t.Fatalf("origin %s accepted with %d", origin, code)
 		}

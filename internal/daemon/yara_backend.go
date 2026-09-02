@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -219,11 +220,14 @@ func (d *Daemon) reportYaraCompileStatus(compileErr string) {
 
 // emitYaraFinding pushes a finding without blocking; a saturated alert channel
 // is accounted for by the daemon's general drop counter.
-func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) {
+func (d *Daemon) emitYaraFinding(sev alert.Severity, check, msg string) bool {
 	finding := alert.Finding{Severity: sev, Check: check, Message: msg}
 	select {
 	case d.alertCh <- finding:
+		return true
 	default:
+		atomic.AddInt64(&d.droppedAlerts, 1)
+		return false
 	}
 }
 

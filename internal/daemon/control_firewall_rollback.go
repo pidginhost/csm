@@ -37,10 +37,11 @@ func (c *ControlListener) handleFirewallRollbackConfirm(_ json.RawMessage) (any,
 	if mgr == nil {
 		return control.FirewallAckResult{Message: "rollback manager not initialised"}, nil
 	}
-	if !mgr.Status().Pending {
+	st := mgr.Status()
+	if !st.Pending {
 		return control.FirewallAckResult{Message: "no pending rollback"}, nil
 	}
-	if err := mgr.Confirm(); err != nil {
+	if err := mgr.ConfirmIfCurrent(st); err != nil {
 		return nil, fmt.Errorf("confirm rollback: %w", err)
 	}
 	return control.FirewallAckResult{Message: "rollback confirmed; pending change is now permanent"}, nil
@@ -51,12 +52,13 @@ func (c *ControlListener) handleFirewallRollbackRevert(_ json.RawMessage) (any, 
 	if mgr == nil {
 		return control.FirewallAckResult{Message: "rollback manager not initialised"}, nil
 	}
-	if !mgr.Status().Pending {
+	st := mgr.Status()
+	if !st.Pending {
 		return control.FirewallAckResult{Message: "no pending rollback"}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := mgr.Revert(ctx); err != nil {
+	if err := mgr.RevertIfCurrent(ctx, st); err != nil {
 		return nil, fmt.Errorf("revert rollback: %w", err)
 	}
 	return control.FirewallAckResult{Message: "rollback reverted; previous config restored, daemon restart issued"}, nil

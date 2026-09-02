@@ -44,6 +44,7 @@ type Status struct {
 	AppliedBy        string    `json:"applied_by,omitempty"`
 	PrevHash         string    `json:"prev_hash,omitempty"`
 	NewHash          string    `json:"new_hash,omitempty"`
+	identity         string
 }
 
 // Manager owns the active timer and serialises Apply/Confirm/Revert/Recover
@@ -135,8 +136,8 @@ func clampTimeout(d time.Duration) time.Duration {
 
 // Apply records prevYAML as the snapshot to restore on expiry, computes
 // the expiry deadline, persists the rollback entry, and arms the local
-// timer. The caller is responsible for writing newYAML to disk and
-// triggering the restart.
+// timer. The caller is responsible for holding ConfigWriteMutex across Apply
+// and the newYAML write, then triggering the restart.
 //
 // applyBy is logged with the rollback record (e.g. token name or "cli")
 // so audits can trace the source.
@@ -170,8 +171,39 @@ func (m *Manager) Apply(prevYAML, newYAML []byte, timeout time.Duration, applyBy
 // no daemon restart is required. Idempotent: confirming with no
 // pending entry is a no-op.
 func (m *Manager) Confirm() error {
+	expected := m.Status()
+	if !expected.Pending {
+		return nil
+	}
+	return m.ConfirmIfCurrent(expected)
+}
+
+// ConfirmIfCurrent confirms only the rollback represented by expected. A
+// confirmation request can race another operator confirming the old record
+// and applying a replacement; it must not silently clear the newer record.
+// Taking the config writer lock also keeps confirmation from landing between
+// tentative-apply's rollback staging and its csm.yaml write.
+func (m *Manager) ConfirmIfCurrent(expected Status) error {
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
+	return m.confirmIfCurrent(expected)
+}
+
+// AbortApplyIfCurrent drops a staged rollback when tentative-apply could not
+// write the new config. The caller must already hold ConfigWriteMutex for the
+// complete staging/write transaction.
+func (m *Manager) AbortApplyIfCurrent(expected Status) error {
+	return m.confirmIfCurrent(expected)
+}
+
+func (m *Manager) confirmIfCurrent(expected Status) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	rb, ok := m.db.GetFirewallRollback()
+	if !ok || !sameRollbackStatus(expected, rb) {
+		return fmt.Errorf("rollback changed before confirm; refresh and retry")
+	}
 
 	if m.timer != nil {
 		m.timer.Stop()
@@ -185,12 +217,30 @@ func (m *Manager) Confirm() error {
 // surface a clean "nothing to revert" message instead of silently
 // succeeding.
 func (m *Manager) Revert(ctx context.Context) error {
+	expected := m.Status()
+	if !expected.Pending {
+		return fmt.Errorf("no pending rollback")
+	}
+	return m.RevertIfCurrent(ctx, expected)
+}
+
+// RevertIfCurrent restores only the rollback represented by expected. The
+// manager re-checks after acquiring the config writer lock because a blocked
+// revert must not restore a replacement rollback created while it waited.
+func (m *Manager) RevertIfCurrent(ctx context.Context, expected Status) error {
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	rb, ok := m.db.GetFirewallRollback()
 	if !ok {
 		return fmt.Errorf("no pending rollback")
+	}
+	if !sameRollbackStatus(expected, rb) {
+		return fmt.Errorf("rollback changed before revert; refresh and retry")
 	}
 	return m.applyRevertLocked(ctx, rb)
 }
@@ -212,8 +262,23 @@ func (m *Manager) RecoverOnStartup(ctx context.Context) (reverted bool, err erro
 	}
 	now := m.now()
 	if !now.Before(rb.ExpiresAt) {
-		err := m.applyRevertLocked(ctx, rb)
 		m.mu.Unlock()
+
+		configMu := integrity.ConfigWriteMutex()
+		configMu.Lock()
+		defer configMu.Unlock()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		rb, ok = m.db.GetFirewallRollback()
+		if !ok {
+			return false, nil
+		}
+		now = m.now()
+		if now.Before(rb.ExpiresAt) {
+			m.armTimerLocked(rb.ExpiresAt.Sub(now))
+			return false, nil
+		}
+		err := m.applyRevertLocked(ctx, rb)
 		if err != nil {
 			return false, err
 		}
@@ -255,10 +320,19 @@ func (m *Manager) armTimerLocked(d time.Duration) {
 }
 
 func (m *Manager) timerExpired(ctx context.Context) error {
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	rb, ok := m.db.GetFirewallRollback()
 	if !ok {
+		return nil
+	}
+	now := m.now()
+	if now.Before(rb.ExpiresAt) {
+		m.armTimerLocked(rb.ExpiresAt.Sub(now))
 		return nil
 	}
 	return m.applyRevertLocked(ctx, rb)
@@ -310,5 +384,19 @@ func statusFromRecord(rb store.FirewallRollback, now time.Time) Status {
 		AppliedBy:        rb.AppliedBy,
 		PrevHash:         rb.PrevHash,
 		NewHash:          rb.NewHash,
+		identity:         rollbackIdentity(rb),
 	}
+}
+
+func sameRollbackStatus(expected Status, current store.FirewallRollback) bool {
+	return expected.Pending && expected.identity != "" && expected.identity == rollbackIdentity(current)
+}
+
+func rollbackIdentity(rb store.FirewallRollback) string {
+	payload := fmt.Sprintf("%x\n%q\n%q\n%q\n%q\n%q",
+		rb.PrevYAML, rb.PrevHash, rb.NewHash,
+		rb.AppliedAt.UTC().Format(time.RFC3339Nano),
+		rb.ExpiresAt.UTC().Format(time.RFC3339Nano), rb.AppliedBy)
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
 }

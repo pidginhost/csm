@@ -294,8 +294,12 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.configWriteMu.Lock()
-	defer s.configWriteMu.Unlock()
+	configMu := integrity.ConfigWriteMutex()
+	configMu.Lock()
+	defer configMu.Unlock()
+	if rejectConfigWriteDuringRollback(w) {
+		return
+	}
 	if s.settingsSaveHook != nil {
 		s.settingsSaveHook()
 	}

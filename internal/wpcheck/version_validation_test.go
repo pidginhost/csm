@@ -30,6 +30,7 @@ func TestParseVersionContentAcceptsRealVersionsAndLocales(t *testing.T) {
 		{"<?php $wp_version = '6.7-RC1'; $wp_local_package = 'de_DE_formal';", "6.7-RC1", "de_DE_formal"},
 		{"<?php $wp_version = '6.8-alpha-59245'; $wp_local_package = 'pt_BR';", "6.8-alpha-59245", "pt_BR"},
 		{"<?php $wp_version = '6.6'; $wp_local_package = 'ary';", "6.6", "ary"},
+		{"<?php $wp_version = '6.7.1'; $wp_local_package = 'es_419';", "6.7.1", "es_419"},
 	}
 	for _, tc := range cases {
 		v, l, err := ParseVersionContent([]byte(tc.src))
