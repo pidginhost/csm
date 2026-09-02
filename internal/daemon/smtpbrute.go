@@ -348,7 +348,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		}
 	}
 
-	t.enforceMaxTracked()
+	t.enforceMaxTracked(ip)
 	t.findingsEmitted += int64(len(findings))
 	return findings
 }
@@ -375,7 +375,7 @@ func (t *smtpAuthTracker) RecordSuccess(ip string) {
 	now := t.now()
 	e.slowLastSuccess = now
 	e.lastSeen = now
-	t.enforceMaxTracked()
+	t.enforceMaxTracked(ip)
 }
 
 // Stats returns cumulative Record invocations and findings emitted since
@@ -479,7 +479,9 @@ func (t *smtpAuthTracker) Purge() {
 // enforceMaxTracked evicts the least-recently-seen entries until the total
 // number of tracked entities (IPs + subnets + accounts) is <= maxTracked.
 // Caller must hold t.mu.
-func (t *smtpAuthTracker) enforceMaxTracked() {
+// keepIP is never evicted; see the mail tracker for why the entry a caller
+// just wrote must survive its own bookkeeping.
+func (t *smtpAuthTracker) enforceMaxTracked(keepIP string) {
 	total := len(t.ips) + len(t.subnets) + len(t.accounts)
 	if total <= t.maxTracked {
 		return
@@ -498,6 +500,9 @@ func (t *smtpAuthTracker) enforceMaxTracked() {
 	}
 	victims := make([]victim, 0, total)
 	for k, v := range t.ips {
+		if k == keepIP {
+			continue
+		}
 		victims = append(victims, victim{"ip", k, v.lastSeen, v.evictionRank(now, t.window, t.slowWindow)})
 	}
 	for k, v := range t.subnets {

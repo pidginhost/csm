@@ -458,7 +458,7 @@ func (t *mailAuthTracker) LoadGoodSource(snap goodSourceSnapshot, now time.Time)
 			}
 		}
 	}
-	t.enforceMaxTracked()
+	t.enforceMaxTracked("")
 }
 
 func validGoodSourceTimes(ts goodSourceTimes, cutoff time.Time) bool {
@@ -881,7 +881,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		}
 	}
 
-	t.enforceMaxTracked()
+	t.enforceMaxTracked(ip)
 	t.findingsEmitted += int64(len(findings))
 	return findings
 }
@@ -994,7 +994,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	defer t.mu.Unlock()
 	// Successes create per-IP entries too; keep the tracker bounded on every
 	// path (runs under the held lock, before Unlock).
-	defer t.enforceMaxTracked()
+	defer t.enforceMaxTracked(ip)
 
 	now := t.now()
 	cutoff := now.Add(-t.window)
@@ -1138,7 +1138,11 @@ func (t *mailAuthTracker) Purge() {
 // enforceMaxTracked evicts the least-recently-seen entries until total tracked
 // state is <= 95% of maxTracked. Batch target avoids re-sorting on every
 // subsequent insert. Caller must hold t.mu.
-func (t *mailAuthTracker) enforceMaxTracked() {
+// keepIP is the source entry the caller just wrote. It is never evicted:
+// dropping the entry a Record is currently accumulating into means a single
+// source can never reach its threshold while the table is under pressure, so
+// a flood would switch detection off for the very source causing it.
+func (t *mailAuthTracker) enforceMaxTracked(keepIP string) {
 	total := len(t.ips) + len(t.subnets) + len(t.accounts)
 	if total <= t.maxTracked {
 		return
@@ -1164,6 +1168,9 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 	}
 	victims := make([]victim, 0, total)
 	for k, v := range t.ips {
+		if k == keepIP {
+			continue
+		}
 		victims = append(victims, victim{"ip", k, v.lastSeen, v.evictionRank(now, t.window, t.slowWindow)})
 	}
 	for k, v := range t.subnets {
