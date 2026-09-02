@@ -63,9 +63,15 @@ var uploadTreeDirNames = map[string]bool{
 }
 
 // htaccessInUploadTree reports whether the .htaccess at path sits under an
-// upload-style directory.
+// upload-style directory. The top-level directory (/home, /var, /tmp) is
+// never a docroot-relative upload dir and is skipped, so a system temp root
+// does not make every path below it an upload tree.
 func htaccessInUploadTree(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+	parts := strings.Split(strings.Trim(filepath.ToSlash(filepath.Dir(path)), "/"), "/")
+	for i, part := range parts {
+		if i == 0 {
+			continue
+		}
 		if uploadTreeDirNames[strings.ToLower(part)] {
 			return true
 		}
