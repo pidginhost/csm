@@ -173,9 +173,13 @@ func TestBlockIPForceReblockAtConfiguredLimit(t *testing.T) {
 func TestBlockIPForceRetriesExpiredReplacementElement(t *testing.T) {
 	conn, sends := nftConnReturningErrsThenOK(t, unix.ENOENT)
 	e := newBlockedSetWireTestEngine(t, conn)
+	// state.json still carries the block as live (the engine prunes expired
+	// entries on load), but the kernel has already dropped the element: a
+	// clock difference or an out-of-band nft flush. The delete in the
+	// replace batch therefore fails with ENOENT.
 	writeRawFirewallState(t, e, FirewallState{Blocked: []BlockedEntry{{
-		IP: "192.0.2.22", Reason: "expired auto-block", BlockedAt: time.Now(),
-		ExpiresAt: time.Now().Add(-time.Minute),
+		IP: "192.0.2.22", Reason: "auto-block", BlockedAt: time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
 	}}})
 
 	if err := e.BlockIPForce("192.0.2.22", "operator deny", 0); err != nil {
