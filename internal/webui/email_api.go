@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/systemdrun"
 	"github.com/pidginhost/csm/internal/yara"
@@ -185,6 +186,14 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// Seams so the AV status handler can be tested without a live clamd.
+var (
+	resolveClamdSocket   = config.ResolveClamdSocket
+	clamdSocketAvailable = func(path string) bool {
+		return emailav.NewClamdScanner(path).Available()
+	}
+)
+
 type emailAVStatusResponse struct {
 	Enabled        bool   `json:"enabled"`
 	ClamdAvailable bool   `json:"clamd_available"`
@@ -208,13 +217,20 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 		Enabled: cfg.EmailAV.Enabled,
 	}
 
-	// ClamAV availability - probe the configured socket.
-	clamdSocket := cfg.EmailAV.ClamdSocket
+	// ClamAV availability. Resolve the socket the same way the daemon's
+	// scanner does: when the configured path is not answering the daemon
+	// falls back to a discovered one and mail really is being scanned, so
+	// probing the configured path here would report the subsystem down over
+	// a working scanner. Report the socket actually in use, not the stale
+	// setting, or the page sends the operator after the wrong thing.
+	clamdSocket, _ := resolveClamdSocket(cfg.EmailAV.ClamdSocket)
 	if clamdSocket == "" {
-		clamdSocket = "/var/run/clamd.scan/clamd.sock"
+		// Nothing configured and nothing discovered: name the documented
+		// default so the card points somewhere rather than showing a blank.
+		clamdSocket = config.DefaultClamdSocket
 	}
 	resp.ClamdSocket = clamdSocket
-	resp.ClamdAvailable = emailav.NewClamdScanner(clamdSocket).Available()
+	resp.ClamdAvailable = clamdSocketAvailable(clamdSocket)
 
 	// YARA-X availability and rule count. Active() covers both the
 	// in-process scanner and the out-of-process worker so this card
