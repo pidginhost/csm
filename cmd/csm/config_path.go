@@ -305,14 +305,38 @@ func divergesOnlyByIntegrityHashes(preferred, legacy string) (bool, error) {
 		if preferredLines[i] == legacyLines[i] {
 			continue
 		}
-		preferredKey, preferredHash := integrityHashLineKey(preferredLines[i])
-		legacyKey, legacyHash := integrityHashLineKey(legacyLines[i])
+		preferredKey, preferredHash := integrityHashLineAt(preferredLines, i)
+		legacyKey, legacyHash := integrityHashLineAt(legacyLines, i)
 		if !preferredHash || !legacyHash || preferredKey != legacyKey {
 			return false, nil
 		}
 		sawHashDifference = true
 	}
 	return sawHashDifference, nil
+}
+
+func integrityHashLineAt(lines []string, index int) (string, bool) {
+	key, ok := integrityHashLineKey(lines[index])
+	if !ok {
+		return "", false
+	}
+	indent := len(lines[index]) - len(strings.TrimLeft(lines[index], " \t"))
+	if indent == 0 {
+		return "", false
+	}
+	for i := index - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		parentIndent := len(lines[i]) - len(strings.TrimLeft(lines[i], " \t"))
+		if parentIndent >= indent {
+			continue
+		}
+		return key, parentIndent == 0 &&
+			(trimmed == "integrity:" || strings.HasPrefix(trimmed, "integrity: #"))
+	}
+	return "", false
 }
 
 func isIntegrityHashLine(line string) bool {

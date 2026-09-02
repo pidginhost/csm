@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -8,8 +9,8 @@ import (
 // syslogLineTime returns the time a syslog line was written, from either the
 // traditional BSD prefix ("Sep  2 04:12:33", no year, local time) or an
 // RFC 3339 prefix as rsyslog writes with high-precision timestamps. The BSD
-// form takes its year from now; a result more than a day in the future
-// belongs to the previous year (a January read of December lines). ok is
+// form uses the most recent plausible year; a result more than a day in the
+// future belongs to an earlier year (a January read of December lines). ok is
 // false when the line carries neither.
 func syslogLineTime(line string, now time.Time) (time.Time, bool) {
 	fields := strings.Fields(line)
@@ -23,13 +24,17 @@ func syslogLineTime(line string, now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	stamp := fields[0] + " " + fields[1] + " " + fields[2]
-	t, err := time.ParseInLocation("Jan _2 15:04:05", stamp, now.Location())
-	if err != nil {
-		return time.Time{}, false
+	parseYear := func(year int) (time.Time, error) {
+		return time.ParseInLocation("2006 Jan _2 15:04:05", strconv.Itoa(year)+" "+stamp, now.Location())
 	}
-	t = t.AddDate(now.Year(), 0, 0)
-	if t.After(now.Add(24 * time.Hour)) {
-		t = t.AddDate(-1, 0, 0)
+	// Eight years covers the largest gap between Gregorian leap years. This
+	// also handles a leap-day record read more than one year later without
+	// treating an unparseable timestamp as a current event.
+	for yearsAgo := 0; yearsAgo <= 8; yearsAgo++ {
+		t, err := parseYear(now.Year() - yearsAgo)
+		if err == nil && !t.After(now.Add(24*time.Hour)) {
+			return t, true
+		}
 	}
-	return t, true
+	return time.Time{}, false
 }

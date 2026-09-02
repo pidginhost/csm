@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -401,10 +403,10 @@ func cPanelModsecEngineChain(configDir string) [][]string {
 }
 
 // cPanelEngineMode walks the include chain and returns the last engine
-// directive. A chain file that exists but cannot be read, or that carries a
-// value this check does not understand, makes the effective mode unknown:
-// guessing from the files around it could hide a DetectionOnly set through
-// WHM or report a stale On.
+// directive. A chain file that exists but cannot be read, or that this
+// parser cannot interpret authoritatively, makes the effective mode
+// unknown: guessing from the files around it could hide a DetectionOnly
+// set through WHM or report a stale On.
 func cPanelEngineMode(info platform.Info) string {
 	configDir := filepath.Clean(info.ApacheCompatibleConfigDir())
 	if configDir == "." || configDir == string(filepath.Separator) {
@@ -413,17 +415,17 @@ func cPanelEngineMode(info platform.Info) string {
 	mode := ""
 	for _, spellings := range cPanelModsecEngineChain(configDir) {
 		for _, path := range spellings {
-			m, found, err := engineDirectiveInFile(path)
+			m, known, err := engineDirectiveInFile(path)
 			if err != nil {
-				if os.IsNotExist(err) {
+				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
 				return ""
 			}
-			if found {
-				if m == "" {
-					return ""
-				}
+			if !known {
+				return ""
+			}
+			if m != "" {
 				mode = m
 			}
 			// The first spelling that exists is the file Apache reads.
@@ -434,50 +436,187 @@ func cPanelEngineMode(info platform.Info) string {
 }
 
 // engineModeInFile is the distro-package form of engineDirectiveInFile: a
-// missing, unreadable or unparseable file simply yields unknown.
+// missing, unreadable or ambiguous file simply yields unknown.
 func engineModeInFile(path string) string {
-	mode, _, err := engineDirectiveInFile(path)
-	if err != nil {
+	mode, known, err := engineDirectiveInFile(path)
+	if err != nil || !known {
 		return ""
 	}
 	return mode
 }
 
-// engineDirectiveInFile returns the value of the last uncommented
-// SecRuleEngine directive in path, lower-cased. found reports whether the
-// file has such a directive at all; a directive whose value this check does
-// not understand yields found with an empty mode. err carries the open or
-// read failure so callers can tell a missing file from an unreadable one.
-func engineDirectiveInFile(path string) (mode string, found bool, err error) {
+// lastEngineDirective returns the last server-scope SecRuleEngine value
+// Apache would apply from path, or "" when the file is missing or cannot be
+// interpreted authoritatively.
+func lastEngineDirective(path string) string {
+	mode, known := readLastEngineDirective(path)
+	if !known {
+		return ""
+	}
+	return mode
+}
+
+// readLastEngineDirective also reports whether the file was interpreted
+// authoritatively. A missing optional include has no effect, but an
+// unreadable or ambiguous later include must invalidate an earlier mode
+// instead of silently preserving it.
+func readLastEngineDirective(path string) (string, bool) {
+	mode, known, err := engineDirectiveInFile(path)
+	if err != nil {
+		return "", errors.Is(err, os.ErrNotExist)
+	}
+	return mode, known
+}
+
+// engineDirectiveInFile opens path and returns the last server-scope
+// SecRuleEngine value Apache would apply from it, lower-cased. known is
+// false when the file could not be interpreted authoritatively; err carries
+// the open or read failure so callers can tell a missing file from an
+// unreadable one.
+func engineDirectiveInFile(path string) (mode string, known bool, err error) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return "", false, err
 	}
 	defer func() { _ = f.Close() }()
+	mode, known, err = parseEngineDirectives(f)
+	return mode, known, err
+}
 
-	scanner := bufio.NewScanner(f)
-	invalid := false
+// parseEngineDirectives scans Apache configuration text for the last
+// server-scope SecRuleEngine directive. The cPanel wrapper commonly places
+// the directive inside a positive mod_security2 IfModule block. A directive
+// in an unrelated IfModule, in a request or virtual-host container, or in a
+// runtime-conditional container makes the effective mode unknown because
+// this parser cannot know which other Apache modules or defines are live.
+func parseEngineDirectives(r io.Reader) (mode string, known bool, err error) {
+	type container struct {
+		name        string
+		active      bool
+		activeKnown bool
+		serverScope bool
+	}
+	var stack []container
+	active, activeKnown, serverScope := true, true, true
+	valid := true
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") ||
-			!strings.EqualFold(fields[0], "SecRuleEngine") {
+		line := strings.TrimSpace(stripApacheComment(scanner.Text()))
+		if line == "" {
 			continue
 		}
-		found = true
+		tag, isContainer, tagValid := parseApacheContainerTag(line)
+		if isContainer {
+			if !tagValid {
+				valid = false
+				continue
+			}
+			if tag.closing {
+				if len(stack) == 0 || !strings.EqualFold(stack[len(stack)-1].name, tag.name) {
+					valid = false
+					continue
+				}
+				stack = stack[:len(stack)-1]
+				active, activeKnown, serverScope = true, true, true
+				if len(stack) > 0 {
+					active = stack[len(stack)-1].active
+					activeKnown = stack[len(stack)-1].activeKnown
+					serverScope = stack[len(stack)-1].serverScope
+				}
+				continue
+			}
+
+			next := container{name: tag.name, active: active, activeKnown: activeKnown, serverScope: serverScope}
+			switch {
+			case strings.EqualFold(tag.name, "IfModule"):
+				condition, condKnown := activeModSecurityIfModule(tag.label)
+				switch {
+				case activeKnown && !active:
+					// An inactive parent keeps every nested directive inactive.
+				case condKnown && !condition:
+					next.active = false
+					next.activeKnown = true
+				case condKnown:
+					next.activeKnown = activeKnown
+				case activeKnown:
+					next.active = false
+					next.activeKnown = false
+				default:
+					next.active = false
+				}
+			case apacheEngineScopedContainer(tag.name):
+				// A directive in a request or virtual-host context does not
+				// define the server-wide engine mode.
+				next.serverScope = false
+			case activeKnown && active:
+				// IfDefine, IfVersion, IfFile and expression containers keep
+				// server scope but depend on runtime state unavailable here.
+				next.active = false
+				next.activeKnown = false
+			}
+			stack = append(stack, next)
+			active, activeKnown, serverScope = next.active, next.activeKnown, next.serverScope
+			continue
+		}
+		fields, fieldsValid := parseApacheDirectiveFields(line)
+		if !fieldsValid {
+			valid = false
+			continue
+		}
+		if !serverScope || len(fields) == 0 || !strings.EqualFold(fields[0], "SecRuleEngine") {
+			continue
+		}
+		if !activeKnown {
+			valid = false
+			continue
+		}
+		if !active {
+			continue
+		}
+		if len(fields) != 2 {
+			valid = false
+			continue
+		}
 		switch value := strings.ToLower(fields[1]); value {
-		case "on", "detectiononly", "off":
+		case "on", "off", "detectiononly":
 			mode = value
 		default:
-			invalid = true
+			valid = false
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		return "", false, scanErr
 	}
-	if invalid {
-		return "", found, nil
+	if len(stack) != 0 || !valid {
+		return "", false, nil
 	}
-	return mode, found, nil
+	return mode, true, nil
+}
+
+func apacheEngineScopedContainer(name string) bool {
+	switch strings.ToLower(name) {
+	case "virtualhost", "directory", "directorymatch", "files", "filesmatch",
+		"location", "locationmatch", "proxy", "limit", "limitexcept":
+		return true
+	default:
+		return false
+	}
+}
+
+func activeModSecurityIfModule(label string) (active, known bool) {
+	fields, valid := parseApacheDirectiveFields(label)
+	if !valid || len(fields) != 2 {
+		return false, false
+	}
+	module := strings.ToLower(fields[1])
+	negated := strings.HasPrefix(module, "!")
+	module = strings.TrimPrefix(module, "!")
+	switch module {
+	case "mod_security2.c", "security2_module":
+		return !negated, true
+	default:
+		return false, false
+	}
 }
 
 // checkRuleAge returns the age of the rules that protect the host, or 0 when

@@ -42,3 +42,22 @@ func TestAPIFixDismissKeyFallback(t *testing.T) {
 		t.Errorf("canonical key failed to remove finding (got %d, want 0)", got)
 	}
 }
+
+func TestFixTargetWithoutClientKeyReturnsStoredDismissKey(t *testing.T) {
+	f := alert.Finding{
+		Check:   "world_writable_php",
+		Message: "World-writable PHP file: /home/u/foo.php",
+		Details: "Mode: -rw-rw-rw-",
+	}
+	s := newTestServer(t, "tok")
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	_, _, _, dismissKey, err := s.fixTargetFromStore("", f.Check, f.Message, "", "")
+	if err != nil {
+		t.Fatalf("fixTargetFromStore: %v", err)
+	}
+	if dismissKey != f.Key() {
+		t.Fatalf("dismiss key = %q, want stored canonical key %q", dismissKey, f.Key())
+	}
+}

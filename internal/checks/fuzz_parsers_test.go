@@ -3,6 +3,7 @@ package checks
 import (
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -135,6 +136,36 @@ func FuzzExtractFilePath(f *testing.F) {
 	f.Add("/var/tmp/")
 	f.Fuzz(func(t *testing.T, message string) {
 		_ = extractFilePath(message)
+	})
+}
+
+func FuzzFilesMatchSelectsByName(f *testing.F) {
+	for _, pattern := range []string{
+		`\.php$`,
+		`^(?:\.php|logo)$`,
+		`^(?:foo\|bar|[a|b]+)\.(?:php|phtml)$`,
+		`^logo(?:\.php)?$`,
+		`(?i:foo)\.php`,
+		`[unterminated`,
+		`(unterminated`,
+		`\\`,
+		"",
+	} {
+		f.Add(pattern)
+	}
+	f.Fuzz(func(t *testing.T, pattern string) {
+		if filesMatchSelectsByName(pattern) {
+			return
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return
+		}
+		for _, name := range []string{"", "logo", "index", "php", "foo", "a|b", "filename"} {
+			if re.MatchString(name) {
+				t.Fatalf("pattern %q matches dotless filename %q but was classified extension-only", pattern, name)
+			}
+		}
 	})
 }
 

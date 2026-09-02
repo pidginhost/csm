@@ -3,6 +3,8 @@
 package daemon
 
 import (
+	"encoding/binary"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -39,17 +41,9 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 		scanCh:  make(chan spoolEvent, 4),
 		stopCh:  make(chan struct{}),
 	}
-	// The recovered event still gets its kernel response and fd close: the
-	// handler owns evt.fd, so hand it a real descriptor.
-	fds := make([]int, 2)
-	if err := unix.Pipe2(fds, unix.O_CLOEXEC); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unix.Close(fds[1]) })
-
 	sw.wg.Add(1)
 	go sw.scanWorker()
-	sw.scanCh <- spoolEvent{path: "/spool/bad-D", fd: fds[0]}
+	sw.scanCh <- spoolEvent{path: "/spool/bad-D", fd: -1}
 	sw.scanCh <- spoolEvent{path: "/spool/good-D", fd: -1}
 	close(sw.scanCh)
 
@@ -73,5 +67,49 @@ func TestSpoolScanWorkerSurvivesHandlerPanic(t *testing.T) {
 		}
 	default:
 		t.Fatal("no finding reported for the recovered panic")
+	}
+}
+
+func TestHandleSpoolEventPanicStillAllowsAndCloses(t *testing.T) {
+	orig := spoolEventHandler
+	spoolEventHandler = (*SpoolWatcher).handleSpoolEvent
+	t.Cleanup(func() { spoolEventHandler = orig })
+
+	responsePipe := make([]int, 2)
+	if err := unix.Pipe2(responsePipe, unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Close(responsePipe[0])
+		_ = unix.Close(responsePipe[1])
+	})
+	eventPipe := make([]int, 2)
+	if err := unix.Pipe2(eventPipe, unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(eventPipe[1]) })
+
+	// A nil config panics after handleSpoolEvent installs its response/close
+	// defer. reportScannerPanic must also tolerate the nil alert channel.
+	sw := &SpoolWatcher{fd: responsePipe[1]}
+	sw.handleSpoolEventSafe(spoolEvent{
+		path:     "/spool/panic-D",
+		fd:       eventPipe[0],
+		needResp: true,
+	})
+
+	buf := make([]byte, responseSize)
+	n, err := unix.Read(responsePipe[0], buf)
+	if err != nil || n != responseSize {
+		t.Fatalf("fanotify response read = (%d, %v), want %d bytes", n, err, responseSize)
+	}
+	if got := int32(binary.NativeEndian.Uint32(buf[:4])); got != int32(eventPipe[0]) {
+		t.Fatalf("response fd = %d, want %d", got, eventPipe[0])
+	}
+	if got := binary.NativeEndian.Uint32(buf[4:8]); got != FAN_ALLOW {
+		t.Fatalf("response = %d, want FAN_ALLOW", got)
+	}
+	if _, err := unix.FcntlInt(uintptr(eventPipe[0]), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("event fd remained open after panic: %v", err)
 	}
 }

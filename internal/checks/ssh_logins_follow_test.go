@@ -105,3 +105,18 @@ func TestCheckSSHLoginsCatchUpSkipsOldLogins(t *testing.T) {
 		t.Fatalf("three-day-old login reported as new: %+v", got)
 	}
 }
+
+func TestCheckSSHLoginsTreatsTimestampFreeLineAsCurrent(t *testing.T) {
+	path := useAuthLog(t)
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	appendLines(t, path, "host sshd[1201]: Accepted publickey for root from 198.51.100.23 port 51234 ssh2")
+	got := sshLoginFindings(CheckSSHLogins(context.Background(), &config.Config{}, store))
+	if len(got) != 1 || !strings.Contains(got[0].Message, "198.51.100.23") {
+		t.Fatalf("timestamp-free accepted login not reported: %+v", got)
+	}
+}

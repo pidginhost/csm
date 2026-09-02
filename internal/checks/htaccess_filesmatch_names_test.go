@@ -40,7 +40,10 @@ func TestCheckHtaccessFileReportsNameOnlyFilesMatchHandler(t *testing.T) {
 	}{
 		{"name-only pattern", logoHandlerHtaccess, 1},
 		{"mixed pattern with a bare name", "<FilesMatch \"\\.php$|^logo$\">\nSetHandler application/x-httpd-ea-php81\n</FilesMatch>\n", 1},
+		{"nested mixed pattern", "<FilesMatch \"^(?:\\.php|logo)$\">\nSetHandler application/x-httpd-ea-php81\n</FilesMatch>\n", 1},
 		{"extension-restricted", "<FilesMatch \"\\.php$\">\nSetHandler application/x-httpd-ea-php81\n</FilesMatch>\n", 0},
+		{"nested extension group", "<FilesMatch \"^(?:foo|bar)\\.(?:php|phtml)$\">\nSetHandler application/x-httpd-ea-php81\n</FilesMatch>\n", 0},
+		{"escaped pipe and class", "<FilesMatch \"^(?:foo\\|bar|[a|b]+)\\.php$\">\nSetHandler application/x-httpd-ea-php81\n</FilesMatch>\n", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := filepath.Join(t.TempDir(), ".htaccess")
@@ -60,5 +63,34 @@ func TestCheckHtaccessFileReportsNameOnlyFilesMatchHandler(t *testing.T) {
 				t.Fatalf("handler remap findings = %d, want %d: %+v", got, tc.want, findings)
 			}
 		})
+	}
+}
+
+func TestTopLevelAlternativesIgnoresNestedEscapedAndClassPipes(t *testing.T) {
+	pattern := `(?:foo|bar)\.php|logo\|pipe|[a|b]\.phtml`
+	got := topLevelAlternatives(pattern)
+	if len(got) != 3 {
+		t.Fatalf("topLevelAlternatives(%q) = %v, want 3 branches", pattern, got)
+	}
+}
+
+func TestFilesMatchSelectsByNameNestedAlternatives(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		want    bool
+	}{
+		{`^(?:\.php|logo)$`, true},
+		{`^(?:\.php|(?:\.phtml|logo))$`, true},
+		{`^(?:foo|bar)\.(?:php|phtml)$`, false},
+		{`^logo(?:\.php)?$`, true},
+		{`^(?:foo\|bar|[a|b]+)\.php$`, false},
+		{`^[.]phtml$`, true},
+		{`\.php{999999999999999999999}`, true},
+		{`\.php{1,bad}`, true},
+		{`\.php{2,1}`, true},
+	} {
+		if got := filesMatchSelectsByName(tc.pattern); got != tc.want {
+			t.Errorf("filesMatchSelectsByName(%q) = %v, want %v", tc.pattern, got, tc.want)
+		}
 	}
 }

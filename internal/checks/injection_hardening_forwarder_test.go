@@ -245,6 +245,32 @@ func TestAuditOSNobodyCron_NonEmpty(t *testing.T) {
 	t.Error("os_nobody_cron result not found")
 }
 
+func TestAuditOSNobodyCronUsesDebianSpool(t *testing.T) {
+	withCronSpoolDir(t, "/var/spool/cron/crontabs")
+	const target = "/var/spool/cron/crontabs/nobody"
+	var statted bool
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == target {
+				statted = true
+				return fakeFileInfo{name: "nobody", size: 42}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) { return nil, os.ErrNotExist },
+	})
+	withMockCmd(t, &mockCmd{})
+	for _, r := range auditOS() {
+		if r.Name == "os_nobody_cron" {
+			if !statted || r.Status != "fail" {
+				t.Fatalf("Debian nobody cron result = %+v, statted=%v", r, statted)
+			}
+			return
+		}
+	}
+	t.Fatal("os_nobody_cron result not found")
+}
+
 func TestAuditOSSysctl_AllPass(t *testing.T) {
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) { return nil, os.ErrNotExist },

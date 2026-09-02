@@ -28,3 +28,24 @@ func TestPAMThresholdsUseDedicatedKeys(t *testing.T) {
 		t.Fatalf("dedicated PAM keys ignored: %d failures in %s", threshold, window)
 	}
 }
+
+func TestPAMCleanupUsesConfiguredWindow(t *testing.T) {
+	now := time.Date(2026, time.September, 2, 12, 0, 0, 0, time.UTC)
+	cfg := &config.Config{}
+	cfg.Thresholds.PAMBruteforceWindowMin = 60
+	p := &PAMListener{
+		cfg: cfg,
+		failures: map[string]*pamFailureTracker{
+			"198.51.100.1": {lastSeen: now.Add(-45 * time.Minute)},
+			"198.51.100.2": {lastSeen: now.Add(-61 * time.Minute)},
+		},
+	}
+
+	p.cleanupAt(now)
+	if _, ok := p.failures["198.51.100.1"]; !ok {
+		t.Fatal("cleanup removed a failure tracker still inside the configured window")
+	}
+	if _, ok := p.failures["198.51.100.2"]; ok {
+		t.Fatal("cleanup retained a failure tracker older than the configured window")
+	}
+}

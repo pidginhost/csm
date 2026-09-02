@@ -454,7 +454,7 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 				Severity: alert.Critical,
 				Check:    "suspicious_crontab",
 				Message:  fmt.Sprintf("Suspicious pattern in crontab for %s: %s", account, pattern),
-				Details:  fmt.Sprintf("File: /var/spool/cron/%s\nContent:\n%s", account, content),
+				Details:  fmt.Sprintf("File: %s\nContent:\n%s", crontabFile, content),
 				FilePath: crontabFile,
 			})
 		}

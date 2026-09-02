@@ -2,6 +2,7 @@ package checks
 
 import (
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/contenttype"
@@ -404,20 +405,184 @@ func overlayForFilesMatch(pattern string) phpHandlerOverlay {
 	return overlay
 }
 
-// filesMatchSelectsByName reports whether any top-level alternative of a
-// FilesMatch pattern lacks a "\." extension marker and therefore selects
-// files by name. An empty pattern matches everything.
+// filesMatchSelectsByName reports whether a FilesMatch pattern can match a
+// filename without requiring a literal dot. An empty or unsupported pattern
+// is treated as unrestricted so the content scanner fails toward coverage.
 func filesMatchSelectsByName(pattern string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return true
 	}
-	for _, branch := range topLevelAlternatives(pattern) {
-		if !strings.Contains(branch, `\.`) {
+	p := filesMatchRegexParser{pattern: pattern}
+	requiresDot, valid := p.alternation(0)
+	return !valid || p.pos != len(pattern) || !requiresDot
+}
+
+type filesMatchRegexParser struct {
+	pattern string
+	pos     int
+}
+
+// alternation returns true only when every branch requires a literal dot.
+// That conservative proof is enough to keep extension-only handlers narrow;
+// regex constructs outside the small parser fall back to scanning all names.
+func (p *filesMatchRegexParser) alternation(stop byte) (bool, bool) {
+	allRequireDot := true
+	for {
+		requiresDot, valid := p.sequence(stop)
+		if !valid {
+			return false, false
+		}
+		allRequireDot = allRequireDot && requiresDot
+		if p.pos < len(p.pattern) && p.pattern[p.pos] == '|' {
+			p.pos++
+			continue
+		}
+		if stop != 0 {
+			if p.pos >= len(p.pattern) || p.pattern[p.pos] != stop {
+				return false, false
+			}
+			p.pos++
+		}
+		return allRequireDot, true
+	}
+}
+
+func (p *filesMatchRegexParser) sequence(stop byte) (bool, bool) {
+	requiresDot := false
+	for p.pos < len(p.pattern) {
+		if p.pattern[p.pos] == '|' || (stop != 0 && p.pattern[p.pos] == stop) {
+			break
+		}
+		atomRequiresDot, valid := p.atom()
+		if !valid {
+			return false, false
+		}
+		if p.pos < len(p.pattern) {
+			switch p.pattern[p.pos] {
+			case '*', '?':
+				atomRequiresDot = false
+				p.pos++
+			case '+':
+				p.pos++
+			case '{':
+				minimum, next, ok := regexRepeatMinimum(p.pattern, p.pos)
+				if !ok {
+					return false, false
+				}
+				p.pos = next
+				if minimum == 0 {
+					atomRequiresDot = false
+				}
+			}
+		}
+		requiresDot = requiresDot || atomRequiresDot
+	}
+	return requiresDot, true
+}
+
+func (p *filesMatchRegexParser) atom() (bool, bool) {
+	if p.pos >= len(p.pattern) {
+		return false, false
+	}
+	c := p.pattern[p.pos]
+	p.pos++
+	switch c {
+	case '\\':
+		if p.pos >= len(p.pattern) {
+			return false, false
+		}
+		escaped := p.pattern[p.pos]
+		p.pos++
+		return escaped == '.', true
+	case '[':
+		return p.characterClass()
+	case '(':
+		parseRequirement := true
+		if p.pos < len(p.pattern) && p.pattern[p.pos] == '?' {
+			p.pos++
+			switch {
+			case p.pos < len(p.pattern) && p.pattern[p.pos] == ':':
+				p.pos++
+			case p.regexFlagGroup():
+			default:
+				// Lookarounds, named groups and other PCRE extensions are
+				// parsed for balance but not used as a coverage proof.
+				parseRequirement = false
+			}
+		}
+		requiresDot, valid := p.alternation(')')
+		return parseRequirement && requiresDot, valid
+	case ')':
+		return false, false
+	default:
+		return false, true
+	}
+}
+
+func (p *filesMatchRegexParser) regexFlagGroup() bool {
+	start := p.pos
+	for p.pos < len(p.pattern) {
+		c := p.pattern[p.pos]
+		if c == ':' {
+			if p.pos == start {
+				return false
+			}
+			p.pos++
 			return true
 		}
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '-' {
+			p.pos = start
+			return false
+		}
+		p.pos++
 	}
+	p.pos = start
 	return false
+}
+
+func (p *filesMatchRegexParser) characterClass() (bool, bool) {
+	for p.pos < len(p.pattern) {
+		c := p.pattern[p.pos]
+		p.pos++
+		if c == ']' {
+			// Even a class that currently contains only a dot is not used as
+			// an extension proof: the extension extractor deliberately handles
+			// only escaped-dot forms. Treating it as unrestricted keeps the two
+			// decisions aligned and cannot lose content coverage.
+			return false, true
+		}
+		if c == '\\' {
+			if p.pos >= len(p.pattern) {
+				return false, false
+			}
+			p.pos++
+		}
+	}
+	return false, false
+}
+
+func regexRepeatMinimum(pattern string, start int) (int, int, bool) {
+	end := strings.IndexByte(pattern[start+1:], '}')
+	if end < 0 {
+		return 0, start, false
+	}
+	end += start + 1
+	fields := strings.Split(pattern[start+1:end], ",")
+	if len(fields) > 2 || fields[0] == "" {
+		return 0, start, false
+	}
+	minimum, err := strconv.Atoi(fields[0])
+	if err != nil || minimum < 0 {
+		return 0, start, false
+	}
+	if len(fields) == 2 && fields[1] != "" {
+		maximum, err := strconv.Atoi(fields[1])
+		if err != nil || maximum < minimum {
+			return 0, start, false
+		}
+	}
+	return minimum, end + 1, true
 }
 
 // topLevelAlternatives splits a regex on "|" at nesting depth zero only,

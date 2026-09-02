@@ -4,6 +4,7 @@ package firewall
 
 import (
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -126,6 +127,45 @@ func TestBlockIPForceReplacesLiveElementMissingFromState(t *testing.T) {
 	state := readRawFirewallState(t, e)
 	if len(state.Blocked) != 1 || state.Blocked[0].IP != "192.0.2.25" || !state.Blocked[0].ExpiresAt.IsZero() {
 		t.Fatalf("state after drift repair = %+v, want one permanent block", state.Blocked)
+	}
+}
+
+func TestBlockIPForceReplacesUntrackedLiveElementAtLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ip        string
+		timeout   time.Duration
+		perm, tmp int
+		configure func(*FirewallConfig)
+	}{
+		{
+			name:      "permanent",
+			ip:        "192.0.2.26",
+			perm:      1,
+			configure: func(cfg *FirewallConfig) { cfg.DenyIPLimit = 1 },
+		},
+		{
+			name:      "temporary",
+			ip:        "192.0.2.27",
+			timeout:   2 * time.Hour,
+			tmp:       1,
+			configure: func(cfg *FirewallConfig) { cfg.DenyTempIPLimit = 1 },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, _ := nftConnCapturingRules(t)
+			e := newBlockedSetWireTestEngine(t, conn)
+			tc.configure(e.cfg)
+			e.liveBlockCounts = func() (int, int, error) { return tc.perm, tc.tmp, nil }
+			e.liveBlockLookup = func(*nftables.Set, []byte) (bool, error) { return true, nil }
+			e.liveBlockedDump = func(*nftables.Set) ([]nftables.SetElement, error) {
+				return []nftables.SetElement{{Key: net.ParseIP(tc.ip).To4(), Timeout: tc.timeout}}, nil
+			}
+
+			if err := e.BlockIPForce(tc.ip, "replacement", tc.timeout); err != nil {
+				t.Fatalf("BlockIPForce for untracked live element at limit: %v", err)
+			}
+		})
 	}
 }
 

@@ -1053,6 +1053,7 @@ func uaCloakAlternationCount(pattern string) int {
 // top-level "|" alternations, ignoring "|" inside nested parentheses.
 func uaCloakAlternationBranches(pattern string) []string {
 	depth := 0
+	inClass := false
 	prevEscape := false
 	start := 0
 	var branches []string
@@ -1065,14 +1066,24 @@ func uaCloakAlternationBranches(pattern string) []string {
 		switch c {
 		case '\\':
 			prevEscape = true
+		case '[':
+			if !inClass {
+				inClass = true
+			}
+		case ']':
+			if inClass {
+				inClass = false
+			}
 		case '(':
-			depth++
+			if !inClass {
+				depth++
+			}
 		case ')':
-			if depth > 0 {
+			if !inClass && depth > 0 {
 				depth--
 			}
 		case '|':
-			if depth <= 1 {
+			if !inClass && depth <= 1 {
 				branches = append(branches, pattern[start:i])
 				start = i + 1
 			}
@@ -1081,7 +1092,7 @@ func uaCloakAlternationBranches(pattern string) []string {
 	return append(branches, pattern[start:])
 }
 
-// uaCloakSearchCrawlerMajority reports whether at least half of the UA
+// uaCloakSearchCrawlerMajority reports whether more than half of the UA
 // alternatives across the given cond patterns name search-engine crawlers.
 // Such a chain is a cloak target list, not a scraper blocklist, so the
 // long-list gates must not silence it.
@@ -1095,7 +1106,7 @@ func uaCloakSearchCrawlerMajority(patterns []string) bool {
 			}
 		}
 	}
-	return total > 0 && search*2 >= total
+	return total > 0 && search*2 > total
 }
 
 // uaCloakPairedRuleIsDefensive scans forward from condEnd for the

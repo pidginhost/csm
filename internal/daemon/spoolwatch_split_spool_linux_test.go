@@ -99,4 +99,36 @@ func TestSpoolWatcherMarksSplitSpoolSubdirs(t *testing.T) {
 	if !seen {
 		t.Fatal("no close_write event for a message in a hash directory created after start")
 	}
+
+	// fanotify marks are attached to inodes, not pathnames. Exim can remove an
+	// empty hash directory and recreate the same name; a rescan must reapply the
+	// mark even though the bounded pathname registry has seen it before.
+	if err := os.Remove(late); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "b"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if n := sw.markSpoolTargets(root); n != 0 {
+		t.Fatalf("recreated pathname counted as %d new marks, want 0", n)
+	}
+	recreated := filepath.Join(root, "b", "3ghi-D")
+	if err := os.WriteFile(recreated, []byte("body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seen = false
+	for _, p := range readSpoolEventPaths(t, fd) {
+		if strings.HasSuffix(p, "/b/3ghi-D") {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("no close_write event after a split-spool hash directory was recreated")
+	}
+	if len(sw.marked) != 3 {
+		t.Fatalf("marked pathname registry grew to %d entries, want root plus A and b", len(sw.marked))
+	}
 }

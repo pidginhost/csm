@@ -43,3 +43,22 @@ func TestDetectorUserAgentCloak_SearchCrawlerListForbidStaysQuiet(t *testing.T) 
 		t.Fatalf("ua_cloak matches = %d, want 0 for a forbid rule", got)
 	}
 }
+
+func TestUACloakAlternativesIgnoreCharacterClassPipes(t *testing.T) {
+	got := uaCloakAlternationBranches(`(googlebot|[a|b]+|bingbot)`)
+	if len(got) != 3 {
+		t.Fatalf("branches = %v, want 3", got)
+	}
+}
+
+func TestFacebookExternalHitIsNotSearchCrawlerMajority(t *testing.T) {
+	if uaCloakSearchCrawlerMajority([]string{`(facebookexternalhit|generic-scraper)`}) {
+		t.Fatal("facebookexternalhit must remain a defensive scraper signal, not a search crawler")
+	}
+}
+
+func TestSearchCrawlerTieIsNotMajority(t *testing.T) {
+	if uaCloakSearchCrawlerMajority([]string{`(googlebot|bingbot|facebookexternalhit|generic-scraper)`}) {
+		t.Fatal("a tied mixed blocklist must not be classified as a search-crawler majority")
+	}
+}

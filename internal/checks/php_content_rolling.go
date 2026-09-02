@@ -82,7 +82,12 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	if len(selected) == 0 {
 		return true
 	}
-	complete := wrapped || len(selected) == len(files)
+	// Crossing the end of the list completes a traversal across several
+	// windows, but this run still did not re-emit findings from the earlier
+	// windows. Only a window containing the whole list is safe to report as a
+	// completed check to the runner.
+	windowComplete := len(selected) == len(files)
+	fullTraversal := wrapped || windowComplete
 
 	// Reconstruct the .htaccess handler overlay once per directory: every file
 	// in the slice that shares a directory shares the same overlay, and reading
@@ -115,7 +120,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	cur.Account = account
 	cur.Check = rollingScanCheck
 	cur.LastPath = newLast
-	if complete {
+	if fullTraversal {
 		now := time.Now().UTC()
 		cur.LastFullCycleTS = now
 		if wrapped {
@@ -125,7 +130,7 @@ func rollingContentCoverage(ctx context.Context, cfg *config.Config, scan *phpCo
 	if err := db.PutScanCursor(cur); err != nil {
 		fmt.Fprintf(os.Stderr, "php_content rolling: cursor write for %s: %v\n", account, err)
 	}
-	return complete
+	return windowComplete
 }
 
 func rollingRegularCandidate(file string) bool {

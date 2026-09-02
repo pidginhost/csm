@@ -328,7 +328,8 @@ func auditOS() []store.AuditResult {
 	results = append(results, checkDistroEOL()...)
 
 	// nobody crontab
-	if info, err := osFS.Stat("/var/spool/cron/nobody"); err != nil {
+	nobodyCrontab := filepath.Join(cronSpoolDir(), "nobody")
+	if info, err := osFS.Stat(nobodyCrontab); err != nil {
 		// absent is fine
 		results = append(results, store.AuditResult{
 			Category: "os", Name: "os_nobody_cron", Title: "Nobody Crontab",

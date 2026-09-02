@@ -159,3 +159,17 @@ func TestIntegrityHashDivergenceRequiresMatchingKeys(t *testing.T) {
 		t.Fatal("different integrity keys at the same line positions were treated as hash-value-only divergence")
 	}
 }
+
+func TestIntegrityHashDivergenceRejectsSameNamedKeysOutsideIntegrity(t *testing.T) {
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "feature:\n  config_hash: operator-a\nintegrity:\n  config_hash: sha256:same\n")
+	writeConfig(t, legacy, "feature:\n  config_hash: operator-b\nintegrity:\n  config_hash: sha256:same\n")
+
+	same, err := divergesOnlyByIntegrityHashes(preferred, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Fatal("a same-named key outside the integrity block was treated as a generated hash")
+	}
+}

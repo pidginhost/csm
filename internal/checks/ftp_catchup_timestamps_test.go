@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,5 +69,70 @@ func TestCheckFTPLoginsCatchUpUsesLineTimestamps(t *testing.T) {
 	got := ftpBruteFindings(CheckFTPLogins(context.Background(), cfg, store))
 	if len(got) != 1 || got[0].SourceIP != "198.51.100.7" {
 		t.Fatalf("fresh failures not reported: %+v", got)
+	}
+}
+
+func TestCheckFTPLoginsCountsTimestampFreeLinesAsCurrent(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "messages")
+	line := "pure-ftpd[4242]: (?@198.51.100.8) [WARNING] Authentication failed for user [admin]\n"
+	if err := os.WriteFile(log, []byte(strings.Repeat(line, ftpFailThreshold)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(log) }})
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	got := ftpBruteFindings(CheckFTPLogins(context.Background(), &config.Config{}, store))
+	if len(got) != 1 || got[0].SourceIP != "198.51.100.8" {
+		t.Fatalf("timestamp-free fresh failures not reported: %+v", got)
+	}
+}
+
+func TestCheckFTPLoginsReadsRFC3339SyslogLines(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "messages")
+	line := fmt.Sprintf("%s host pure-ftpd[4242]: (?@198.51.100.9) [WARNING] Authentication failed for user [admin]\n",
+		time.Now().Format(time.RFC3339Nano))
+	if err := os.WriteFile(log, []byte(strings.Repeat(line, ftpFailThreshold)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(log) }})
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	got := ftpBruteFindings(CheckFTPLogins(context.Background(), &config.Config{}, store))
+	if len(got) != 1 || got[0].SourceIP != "198.51.100.9" {
+		t.Fatalf("RFC3339 failures not reported: %+v", got)
+	}
+}
+
+func TestCheckFTPLoginsDoesNotPersistFutureTimestampBuckets(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "messages")
+	line := fmt.Sprintf("%s host pure-ftpd[4242]: (?@198.51.100.10) [WARNING] Authentication failed for user [admin]\n",
+		time.Now().AddDate(1, 0, 0).Format(time.RFC3339Nano))
+	if err := os.WriteFile(log, []byte(strings.Repeat(line, ftpFailThreshold)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(log) }})
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	got := ftpBruteFindings(CheckFTPLogins(context.Background(), &config.Config{}, store))
+	if len(got) != 1 || got[0].SourceIP != "198.51.100.10" {
+		t.Fatalf("future-dated failures not treated as current: %+v", got)
+	}
+	currentMinute := time.Now().Unix() / 60
+	for minute := range loadFTPFailTracker(store).Buckets["198.51.100.10"] {
+		if minute > currentMinute {
+			t.Fatalf("future minute bucket persisted: %d > %d", minute, currentMinute)
+		}
 	}
 }

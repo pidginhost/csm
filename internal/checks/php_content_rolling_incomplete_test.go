@@ -38,3 +38,23 @@ func TestRollingContentFullCoverageLeavesCheckComplete(t *testing.T) {
 		t.Fatal("a window that covered every file marked php_content incomplete")
 	}
 }
+
+func TestRollingContentWrapStillMarksCheckIncomplete(t *testing.T) {
+	resetPHPContentScanCounts(t)
+	fx := newRollingFixture(t)
+	withMockOS(t, rollingRootOS{root: fx.root})
+	useRollingStore(t)
+	cfg := rollingCfg(2)
+
+	// Seven files at a cap of two cross the end of the list on the fourth
+	// window. That completes a traversal across runs, not full coverage in the
+	// fourth run, so earlier windows' findings still need carrying forward.
+	for range 3 {
+		CheckPHPContent(context.Background(), cfg, nil)
+	}
+	ctx, _ := withIncompleteCheckCollector(context.Background())
+	CheckPHPContent(ctx, cfg, nil)
+	if !checkMarkedIncomplete(ctx, "php_content") {
+		t.Fatal("a wrapping partial window marked php_content complete and would purge earlier findings")
+	}
+}

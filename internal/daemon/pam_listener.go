@@ -353,21 +353,25 @@ func (p *PAMListener) cleanupLoop(stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			p.mu.Lock()
-			cutoff := time.Now().Add(-30 * time.Minute)
-			for ip, tracker := range p.failures {
-				if tracker.lastSeen.Before(cutoff) {
-					delete(p.failures, ip)
-				}
-			}
-			if p.stuffing != nil {
-				now := time.Now()
-				_, window, distinct := pamThresholds(p.currentCfg())
-				p.stuffing.Configure(distinct, window, now)
-				p.stuffing.PruneStale(now)
-			}
-			p.mu.Unlock()
+			p.cleanupAt(time.Now())
 		}
+	}
+}
+
+func (p *PAMListener) cleanupAt(now time.Time) {
+	_, window, distinct := pamThresholds(p.currentCfg())
+	cutoff := now.Add(-window)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for ip, tracker := range p.failures {
+		if tracker.lastSeen.Before(cutoff) {
+			delete(p.failures, ip)
+		}
+	}
+	if p.stuffing != nil {
+		p.stuffing.Configure(distinct, window, now)
+		p.stuffing.PruneStale(now)
 	}
 }
 

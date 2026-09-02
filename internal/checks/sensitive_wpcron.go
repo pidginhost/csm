@@ -220,9 +220,9 @@ func safeCrontabHome(value string) bool {
 
 // suppressedAsManagedWPCron reports whether a sensitive-file finding for a user
 // crontab should be suppressed because the crontab is exclusively a
-// CSM-installed WP-Cron block. Scoped to /var/spool/cron user crontabs, the
-// only place CSM installs WP-Cron jobs; system drop-ins under /etc/cron.d are
-// never suppressed here.
+// CSM-installed WP-Cron block. Scoped to the platform's user crontab spool,
+// the only place CSM installs WP-Cron jobs; system drop-ins under /etc/cron.d
+// are never suppressed here.
 func suppressedAsManagedWPCron(path string, content []byte) bool {
 	if len(content) == 0 {
 		return false
@@ -236,7 +236,7 @@ func suppressedAsManagedWPCron(path string, content []byte) bool {
 
 func cronSpoolOwner(path string) (string, bool) {
 	clean := filepath.ToSlash(filepath.Clean(path))
-	if filepath.ToSlash(filepath.Dir(clean)) != "/var/spool/cron" {
+	if filepath.ToSlash(filepath.Dir(clean)) != filepath.ToSlash(filepath.Clean(cronSpoolDir())) {
 		return "", false
 	}
 	owner := filepath.Base(clean)

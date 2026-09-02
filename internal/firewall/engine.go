@@ -2489,15 +2489,26 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
 		perm, temp, ok := e.livePermTempCountsLocked(st)
 		stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
-		if ok && !skipExisting && replacingStateEntry {
-			// Replacing an element already occupying a limit slot is not a new
-			// block. Only subtract it when the kernel confirms the state entry
-			// is still live; stale state must not hide some other live element.
-			if live, liveErr := e.isBlockedLiveLocked(ip); liveErr == nil && live {
-				if stateEntry.ExpiresAt.IsZero() && perm > 0 {
-					perm--
-				} else if !stateEntry.ExpiresAt.IsZero() && temp > 0 {
+		if ok && !skipExisting {
+			if replacingStateEntry {
+				// Replacing an element already occupying a limit slot is not a new
+				// block. Only subtract it when the kernel confirms the state entry
+				// is still live; stale state must not hide some other live element.
+				if live, liveErr := e.isBlockedLiveLocked(ip); liveErr == nil && live {
+					if stateEntry.ExpiresAt.IsZero() && perm > 0 {
+						perm--
+					} else if !stateEntry.ExpiresAt.IsZero() && temp > 0 {
+						temp--
+					}
+				}
+			} else if live, temporary, classified := e.liveBlockElementKindLocked(targetSet, key); classified && live {
+				// Recovery may leave a kernel element with no state row. It still
+				// occupies one of the counted slots, so replacing it must release
+				// that same slot before enforcing the limit.
+				if temporary && temp > 0 {
 					temp--
+				} else if !temporary && perm > 0 {
+					perm--
 				}
 			}
 		}
@@ -2799,6 +2810,22 @@ func countLiveBlockElements(elements []nftables.SetElement, stateTempByIP map[st
 		}
 	}
 	return perm, temp
+}
+
+func (e *Engine) liveBlockElementKindLocked(set *nftables.Set, key []byte) (live, temporary, classified bool) {
+	if set == nil || (e.liveBlockedDump == nil && e.conn == nil) {
+		return false, false, false
+	}
+	elements, err := e.dumpBlockedSetLocked(set)
+	if err != nil {
+		return false, false, false
+	}
+	for _, el := range elements {
+		if bytes.Equal(el.Key, key) {
+			return true, el.Timeout > 0 || el.Expires > 0, true
+		}
+	}
+	return false, false, true
 }
 
 func setElementIPString(key []byte) (string, bool) {

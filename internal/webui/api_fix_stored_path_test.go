@@ -62,3 +62,80 @@ func TestAPIBulkFixRefusesPathDifferingFromStoredFinding(t *testing.T) {
 		t.Fatalf("finding dismissed after a refused fix (left %d)", got)
 	}
 }
+
+func TestFixTargetUsesStoredMessageWhenStoredPathIsEmpty(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check:   "world_writable_php",
+		Message: "World-writable PHP file: /home/alice/public_html/legacy.php",
+		Details: "Mode: -rw-rw-rw-",
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	message, details, path, dismissKey, err := s.fixTargetFromStore(
+		f.Key(), f.Check, "changed client message", "changed details", "/tmp/substitute.php",
+	)
+	if err != nil {
+		t.Fatalf("fixTargetFromStore: %v", err)
+	}
+	if message != f.Message || details != f.Details || path != "" {
+		t.Fatalf("target = (%q, %q, %q), want stored message/details and empty path", message, details, path)
+	}
+	if dismissKey != f.Key() {
+		t.Fatalf("dismiss key = %q, want %q", dismissKey, f.Key())
+	}
+}
+
+func TestFixTargetKeyCannotBeBypassedWithChangedMessage(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check:    "webshell",
+		Message:  "Webshell found: /home/alice/public_html/evil.php",
+		FilePath: "/home/alice/public_html/evil.php",
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	_, _, _, _, err := s.fixTargetFromStore(
+		f.Key(), f.Check, "different message", "", "/home/alice/public_html/other.php",
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("changed message bypassed stored path pin: %v", err)
+	}
+}
+
+func TestFixTargetLegacyKeyStillPinsMatchingStoredFinding(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Check:    "webshell",
+		Message:  "Webshell found: /home/alice/public_html/evil.php",
+		Details:  "signature details make the canonical key differ",
+		FilePath: "/home/alice/public_html/evil.php",
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	legacyKey := f.Check + ":" + f.Message
+	_, _, _, _, err := s.fixTargetFromStore(
+		legacyKey, f.Check, f.Message, f.Details, "/home/alice/public_html/other.php",
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("legacy key bypassed the matching stored path: %v", err)
+	}
+}
+
+func TestFixTargetWithoutKeyRefusesAmbiguousStoredFindings(t *testing.T) {
+	s := newTestServer(t, "tok")
+	findings := []alert.Finding{
+		{Check: "webshell", Message: "Webshell found", Details: "first", FilePath: "/home/alice/public_html/one.php"},
+		{Check: "webshell", Message: "Webshell found", Details: "second", FilePath: "/home/alice/public_html/two.php"},
+	}
+	s.store.ClearLatestFindings()
+	s.store.SetLatestFindings(findings)
+
+	_, _, _, _, err := s.fixTargetFromStore("", "webshell", "Webshell found", "", findings[0].FilePath)
+	if err == nil || !strings.Contains(err.Error(), "key is required") {
+		t.Fatalf("ambiguous keyless fix was not refused: %v", err)
+	}
+}

@@ -63,3 +63,65 @@ func TestCheckEngineModeCPanelLiteSpeedReadsApacheTree(t *testing.T) {
 		t.Fatalf("mode = %q, want detectiononly", mode)
 	}
 }
+
+func TestCheckEngineModeCPanelHonorsApacheContainersAndComments(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf": `
+# SecRuleEngine Off
+SecRuleEngineDisabled Off
+<IfModule mod_security2.c>
+  SecRuleEngine On # active cPanel wrapper
+  <IfModule !mod_security2.c>
+    SecRuleEngine Off
+  </IfModule>
+</IfModule>
+<VirtualHost *:443>
+  SecRuleEngine DetectionOnly
+</VirtualHost>
+`,
+	})
+	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "on" {
+		t.Fatalf("mode = %q, want active server-scope mode on", mode)
+	}
+}
+
+func TestCheckEngineModeCPanelRejectsDirectiveInUnknownIfModule(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf": "SecRuleEngine On\n<IfModule ssl_module>\nSecRuleEngine Off\n</IfModule>\n",
+	})
+	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "" {
+		t.Fatalf("mode = %q, want unknown because ssl_module load state is unavailable", mode)
+	}
+}
+
+func TestCheckEngineModeCPanelRejectsAmbiguousLaterInclude(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf":             "SecRuleEngine On\n",
+		"/etc/apache2/conf.d/modsec/modsec2.user.conf": "<IfModule ssl_module>\nSecRuleEngine Off\n</IfModule>\n",
+	})
+	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "" {
+		t.Fatalf("mode = %q, want unknown because a later include is conditional", mode)
+	}
+}
+
+func TestCheckEngineModeCPanelRejectsUnknownServerCondition(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf": "SecRuleEngine On\n<IfVersion >= 2.4>\nSecRuleEngine Off\n</IfVersion>\n",
+	})
+	info := platform.Info{Panel: platform.PanelCPanel, OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
+	if mode := checkEngineMode(info); mode != "" {
+		t.Fatalf("mode = %q, want unknown because the server-scope condition cannot be evaluated", mode)
+	}
+}
+
+func TestLastEngineDirectiveRejectsMalformedContainerNesting(t *testing.T) {
+	mockModsecFiles(t, map[string]string{
+		"/etc/apache2/conf.d/modsec2.conf": "<IfModule mod_security2.c>\nSecRuleEngine On\n</VirtualHost>\n",
+	})
+	if mode := lastEngineDirective("/etc/apache2/conf.d/modsec2.conf"); mode != "" {
+		t.Fatalf("mode = %q, want unknown for malformed Apache nesting", mode)
+	}
+}

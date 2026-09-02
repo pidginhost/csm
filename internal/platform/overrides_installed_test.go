@@ -26,3 +26,24 @@ func TestSetOverridesRecognisesInstalledOverridesAfterDetect(t *testing.T) {
 		t.Fatal("different overrides after Detect must be reported as lost")
 	}
 }
+
+func TestSetOverridesTreatsNilAndEmptySlicesAsIdentical(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+
+	o := Overrides{}
+	if !SetOverrides(o) {
+		t.Fatal("first SetOverrides before Detect must install")
+	}
+	_ = Detect()
+
+	equivalent := Overrides{
+		AccessLogPaths:      []string{},
+		ErrorLogPaths:       []string{},
+		ModSecAuditLogPaths: []string{},
+		DomlogGlobs:         []string{},
+	}
+	if !SetOverrides(equivalent) {
+		t.Fatal("nil and empty override slices must describe the same installed overrides")
+	}
+}

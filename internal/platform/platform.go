@@ -7,7 +7,7 @@ import (
 	"bufio"
 	"os"
 	"os/exec"
-	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -183,10 +183,28 @@ func SetOverrides(o Overrides) bool {
 	// force is not late: several startup paths install and then detect, and
 	// the daemon's own call must not read "already detected" as "lost".
 	if isDetected() {
-		return pendingOverride != nil && reflect.DeepEqual(*pendingOverride, o)
+		return pendingOverride != nil && overridesEqual(*pendingOverride, o)
 	}
 	pendingOverride = &o
 	return true
+}
+
+func overridesEqual(a, b Overrides) bool {
+	return optionalEqual(a.Panel, b.Panel) &&
+		optionalEqual(a.WebServer, b.WebServer) &&
+		slices.Equal(a.AccessLogPaths, b.AccessLogPaths) &&
+		slices.Equal(a.ErrorLogPaths, b.ErrorLogPaths) &&
+		slices.Equal(a.ModSecAuditLogPaths, b.ModSecAuditLogPaths) &&
+		slices.Equal(a.DomlogGlobs, b.DomlogGlobs) &&
+		a.ApacheConfigDir == b.ApacheConfigDir &&
+		a.NginxConfigDir == b.NginxConfigDir
+}
+
+func optionalEqual[T comparable](a, b *T) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // isDetected returns true if Detect() has already cached a result.

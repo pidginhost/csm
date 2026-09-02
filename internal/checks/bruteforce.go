@@ -466,7 +466,10 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 			// of history, and stamping that with now would turn scattered
 			// failures into one burst and auto-block the address.
 			at, ok := syslogLineTime(line, now)
-			if !ok {
+			if !ok || at.After(now) {
+				// A missing or future timestamp cannot safely seed a future
+				// minute bucket that survives eviction indefinitely. Treat the
+				// record as current, matching the timestamp-free fallback.
 				at = now
 			}
 			if at.Before(cutoff) {
@@ -740,7 +743,15 @@ func isPureFTPDLogFields(fields []string) bool {
 	if isPureFTPDProgramToken(fields[0]) {
 		return true
 	}
-	return len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isPureFTPDProgramToken(fields[4])
+	if len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isPureFTPDProgramToken(fields[4]) {
+		return true
+	}
+	if len(fields) >= 3 {
+		if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+			return isPureFTPDProgramToken(fields[2])
+		}
+	}
+	return false
 }
 
 func isPureFTPDProgramToken(field string) bool {

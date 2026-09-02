@@ -52,13 +52,34 @@ func TestCheckCrontabsReadsDebianSpool(t *testing.T) {
 
 func TestAccountCrontabCheckReadsDebianSpool(t *testing.T) {
 	withCronSpoolDir(t, "/var/spool/cron/crontabs")
-	var read []string
+	const target = "/var/spool/cron/crontabs/bob"
 	withMockOS(t, &mockOS{readFile: func(name string) ([]byte, error) {
-		read = append(read, name)
+		if name == target {
+			return []byte("* * * * * defunct-kernel\n"), nil
+		}
 		return nil, os.ErrNotExist
 	}})
-	makeAccountCrontabCheck("bob")(context.Background(), nil, nil)
-	if len(read) != 1 || !strings.HasSuffix(read[0], "/var/spool/cron/crontabs/bob") {
-		t.Fatalf("account crontab read from %v, want the Debian spool", read)
+	findings := makeAccountCrontabCheck("bob")(context.Background(), nil, nil)
+	if len(findings) == 0 {
+		t.Fatal("suspicious Debian account crontab was not reported")
+	}
+	if findings[0].FilePath != target || !strings.Contains(findings[0].Details, "File: "+target+"\n") {
+		t.Fatalf("finding did not carry the Debian crontab path: %+v", findings[0])
+	}
+}
+
+func TestCronSpoolOwnerAcceptsDebianUserCrontab(t *testing.T) {
+	withCronSpoolDir(t, "/var/spool/cron/crontabs")
+	owner, ok := cronSpoolOwner("/var/spool/cron/crontabs/alice")
+	if !ok || owner != "alice" {
+		t.Fatalf("cronSpoolOwner = (%q, %v), want (alice, true)", owner, ok)
+	}
+}
+
+func TestCrontabFixRootContainsDebianSpool(t *testing.T) {
+	const path = "/var/spool/cron/crontabs/alice"
+	got, err := sanitizeFixPath(path, fixCrontabAllowedRoots)
+	if err != nil || got != path {
+		t.Fatalf("sanitizeFixPath(%q) = (%q, %v), want accepted", path, got, err)
 	}
 }

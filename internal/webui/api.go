@@ -917,7 +917,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	message, details, filePath, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+	message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -925,16 +925,9 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 	result := checks.ApplyFix(req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
-	// Prefer the canonical key sent by the client (matches Finding.Key(), which
-	// includes a hash of Details when present); fall back to check:message for
-	// older clients and findings with empty Details.
 	if result.Success {
-		key := req.Key
-		if key == "" {
-			key = req.Check + ":" + req.Message
-		}
-		s.store.DismissFinding(key)
-		s.store.DismissLatestFinding(key)
+		s.store.DismissFinding(dismissKey)
+		s.store.DismissLatestFinding(dismissKey)
 		s.auditLog(r, "fix", req.Check, result.Action)
 	}
 
@@ -1048,19 +1041,15 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		message, details, filePath, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+		message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 		if err != nil {
 			results = append(results, checks.RemediationResult{Error: err.Error()})
 			continue
 		}
 		result := checks.ApplyFix(req.Check, message, details, filePath)
 		if result.Success {
-			key := req.Key
-			if key == "" {
-				key = req.Check + ":" + req.Message
-			}
-			s.store.DismissFinding(key)
-			s.store.DismissLatestFinding(key)
+			s.store.DismissFinding(dismissKey)
+			s.store.DismissLatestFinding(dismissKey)
 		}
 		results = append(results, result)
 	}
