@@ -191,7 +191,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		_ = os.MkdirAll(quarantineDir, 0700)
 
 		// Build quarantine destination preserving directory structure
-		safeName := strings.ReplaceAll(path, "/", "_")
+		safeName := quarantineSafeName(path)
 		ts := time.Now().Format("20060102-150405")
 		qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
 
@@ -668,7 +668,7 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 	}
 
 	_ = os.MkdirAll(quarantineDir, 0700)
-	safeName := strings.ReplaceAll(path, "/", "_")
+	safeName := quarantineSafeName(path)
 	ts := time.Now().Format("20060102-150405")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
 

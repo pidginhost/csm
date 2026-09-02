@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/obs"
@@ -221,8 +222,9 @@ func (p *PAMListener) processEvent(line string) {
 		return
 	}
 
-	// Skip infra IPs
-	if isInfraIP(ip, p.cfg.InfraIPs) {
+	// Skip infra IPs. Read from the live config like the thresholds are: an
+	// infrastructure address added by reload must stop counting at once.
+	if isInfraIP(ip, p.currentCfg().InfraIPs) {
 		return
 	}
 
@@ -434,19 +436,9 @@ func sortedBoolKeys(m map[string]bool) []string {
 
 // isInfraIP checks if an IP is in the configured infra IP ranges.
 // Duplicated here to avoid import cycle with checks package.
+// isInfraIP defers to the shared matcher so an infra_ips entry written as a
+// bare address ("203.0.113.5") counts here the way it does everywhere else;
+// the local copy accepted CIDRs only and silently ignored bare entries.
 func isInfraIP(ip string, infraNets []string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, cidr := range infraNets {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(parsed) {
-			return true
-		}
-	}
-	return false
+	return checks.IsInfraIP(ip, infraNets)
 }

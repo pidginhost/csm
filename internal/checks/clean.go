@@ -96,7 +96,7 @@ func CleanInfectedFile(path string) CleanResult {
 	backupDir := filepath.Join(quarantineDir, "pre_clean")
 	_ = os.MkdirAll(backupDir, 0700)
 	ts := time.Now().Format("20060102-150405")
-	safeName := strings.ReplaceAll(path, "/", "_")
+	safeName := quarantineSafeName(path)
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", ts, safeName))
 	if err := os.WriteFile(backupPath, data, 0600); err != nil {
 		result.Error = fmt.Sprintf("cannot create backup: %v", err)

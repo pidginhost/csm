@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -298,6 +299,12 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	}
 
 	// --- Per-account spray tracker ---
+	// Keyed on the trimmed, lower-cased mailbox: "User@X.RO", "user@x.ro"
+	// and a padded spelling are one target, and a spray across those
+	// variants must reach the distinct-source threshold as one account.
+	// (Only the tracker key is folded; the local part keeps its case
+	// everywhere it is displayed.)
+	account = strings.ToLower(strings.TrimSpace(account))
 	if account != "" {
 		a, ok := t.accounts[account]
 		if !ok {

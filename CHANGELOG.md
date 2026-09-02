@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Quarantine and pre-clean backup file names are now shortened (hash plus path tail) when the flattened source path would exceed the filename limit; a deeply nested file used to fail its move with ENAMETOOLONG and stay in place.
+- The PAM listener now reads `infra_ips` from the live configuration, so an infrastructure address added by reload stops counting failures at once.
+- The SMTP account-spray tracker now keys mailboxes case-insensitively and trimmed, so a spray across case variants of one mailbox reaches the distinct-source threshold.
 - The `.htaccess` FilesMatch-shield detector's suppression gates can no longer be steered by the attacker: a pattern counts as targeted only when every alternative names a file (`^(a|.*)\.php$` no longer passes), and the sibling-PHP gate is not applied inside upload, cache and temp trees, where three dummy `.php` files used to silence the finding.
 - The phishing scanner now analyses the whole of each accepted HTML page (up to 100 KB) instead of its first 16 KB, and no longer skips WordPress core, cache, tmp and logs directories by name; a kit that opened with a large stylesheet, or that was dropped under `wp-includes/`, passed as clean before.
 - The scheduled `.htaccess` scan now walks twelve levels below a document root instead of five, reaching uploads trees where droppers plant the handler-enabling `.htaccess` next to their payload.
