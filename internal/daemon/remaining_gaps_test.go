@@ -184,7 +184,7 @@ func TestPAMClearFailuresRemovesEntry(t *testing.T) {
 	}
 	p.failures["1.2.3.4"] = &pamFailureTracker{count: 3}
 
-	p.clearFailures("1.2.3.4")
+	p.clearFailuresForUser("1.2.3.4", "root")
 
 	if _, ok := p.failures["1.2.3.4"]; ok {
 		t.Error("clearFailures should remove entry")
@@ -196,7 +196,7 @@ func TestPAMClearFailuresMissingIsNoop(t *testing.T) {
 		failures: make(map[string]*pamFailureTracker),
 	}
 	// Should not panic or alter state
-	p.clearFailures("nonexistent")
+	p.clearFailuresForUser("nonexistent", "root")
 	if len(p.failures) != 0 {
 		t.Errorf("map size = %d", len(p.failures))
 	}

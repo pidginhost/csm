@@ -96,6 +96,28 @@ func (d *credentialStuffingDetector) Record(ip, account string) ([]string, bool)
 	return accounts, true
 }
 
+// ClearAccount forgets one account's failures from ip: that account logged
+// in, so its earlier failures were the user's own. Failures against other
+// accounts stay counted; the entry goes only when none remain, and a set
+// that drops back under the threshold may fire again once it regrows.
+func (d *credentialStuffingDetector) ClearAccount(ip, account string) {
+	if d == nil {
+		return
+	}
+	state, ok := d.perIP[ip]
+	if !ok {
+		return
+	}
+	delete(state.accounts, account)
+	if len(state.accounts) == 0 {
+		delete(d.perIP, ip)
+		return
+	}
+	if len(state.accounts) < d.distinctAccounts {
+		state.fired = false
+	}
+}
+
 // PruneStale drops per-IP entries whose lastSeen is older than the window.
 // Called from the PAM listener cleanup loop so the detector does not grow
 // without bound between window resets. Returns the number pruned.

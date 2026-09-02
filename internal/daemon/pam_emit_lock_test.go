@@ -62,7 +62,7 @@ func TestPAMListenerEmitDoesNotHoldLock(t *testing.T) {
 	// While the emit is blocked, a method that needs p.mu must still run.
 	lockFreed := make(chan struct{})
 	go func() {
-		p.clearFailures("203.0.113.99")
+		p.clearFailuresForUser("203.0.113.99", "root")
 		close(lockFreed)
 	}()
 

@@ -1975,7 +1975,7 @@ func (d *Daemon) startLogWatchers() {
 		if success {
 			findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
 		} else {
-			findings = append(findings, d.mailAuthTracker.Record(ip, account)...)
+			findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line)...)
 		}
 		return findings
 	}

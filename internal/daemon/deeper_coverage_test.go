@@ -348,7 +348,7 @@ func TestClearFailures_RemovesEntry(t *testing.T) {
 		services:  map[string]bool{"sshd": true},
 	}
 
-	p.clearFailures("203.0.113.20")
+	p.clearFailuresForUser("203.0.113.20", "root")
 
 	if _, exists := p.failures["203.0.113.20"]; exists {
 		t.Error("clearFailures should remove the entry")
@@ -362,7 +362,7 @@ func TestClearFailures_NoOpForMissing(t *testing.T) {
 		failures: make(map[string]*pamFailureTracker),
 	}
 	// Should not panic
-	p.clearFailures("203.0.113.99")
+	p.clearFailuresForUser("203.0.113.99", "root")
 }
 
 // ---------------------------------------------------------------------------

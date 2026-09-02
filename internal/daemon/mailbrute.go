@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1343,4 +1344,44 @@ func extractMailLoginEvent(line string) (ip, account string, success bool) {
 	}
 
 	return ip, account, success
+}
+
+// dovecotAttemptsCap bounds how many failures one "Login aborted" line may
+// record, so a forged or absurd count cannot flood the tracker.
+const dovecotAttemptsCap = 20
+
+// dovecotFailedAttempts returns the number of password attempts a Dovecot
+// "Login aborted ... (auth failed, N attempts in S secs)" line reports, or 1
+// when the line carries no count. Dovecot writes one such line per
+// connection; counting it once let a client that tries many passwords per
+// connection stay under every per-IP threshold.
+func dovecotFailedAttempts(line string) int {
+	const marker = "(auth failed, "
+	i := strings.Index(line, marker)
+	if i < 0 {
+		return 1
+	}
+	rest := line[i+len(marker):]
+	end := strings.IndexByte(rest, ' ')
+	if end <= 0 || !strings.HasPrefix(strings.TrimSpace(rest[end:]), "attempts") {
+		return 1
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n < 1 {
+		return 1
+	}
+	if n > dovecotAttemptsCap {
+		return dovecotAttemptsCap
+	}
+	return n
+}
+
+// recordDovecotFailure records one failure per attempt the Dovecot line
+// reports and returns every finding those records produced.
+func recordDovecotFailure(t *mailAuthTracker, ip, account, line string) []alert.Finding {
+	var findings []alert.Finding
+	for i := dovecotFailedAttempts(line); i > 0; i-- {
+		findings = append(findings, t.Record(ip, account)...)
+	}
+	return findings
 }

@@ -230,7 +230,7 @@ func (p *PAMListener) processEvent(line string) {
 	case "FAIL":
 		p.emit(p.recordFailure(ip, user, service))
 	case "OK":
-		p.clearFailures(ip)
+		p.clearFailuresForUser(ip, user)
 		// Successful login from non-infra IP - informational alert
 		p.emit([]alert.Finding{{
 			Severity:  alert.High,
@@ -336,11 +336,24 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 	return findings
 }
 
-func (p *PAMListener) clearFailures(ip string) {
+// clearFailuresForUser forgets the failures attributed to user from ip once
+// that user logged in. Failures against other users stay, and so does the
+// credential-stuffing breadth: an attacker walking many accounts who finally
+// lands one (or who owns one valid account) must not reset the record against
+// every other account. The tracker goes only when no failed user remains.
+func (p *PAMListener) clearFailuresForUser(ip, user string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.failures, ip)
-	p.stuffing.Clear(ip)
+	p.stuffing.ClearAccount(ip, user)
+	tracker, ok := p.failures[ip]
+	if !ok {
+		return
+	}
+	delete(tracker.users, user)
+	if len(tracker.users) == 0 {
+		delete(p.failures, ip)
+		p.stuffing.Clear(ip)
+	}
 }
 
 // cleanupLoop removes expired failure trackers every minute.
