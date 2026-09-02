@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Scan-job retention no longer deletes jobs that are still queued or running. A burst of queued scans was older than the job that had just finished, so the first completion pruned the waiting jobs and they were silently skipped.
 - A PHP handler placed inside an .htaccess file-match block that selects files by name rather than by extension is now reported as a handler remap, and the files it selects are content-scanned as PHP. Until now such a block was invisible to both, so a backdoor stored under a name like `logo` executed without ever being examined.
 - An .htaccess rule that redirects several search-engine crawlers at once to another site is now reported as crawler cloaking. The long-list exemptions meant for scraper blocklists no longer apply when the list is mostly made of search engines, since no site blocks Googlebot, Bingbot, Yandex and Baidu together.
 - A crash inside the real-time file analyzer or the email attachment scanner no longer takes the whole daemon down. The event is skipped, a critical finding reports it, and the worker keeps going; until now one malformed message could restart the daemon, and Exim's redelivery of that same message restarted it again.

@@ -244,6 +244,12 @@ func (db *DB) PruneScanJobs(keepJobs, maxTotalFindings int) (int, error) {
 		keptFindings := 0
 		var delErr error
 		for _, rec := range jobs {
+			// Retention applies to finished jobs only. A queued or running
+			// job is older than the job that just completed, so counting or
+			// deleting it here would drop work the scheduler still owns.
+			if rec.State == "queued" || rec.State == "running" {
+				continue
+			}
 			overJobCount := kept >= keepJobs
 			if overJobCount {
 				if delErr = deleteScanJobAndFindings(jb, fb, rec.ID); delErr != nil {
