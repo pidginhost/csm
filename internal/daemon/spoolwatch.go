@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,6 +107,8 @@ type SpoolWatcher struct {
 	runActive      int32 // atomic - Run owns scanCh shutdown while set
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
+	panicMu        sync.Mutex
+	lastPanicAt    time.Time
 
 	// queueOverflows counts FAN_Q_OVERFLOW records. In permission mode a kernel
 	// queue overflow means opens were let through without a scan verdict, so
@@ -446,11 +449,11 @@ func (sw *SpoolWatcher) scanWorker() {
 			if !ok {
 				return
 			}
-			sw.handleSpoolEvent(evt)
+			sw.handleSpoolEventSafe(evt)
 		case <-sw.stopCh:
 			if atomic.LoadInt32(&sw.runActive) != 0 {
 				for evt := range sw.scanCh {
-					sw.handleSpoolEvent(evt)
+					sw.handleSpoolEventSafe(evt)
 				}
 				return
 			}
@@ -460,13 +463,46 @@ func (sw *SpoolWatcher) scanWorker() {
 					if !ok {
 						return
 					}
-					sw.handleSpoolEvent(evt)
+					sw.handleSpoolEventSafe(evt)
 				default:
 					return
 				}
 			}
 		}
 	}
+}
+
+// spoolEventHandler processes one queued spool event. Var so tests can
+// substitute a panicking handler.
+var spoolEventHandler = (*SpoolWatcher).handleSpoolEvent
+
+// handleSpoolEventSafe runs one event and contains a panic. The handler's
+// deferred response still answers the kernel (fail-open) and closes the fd
+// while the stack unwinds, so what remains is to report and carry on.
+// Re-raising would restart the daemon, and Exim would redeliver the same
+// message into the same panic.
+func (sw *SpoolWatcher) handleSpoolEventSafe(evt spoolEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			sw.reportScannerPanic(evt.path, r)
+		}
+	}()
+	spoolEventHandler(sw, evt)
+}
+
+// reportScannerPanic logs the panic with its stack, forwards it to
+// observability and raises a critical finding at most once per ten minutes.
+func (sw *SpoolWatcher) reportScannerPanic(path string, r interface{}) {
+	obs.CaptureMsg("spool-scanner", fmt.Sprintf("panic scanning %s: %v", path, r))
+	fmt.Fprintf(os.Stderr, "[%s] spool watcher: recovered panic scanning %s: %v\n%s", ts(), path, r, debug.Stack())
+	sw.panicMu.Lock()
+	defer sw.panicMu.Unlock()
+	if !sw.lastPanicAt.IsZero() && time.Since(sw.lastPanicAt) < 10*time.Minute {
+		return
+	}
+	sw.lastPanicAt = time.Now()
+	sw.emitFinding("email_av_scanner_panic", alert.Critical,
+		fmt.Sprintf("Email AV scanner panicked on %s and let it through unscanned: %v", filepath.Base(path), r))
 }
 
 func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {

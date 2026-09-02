@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,10 +79,15 @@ const alertDedupTTL = 30 * time.Second
 
 // FileMonitor watches mount points for file creation/modification using fanotify.
 type FileMonitor struct {
-	fd         int
-	cfg        *config.Config
-	alertCh    chan<- alert.Finding
-	analyzerCh chan fileEvent
+	fd      int
+	cfg     *config.Config
+	alertCh chan<- alert.Finding
+
+	// panicMu / lastPanicAt rate-limit the realtime_scanner_panic finding
+	// raised when an analyzer panics on one event (see analyzeFileSafe).
+	panicMu     sync.Mutex
+	lastPanicAt time.Time
+	analyzerCh  chan fileEvent
 
 	// M7 - separate counters for dropped events and alerts
 	droppedEvents int64
@@ -942,9 +948,40 @@ var credentialLogNames = map[string]bool{
 func (fm *FileMonitor) analyzerWorker() {
 	defer fm.wg.Done()
 	for event := range fm.analyzerCh {
-		fm.analyzeFile(event)
+		fm.analyzeFileSafe(event)
 		_ = unix.Close(event.fd)
 	}
+}
+
+// fileAnalyzer analyzes one queued event. Var so tests can substitute a
+// panicking analyzer.
+var fileAnalyzer = (*FileMonitor).analyzeFile
+
+// analyzeFileSafe runs one event and contains a panic: one crafted file
+// must not restart the daemon and reopen the detection gap for every other
+// write in flight. The caller still closes the event fd.
+func (fm *FileMonitor) analyzeFileSafe(event fileEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			fm.reportScannerPanic(event.path, r)
+		}
+	}()
+	fileAnalyzer(fm, event)
+}
+
+// reportScannerPanic logs the panic with its stack, forwards it to
+// observability and raises a critical finding at most once per ten minutes.
+func (fm *FileMonitor) reportScannerPanic(path string, r interface{}) {
+	obs.CaptureMsg("fanotify-analyzer", fmt.Sprintf("panic analyzing %s: %v", path, r))
+	fmt.Fprintf(os.Stderr, "[%s] file monitor: recovered panic analyzing %s: %v\n%s", ts(), path, r, debug.Stack())
+	fm.panicMu.Lock()
+	defer fm.panicMu.Unlock()
+	if !fm.lastPanicAt.IsZero() && time.Since(fm.lastPanicAt) < 10*time.Minute {
+		return
+	}
+	fm.lastPanicAt = time.Now()
+	fm.sendAlertWithPath(alert.Critical, "realtime_scanner_panic",
+		fmt.Sprintf("Realtime scanner panicked on %s and skipped it: %v", path, r), "", path, "")
 }
 
 // readFromFd reads up to maxBytes from a file descriptor at position 0.
