@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -58,9 +59,11 @@ type Store struct {
 	// LatestFindings holds the full output of the most recent scan cycle.
 	// This is what the Findings page shows - "what's wrong right now" -
 	// separate from the alert dedup state above which controls "what to email."
-	latestMu       sync.RWMutex
-	latestFindings []alert.Finding
-	latestScanTime time.Time
+	latestMu        sync.RWMutex
+	latestFindings  []alert.Finding
+	latestDigest    [sha256.Size]byte // digest of the last persisted latest_findings.json
+	latestDigestSet bool
+	latestScanTime  time.Time
 }
 
 type Entry struct {
@@ -886,20 +889,9 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 		existing[f.Key()] = f // newer overwrites older
 	}
 
-	// Flatten back to slice
-	var merged []alert.Finding
-	for _, f := range existing {
-		merged = append(merged, f)
-	}
-	// Cap at 15,000 findings to prevent unbounded memory growth
-	if len(merged) > 15000 {
-		merged = merged[:15000]
-	}
-	s.latestFindings = merged
+	s.latestFindings = orderAndCapLatest(existing)
 	s.latestScanTime = time.Now()
-
-	// Persist to disk
-	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, merged)
+	s.persistLatestLocked()
 }
 
 // PurgeFindingsByChecks removes all findings whose Check field matches
@@ -928,49 +920,106 @@ func (s *Store) PurgeFindingsByChecks(checks []string) {
 	s.latestFindings = s.latestFindings[:n]
 
 	// Persist to disk so purged findings don't reappear after restart.
-	// Mirrors the persistence logic at the end of SetLatestFindings().
-	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, s.latestFindings)
+	s.persistLatestLocked()
 }
 
 // PurgeAndMergeFindings atomically removes findings matching the given check
 // names and then merges the new findings. This prevents a race window where
 // concurrent readers could see findings with perf checks missing.
 func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Finding) {
+	s.PurgeAndMergeFindingsDerived(purgeChecks, findings, nil, nil)
+}
+
+// PurgeAndMergeFindingsDerived is PurgeAndMergeFindings followed, under the
+// same lock and before the single persist, by a second purge-and-merge of
+// derivedChecks with derive(merged): the correlation findings a tier cycle
+// rebuilds from the merged set. One file write per cycle instead of two.
+func (s *Store) PurgeAndMergeFindingsDerived(purgeChecks []string, findings []alert.Finding, derivedChecks []string, derive func([]alert.Finding) []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	// Build set of checks to purge
+	merged := purgeAndMergeLatest(s.latestFindings, purgeChecks, findings)
+	if derive != nil {
+		merged = purgeAndMergeLatest(merged, derivedChecks, derive(append([]alert.Finding(nil), merged...)))
+	}
+	s.latestFindings = merged
+	s.latestScanTime = time.Now()
+	s.persistLatestLocked()
+}
+
+// purgeAndMergeLatest drops findings owned by purgeChecks (and the timeout
+// findings those runners produced), merges findings by key, and returns the
+// ordered, capped result.
+func purgeAndMergeLatest(current []alert.Finding, purgeChecks []string, findings []alert.Finding) []alert.Finding {
 	remove := make(map[string]bool, len(purgeChecks))
 	for _, c := range purgeChecks {
 		remove[c] = true
 	}
-
-	// Build map: keep existing non-purged findings
-	existing := make(map[string]alert.Finding)
-	for _, f := range s.latestFindings {
+	existing := make(map[string]alert.Finding, len(current)+len(findings))
+	for _, f := range current {
 		if !shouldPurgeLatestFinding(f, remove) {
 			existing[f.Key()] = f
 		}
 	}
-
-	// Merge new findings
 	for _, f := range findings {
 		existing[f.Key()] = f
 	}
+	return orderAndCapLatest(existing)
+}
 
-	// Flatten
-	var merged []alert.Finding
+// latestFindingsCap bounds the active set to keep memory and the persisted
+// file bounded; the ordering below decides what the cap keeps.
+const latestFindingsCap = 15000
+
+// orderAndCapLatest flattens a keyed set into a deterministic order:
+// severity first, then most recent, then key. Map iteration order used to
+// decide both the file bytes and which findings a full set dropped.
+func orderAndCapLatest(existing map[string]alert.Finding) []alert.Finding {
+	merged := make([]alert.Finding, 0, len(existing))
 	for _, f := range existing {
 		merged = append(merged, f)
 	}
-	if len(merged) > 15000 {
-		merged = merged[:15000]
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Severity != merged[j].Severity {
+			return merged[i].Severity > merged[j].Severity
+		}
+		if !merged[i].Timestamp.Equal(merged[j].Timestamp) {
+			return merged[i].Timestamp.After(merged[j].Timestamp)
+		}
+		return merged[i].Key() < merged[j].Key()
+	})
+	if len(merged) > latestFindingsCap {
+		merged = merged[:latestFindingsCap]
 	}
-	s.latestFindings = merged
-	s.latestScanTime = time.Now()
+	return merged
+}
 
-	// Persist
-	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, merged)
+// latestFindingsWriter writes the persisted file; a seam for tests.
+var latestFindingsWriter = atomicio.AtomicWrite
+
+// persistLatestLocked writes latest_findings.json when its content changed
+// since the last write. Callers hold latestMu. Compact JSON: the file is
+// read back by this process only.
+func (s *Store) persistLatestLocked() {
+	data, err := json.Marshal(s.latestFindings)
+	if err != nil {
+		return
+	}
+	digest := sha256.Sum256(data)
+	if s.latestDigestSet && digest == s.latestDigest {
+		return
+	}
+	path := filepath.Join(s.path, "latest_findings.json")
+	// Older releases wrote through a fixed <path>.tmp; clear one left by a
+	// crash so it cannot be mistaken for live state.
+	if err := os.Remove(path + ".tmp"); err != nil && !os.IsNotExist(err) {
+		return
+	}
+	if err := latestFindingsWriter(path, 0o600, data); err != nil {
+		return
+	}
+	s.latestDigest = digest
+	s.latestDigestSet = true
 }
 
 func shouldPurgeLatestFinding(f alert.Finding, remove map[string]bool) bool {

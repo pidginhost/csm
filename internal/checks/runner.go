@@ -667,16 +667,21 @@ func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []a
 	if len(purgeChecks) == 0 && len(findings) == 0 {
 		return
 	}
-	st.PurgeAndMergeFindings(latestPurgeWithVolatile(purgeChecks), latestPersistentFindings(findings))
-
 	now := time.Now()
-	derived := CorrelateFindings(st.LatestFindings())
-	for i := range derived {
-		if derived[i].Timestamp.IsZero() {
-			derived[i].Timestamp = now
-		}
-	}
-	st.PurgeAndMergeFindings(latestDerivedCheckNames, derived)
+	st.PurgeAndMergeFindingsDerived(
+		latestPurgeWithVolatile(purgeChecks),
+		latestPersistentFindings(findings),
+		latestDerivedCheckNames,
+		func(merged []alert.Finding) []alert.Finding {
+			derived := CorrelateFindings(merged)
+			for i := range derived {
+				if derived[i].Timestamp.IsZero() {
+					derived[i].Timestamp = now
+				}
+			}
+			return derived
+		},
+	)
 }
 
 func latestPurgeWithVolatile(purgeChecks []string) []string {

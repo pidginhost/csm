@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The active findings file is now written once per scan cycle, only when its content changed, in a stable order by severity and recency, so the cap keeps the most important findings instead of a random subset.
 - Store export now stages the archive under the daemon's state directory and the CLI moves it to the requested path, copying and verifying the digest across filesystems, so destinations outside the daemon's sandbox such as /var/backups work again.
 - Validate's deep probes now read the installed service unit and reject a state path outside its ReadWritePaths grants, which used to pass validation and then crash-loop the daemon under ProtectSystem=strict.
 - suppress_webmail_alerts now defaults to true in code as it does in the shipped templates and documentation, an explicit false is kept, and the installer template no longer ships a placeholder API token name.
