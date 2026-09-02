@@ -99,8 +99,14 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 		// was truncated in transport. Scan whatever decoded rather than
 		// dropping the row: a partially recovered payload still identifies a
 		// backdoor, and silence here would read as "clean".
+		cacheDefeat, crawler := storedCloakComponents(row.code)
 		hits := scanner.ScanContentWithSize(row.code, ".php", row.contentSize)
 		if len(hits) == 0 {
+			// No signature matched, but stored code that both defeats caching
+			// and looks for a crawler is a cloak on its own terms.
+			if cloak := storedCloakFindingWithComponents(user, creds, prefix, row, cacheDefeat, crawler); cloak != nil {
+				findings = append(findings, *cloak)
+			}
 			continue
 		}
 
@@ -125,8 +131,9 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 				row.id, row.status, strings.Join(names, ", "), user),
 			Details: dbContentFindingDetails(creds.dbName, prefix,
 				fmt.Sprintf("Snippet %s is stored in %sposts for WPCode, "+
-					"so it is not visible to any filesystem scan.\nMatched: %s",
-					row.id, prefix, strings.Join(names, ", "))),
+					"so it is not visible to any filesystem scan.\nMatched: %s%s",
+					row.id, prefix, strings.Join(names, ", "),
+					storedCloakNote(cacheDefeat, crawler))),
 		})
 	}
 	return findings
