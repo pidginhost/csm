@@ -701,6 +701,7 @@ func TestValidateSignaturesRejectUnsafeUpdateURLs(t *testing.T) {
 		url  string
 	}{
 		{name: "bad scheme", url: "ftp://example.com/rules.yml"},
+		{name: "plain http", url: "http://example.com/rules.yml"},
 		{name: "localhost", url: "https://localhost/rules.yml"},
 		{name: "localhost trailing dot", url: "https://localhost./rules.yml"},
 		{name: "loopback IPv4", url: "https://127.0.0.1/rules.yml"},
@@ -730,6 +731,7 @@ func TestValidateSignaturesRejectUnsafeForgeDownloadURLs(t *testing.T) {
 		url  string
 	}{
 		{name: "bad scheme", url: "ftp://example.com/rules.zip"},
+		{name: "plain http", url: "http://example.com/rules.zip"},
 		{name: "localhost", url: "https://localhost/rules.zip"},
 		{name: "loopback IPv6 zone", url: "https://[::1%25lo0]/rules.zip"},
 		{name: "private IPv4 mapped IPv6", url: "https://[::ffff:10.1.2.3]/rules.zip"},

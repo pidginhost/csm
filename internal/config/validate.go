@@ -1206,10 +1206,11 @@ func validateSignatureURL(raw string, allowTemplates bool) error {
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return fmt.Errorf("signatures URL must be an http or https URL")
+	// Signed content and the rollback guard bound what a tampered download
+	// can do, but a plain-http mirror still hands an on-path attacker every
+	// old signed release to replay and every request to observe.
+	if strings.ToLower(u.Scheme) != "https" {
+		return fmt.Errorf("signatures URL must be an https URL")
 	}
 	host := u.Hostname()
 	if host == "" {

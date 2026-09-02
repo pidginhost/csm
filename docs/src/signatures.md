@@ -106,7 +106,7 @@ csm update-rules          # download latest rules and reload the running daemon
 
 Or from the web UI: **Rules** page > **Reload Rules** button.
 
-Remote rule updates are now signature-verified. Any configuration that enables `signatures.update_url` or `signatures.yara_forge.enabled` must also set `signatures.signing_key` to the 64-character hex-encoded Ed25519 public key that verifies the downloaded `.sig` files.
+Remote rule updates are now signature-verified. Any configuration that enables `signatures.update_url` or `signatures.yara_forge.enabled` must also set `signatures.signing_key` to the 64-character hex-encoded Ed25519 public key that verifies the downloaded `.sig` files. Both URLs must use https; a plain-http URL fails validation.
 
 A valid signature proves who published a rules file, not that it is the current one. The YAML updater therefore also refuses a download whose `version` is lower than the installed file's, or that carries fewer than half as many rules, and keeps the installed rules. Both cases are logged as a refused downgrade or rollback so a stale mirror or a replayed old release is visible instead of silently stripping detection. A missing or unparsable installed file is not compared, so a signed update remains the way to recover from a corrupt rules file.
 Remote update URLs must use HTTP or HTTPS and must not point at localhost, loopback, link-local, unspecified, or RFC1918 / ULA private addresses.
