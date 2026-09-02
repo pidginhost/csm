@@ -14,6 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/reporting"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 const (
@@ -251,6 +252,12 @@ func (d *Daemon) centralFirebreak() func(string) bool {
 			if n.Contains(ip) {
 				return true
 			}
+		}
+		// A Cloudflare edge or a verified crawler in the scored set is not
+		// an attacker to act on: challenging or blocking it hits every
+		// visitor behind the edge, or delists the site.
+		if checks.IsCloudflareIP(ip) || threatintel.IPInAnyVerifiedBotRange(ip) {
+			return true
 		}
 		return false
 	}

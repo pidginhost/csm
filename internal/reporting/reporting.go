@@ -60,6 +60,11 @@ type Gate struct {
 	// Enabled is the set of classes the operator has turned on. Empty means
 	// none are reported.
 	Enabled map[Class]bool
+	// Protected is the firebreak: addresses that must never be reported as
+	// attackers (private and documentation space, infrastructure, Cloudflare
+	// edges, verified crawlers). The daemon supplies the same predicate it
+	// uses before acting on central intelligence. Nil protects nothing.
+	Protected func(net.IP) bool
 }
 
 // Consider returns the minimized report for f, or ok=false when f must not be
@@ -75,6 +80,9 @@ func (g Gate) Consider(f alert.Finding) (Report, bool) {
 	}
 	ip := net.ParseIP(f.SourceIP)
 	if ip == nil {
+		return Report{}, false
+	}
+	if g.Protected != nil && g.Protected(ip) {
 		return Report{}, false
 	}
 	ts := f.Timestamp

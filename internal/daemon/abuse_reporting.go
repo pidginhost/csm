@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -20,6 +21,11 @@ const (
 	abuseReportQueueDefault = abuseReportSpoolDefault
 	abuseReportDrainEvery   = time.Minute
 )
+
+// abuseReportFirebreak returns the predicate that keeps protected addresses
+// out of abuse reports. Var so tests that report documentation-range
+// fixtures can lift it.
+var abuseReportFirebreak = func(d *Daemon) func(string) bool { return d.centralFirebreak() }
 
 // startAbuseReporting wires the abuse reporter from config: it sets
 // alert.ReportHook so confirmed-abuse findings are gated, minimized, and
@@ -61,7 +67,14 @@ func (d *Daemon) startAbuseReporting() func() {
 
 	reportQueue := make(chan reporting.Report, abuseReportQueueSize(max))
 	spooler := reporting.NewSpooler(spool, reporting.NewSender(nil, nil), targets, abuseReportDrainEvery)
-	gate := reporting.Gate{Enabled: enabled}
+	// The same firebreak that guards central-intel actions keeps
+	// infrastructure, Cloudflare edges and verified crawlers out of the
+	// shared abuse set.
+	firebreak := abuseReportFirebreak(d)
+	gate := reporting.Gate{
+		Enabled:   enabled,
+		Protected: func(ip net.IP) bool { return firebreak(ip.String()) },
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	d.abuseReportStop = stopCh

@@ -134,6 +134,7 @@ func TestStartAbuseReportingMisconfiguredClearsStaleHook(t *testing.T) {
 }
 
 func TestAbuseReportLoopClearsHookAndClosesSpoolOnStop(t *testing.T) {
+	reportEveryAddress(t)
 	prev := alert.ReportHook
 	t.Cleanup(func() { alert.SetReportHook(prev) })
 
@@ -191,6 +192,7 @@ func TestAbuseReportLoopClearsHookAndClosesSpoolOnStop(t *testing.T) {
 }
 
 func TestAbuseReportLoopAcceptsReportsAfterDaemonStop(t *testing.T) {
+	reportEveryAddress(t)
 	prev := alert.ReportHook
 	t.Cleanup(func() { alert.SetReportHook(prev) })
 

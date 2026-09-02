@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -820,25 +820,12 @@ func parsePurgeDaemon(line string) string {
 	return ""
 }
 
+// isInfraIPDaemon is the realtime path's infra test. It delegates to the
+// checks package so the two cannot drift: an earlier copy here lacked the
+// Cloudflare branch, so realtime findings carried edge addresses that the
+// scan path filters, and those were exported and blocked as attackers.
 func isInfraIPDaemon(ip string, infraNets []string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, cidr := range infraNets {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			// Try as plain IP
-			if ip == cidr {
-				return true
-			}
-			continue
-		}
-		if network.Contains(parsed) {
-			return true
-		}
-	}
-	return false
+	return checks.IsInfraIP(ip, infraNets)
 }
 
 // mergeInfraIPs combines top-level infra IPs with firewall-specific ones,

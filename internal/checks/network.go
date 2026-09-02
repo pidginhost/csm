@@ -107,6 +107,15 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 	return findings
 }
 
+// IsInfraIP reports whether ip is infrastructure the daemon must never act
+// against: an operator infra entry (CIDR or address) or a Cloudflare edge.
+// One implementation serves scans and the realtime path alike.
+func IsInfraIP(ip string, infraNets []string) bool { return isInfraIP(ip, infraNets) }
+
+// IsCloudflareIP reports whether ip is inside the published Cloudflare
+// ranges the daemon last refreshed.
+func IsCloudflareIP(ip net.IP) bool { return isCloudflareIP(ip) }
+
 func isInfraIP(ip string, infraNets []string) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
