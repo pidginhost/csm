@@ -4,7 +4,7 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 
 ## How It Works
 
-1. **fanotify** watches the Exim spool directory for new messages
+1. **fanotify** watches the Exim spool directory for new messages, including every `split_spool_directory` hash subdirectory (the cPanel default layout); hash directories Exim creates later are picked up within a minute
 2. Attachments are extracted and scanned by ClamAV (socket) and YARA-X (if available)
 3. Zip and tar.gz attachments are unpacked within configured size and file limits
 4. Extracted parts are staged under `state_path/emailav-tmp`, which must stay daemon-owned and private

@@ -71,6 +71,16 @@ type SpoolWatcher struct {
 	quarantine     *emailav.Quarantine
 	permissionMode bool // true if using FAN_OPEN_PERM, false if fallback to FAN_CLOSE_WRITE
 
+	// eventMask is the fanotify mask every spool directory is marked with.
+	// spoolRoots are the Exim input directories found at start; marked
+	// records each directory carrying a mark so periodic rescans add only
+	// the split-spool hash subdirectories Exim created since (it creates
+	// them lazily, on the first message hashing into them).
+	eventMask  uint64
+	spoolRoots []string
+	markedMu   sync.Mutex
+	marked     map[string]struct{}
+
 	// emailAVTempDir is the staging directory CreateTemp uses for
 	// extracted attachments. Established once at watcher construction
 	// (0700, daemon-owned) so an unprivileged local uid cannot race
@@ -162,19 +172,15 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		eventMask = FAN_CLOSE_WRITE | FAN_EVENT_ON_CHILD
 	}
 
+	sw.eventMask = eventMask
+	sw.marked = make(map[string]struct{})
 	marked := 0
 	for _, dir := range spoolDirs {
 		if _, err := os.Stat(dir); err != nil {
 			continue
 		}
-		// Use FAN_MARK_ADD (not FAN_MARK_MOUNT) to scope to the directory
-		err := unix.FanotifyMark(sw.fd, FAN_MARK_ADD, eventMask, -1, dir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot watch %s: %v\n", ts(), dir, err)
-			continue
-		}
-		marked++
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: watching %s\n", ts(), dir)
+		sw.spoolRoots = append(sw.spoolRoots, dir)
+		marked += sw.markSpoolTargets(dir)
 	}
 
 	if marked == 0 {
@@ -189,6 +195,46 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 	}
 
 	return sw, nil
+}
+
+// spoolRescanInterval bounds how long a split-spool hash directory Exim
+// created after start stays unwatched.
+var spoolRescanInterval = time.Minute
+
+// markSpoolTargets marks root and every split-spool hash subdirectory under
+// it that does not carry a mark yet, and returns how many directories were
+// newly marked. FAN_EVENT_ON_CHILD on a directory mark covers only its
+// direct children, so on a split spool (the cPanel default) the -D files,
+// which live one level down, are only seen through the subdirectory marks.
+// Uses FAN_MARK_ADD (not FAN_MARK_MOUNT) to scope to the directory.
+func (sw *SpoolWatcher) markSpoolTargets(root string) int {
+	added := 0
+	for _, dir := range spoolMarkTargets(root) {
+		sw.markedMu.Lock()
+		_, done := sw.marked[dir]
+		sw.markedMu.Unlock()
+		if done {
+			continue
+		}
+		if err := unix.FanotifyMark(sw.fd, FAN_MARK_ADD, sw.eventMask, -1, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot watch %s: %v\n", ts(), dir, err)
+			continue
+		}
+		sw.markedMu.Lock()
+		sw.marked[dir] = struct{}{}
+		sw.markedMu.Unlock()
+		added++
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: watching %s\n", ts(), dir)
+	}
+	return added
+}
+
+// rescanSpoolDirs marks split-spool hash directories that appeared since
+// the last pass.
+func (sw *SpoolWatcher) rescanSpoolDirs() {
+	for _, root := range sw.spoolRoots {
+		sw.markSpoolTargets(root)
+	}
 }
 
 // Run starts the event loop and scanner workers. Blocks until Stop() is called.
@@ -231,6 +277,7 @@ func (sw *SpoolWatcher) Run() {
 
 	events := make([]unix.EpollEvent, 16)
 	buf := make([]byte, 4096)
+	lastRescan := time.Now()
 
 	for {
 		select {
@@ -238,6 +285,11 @@ func (sw *SpoolWatcher) Run() {
 			sw.drainAndClose()
 			return
 		default:
+		}
+
+		if time.Since(lastRescan) >= spoolRescanInterval {
+			sw.rescanSpoolDirs()
+			lastRescan = time.Now()
 		}
 
 		n, err := unix.EpollWait(epfd, events, 500)
