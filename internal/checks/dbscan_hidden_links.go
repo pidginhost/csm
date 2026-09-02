@@ -835,7 +835,7 @@ func buildHiddenLinkFindings(user string, creds wpDBCreds, prefix string, rows [
 		Check:    "db_hidden_link_injection",
 		Message: fmt.Sprintf("%d WordPress rows hide outbound links to %d hosts across %d domains (account: %s)",
 			len(reported), len(named), len(domains), user),
-		Details: dbContentFindingDetails(creds.dbName, prefix, details...),
+		Details: dbContentFindingDetails(creds, prefix, details...),
 	}}
 }
 

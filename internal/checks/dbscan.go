@@ -63,12 +63,30 @@ var nonDocRootDirs = map[string]bool{
 	"www": true,
 }
 
-// wpConfigPaths returns direct wp-config.php files at account document roots.
+// servedState records whether the panel currently serves a document root.
+// A dormant install is not harmless -- it holds a live database and becomes
+// public again the moment the domain is re-pointed -- but it is not being
+// served to anyone today, and triage that cannot tell the two apart orders its
+// queue wrongly in both directions.
+type servedState int
+
+const (
+	// servedUnknown is the honest answer when the panel's domain map could not
+	// be read. It is not "not served".
+	servedUnknown servedState = iota
+	servedByPanel
+	notServed
+)
+
+// wpConfigPaths returns direct wp-config.php files at account document roots,
+// each with whether the panel currently serves that root.
 // cPanel's map covers addon roots in any supported layout; other panels retain
 // the one-level home-directory fallback.
-func wpConfigPaths(ctx context.Context) []string {
+func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
 	seen := make(map[string]bool)
 	var out []string
+	served := make(map[string]servedState)
+	state := servedUnknown
 	add := func(missingIsIncomplete bool, paths ...string) {
 		for _, p := range paths {
 			if seen[p] {
@@ -86,6 +104,7 @@ func wpConfigPaths(ctx context.Context) []string {
 				continue
 			}
 			seen[p] = true
+			served[p] = state
 			out = append(out, p)
 		}
 	}
@@ -110,6 +129,7 @@ func wpConfigPaths(ctx context.Context) []string {
 				markCheckIncomplete(ctx, "db_content")
 				continue
 			}
+			state = servedByPanel
 			add(false, filepath.Join(root, "wp-config.php"))
 		}
 	case vhostMapFailureIsIncomplete(vhostErr):
@@ -123,6 +143,12 @@ func wpConfigPaths(ctx context.Context) []string {
 	// domain publishes it again, so the home-directory layout is walked whatever
 	// the panel says. nonDocRootDirs keeps account-data and backup directories
 	// out of the result.
+	// Anything the map did not name is not served today -- but only when the
+	// map could be read at all.
+	state = notServed
+	if vhostErr != nil {
+		state = servedUnknown
+	}
 	primary, _ := homeGlob(ctx, "public_html", "wp-config.php")
 	add(true, primary...)
 	addon, _ := homeGlob(ctx, "*", "wp-config.php")
@@ -133,7 +159,7 @@ func wpConfigPaths(ctx context.Context) []string {
 		}
 		add(true, p)
 	}
-	return out
+	return out, served
 }
 
 func docrootBelongsToCPanelUser(root, user string) bool {
@@ -180,7 +206,7 @@ func spamCountLabel(n int, truncated bool) string {
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs := wpConfigPaths(ctx)
+	wpConfigs, servedRoots := wpConfigPaths(ctx)
 	if len(wpConfigs) == 0 {
 		return appendDatabaseScanIncompleteFinding(ctx, nil)
 	}
@@ -210,6 +236,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			continue
 		}
 		creds.tablePrefix = prefix
+		creds.docrootServed = servedRoots[wpConfig]
 		databaseKey := strings.Join([]string{
 			user, creds.dbHost, creds.dbName, creds.dbUser, creds.dbPass, prefix,
 			strconv.FormatBool(creds.multisite),
@@ -331,7 +358,7 @@ func scanMultisiteSecondaryBlogs(ctx context.Context, user string, creds wpDBCre
 			Severity: alert.Warning,
 			Check:    "db_content_scan_incomplete",
 			Message:  fmt.Sprintf("WordPress multisite database scan reached its %d-site safety limit (account: %s)", maxWPSecondaryBlogs, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
 				"The network has more active secondary sites than one scheduled scan can safely inspect."),
 		})
 	}
@@ -356,6 +383,9 @@ type wpDBCreds struct {
 	dbPass      string
 	dbHost      string
 	tablePrefix string
+	// docrootServed records whether the panel serves this install's document
+	// root, so a finding says whether it is reachable today.
+	docrootServed servedState
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
@@ -689,7 +719,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Severity: alert.Critical,
 					Check:    "db_siteurl_hijack",
 					Message:  fmt.Sprintf("WordPress %s contains malicious code (account: %s)", optName, user),
-					Details: dbContentFindingDetails(creds.dbName, prefix,
+					Details: dbContentFindingDetails(creds, prefix,
 						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 				})
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
@@ -697,7 +727,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Severity: alert.Critical,
 					Check:    "db_siteurl_invalid",
 					Message:  fmt.Sprintf("WordPress %s is not a site address (account: %s): %s", optName, user, reason),
-					Details: dbContentFindingDetails(creds.dbName, prefix,
+					Details: dbContentFindingDetails(creds, prefix,
 						fmt.Sprintf("%s = %s\nWordPress builds every asset URL from this value, so the address it names is loaded on every page.",
 							optName, truncateDB(parts[1], 200))),
 				})
@@ -731,7 +761,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			// No attacker marker. A loader on an unremarkable HTTPS host is
 			// still reported once, the first time it appears after the
 			// site's baseline.
-			findings = append(findings, newExternalScriptFindings(user, creds.dbName, prefix, optName, optValue, firstSeen)...)
+			findings = append(findings, newExternalScriptFindings(user, creds, prefix, optName, optValue, firstSeen)...)
 			continue
 		}
 
@@ -739,7 +769,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious script injection in wp_options '%s' (account: %s)", optName, user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
 				fmt.Sprintf("Option: %s", optName),
 				fmt.Sprintf("Malicious URL: %s", maliciousURL),
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
@@ -770,7 +800,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 			Severity: alert.Critical,
 			Check:    "db_options_injection",
 			Message:  fmt.Sprintf("Malicious content in core wp_option '%s' (account: %s)", parts[0], user),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
 				fmt.Sprintf("Option: %s", parts[0]),
 				fmt.Sprintf("Content preview: %s", truncateDB(parts[1], 200))),
 		})
@@ -860,7 +890,7 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			Severity: mp.severity,
 			Check:    "db_post_injection",
 			Message:  fmt.Sprintf("WordPress posts contain %s (account: %s, %d posts)", mp.desc, user, len(confirmedIDs)),
-			Details: dbContentFindingDetails(creds.dbName, prefix,
+			Details: dbContentFindingDetails(creds, prefix,
 				fmt.Sprintf("Affected post IDs: %s", strings.Join(confirmedIDs, ", ")),
 				fmt.Sprintf("Pattern: %s", mp.pattern)),
 		})
@@ -918,17 +948,20 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			// scale, and scale is what decides whether an operator looks.
 			Message: fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%s posts, account: %s)",
 				sp.keyword, spamCountLabel(n, spamSampled[i] >= dbSpamSampleLimit), user),
-			Details: dbContentFindingDetails(creds.dbName, prefix),
+			Details: dbContentFindingDetails(creds, prefix),
 		})
 	}
 
 	return findings
 }
 
-func dbContentFindingDetails(dbName, prefix string, lines ...string) string {
+func dbContentFindingDetails(creds wpDBCreds, prefix string, lines ...string) string {
 	out := []string{
-		fmt.Sprintf("Database: %s", dbName),
+		fmt.Sprintf("Database: %s", creds.dbName),
 		fmt.Sprintf("Table prefix: %s", prefix),
+	}
+	if note := docrootServedNote(creds.docrootServed); note != "" {
+		out = append(out, note)
 	}
 	out = append(out, lines...)
 	return strings.Join(out, "\n")
@@ -1280,4 +1313,20 @@ func firstN(in []string, n int) []string {
 		return in
 	}
 	return in[:n]
+}
+
+// docrootServedNote states whether this install is reachable today. Both
+// answers change how a finding should be queued: a dormant install is not
+// serving anyone right now, and a served one is. Silence when the panel's map
+// could not be read -- claiming either would be a guess.
+func docrootServedNote(state servedState) string {
+	switch state {
+	case servedByPanel:
+		return "Document root: served by the panel, so this is live now."
+	case notServed:
+		return "Document root: not currently served. The database is still live " +
+			"and the content publishes again the moment a domain is pointed here."
+	default:
+		return ""
+	}
 }

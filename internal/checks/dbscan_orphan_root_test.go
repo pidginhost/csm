@@ -58,7 +58,7 @@ func TestWPConfigPaths_CPanelMapDoesNotHideOrphanedDocRoots(t *testing.T) {
 	}
 	t.Cleanup(func() { osFS = old })
 
-	got := wpConfigPaths(context.Background())
+	got, _ := wpConfigPaths(context.Background())
 	found := map[string]bool{}
 	for _, p := range got {
 		found[p] = true
