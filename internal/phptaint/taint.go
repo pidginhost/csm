@@ -1083,6 +1083,7 @@ func findFlows(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	written := taintedWritePaths(f, st, summaries, wholeCalls, exclude)
 	out := make([]flowResult, 0, len(f.sinks))
 	for _, s := range f.sinks {
 		if err := ctx.Err(); err != nil {
@@ -1091,6 +1092,21 @@ func findFlows(
 		sub := wholeCalls.apply(collectScope(s.expr)).withoutNestedDeclarationVars(exclude)
 		c, tainted := exprTaintFacts(sub, st, summaries)
 		if !tainted {
+			// A file this scope wrote from remote content and now includes
+			// by the same path expression executes that content just as a
+			// tainted variable would: the file is the carrier.
+			if ev, ok := written[pathExprKey(s.expr)]; ok && includeSink(s.kind) {
+				identifiers, identifiersTruncated := identifiersFor(sub)
+				out = append(out, flowResult{
+					Result: Result{
+						Source:      ev.source,
+						Identifiers: identifiers,
+						Sink:        s.kind,
+						Confidence:  ev.confidence,
+					},
+					evidenceTruncated: ev.truncated || identifiersTruncated,
+				})
+			}
 			continue
 		}
 		source, sourceTruncated := sourceLabel(sub, st, summaries)
@@ -1294,4 +1310,104 @@ func activeTaint(sub *scopeFacts, st taintState, summaries summaryTables) (Confi
 		}
 	}
 	return best, found, origins
+}
+
+// writtenEvidence is what a tainted file write contributes to an include of
+// the same path.
+type writtenEvidence struct {
+	source     string
+	confidence Confidence
+	truncated  bool
+}
+
+// taintedWritePaths maps the path key of every file_put_contents whose data
+// argument is tainted in this scope to the evidence of that taint.
+func taintedWritePaths(
+	f *scopeFacts, st taintState, summaries summaryTables,
+	wholeCalls resolvedCallIndex, exclude *spanIndex,
+) map[string]writtenEvidence {
+	if len(f.fileWrites) == 0 {
+		return nil
+	}
+	out := make(map[string]writtenEvidence, len(f.fileWrites))
+	for _, w := range f.fileWrites {
+		key := pathExprKey(w.path)
+		if key == "" {
+			continue
+		}
+		sub := wholeCalls.apply(collectScope(w.data)).withoutNestedDeclarationVars(exclude)
+		c, tainted := exprTaintFacts(sub, st, summaries)
+		if !tainted {
+			continue
+		}
+		if prev, ok := out[key]; ok && prev.confidence >= c {
+			continue
+		}
+		source, truncated := sourceLabel(sub, st, summaries)
+		out[key] = writtenEvidence{source: source, confidence: c, truncated: truncated}
+	}
+	return out
+}
+
+func includeSink(kind string) bool {
+	switch kind {
+	case "include", "include_once", "require", "require_once":
+		return true
+	}
+	return false
+}
+
+// pathExprKey renders a path expression into a canonical string so a write
+// and an include of the same path match syntactically: literals, magic
+// constants, constants, variables, concatenations and argument-less or
+// keyable calls. Anything else (a property, an array element, an unresolved
+// call) yields "" and never matches, so no guess can produce a flow.
+func pathExprKey(n ast.Vertex) string { return pathExprKeyAt(n, 0) }
+
+func pathExprKeyAt(n ast.Vertex, depth int) string {
+	if depth >= maxAnalysisDepth {
+		return ""
+	}
+	switch v := n.(type) {
+	case *ast.ScalarString:
+		return "s:" + string(v.Value)
+	case *ast.ScalarMagicConstant:
+		return "m:" + strings.ToLower(string(v.Value))
+	case *ast.ExprConstFetch:
+		return "c:" + strings.ToLower(calleeName(v.Const))
+	case *ast.ExprVariable:
+		name := varName(v.Name)
+		if name == "" {
+			return ""
+		}
+		return "v:" + name
+	case *ast.ExprBrackets:
+		return pathExprKeyAt(v.Expr, depth+1)
+	case *ast.ExprBinaryConcat:
+		left := pathExprKeyAt(v.Left, depth+1)
+		right := pathExprKeyAt(v.Right, depth+1)
+		if left == "" || right == "" {
+			return ""
+		}
+		return "(" + left + "." + right + ")"
+	case *ast.ExprFunctionCall:
+		name := calleeName(v.Function)
+		if name == "" {
+			return ""
+		}
+		parts := make([]string, 0, len(v.Args))
+		for _, a := range v.Args {
+			arg, ok := a.(*ast.Argument)
+			if !ok {
+				return ""
+			}
+			key := pathExprKeyAt(arg.Expr, depth+1)
+			if key == "" {
+				return ""
+			}
+			parts = append(parts, key)
+		}
+		return "f:" + strings.ToLower(name) + "(" + strings.Join(parts, ",") + ")"
+	}
+	return ""
 }

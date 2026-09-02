@@ -93,8 +93,13 @@ type scopeFacts struct {
 	// target. readVarNodes keys each one to the specific property it fetches
 	// (see assignedTargetKey) so a write to one property never taints a read
 	// of a different one or of the bare base object.
-	propNodes      []ast.Vertex
-	writes         []ast.Vertex
+	propNodes []ast.Vertex
+	writes    []ast.Vertex
+	// fileWrites holds every file_put_contents(path, data) call in this
+	// scope. It is the bridge the fetch-write-include dropper relies on:
+	// remote content lands in a local file that an include then executes
+	// by path, with no variable ever carrying the taint into the sink.
+	fileWrites     []fileWriteSite
 	precisionLoss  map[string]bool
 	visited        int
 	budgetExceeded bool
@@ -281,6 +286,31 @@ func (v *factVisitor) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	if sink, ok := callSinkSite(name, n); ok {
 		v.f.sinks = append(v.f.sinks, sink)
 	}
+	if w, ok := callFileWriteSite(name, n); ok {
+		v.f.fileWrites = append(v.f.fileWrites, w)
+	}
+}
+
+// fileWriteSite is one file_put_contents(path, data) call.
+type fileWriteSite struct {
+	path ast.Vertex
+	data ast.Vertex
+}
+
+// fileWriteCalls write their second argument to the path in their first.
+var fileWriteCalls = map[string]bool{"file_put_contents": true}
+
+func callFileWriteSite(name string, node ast.Vertex) (fileWriteSite, bool) {
+	call, ok := node.(*ast.ExprFunctionCall)
+	if !ok || !fileWriteCalls[name] || len(call.Args) < 2 {
+		return fileWriteSite{}, false
+	}
+	pathArg, okPath := call.Args[0].(*ast.Argument)
+	dataArg, okData := call.Args[1].(*ast.Argument)
+	if !okPath || !okData {
+		return fileWriteSite{}, false
+	}
+	return fileWriteSite{path: pathArg.Expr, data: dataArg.Expr}, true
 }
 
 func callSinkSite(name string, node ast.Vertex) (sinkSite, bool) {
