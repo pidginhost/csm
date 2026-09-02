@@ -216,6 +216,18 @@ func TestDoorwaySitemapRoutes_RequiresOneRulePair(t *testing.T) {
 	if got := doorwaySitemapRoutes(rules); len(got) != 0 {
 		t.Fatalf("unrelated rewrite rules were correlated: %v", got)
 	}
+
+	// The same split, but with a trailing parameter after the feed so a
+	// whole-string search would find both halves. Only the key and value of
+	// one rule may be paired; the route lives in the first rule and the feed
+	// in the second, so this is still not a doorway route.
+	trailing := phpStringMap(
+		`sitemap7\.xml$`, `index.php?sitemap=7`,
+		`unrelated-route$`, `index.php?feed=xmlsitemap7&paged=1`,
+	)
+	if got := doorwaySitemapRoutes(trailing); len(got) != 0 {
+		t.Fatalf("halves from different rules were correlated: %v", got)
+	}
 }
 
 func TestDoorwaySitemapRoutes_RequiresExactRouteAndFeedParameter(t *testing.T) {
