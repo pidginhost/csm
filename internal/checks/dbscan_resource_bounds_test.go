@@ -305,8 +305,8 @@ func TestCheckDatabaseContentDeduplicatesSharedInstall(t *testing.T) {
 	t.Cleanup(func() { contentSignatureScanner = previousScanner })
 
 	CheckDatabaseContent(context.Background(), nil, nil)
-	if queries != 13 {
-		t.Errorf("queries for two paths sharing one database = %d, want 13 for one scan", queries)
+	if queries != 14 {
+		t.Errorf("queries for two paths sharing one database = %d, want 14 for one scan", queries)
 	}
 }
 

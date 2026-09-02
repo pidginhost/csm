@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Code that builds its own function and constant names by XOR-ing two binary strings is now reported. The technique exists only to keep those names out of the file, so keyword-based rules never saw it, and it was hiding an active backdoor stored in a site's database rather than in a file.
 - An active known-vulnerable plugin is now reported as unprotected, and raised to Critical, when ModSecurity does not filter its traffic; where CSM ships a virtual patch for that CVE the alert says the patch cannot run. A cPanel addon domain is matched to its exact associated subdomain, so a disabled flag recorded against either name covers the site, without treating every vhost that happens to share a document root as the same site.
 - Link blocks a page hides from its readers are now found in the database. A container pushed off the canvas, or hidden outright, that wraps links to other domains lends the site's ranking to those domains while a visitor sees nothing; subdomains of one target count as one domain.
+- Doorway scaffolding kept in the WordPress options table is now reported: an autoloaded option named after a digest holding encoded configuration, which cannot be found without already knowing the key, and rewrite rules routing a numbered sitemap into a matching numbered feed so crawlers are handed generated pages the real sitemap never lists.
 
 ### Changed
 
