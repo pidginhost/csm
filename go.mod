@@ -4,10 +4,10 @@ go 1.26.7
 
 require (
 	github.com/VKCOM/php-parser v0.8.2
-	github.com/VirusTotal/yara-x/go v1.19.0
+	github.com/VirusTotal/yara-x/go v1.20.0
 	github.com/cilium/ebpf v0.22.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/getsentry/sentry-go v0.48.0
+	github.com/getsentry/sentry-go v0.49.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.19.2
