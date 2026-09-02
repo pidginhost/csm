@@ -88,14 +88,14 @@ func TestQuarantineFileTOCTOUSafe_CopiesLinkAddedAfterFstat(t *testing.T) {
 	}
 	other := filepath.Join(tmp, "surviving.php")
 	qPath := filepath.Join(tmp, "quarantine", "shell.php")
-	if err := os.MkdirAll(filepath.Dir(qPath), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(qPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	oldCopy := quarantineCopyByFD
 	quarantineCopyByFD = func(fd *os.File, dst string) error {
-		if err := os.Link(src, other); err != nil {
-			return err
+		if linkErr := os.Link(src, other); linkErr != nil {
+			return linkErr
 		}
 		return oldCopy(fd, dst)
 	}
@@ -105,8 +105,8 @@ func TestQuarantineFileTOCTOUSafe_CopiesLinkAddedAfterFstat(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "hard link") {
 		t.Fatalf("link added after fstat was not reported: %v", err)
 	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Fatalf("detected name remains after quarantine: %v", err)
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("detected name remains after quarantine: %v", statErr)
 	}
 	qInfo, err := os.Stat(qPath)
 	if err != nil {

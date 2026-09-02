@@ -79,11 +79,11 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	// Always create an independent root-owned copy. Checking st_nlink before a
 	// hardlink is not sufficient: the account can add another name after the
 	// check and retain write access to the inode placed in quarantine.
-	if err := quarantineCopyByFD(fd, qPath); err != nil {
+	if err = quarantineCopyByFD(fd, qPath); err != nil {
 		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 	}
 
-	if err := removeQuarantinedSource(path, qPath, cur); err != nil {
+	if err = removeQuarantinedSource(path, qPath, cur); err != nil {
 		return err
 	}
 	remaining, err := fd.Stat()
