@@ -389,6 +389,28 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 // auto_response.dry_run is active. The daemon calls this after construction
 // to wire in store.RecordDryRunBlock without creating an import cycle between
 // internal/firewall and internal/store.
+// SetConfig replaces the ruleset input the next Apply builds from. The
+// engine was constructed with a value copy of the firewall block taken at
+// daemon start, so every re-apply path (`csm firewall restart`,
+// `apply-confirmed`, SIGHUP) rebuilt the old rules while reporting success
+// and the operator's csm.yaml edit landed unprotected at the next restart.
+// A nil cfg is ignored.
+func (e *Engine) SetConfig(cfg *FirewallConfig) {
+	if cfg == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cfg = cfg
+}
+
+// Config returns the ruleset input the engine currently applies.
+func (e *Engine) Config() *FirewallConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg
+}
+
 func (e *Engine) SetDryRunRecorder(fn func(ip, reason string, timeout time.Duration)) {
 	e.mu.Lock()
 	e.dryRunRecorder = fn

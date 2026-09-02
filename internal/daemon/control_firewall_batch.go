@@ -181,7 +181,15 @@ func (c *ControlListener) handleFirewallRestart(_ json.RawMessage) (any, error) 
 	if c.d.fwEngine == nil {
 		return nil, fmt.Errorf("firewall engine not running; restart the csm daemon")
 	}
+	// Re-read the firewall block from disk: the engine holds the copy taken
+	// at daemon start, and a restart that re-applied it reported success
+	// while the operator's edit stayed unapplied.
+	previous, err := c.d.refreshFirewallFromDisk()
+	if err != nil {
+		return nil, err
+	}
 	if err := c.d.fwEngine.Apply(); err != nil {
+		c.d.fwEngine.SetConfig(previous)
 		return nil, fmt.Errorf("applying ruleset: %w", err)
 	}
 	state, _ := firewall.LoadState(c.d.currentCfg().StatePath)
@@ -209,8 +217,21 @@ func (c *ControlListener) handleFirewallApplyConfirmed(argsRaw json.RawMessage) 
 	cfg := c.d.currentCfg()
 	confirmFile, rollbackFile, legacyRollbackFile := firewallRollbackFiles(cfg.StatePath)
 
+	// The command exists to apply an edited csm.yaml firewall block under a
+	// deadman. Read that block from disk (the live config keeps the
+	// startup copy) and remember what the engine held, so an expired
+	// window, a revert, or a failed apply puts the old input back as well
+	// as the old kernel rules.
+	previous, err := c.d.refreshFirewallFromDisk()
+	if err != nil {
+		return nil, err
+	}
+	setFirewallDeadmanOnRollback(func() { c.d.fwEngine.SetConfig(previous) })
+
 	if err := applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile,
 		time.Duration(minutes)*time.Minute, c.d.fwEngine.Apply); err != nil {
+		c.d.fwEngine.SetConfig(previous)
+		setFirewallDeadmanOnRollback(nil)
 		return nil, err
 	}
 
@@ -242,6 +263,8 @@ func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) 
 	if err := removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFile); err != nil {
 		return nil, err
 	}
+	// Confirmed: the candidate ruleset input stays in the engine.
+	firewallDeadmanOnRollback = nil
 	return control.FirewallAckResult{
 		Message: "Firewall confirmed. Rollback timer cancelled.",
 	}, nil
@@ -303,6 +326,28 @@ func applyFirewallDeadman(confirmFile, rollbackFile, legacyRollbackFile string, 
 // the operator confirms first. The goroutine lives in the daemon (long-lived,
 // so it survives CLI exit); a daemon restart kills it, which is why
 // recoverFirewallApplyConfirmed re-arms from the persisted deadline.
+// firewallDeadmanOnRollback runs after a rollback restores the kernel
+// snapshot (deadline expiry or explicit revert), so the engine's ruleset
+// input reverts with it; otherwise the next Apply would rebuild the rules
+// the operator never confirmed. Cleared on confirm. Guarded by
+// firewallDeadmanMu except in setFirewallDeadmanOnRollback, which takes it.
+var firewallDeadmanOnRollback func()
+
+func setFirewallDeadmanOnRollback(fn func()) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	firewallDeadmanOnRollback = fn
+}
+
+// runFirewallDeadmanOnRollbackLocked invokes and clears the rollback hook.
+// Caller holds firewallDeadmanMu.
+func runFirewallDeadmanOnRollbackLocked() {
+	if firewallDeadmanOnRollback != nil {
+		firewallDeadmanOnRollback()
+		firewallDeadmanOnRollback = nil
+	}
+}
+
 func armFirewallDeadman(confirmFile, rollbackFile string, marker []byte, wait time.Duration) {
 	obs.SafeGo("fw-apply-confirmed-rollback", func() {
 		time.Sleep(wait)
@@ -434,6 +479,9 @@ func restoreFirewallRollback(confirmFile, rollbackFile string, expectedMarker []
 	if err := applyFirewallRollbackFile(rollbackFile); err != nil {
 		return err
 	}
+	// The kernel is back on the snapshot; put the engine's ruleset input
+	// back too, or the next Apply rebuilds the unconfirmed candidate.
+	runFirewallDeadmanOnRollbackLocked()
 
 	return removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFileFor(rollbackFile))
 }

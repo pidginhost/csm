@@ -53,7 +53,7 @@ csm firewall allow-file <path>                   # Bulk allow from file
 csm firewall flush                               # Clear all blocked IPs (subnet blocks kept)
 
 # Safety
-csm firewall apply-confirmed <minutes>           # Apply with auto-rollback timer
+csm firewall apply-confirmed <minutes>           # Apply the firewall block from csm.yaml with auto-rollback timer
 csm firewall confirm                             # Confirm applied changes
 csm firewall rollback status|confirm|revert      # Manage pending config rollback
 csm firewall restart                             # Reapply full ruleset

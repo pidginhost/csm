@@ -101,7 +101,12 @@ func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error {
 func (e *Engine) ValidateSubnetBlock(_ string) error            { return ErrUnsupportedPlatform }
 func (e *Engine) IsSubnetBlocked(_ string) bool                 { return false }
 func (e *Engine) BlockedSubnetCovering(_ string) (string, bool) { return "", false }
-func (e *Engine) UnblockSubnet(_ string) error                  { return ErrUnsupportedPlatform }
+
+// SetConfig and Config mirror the Linux engine so re-apply wiring compiles
+// everywhere; the stub applies nothing.
+func (e *Engine) SetConfig(_ *FirewallConfig)  {}
+func (e *Engine) Config() *FirewallConfig      { return nil }
+func (e *Engine) UnblockSubnet(_ string) error { return ErrUnsupportedPlatform }
 func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error {
 	return ErrUnsupportedPlatform
 }
