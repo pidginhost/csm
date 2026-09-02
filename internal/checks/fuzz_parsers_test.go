@@ -358,6 +358,25 @@ func FuzzCloakOptionParsers(f *testing.F) {
 	})
 }
 
+func FuzzStoredCloakComponents(f *testing.F) {
+	f.Add([]byte(`define('DONOTCACHEPAGE', true); $_SERVER['HTTP_USER_AGENT']; 'Googlebot';`))
+	f.Add([]byte(`$cache = false; define('WP_CACHE', $cache); str_rot13('Tbbtyrobg');`))
+	f.Add([]byte(`/* unclosed comment define('DONOTCACHEPAGE', true)`))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, code []byte) {
+		if len(code) > maxStoredCodeBytes {
+			return
+		}
+		cache, crawler := storedCloakComponents(code)
+		if len(cache) > maxStoredCloakDetailNames || len(crawler) > maxStoredCloakDetailNames {
+			t.Fatalf("component bounds exceeded: cache=%d crawler=%d", len(cache), len(crawler))
+		}
+		if note := storedCloakNote(cache, crawler); len(note) > 1024 {
+			t.Fatalf("cloak note exceeded detail bound: %d bytes", len(note))
+		}
+	})
+}
+
 func FuzzParseSessionTokenIPs(f *testing.F) {
 	f.Add(`a:1:{s:5:"token";a:4:{s:10:"expiration";i:1775817506;s:2:"ip";s:11:"203.0.113.7";s:2:"ua";s:11:"Mozilla/5.0";s:5:"login";i:1775644706;}}`)
 	f.Add(`a:1:{s:2:"ip";s:1:"203.0.113.7";}`)

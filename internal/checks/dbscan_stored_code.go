@@ -104,7 +104,7 @@ func checkWPStoredCode(user string, creds wpDBCreds, prefix string) []alert.Find
 		if len(hits) == 0 {
 			// No signature matched, but stored code that both defeats caching
 			// and looks for a crawler is a cloak on its own terms.
-			if cloak := storedCloakFinding(user, creds, prefix, row); cloak != nil {
+			if cloak := storedCloakFindingWithComponents(user, creds, prefix, row, cacheDefeat, crawler); cloak != nil {
 				findings = append(findings, *cloak)
 			}
 			continue
