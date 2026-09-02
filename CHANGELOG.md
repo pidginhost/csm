@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- A credential-spray trip now promotes the per-IP incident that the same attacker already had open instead of opening a second incident under the same key, which left the first one open forever with nothing able to merge into or close it.
+- Sub-threshold findings waiting in the incident correlator and stale spray-detector state are now pruned on every auto-close tick instead of only by the daily retention sweep.
 - The WordPress version and locale read from a site's `version.php` are now validated against the shapes WordPress ships before they name the checksum cache file or the checksum API query. The file is tenant-writable, and a crafted locale could steer the root-written cache path or rewrite the query.
 - Cancelling an account scan now stops it cleanly: checks still waiting for a worker slot no longer start, checks cut short by the cancel no longer leave a spurious `check_timeout` warning in the kept partial results, and a cancelled `--quarantine` job stops quarantining the findings it produced while shutting down.
 - The re-check for `db_post_injection` findings now searches every published post for the injected pattern instead of re-reading only the five example post IDs the finding lists, so cleaning the examples no longer resolves a finding whose injection is still present in other posts.

@@ -308,6 +308,18 @@ func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func
 // cap left stale incidents unclosed, so the caller schedules a prompt
 // follow-up sweep instead of waiting the full interval.
 func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool) {
+	return runIncidentAutoCloseAt(c, cfg, time.Now())
+}
+
+// runIncidentAutoCloseAt is runIncidentAutoClose with an explicit clock.
+func runIncidentAutoCloseAt(c *incident.Correlator, cfg *config.Config, now time.Time) (more bool) {
+	// Sub-threshold findings and spray-detector state age out after the
+	// merge window. Pruning them only in the daily retention compaction
+	// held a day of stale entries, each carrying a full Finding, on a host
+	// with sustained one-shot scanner traffic.
+	_ = c.PruneStalePending(now)
+	_ = c.PruneStaleSpray(now)
+
 	// The safety cap runs on every tick regardless of the operator's
 	// auto-close toggle or per-kind thresholds. It is a hard backstop against
 	// unbounded growth of Open/Contained incidents (in memory and bbolt) on a
@@ -326,7 +338,7 @@ func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) (more bool
 		thresholds[incident.Kind(k)] = v
 	}
 	dryRun := cfg.Incidents.AutoClose.DryRun
-	closed, dryRunCount, scanned, more := c.CloseStaleLimited(time.Now(), thresholds, dryRun, incidentAutoCloseMaxPerSweep)
+	closed, dryRunCount, scanned, more := c.CloseStaleLimited(now, thresholds, dryRun, incidentAutoCloseMaxPerSweep)
 	if closed > 0 || dryRunCount > 0 {
 		csmlog.Info("incident auto-close",
 			"closed", closed,

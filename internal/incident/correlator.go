@@ -262,7 +262,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		switch decision {
 		case sprayDecisionOpen:
 			sprayKey := Key{RemoteIP: f.SourceIP}
-			id := c.createSprayIncidentLocked(sprayKey, f, now, hits)
+			id := c.promoteOrCreateSprayLocked(sprayKey, f, now, hits)
 			c.spray.BindIncident(f.SourceIP, id)
 			c.counters.sprayOpenedTotal.Add(1)
 			if cb := c.maybeBlockSprayLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened"); cb != nil {
@@ -360,6 +360,35 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		afterUnlock = cb
 	}
 	return id, true, nil
+}
+
+// promoteOrCreateSprayLocked opens the credential_spray incident for key.
+// The first failures from an IP usually opened an ordinary per-IP incident
+// under the same RemoteIP key before the spray threshold tripped; creating
+// a second incident under that key stole the key index and left the earlier
+// incident Open with nothing able to merge into or close it. An active
+// incident already holding the key is promoted in place, keeping its
+// findings and timeline. Caller must hold c.mu.
+func (c *Correlator) promoteOrCreateSprayLocked(key Key, f alert.Finding, now time.Time, hits int) string {
+	if existingID, ok := c.byKey[keyString(key)]; ok {
+		if inc, live := c.incidents[existingID]; live && incidentStatusActive(inc.Status) {
+			inc.Kind = KindCredentialSpray
+			if inc.Severity < alert.High {
+				inc.Severity = alert.High
+			}
+			inc.Actions = append(inc.Actions, IncidentAction{
+				Time:    now,
+				Action:  "credential_spray_opened",
+				Result:  "ok",
+				Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(KindMailboxBruteforce),
+			})
+			// A kind change must be durable, not left to the bookkeeping
+			// debounce.
+			c.mergeAndPersistLocked(inc, f, now, true)
+			return existingID
+		}
+	}
+	return c.createSprayIncidentLocked(key, f, now, hits)
 }
 
 // createSprayIncidentLocked builds a credential_spray incident keyed on
