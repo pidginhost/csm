@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -723,8 +725,7 @@ func extractIPAfterKeyword(line, keyword string) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	ip := strings.TrimRight(fields[0], ",:;)([]")
-	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
+	if ip, ok := netutil.ParseIPToken(fields[0]); ok {
 		return ip
 	}
 	return ""
@@ -810,7 +811,7 @@ type abuseIPDBResponse struct {
 // queryAbuseIPDB returns (score, category, error).
 // Returns specific errors for rate limiting (429) and quota exhaustion (402).
 func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error) {
-	req, err := http.NewRequest("GET", abuseIPDBEndpoint+"?ipAddress="+ip+"&maxAgeInDays=90", nil)
+	req, err := http.NewRequest("GET", abuseIPDBEndpoint+"?ipAddress="+url.QueryEscape(ip)+"&maxAgeInDays=90", nil)
 	if err != nil {
 		return 0, "", err
 	}

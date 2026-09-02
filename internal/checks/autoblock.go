@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mailranges"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -773,9 +774,10 @@ func extractIPFromFinding(f alert.Finding) string {
 			rest := msg[idx+len(sep):]
 			fields := strings.Fields(rest)
 			if len(fields) > 0 {
-				candidate := strings.TrimRight(fields[0], ",:;)([]")
-				if ip := normalizeBlockIP(candidate); ip != "" {
-					return ip
+				if candidate, ok := netutil.ParseIPToken(fields[0]); ok {
+					if ip := normalizeBlockIP(candidate); ip != "" {
+						return ip
+					}
 				}
 			}
 		}
@@ -1207,7 +1209,9 @@ func extractCIDRFromFinding(f alert.Finding) string {
 	if len(fields) == 0 {
 		return ""
 	}
-	candidate := strings.TrimRight(fields[0], ",:;)([]")
+	// A CIDR never ends in ':' (the prefix length is last), so a trailing
+	// separator can be dropped here; IP tokens go through netutil instead.
+	candidate := strings.TrimRight(strings.TrimRight(fields[0], ",;)([]"), ":")
 	_, ipnet, err := net.ParseCIDR(candidate)
 	if err != nil {
 		return ""

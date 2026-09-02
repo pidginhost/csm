@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // AttackType categorises observed attacks for grouping and scoring.
@@ -480,12 +481,12 @@ func extractIP(message string) string {
 			rest := message[idx+len(sep):]
 			fields := strings.Fields(rest)
 			if len(fields) > 0 {
-				ip := strings.TrimRight(fields[0], ",:;)([]")
+				token := fields[0]
 				// Strip AbuseIPDB score suffix like "(AbuseIPDB"
-				if paren := strings.Index(ip, "("); paren > 0 {
-					ip = ip[:paren]
+				if paren := strings.Index(token, "("); paren > 0 {
+					token = token[:paren]
 				}
-				if net.ParseIP(ip) != nil {
+				if ip, ok := netutil.ParseIPToken(token); ok {
 					return ip
 				}
 			}
