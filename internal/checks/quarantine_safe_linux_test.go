@@ -153,8 +153,13 @@ func TestQuarantineFileTOCTOUSafe_LinkFallbackUsesOpenFD(t *testing.T) {
 			}
 			t.Cleanup(func() { quarantineLinkByFD = oldLink })
 
-			if qErr := quarantineFileTOCTOUSafe(src, dst, info); qErr != nil {
-				t.Fatalf("quarantine: %v", qErr)
+			// The hook swapped a replacement into the source path after the
+			// fd was opened: the copy must still come from the open fd, and
+			// the swap is reported rather than passed off as a completed
+			// quarantine.
+			qErr := quarantineFileTOCTOUSafe(src, dst, info)
+			if qErr == nil || !strings.Contains(qErr.Error(), "replaced before unlink") {
+				t.Fatalf("swap after open not reported: %v", qErr)
 			}
 			got, err := os.ReadFile(dst)
 			if err != nil {

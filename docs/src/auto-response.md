@@ -181,6 +181,7 @@ receive them.
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Subnet blocks refuse the default route and any range that covers infrastructure, local host, allowed, or port-specific allowed IPs
 - Quarantined files preserve full metadata for restoration
+- A file with other hard links is copied into quarantine rather than linked, because the account keeps the inode through its other names; the detected name is removed and the result names how many links survive. A file swapped into the detected path between capture and removal is reported as a failed remediation, with the captured copy kept as evidence and the replacement left untouched
 - Realtime signature auto-quarantine requires high confidence: category `webshell` or `dropper`, file size at least 512 bytes, and either Shannon entropy >= 5.5 or hex density > 20% with an obfuscated-execution signal. This prevents legitimate WordPress plugins from being quarantined.
 - IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts and threat-intel reputation sightings always bypass the operator email/webhook rate limit (default 30/hour)

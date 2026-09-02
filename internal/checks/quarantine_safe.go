@@ -4,7 +4,6 @@ package checks
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"syscall"
 
@@ -80,7 +79,16 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
 	}
 
-	if err := quarantineLinkByFD(fd, qPath); err != nil {
+	// A multi-link inode cannot be moved out of the account's reach: linking
+	// it into quarantine would share the account-owned inode, still live and
+	// still writable through its other names. Copy the content instead (the
+	// copy is root-owned) and report the names that survive.
+	links := fileLinkCount(cur)
+	if links > 1 {
+		if err := copyQuarantineFileByFD(fd, qPath); err != nil {
+			return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
+		}
+	} else if err := quarantineLinkByFD(fd, qPath); err != nil {
 		if err := copyQuarantineFileByFD(fd, qPath); err != nil {
 			return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 		}
@@ -89,75 +97,22 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	if err := removeQuarantinedSource(path, qPath, cur); err != nil {
 		return err
 	}
+	if links > 1 {
+		return fmt.Errorf("quarantine: copied %s to %s and removed that name, but %d other hard link(s) to the same content remain reachable elsewhere", path, qPath, links-1)
+	}
 	return nil
 }
 
-// sameContentShape verifies that two stats describe a file with the same
-// size and modification time. Used as a defence-in-depth check after
-// sameFileIdentity passes, because inode reuse on tmpfs / ext4 lets an
-// attacker recreate a file under the same path with a fresh ino that
-// happens to match the freed slot.
-func sameContentShape(a, b os.FileInfo) bool {
-	if a == nil || b == nil {
-		return false
+// fileLinkCount returns the inode's link count, or 1 when the stat carries
+// no platform data.
+func fileLinkCount(info os.FileInfo) uint64 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Nlink) // #nosec G115 -- link count, never negative.
 	}
-	if a.Size() != b.Size() {
-		return false
-	}
-	return a.ModTime().Equal(b.ModTime())
+	return 1
 }
 
 func linkQuarantineFileByFD(fd *os.File, qPath string) error {
 	procLink := fmt.Sprintf("/proc/self/fd/%d", fd.Fd())
 	return unix.Linkat(unix.AT_FDCWD, procLink, unix.AT_FDCWD, qPath, unix.AT_SYMLINK_FOLLOW)
-}
-
-func copyQuarantineFileByFD(src *os.File, qPath string) error {
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek source: %w", err)
-	}
-	// #nosec G304 G306 -- qPath is generated under the quarantine
-	// directory; 0600 keeps cross-device quarantine copies private.
-	dst, err := os.OpenFile(qPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	removeCopy := true
-	defer func() {
-		if removeCopy {
-			_ = os.Remove(qPath)
-		}
-	}()
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
-		return err
-	}
-	if err := dst.Close(); err != nil {
-		return err
-	}
-	removeCopy = false
-	return nil
-}
-
-func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		_ = os.Remove(qPath)
-		return fmt.Errorf("quarantine: stat source before unlink %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
-		return nil
-	}
-	if !sameContentShape(info, original) {
-		_ = os.Remove(qPath)
-		return fmt.Errorf("quarantine: source changed before unlink %s", path)
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		_ = os.Remove(qPath)
-		return fmt.Errorf("quarantine: unlink source %s: %w", path, err)
-	}
-	return nil
 }
