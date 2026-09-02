@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Doorway scaffolding kept in the WordPress options table is now reported: an autoloaded option named after a digest holding encoded configuration, which cannot be found without already knowing the key, and rewrite rules routing a numbered sitemap into a matching numbered feed so crawlers are handed generated pages the real sitemap never lists. Partial or oversized option reads are treated as incomplete scans instead of evidence.
 - A stored PHP snippet that disables caching for the request and, in the same snippet, tests the visitor's user agent for a search or SEO crawler is now reported as cloaking. Neither half means anything alone, which is why both are required: caching helpers and user-agent checks are ordinary by themselves.
 - Database findings now say whether the document root is currently served. A dormant install still holds a live database and publishes again the moment a domain is pointed at it, but it is not reachable today; without that distinction a dormant compromise and a live one look identical in the queue.
+- A WordPress site address pointing at a domain the account does not own is now reported, but only for a document root the panel is currently serving. A site that moved away is no longer served, which is what separates a hijack from a migration; the previous shape-only test caught a live poisoning only because the injected address happened to carry a query string.
 
 ### Changed
 

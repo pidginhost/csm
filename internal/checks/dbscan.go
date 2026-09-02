@@ -83,9 +83,15 @@ const (
 // cPanel's map covers addon roots in any supported layout; other panels retain
 // the one-level home-directory fallback.
 func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
+	paths, served, _ := wpConfigPathsWithDomains(ctx)
+	return paths, served
+}
+
+func wpConfigPathsWithDomains(ctx context.Context) ([]string, map[string]servedState, map[string][]string) {
 	seen := make(map[string]bool)
 	var out []string
 	served := make(map[string]servedState)
+	owned := make(map[string][]string)
 	state := servedUnknown
 	add := func(missingIsIncomplete bool, paths ...string) {
 		for _, p := range paths {
@@ -129,6 +135,7 @@ func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
 				markCheckIncomplete(ctx, "db_content")
 				continue
 			}
+			owned[vh.user] = append(owned[vh.user], vh.domain)
 			state = servedByPanel
 			add(false, filepath.Join(root, "wp-config.php"))
 		}
@@ -159,7 +166,13 @@ func wpConfigPaths(ctx context.Context) ([]string, map[string]servedState) {
 		}
 		add(true, p)
 	}
-	return out, served
+	return out, served, owned
+}
+
+// accountDomainsFor is the panel's list of domains for one account, used to
+// decide whether a WordPress address points off the account.
+func accountDomainsFor(owned map[string][]string, wpConfig string) []string {
+	return owned[wpConfigUser(filepath.Dir(wpConfig))]
 }
 
 func docrootBelongsToCPanelUser(root, user string) bool {
@@ -206,7 +219,7 @@ func spamCountLabel(n int, truncated bool) string {
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, servedRoots := wpConfigPaths(ctx)
+	wpConfigs, servedRoots, ownedDomains := wpConfigPathsWithDomains(ctx)
 	if len(wpConfigs) == 0 {
 		return appendDatabaseScanIncompleteFinding(ctx, nil)
 	}
@@ -237,6 +250,7 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		}
 		creds.tablePrefix = prefix
 		creds.docrootServed = servedRoots[wpConfig]
+		creds.accountDomains = accountDomainsFor(ownedDomains, wpConfig)
 		databaseKey := strings.Join([]string{
 			user, creds.dbHost, creds.dbName, creds.dbUser, creds.dbPass, prefix,
 			strconv.FormatBool(creds.multisite),
@@ -386,6 +400,9 @@ type wpDBCreds struct {
 	// docrootServed records whether the panel serves this install's document
 	// root, so a finding says whether it is reachable today.
 	docrootServed servedState
+	// accountDomains are the domains the panel maps to this account, used to
+	// decide whether a WordPress address points off the account entirely.
+	accountDomains []string
 	// queryCtx ties scheduled database work to the runner's deadline. Command
 	// paths leave it nil and retain the per-query timeout below.
 	queryCtx context.Context
@@ -722,6 +739,8 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 					Details: dbContentFindingDetails(creds, prefix,
 						fmt.Sprintf("%s = %s", optName, truncateDB(parts[1], 200))),
 				})
+			} else if foreign := foreignSiteURLFinding(user, creds, prefix, optName, parts[1]); foreign != nil {
+				findings = append(findings, *foreign)
 			} else if reason, bad := siteURLPoisonReason(parts[1]); bad {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -86,7 +87,7 @@ func TestCheckDatabaseContentRejectsOversizedWPConfig(t *testing.T) {
 	if _, complete := parseWPConfigChecked(configFile); complete {
 		t.Fatal("oversized wp-config.php parsed as complete")
 	}
-	if creds := parseWPConfig(configFile); creds != (wpDBCreds{}) {
+	if creds := parseWPConfig(configFile); reflect.DeepEqual(creds, wpDBCreds{}) == false {
 		t.Fatalf("oversized wp-config.php returned partial credentials: %+v", creds)
 	}
 	withMockOS(t, &mockOS{
