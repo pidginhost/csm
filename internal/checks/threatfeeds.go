@@ -806,6 +806,8 @@ func (db *ThreatDB) loadFeedCache() {
 		db.feedNets[feed.name] = nil
 
 		cachePath := filepath.Join(db.dbPath, feed.name+".txt")
+		_, statErr := osFS.Stat(cachePath)
+		cacheExists := statErr == nil
 		for _, line := range loadLines(cachePath) {
 			// Cache files mix plain IPs and CIDR lines ("/" marks a
 			// CIDR); legacy IP-only files parse the same way.
@@ -820,8 +822,10 @@ func (db *ThreatDB) loadFeedCache() {
 		// The download path refuses a feed below its floor; a cache below it
 		// is a truncated write, not a smaller feed. Serve nothing from it and
 		// drop the update marker so the next cycle downloads instead of
-		// honouring the 20-hour skip.
-		if minExpected := feedMinEntries[feed.name]; minExpected > 0 {
+		// honouring the 20-hour skip. A feed with no cache at all (never
+		// fetched, or every download refused) is not truncated and must not
+		// force a refresh of the others.
+		if minExpected := feedMinEntries[feed.name]; cacheExists && minExpected > 0 {
 			if n := len(db.feedIPs[feed.name]) + len(db.feedNets[feed.name]); n < minExpected {
 				if n > 0 {
 					fmt.Fprintf(os.Stderr, "threatdb: WARNING cached %s holds only %d entries (expected >%d); ignoring it until refreshed\n", feed.name, n, minExpected)
