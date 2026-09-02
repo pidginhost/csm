@@ -299,8 +299,8 @@ func TestCSSOffScreen_LengthSyntax(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cssOffScreen(tt.style); got != tt.want {
-				t.Fatalf("cssOffScreen(%q) = %t, want %t", tt.style, got, tt.want)
+			if got := parseHiddenCSSState(tt.style).offScreen; got != tt.want {
+				t.Fatalf("offScreen(%q) = %t, want %t", tt.style, got, tt.want)
 			}
 		})
 	}
@@ -750,6 +750,11 @@ func TestCheckWPHiddenLinks_QueryIncludesEverySupportedStyle(t *testing.T) {
 			if !strings.Contains(query, want) {
 				t.Errorf("query missing %q: %s", want, query)
 			}
+		}
+		// The prefilter runs against every published post of every install on
+		// the host, so it must read each column once.
+		if got := strings.Count(query, "REGEXP"); got != 1 {
+			t.Errorf("query scans the column %d times, want 1: %s", got, query)
 		}
 	}
 }

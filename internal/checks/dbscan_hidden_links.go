@@ -74,14 +74,17 @@ const hiddenLinkCandidatePattern = `(display|visibility)` + hiddenLinkCSSGapPatt
 	hiddenLinkCSSGapPattern + `(calc` + hiddenLinkCSSGapPattern + `[(]` + hiddenLinkCSSGapPattern + `)?` +
 	`-([0-9]|[.][0-9])|` + hiddenLinkEncodedStylePattern
 
-const hiddenLinkCandidateSQL = "'" + hiddenLinkCandidatePattern + "'"
-
+// hiddenLinkCandidateCondition builds the row prefilter. Both alternatives
+// live in one pattern so the column is scanned once: this runs against every
+// published post of every install on the host, and a second REGEXP pass over a
+// TEXT column doubles that for nothing.
+//
+// A CSS escape is a literal backslash in the stored markup, which needs two in
+// the regular expression. CHAR() builds them so the result does not depend on
+// MySQL's string-escape mode.
 func hiddenLinkCandidateCondition(column string) string {
-	// CSS escapes need two backslashes in the regular expression. Build them
-	// with CHAR() so the result does not depend on MySQL's string-escape mode.
-	escapedStyle := `style[[:space:]]*=[^>]*`
-	return fmt.Sprintf("(LOWER(%s) REGEXP %s OR LOWER(%s) REGEXP CONCAT('%s', CHAR(92), CHAR(92)))",
-		column, hiddenLinkCandidateSQL, column, escapedStyle)
+	return fmt.Sprintf("LOWER(%s) REGEXP CONCAT('%s|style[[:space:]]*=[^>]*', CHAR(92), CHAR(92))",
+		column, hiddenLinkCandidatePattern)
 }
 
 // hiddenLinkHit is what one row's markup revealed.
@@ -359,12 +362,6 @@ func normalizeHost(host string) string {
 		return ""
 	}
 	return strings.ToLower(ascii)
-}
-
-// cssOffScreen reports whether inline declarations move content outside the
-// canvas rather than merely hiding it.
-func cssOffScreen(declarations string) bool {
-	return parseHiddenCSSState(declarations).offScreen
 }
 
 type cssDeclaration struct {
