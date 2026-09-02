@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// Regression batch for the 2026-07-13 cluster6 phishing false-positive storm.
+// Regression batch for the 2026-07-13 production phishing false-positive storm.
 // The phishing_credential_log, phishing_php, phishing_kit_archive and
 // phishing_iframe detectors mislabelled binary media, legit plugin/theme
 // source, distribution archives and a shipped iframe demo as attacks. These

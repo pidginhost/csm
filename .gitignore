@@ -53,3 +53,10 @@ Thumbs.db
 
 # mdBook output
 docs/book/
+
+# Local operational dumps. These carry live hostnames, customer account names
+# and observed IPs, and must never be committed to this public repo.
+/alerts.txt
+/findings.txt
+/scan-*.txt
+/*.alerts

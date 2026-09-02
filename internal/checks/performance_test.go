@@ -286,7 +286,7 @@ func TestCheckRedisConfigUsesRawUint64ForHeadroomRatio(t *testing.T) {
 }
 
 // redisNonExpiringFixture wires a Redis with maxmemory set, a given eviction
-// policy, and a 98.9% non-expiring keyspace (the cluster6 shape).
+// policy, and a 98.9% non-expiring keyspace (the production-host shape).
 func redisNonExpiringFixture(t *testing.T, policy string) []alert.Finding {
 	return redisNonExpiringFixtureWithPolicyError(t, policy, nil)
 }

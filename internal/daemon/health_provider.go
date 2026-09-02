@@ -92,7 +92,7 @@ func (d *Daemon) SeverityCounts() map[string]int {
 //
 // The firewall engine is the authoritative source: production code never
 // writes the parallel bbolt `fw:blocked` bucket the previous implementation
-// read, so /api/v1/status reported a stale count (cluster6 showed 25
+// read, so /api/v1/status reported a stale count (a production host showed 25
 // against 909 in the real engine state). Engine.BlockedCount() reads the
 // same state file Status() and `csm firewall status` use, with expired
 // entries pruned.

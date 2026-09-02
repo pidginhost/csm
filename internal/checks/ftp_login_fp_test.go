@@ -28,7 +28,7 @@ func serveSyslog(t *testing.T, content string) string {
 // are internal machinery, not customer or attacker activity, and must never
 // alert -- mirroring the loopback exemption the cPanel-login detector already has.
 func TestCheckFTPLoginsSkipsLoopbackServiceAuth(t *testing.T) {
-	content := "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@127.0.0.1) [INFO] __cpanel__service__auth__ftpd__8ut13JQgSaTMaObe is now logged in\n"
+	content := "Jun 21 21:26:25 srv01 pure-ftpd[1]: (?@127.0.0.1) [INFO] __cpanel__service__auth__ftpd__8ut13JQgSaTMaObe is now logged in\n"
 	serveSyslog(t, content)
 
 	// Legacy (no store) path.
@@ -48,7 +48,7 @@ func TestCheckFTPLoginsSkipsLoopbackServiceAuth(t *testing.T) {
 }
 
 func TestCheckFTPLoginsSkipsIPv6Loopback(t *testing.T) {
-	content := "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@::1) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"
+	content := "Jun 21 21:26:25 srv01 pure-ftpd[1]: (?@::1) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"
 	serveSyslog(t, content)
 
 	if f := CheckFTPLogins(context.Background(), &config.Config{}, nil); len(f) != 0 {
@@ -61,8 +61,8 @@ func TestCheckFTPLoginsSkipsLoopbackVariants(t *testing.T) {
 		name    string
 		content string
 	}{
-		{"ipv4_127_8", "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@127.0.0.2) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
-		{"ipv4_mapped", "Jun 21 21:26:25 cluster6 pure-ftpd[1]: (?@::ffff:127.0.0.1) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
+		{"ipv4_127_8", "Jun 21 21:26:25 srv01 pure-ftpd[1]: (?@127.0.0.2) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
+		{"ipv4_mapped", "Jun 21 21:26:25 srv01 pure-ftpd[1]: (?@::ffff:127.0.0.1) [INFO] __cpanel__service__auth__ftpd__X is now logged in\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -242,7 +242,7 @@ func TestParseFTPLoginAccount(t *testing.T) {
 		line string
 		want string
 	}{
-		{"Jun 21 20:00:25 cluster6 pure-ftpd[1]: (?@81.196.138.64) [INFO] backup is now logged in", "backup"},
+		{"Jun 21 20:00:25 srv01 pure-ftpd[1]: (?@203.0.113.64) [INFO] backup is now logged in", "backup"},
 		{"x pure-ftpd[1]: (mallory@203.0.113.5) [INFO] mallory is now logged in", "mallory"},
 		{"x pure-ftpd[1]: (?@127.0.0.1) [INFO] user@domain.tld is now logged in", "user@domain.tld"},
 		{"no login marker here", ""},

@@ -15,7 +15,7 @@ import "testing"
 // list as a PHP bind shell because socket_bind/socket_listen/shell_exec all
 // appear as documented function names. A PHP bind shell is PHP; require the
 // open tag.
-func TestFPCluster6_RevshellPhpBind_JsFunctionReference(t *testing.T) {
+func TestFPRegression_RevshellPhpBind_JsFunctionReference(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`window.phpFns={` +
 		`socket_bind:["bool socket_bind(resource socket, string address)","Binds a name to a socket"],` +
@@ -26,7 +26,7 @@ func TestFPCluster6_RevshellPhpBind_JsFunctionReference(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_RevshellPhpBind_PhpcsXmlRuleList(t *testing.T) {
+func TestFPRegression_RevshellPhpBind_PhpcsXmlRuleList(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<ruleset><rule ref="Generic.PHP.ForbiddenFunctions">` +
 		`<element key="socket_bind" value="Avoid using socket_bind()"/>` +
@@ -37,7 +37,7 @@ func TestFPCluster6_RevshellPhpBind_PhpcsXmlRuleList(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_RevshellPhpBind_RealBindShellStillDetected(t *testing.T) {
+func TestFPRegression_RevshellPhpBind_RealBindShellStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte(`<?php
 	$sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
@@ -56,7 +56,7 @@ func TestFPCluster6_RevshellPhpBind_RealBindShellStillDetected(t *testing.T) {
 // and the timthumb function. The exploit is the webshot RCE feature switched
 // on, or an injected code-exec sink -- not the library's existence. Unpatched
 // clean copies stay covered by the separate version check.
-func TestFPCluster6_ExploitTimthumb_HardenedDisabled(t *testing.T) {
+func TestFPRegression_ExploitTimthumb_HardenedDisabled(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php
 		if(! defined('WEBSHOT_ENABLED') ) define('WEBSHOT_ENABLED', false);
@@ -73,7 +73,7 @@ func TestFPCluster6_ExploitTimthumb_HardenedDisabled(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_ExploitTimthumb_WebshotEnabledStillDetected(t *testing.T) {
+func TestFPRegression_ExploitTimthumb_WebshotEnabledStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte(`<?php
 		define('WEBSHOT_ENABLED', true);
@@ -83,7 +83,7 @@ func TestFPCluster6_ExploitTimthumb_WebshotEnabledStillDetected(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_ExploitTimthumb_InjectedSinkStillDetected(t *testing.T) {
+func TestFPRegression_ExploitTimthumb_InjectedSinkStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte(`<?php
 		if(! defined('WEBSHOT_ENABLED') ) define('WEBSHOT_ENABLED', false);
@@ -97,7 +97,7 @@ func TestFPCluster6_ExploitTimthumb_InjectedSinkStillDetected(t *testing.T) {
 // spam_hidden_links matched a template's hidden social-icon bar whose links are
 // href="#" placeholders. SEO link-farm spam packs external http(s) links into
 // the hidden container.
-func TestFPCluster6_SpamHiddenLinks_HiddenSocialPlaceholders(t *testing.T) {
+func TestFPRegression_SpamHiddenLinks_HiddenSocialPlaceholders(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<p class="right" style="display:none; visibility:hidden">` +
 		`<a href="#" class="socials facebook" title="Facebook">facebook</a>` +
@@ -113,7 +113,7 @@ func TestFPCluster6_SpamHiddenLinks_HiddenSocialPlaceholders(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_SpamHiddenLinks_ExternalLinkFarmStillDetected(t *testing.T) {
+func TestFPRegression_SpamHiddenLinks_ExternalLinkFarmStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte(`<div style="display:none">` +
 		`<a href="https://casino-x.example/1">buy</a>` +
@@ -133,7 +133,7 @@ func TestFPCluster6_SpamHiddenLinks_ExternalLinkFarmStillDetected(t *testing.T) 
 // spam_wp_footer_injection matched a plugin that hooks wp_footer and echoes a
 // <style> block hiding admin notices, followed by a visible branding link. The
 // spam shape hides the injected link itself with an inline style attribute.
-func TestFPCluster6_SpamWpFooter_AdminNoticeStyleBlock(t *testing.T) {
+func TestFPRegression_SpamWpFooter_AdminNoticeStyleBlock(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	legit := []byte(`<?php
 		add_action('wp_footer', function() {
@@ -147,7 +147,7 @@ func TestFPCluster6_SpamWpFooter_AdminNoticeStyleBlock(t *testing.T) {
 	}
 }
 
-func TestFPCluster6_SpamWpFooter_InlineHiddenLinkStillDetected(t *testing.T) {
+func TestFPRegression_SpamWpFooter_InlineHiddenLinkStillDetected(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 	mal := []byte(`<?php
 		add_action('wp_footer', 'inject_links');
