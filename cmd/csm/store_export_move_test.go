@@ -112,10 +112,45 @@ func TestMoveExportedArchiveRefusesSymlinkDestination(t *testing.T) {
 	}
 }
 
-// A symlink the operator did not put there can also stand in for a
-// directory on the path. Its own mode says nothing, so what matters is
-// who owns it.
-func TestMoveExportedArchiveRefusesForeignSymlinkOnPath(t *testing.T) {
+// Cleaning a path lexically and resolving it the way the kernel does are
+// not the same thing: a ".." after a symlink pops the link's target, not
+// the directory the link sits in. The check has to look at the directory
+// the write actually lands in.
+func TestMoveExportedArchiveResolvesParentTraversalThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	shared := filepath.Join(dir, "shared")
+	sub := filepath.Join(shared, "sub")
+	link := filepath.Join(dir, "link")
+	// Built by concatenation: filepath.Join would clean the ".." away and
+	// the test would no longer describe what an operator can type.
+	dst := link + "/../final.csmbak"
+	writeExportFixture(t, src, "archive-bytes")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sub, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	err := moveExportedArchive(src, dst, sha256Hex("archive-bytes"))
+	if err == nil {
+		t.Fatal("the directory actually written to must be the one checked")
+	}
+	if !strings.Contains(err.Error(), "writable by other accounts") {
+		t.Fatalf("failed for the wrong reason: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "final.csmbak")); !os.IsNotExist(err) {
+		t.Fatal("archive was written into the shared directory anyway")
+	}
+}
+
+// A symlink on the path carries no permission of its own, so it is judged
+// by its owner. One the caller owns is theirs to point wherever they like.
+func TestMoveExportedArchiveAllowsOwnSymlinkOnPath(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "staged.csmbak")
 	real := filepath.Join(dir, "real")

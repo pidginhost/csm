@@ -19,6 +19,22 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// writeFileNoFollow is os.WriteFile that refuses to write through a
+// symlink standing at path.
+//
+// #nosec G304 G703 -- path is the export destination the operator named.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // ArchiveSchemaVersion is the on-wire schema for backup archives. Bump
 // when the manifest layout or contents shape changes incompatibly. Old
 // CSM binaries refuse archives newer than the version they understand.
@@ -221,9 +237,11 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 	archiveSHA := hex.EncodeToString(archHash.Sum(nil))
 
 	// Write companion .sha256 file alongside for operator verification.
+	// O_NOFOLLOW for the same reason as the archive itself: the companion
+	// can truncate whatever a planted symlink points at.
 	companion := opts.DstPath + ".sha256"
 	companionLine := fmt.Sprintf("%s  %s\n", archiveSHA, filepath.Base(opts.DstPath))
-	if err = os.WriteFile(companion, []byte(companionLine), 0600); err != nil {
+	if err = writeFileNoFollow(companion, []byte(companionLine), 0600); err != nil {
 		return nil, fmt.Errorf("writing companion sha256: %w", err)
 	}
 

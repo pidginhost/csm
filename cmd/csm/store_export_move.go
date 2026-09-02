@@ -26,10 +26,8 @@ var renameExportFile = os.Rename
 // destination the operator named on the command line; both are root-only
 // inputs, and the export subcommand already runs as root.
 func moveExportedArchive(src, dst, wantSHA string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
-		return fmt.Errorf("creating destination directory: %w", err)
-	}
-	if err := assertExportDestination(dst); err != nil {
+	dst, err := assertExportDestination(dst)
+	if err != nil {
 		return err
 	}
 	if err := renameExportFile(src, dst); err == nil {
@@ -79,25 +77,55 @@ func isCrossDevice(err error) bool {
 //
 // This is a best-effort check against a path the operator chose: it closes
 // the cases an unprivileged account can set up, not a root-owned one.
-func assertExportDestination(dst string) error {
-	dir := filepath.Dir(dst)
-	if !filepath.IsAbs(dir) {
-		return fmt.Errorf("export destination %s must be an absolute path", dst)
+// It returns the destination with its directory fully resolved, so the
+// path that was checked is the path that gets written. Cleaning a path
+// lexically is not enough: a ".." after a symlink pops the link's target,
+// not the directory the link sits in, so filepath.Dir can name a different
+// directory than the one the kernel writes to.
+//
+// #nosec G703 -- dst is the destination the operator named on the command
+// line, and creating its directory is what this check then examines.
+func assertExportDestination(dst string) (string, error) {
+	rawDir, base := splitExportDestination(dst)
+	if !filepath.IsAbs(rawDir) {
+		return "", fmt.Errorf("export destination %s must be an absolute path", dst)
+	}
+	if base == "" || base == "." || base == ".." {
+		return "", fmt.Errorf("export destination %s does not name a file", dst)
+	}
+	if err := os.MkdirAll(rawDir, 0o750); err != nil {
+		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 	self := os.Geteuid()
-	if err := assertExportPathPrivate(dir, self); err != nil {
-		return err
+	if err := assertExportPathPrivate(rawDir, self); err != nil {
+		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := filepath.EvalSymlinks(rawDir)
 	if err != nil {
-		return fmt.Errorf("checking destination directory: %w", err)
+		return "", fmt.Errorf("checking destination directory: %w", err)
 	}
-	if resolved != filepath.Clean(dir) {
+	if resolved != filepath.Clean(rawDir) {
 		if err := assertExportPathPrivate(resolved, self); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return assertExportLeafPrivate(dst, self)
+	dst = filepath.Join(resolved, base)
+	return dst, assertExportLeafPrivate(dst, self)
+}
+
+// splitExportDestination separates the destination into its directory and
+// its final element without cleaning either, so a ".." stays in the
+// directory part where EvalSymlinks resolves it the way the kernel does.
+func splitExportDestination(dst string) (string, string) {
+	sep := string(filepath.Separator)
+	i := strings.LastIndex(dst, sep)
+	if i < 0 {
+		return "", dst
+	}
+	if i == 0 {
+		return sep, dst[1:]
+	}
+	return dst[:i], dst[i+1:]
 }
 
 func assertExportPathPrivate(dir string, self int) error {

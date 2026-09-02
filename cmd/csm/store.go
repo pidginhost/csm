@@ -383,17 +383,14 @@ func runStoreExportCLI() {
 	// Check the destination before the daemon writes anything. An older
 	// daemon ignores Stage and writes dstPath itself, so a check that only
 	// ran on the move below would never run at all against that daemon.
-	//
-	// #nosec G703 -- dstPath is the destination the operator named on the
-	// command line and is checked for shared ownership right below.
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil {
-		fmt.Fprintf(os.Stderr, "csm store export: creating destination directory: %v\n", err)
-		os.Exit(1)
-	}
-	if err := assertExportDestination(dstPath); err != nil {
+	// The destination comes back with its directory resolved, so the daemon
+	// is asked to write the same path that was checked.
+	resolvedDst, err := assertExportDestination(dstPath)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "csm store export: %v\n", err)
 		os.Exit(1)
 	}
+	dstPath = resolvedDst
 
 	// The daemon runs under ProtectSystem=strict, where the usual backup
 	// destinations are read-only. It stages the archive under its state

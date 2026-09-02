@@ -935,6 +935,34 @@ func TestArchiveExportRefusesSymlinkDestination(t *testing.T) {
 	}
 }
 
+// The companion digest is written next to the archive and is just as
+// capable of truncating whatever a planted symlink points at.
+func TestArchiveExportRefusesSymlinkCompanion(t *testing.T) {
+	statePath, rulesPath, _, db, _, _, _ := mustExportSetup(t)
+
+	dir := t.TempDir()
+	planted := filepath.Join(dir, "planted")
+	dstPath := filepath.Join(dir, "snapshot.csmbak")
+	if err := os.WriteFile(planted, []byte("planted"), 0o600); err != nil {
+		t.Fatalf("seed planted file: %v", err)
+	}
+	if err := os.Symlink(planted, dstPath+".sha256"); err != nil {
+		t.Fatalf("seed companion as symlink: %v", err)
+	}
+
+	if _, err := db.Export(ExportOptions{
+		StatePath: statePath,
+		RulesPath: rulesPath,
+		DstPath:   dstPath,
+		Manifest:  defaultManifest(),
+	}); err == nil {
+		t.Fatal("Export: expected error when the companion is a symlink")
+	}
+	if data, err := os.ReadFile(planted); err != nil || string(data) != "planted" {
+		t.Fatalf("symlink target was written through: %q, %v", data, err)
+	}
+}
+
 func TestArchiveExportCleansUpPartialFileOnError(t *testing.T) {
 	statePath, rulesPath, _, db, _, _, _ := mustExportSetup(t)
 
