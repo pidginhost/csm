@@ -1686,7 +1686,7 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 	count := 0
 	for _, id := range req.IDs {
 		entry, err := resolveQuarantineEntry(id)
-		if err != nil {
+		if err != nil || !quarantineEntryDeletable(entry) {
 			continue
 		}
 		if _, statErr := os.Lstat(entry.ItemPath); statErr == nil {

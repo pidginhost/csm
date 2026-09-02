@@ -380,6 +380,22 @@ func quarantineEntryID(metaPath string) string {
 	return id
 }
 
+// reservedQuarantineNames are subtrees of the quarantine root that are not
+// entries: the pre-clean backups and the email quarantine. An ID naming one
+// of them resolves to the subtree itself and must never be deleted.
+var reservedQuarantineNames = map[string]bool{"pre_clean": true, "email": true}
+
+// quarantineEntryDeletable reports whether an ID resolved to a real
+// quarantine entry: not a reserved subtree, and carrying the metadata
+// sidecar every quarantined item is written with.
+func quarantineEntryDeletable(entry quarantineEntryRef) bool {
+	if reservedQuarantineNames[filepath.Base(entry.ItemPath)] {
+		return false
+	}
+	_, err := os.Stat(entry.MetaPath)
+	return err == nil
+}
+
 func resolveQuarantineEntry(id string) (quarantineEntryRef, error) {
 	rawID := strings.TrimSpace(id)
 	if rawID == "" {
