@@ -355,7 +355,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 				Severity:  alert.High,
 				Check:     "perf_php_processes",
 				Message:   fmt.Sprintf("Excessive PHP worker processes for user %s", username),
-				Details:   fmt.Sprintf("Count: %d, Threshold: %d, Sample cmdlines: %s", len(procs), cfg.Performance.PHPProcessWarnPerUser, strings.Join(samples, " | ")),
+				Details:   fmt.Sprintf("Count: %d, Threshold: %d, Sample cmdlines: %s", len(procs), cfg.Performance.PHPProcessWarnPerUser, alert.RedactCommandLine(strings.Join(samples, " | "))),
 				Timestamp: time.Now(),
 			})
 		}

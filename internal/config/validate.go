@@ -80,7 +80,7 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Alerts.Webhook.URL == "" {
 			results = append(results, ValidationResult{"error", "alerts.webhook.url", "webhook alerts enabled but no URL configured"})
 		} else {
-			results = append(results, ValidationResult{"ok", "alerts.webhook.url", cfg.Alerts.Webhook.URL})
+			results = append(results, ValidationResult{"ok", "alerts.webhook.url", RedactURL(cfg.Alerts.Webhook.URL)})
 		}
 		switch cfg.Alerts.Webhook.Type {
 		case "", "slack", "discord", "generic", "phpanel":
@@ -109,7 +109,7 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Alerts.Heartbeat.URL == "" {
 			results = append(results, ValidationResult{"error", "alerts.heartbeat.url", "heartbeat enabled but no URL configured"})
 		} else {
-			results = append(results, ValidationResult{"ok", "alerts.heartbeat.url", cfg.Alerts.Heartbeat.URL})
+			results = append(results, ValidationResult{"ok", "alerts.heartbeat.url", RedactURL(cfg.Alerts.Heartbeat.URL)})
 		}
 	}
 
@@ -1196,7 +1196,7 @@ func probeWebhook(url string) []ValidationResult {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Head(url)
 	if err != nil {
-		return []ValidationResult{{"error", "alerts.webhook.url", fmt.Sprintf("cannot reach %s: %v", url, err)}}
+		return []ValidationResult{{"error", "alerts.webhook.url", fmt.Sprintf("cannot reach %s: %v", RedactURL(url), err)}}
 	}
 	resp.Body.Close()
 	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}

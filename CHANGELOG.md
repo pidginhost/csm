@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- Process findings now redact credential-bearing command-line arguments before they reach the finding store or an alert channel, so a mysqldump -pSECRET, a PGPASSWORD= assignment, a --password value, a user:password pair or a URL with embedded credentials no longer leaks the secret.
+- Webhook, heartbeat, callback and reputation URLs are shown as scheme and host only by validate, config show and hot-reload logging; the path, query and userinfo carry the credential for Slack, Discord and healthcheck endpoints.
 - The mail and SMTP brute-force trackers now give attacker-chosen account names their own budget and evict source entries that hold good-source standing or slow-brute evidence last; a flood of unique mailbox names used to push those entries out of the shared cap and strip a legitimate client of its auto-block exemption.
 - A YARA Forge tier whose merged reload fails is now removed and reported as a Critical rollback like a rule-count collapse; it used to stay on disk with a log line, so the next scanner restart compiled the same directory, failed, and ran with zero rules until the file was deleted by hand.
 - A firewall apply now aborts when the kernel table listing fails instead of appending every rule a second time to the live chains (doubled meters, halved rate limits) until a later successful apply.

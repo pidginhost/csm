@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 const redactedValue = "***REDACTED***"
 
 var sensitiveScalarPaths = map[string]struct{}{
@@ -82,6 +84,20 @@ func Redact(cfg *Config) *Config {
 		c.Sentry.DSN = redactedValue
 	}
 
+	// Credential-bearing URLs keep scheme and host only.
+	c.Alerts.Webhook.URL = RedactURL(c.Alerts.Webhook.URL)
+	c.Alerts.Heartbeat.URL = RedactURL(c.Alerts.Heartbeat.URL)
+	c.AutoResponse.VerdictCallback.URL = RedactURL(c.AutoResponse.VerdictCallback.URL)
+	c.Reputation.Rspamd.URL = RedactURL(c.Reputation.Rspamd.URL)
+	c.Reputation.Upstream.URL = RedactURL(c.Reputation.Upstream.URL)
+	if len(c.Reputation.Report.Targets) > 0 {
+		targets := slices.Clone(c.Reputation.Report.Targets)
+		for i := range targets {
+			targets[i].URL = RedactURL(targets[i].URL)
+		}
+		c.Reputation.Report.Targets = targets
+	}
+
 	// Deep-copy Firewall pointer so we don't share it with the original
 	if cfg.Firewall != nil {
 		fw := *cfg.Firewall
@@ -97,6 +113,9 @@ func redactConfigScalarForLog(keyPath, value string) string {
 	}
 	if _, ok := sensitiveScalarPaths[keyPath]; ok {
 		return redactedValue
+	}
+	if _, ok := urlScalarPaths[keyPath]; ok {
+		return RedactURL(value)
 	}
 	return value
 }

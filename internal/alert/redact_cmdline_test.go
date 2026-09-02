@@ -1,0 +1,50 @@
+package alert
+
+import "testing"
+
+// Process findings embed /proc cmdlines in Details, and the text redaction
+// only understood password= fields. A mysqldump -pSECRET argument, a
+// PGPASSWORD=... environment assignment on the command line, a separated
+// --password value or a URL with user:pass@ all reached alert channels and
+// the finding store verbatim.
+func TestRedactCommandLine(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"mysql attached -p", "mysqldump -u shop -pS3cr3t! shop_db", "mysqldump -u shop -p[REDACTED] shop_db"},
+		{"mariadb attached -p", "/usr/bin/mariadb-dump -pS3cr3t --all-databases", "/usr/bin/mariadb-dump -p[REDACTED] --all-databases"},
+		{"long option equals", "mysqldump --password=S3cr3t shop_db", "mysqldump --password=[REDACTED] shop_db"},
+		{"long option separated", "pg_dump --password S3cr3t -h db", "pg_dump --password [REDACTED] -h db"},
+		{"env assignment", "PGPASSWORD=S3cr3t pg_dump shop", "PGPASSWORD=[REDACTED] pg_dump shop"},
+		{"mysql pwd env", "env MYSQL_PWD=S3cr3t mysql shop", "env MYSQL_PWD=[REDACTED] mysql shop"},
+		{"sshpass", "sshpass -p S3cr3t ssh backup@203.0.113.9", "sshpass -p [REDACTED] ssh backup@203.0.113.9"},
+		{"curl user colon", "curl -u shop:S3cr3t https://example.com/api", "curl -u shop:[REDACTED] https://example.com/api"},
+		{"curl user equals", "curl --user=shop:S3cr3t https://example.com/api", "curl --user=shop:[REDACTED] https://example.com/api"},
+		{"token option", "curl --token=abcdef123456 https://example.com", "curl --token=[REDACTED] https://example.com"},
+		{"api key env", "API_KEY=abcdef123456 ./sync", "API_KEY=[REDACTED] ./sync"},
+		{"url userinfo", "wget https://shop:S3cr3t@example.com/dump.sql", "wget https://shop:[REDACTED]@example.com/dump.sql"},
+		{"url token query", "curl https://example.com/hook?token=abcdef&x=1", "curl https://example.com/hook?token=[REDACTED]&x=1"},
+		{"ssh port untouched", "ssh -p 2222 backup@203.0.113.9", "ssh -p 2222 backup@203.0.113.9"},
+		{"ssh attached port untouched", "ssh -p2222 backup@203.0.113.9", "ssh -p2222 backup@203.0.113.9"},
+		{"mysql capital P port untouched", "mysql -P 3306 -h db shop", "mysql -P 3306 -h db shop"},
+		{"php process untouched", "php-fpm: pool shop", "php-fpm: pool shop"},
+		{"empty", "", ""},
+		{"trailing separated flag", "mysql --password", "mysql --password"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactCommandLine(tc.in); got != tc.want {
+				t.Fatalf("RedactCommandLine(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The text redaction used for alert bodies picks up the command-line rules
+// too, so log excerpts that quote a command are covered as well.
+func TestRedactSensitiveCoversCommandLineSecrets(t *testing.T) {
+	in := "cmdline: mysqldump -pS3cr3t shop_db"
+	if got := redactSensitive(in); got != "cmdline: mysqldump -p[REDACTED] shop_db" {
+		t.Fatalf("redactSensitive(%q) = %q", in, got)
+	}
+}

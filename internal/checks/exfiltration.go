@@ -63,7 +63,7 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 					Severity: alert.Critical,
 					Check:    "database_dump",
 					Message:  fmt.Sprintf("Database dump by non-root user: %s (%s)", user, tool),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, strings.TrimSpace(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
 				})
 				break
 			}
@@ -117,7 +117,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 					Severity: alert.Critical,
 					Check:    "exfiltration_paste_site",
 					Message:  fmt.Sprintf("Process connecting to paste/exfiltration site: %s (user: %s)", site, user),
-					Details:  fmt.Sprintf("PID: %s, cmdline: %s", pid, strings.TrimSpace(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, cmdline: %s", pid, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
 				})
 				break
 			}

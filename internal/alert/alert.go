@@ -386,7 +386,9 @@ func redactSensitive(s string) string {
 		}
 	}
 
-	return s
+	// Command-line style secrets (-pSECRET, KEY=VALUE assignments, URL
+	// userinfo) quoted in messages or details.
+	return RedactCommandLine(s)
 }
 
 func filterChecks(findings []Finding, disabledChecks []string) []Finding {

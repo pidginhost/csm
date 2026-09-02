@@ -160,7 +160,7 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 				Severity: alert.Critical,
 				Check:    "fake_kernel_thread",
 				Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: [%s]", name),
-				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, cmdStr),
+				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, alert.RedactCommandLine(cmdStr)),
 				PID:      pidInt,
 			})
 		}
@@ -207,7 +207,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.Critical,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, cmdStr),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, alert.RedactCommandLine(cmdStr)),
 					PID:      pidInt,
 				})
 			}
@@ -221,7 +221,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.Critical,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious cmdline pattern: %s", s),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, cmdStr),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, alert.RedactCommandLine(cmdStr)),
 					PID:      pidInt,
 				})
 				break
@@ -235,7 +235,7 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 					Severity: alert.High,
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, cmdStr),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, alert.RedactCommandLine(cmdStr)),
 					PID:      pidInt,
 				})
 				break
@@ -295,7 +295,7 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 					Severity: alert.Critical,
 					Check:    "php_suspicious_execution",
 					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uidText, strings.TrimSpace(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uidText, alert.RedactCommandLine(strings.TrimSpace(cmdStr))),
 					PID:      pidInt,
 					Process:  proc,
 				})
