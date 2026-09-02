@@ -20,8 +20,12 @@ var renameExportFile = os.Rename
 // rename is tried first; across filesystems the archive is copied, fsynced
 // and verified against wantSHA before the staged copy is removed, so a
 // truncated copy never replaces a good archive silently.
+//
+// #nosec G304 G703 -- src is the daemon's staged export path and dst is the
+// destination the operator named on the command line; both are root-only
+// inputs, and the export subcommand already runs as root.
 func moveExportedArchive(src, dst, wantSHA string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 	if err := renameExportFile(src, dst); err == nil {
@@ -53,6 +57,8 @@ func isCrossDevice(err error) bool {
 
 // copyFileVerified copies src to dst, syncs it, and checks the SHA-256 of
 // the bytes written against wantSHA (skipped when wantSHA is empty).
+//
+// #nosec G304 G703 -- same root-only src and dst as moveExportedArchive.
 func copyFileVerified(src, dst, wantSHA string) error {
 	in, err := os.Open(src)
 	if err != nil {

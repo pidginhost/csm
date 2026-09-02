@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The .htaccess upload-tree gate now judges only directories inside the account's web tree; a "tmp" or "files" component above it used to disable the sibling-PHP gate for everything below.
 - The active findings file is now written once per scan cycle, only when its content changed, in a stable order by severity and recency, so the cap keeps the most important findings instead of a random subset.
 - Store export now stages the archive under the daemon's state directory and the CLI moves it to the requested path, copying and verifying the digest across filesystems, so destinations outside the daemon's sandbox such as /var/backups work again.
+- A destination directory created by store export is no longer world-readable, so the export of every recorded finding is not left listable by every local account.
 - Validate's deep probes now read the installed service unit and reject a state path outside its ReadWritePaths grants, which used to pass validation and then crash-loop the daemon under ProtectSystem=strict.
 - suppress_webmail_alerts now defaults to true in code as it does in the shipped templates and documentation, an explicit false is kept, and the installer template no longer ships a placeholder API token name.
 - Store restore now stages the archive next to the state directory instead of the system temp directory, so the final rename stays on one filesystem and a small tmpfs cannot fill up.

@@ -76,6 +76,29 @@ func TestMoveExportedArchiveRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
+// The export archive holds every finding CSM has recorded. Creating the
+// destination directory world-readable would leave that directory listing
+// open to every local account on a shared host, so the CLI creates it
+// private to root and its group.
+func TestMoveExportedArchiveCreatesPrivateDestinationDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	dstDir := filepath.Join(dir, "exports")
+	dst := filepath.Join(dstDir, "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+
+	if err := moveExportedArchive(src, dst, sha256Hex("archive-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm&0o007 != 0 {
+		t.Fatalf("destination directory mode = %#o, want no world access", perm)
+	}
+}
+
 func writeExportFixture(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
