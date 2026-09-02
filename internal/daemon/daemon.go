@@ -925,6 +925,10 @@ func (d *Daemon) Run() error {
 	// and nothing queued while it ran was lost.
 	d.releaseAlertDispatch()
 
+	// Findings the previous shutdown drained but could not act on get their
+	// auto-response and alerts now, through the same pipeline.
+	d.replayPendingFindings()
+
 	// Retrospective cloud-relay scan: replay the last 24h of exim_mainlog
 	// through the compromise-detection rule so any in-progress credential
 	// abuse is surfaced within seconds of daemon start, not after the
@@ -1382,19 +1386,24 @@ func (d *Daemon) flushPendingAlertsOnShutdown() {
 }
 
 // persistPendingFindingsOnShutdown records findings still queued at shutdown to
-// the history log for forensics, then returns. It deliberately does NOT run the
-// auto-response pipeline (nftables blocks, permission fixes, kill/quarantine,
-// DB cleanup) or network alert dispatch: that work blocked the service stop for
-// tens of seconds -- up to twice, once here and once in the dispatcher's stop
-// branch -- while systemd waited. It is also redundant, because the next
-// startup baseline scan re-detects and re-acts on the same conditions. Writing
-// history only also leaves each finding re-alertable (it is not marked sent via
-// store.Update), so the restart's dispatch is not suppressed.
+// the history log for forensics and parks them for the next start. It
+// deliberately does NOT run the auto-response pipeline (nftables blocks,
+// permission fixes, kill/quarantine, DB cleanup) or network alert dispatch
+// here: that work blocked the service stop for tens of seconds -- up to twice,
+// once here and once in the dispatcher's stop branch -- while systemd waited.
+// The baseline scan re-detects scheduled checks after a restart, but a
+// realtime-only finding (a webshell written in the last seconds) is seen by
+// nothing else, so the parked batch is replayed through dispatchBatch once
+// the next start releases the dispatcher. Nothing here is marked sent via
+// store.Update, so the replay's dispatch is not suppressed.
 func (d *Daemon) persistPendingFindingsOnShutdown(batch []alert.Finding) {
 	if len(batch) == 0 {
 		return
 	}
 	d.store.AppendHistory(batch)
+	if err := d.store.AppendPendingFindings(batch); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Could not park %d pending finding(s) for the next start: %v\n", ts(), len(batch), err)
+	}
 }
 
 func isOperatorAlertableCheck(check string) bool {
