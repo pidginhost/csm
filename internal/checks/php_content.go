@@ -26,7 +26,12 @@ import (
 // comments or common call modifiers between the sink and decoder; comments and
 // strings are stripped before matching so only executable token structure is
 // evaluated.
-var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*@?\s*\\?\s*(\w+)\s*\(`)
+var nestedEvalDecodeRe = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*(?:(?:"\s*"|'\s*')?\s*\.\s*)*@?\s*\\?\s*(\w+)\s*\(`)
+
+// reEvalRequestInput matches eval/assert applied to request input with no
+// decoder at all (`eval($_POST['c'])`), the simplest possible shell. Strings
+// are stripped before matching, so the superglobal name is what remains.
+var reEvalRequestInput = regexp.MustCompile(`(?is)\b(eval|assert)\s*\(\s*(?:(?:"\s*"|'\s*')?\s*\.\s*)*@?\s*\$_(?:post|get|request|cookie)\b`)
 
 // reEvalVarCallee matches eval wrapping a variable function call,
 // e.g. `eval($f(...))`. The literal-callee form above cannot capture a
@@ -2183,6 +2188,10 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	decoders := []string{
 		"base64_decode", "gzinflate", "gzuncompress", "str_rot13",
 		"rawurldecode", "gzdecode", "bzdecompress",
+		// Droppers rotate through every reversible transform PHP ships;
+		// the four below were the unlisted ones seen wrapping eval in the
+		// wild (hex payloads, reversed strings, URL-encoded blobs, uuencode).
+		"hex2bin", "strrev", "urldecode", "convert_uudecode",
 	}
 	hasDecoder := false
 	hasNestedEvalDecode := false
@@ -2218,6 +2227,9 @@ func analyzePHPCode(path, content string, readOK bool) phpAnalysisResult {
 	}
 	if hasNestedEvalDecode {
 		indicators = append(indicators, "eval() directly wrapping encoding/compression function")
+	}
+	if reEvalRequestInput.MatchString(codeLower) {
+		indicators = append(indicators, "eval() of request input")
 	}
 
 	// eval wrapping dynamic code construction the decoder loop above

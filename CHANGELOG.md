@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The PHP content analyzer now recognises `eval()` or `assert()` applied directly to request input, a string literal concatenated in front of the decoder (the `"?>" . base64_decode(...)` form), and the `hex2bin`, `strrev`, `urldecode` and `convert_uudecode` decoders. Each shape passed as ordinary code before.
 - An external script loader stored in `wp_options` on an ordinary HTTPS host is now reported once as a Warning (`db_options_new_external_script`) the first time that host appears after the site's baseline scan. The structural classifier only flags raw-IP, abused-TLD, plaintext-HTTP and known exfil hosts, so a careful injection on a mainstream domain never produced a finding.
 - The YARA worker socket is now created private (0600) from the moment it exists instead of being chmodded after the listen, closing the window in which any local user could connect to the scanner and keep that connection.
 - Forensic snapshots now refuse an output path that already exists, symlink or file: the archive and its checksum sidecar used to be written through whatever sat at the destination, so a symlink planted by the compromised account made root overwrite another file with the tar stream.
