@@ -36,6 +36,14 @@ var checkClass = map[string]Class{
 	"bad_asn_outbound":       ClassBadASNEgress,
 }
 
+// classMinSeverity is the least severe finding a class reports.
+func classMinSeverity(class Class) alert.Severity {
+	if class == ClassBadASNEgress {
+		return alert.High
+	}
+	return alert.Critical
+}
+
 // Classify returns the abuse class for a check name, if it is reportable.
 func Classify(check string) (Class, bool) {
 	c, ok := checkClass[check]
@@ -71,11 +79,15 @@ type Gate struct {
 // reported. The minimizer is deny-by-default: it copies only the IP, class,
 // count, and timestamps, never tenant/domain/mailbox/path/process fields.
 func (g Gate) Consider(f alert.Finding) (Report, bool) {
-	if f.Severity != alert.Critical {
-		return Report{}, false
-	}
 	class, ok := Classify(f.Check)
 	if !ok || !g.Enabled[class] {
+		return Report{}, false
+	}
+	// Severity values grow more severe as they increase (Warning < High < Critical).
+	// Brute-force and relay classes need the Critical verdict; bad-ASN
+	// egress is only ever emitted as High, so demanding Critical made that
+	// class a dead option.
+	if f.Severity < classMinSeverity(class) {
 		return Report{}, false
 	}
 	ip := net.ParseIP(f.SourceIP)

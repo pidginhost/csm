@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The `bad_asn_egress` abuse-report class now actually reports: its only detector emits high-severity findings while the report gate demanded critical ones, so enabling the class silently sent nothing.
 - External intelligence inputs are bounded and validated: a country CIDR download is size-limited and installed only when it actually contains CIDR entries, an upstream reputation answer can shorten but no longer extend the configured cache lifetime, and the known-bad script host list matches whole domain labels so a name that merely ends in the same characters is not reported.
 - A failed registry (RDAP) lookup is retried after ten minutes instead of standing as an empty answer for a day, and the registry response is read with a size limit.
 - Threat-feed caches are written atomically, and a cached feed that holds fewer entries than its minimum is ignored and refreshed at the next cycle instead of being served for up to twenty hours. A crash during the old in-place write could leave a few hundred entries of a feed on disk with the update marker intact.
