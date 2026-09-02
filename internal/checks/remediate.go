@@ -461,11 +461,32 @@ func sanitizeFixPath(path string, allowedRoots []string) (string, error) {
 		return "", fmt.Errorf("file path must be absolute")
 	}
 	for _, root := range allowedRoots {
-		if isPathWithinOrEqual(path, root) {
+		if fixTargetDepthBelow(path, root) >= fixTargetMinDepth(root) {
 			return path, nil
 		}
 	}
 	return "", fmt.Errorf("file path is outside the allowed remediation roots: %s", path)
+}
+
+// fixTargetDepthBelow returns how many path components path lies below
+// root, or 0 when path is root itself or not under it.
+func fixTargetDepthBelow(path, root string) int {
+	cleanRoot := filepath.Clean(root)
+	if !strings.HasPrefix(path, cleanRoot+string(filepath.Separator)) {
+		return 0
+	}
+	rel := strings.TrimPrefix(path, cleanRoot+string(filepath.Separator))
+	return strings.Count(rel, string(filepath.Separator)) + 1
+}
+
+// fixTargetMinDepth is how far below a remediation root a target must lie.
+// A root itself is never a target, and under /home neither is an account's
+// home directory: quarantining or chmod-ing either takes a whole tree away.
+func fixTargetMinDepth(root string) int {
+	if filepath.Clean(root) == "/home" {
+		return 2
+	}
+	return 1
 }
 
 func isPathWithinOrEqual(path, base string) bool {

@@ -917,7 +917,12 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
+	message, details, filePath, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result := checks.ApplyFix(req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
 	// Prefer the canonical key sent by the client (matches Finding.Key(), which
@@ -1043,7 +1048,12 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
+		message, details, filePath, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
+		if err != nil {
+			results = append(results, checks.RemediationResult{Error: err.Error()})
+			continue
+		}
+		result := checks.ApplyFix(req.Check, message, details, filePath)
 		if result.Success {
 			key := req.Key
 			if key == "" {

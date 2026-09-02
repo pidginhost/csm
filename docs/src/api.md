@@ -212,6 +212,11 @@ POST /api/v1/test-alert               Send test alert through all channels
 POST /api/v1/import                   Import state bundle (suppressions, whitelist)
 ```
 
+`fix` and `fix-bulk` act on the file the stored finding names. A request may
+repeat that path in `file_path`, but a different path is refused, and a target
+is never a remediation root itself (`/home`, `/tmp`, `/var/tmp`, `/dev/shm`)
+or an account's home directory.
+
 ## Settings
 
 ```
