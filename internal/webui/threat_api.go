@@ -162,10 +162,15 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Every downstream key (firewall, threat DB, attack DB, audit) uses the
+	// canonical form; a padded or upper-case spelling validated but then
+	// matched nothing and still answered 200.
+	req.IP = parsedIP.String()
 
 	var actions []string
 
@@ -232,10 +237,15 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Every downstream key (firewall, threat DB, attack DB, audit) uses the
+	// canonical form; a padded or upper-case spelling validated but then
+	// matched nothing and still answered 200.
+	req.IP = parsedIP.String()
 
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveWhitelist(req.IP)
@@ -267,10 +277,15 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Every downstream key (firewall, threat DB, attack DB, audit) uses the
+	// canonical form; a padded or upper-case spelling validated but then
+	// matched nothing and still answered 200.
+	req.IP = parsedIP.String()
 
 	var actions []string
 
@@ -322,10 +337,15 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Every downstream key (firewall, threat DB, attack DB, audit) uses the
+	// canonical form; a padded or upper-case spelling validated but then
+	// matched nothing and still answered 200.
+	req.IP = parsedIP.String()
 
 	var actions []string
 
@@ -375,10 +395,15 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Every downstream key (firewall, threat DB, attack DB, audit) uses the
+	// canonical form; a padded or upper-case spelling validated but then
+	// matched nothing and still answered 200.
+	req.IP = parsedIP.String()
 	if req.Hours <= 0 {
 		req.Hours = 24
 	}
