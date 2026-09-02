@@ -91,10 +91,11 @@ func TestScanForPhishingIgnoresPlainACMEChallengeTokens(t *testing.T) {
 	}
 }
 
-// Cost guard: the heavy / transient dirs stay excluded so the scan does not
-// walk node_modules or WP core.
+// Cost guard: dependency trees and VCS metadata stay excluded. WordPress core
+// directories are scanned: stock core ships no login-form HTML, and kits are
+// dropped there precisely because scanners used to skip them.
 func TestScanForPhishingStillSkipsHeavyDirs(t *testing.T) {
-	for _, skip := range []string{"node_modules", "vendor", "wp-admin", "wp-includes", ".git"} {
+	for _, skip := range []string{"node_modules", "vendor", ".git"} {
 		root := t.TempDir()
 		dropDir := filepath.Join(root, skip, "nested")
 		if err := os.MkdirAll(dropDir, 0755); err != nil {

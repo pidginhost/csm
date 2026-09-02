@@ -18,7 +18,11 @@ import (
 	"golang.org/x/net/html"
 )
 
-const phishingReadSize = 16384 // Read first 16KB - phishing pages are self-contained
+// phishingReadSize is how much of an accepted HTML page is analysed. It
+// matches the 100 KB acceptance ceiling: reading only the first 16 KB let a
+// kit that opens with a large inline stylesheet keep its form past the read
+// window and pass as clean.
+const phishingReadSize = 100000
 
 // phishingScanMaxDepth bounds how deep CheckPhishing recurses below each doc
 // root. Real kits land in date-nested WordPress upload folders
@@ -1961,18 +1965,18 @@ func visibleTextLen(s string) int {
 // ---------------------------------------------------------------------------
 
 // isKnownSafeDir names directories that CheckPhishing does not recurse into.
-// The list is deliberately narrow: only heavy, non-servable, or checksum-
-// verified trees (WP core, dependency vendor dirs, VCS metadata) and transient
-// caches. wp-content and .well-known are NOT here - both are prime real-world
-// phishing drop paths (wp-content/uploads date folders, world-writable ACME
-// challenge dirs) and must be scanned. Never widen this list to skip a path
-// where a file could be dropped and served; fix detection instead.
+// The list is deliberately narrow: dependency trees whose bundled HTML
+// documentation contains legitimate login-form examples, and VCS metadata.
+// It is not an allowlist of "trusted" paths. WordPress core directories,
+// caches, tmp and logs used to be pruned too, and kits were found under
+// wp-includes and wp-admin precisely because scanners skip them; stock core
+// ships no login-form HTML there, so a kit in those trees is as anomalous as
+// one under uploads. wp-content and .well-known are prime drop paths and are
+// always scanned. Never widen this list to skip a path where a file could be
+// dropped and served; fix detection instead.
 func isKnownSafeDir(name string) bool {
 	safeDirs := map[string]bool{
-		"wp-admin": true, "wp-includes": true,
 		"node_modules": true, "vendor": true, ".git": true,
-		"cgi-bin": true, "mail": true,
-		"cache": true, "tmp": true, "logs": true,
 	}
 	return safeDirs[name]
 }

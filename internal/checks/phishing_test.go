@@ -225,13 +225,15 @@ func TestIsKnownCMSFileUnknown(t *testing.T) {
 }
 
 func TestIsKnownSafeDir(t *testing.T) {
-	for _, name := range []string{"wp-admin", "node_modules", "vendor", ".git"} {
+	for _, name := range []string{"node_modules", "vendor", ".git"} {
 		if !isKnownSafeDir(name) {
 			t.Errorf("%q should be safe", name)
 		}
 	}
-	if isKnownSafeDir("PhishingKit") {
-		t.Error("unknown dir should not be safe")
+	for _, name := range []string{"PhishingKit", "wp-admin", "wp-includes", "cache", "tmp"} {
+		if isKnownSafeDir(name) {
+			t.Errorf("%q must be scanned, not pruned", name)
+		}
 	}
 }
 
@@ -846,7 +848,7 @@ func TestScanForPhishingContextCancelled(t *testing.T) {
 
 func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
 	root := t.TempDir()
-	safe := filepath.Join(root, "wp-admin")
+	safe := filepath.Join(root, "node_modules")
 	_ = os.MkdirAll(safe, 0700)
 	// Would normally match but the dir is in the skip list.
 	_ = os.WriteFile(filepath.Join(safe, "verify.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600)

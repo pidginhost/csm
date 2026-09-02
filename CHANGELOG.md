@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The phishing scanner now analyses the whole of each accepted HTML page (up to 100 KB) instead of its first 16 KB, and no longer skips WordPress core, cache, tmp and logs directories by name; a kit that opened with a large stylesheet, or that was dropped under `wp-includes/`, passed as clean before.
 - The scheduled `.htaccess` scan now walks twelve levels below a document root instead of five, reaching uploads trees where droppers plant the handler-enabling `.htaccess` next to their payload.
 - The `wp_options` script-loader pre-filter no longer requires a literal `src=`, so a loader written as `src = "..."` is fetched and classified like any other.
 - A version-control directory served from a document root (`.git/`, `.svn/`) is now detected as a Critical `web_exposed_repo_metadata` finding and virtual-patched by denying the whole directory; the exposure walker used to skip those directories entirely, so a checked-out repository handing out the site's source and credentials was never reported.
