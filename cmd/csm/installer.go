@@ -1034,9 +1034,7 @@ func deploySystemdTimer() error {
 	os.Remove("/etc/systemd/system/csm.timer")
 
 	// Deploy daemon service unit (the only unit CSM ships now)
-	daemonService := systemdServiceUnit("/opt/csm/csm")
-	// #nosec G306 -- systemd unit; standard 0644.
-	if err := os.WriteFile("/etc/systemd/system/csm.service", []byte(daemonService), 0644); err != nil {
+	if err := writeSystemdServiceUnit(systemdServiceUnit("/opt/csm/csm")); err != nil {
 		return err
 	}
 
@@ -1725,4 +1723,14 @@ return array(
 		return
 	}
 	fmt.Printf("  Shield config: %s (%d infra IPs allowlisted)\n", phpShieldConfPath, len(cfg.InfraIPs))
+}
+
+// systemdUnitPath is where the daemon's service unit is installed.
+var systemdUnitPath = "/etc/systemd/system/csm.service"
+
+// writeSystemdServiceUnit replaces the service unit atomically: systemd
+// (daemon-reload, a concurrent systemctl) must never read a truncated or
+// half-written unit, which a plain in-place write exposed on every rehash.
+func writeSystemdServiceUnit(content string) error {
+	return writeFileAtomic(systemdUnitPath, []byte(content), 0o644)
 }

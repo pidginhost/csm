@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- The DNS connection check now treats the upstreams behind a loopback stub resolver as configured and skips systemd-resolved and dnsmasq themselves, so a systemd-resolved host no longer reports every upstream query.
+- The status command's JSON output now carries a status field, prints the offline stub only when the daemon is not running, and exits non-zero on any other control socket error.
+- The systemd service unit is now replaced atomically on install and rehash instead of being truncated and rewritten in place.
 - The sshd configuration change detector now hashes every file sshd reads, so a drop-in under an Include that flips PermitRootLogin or PasswordAuthentication is reported instead of being baselined silently.
 - Quoted pipe destinations in cPanel valiases files are now recognised as pipe forwarders; the quotes hid every one of them from the detector.
 - The hardening audit's default-deny check and the MySQL exposure check now look for a drop or reject policy on the nft input hook only; a Docker FORWARD chain used to satisfy both.

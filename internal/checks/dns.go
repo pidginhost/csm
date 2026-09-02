@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -14,10 +15,16 @@ import (
 // DNS server processes that legitimately connect to many resolvers
 // (e.g. BIND doing recursive resolution on a cPanel server).
 var dnsServerUsers = map[string]bool{
-	"named":   true, // BIND
-	"unbound": true, // Unbound
-	"pdns":    true, // PowerDNS
+	"named":           true, // BIND
+	"unbound":         true, // Unbound
+	"pdns":            true, // PowerDNS
+	"systemd-resolve": true, // systemd-resolved forwarding to its upstreams
+	"dnsmasq":         true, // dnsmasq forwarding to its upstreams
 }
+
+// resolvedUpstreamsPath lists the real upstreams when /etc/resolv.conf only
+// names the systemd-resolved stub.
+const resolvedUpstreamsPath = "/run/systemd/resolve/resolv.conf"
 
 // CheckDNSConnections looks for established connections to port 53 on
 // DNS servers that are NOT in /etc/resolv.conf. This catches DNS
@@ -111,8 +118,24 @@ func resolveDNSServerUIDs() map[string]bool {
 	return uids
 }
 
+// parseResolvers returns the configured nameservers. When /etc/resolv.conf
+// points at a loopback stub (systemd-resolved's 127.0.0.53, a local
+// dnsmasq) the upstreams behind it are configured resolvers too: clients
+// never reach them directly, but the stub does, and nothing else on the
+// host is expected to.
 func parseResolvers() []string {
-	f, err := osFS.Open("/etc/resolv.conf")
+	resolvers := parseResolverFile("/etc/resolv.conf")
+	for _, r := range resolvers {
+		if ip := net.ParseIP(r); ip != nil && ip.IsLoopback() {
+			resolvers = append(resolvers, parseResolverFile(resolvedUpstreamsPath)...)
+			break
+		}
+	}
+	return resolvers
+}
+
+func parseResolverFile(path string) []string {
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}

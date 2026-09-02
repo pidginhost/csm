@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/user"
@@ -676,8 +677,13 @@ func runStatusViaSocket() {
 	result, err := sendControl(control.CmdStatus, nil)
 	if err != nil {
 		if jsonOut {
-			emitOfflineSnapshot()
-			return
+			stub, code := statusJSONFailure(err)
+			if stub {
+				emitOfflineSnapshot()
+				return
+			}
+			fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+			os.Exit(code)
 		}
 		if errors.Is(err, errDaemonNotRunning) {
 			fmt.Fprintln(os.Stderr, "csm: daemon not running (start with: systemctl start csm)")
@@ -697,7 +703,7 @@ func runStatusViaSocket() {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if sr.Snapshot != nil {
-			_ = enc.Encode(sr.Snapshot)
+			writeStatusJSON(os.Stdout, sr.Snapshot, "running")
 			return
 		}
 		// Older daemon without Snapshot: fall back to printing the legacy struct.
@@ -745,9 +751,31 @@ func emitOfflineSnapshot() {
 		Version:  Version,
 		Hostname: hostnameLite(),
 	}
-	enc := json.NewEncoder(os.Stdout)
+	writeStatusJSON(os.Stdout, &snap, "offline")
+}
+
+// statusJSONFailure decides how `status --json` reports a control-socket
+// failure: a daemon that is simply not running gets the offline stub and
+// exit 0; anything else (permissions, a wedged socket) is an error and must
+// not be mistaken for a clean stop.
+func statusJSONFailure(err error) (stub bool, exitCode int) {
+	if errors.Is(err, errDaemonNotRunning) {
+		return true, 0
+	}
+	return false, 1
+}
+
+// statusJSON is the `status --json` document: the health snapshot plus a
+// status field that tells a live daemon from the offline stub.
+type statusJSON struct {
+	Status string `json:"status"`
+	*health.Snapshot
+}
+
+func writeStatusJSON(w io.Writer, snap *health.Snapshot, status string) {
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(snap)
+	_ = enc.Encode(statusJSON{Status: status, Snapshot: snap})
 }
 
 func hostnameLite() string {
