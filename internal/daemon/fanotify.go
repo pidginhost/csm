@@ -72,11 +72,6 @@ var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntr
 
 const pluginCacheTTL = 5 * time.Minute
 
-// cronSpoolWatchDir is the directory the realtime crontab watcher marks.
-// Declared as a var (not const) so tests can redirect it under t.TempDir()
-// without touching the real /var/spool/cron.
-var cronSpoolWatchDir = "/var/spool/cron"
-
 // alertDedupTTL is the cooldown period for duplicate alerts on the same
 // check+filepath combination. Prevents alert storms from rapid writes.
 const alertDedupTTL = 30 * time.Second
@@ -346,10 +341,10 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	// after O_CREAT|O_WRONLY|... fires the close-write event. FAN_CREATE
 	// is omitted because it has stricter kernel requirements with
 	// directory-scoped (non-MOUNT) marks and adds no coverage here.
-	if _, statErr := os.Stat(cronSpoolWatchDir); statErr == nil {
+	if _, statErr := os.Stat(cronSpoolDir()); statErr == nil {
 		if err := unix.FanotifyMark(fd, FAN_MARK_ADD,
-			FAN_CLOSE_WRITE|FAN_EVENT_ON_CHILD, -1, cronSpoolWatchDir); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), cronSpoolWatchDir, err)
+			FAN_CLOSE_WRITE|FAN_EVENT_ON_CHILD, -1, cronSpoolDir()); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), cronSpoolDir(), err)
 		}
 	}
 
@@ -895,7 +890,7 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	// User crontabs surfaced via the directory-scoped fanotify mark in
 	// NewFileMonitor. Each write to /var/spool/cron/<user> dispatches to
 	// checkCrontab in real time.
-	if strings.HasPrefix(path, cronSpoolWatchDir+"/") {
+	if strings.HasPrefix(path, cronSpoolDir()+"/") {
 		return true
 	}
 
@@ -1110,7 +1105,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// from the event fd via the shared deep matcher and emit Critical on
 	// any hit. The polled CheckCrontabs run still tracks root crontab
 	// hash drift, so we skip root here to avoid duplicate signal.
-	if strings.HasPrefix(path, cronSpoolWatchDir+"/") {
+	if strings.HasPrefix(path, cronSpoolDir()+"/") {
 		fm.checkCrontab(event.fd, path, procInfo)
 		return
 	}
@@ -1387,7 +1382,7 @@ var (
 // hash-baseline by the polled CheckCrontabs.
 func (fm *FileMonitor) checkCrontab(fd int, path, procInfo string) {
 	user := filepath.Base(path)
-	if user == "" || user == "root" || user == filepath.Base(cronSpoolWatchDir) {
+	if user == "" || user == "root" || user == filepath.Base(cronSpoolDir()) {
 		return
 	}
 	recordReadTruncation(fd, 65536, "crontab")

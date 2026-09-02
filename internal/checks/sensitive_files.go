@@ -37,6 +37,8 @@ var sensitiveWatchset = []string{
 	"/etc/cron.weekly/*",
 	"/etc/cron.monthly/*",
 	"/var/spool/cron/*",
+	// Debian cron keeps user crontabs one level deeper than cronie.
+	"/var/spool/cron/crontabs/*",
 }
 
 const sensitiveFileBaselineKey = "_sensitive_file_hash:__baseline_complete"

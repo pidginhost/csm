@@ -102,6 +102,16 @@ func (i Info) IsDebianFamily() bool {
 	return i.OS == OSUbuntu || i.OS == OSDebian
 }
 
+// CronSpoolDir returns the directory holding per-user crontabs: cronie
+// (RHEL family, cPanel) writes them directly under /var/spool/cron, while
+// Debian's cron keeps them in /var/spool/cron/crontabs.
+func (i Info) CronSpoolDir() string {
+	if i.IsDebianFamily() {
+		return "/var/spool/cron/crontabs"
+	}
+	return "/var/spool/cron"
+}
+
 // MailLogPath returns the platform-default mail log file. Empty string
 // means "no file source available" (operator must use journal).
 func (i Info) MailLogPath() string {

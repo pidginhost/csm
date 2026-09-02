@@ -17,6 +17,10 @@ import (
 func TestMain(m *testing.M) {
 	processCtxRegistry = metrics.NewRegistry
 	incidentRegistry = metrics.NewRegistry
+	// Crontab fixtures assume the cronie layout; pin it so the suite does
+	// not change shape on a Debian-based test host. Tests that need another
+	// directory override it with withCronSpoolDir.
+	cronSpoolWatchDir = "/var/spool/cron"
 	os.Exit(m.Run())
 }
 

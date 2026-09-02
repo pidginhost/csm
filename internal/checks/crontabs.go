@@ -48,7 +48,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 	if ctx.Err() != nil {
 		return findings
 	}
-	crontabs, _ := osFS.Glob("/var/spool/cron/*")
+	crontabs, _ := osFS.Glob(filepath.Join(cronSpoolDir(), "*"))
 	var rootCrontabs []string
 	accountCrontabs := make([]string, 0, len(crontabs))
 	for _, path := range crontabs {

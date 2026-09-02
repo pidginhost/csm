@@ -442,7 +442,7 @@ func makeAccountSSHKeyCheck(account string) CheckFunc {
 func makeAccountCrontabCheck(account string) CheckFunc {
 	return func(_ context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 		var findings []alert.Finding
-		crontabFile := filepath.Join("/var/spool/cron", account)
+		crontabFile := filepath.Join(cronSpoolDir(), account)
 		data, err := osFS.ReadFile(crontabFile)
 		if err != nil {
 			return nil
