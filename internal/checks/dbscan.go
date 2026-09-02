@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // Malicious patterns in WordPress database content.
@@ -708,6 +709,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		"SELECT option_name, option_value FROM %soptions WHERE option_value LIKE '%%<script%%src=%%' LIMIT 20",
 		prefix)
 	lines = runMySQLQuery(creds, query)
+	firstSeen := storeFirstSeen(externalScriptSiteKey(creds.dbName, prefix))
 
 	for _, line := range lines {
 		parts := strings.SplitN(line, "\t", 2)
@@ -725,6 +727,10 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 
 		maliciousURL := extractMaliciousScriptURL(optValue)
 		if maliciousURL == "" {
+			// No attacker marker. A loader on an unremarkable HTTPS host is
+			// still reported once, the first time it appears after the
+			// site's baseline.
+			findings = append(findings, newExternalScriptFindings(user, creds.dbName, prefix, optName, optValue, firstSeen)...)
 			continue
 		}
 
@@ -737,6 +743,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 				fmt.Sprintf("Malicious URL: %s", maliciousURL),
 				fmt.Sprintf("Content preview: %s", truncateDB(optValue, 200))),
 		})
+	}
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.FinishExternalScriptBaseline(externalScriptSiteKey(creds.dbName, prefix), time.Now())
 	}
 
 	// Path 2: Inline script/code injection in core WP options that should
