@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Database hidden-link scans now keep containment across malformed markup and bounded values, recognize equivalent inline hiding syntax, and grade distinct target domains within each hidden container. Truncated candidate values now report incomplete coverage.
+- A YARA Forge tier whose merged reload fails is now removed and reported as a Critical rollback like a rule-count collapse; it used to stay on disk with a log line, so the next scanner restart compiled the same directory, failed, and ran with zero rules until the file was deleted by hand.
 - A firewall apply now aborts when the kernel table listing fails instead of appending every rule a second time to the live chains (doubled meters, halved rate limits) until a later successful apply.
 - The apply-confirmed rollback now restores the firewall state file together with the kernel snapshot, so an address unblocked inside the window no longer comes back blocked in the kernel while the UI still reports it free.
 - `csm firewall restart` and `csm firewall apply-confirmed` now read the firewall block from csm.yaml before applying, and a rollback or a failed apply restores the previous block in the running engine. Both commands used to re-apply the copy taken at daemon start, reporting success while an edited ruleset stayed unapplied until the next daemon restart, where it took effect with no rollback timer.

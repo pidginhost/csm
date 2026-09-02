@@ -3369,32 +3369,51 @@ func (d *Daemon) doForgeUpdate() {
 
 	fmt.Fprintf(os.Stderr, "[%s] YARA Forge update: %d rules (version %s)\n", ts(), count, newVersion)
 
-	if err := yaraScanner.Reload(); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] YARA rule reload after Forge update error: %v\n", ts(), err)
-		return // don't store version - retry next cycle
-	}
-
-	newCount := yaraScanner.RuleCount()
-
-	// If rule count dropped, the Forge file likely conflicts with existing rules.
-	// Roll back: remove the Forge file, reload again, don't store version.
-	if forgeRollbackNeeded(newCount, count) {
-		forgeFile := filepath.Join(d.cfg.Signatures.RulesDir, fmt.Sprintf("yara-forge-%s.yar", d.cfg.Signatures.YaraForge.Tier))
-		_ = os.Remove(forgeFile)
-		_ = yaraScanner.Reload()
-		// Losing a ruleset this size is a coverage collapse, so it has to be
-		// alertable rather than a line on stderr that the journal rotates away.
-		d.emitReloadFinding(alert.Critical, "yara_forge_rollback", fmt.Sprintf(
-			"YARA Forge update rolled back: %d rules downloaded but only %d loaded, so %s was removed. Scanning continues on the remaining rules.",
-			count, newCount, forgeFile))
+	forgeFile := filepath.Join(d.cfg.Signatures.RulesDir, fmt.Sprintf("yara-forge-%s.yar", d.cfg.Signatures.YaraForge.Tier))
+	if !d.settleForgeInstall(yaraScanner, forgeFile, count) {
 		return // don't store version
 	}
-
-	fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rules after Forge update\n", ts(), newCount)
 
 	if db != nil {
 		_ = db.SetMetaString("forge_version_"+d.cfg.Signatures.YaraForge.Tier, newVersion)
 	}
+}
+
+// forgeReloader is the slice of the YARA backend the Forge settle step uses.
+type forgeReloader interface {
+	Reload() error
+	RuleCount() int
+}
+
+// settleForgeInstall reloads the merged rules directory after a Forge tier
+// was written and decides whether the tier stays. It goes when the merged
+// reload fails (the tier compiled alone but conflicts with the shipped
+// rules) or when the loaded count collapses; either way the file is
+// removed, the backend reloads without it, and a Critical finding says so.
+// Leaving a non-compiling tier on disk kept the live rules for now but made
+// the next worker restart compile the same directory, fail, and run with
+// zero rules until an operator deleted the file by hand. Returns true when
+// the tier stays and its version may be recorded.
+func (d *Daemon) settleForgeInstall(backend forgeReloader, forgeFile string, count int) bool {
+	reason := ""
+	if err := backend.Reload(); err != nil {
+		reason = fmt.Sprintf("the merged rules failed to compile (%v)", err)
+	} else if newCount := backend.RuleCount(); forgeRollbackNeeded(newCount, count) {
+		reason = fmt.Sprintf("%d rules downloaded but only %d loaded", count, newCount)
+	} else {
+		fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rules after Forge update\n", ts(), newCount)
+		return true
+	}
+	_ = os.Remove(forgeFile)
+	if err := backend.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] YARA reload after Forge rollback error: %v\n", ts(), err)
+	}
+	// Losing a ruleset this size is a coverage collapse, so it has to be
+	// alertable rather than a line on stderr that the journal rotates away.
+	d.emitReloadFinding(alert.Critical, "yara_forge_rollback", fmt.Sprintf(
+		"YARA Forge update rolled back: %s, so %s was removed. Scanning continues on the remaining rules.",
+		reason, forgeFile))
+	return false
 }
 
 func (d *Daemon) reloadSignatures() {
