@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,9 +179,11 @@ func SetOverrides(o Overrides) bool {
 	defer overrideMu.Unlock()
 	// sync.Once has no public "was called" query, so detectedFlag is the
 	// guard that makes late override attempts a true no-op for both Detect
-	// and fresh re-probes.
+	// and fresh re-probes. Re-installing the overrides that are already in
+	// force is not late: several startup paths install and then detect, and
+	// the daemon's own call must not read "already detected" as "lost".
 	if isDetected() {
-		return false
+		return pendingOverride != nil && reflect.DeepEqual(*pendingOverride, o)
 	}
 	pendingOverride = &o
 	return true

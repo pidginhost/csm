@@ -574,25 +574,11 @@ func (d *Daemon) Run() error {
 	alert.FindingBus = d.findingBus
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
-	// call so every check sees the merged view. Must happen before any
-	// other code calls platform.Detect() in this daemon run.
-	//
-	// WebServer is a *platform.WebServer pointer — take address only when
-	// the operator actually supplied a non-empty type, otherwise leave
-	// the auto-detected value alone.
-	var wsOverride *platform.WebServer
-	if t := d.cfg.WebServer.Type; t != "" {
-		ws := platform.WebServer(t)
-		wsOverride = &ws
-	}
-	platform.SetOverrides(platform.Overrides{
-		WebServer:           wsOverride,
-		ApacheConfigDir:     d.cfg.WebServer.ConfigDir,
-		AccessLogPaths:      d.cfg.WebServer.AccessLogs,
-		ErrorLogPaths:       d.cfg.WebServer.ErrorLogs,
-		ModSecAuditLogPaths: d.cfg.WebServer.ModSecAudits,
-		DomlogGlobs:         d.cfg.WebServer.DomlogGlobs,
-	})
+	// call so every check sees the merged view. The daemon command installs
+	// them even earlier (before the challenge-snippet refresh detects the
+	// platform); this call re-asserts them and reports if detection ran
+	// first without them.
+	InstallPlatformOverrides(d.cfg)
 
 	// Log detected platform as a structured record. In text mode this
 	// comes out as "[ts] platform detected  os=X  panel=Y  ..."; in

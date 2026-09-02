@@ -317,6 +317,12 @@ func runDaemon() {
 		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
+	// The operator's web_server: overrides must be in force before anything
+	// detects the platform; the snippet refresh below is the first such
+	// call, and a detection cached without them would silently pin the
+	// probe's (possibly wrong) webserver and log paths for the whole run.
+	daemon.InstallPlatformOverrides(cfg)
+
 	// Binary-swap upgrades never re-run the installer, so a stale challenge
 	// snippet survives until it breaks webserver reloads host-wide.
 	if _, err := prepareChallengeConf(cfg); err != nil {
