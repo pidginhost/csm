@@ -45,7 +45,7 @@ const clamdDialTimeout = 2 * time.Second
 // whatever is listening answers clamd's PING. Discovery must not be a way to
 // point mail scanning at something an account controls.
 func ResolveClamdSocket(configured string) (string, bool) {
-	if configured != "" && clamdSocketAnswers(configured) {
+	if configured != "" && clamdSocketTrusted(configured) && clamdSocketAnswers(configured) {
 		return configured, false
 	}
 	for _, candidate := range clamdSocketCandidates {
@@ -62,34 +62,47 @@ func ResolveClamdSocket(configured string) (string, bool) {
 	return configured, false
 }
 
-// clamdSocketTrusted reports whether a socket and the directory holding it are
-// out of reach of every account but root and this process.
+// clamdSocketTrusted reports whether only a privileged account could have put
+// this socket here.
+//
+// What matters is the directory: whoever can write to it decides what the name
+// resolves to, and CSM is about to stream every mail attachment to whatever is
+// listening and believe the verdict it returns. The socket's own owner is not
+// the test -- clamd is packaged to run as its own service user (Debian's
+// clamav owns /run/clamav), so requiring root there would reject exactly the
+// sockets this discovery exists to find.
+//
+// A sticky directory is refused rather than allowed: /tmp lets any account
+// create the name first, and being unable to delete someone else's socket is
+// no help when the attacker's is the one that got there.
 func clamdSocketTrusted(path string) bool {
-	if !clamdPathTrusted(path) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	// The directory decides who can replace the socket, so it matters as much
-	// as the socket itself.
-	return clamdPathTrusted(filepath.Dir(path))
+	return clamdDirTrusted(filepath.Dir(path))
 }
 
-func clamdPathTrusted(path string) bool {
-	info, err := os.Lstat(path)
-	if err != nil {
+// clamdMaxServiceUID is the ceiling for a packaged service account. Hosting
+// accounts start well above it on every panel CSM supports.
+const clamdMaxServiceUID = 500
+
+func clamdDirTrusted(dir string) bool {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	if info.Mode().Perm()&0o002 != 0 && info.Mode()&os.ModeSticky == 0 {
+	if info.Mode().Perm()&0o022 != 0 {
 		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return false
 	}
+	// Owned by root, by this process, or by the service account clamd runs
+	// as -- never by an account that also hosts websites.
 	uid := int(stat.Uid)
-	return uid == 0 || uid == os.Geteuid()
+	return uid == 0 || uid == os.Geteuid() || uid < clamdMaxServiceUID
 }
 
 // clamdSocketAnswers reports whether clamd itself is listening. Connecting

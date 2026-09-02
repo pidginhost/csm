@@ -1406,6 +1406,11 @@ func probeSMTP(addr string) []ValidationResult {
 // which one actually answers instead of only that mail is not being scanned.
 func probeClamd(socket string) []ValidationResult {
 	resolved, discovered := ResolveClamdSocket(socket)
+	if !discovered && socket != "" && !clamdSocketTrusted(socket) {
+		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf(
+			"%s is in a directory other accounts can write to, so what answers there is not necessarily clamd; move the socket somewhere only root or the clamd service account can write",
+			socket)}}
+	}
 	conn, err := net.DialTimeout("unix", resolved, 3*time.Second)
 	if err != nil {
 		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf("cannot connect to %s: %v", resolved, err)}}

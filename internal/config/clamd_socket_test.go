@@ -184,21 +184,52 @@ func TestClamdCandidatesExcludeWorldWritableLocations(t *testing.T) {
 	}
 }
 
-// The operator's own setting is still honoured as-is: it is a root-only file,
-// and second-guessing it would break a deliberate non-standard deployment.
-func TestResolveClamdSocketDoesNotSecondGuessTheConfiguredPath(t *testing.T) {
+// A configured path in a directory any account can write to is not safe just
+// because an operator typed it: whoever can write there decides what CSM
+// streams mail to. It is not silently swapped -- the operator still sees the
+// path they set -- but validate has to report it rather than pass it as OK.
+func TestProbeClamdReportsAnUntrustedConfiguredDirectory(t *testing.T) {
 	dir := shortTempDir(t)
 	shared := filepath.Join(dir, "shared")
-	if err := os.Mkdir(shared, 0o777); err != nil {
+	if err := os.Mkdir(shared, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	configured := filepath.Join(shared, "clamd.sock")
 	listenUnix(t, configured)
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
 
 	withClamdCandidates(t, nil)
 
-	if got, discovered := ResolveClamdSocket(configured); got != configured || discovered {
-		t.Fatalf("ResolveClamdSocket = %q, %v; want the configured path kept", got, discovered)
+	res := probeClamd(configured)
+	if len(res) != 1 || res[0].Level != "error" {
+		t.Fatalf("results = %+v; want a single error for a world-writable socket directory", res)
+	}
+	if !strings.Contains(res[0].Message, shared) {
+		t.Errorf("message %q must name the directory %q", res[0].Message, shared)
+	}
+}
+
+// Debian and upstream ClamAV run clamd as its own service account and chown
+// the socket directory to it. Requiring root there would reject exactly the
+// sockets discovery exists to find.
+func TestClamdDirTrustedAcceptsAServiceAccountDirectory(t *testing.T) {
+	dir := shortTempDir(t)
+	if !clamdDirTrusted(dir) {
+		t.Fatal("a 0700 directory owned by this process must be trusted")
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !clamdDirTrusted(dir) {
+		t.Fatal("a 0755 service directory must be trusted")
+	}
+	if err := os.Chmod(dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if clamdDirTrusted(dir) {
+		t.Fatal("a group-writable directory must not be trusted")
 	}
 }
 

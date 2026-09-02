@@ -104,9 +104,14 @@ func accountHomeForUID(uid uint64) (string, bool) {
 
 // serviceAccountHomeRoots are the trees a packaged daemon's home lives under.
 // Nothing hosting a website is ever placed in one.
+// Deliberately narrow. cPanel accepts an arbitrary absolute homedir, so /srv
+// and /opt are left out even though no service account CSM has seen uses them:
+// excluding a real account makes Doctor report OK over a cage that is actually
+// blind, which is the failure this check exists to prevent.
 var serviceAccountHomeRoots = []string{
-	"/var", "/usr", "/etc", "/run", "/opt", "/srv",
-	"/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/boot",
+	"/var/lib", "/var/run", "/var/cache", "/var/spool", "/var/empty",
+	"/usr", "/etc", "/run", "/bin", "/sbin", "/lib", "/lib64",
+	"/dev", "/proc", "/sys", "/boot",
 	"/nonexistent",
 }
 

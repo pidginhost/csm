@@ -165,6 +165,11 @@ require getenv('CSM_SHIELD_TEST_FILE');
 		{"weak_param_base64_noise", "wp-content/plugins/foo/api6.php",
 			"<?php echo 'SAFE';", "c", "dGVzdA==", false, false},
 
+		// base64url swaps +/ for -_ and is what a parameter actually carries:
+		// aWQ-L3RtcC94 is "id>/tmp/x".
+		{"weak_param_base64url_command", "wp-content/plugins/foo/api8.php",
+			"<?php echo 'SAFE';", "c", "aWQ-L3RtcC94", false, true},
+
 		// No ordinary flag is kilobytes long.
 		{"weak_param_oversized_value", "wp-content/plugins/foo/api7.php",
 			"<?php echo 'SAFE';", "c", strings.Repeat("A", 900), false, true},

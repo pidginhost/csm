@@ -1330,8 +1330,10 @@ function csm_is_command_value($value, $depth = 0) {
     if (preg_match('/[;|&\x60$(){}<>\\\\\s\'"]/', $v)) return true;
     if (strpos($v, '/') !== false || strpos($v, '..') !== false) return true;
     if (preg_match('/^(?:ls|id|pwd|whoami|uname|cat|head|tail|wget|curl|nc|ncat|socat|telnet|ftp|tftp|sh|bash|zsh|dash|python[0-9.]*|perl|ruby|node|php|awk|sed|env|base64|xxd|openssl|busybox|chmod|chown|rm|mv|cp|kill|ps|netstat|ifconfig|ipconfig|dir|type|systeminfo|net|tasklist)$/i', $v)) return true;
-    if ($depth === 0 && preg_match('/^[A-Za-z0-9+\/=]{4,}$/', $v)) {
-        $decoded = base64_decode($v, true);
+    if ($depth === 0 && preg_match('/^[A-Za-z0-9+\/_=-]{4,}$/', $v)) {
+        // base64url swaps +/ for -_; a packed shell translates it back
+        // before decoding, so normalise before the strict decode.
+        $decoded = base64_decode(strtr($v, '-_', '+/'), true);
         if (is_string($decoded) && $decoded !== '' && $decoded === preg_replace('/[^\x20-\x7e]/', '', $decoded)) {
             return csm_is_command_value($decoded, 1);
         }

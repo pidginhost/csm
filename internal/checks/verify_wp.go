@@ -2,10 +2,9 @@ package checks
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -94,39 +93,58 @@ func wpCoreModifiedSeverity(path, rel string) alert.Severity {
 	return alert.High
 }
 
-// wpCoreMarkupActiveMarkers are the constructs that make markup executable.
+// wpCoreMarkupActiveMarkers are the element-level constructs that make markup
+// executable. Event attributes are matched separately: SVG defines dozens of
+// them, so any list of names would really be a list of the ones an attacker
+// has to avoid.
 var wpCoreMarkupActiveMarkers = []string{
-	"<script", "javascript:", "<foreignobject", "<!entity", "<handler", "<set ",
-	"onload=", "onerror=", "onclick=", "onmouseover=", "onbegin=", "onfocus=",
+	"<script", "javascript:", "<foreignobject", "<!entity", "<handler",
+	"<animate", "<set ", "<use ", "data:text/html",
 }
 
+// wpCoreMarkupEventAttr matches any on<name>= handler attribute.
+var wpCoreMarkupEventAttr = regexp.MustCompile(`(?i)\bon[a-z]+\s*=`)
+
+// wpCoreMarkupPeekBytes bounds the read. A shipped core asset is far smaller;
+// anything larger is judged active without reading further, because the part
+// that was not read is exactly where content would be hidden.
+const wpCoreMarkupPeekBytes = 256 << 10
+
 // wpCoreMarkupIsActive reports whether a markup file carries anything the
-// browser would execute. A read failure counts as active: an unreadable file
-// is not evidence of innocence.
+// browser would execute.
+//
+// Every uncertain answer is "active": an unreadable file, one larger than the
+// peek, a path raced to something that is not a regular file. None of those is
+// evidence of innocence, and the point of the grade is that a core asset which
+// cannot be shown inert keeps the higher severity.
 func wpCoreMarkupIsActive(path string) bool {
 	if path == "" {
 		return true
 	}
-	f, err := osFS.Open(path)
+	info, err := osFS.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > wpCoreMarkupPeekBytes {
+		return true
+	}
+
+	// The path is in a tenant-writable tree, so it can be raced to a FIFO
+	// between the report and this read. Use the non-blocking, O_NOFOLLOW,
+	// regular-file-verified reader rather than a plain open.
+	reader, ok := osFS.(phpRegularFilePrefixReader)
+	if !ok {
+		return true
+	}
+	body, err := reader.ReadRegularFilePrefix(path, info, wpCoreMarkupPeekBytes)
 	if err != nil {
 		return true
 	}
-	defer func() { _ = f.Close() }()
 
-	// A core asset is small; a prefix is enough to see active constructs and
-	// bounds what a tenant-grown file can cost.
-	buf := make([]byte, 256*1024)
-	n, err := io.ReadFull(f, buf)
-	if n == 0 && err != nil && !errors.Is(err, io.EOF) {
-		return true
-	}
-	body := strings.ToLower(string(buf[:n]))
+	lower := strings.ToLower(string(body))
 	for _, marker := range wpCoreMarkupActiveMarkers {
-		if strings.Contains(body, marker) {
+		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
-	return false
+	return wpCoreMarkupEventAttr.MatchString(lower)
 }
 
 // wpCoreFilePathWithin joins a wp-cli reported relative path onto the install

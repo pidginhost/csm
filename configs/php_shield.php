@@ -182,8 +182,10 @@ function csm_shield_is_command_value($value, $depth = 0) {
     // A packed webshell builds its sink name at runtime, so the source scan
     // finds nothing and this event is the only trace it leaves. Those hand the
     // command in base64, so look one level through it.
-    if ($depth === 0 && preg_match('/^[A-Za-z0-9+\/=]{4,}$/', $v)) {
-        $decoded = base64_decode($v, true);
+    if ($depth === 0 && preg_match('/^[A-Za-z0-9+\/_=-]{4,}$/', $v)) {
+        // base64url swaps +/ for -_; a packed shell translates it back
+        // before decoding, so normalise before the strict decode.
+        $decoded = base64_decode(strtr($v, '-_', '+/'), true);
         if (is_string($decoded) && $decoded !== '' && $decoded === preg_replace('/[^\x20-\x7e]/', '', $decoded)) {
             return csm_shield_is_command_value($decoded, 1);
         }
