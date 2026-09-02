@@ -195,6 +195,35 @@ func TestMoveExportedArchiveRefusesSharedDestinationDir(t *testing.T) {
 	}
 }
 
+// Renaming a directory is governed by the permissions of the directory
+// holding it, so a private destination directory under a shared parent is
+// no protection: that parent's writers can swap the whole directory out.
+func TestMoveExportedArchiveRefusesSharedAncestorDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged.csmbak")
+	outer := filepath.Join(dir, "outer")
+	inner := filepath.Join(outer, "inner")
+	dst := filepath.Join(inner, "final.csmbak")
+	writeExportFixture(t, src, "archive-bytes")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outer, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	err := moveExportedArchive(src, dst, sha256Hex("archive-bytes"))
+	if err == nil {
+		t.Fatal("export under a world-writable ancestor must be refused")
+	}
+	if !strings.Contains(err.Error(), "writable by other accounts") {
+		t.Fatalf("failed for the wrong reason: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatal("archive was written under the shared ancestor anyway")
+	}
+}
+
 // The sticky bit is what makes /tmp usable: another account can create
 // entries there but cannot rename or remove root's.
 func TestMoveExportedArchiveAllowsStickyDestinationDir(t *testing.T) {

@@ -380,6 +380,21 @@ func runStoreExportCLI() {
 		os.Exit(2)
 	}
 
+	// Check the destination before the daemon writes anything. An older
+	// daemon ignores Stage and writes dstPath itself, so a check that only
+	// ran on the move below would never run at all against that daemon.
+	//
+	// #nosec G703 -- dstPath is the destination the operator named on the
+	// command line and is checked for shared ownership right below.
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o750); err != nil {
+		fmt.Fprintf(os.Stderr, "csm store export: creating destination directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := assertExportDirPrivate(filepath.Dir(dstPath)); err != nil {
+		fmt.Fprintf(os.Stderr, "csm store export: %v\n", err)
+		os.Exit(1)
+	}
+
 	// The daemon runs under ProtectSystem=strict, where the usual backup
 	// destinations are read-only. It stages the archive under its state
 	// directory; this unsandboxed process moves it into place. An older
@@ -397,7 +412,7 @@ func runStoreExportCLI() {
 	}
 	if res.Path != dstPath {
 		if err := moveExportedArchive(res.Path, dstPath, res.ArchiveSHA256); err != nil {
-			fmt.Fprintf(os.Stderr, "csm store export: archive staged at %s but not moved: %v\n", res.Path, err)
+			fmt.Fprintf(os.Stderr, "csm store export: moving archive from %s: %v\n", res.Path, err)
 			os.Exit(1)
 		}
 		res.Path = dstPath

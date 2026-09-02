@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -33,7 +34,9 @@ func moveExportedArchive(src, dst, wantSHA string) error {
 	}
 	if err := renameExportFile(src, dst); err == nil {
 		_ = renameExportFile(src+".sha256", dst+".sha256")
-		return nil
+		// Nothing else references the staged copy after this, so the new
+		// directory entries have to survive a crash on their own.
+		return syncParentDir(filepath.Dir(dst))
 	} else if !isCrossDevice(err) {
 		return fmt.Errorf("moving archive into place: %w", err)
 	}
@@ -57,29 +60,60 @@ func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
 }
 
-// assertExportDirPrivate refuses a destination directory another account can
-// write to. Verifying the copy proves nothing there: whoever can write to
-// the directory can rename the verified file out of the way between the
-// digest check and the rename that commits it, and would end up choosing
-// what the operator receives as the export.
+// assertExportDirPrivate refuses a destination another account can write to.
+// Verifying the copy proves nothing there: whoever can write to the
+// directory can rename the verified file out of the way between the digest
+// check and the rename that commits it, and would end up choosing what the
+// operator receives as the export.
+//
+// Every ancestor is checked, not just the destination directory itself.
+// Renaming a directory entry is governed by the permissions of the
+// directory holding it, so a private directory under a shared parent can be
+// swapped whole. Symlinks are resolved first so a link cannot stand in for
+// a directory that passed the check.
 //
 // The sticky bit is the exception that keeps /tmp working -- entries can be
-// created but only their owner may rename or remove them.
-//
-// #nosec G703 -- dir is the parent of the destination the operator named.
+// created there but only their owner may rename or remove them. Components
+// owned by root are accepted because root can write anywhere regardless.
 func assertExportDirPrivate(dir string) error {
-	info, err := os.Lstat(dir)
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("checking destination directory: %w", err)
+	}
+	if !filepath.IsAbs(resolved) {
+		return fmt.Errorf("export destination %s must be an absolute path", dir)
+	}
+	self := os.Geteuid()
+	current := string(filepath.Separator)
+	if err := assertExportPathComponentPrivate(current, self); err != nil {
+		return err
+	}
+	for _, part := range strings.Split(strings.Trim(resolved, string(filepath.Separator)), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		if err := assertExportPathComponentPrivate(current, self); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// #nosec G703 -- path is one component of the destination the operator named.
+func assertExportPathComponentPrivate(path string, self int) error {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("checking destination directory: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("export destination %s is not a directory", dir)
+		return fmt.Errorf("export destination component %s is not a directory", path)
 	}
 	if info.Mode().Perm()&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
-		return fmt.Errorf("refusing to export into %s: it is writable by other accounts", dir)
+		return fmt.Errorf("refusing to export into %s: it is writable by other accounts", path)
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
-		return fmt.Errorf("refusing to export into %s: it is owned by uid %d, which can replace the archive after it is verified", dir, stat.Uid)
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != self && stat.Uid != 0 {
+		return fmt.Errorf("refusing to export into %s: it is owned by uid %d, which can replace the archive after it is verified", path, stat.Uid)
 	}
 	return nil
 }
@@ -134,8 +168,12 @@ func copyFileVerified(src, dst, wantSHA string) error {
 	}
 	committed = true
 	// The staged copy is removed right after this, so the destination
-	// directory entry has to survive a crash on its own.
-	return syncParentDir(filepath.Dir(dst))
+	// directory entry has to survive a crash on its own. The archive is
+	// already in place if this fails, which the message has to say.
+	if err = syncParentDir(filepath.Dir(dst)); err != nil {
+		return fmt.Errorf("archive is in place at %s but its directory could not be synced: %w", dst, err)
+	}
+	return nil
 }
 
 // writeExportFileAtomic writes the companion digest the same way, so a
@@ -168,7 +206,10 @@ func writeExportFileAtomic(path string, data []byte) error {
 		return err
 	}
 	committed = true
-	return syncParentDir(filepath.Dir(path))
+	if err = syncParentDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("%s is in place but its directory could not be synced: %w", path, err)
+	}
+	return nil
 }
 
 // createExportTemp opens a 0600 temporary file in the destination's own
