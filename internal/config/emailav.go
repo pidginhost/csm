@@ -31,10 +31,15 @@ func (c *EmailAVConfig) ScanTimeoutDuration() time.Duration {
 	return d
 }
 
+// DefaultClamdSocket is the socket assumed when the operator sets none. It is
+// RHEL's clamd-scan path; other packagings put it elsewhere, which is what
+// ResolveClamdSocket exists to cope with.
+const DefaultClamdSocket = "/var/run/clamd.scan/clamd.sock"
+
 // EmailAVDefaults applies default values to an EmailAVConfig.
 func EmailAVDefaults(c *EmailAVConfig) {
 	if c.ClamdSocket == "" {
-		c.ClamdSocket = "/var/run/clamd.scan/clamd.sock"
+		c.ClamdSocket = DefaultClamdSocket
 	}
 	if c.ScanTimeout == "" {
 		c.ScanTimeout = "30s"
