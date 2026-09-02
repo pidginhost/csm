@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestMsgIDPattern_AcceptsValid(t *testing.T) {
@@ -66,6 +67,59 @@ func TestActionRateLimiter_PartialConsume(t *testing.T) {
 	}
 	if got := rl.consumeUpTo(1); got != 0 {
 		t.Fatalf("bucket should be empty after partial grant, got %d", got)
+	}
+}
+
+func TestAutoFreezeRateLimitFollowsLiveConfig(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	startup := defaultPHPRelayCfg()
+	startup.AutoResponse.Enabled = true
+	startup.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	startup.AutoResponse.PHPRelay.MaxActionsPerMinute = 1
+	psw := newPerScriptWindow()
+	script := psw.getOrCreate("k:/p")
+	for _, id := range []string{"11abcdefghij1234", "21bbcdefghij1234", "31ccdefghij12345"} {
+		script.recordActive(id, time.Now())
+	}
+	var args [][]string
+	af := newAutoFreezer(psw, startup, "/nonexistent-spool", "/usr/sbin/exim",
+		&fakeRunner{onRun: func() {}, recordArgs: &args}, &fakeAuditor{}, nil, neverDryRun)
+
+	live := *startup
+	live.AutoResponse.PHPRelay.MaxActionsPerMinute = 2
+	config.SetActive(&live)
+	af.Apply([]alert.Finding{{
+		Check: "email_php_relay_abuse", Path: "header",
+		ScriptKey: "k:/p", Severity: alert.Critical,
+	}})
+	if len(args) != 2 {
+		t.Fatalf("freeze actions = %d, want live limit 2", len(args))
+	}
+}
+
+func TestAutoFreezeSnapshotsLiveConfigOnce(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	var dryRunCfg *config.Config
+	af := newAutoFreezer(newPerScriptWindow(), cfg, "", "/usr/sbin/exim", nil, &fakeAuditor{}, nil, func(liveCfg *config.Config) bool {
+		dryRunCfg = liveCfg
+		return true
+	})
+	calls := 0
+	af.cfgFn = func() *config.Config {
+		calls++
+		return cfg
+	}
+	af.Apply(nil)
+	if calls != 1 {
+		t.Fatalf("config snapshots = %d, want 1 per Apply", calls)
+	}
+	if dryRunCfg != cfg {
+		t.Fatal("dry-run resolver did not receive the Apply config snapshot")
 	}
 }
 
@@ -128,8 +182,8 @@ func TestSpoolScanMatchingScript_ReturnsMatchingMsgIDs(t *testing.T) {
 // to newAutoFreezer. They short-circuit the runtime/bbolt/yaml precedence
 // chain because that's the controller's job, not the freezer's.
 // (boolPtr is shared across daemon tests via yara_worker_default_test.go.)
-func alwaysDryRun() bool { return true }
-func neverDryRun() bool  { return false }
+func alwaysDryRun(*config.Config) bool { return true }
+func neverDryRun(*config.Config) bool  { return false }
 
 func TestAutoFreeze_DryRunDoesNotInvokeExim(t *testing.T) {
 	cfg := defaultPHPRelayCfg()

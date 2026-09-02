@@ -2,6 +2,7 @@ package firewall
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,18 +25,19 @@ const (
 // FetchCloudflareIPs downloads the current Cloudflare IP ranges.
 func FetchCloudflareIPs() (ipv4, ipv6 []string, err error) {
 	client := &http.Client{Timeout: 30 * time.Second}
+	return fetchCloudflareIPs(client)
+}
 
-	ipv4, err = fetchCIDRList(client, cfIPv4URL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("fetching CF IPv4: %w", err)
+func fetchCloudflareIPs(client *http.Client) (ipv4, ipv6 []string, err error) {
+	ipv4, ipv4Err := fetchCIDRList(client, cfIPv4URL)
+	if ipv4Err != nil {
+		ipv4Err = fmt.Errorf("fetching CF IPv4: %w", ipv4Err)
 	}
-
-	ipv6, err = fetchCIDRList(client, cfIPv6URL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("fetching CF IPv6: %w", err)
+	ipv6, ipv6Err := fetchCIDRList(client, cfIPv6URL)
+	if ipv6Err != nil {
+		ipv6Err = fmt.Errorf("fetching CF IPv6: %w", ipv6Err)
 	}
-
-	return ipv4, ipv6, nil
+	return ipv4, ipv6, errors.Join(ipv4Err, ipv6Err)
 }
 
 // fetchCIDRList fetches a URL and parses one CIDR per line.

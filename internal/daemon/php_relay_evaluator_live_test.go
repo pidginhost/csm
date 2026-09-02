@@ -41,3 +41,42 @@ func TestEvaluatorHonoursLiveConfig(t *testing.T) {
 		t.Fatal("evaluator ignored the live config that disabled php_relay")
 	}
 }
+
+func TestEvaluatorSnapshotsLiveConfigOncePerEvaluation(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), nil, cfg, nil)
+	calls := 0
+	eng.cfgFn = func() *config.Config {
+		calls++
+		return cfg
+	}
+	eng.evaluatePaths("example.test:/mail.php", "192.0.2.10", "acct", time.Now())
+	if calls != 1 {
+		t.Fatalf("config snapshots = %d, want 1 per evaluation", calls)
+	}
+}
+
+func TestEvaluatorAccountLimitFollowsLiveConfig(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	startup := defaultPHPRelayCfg()
+	startup.EmailProtection.PHPRelay.AccountVolumePerHour = 50
+	accounts := newPerAccountWindow(5000)
+	eng := newEvaluator(nil, nil, accounts, startup, nil)
+	eng.SetAccountLimitSource(100, cpanelLimitOK)
+
+	live := *startup
+	live.EmailProtection.PHPRelay.AccountVolumePerHour = 2
+	config.SetActive(&live)
+	now := time.Now()
+	line := "2026-09-02 12:00:00 1abcdefghijk-DEF <= info@example.com U=acct ID=1 B=redirect_resolver"
+	if got := eng.parsePHPRelayAccountVolumeAt(line, now, now); len(got) != 0 {
+		t.Fatalf("first message fired unexpectedly: %+v", got)
+	}
+	got := eng.parsePHPRelayAccountVolumeAt(line, now, now)
+	if len(got) != 1 || got[0].Path != "volume_account" {
+		t.Fatalf("live account limit was ignored: %+v", got)
+	}
+}

@@ -63,6 +63,17 @@ func newDaemonForReloadTest(t *testing.T, cfg *config.Config) *Daemon {
 	return d
 }
 
+func TestEmitReloadFindingCountsChannelOverflow(t *testing.T) {
+	d := &Daemon{alertCh: make(chan alert.Finding, 1)}
+	d.alertCh <- alert.Finding{Check: "already_queued"}
+
+	d.emitReloadFinding(alert.Critical, "config_reload_error", "queue full")
+
+	if got := d.DroppedAlerts(); got != 1 {
+		t.Fatalf("dropped alerts = %d, want 1", got)
+	}
+}
+
 func TestPublishActiveConfigPurgesDryRunBlocksInLiveMode(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {

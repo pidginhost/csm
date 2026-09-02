@@ -574,14 +574,19 @@ function loadWhitelist() {
             for (var i = 0; i < ips.length; i++) {
                 var wl = ips[i];
                 var ip = typeof wl === 'string' ? wl : wl.ip;
-                var status = '<span class="badge bg-green-lt">Permanent</span>';
-                if (wl && wl.expires_at) {
+                var configured = wl && wl.configured;
+                var status = configured
+                    ? '<span class="badge bg-blue-lt">Configured</span>'
+                    : '<span class="badge bg-green-lt">Permanent</span>';
+                if (!configured && wl && wl.expires_at) {
                     status = '<div><span class="badge bg-yellow-lt">Temporary</span></div><div class="text-muted small mt-1">' + CSM.fmtDate(wl.expires_at) + '</div>';
                 }
                 h += '<tr>';
                 h += '<td><code class="csm-copy">' + CSM.esc(ip) + '</code></td>';
                 h += '<td>' + status + '</td>';
-                h += '<td><button class="btn btn-sm btn-outline-secondary wl-remove-btn" data-ip="' + CSM.esc(ip) + '">Remove</button></td>';
+                h += '<td>' + (configured
+                    ? '<span class="text-muted small">Edit csm.yaml</span>'
+                    : '<button class="btn btn-sm btn-outline-secondary wl-remove-btn" data-ip="' + CSM.esc(ip) + '">Remove</button>') + '</td>';
                 h += '</tr>';
             }
             h += '</tbody></table></div>';

@@ -113,8 +113,10 @@ func SetGlobalThreatDBForTest(statePath string) func() {
 
 func configWhitelistSet(ips []string) map[string]bool {
 	set := make(map[string]bool, len(ips))
-	for _, ip := range ips {
-		set[ip] = true
+	for _, raw := range ips {
+		if ip := net.ParseIP(strings.TrimSpace(raw)); ip != nil {
+			set[ip.String()] = true
+		}
 	}
 	return set
 }
@@ -127,6 +129,15 @@ func (db *ThreatDB) SetConfigWhitelist(ips []string) {
 	db.mu.Lock()
 	db.configWhitelist = configWhitelistSet(ips)
 	db.mu.Unlock()
+}
+
+// IsConfigWhitelisted reports whether ip is managed by reputation.whitelist.
+// Runtime removal must not claim to remove these entries because the config
+// remains authoritative and restores them on reload.
+func (db *ThreatDB) IsConfigWhitelisted(ip string) bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	return db.configWhitelist[ip]
 }
 
 // Lookup checks if an IP is in the local threat database.
@@ -332,14 +343,12 @@ func (db *ThreatDB) addWhitelistEntry(ip string, expiresAt time.Time) {
 	db.saveWhitelistFile()
 }
 
-// RemoveWhitelist removes an IP from the whitelist.
+// RemoveWhitelist removes an operator-managed whitelist entry. Config-managed
+// entries are replaced only by SetConfigWhitelist.
 func (db *ThreatDB) RemoveWhitelist(ip string) {
 	db.mu.Lock()
 	delete(db.whitelist, ip)
 	delete(db.whitelistMeta, ip)
-	// A configured entry removed at runtime stays gone until the next
-	// reload or restart re-reads csm.yaml, as before.
-	delete(db.configWhitelist, ip)
 	db.mu.Unlock()
 
 	if sdb := store.Global(); sdb != nil {
@@ -429,9 +438,10 @@ func (db *ThreatDB) feedSourceLocked(ip string) (string, bool) {
 
 // WhitelistInfo returns all whitelisted IPs with their expiry info.
 type WhitelistIP struct {
-	IP        string     `json:"ip"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = permanent
-	Permanent bool       `json:"permanent"`
+	IP         string     `json:"ip"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // nil = permanent
+	Permanent  bool       `json:"permanent"`
+	Configured bool       `json:"configured,omitempty"`
 }
 
 func (db *ThreatDB) WhitelistedIPs() []WhitelistIP {
@@ -451,12 +461,14 @@ func (db *ThreatDB) WhitelistedIPs() []WhitelistIP {
 
 	result := make([]WhitelistIP, len(ips))
 	for i, ip := range ips {
-		entry := db.whitelistMeta[ip]
-		w := WhitelistIP{IP: ip, Permanent: true}
-		if entry != nil && !entry.ExpiresAt.IsZero() {
-			t := entry.ExpiresAt
-			w.ExpiresAt = &t
-			w.Permanent = false
+		w := WhitelistIP{IP: ip, Configured: db.configWhitelist[ip]}
+		if db.whitelist[ip] {
+			entry := db.whitelistMeta[ip]
+			w.Permanent = entry == nil || entry.ExpiresAt.IsZero()
+			if entry != nil && !entry.ExpiresAt.IsZero() {
+				t := entry.ExpiresAt
+				w.ExpiresAt = &t
+			}
 		}
 		result[i] = w
 	}
@@ -577,9 +589,19 @@ func (db *ThreatDB) Stats() map[string]interface{} {
 		"feed_ips":      db.FeedIPCount,
 		"feed_cidrs":    db.FeedNetCount,
 		"total":         len(db.badIPs) + len(db.badNets),
-		"whitelist":     len(db.whitelist),
+		"whitelist":     db.whitelistCountLocked(),
 		"last_update":   db.LastFeedUpdate.Format(time.RFC3339),
 	}
+}
+
+func (db *ThreatDB) whitelistCountLocked() int {
+	count := len(db.whitelist)
+	for ip := range db.configWhitelist {
+		if !db.whitelist[ip] {
+			count++
+		}
+	}
+	return count
 }
 
 // LastFeedRefresh returns when feeds last loaded successfully, preferring
@@ -865,8 +887,6 @@ func (db *ThreatDB) loadFeedCache() {
 	}
 	if incomplete {
 		db.lastUpdate = time.Time{}
-		db.LastFeedUpdate = time.Time{}
-		db.LastUpdated = time.Time{}
 	}
 	db.FeedIPCount, db.FeedNetCount = db.rebuildFeedLookup(feedNames)
 

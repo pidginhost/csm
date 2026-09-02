@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 )
 
@@ -11,6 +12,11 @@ func TestPHPRelayController_StatusReturnsBasicState(t *testing.T) {
 	cfg := defaultPHPRelayCfg()
 	eng := newEvaluator(newPerScriptWindow(), newPerIPWindow(64), newPerAccountWindow(5000), cfg, nil)
 	eng.SetEffectiveAccountLimit(60)
+	configCalls := 0
+	eng.cfgFn = func() *config.Config {
+		configCalls++
+		return cfg
+	}
 	c := &PHPRelayController{
 		eng: eng, ignores: newIgnoreList(), actionDryRun: &runtimeBool{},
 		enabled: true, platform: "cpanel",
@@ -24,6 +30,9 @@ func TestPHPRelayController_StatusReturnsBasicState(t *testing.T) {
 	}
 	if resp.Platform != "cpanel" {
 		t.Errorf("Platform = %q", resp.Platform)
+	}
+	if configCalls != 1 {
+		t.Errorf("config snapshots = %d, want 1 per status request", configCalls)
 	}
 }
 

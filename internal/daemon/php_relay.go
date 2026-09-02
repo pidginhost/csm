@@ -732,6 +732,7 @@ type evaluator struct {
 	policies              *emailspool.Policies
 	msgIndex              *msgIDIndex // optional; nil in unit tests
 	effectiveAccountLimit int
+	accountLimitFn        func(*config.Config) int
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
@@ -749,18 +750,20 @@ func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
 // returns the set of findings that fire at this moment. Cooldowns prevent
 // duplicate emissions per (script, path).
 func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time.Time) []alert.Finding {
-	if !e.config().EmailProtection.PHPRelay.Enabled {
+	cfg := e.config()
+	relayCfg := cfg.EmailProtection.PHPRelay
+	if !relayCfg.Enabled {
 		return nil
 	}
 	var findings []alert.Finding
 	s := e.scripts.getOrCreate(k)
 
 	// Path 1: sustained qualifying events.
-	win := time.Duration(e.config().EmailProtection.PHPRelay.RateWindowMin) * time.Minute
+	win := time.Duration(relayCfg.RateWindowMin) * time.Minute
 	qualifying := s.qualifyingCount(now.Add(-win), func(ev scriptEvent) bool {
 		return ev.FromMismatch && ev.AdditionalSignal
 	})
-	if qualifying >= e.config().EmailProtection.PHPRelay.HeaderScoreVolumeMin {
+	if qualifying >= relayCfg.HeaderScoreVolumeMin {
 		if s.shouldFire("header", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win), now)
 			f.RelayTotal = qualifying
@@ -776,8 +779,8 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 
 	// Path 2: absolute volume per script in the last 60 min.
 	absVol := s.volumeCount(now.Add(-60 * time.Minute))
-	if absVol >= e.config().EmailProtection.PHPRelay.AbsoluteVolumePerHour &&
-		!e.scriptIsLowDiversityNotification(s, now.Add(-60*time.Minute)) {
+	if absVol >= relayCfg.AbsoluteVolumePerHour &&
+		!e.scriptIsLowDiversityNotification(s, now.Add(-60*time.Minute), relayCfg.FanoutDistinctRecipients) {
 		if s.shouldFire("volume", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
 				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol), now)
@@ -795,10 +798,10 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	// Path 4: HTTP-IP fanout. Skipped silently for proxy IPs.
 	if sourceIP != "" {
 		if e.policies == nil || !e.policies.IsProxyIP(sourceIP) {
-			fwin := time.Duration(e.config().EmailProtection.PHPRelay.FanoutWindowMin) * time.Minute
+			fwin := time.Duration(relayCfg.FanoutWindowMin) * time.Minute
 			distinct := e.ips.distinctScriptsSince(sourceIP, now.Add(-fwin))
-			if distinct >= e.config().EmailProtection.PHPRelay.FanoutDistinctScripts &&
-				!e.fanoutIsLowDiversityNotification(sourceIP, now.Add(-fwin)) {
+			if distinct >= relayCfg.FanoutDistinctScripts &&
+				!e.fanoutIsLowDiversityNotification(sourceIP, now.Add(-fwin), relayCfg.FanoutDistinctRecipients) {
 				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
 					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
 						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin), now)
@@ -821,8 +824,7 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 // can legitimately emit hundreds of mails an hour to the same one or two
 // admin addresses; relay abuse reaches many distinct victims. Unknown or
 // partially parsed recipients leave the gate failing open.
-func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.Time) bool {
-	minRcpt := e.config().EmailProtection.PHPRelay.FanoutDistinctRecipients
+func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.Time, minRcpt int) bool {
 	if minRcpt <= 0 || s == nil {
 		return false
 	}
@@ -837,8 +839,7 @@ func (e *evaluator) scriptIsLowDiversityNotification(s *scriptState, since time.
 // below the configured minimum, so Path 4 still fires whenever recipients are
 // diverse (real relay) or unknown (recipient parsing gap -- fail open). A
 // non-positive threshold disables the gate and preserves the original behavior.
-func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time) bool {
-	minRcpt := e.config().EmailProtection.PHPRelay.FanoutDistinctRecipients
+func (e *evaluator) fanoutIsLowDiversityNotification(sourceIP string, since time.Time, minRcpt int) bool {
 	if minRcpt <= 0 || e.ips == nil {
 		return false
 	}
@@ -1033,6 +1034,27 @@ const (
 // Tests may also call it directly. A non-positive value disables Path 2b.
 func (e *evaluator) SetEffectiveAccountLimit(n int) {
 	e.effectiveAccountLimit = n
+	e.accountLimitFn = nil
+}
+
+// SetAccountLimitSource keeps the cPanel limit fixed while deriving the
+// operator-controlled threshold from the live config on each evaluation.
+func (e *evaluator) SetAccountLimitSource(cpanelLimit int, status cpanelLimitStatus) {
+	e.accountLimitFn = func(cfg *config.Config) int {
+		effective, enabled, _ := deriveEffectiveAccountLimit(cfg, cpanelLimit, status)
+		if !enabled {
+			return 0
+		}
+		return effective
+	}
+	e.effectiveAccountLimit = e.accountLimit(e.config())
+}
+
+func (e *evaluator) accountLimit(cfg *config.Config) int {
+	if e.accountLimitFn != nil {
+		return e.accountLimitFn(cfg)
+	}
+	return e.effectiveAccountLimit
 }
 
 // SetMsgIndex wires the msgID->script index so exim queue-completion log lines
@@ -1100,7 +1122,9 @@ func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []ale
 // timestamp so days-old log entries are not all stamped "now" and miscounted as
 // a single last-hour burst (a false Path 2b Critical on every restart).
 func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now time.Time) []alert.Finding {
-	if e.effectiveAccountLimit <= 0 || e.accounts == nil {
+	cfg := e.config()
+	limit := e.accountLimit(cfg)
+	if !cfg.EmailProtection.PHPRelay.Enabled || limit <= 0 || e.accounts == nil {
 		return nil
 	}
 	if !strings.Contains(line, " <= ") {
@@ -1115,7 +1139,7 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 	}
 	e.accounts.append(user, eventTime)
 	volume := e.accounts.volumeSince(user, now.Add(-phpRelayAccountWindowDur))
-	if volume < e.effectiveAccountLimit {
+	if volume < limit {
 		return nil
 	}
 	if !e.accounts.shouldFire(user, now, phpRelayAccountFireCooldown) {
@@ -1128,7 +1152,7 @@ func (e *evaluator) parsePHPRelayAccountVolumeAt(line string, eventTime, now tim
 		Severity:   alert.Critical,
 		Check:      "email_php_relay_abuse",
 		Path:       "volume_account",
-		Message:    fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, e.effectiveAccountLimit),
+		Message:    fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, limit),
 		CPUser:     user,
 		RelayTotal: volume,
 		Timestamp:  now,

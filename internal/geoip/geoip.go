@@ -295,7 +295,7 @@ func fetchRDAP(ip string) (Info, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return info, err
+		return info, fmt.Errorf("%w: %v", errRDAPLookupIncomplete, err)
 	}
 	defer resp.Body.Close()
 
@@ -313,9 +313,16 @@ func fetchRDAP(ip string) (Info, error) {
 		} `json:"entities"`
 	}
 
-	// Bounded: the service answer is small; a hostile or broken upstream
-	// must not stream into an unbounded decoder buffer.
-	if err := json.NewDecoder(io.LimitReader(resp.Body, rdapMaxResponseBytes)).Decode(&rdap); err != nil {
+	// Read one byte past the cap so a complete JSON prefix with an oversized
+	// trailing body cannot be accepted and cached as a positive answer.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, rdapMaxResponseBytes+1))
+	if err != nil {
+		return info, fmt.Errorf("%w: %v", errRDAPLookupIncomplete, err)
+	}
+	if int64(len(data)) > rdapMaxResponseBytes {
+		return info, fmt.Errorf("%w: response exceeds %d bytes", errRDAPLookupIncomplete, rdapMaxResponseBytes)
+	}
+	if err := json.Unmarshal(data, &rdap); err != nil {
 		return info, fmt.Errorf("%w: %v", errRDAPLookupIncomplete, err)
 	}
 

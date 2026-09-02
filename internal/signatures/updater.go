@@ -14,12 +14,20 @@ import (
 	"github.com/pidginhost/csm/internal/atomicio"
 )
 
+// ErrUpdateRollback marks a signed update refused by rollback protection.
+var ErrUpdateRollback = errors.New("signed rules update refused")
+
+// UpdateOptions controls operator-approved exceptions to rollback protection.
+type UpdateOptions struct {
+	AllowRuleCountDecrease bool
+}
+
 // Update downloads the latest rules from the configured URL.
 // Validates the downloaded rules before installing.
 // A detached ed25519 signature is fetched from url+".sig" and verified
 // before the rules are installed.
 // Returns the number of rules loaded, or error.
-func Update(rulesDir, url, signingKey string) (int, error) {
+func Update(rulesDir, url, signingKey string, options UpdateOptions) (int, error) {
 	if url == "" {
 		return 0, fmt.Errorf("no update URL configured (set signatures.update_url in csm.yaml)")
 	}
@@ -69,7 +77,7 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 	}
 
 	destPath := filepath.Join(rulesDir, "malware.yml")
-	if err := refuseRollback(destPath, rf); err != nil {
+	if err := refuseRollback(destPath, rf, options.AllowRuleCountDecrease); err != nil {
 		return 0, err
 	}
 
@@ -94,7 +102,7 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 // would silently strip detection while reporting a successful update. A
 // missing or unparsable installed file gives nothing to compare against and
 // is not protected: the signed update is the recovery path out of that state.
-func refuseRollback(destPath string, next RuleFile) error {
+func refuseRollback(destPath string, next RuleFile, allowRuleCountDecrease bool) error {
 	current, err := os.ReadFile(destPath) // #nosec G304 -- operator-configured rules dir.
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -107,10 +115,10 @@ func refuseRollback(destPath string, next RuleFile) error {
 		return nil
 	}
 	if next.Version < installed.Version {
-		return fmt.Errorf("refusing rules downgrade: update is version %d, installed rules are version %d", next.Version, installed.Version)
+		return fmt.Errorf("%w: refusing rules downgrade: update is version %d, installed rules are version %d", ErrUpdateRollback, next.Version, installed.Version)
 	}
-	if len(next.Rules)*2 < len(installed.Rules) {
-		return fmt.Errorf("refusing rules rollback: update carries %d rules, installed rules carry %d", len(next.Rules), len(installed.Rules))
+	if !allowRuleCountDecrease && len(next.Rules)*2 < len(installed.Rules) {
+		return fmt.Errorf("%w: refusing rules rollback: update carries %d rules, installed rules carry %d", ErrUpdateRollback, len(next.Rules), len(installed.Rules))
 	}
 	return nil
 }

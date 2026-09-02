@@ -58,7 +58,28 @@ func newActionRateLimiter(maxPerMin int) *actionRateLimiter {
 func (rl *actionRateLimiter) consumeUpTo(n int) int {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	return rl.consumeUpToLocked(n, rl.maxPerMin)
+}
+
+func (rl *actionRateLimiter) consumeUpToLimit(n, maxPerMin int) int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.consumeUpToLocked(n, maxPerMin)
+}
+
+func (rl *actionRateLimiter) consumeUpToLocked(n, maxPerMin int) int {
+	if maxPerMin <= 0 {
+		maxPerMin = 60
+	}
 	now := rl.now()
+	if maxPerMin != rl.maxPerMin {
+		used := rl.maxPerMin - rl.bucket
+		rl.maxPerMin = maxPerMin
+		rl.bucket = maxPerMin - used
+		if rl.bucket < 0 {
+			rl.bucket = 0
+		}
+	}
 	if rl.refilledAt.IsZero() || now.Sub(rl.refilledAt) >= time.Minute {
 		rl.bucket = rl.maxPerMin
 		rl.refilledAt = now
@@ -200,12 +221,10 @@ type auditor interface {
 // invocations. Constructed once at daemon start; Apply is invoked per
 // post-emit AutoResponse pass.
 //
-// dryRunFn returns the EFFECTIVE dry-run state. The CLI's runtime
-// override + bbolt override + csm.yaml fallback are resolved by the
-// PHPRelayController.effectiveDryRun and threaded in via dryRunFn so
-// `csm phprelay dry-run on|off|reset` actually changes freeze
-// behaviour. autoFreezer never reads cfg.AutoResponse.PHPRelay.DryRun
-// directly.
+// dryRunFn returns the EFFECTIVE dry-run state from the same config snapshot
+// Apply uses for enablement and rate limits. The CLI's runtime override,
+// bbolt override and csm.yaml fallback are resolved by the controller so
+// `csm phprelay dry-run on|off|reset` changes freeze behaviour immediately.
 //
 //nolint:unused // wired in O2 by daemon controller
 type autoFreezer struct {
@@ -217,7 +236,7 @@ type autoFreezer struct {
 	auditor   auditor
 	rateLim   *actionRateLimiter
 	metrics   *phpRelayMetrics
-	dryRunFn  func() bool
+	dryRunFn  func(*config.Config) bool
 }
 
 // config returns the live config so a reload that disables auto-response or
@@ -225,7 +244,7 @@ type autoFreezer struct {
 func (a *autoFreezer) config() *config.Config { return a.cfgFn() }
 
 //nolint:unused // wired in O2 by daemon controller
-func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, eximBin string, r runner, a auditor, m *phpRelayMetrics, dryRunFn func() bool) *autoFreezer {
+func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, eximBin string, r runner, a auditor, m *phpRelayMetrics, dryRunFn func(*config.Config) bool) *autoFreezer {
 	if r == nil {
 		r = defaultRunner{}
 	}
@@ -236,7 +255,7 @@ func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, exi
 	if dryRunFn == nil {
 		// Defensive default: if no resolver wired, fall back to the safe
 		// YAML-level dry-run state (PHPRelayDryRunEnabled defaults to TRUE).
-		dryRunFn = cfg.PHPRelayDryRunEnabled
+		dryRunFn = func(liveCfg *config.Config) bool { return liveCfg.PHPRelayDryRunEnabled() }
 	}
 	return &autoFreezer{
 		scripts: scripts, cfgFn: liveConfigFn(cfg), spoolRoot: spoolRoot, eximBin: eximBin,
@@ -253,13 +272,14 @@ func newAutoFreezer(scripts *perScriptWindow, cfg *config.Config, spoolRoot, exi
 //nolint:unused // wired in O2 by daemon controller
 func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 	var emitted []alert.Finding
-	if !a.config().AutoResponse.Enabled || !a.config().PHPRelayFreezeEnabled() {
+	cfg := a.config()
+	if !cfg.AutoResponse.Enabled || !cfg.PHPRelayFreezeEnabled() {
 		return nil
 	}
 	if a.eximBin == "" {
 		return nil
 	}
-	dryRun := a.dryRunFn()
+	dryRun := a.dryRunFn(cfg)
 	for _, f := range findings {
 		if f.Check != "email_php_relay_abuse" {
 			continue
@@ -308,7 +328,7 @@ func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 			continue
 		}
 		requested := len(ids)
-		grant := a.rateLim.consumeUpTo(requested)
+		grant := a.rateLim.consumeUpToLimit(requested, cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)
 		if grant < requested {
 			emitted = append(emitted, alert.Finding{
 				Severity:  alert.Warning,

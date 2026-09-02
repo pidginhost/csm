@@ -100,7 +100,7 @@ func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 	}
 	// Bounded: a country list is well under a megabyte; an upstream that
 	// streams more is not serving the list.
-	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, countryCIDRMaxBytes))
+	n, copyErr := io.Copy(f, io.LimitReader(resp.Body, countryCIDRMaxBytes+1))
 	closeErr := f.Close()
 	if copyErr != nil {
 		_ = os.Remove(tmpPath)
@@ -110,6 +110,11 @@ func downloadCIDRFile(client *http.Client, url, outPath string) bool {
 	if closeErr != nil {
 		_ = os.Remove(tmpPath)
 		fmt.Fprintf(os.Stderr, "geoip: error closing %s: %v\n", tmpPath, closeErr)
+		return false
+	}
+	if n > countryCIDRMaxBytes {
+		_ = os.Remove(tmpPath)
+		fmt.Fprintf(os.Stderr, "geoip: %s exceeds %d bytes, keeping previous file\n", url, countryCIDRMaxBytes)
 		return false
 	}
 	// Validate before install: a 200 with no parseable CIDR (an HTML

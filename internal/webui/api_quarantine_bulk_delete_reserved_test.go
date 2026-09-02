@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -53,5 +54,35 @@ func TestQuarantineBulkDeleteNeverRemovesReservedSubtrees(t *testing.T) {
 	}
 	if _, err := os.Stat(item); !os.IsNotExist(err) {
 		t.Fatal("the real quarantine entry was not removed")
+	}
+}
+
+func TestQuarantineRestoreRejectsReservedSubtreesWithSidecars(t *testing.T) {
+	dir := t.TempDir()
+	old := quarantineDir
+	quarantineDir = dir
+	t.Cleanup(func() { quarantineDir = old })
+
+	for _, sub := range []string{"pre_clean", "email"} {
+		t.Run(sub, func(t *testing.T) {
+			if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, sub+".meta"), []byte("not metadata"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			s := newTestServer(t, "tok")
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"id":"`+sub+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			s.apiQuarantineRestore(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d body = %s, want 404", w.Code, w.Body.String())
+			}
+			if _, err := os.Stat(filepath.Join(dir, sub)); err != nil {
+				t.Fatalf("reserved subtree changed: %v", err)
+			}
+		})
 	}
 }

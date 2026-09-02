@@ -1,6 +1,7 @@
 package signatures
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,11 +57,29 @@ func TestUpdateRefusesRuleCountCollapse(t *testing.T) {
 	installRules(t, rulesDir, installed)
 	pubHex := serveSignedRules(t, rulesYAML(8, 2))
 
-	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex); err == nil {
+	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{}); err == nil {
 		t.Fatal("update that drops 20 rules to 2 was installed")
+	} else if !errors.Is(err, ErrUpdateRollback) {
+		t.Fatalf("collapse error = %v, want ErrUpdateRollback", err)
 	}
 	if got := installedRules(t, rulesDir); string(got) != string(installed) {
 		t.Fatal("installed rules were replaced despite the refusal")
+	}
+}
+
+func TestUpdateAllowsConfiguredRuleCountDecrease(t *testing.T) {
+	rulesDir := t.TempDir()
+	installRules(t, rulesDir, rulesYAML(7, 20))
+	pubHex := serveSignedRules(t, rulesYAML(8, 2))
+
+	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{
+		AllowRuleCountDecrease: true,
+	})
+	if err != nil {
+		t.Fatalf("operator-approved decrease refused: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("Update returned %d rules, want 2", n)
 	}
 }
 
@@ -72,7 +91,7 @@ func TestUpdateRefusesOlderVersion(t *testing.T) {
 	installRules(t, rulesDir, installed)
 	pubHex := serveSignedRules(t, rulesYAML(6, 20))
 
-	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex); err == nil {
+	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{}); err == nil {
 		t.Fatal("update with an older version than the installed file was installed")
 	}
 	if got := installedRules(t, rulesDir); string(got) != string(installed) {
@@ -86,7 +105,7 @@ func TestUpdateAcceptsModestShrink(t *testing.T) {
 	installRules(t, rulesDir, rulesYAML(7, 20))
 	pubHex := serveSignedRules(t, rulesYAML(8, 15))
 
-	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex)
+	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err != nil {
 		t.Fatalf("modest shrink refused: %v", err)
 	}
@@ -102,7 +121,7 @@ func TestUpdateReplacesUnparsableInstalledRules(t *testing.T) {
 	installRules(t, rulesDir, []byte("rules: [\n"))
 	pubHex := serveSignedRules(t, rulesYAML(1, 2))
 
-	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex); err != nil {
+	if _, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{}); err != nil {
 		t.Fatalf("recovery update refused: %v", err)
 	}
 }

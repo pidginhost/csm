@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -19,6 +20,7 @@ import (
 // and leave the finding unresolved instead of reading past it.
 func TestContentStillMatchesRefusesFilesAboveScanCeiling(t *testing.T) {
 	dir := t.TempDir()
+	withQuarantineAllowedRoots(t, dir)
 	rules := "version: 1\nrules:\n  - name: test_marker\n    description: t\n    severity: high\n    category: obfuscation\n    file_types: [\".php\"]\n    patterns: [\"EVIL_MARKER_B\"]\n    min_match: 1\n"
 	if err := os.WriteFile(filepath.Join(dir, "r.yml"), []byte(rules), 0o644); err != nil {
 		t.Fatal(err)
@@ -43,7 +45,19 @@ func TestContentStillMatchesRefusesFilesAboveScanCeiling(t *testing.T) {
 	}
 
 	_, _, _, err = contentStillMatches("signature_match_realtime", path, info)
-	if !errors.Is(err, errContentSnapshotTooLarge) && (err == nil || !bytes.Contains([]byte(err.Error()), []byte("read limit"))) {
+	if !errors.Is(err, errContentSnapshotTooLarge) {
 		t.Fatalf("2 MiB flagged file above a 1 MiB ceiling was read: err = %v", err)
+	}
+
+	result := reverifyContentFinding(VerifyInput{
+		Check:         "signature_match_realtime",
+		Path:          path,
+		ContentSHA256: "confirmed-finding-hash",
+	})
+	if result.Checked || result.Resolved {
+		t.Fatalf("oversized confirmed finding was cleared: %+v", result)
+	}
+	if !strings.Contains(result.Detail, "read limit") {
+		t.Fatalf("reverify detail = %q, want bounded-read failure", result.Detail)
 	}
 }

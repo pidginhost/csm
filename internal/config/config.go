@@ -971,7 +971,10 @@ type Config struct {
 		AutoUpdate     bool   `yaml:"auto_update"`     // auto-download rules daily (default: true if update_url set)
 		UpdateInterval string `yaml:"update_interval"` // how often to check (default: "24h")
 		SigningKey     string `yaml:"signing_key"`     // hex-encoded ed25519 public key for verifying rule updates
-		YaraForge      struct {
+		// AllowRuleCountDecrease permits a deliberately reduced, newer signed
+		// ruleset to bypass the default count-collapse guard.
+		AllowRuleCountDecrease bool `yaml:"allow_rule_count_decrease"`
+		YaraForge              struct {
 			Enabled        bool   `yaml:"enabled"`
 			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)

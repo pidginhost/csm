@@ -16,6 +16,10 @@ func TestCountryDBDirDefaultsUnderStatePath(t *testing.T) {
 	if got := CountryDBDir(cfg, "/var/lib/csm/state"); got != "/srv/geo" {
 		t.Fatalf("explicit country_db_path overridden: %q", got)
 	}
+	cfg.CountryDBPath = "custom/geo"
+	if got := CountryDBDir(cfg, "/var/lib/csm/state"); got != "custom/geo" {
+		t.Fatalf("relative country_db_path re-rooted: %q", got)
+	}
 }
 
 func TestCountryBlockingActiveDoesNotRequireExplicitPath(t *testing.T) {

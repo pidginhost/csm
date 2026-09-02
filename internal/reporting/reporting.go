@@ -62,8 +62,8 @@ type Report struct {
 }
 
 // Gate decides whether a finding is reportable and, if so, the minimized report
-// to send. Only Critical findings whose check is an enabled abuse class and
-// that carry a usable source IP are reported.
+// to send. Only findings at or above their class minimum severity whose check
+// is an enabled abuse class and that carry a usable source IP are reported.
 type Gate struct {
 	// Enabled is the set of classes the operator has turned on. Empty means
 	// none are reported.

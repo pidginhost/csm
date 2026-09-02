@@ -1,42 +1,111 @@
 package daemon
 
 import (
+	"errors"
+	"net"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// The refresh replaces the kernel sets, the saved list and the checks
-// package's Cloudflare ranges with whatever the fetch returned. An empty
-// family must never reach that step: it would flush every Cloudflare guard
-// and the next brute-force finding carrying an edge address would block that
-// edge for every visitor behind it. The previous list stays in force.
-func TestRefreshCloudflareIPsKeepsPreviousListOnEmptyFetch(t *testing.T) {
+func TestRefreshCloudflareIPsMergesFreshAndCachedFamilies(t *testing.T) {
 	orig := fetchCloudflareIPs
 	t.Cleanup(func() { fetchCloudflareIPs = orig })
+	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
 
-	state := t.TempDir()
-	saved := filepath.Join(state, "cf_whitelist.txt")
-	const previous = "173.245.48.0/20\n2400:cb00::/32\n"
-	if err := os.WriteFile(saved, []byte(previous), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	d := &Daemon{cfg: &config.Config{StatePath: state}}
-
-	for name, fetch := range map[string]func() ([]string, []string, error){
-		"both empty":  func() ([]string, []string, error) { return nil, nil, nil },
-		"ipv6 empty":  func() ([]string, []string, error) { return []string{"173.245.48.0/20"}, nil, nil },
-		"fetch error": func() ([]string, []string, error) { return nil, nil, os.ErrDeadlineExceeded },
+	for name, tc := range map[string]struct {
+		fetch func() ([]string, []string, error)
+		want4 []string
+		want6 []string
+	}{
+		"fresh IPv4": {
+			fetch: func() ([]string, []string, error) {
+				return []string{"198.51.100.0/24"}, nil, errors.New("IPv6 unavailable")
+			},
+			want4: []string{"198.51.100.0/24"},
+			want6: []string{"2400:cb00::/32"},
+		},
+		"fresh IPv6": {
+			fetch: func() ([]string, []string, error) {
+				return nil, []string{"2001:db8:100::/48"}, errors.New("IPv4 unavailable")
+			},
+			want4: []string{"173.245.48.0/20"},
+			want6: []string{"2001:db8:100::/48"},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			fetchCloudflareIPs = fetch
+			state := t.TempDir()
+			if err := firewall.SaveCFState(state, []string{"173.245.48.0/20"}, []string{"2400:cb00::/32"}, time.Now().Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			fetchCloudflareIPs = tc.fetch
+			d := &Daemon{cfg: &config.Config{StatePath: state}}
 			d.refreshCloudflareIPs()
-			got, err := os.ReadFile(saved)
-			if err != nil || string(got) != previous {
-				t.Fatalf("saved Cloudflare list changed after an unusable fetch: %q (%v)", got, err)
+			got4, got6 := firewall.LoadCFState(state)
+			if len(got4) != 1 || got4[0] != tc.want4[0] || len(got6) != 1 || got6[0] != tc.want6[0] {
+				t.Fatalf("saved ranges = %v, %v; want %v, %v", got4, got6, tc.want4, tc.want6)
+			}
+			for _, ip := range []string{firstAddress(tc.want4[0]), firstAddress(tc.want6[0])} {
+				if !checks.IsCloudflareIP(net.ParseIP(ip)) {
+					t.Fatalf("checks package did not receive merged Cloudflare range for %s", ip)
+				}
 			}
 		})
 	}
+}
+
+func TestRefreshCloudflareIPsRestoresCachedRangesAfterFetchFailure(t *testing.T) {
+	orig := fetchCloudflareIPs
+	t.Cleanup(func() { fetchCloudflareIPs = orig })
+	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
+
+	state := t.TempDir()
+	refreshed := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := firewall.SaveCFState(state, []string{"173.245.48.0/20"}, []string{"2400:cb00::/32"}, refreshed); err != nil {
+		t.Fatal(err)
+	}
+	fetchCloudflareIPs = func() ([]string, []string, error) {
+		return nil, nil, os.ErrDeadlineExceeded
+	}
+	d := &Daemon{cfg: &config.Config{StatePath: state}}
+	d.refreshCloudflareIPs()
+
+	if got := firewall.LoadCFRefreshTime(state); !got.Equal(refreshed) {
+		t.Fatalf("failed fetch rewrote refresh time to %s; want %s", got, refreshed)
+	}
+	for _, ip := range []string{"173.245.48.1", "2400:cb00::1"} {
+		if !checks.IsCloudflareIP(net.ParseIP(ip)) {
+			t.Fatalf("cached Cloudflare range was not restored for %s", ip)
+		}
+	}
+}
+
+func TestRefreshCloudflareIPsUsesPartialFirstFetch(t *testing.T) {
+	orig := fetchCloudflareIPs
+	t.Cleanup(func() { fetchCloudflareIPs = orig })
+	t.Cleanup(func() { checks.SetCloudflareNets(nil) })
+
+	state := t.TempDir()
+	fetchCloudflareIPs = func() ([]string, []string, error) {
+		return []string{"198.51.100.0/24"}, nil, errors.New("IPv6 unavailable")
+	}
+	d := &Daemon{cfg: &config.Config{StatePath: state}}
+	d.refreshCloudflareIPs()
+
+	got4, got6 := firewall.LoadCFState(state)
+	if len(got4) != 1 || got4[0] != "198.51.100.0/24" || len(got6) != 0 {
+		t.Fatalf("first partial refresh = %v, %v; want fresh IPv4 retained", got4, got6)
+	}
+	if !checks.IsCloudflareIP(net.ParseIP("198.51.100.1")) {
+		t.Fatal("first partial refresh did not install the available family")
+	}
+}
+
+func firstAddress(cidr string) string {
+	return strings.SplitN(cidr, "/", 2)[0]
 }

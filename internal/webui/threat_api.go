@@ -248,6 +248,10 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 	req.IP = parsedIP.String()
 
 	if tdb := checks.GetThreatDB(); tdb != nil {
+		if tdb.IsConfigWhitelisted(req.IP) {
+			writeJSONError(w, "IP is managed by reputation.whitelist; edit the config and reload", http.StatusConflict)
+			return
+		}
 		tdb.RemoveWhitelist(req.IP)
 	}
 
@@ -486,9 +490,11 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	succeeded := make([]string, 0, len(req.IPs))
 	var removedThreats []undoThreatRow
 	for _, ipStr := range req.IPs {
-		if _, err := parseAndValidateIP(ipStr); err != nil {
+		parsedIP, err := parseAndValidateIP(ipStr)
+		if err != nil {
 			continue
 		}
+		ipStr = parsedIP.String()
 		switch req.Action {
 		case "block":
 			// Mirror apiThreatBlockIP flow

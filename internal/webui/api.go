@@ -1399,6 +1399,10 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !quarantineEntryDeletable(entry) {
+		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
+		return
+	}
 
 	metaData, err := os.ReadFile(entry.MetaPath)
 	if err != nil {

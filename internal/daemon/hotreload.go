@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -259,5 +260,6 @@ func (d *Daemon) emitReloadFinding(sev alert.Severity, check, msg string) {
 	select {
 	case d.alertCh <- finding:
 	default:
+		atomic.AddInt64(&d.droppedAlerts, 1)
 	}
 }

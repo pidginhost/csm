@@ -52,7 +52,7 @@ func startPHPRelayLinux(d *Daemon) {
 	prMetrics := newPHPRelayMetrics()
 	eng := newEvaluator(psw, pip, pacct, d.cfg, prMetrics)
 	eng.SetPolicies(pol)
-	eff, enabled, capped := deriveEffectiveAccountLimit(d.cfg, limit, status)
+	_, enabled, capped := deriveEffectiveAccountLimit(d.cfg, limit, status)
 	if !enabled {
 		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_path2b_disabled",
 			"Path 2b disabled: cPanel limit off and no operator override")
@@ -61,7 +61,7 @@ func startPHPRelayLinux(d *Daemon) {
 		emitPHPRelayFinding(d, alert.Warning, "email_php_relay_account_volume_capped",
 			"operator AccountVolumePerHour capped to 95% of cPanel hourly limit")
 	}
-	eng.SetEffectiveAccountLimit(eff)
+	eng.SetAccountLimitSource(limit, status)
 	SetPHPRelayEvaluator(eng)
 
 	// 5. msgIDIndex + persister. Bbolt access is via store.Global() --

@@ -207,14 +207,14 @@ func TestRuleMatchesExtEmptyMatchesAll(t *testing.T) {
 // --- Update (HTTP) ----------------------------------------------------
 
 func TestUpdateRequiresURL(t *testing.T) {
-	_, err := Update(t.TempDir(), "", "deadbeef")
+	_, err := Update(t.TempDir(), "", "deadbeef", UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with empty URL should error")
 	}
 }
 
 func TestUpdateRequiresSigningKey(t *testing.T) {
-	_, err := Update(t.TempDir(), "https://example.com/rules.yml", "")
+	_, err := Update(t.TempDir(), "https://example.com/rules.yml", "", UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with empty signing key should error")
 	}
@@ -231,7 +231,7 @@ func TestUpdateSuccessInstallsRules(t *testing.T) {
 	}})
 
 	rulesDir := t.TempDir()
-	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex)
+	n, err := Update(rulesDir, "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestUpdateFailsOnWrongSignature(t *testing.T) {
 		"/rules.yml.sig": {body: badSig},
 	}})
 
-	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with wrong signature should fail")
 	}
@@ -269,7 +269,7 @@ func TestUpdateFailsOnHTTPError(t *testing.T) {
 		"/rules.yml": {status: http.StatusInternalServerError},
 	}})
 
-	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", "deadbeef")
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", "deadbeef", UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with HTTP 500 should fail")
 	}
@@ -286,7 +286,7 @@ func TestUpdateFailsOnInvalidYAML(t *testing.T) {
 		"/rules.yml.sig": {body: sig},
 	}})
 
-	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with invalid YAML should fail")
 	}
@@ -305,7 +305,7 @@ func TestUpdateFailsOnEmptyRules(t *testing.T) {
 		"/rules.yml.sig": {body: sig},
 	}})
 
-	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err == nil || !strings.Contains(err.Error(), "no rules") {
 		t.Fatalf("Update with empty rules = %v, want 'no rules' error", err)
 	}
@@ -320,7 +320,7 @@ func TestUpdateFailsOnMissingSignature(t *testing.T) {
 		"/rules.yml.sig": {status: http.StatusNotFound},
 	}})
 
-	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex)
+	_, err := Update(t.TempDir(), "https://rules.example/rules.yml", pubHex, UpdateOptions{})
 	if err == nil {
 		t.Fatal("Update with missing signature should fail")
 	}

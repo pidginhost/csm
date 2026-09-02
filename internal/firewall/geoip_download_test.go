@@ -1,13 +1,12 @@
 package firewall
 
 import (
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The country CIDR download accepted any 200 body larger than ten bytes and
@@ -21,12 +20,10 @@ func TestDownloadCIDRFileRejectsBodiesWithoutCIDRs(t *testing.T) {
 	if err := os.WriteFile(out, []byte(previous), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("<html><body>Rate limit exceeded, try again later</body></html>\n"))
-	}))
-	defer srv.Close()
+	client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(
+		"<html><body>Rate limit exceeded, try again later</body></html>\n")))
 
-	if downloadCIDRFile(&http.Client{Timeout: 5 * time.Second}, srv.URL, out) {
+	if downloadCIDRFile(client, "https://example.test/cn.cidr", out) {
 		t.Fatal("HTML body accepted as a country CIDR list")
 	}
 	got, err := os.ReadFile(out)
@@ -40,11 +37,9 @@ func TestDownloadCIDRFileRejectsBodiesWithoutCIDRs(t *testing.T) {
 
 func TestDownloadCIDRFileInstallsValidList(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "RO.cidr")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("# comment\n5.2.128.0/17\n31.5.0.0/16\n"))
-	}))
-	defer srv.Close()
-	if !downloadCIDRFile(&http.Client{Timeout: 5 * time.Second}, srv.URL, out) {
+	client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(
+		"# comment\n5.2.128.0/17\n31.5.0.0/16\n")))
+	if !downloadCIDRFile(client, "https://example.test/ro.cidr", out) {
 		t.Fatal("valid CIDR list rejected")
 	}
 	got, _ := os.ReadFile(out)

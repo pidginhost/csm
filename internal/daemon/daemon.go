@@ -843,7 +843,7 @@ func (d *Daemon) Run() error {
 		})
 	}
 
-	// Run initial scan synchronously (before dispatcher starts)
+	// Run the initial scan synchronously while alert dispatch is held.
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
 	initialFindings, initialPurge := checks.RunTierWithContext(d.scanContext(), initialCfg, d.store, checks.TierCritical)
 
@@ -1154,7 +1154,7 @@ func (d *Daemon) Run() error {
 			d.reloadConfig()
 			d.reloadSignatures()
 			if d.policies != nil {
-				if err := d.policies.Reload(d.cfg.EmailProtection.PHPRelay.PoliciesDir); err != nil {
+				if err := d.policies.Reload(d.currentCfg().EmailProtection.PHPRelay.PoliciesDir); err != nil {
 					// Previous valid version stays in effect; surface the failure
 					// via the existing alert pipeline so operators see partial reload.
 					d.emitReloadFinding(alert.Warning, "email_php_relay_policies_reload",
@@ -1345,6 +1345,7 @@ func (d *Daemon) alertDispatcher() {
 		case f := <-d.alertCh:
 			if held != nil && len(batch) >= alertHoldMaxBatch {
 				heldDropped++
+				atomic.AddInt64(&d.droppedAlerts, 1)
 				continue
 			}
 			batch = append(batch, f)
@@ -3203,17 +3204,27 @@ func (d *Daemon) refreshCloudflareIPs() {
 	ipv4, ipv6, err := fetchCloudflareIPs()
 	if err != nil {
 		csmlog.Error("cloudflare IP fetch error", "err", err)
+	}
+	fresh := len(ipv4) > 0 || len(ipv6) > 0
+	cached4, cached6 := firewall.LoadCFState(d.cfg.StatePath)
+	if len(ipv4) == 0 {
+		ipv4 = cached4
+	}
+	if len(ipv6) == 0 {
+		ipv6 = cached6
+	}
+	if len(ipv4) == 0 && len(ipv6) == 0 {
+		csmlog.Error("cloudflare IP refresh has no fetched or cached ranges")
 		return
 	}
-	// Cloudflare always publishes both families. An empty one means the
-	// fetch was not a real list; replacing the kernel sets, the saved list
-	// and the checks-package ranges with it would flush every Cloudflare
-	// guard, so the previous list stays in force until the next refresh.
-	if len(ipv4) == 0 || len(ipv6) == 0 {
-		csmlog.Error("cloudflare IP fetch returned an empty family; keeping previous ranges",
-			"ipv4", len(ipv4), "ipv6", len(ipv6))
-		return
-	}
+
+	// Restore the local auto-block guard even when nftables is unavailable.
+	// Otherwise the daemon's first refresh failure leaves cached edges
+	// blockable until the network recovers.
+	allCF := make([]string, 0, len(ipv4)+len(ipv6))
+	allCF = append(allCF, ipv4...)
+	allCF = append(allCF, ipv6...)
+	checks.SetCloudflareNets(allCF)
 
 	if d.fwEngine != nil {
 		if err := d.fwEngine.UpdateCloudflareSet(ipv4, ipv6); err != nil {
@@ -3222,16 +3233,11 @@ func (d *Daemon) refreshCloudflareIPs() {
 		}
 	}
 
-	if err := firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now()); err != nil {
-		csmlog.Error("cloudflare state save error", "err", err)
+	if fresh {
+		if err := firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now()); err != nil {
+			csmlog.Error("cloudflare state save error", "err", err)
+		}
 	}
-
-	// Update the checks package so AutoBlockIPs/ChallengeRouteIPs skip CF IPs.
-	// Blocking a CF edge IP would block thousands of legitimate users.
-	allCF := make([]string, 0, len(ipv4)+len(ipv6))
-	allCF = append(allCF, ipv4...)
-	allCF = append(allCF, ipv6...)
-	checks.SetCloudflareNets(allCF)
 }
 
 // signatureUpdater periodically downloads new rules and reloads scanners.
@@ -3297,13 +3303,23 @@ func (d *Daemon) signatureUpdater() {
 }
 
 func (d *Daemon) doSignatureUpdate() {
-	count, err := signatures.Update(d.cfg.Signatures.RulesDir, d.cfg.Signatures.UpdateURL, d.cfg.Signatures.SigningKey)
+	count, err := signatures.Update(d.cfg.Signatures.RulesDir, d.cfg.Signatures.UpdateURL, d.cfg.Signatures.SigningKey, signatures.UpdateOptions{
+		AllowRuleCountDecrease: d.cfg.Signatures.AllowRuleCountDecrease,
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Signature auto-update failed: %v\n", ts(), err)
+		d.reportSignatureUpdateError(err)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "[%s] Signature auto-update: %d rules downloaded\n", ts(), count)
 	d.reloadSignatures()
+}
+
+func (d *Daemon) reportSignatureUpdateError(err error) {
+	fmt.Fprintf(os.Stderr, "[%s] Signature auto-update failed: %v\n", ts(), err)
+	if errors.Is(err, signatures.ErrUpdateRollback) {
+		d.emitReloadFinding(alert.Critical, "signature_update_rollback",
+			fmt.Sprintf("Signed rule update refused by rollback protection: %v", err))
+	}
 }
 
 // forgeRollbackNeeded reports whether a freshly installed Forge ruleset has to

@@ -351,10 +351,11 @@ const phpRelayStartupWalkMax = 20000
 // Lives in this linux-only file because the walker is its sole caller.
 func (e *evaluator) maxDetectionWindow() time.Duration {
 	maxMin := 60 // Path 2 absolute-volume window is hardcoded at 60 min
-	if v := e.config().EmailProtection.PHPRelay.RateWindowMin; v > maxMin {
+	relayCfg := e.config().EmailProtection.PHPRelay
+	if v := relayCfg.RateWindowMin; v > maxMin {
 		maxMin = v
 	}
-	if v := e.config().EmailProtection.PHPRelay.FanoutWindowMin; v > maxMin {
+	if v := relayCfg.FanoutWindowMin; v > maxMin {
 		maxMin = v
 	}
 	return time.Duration(maxMin) * time.Minute

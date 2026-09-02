@@ -505,6 +505,7 @@ signatures:
   auto_update: false                    # auto-download rules on schedule
   update_interval: ""                   # how often to check (e.g. "24h")
   signing_key: ""                       # required for any remote rule update path; 64-char hex Ed25519 public key
+  allow_rule_count_decrease: false      # permit a deliberate drop below half the installed YAML rule count
   yara_forge:
     enabled: false                      # auto-fetch YARA Forge community rules
     tier: "core"                        # "core", "extended", "full" (default: "core")

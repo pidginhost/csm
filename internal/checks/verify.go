@@ -236,7 +236,7 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		// grown must leave the finding unresolved, not be read whole.
 		snap, err := readContentSnapshotForReverifyBounded(path, info, FullScanMaxFileBytes(config.Active()))
 		if err != nil {
-			return false, "", "", fmt.Errorf("cannot read file: %v", err)
+			return false, "", "", fmt.Errorf("cannot read file: %w", err)
 		}
 		if hits := s.ScanContent(snap.data, strings.ToLower(filepath.Ext(path))); len(hits) > 0 {
 			return true, fmt.Sprintf("%d signature match(es)", len(hits)), snap.sha256, nil
@@ -249,7 +249,7 @@ func contentStillMatches(check, path string, info os.FileInfo) (bool, string, st
 		}
 		snap, err := readContentSnapshotForReverifyBounded(path, info, FullScanMaxFileBytes(config.Active()))
 		if err != nil {
-			return false, "", "", fmt.Errorf("cannot read file: %v", err)
+			return false, "", "", fmt.Errorf("cannot read file: %w", err)
 		}
 		// A payload too large for one IPC frame is retried by path, so a big
 		// file is re-checked rather than being stuck forever: the finding could

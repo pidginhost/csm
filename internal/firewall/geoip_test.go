@@ -195,3 +195,35 @@ func TestDownloadCIDRFileRejectsRenameError(t *testing.T) {
 		t.Fatalf("temp output exists after rename failure: %v", err)
 	}
 }
+
+func TestDownloadCIDRFileRejectsBodyPastLimit(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "US.cidr")
+	const previous = "198.51.100.0/24\n"
+	if err := os.WriteFile(outPath, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "203.0.113.0/24\n" + strings.Repeat("#", countryCIDRMaxBytes)
+	client := geoIPTestClient(http.StatusOK, io.NopCloser(strings.NewReader(body)))
+
+	if downloadCIDRFile(client, "https://example.test/us.cidr", outPath) {
+		t.Fatal("oversized country response was installed")
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil || string(got) != previous {
+		t.Fatalf("previous country file changed: %q (%v)", got, err)
+	}
+	if _, err := os.Stat(outPath + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp output exists after oversized response: %v", err)
+	}
+}
+
+func TestCountCIDRLinesCountsIPv6(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "RO.cidr6")
+	if err := os.WriteFile(path, []byte("2001:db8::/32\n# comment\ninvalid\n2001:db8:1::/48\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := countCIDRLines(path); got != 2 {
+		t.Fatalf("IPv6 CIDR count = %d, want 2", got)
+	}
+}

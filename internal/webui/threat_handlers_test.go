@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 // --- apiThreatStats (attackdb not initialized in test) -----------------
@@ -16,6 +18,22 @@ func TestAPIThreatStatsNoAttackDB(t *testing.T) {
 	s.apiThreatStats(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
+	}
+}
+
+func TestAPIThreatUnwhitelistRejectsConfiguredEntry(t *testing.T) {
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	checks.GetThreatDB().SetConfigWhitelist([]string{"203.0.113.5"})
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader("{\"ip\":\"203.0.113.5\"}"))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiThreatUnwhitelistIP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s, want 409", w.Code, w.Body.String())
+	}
+	if !checks.GetThreatDB().IsConfigWhitelisted("203.0.113.5") {
+		t.Fatal("configured entry was removed despite refusal")
 	}
 }
 

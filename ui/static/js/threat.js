@@ -454,11 +454,13 @@ function loadWhitelist() {
         var html='';
         for(var i=0;i<entries.length;i++){
             var e=entries[i];
-            var typeBadge=e.permanent?'<span class="badge bg-success-lt">Permanent</span>':
-                '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>';
+            var typeBadge=e.configured?'<span class="badge bg-blue-lt">Configured</span>':
+                (e.permanent?'<span class="badge bg-success-lt">Permanent</span>':
+                '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>');
             html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
             html+='<td>'+typeBadge+'</td>';
-            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist - it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
+            html+='<td>'+(e.configured?'<span class="text-muted small">Edit csm.yaml</span>':
+                '<button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist - it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button>')+'</td></tr>';
         }
         tbody.innerHTML=html;
         // Bind remove buttons after DOM insertion

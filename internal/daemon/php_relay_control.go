@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -53,6 +54,14 @@ func (r *runtimeBool) Get() (value, set bool) {
 // effectiveDryRun resolves precedence: runtime > bbolt > csm.yaml.
 // Returns (effective, source) where source identifies the winning input.
 func (c *PHPRelayController) effectiveDryRun() (bool, string) {
+	var cfg *config.Config
+	if c.eng != nil {
+		cfg = c.eng.config()
+	}
+	return c.effectiveDryRunForConfig(cfg)
+}
+
+func (c *PHPRelayController) effectiveDryRunForConfig(cfg *config.Config) (bool, string) {
 	if v, set := c.actionDryRun.Get(); set {
 		return v, "runtime"
 	}
@@ -61,22 +70,23 @@ func (c *PHPRelayController) effectiveDryRun() (bool, string) {
 			return v, "bbolt"
 		}
 	}
-	if c.eng != nil && c.eng.config() != nil {
-		return c.eng.config().PHPRelayDryRunEnabled(), "csm.yaml"
+	if cfg != nil {
+		return cfg.PHPRelayDryRunEnabled(), "csm.yaml"
 	}
 	return true, "default"
 }
 
 // Status returns a snapshot of detector state for `csm phprelay status`.
 func (c *PHPRelayController) Status(_ context.Context, _ control.PHPRelayStatusRequest) (control.PHPRelayStatusResponse, error) {
+	cfg := c.eng.config()
 	resp := control.PHPRelayStatusResponse{
 		Enabled:               c.enabled,
 		Platform:              c.platform,
-		EffectiveAccountLimit: c.eng.effectiveAccountLimit,
+		EffectiveAccountLimit: c.eng.accountLimit(cfg),
 		IgnoresActive:         len(c.ignores.List()),
 		RecentFindings:        map[string]int{}, // populated by metrics in Phase N
 	}
-	eff, _ := c.effectiveDryRun()
+	eff, _ := c.effectiveDryRunForConfig(cfg)
 	resp.DryRun = eff
 	if c.eng.scripts != nil {
 		resp.ScriptsTracked = len(c.eng.scripts.Snapshot())
@@ -215,13 +225,12 @@ func (c *PHPRelayController) DryRun(_ context.Context, req control.PHPRelayDryRu
 	return control.PHPRelayDryRunResponse{Effective: eff, Source: src}, nil
 }
 
-// DryRunFn returns a closure that evaluates the precedence chain on
-// every call. Daemon wiring passes this to newAutoFreezer so that
-// `csm phprelay dry-run` actually changes freeze behaviour without
-// rebuilding the freezer.
-func (c *PHPRelayController) DryRunFn() func() bool {
-	return func() bool {
-		v, _ := c.effectiveDryRun()
+// DryRunFn evaluates the precedence chain against the operation's config
+// snapshot. Daemon wiring passes it to newAutoFreezer so `csm phprelay
+// dry-run` changes freeze behaviour without rebuilding the freezer.
+func (c *PHPRelayController) DryRunFn() func(*config.Config) bool {
+	return func(cfg *config.Config) bool {
+		v, _ := c.effectiveDryRunForConfig(cfg)
 		return v
 	}
 }
