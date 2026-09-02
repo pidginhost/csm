@@ -3130,10 +3130,23 @@ func (d *Daemon) cloudflareRefreshLoop() {
 	}
 }
 
+// fetchCloudflareIPs downloads the current Cloudflare ranges. Var so tests
+// can feed the refresh an unusable result.
+var fetchCloudflareIPs = firewall.FetchCloudflareIPs
+
 func (d *Daemon) refreshCloudflareIPs() {
-	ipv4, ipv6, err := firewall.FetchCloudflareIPs()
+	ipv4, ipv6, err := fetchCloudflareIPs()
 	if err != nil {
 		csmlog.Error("cloudflare IP fetch error", "err", err)
+		return
+	}
+	// Cloudflare always publishes both families. An empty one means the
+	// fetch was not a real list; replacing the kernel sets, the saved list
+	// and the checks-package ranges with it would flush every Cloudflare
+	// guard, so the previous list stays in force until the next refresh.
+	if len(ipv4) == 0 || len(ipv6) == 0 {
+		csmlog.Error("cloudflare IP fetch returned an empty family; keeping previous ranges",
+			"ipv4", len(ipv4), "ipv6", len(ipv6))
 		return
 	}
 

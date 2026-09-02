@@ -50,7 +50,18 @@ func fetchCIDRList(client *http.Client, url string) ([]string, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	return parseCloudflareResponse(bufio.NewScanner(resp.Body)), nil
+	scanner := bufio.NewScanner(resp.Body)
+	cidrs := parseCloudflareResponse(scanner)
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", url, err)
+	}
+	// A 200 with no ranges is an interstitial, a proxy page or a truncated
+	// body, never an empty Cloudflare list. Publishing it would flush every
+	// Cloudflare guard, so the previous list must stay in force.
+	if len(cidrs) == 0 {
+		return nil, fmt.Errorf("no CIDR ranges in response from %s", url)
+	}
+	return cidrs, nil
 }
 
 // parseCloudflareResponse parses lines from a scanner, returning valid CIDRs.
